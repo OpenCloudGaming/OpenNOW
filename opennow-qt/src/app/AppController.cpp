@@ -1,4 +1,5 @@
 #include "app/AppController.h"
+#include "media/MediaPaths.h"
 
 #include <algorithm>
 #include <QCoreApplication>
@@ -276,11 +277,11 @@ bool AppController::copyScreenshotTo(const QString &sourcePath,
             || source.size() > 512LL * 1024 * 1024) {
         return false;
     }
-    const auto pictures = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
-    if (pictures.isEmpty()) return false;
-    QDir screenshots(QDir(pictures).filePath(u"OpenNOW/Screenshots"_s));
+    const auto screenshotsPath = mediaScreenshotsDirectory();
+    if (screenshotsPath.isEmpty()) return false;
+    const QDir screenshots(screenshotsPath);
     if (!screenshots.exists()
-            || QDir::cleanPath(source.absolutePath()) != QDir::cleanPath(screenshots.absolutePath())) {
+            || QDir::cleanPath(source.absolutePath()) != QDir::cleanPath(screenshotsPath)) {
         return false;
     }
     const auto sourceSuffix = source.suffix().toLower();
@@ -335,14 +336,9 @@ QString AppController::captureScreenRegion(int x, int y, int width, int height,
     const auto image = screen->grabWindow(0, local.x(), local.y(), local.width(), local.height());
     if (image.isNull()) return {};
 
-    auto pictures = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
-    if (pictures.isEmpty()) return {};
-    QDir directory(pictures);
-    if (!directory.mkpath(u"OpenNOW/Screenshots"_s)
-            || !directory.cd(u"OpenNOW"_s)
-            || !directory.cd(u"Screenshots"_s)) {
-        return {};
-    }
+    const auto screenshotsPath = mediaScreenshotsDirectory();
+    if (screenshotsPath.isEmpty() || !QDir().mkpath(screenshotsPath)) return {};
+    QDir directory(screenshotsPath);
     auto safeTitle = gameTitle.trimmed();
     safeTitle.replace(QRegularExpression(uR"([^A-Za-z0-9._-]+)"_s), u"-"_s);
     safeTitle = safeTitle.left(72).trimmed();
@@ -366,13 +362,9 @@ bool AppController::captureScreenRegionTo(int x, int y, int width, int height,
             || !output.completeBaseName().endsWith(u"-thumb"_s)) {
         return false;
     }
-    const auto pictures = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
-    if (pictures.isEmpty()) return false;
-    QDir directory(pictures);
-    if (!directory.mkpath(u"OpenNOW/Recordings"_s)
-            || !directory.cd(u"OpenNOW"_s)
-            || !directory.cd(u"Recordings"_s)
-            || QDir::cleanPath(output.absolutePath()) != QDir::cleanPath(directory.absolutePath())) {
+    const auto recordingsPath = mediaRecordingsDirectory();
+    if (recordingsPath.isEmpty() || !QDir().mkpath(recordingsPath)
+            || QDir::cleanPath(output.absolutePath()) != QDir::cleanPath(recordingsPath)) {
         return false;
     }
 

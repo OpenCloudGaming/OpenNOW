@@ -1,11 +1,11 @@
 #include "media/ThumbnailGenerator.h"
+#include "media/MediaPaths.h"
 
 #include <QDir>
 #include <QFileInfo>
 #include <QImage>
 #include <QMediaPlayer>
 #include <QSaveFile>
-#include <QStandardPaths>
 #include <QUrl>
 #include <QVideoFrame>
 #include <QVideoSink>
@@ -81,11 +81,9 @@ QString ThumbnailGenerator::trustedSource(const QString &urlOrPath) const
     if (!QStringList{u"mp4"_s, u"webm"_s, u"mkv"_s, u"mov"_s, u"avi"_s}.contains(extension)) {
         return {};
     }
-    const auto pictures = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
-    if (pictures.isEmpty()) return {};
-    QDir recordings(QDir(pictures).filePath(u"OpenNOW/Recordings"_s));
-    if (!recordings.exists()
-            || QDir::cleanPath(source.absolutePath()) != QDir::cleanPath(recordings.absolutePath())) {
+    const auto recordingsPath = mediaRecordingsDirectory();
+    if (recordingsPath.isEmpty() || !QDir(recordingsPath).exists()
+            || QDir::cleanPath(source.absolutePath()) != QDir::cleanPath(recordingsPath)) {
         return {};
     }
     return source.canonicalFilePath();

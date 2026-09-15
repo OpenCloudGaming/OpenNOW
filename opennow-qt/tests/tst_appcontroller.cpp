@@ -4,7 +4,10 @@
 #include <QClipboard>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
+#include <QScopeGuard>
 #include <QStandardPaths>
+#include <QTemporaryDir>
 #include <QtTest>
 
 class AppControllerTest final : public QObject
@@ -67,6 +70,8 @@ private slots:
     void clipboardReadIsBounded();
     void clipboardWriteIsBounded();
     void screenshotExportIsScoped();
+    void screenshotExportHonorsPicturesOverride();
+    void screenshotExportRefusesUnavailablePicturesRoot();
 };
 
 void AppControllerTest::rejectsUnknownRoutes()
@@ -255,6 +260,12 @@ void AppControllerTest::clipboardWriteIsBounded()
 void AppControllerTest::screenshotExportIsScoped()
 {
     AppController controller;
+    const auto previousPictures = qgetenv("OPENNOW_PICTURES_DIR");
+    const auto restoreEnvironment = qScopeGuard([&] {
+        if (previousPictures.isNull()) qunsetenv("OPENNOW_PICTURES_DIR");
+        else qputenv("OPENNOW_PICTURES_DIR", previousPictures);
+    });
+    qunsetenv("OPENNOW_PICTURES_DIR");
     const auto pictures = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
     QDir directory(pictures);
     QVERIFY(directory.mkpath(QStringLiteral("OpenNOW/Screenshots")));
@@ -270,6 +281,55 @@ void AppControllerTest::screenshotExportIsScoped()
                                          QUrl::fromLocalFile(source).toString()));
     QFile::remove(source);
     QFile::remove(target);
+}
+
+void AppControllerTest::screenshotExportHonorsPicturesOverride()
+{
+    QTemporaryDir overrideRoot;
+    QVERIFY(overrideRoot.isValid());
+    const auto previousPictures = qgetenv("OPENNOW_PICTURES_DIR");
+    const auto restoreEnvironment = qScopeGuard([&] {
+        if (previousPictures.isNull()) qunsetenv("OPENNOW_PICTURES_DIR");
+        else qputenv("OPENNOW_PICTURES_DIR", previousPictures);
+    });
+    qputenv("OPENNOW_PICTURES_DIR", overrideRoot.path().toUtf8());
+
+    AppController controller;
+    QDir root(overrideRoot.path());
+    QVERIFY(root.mkpath(QStringLiteral("OpenNOW/Screenshots")));
+    const auto source = root.filePath(QStringLiteral("OpenNOW/Screenshots/override-test.png"));
+    const auto target = root.filePath(QStringLiteral("OpenNOW/override-export.png"));
+    QFile file(source);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QCOMPARE(file.write("fixture"), 7);
+    file.close();
+    QVERIFY(controller.copyScreenshotTo(source, QUrl::fromLocalFile(target).toString()));
+    QVERIFY(QFileInfo::exists(target));
+}
+
+void AppControllerTest::screenshotExportRefusesUnavailablePicturesRoot()
+{
+    const auto previousPictures = qgetenv("OPENNOW_PICTURES_DIR");
+    const auto restoreEnvironment = qScopeGuard([&] {
+        if (previousPictures.isNull()) qunsetenv("OPENNOW_PICTURES_DIR");
+        else qputenv("OPENNOW_PICTURES_DIR", previousPictures);
+    });
+    qputenv("OPENNOW_PICTURES_DIR", "");
+    if (!qEnvironmentVariableIsSet("OPENNOW_PICTURES_DIR"))
+        QSKIP("This platform cannot set an empty environment variable in-process");
+
+    AppController controller;
+    QDir root(QStandardPaths::writableLocation(QStandardPaths::PicturesLocation));
+    QVERIFY(root.mkpath(QStringLiteral("OpenNOW/Screenshots")));
+    const auto source = root.filePath(QStringLiteral("OpenNOW/Screenshots/unavailable-test.png"));
+    const auto target = root.filePath(QStringLiteral("OpenNOW/unavailable-export.png"));
+    QFile file(source);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QCOMPARE(file.write("fixture"), 7);
+    file.close();
+    QVERIFY(!controller.copyScreenshotTo(source, QUrl::fromLocalFile(target).toString()));
+    QVERIFY(!QFileInfo::exists(target));
+    QFile::remove(source);
 }
 
 QTEST_MAIN(AppControllerTest)

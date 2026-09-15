@@ -1,6 +1,7 @@
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::env;
+use std::ffi::OsString;
 use std::fs;
 use std::io::{self, BufReader, Read};
 use std::path::{Component, Path, PathBuf};
@@ -9,20 +10,31 @@ use url::Url;
 
 const LIST_LIMIT: usize = 100;
 
+const MEDIA_UNAVAILABLE: &str = "No pictures directory is available for the media library";
+
 pub struct MediaService {
-    root: PathBuf,
+    root: Option<PathBuf>,
 }
 
 impl MediaService {
     pub fn new() -> io::Result<Self> {
-        let root = pictures_directory().join("OpenNOW");
+        let Some(root) = pictures_directory() else {
+            return Ok(Self { root: None });
+        };
+        let root = root.join("OpenNOW");
         fs::create_dir_all(root.join("Screenshots"))?;
         fs::create_dir_all(root.join("Recordings"))?;
-        Ok(Self { root })
+        Ok(Self { root: Some(root) })
     }
 
-    pub fn root(&self) -> Value {
-        json!({ "path": self.root.to_string_lossy() })
+    fn available_root(&self) -> Result<&PathBuf, String> {
+        self.root
+            .as_ref()
+            .ok_or_else(|| MEDIA_UNAVAILABLE.to_owned())
+    }
+
+    pub fn root(&self) -> Result<Value, String> {
+        Ok(json!({ "path": self.available_root()?.to_string_lossy() }))
     }
 
     pub fn recording_target(&self, params: &Value) -> Result<Value, String> {
@@ -114,7 +126,7 @@ impl MediaService {
             "items": entries,
             "screenshots": screenshot_count,
             "recordings": recording_count,
-            "rootPath": self.root.to_string_lossy()
+            "rootPath": self.available_root()?.to_string_lossy()
         }))
     }
 
@@ -178,7 +190,7 @@ impl MediaService {
     }
 
     fn collect(&self, kind: &str, folder: &str, output: &mut Vec<Value>) -> Result<(), String> {
-        let directory = self.root.join(folder);
+        let directory = self.available_root()?.join(folder);
         let items = fs::read_dir(&directory)
             .map_err(|error| format!("Could not read media directory: {error}"))?;
         for item in items.flatten() {
@@ -275,9 +287,10 @@ impl MediaService {
     }
 
     fn directory_for_kind(&self, kind: &str) -> Result<PathBuf, String> {
+        let root = self.available_root()?;
         match kind {
-            "screenshot" => Ok(self.root.join("Screenshots")),
-            "recording" => Ok(self.root.join("Recordings")),
+            "screenshot" => Ok(root.join("Screenshots")),
+            "recording" => Ok(root.join("Recordings")),
             _ => Err("Unsupported media kind".to_owned()),
         }
     }
@@ -306,18 +319,33 @@ fn digest_regular_file(path: &Path) -> Result<(u64, String), String> {
     Ok((metadata.len(), format!("{:x}", hasher.finalize())))
 }
 
-fn pictures_directory() -> PathBuf {
-    if let Some(path) = env::var_os("OPENNOW_PICTURES_DIR") {
-        return PathBuf::from(path);
-    }
+fn pictures_directory() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
-    if let Some(path) = env::var_os("USERPROFILE") {
-        return PathBuf::from(path).join("Pictures");
+    let profile_root = env::var_os("USERPROFILE");
+    #[cfg(not(target_os = "windows"))]
+    let profile_root = env::var_os("HOME");
+    resolve_pictures_directory(env::var_os("OPENNOW_PICTURES_DIR"), profile_root)
+}
+
+fn resolve_pictures_directory(
+    override_value: Option<OsString>,
+    profile_root: Option<OsString>,
+) -> Option<PathBuf> {
+    match override_value {
+        Some(value) if !value.is_empty() => normalize_root(PathBuf::from(value)),
+        Some(_) => None,
+        None => profile_root
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .map(|path| path.join("Pictures")),
     }
-    env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("Pictures")
+}
+
+fn normalize_root(path: PathBuf) -> Option<PathBuf> {
+    std::path::absolute(&path)
+        .ok()
+        .filter(|resolved| resolved.is_absolute())
 }
 
 fn safe_id(value: &Value) -> Result<&str, String> {
@@ -373,10 +401,99 @@ fn sanitized_title(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use std::time::SystemTime;
+
+    static ENVIRONMENT_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock_environment() -> std::sync::MutexGuard<'static, ()> {
+        ENVIRONMENT_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+
+    #[test]
+    fn pictures_root_prefers_an_explicit_override_and_rejects_blank_values() {
+        let captures = env::temp_dir().join("opennow-media-captures");
+        assert_eq!(
+            resolve_pictures_directory(Some(captures.clone().into_os_string()), None),
+            Some(captures)
+        );
+        let relative = resolve_pictures_directory(Some(OsString::from("relative/captures")), None)
+            .expect("a relative override must resolve to an absolute path");
+        assert!(relative.is_absolute());
+        assert!(relative.ends_with("relative/captures"));
+
+        let home = env::temp_dir().join("opennow-media-home");
+        assert_eq!(
+            resolve_pictures_directory(None, Some(home.clone().into_os_string())),
+            Some(home.join("Pictures"))
+        );
+        assert_eq!(
+            resolve_pictures_directory(Some(OsString::new()), Some(home.clone().into_os_string())),
+            None
+        );
+        assert_eq!(
+            resolve_pictures_directory(None, Some(OsString::from("home/user"))),
+            None
+        );
+        assert_eq!(
+            resolve_pictures_directory(None, Some(OsString::new())),
+            None
+        );
+        assert_eq!(resolve_pictures_directory(None, None), None);
+    }
+
+    #[test]
+    fn override_normalization_is_always_absolute_or_unavailable() {
+        let absolute = env::temp_dir().join("opennow-media-absolute-root");
+        assert_eq!(normalize_root(absolute.clone()), Some(absolute.clone()));
+        let relative = normalize_root(PathBuf::from("relative/root"))
+            .expect("a relative override must resolve to an absolute path");
+        assert!(relative.is_absolute());
+        assert!(relative.ends_with("relative/root"));
+        assert_eq!(normalize_root(PathBuf::new()), None);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_partial_overrides_resolve_to_fully_qualified_paths() {
+        for value in [r"C:Pictures", r"\Pictures"] {
+            let resolved = normalize_root(PathBuf::from(value))
+                .expect("a partially rooted override must resolve on Windows");
+            assert!(resolved.is_absolute());
+            assert!(resolved.ends_with("Pictures"));
+            assert_ne!(resolved, PathBuf::from(value));
+        }
+    }
+
+    #[test]
+    fn media_service_reports_unavailable_root_without_failing_construction() {
+        let _guard = lock_environment();
+        let previous = env::var_os("OPENNOW_PICTURES_DIR");
+        unsafe { env::set_var("OPENNOW_PICTURES_DIR", "") };
+        let service = MediaService::new().expect("an unavailable root must not fail construction");
+        assert!(service.root().is_err());
+        assert!(service.list(&json!({})).is_err());
+        assert!(
+            service
+                .recording_target(&json!({"gameTitle":"Test"}))
+                .is_err()
+        );
+        assert!(
+            service
+                .delete(&json!({"kind":"screenshot","id":"shot.png","confirmed":true}))
+                .is_err()
+        );
+        match previous {
+            Some(value) => unsafe { env::set_var("OPENNOW_PICTURES_DIR", value) },
+            None => unsafe { env::remove_var("OPENNOW_PICTURES_DIR") },
+        }
+    }
 
     #[test]
     fn media_listing_is_bounded_and_deletion_is_scoped() {
+        let _guard = lock_environment();
         let directory = env::temp_dir().join(format!(
             "opennow-media-{}",
             SystemTime::now()
@@ -386,6 +503,7 @@ mod tests {
         ));
         unsafe { env::set_var("OPENNOW_PICTURES_DIR", &directory) };
         let service = MediaService::new().unwrap();
+        let root = service.available_root().unwrap().clone();
         let target = service
             .recording_target(&json!({"gameTitle":"Test / Game"}))
             .unwrap();
@@ -398,14 +516,10 @@ mod tests {
                 .validate_recording_target(&json!({"outputPath":directory.join("escape.mkv")}))
                 .is_err()
         );
-        fs::write(service.root.join("Screenshots/shot.png"), b"png").unwrap();
-        fs::write(service.root.join("Recordings/OpenNOW-test.mkv"), b"mkv").unwrap();
-        fs::write(
-            service.root.join("Recordings/OpenNOW-test-thumb.jpg"),
-            b"jpg",
-        )
-        .unwrap();
-        fs::write(service.root.join("Screenshots/nope.txt"), b"no").unwrap();
+        fs::write(root.join("Screenshots/shot.png"), b"png").unwrap();
+        fs::write(root.join("Recordings/OpenNOW-test.mkv"), b"mkv").unwrap();
+        fs::write(root.join("Recordings/OpenNOW-test-thumb.jpg"), b"jpg").unwrap();
+        fs::write(root.join("Screenshots/nope.txt"), b"no").unwrap();
         let listed = service.list(&json!({})).unwrap();
         assert_eq!(listed["items"].as_array().unwrap().len(), 2);
         let evidence = service.acceptance_evidence(Some(0)).unwrap();
@@ -431,7 +545,7 @@ mod tests {
         service
             .delete(&json!({"kind":"screenshot","id":"shot.png","confirmed":true}))
             .unwrap();
-        assert!(!service.root.join("Screenshots/shot.png").exists());
+        assert!(!root.join("Screenshots/shot.png").exists());
         let _ = fs::remove_dir_all(directory);
         unsafe { env::remove_var("OPENNOW_PICTURES_DIR") };
     }
