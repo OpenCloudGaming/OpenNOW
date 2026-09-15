@@ -13,12 +13,15 @@ root = Path(__file__).resolve().parents[1] / 'nvst'
 host = {'Darwin': 'darwin-x86_64', 'Linux': 'linux-x86_64', 'Windows': 'windows-x86_64'}[platform.system()]
 toolchain = ndk / 'toolchains/llvm/prebuilt' / host / 'bin'
 cargo = os.environ.get('CARGO') or shutil.which('cargo') or str(Path.home() / '.cargo/bin/cargo')
-cmake = os.environ.get('CMAKE') or shutil.which('cmake')
+cmake = os.environ.get('CMAKE')
 if not cmake:
-    # Android Studio installs CMake under the SDK without adding it to Gradle's PATH.
+    # Prefer the SDK copy so a Visual Studio developer shell cannot silently select
+    # its host CMake for an Android cross-build.
     candidates = list((ndk.parents[1] / 'cmake').glob('*/bin/cmake' + ('.exe' if os.name == 'nt' else '')))
     if candidates:
         cmake = str(max(candidates, key=lambda p: tuple(int(v) for v in p.parents[1].name.split('.') if v.isdigit())))
+if not cmake:
+    cmake = shutil.which('cmake')
 if not cmake:
     raise SystemExit('Install CMake through Android SDK Manager or set CMAKE to its executable.')
 # Prefer rustup's target-aware toolchain over a Homebrew host-only installation.
@@ -38,6 +41,10 @@ for abi, target, clang_target in [
     env['AR_' + target.replace('-', '_')] = str(toolchain / ('llvm-ar.exe' if os.name == 'nt' else 'llvm-ar'))
     env['CXX_' + target.replace('-', '_')] = str(toolchain / (clang_target + '23-clang++' + suffix))
     env['CMAKE'] = cmake
+    ninja = Path(cmake).with_name('ninja' + ('.exe' if os.name == 'nt' else ''))
+    if ninja.exists():
+        env.setdefault('CMAKE_GENERATOR', 'Ninja')
+        env['PATH'] = str(ninja.parent) + os.pathsep + env.get('PATH', '')
     env['OPUS_NO_PKG'] = '1'
     env['OPENNOW_ANDROID_NDK'] = str(ndk)
     env['OPENNOW_ANDROID_ABI'] = abi
