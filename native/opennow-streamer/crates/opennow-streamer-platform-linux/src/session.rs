@@ -524,6 +524,17 @@ impl ReferenceRecovery {
     }
 }
 
+fn publish_video_readiness(
+    state: &Mutex<LifecycleState>,
+    events: &EventQueue,
+    backend: DecoderBackend,
+    startup: &mpsc::SyncSender<Result<DecoderBackend>>,
+) -> bool {
+    emit(events, BackendEvent::DecoderSelected(backend));
+    transition_state(state, LifecycleState::Running, events);
+    startup.send(Ok(backend)).is_ok()
+}
+
 fn run_video_worker(
     config: SessionConfig,
     state: Arc<Mutex<LifecycleState>>,
@@ -540,11 +551,9 @@ fn run_video_worker(
             return;
         }
     };
-    if startup.send(Ok(backend)).is_err() {
+    if !publish_video_readiness(&state, &events, backend, &startup) {
         return;
     }
-    emit(&events, BackendEvent::DecoderSelected(backend));
-    transition_state(&state, LifecycleState::Running, &events);
     // Never feed a fresh hardware decoder an inter-frame packet. In
     // particular, an AV1 stream can deliver its sequence header separately;
     // treating the following delta frame as startup input caused an avoidable
@@ -1259,6 +1268,59 @@ mod tests {
         assert!(LifecycleState::Stopping.can_transition_to(LifecycleState::Failed));
         assert!(LifecycleState::Failed.can_transition_to(LifecycleState::Stopping));
         assert!(LifecycleState::Stopping.can_transition_to(LifecycleState::Stopped));
+    }
+
+    #[test]
+    fn video_readiness_is_published_only_after_running() {
+        let state = Arc::new(Mutex::new(LifecycleState::Starting));
+        let events: EventQueue = Arc::new(BoundedQueue::new(8));
+        let (startup_tx, startup_rx) = mpsc::sync_channel(1);
+        let guard = state.lock().unwrap_or_else(|poison| poison.into_inner());
+        let worker = {
+            let state = Arc::clone(&state);
+            let events = Arc::clone(&events);
+            thread::spawn(move || {
+                publish_video_readiness(&state, &events, DecoderBackend::Ffmpeg, &startup_tx)
+            })
+        };
+
+        assert!(matches!(
+            events.pop_timeout(Duration::from_secs(5)),
+            Some(BackendEvent::DecoderSelected(DecoderBackend::Ffmpeg))
+        ));
+        assert_eq!(*guard, LifecycleState::Starting);
+        assert!(matches!(
+            startup_rx.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+
+        drop(guard);
+        assert!(worker.join().unwrap());
+        assert_eq!(
+            *state.lock().unwrap_or_else(|poison| poison.into_inner()),
+            LifecycleState::Running
+        );
+        assert_eq!(
+            startup_rx.try_recv().map(|result| result.unwrap()),
+            Ok(DecoderBackend::Ffmpeg)
+        );
+    }
+
+    #[cfg(feature = "ffmpeg")]
+    #[test]
+    fn successful_start_accepts_the_first_video_submission() {
+        let format = StreamFormat::video_default(64, 64).unwrap();
+        let mut config = SessionConfig::new(format);
+        config.decoder_preference = DecoderPreference::SoftwareOnly;
+        config.audio = None;
+
+        let mut session = LinuxSession::start(config).unwrap();
+        assert_eq!(session.state(), LifecycleState::Running);
+
+        let frame = EncodedVideoFrame::new(vec![0_u8; 32], 0, true).unwrap();
+        assert_eq!(session.submit_video(frame).unwrap(), PushOutcome::Queued);
+
+        assert!(session.stop().is_ok());
     }
 
     #[test]
