@@ -38,6 +38,11 @@ OwnershipAcceptance {
             contained(child)
         }
     }
+    function polishLayout(item) {
+        item.ensurePolished()
+        for (const child of item.children || []) polishLayout(child)
+        item.ensurePolished()
+    }
     function unobscured(control) {
         const close = find(modal, "gameDetailsClose")
         const top = control.mapToItem(modal, 0, 0)
@@ -80,9 +85,11 @@ OwnershipAcceptance {
             message:"Confirm that you already own this store version before adding it to your GeForce NOW library. This does not buy the game or grant a license."}
         modal = find(host, "desktopGameModal")
         scroll = find(modal, "gameDetailsScroll")
+        polishLayout(modal)
         return true
     }
     function advance() {
+        polishLayout(modal)
         if (settling) {
             settling = false
             return 0
@@ -96,7 +103,7 @@ OwnershipAcceptance {
             for (let i = 0; i < sections.length; ++i) {
                 inside(sections[i], body)
                 if (i > 0) check(sections[i].y - sections[i - 1].y - sections[i - 1].height >= DesktopTokens.px(20) - 1,
-                    "adjacent sections lost their scaled vertical spacing")
+                    "adjacent sections lost their scaled vertical spacing: " + [i, sections[i].y, sections[i - 1].y, sections[i - 1].height, body.spacing, DesktopTokens.uiScale])
             }
             const summary = sections[3]
             const bottom = summary.mapToItem(scroll.contentItem, 0, summary.height).y
@@ -168,6 +175,7 @@ OwnershipAcceptance {
             check(!modal.opened, "Escape did not dismiss details")
             AppController.navigate("game-detail")
             detail(owned ? "ready" : "ownership_required")
+            polishLayout(modal)
             phase = 6
             return 0
         }
