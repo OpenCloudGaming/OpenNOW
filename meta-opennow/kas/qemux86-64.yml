@@ -1,0 +1,37 @@
+header:
+  version: 14
+
+machine: qemux86-64
+distro: nodistro
+target: opennow-image
+
+repos:
+  opennow:
+    layers:
+      meta-opennow:
+  openembedded-core:
+    url: https://git.openembedded.org/openembedded-core
+    commit: 9da814ca3685ada3fce46b8987f04ed3d57247b7
+    layers:
+      meta:
+  bitbake:
+    url: https://git.openembedded.org/bitbake
+    commit: 0ad6c1c34a5e07a5f8dd66ab248c1e7b37b69fa9
+    layers: {}
+  meta-openembedded:
+    url: https://git.openembedded.org/meta-openembedded
+    commit: 14282a02be9c74a1276a7cda7d6c89e054699a11
+    layers:
+      meta-oe:
+      meta-python:
+  meta-qt6:
+    url: https://code.qt.io/yocto/meta-qt6.git
+    commit: 62e6eb6003f2ad3a8952519e7a3dd7df700c26fc
+
+local_conf_header:
+  opennow: |
+    DISTRO_FEATURES:append = " opengl pam vulkan wayland"
+    LICENSE_FLAGS_ACCEPTED += "commercial_ffmpeg"
+    PACKAGECONFIG:append:pn-ffmpeg = " vaapi"
+    PACKAGECONFIG:append:pn-qtbase = " vulkan"
+    EXTRA_IMAGE_FEATURES = "allow-empty-password empty-root-password allow-root-login"
