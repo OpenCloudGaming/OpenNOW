@@ -13,15 +13,21 @@ mod vaapi;
 #[cfg(feature = "ffmpeg")]
 mod vaapi_probe;
 
-pub fn supports_vaapi_ten_bit(codec: VideoCodec) -> bool {
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct VaapiColorSupport {
+    pub eight_bit_420: bool,
+    pub ten_bit_420: bool,
+}
+
+pub fn vaapi_color_support(codec: VideoCodec) -> VaapiColorSupport {
     #[cfg(feature = "ffmpeg")]
     {
-        FfmpegDecoder::supports_vaapi_ten_bit(codec)
+        FfmpegDecoder::supports_vaapi_color(codec)
     }
     #[cfg(not(feature = "ffmpeg"))]
     {
         let _ = codec;
-        false
+        VaapiColorSupport::default()
     }
 }
 

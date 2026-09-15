@@ -168,8 +168,8 @@ pub(crate) fn embedded_video_backends_with_config(
                         "av1" => opennow_streamer_platform_linux::VideoCodec::Av1,
                         _ => opennow_streamer_platform_linux::VideoCodec::H264,
                     };
-                    if opennow_streamer_platform_linux::supports_vaapi_ten_bit(profile) {
-                        colors.push("10bit_420");
+                    let support = opennow_streamer_platform_linux::vaapi_color_support(profile);
+                    if apply_vaapi_color_support(&mut colors, support) {
                         codec.available = true;
                         codec.reason = None;
                     }
@@ -272,6 +272,20 @@ pub(crate) fn embedded_video_backends_with_config(
             .as_deref(),
     );
     backends
+}
+
+#[cfg(target_os = "linux")]
+fn apply_vaapi_color_support(
+    colors: &mut Vec<&'static str>,
+    support: opennow_streamer_platform_linux::VaapiColorSupport,
+) -> bool {
+    if support.eight_bit_420 {
+        colors.push("8bit_420");
+    }
+    if support.ten_bit_420 {
+        colors.push("10bit_420");
+    }
+    support.eight_bit_420 || support.ten_bit_420
 }
 
 fn apply_backend_policy(backends: &mut [VideoBackendCapability], requested: Option<&str>) {
@@ -954,14 +968,63 @@ mod tests {
                 let colors = codec
                     .color_qualities
                     .expect("embedded Linux color profiles");
-                if backend.backend == "vulkan" {
-                    assert!(colors.is_empty());
-                    assert!(backend.zero_copy_modes.is_empty());
-                } else {
-                    assert!(colors.iter().all(|color| *color == "8bit_420"));
+                match backend.backend {
+                    "vulkan" => {
+                        assert!(colors.is_empty());
+                        assert!(backend.zero_copy_modes.is_empty());
+                    }
+                    "vaapi" => {
+                        for color in &colors {
+                            assert!(
+                                matches!(*color, "8bit_420" | "10bit_420"),
+                                "{} {color}",
+                                codec.codec
+                            );
+                            if *color == "10bit_420" {
+                                assert!(
+                                    matches!(codec.codec, "h265" | "av1"),
+                                    "{} {color}",
+                                    codec.codec
+                                );
+                            }
+                        }
+                    }
+                    _ => assert!(
+                        colors.iter().all(|color| *color == "8bit_420"),
+                        "{} {colors:?}",
+                        backend.backend
+                    ),
                 }
             }
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn vaapi_color_support_extends_the_advertised_profiles_in_wire_order() {
+        use opennow_streamer_platform_linux::VaapiColorSupport;
+        let support = |eight_bit_420, ten_bit_420| VaapiColorSupport {
+            eight_bit_420,
+            ten_bit_420,
+        };
+
+        let mut colors = Vec::new();
+        assert!(!apply_vaapi_color_support(
+            &mut colors,
+            support(false, false)
+        ));
+        assert!(colors.is_empty());
+
+        assert!(apply_vaapi_color_support(&mut colors, support(true, false)));
+        assert_eq!(colors, ["8bit_420"]);
+
+        let mut colors = Vec::new();
+        assert!(apply_vaapi_color_support(&mut colors, support(false, true)));
+        assert_eq!(colors, ["10bit_420"]);
+
+        let mut colors = Vec::new();
+        assert!(apply_vaapi_color_support(&mut colors, support(true, true)));
+        assert_eq!(colors, ["8bit_420", "10bit_420"]);
     }
 
     #[cfg(target_os = "macos")]

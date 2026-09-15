@@ -28,7 +28,7 @@ mod video;
 mod vulkan_device;
 
 #[cfg(target_os = "linux")]
-pub use video::supports_vaapi_ten_bit;
+pub use video::{VaapiColorSupport, vaapi_color_support};
 #[cfg(target_os = "linux")]
 pub use vulkan_device::{SharedVulkanDevice, VulkanDeviceInfo};
 
