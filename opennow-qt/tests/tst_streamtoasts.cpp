@@ -18,6 +18,7 @@ public slots:
         qmlRegisterSingletonType(QUrl::fromLocalFile(source + "/components/InputPromptIcons.qml"), "OpenNOW", 1, 0, "InputPromptIcons");
         qmlRegisterType(QUrl::fromLocalFile(source + "/desktop/stream/DesktopStreamToast.qml"), "OpenNOW", 1, 0, "DesktopStreamToast");
         qmlRegisterType(QUrl::fromLocalFile(source + "/desktop/stream/DesktopStreamToasts.qml"), "OpenNOW", 1, 0, "DesktopStreamToasts");
+        qmlRegisterType(QUrl::fromLocalFile(source + "/state/ConnectionHealthState.qml"), "OpenNOW", 1, 0, "ConnectionHealthState");
     }
 
     void qmlEngineAvailable(QQmlEngine *engine)
@@ -32,6 +33,7 @@ public slots:
         m_shell.insert("streamColorNotice", QVariant{});
         m_shell.insert("streamColorNoticeShown", false);
         m_shell.insert("streamerStopExpected", false);
+        m_shell.insert("connectionHealth", QVariant{});
         m_input.insert("controllers", QVariantList{});
         m_controller.insert("reducedMotion", true);
         engine->rootContext()->setContextProperty("ShellStore", &m_shell);

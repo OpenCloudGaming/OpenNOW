@@ -7,6 +7,11 @@ import "account"
 QtObject {
     id: root
     signal backgroundStreamReminderRequested()
+    property ConnectionHealthState connectionHealth: ConnectionHealthState {
+        active: root.activeSession !== null && root.streamerStatus === "streaming"
+            && !root.streamerStopExpected
+        sessionId: String(root.activeSession && root.activeSession.sessionId || "")
+    }
     property BackgroundStreamState backgroundStreamState: BackgroundStreamState {
         settings: root.settings
         applicationActive: Qt.application.state === Qt.ApplicationActive
@@ -2900,6 +2905,9 @@ QtObject {
                 fields.fullscreenToggleCount = Number(streamer && streamer.fullscreenToggleCount || 0) + 1
         }
         updateStreamerFields(fields)
+        if (type === "telemetry" && Object.prototype.hasOwnProperty.call(event, "packetLossPercent")
+                && (!event.sessionId || String(event.sessionId) === connectionHealth.sessionId))
+            connectionHealth.acceptSample(event.packetLossPercent)
     }
 
     property Connections nativeRuntimeConnections: Connections {

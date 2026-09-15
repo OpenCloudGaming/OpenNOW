@@ -1,8 +1,119 @@
 import QtQuick
+import QtQuick.Window
 import OpenNOW
 
 QtObject {
+    id: fixture
+    property real sampleTime: 100000
     property Component statsComponent: Component { DesktopStreamStats { visible: false } }
+    property Component toastComponent: Component { DesktopStreamToasts {} }
+
+    function sample(loss, elapsed = 100) {
+        sampleTime += elapsed
+        ShellStore.acceptNativeEvent({type: "telemetry", packetLossPercent: loss})
+    }
+
+    function sustainedLoss(loss) {
+        sample(loss)
+        sample(loss, 2000)
+    }
+
+    function checkConnectionHealth(stats, parent) {
+        const health = ShellStore.connectionHealth
+        const host = find(parent, "desktopStreamOverlayHost")
+        check(host !== null, "production toast host is mounted")
+        host.connectionNotificationsEnabled = false
+        const toast = toastComponent.createObject(parent)
+        check(toast !== null, "connection toast created")
+        sample(0)
+        sample(0.5)
+        check(!stats.degraded && !toast.lossNotice, "first spike never warns")
+        sampleTime += 2000
+        ShellStore.acceptNativeEvent({type: "telemetry", pingMs: 20})
+        ShellStore.acceptNativeEvent({type: "log", packetLossPercent: 5})
+        ShellStore.streamer = Object.assign({}, ShellStore.streamer, {packetLossPercent: 8})
+        check(!stats.degraded && !toast.lossNotice, "unrelated events and cached fields cannot sustain loss")
+        check(stats.read("packetLossPercent") === 0.5
+            && stats.cards.find(card => card.key === "PacketLoss").value === 0.5
+            && toast.lastLoss === 0.5,
+            "stats and toast retain the last genuine sample instead of cached packet loss")
+        sample(0.5, 0)
+        check(stats.degraded && toast.lossNotice, "fresh loss at two seconds warns in both surfaces")
+        sample(0.1)
+        check(stats.degraded, "recovery threshold is strictly below 0.1 percent")
+        sample(0.3)
+        check(stats.degraded, "hysteresis retains unstable between thresholds")
+        toast.visible = false
+        toast.visible = true
+        check(!toast.lossNotice, "overlay reopening does not replay a claimed warning")
+        toast.visible = false
+        toast.destroy()
+        const recreated = toastComponent.createObject(parent)
+        check(!recreated.lossNotice, "overlay recreation does not replay a claimed warning")
+        sample(0.04)
+        check(stats.healthText === qsTr("Stream healthy") && !stats.degraded && !recreated.lossNotice,
+            "loss rounded to 0.0 immediately recovers both surfaces")
+        sustainedLoss(0.5)
+        check(stats.degraded && !recreated.lossNotice, "recovered episode still respects cooldown")
+        sampleTime += 5000
+        health.expire(sampleTime)
+        check(!stats.healthKnown && !recreated.lossNotice, "stale input becomes unknown without a warning")
+        check(stats.read("packetLossPercent") === null && recreated.lastLoss === null,
+            "stale packet loss becomes unavailable in both surfaces")
+        sample(0.5)
+        sample(0.49, 2000)
+        sample(0.5)
+        sample(0.5, 1999)
+        check(!stats.degraded, "flapping interrupts the pending sustained-loss duration")
+        sample(0.5, 1)
+        check(stats.degraded, "exactly two seconds at the threshold is unstable")
+        for (const invalid of [null, undefined, "", "0.5", true, -1, 101, NaN, Infinity]) {
+            sample(invalid)
+            check(!stats.healthKnown && !recreated.lossNotice, "invalid input clears health and the active toast")
+            check(stats.read("packetLossPercent") === null && recreated.lastLoss === null,
+                "invalid loss cannot replace the unavailable metric with a coerced value")
+        }
+        sample(0.5)
+        sample(0.5, -1000)
+        check(!stats.degraded, "clock rollback cannot fabricate sustained duration")
+        sample(0.5, 1999)
+        check(!stats.degraded, "rollback restarts the pending interval")
+        sample(0.5, 1)
+        check(stats.degraded, "fresh samples can establish health after rollback")
+        ShellStore.streamerStopExpected = true
+        check(!stats.healthKnown && !recreated.lossNotice, "stop request clears health immediately")
+        sample(2)
+        check(!stats.healthKnown, "stopping cannot accept a new health sample")
+        ShellStore.streamerStopExpected = false
+        ShellStore.streamer = Object.assign({}, ShellStore.streamer, {status: "starting"})
+        ShellStore.streamer = Object.assign({}, ShellStore.streamer, {status: "streaming"})
+        sample(0.5)
+        check(!stats.degraded, "restart cannot inherit a bad interval")
+        ShellStore.activeSession = Object.assign({}, ShellStore.activeSession, {sessionId: "health-new-session"})
+        check(!stats.healthKnown, "new session discards cached health")
+        ShellStore.acceptNativeEvent({type: "telemetry", sessionId: "stats-v2-fixture", packetLossPercent: 0})
+        check(!stats.healthKnown, "old-session telemetry cannot establish health")
+        sample(0)
+        sample(0.49)
+        check(stats.healthKnown && !stats.degraded, "healthy state survives the hysteresis band")
+        sampleTime += 30000
+        sample(0.5)
+        check(!stats.degraded, "a stale gap cannot count towards a bad interval")
+        sample(0.5, 2000)
+        check(stats.degraded && recreated.lossNotice, "a new sustained episode may warn after cooldown")
+        sample(0.5, -60000)
+        check(!stats.degraded && !recreated.lossNotice && health.lastNoticeAt === null,
+            "rollback clears a future-dated cooldown without inheriting bad duration")
+        sample(0.5, 2000)
+        check(stats.degraded && recreated.lossNotice, "fresh sustained loss can notify after clock rollback")
+        sample(0.04)
+        check(!recreated.lossNotice && !stats.degraded, "fresh recovery clears an active loss toast")
+        recreated.visible = false
+        recreated.destroy()
+        ShellStore.activeSession = Object.assign({}, ShellStore.activeSession, {sessionId: "stats-v2-fixture"})
+        sample(0)
+        host.connectionNotificationsEnabled = true
+    }
 
     function check(ok, message) { if (!ok) throw new Error("Stream stats V2: " + message) }
     function find(item, name) {
@@ -28,6 +139,8 @@ QtObject {
         ShellStore.streamStartedAtMs = Date.now() - 6130000
         ShellStore.streamer = {status:"streaming", framesPerSecond:120, pingMs:9, latencyMs:31,
             bitrateMbps:74.6, jitterMs:1.2, packetLossPercent:0, decodeTimeMs:2.1, mediaBackend:"Vulkan"}
+        ShellStore.connectionHealth.clock = () => fixture.sampleTime
+        sample(0)
         const stats = statsComponent.createObject(parent, {width:parent.width, height:parent.height})
         check(stats !== null, "overlay created")
         check(stats.allocatedBitrateMbps === 75, "allocation uses prepared session, not editable settings")
@@ -35,9 +148,14 @@ QtObject {
         check(stats.healthKnown && !stats.degraded, "zero packet loss is healthy")
         check(stats.videoText === "AV1 · 2560×1440 · 10-bit 4:2:0 · HDR", "real negotiated profile fields format correctly")
         check(stats.featureBadges.length === 1 && stats.featureBadges[0].text === "HDR", "only enabled features are advertised")
+        checkConnectionHealth(stats, parent)
+        ShellStore.acceptNativeEvent({type:"log", event:"queue-dropped", unit:"frames", count:23})
+        ShellStore.acceptNativeEvent({type:"log", event:"queue-dropped", unit:"packets", count:1})
         ShellStore.acceptNativeEvent({type:"telemetry", bitrateMbps:120, packetLossPercent:1.8})
+        check(!stats.degraded, "an isolated loss spike does not degrade health")
+        sample(1.8, 2000)
         check(stats.bitrateUsage === 1 && stats.degraded, "overshoot is bounded and packet loss degrades health")
-        ShellStore.streamer = Object.assign({}, ShellStore.streamer, {bitrateMbps:null, packetLossPercent:null})
+        ShellStore.acceptNativeEvent({type:"telemetry", bitrateMbps:null, packetLossPercent:null})
         check(stats.bitrateUsage === 0 && !stats.healthKnown, "missing measurements are not a full bar or healthy status")
         ShellStore.runtimeStreamProfile = {}
         ShellStore.settings = Object.assign({}, ShellStore.settings, {maxBitrateMbps:0})
@@ -45,6 +163,9 @@ QtObject {
         ShellStore.runtimeStreamProfile = {maxBitrateMbps:75}
         ShellStore.settings = Object.assign({}, ShellStore.settings, {maxBitrateMbps:100})
         ShellStore.acceptNativeEvent({type:"telemetry", bitrateMbps:74.6, packetLossPercent:0})
+        check(!stats.degraded && stats.read("videoDropCount") === 23
+            && stats.read("audioPacketDropCount") === 1,
+            "fresh healthy telemetry preserves cumulative video and audio drops")
         for (let i = 0; i < 75; ++i) stats.sampleHistory()
         check(stats.history.framesPerSecond.length === 60, "history is bounded to sixty samples")
         ShellStore.streamer = Object.assign({}, ShellStore.streamer, {status:"starting"})
@@ -65,6 +186,7 @@ QtObject {
         if (Qt.application.arguments.indexOf("--smoke-stats-degraded") >= 0) {
             ShellStore.acceptNativeEvent({type:"telemetry", framesPerSecond:112, pingMs:38, latencyMs:94,
                 bitrateMbps:58.2, jitterMs:4.6, packetLossPercent:1.8})
+            sample(1.8, 2000)
         }
         stats.expanded = Qt.application.arguments.indexOf("--smoke-stats-compact") < 0
         stats.visible = true
@@ -92,12 +214,26 @@ QtObject {
                 check(toasts !== null, "production toast stack is mounted")
                 toasts.controllers = [{instanceId:2, slot:2, name:"Xbox Wireless Controller",
                     family:"xbox", powerState:"onBattery", batteryPercent:82}]
+                sampleTime += 30000
                 for (const loss of [0, 0.2, 0.1, 0.5, 0.3, 0.7, 0.3, 0.6, 0.4, 0.5])
-                    ShellStore.acceptNativeEvent({type:"telemetry", packetLossPercent:loss})
+                    sample(loss)
+                sample(0.5, 2000)
                 check(toasts.controllerNotice !== null && toasts.lossNotice, "controller and packet-loss notices are visible")
                 check(toasts.lossHistory.length <= 12, "toast history remains bounded")
                 check(toasts.y >= renderedStats.topRightInset, "toasts respect the actual stats geometry")
+                if (Qt.application.arguments.indexOf("--smoke-stats-recovered") >= 0) {
+                    sample(0.04)
+                    check(!toasts.lossNotice && renderedStats.healthText === qsTr("Stream healthy"),
+                        "production overlay immediately clears the rounded-zero loss warning")
+                    check(renderedStats.read("videoDropCount") === 23
+                        && renderedStats.read("audioPacketDropCount") === 1,
+                        "recovery leaves historical frame and audio queue drops visible")
+                }
+                if (Qt.application.arguments.indexOf("--smoke-stats-closed") >= 0)
+                    AppController.showOverlay("")
             }
+            if (Qt.application.arguments.indexOf("--smoke-stats-fullscreen") >= 0)
+                parent.Window.window.showFullScreen()
         } else {
             stats.destroy()
         }

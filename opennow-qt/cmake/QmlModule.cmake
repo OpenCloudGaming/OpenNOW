@@ -351,6 +351,7 @@ qt_add_qml_module(opennow-qt
         qml/state/catalog/CatalogState.qml
         qml/state/settings/SettingsState.qml
         qml/state/BackgroundStreamState.qml
+        qml/state/ConnectionHealthState.qml
         qml/state/settings/OnboardingState.qml
         qml/theme/Theme.qml
     RESOURCES

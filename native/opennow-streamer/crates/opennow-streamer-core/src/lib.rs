@@ -120,7 +120,7 @@ impl NvstSessionResources for ActiveNvstResources {
         self.feedback.ping_ms(Instant::now())
     }
     fn network_metrics(&self) -> Option<(f64, f64)> {
-        self.feedback.network_metrics()
+        self.feedback.recent_network_metrics(Instant::now())
     }
     fn request_keyframe(&self) {
         self.feedback.request_keyframe();

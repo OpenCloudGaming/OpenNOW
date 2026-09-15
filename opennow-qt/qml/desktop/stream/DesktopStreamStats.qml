@@ -27,8 +27,8 @@ Item {
             clockPill.visible && clockPill.x + clockPill.width > width - 408 ? clockPill.y + clockPill.height + 12 : inset)
     readonly property color surface: Qt.rgba(14 / 255, 16 / 255, 24 / 255,
         Math.max(0.4, Math.min(1, Number(ShellStore.settings.statsOverlayOpacity || 85) / 100)))
-    readonly property bool degraded: telemetryActive && read("packetLossPercent") > 0
-    readonly property bool healthKnown: telemetryActive && read("packetLossPercent") !== null
+    readonly property bool degraded: telemetryActive && ShellStore.connectionHealth.status === "unstable"
+    readonly property bool healthKnown: telemetryActive && ShellStore.connectionHealth.status !== "unknown"
     readonly property color accent: degraded ? "#F5A623" : "#6EE7B7"
     readonly property color statusColor: !healthKnown || degraded ? "#F5A623" : "#1DB954"
     readonly property color metricColor: degraded ? accent : "white"
@@ -61,6 +61,7 @@ Item {
     }
     function read(key) {
         if (!telemetryActive) return null
+        if (key === "packetLossPercent") return ShellStore.connectionHealth.lastLoss
         const drops = ShellStore.streamDropCounts
         return numeric(drops[key] !== undefined ? drops[key] : live[key])
     }

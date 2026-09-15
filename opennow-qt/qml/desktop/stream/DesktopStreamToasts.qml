@@ -11,9 +11,9 @@ Column {
     property string sessionId: String((ShellStore.activeSession || {}).sessionId || "")
     property var knownControllerIds: []
     property var controllerNotice: null
-    property var lossHistory: []
-    property var lastLoss: null
-    property bool lossEpisode: false
+    readonly property var health: ShellStore.connectionHealth
+    readonly property var lossHistory: active ? health.history : []
+    readonly property var lastLoss: health.lastLoss
     property bool lossNotice: false
     property real controllerLifetime: 0
     property real lossLifetime: 0
@@ -28,12 +28,8 @@ Column {
         lossAnimation.stop()
         colorAnimation.stop()
         colorNotice = false
-        lossCooldown.stop()
         controllerNotice = null
         lossNotice = false
-        lossEpisode = false
-        lossHistory = []
-        lastLoss = null
         knownControllerIds = controllers.map(controller => controller.instanceId)
     }
 
@@ -60,31 +56,20 @@ Column {
 
     function observeTelemetry() {
         if (!active || !connectionNotificationsEnabled) return
-        const value = telemetry.packetLossPercent
-        if (value === null || value === undefined || value === ""
-                || !Number.isFinite(Number(value)) || Number(value) < 0 || Number(value) > 100) {
-            lossHistory = []
-            lastLoss = null
+        if (health.status !== "unstable") {
             lossAnimation.stop()
             lossNotice = false
             return
         }
-        const loss = Number(value)
-        if (loss !== lastLoss) {
-            lossHistory = lossHistory.concat([loss]).slice(-12)
-            lastLoss = loss
-        }
-        if (loss === 0) {
-            lossEpisode = false
-            lossAnimation.stop()
-            lossNotice = false
-            return
-        }
-        if (lossEpisode || lossCooldown.running) return
-        lossEpisode = true
+        if (!health.claimNotice()) return
         lossNotice = true
         lossAnimation.restart()
-        lossCooldown.start()
+    }
+
+    Connections {
+        target: root.health
+        function onStatusChanged() { root.observeTelemetry() }
+        function onSampleAccepted() { root.observeTelemetry() }
     }
 
     onControllersChanged: observeControllers()
@@ -107,7 +92,6 @@ Column {
     }
 
     onColorFormatChanged: observeColorFormat()
-    onTelemetryChanged: observeTelemetry()
     onActiveChanged: {
         reset()
         if (active) {
@@ -136,7 +120,6 @@ Column {
         from: 1; to: 0; duration: 4000
         onFinished: root.lossNotice = false
     }
-    Timer { id: lossCooldown; interval: 30000 }
     NumberAnimation {
         id: colorAnimation
         target: root; property: "colorLifetime"

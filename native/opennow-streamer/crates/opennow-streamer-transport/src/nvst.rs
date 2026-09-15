@@ -418,6 +418,59 @@ struct PendingNackRange {
     attempts: u8,
 }
 
+const RECENT_NETWORK_MAX_SAMPLE_GAP: Duration = Duration::from_secs(3);
+const RECENT_NETWORK_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NetworkCounters {
+    ssrc: u32,
+    base: u32,
+    highest: u32,
+    received: u32,
+}
+
+#[derive(Debug, Default)]
+struct RecentNetworkMetrics {
+    previous: Option<(Instant, NetworkCounters)>,
+}
+
+impl RecentNetworkMetrics {
+    fn sample(&mut self, now: Instant, counters: NetworkCounters) -> Option<f64> {
+        if counters.ssrc == 0 || counters.base == u32::MAX || counters.highest < counters.base {
+            self.previous = None;
+            return None;
+        }
+        if let Some((sampled_at, previous)) = self.previous {
+            if now < sampled_at {
+                return None;
+            }
+            if counters.ssrc != previous.ssrc
+                || counters.base != previous.base
+                || counters.highest < previous.highest
+                || counters.received < previous.received
+            {
+                self.previous = Some((now, counters));
+                return None;
+            } else if counters.received == previous.received {
+                return None;
+            } else if now.duration_since(sampled_at) > RECENT_NETWORK_MAX_SAMPLE_GAP {
+                self.previous = Some((now, counters));
+                return None;
+            } else if now.duration_since(sampled_at) < RECENT_NETWORK_SAMPLE_INTERVAL {
+                return None;
+            }
+            let expected = counters.highest - previous.highest;
+            let received = counters.received - previous.received;
+            self.previous = Some((now, counters));
+            return (expected > 0).then(|| {
+                f64::from(expected.saturating_sub(received)) * 100.0 / f64::from(expected)
+            });
+        }
+        self.previous = Some((now, counters));
+        None
+    }
+}
+
 #[derive(Debug)]
 pub struct NvstFeedbackState {
     pub haptics: crate::NvstHaptics,
@@ -428,6 +481,7 @@ pub struct NvstFeedbackState {
     base_sequence: AtomicU32,
     received_packets: AtomicU32,
     report_prior: Mutex<(u32, u32)>,
+    recent_network_metrics: Mutex<RecentNetworkMetrics>,
     reception_timing: Mutex<ReceptionTiming>,
     ice_ping: Mutex<Option<(Instant, Duration)>>,
     video_ping: Mutex<Option<(Instant, Duration)>>,
@@ -450,6 +504,7 @@ impl Default for NvstFeedbackState {
             base_sequence: AtomicU32::new(u32::MAX),
             received_packets: AtomicU32::new(0),
             report_prior: Mutex::new((0, 0)),
+            recent_network_metrics: Mutex::new(RecentNetworkMetrics::default()),
             reception_timing: Mutex::new(ReceptionTiming::default()),
             ice_ping: Mutex::new(None),
             video_ping: Mutex::new(None),
@@ -708,6 +763,31 @@ impl NvstFeedbackState {
             .saturating_add(1);
         let loss = f64::from(report.cumulative_lost.max(0)) * 100.0 / f64::from(expected.max(1));
         Some((f64::from(report.jitter) / 90.0, loss.clamp(0.0, 100.0)))
+    }
+
+    pub fn recent_network_metrics(&self, now: Instant) -> Option<(f64, f64)> {
+        let mut recent = self
+            .recent_network_metrics
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let read_counters = || NetworkCounters {
+            ssrc: self.video_ssrc.load(Ordering::Acquire),
+            base: self.base_sequence.load(Ordering::Acquire),
+            highest: self.highest_sequence.load(Ordering::Acquire),
+            received: self.received_packets.load(Ordering::Acquire),
+        };
+        let counters = read_counters();
+        if counters != read_counters() {
+            return None;
+        }
+        let loss = recent.sample(now, counters)?;
+        let jitter = self
+            .reception_timing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .jitter
+            .clamp(0.0, f64::from(u32::MAX)) as u32;
+        Some((f64::from(jitter) / 90.0, loss))
     }
 
     fn report_snapshot(&self, update_interval: bool) -> Option<RtcpReportBlock> {
@@ -6767,6 +6847,220 @@ mod tests {
         let report = feedback.report_snapshot(true).unwrap();
         assert_eq!(report.cumulative_lost, 1);
         assert!(report.fraction_lost > 0);
+    }
+
+    fn network_counters(highest: u32, received: u32) -> NetworkCounters {
+        NetworkCounters {
+            ssrc: 7,
+            base: 100,
+            highest,
+            received,
+        }
+    }
+
+    #[test]
+    fn recent_network_loss_recovers_on_the_next_healthy_interval() {
+        let mut recent = RecentNetworkMetrics::default();
+        let now = Instant::now();
+        assert_eq!(recent.sample(now, network_counters(100, 1)), None);
+        assert_eq!(
+            recent.sample(now + Duration::from_secs(1), network_counters(110, 6)),
+            Some(50.0)
+        );
+        for second in 2..=4 {
+            assert_eq!(
+                recent.sample(
+                    now + Duration::from_secs(u64::from(second)),
+                    network_counters(100 + second * 10, second * 10 - 4),
+                ),
+                Some(0.0)
+            );
+        }
+    }
+
+    #[test]
+    fn recent_network_sampling_is_bounded_and_does_not_manufacture_intervals() {
+        let mut recent = RecentNetworkMetrics::default();
+        let now = Instant::now();
+        for millis in 0..=10_000 {
+            let result = recent.sample(
+                now + Duration::from_millis(u64::from(millis)),
+                network_counters(100 + millis, 1 + millis),
+            );
+            assert_eq!(result, (millis > 0 && millis % 1000 == 0).then_some(0.0));
+            assert_eq!(
+                recent.previous.unwrap().0,
+                now + Duration::from_secs(u64::from(millis / 1000))
+            );
+        }
+        let previous = recent.previous;
+        for second in 10..=20 {
+            assert_eq!(
+                recent.sample(
+                    now + Duration::from_secs(second),
+                    network_counters(10_100, 10_001)
+                ),
+                None
+            );
+            assert_eq!(recent.previous, previous);
+        }
+        assert_eq!(
+            recent.sample(
+                now + Duration::from_secs(21),
+                network_counters(10_110, 10_011)
+            ),
+            None
+        );
+        assert_eq!(recent.previous.unwrap().0, now + Duration::from_secs(21));
+        assert_eq!(
+            recent.sample(
+                now + Duration::from_secs(22),
+                network_counters(10_120, 10_021)
+            ),
+            Some(0.0)
+        );
+    }
+
+    #[test]
+    fn recent_network_sampling_rejects_stale_and_nonadvancing_times() {
+        let mut recent = RecentNetworkMetrics::default();
+        let now = Instant::now();
+        assert_eq!(recent.sample(now, network_counters(100, 1)), None);
+        assert_eq!(recent.sample(now, network_counters(110, 11)), None);
+        assert_eq!(
+            recent.sample(now - Duration::from_secs(1), network_counters(110, 11)),
+            None
+        );
+        assert_eq!(recent.previous, Some((now, network_counters(100, 1))));
+        assert_eq!(
+            recent.sample(
+                now + RECENT_NETWORK_MAX_SAMPLE_GAP + Duration::from_millis(1),
+                network_counters(110, 11)
+            ),
+            None
+        );
+        assert_eq!(recent.previous.unwrap().1, network_counters(110, 11));
+    }
+
+    #[test]
+    fn recent_network_loss_clamps_late_recovery_and_requires_traffic() {
+        let mut recent = RecentNetworkMetrics::default();
+        let now = Instant::now();
+        assert_eq!(recent.sample(now, network_counters(110, 6)), None);
+        assert_eq!(
+            recent.sample(now + Duration::from_secs(1), network_counters(110, 11)),
+            None
+        );
+        assert_eq!(
+            recent.sample(now + Duration::from_secs(2), network_counters(120, 26)),
+            Some(0.0)
+        );
+        let previous = recent.previous;
+        assert_eq!(
+            recent.sample(now + Duration::from_secs(3), network_counters(130, 26)),
+            None
+        );
+        assert_eq!(recent.previous, previous);
+    }
+
+    #[test]
+    fn recent_network_sampling_resets_on_stream_and_counter_epoch_changes() {
+        let now = Instant::now();
+        for replacement in [
+            NetworkCounters {
+                ssrc: 8,
+                ..network_counters(120, 16)
+            },
+            NetworkCounters {
+                base: 101,
+                ..network_counters(120, 16)
+            },
+            network_counters(105, 16),
+            network_counters(120, 2),
+        ] {
+            let mut recent = RecentNetworkMetrics::default();
+            recent.sample(now, network_counters(100, 1));
+            assert_eq!(
+                recent.sample(now + Duration::from_secs(1), network_counters(110, 6)),
+                Some(50.0)
+            );
+            assert_eq!(
+                recent.sample(now + Duration::from_secs(2), replacement),
+                None
+            );
+            assert_eq!(
+                recent.previous,
+                Some((now + Duration::from_secs(2), replacement))
+            );
+            assert_eq!(
+                recent.sample(
+                    now + Duration::from_secs(3),
+                    NetworkCounters {
+                        highest: replacement.highest + 10,
+                        received: replacement.received + 10,
+                        ..replacement
+                    }
+                ),
+                Some(0.0)
+            );
+        }
+    }
+
+    #[test]
+    fn recent_network_sampling_clears_unbound_and_invalid_counters() {
+        let now = Instant::now();
+        for invalid in [
+            NetworkCounters {
+                ssrc: 0,
+                ..network_counters(110, 6)
+            },
+            NetworkCounters {
+                base: u32::MAX,
+                ..network_counters(110, 6)
+            },
+            network_counters(99, 6),
+        ] {
+            let mut recent = RecentNetworkMetrics::default();
+            recent.sample(now, network_counters(100, 1));
+            assert_eq!(recent.sample(now + Duration::from_secs(1), invalid), None);
+            assert!(recent.previous.is_none());
+        }
+    }
+
+    #[test]
+    fn recent_network_telemetry_preserves_cumulative_metrics_and_rtcp_intervals() {
+        let feedback = NvstFeedbackState::default();
+        let now = Instant::now();
+        assert_eq!(feedback.recent_network_metrics(now), None);
+        feedback.publish_stream(7, 100, 90_000, now);
+        assert_eq!(feedback.recent_network_metrics(now), None);
+        assert_eq!(feedback.report_snapshot(true).unwrap().fraction_lost, 0);
+        feedback.publish_stream(7, 102, 93_000, now + Duration::from_secs(1));
+        let recent = feedback
+            .recent_network_metrics(now + Duration::from_secs(1))
+            .unwrap();
+        assert!(recent.0 > 0.0);
+        assert_eq!(recent.1, 50.0);
+        assert_eq!(*feedback.report_prior.lock().unwrap(), (1, 1));
+        assert_eq!(
+            feedback.recent_network_metrics(now + Duration::from_secs(1)),
+            None
+        );
+        let cumulative = feedback.network_metrics().unwrap();
+        assert_eq!(recent.0, cumulative.0);
+        assert!((cumulative.1 - 100.0 / 3.0).abs() < 0.001);
+        let report = feedback.report_snapshot(true).unwrap();
+        assert_eq!(report.fraction_lost, 128);
+        assert_eq!(report.cumulative_lost, 1);
+        for second in 2..=4 {
+            let at = now + Duration::from_secs(u64::from(second));
+            feedback.publish_stream(7, 101 + second, 90_000 + second * 3_000, at);
+            let recent = feedback.recent_network_metrics(at).unwrap();
+            assert_eq!(recent.1, 0.0);
+        }
+        assert!(feedback.network_metrics().unwrap().1 > 0.0);
+        assert_eq!(*feedback.report_prior.lock().unwrap(), (3, 2));
+        assert_eq!(feedback.report_snapshot(true).unwrap().fraction_lost, 0);
     }
 
     #[test]
