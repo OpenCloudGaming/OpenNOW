@@ -1,3 +1,6 @@
+if(OPENNOW_PREBUILT_NATIVE_DIR)
+    include("${CMAKE_CURRENT_LIST_DIR}/PrebuiltNativeRuntime.cmake")
+else()
 set(OPENNOW_CORE_TARGET_DIR "${CMAKE_BINARY_DIR}/rust-target")
 set(OPENNOW_CORE_PROFILE "$<IF:$<CONFIG:Release>,release,debug>")
 set(OPENNOW_CORE_SUFFIX "$<IF:$<PLATFORM_ID:Windows>,.exe,>")
@@ -277,7 +280,12 @@ add_custom_command(TARGET opennow-qt POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "${OPENNOW_STREAMER_BIN_ARTIFACT}"
             "$<TARGET_FILE_DIR:opennow-qt>/${OPENNOW_STREAMER_BIN_NAME}")
+endif()
+
 add_library(opennow-streamer-ffi SHARED IMPORTED GLOBAL)
+if(OPENNOW_PREBUILT_NATIVE_DIR)
+    set_target_properties(opennow-streamer-ffi PROPERTIES IMPORTED_NO_SONAME TRUE)
+endif()
 if(WIN32)
     set_target_properties(opennow-streamer-ffi PROPERTIES
         IMPORTED_IMPLIB "${OPENNOW_STREAMER_FFI_LINK_LIBRARY}"
