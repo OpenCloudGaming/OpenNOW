@@ -156,6 +156,13 @@
     "title": "Persistent in-game settings",
     "description": "Keep your in-game graphics settings between sessions for supported games and memberships. Applies to new sessions."
   },
+  "storeLaunch": {
+    "checking": "Checking the Steam store launch…",
+    "readyDescription": "Opens the %1 store with your persistent storage.",
+    "launch": "Launch Steam",
+    "starting": "Starting the Steam store session…",
+    "staleAccount": "The account changed. Refresh the store launch and try again."
+  },
   "graphicsProcessor": {
     "title": "Graphics processor",
     "restartHint": "Uses the same GPU for decoding and display. Changes apply after restarting OpenNOW.",
