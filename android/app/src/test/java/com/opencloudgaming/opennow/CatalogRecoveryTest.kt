@@ -14,7 +14,8 @@ class CatalogRecoveryTest {
         hasGames: Boolean = false,
         loadInFlight: Boolean = false,
         streamActive: Boolean = false,
-    ) = shouldRetryCatalogLoad(signedIn, loadAttempted, hasGames, loadInFlight, streamActive)
+        loadFailed: Boolean = false,
+    ) = shouldRetryCatalogLoad(signedIn, loadAttempted, hasGames, loadInFlight, streamActive, loadFailed)
 
     @Test
     fun anEmptyStoreAfterAFailedLoadIsRetried() {
@@ -36,6 +37,27 @@ class CatalogRecoveryTest {
     @Test
     fun aPopulatedStoreIsLeftAlone() {
         assertFalse(retry(hasGames = true))
+    }
+
+    @Test
+    fun fourCachedGamesDoNotSuppressRecoveryAfterANetworkTimeout() {
+        val cached = OpenNowUiState(games = (1..4).map { game("cached-$it") })
+        assertTrue(retry(hasGames = cached.hasLoadedCatalogGames(), loadFailed = true))
+        assertFalse(retry(hasGames = cached.hasLoadedCatalogGames(), loadFailed = false))
+    }
+
+    @Test
+    fun partialLibraryResultsDoNotSuppressRecoveryOfTheStore() {
+        val partial = OpenNowUiState(libraryGames = listOf(game("library")))
+        assertTrue(retry(hasGames = partial.hasLoadedCatalogGames(), loadFailed = true))
+    }
+
+    @Test
+    fun cachedFailureRecoveryStillHonorsLifecycleGuards() {
+        assertFalse(retry(hasGames = true, loadFailed = true, signedIn = false))
+        assertFalse(retry(hasGames = true, loadFailed = true, loadAttempted = false))
+        assertFalse(retry(hasGames = true, loadFailed = true, loadInFlight = true))
+        assertFalse(retry(hasGames = true, loadFailed = true, streamActive = true))
     }
 
     @Test

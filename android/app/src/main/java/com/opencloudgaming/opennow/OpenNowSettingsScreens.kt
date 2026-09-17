@@ -688,6 +688,18 @@ private fun SettingsContent(
         )
     }
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    if (selectedCategory == SettingsCategory.Stream && settings.stream.shouldWarnAboutHighSettings()) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.errorContainer,
+        ) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(stringResource(R.string.settings_high_settings_warning_title), style = MaterialTheme.typography.titleSmall)
+                Text(stringResource(R.string.settings_high_settings_warning_body), style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+    }
     CategorySettingsSection(selectedCategory, SettingsCategory.General, searchQuery, "App updates", "update", "updates", "disable update checking", "checking", "check", "download", "install", "apk") {
                 if (state.androidUpdate.apkUpdatesAllowed) {
                     SettingSwitch(stringResource(R.string.settings_disable_update_checking), !settings.autoCheckForUpdates) { disabled ->

@@ -41,6 +41,18 @@ internal enum class TouchButtonIcon(val vector: ImageVector, @StringRes val labe
     Photo(Icons.Default.PhotoCamera, R.string.touch_icon_photo),
     Flag(Icons.Default.Flag, R.string.touch_icon_flag),
     Star(Icons.Default.Star, R.string.touch_icon_star),
+    Accelerate(TouchActionIcons.Accelerate, R.string.touch_icon_accelerate),
+    Brake(TouchActionIcons.Brake, R.string.touch_icon_brake),
+    Handbrake(TouchActionIcons.Handbrake, R.string.touch_icon_handbrake),
+    ShiftUp(TouchActionIcons.ShiftUp, R.string.touch_icon_shift_up),
+    ShiftDown(TouchActionIcons.ShiftDown, R.string.touch_icon_shift_down),
+    Horn(TouchActionIcons.Horn, R.string.touch_icon_horn),
+    Dodge(TouchActionIcons.Dodge, R.string.touch_icon_dodge),
+    Knife(TouchActionIcons.Knife, R.string.touch_icon_knife),
+    Door(TouchActionIcons.Door, R.string.touch_icon_door),
+    Key(Icons.Default.Key, R.string.touch_icon_key),
+    Puzzle(Icons.Default.Extension, R.string.touch_icon_puzzle),
+    Sprint(Icons.Default.Bolt, R.string.touch_icon_sprint),
 }
 
 internal val LocalTouchButtonAppearances = staticCompositionLocalOf<Map<String, TouchButtonAppearance>> { emptyMap() }
@@ -192,5 +204,7 @@ private fun touchButtonShapeLabel(shape: TouchButtonShape): String = stringResou
     TouchButtonShape.Square -> R.string.touch_shape_square
     TouchButtonShape.Rounded -> R.string.touch_shape_rounded
     TouchButtonShape.Hexagon -> R.string.touch_shape_hexagon
+    TouchButtonShape.Diamond -> R.string.touch_shape_diamond
+    TouchButtonShape.Octagon -> R.string.touch_shape_octagon
     TouchButtonShape.Trigger -> R.string.touch_shape_trigger
 })

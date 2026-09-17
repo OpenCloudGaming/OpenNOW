@@ -283,6 +283,7 @@ data class OpenNowUiState(
     val printedWastePings: Map<String, Long?> = emptyMap(),
     val printedWasteLoading: Boolean = false,
     val printedWasteError: String? = null,
+    val appMessage: AppMessage? = null,
     val androidUpdate: AndroidUpdateState = AndroidUpdateState(),
     val dismissedAndroidUpdateNoticeKey: String? = null,
     val androidPictureInPictureActive: Boolean = false,
@@ -302,8 +303,7 @@ internal fun OpenNowUiState.isAndroidUpdateCheckBlockedByStream(): Boolean =
 /**
  * Whether the catalogue currently has anything to show.
  *
- * The Store, the Library and the cached "main" list all feed off the same fetch, so any one of
- * them holding games means that fetch has landed at least once.
+ * This includes disk caches and partial results; it does not prove the latest refresh succeeded.
  */
 internal fun OpenNowUiState.hasLoadedCatalogGames(): Boolean =
     games.isNotEmpty() || catalogResult.games.isNotEmpty() || libraryGames.isNotEmpty()
@@ -402,7 +402,8 @@ internal fun shouldRetryCatalogLoad(
     hasGames: Boolean,
     loadInFlight: Boolean,
     streamActive: Boolean,
-): Boolean = signedIn && loadAttempted && !hasGames && !loadInFlight && !streamActive
+    loadFailed: Boolean = false,
+): Boolean = signedIn && loadAttempted && (loadFailed || !hasGames) && !loadInFlight && !streamActive
 
 internal fun OpenNowUiState.isNativeStreamReady(): Boolean =
     streamStatus in setOf("connecting", "streaming") &&
@@ -458,6 +459,10 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         diagnosticsSink = { response -> recordSessionDiagnosticResponse(response) },
         isAndroidTv = isAndroidTvProfile(application),
     )
+    private val appMessages = AppMessageRepository(application, http)
+    private var appMessageCheckAt = 0L
+    private val appMessageMutex = Mutex()
+    private val appMessageAckMutex = Mutex()
     private val appUpdater = AndroidAppUpdater(application, http)
     private val androidUpdateNoticeStore = AndroidUpdateNoticeStore(application)
     private val localTvConnector = openNowApplication.localTvConnector
@@ -553,6 +558,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private var catalogRetryAttempt = 0
     /** False until the first fetch has been asked for; see [shouldRetryCatalogLoad]. */
     private var catalogLoadAttempted = false
+    /** Cached/partial games must not suppress recovery after a failed network refresh. */
+    private var catalogLoadFailed = false
 
     init {
         viewModelScope.launch {
@@ -629,6 +636,39 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         primeCatalogFromCache()
         startDeviceCapabilityProbe()
         initialize()
+    }
+
+    suspend fun checkAppMessage() {
+        if (state.value.isAndroidUpdateCheckBlockedByStream()) return
+        if (!appMessageMutex.tryLock()) return
+        try {
+            val now = android.os.SystemClock.elapsedRealtime()
+            if (appMessageCheckAt != 0L && now - appMessageCheckAt < APP_MESSAGE_CHECK_INTERVAL_MS) return
+            appMessageCheckAt = now
+            val message = appMessages.fetch()
+            _state.update { it.copy(appMessage = message?.takeIf(appMessages::isUnacknowledged)) }
+        } catch (error: CancellationException) {
+            appMessageCheckAt = 0L
+            throw error
+        } catch (_: Exception) {
+            // Optional announcements must not interrupt login, launching, or offline use.
+        } finally {
+            appMessageMutex.unlock()
+        }
+    }
+
+    fun acknowledgeAppMessage(message: AppMessage) {
+        viewModelScope.launch {
+            if (!appMessageAckMutex.tryLock()) return@launch
+            try {
+                val saved = withContext(Dispatchers.IO) { appMessages.acknowledge(message) }
+                if (saved) _state.update { current ->
+                    current.copy(appMessage = current.appMessage?.takeIf { it.id > message.id })
+                }
+            } finally {
+                appMessageAckMutex.unlock()
+            }
+        }
     }
 
     private fun startDiagnosticSnapshotPersistence() {
@@ -932,7 +972,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     /**
      * Called when the app comes back to the foreground.
      *
-     * Two things can leave a signed-in reader looking at an empty Store: the one startup fetch
+     * Two things can leave a signed-in reader looking at an empty or stale Store: the startup fetch
      * failed and its retry ladder ran out, or the process was frozen long enough for its tokens to
      * go stale — and the only in-process token refresh is a 15-minute WorkManager job. Returning to
      * the app is the natural moment to repair both.
@@ -947,13 +987,14 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 signedIn = true,
                 loadAttempted = catalogLoadAttempted,
                 hasGames = snapshot.hasLoadedCatalogGames(),
+                loadFailed = catalogLoadFailed,
                 loadInFlight = gamesJob?.isActive == true,
                 streamActive = snapshot.isAndroidUpdateCheckBlockedByStream(),
             )
         ) {
             return
         }
-        recordDebugEvent("catalog", "Reloading empty catalog after returning to the foreground")
+        recordDebugEvent("catalog", "Reloading empty or failed catalog after returning to the foreground")
         startCatalogRecovery(delayMs = 0L)
     }
 
@@ -982,6 +1023,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     signedIn = true,
                     loadAttempted = catalogLoadAttempted,
                     hasGames = snapshot.hasLoadedCatalogGames(),
+                    loadFailed = catalogLoadFailed,
                     loadInFlight = gamesJob?.isActive == true,
                     streamActive = snapshot.isAndroidUpdateCheckBlockedByStream(),
                 )
@@ -3736,6 +3778,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     private suspend fun refreshAfterAuth(session: AuthSession, keepRefreshVisibleWithCache: Boolean = false) {
         catalogLoadAttempted = true
+        catalogLoadFailed = false
         _state.update { it.copy(loadingGames = true, error = null) }
         val baseUrl = effectiveStreamingBaseUrl(session)
         val token = session.tokens.idToken ?: session.tokens.accessToken
@@ -4043,9 +4086,11 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 }
                 catalogRetryJob?.cancel()
                 catalogRetryAttempt = 0
+                catalogLoadFailed = false
                 refreshActiveSession()
             }.onFailure { error ->
                 if (error is CancellationException) return@onFailure
+                catalogLoadFailed = true
                 _state.update { current ->
                     val hasUsableGames =
                         cachedMain != null ||
@@ -4061,11 +4106,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     )
                 }
                 recordDebugEvent("catalog", "Catalog load failed error=${error.debugMessage()}")
-                // An empty Store with an error on it used to be terminal until someone pulled to
-                // refresh. Nothing else in the app ever asks again.
-                if (!state.value.hasLoadedCatalogGames()) {
-                    scheduleCatalogRetry()
-                }
+                // Keep cached games visible, but still recover the failed network refresh.
+                scheduleCatalogRetry()
             }
         }
         subscriptionJob.join()

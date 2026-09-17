@@ -605,14 +605,6 @@ internal fun restampProtocolV3OuterTimestamp(packet: ByteArray, nowUs: Long = ti
     return true
 }
 
-/**
- * WebRTC's low-latency AudioTrack path can race teardown and dereference a released AudioTrack.
- * Stable buffering is preferable to a process crash on both handheld and TV devices.
- */
-internal fun shouldUseLowLatencyStreamAudio(
-    @Suppress("UNUSED_PARAMETER") androidTvProfile: Boolean,
-): Boolean = false
-
 internal fun shouldRunControllerMouseLoop(
     controllerMouseAssistActive: Boolean,
     controllerMouseEmulationActive: Boolean,

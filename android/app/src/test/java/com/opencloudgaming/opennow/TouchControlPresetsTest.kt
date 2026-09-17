@@ -49,8 +49,15 @@ class TouchControlPresetsTest {
         assertTrue(OpenNowJson.decodeFromString<AppSettings>("{}").touchControlPresets.isEmpty())
         val presets = builtinTouchPresets()
         assertTrue(presets.first().controls.buttonAppearances.isEmpty())
-        assertEquals("×", presets.last().controls.buttonAppearances["A"]?.label)
-        assertEquals("L2", presets.last().controls.buttonAppearances["LT"]?.label)
+        val playstation = presets.first { it.id == "playstation" }
+        assertEquals("×", playstation.controls.buttonAppearances["A"]?.label)
+        assertEquals("L2", playstation.controls.buttonAppearances["LT"]?.label)
+        assertTrue(presets.any { it.id == "forza-horizon" })
+        assertTrue(presets.any { it.id == "resident-evil" })
+        assertTrue(presets.any { it.id == "first-person-shooter" })
+        assertTrue(presets.any { it.id == "action-adventure" })
+        assertTrue(presets.filter { it.id !in setOf("xbox", "playstation") }
+            .all { it.controls.extraButtonActions.size == TOUCH_EXTRA_BUTTON_COUNT })
     }
 
     @Test fun momentaryAndToggleButtonsReleaseOnCancellation() {

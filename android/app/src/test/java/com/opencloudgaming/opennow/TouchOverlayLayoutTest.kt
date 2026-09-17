@@ -106,13 +106,33 @@ class TouchOverlayLayoutTest {
     @Test
     fun programmableSlotsAreFixedWidthAndCycleThroughOff() {
         val customized = AndroidTouchSettings()
-            .withExtraButtonAction(3, TouchExtraButtonAction.RightTrigger)
+            .withExtraButtonAction(7, TouchExtraButtonAction.RightBumperAndRightTrigger)
 
-        assertEquals(TouchExtraButtonAction.RightTrigger, customized.extraButtonAction(3))
-        assertEquals(TouchExtraButtonAction.None, nextTouchExtraButtonAction(TouchExtraButtonAction.Select))
+        assertEquals(TouchExtraButtonAction.RightBumperAndRightTrigger, customized.extraButtonAction(7))
+        assertEquals(TouchExtraButtonAction.None, nextTouchExtraButtonAction(TouchExtraButtonAction.LeftAndRightTriggers))
         assertEquals(
-            TouchExtraButtonAction.RightTrigger,
-            customized.withExtraButtonAction(9, TouchExtraButtonAction.A).extraButtonAction(3),
+            TouchExtraButtonAction.RightBumperAndRightTrigger,
+            customized.withExtraButtonAction(9, TouchExtraButtonAction.A).extraButtonAction(7),
         )
+    }
+
+    @Test
+    fun rightBumperAndTriggerComboDispatchesBothControls() {
+        val binding = touchExtraButtonBinding(TouchExtraButtonAction.RightBumperAndRightTrigger)
+
+        assertEquals(listOf(GamepadButtonMapping.RIGHT_SHOULDER), binding.buttonMasks)
+        assertEquals(false, binding.leftTrigger)
+        assertTrue(binding.rightTrigger)
+    }
+
+    @Test
+    fun customShoulderShapeShrinksLayoutAndHitboxToVisibleCap() {
+        val circle = touchShoulderFaceSize(72f, 32f, TouchButtonShape.Circle)
+        val trigger = touchShoulderFaceSize(72f, 32f, TouchButtonShape.Trigger)
+
+        assertEquals(32f, circle.width, 0.001f)
+        assertEquals(32f, circle.height, 0.001f)
+        assertEquals(72f, trigger.width, 0.001f)
+        assertEquals(32f, trigger.height, 0.001f)
     }
 }

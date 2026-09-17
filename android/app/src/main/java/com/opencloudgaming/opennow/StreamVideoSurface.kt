@@ -25,6 +25,10 @@ class StreamVideoSurface(context: Context, private val hdr: Boolean) : FrameLayo
     @Volatile private var released = false
 
     init {
+        // Stretch-to-fit deliberately lets the native video surface extend past this wrapper's
+        // aspect-fit bounds. The Compose viewport remains the final clip boundary.
+        clipChildren = false
+        clipToPadding = false
         addView(surfaceView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT, Gravity.CENTER))
         if (hdr) holder.addCallback(object : SurfaceHolder.Callback {
             override fun surfaceCreated(holder: SurfaceHolder) {
@@ -80,5 +84,19 @@ class StreamVideoSurface(context: Context, private val hdr: Boolean) : FrameLayo
     fun setEnableHardwareScaler(enabled: Boolean) { sdr?.setEnableHardwareScaler(enabled) }
     fun setMirror(mirror: Boolean) { sdr?.setMirror(mirror) }
     fun setScalingType(type: RendererCommon.ScalingType) { sdr?.setScalingType(type) }
+
+    /**
+     * Apply presentation transforms to the SurfaceView itself, not this wrapper.
+     *
+     * SurfaceView buffers are composed in a separate native layer. Some Android 9/OEM
+     * compositors do not reliably carry a parent View transform to that layer, which can leave a
+     * black strip at one edge while stretch-to-fit is enabled. Scaling the actual surface also
+     * preserves the behavior from before this HDR-capable wrapper was introduced.
+     */
+    fun setPresentationScale(scaleX: Float, scaleY: Float) {
+        surfaceView.scaleX = scaleX
+        surfaceView.scaleY = scaleY
+    }
+
     fun release() { released = true; hdrTarget = null; sdr?.release() }
 }

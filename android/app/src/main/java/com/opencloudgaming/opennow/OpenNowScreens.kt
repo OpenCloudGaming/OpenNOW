@@ -25,6 +25,7 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -570,6 +571,16 @@ fun OpenNowApp(
         !diagnosticDialogVisible &&
         state.androidUpdate.status in setOf(AndroidUpdateStatus.Available, AndroidUpdateStatus.Downloaded)
 
+    val messageCheckBlocked = streamActive || state.isAndroidUpdateCheckBlockedByStream()
+    LaunchedEffect(lifecycleOwner, messageCheckBlocked) {
+        if (!messageCheckBlocked) lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            while (true) {
+                viewModel.checkAppMessage()
+                delay(APP_MESSAGE_CHECK_INTERVAL_MS)
+            }
+        }
+    }
+
     DisposableEffect(launchAudioController) {
         onDispose {
             launchAudioController.release()
@@ -815,6 +826,26 @@ fun OpenNowApp(
                         },
                         onDismiss = viewModel::dismissAndroidUpdateNotice,
                     )
+                }
+                if (!messageCheckBlocked && !showSetupFlow && !showUpdatePrompt && !showSessionReport &&
+                    !showCompletedSessionBugReport && !diagnosticDialogVisible &&
+                    state.deviceLoginPrompt == null && state.pendingStoreChoiceGame == null &&
+                    state.pendingMembershipNotice == null && state.pendingPrintedWasteGame == null &&
+                    state.error == null && !state.loginToolsVisible) {
+                    state.appMessage?.let { message ->
+                        AlertDialog(
+                            onDismissRequest = {},
+                            title = { Text(message.title) },
+                            text = {
+                                Text(message.body, Modifier.verticalScroll(rememberScrollState()))
+                            },
+                            confirmButton = {
+                                TextButton(onClick = { viewModel.acknowledgeAppMessage(message) }) {
+                                    Text(stringResource(android.R.string.ok))
+                                }
+                            },
+                        )
+                    }
                 }
                 UselessMascotOverlay(
                     settings = state.settings,

@@ -1,7 +1,21 @@
+import com.android.build.api.instrumentation.FramesComputationMode
+import com.android.build.api.instrumentation.InstrumentationScope
+import com.opencloudgaming.buildlogic.WebRtcAudioGuardFactory
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
+}
+
+androidComponents.onVariants { variant ->
+    variant.instrumentation.transformClassesWith(
+        WebRtcAudioGuardFactory::class.java,
+        InstrumentationScope.ALL,
+    ) {}
+    variant.instrumentation.setAsmFramesComputationMode(
+        FramesComputationMode.COMPUTE_FRAMES_FOR_INSTRUMENTED_METHODS,
+    )
 }
 
 val buildingPlayReleaseBundle =
@@ -17,11 +31,12 @@ android {
     defaultConfig {
         applicationId = "com.opencloudgaming.opennow"
         minSdk = 23
-        // Android 17 target changes are audited; LAN access is permission-gated at its feature boundary.
+        // Android 17
+        // target changes are audited; LAN access is permission-gated at its feature boundary.
         //noinspection EditedTargetSdkVersion
         targetSdk = 37
-        versionCode = 130
-        versionName = "1.7.4"
+        versionCode = 133
+        versionName = "1.7.7"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         buildConfigField("boolean", "APK_UPDATES_SUPPORTED", "true")

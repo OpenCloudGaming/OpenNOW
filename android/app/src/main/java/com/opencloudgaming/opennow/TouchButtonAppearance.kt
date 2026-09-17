@@ -3,7 +3,7 @@ package com.opencloudgaming.opennow
 import kotlinx.serialization.Serializable
 
 @Serializable
-enum class TouchButtonShape { Theme, Circle, Square, Rounded, Hexagon, Trigger }
+enum class TouchButtonShape { Theme, Circle, Square, Rounded, Hexagon, Diamond, Octagon, Trigger }
 
 @Serializable
 data class TouchButtonAppearance(
@@ -36,4 +36,3 @@ internal fun AndroidTouchSettings.withButtonAppearance(key: String, appearance: 
     return copy(buttonAppearances = if (value == TouchButtonAppearance()) buttonAppearances - key
         else buttonAppearances + (key to value))
 }
-

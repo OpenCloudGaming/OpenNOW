@@ -117,14 +117,26 @@ private fun buttonPath(bounds: Size, form: TouchSkinForm, inset: Float, shape: T
             quadraticTo(left, bottom, left, extent * 0.5f)
             close()
         }
-        else -> capPath(centered, form.copy(
-            capShape = when (shape) {
-                TouchButtonShape.Circle -> TouchCapShape.Circle
-                TouchButtonShape.Hexagon -> TouchCapShape.Hexagon
-                else -> TouchCapShape.Rounded
-            },
+        TouchButtonShape.Diamond -> Path().apply {
+            addPolygon(Rect(inset, inset, extent - inset, extent - inset).center,
+                (extent - inset * 2f) / 2f, (extent - inset * 2f) / 2f, sides = 4, startDegrees = -90f)
+        }
+        TouchButtonShape.Hexagon -> Path().apply {
+            addPolygon(Rect(inset, inset, extent - inset, extent - inset).center,
+                (extent - inset * 2f) / 2f, (extent - inset * 2f) / 2f, sides = 6, startDegrees = 0f)
+        }
+        TouchButtonShape.Octagon -> Path().apply {
+            addPolygon(Rect(inset, inset, extent - inset, extent - inset).center,
+                (extent - inset * 2f) / 2f, (extent - inset * 2f) / 2f, sides = 8, startDegrees = 22.5f)
+        }
+        TouchButtonShape.Circle,
+        TouchButtonShape.Square,
+        TouchButtonShape.Rounded,
+        -> capPath(centered, form.copy(
+            capShape = if (shape == TouchButtonShape.Circle) TouchCapShape.Circle else TouchCapShape.Rounded,
             capCornerPercent = if (shape == TouchButtonShape.Square) 0 else 30,
         ), inset)
+        TouchButtonShape.Theme -> error("Theme shape is handled before custom paths")
     }
     path.translate(Offset((bounds.width - extent) / 2f, (bounds.height - extent) / 2f))
     return path
@@ -654,6 +666,12 @@ internal fun TouchCapFace(
 }
 
 /** A trigger, a bumper, or a thumb-click pill. Input belongs to the caller. */
+internal fun touchShoulderFaceSize(width: Float, height: Float, shape: TouchButtonShape): Size {
+    val customCap = shape != TouchButtonShape.Theme && shape != TouchButtonShape.Trigger
+    val extent = if (customCap) min(width, height) else 0f
+    return if (customCap) Size(extent, extent) else Size(width, height)
+}
+
 @Composable
 internal fun TouchShoulderFace(
     label: String,
@@ -667,11 +685,14 @@ internal fun TouchShoulderFace(
     val form = LocalTouchSkinForm.current
     val shape = LocalTouchButtonAppearances.current[appearanceKey]?.shape ?: TouchButtonShape.Theme
     val sizeScale = LocalTouchButtonAppearances.current[appearanceKey]?.effectiveSizeScale() ?: 1f
+    val faceSize = touchShoulderFaceSize(width.value, height.value, shape)
+    val faceWidth = faceSize.width.dp * sizeScale
+    val faceHeight = faceSize.height.dp * sizeScale
     val scale = if (pressed) form.pressScale else 1f
     Box(
         modifier
-            .width(width * sizeScale)
-            .height(height * sizeScale)
+            .width(faceWidth)
+            .height(faceHeight)
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
@@ -683,7 +704,7 @@ internal fun TouchShoulderFace(
             },
         contentAlignment = Alignment.Center,
     ) {
-        TouchButtonLabel(label, pressed, sizeSp = (height.value * sizeScale * 0.44f).coerceIn(7f, 18f), appearanceKey = appearanceKey, availableWidth = width * sizeScale * 0.82f)
+        TouchButtonLabel(label, pressed, sizeSp = (faceHeight.value * 0.44f).coerceIn(7f, 18f), appearanceKey = appearanceKey, availableWidth = faceWidth * 0.82f)
     }
 }
 

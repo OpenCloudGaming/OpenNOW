@@ -21,11 +21,9 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -793,6 +791,10 @@ internal fun touchExtraButtonActionLabel(action: TouchExtraButtonAction): String
     TouchExtraButtonAction.RightStickClick -> "R3 / RS"
     TouchExtraButtonAction.Start -> "Start"
     TouchExtraButtonAction.Select -> "Select"
+    TouchExtraButtonAction.LeftBumperAndLeftTrigger -> "LB + LT / L1 + L2"
+    TouchExtraButtonAction.RightBumperAndRightTrigger -> "RB + RT / R1 + R2"
+    TouchExtraButtonAction.LeftAndRightBumpers -> "LB + RB / L1 + R1"
+    TouchExtraButtonAction.LeftAndRightTriggers -> "LT + RT / L2 + R2"
 }
 
 internal fun touchControlGroupLabelRes(group: TouchControlGroup): Int = when (group) {
@@ -825,29 +827,50 @@ private fun touchExtraButtonCapLabel(action: TouchExtraButtonAction): String = w
     TouchExtraButtonAction.RightStickClick -> "RS"
     TouchExtraButtonAction.Start -> "▶"
     TouchExtraButtonAction.Select -> "◀"
+    TouchExtraButtonAction.LeftBumperAndLeftTrigger -> "L1+L2"
+    TouchExtraButtonAction.RightBumperAndRightTrigger -> "R1+R2"
+    TouchExtraButtonAction.LeftAndRightBumpers -> "L1+R1"
+    TouchExtraButtonAction.LeftAndRightTriggers -> "L2+R2"
     else -> action.name
 }
 
-private fun touchExtraButtonMask(action: TouchExtraButtonAction): Int? = when (action) {
-    TouchExtraButtonAction.Guide -> GamepadButtonMapping.GUIDE
-    TouchExtraButtonAction.A -> GamepadButtonMapping.A
-    TouchExtraButtonAction.B -> GamepadButtonMapping.B
-    TouchExtraButtonAction.X -> GamepadButtonMapping.X
-    TouchExtraButtonAction.Y -> GamepadButtonMapping.Y
-    TouchExtraButtonAction.DpadUp -> GamepadButtonMapping.DPAD_UP
-    TouchExtraButtonAction.DpadDown -> GamepadButtonMapping.DPAD_DOWN
-    TouchExtraButtonAction.DpadLeft -> GamepadButtonMapping.DPAD_LEFT
-    TouchExtraButtonAction.DpadRight -> GamepadButtonMapping.DPAD_RIGHT
-    TouchExtraButtonAction.LeftBumper -> GamepadButtonMapping.LEFT_SHOULDER
-    TouchExtraButtonAction.RightBumper -> GamepadButtonMapping.RIGHT_SHOULDER
-    TouchExtraButtonAction.LeftStickClick -> GamepadButtonMapping.LEFT_THUMB
-    TouchExtraButtonAction.RightStickClick -> GamepadButtonMapping.RIGHT_THUMB
-    TouchExtraButtonAction.Start -> GamepadButtonMapping.START
-    TouchExtraButtonAction.Select -> GamepadButtonMapping.BACK
-    TouchExtraButtonAction.None,
-    TouchExtraButtonAction.LeftTrigger,
-    TouchExtraButtonAction.RightTrigger,
-    -> null
+internal data class TouchExtraButtonBinding(
+    val buttonMasks: List<Int> = emptyList(),
+    val leftTrigger: Boolean = false,
+    val rightTrigger: Boolean = false,
+)
+
+internal fun touchExtraButtonBinding(action: TouchExtraButtonAction): TouchExtraButtonBinding = when (action) {
+    TouchExtraButtonAction.Guide -> TouchExtraButtonBinding(listOf(GamepadButtonMapping.GUIDE))
+    TouchExtraButtonAction.A -> TouchExtraButtonBinding(listOf(GamepadButtonMapping.A))
+    TouchExtraButtonAction.B -> TouchExtraButtonBinding(listOf(GamepadButtonMapping.B))
+    TouchExtraButtonAction.X -> TouchExtraButtonBinding(listOf(GamepadButtonMapping.X))
+    TouchExtraButtonAction.Y -> TouchExtraButtonBinding(listOf(GamepadButtonMapping.Y))
+    TouchExtraButtonAction.DpadUp -> TouchExtraButtonBinding(listOf(GamepadButtonMapping.DPAD_UP))
+    TouchExtraButtonAction.DpadDown -> TouchExtraButtonBinding(listOf(GamepadButtonMapping.DPAD_DOWN))
+    TouchExtraButtonAction.DpadLeft -> TouchExtraButtonBinding(listOf(GamepadButtonMapping.DPAD_LEFT))
+    TouchExtraButtonAction.DpadRight -> TouchExtraButtonBinding(listOf(GamepadButtonMapping.DPAD_RIGHT))
+    TouchExtraButtonAction.LeftBumper -> TouchExtraButtonBinding(listOf(GamepadButtonMapping.LEFT_SHOULDER))
+    TouchExtraButtonAction.RightBumper -> TouchExtraButtonBinding(listOf(GamepadButtonMapping.RIGHT_SHOULDER))
+    TouchExtraButtonAction.LeftTrigger -> TouchExtraButtonBinding(leftTrigger = true)
+    TouchExtraButtonAction.RightTrigger -> TouchExtraButtonBinding(rightTrigger = true)
+    TouchExtraButtonAction.LeftStickClick -> TouchExtraButtonBinding(listOf(GamepadButtonMapping.LEFT_THUMB))
+    TouchExtraButtonAction.RightStickClick -> TouchExtraButtonBinding(listOf(GamepadButtonMapping.RIGHT_THUMB))
+    TouchExtraButtonAction.Start -> TouchExtraButtonBinding(listOf(GamepadButtonMapping.START))
+    TouchExtraButtonAction.Select -> TouchExtraButtonBinding(listOf(GamepadButtonMapping.BACK))
+    TouchExtraButtonAction.LeftBumperAndLeftTrigger -> TouchExtraButtonBinding(
+        listOf(GamepadButtonMapping.LEFT_SHOULDER), leftTrigger = true,
+    )
+    TouchExtraButtonAction.RightBumperAndRightTrigger -> TouchExtraButtonBinding(
+        listOf(GamepadButtonMapping.RIGHT_SHOULDER), rightTrigger = true,
+    )
+    TouchExtraButtonAction.LeftAndRightBumpers -> TouchExtraButtonBinding(
+        listOf(GamepadButtonMapping.LEFT_SHOULDER, GamepadButtonMapping.RIGHT_SHOULDER),
+    )
+    TouchExtraButtonAction.LeftAndRightTriggers -> TouchExtraButtonBinding(
+        leftTrigger = true, rightTrigger = true,
+    )
+    TouchExtraButtonAction.None -> TouchExtraButtonBinding()
 }
 
 @Composable
@@ -1399,7 +1422,6 @@ private fun GamepadTriggerButton(
     }
     Box(
         Modifier
-            .heightIn(min = 48.dp)
             .editTouchButtonOnTap(label)
             .virtualPressInput(client, left, currentOnPressedChange,
                 LocalTouchButtonAppearances.current[label]?.toggle == true, LocalTouchInputEnabled.current),
@@ -1460,13 +1482,10 @@ private fun GamepadActionButton(
     var pressed by remember(action, sourceId) { mutableStateOf(false) }
 
     fun dispatch(down: Boolean) {
-        when (action) {
-            TouchExtraButtonAction.LeftTrigger -> client.setVirtualTriggerFromSource(true, sourceId, down)
-            TouchExtraButtonAction.RightTrigger -> client.setVirtualTriggerFromSource(false, sourceId, down)
-            else -> touchExtraButtonMask(action)?.let { mask ->
-                client.setVirtualButtonFromSource(mask, sourceId, down)
-            }
-        }
+        val binding = touchExtraButtonBinding(action)
+        binding.buttonMasks.forEach { mask -> client.setVirtualButtonFromSource(mask, sourceId, down) }
+        if (binding.leftTrigger) client.setVirtualTriggerFromSource(true, sourceId, down)
+        if (binding.rightTrigger) client.setVirtualTriggerFromSource(false, sourceId, down)
     }
 
     val currentOnPressedChange = rememberUpdatedState<(Boolean) -> Unit> { down ->
@@ -1478,7 +1497,6 @@ private fun GamepadActionButton(
     }
     Box(
         Modifier
-            .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
             .editTouchButtonOnTap(appearanceKey)
             .virtualPressInput(client, "$sourceId-${action.name}", currentOnPressedChange,
                 LocalTouchButtonAppearances.current[appearanceKey]?.toggle == true, LocalTouchInputEnabled.current),
@@ -1510,7 +1528,6 @@ private fun GamepadButton(
     }
     Box(
         Modifier
-            .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
             .editTouchButtonOnTap(label)
             .virtualPressInput(client, mask, currentOnPressedChange,
                 LocalTouchButtonAppearances.current[label]?.toggle == true, LocalTouchInputEnabled.current),

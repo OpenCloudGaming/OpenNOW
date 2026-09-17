@@ -1563,14 +1563,12 @@ private fun StreamVideoSurface(
                         isFocusable = false
                         isFocusableInTouchMode = false
                         hideAndroidPointerTree()
-                        scaleX = stretchScale.first
-                        scaleY = stretchScale.second
+                        setPresentationScale(stretchScale.first, stretchScale.second)
                     }
                 },
                 update = { renderer ->
                     client.applyLiveSettings(settings, vibrationEnabled, hapticsOutput, stretchToFit)
-                    renderer.scaleX = stretchScale.first
-                    renderer.scaleY = stretchScale.second
+                    renderer.setPresentationScale(stretchScale.first, stretchScale.second)
                     renderer.isFocusable = false
                     renderer.isFocusableInTouchMode = false
                     pointerRootView.configureAndroidMousePointerCapture(hideExternalMousePointer, { currentOnMouseCaptureInput() }) { event ->

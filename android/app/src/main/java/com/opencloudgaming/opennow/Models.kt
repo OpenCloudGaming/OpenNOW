@@ -297,11 +297,11 @@ enum class TouchControlGroup {
 }
 
 /**
- * Actions available to the four movable accessibility buttons.
+ * Actions available to the movable accessibility buttons.
  *
- * These are deliberately single, momentary gamepad actions rather than macros. A duplicate action
- * is useful when a player cannot comfortably reach the original control, while avoiding recorded
- * sequences keeps releases predictable when a stream reconnects or the overlay is removed.
+ * Combo entries press their listed controls simultaneously. They are deliberately not recorded or
+ * timed macros: every member is released together, which keeps reconnect and overlay teardown
+ * behavior predictable.
  */
 @Serializable
 enum class TouchExtraButtonAction {
@@ -323,6 +323,10 @@ enum class TouchExtraButtonAction {
     RightStickClick,
     Start,
     Select,
+    LeftBumperAndLeftTrigger,
+    RightBumperAndRightTrigger,
+    LeftAndRightBumpers,
+    LeftAndRightTriggers,
 }
 
 @Serializable
@@ -360,9 +364,13 @@ data class AndroidTouchSettings(
     val stickKnobScale: Float = 0.44f,
     /** Built-in clusters can be removed without giving up the rest of the overlay. */
     val visibleControlGroups: Set<TouchControlGroup> = TouchControlGroup.entries.toSet(),
-    /** Up to four independently mapped and positioned accessibility buttons. */
+    /** Independently mapped and positioned accessibility buttons. */
     val extraButtonActions: List<TouchExtraButtonAction> = listOf(
         TouchExtraButtonAction.Guide,
+        TouchExtraButtonAction.None,
+        TouchExtraButtonAction.None,
+        TouchExtraButtonAction.None,
+        TouchExtraButtonAction.None,
         TouchExtraButtonAction.None,
         TouchExtraButtonAction.None,
         TouchExtraButtonAction.None,
@@ -410,10 +418,18 @@ data class AndroidTouchSettings(
         "extra2_landscape" to TouchOffset(-28f, 0f),
         "extra3_landscape" to TouchOffset(28f, 0f),
         "extra4_landscape" to TouchOffset(84f, 0f),
+        "extra5_landscape" to TouchOffset(-84f, 56f),
+        "extra6_landscape" to TouchOffset(-28f, 56f),
+        "extra7_landscape" to TouchOffset(28f, 56f),
+        "extra8_landscape" to TouchOffset(84f, 56f),
         "extra1_portrait" to TouchOffset(-84f, 0f),
         "extra2_portrait" to TouchOffset(-28f, 0f),
         "extra3_portrait" to TouchOffset(28f, 0f),
         "extra4_portrait" to TouchOffset(84f, 0f),
+        "extra5_portrait" to TouchOffset(-84f, 56f),
+        "extra6_portrait" to TouchOffset(-28f, 56f),
+        "extra7_portrait" to TouchOffset(28f, 56f),
+        "extra8_portrait" to TouchOffset(84f, 56f),
     ),
     val touchControllerStyle: TouchControllerStyle = TouchControllerStyle.V1,
     /** Overrides the skin's own accent. Null keeps whatever the chosen skin ships with. */
@@ -472,11 +488,12 @@ data class AndroidTouchSettings(
     }
 }
 
-internal const val TOUCH_EXTRA_BUTTON_COUNT = 4
+internal const val TOUCH_EXTRA_BUTTON_COUNT = 8
 
 internal const val DEFAULT_CATALOG_SORT_ID = "most_popular"
 internal const val NEWLY_ADDED_CATALOG_SORT_ID = "last_added"
 internal const val CATALOG_SORT_DEFAULT_VERSION = 1
+internal const val GAME_BORDERS_DEFAULT_VERSION = 1
 
 @Serializable
 data class AppSettings(
@@ -505,6 +522,8 @@ data class AppSettings(
     val uselessMascotDelaySeconds: Int = 5,
     /** Static outlines around game artwork, independent from optional animated border effects. */
     val liveSelectedOutlines: Boolean = false,
+    /** One-time migration disabling game borders; later explicit opt-ins remain untouched. */
+    val gameBordersDefaultVersion: Int = 0,
     /** Animated focus energy using the selected interface accent; never changes the accent itself. */
     val absoluteCinemaEffects: Boolean = false,
     /** Extends Absolute Cinema to pointer hover and non-controller focus surfaces throughout the UI. */

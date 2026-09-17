@@ -7,3 +7,5 @@ captures/
 app/build/
 app/release/
 .kotlin/
+!buildSrc/src/test/
+!buildSrc/src/test/**

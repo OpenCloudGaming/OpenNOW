@@ -247,7 +247,7 @@ class NativeStreamClient(
     private val inputEncoder = InputEncoder()
     private val audioDeviceModule: AudioDeviceModule =
         JavaAudioDeviceModule.builder(appContext)
-            .setUseLowLatency(shouldUseLowLatencyStreamAudio(initialAndroidTvProfile))
+            .setUseLowLatency(shouldUseLowLatencyStreamAudio(Build.VERSION.SDK_INT))
             .setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
             .setUseStereoInput(false)
             .setUseStereoOutput(true)
@@ -557,6 +557,7 @@ class NativeStreamClient(
 
     init {
         WebRtcRuntime.ensureInitialized(appContext)
+        recordStreamDiagnostic("audio playback lowLatencyRequested=${shouldUseLowLatencyStreamAudio(Build.VERSION.SDK_INT)} usage=game stereo=true")
         val lowLatencyEnabled = SettingsStore(appContext).settings.value.nativeLowLatencyDecoder
         factory = PeerConnectionFactory.builder()
             .setOptions(PeerConnectionFactory.Options())

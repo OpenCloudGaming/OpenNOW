@@ -147,6 +147,19 @@ class AppSettingsDefaultsTest {
     }
 
     @Test
+    fun legacyGameBordersAreDisabledOnceAndLaterOptInSurvives() {
+        val migrated = OpenNowJson.decodeFromString<AppSettings>(
+            """{"liveSelectedOutlines":true}""",
+        ).normalizedForAndroid()
+        val optedInAgain = migrated.copy(liveSelectedOutlines = true).normalizedForAndroid()
+
+        assertFalse(migrated.liveSelectedOutlines)
+        assertEquals(GAME_BORDERS_DEFAULT_VERSION, migrated.gameBordersDefaultVersion)
+        assertTrue(optedInAgain.liveSelectedOutlines)
+        assertEquals(GAME_BORDERS_DEFAULT_VERSION, optedInAgain.gameBordersDefaultVersion)
+    }
+
+    @Test
     fun localAppsAreOptInAndSavedPackagesRemainCompatible() {
         val defaulted = OpenNowJson.decodeFromString<AppSettings>("{}")
         val optedIn = OpenNowJson.decodeFromString<AppSettings>(

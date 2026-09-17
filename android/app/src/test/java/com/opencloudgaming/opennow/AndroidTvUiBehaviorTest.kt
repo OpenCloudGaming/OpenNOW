@@ -532,12 +532,6 @@ class AndroidTvUiBehaviorTest {
     }
 
     @Test
-    fun allAndroidDevicesUseStableAudioBuffering() {
-        assertFalse(shouldUseLowLatencyStreamAudio(androidTvProfile = true))
-        assertFalse(shouldUseLowLatencyStreamAudio(androidTvProfile = false))
-    }
-
-    @Test
     fun tvSafeAreaStartsInset() {
         assertEquals(16f, AppSettings().tvSafeAreaPaddingDp, 0f)
     }

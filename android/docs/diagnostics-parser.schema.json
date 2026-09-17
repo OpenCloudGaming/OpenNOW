@@ -2365,7 +2365,11 @@
                             "LeftStickClick",
                             "RightStickClick",
                             "Start",
-                            "Select"
+                            "Select",
+                            "LeftBumperAndLeftTrigger",
+                            "RightBumperAndRightTrigger",
+                            "LeftAndRightBumpers",
+                            "LeftAndRightTriggers"
                         ]
                     }
                 },
@@ -2539,6 +2543,8 @@
                         "Square",
                         "Rounded",
                         "Hexagon",
+                        "Diamond",
+                        "Octagon",
                         "Trigger"
                     ]
                 },

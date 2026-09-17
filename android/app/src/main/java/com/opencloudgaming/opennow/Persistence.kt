@@ -317,6 +317,10 @@ internal fun AppSettings.normalizedForAndroid(): AppSettings {
         stream = lowPowerSafe,
         posterSizeScale = posterSizeScale.finiteIn(MIN_GAME_CARD_SCALE, MAX_GAME_CARD_SCALE, 1f),
         uselessMascotDelaySeconds = normalizeMascotDelaySeconds(uselessMascotDelaySeconds),
+        liveSelectedOutlines =
+            if (gameBordersDefaultVersion < GAME_BORDERS_DEFAULT_VERSION) false
+            else liveSelectedOutlines,
+        gameBordersDefaultVersion = GAME_BORDERS_DEFAULT_VERSION,
         streamMenuShortcut = androidKeyboardShortcutDisplay(streamMenuShortcut),
         streamKeyboardButtonPosition = streamKeyboardButtonPosition.normalized(),
         touchControlPresets = touchControlPresets.take(MAX_TOUCH_PRESETS)
@@ -807,7 +811,7 @@ internal fun AndroidTouchSettings.normalizedTouchControls(): AndroidTouchSetting
         leftOffsetYDp = leftOffsetYDp.finiteIn(-160f, 160f, touchDefaults.leftOffsetYDp),
         rightOffsetXDp = rightOffsetXDp.finiteIn(-220f, 220f, touchDefaults.rightOffsetXDp),
         rightOffsetYDp = rightOffsetYDp.finiteIn(-160f, 160f, touchDefaults.rightOffsetYDp),
-        offsets = offsets.mapValues { (_, offset) ->
+        offsets = touchDefaults.offsets + offsets.mapValues { (_, offset) ->
             TouchOffset(
                 x = offset.x.takeIf { it.isFinite() } ?: 0f,
                 y = offset.y.takeIf { it.isFinite() } ?: 0f,
