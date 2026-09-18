@@ -37,7 +37,15 @@ Item {
     MotionProgress { id: reveal; shown: root.expanded; enterDuration: 200; exitDuration: 160 }
     onExpandedChanged: {
         if (expanded) gridFlick.forceActiveFocus()
-        else selector.forceActiveFocus()
+        else stepper.focusSelector()
+    }
+    Keys.onEscapePressed: event => {
+        if (!root.expanded) {
+            event.accepted = false
+            return
+        }
+        root.expanded = false
+        event.accepted = true
     }
     function step(direction) {
         if (!available.length) return
@@ -56,16 +64,22 @@ Item {
         title: qsTr("Resolution")
         description: root.expanded ? qsTr("%1 available · Esc closes").arg(root.available.length)
             : root.current ? root.current.detail : root.value.replace("x", "×")
-        showDivider: !root.expanded
-        DesktopSettingsButton {
-            id: selector
-            width: header.controlWidth
-            menu: true
+        showDivider: !root.expanded; expandable: true
+        onExpansionRequested: root.expanded = !root.expanded
+        DesktopSettingsStepper {
+            id: stepper
+            visible: !root.expanded
             text: root.current ? root.current.label : root.value.replace("x","×")
-            Accessible.name: header.title + ": " + text
-            onClicked: root.expanded = !root.expanded
-            Keys.onLeftPressed: event => { root.step(-1); event.accepted = true }
-            Keys.onRightPressed: event => { root.step(1); event.accepted = true }
+            previousEnabled: root.available.length > 1; nextEnabled: previousEnabled
+            onPrevious: root.step(-1); onNext: root.step(1)
+            onOpenRequested: root.expanded = true
+        }
+        DesktopSettingsSegmented {
+            visible: root.expanded
+            options: [{label: qsTr("All"), width: 46},
+                {label: qsTr("Fits monitor"), width: 108}]
+            selectedIndex: root.fitsMonitor ? 1 : 0
+            onSelected: index => root.fitsMonitor = index === 1
         }
     }
     Flickable {
@@ -78,15 +92,8 @@ Item {
         contentWidth: width; contentHeight: gridContents.implicitHeight+14
         clip: true; boundsBehavior: Flickable.StopAtBounds
         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-        Keys.onEscapePressed: event => { root.expanded = false; event.accepted = true }
         Column {
             id: gridContents; width: parent.width; spacing: 14
-            DesktopSettingsSegmented {
-                options: [{label: qsTr("All"), width: 46},
-                    {label: qsTr("Fits monitor"), width: 108}]
-                selectedIndex: root.fitsMonitor ? 1 : 0
-                onSelected: index => root.fitsMonitor = index === 1
-            }
             Repeater {
                 model: root.groups
                 delegate: Column {
@@ -111,7 +118,6 @@ Item {
                                 hoverEnabled: true
                                 Accessible.name: modelData.label + " " + modelData.detail
                                 onClicked: { root.selected(modelData.value); root.expanded = false }
-                                Keys.onEscapePressed: event => { root.expanded = false; event.accepted = true }
                                 background: Rectangle {
                                     radius: 12; color: tile.selected ? Theme.focus : tile.hovered ? DesktopTokens.raisedStrong : DesktopTokens.raised
                                     border.width: 1; border.color: tile.activeFocus ? Theme.focus : DesktopTokens.seamSoft

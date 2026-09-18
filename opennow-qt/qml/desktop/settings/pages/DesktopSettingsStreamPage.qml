@@ -18,21 +18,18 @@ Column {
             value: page.settingsScreen.currentResolutionValue()
             onSelected: value => page.settingsScreen.setSetting("resolution", value)
         }
-        DesktopSettingsChoice {
-            objectName: "desktopFrameRateControl"
-            width: parent.width; glyph: "speed"; title: qsTr("Frame rate")
+        DesktopSettingsRow {
+            width: parent.width; paperStyle: true; glyph: "speed"; title: qsTr("Frame rate")
             description: page.settingsScreen.fpsEntitlementNote()
-            readonly property var canonical: ShellStore.canonicalFpsValues().map(value => String(value))
-            readonly property string currentRate: Number(page.settingsScreen.valueSetting("fps", 60)) === 0 ? "AUTO" : String(page.settingsScreen.valueSetting("fps", 60))
-            items: {
-                const values = canonical.indexOf(currentRate) >= 0 ? canonical : [currentRate].concat(canonical)
-                const locked = page.settingsScreen.lockedFpsValues().map(value => String(value))
-                return values.map(value => ({label: value === "AUTO" ? qsTr("Auto") : qsTr("%1 FPS").arg(value), value: value,
-                    disabled: locked.indexOf(value) >= 0,
-                    detail: locked.indexOf(value) >= 0 ? page.settingsScreen.fpsLockedHint() : ""}))
+            DesktopSettingsSegmented {
+                objectName: "desktopFrameRateControl"
+                readonly property var canonical: ShellStore.canonicalFpsValues().map(value => String(value))
+                readonly property string current: Number(page.settingsScreen.valueSetting("fps",60)) === 0 ? "AUTO" : String(page.settingsScreen.valueSetting("fps",60))
+                options: canonical.indexOf(current) >= 0 ? canonical : [current].concat(canonical)
+                optionWidth: 50; selectedIndex: options.indexOf(current)
+                disabledValues: page.settingsScreen.lockedFpsValues(); disabledHint: page.settingsScreen.fpsLockedHint()
+                onSelected: (index,value) => page.settingsScreen.setSetting("fps",value === "AUTO" ? 0 : Number(value))
             }
-            value: currentRate
-            onSelected: value => page.settingsScreen.setSetting("fps", value === "AUTO" ? 0 : Number(value))
         }
         DesktopSettingsRow {
             width: parent.width; paperStyle: true; glyph: "wave"; title: qsTr("Bitrate"); description: qsTr("Maximum requested bitrate")
