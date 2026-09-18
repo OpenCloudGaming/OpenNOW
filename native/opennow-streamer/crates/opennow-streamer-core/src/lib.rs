@@ -753,7 +753,10 @@ impl Engine {
         self.stop_media_resources();
         if let Some(runtime) = self.media_runtime.clone() {
             let (feedback_sender, feedback_receiver) = std::sync::mpsc::channel();
-            let stream_config = media_stream_config(&context);
+            let stream_config = prepared_nvst
+                .as_ref()
+                .map(|prepared| prepared.media_config)
+                .unwrap_or_else(|| media_stream_config(&context));
             opennow_streamer_protocol::log::log_line(
                 "INFO",
                 "media-config",

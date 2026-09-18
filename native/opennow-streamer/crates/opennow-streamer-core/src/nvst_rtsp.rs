@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use opennow_streamer_platform::MediaStreamConfig;
 use opennow_streamer_protocol::SessionContext;
 use opennow_streamer_transport::nvst::MAX_NVST_VIDEO_PEER_PORTS;
 use opennow_streamer_transport::{ReservedNvstBundle, nvst_video_packet_size};
@@ -14,6 +15,10 @@ use tungstenite::client::IntoClientRequest;
 use tungstenite::http::{HeaderValue, Uri};
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket, connect};
+
+#[path = "nvst_rtsp_color.rs"]
+mod color;
+use color::NvstColorNegotiation;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(2);
@@ -304,6 +309,7 @@ pub struct PreparedNvstRtspSession {
     announced: bool,
     owns_session: bool,
     pub handoff: Value,
+    pub media_config: MediaStreamConfig,
 }
 
 impl PreparedNvstRtspSession {
@@ -572,6 +578,20 @@ pub fn prepare_owned_nvst(
     describe_headers.push(("x-nv-abtesting", "2".to_owned()));
     let describe = client.request("DESCRIBE", &target, &describe_headers, "")?;
     ensure_rtsp_ok("DESCRIBE", &describe)?;
+    let requested_stream = super::media_stream_config(context);
+    let color = NvstColorNegotiation::resolve(requested_stream, &describe.body)?;
+    opennow_streamer_protocol::log::log_line(
+        "INFO",
+        "nvst-color",
+        &format!(
+            "requested={} requested_hdr={} effective={} effective_hdr={} announce={:?}",
+            requested_stream.color_quality.protocol_name(),
+            requested_stream.hdr,
+            color.stream.color_quality.protocol_name(),
+            color.stream.hdr,
+            color.announce_lines(),
+        ),
+    );
 
     let rtsp_session = header_value(&describe, "session")
         .and_then(|value| value.split(';').next())
@@ -761,6 +781,7 @@ pub fn prepare_owned_nvst(
     let announce_body = build_announce(
         context,
         AnnounceParams {
+            color: &color,
             key: handoff["srtpAesKeyHex"].as_str().unwrap_or_default(),
             key_id,
             port: client_port,
@@ -787,6 +808,7 @@ pub fn prepare_owned_nvst(
         announced: false,
         owns_session: true,
         handoff,
+        media_config: color.stream,
     })
 }
 
@@ -804,6 +826,7 @@ fn ensure_tls_crypto_provider() -> Result<(), NvstRtspError> {
 }
 
 struct AnnounceParams<'a> {
+    color: &'a NvstColorNegotiation,
     key: &'a str,
     key_id: u32,
     port: u16,
@@ -844,7 +867,6 @@ fn build_announce(context: &SessionContext, params: AnnounceParams<'_>) -> Strin
     } else {
         0
     };
-    let (bit_depth, chroma_format) = negotiated_color_format(context, &codec);
     let dynamic_streaming_mode = negotiated_dynamic_streaming_mode(context);
     let adjust_res_and_fps = negotiated_adjustment_enabled(dynamic_streaming_mode);
     let mut lines = vec![
@@ -873,12 +895,6 @@ fn build_announce(context: &SessionContext, params: AnnounceParams<'_>) -> Strin
         "a=x-nv-video[0].adaptiveQuantization.perfAdjEnablement:1".to_owned(),
         "a=x-nv-video[0].enableAv1RcPrecisionFactor:1".to_owned(),
         "a=x-nv-video[0].maxNumReferenceFrames:0".to_owned(),
-        format!(
-            "a=x-nv-video[0].dynamicRangeMode:{}",
-            u8::from(super::media_stream_config(context).hdr)
-        ),
-        format!("a=x-nv-video[0].bitDepth:{bit_depth}"),
-        format!("a=x-nv-video[0].chromaFormat:{chroma_format}"),
         "a=x-nv-video[0].prefilterParams.prefilterMode:0".to_owned(),
         "a=x-nv-video[0].prefilterParams.prefilterModel:4".to_owned(),
         "a=x-nv-video[0].prefilterParams.denoiseLevel:0".to_owned(),
@@ -980,6 +996,7 @@ fn build_announce(context: &SessionContext, params: AnnounceParams<'_>) -> Strin
         lines.push("a=x-nv-general.rtcMicOnNativeBundle:1".to_owned());
         lines.push("a=x-nv-mic.micSsrcConfig.senderSsrc:1".to_owned());
     }
+    lines.extend(params.color.announce_lines());
     lines.extend([
         "t=0 0".to_owned(),
         format!("m=video {}", params.video_port),
@@ -988,30 +1005,6 @@ fn build_announce(context: &SessionContext, params: AnnounceParams<'_>) -> Strin
         String::new(),
     ]);
     lines.join("\r\n")
-}
-
-fn negotiated_color_format(context: &SessionContext, codec: &str) -> (u8, u8) {
-    if codec.eq_ignore_ascii_case("H264") {
-        return (8, 1);
-    }
-    let quality = context
-        .session
-        .extra
-        .get("negotiatedStreamProfile")
-        .and_then(|profile| profile.get("colorQuality"))
-        .and_then(Value::as_str)
-        .or_else(|| context.settings.get("colorQuality").and_then(Value::as_str))
-        .unwrap_or("8bit_420")
-        .to_ascii_lowercase();
-    let bit_depth = if quality.starts_with("10bit") { 10 } else { 8 };
-    let chroma_format = if codec.eq_ignore_ascii_case("AV1") {
-        1
-    } else if quality.ends_with("444") {
-        3
-    } else {
-        1
-    };
-    (bit_depth, chroma_format)
 }
 
 fn resolution(context: &SessionContext) -> (u64, u64) {
@@ -1454,6 +1447,18 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn color(context: &SessionContext) -> NvstColorNegotiation {
+        NvstColorNegotiation::resolve(super::super::media_stream_config(context), "").unwrap()
+    }
+
+    fn announce_color_format(context: &SessionContext) -> (u8, u8) {
+        let stream = color(context).stream;
+        (
+            stream.color_quality.bit_depth(),
+            u8::from(stream.color_quality.is_444()),
+        )
+    }
+
     #[test]
     fn video_setup_retains_only_bounded_advertised_port_ranges() {
         for (ports, expected) in [
@@ -1552,6 +1557,7 @@ mod tests {
         let sdp = build_announce(
             &value,
             AnnounceParams {
+                color: &color(&value),
                 key: &"01".repeat(32),
                 key_id: 7,
                 port: 49006,
@@ -1573,6 +1579,7 @@ mod tests {
         let sdp = build_announce(
             &runaway,
             AnnounceParams {
+                color: &color(&runaway),
                 key: &"01".repeat(32),
                 key_id: 7,
                 port: 49006,
@@ -1596,6 +1603,7 @@ mod tests {
         let sdp = build_announce(
             &value,
             AnnounceParams {
+                color: &color(&value),
                 key: &"01".repeat(32),
                 key_id: 7,
                 port: 49006,
@@ -1611,7 +1619,7 @@ mod tests {
         );
         assert!(sdp.contains("a=x-nv-video[0].maxFPS:120"));
         assert!(sdp.contains("a=x-nv-video[0].bitDepth:10"));
-        assert!(sdp.contains("a=x-nv-video[0].chromaFormat:1"));
+        assert!(sdp.contains("a=x-nv-video[0].chromaFormat:0"));
         assert!(sdp.contains("a=x-nv-video[0].encoderCscMode:2"));
         assert!(sdp.contains("a=x-nv-vqos[0].bitStreamFormat:2"));
         assert!(sdp.contains("a=x-nv-general.clientBundlePort:49006"));
@@ -1626,6 +1634,7 @@ mod tests {
             let sdp = build_announce(
                 &context(),
                 AnnounceParams {
+                    color: &color(&context()),
                     key: &"01".repeat(32),
                     key_id: 7,
                     port: 49006,
@@ -1661,6 +1670,7 @@ mod tests {
         let sdp = build_announce(
             &context,
             AnnounceParams {
+                color: &color(&context),
                 key: &"01".repeat(32),
                 key_id: 7,
                 port: 49006,
@@ -1718,6 +1728,7 @@ mod tests {
             let sdp = build_announce(
                 &value,
                 AnnounceParams {
+                    color: &color(&value),
                     key: &"01".repeat(32),
                     key_id: 7,
                     port: 49006,
@@ -1752,6 +1763,7 @@ mod tests {
             let sdp = build_announce(
                 &value,
                 AnnounceParams {
+                    color: &color(&value),
                     key: &"01".repeat(32),
                     key_id: 7,
                     port: 49006,
@@ -1767,7 +1779,7 @@ mod tests {
             );
             assert!(sdp.contains(&format!("a=x-nv-video[0].dynamicRangeMode:{mode}\r\n")));
             assert!(sdp.contains("a=x-nv-video[0].bitDepth:10\r\n"));
-            assert!(sdp.contains("a=x-nv-video[0].chromaFormat:1\r\n"));
+            assert!(sdp.contains("a=x-nv-video[0].chromaFormat:0\r\n"));
         }
     }
 
@@ -1778,6 +1790,7 @@ mod tests {
         let sdp = build_announce(
             &value,
             AnnounceParams {
+                color: &color(&value),
                 key: &"01".repeat(32),
                 key_id: 7,
                 port: 49006,
@@ -1815,6 +1828,7 @@ mod tests {
                 let sdp = build_announce(
                     &value,
                     AnnounceParams {
+                        color: &color(&value),
                         key: &"01".repeat(32),
                         key_id: 7,
                         port: 49006,
@@ -1847,28 +1861,29 @@ mod tests {
         let mut value = context();
         value.session.extra["negotiatedStreamProfile"]["codec"] = json!("H264");
         value.session.extra["negotiatedStreamProfile"]["colorQuality"] = json!("10bit_444");
-        assert_eq!(negotiated_color_format(&value, "H264"), (8, 1));
+        assert_eq!(announce_color_format(&value), (8, 0));
     }
 
     #[test]
     fn av1_announce_stays_420_but_preserves_ten_bit_depth() {
         let mut value = context();
         value.session.extra["negotiatedStreamProfile"]["colorQuality"] = json!("10bit_444");
-        assert_eq!(negotiated_color_format(&value, "AV1"), (10, 1));
+        assert_eq!(announce_color_format(&value), (10, 0));
     }
 
     #[test]
     fn accepted_hevc_color_preserves_nvst_depth_and_chroma_enum_space() {
         for (color, format) in [
-            ("8bit_420", (8, 1)),
-            ("10bit_420", (10, 1)),
-            ("10bit_444", (10, 3)),
+            ("8bit_420", (8, 0)),
+            ("8bit_444", (8, 1)),
+            ("10bit_420", (10, 0)),
+            ("10bit_444", (10, 1)),
         ] {
             let mut value = context();
             value.settings["colorQuality"] = json!("8bit_420");
             value.session.extra["negotiatedStreamProfile"]["codec"] = json!("H265");
             value.session.extra["negotiatedStreamProfile"]["colorQuality"] = json!(color);
-            assert_eq!(negotiated_color_format(&value, "H265"), format);
+            assert_eq!(announce_color_format(&value), format);
         }
     }
 
@@ -1877,7 +1892,70 @@ mod tests {
         let mut value = context();
         value.session.extra["negotiatedStreamProfile"]["codec"] = json!("H265");
         value.session.extra["negotiatedStreamProfile"]["colorQuality"] = json!("10bit_444");
-        assert_eq!(negotiated_color_format(&value, "H265"), (10, 3));
+        assert_eq!(announce_color_format(&value), (10, 1));
+    }
+
+    #[test]
+    fn full_announce_uses_resolved_color_without_reintroducing_requested_values() {
+        for (suffix, expected_color, expected_hdr, expected_depth, expected_chroma) in [
+            (
+                "a=x-nv-video[0].bitDepth:8\r\na=x-nv-video[0].chromaFormat:0\r\na=x-nv-video[0].dynamicRangeMode:0\r\n",
+                opennow_streamer_platform::MediaColorQuality::EightBit420,
+                false,
+                None,
+                None,
+            ),
+            (
+                "a=x-nv-video[0].bitDepth:10\r\na=x-nv-video[0].chromaFormat:1\r\na=x-nv-video[0].dynamicRangeMode:1\r\n",
+                opennow_streamer_platform::MediaColorQuality::TenBit444,
+                true,
+                Some("10".to_owned()),
+                Some("1".to_owned()),
+            ),
+        ] {
+            let mut value = context();
+            value.session.extra["negotiatedStreamProfile"]["codec"] = json!("H265");
+            let resolved = NvstColorNegotiation::resolve(
+                super::super::media_stream_config(&value),
+                &format!("a=x-nv-general.nativeRtcOnBundlePort:1\r\n;;{suffix}"),
+            )
+            .unwrap();
+            let sdp = build_announce(
+                &value,
+                AnnounceParams {
+                    color: &resolved,
+                    key: &"01".repeat(32),
+                    key_id: 7,
+                    port: 49006,
+                    address: "192.0.2.10",
+                    ufrag: "abcd",
+                    password: "abcdefghijklmnopqrstuv",
+                    fingerprint: "AA:BB",
+                    video_port: 5004,
+                    video_packet_size: 1280,
+                    rtcp_on_sctp: true,
+                    microphone_available: false,
+                },
+            );
+            assert_eq!(resolved.stream.color_quality, expected_color);
+            assert_eq!(resolved.stream.hdr, expected_hdr);
+            assert_eq!(sdp_attribute(&sdp, "video[0].bitDepth"), expected_depth);
+            assert_eq!(
+                sdp_attribute(&sdp, "video[0].chromaFormat"),
+                expected_chroma
+            );
+            assert_eq!(
+                sdp_attribute(&sdp, "video[0].dynamicRangeMode"),
+                expected_hdr.then(|| "1".to_owned())
+            );
+            for field in ["bitDepth", "chromaFormat", "dynamicRangeMode"] {
+                assert!(sdp.matches(&format!("a=x-nv-video[0].{field}:")).count() <= 1);
+            }
+            assert_eq!(
+                value.session.extra["negotiatedStreamProfile"]["colorQuality"],
+                "10bit_444"
+            );
+        }
     }
 
     #[test]

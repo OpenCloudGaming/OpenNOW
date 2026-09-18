@@ -833,13 +833,35 @@ allocation, even if a decoder capability lists those formats. These combinations
 requested by the supported GFN wire policy. Auto selects HEVC for 4:4:4 rather than silently
 reducing chroma; an explicit incompatible codec remains an error.
 
-The native context preserves the resolved profile and codec provenance, and `MediaStreamConfig.hdr` follows its
-`enableHdr` alone (missing means false). Invalid accepted HDR profiles are rejected before
-stream startup. NVST ANNOUNCE sends `x-nv-video[0].dynamicRangeMode=1` for HDR and `0` for
-SDR, with literal bit depth `10` or `8`. Its `chromaFormat` uses chroma_format_idc (`1` for
-4:2:0, `3` for 4:4:4), unlike CloudMatch's enum. The captured Mac native ANNOUNCE confirms
-10-bit 4:2:0 as `bitDepth:10` / `chromaFormat:1`; its seat control notification `0x010e`
-reports a separate runtime mode and must not be confused with CloudMatch's `trueHdr` field.
+The native context preserves the resolved profile and codec provenance. Its accepted
+`enableHdr` initializes the native HDR mode (missing means false). Invalid accepted HDR
+profiles are rejected before stream startup. NVST color negotiation uses literal bit depth
+`8` or `10`, `chromaFormat=0` for 4:2:0 or `1` for 4:4:4, and
+`dynamicRangeMode=0` for SDR or `1` for HDR. The NVST chroma enum is distinct from the
+elementary video's `chroma_format_idc` values `1` and `3`; CloudMatch's existing bit-depth
+enum remains `0` or `1`.
+
+These native values follow the built-in conversion and serializer in the official Linux
+GeForce NOW 2.0.84.127 `libBifrost2.so`, SHA-256
+`8400714f98b7db928ef4377515b1ed35be12523b7fa306566e776b76965537c9`.
+The application-to-NVST chroma conversion is at ELF address `0x1f5d50`, and the unchanged
+byte reaches the SDP formatter through `0x4e0fc5` and `0x3792c5`.
+
+The main DESCRIBE SDP supplies a comparison baseline, not replacement client preferences.
+Its defaults are 8-bit 4:2:0 SDR. Once color attributes or the native-bundle configuration
+are recognized, ANNOUNCE omits color values equal to that baseline. The `;;` new-features
+suffix overrides the selected bit depth, chroma and dynamic-range mode before ANNOUNCE.
+One resolved configuration feeds both the wire values and the media runtime, so a server
+downgrade or upgrade cannot leave the decoder expecting the old color format. The stored
+CloudMatch profile and user preferences are not rewritten.
+
+Overrides are restricted to these primary-stream color attributes. Malformed or conflicting
+values fail with `nvst-color-invalid`; unsupported depth, chroma, dynamic range or codec
+combinations fail with `nvst-color-unsupported` before ANNOUNCE. Existing media-runtime
+hardware and output checks remain in place. Full SDP must not be logged because it contains ICE
+credentials and encryption material. The earlier Mac-reference claim of NVST chroma `1/3`
+does not describe this built-in mapping; a captured final value must also be checked for
+server overrides and the actual selected stream format.
 
 After an update check, `updater.highlights.get` returns the latest published
 release notes for the selected channel, even when that release is equal to or
