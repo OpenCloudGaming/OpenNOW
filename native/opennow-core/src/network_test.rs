@@ -657,6 +657,7 @@ fn confirm_datagram(
     size: u32,
     deadline: std::time::Instant,
 ) -> bool {
+    let deadline = deadline.min(std::time::Instant::now() + PROBE_ATTEMPT_WAIT);
     let mut message = NetworkTestMessage::mtu_probe(size, session_id, sequence);
     if message.seal(key).is_err() {
         return false;
@@ -667,15 +668,15 @@ fn confirm_datagram(
     let mut buffer = vec![0_u8; MAX_MESSAGE_BYTES];
     while std::time::Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        let wait = remaining
-            .min(PROBE_ATTEMPT_WAIT)
-            .max(std::time::Duration::from_millis(1));
-        if socket.set_read_timeout(Some(wait)).is_err() {
+        if remaining.is_zero() || socket.set_read_timeout(Some(remaining)).is_err() {
             return false;
         }
         let Ok((length, source)) = socket.recv_from(&mut buffer) else {
             return false;
         };
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
         if source != peer || length < size as usize {
             continue;
         }
@@ -1015,6 +1016,32 @@ mod probe_tests {
         assert!(body.len() < REPLY_PREFIX_THRESHOLD);
         let reply = NetworkTestMessage::decode_reply(&body).unwrap();
         assert!(reply_is_accepted(&reply, SESSION, 300));
+    }
+
+    #[test]
+    fn unrelated_replies_do_not_renew_a_probe_attempt() {
+        use std::time::Instant;
+
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let peer = socket.local_addr().unwrap();
+        let client = client_socket();
+        let client_address = client.local_addr().unwrap();
+        let deadline = Instant::now() + PROBE_BUDGET;
+        let server = std::thread::spawn(move || {
+            while Instant::now() < deadline {
+                let _ = socket.send_to(&vendor_datagram(b"other", 1_340, 8), client_address);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        });
+        let started = Instant::now();
+        let confirmed = confirm_datagram(&client, peer, &KEY, SESSION, 1, 1_340, deadline);
+        let elapsed = started.elapsed();
+        server.join().unwrap();
+        assert!(!confirmed);
+        assert!(
+            elapsed < PROBE_BUDGET / 2,
+            "unrelated replies extended one probe attempt to {elapsed:?}"
+        );
     }
 
     #[test]
