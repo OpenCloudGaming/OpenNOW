@@ -11,6 +11,23 @@ import org.webrtc.SurfaceViewRenderer
 import org.webrtc.VideoFrame
 import org.webrtc.VideoSink
 
+internal fun aspectFitStreamSurfaceSize(
+    frameWidth: Int,
+    frameHeight: Int,
+    containerWidth: Int,
+    containerHeight: Int,
+): Pair<Int, Int> {
+    if (frameWidth <= 0 || frameHeight <= 0 || containerWidth <= 0 || containerHeight <= 0) {
+        return containerWidth.coerceAtLeast(0) to containerHeight.coerceAtLeast(0)
+    }
+    val scale = minOf(
+        containerWidth.toFloat() / frameWidth,
+        containerHeight.toFloat() / frameHeight,
+    )
+    return (frameWidth * scale).toInt().coerceIn(1, containerWidth) to
+        (frameHeight * scale).toInt().coerceIn(1, containerHeight)
+}
+
 /** Owns one surface producer: WebRTC GL for SDR, or the hardware decoder for HDR. */
 class StreamVideoSurface(context: Context, private val hdr: Boolean) : FrameLayout(context), VideoSink {
     private val sdr = if (hdr) null else SurfaceViewRenderer(context)
@@ -43,7 +60,24 @@ class StreamVideoSurface(context: Context, private val hdr: Boolean) : FrameLayo
     fun init(context: EglBase.Context, events: RendererCommon.RendererEvents, config: IntArray,
         drawer: RendererCommon.GlDrawer) {
         this.events = events
-        if (sdr != null) sdr.init(context, events, config, drawer)
+        if (sdr != null) {
+            sdr.init(
+                context,
+                object : RendererCommon.RendererEvents {
+                    override fun onFirstFrameRendered() = events.onFirstFrameRendered()
+
+                    override fun onFrameResolutionChanged(width: Int, height: Int, rotation: Int) {
+                        val quarterTurns = ((rotation % 360) + 360) % 360
+                        frameWidth = if (quarterTurns == 90 || quarterTurns == 270) height else width
+                        frameHeight = if (quarterTurns == 90 || quarterTurns == 270) width else height
+                        post { requestLayout() }
+                        events.onFrameResolutionChanged(width, height, rotation)
+                    }
+                },
+                config,
+                drawer,
+            )
+        }
     }
 
     override fun onFrame(frame: VideoFrame) {
@@ -69,13 +103,20 @@ class StreamVideoSurface(context: Context, private val hdr: Boolean) : FrameLayo
     }
 
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
-        if (!hdr || frameWidth <= 0 || frameHeight <= 0) {
+        if (frameWidth <= 0 || frameHeight <= 0) {
             super.onLayout(changed, left, top, right, bottom)
             return
         }
-        val scale = minOf(width.toFloat() / frameWidth, height.toFloat() / frameHeight)
-        val videoWidth = (frameWidth * scale).toInt()
-        val videoHeight = (frameHeight * scale).toInt()
+        // SurfaceEglRenderer fills its own View and crops when that View has a different aspect
+        // ratio from the decoded frame. Lay out the native Surface at the decoded aspect inside
+        // this stable wrapper so normal presentation always shows the complete frame. Explicit
+        // stretch-to-fit scales this fitted child afterward via setPresentationScale().
+        val (videoWidth, videoHeight) = aspectFitStreamSurfaceSize(
+            frameWidth = frameWidth,
+            frameHeight = frameHeight,
+            containerWidth = width,
+            containerHeight = height,
+        )
         val x = (width - videoWidth) / 2
         val y = (height - videoHeight) / 2
         surfaceView.layout(x, y, x + videoWidth, y + videoHeight)

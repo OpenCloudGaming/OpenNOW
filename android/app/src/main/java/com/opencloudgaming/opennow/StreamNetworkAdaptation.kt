@@ -9,11 +9,12 @@ internal object StreamNetworkAdaptation {
 
     fun bitrateRange(maxBitrateMbps: Int): StreamBitrateRange {
         val maximum = maxBitrateMbps.coerceIn(1, 200) * 1000
-        // A maximum is a ceiling, not a target or a minimum. Even the 1-3 Mbps profiles
-        // need room to back off when packets queue up. Start conservatively and let BWE
-        // increase quality up to the user's ceiling as the path permits.
-        val minimum = minOf(1000, maximum / 4)
-        return StreamBitrateRange(minimum, maximum / 4, maximum)
+        // Preserve the normal NVIDIA 4 Mbps floor so a standard profile does not start at
+        // one quarter of the user's limit and remain visibly over-compressed. Explicit 1-3
+        // Mbps profiles still keep their selected cap instead of being raised above it.
+        val minimum = minOf(4_000, maximum)
+        val initial = maxOf(minimum, maximum / 4)
+        return StreamBitrateRange(minimum, initial, maximum)
     }
 }
 

@@ -143,7 +143,7 @@ class NvstTransportTest {
         assertEquals("10bit_420", context["settings"]!!.jsonObject["colorQuality"]!!.jsonPrimitive.content)
         val adaptation = context["settings"]!!.jsonObject["networkAdaptation"]!!.jsonObject
         assertEquals(0, adaptation["dynamicStreamingMode"]!!.jsonPrimitive.int)
-        assertEquals(1000, adaptation["minimumBitrateKbps"]!!.jsonPrimitive.int)
+        assertEquals(4000, adaptation["minimumBitrateKbps"]!!.jsonPrimitive.int)
         assertEquals(18750, adaptation["initialBitrateKbps"]!!.jsonPrimitive.int)
         assertEquals(session.rtspsEndpoints.first(), context["session"]!!.jsonObject["rtspsEndpoints"]!!.jsonArray.first().jsonPrimitive.content)
     }

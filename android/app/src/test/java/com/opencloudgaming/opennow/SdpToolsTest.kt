@@ -250,20 +250,20 @@ class SdpToolsTest {
     fun nvstSdpHonorsConfiguredBitrateBelowTheNormalFourMbpsFloor() {
         val nvst = buildNvstSdp(StreamSettings(maxBitrateMbps = 1))
 
-        assertTrue(nvst.contains("a=video.initialBitrateKbps:250"))
-        assertTrue(nvst.contains("a=video.initialPeakBitrateKbps:250"))
+        assertTrue(nvst.contains("a=video.initialBitrateKbps:1000"))
+        assertTrue(nvst.contains("a=video.initialPeakBitrateKbps:1000"))
         assertTrue(nvst.contains("a=vqos.bw.maximumBitrateKbps:1000"))
-        assertTrue(nvst.contains("a=vqos.bw.minimumBitrateKbps:250"))
+        assertTrue(nvst.contains("a=vqos.bw.minimumBitrateKbps:1000"))
         assertTrue(nvst.contains("a=vqos.bw.peakBitrateKbps:1000"))
         assertTrue(nvst.contains("a=vqos.bw.serverPeakBitrateKbps:1000"))
     }
 
     @Test
-    fun everyBitrateCeilingHasCongestionHeadroomAndABoundedStartupRate() {
+    fun everyBitrateCeilingHasTheNormalFloorAndABoundedStartupRate() {
         for (mbps in 1..200) {
             val range = StreamNetworkAdaptation.bitrateRange(mbps)
             assertEquals(mbps * 1000, range.maximumKbps)
-            assertTrue("$mbps Mbps needs headroom", range.minimumKbps in 1 until range.maximumKbps)
+            assertEquals(minOf(4_000, range.maximumKbps), range.minimumKbps)
             assertTrue("$mbps Mbps startup out of bounds", range.initialKbps in range.minimumKbps..range.maximumKbps)
         }
         assertEquals(1000, StreamNetworkAdaptation.bitrateRange(Int.MIN_VALUE).maximumKbps)
@@ -271,10 +271,19 @@ class SdpToolsTest {
     }
 
     @Test
-    fun threeMbpsReportProfileCanAdaptWithoutChangingItsCeiling() {
+    fun fourMbpsProfileStartsAndStaysAtTheSelectedRate() {
+        val range = StreamNetworkAdaptation.bitrateRange(4)
+
+        assertEquals(4_000, range.minimumKbps)
+        assertEquals(4_000, range.initialKbps)
+        assertEquals(4_000, range.maximumKbps)
+    }
+
+    @Test
+    fun threeMbpsReportProfileKeepsItsExplicitCeiling() {
         val settings = StreamSettings(resolution = "1280x720", fps = 30, maxBitrateMbps = 3)
         val nvst = buildNvstSdp(settings)
-        assertTrue(nvst.lineSequence().contains("a=vqos.bw.minimumBitrateKbps:750"))
+        assertTrue(nvst.lineSequence().contains("a=vqos.bw.minimumBitrateKbps:3000"))
         assertTrue(nvst.lineSequence().contains("a=vqos.bw.maximumBitrateKbps:3000"))
         assertTrue(nvst.lineSequence().contains("a=video.maxFPS:30"))
         assertEquals(3, settings.maxBitrateMbps)
@@ -286,7 +295,7 @@ class SdpToolsTest {
         val nvst = buildNvstSdp(StreamSettings(maxBitrateMbps = 18))
 
         assertTrue(nvst.contains("a=vqos.bw.maximumBitrateKbps:18000"))
-        assertTrue(nvst.contains("a=vqos.bw.minimumBitrateKbps:1000"))
+        assertTrue(nvst.contains("a=vqos.bw.minimumBitrateKbps:4000"))
     }
 
     @Test

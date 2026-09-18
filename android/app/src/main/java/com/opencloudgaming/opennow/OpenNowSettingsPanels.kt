@@ -42,7 +42,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.Clipboard
+import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -50,7 +51,6 @@ import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.KeyboardType
@@ -1421,14 +1421,17 @@ internal fun CodecDiagnosticsPanel(report: RuntimeCodecReport?) {
         Text(stringResource(R.string.settings_codec_diagnostics_unavailable), color = SettingsTextMuted)
         return
     }
-    val clipboard = LocalClipboardManager.current
+    val clipboard = LocalClipboard.current
+    val scope = rememberCoroutineScope()
     var copied by remember(report) { mutableStateOf(false) }
     val safeDecoders = report.capabilities.count { it.streamingRealtimeSafe() }
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Button(
             onClick = {
-                clipboard.setText(AnnotatedString(formatCodecDiagnosticReport(report)))
-                copied = true
+                scope.launch {
+                    clipboard.copyPlainText(formatCodecDiagnosticReport(report))
+                    copied = true
+                }
             },
             modifier = Modifier.fillMaxWidth(),
         ) {
@@ -1620,7 +1623,8 @@ internal fun AppVersionPanel(settings: AppSettings, onSettingsChange: (AppSettin
 @Composable
 internal fun OpenNowGitHubPanel() {
     val context = LocalContext.current
-    val clipboard = LocalClipboardManager.current
+    val clipboard = LocalClipboard.current
+    val scope = rememberCoroutineScope()
     Row(
         Modifier
             .fillMaxWidth()
@@ -1634,7 +1638,9 @@ internal fun OpenNowGitHubPanel() {
             Text("OpenNOW Repository", color = SettingsText, fontWeight = FontWeight.SemiBold)
             Text("OpenCloudGaming/OpenNOW", color = SettingsTextMuted, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        OutlinedButton(onClick = { openExternalUrlOrCopy(context, clipboard, OPENNOW_GITHUB_URL, "GitHub link copied") }) {
+        OutlinedButton(onClick = {
+            scope.launch { openExternalUrlOrCopy(context, clipboard, OPENNOW_GITHUB_URL, "GitHub link copied") }
+        }) {
             Text("GitHub", maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
@@ -1643,7 +1649,8 @@ internal fun OpenNowGitHubPanel() {
 @Composable
 internal fun DeveloperPanel() {
     val context = LocalContext.current
-    val clipboard = LocalClipboardManager.current
+    val clipboard = LocalClipboard.current
+    val scope = rememberCoroutineScope()
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         DEVELOPER_CREDITS.forEach { developer ->
             Row(
@@ -1666,7 +1673,9 @@ internal fun DeveloperPanel() {
                     Text(developer.name, color = SettingsText, fontWeight = FontWeight.SemiBold)
                     Text(stringResource(R.string.settings_developer_label), color = SettingsTextMuted, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                OutlinedButton(onClick = { openExternalUrlOrCopy(context, clipboard, developer.githubUrl, "GitHub link copied") }) {
+                OutlinedButton(onClick = {
+                    scope.launch { openExternalUrlOrCopy(context, clipboard, developer.githubUrl, "GitHub link copied") }
+                }) {
                     Text("GitHub", maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
@@ -1677,7 +1686,8 @@ internal fun DeveloperPanel() {
 @Composable
 internal fun ThanksPanel() {
     val context = LocalContext.current
-    val clipboard = LocalClipboardManager.current
+    val clipboard = LocalClipboard.current
+    val scope = rememberCoroutineScope()
     Text(
         stringResource(R.string.settings_thanks_body),
         color = SettingsTextMuted,
@@ -1702,7 +1712,14 @@ internal fun ThanksPanel() {
     )
     Button(
         onClick = {
-            openExternalUrlOrCopy(context, clipboard, DONATE_URL, context.getString(R.string.settings_donate_link_copied))
+            scope.launch {
+                openExternalUrlOrCopy(
+                    context,
+                    clipboard,
+                    DONATE_URL,
+                    context.getString(R.string.settings_donate_link_copied),
+                )
+            }
         },
         modifier = Modifier.fillMaxWidth(),
     ) {
@@ -1710,14 +1727,14 @@ internal fun ThanksPanel() {
     }
 }
 
-private fun openExternalUrlOrCopy(
+private suspend fun openExternalUrlOrCopy(
     context: android.content.Context,
-    clipboard: androidx.compose.ui.platform.ClipboardManager,
+    clipboard: Clipboard,
     url: String,
     copiedMessage: String,
 ) {
     if (!openExternalUrl(context, url)) {
-        clipboard.setText(AnnotatedString(url))
+        clipboard.copyPlainText(url)
         Toast.makeText(context, copiedMessage, Toast.LENGTH_SHORT).show()
     }
 }
@@ -1725,7 +1742,7 @@ private fun openExternalUrlOrCopy(
 @Composable
 internal fun DebugLogsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     val context = LocalContext.current
-    val clipboard = LocalClipboardManager.current
+    val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
     var copied by remember { mutableStateOf(false) }
     var saved by remember { mutableStateOf(false) }
@@ -1784,7 +1801,7 @@ internal fun DebugLogsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) 
                             onFinished = { diagnosticActionInProgress = false },
                         ) {
                             val logs = viewModel.sanitizedDebugLogText()
-                            clipboard.setText(AnnotatedString(logs))
+                            clipboard.copyPlainText(logs)
                             copied = true
                         }
                     }
@@ -1834,7 +1851,7 @@ internal fun DebugLogsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) 
                         onFailure = { saveError = it.message ?: "Could not copy logs" },
                         onFinished = { diagnosticActionInProgress = false },
                     ) {
-                        clipboard.setText(AnnotatedString(error))
+                        clipboard.copyPlainText(error)
                         copied = true
                     }
                 }

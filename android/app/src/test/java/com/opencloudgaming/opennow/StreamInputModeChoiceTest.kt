@@ -116,4 +116,17 @@ class StreamInputModeChoiceTest {
             ),
         )
     }
+
+    @Test
+    fun noisyDeviceChangesPresentEachPromptAtMostOncePerSession() {
+        val gate = StreamInputModePromptGate()
+
+        assertTrue(gate.shouldPresent(StreamInputModePrompt.SwitchToKeyboardMouse))
+        assertFalse(gate.shouldPresent(StreamInputModePrompt.SwitchToKeyboardMouse))
+        assertTrue(gate.shouldPresent(StreamInputModePrompt.SwitchToNativeTouch))
+        assertFalse(gate.shouldPresent(StreamInputModePrompt.SwitchToNativeTouch))
+
+        // A new stream gets a new gate and can ask again.
+        assertTrue(StreamInputModePromptGate().shouldPresent(StreamInputModePrompt.SwitchToKeyboardMouse))
+    }
 }

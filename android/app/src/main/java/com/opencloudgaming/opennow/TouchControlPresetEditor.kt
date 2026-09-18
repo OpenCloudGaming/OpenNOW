@@ -1,6 +1,7 @@
 package com.opencloudgaming.opennow
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -23,6 +24,8 @@ internal fun TouchControlPresetEditor(
     val clipboard = LocalClipboardManager.current
     var open by rememberSaveable { mutableStateOf(false) }
     var name by rememberSaveable { mutableStateOf("") }
+    var description by rememberSaveable { mutableStateOf("") }
+    var genreName by rememberSaveable { mutableStateOf(TouchPresetGenre.Custom.name) }
     var code by rememberSaveable { mutableStateOf("") }
     var sharing by rememberSaveable { mutableStateOf(false) }
     var invalid by rememberSaveable { mutableStateOf(false) }
@@ -42,9 +45,17 @@ internal fun TouchControlPresetEditor(
                 Text(stringResource(R.string.touch_presets_hint))
                 notice?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
                 Text(stringResource(R.string.touch_presets_builtin), style = MaterialTheme.typography.titleSmall)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    builtinTouchPresets().forEach { preset ->
-                        OutlinedButton(onClick = { onTouchChange(touch.applyingTouchPreset(preset)); notice = applied }) { Text(preset.name) }
+                builtinTouchPresets().forEach { preset ->
+                    OutlinedButton(
+                        onClick = { onTouchChange(touch.applyingTouchPreset(preset)); notice = applied },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(Modifier.fillMaxWidth()) {
+                            Text(preset.name)
+                            if (preset.description.isNotBlank()) {
+                                Text(preset.description, style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
                     }
                 }
                 Text(stringResource(R.string.touch_themes), style = MaterialTheme.typography.titleSmall)
@@ -56,8 +67,30 @@ internal fun TouchControlPresetEditor(
                 }
                 OutlinedTextField(value = name, onValueChange = { name = it.take(64) }, singleLine = true,
                     label = { Text(stringResource(R.string.touch_preset_name)) }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(
+                    value = description,
+                    onValueChange = { description = it.take(240) },
+                    label = { Text(stringResource(R.string.touch_preset_description)) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(stringResource(R.string.touch_preset_genre), style = MaterialTheme.typography.labelLarge)
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    TouchPresetGenre.entries.forEach { genre ->
+                        FilterChip(
+                            selected = genreName == genre.name,
+                            onClick = { genreName = genre.name },
+                            label = { Text(genre.name) },
+                        )
+                    }
+                }
                 Button(onClick = {
-                    onPresetsChange(presets + newTouchPreset(name, touch)); name = ""; notice = saved
+                    onPresetsChange(
+                        presets + newTouchPreset(name, touch, TouchPresetGenre.valueOf(genreName), description),
+                    )
+                    name = ""; description = ""; genreName = TouchPresetGenre.Custom.name; notice = saved
                 }, enabled = name.isNotBlank() && presets.size < MAX_TOUCH_PRESETS, modifier = Modifier.fillMaxWidth()) {
                     Text(stringResource(R.string.touch_preset_save_current))
                 }
@@ -65,6 +98,10 @@ internal fun TouchControlPresetEditor(
                 presets.forEach { preset ->
                     HorizontalDivider()
                     Text(preset.name, style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        listOfNotNull(preset.genre.name, preset.description.takeIf(String::isNotBlank)).joinToString(" · "),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         TextButton(onClick = { onTouchChange(touch.applyingTouchPreset(preset)); notice = applied }) {
                             Text(stringResource(R.string.touch_preset_load))
@@ -75,7 +112,7 @@ internal fun TouchControlPresetEditor(
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         TextButton(onClick = { code = exportTouchPreset(preset); invalid = false; sharing = true }) {
-                            Text(stringResource(R.string.touch_preset_share))
+                            Text(stringResource(R.string.touch_preset_export_yaml))
                         }
                         TextButton(onClick = { onPresetsChange(presets.filterNot { it.id == preset.id }); notice = deleted }) {
                             Text(stringResource(R.string.touch_preset_delete))

@@ -473,7 +473,8 @@ class AndroidAppUpdater(
             if (looksLikeApk(sourceUrl, contentType)) {
                 return directApkCandidate(sourceUrl, response.header("X-OpenNOW-Version-Name"), response.header("X-OpenNOW-Version-Code")?.toLongOrNull(), response.header("X-OpenNOW-SHA256"))
             }
-            val body = response.body?.string()?.takeIf { it.isNotBlank() } ?: error("Update source returned an empty manifest.")
+            val body = response.body.string().takeIf { it.isNotBlank() }
+                ?: error("Update source returned an empty manifest.")
             return parseAndroidUpdateCandidate(sourceUrl, body)
                 ?: error("Update manifest must provide versionCode/versionName and an apkUrl.")
         }
@@ -488,7 +489,7 @@ class AndroidAppUpdater(
             if (!response.isSuccessful) {
                 error("APK download returned HTTP ${response.code}.")
             }
-            val body = response.body ?: error("APK download response was empty.")
+            val body = response.body
             val totalBytes = body.contentLength().takeIf { it > 0 }
             val updatesDir = androidUpdateStorageDir(appContext).apply {
                 mkdirs()

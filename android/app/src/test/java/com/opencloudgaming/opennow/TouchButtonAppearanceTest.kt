@@ -67,6 +67,42 @@ class TouchButtonAppearanceTest {
         assertEquals(0.75f, reset.buttonAppearances.getValue("B").sizeScale, 0f)
     }
 
+    @Test fun yamlPresetRoundTripsGenreMetadataAndStillImportsLegacyJson() {
+        val preset = newTouchPreset(
+            name = "Racing custom",
+            controls = AndroidTouchSettings().withExtraButtonCombo(
+                0,
+                listOf(TouchExtraButtonAction.LeftStickLeft, TouchExtraButtonAction.KeyboardA),
+            ),
+            genre = TouchPresetGenre.Racing,
+            description = "Steering tuned for touch",
+        )
+        val yaml = exportTouchPreset(preset)
+        assertTrue(yaml.contains("format: opennow-touch"))
+        assertTrue(yaml.contains("genre: Racing"))
+        val restored = importTouchPreset(yaml)!!
+        assertEquals(TouchPresetGenre.Racing, restored.genre)
+        assertEquals("Steering tuned for touch", restored.description)
+        assertEquals(TouchExtraButtonAction.LeftStickLeft, restored.controls.extraButtonAction(0))
+        assertEquals(
+            listOf(TouchExtraButtonAction.LeftStickLeft, TouchExtraButtonAction.KeyboardA),
+            restored.controls.extraButtonCombo(0),
+        )
+        assertTrue(yaml.contains("extraButtonCombos:"))
+
+        val legacy = importTouchPreset(exportTouchPresetJson(preset))!!
+        assertEquals(restored.controls, legacy.controls)
+        assertEquals(restored.genre, legacy.genre)
+    }
+
+    @Test fun builtInPresetsAreGenreBasedAndRacingHasDirectSteeringButtons() {
+        val builtIns = builtinTouchPresets()
+        assertEquals(listOf("Racing", "Survival", "Horror", "Action"), builtIns.takeLast(4).map { it.name })
+        val racing = builtIns.first { it.genre == TouchPresetGenre.Racing }
+        assertEquals(TouchExtraButtonAction.LeftStickLeft, racing.controls.extraButtonAction(0))
+        assertEquals(TouchExtraButtonAction.LeftStickRight, racing.controls.extraButtonAction(1))
+    }
+
     @Test fun draggingCrossesBothWaysAndStopsAtTheScreenEdges() {
         assertEquals(800f, draggedTouchOffset(0f, 800f, 40f, 120f, 1000f), 0.001f)
         assertEquals(880f, draggedTouchOffset(0f, 1200f, 40f, 120f, 1000f), 0.001f)

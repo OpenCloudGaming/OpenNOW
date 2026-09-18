@@ -12,6 +12,65 @@ import org.junit.Test
 
 class InputEncoderGamepadTest {
     @Test
+    fun gamepadTransportHonorsTheNegotiatedSlotMask() {
+        assertTrue(
+            shouldUsePartiallyReliableGamepadTransport(
+                controllerId = 0,
+                negotiatedMask = 0b1111,
+                partiallyReliableAvailable = true,
+            ),
+        )
+        assertTrue(
+            shouldUsePartiallyReliableGamepadTransport(
+                controllerId = 3,
+                negotiatedMask = 0b1000,
+                partiallyReliableAvailable = true,
+            ),
+        )
+        assertFalse(
+            shouldUsePartiallyReliableGamepadTransport(
+                controllerId = 1,
+                negotiatedMask = 0b0001,
+                partiallyReliableAvailable = true,
+            ),
+        )
+        assertFalse(
+            shouldUsePartiallyReliableGamepadTransport(
+                controllerId = 0,
+                negotiatedMask = 0b1111,
+                partiallyReliableAvailable = false,
+            ),
+        )
+    }
+
+    @Test
+    fun negotiatedGamepadTransportUsesTheSequencedProtocolThreeWrapper() {
+        val encoder = InputEncoder().apply { setProtocolVersion(3) }
+        val payload = encoder.encodeGamepadState(
+            controllerId = 0,
+            buttons = GamepadButtonMapping.A,
+            leftTrigger = 0,
+            rightTrigger = 0,
+            leftStickX = 0,
+            leftStickY = 0,
+            rightStickX = 0,
+            rightStickY = 0,
+            bitmap = 0x0101,
+            partiallyReliable = true,
+            timestampUs = 0L,
+        )
+
+        assertEquals(54, payload.size)
+        assertEquals(0x23, payload[0].toInt() and 0xff)
+        assertEquals(0x26, payload[9].toInt() and 0xff)
+        assertEquals(0, payload[10].toInt() and 0xff)
+        assertEquals(1, ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN).getShort(11).toInt())
+        assertEquals(0x21, payload[13].toInt() and 0xff)
+        assertEquals(38, ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN).getShort(14).toInt())
+        assertEquals(InputEncoder.INPUT_GAMEPAD, ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN).getInt(16))
+    }
+
+    @Test
     fun encodesGuideButtonMaskForSteamOverlay() {
         val encoder = InputEncoder().apply { setProtocolVersion(2) }
         val payload = encoder.encodeGamepadState(

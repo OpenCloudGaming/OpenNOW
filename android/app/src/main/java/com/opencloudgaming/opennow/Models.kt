@@ -323,10 +323,35 @@ enum class TouchExtraButtonAction {
     RightStickClick,
     Start,
     Select,
+    LeftStickLeft,
+    LeftStickRight,
+    KeyboardA,
+    KeyboardD,
     LeftBumperAndLeftTrigger,
     RightBumperAndRightTrigger,
     LeftAndRightBumpers,
     LeftAndRightTriggers,
+}
+
+/**
+ * A user-defined set of controls pressed and released as one extra button.
+ *
+ * This intentionally models simultaneous input only. Timed macros would make release and
+ * reconnect behavior ambiguous, so they are not part of the preset contract.
+ */
+@Serializable
+data class TouchExtraButtonCombo(
+    val actions: List<TouchExtraButtonAction> = emptyList(),
+)
+
+/** Broad starter category. Custom keeps imported and user-created layouts future-compatible. */
+@Serializable
+enum class TouchPresetGenre {
+    Racing,
+    Survival,
+    Horror,
+    Action,
+    Custom,
 }
 
 @Serializable
@@ -375,6 +400,8 @@ data class AndroidTouchSettings(
         TouchExtraButtonAction.None,
         TouchExtraButtonAction.None,
     ),
+    /** Sparse overrides for freely configurable simultaneous-action extra buttons. */
+    val extraButtonCombos: Map<String, TouchExtraButtonCombo> = emptyMap(),
     val extraButtonScale: Float = 1f,
     val joystickMode: TouchJoystickMode = TouchJoystickMode.Fixed,
     val aimMode: TouchAimMode = TouchAimMode.LockJoystick,
@@ -455,11 +482,29 @@ data class AndroidTouchSettings(
     fun extraButtonAction(index: Int): TouchExtraButtonAction =
         extraButtonActions.getOrNull(index) ?: TouchExtraButtonAction.None
 
+    fun extraButtonCombo(index: Int): List<TouchExtraButtonAction> =
+        extraButtonCombos[extraButtonComboKey(index)]?.actions?.let(::normalizeTouchExtraButtonCombo)
+            ?: expandedTouchExtraButtonActions(extraButtonAction(index))
+
     fun withExtraButtonAction(index: Int, action: TouchExtraButtonAction): AndroidTouchSettings {
         if (index !in 0 until TOUCH_EXTRA_BUTTON_COUNT) return this
         val actions = List(TOUCH_EXTRA_BUTTON_COUNT) { extraButtonAction(it) }.toMutableList()
         actions[index] = action
-        return copy(extraButtonActions = actions)
+        return copy(
+            extraButtonActions = actions,
+            extraButtonCombos = extraButtonCombos - extraButtonComboKey(index),
+        )
+    }
+
+    fun withExtraButtonCombo(index: Int, actions: List<TouchExtraButtonAction>): AndroidTouchSettings {
+        if (index !in 0 until TOUCH_EXTRA_BUTTON_COUNT) return this
+        val normalized = normalizeTouchExtraButtonCombo(actions)
+        val fallbacks = List(TOUCH_EXTRA_BUTTON_COUNT) { extraButtonAction(it) }.toMutableList()
+        fallbacks[index] = normalized.firstOrNull() ?: TouchExtraButtonAction.None
+        return copy(
+            extraButtonActions = fallbacks,
+            extraButtonCombos = extraButtonCombos + (extraButtonComboKey(index) to TouchExtraButtonCombo(normalized)),
+        )
     }
 
     fun withResetOffsets(): AndroidTouchSettings {

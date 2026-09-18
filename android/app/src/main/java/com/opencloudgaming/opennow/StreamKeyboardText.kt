@@ -21,6 +21,33 @@ internal suspend fun sendStreamKeyboardKeyStroke(send: suspend (pressed: Boolean
     return released
 }
 
+/**
+ * SendUnicode is correct for committed text, but a soft-keyboard Space also needs to behave like
+ * the physical key for games. Keep text runs intact and surface literal spaces as held key strokes.
+ */
+internal sealed interface StreamKeyboardInputChunk {
+    data class Text(val value: String) : StreamKeyboardInputChunk
+    data object SpaceKey : StreamKeyboardInputChunk
+}
+
+internal fun streamKeyboardInputChunks(text: String): List<StreamKeyboardInputChunk> {
+    if (text.isEmpty()) return emptyList()
+    val chunks = mutableListOf<StreamKeyboardInputChunk>()
+    var textStart = 0
+    text.forEachIndexed { index, char ->
+        if (char != ' ') return@forEachIndexed
+        if (textStart < index) {
+            chunks += StreamKeyboardInputChunk.Text(text.substring(textStart, index))
+        }
+        chunks += StreamKeyboardInputChunk.SpaceKey
+        textStart = index + 1
+    }
+    if (textStart < text.length) {
+        chunks += StreamKeyboardInputChunk.Text(text.substring(textStart))
+    }
+    return chunks
+}
+
 /** A minimal remote edit that keeps the host field aligned with the locally mirrored draft. */
 internal sealed interface StreamKeyboardEdit {
     data object None : StreamKeyboardEdit

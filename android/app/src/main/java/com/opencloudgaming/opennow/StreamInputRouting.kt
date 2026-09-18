@@ -1014,6 +1014,21 @@ internal fun androidGamepadConnectionBitmap(
     return connectedBit or xinputStyleBit
 }
 
+/**
+ * The host advertises the controller slots accepted on its partially reliable input channel.
+ * Gamepad protocol v3 adds a per-slot sequence number on that path, so the host can reject stale
+ * snapshots while applying the newest state without waiting behind reliable-channel retransmits.
+ */
+internal fun shouldUsePartiallyReliableGamepadTransport(
+    controllerId: Int,
+    negotiatedMask: Int,
+    partiallyReliableAvailable: Boolean,
+): Boolean {
+    if (!partiallyReliableAvailable) return false
+    val controllerMask = 1 shl (controllerId and 0x1f)
+    return (negotiatedMask and controllerMask) != 0
+}
+
 internal object AndroidControllerInput {
     fun hasControllerSource(source: Int): Boolean =
         source.hasSource(InputDevice.SOURCE_GAMEPAD) ||

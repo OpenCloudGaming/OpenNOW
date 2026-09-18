@@ -2557,7 +2557,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             }.onFailure { error ->
                 if (error is CancellationException) return@onFailure
                 recordDebugEvent("launch", "Launch failed game=${game.title} error=${error.debugMessage()}")
-                val returnPage = state.value.streamReturnPage ?: AppPage.Home
+                val failureReturnPage = state.value.streamReturnPage ?: AppPage.Home
                 _state.update {
                     it.copy(
                         error = normalizeLaunchError(error, game.title),
@@ -2570,7 +2570,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                         queueAdActiveId = null,
                         pendingStoreChoiceGame = null,
                         activeSessionDecision = null,
-                        page = returnPage,
+                        page = failureReturnPage,
                     )
                 }
             }
@@ -2931,7 +2931,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             }.onFailure { error ->
                 if (error is CancellationException) return@onFailure
                 recordDebugEvent("queue", "Resume failed error=${error.debugMessage()}")
-                val returnPage = state.value.streamReturnPage ?: AppPage.Home
+                val failureReturnPage = state.value.streamReturnPage ?: AppPage.Home
                 _state.update {
                     it.copy(
                         error = normalizeLaunchError(error, state.value.streamGame?.title),
@@ -2945,7 +2945,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                         pendingStoreChoiceGame = null,
                         pendingPrintedWasteGame = null,
                         activeSessionDecision = null,
-                        page = returnPage,
+                        page = failureReturnPage,
                     )
                 }
             }

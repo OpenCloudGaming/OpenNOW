@@ -138,6 +138,15 @@ internal fun shouldSendExternalMouseAsRelative(
     hasRelativeAxisMotion: Boolean,
 ): Boolean = capturedPointer || hasRelativeAxisMotion
 
+/**
+ * Pointer capture can cancel the view's pre-capture gesture while the physical mouse button is
+ * still held. That cancellation transfers event ownership; it is not a hardware button release.
+ * A real release arrives as ACTION_UP or ACTION_BUTTON_RELEASE on the captured pointer, while
+ * focus/session lifecycle cleanup covers the case where Android never delivers that release.
+ */
+internal fun shouldReleaseExternalMouseButton(actionMasked: Int): Boolean =
+    actionMasked == MotionEvent.ACTION_UP || actionMasked == MotionEvent.ACTION_BUTTON_RELEASE
+
 internal fun shouldUseFixedSizeStreamSurface(
     videoWidth: Int,
     videoHeight: Int,
@@ -334,8 +343,9 @@ class NativeStreamClient(
     private val directInputSendConfirmed = AtomicBoolean(false)
     private var statsChannel: DataChannel? = null
     private var lastParsedGameFps: Int? = null
-    // Informational only. Gamepad snapshots stay ordered and reliable because a late, older
-    // snapshot on the loss-tolerant channel can undo a newer button or stick state.
+    // The host advertises which controller slots use its low-latency gamepad path. Protocol v3
+    // sequences those snapshots per slot, so honor the negotiated path instead of forcing them
+    // onto a different channel than the receiver requested.
     private var partiallyReliableGamepadMask = 0
     private var hidDeviceMask = 0
     private var partiallyReliableHidMask = 0
@@ -385,6 +395,8 @@ class NativeStreamClient(
     private var virtualRightTrigger = 0
     private val virtualLeftTriggerPressSources = mutableSetOf<String>()
     private val virtualRightTriggerPressSources = mutableSetOf<String>()
+    private val virtualKeyboardPressSources = mutableMapOf<Int, MutableSet<String>>()
+    private val virtualLeftStickSources = VirtualStickSourceState()
     private var virtualLeftStickActive = false
     private var virtualLeftStickX = 0
     private var virtualLeftStickY = 0
@@ -1006,6 +1018,8 @@ class NativeStreamClient(
         virtualRightTrigger = 0
         virtualLeftTriggerPressSources.clear()
         virtualRightTriggerPressSources.clear()
+        virtualKeyboardPressSources.clear()
+        virtualLeftStickSources.clear()
         virtualLeftStickActive = false
         virtualLeftStickX = 0
         virtualLeftStickY = 0
@@ -1449,7 +1463,18 @@ class NativeStreamClient(
                 mousePositionValid = false
                 mouseSuppressNextAbsoluteDelta = true
                 flushPendingMouseMove()
-                sendExternalMouseButton(event.primaryMouseButton(), pressed = false)
+                if (shouldReleaseExternalMouseButton(event.actionMasked)) {
+                    sendExternalMouseButton(event.primaryMouseButton(), pressed = false)
+                } else {
+                    // requestPointerCapture() cancels the old view gesture even though the
+                    // physical button remains down. Preserve the cloud-side hold until the
+                    // captured stream supplies a real release, or lifecycle cleanup releases it.
+                    NativeInputDiagnostics.addRetained(
+                        key = "mouse.capture-cancel",
+                        message = "external mouse gesture cancelled without button release " +
+                            "source=${event.source} device=${event.deviceId} buttons=${event.buttonState}",
+                    )
+                }
             }
             MotionEvent.ACTION_BUTTON_PRESS -> {
                 mouseSuppressNextAbsoluteDelta = true
@@ -1774,8 +1799,15 @@ class NativeStreamClient(
     }
 
     private suspend fun sendTextLocked(text: String, generation: Int) {
-        inputEncoder.encodeTextInput(text).forEach { packet ->
-            if (!sendTextPacketWithRetry(packet, generation)) return
+        for (chunk in streamKeyboardInputChunks(text)) {
+            when (chunk) {
+                is StreamKeyboardInputChunk.Text -> inputEncoder.encodeTextInput(chunk.value).forEach { packet ->
+                    if (!sendTextPacketWithRetry(packet, generation)) return
+                }
+                StreamKeyboardInputChunk.SpaceKey -> {
+                    if (!sendTextKeyStroke(KeyEvent.KEYCODE_SPACE, generation)) return
+                }
+            }
         }
     }
 
@@ -1807,9 +1839,14 @@ class NativeStreamClient(
 
     private suspend fun sendTextKeyStroke(keyCode: Int, generation: Int): Boolean {
         val payload = InputEncoder.mapKeyboardPayload(keyCode, unicode = 0, scanCode = 0) ?: return false
-        return sendStreamKeyboardKeyStroke { pressed ->
+        val sent = sendStreamKeyboardKeyStroke { pressed ->
             sendKeyboardPayloadWithRetry(payload, pressed, generation)
         }
+        NativeInputDiagnostics.retainResult("keyboard.overlay.$keyCode", sent) {
+            "overlay keyboard key=$keyCode vk=${payload.keycode} scan=${payload.scancode} " +
+                "holdMs=$STREAM_KEY_PRESS_DURATION_MS ${inputChannelStateSummary()}"
+        }
+        return sent
     }
 
     private fun sendKeyboardPayload(payload: InputEncoder.KeyboardPayload, isDown: Boolean): Boolean {
@@ -2066,24 +2103,44 @@ class NativeStreamClient(
     }
 
     fun setVirtualLeftStick(x: Float, y: Float) {
+        setVirtualLeftStickFromSource("primary-left-stick", x, y)
+    }
+
+    fun setVirtualLeftStickFromSource(sourceId: String, x: Float, y: Float) {
         val scale = radialDeadzoneScale(x, y, deadzone = 0.08f)
-        val normalizedX = x * scale
-        val normalizedY = y * scale
+        val input = virtualLeftStickSources.update(sourceId, x * scale, y * scale)
         if (controllerMouseEmulationActive) {
             // Redirect left-stick input to mouse movement; keep virtual stick zeroed so the game
             // receives no stick deflection from the touch controller either.
-            physicalLeftStickX = normalizedX
-            physicalLeftStickY = normalizedY
+            physicalLeftStickX = input.x
+            physicalLeftStickY = input.y
             virtualLeftStickActive = false
             virtualLeftStickX = 0
             virtualLeftStickY = 0
             sendBurstLimitedGamepadState()
             return
         }
-        virtualLeftStickActive = normalizedX != 0f || normalizedY != 0f
-        virtualLeftStickX = normalizeToInt16(normalizedX)
-        virtualLeftStickY = normalizeToInt16(-normalizedY)
+        virtualLeftStickActive = input.x != 0f || input.y != 0f
+        virtualLeftStickX = normalizeToInt16(input.x)
+        virtualLeftStickY = normalizeToInt16(-input.y)
         sendBurstLimitedGamepadState()
+    }
+
+    /** Keyboard equivalent of the source-aware virtual gamepad APIs used by extra buttons. */
+    fun setVirtualKeyboardKeyFromSource(keyCode: Int, sourceId: String, pressed: Boolean) {
+        val payload = InputEncoder.mapKeyboardPayload(keyCode, unicode = 0, scanCode = 0) ?: return
+        val sources = virtualKeyboardPressSources.getOrPut(keyCode) { mutableSetOf() }
+        val wasEffectivelyPressed = sources.isNotEmpty()
+        val changed = if (pressed) sources.add(sourceId) else sources.remove(sourceId)
+        if (!pressed && sources.isEmpty()) virtualKeyboardPressSources.remove(keyCode)
+        if (!changed) return
+        val effectivelyPressed = sources.isNotEmpty()
+        if (wasEffectivelyPressed == effectivelyPressed) return
+        val sent = sendKeyboardPayload(payload, effectivelyPressed)
+        val action = if (effectivelyPressed) "down" else "up"
+        NativeInputDiagnostics.retainResult("keyboard.extra.$keyCode.$action", sent) {
+            "extra keyboard key=$keyCode action=$action ${inputChannelStateSummary()}"
+        }
     }
 
     fun setVirtualRightStick(x: Float, y: Float) {
@@ -3908,9 +3965,7 @@ class NativeStreamClient(
     }
 
     private fun sendCurrentGamepadState(controllerId: Int = activeControllerId): Boolean {
-        // A gamepad packet is a full-state snapshot. Keep snapshots ordered: an older packet that
-        // arrives late on the loss-tolerant channel can undo a newer button or stick state.
-        val partiallyReliable = false
+        val partiallyReliable = canSendGamepadPartiallyReliable(controllerId)
         val buttons =
             physicalSteamOverlayChord.effectiveButtons(physicalButtons) or
                 physicalHatButtons or
@@ -3938,6 +3993,8 @@ class NativeStreamClient(
         val sent = sendInput(
             packet,
             partiallyReliable = partiallyReliable,
+            // A partially reliable wrapper is channel-specific. If that channel closes, the next
+            // snapshot is encoded for the reliable channel instead of sending the wrong wrapper.
             fallbackToReliable = !partiallyReliable,
             resultDiagnosticKey = "controller.send.$controllerId",
         )
@@ -4052,6 +4109,14 @@ class NativeStreamClient(
             effectiveLeftStickY() != 0 ||
             effectiveRightStickX() != 0 ||
             effectiveRightStickY() != 0
+
+    private fun canSendGamepadPartiallyReliable(controllerId: Int): Boolean =
+        shouldUsePartiallyReliableGamepadTransport(
+            controllerId = controllerId,
+            negotiatedMask = partiallyReliableGamepadMask,
+            partiallyReliableAvailable = nvstTransport?.inputReady
+                ?: (partiallyReliableInputState == DataChannel.State.OPEN),
+        )
 
     private fun sendInput(bytes: ByteArray, partiallyReliable: Boolean): Boolean =
         sendInput(bytes, partiallyReliable, fallbackToReliable = true)

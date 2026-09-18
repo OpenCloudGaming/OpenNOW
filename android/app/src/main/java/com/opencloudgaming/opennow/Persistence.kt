@@ -325,7 +325,13 @@ internal fun AppSettings.normalizedForAndroid(): AppSettings {
         streamKeyboardButtonPosition = streamKeyboardButtonPosition.normalized(),
         touchControlPresets = touchControlPresets.take(MAX_TOUCH_PRESETS)
             .distinctBy { it.id }
-            .map { it.copy(name = it.name.filterNot(Char::isISOControl).trim().take(64), controls = it.controls.normalizedPresetControls()) }
+            .map {
+                it.copy(
+                    name = it.name.filterNot(Char::isISOControl).trim().take(64),
+                    description = it.description.filterNot(Char::isISOControl).trim().take(240),
+                    controls = it.controls.normalizedPresetControls(),
+                )
+            }
             .filter { it.id.isNotBlank() && it.name.isNotBlank() },
         androidTouch = androidTouch.normalizedTouchControls(),
         streamIntroMusic = streamIntroMusic,
@@ -794,6 +800,9 @@ internal fun AndroidTouchSettings.normalizedTouchControls(): AndroidTouchSetting
         extraButtonActions = List(TOUCH_EXTRA_BUTTON_COUNT) { index ->
             extraButtonAction(index)
         },
+        extraButtonCombos = extraButtonCombos
+            .filterKeys { key -> key.toIntOrNull() in 1..TOUCH_EXTRA_BUTTON_COUNT }
+            .mapValues { (_, combo) -> TouchExtraButtonCombo(normalizeTouchExtraButtonCombo(combo.actions)) },
         extraButtonScale = extraButtonScale.finiteIn(0.6f, 1.6f, touchDefaults.extraButtonScale),
         aimZoneScale = aimZoneScale.finiteIn(0.5f, 1.5f, touchDefaults.aimZoneScale),
         aimZoneSensitivity = aimZoneSensitivity.finiteIn(

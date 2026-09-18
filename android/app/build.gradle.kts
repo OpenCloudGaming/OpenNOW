@@ -35,8 +35,8 @@ android {
         // target changes are audited; LAN access is permission-gated at its feature boundary.
         //noinspection EditedTargetSdkVersion
         targetSdk = 37
-        versionCode = 133
-        versionName = "1.7.7"
+        versionCode = 134
+        versionName = "1.7.8"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         buildConfigField("boolean", "APK_UPDATES_SUPPORTED", "true")
@@ -112,7 +112,7 @@ android {
 // New Android copy stays in the shared English source; Android XML is generated.
 val touchButtonResources = layout.buildDirectory.dir("generated/touchButtonResources")
 val touchButtonEnglishSource = rootProject.file("../locales/en.json")
-val generateTouchButtonResources by tasks.registering {
+val generateTouchButtonResources = tasks.register("generateTouchButtonResources") {
     inputs.file(touchButtonEnglishSource)
     outputs.dir(touchButtonResources)
     doLast {
@@ -129,11 +129,11 @@ val generateTouchButtonResources by tasks.registering {
         } + "\n</resources>\n")
     }
 }
-android.sourceSets.getByName("main").res.srcDir(touchButtonResources.get().asFile)
+android.sourceSets.getByName("main").res.directories.add(touchButtonResources.get().asFile.absolutePath)
 tasks.named("preBuild").configure { dependsOn(generateTouchButtonResources) }
 
 val nvstJniOutput = layout.buildDirectory.dir("generated/nvstJniLibs")
-val buildNvst by tasks.registering(Exec::class) {
+val buildNvst = tasks.register<Exec>("buildNvst") {
     inputs.files(fileTree(rootProject.file("nvst")) { exclude("target/**") })
     inputs.file(rootProject.file("scripts/build_nvst.py"))
     outputs.dir(nvstJniOutput)
@@ -145,7 +145,7 @@ val buildNvst by tasks.registering(Exec::class) {
         nvstJniOutput.get().asFile.absolutePath,
     )
 }
-android.sourceSets.getByName("main").jniLibs.srcDir(nvstJniOutput.get().asFile)
+android.sourceSets.getByName("main").jniLibs.directories.add(nvstJniOutput.get().asFile.absolutePath)
 tasks.named("preBuild").configure { dependsOn(buildNvst) }
 
 kotlin {
@@ -194,6 +194,7 @@ dependencies {
     implementation("io.github.webrtc-sdk:android:144.7559.14")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
+    implementation("org.snakeyaml:snakeyaml-engine:3.1.1")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")

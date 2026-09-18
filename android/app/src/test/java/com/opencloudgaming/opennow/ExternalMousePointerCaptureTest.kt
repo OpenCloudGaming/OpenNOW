@@ -1,5 +1,6 @@
 package com.opencloudgaming.opennow
 
+import android.view.MotionEvent
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -153,5 +154,12 @@ class ExternalMousePointerCaptureTest {
                 hasRelativeAxisMotion = false,
             ),
         )
+    }
+
+    @Test
+    fun pointerCaptureCancellationDoesNotReleaseAHeldMouseButton() {
+        assertFalse(shouldReleaseExternalMouseButton(MotionEvent.ACTION_CANCEL))
+        assertTrue(shouldReleaseExternalMouseButton(MotionEvent.ACTION_UP))
+        assertTrue(shouldReleaseExternalMouseButton(MotionEvent.ACTION_BUTTON_RELEASE))
     }
 }

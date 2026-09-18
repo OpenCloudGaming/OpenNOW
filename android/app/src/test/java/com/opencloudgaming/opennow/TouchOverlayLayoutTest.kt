@@ -1,6 +1,7 @@
 package com.opencloudgaming.opennow
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -123,6 +124,50 @@ class TouchOverlayLayoutTest {
         assertEquals(listOf(GamepadButtonMapping.RIGHT_SHOULDER), binding.buttonMasks)
         assertEquals(false, binding.leftTrigger)
         assertTrue(binding.rightTrigger)
+    }
+
+    @Test
+    fun racingSteeringAndKeyboardBindingsStayExplicit() {
+        assertEquals(-1f, touchExtraButtonBinding(TouchExtraButtonAction.LeftStickLeft).leftStickX)
+        assertEquals(1f, touchExtraButtonBinding(TouchExtraButtonAction.LeftStickRight).leftStickX)
+        assertEquals(android.view.KeyEvent.KEYCODE_A, touchExtraButtonBinding(TouchExtraButtonAction.KeyboardA).keyboardKeyCode)
+        assertEquals(android.view.KeyEvent.KEYCODE_D, touchExtraButtonBinding(TouchExtraButtonAction.KeyboardD).keyboardKeyCode)
+    }
+
+    @Test
+    fun freelyConfiguredComboDispatchesEverySelectedInputType() {
+        val actions = listOf(
+            TouchExtraButtonAction.A,
+            TouchExtraButtonAction.RightBumper,
+            TouchExtraButtonAction.LeftTrigger,
+            TouchExtraButtonAction.LeftStickLeft,
+            TouchExtraButtonAction.KeyboardD,
+        )
+        val settings = AndroidTouchSettings().withExtraButtonCombo(2, actions)
+        val binding = touchExtraButtonBinding(settings.extraButtonCombo(2))
+
+        assertEquals(actions, settings.extraButtonCombo(2))
+        assertEquals(listOf(GamepadButtonMapping.A, GamepadButtonMapping.RIGHT_SHOULDER), binding.buttonMasks)
+        assertTrue(binding.leftTrigger)
+        assertEquals(false, binding.rightTrigger)
+        assertEquals(-1f, binding.leftStickX)
+        assertEquals(listOf(android.view.KeyEvent.KEYCODE_D), binding.keyboardKeyCodes)
+    }
+
+    @Test
+    fun quickAssignmentReplacesCustomComboAndLegacyCombosRemainCompatible() {
+        val custom = AndroidTouchSettings().withExtraButtonCombo(
+            0,
+            listOf(TouchExtraButtonAction.A, TouchExtraButtonAction.RightTrigger),
+        )
+        val quick = custom.withExtraButtonAction(0, TouchExtraButtonAction.LeftBumperAndLeftTrigger)
+
+        assertTrue("1" in custom.extraButtonCombos)
+        assertFalse("1" in quick.extraButtonCombos)
+        assertEquals(
+            listOf(TouchExtraButtonAction.LeftBumper, TouchExtraButtonAction.LeftTrigger),
+            quick.extraButtonCombo(0),
+        )
     }
 
     @Test

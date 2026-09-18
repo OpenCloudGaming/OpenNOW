@@ -22,10 +22,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -55,7 +54,7 @@ import kotlinx.coroutines.launch
 internal fun DeveloperOptionsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     val settings = state.settings
     val context = LocalContext.current
-    val clipboard = LocalClipboardManager.current
+    val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
     var pendingDestructive by remember { mutableStateOf<DeveloperDestructiveAction?>(null) }
 
@@ -233,7 +232,7 @@ internal fun DeveloperOptionsPanel(state: OpenNowUiState, viewModel: OpenNowView
                 actionLabel = stringResource(R.string.dev_action_copy),
                 onClick = {
                     scope.launch {
-                        clipboard.setText(AnnotatedString(viewModel.sanitizedDebugLogText()))
+                        clipboard.copyPlainText(viewModel.sanitizedDebugLogText())
                         Toast.makeText(context, context.getString(R.string.dev_toast_diagnostics_copied), Toast.LENGTH_SHORT).show()
                     }
                 },
@@ -243,8 +242,10 @@ internal fun DeveloperOptionsPanel(state: OpenNowUiState, viewModel: OpenNowView
                 value = stringResource(R.string.dev_copy_environment_desc),
                 actionLabel = stringResource(R.string.dev_action_copy),
                 onClick = {
-                    clipboard.setText(AnnotatedString(developerEnvironmentSummary(context, state)))
-                    Toast.makeText(context, context.getString(R.string.dev_toast_environment_copied), Toast.LENGTH_SHORT).show()
+                    scope.launch {
+                        clipboard.copyPlainText(developerEnvironmentSummary(context, state))
+                        Toast.makeText(context, context.getString(R.string.dev_toast_environment_copied), Toast.LENGTH_SHORT).show()
+                    }
                 },
             )
             ControlActionRow(

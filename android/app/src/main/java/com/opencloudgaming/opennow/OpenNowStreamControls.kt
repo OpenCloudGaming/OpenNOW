@@ -1007,7 +1007,7 @@ internal fun StreamControlsPanel(
                                 ControlActionRow(
                                     label = stringResource(R.string.settings_touch_extra_button, index + 1),
                                     actionLabel = stringResource(R.string.common_next),
-                                    value = touchExtraButtonActionLabel(action),
+                                    value = touchExtraButtonComboLabel(settings.androidTouch.extraButtonCombo(index)),
                                     onClick = {
                                         onButtonTone()
                                         onTouchSettingsChange(
@@ -1019,6 +1019,7 @@ internal fun StreamControlsPanel(
                                     },
                                 )
                             }
+                            TouchExtraButtonComboEditor(settings.androidTouch, onTouchSettingsChange)
                             TouchLayoutSlider(
                                 R.string.settings_touch_extra_button_size,
                                 settings.androidTouch.extraButtonScale,

@@ -1256,16 +1256,35 @@ private fun SettingsContent(
                     SettingsChoiceOption(action.name, touchExtraButtonActionLabel(action))
                 }
                 repeat(TOUCH_EXTRA_BUTTON_COUNT) { index ->
+                    val customCombo = extraButtonComboKey(index) in settings.androidTouch.extraButtonCombos
+                    val customValue = "custom-combo-$index"
+                    val options = if (customCombo) {
+                        listOf(
+                            SettingsChoiceOption(
+                                customValue,
+                                stringResource(
+                                    R.string.touch_extra_combo_custom_value,
+                                    touchExtraButtonComboLabel(settings.androidTouch.extraButtonCombo(index)),
+                                ),
+                            ),
+                        ) + extraButtonOptions
+                    } else {
+                        extraButtonOptions
+                    }
                     ChoiceOptionRow(
                         label = stringResource(R.string.settings_touch_extra_button, index + 1),
-                        options = extraButtonOptions,
-                        selectedValue = settings.androidTouch.extraButtonAction(index).name,
+                        options = options,
+                        selectedValue = if (customCombo) customValue else settings.androidTouch.extraButtonAction(index).name,
                     ) { actionName ->
+                        if (actionName == customValue) return@ChoiceOptionRow
                         val action = TouchExtraButtonAction.valueOf(actionName)
                         viewModel.updateSettings(
                             settings.copy(androidTouch = settings.androidTouch.withExtraButtonAction(index, action)),
                         )
                     }
+                }
+                TouchExtraButtonComboEditor(settings.androidTouch) { touch ->
+                    viewModel.updateSettings(settings.copy(androidTouch = touch))
                 }
                 NumberSlider(
                     stringResource(R.string.settings_touch_extra_button_size),

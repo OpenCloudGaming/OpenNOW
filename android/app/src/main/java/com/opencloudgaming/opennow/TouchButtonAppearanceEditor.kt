@@ -5,6 +5,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -19,6 +21,8 @@ import androidx.compose.ui.semantics.semantics
 import kotlin.math.roundToInt
 
 internal enum class TouchButtonIcon(val vector: ImageVector, @StringRes val labelRes: Int) {
+    SteerLeft(Icons.AutoMirrored.Filled.ArrowBack, R.string.touch_icon_steer_left),
+    SteerRight(Icons.AutoMirrored.Filled.ArrowForward, R.string.touch_icon_steer_right),
     Aim(TouchActionIcons.Aim, R.string.touch_icon_aim),
     Shoot(Icons.Default.GpsFixed, R.string.touch_icon_shoot),
     Jump(TouchActionIcons.Jump, R.string.touch_icon_jump),

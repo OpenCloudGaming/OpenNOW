@@ -1,5 +1,6 @@
 package com.opencloudgaming.opennow
 
+import android.view.KeyEvent
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -184,7 +185,7 @@ internal fun TouchOverlay(
                             leftStickScale = touch.leftStickScale,
                             rightStickScale = touch.rightStickScale,
                             visibleControlGroups = touch.visibleControlGroups,
-                            extraButtonActions = List(TOUCH_EXTRA_BUTTON_COUNT, touch::extraButtonAction),
+                            extraButtonCombos = List(TOUCH_EXTRA_BUTTON_COUNT, touch::extraButtonCombo),
                             extraButtonScale = touch.extraButtonScale,
                             joystickMode = touch.joystickMode,
                             aimMode = touch.aimMode,
@@ -211,7 +212,7 @@ internal fun TouchOverlay(
                             leftStickScale = touch.leftStickScale,
                             rightStickScale = touch.rightStickScale,
                             visibleControlGroups = touch.visibleControlGroups,
-                            extraButtonActions = List(TOUCH_EXTRA_BUTTON_COUNT, touch::extraButtonAction),
+                            extraButtonCombos = List(TOUCH_EXTRA_BUTTON_COUNT, touch::extraButtonCombo),
                             extraButtonScale = touch.extraButtonScale,
                             joystickMode = touch.joystickMode,
                             aimMode = touch.aimMode,
@@ -252,7 +253,7 @@ private fun PortraitTouchControls(
     leftStickScale: Float,
     rightStickScale: Float,
     visibleControlGroups: Set<TouchControlGroup>,
-    extraButtonActions: List<TouchExtraButtonAction>,
+    extraButtonCombos: List<List<TouchExtraButtonAction>>,
     extraButtonScale: Float,
     joystickMode: TouchJoystickMode,
     aimMode: TouchAimMode,
@@ -304,7 +305,7 @@ private fun PortraitTouchControls(
 
         ExtraTouchButtons(
             orientation = "portrait",
-            actions = extraButtonActions,
+            combos = extraButtonCombos,
             scale = buttonScale * extraButtonScale * layoutScale,
             client = client,
             layoutEditing = layoutEditing,
@@ -512,7 +513,7 @@ private fun BoxScope.LandscapeTouchControls(
     leftStickScale: Float,
     rightStickScale: Float,
     visibleControlGroups: Set<TouchControlGroup>,
-    extraButtonActions: List<TouchExtraButtonAction>,
+    extraButtonCombos: List<List<TouchExtraButtonAction>>,
     extraButtonScale: Float,
     joystickMode: TouchJoystickMode,
     aimMode: TouchAimMode,
@@ -559,7 +560,7 @@ private fun BoxScope.LandscapeTouchControls(
 
         ExtraTouchButtons(
             orientation = "landscape",
-            actions = extraButtonActions,
+            combos = extraButtonCombos,
             scale = controlScale * extraButtonScale,
             client = client,
             layoutEditing = layoutEditing,
@@ -791,10 +792,19 @@ internal fun touchExtraButtonActionLabel(action: TouchExtraButtonAction): String
     TouchExtraButtonAction.RightStickClick -> "R3 / RS"
     TouchExtraButtonAction.Start -> "Start"
     TouchExtraButtonAction.Select -> "Select"
+    TouchExtraButtonAction.LeftStickLeft -> "Left stick left (A)"
+    TouchExtraButtonAction.LeftStickRight -> "Left stick right (D)"
+    TouchExtraButtonAction.KeyboardA -> "Keyboard A"
+    TouchExtraButtonAction.KeyboardD -> "Keyboard D"
     TouchExtraButtonAction.LeftBumperAndLeftTrigger -> "LB + LT / L1 + L2"
     TouchExtraButtonAction.RightBumperAndRightTrigger -> "RB + RT / R1 + R2"
     TouchExtraButtonAction.LeftAndRightBumpers -> "LB + RB / L1 + R1"
     TouchExtraButtonAction.LeftAndRightTriggers -> "LT + RT / L2 + R2"
+}
+
+internal fun touchExtraButtonComboLabel(actions: List<TouchExtraButtonAction>): String {
+    val normalized = normalizeTouchExtraButtonCombo(actions)
+    return if (normalized.isEmpty()) "Off" else normalized.joinToString(" + ", transform = ::touchExtraButtonActionLabel)
 }
 
 internal fun touchControlGroupLabelRes(group: TouchControlGroup): Int = when (group) {
@@ -827,6 +837,10 @@ private fun touchExtraButtonCapLabel(action: TouchExtraButtonAction): String = w
     TouchExtraButtonAction.RightStickClick -> "RS"
     TouchExtraButtonAction.Start -> "▶"
     TouchExtraButtonAction.Select -> "◀"
+    TouchExtraButtonAction.LeftStickLeft -> "LS←"
+    TouchExtraButtonAction.LeftStickRight -> "LS→"
+    TouchExtraButtonAction.KeyboardA -> "A⌨"
+    TouchExtraButtonAction.KeyboardD -> "D⌨"
     TouchExtraButtonAction.LeftBumperAndLeftTrigger -> "L1+L2"
     TouchExtraButtonAction.RightBumperAndRightTrigger -> "R1+R2"
     TouchExtraButtonAction.LeftAndRightBumpers -> "L1+R1"
@@ -834,13 +848,25 @@ private fun touchExtraButtonCapLabel(action: TouchExtraButtonAction): String = w
     else -> action.name
 }
 
+private fun touchExtraButtonCapLabel(actions: List<TouchExtraButtonAction>): String {
+    val labels = normalizeTouchExtraButtonCombo(actions).map(::touchExtraButtonCapLabel)
+    return when {
+        labels.size <= 3 -> labels.joinToString("+")
+        else -> "${labels.first()}+${labels.size - 1}"
+    }
+}
+
 internal data class TouchExtraButtonBinding(
     val buttonMasks: List<Int> = emptyList(),
     val leftTrigger: Boolean = false,
     val rightTrigger: Boolean = false,
-)
+    val leftStickX: Float? = null,
+    val keyboardKeyCodes: List<Int> = emptyList(),
+) {
+    val keyboardKeyCode: Int? get() = keyboardKeyCodes.singleOrNull()
+}
 
-internal fun touchExtraButtonBinding(action: TouchExtraButtonAction): TouchExtraButtonBinding = when (action) {
+private fun atomicTouchExtraButtonBinding(action: TouchExtraButtonAction): TouchExtraButtonBinding = when (action) {
     TouchExtraButtonAction.Guide -> TouchExtraButtonBinding(listOf(GamepadButtonMapping.GUIDE))
     TouchExtraButtonAction.A -> TouchExtraButtonBinding(listOf(GamepadButtonMapping.A))
     TouchExtraButtonAction.B -> TouchExtraButtonBinding(listOf(GamepadButtonMapping.B))
@@ -858,25 +884,37 @@ internal fun touchExtraButtonBinding(action: TouchExtraButtonAction): TouchExtra
     TouchExtraButtonAction.RightStickClick -> TouchExtraButtonBinding(listOf(GamepadButtonMapping.RIGHT_THUMB))
     TouchExtraButtonAction.Start -> TouchExtraButtonBinding(listOf(GamepadButtonMapping.START))
     TouchExtraButtonAction.Select -> TouchExtraButtonBinding(listOf(GamepadButtonMapping.BACK))
-    TouchExtraButtonAction.LeftBumperAndLeftTrigger -> TouchExtraButtonBinding(
-        listOf(GamepadButtonMapping.LEFT_SHOULDER), leftTrigger = true,
+    TouchExtraButtonAction.LeftStickLeft -> TouchExtraButtonBinding(leftStickX = -1f)
+    TouchExtraButtonAction.LeftStickRight -> TouchExtraButtonBinding(leftStickX = 1f)
+    TouchExtraButtonAction.KeyboardA -> TouchExtraButtonBinding(keyboardKeyCodes = listOf(KeyEvent.KEYCODE_A))
+    TouchExtraButtonAction.KeyboardD -> TouchExtraButtonBinding(keyboardKeyCodes = listOf(KeyEvent.KEYCODE_D))
+    TouchExtraButtonAction.LeftBumperAndLeftTrigger,
+    TouchExtraButtonAction.RightBumperAndRightTrigger,
+    TouchExtraButtonAction.LeftAndRightBumpers,
+    TouchExtraButtonAction.LeftAndRightTriggers,
+    TouchExtraButtonAction.None,
+    -> TouchExtraButtonBinding()
+}
+
+internal fun touchExtraButtonBinding(action: TouchExtraButtonAction): TouchExtraButtonBinding =
+    touchExtraButtonBinding(listOf(action))
+
+internal fun touchExtraButtonBinding(actions: List<TouchExtraButtonAction>): TouchExtraButtonBinding {
+    val bindings = normalizeTouchExtraButtonCombo(actions).map(::atomicTouchExtraButtonBinding)
+    val stickValues = bindings.mapNotNull(TouchExtraButtonBinding::leftStickX)
+    return TouchExtraButtonBinding(
+        buttonMasks = bindings.flatMap(TouchExtraButtonBinding::buttonMasks).distinct(),
+        leftTrigger = bindings.any(TouchExtraButtonBinding::leftTrigger),
+        rightTrigger = bindings.any(TouchExtraButtonBinding::rightTrigger),
+        leftStickX = stickValues.takeIf { it.isNotEmpty() }?.sum()?.coerceIn(-1f, 1f),
+        keyboardKeyCodes = bindings.flatMap(TouchExtraButtonBinding::keyboardKeyCodes).distinct(),
     )
-    TouchExtraButtonAction.RightBumperAndRightTrigger -> TouchExtraButtonBinding(
-        listOf(GamepadButtonMapping.RIGHT_SHOULDER), rightTrigger = true,
-    )
-    TouchExtraButtonAction.LeftAndRightBumpers -> TouchExtraButtonBinding(
-        listOf(GamepadButtonMapping.LEFT_SHOULDER, GamepadButtonMapping.RIGHT_SHOULDER),
-    )
-    TouchExtraButtonAction.LeftAndRightTriggers -> TouchExtraButtonBinding(
-        leftTrigger = true, rightTrigger = true,
-    )
-    TouchExtraButtonAction.None -> TouchExtraButtonBinding()
 }
 
 @Composable
 private fun BoxScope.ExtraTouchButtons(
     orientation: String,
-    actions: List<TouchExtraButtonAction>,
+    combos: List<List<TouchExtraButtonAction>>,
     scale: Float,
     client: NativeStreamClient,
     layoutEditing: Boolean,
@@ -885,10 +923,10 @@ private fun BoxScope.ExtraTouchButtons(
     onButtonTone: () -> Unit,
     modifier: Modifier,
 ) {
-    actions.take(TOUCH_EXTRA_BUTTON_COUNT).forEachIndexed { index, action ->
-        if (action == TouchExtraButtonAction.None) return@forEachIndexed
+    combos.take(TOUCH_EXTRA_BUTTON_COUNT).forEachIndexed { index, actions ->
+        if (actions.isEmpty()) return@forEachIndexed
         val controlKey = "extra${index + 1}"
-        key("$orientation-$controlKey", action) {
+        key("$orientation-$controlKey", actions) {
             TouchControlGroup(
                 id = "$orientation-$controlKey",
                 layoutEditing = layoutEditing,
@@ -898,7 +936,7 @@ private fun BoxScope.ExtraTouchButtons(
                 modifier = modifier,
             ) {
                 GamepadActionButton(
-                    action = action,
+                    actions = actions,
                     appearanceKey = controlKey,
                     sourceId = "touch-$orientation-$controlKey",
                     client = client,
@@ -1471,7 +1509,7 @@ private fun GamepadBumperButton(
 
 @Composable
 private fun GamepadActionButton(
-    action: TouchExtraButtonAction,
+    actions: List<TouchExtraButtonAction>,
     appearanceKey: String,
     sourceId: String,
     client: NativeStreamClient,
@@ -1479,13 +1517,15 @@ private fun GamepadActionButton(
     onPressTone: () -> Unit,
 ) {
     val currentOnPressTone by rememberUpdatedState(onPressTone)
-    var pressed by remember(action, sourceId) { mutableStateOf(false) }
+    var pressed by remember(actions, sourceId) { mutableStateOf(false) }
 
     fun dispatch(down: Boolean) {
-        val binding = touchExtraButtonBinding(action)
+        val binding = touchExtraButtonBinding(actions)
         binding.buttonMasks.forEach { mask -> client.setVirtualButtonFromSource(mask, sourceId, down) }
         if (binding.leftTrigger) client.setVirtualTriggerFromSource(true, sourceId, down)
         if (binding.rightTrigger) client.setVirtualTriggerFromSource(false, sourceId, down)
+        binding.leftStickX?.let { x -> client.setVirtualLeftStickFromSource(sourceId, if (down) x else 0f, 0f) }
+        binding.keyboardKeyCodes.forEach { keyCode -> client.setVirtualKeyboardKeyFromSource(keyCode, sourceId, down) }
     }
 
     val currentOnPressedChange = rememberUpdatedState<(Boolean) -> Unit> { down ->
@@ -1498,13 +1538,13 @@ private fun GamepadActionButton(
     Box(
         Modifier
             .editTouchButtonOnTap(appearanceKey)
-            .virtualPressInput(client, "$sourceId-${action.name}", currentOnPressedChange,
+            .virtualPressInput(client, "$sourceId-${actions.joinToString("-") { it.name }}", currentOnPressedChange,
                 LocalTouchButtonAppearances.current[appearanceKey]?.toggle == true, LocalTouchInputEnabled.current),
         contentAlignment = Alignment.Center,
     ) {
-        TouchCapFace(label = touchExtraButtonCapLabel(action), pressed = pressed, diameter = size, appearanceKey = appearanceKey)
+        TouchCapFace(label = touchExtraButtonCapLabel(actions), pressed = pressed, diameter = size, appearanceKey = appearanceKey)
     }
-    DisposableEffect(client, action, sourceId) {
+    DisposableEffect(client, actions, sourceId) {
         onDispose { dispatch(false) }
     }
 }

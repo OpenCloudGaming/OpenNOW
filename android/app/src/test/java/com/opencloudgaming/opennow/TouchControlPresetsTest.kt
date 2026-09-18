@@ -34,14 +34,51 @@ class TouchControlPresetsTest {
         assertNotEquals(preset.id, imported.id)
     }
 
+    @Test fun yamlExportKeepsCustomStylingPositionsVisibilityAndCombos() {
+        val controls = AndroidTouchSettings(
+            opacity = 0.63f,
+            scale = 1.2f,
+            extraButtonScale = 1.35f,
+            visibleControlGroups = setOf(
+                TouchControlGroup.LeftStick,
+                TouchControlGroup.RightStick,
+                TouchControlGroup.ShoulderButtons,
+            ),
+            touchControllerStyle = TouchControllerStyle.Neon,
+            touchSkinTint = ControllerThemeRgb(12, 34, 56),
+            touchButtonLabels = false,
+            buttonAppearances = mapOf(
+                "extra1" to TouchButtonAppearance(
+                    label = "Drift",
+                    icon = "Handbrake",
+                    shape = TouchButtonShape.Diamond,
+                    toggle = true,
+                    sizeScale = 1.4f,
+                ),
+            ),
+        ).withOffset("extra1_landscape", 123f, -45f).withExtraButtonCombo(
+            0,
+            listOf(TouchExtraButtonAction.A, TouchExtraButtonAction.RightBumper, TouchExtraButtonAction.KeyboardD),
+        )
+
+        val yaml = exportTouchPreset(newTouchPreset("Styled layout", controls))
+        val restored = importTouchPreset(yaml)!!.controls
+
+        assertEquals(controls.normalizedPresetControls(), restored)
+        assertTrue("touchControllerStyle: Neon" in yaml)
+        assertTrue("extra1_landscape:" in yaml)
+        assertTrue("buttonAppearances:" in yaml)
+        assertTrue("extraButtonCombos:" in yaml)
+    }
+
     @Test fun invalidImportsAreRejectedAndValidValuesAreNormalized() {
         assertNull(importTouchPreset("{}"))
         assertNull(importTouchPreset("not json"))
         assertNull(importTouchPreset(" ".repeat(MAX_TOUCH_PRESET_CODE + 1)))
         val code = exportTouchPreset(newTouchPreset("Game", AndroidTouchSettings()))
-        assertNull(importTouchPreset(code.replace("\"version\":1", "\"version\":2")))
+        assertNull(importTouchPreset(code.replace("version: 1", "version: 2")))
         assertNull(importTouchPreset(code.replace("opennow-touch", "another-format")))
-        val imported = importTouchPreset(code.replace("\"aimZoneScale\":1.0", "\"aimZoneScale\":999"))!!
+        val imported = importTouchPreset(code.replace("aimZoneScale: 1.0", "aimZoneScale: 999"))!!
         assertEquals(1.5f, imported.controls.aimZoneScale)
     }
 
@@ -52,10 +89,10 @@ class TouchControlPresetsTest {
         val playstation = presets.first { it.id == "playstation" }
         assertEquals("×", playstation.controls.buttonAppearances["A"]?.label)
         assertEquals("L2", playstation.controls.buttonAppearances["LT"]?.label)
-        assertTrue(presets.any { it.id == "forza-horizon" })
-        assertTrue(presets.any { it.id == "resident-evil" })
-        assertTrue(presets.any { it.id == "first-person-shooter" })
-        assertTrue(presets.any { it.id == "action-adventure" })
+        assertEquals(
+            setOf(TouchPresetGenre.Racing, TouchPresetGenre.Survival, TouchPresetGenre.Horror, TouchPresetGenre.Action),
+            presets.map { it.genre }.filterNot { it == TouchPresetGenre.Custom }.toSet(),
+        )
         assertTrue(presets.filter { it.id !in setOf("xbox", "playstation") }
             .all { it.controls.extraButtonActions.size == TOUCH_EXTRA_BUTTON_COUNT })
     }

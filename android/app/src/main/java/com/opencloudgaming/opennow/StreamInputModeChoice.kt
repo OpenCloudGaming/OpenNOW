@@ -11,6 +11,17 @@ internal enum class StreamInputModePrompt {
 }
 
 /**
+ * Prevent a noisy composite or Bluetooth input device from repeatedly presenting the same
+ * connection-change prompt. The choice is still asked again in a new stream session, and the
+ * opposite transition can still be offered once if the player changes modes during this session.
+ */
+internal class StreamInputModePromptGate {
+    private val presented = mutableSetOf<StreamInputModePrompt>()
+
+    fun shouldPresent(prompt: StreamInputModePrompt): Boolean = presented.add(prompt)
+}
+
+/**
  * Fallback for sessions without a saved launch choice. New launches use
  * [chooseStreamInputModeAtStart] before provisioning the host input devices.
  */

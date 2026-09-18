@@ -175,6 +175,7 @@ internal fun StreamScreen(
     var inputModePromptOpen by remember(session?.sessionId) {
         mutableStateOf<StreamInputModePrompt?>(null)
     }
+    val inputModePromptGate = remember(session?.sessionId) { StreamInputModePromptGate() }
     // Native game touch and the virtual controller need exclusive ownership of the same fingers.
     // Catalog touch remains the default, while a player's in-session controller choice wins.
     val nativeTouchActive = !tvProfile && shouldUseNativeTouchForStream(
@@ -502,7 +503,9 @@ internal fun StreamScreen(
             !physicalControllerPromptOpen &&
             !touchLayoutEditing
         ) {
-            inputModePromptOpen = prompt
+            if (inputModePromptGate.shouldPresent(prompt)) {
+                inputModePromptOpen = prompt
+            }
             pendingInputModePrompt = null
         }
     }

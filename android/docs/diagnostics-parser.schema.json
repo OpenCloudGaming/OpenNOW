@@ -2366,11 +2366,21 @@
                             "RightStickClick",
                             "Start",
                             "Select",
+                            "LeftStickLeft",
+                            "LeftStickRight",
+                            "KeyboardA",
+                            "KeyboardD",
                             "LeftBumperAndLeftTrigger",
                             "RightBumperAndRightTrigger",
                             "LeftAndRightBumpers",
                             "LeftAndRightTriggers"
                         ]
+                    }
+                },
+                "extraButtonCombos": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/$defs/TouchExtraButtonCombo"
                     }
                 },
                 "extraButtonScale": {
@@ -2484,6 +2494,47 @@
                     "type": "object",
                     "additionalProperties": {
                         "$ref": "#/$defs/TouchButtonAppearance"
+                    }
+                }
+            },
+            "required": [],
+            "additionalProperties": true
+        },
+        "TouchExtraButtonCombo": {
+            "type": "object",
+            "properties": {
+                "actions": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": [
+                            "None",
+                            "Guide",
+                            "A",
+                            "B",
+                            "X",
+                            "Y",
+                            "DpadUp",
+                            "DpadDown",
+                            "DpadLeft",
+                            "DpadRight",
+                            "LeftBumper",
+                            "RightBumper",
+                            "LeftTrigger",
+                            "RightTrigger",
+                            "LeftStickClick",
+                            "RightStickClick",
+                            "Start",
+                            "Select",
+                            "LeftStickLeft",
+                            "LeftStickRight",
+                            "KeyboardA",
+                            "KeyboardD",
+                            "LeftBumperAndLeftTrigger",
+                            "RightBumperAndRightTrigger",
+                            "LeftAndRightBumpers",
+                            "LeftAndRightTriggers"
+                        ]
                     }
                 }
             },

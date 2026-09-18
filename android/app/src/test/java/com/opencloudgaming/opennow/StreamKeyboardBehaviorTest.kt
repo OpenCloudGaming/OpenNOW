@@ -8,6 +8,32 @@ import org.junit.Test
 
 class StreamKeyboardBehaviorTest {
     @Test
+    fun softKeyboardSpaceUsesAKeyStrokeInsteadOfUnicodeText() {
+        assertEquals(
+            listOf(StreamKeyboardInputChunk.SpaceKey),
+            streamKeyboardInputChunks(" "),
+        )
+    }
+
+    @Test
+    fun unicodeTextRunsStayOrderedAroundSpaceKeys() {
+        assertEquals(
+            listOf(
+                StreamKeyboardInputChunk.Text("hello"),
+                StreamKeyboardInputChunk.SpaceKey,
+                StreamKeyboardInputChunk.SpaceKey,
+                StreamKeyboardInputChunk.Text("🙂world"),
+            ),
+            streamKeyboardInputChunks("hello  🙂world"),
+        )
+    }
+
+    @Test
+    fun emptySoftKeyboardEditProducesNoInputChunks() {
+        assertEquals(emptyList<StreamKeyboardInputChunk>(), streamKeyboardInputChunks(""))
+    }
+
+    @Test
     fun emptyNewDraftHasNothingToType() {
         assertEquals(StreamKeyboardEdit.None, streamKeyboardEdit(null, ""))
     }
