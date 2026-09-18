@@ -37,12 +37,12 @@ Item {
     MotionProgress { id: reveal; shown: root.expanded; enterDuration: 200; exitDuration: 160 }
     onExpandedChanged: {
         if (expanded) gridFlick.forceActiveFocus()
-        else stepper.focusSelector()
+        else selector.forceActiveFocus()
     }
     function step(direction) {
         if (!available.length) return
         const index = available.findIndex(item => item.value === value)
-        root.selected(available[(Math.max(0,index) + direction + available.length) % available.length].value)
+        root.selected(available[(Math.max(0, index) + direction + available.length) % available.length].value)
     }
     Rectangle {
         visible: reveal.present; opacity: reveal.progress
@@ -56,22 +56,16 @@ Item {
         title: qsTr("Resolution")
         description: root.expanded ? qsTr("%1 available · Esc closes").arg(root.available.length)
             : root.current ? root.current.detail : root.value.replace("x", "×")
-        showDivider: !root.expanded; expandable: true
-        onExpansionRequested: root.expanded = !root.expanded
-        DesktopSettingsStepper {
-            id: stepper
-            visible: !root.expanded
+        showDivider: !root.expanded
+        DesktopSettingsButton {
+            id: selector
+            width: header.controlWidth
+            menu: true
             text: root.current ? root.current.label : root.value.replace("x","×")
-            previousEnabled: root.available.length > 1; nextEnabled: previousEnabled
-            onPrevious: root.step(-1); onNext: root.step(1)
-            onOpenRequested: root.expanded = true
-        }
-        DesktopSettingsSegmented {
-            visible: root.expanded
-            options: [{label: qsTr("All"), width: DesktopTokens.px(46)},
-                {label: qsTr("Fits monitor"), width: DesktopTokens.px(108)}]
-            selectedIndex: root.fitsMonitor ? 1 : 0
-            onSelected: index => root.fitsMonitor = index === 1
+            Accessible.name: header.title + ": " + text
+            onClicked: root.expanded = !root.expanded
+            Keys.onLeftPressed: event => { root.step(-1); event.accepted = true }
+            Keys.onRightPressed: event => { root.step(1); event.accepted = true }
         }
     }
     Flickable {
@@ -87,6 +81,12 @@ Item {
         Keys.onEscapePressed: event => { root.expanded = false; event.accepted = true }
         Column {
             id: gridContents; width: parent.width; spacing: 14
+            DesktopSettingsSegmented {
+                options: [{label: qsTr("All"), width: 46},
+                    {label: qsTr("Fits monitor"), width: 108}]
+                selectedIndex: root.fitsMonitor ? 1 : 0
+                onSelected: index => root.fitsMonitor = index === 1
+            }
             Repeater {
                 model: root.groups
                 delegate: Column {

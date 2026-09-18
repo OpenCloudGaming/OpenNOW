@@ -12,7 +12,7 @@ Item {
     property string title: ""
     property string description: ""
     property string value: ""
-    property int rowHeight: paperStyle ? DesktopTokens.px(68) : DesktopTokens.rowHeight
+    property int rowHeight: DesktopTokens.rowHeight
     property bool showDivider: true
     property string leadingLetter: ""
     property url leadingIcon: ""
@@ -20,30 +20,32 @@ Item {
     readonly property bool hasLeading: glyph !== "" || leadingLetter !== "" || leadingIcon.toString() !== ""
     default property alias trailing: trailingSlot.data
 
-    readonly property bool stacked: width < trailingSlot.implicitWidth + (hasLeading ? 340 : 290)
-    implicitHeight: Math.max(rowHeight, stacked ? labels.implicitHeight + trailingSlot.height + 28
-        : labels.implicitHeight + (paperStyle ? 12 : 24))
+    readonly property real labelInset: paperStyle ? DesktopTokens.settingsLabelInset : (hasLeading ? DesktopTokens.px(50) : 0)
+    readonly property real rightInset: paperStyle ? DesktopTokens.settingsInset : 0
+    readonly property real controlWidth: Math.max(0, Math.min(DesktopTokens.settingsControlWidth, width - labelInset - rightInset))
+    readonly property bool stacked: width < DesktopTokens.settingsCompactWidth && trailingSlot.implicitWidth > DesktopTokens.px(120)
+    implicitHeight: Math.max(rowHeight, (stacked ? trailingSlot.y + trailingSlot.height : Math.max(labels.y + labels.height, trailingSlot.y + trailingSlot.height)) + DesktopTokens.px(14))
 
     Rectangle {
         id: leadingTile
         visible: root.hasLeading
-        x: root.paperStyle ? DesktopTokens.px(20) : 0
-        y: root.stacked ? 12 : (parent.height - height) / 2
-        width: root.paperStyle ? DesktopTokens.px(40) : 36
+        x: root.paperStyle ? DesktopTokens.settingsInset : 0
+        y: DesktopTokens.px(14)
+        width: DesktopTokens.px(root.paperStyle ? 40 : 36)
         height: width
-        radius: root.paperStyle ? 12 : 10
+        radius: DesktopTokens.px(root.paperStyle ? 12 : 10)
         color: root.expanded ? Theme.focus : root.leadingColor
         border.width: root.paperStyle ? 0 : 1
         border.color: Theme.seam
         DesktopSettingsIcon {
-            anchors.centerIn: parent; width: 20; height: 20
+            anchors.centerIn: parent; width: DesktopTokens.px(20); height: width
             visible: root.glyph !== ""; glyph: root.glyph
             ink: root.expanded ? Theme.focusText : Theme.label
         }
         Image {
             anchors.centerIn: parent
-            width: 19
-            height: 19
+            width: DesktopTokens.px(19)
+            height: width
             source: root.leadingIcon
             sourceSize: Qt.size(width, height)
             fillMode: Image.PreserveAspectFit
@@ -55,20 +57,22 @@ Item {
             visible: root.leadingIcon.toString() === "" && root.glyph === ""
             color: Theme.label
             font.family: DesktopTokens.bodyFont
-            font.pixelSize: 16
+            font.pixelSize: DesktopTokens.px(16)
             font.weight: Font.Black
         }
     }
 
     Column {
         id: labels
+        objectName: "settingsRowLabels"
         anchors.left: parent.left
-        anchors.leftMargin: root.paperStyle ? DesktopTokens.px(root.hasLeading ? 76 : 20) : (root.hasLeading ? 50 : 0)
+        anchors.leftMargin: root.labelInset
         anchors.right: root.stacked ? parent.right : trailingSlot.left
-        anchors.rightMargin: root.paperStyle ? 16 : 20
-        y: root.stacked ? 10 : (parent.height - height) / 2
-        spacing: 2
+        anchors.rightMargin: root.stacked ? root.rightInset : DesktopTokens.px(20)
+        y: DesktopTokens.px(14) + Math.max(0, (DesktopTokens.px(40) - titleLabel.implicitHeight) / 2)
+        spacing: DesktopTokens.px(4)
         Text {
+            id: titleLabel
             width: parent.width
             text: root.title
             color: Theme.label
@@ -91,11 +95,13 @@ Item {
 
     Row {
         id: trailingSlot
+        objectName: "settingsRowControls"
+        readonly property real availableWidth: root.controlWidth
         anchors.right: parent.right
-        anchors.rightMargin: root.paperStyle ? DesktopTokens.px(68) : 0
-        y: root.stacked ? labels.y + labels.height + 8 : (parent.height - height) / 2
-        spacing: 10
-        height: DesktopTokens.controlHeight
+        anchors.rightMargin: root.rightInset + (root.expandable ? DesktopTokens.px(40) : 0)
+        y: root.stacked ? labels.y + labels.height + DesktopTokens.px(12) : DesktopTokens.px(14)
+        spacing: DesktopTokens.px(10)
+        height: Math.max(DesktopTokens.px(40), implicitHeight)
 
         add: Transition {
             ScriptAction { script: root.centerTrailing() }
@@ -114,13 +120,13 @@ Item {
 
     AbstractButton {
         visible: root.paperStyle && root.expandable
-        anchors.right: parent.right; anchors.rightMargin: DesktopTokens.px(20)
-        anchors.verticalCenter: parent.verticalCenter; width: 32; height: 32
+        anchors.right: parent.right; anchors.rightMargin: root.rightInset
+        y: DesktopTokens.px(18); width: DesktopTokens.px(32); height: width
         Accessible.name: root.title
         onClicked: root.expansionRequested()
-        background: Rectangle { radius: 10; color: parent.activeFocus || parent.hovered ? DesktopTokens.raised : "transparent" }
+        background: Rectangle { radius: DesktopTokens.px(10); color: parent.activeFocus || parent.hovered ? DesktopTokens.raised : "transparent" }
         DesktopSettingsIcon {
-            anchors.centerIn: parent; width: 14; height: 14; glyph: "chevron"
+            anchors.centerIn: parent; width: DesktopTokens.px(14); height: width; glyph: "chevron"
             rotation: root.expanded ? -90 : 90; ink: root.expanded ? Theme.focus : Theme.textMuted
             Behavior on rotation { enabled: !AppController.reducedMotion; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
         }

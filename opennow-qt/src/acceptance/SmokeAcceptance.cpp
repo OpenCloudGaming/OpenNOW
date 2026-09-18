@@ -590,6 +590,11 @@ int AcceptanceSession::startSmokeWorkload()
             m_application.exit(EXIT_FAILURE);
         });
     } else if (m_arguments.contains(u"--smoke-release-notes"_s)) {
+        if (!m_engine.rootObjects().isEmpty()) {
+            auto *window = m_engine.rootObjects().first();
+            if (auto *about = window->findChild<QObject *>(u"desktopAboutSettings"_s))
+                about->setProperty("releaseNotesOpen", true);
+        }
         auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
         store->setProperty("updaterState", QVariantMap{
             {u"status"_s, u"available"_s}, {u"currentVersion"_s, QGuiApplication::applicationVersion()},

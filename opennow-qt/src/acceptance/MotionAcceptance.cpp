@@ -80,11 +80,14 @@ void startSettingsMotionAcceptance(QQuickWindow *window, AppController *controll
             state->settings = find("desktopSettingsScreen");
             auto *sharing = find("accountActivitySharing");
             auto *reports = find("accountCrashReports");
-            state->disclosure = find("accountAdvancedDisclosure");
             if (!require(state->settings && !state->settings->property("advancedOpen").toBool()
-                         && sharing && sharing->isVisible() && reports && reports->isVisible()
-                         && state->disclosure, "privacy controls hidden behind Advanced")) return;
-            // Only disclosure state is changed; never mutate privacy preferences.
+                         && sharing && sharing->isVisible() && reports && reports->isVisible(),
+                         "privacy controls hidden behind Advanced")) return;
+            state->settings->setProperty("selectedSection", 6);
+        }
+        if (tick == 21) {
+            state->disclosure = find("networkAdvancedDisclosure");
+            if (!require(state->disclosure, "network Advanced disclosure missing")) return;
             state->settings->setProperty("advancedOpen", true);
         }
         if (tick == 30 || tick == 36) state->settings->setProperty("advancedOpen", false);

@@ -284,7 +284,6 @@ qt_add_qml_module(opennow-qt
         qml/desktop/settings/controls/DesktopSettingsSection.qml
         qml/desktop/settings/controls/DesktopSettingsSegmented.qml
         qml/desktop/settings/controls/DesktopSettingsSlider.qml
-        qml/desktop/settings/controls/DesktopSettingsStepper.qml
         qml/desktop/settings/controls/DesktopSettingsToggle.qml
         qml/desktop/settings/pages/DesktopSettingsAboutPage.qml
         qml/desktop/settings/pages/DesktopSettingsAccountPage.qml

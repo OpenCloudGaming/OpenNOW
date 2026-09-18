@@ -22,6 +22,7 @@ QtObject {
         check(GraphicsDevices.choices.length === count + 1, "only hardware choices plus Automatic")
         const desktop = find(parent, "desktopSettingsScreen")
         if (desktop) {
+            desktop.advancedOpen = true
             const selector = find(parent, "graphicsProcessorSelector")
             check(selector !== null, "desktop selector exists")
             check(selector.visible === (count >= 2), "desktop row is hidden below two GPUs")

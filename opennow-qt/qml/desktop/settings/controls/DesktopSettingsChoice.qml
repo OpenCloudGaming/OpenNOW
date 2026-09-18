@@ -17,6 +17,7 @@ Item {
     property int maximumColumns: 0
     property real maximumOptionsHeight: DesktopTokens.px(260)
     property string filterPlaceholder: qsTr("Filter options…")
+    default property alias footer: footerContent.data
     signal selected(var value)
     readonly property var current: items.find(item => item.kind !== "heading" && String(item.value) === String(root.value))
     readonly property var groups: {
@@ -32,7 +33,8 @@ Item {
     }
     readonly property real revealProgress: reveal.progress
     readonly property real optionsHeight: Math.min(maximumOptionsHeight, grid.implicitHeight + 12)
-    implicitHeight: header.height + (search.height + optionsHeight + 28) * reveal.progress
+    implicitHeight: header.height + (search.height + optionsHeight + DesktopTokens.px(28)) * reveal.progress
+        + (footerContent.implicitHeight > 0 ? footerContent.implicitHeight + DesktopTokens.px(12) : 0)
     clip: true
     MotionProgress { id: reveal; shown: root.expanded; enterDuration: 200; exitDuration: 160 }
     onExpandedChanged: {
@@ -42,20 +44,19 @@ Item {
     Rectangle {
         visible: reveal.present
         opacity: reveal.progress
-        x: 8; width: parent.width-16; height: parent.height
-        radius: 16; color: DesktopTokens.raised
+        x: DesktopTokens.px(8); width: parent.width-DesktopTokens.px(16); height: parent.height
+        radius: DesktopTokens.px(16); color: DesktopTokens.raised
         border.width: 1; border.color: Theme.focus
     }
     DesktopSettingsRow {
         id: header
         width: parent.width; paperStyle: true; glyph: root.glyph
         title: root.title; description: root.description
-        expanded: root.expanded; expandable: true
+        expanded: root.expanded
         showDivider: root.showDivider && !root.expanded
-        onExpansionRequested: root.expanded = !root.expanded
         DesktopSettingsButton {
             id: selector
-            width: Math.min(DesktopTokens.px(260), root.width - DesktopTokens.px(110))
+            width: header.controlWidth
             menu: true
             text: root.valueLabel || (root.current ? root.current.label : String(root.value))
             Accessible.name: root.title + ": " + text
@@ -67,7 +68,7 @@ Item {
         visible: reveal.present
         enabled: root.expanded
         opacity: reveal.progress
-        x: 20; y: header.height; width: parent.width - 40
+        x: DesktopTokens.settingsInset; y: header.height; width: parent.width - DesktopTokens.settingsInset * 2
         placeholderText: root.filterPlaceholder
         onTextChanged: scroll.contentY = 0
         Accessible.name: root.title + ": " + placeholderText
@@ -78,7 +79,7 @@ Item {
         visible: reveal.present
         enabled: root.expanded
         opacity: reveal.progress
-        x: 20; y: search.y + search.height + 12; width: parent.width-40
+        x: DesktopTokens.settingsInset; y: search.y + search.height + DesktopTokens.px(12); width: parent.width-DesktopTokens.settingsInset * 2
         height: root.optionsHeight
         contentWidth: width; contentHeight: grid.implicitHeight
         clip: true; boundsBehavior: Flickable.StopAtBounds
@@ -146,5 +147,12 @@ Item {
             }
             Text { visible: root.groups.length === 0; text: qsTr("No matching options"); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: DesktopTokens.px(13) }
         }
+    }
+    Column {
+        id: footerContent
+        x: header.labelInset
+        y: header.height + (search.height + root.optionsHeight + DesktopTokens.px(28)) * reveal.progress
+        width: parent.width - x - DesktopTokens.settingsInset
+        spacing: DesktopTokens.px(8)
     }
 }

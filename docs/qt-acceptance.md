@@ -276,6 +276,25 @@ stay at 40 while idle; Load more adds one page; route re-entry retains it; categ
 and See all remain in Store; Ctrl+K finds games outside the loaded page. Scroll through a
 short final row and confirm its posters remain the same size as those in a full row.
 
+## Desktop settings layout and screenshots
+
+Run `ctest --test-dir build/opennow-qt -R qml-settings-layout --output-on-failure`
+to check all nine settings pages at desktop width, compact width, and 1.25 interface
+scale. The checks open Advanced and reject overlapping or overflowing row content.
+
+Capture the actual Qt pages with account-free smoke data:
+
+```sh
+bash scripts/capture-qt-settings.sh build/opennow-qt/opennow-qt /absolute/path/settings-captures
+```
+
+The script captures every page, compact and scaled views, expanded conditional
+settings, statistics customization, and shortcuts. Full-page images resize the
+window to the page content, capped at 3840 pixels high; a separate bottom capture
+covers the expanded Stream page. Each image has a matching runtime log. On Linux,
+the script uses Xvfb when `DISPLAY` is unset. These fixtures never start the core
+or persist account preferences.
+
 ## Desktop settings motion
 
 `qml-idle-mode` verifies that expiry of the mouse grace period cannot change the

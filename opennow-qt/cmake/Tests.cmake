@@ -1210,6 +1210,25 @@ if(BUILD_TESTING)
             --smoke-height 900 --smoke-resolution-open --reduced-motion)
     set_tests_properties(qml-renew-resolution-picker PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT ${OPENNOW_QT_SMOKE_TIMEOUT})
+    foreach(page stream network audio controls recording appearance console account about)
+        foreach(size desktop compact scaled)
+            set(settings_width 1440)
+            set(settings_scale 1)
+            if(size STREQUAL "compact")
+                set(settings_width 960)
+            elseif(size STREQUAL "scaled")
+                set(settings_scale 1.25)
+            endif()
+            add_test(NAME "qml-settings-layout-${page}-${size}"
+                COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+                    --route settings --smoke-paper-design --smoke-settings-page "${page}"
+                    --smoke-width ${settings_width} --smoke-height 900
+                    --smoke-settings-scale ${settings_scale} --smoke-settings-layout
+                    --smoke-settings-advanced --reduced-motion)
+            set_tests_properties("qml-settings-layout-${page}-${size}" PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT ${OPENNOW_QT_SMOKE_TIMEOUT})
+        endforeach()
+    endforeach()
     foreach(panel stats audio interface console shortcuts controllers subscription recording)
         foreach(size desktop compact)
             if(size STREQUAL "desktop")

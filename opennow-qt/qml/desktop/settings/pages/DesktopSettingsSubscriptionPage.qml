@@ -13,17 +13,9 @@ DesktopSettingsPanel {
     DesktopSettingsRow {
         width: parent.width; paperStyle: true; glyph: "crown"
         title: page.settingsScreen.liveTierBadge() || qsTr("Membership unavailable")
-        description: qsTr("Plans and billing are managed by NVIDIA, not OpenNOW")
-        DesktopSettingsButton { text: qsTr("Manage on NVIDIA"); onClicked: AppController.openExternalUrl("https://www.nvidia.com/en-us/account/") }
-    }
-    DesktopSettingsRow {
-        width: parent.width; paperStyle: true; glyph: "monitor"; title: qsTr("Entitlements reported by NVIDIA")
         description: page.settingsScreen.planChips().join(" · ")
+        showDivider: false
         DesktopSettingsButton { text: qsTr("Refresh entitlements"); onClicked: ShellStore.refreshAccountServices() }
-    }
-    DesktopSettingsRow {
-        width: parent.width; paperStyle: true; glyph: "person"; title: qsTr("Profiles")
-        description: qsTr("Manage saved account profiles"); showDivider: false
-        DesktopSettingsButton { text: qsTr("Manage"); onClicked: AppController.navigate("accounts") }
+        DesktopSettingsButton { text: qsTr("Manage on NVIDIA"); onClicked: AppController.openExternalUrl("https://www.nvidia.com/en-us/account/") }
     }
 }

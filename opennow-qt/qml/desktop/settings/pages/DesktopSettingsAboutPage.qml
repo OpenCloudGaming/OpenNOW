@@ -5,10 +5,14 @@ import OpenNOW
 
 Column {
     id: page
+    objectName: "desktopAboutSettings"
     required property real availableWidth
     required property var settingsScreen
 
-    width: page.availableWidth; spacing: 20
+    property bool confirmReset: false
+    property bool releaseNotesOpen: false
+
+    width: page.availableWidth; spacing: DesktopTokens.px(20)
     DesktopSettingsPanel {
         width: parent.width; paperStyle: true
         DesktopSettingsSection { text: qsTr("OPENNOW") }
@@ -16,18 +20,9 @@ Column {
             width: parent.width; paperStyle: true
             leadingIcon: "qrc:/qt/qml/OpenNOW/res/brand/opennow-mark.png"
             title: "OpenNOW " + String(ShellStore.updaterState.currentVersion || qsTr("unknown"))
-            description: qsTr("Your games, anywhere.")
+            description: String(ShellStore.updaterState.message || ShellStore.updaterState.status || qsTr("idle"))
+            DesktopSettingsButton { text: qsTr("Updates"); onClicked: AppController.navigate("updates") }
             DesktopSettingsButton { text: ShellStore.updaterState.status === "checking" ? qsTr("Checking…") : qsTr("Check for updates"); primary: true; enabled: !ShellStore.updaterBusy && ShellStore.updaterState.canCheck === true; onClicked: ShellStore.checkForUpdates() }
-        }
-        DesktopSettingsRow {
-            width: parent.width; paperStyle: true; glyph: "arrows"; title: qsTr("Update channel")
-            description: qsTr("Choose which releases OpenNOW checks")
-            DesktopSettingsSegmented {
-                options: [{label:qsTr("Stable"),value:"stable"},{label:qsTr("Nightly"),value:"nightly"}]
-                objectName: "renewUpdateChannel"
-                optionWidth: 96; selectedIndex: options.findIndex(item => item.value === page.settingsScreen.valueSetting("updateChannel","stable"))
-                onSelected: (index,item) => page.settingsScreen.setChoice("updateChannel",item.value)
-            }
         }
         DesktopSettingsRow {
             width: parent.width; paperStyle: true; title: qsTr("Automatically check for updates")
@@ -50,19 +45,14 @@ Column {
             }
         }
         DesktopSettingsRow {
-            width: parent.width; paperStyle: true; glyph: "info"; title: qsTr("Update status")
-            description: String(ShellStore.updaterState.message || ShellStore.updaterState.status || qsTr("idle"))
-            showDivider: false
-            DesktopSettingsButton { text: qsTr("Updates"); onClicked: AppController.navigate("updates") }
-        }
-    }
-    DesktopSettingsPanel {
-        width: parent.width; paperStyle: true
-        DesktopSettingsSection { text: qsTr("RELEASE NOTES") }
-        Column {
-            x: DesktopTokens.px(20); width: parent.width-DesktopTokens.px(40); spacing: 8
-            Text { width: parent.width; text: ShellStore.releaseHighlights.title || qsTr("Release notes"); color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: DesktopTokens.px(15); font.weight: Font.ExtraBold; wrapMode: Text.WordWrap; textFormat: Text.PlainText }
-            ReleaseNotes { width: parent.width; bottomPadding: 20; text: ShellStore.releaseHighlights.bodyMarkdown || qsTr("Check for updates to load verified release information from GitHub."); font.pixelSize: DesktopTokens.px(13) }
+            width: parent.width; paperStyle: true; glyph: "arrows"; title: qsTr("Update channel")
+            description: qsTr("Choose which releases OpenNOW checks"); showDivider: false
+            DesktopSettingsSegmented {
+                options: [{label:qsTr("Stable"),value:"stable"},{label:qsTr("Nightly"),value:"nightly"}]
+                objectName: "renewUpdateChannel"
+                optionWidth: 96; selectedIndex: options.findIndex(item => item.value === page.settingsScreen.valueSetting("updateChannel","stable"))
+                onSelected: (index,item) => page.settingsScreen.setChoice("updateChannel",item.value)
+            }
         }
     }
     DesktopSettingsPanel {
@@ -73,16 +63,35 @@ Column {
             delegate: DesktopSettingsRow {
                 required property var modelData
                 required property int index
-                width: parent.width; paperStyle: true; glyph: modelData.id === "diagnostics" ? "wave" : modelData.id === "captures" ? "image" : "globe"
+                width: parent.width; paperStyle: true; glyph: modelData.id === "diagnostics" ? "wave" : "globe"
                 title: modelData.label
                 description: modelData.id === "diagnostics" ? qsTr("Generate a diagnostic report") : ""
-                showDivider: index < 3
+                showDivider: index < 2
                 DesktopSettingsButton { text: modelData.id === "diagnostics" ? qsTr("Export") : qsTr("Open"); onClicked: page.settingsScreen.runProjectLink(modelData) }
             }
         }
     }
     DesktopSettingsPanel {
         width: parent.width; paperStyle: true
+        DesktopSettingsRow {
+            objectName: "releaseNotesDisclosure"
+            width: parent.width; paperStyle: true; glyph: "info"; title: qsTr("Release notes")
+            description: ShellStore.releaseHighlights.title || ""
+            showDivider: false; expandable: true; expanded: page.releaseNotesOpen
+            onExpansionRequested: page.releaseNotesOpen = !page.releaseNotesOpen
+        }
+        DesktopSettingsDisclosure {
+            width: parent.width; expanded: page.releaseNotesOpen
+            sourceComponent: ReleaseNotes {
+                width: page.availableWidth; leftPadding: DesktopTokens.settingsInset; rightPadding: DesktopTokens.settingsInset; bottomPadding: DesktopTokens.settingsInset
+                text: ShellStore.releaseHighlights.bodyMarkdown || qsTr("Check for updates to load verified release information from GitHub.")
+                font.pixelSize: DesktopTokens.px(13)
+            }
+        }
+    }
+    DesktopSettingsPanel {
+        width: parent.width; paperStyle: true
+        DesktopSettingsSection { text: qsTr("LEGAL") }
         DesktopSettingsRow {
             width: parent.width; paperStyle: true; glyph: "info"; title: qsTr("Independent client")
             description: qsTr("OpenNOW is not affiliated with, endorsed by or supported by NVIDIA. GeForce NOW is a trademark of NVIDIA Corporation. You bring your own account and subscription.")
@@ -91,6 +100,7 @@ Column {
     }
     DesktopSettingsPanel {
         width: parent.width; paperStyle: true
+        DesktopSettingsSection { text: qsTr("MAINTENANCE") }
         DesktopSettingsRow {
             width: parent.width; paperStyle: true; glyph: "arrows"
             title: qsTr("Replay onboarding")
@@ -105,6 +115,17 @@ Column {
                 enabled: ShellStore.onboardingReplayAvailable
                 onClicked: replayConfirmation.open()
             }
+        }
+    }
+
+    DesktopSettingsPanel {
+        width: parent.width; paperStyle: true
+        DesktopSettingsRow {
+            width: parent.width; paperStyle: true; glyph: "sliders"; title: qsTr("Reset all settings")
+            description: page.confirmReset ? qsTr("This resets all OpenNOW preferences. Continue?") : qsTr("Restore OpenNOW preferences to their defaults")
+            showDivider: false
+            DesktopSettingsButton { visible: page.confirmReset; text: qsTr("Cancel"); onClicked: page.confirmReset = false }
+            DesktopSettingsButton { text: page.confirmReset ? qsTr("Confirm reset") : qsTr("Reset"); danger: true; onClicked: { if (page.confirmReset) { ShellStore.resetSettings(); page.confirmReset = false } else page.confirmReset = true } }
         }
     }
 

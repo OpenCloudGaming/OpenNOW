@@ -8,13 +8,13 @@ Row {
     property alias to: slider.to
     property alias stepSize: slider.stepSize
     property alias value: slider.value
-    property real trackWidth: DesktopTokens.px(200)
+    property real trackWidth: Math.max(0, (parent && parent.availableWidth !== undefined ? parent.availableWidth : DesktopTokens.settingsControlWidth) - valueLabel.width - spacing)
     property string suffix: "%"
     property int decimals: 0
     property string accessibleName: ""
     signal moved(real value)
     signal committed(real value)
-    spacing: 14
+    spacing: DesktopTokens.px(12)
 
     Timer {
         id: commitTimer
@@ -66,7 +66,8 @@ Row {
         }
     }
     Text {
-        width: DesktopTokens.px(84)
+        id: valueLabel
+        width: DesktopTokens.px(80)
         height: DesktopTokens.px(28)
         text: Number(slider.value).toFixed(root.decimals) + root.suffix
         color: Theme.label

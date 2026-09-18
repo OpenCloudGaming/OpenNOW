@@ -3,7 +3,7 @@ import OpenNOW
 
 QtObject {
     id: fixture
-    property var savedSettings: ({})
+    property var savedSettings: ShellStore.settings
     property var commands: []
     property int reminders: 0
     property BackgroundStreamState policy: BackgroundStreamState {
@@ -25,7 +25,7 @@ QtObject {
         return savedSettings[key] === undefined ? fallback : savedSettings[key]
     }
     function setSetting(key, value) {
-        savedSettings = Object.assign({}, savedSettings, {[key]: value})
+        ShellStore.applySetting(key, value)
     }
     function check(ok, message) {
         if (!ok) throw new Error("Background stream: " + message)
@@ -41,10 +41,15 @@ QtObject {
     function lastMuted() { return commands[commands.length - 1] }
 
     function run(parent) {
+        ShellStore.settings = ({})
         const page = pageComponent.createObject(parent)
         check(page !== null, "Audio settings must load")
         const mute = find(page, "muteWhenOutOfFocusToggle")
-        const reminder = find(page, "backgroundStreamReminderToggle")
+        const screen = find(parent, "desktopSettingsScreen")
+        check(screen !== null, "desktop settings must load")
+        screen.selectedSection = 3
+        const reminder = find(screen, "backgroundStreamReminderToggle")
+        check(reminder !== null, "Stream settings must expose the background reminder")
         check(!mute.checked && !reminder.checked, "both settings must default off")
         policy.nativeRuntimeReady = true
         check(commands.length === 0, "disabled policy must not send playback commands")

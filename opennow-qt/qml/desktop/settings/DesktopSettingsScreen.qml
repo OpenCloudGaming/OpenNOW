@@ -17,7 +17,7 @@ FocusScope {
     readonly property var acceptancePanels: ({stats:statsSettingsPage, audio:audioPage,
         interface:interfacePage, console:consolePage, shortcuts:shortcutsPage,
         controllers:controllersPage, subscription:subscriptionPage, recording:recordingPage})
-    readonly property bool compactNavigation: width < 1050
+    readonly property bool compactNavigation: width < DesktopTokens.px(1050)
     readonly property int selectedGroup: sections.findIndex(section => section.page ===
         ([0,1,2].indexOf(selectedSection) >= 0 ? 0 : selectedSection === 10 ? 5 : selectedSection === 7 ? 8 : selectedSection))
     onSelectedSectionChanged: { advancedOpen = false }
@@ -26,18 +26,18 @@ FocusScope {
     TenBitWarningDialog { id: tenBitWarning; settingsStore: ShellStore }
 
     readonly property var sections: [
-        {label: qsTr("Stream"), detail: qsTr("Picture, codec, bitrate"), icon: "monitor", page: 3, keywords: "resolution fps hdr color audio stats overlay bitrate codec reflex backend gpu directx vulkan steam big picture launch gamepad fullscreen session ready persistent in-game graphics settings"},
-        {label: qsTr("Audio"), detail: qsTr("Output and stream audio"), icon: "wave", page: 4, keywords: "sound audio volume output microphone mute focus background reminder afk taskbar"},
-        {label: qsTr("Recording"), detail: qsTr("Capture, replay, shortcuts"), icon: "image", page: 12, keywords: "recording capture clip replay buffer memory duration folder resolution fps quality shortcuts F12"},
-        {label: qsTr("Controls"), detail: qsTr("Pads, mouse, shortcuts"), icon: "controller", page: 5, keywords: "controller gyroscope steam sensitivity keyboard language shortcuts"},
-        {label: qsTr("Look"), detail: qsTr("Theme, accent, layout"), icon: "palette", page: 8, keywords: "theme accent interface language scale motion console sidebar tiles"},
-        {label: qsTr("Console mode"), detail: qsTr("Gamepad-first interface"), icon: "controller", page: 9, keywords: "console fullscreen gamepad startup"},
+        {label: qsTr("Stream"), detail: qsTr("Picture, codec, bitrate"), icon: "monitor", page: 3, keywords: "resolution fps hdr color stats overlay timer bitrate codec reflex backend gpu directx vulkan steam big picture launch gamepad fullscreen session ready persistent in-game graphics settings background reminder afk taskbar"},
         {label: qsTr("Network"), detail: qsTr("Region, ping, proxy"), icon: "globe", page: 6, keywords: "server region ping proxy l4s"},
+        {label: qsTr("Audio"), detail: qsTr("Output and stream audio"), icon: "wave", page: 4, keywords: "sound audio volume output microphone mute focus"},
+        {label: qsTr("Controls"), detail: qsTr("Pads, mouse, shortcuts"), icon: "controller", page: 5, keywords: "controller gyroscope steam sensitivity keyboard language shortcuts"},
+        {label: qsTr("Recording"), detail: qsTr("Capture, replay, shortcuts"), icon: "image", page: 12, keywords: "recording capture clip replay buffer memory duration folder resolution fps quality shortcuts F12"},
+        {label: qsTr("Appearance"), detail: qsTr("Theme, accent, layout"), icon: "palette", page: 8, keywords: "theme accent interface language scale motion console sidebar tiles"},
+        {label: qsTr("Console mode"), detail: qsTr("Gamepad-first interface"), icon: "controller", page: 9, keywords: "console fullscreen gamepad startup"},
         {label: qsTr("Account"), detail: qsTr("NVIDIA, stores, privacy"), icon: "person", page: 0, keywords: "profile subscription stores steam epic xbox ubisoft battle gaijin privacy"},
-        {label: qsTr("About"), detail: qsTr("Updates, diagnostics"), icon: "info", page: 11, keywords: "version release update diagnostics onboarding introduction replay setup restart"}
+        {label: qsTr("About & support"), detail: qsTr("Updates, diagnostics"), icon: "info", page: 11, keywords: "version release update diagnostics onboarding introduction replay setup restart reset"}
     ]
-    readonly property var pageTitles: [qsTr("Account"), qsTr("Account"), qsTr("Account"), qsTr("Stream"), qsTr("Audio"), qsTr("Controls"), qsTr("Network"), qsTr("Look"), qsTr("Look"), qsTr("Console mode"), qsTr("Controls"), qsTr("About"), qsTr("Recording")]
-    readonly property var pageComponents: [accountGroup, subscriptionPage, accountGroup, streamPage, audioPage, controlsGroup, networkPage, lookGroup, lookGroup, consolePage, controlsGroup, aboutPage, recordingPage]
+    readonly property var pageTitles: [qsTr("Account"), qsTr("Account"), qsTr("Account"), qsTr("Stream"), qsTr("Audio"), qsTr("Controls"), qsTr("Network"), qsTr("Appearance"), qsTr("Appearance"), qsTr("Console mode"), qsTr("Controls"), qsTr("About & support"), qsTr("Recording")]
+    readonly property var pageComponents: [accountGroup, accountGroup, accountGroup, streamPage, audioPage, controlsGroup, networkPage, lookGroup, lookGroup, consolePage, controlsGroup, aboutPage, recordingPage]
 
     function matchesSection(section) {
         const query = searchQuery.trim().toLowerCase()
@@ -388,10 +388,9 @@ FocusScope {
 
     function projectLinks() {
         return [
-            {id: "source", label: qsTr("Source on GitHub"), hint: "↗"},
-            {id: "issues", label: qsTr("Report an issue"), hint: "↗"},
             {id: "diagnostics", label: qsTr("Copy diagnostics"), hint: "NO PERSONAL DATA"},
-            {id: "captures", label: qsTr("Reveal captures folder"), hint: ShellStore.mediaRootPath ? "↗" : "…"}
+            {id: "issues", label: qsTr("Report an issue"), hint: "↗"},
+            {id: "source", label: qsTr("Source on GitHub"), hint: "↗"}
         ]
     }
 
@@ -404,12 +403,6 @@ FocusScope {
             AppController.openExternalUrl("https://github.com/OpenCloudGaming/OpenNOW/issues")
         else if (link.id === "diagnostics")
             ShellStore.exportDiagnostics()
-        else if (link.id === "captures") {
-            if (ShellStore.mediaRootPath)
-                AppController.openLocalPath(ShellStore.mediaRootPath, false)
-            else
-                ShellStore.refreshMedia()
-        }
     }
 
     function resolutionItems() {
@@ -465,6 +458,8 @@ FocusScope {
                     delegate: Button {
                         required property var modelData
                         required property int index
+                        objectName: "settingsNavigation-" + modelData.page
+                        Accessible.name: modelData.label
                         visible: root.matchesSection(modelData)
                         width: root.compactNavigation ? DesktopTokens.px(130) : settingsRail.width
                         height: DesktopTokens.px(root.compactNavigation ? 48 : 64)
@@ -559,7 +554,6 @@ FocusScope {
         DesktopSettingsLookPage {
             availableWidth: contentFlick.width
             settingsScreen: root
-            statsSettingsPageComponent: statsSettingsPage
             interfacePageComponent: interfacePage
         }
     }
@@ -601,6 +595,7 @@ FocusScope {
         DesktopSettingsStreamPage {
             availableWidth: contentFlick.width
             settingsScreen: root
+            statsSettingsPageComponent: statsSettingsPage
         }
     }
 

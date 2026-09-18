@@ -1,14 +1,13 @@
 import QtQuick
-import QtQuick.Controls
-import QtQuick.Layouts
 import OpenNOW
 
 Column {
     id: page
+    objectName: "desktopNetworkSettings"
     required property real availableWidth
     required property var settingsScreen
 
-    width: page.availableWidth; spacing: 20
+    width: page.availableWidth; spacing: DesktopTokens.px(20)
     Component.onCompleted: ShellStore.refreshRegions()
     DesktopSettingsPanel {
         width: parent.width; paperStyle: true
@@ -57,32 +56,12 @@ Column {
             }
         }
     }
-    DesktopSettingsPanel {
-        width: parent.width; paperStyle: true
-        DesktopSettingsSection { text: qsTr("API PROXY") }
-        DesktopSettingsRow {
-            width: parent.width; paperStyle: true; glyph: "globe"; title: qsTr("Use proxy")
-            description: qsTr("Applies to API calls only · the stream always goes direct")
-            DesktopSettingsToggle { objectName: "renewProxyEnabled"; checked: page.settingsScreen.boolSetting("sessionProxyEnabled",false); onValueChangedByUser: value => page.settingsScreen.setSetting("sessionProxyEnabled",value) }
-        }
-        DesktopSettingsRow {
-            width: parent.width; paperStyle: true; glyph: "arrows"; title: qsTr("Proxy address")
-            description: qsTr("Leave empty to use a direct connection"); showDivider: false
-            DesktopSettingsField {
-                objectName: "renewProxyAddress"
-                width: DesktopTokens.px(320)
-                text: String(page.settingsScreen.valueSetting("sessionProxyUrl",""))
-                placeholderText: qsTr("http://proxy.example:8080")
-                Accessible.name: qsTr("Proxy address")
-                onEditingFinished: page.settingsScreen.setSetting("sessionProxyUrl",text)
-            }
-        }
-    }
     DesktopSettingsAdvanced {
-        detail: qsTr("Low-latency transport")
+        detail: qsTr("Transport · Network test · API proxy")
         expanded: page.settingsScreen.advancedOpen; onClicked: page.settingsScreen.advancedOpen = !page.settingsScreen.advancedOpen
     }
     DesktopSettingsDisclosure {
+        objectName: "networkAdvancedDisclosure"
         width: parent.width; expanded: page.settingsScreen.advancedOpen
         sourceComponent: DesktopSettingsPanel {
             width: page.availableWidth; paperStyle: true
@@ -98,6 +77,25 @@ Column {
                 showDivider: false
                 description: qsTr("Measure this zone's UDP payload reachability before streaming · selected zones only")
                 DesktopSettingsToggle { objectName: "renewNetworkTestToggle"; checked: page.settingsScreen.boolSetting("networkTest",false); onValueChangedByUser: value => page.settingsScreen.setSetting("networkTest",value) }
+            }
+            DesktopSettingsSection { text: qsTr("API PROXY") }
+            DesktopSettingsRow {
+                width: parent.width; paperStyle: true; glyph: "globe"; title: qsTr("Use proxy")
+                description: qsTr("Applies to API calls only · the stream always goes direct")
+                DesktopSettingsToggle { objectName: "renewProxyEnabled"; checked: page.settingsScreen.boolSetting("sessionProxyEnabled",false); onValueChangedByUser: value => page.settingsScreen.setSetting("sessionProxyEnabled",value) }
+            }
+            DesktopSettingsRow {
+                visible: page.settingsScreen.boolSetting("sessionProxyEnabled", false)
+                width: parent.width; paperStyle: true; glyph: "arrows"; title: qsTr("Proxy address")
+                description: qsTr("Leave empty to use a direct connection"); showDivider: false
+                DesktopSettingsField {
+                    objectName: "renewProxyAddress"
+                    width: DesktopTokens.px(300)
+                    text: String(page.settingsScreen.valueSetting("sessionProxyUrl",""))
+                    placeholderText: qsTr("http://proxy.example:8080")
+                    Accessible.name: qsTr("Proxy address")
+                    onEditingFinished: page.settingsScreen.setSetting("sessionProxyUrl",text)
+                }
             }
         }
     }

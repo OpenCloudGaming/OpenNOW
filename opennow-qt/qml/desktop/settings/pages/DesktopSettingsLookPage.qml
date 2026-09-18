@@ -6,13 +6,12 @@ import OpenNOW
 
 Column {
     id: page
+    objectName: "desktopAppearanceSettings"
     required property real availableWidth
     required property var settingsScreen
-    required property Component statsSettingsPageComponent
     required property Component interfacePageComponent
 
-    width: page.availableWidth; spacing: 20
-    property bool allThemes: false
+    width: page.availableWidth; spacing: DesktopTokens.px(20)
     readonly property string backgroundImage: String(page.settingsScreen.valueSetting("desktopBackgroundImage", ""))
 
     FileDialog {
@@ -28,6 +27,7 @@ Column {
         }
         onRejected: chooseBackgroundButton.forceActiveFocus()
     }
+    Loader { width: parent.width; sourceComponent: page.interfacePageComponent }
     DesktopSettingsPanel {
         width: parent.width; paperStyle: true
         DesktopSettingsSection { text: qsTr("THEME") }
@@ -50,7 +50,7 @@ Column {
         DesktopSettingsRow {
             width: parent.width; paperStyle: true; glyph: "palette"; title: qsTr("Accent"); description: qsTr("Selection, toggles and keyboard focus")
             Row {
-                spacing: 10
+                spacing: DesktopTokens.px(10)
                 DesktopSettingsButton {
                     objectName: "themePackAccent"
                     text: qsTr("Theme")
@@ -63,11 +63,11 @@ Column {
                     delegate: AbstractButton {
                         required property string modelData
                         objectName: "themeAccent-" + modelData
-                        width: 28; height: 28; Accessible.name: modelData
+                        width: DesktopTokens.px(28); height: DesktopTokens.px(28); Accessible.name: modelData
                         checked: Theme.accentOverridden && Theme.accent === modelData
                         onClicked: page.settingsScreen.setChoice("appAccentColor",modelData)
                         background: Rectangle {
-                            radius: 14; color: Theme.accentColor(parent.modelData)
+                            radius: DesktopTokens.px(14); color: Theme.accentColor(parent.modelData)
                             border.width: parent.activeFocus || parent.checked ? 3 : 0
                             border.color: Theme.label
                         }
@@ -76,29 +76,40 @@ Column {
             }
         }
         DesktopSettingsRow {
+            width: parent.width; paperStyle: true; glyph: "sun"; title: qsTr("Translucent interface")
+            description: qsTr("Use translucent shell surfaces when supported"); showDivider: false
+            DesktopSettingsToggle { checked: page.settingsScreen.boolSetting("translucentUI",false); onValueChangedByUser: value => page.settingsScreen.setSetting("translucentUI",value) }
+        }
+    }
+    DesktopSettingsPanel {
+        width: parent.width; paperStyle: true
+        DesktopSettingsSection { text: qsTr("BACKGROUND") }
+        DesktopSettingsRow {
             width: parent.width; paperStyle: true; glyph: "image"; title: qsTr("Background"); description: qsTr("Game art, a custom image, gradient or solid color")
             DesktopSettingsSegmented {
+                id: backgroundSelector
                 objectName: "desktopBackgroundChoice"
-                options: [{label:qsTr("Game art"),value:"art"},{label:qsTr("Gradient"),value:"gradient"},{label:qsTr("Solid"),value:"solid"},{label:qsTr("Custom"),value:"custom"}]; optionWidth: 80
+                options: [{label:qsTr("Game art"),value:"art"},{label:qsTr("Gradient"),value:"gradient"},{label:qsTr("Solid"),value:"solid"},{label:qsTr("Custom"),value:"custom"}]; optionWidth: 72
                 selectedIndex: options.findIndex(item => item.value === page.settingsScreen.valueSetting("desktopBackground","art"))
                 onSelected: (index,item) => page.settingsScreen.setSetting("desktopBackground",item.value)
             }
         }
         DesktopSettingsRow {
             width: parent.width; paperStyle: true; glyph: "image"; title: qsTr("Custom image")
+            visible: page.settingsScreen.valueSetting("desktopBackground", "art") === "custom"
             description: backgroundPreview.status === Image.Error
                 ? qsTr("Image unavailable. Choose another file or remove it.")
                 : page.backgroundImage !== "" ? qsTr("Keep the image in its original location") : qsTr("Choose a local PNG, JPEG, WebP or BMP image")
             Row {
-                spacing: 10
+                spacing: DesktopTokens.px(10)
                 Image {
                     id: backgroundPreview
                     objectName: "customBackgroundPreview"
-                    width: 60; height: 40
+                    width: DesktopTokens.px(60); height: DesktopTokens.px(40)
                     anchors.verticalCenter: parent.verticalCenter
                     visible: page.backgroundImage !== ""
                     source: page.backgroundImage
-                    sourceSize: Qt.size(120, 80)
+                    sourceSize: Qt.size(width * 2, height * 2)
                     fillMode: Image.PreserveAspectCrop
                     asynchronous: true
                 }
@@ -116,7 +127,7 @@ Column {
                         page.settingsScreen.setSetting("desktopBackgroundImage", "")
                         if (page.settingsScreen.valueSetting("desktopBackground", "art") === "custom")
                             page.settingsScreen.setSetting("desktopBackground", "art")
-                        chooseBackgroundButton.forceActiveFocus()
+                        backgroundSelector.focusSelectedOption()
                     }
                 }
             }
@@ -146,25 +157,18 @@ Column {
             }
         }
         DesktopSettingsRow {
+            width: parent.width; paperStyle: true; glyph: "sidebar"; title: qsTr("Collapsed sidebar")
+            description: qsTr("Show icons only · Ctrl B toggles")
+            DesktopSettingsToggle { checked: page.settingsScreen.boolSetting("desktopRailCollapsed",true); onValueChangedByUser: value => page.settingsScreen.setSetting("desktopRailCollapsed",value) }
+        }
+        DesktopSettingsRow {
             width: parent.width; paperStyle: true; glyph: "sidebar"; title: qsTr("Sidebar opens on hover"); description: qsTr("Expands over the page without moving it")
             DesktopSettingsToggle { checked: page.settingsScreen.boolSetting("desktopSidebarHover",true); onValueChangedByUser: value => page.settingsScreen.setSetting("desktopSidebarHover",value) }
         }
         DesktopSettingsRow {
-            width: parent.width; paperStyle: true; glyph: "clock"; title: qsTr("Session clock in stream"); description: qsTr("Small timer while playing"); showDivider: false
-            DesktopSettingsToggle { checked: page.settingsScreen.boolSetting("sessionCounterEnabled",false); onValueChangedByUser: value => page.settingsScreen.setSetting("sessionCounterEnabled",value) }
+            width: parent.width; paperStyle: true; glyph: "wave"; title: qsTr("Reduce motion")
+            description: qsTr("Cuts parallax and cover animations · follows your OS by default"); showDivider: false
+            DesktopSettingsToggle { checked: page.settingsScreen.boolSetting("reducedMotion",false); onValueChangedByUser: value => page.settingsScreen.setSetting("reducedMotion",value) }
         }
     }
-    Loader { width: parent.width; sourceComponent: page.statsSettingsPageComponent }
-    DesktopSettingsAdvanced { detail: qsTr("Language · Interface scale · Motion"); expanded: page.settingsScreen.advancedOpen; onClicked: page.settingsScreen.advancedOpen = !page.settingsScreen.advancedOpen }
-    DesktopSettingsDisclosure {
-        width: parent.width; expanded: page.settingsScreen.advancedOpen
-        sourceComponent: DesktopSettingsPanel {
-            width: page.availableWidth; paperStyle: true
-            DesktopSettingsRow {
-                width: parent.width; paperStyle: true; glyph: "grid"; title: qsTr("Interface scale"); showDivider: false
-                DesktopSettingsSlider { from: 0.85; to: 1.25; stepSize: 0.05; decimals: 2; suffix: "×"; value: Number(page.settingsScreen.valueSetting("desktopUiScale",1)); onCommitted: value => page.settingsScreen.setSetting("desktopUiScale",value) }
-            }
-        }
-    }
-    DesktopSettingsDisclosure { width: parent.width; expanded: page.settingsScreen.advancedOpen; sourceComponent: page.interfacePageComponent }
 }

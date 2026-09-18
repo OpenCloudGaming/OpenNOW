@@ -54,7 +54,7 @@ QtObject {
             {width:width, height:height, fps:fps}]}
     }
     function optionEnabled(value) {
-        const option = find(shell, "settingsOption-" + value)
+        const option = find(shell, "settingsChoice-" + value)
         check(option !== null, "the rendered control exposes " + value)
         return option.enabled
     }
@@ -184,6 +184,7 @@ QtObject {
         if (shell !== null) {
             control = find(shell, "desktopFrameRateControl")
             check(control !== null, "the desktop frame-rate selector exists")
+            control.expanded = true
             entitlement(1920, 1080, 360)
             owner.settings = Object.assign({}, owner.settings, {resolution:"1920x1080"})
             capability(true)

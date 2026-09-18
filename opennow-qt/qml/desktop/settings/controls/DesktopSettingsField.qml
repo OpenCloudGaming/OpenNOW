@@ -4,7 +4,7 @@ import OpenNOW
 
 TextField {
     id: control
-    implicitWidth: DesktopTokens.px(260)
+    implicitWidth: DesktopTokens.settingsControlWidth
     implicitHeight: DesktopTokens.px(40)
     color: Theme.label
     placeholderTextColor: Theme.textMuted

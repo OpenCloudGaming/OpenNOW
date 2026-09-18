@@ -34,6 +34,9 @@ QtObject {
     property Component pageComponent: Component {
         DesktopSettingsRecordingPage { availableWidth: 960; settingsScreen: fixture }
     }
+    property Component shortcutsComponent: Component {
+        DesktopSettingsShortcutsPage { availableWidth: 960; settingsScreen: fixture }
+    }
     property Component bindingComponent: Component { DesktopSettingsShortcutBinding {} }
     property Component statusComponent: Component { StreamCaptureStatus {} }
     function boolSetting(key, fallback) { return ShellStore.settings[key] ?? fallback }
@@ -62,8 +65,16 @@ QtObject {
         check(find(page, "replayBufferMemoryChoice").value === 256, "default memory limit")
         find(page, "recordingStreamSettings").clicked()
         check(selectedSection === 3, "source settings must link to Stream")
-        check(find(page, "editRecordingShortcut").text === "F12", "recording binding must be visible")
-        check(find(page, "editSaveClipShortcut").text === "Ctrl+F12", "clip binding must be visible")
+        check(find(page, "recordingShortcutHint").keyText === "F12", "recording binding must be visible")
+        check(find(page, "replayShortcutHint").keyText === "Ctrl+F12", "clip binding must be visible")
+        find(page, "recordingKeyboardShortcuts").clicked()
+        check(selectedSection === 10, "capture shortcut editing must link to the central shortcuts page")
+        const shortcuts = shortcutsComponent.createObject(parent)
+        check(shortcuts !== null, "central shortcut settings must load")
+        const editableBindings = shortcuts.allShortcutGroups().reduce((keys, group) => keys.concat(group.rows.map(row => row.setting)), [])
+        check(["shortcutToggleStats", "shortcutToggleRecording", "shortcutSaveClip"].every(key => editableBindings.indexOf(key) >= 0),
+            "statistics and capture bindings must remain editable in the central shortcut settings")
+        shortcuts.destroy()
         const binding = bindingComponent.createObject(parent)
         const status = statusComponent.createObject(parent)
         ShellStore.streamRecordingElapsedMs = 65000
