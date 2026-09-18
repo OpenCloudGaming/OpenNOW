@@ -217,6 +217,7 @@ qt_add_qml_module(opennow-qt
     QML_FILES
         qml/Main.qml
         qml/components/AppChrome.qml
+        qml/components/UpdateFailureDialog.qml
         qml/components/ShellViewport.qml
         qml/components/ArtworkSource.qml
         qml/components/ControllerGlyph.qml

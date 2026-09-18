@@ -1109,7 +1109,15 @@ fn preserve_portable_data(plan: &Plan, payload: &Path) -> Result<Vec<(PathBuf, P
         let entry = entry.map_err(|error| error.to_string())?;
         if !matches!(
             entry.file_name().to_str(),
-            Some("bin" | "share" | "LICENSE" | "THIRD_PARTY_NOTICES.json")
+            Some(
+                "bin"
+                    | "plugins"
+                    | "qml"
+                    | "share"
+                    | "translations"
+                    | "LICENSE"
+                    | "THIRD_PARTY_NOTICES.json"
+            )
         ) {
             sources.push(entry.path());
         }

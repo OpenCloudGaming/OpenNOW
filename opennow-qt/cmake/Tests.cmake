@@ -52,6 +52,12 @@ if(BUILD_TESTING)
     qt_add_shaders(opennow-hdrcolor-tests "opennow-hdrchrome-test-shaders"
         BATCHABLE PREFIX "/opennow/shaders" BASE "shaders" FILES ${OPENNOW_CHROME_SHADERS})
     find_package(Qt6 6.8 REQUIRED COMPONENTS QuickTest)
+    qt_add_executable(opennow-updatefailure-tests tests/tst_updatefailure.cpp)
+    target_link_libraries(opennow-updatefailure-tests PRIVATE Qt6::QuickTest Qt6::Quick)
+    add_test(NAME opennow-updatefailure-tests COMMAND opennow-updatefailure-tests
+        -input "${CMAKE_CURRENT_SOURCE_DIR}/tests/qml-updater")
+    set_tests_properties(opennow-updatefailure-tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software" TIMEOUT 30)
     qt_add_executable(opennow-queueselector-tests tests/tst_queueselector.cpp)
     target_link_libraries(opennow-queueselector-tests PRIVATE Qt6::QuickTest Qt6::Quick)
     target_compile_definitions(opennow-queueselector-tests PRIVATE
@@ -971,6 +977,7 @@ if(BUILD_TESTING)
         TIMEOUT 30
     )
     set(OPENNOW_CI_UNIT_TEST_TARGETS
+        opennow-updatefailure-tests
         opennow-applicationicons-tests
         opennow-tenbitwarning-tests
         opennow-graphicsdevices-tests

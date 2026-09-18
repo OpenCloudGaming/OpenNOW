@@ -666,6 +666,30 @@ private slots:
         }
     }
 
+    void updaterInstallationFailuresRemainVisibleAfterBackgroundChecks()
+    {
+        QJSEngine engine;
+        QVERIFY(prepareLaunchGuards(engine));
+        QVERIFY(initializeUpdaterEngine(engine));
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            acceptUpdaterState({status:'failed',message:'Authorization failed',canCheck:true});
+            acceptUpdaterState({status:'checking',message:'Checking releases'});
+            acceptUpdaterState({status:'not-available',message:'Up to date',canCheck:true});
+        )JS")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("updaterFailureMessage")).toString(), QStringLiteral("Authorization failed"));
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            updaterFailureMessage = '';
+            acceptUpdaterState({status:'rolled-back',message:'Previous version restored'});
+        )JS")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("updaterFailureMessage")).toString(), QStringLiteral("Previous version restored"));
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            updaterFailureMessage = '';
+            acceptUpdaterState({status:'rolled-back',message:'Previous version restored'});
+            acceptUpdaterState({status:'error',message:'Network unavailable'});
+        )JS")).isError());
+        QVERIFY(engine.evaluate(QStringLiteral("updaterFailureMessage")).toString().isEmpty());
+    }
+
     void updaterRetriesTransientDownloadsWithBoundedBackoff()
     {
         QJSEngine engine;
@@ -1440,6 +1464,7 @@ private:
             var pendingLaunchParams = null, pendingDirectLaunch = null, streamState = 'idle', streamerStatus = 'stopped';
             var updaterCheckRequestId = '', updaterDownloadRequestId = '', updaterInstallRequestId = '', updaterStateRequestId = '';
             var updaterError = '', accessibilityMessage = '', updaterInstallConfirmed = false, updaterExitScheduled = false, updaterReconciling = false;
+            var updaterFailureMessage = '';
             var lastAutoUpdateCheckMs = 0, autoDownloadAttempt = '';
             var autoDownloadAttemptCount = 0, autoDownloadAttemptMs = 0;
             var updaterState = {status:'downloaded',canInstall:true,canCheck:true};

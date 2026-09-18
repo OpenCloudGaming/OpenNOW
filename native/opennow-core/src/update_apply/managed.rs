@@ -455,9 +455,7 @@ pub(super) fn install(plan: &Plan, directory: &Path) -> Result<(), String> {
         return Ok(());
     }
     if code != 0 {
-        let mut message = format!(
-            "Native package manager exited with code {code}; update completion is not confirmed"
-        );
+        let mut message = installer_failure_message(plan.kind, code);
         if prepare(plan.kind, &plan.package, &plan.target, &plan.version).is_ok()
             && super::canonical_file(&plan.application_executable).is_ok()
         {
@@ -499,6 +497,22 @@ pub(super) fn install(plan: &Plan, directory: &Path) -> Result<(), String> {
         None,
     )?;
     super::cleanup_completed(plan, directory)
+}
+
+fn installer_failure_message(kind: InstallKind, code: i32) -> String {
+    let reason = match (kind, code) {
+        (InstallKind::DebianPackage, 126) => {
+            "Update authorization was cancelled. Try installing the update again and approve the authorization prompt"
+        }
+        (InstallKind::DebianPackage, 127) => {
+            "Update authorization failed. Ensure a PolicyKit authentication agent is running, then try again and approve the authorization prompt"
+        }
+        (InstallKind::WindowsMsi, 1602) => {
+            "Windows Installer was cancelled. Try installing the update again and complete the installer prompts"
+        }
+        _ => "Native package manager failed",
+    };
+    format!("{reason} (exit code {code}); update completion is not confirmed")
 }
 
 pub(super) fn verify_installed(
@@ -563,10 +577,55 @@ pub(super) fn verify_installed(
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
+    #[test]
+    fn installer_failures_explain_authorization_and_cancellation_without_claiming_success() {
+        for (kind, code, explanation) in [
+            (
+                InstallKind::DebianPackage,
+                126,
+                "authorization was cancelled",
+            ),
+            (
+                InstallKind::DebianPackage,
+                127,
+                "PolicyKit authentication agent",
+            ),
+            (
+                InstallKind::WindowsMsi,
+                1602,
+                "Windows Installer was cancelled",
+            ),
+        ] {
+            let message = installer_failure_message(kind, code);
+            assert!(message.contains(explanation), "{message}");
+            assert!(message.contains(&format!("exit code {code}")), "{message}");
+            assert!(message.ends_with("update completion is not confirmed"));
+        }
+    }
+
+    #[test]
+    fn installer_failure_codes_are_interpreted_only_for_their_package_manager() {
+        for (kind, code) in [
+            (InstallKind::DebianPackage, 1602),
+            (InstallKind::WindowsMsi, 126),
+            (InstallKind::WindowsMsi, 127),
+            (InstallKind::DebianPackage, 1),
+            (InstallKind::WindowsMsi, 1603),
+        ] {
+            assert_eq!(
+                installer_failure_message(kind, code),
+                format!(
+                    "Native package manager failed (exit code {code}); update completion is not confirmed"
+                )
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
     #[test]
     fn deb_ownership_matches_canonical_directories_but_rejects_file_symlinks() {
         let directory = tempfile::tempdir().unwrap();

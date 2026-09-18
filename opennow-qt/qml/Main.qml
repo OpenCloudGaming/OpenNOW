@@ -835,6 +835,14 @@ ApplicationWindow {
         }
     }
 
+    UpdateFailureDialog {
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        failureMessage: ShellStore.updaterFailureMessage
+        sessionSafe: ShellStore.updaterSessionSafe
+        onDismissed: ShellStore.updaterFailureMessage = ""
+    }
+
     Component { id: desktopAppScreen; DesktopApp {} }
     Component { id: onboardingScreen; DesktopOnboardingScreen {} }
     Component { id: homeScreen; HomeScreen {} }

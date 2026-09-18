@@ -277,6 +277,7 @@ QtObject {
     property string diagnosticsMessage: ""
     property var updaterState: ({status: "idle", currentVersion: Qt.application.version, canCheck: false})
     property string updaterError: ""
+    property string updaterFailureMessage: ""
     property bool updaterInstallConfirmed: false
     property bool updaterExitScheduled: false
     property bool updaterReconciling: false
@@ -1332,6 +1333,9 @@ QtObject {
     }
 
     function acceptUpdaterState(state) {
+        if (["failed", "rolled-back"].indexOf(state.status) >= 0 && state.message
+                && (state.status !== updaterState.status || state.message !== updaterState.message))
+            updaterFailureMessage = state.message
         if (state.status !== updaterState.status
                 || ["error", "failed", "rolled-back", "succeeded", "managed-pending", "reboot-required"].indexOf(state.status) >= 0)
             updaterError = ""
@@ -3679,6 +3683,7 @@ QtObject {
                 root.reconcileUpdaterFailure(message)
             } else if (requestId === root.updaterInstallRequestId) {
                 root.updaterInstallRequestId = ""
+                root.updaterFailureMessage = message
                 root.reconcileUpdaterFailure(message)
             } else if (requestId === root.socialCapabilitiesRequestId) {
                 root.socialCapabilitiesRequestId = ""
