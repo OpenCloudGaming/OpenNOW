@@ -121,30 +121,13 @@ FocusScope {
             width: parent.width
             height: 28
 
-            Image {
-                id: brandMark
-                width: 40
-                height: 22
+            DesktopBrandLockup {
                 anchors.verticalCenter: parent.verticalCenter
                 x: 2
-                source: "qrc:/qt/qml/OpenNOW/res/brand/opennow-mark.png"
-                fillMode: Image.PreserveAspectFit
-                smooth: false
-                sourceSize: Qt.size(Math.ceil(width * Screen.devicePixelRatio), Math.ceil(height * Screen.devicePixelRatio))
-            }
-
-            Text {
-                visible: root.reveal > 0
-                        opacity: root.reveal
-                anchors.verticalCenter: parent.verticalCenter
-                anchors.left: brandMark.right
-                anchors.leftMargin: 10
-                text: "OpenNOW"
-                color: DesktopTokens.text
-                font.family: DesktopTokens.displayFont
-                font.pixelSize: DesktopTokens.headingSize
-                font.weight: Font.Black
-                font.letterSpacing: -0.32
+                markHeight: 22
+                fontPixelSize: DesktopTokens.headingSize
+                spacing: 10
+                textReveal: root.reveal
             }
 
             Rectangle {

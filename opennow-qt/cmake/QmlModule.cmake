@@ -248,6 +248,7 @@ qt_add_qml_module(opennow-qt
         qml/components/VirtualKeyboard.qml
         qml/desktop/auth/DesktopSignInScreen.qml
         qml/desktop/components/DesktopBackdrop.qml
+        qml/desktop/components/DesktopBrandLockup.qml
         qml/desktop/components/DesktopButton.qml
         qml/desktop/components/DesktopGameModal.qml
         qml/desktop/components/DesktopQueueSelector.qml
@@ -264,7 +265,6 @@ qt_add_qml_module(opennow-qt
         qml/desktop/settings/DesktopSettingsScreen.qml
         qml/desktop/onboarding/DesktopOnboardingScreen.qml
         qml/desktop/onboarding/DesktopOnboardingBackdrop.qml
-        qml/desktop/onboarding/DesktopOnboardingMark.qml
         qml/desktop/onboarding/DesktopOnboardingModeCard.qml
         qml/desktop/onboarding/DesktopOnboardingPicture.qml
         qml/desktop/onboarding/DesktopOnboardingBoost.qml

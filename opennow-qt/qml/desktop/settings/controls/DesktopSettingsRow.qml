@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Window
 import OpenNOW
 
 Item {
@@ -16,6 +17,7 @@ Item {
     property bool showDivider: true
     property string leadingLetter: ""
     property url leadingIcon: ""
+    property real leadingIconWidth: DesktopTokens.px(19)
     property color leadingColor: DesktopTokens.raised
     readonly property bool hasLeading: glyph !== "" || leadingLetter !== "" || leadingIcon.toString() !== ""
     default property alias trailing: trailingSlot.data
@@ -44,10 +46,10 @@ Item {
         }
         Image {
             anchors.centerIn: parent
-            width: DesktopTokens.px(19)
+            width: root.leadingIconWidth
             height: width
             source: root.leadingIcon
-            sourceSize: Qt.size(width, height)
+            sourceSize: Qt.size(Math.ceil(width * Screen.devicePixelRatio), Math.ceil(height * Screen.devicePixelRatio))
             fillMode: Image.PreserveAspectFit
             visible: root.leadingIcon.toString() !== ""
         }

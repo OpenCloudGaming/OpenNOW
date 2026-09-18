@@ -381,7 +381,7 @@ FocusScope {
                 Text { text: qsTr("Jump back in"); color: "#FFFFFF"; font.family: Theme.displayFont; font.pixelSize: 16; font.weight: Font.Black; font.letterSpacing: -0.2 }
                 Text {
                     anchors.right: parent.right; y: 1
-                    text: qsTr("See all %1  ›").arg(root.games.length)
+                    text: root.games.length > 0 ? qsTr("See all %1  ›").arg(root.games.length) : qsTr("See all  ›")
                     color: seeJump.hovered ? "#B8FFFFFF" : "#80FFFFFF"
                     font.family: Theme.bodyFont; font.pixelSize: 11; font.weight: Font.Bold
                     HoverHandler { id: seeJump; cursorShape: Qt.PointingHandCursor }

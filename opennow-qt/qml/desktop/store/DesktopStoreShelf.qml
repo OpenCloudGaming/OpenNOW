@@ -20,6 +20,8 @@ Item {
     property int loadedLimit: 0
     property int requestedLimit: 0
     readonly property var displayGames: categoryId ? localGames : games
+    readonly property bool empty: root.displayGames.length === 0 && root.loadError === ""
+    visible: !root.empty
     function cancelRequest() {
         loadDelay.stop()
         const pending = requestId
@@ -83,7 +85,7 @@ Item {
     readonly property int tileWidth: Math.max(DesktopTokens.libraryArtWidth, Math.floor((width - railGap * (columnCount - 1)) / columnCount))
     readonly property int tileHeight: Math.round(tileWidth * 198 / 132) + DesktopTokens.storeCardInfoHeight
 
-    height: DesktopTokens.px(31) + tileHeight
+    height: root.empty ? 0 : DesktopTokens.px(31) + tileHeight
 
     Row {
         x: 0

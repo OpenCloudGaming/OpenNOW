@@ -259,14 +259,7 @@ FocusScope {
             Layout.leftMargin: DesktopTokens.px(root.compact ? 20 : 40)
             Layout.rightMargin: DesktopTokens.px(root.compact ? 20 : 40)
             spacing: DesktopTokens.px(10)
-            DesktopOnboardingMark {
-                Layout.preferredWidth: DesktopTokens.px(26)
-                Layout.preferredHeight: DesktopTokens.px(16)
-            }
-            Text {
-                text: "OpenNOW"
-                color: Theme.label; font.family: Theme.displayFont
-                font.pixelSize: DesktopTokens.px(18); font.weight: Font.Black
+            DesktopBrandLockup {
             }
             Rectangle {
                 visible: !root.compact

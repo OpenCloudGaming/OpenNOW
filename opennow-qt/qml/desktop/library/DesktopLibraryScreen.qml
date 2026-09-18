@@ -107,7 +107,9 @@ FocusScope {
     readonly property real tileScale: Math.max(0.75, Math.min(1.5, Number(ShellStore.settings.posterSizeScale || 1.05))) / 1.05
     readonly property int libraryColumns: Math.max(1, Math.floor((grid.width + 10) / (156 * tileScale)))
     readonly property int libraryCellW: Math.max(1, Math.floor(grid.width / libraryColumns))
-    readonly property int libraryCellH: Math.round(libraryCellW * 214 / 146)
+    // The delegate's artwork keeps a 2:3 aspect inside a 6px gutter; derive the
+    // cell from that geometry so the outline and overlay never clip at scale.
+    readonly property int libraryCellH: Math.round((libraryCellW - 12) * 198 / 132) + 12
 
     function editCollection(mode, game) {
         collectionDialog.mode = mode

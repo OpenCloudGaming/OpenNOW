@@ -169,16 +169,7 @@ FocusScope {
             x: DesktopTokens.px(root.wideLayout ? 40 : 24)
             anchors.verticalCenter: parent.verticalCenter
             spacing: DesktopTokens.px(10)
-            DesktopOnboardingMark { anchors.verticalCenter: parent.verticalCenter; width: DesktopTokens.px(26); height: DesktopTokens.px(16) }
-            BodyText {
-                anchors.verticalCenter: parent.verticalCenter
-                text: "OpenNOW"
-                color: DesktopTokens.text
-                font.pixelSize: DesktopTokens.px(18)
-                font.weight: Font.Black
-                font.letterSpacing: -0.36 * DesktopTokens.uiScale
-                lineHeight: DesktopTokens.px(22)
-            }
+            DesktopBrandLockup { anchors.verticalCenter: parent.verticalCenter }
             Row {
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: DesktopTokens.px(6)

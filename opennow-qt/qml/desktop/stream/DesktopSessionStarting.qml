@@ -92,18 +92,12 @@ FocusScope {
         anchors.top: parent.top
         anchors.margins: 32
         spacing: 10
-        Image {
+        DesktopBrandLockup {
             anchors.verticalCenter: parent.verticalCenter
-            width: 22; height: 12
-            source: "qrc:/qt/qml/OpenNOW/res/brand/opennow-mark.png"
-            fillMode: Image.PreserveAspectFit
-        }
-        Text {
-            text: "OpenNOW"
-            color: Theme.mediaForeground
-            font.family: DesktopTokens.displayFont
-            font.pixelSize: 16
-            font.weight: Font.Black
+            markHeight: 12
+            fontPixelSize: 16
+            spacing: 10
+            ink: Theme.mediaForeground
         }
     }
 

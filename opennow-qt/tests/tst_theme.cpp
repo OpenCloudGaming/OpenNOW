@@ -42,6 +42,7 @@ public slots:
             qmlRegisterSingletonType(QUrl::fromLocalFile(source + "/" + entry.second), "OpenNOW", 1, 0, entry.first);
         }
         for (const auto &entry : {std::pair{"DesktopSessionStarting", "desktop/stream/DesktopSessionStarting.qml"},
+                                 {"DesktopBrandLockup", "desktop/components/DesktopBrandLockup.qml"},
                                  {"SessionSetupProgress", "state/SessionSetupProgress.qml"},
                                  {"DesktopGameModal", "desktop/components/DesktopGameModal.qml"},
                                  {"MotionProgress", "components/MotionProgress.qml"},

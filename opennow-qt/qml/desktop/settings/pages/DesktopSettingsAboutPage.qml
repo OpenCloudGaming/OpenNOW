@@ -19,13 +19,14 @@ Column {
         DesktopSettingsRow {
             width: parent.width; paperStyle: true
             leadingIcon: "qrc:/qt/qml/OpenNOW/res/brand/opennow-mark.png"
+            leadingIconWidth: DesktopTokens.px(30)
             title: "OpenNOW " + String(ShellStore.updaterState.currentVersion || qsTr("unknown"))
             description: String(ShellStore.updaterState.message || ShellStore.updaterState.status || qsTr("idle"))
             DesktopSettingsButton { text: qsTr("Updates"); onClicked: AppController.navigate("updates") }
             DesktopSettingsButton { text: ShellStore.updaterState.status === "checking" ? qsTr("Checking…") : qsTr("Check for updates"); primary: true; enabled: !ShellStore.updaterBusy && ShellStore.updaterState.canCheck === true; onClicked: ShellStore.checkForUpdates() }
         }
         DesktopSettingsRow {
-            width: parent.width; paperStyle: true; title: qsTr("Automatically check for updates")
+            width: parent.width; paperStyle: true; glyph: "clock"; title: qsTr("Automatically check for updates")
             description: qsTr("Check every six hours while no streaming session is active.")
             DesktopSettingsToggle {
                 objectName: "autoCheckUpdatesToggle"
@@ -35,7 +36,7 @@ Column {
             }
         }
         DesktopSettingsRow {
-            width: parent.width; paperStyle: true; title: qsTr("Automatically download updates")
+            width: parent.width; paperStyle: true; glyph: "check"; title: qsTr("Automatically download updates")
             description: qsTr("Download verified updates while idle. Installation always requires your confirmation.")
             DesktopSettingsToggle {
                 objectName: "autoDownloadUpdatesToggle"

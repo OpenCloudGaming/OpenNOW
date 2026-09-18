@@ -442,16 +442,15 @@ FocusScope {
         }
         Flickable {
             width: parent.width
-            height: root.compactNavigation ? DesktopTokens.px(52) : Math.max(0, root.height - settingsRail.y - settingsSearch.height - 36)
-            contentWidth: root.compactNavigation ? navigation.implicitWidth : width
+            height: root.compactNavigation ? navigation.implicitHeight : Math.max(0, root.height - settingsRail.y - settingsSearch.height - 36)
+            contentWidth: width
             contentHeight: navigation.implicitHeight
             clip: true
             boundsBehavior: Flickable.StopAtBounds
             Flow {
                 id: navigation
-                width: root.compactNavigation ? implicitWidth : parent.width
-                flow: root.compactNavigation ? Flow.TopToBottom : Flow.LeftToRight
-                height: root.compactNavigation ? DesktopTokens.px(52) : implicitHeight
+                width: parent.width
+                height: implicitHeight
                 spacing: DesktopTokens.px(6)
                 Repeater {
                     model: root.sections
@@ -461,7 +460,7 @@ FocusScope {
                         objectName: "settingsNavigation-" + modelData.page
                         Accessible.name: modelData.label
                         visible: root.matchesSection(modelData)
-                        width: root.compactNavigation ? DesktopTokens.px(130) : settingsRail.width
+                        width: root.compactNavigation ? Math.max(DesktopTokens.px(104), navLabel.implicitWidth + DesktopTokens.px(40)) : settingsRail.width
                         height: DesktopTokens.px(root.compactNavigation ? 48 : 64)
                         padding: 12
                         hoverEnabled: true
@@ -483,7 +482,7 @@ FocusScope {
                             ColumnLayout {
                                 Layout.fillWidth: true
                                 spacing: 2
-                                Text { Layout.fillWidth: true; text: modelData.label; color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: DesktopTokens.bodySize; font.weight: root.selectedGroup === index ? Font.ExtraBold : Font.Bold; elide: Text.ElideRight }
+                                Text { id: navLabel; Layout.fillWidth: true; text: modelData.label; color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: DesktopTokens.bodySize; font.weight: root.selectedGroup === index ? Font.ExtraBold : Font.Bold; elide: Text.ElideRight }
                                 Text { visible: !root.compactNavigation; Layout.fillWidth: true; text: modelData.detail; color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: DesktopTokens.captionSize; elide: Text.ElideRight }
                             }
                         }
