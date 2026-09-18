@@ -9,7 +9,7 @@ Column {
     required property Component statsSettingsPageComponent
     property bool statisticsOpen: false
 
-    width: page.availableWidth; spacing: DesktopTokens.px(20)
+    width: page.availableWidth; spacing: DesktopTokens.px(12)
     DesktopSettingsPanel {
         width: parent.width; paperStyle: true
         DesktopSettingsSection { text: qsTr("STREAM QUALITY") }
@@ -38,6 +38,23 @@ Column {
                 value: Number(page.settingsScreen.valueSetting("maxBitrateMbps",75)); suffix: " Mbps"
                 onCommitted: value => page.settingsScreen.setSetting("maxBitrateMbps",Math.round(value))
             }
+        }
+        DesktopSettingsRow {
+            objectName: "codecSettingsRow"
+            width: parent.width; paperStyle: true; glyph: "chip"; title: qsTr("Codec")
+            description: ShellStore.streamerDetectionMessage
+            DesktopSettingsSegmented {
+                options: [{label:qsTr("Auto"),value:"auto"},{label:"AV1",value:"av1",enabled:ShellStore.codecAvailable("av1")},{label:"H.265",value:"h265",enabled:ShellStore.codecAvailable("h265")},{label:"H.264",value:"h264",enabled:ShellStore.codecAvailable("h264")}]
+                disabledHint: qsTr("Not supported by the detected native decoder")
+                optionWidth: 64; selectedIndex: options.findIndex(item => item.value === page.settingsScreen.valueSetting("codec","auto"))
+                onSelected: (index,item) => page.settingsScreen.setChoice("codec",item.value)
+            }
+        }
+        DesktopSettingsHevcHelp {
+            width: parent.width
+            runtimeReady: ShellStore.nativeRuntimeReady
+            capabilities: ShellStore.nativeRuntimeCapabilities
+            onOpenStoreRequested: url => Qt.openUrlExternally(url)
         }
         DesktopSettingsRow {
             width: parent.width; paperStyle: true; glyph: "drop"; title: qsTr("Save bandwidth")
@@ -230,22 +247,6 @@ Column {
                 items: ShellStore.videoBackendItems()
                 value: page.settingsScreen.valueSetting("nativeVideoBackend", "auto")
                 onSelected: value => page.settingsScreen.setSetting("nativeVideoBackend", value)
-            }
-            DesktopSettingsRow {
-                width: parent.width; paperStyle: true; glyph: "chip"; title: qsTr("Codec")
-                description: ShellStore.streamerDetectionMessage
-                DesktopSettingsSegmented {
-                    options: [{label:qsTr("Auto"),value:"auto"},{label:"AV1",value:"av1",enabled:ShellStore.codecAvailable("av1")},{label:"H.265",value:"h265",enabled:ShellStore.codecAvailable("h265")},{label:"H.264",value:"h264",enabled:ShellStore.codecAvailable("h264")}]
-                    disabledHint: qsTr("Not supported by the detected native decoder")
-                    optionWidth: 64; selectedIndex: options.findIndex(item => item.value === page.settingsScreen.valueSetting("codec","auto"))
-                    onSelected: (index,item) => page.settingsScreen.setChoice("codec",item.value)
-                }
-            }
-            DesktopSettingsHevcHelp {
-                width: parent.width
-                runtimeReady: ShellStore.nativeRuntimeReady
-                capabilities: ShellStore.nativeRuntimeCapabilities
-                onOpenStoreRequested: url => Qt.openUrlExternally(url)
             }
             DesktopSettingsRow {
                 width: parent.width; paperStyle: true; glyph: "controller"; title: qsTr("Steam Deck identity"); description: qsTr("Unlock Deck resolutions and 90 FPS · refreshes entitlements")

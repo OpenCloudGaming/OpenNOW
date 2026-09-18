@@ -8,7 +8,7 @@ Column {
     required property real availableWidth
     required property var settingsScreen
 
-    width: page.availableWidth; spacing: DesktopTokens.px(20)
+    width: page.availableWidth; spacing: DesktopTokens.px(12)
     DesktopSettingsPanel {
         width: parent.width; paperStyle: true
         DesktopSettingsSection { text: qsTr("CONSOLE MODE") }

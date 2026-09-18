@@ -12,7 +12,7 @@ Column {
     property bool confirmReset: false
     property bool releaseNotesOpen: false
 
-    width: page.availableWidth; spacing: DesktopTokens.px(20)
+    width: page.availableWidth; spacing: DesktopTokens.px(12)
     DesktopSettingsPanel {
         width: parent.width; paperStyle: true
         DesktopSettingsSection { text: qsTr("OPENNOW") }

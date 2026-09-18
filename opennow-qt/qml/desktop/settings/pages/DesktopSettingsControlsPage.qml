@@ -12,7 +12,7 @@ Column {
     required property Component shortcutsPageComponent
 
     property bool shortcutsOpen: controlsRoot.settingsScreen.selectedSection === 10
-    width: controlsRoot.availableWidth; spacing: DesktopTokens.px(20)
+    width: controlsRoot.availableWidth; spacing: DesktopTokens.px(12)
     Loader { width: parent.width; sourceComponent: controlsRoot.controllersPageComponent }
     DesktopSettingsPanel {
         width: parent.width; paperStyle: true

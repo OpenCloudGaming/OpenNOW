@@ -60,7 +60,6 @@ Item {
     DesktopSettingsRow {
         id: header
         width: parent.width; paperStyle: true; glyph: "monitor"; expanded: root.expanded
-        rowHeight: DesktopTokens.px(68)
         title: qsTr("Resolution")
         description: root.expanded ? qsTr("%1 available · Esc closes").arg(root.available.length)
             : root.current ? root.current.detail : root.value.replace("x", "×")

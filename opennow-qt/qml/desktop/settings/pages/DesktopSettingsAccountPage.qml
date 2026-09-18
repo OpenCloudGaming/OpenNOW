@@ -12,7 +12,7 @@ Column {
     required property Component subscriptionPageComponent
     required property Component storesPageComponent
 
-    width: page.availableWidth; spacing: DesktopTokens.px(20)
+    width: page.availableWidth; spacing: DesktopTokens.px(12)
     Loader { width: parent.width; sourceComponent: page.profilePageComponent }
     Loader { width: parent.width; sourceComponent: page.subscriptionPageComponent }
     DesktopSettingsPanel {

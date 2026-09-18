@@ -8,7 +8,7 @@ Column {
     required property var settingsScreen
     property bool metricsOpen: false
 
-    width: page.availableWidth; spacing: DesktopTokens.px(20)
+    width: page.availableWidth; spacing: DesktopTokens.px(12)
     DesktopSettingsPanel {
         width: parent.width; paperStyle: true
         DesktopSettingsSection { text: qsTr("STATISTICS OVERLAY") }

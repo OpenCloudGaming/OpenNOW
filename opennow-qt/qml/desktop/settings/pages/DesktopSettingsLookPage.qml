@@ -11,7 +11,7 @@ Column {
     required property var settingsScreen
     required property Component interfacePageComponent
 
-    width: page.availableWidth; spacing: DesktopTokens.px(20)
+    width: page.availableWidth; spacing: DesktopTokens.px(12)
     readonly property string backgroundImage: String(page.settingsScreen.valueSetting("desktopBackgroundImage", ""))
 
     FileDialog {

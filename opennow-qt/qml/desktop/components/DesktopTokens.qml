@@ -62,7 +62,7 @@ QtObject {
     readonly property int railCollapsedWidth: px(72)
     readonly property int topBarHeight: px(64)
     readonly property int statusBarHeight: px(52)
-    readonly property int rowHeight: px(76)
+    readonly property int rowHeight: px(60)
     readonly property int controlHeight: px(38)
     readonly property int settingsInset: px(20)
     readonly property int settingsLabelInset: px(76)

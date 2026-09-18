@@ -272,6 +272,13 @@ int AcceptanceSession::prepareWindow()
                 int rows = 0;
                 const auto verify = [&rows](auto &&self, QQuickItem *item) -> bool {
                     if (!item || !item->isVisible()) return true;
+                    if (item->objectName() == u"desktopStreamSettings"_s) {
+                        auto *codec = item->findChild<QQuickItem *>(u"codecSettingsRow"_s);
+                        if (!codec || !codec->isVisible()) {
+                            qCritical("Codec must be visible without opening Advanced");
+                            return false;
+                        }
+                    }
                     if (item->objectName() == u"settingsButtonLabel"_s) {
                         auto *button = item->parentItem()->parentItem()->parentItem();
                         if (!button->property("menu").toBool() && button->width() >= button->implicitWidth()

@@ -8,7 +8,7 @@ Column {
     required property var settingsScreen
 
     width: availableWidth
-    spacing: DesktopTokens.px(20)
+    spacing: DesktopTokens.px(12)
 
     Component.onCompleted: ShellStore.refreshMedia()
 

@@ -7,12 +7,12 @@ Item {
     property string description: ""
     default property alias actions: actionRow.data
     width: parent.width
-    implicitHeight: Math.max(heading.implicitHeight, actionRow.implicitHeight) + DesktopTokens.px(28)
+    implicitHeight: Math.max(heading.implicitHeight, actionRow.implicitHeight) + DesktopTokens.px(20)
 
     Column {
         id: heading
         x: DesktopTokens.settingsInset
-        y: DesktopTokens.px(14)
+        y: DesktopTokens.px(10)
         width: Math.max(0, actionRow.x - x - DesktopTokens.px(16))
         spacing: DesktopTokens.px(4)
         Text {

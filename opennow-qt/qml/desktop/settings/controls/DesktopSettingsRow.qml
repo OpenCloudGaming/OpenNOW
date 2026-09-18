@@ -24,13 +24,13 @@ Item {
     readonly property real rightInset: paperStyle ? DesktopTokens.settingsInset : 0
     readonly property real controlWidth: Math.max(0, Math.min(DesktopTokens.settingsControlWidth, width - labelInset - rightInset))
     readonly property bool stacked: width < DesktopTokens.settingsCompactWidth && trailingSlot.implicitWidth > DesktopTokens.px(120)
-    implicitHeight: Math.max(rowHeight, (stacked ? trailingSlot.y + trailingSlot.height : Math.max(labels.y + labels.height, trailingSlot.y + trailingSlot.height)) + DesktopTokens.px(14))
+    implicitHeight: Math.max(rowHeight, (stacked ? trailingSlot.y + trailingSlot.height : Math.max(labels.y + labels.height, trailingSlot.y + trailingSlot.height)) + DesktopTokens.px(10))
 
     Rectangle {
         id: leadingTile
         visible: root.hasLeading
         x: root.paperStyle ? DesktopTokens.settingsInset : 0
-        y: DesktopTokens.px(14)
+        y: DesktopTokens.px(10)
         width: DesktopTokens.px(root.paperStyle ? 40 : 36)
         height: width
         radius: DesktopTokens.px(root.paperStyle ? 12 : 10)
@@ -69,8 +69,8 @@ Item {
         anchors.leftMargin: root.labelInset
         anchors.right: root.stacked ? parent.right : trailingSlot.left
         anchors.rightMargin: root.stacked ? root.rightInset : DesktopTokens.px(20)
-        y: DesktopTokens.px(14) + Math.max(0, (DesktopTokens.px(40) - titleLabel.implicitHeight) / 2)
-        spacing: DesktopTokens.px(4)
+        y: DesktopTokens.px(10) + Math.max(0, (DesktopTokens.px(40) - height) / 2)
+        spacing: DesktopTokens.px(2)
         Text {
             id: titleLabel
             width: parent.width
@@ -99,7 +99,7 @@ Item {
         readonly property real availableWidth: root.controlWidth
         anchors.right: parent.right
         anchors.rightMargin: root.rightInset + (root.expandable ? DesktopTokens.px(40) : 0)
-        y: root.stacked ? labels.y + labels.height + DesktopTokens.px(12) : DesktopTokens.px(14)
+        y: root.stacked ? labels.y + labels.height + DesktopTokens.px(8) : DesktopTokens.px(10)
         spacing: DesktopTokens.px(10)
         height: Math.max(DesktopTokens.px(40), implicitHeight)
 
@@ -121,7 +121,7 @@ Item {
     AbstractButton {
         visible: root.paperStyle && root.expandable
         anchors.right: parent.right; anchors.rightMargin: root.rightInset
-        y: DesktopTokens.px(18); width: DesktopTokens.px(32); height: width
+        y: DesktopTokens.px(14); width: DesktopTokens.px(32); height: width
         Accessible.name: root.title
         onClicked: root.expansionRequested()
         background: Rectangle { radius: DesktopTokens.px(10); color: parent.activeFocus || parent.hovered ? DesktopTokens.raised : "transparent" }
