@@ -92,6 +92,7 @@ include(CPack)
         self.assertNotIn("sdl3", dependencies.lower())
         self.assertIn("libc6", dependencies)
         self.assertIn("libvulkan1", dependencies)
+        self.assertIn("pkexec", dependencies)
         self.assertEqual(self.run_command(["dpkg-deb", "-f", str(deb), "Version"]).stdout.strip(),
                          "1.2.3~nightly.4.1")
         extracted = self.root / "extracted"

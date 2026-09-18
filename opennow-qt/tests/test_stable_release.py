@@ -30,7 +30,7 @@ class StableReleaseTest(unittest.TestCase):
             source = root / "source"
             source.mkdir()
             names = expected_packages("1.0.0", "a" * 40, "stable")
-            self.assertEqual(len(names), 9)
+            self.assertEqual(len(names), 11)
             self.assertIn("OpenNOW-Qt-1.0.0-Darwin-arm64.dmg", names)
             for name in names:
                 (source / name).write_bytes(name.encode())
@@ -52,16 +52,27 @@ class StableReleaseTest(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/qt-stable-release.yml").read_text()
         for required in ('[[ "$GITHUB_REF" == refs/heads/main ]]',
                          '[[ "$SOURCE_COMMIT" == "$GITHUB_SHA" ]]',
-                         "needs: [preflight, contracts, checks, build]",
-                         "channel: stable", 'update_public_key: ""',
+                         "needs: [preflight, contracts, checks]",
+                         "--channel stable", "candidate_run_id:",
                          "sha256sum --check --strict SHA256SUMS",
-                         "cmp downloaded/RELEASE-INFO.json release/RELEASE-INFO.json",
-                         "cmp downloaded/SHA256SUMS release/SHA256SUMS",
+                         "promote_candidate.py provenance", "promote_candidate.py assemble",
                          "--draft --latest=false", "--draft=false --prerelease=false --latest"):
             self.assertIn(required, workflow)
         self.assertNotIn("continue-on-error", workflow)
+        self.assertIn("uses: ./.github/actions/qt-unit-tests", workflow)
+        for label in ("linux-x64", "windows-x64", "macos-arm64"):
+            self.assertIn(f"label: {label}", workflow)
+        publisher = workflow.split("  publish:\n", 1)[1]
+        self.assertIn("environment: qt-production-release", publisher)
+        self.assertIn("persist-credentials: false", publisher)
         self.assertNotIn("secrets.", workflow)
-        self.assertNotIn("always()", workflow)
+        self.assertNotIn("qt-build.yml", workflow)
+        self.assertNotIn("complete-unsigned", publisher)
+        self.assertIn("complete-candidate", publisher)
+        self.assertIn("run-id: ${{ inputs.candidate_run_id }}", publisher)
+        self.assertLess(publisher.index("promote_candidate.py provenance"), publisher.index("actions/download-artifact"))
+        self.assertLess(publisher.index("promote_candidate.py assemble"), publisher.index("gh release create"))
+        self.assertNotIn("Updates require a manual download", publisher)
 
 
 if __name__ == "__main__":

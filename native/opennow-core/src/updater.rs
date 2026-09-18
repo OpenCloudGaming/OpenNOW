@@ -15,10 +15,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
-const RELEASES_URL: &str =
-    "https://api.github.com/repos/OpenCloudGaming/OpenNOW/releases?per_page=20";
+const RELEASES_URL: &str = "https://api.github.com/repos/OpenCloudGaming/OpenNOW/releases";
 const RELEASES_PAGE: &str = "https://github.com/OpenCloudGaming/OpenNOW/releases";
 const RELEASE_ASSET_PREFIX: &str = "https://github.com/OpenCloudGaming/OpenNOW/releases/download/";
+const MAXIMUM_RELEASE_METADATA_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Clone)]
 struct AvailableUpdate {
@@ -175,24 +175,7 @@ impl UpdaterService {
             state.transaction = None;
             state.message = "Checking GitHub Releases…".to_owned();
         }
-        let releases = self
-            .client
-            .get(RELEASES_URL)
-            .header(USER_AGENT, "OpenNOW-Qt/0.5")
-            .header(ACCEPT, "application/vnd.github+json")
-            .send()
-            .map_err(|error| friendly_network_error(&error.to_string()))
-            .and_then(|response| {
-                if !response.status().is_success() {
-                    return Err(format!(
-                        "GitHub Releases returned HTTP {}",
-                        response.status().as_u16()
-                    ));
-                }
-                response
-                    .json::<Vec<Release>>()
-                    .map_err(|_| "GitHub Releases returned invalid metadata".to_owned())
-            });
+        let releases = self.fetch_releases(RELEASES_URL);
         let releases = match releases {
             Ok(releases) => releases,
             Err(error) => {
@@ -204,7 +187,8 @@ impl UpdaterService {
         };
         let current = parse_version(crate::version::APPLICATION_VERSION)
             .ok_or_else(|| "Current application version is invalid".to_owned())?;
-        let release = select_release(&releases, channel, current);
+        let release = select_installable_release(&releases, channel, &current)
+            .or_else(|| select_release(&releases, channel, current));
         let mut state = self.state.lock().expect("updater state poisoned");
         state.last_checked_at = Some(now_ms());
         // Reading release notes is independent of installing a newer version.
@@ -213,14 +197,10 @@ impl UpdaterService {
         if let Some(release) = release {
             let version = release.tag_name.trim_start_matches('v').to_owned();
             let compatible = compatible_asset(&release.assets).cloned();
-            let manifest_url = compatible.as_ref().and_then(|asset| {
-                let expected = format!("{}.manifest.json", asset.name);
-                release
-                    .assets
-                    .iter()
-                    .find(|candidate| candidate.name == expected && trusted_asset_url(candidate))
-                    .map(|candidate| candidate.browser_download_url.clone())
-            });
+            let manifest_url = compatible
+                .as_ref()
+                .and_then(|asset| manifest_asset(release, asset))
+                .map(|manifest| manifest.browser_download_url.clone());
             state.status = "available";
             state.available_version = Some(version.clone());
             state.release_url = trusted_release_url(&release.html_url)
@@ -240,19 +220,70 @@ impl UpdaterService {
                 )
             } else if embedded_update_key().is_err() {
                 format!(
-                    "OpenNOW {version} is available; this validation build has no pinned update signing key."
+                    "OpenNOW {version} is available; this build has no pinned update signing key. Install a signed-update build manually once to enable future automatic updates."
                 )
             } else {
                 format!("OpenNOW {version} is available with signed update metadata.")
             };
         } else {
-            state.status = "not-available";
+            let has_release = select_latest_release(&releases, channel).is_some();
+            state.status = if has_release {
+                "not-available"
+            } else {
+                "error"
+            };
             state.available_version = None;
             state.available = None;
-            state.message = "OpenNOW is up to date.".to_owned();
+            state.message = if has_release {
+                "OpenNOW is up to date.".to_owned()
+            } else {
+                format!(
+                    "No published releases were found for the {channel} update channel. Try again later."
+                )
+            };
         }
         restore_downloaded_status(&mut state);
         Ok(state_json(&state))
+    }
+
+    fn fetch_releases(&self, releases_url: &str) -> Result<Vec<Release>, String> {
+        let mut releases = Vec::new();
+        for (url, latest) in [
+            (format!("{releases_url}?per_page=100"), false),
+            (format!("{releases_url}/latest"), true),
+        ] {
+            let response = self
+                .client
+                .get(url)
+                .timeout(Duration::from_secs(10))
+                .header(
+                    USER_AGENT,
+                    concat!("OpenNOW-Qt/", env!("CARGO_PKG_VERSION")),
+                )
+                .header(ACCEPT, "application/vnd.github+json")
+                .send()
+                .map_err(|error| friendly_network_error(&error.to_string()))?;
+            if latest && response.status() == reqwest::StatusCode::NOT_FOUND {
+                continue;
+            }
+            if !response.status().is_success() {
+                return Err(format!(
+                    "GitHub Releases returned HTTP {}",
+                    response.status().as_u16()
+                ));
+            }
+            let bytes = read_bounded(response, MAXIMUM_RELEASE_METADATA_BYTES)?;
+            if latest {
+                let release: Release = serde_json::from_slice(&bytes)
+                    .map_err(|_| "GitHub Releases returned invalid metadata".to_owned())?;
+                releases.retain(|existing: &Release| existing.tag_name != release.tag_name);
+                releases.push(release);
+            } else {
+                releases = serde_json::from_slice(&bytes)
+                    .map_err(|_| "GitHub Releases returned invalid metadata".to_owned())?;
+            }
+        }
+        Ok(releases)
     }
 
     pub fn download(&self) -> Result<Value, String> {
@@ -649,6 +680,39 @@ fn select_latest_release<'a>(releases: &'a [Release], channel: &str) -> Option<&
         .filter(|(_, version)| channel == "nightly" || version.pre.is_empty())
         .max_by(|(_, left), (_, right)| left.cmp_precedence(right))
         .map(|(release, _)| release)
+}
+
+fn select_installable_release<'a>(
+    releases: &'a [Release],
+    channel: &str,
+    current: &Version,
+) -> Option<&'a Release> {
+    releases
+        .iter()
+        .filter(|release| !release.draft && (channel == "nightly" || !release.prerelease))
+        .filter_map(|release| parse_version(&release.tag_name).map(|version| (release, version)))
+        .filter(|(_, version)| {
+            (channel == "nightly" || version.pre.is_empty())
+                && version.cmp_precedence(current).is_gt()
+        })
+        .filter(|(release, _)| {
+            compatible_asset(&release.assets)
+                .and_then(|asset| manifest_asset(release, asset))
+                .is_some()
+        })
+        .max_by(|(_, left), (_, right)| left.cmp_precedence(right))
+        .map(|(release, _)| release)
+}
+
+fn manifest_asset<'a>(release: &'a Release, asset: &Asset) -> Option<&'a Asset> {
+    let expected_name = format!("{}.manifest.json", asset.name);
+    let expected_url = format!("{}.manifest.json", asset.browser_download_url);
+    release.assets.iter().find(|manifest| {
+        manifest.name == expected_name
+            && manifest.browser_download_url == expected_url
+            && manifest.size > 0
+            && manifest.size <= MAXIMUM_MANIFEST_BYTES
+    })
 }
 
 fn update_highlights(state: &mut State, release: Option<&Release>) {
@@ -1266,6 +1330,140 @@ mod tests {
             prerelease,
             assets: vec![],
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn linux_update(version: &str, prerelease: bool) -> Release {
+        let mut release = release(version, prerelease);
+        let architecture = if cfg!(target_arch = "aarch64") {
+            "arm64"
+        } else {
+            "x64"
+        };
+        let extension = update_apply::compatible_package_extension().unwrap();
+        let name = format!(
+            "OpenNOW-Qt-{}-Linux-{architecture}.{extension}",
+            version.trim_start_matches('v')
+        );
+        release.assets = [name.clone(), format!("{name}.manifest.json")]
+            .into_iter()
+            .map(|name| Asset {
+                browser_download_url: format!("{RELEASE_ASSET_PREFIX}{version}/{name}"),
+                name,
+                size: 128,
+            })
+            .collect();
+        release
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn incomplete_releases_do_not_hide_a_compatible_signed_update() {
+        let mut releases = vec![linux_update("v1.1.0", false), linux_update("v1.2.0", false)];
+        releases[1].assets.pop();
+        assert_eq!(
+            select_installable_release(&releases, "stable", &Version::new(1, 0, 0))
+                .unwrap()
+                .tag_name,
+            "v1.1.0"
+        );
+        assert!(select_installable_release(&releases, "stable", &Version::new(1, 1, 0)).is_none());
+        releases.push(linux_update("v1.3.0-nightly.1.1", true));
+        assert_eq!(
+            select_installable_release(&releases, "nightly", &Version::new(1, 0, 0))
+                .unwrap()
+                .tag_name,
+            "v1.3.0-nightly.1.1"
+        );
+        assert_eq!(
+            select_installable_release(&releases, "stable", &Version::new(1, 0, 0))
+                .unwrap()
+                .tag_name,
+            "v1.1.0"
+        );
+        releases[2].draft = true;
+        assert_eq!(
+            select_installable_release(&releases, "nightly", &Version::new(1, 0, 0))
+                .unwrap()
+                .tag_name,
+            "v1.1.0"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn manifests_must_belong_to_the_selected_release_and_be_bounded() {
+        let mut release = linux_update("v1.1.0", false);
+        assert!(manifest_asset(&release, &release.assets[0]).is_some());
+        for size in [0, MAXIMUM_MANIFEST_BYTES + 1] {
+            release.assets[1].size = size;
+            assert!(manifest_asset(&release, &release.assets[0]).is_none());
+        }
+        release.assets[1].size = 128;
+        release.assets[1].browser_download_url = release.assets[1]
+            .browser_download_url
+            .replace("/v1.1.0/", "/v1.0.0/");
+        assert!(manifest_asset(&release, &release.assets[0]).is_none());
+    }
+
+    #[test]
+    fn release_discovery_reaches_stable_beyond_the_nightly_window() {
+        use std::io::{BufRead, BufReader};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/releases", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            for path in ["/releases?per_page=100", "/releases/latest"] {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = BufReader::new(socket.try_clone().unwrap());
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                assert!(line.starts_with(&format!("GET {path} ")), "{line}");
+                loop {
+                    line.clear();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                let metadata = |version: &str, prerelease| {
+                    json!({
+                        "tag_name":version,"html_url":format!("{RELEASES_PAGE}/tag/{version}"),
+                        "body":null,"draft":false,"prerelease":prerelease,"assets":[]
+                    })
+                };
+                let body = if path.ends_with("/latest") {
+                    metadata("v1.1.0", false).to_string()
+                } else {
+                    serde_json::to_string(
+                        &(1..=100)
+                            .map(|run| metadata(&format!("v1.2.0-nightly.{run}.1"), true))
+                            .collect::<Vec<_>>(),
+                    )
+                    .unwrap()
+                };
+                write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let updater = UpdaterService::new(directory.path()).unwrap();
+        let releases = updater.fetch_releases(&url).unwrap();
+        server.join().unwrap();
+        assert_eq!(releases.len(), 101);
+        assert_eq!(
+            select_release(&releases, "stable", Version::new(1, 0, 0))
+                .unwrap()
+                .tag_name,
+            "v1.1.0"
+        );
+        assert_eq!(
+            select_release(&releases, "nightly", Version::new(1, 0, 0))
+                .unwrap()
+                .tag_name,
+            "v1.2.0-nightly.100.1"
+        );
     }
 
     #[test]

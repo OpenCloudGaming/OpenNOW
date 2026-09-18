@@ -181,11 +181,13 @@ pub fn compatible_package_extension() -> Result<&'static str, String> {
     require_native_updates()?;
     #[cfg(target_os = "linux")]
     {
-        Ok(if std::env::var_os("APPIMAGE").is_some() {
-            "appimage"
-        } else {
-            "deb"
-        })
+        Ok(
+            if std::env::var_os("APPIMAGE").is_some_and(|path| !path.is_empty()) {
+                "appimage"
+            } else {
+                "deb"
+            },
+        )
     }
     #[cfg(target_os = "macos")]
     {
@@ -207,6 +209,8 @@ pub fn compatible_package_extension() -> Result<&'static str, String> {
 
 pub fn prepare_update(request: PrepareRequest) -> Result<PreparedUpdate, String> {
     require_native_updates()?;
+    #[cfg(target_os = "linux")]
+    validate_linux_install_kind(request.kind, std::env::var_os("APPIMAGE").as_deref())?;
     let package = canonical_file(&request.package)?;
     let manifest = read_manifest(&package)?;
     if manifest.version.trim_start_matches('v') != request.expected_version.trim_start_matches('v')
@@ -318,6 +322,21 @@ pub fn prepare_update(request: PrepareRequest) -> Result<PreparedUpdate, String>
         let _ = fs::remove_dir_all(&directory);
     }
     result
+}
+
+#[cfg(target_os = "linux")]
+fn validate_linux_install_kind(
+    kind: InstallKind,
+    appimage: Option<&std::ffi::OsStr>,
+) -> Result<(), String> {
+    let is_appimage = appimage.is_some_and(|path| !path.is_empty());
+    if (kind == InstallKind::AppImage && is_appimage)
+        || (kind == InstallKind::DebianPackage && !is_appimage)
+    {
+        Ok(())
+    } else {
+        Err("Update package does not match the running Linux installation format".to_owned())
+    }
 }
 
 pub fn launch_prepared_update(prepared: &PreparedUpdate) -> Result<u32, String> {

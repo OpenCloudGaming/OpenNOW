@@ -65,13 +65,17 @@ def validate_inventory(source, version, commit, signed=False):
 
 
 def verify(source, version, commit, public_key):
-    key = decode_key(public_key)
     metadata = validate_inventory(source, version, commit, signed=True)
+    verify_manifests(source, version, metadata["assets"], public_key)
+
+
+def verify_manifests(source, version, assets, public_key):
+    key = decode_key(public_key)
     with tempfile.TemporaryDirectory(prefix="opennow-update-verify-") as directory:
         root = Path(directory)
         public = root / "public.der"
         public.write_bytes(bytes.fromhex("302a300506032b6570032100") + key)
-        for asset in metadata["assets"]:
+        for asset in assets:
             manifest = json.loads((source / (asset["name"] + ".manifest.json")).read_text())
             unsigned = {"schemaVersion": 1, "version": version, "asset": asset["name"],
                         "size": asset["size"], "sha256": asset["sha256"]}
@@ -160,8 +164,12 @@ def main():
     args = parser.parse_args()
     public_key = os.environ.get("OPENNOW_UPDATE_PUBLIC_KEY", "")
     if args.command == "preflight":
-        if public_key or os.environ.get("PUBLISH_NIGHTLY") == "true":
+        if public_key or os.environ.get("PUBLISH_RELEASE") == "true":
             decode_key(public_key)
+        if os.environ.get("PUBLISH_RELEASE") == "true":
+            pinned = Path(__file__).with_name("update-public-key.base64").read_text().strip()
+            if public_key != pinned:
+                raise ValueError("Publication requires the pinned production update public key")
         return
     if args.command == "release-guard":
         if not args.version or not args.releases:

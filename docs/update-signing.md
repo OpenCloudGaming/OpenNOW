@@ -4,9 +4,9 @@ Qt updates fail closed unless the application core was compiled with a pinned
 Ed25519 public key. GitHub ownership, HTTPS and an asset checksum alone are not
 treated as an update signature.
 
-Public nightly publication requires the protected signing environment. See
-[Activate nightly update signing](update-signing-setup.md) for the current activation
-blocker and the first manual upgrade from a nightly without a pinned key.
+Stable and nightly publication require the protected signing environment. See
+[Update signing setup](update-signing-setup.md) for signer protections and the one-time
+manual upgrade from a build without a pinned key, including v1.0.0.
 
 ## Release key boundary
 
@@ -16,6 +16,10 @@ blocker and the first manual upgrade from a nightly without a pinned key.
 - Configure the matching 32-byte public key as base64 through CMake's
   `OPENNOW_UPDATE_ED25519_PUBLIC_KEY` cache variable. It is compiled into the
   Rust core and is safe to publish.
+- The production public key is recorded in `opennow-qt/packaging/update-public-key.base64`:
+  `HoyKVmfuH+KDioPCJJNxOB2e/bXJoOALSjo1QeMsDlk=`. It verifies the published v1.0.1
+  manifests and was embedded by candidate run `34765163641`. Publication preflight
+  rejects another key; the signer independently verifies that its seed matches.
 - A release build without that public key may discover releases, but reports
   `signaturePolicy: unconfigured-fail-closed` and cannot download an update.
 - Rotating the key requires a normally signed application release containing
@@ -55,8 +59,8 @@ extracts packages, or executes candidate binaries, including `opennow-update-man
 The checkout is pinned to the workflow's immutable `github.sha`, with Git credentials
 disabled. Environment approval covers that revision, including its signing scripts.
 
-The public `qt-ci` input `public_key` must be canonical base64 encoding of exactly
-32 bytes when `publish_nightly` is enabled. `qt-build` passes that same value through
+The public `qt-ci` input `public_key` defaults to the pinned production key and must
+match it when `publish_nightly` is enabled. `qt-build` passes that same value through
 its optional `update_public_key` input to both CMake configurations. Artifact-only
 builds may omit the key and retain the core's unconfigured, fail-closed update policy.
 
@@ -65,7 +69,7 @@ commit, version, complete package names, sizes, and checksums before signing. It
 the public key from the private seed and requires an exact match with the build's key.
 Every generated signature is verified against its package before the final directory
 becomes available. A separate publisher job verifies the complete signed inventory
-again, without receiving the seed, before creating a draft prerelease. Only a complete
+again, without receiving the seed, before creating a draft release. Only a complete
 upload is made public.
 
 For version `<version>`, the public nightly inventory contains exactly these packages:
@@ -80,16 +84,25 @@ For version `<version>`, the public nightly inventory contains exactly these pac
 - `OpenNOW-Qt-<version>-Linux-arm64.deb`
 - `OpenNOW-Qt-<version>-Darwin-arm64.dmg`
 
-Each package has its exact sibling manifest. `RELEASE-INFO.json` retains the immutable
+Both AppImages also have versioned `.AppImage.zsync` sidecars. All eleven assets have
+exact sibling manifests. `RELEASE-INFO.json` retains the immutable
 package inventory and changes `updates` from `manual-download` to `signed-manifest`.
 `platformSigning` remains `unsigned`: update signatures do not provide Authenticode
-or macOS notarization. Final `SHA256SUMS` covers all nine packages, all nine manifests,
+or macOS notarization. Final `SHA256SUMS` covers all eleven assets, all eleven manifests,
 and the rewritten release metadata. The validation-only macOS ZIP is never published.
 
-The production `qt-release-candidate.yml` contract remains separate: ten Linux, Windows,
-and macOS packages, platform signing on Windows and macOS, isolated update signing,
+The production `qt-release-candidate.yml` contract uses ten Linux, Windows,
+and macOS packages plus two AppImage sidecars, optional Windows platform signing and
+required macOS platform signing, isolated update signing,
 and a candidate artifact. See [Set up signed Qt releases](qt-release-signing-setup.md)
 for production credentials and first-release instructions.
+`qt-stable-release.yml` promotes only a successful candidate run with the exact reviewed
+main SHA and project version. It verifies the run's repository/workflow provenance,
+candidate inventory and production-key signatures before flattening and publishing
+the unchanged packages and manifests. Its 26-file release includes twelve assets,
+twelve manifests, metadata and checksums. The macOS Developer ID identity and
+notarization from the candidate are preserved; stable releases must not replace
+these with ad-hoc packages because the update helper rejects a changed signing identity.
 Nightly release notes use GitHub-generated changelogs. Installation guidance and known
 limitations are documented in [`qt-nightly-release.md`](qt-nightly-release.md).
 
@@ -108,6 +121,9 @@ name, manifest signature, declared size, and SHA-256 digest before atomically st
 anything executable. It re-hashes the staged file immediately before install.
 AppImage replacement keeps a `.previous` rollback copy and restores it if the updated
 image cannot restart; native installers remain responsible for their platform rollback.
+Switching stable/nightly channels on Windows MSI or macOS can require a manual installation:
+MSI upgrade families and macOS signing identities intentionally differ. Do not relax
+those checks to turn cross-channel migration into a silent update.
 
 ## Windows installation identity
 

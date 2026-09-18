@@ -15,6 +15,7 @@ on:
         description: Base64 Ed25519 public key pinned into every build
         required: true
         type: string
+        default: HoyKVmfuH+KDioPCJJNxOB2e/bXJoOALSjo1QeMsDlk=
       windows_signing_mode:
         description: Windows platform signing (Ed25519 update signing is always required)
         required: true
@@ -69,6 +70,12 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+
+      - name: Validate the production update key
+        env:
+          OPENNOW_UPDATE_PUBLIC_KEY: ${{ inputs.update_public_key }}
+          PUBLISH_RELEASE: "true"
+        run: python3 opennow-qt/packaging/sign_nightly_release.py preflight
 
       - name: Record source commit
         id: source
@@ -180,6 +187,7 @@ jobs:
           LINUXDEPLOY_ARCH: ${{ matrix.linuxdeploy_arch }}
           LINUXDEPLOY_SHA256: ${{ matrix.linuxdeploy_sha256 }}
           QT_PLUGIN_SHA256: ${{ matrix.qt_plugin_sha256 }}
+          PACKAGE_ARCH: ${{ matrix.arch }}
         run: |
           export LD_LIBRARY_PATH="$RUNNER_TEMP/SDL-install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           mkdir -p build/release-artifacts
@@ -198,6 +206,9 @@ jobs:
           chmod +x build/linuxdeploy-*.AppImage build/linuxdeploy-plugin-qt-*.AppImage
           install -Dm644 opennow-qt/packaging/opennow-vaapi-hook.sh \
             build/AppDir/apprun-hooks/opennow-vaapi-hook.sh
+          export LDAI_UPDATE_INFORMATION
+          LDAI_UPDATE_INFORMATION=$(python3 opennow-qt/packaging/appimage_updates.py information \
+            --channel stable --arch "$PACKAGE_ARCH")
           QMAKE="$QT_ROOT_DIR/bin/qmake" QML_SOURCES_PATHS="$PWD/opennow-qt/qml" \
           OUTPUT="OpenNOW-Qt-${{ inputs.version }}-Linux-${{ matrix.arch }}.AppImage" \
             "build/linuxdeploy-${LINUXDEPLOY_ARCH}.AppImage" \
@@ -215,7 +226,10 @@ jobs:
           test -f build/AppDir/usr/plugins/wayland-shell-integration/libxdg-shell.so
           LD_LIBRARY_PATH="$PWD/build/AppDir/usr/lib:$LD_LIBRARY_PATH" \
             python3 opennow-qt/packaging/verify_linux_package.py build/AppDir/usr/bin --appdir build/AppDir
-          mv OpenNOW-Qt-*.AppImage build/release-artifacts/
+          python3 opennow-qt/packaging/appimage_updates.py verify \
+            --channel stable --arch "$PACKAGE_ARCH" \
+            --appimage "OpenNOW-Qt-${{ inputs.version }}-Linux-${PACKAGE_ARCH}.AppImage"
+          mv OpenNOW-Qt-*.AppImage OpenNOW-Qt-*.AppImage.zsync build/release-artifacts/
           cpack --config build/qt-release/CPackConfig.cmake \
             -D "CPACK_PROJECT_CONFIG_FILE=$PWD/opennow-qt/packaging/LinuxBundledDeb.cmake" \
             -D "OPENNOW_APPDIR=$PWD/build/AppDir" \
@@ -235,13 +249,14 @@ jobs:
           env -u QT_PLUGIN_PATH -u QT_QPA_PLATFORM_PLUGIN_PATH \
             -u QML2_IMPORT_PATH -u QML_IMPORT_PATH -u LD_LIBRARY_PATH \
             "$appimage" --smoke-test --allow-multiple-instances --route home --reduced-motion
-          (cd build/release-artifacts && sha256sum -- *.AppImage *.deb > SHA256SUMS)
+          (cd build/release-artifacts && sha256sum -- *.AppImage *.AppImage.zsync *.deb > SHA256SUMS)
 
       - uses: actions/upload-artifact@v4
         with:
           name: opennow-qt-${{ inputs.version }}-linux-${{ matrix.arch }}-signed
           path: |
             build/release-artifacts/*.AppImage
+            build/release-artifacts/*.AppImage.zsync
             build/release-artifacts/*.deb
             build/release-artifacts/SHA256SUMS
           if-no-files-found: error
@@ -742,6 +757,7 @@ jobs:
           expected=$(for arch in x64 arm64; do
             printf 'OpenNOW-Qt-%s-Linux-%s.AppImage\nOpenNOW-Qt-%s-Linux-%s.deb\n' \
               "$RELEASE_VERSION" "$arch" "$RELEASE_VERSION" "$arch"
+            printf 'OpenNOW-Qt-%s-Linux-%s.AppImage.zsync\n' "$RELEASE_VERSION" "$arch"
             printf 'OpenNOW-Qt-%s-Windows-%s.msi\nOpenNOW-Qt-%s-Windows-%s.zip\n' \
               "$RELEASE_VERSION" "$arch" "$RELEASE_VERSION" "$arch"
           done
@@ -750,8 +766,8 @@ jobs:
           actual=$(find candidate -type f ! -name SHA256SUMS -printf '%f\n' | LC_ALL=C sort)
           [[ "$actual" == "$(printf '%s\n' "$expected" | LC_ALL=C sort)" ]]
           assets=$(find candidate -type f \( -name '*.msi' -o -name '*.dmg' -o -name '*.AppImage' \
-            -o -name '*.deb' -o -name '*.zip' \) | wc -l)
-          [[ "$assets" -eq 10 ]]
+            -o -name '*.AppImage.zsync' -o -name '*.deb' -o -name '*.zip' \) | wc -l)
+          [[ "$assets" -eq 12 ]]
 
           signing_dir=$(mktemp -d "$RUNNER_TEMP/opennow-update-signing.XXXXXX")
           trap 'rm -rf "$signing_dir"' EXIT
@@ -788,7 +804,7 @@ jobs:
               > "$temporary"
             mv "$temporary" "$manifest"
           done < <(find candidate -type f \( -name '*.msi' -o -name '*.dmg' -o -name '*.AppImage' \
-            -o -name '*.deb' -o -name '*.zip' \) -print0)
+            -o -name '*.AppImage.zsync' -o -name '*.deb' -o -name '*.zip' \) -print0)
 
           manifests=$(find candidate -type f -name '*.manifest.json' | wc -l)
           [[ "$manifests" -eq "$assets" ]]

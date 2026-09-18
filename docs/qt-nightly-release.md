@@ -13,27 +13,29 @@ key described in [`update-signing-setup.md`](update-signing-setup.md) before pub
 After the release changes are merged into `dev`, run:
 
 ```sh
-gh workflow run qt-ci --repo OpenCloudGaming/OpenNOW --ref dev -f publish_nightly=false
+gh workflow run qt-ci --repo OpenCloudGaming/OpenNOW --ref dev -f publish_nightly=false -f public_key=
 ```
 
-Leave `public_key` empty for this no-key artifact-only path. It requires no signing environment,
+Explicitly set `public_key` empty for this no-key artifact-only path. The default is the
+production public key, which enables verified updates in the built application even when
+the artifacts themselves are not published. The no-key path requires no signing environment,
 does not create updater manifests, and cannot download updates in the application.
 This builds all five targets without publishing anything. Download the five unsigned
 artifact groups from that workflow run and perform the relevant checks in
 [`qt-acceptance.md`](qt-acceptance.md), especially Windows ARM64, which is cross-compiled and
 cannot run its application tests on the x64 CI worker.
 
-To publish, set `OPENNOW_UPDATE_PUBLIC_KEY` to the matching canonical base64-encoded 32-byte
-public key from the signing setup. This is the public key, never the private seed. Then run:
+To publish, retain the default production public key from
+`opennow-qt/packaging/update-public-key.base64`, never the private seed. Run:
 
 ```sh
 gh workflow run qt-ci --repo OpenCloudGaming/OpenNOW --ref dev \
-  -f publish_nightly=true -f public_key="$OPENNOW_UPDATE_PUBLIC_KEY"
+  -f publish_nightly=true
 ```
 
-An empty or malformed key fails preflight. After checks and package builds pass, approve the
+An empty, malformed, or different production key fails preflight. After checks and package builds pass, approve the
 exact source/workflow revision in the protected `qt-update-signing` environment. Its isolated
-signer verifies the complete nine-package inventory, signs each package's sibling manifest,
+signer verifies the complete nine-package inventory and two AppImage sidecars, signs each asset's sibling manifest,
 and uploads `opennow-qt-<version>-complete-update-signed`. The publisher independently verifies
 that finalized set before uploading it. Missing signing configuration blocks publication; it
 does not fall back to an unsigned public update.
@@ -79,8 +81,9 @@ Each release contains nine packages with distinct version/platform/architecture 
   macOS offers it. Do not disable Gatekeeper globally. CI also retains a separate macOS ZIP for
   validation; that ZIP is not a public release asset.
 
-The public signed set contains 20 files: nine packages, nine `<package>.manifest.json` siblings,
-`RELEASE-INFO.json`, and `SHA256SUMS`. Its checksums cover all 19 other files. The no-key
+The public signed set contains 24 files: nine packages, two `.AppImage.zsync` sidecars,
+eleven `<asset>.manifest.json` siblings, `RELEASE-INFO.json`, and `SHA256SUMS`.
+Its checksums cover all 23 other files. The no-key
 artifact-only inventory has no manifests; its checksums cover the packages and release metadata.
 Checksums detect corruption; they do not replace a publisher signature. The inventory rejects
 missing platforms, duplicate basenames, wrong versions, empty files, and unexpected assets
@@ -110,6 +113,32 @@ upgrade family and numeric version; supporter packages use a third family and di
 
 ## Updates and signed candidates
 
+### AppImage delta updates
+
+Both Linux architectures embed `gh-releases-zsync` update information during packaging.
+Stable and numeric release-candidate AppImages use GitHub's `latest` selector, which
+excludes prereleases. Nightlies use `latest-pre` and an architecture-specific
+`OpenNOW-Qt-*-nightly.*-Linux-<arch>.AppImage.zsync` pattern. Files retain their full
+versioned names; no mutable release tag or unversioned package alias is needed.
+Supporter artifact builds use a supporter-specific pattern and are not public releases.
+`latest-pre` examines the latest prerelease, not all matching historical prereleases;
+publishing another prerelease channel there can make external nightly checks report no
+matching asset rather than crossing channels.
+
+The pinned AppImage tooling generates each sidecar after embedding the update metadata.
+Packaging verifies the actual runtime's update information and the sidecar's filename,
+relative download URL, length, and SHA-1 against the completed AppImage before upload.
+Inventories, Ed25519 manifests, and release checksums include both sidecars. Consumers
+must keep the `.zsync` and AppImage siblings together on the GitHub release.
+
+AppImageUpdate and compatible external tools can use these sidecars for delta downloads.
+OpenNOW's built-in updater still downloads the complete AppImage and verifies its pinned
+Ed25519 manifest; this change does not add in-app delta downloads. External tools do not
+automatically verify OpenNOW's Ed25519 manifests. Their transport/integrity checks are a
+separate trust boundary and do not replace the built-in updater's authentication policy.
+
+### Built-in updates
+
 Public nightlies embed the supplied Ed25519 public key in both the core and apply helper.
 Their manifests authenticate each exact package before download completion and again before
 installation. Installation requires confirmation and no active or recovering streaming session;
@@ -126,6 +155,9 @@ The updater compares complete semantic versions, so nightly runs order numerical
 `1.0.0` sorts after its nightlies. A stable MSI installs separately from the nightly MSI family
 rather than replacing it. Portable Windows replacement requires persistent ACL support;
 FAT/exFAT installations are refused before shutdown and require manual updating.
+macOS nightly ad-hoc signatures also differ from stable Developer ID signatures. Install
+the selected channel manually once when switching between these signing identities;
+automatic updates must not bypass the helper's identity checks.
 
 Authenticode and Apple Developer ID signatures authenticate platform applications. Ed25519
 manifests authenticate the exact updater payload bytes; they do not remove SmartScreen or

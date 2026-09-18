@@ -38,7 +38,9 @@ certificates normally use non-exportable hardware-backed keys. If your provider 
 token, HSM, or cloud signing service, integrate its signing client before dispatching.
 The PFX inputs are not a way to export a hardware-protected private key.
 
-The matching Ed25519 public key is a workflow input, not a secret. The workflow embeds that exact
+The matching Ed25519 public key is a workflow input, not a secret. It defaults to the existing
+production key in `opennow-qt/packaging/update-public-key.base64`; preflight rejects a different
+key to preserve compatibility with deployed clients. The workflow embeds that exact
 value into every core. Ordinary Linux, Windows and macOS build workers never receive the update
 private seed. After their platform artifacts are uploaded, the isolated signer downloads
 them without executing any candidate program, derives the Ed25519 public key from the protected
@@ -75,8 +77,11 @@ the update-signing seed, and does not require a manually registered runner.
   offscreen/X11 startup and capabilities, and exercise reinstall/removal without a GPU.
 - Every installable artifact receives a sibling Ed25519 update manifest, including unsigned Windows
   packages. This signature authenticates updater downloads; it does not establish a Windows publisher.
+- AppImages embed stable-channel update information and include versioned `.zsync` sidecars
+  for external delta-update tools. Both sidecars receive manifests and release checksums.
 - The inventory job fails unless it finds both Windows MSI/ZIP pairs, both Linux AppImage/DEB pairs,
-  the macOS ARM64 DMG/ZIP pair, and exactly one manifest per artifact (ten artifacts total). It records the immutable commit and
+  both AppImage sidecars, the macOS ARM64 DMG/ZIP pair, and exactly one manifest per asset
+  (ten packages plus two sidecars). It records the immutable commit and
   SHA-256 of every candidate file, plus `windowsSigningMode=unsigned` or
   `windowsSigningMode=authenticode`. Windows artifact bundles use the same mode as their suffix;
   package filenames stay unchanged for updater compatibility.

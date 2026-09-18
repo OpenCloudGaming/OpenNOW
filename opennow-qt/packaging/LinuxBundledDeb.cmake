@@ -40,7 +40,7 @@ set(CPACK_INSTALLED_DIRECTORIES "${OPENNOW_APPDIR};/opt/opennow;${integration};/
 set(CPACK_PACKAGING_INSTALL_PREFIX "/")
 set(CPACK_SET_DESTDIR OFF)
 set(CPACK_STRIP_FILES OFF)
-set(CPACK_DEBIAN_PACKAGE_DEPENDS "ca-certificates, libssl3t64, libvulkan1, libasound2t64, libudev1")
+set(CPACK_DEBIAN_PACKAGE_DEPENDS "ca-certificates, libssl3t64, libvulkan1, libasound2t64, libudev1, pkexec")
 set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS TRUE)
 set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS_PRIVATE_DIRS
     "${OPENNOW_APPDIR}/usr/lib;${OPENNOW_APPDIR}/usr/bin")

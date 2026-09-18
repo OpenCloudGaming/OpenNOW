@@ -53,8 +53,8 @@ class SignedNightlyReleaseTest(unittest.TestCase):
     def test_signs_and_verifies_every_exact_package_without_changing_bytes(self):
         self.sign()
         self.verify()
-        self.assertEqual(len(list(self.destination.iterdir())), 20)
-        self.assertEqual(len((self.destination / "SHA256SUMS").read_text().splitlines()), 19)
+        self.assertEqual(len(list(self.destination.iterdir())), 24)
+        self.assertEqual(len((self.destination / "SHA256SUMS").read_text().splitlines()), 23)
         info = json.loads((self.destination / "RELEASE-INFO.json").read_text())
         self.assertEqual(info["updates"], "signed-manifest")
         self.assertEqual(info["platformSigning"], "unsigned")
@@ -138,14 +138,16 @@ class SignedNightlyReleaseTest(unittest.TestCase):
 
     def test_preflight_requires_canonical_key_only_for_publication(self):
         script = ROOT / "opennow-qt/packaging/sign_nightly_release.py"
+        pinned = script.with_name("update-public-key.base64").read_text().strip()
         for key, publish, success in (("", "false", True), ("", "true", False),
-                                      (self.public, "true", True), ("invalid", "false", False),
+                                      (pinned, "true", True), (self.public, "true", False),
+                                      (self.public, "false", True), ("invalid", "false", False),
                                       (self.public + "\n", "true", False),
                                       (base64.b64encode(bytes(31)).decode(), "true", False)):
             with self.subTest(key_length=len(key), publish=publish):
                 result = subprocess.run([sys.executable, str(script), "preflight"],
                                         env={**os.environ, "OPENNOW_UPDATE_PUBLIC_KEY": key,
-                                             "PUBLISH_NIGHTLY": publish}, capture_output=True)
+                                             "PUBLISH_RELEASE": publish}, capture_output=True)
                 self.assertEqual(result.returncode == 0, success)
         with self.assertRaises(ValueError):
             decode_key(self.public[:-1])

@@ -327,8 +327,14 @@ fn wait_for_status(fixture: &Fixture, helper: &mut OwnedChild, status: OutcomeSt
 }
 
 fn apply_after_exit(fixture: &mut Fixture) -> std::process::ExitStatus {
+    let mut command = Command::new(fixture_path("OPENNOW_TEST_UPDATE_HELPER"));
+    #[cfg(target_os = "linux")]
+    command
+        .env("APPDIR", "/tmp/opennow-old-mount")
+        .env("APPIMAGE", &fixture.plan.target)
+        .env("ARGV0", "/tmp/opennow-old-mount/AppRun");
     let mut helper = OwnedChild(
-        Command::new(fixture_path("OPENNOW_TEST_UPDATE_HELPER"))
+        command
             .arg("--apply")
             .arg(fixture.directory.join("plan.json"))
             .spawn()
@@ -382,6 +388,12 @@ fn signed_native_package_replaces_and_candidate_acknowledges_its_own_restart() {
         fixture.plan.application_executable
     );
     assert!(ack.application.is_running().unwrap());
+    #[cfg(target_os = "linux")]
+    {
+        let environment = fs::read(format!("/proc/{}/environ", ack.application.pid)).unwrap();
+        let environment = String::from_utf8(environment).unwrap();
+        assert!(!environment.contains("/tmp/opennow-old-mount"));
+    }
     assert_eq!(
         fs::read_to_string(fixture.directory.join("candidate-started")).unwrap(),
         ack.application.pid.to_string()

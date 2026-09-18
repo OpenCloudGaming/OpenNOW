@@ -51,6 +51,7 @@ def expected_packages(version, commit, channel="nightly"):
         for platform, extension in (("Windows", "msi"), ("Windows", "zip"), ("Linux", "AppImage"), ("Linux", "deb"))
     }
     expected.add(f"OpenNOW-Qt-{version}-Darwin-arm64.dmg")
+    expected.update(name + ".zsync" for name in tuple(expected) if name.endswith(".AppImage"))
     return expected
 
 

@@ -1,10 +1,14 @@
-name: Qt unsigned stable release
+name: Qt update-signed stable release
 
 on:
   workflow_dispatch:
     inputs:
       source_commit:
-        description: Exact reviewed main commit to release
+        description: Exact reviewed main commit built by the production candidate
+        required: true
+        type: string
+      candidate_run_id:
+        description: Successful qt-release-candidate run to promote without rebuilding
         required: true
         type: string
 
@@ -18,19 +22,27 @@ permissions:
 jobs:
   preflight:
     runs-on: blacksmith-2vcpu-ubuntu-2404
+    outputs:
+      version: ${{ steps.source.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
       - name: Require the exact main revision
+        id: source
         env:
           SOURCE_COMMIT: ${{ inputs.source_commit }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
         run: |
           set -euo pipefail
           [[ "$GITHUB_REF" == refs/heads/main ]]
           [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
           [[ "$SOURCE_COMMIT" == "$GITHUB_SHA" ]]
           [[ "$(git rev-parse HEAD)" == "$SOURCE_COMMIT" ]]
+          [[ "$CANDIDATE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          version=$(python3 opennow-qt/packaging/nightly_release.py version \
+            --run "$GITHUB_RUN_NUMBER" --attempt "$GITHUB_RUN_ATTEMPT" --channel stable)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
   contracts:
     needs: preflight
@@ -76,64 +88,58 @@ jobs:
           target-arch: ${{ matrix.target-arch }}
           parallel: ${{ matrix.parallel }}
 
-  build:
-    needs: contracts
-    uses: ./.github/workflows/qt-build.yml
-    with:
-      channel: stable
-      upload_complete: true
-      update_public_key: ""
-
   publish:
-    needs: [preflight, contracts, checks, build]
+    needs: [preflight, contracts, checks]
     runs-on: blacksmith-2vcpu-ubuntu-2404
+    environment: qt-production-release
     permissions:
+      actions: read
       contents: write
     env:
-      RELEASE_VERSION: ${{ needs.build.outputs.version }}
+      RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
       SOURCE_SHA: ${{ github.sha }}
+      CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Verify immutable candidate provenance
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE_RUN_ID" > candidate-run.json
+          python3 opennow-qt/packaging/promote_candidate.py provenance \
+            --run candidate-run.json --run-id "$CANDIDATE_RUN_ID" \
+            --repository "$GITHUB_REPOSITORY" --commit "$SOURCE_SHA"
       - uses: actions/download-artifact@v4
         with:
-          name: opennow-qt-${{ needs.build.outputs.version }}-complete-unsigned
-          path: downloaded
-      - name: Verify package inventory and checksums
-        shell: bash
+          name: opennow-qt-${{ needs.preflight.outputs.version }}-complete-candidate
+          path: candidate
+          run-id: ${{ inputs.candidate_run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify signatures and prepare complete release inventory
         run: |
-          set -euo pipefail
-          (cd downloaded && sha256sum --check --strict SHA256SUMS)
-          mkdir packages
-          find downloaded -maxdepth 1 -type f \( -name '*.msi' -o -name '*.zip' -o -name '*.dmg' -o -name '*.deb' -o -name '*.AppImage' \) -exec cp {} packages/ \;
-          python3 opennow-qt/packaging/nightly_release.py assemble \
-            --source packages --destination release --version "$RELEASE_VERSION" \
-            --commit "$SOURCE_SHA" --channel stable
-          cmp downloaded/RELEASE-INFO.json release/RELEASE-INFO.json
-          cmp downloaded/SHA256SUMS release/SHA256SUMS
+          python3 opennow-qt/packaging/promote_candidate.py assemble \
+            --source candidate --destination release \
+            --version "$RELEASE_VERSION" --commit "$SOURCE_SHA"
+          (cd release && sha256sum --check --strict SHA256SUMS)
       - name: Prepare public release notes
         run: |
           cat > release-notes.md <<EOF
-          OpenNOW $RELEASE_VERSION replaces the Electron desktop client with Qt Quick and a native Rust streaming engine.
+          OpenNOW $RELEASE_VERSION uses Qt Quick and a native Rust streaming engine.
 
-          Includes desktop and controller layouts, onboarding, library collections, stream overlays and statistics, screenshots, and recording.
+          Updates are authenticated with signed Ed25519 manifests. The Apple Silicon macOS packages require macOS 13+ and are Developer ID-signed and notarized. Windows platform signing follows the candidate's windowsSigningMode recorded in RELEASE-INFO.json; unsigned Windows packages may trigger SmartScreen.
+          Older builds without the production update key (including v1.0.0) require one manual installation to enable verified updates.
+          Linux AppImages include embedded update information and .zsync sidecars for external delta-update tools. Make the AppImage executable before launching.
+          DEBs bundle Qt and SDL3; install with \`sudo apt install ./OpenNOW-Qt-$RELEASE_VERSION-Linux-x64.deb\` (use arm64 on ARM systems) to install system dependencies, including pkexec for update authorization.
 
-          **These packages are unsigned. Updates require a manual download and installation.**
-          Windows may show SmartScreen or an unknown-publisher warning. Install the MSI, or extract the entire portable ZIP and run \`bin/OpenNOW.exe\`.
-          The Apple Silicon DMG requires macOS 13+. Drag OpenNOW into Applications. It is not notarized; if blocked, use System Settings → Privacy & Security → Open Anyway when offered. Do not disable Gatekeeper globally.
-          Linux AppImages are recommended; make the file executable before launching. DEBs require Qt 6.8+ and SDL3, which stock Ubuntu 24.04 does not provide.
+          Intel macOS is not included. Windows ARM64 is cross-built, not runtime-tested by CI. Hardware-specific gameplay acceptance is not implied by CI passing.
+          **Known issue: Alliance Partners may not work correctly.**
+          SHA256SUMS detects corrupted downloads; update manifests authenticate the exact asset bytes.
 
-          Intel macOS is not included. Windows ARM64 is cross-built, not runtime-tested by CI.
-          **Known issue: Alliance Partners may not work correctly.** Hardware-specific gameplay acceptance is not implied by CI passing.
-          SHA256SUMS detects corrupted downloads; it does not authenticate the publisher.
-
-          Source commit: \`$SOURCE_SHA\`.
+          Source commit: \`$SOURCE_SHA\`. Production candidate run: \`$CANDIDATE_RUN_ID\`.
           EOF
       - name: Upload as draft before publishing the complete release
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           gh release create "v$RELEASE_VERSION" release/* \

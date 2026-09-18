@@ -44,7 +44,7 @@ class SupporterBuildTest(unittest.TestCase):
         source = self.root / "artifacts"
         destination = self.root / "complete"
         for arch in ("x64", "arm64"):
-            for platform, extension in (("Windows", "msi"), ("Windows", "zip"), ("Linux", "AppImage"), ("Linux", "deb")):
+            for platform, extension in (("Windows", "msi"), ("Windows", "zip"), ("Linux", "AppImage"), ("Linux", "AppImage.zsync"), ("Linux", "deb")):
                 package = source / arch / f"OpenNOW-Qt-{self.version}-{platform}-{arch}.{extension}"
                 package.parent.mkdir(parents=True, exist_ok=True)
                 package.write_bytes(f"fixture {platform} {arch}".encode())
@@ -61,9 +61,9 @@ class SupporterBuildTest(unittest.TestCase):
         self.assertEqual(metadata["sourceCommit"], self.commit)
         self.assertEqual(metadata["platformSigning"], "unsigned")
         self.assertEqual(metadata["updates"], "manual-download")
-        self.assertEqual(len(metadata["assets"]), 9)
+        self.assertEqual(len(metadata["assets"]), 11)
         sums = (destination / "SHA256SUMS").read_text().splitlines()
-        self.assertEqual(len(sums), 10)
+        self.assertEqual(len(sums), 12)
         for line in sums:
             digest, name = line.split("  ")
             self.assertEqual(digest, hashlib.sha256((destination / name).read_bytes()).hexdigest())

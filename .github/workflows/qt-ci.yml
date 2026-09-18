@@ -8,9 +8,9 @@ on:
         type: boolean
         default: false
       public_key:
-        description: Canonical base64 Ed25519 public key (32 bytes; required to publish)
+        description: Production Ed25519 public key (leave default for verified updates)
         type: string
-        default: ""
+        default: HoyKVmfuH+KDioPCJJNxOB2e/bXJoOALSjo1QeMsDlk=
   pull_request:
     branches:
       - dev
@@ -74,7 +74,7 @@ jobs:
       - name: Require a pinned public key for publication
         env:
           OPENNOW_UPDATE_PUBLIC_KEY: ${{ inputs.public_key }}
-          PUBLISH_NIGHTLY: ${{ inputs.publish_nightly }}
+          PUBLISH_RELEASE: ${{ inputs.publish_nightly }}
         run: python3 opennow-qt/packaging/sign_nightly_release.py preflight
       - name: Require a nightly base newer than the published stable
         if: inputs.publish_nightly
@@ -170,7 +170,7 @@ jobs:
         with:
           name: opennow-qt-${{ needs.build.outputs.version }}-complete-unsigned
           path: unsigned-release
-      - name: Sign and verify the immutable nine-package inventory
+      - name: Sign and verify the immutable packages and AppImage sidecars
         env:
           OPENNOW_UPDATE_PUBLIC_KEY: ${{ inputs.public_key }}
           OPENNOW_UPDATE_ED25519_PRIVATE_KEY: ${{ secrets.OPENNOW_UPDATE_ED25519_PRIVATE_KEY }}

@@ -5,6 +5,19 @@ use sha2::{Digest, Sha256};
 use std::sync::OnceLock;
 use tempfile::TempDir;
 
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_update_preparation_rejects_cross_format_replacement() {
+    use std::ffi::OsStr;
+    let image = Some(OsStr::new("/home/user/OpenNOW.AppImage"));
+    assert!(validate_linux_install_kind(InstallKind::AppImage, image).is_ok());
+    assert!(validate_linux_install_kind(InstallKind::DebianPackage, None).is_ok());
+    assert!(validate_linux_install_kind(InstallKind::AppImage, None).is_err());
+    assert!(validate_linux_install_kind(InstallKind::AppImage, Some(OsStr::new(""))).is_err());
+    assert!(validate_linux_install_kind(InstallKind::DebianPackage, image).is_err());
+    assert!(validate_linux_install_kind(InstallKind::WindowsMsi, None).is_err());
+}
+
 #[test]
 fn flatpak_detection_accepts_environment_or_sandbox_marker() {
     use std::ffi::OsStr;

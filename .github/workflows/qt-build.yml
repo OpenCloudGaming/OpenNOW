@@ -422,6 +422,8 @@ jobs:
           LINUXDEPLOY_SHA256: ${{ matrix.linuxdeploy-sha256 }}
           QT_PLUGIN_SHA256: ${{ matrix.qt-plugin-sha256 }}
           APPIMAGE_RUNTIME_SHA256: ${{ matrix.appimage-runtime-sha256 }}
+          BUILD_CHANNEL: ${{ inputs.channel }}
+          PACKAGE_ARCH: ${{ matrix.linuxdeploy-arch == 'aarch64' && 'arm64' || 'x64' }}
         run: |
           export LD_LIBRARY_PATH="$RUNNER_TEMP/SDL-install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           mkdir -p build/qt-packages
@@ -444,6 +446,9 @@ jobs:
           chmod +x "build/linuxdeploy-${LINUXDEPLOY_ARCH}.AppImage" "build/linuxdeploy-plugin-qt-${LINUXDEPLOY_ARCH}.AppImage"
           install -Dm644 opennow-qt/packaging/opennow-vaapi-hook.sh \
             build/AppDir/apprun-hooks/opennow-vaapi-hook.sh
+          export LDAI_UPDATE_INFORMATION
+          LDAI_UPDATE_INFORMATION=$(python3 opennow-qt/packaging/appimage_updates.py information \
+            --channel "$BUILD_CHANNEL" --arch "$PACKAGE_ARCH")
           QMAKE="$QT_ROOT_DIR/bin/qmake" \
           QML_SOURCES_PATHS="$PWD/opennow-qt/qml" \
           LDAI_RUNTIME_FILE="$PWD/build/appimage-runtime-${LINUXDEPLOY_ARCH}" \
@@ -464,7 +469,10 @@ jobs:
           test -f build/AppDir/usr/plugins/wayland-shell-integration/libxdg-shell.so
           LD_LIBRARY_PATH="$PWD/build/AppDir/usr/lib:$LD_LIBRARY_PATH" \
             python3 opennow-qt/packaging/verify_linux_package.py build/AppDir/usr/bin --appdir build/AppDir
-          mv OpenNOW-Qt-*.AppImage build/qt-packages/
+          python3 opennow-qt/packaging/appimage_updates.py verify \
+            --channel "$BUILD_CHANNEL" --arch "$PACKAGE_ARCH" \
+            --appimage "OpenNOW-Qt-${OPENNOW_BUILD_VERSION}-Linux-${PACKAGE_ARCH}.AppImage"
+          mv OpenNOW-Qt-*.AppImage OpenNOW-Qt-*.AppImage.zsync build/qt-packages/
 
       - name: Create bundled Linux DEB
         if: runner.os == 'Linux'
@@ -499,6 +507,7 @@ jobs:
           name: opennow-qt-${{ matrix.label }}-unsigned
           path: |
             build/qt-packages/*.AppImage
+            build/qt-packages/*.AppImage.zsync
             build/qt-packages/*.deb
             build/qt-packages/*.dmg
             build/qt-packages/*.msi
@@ -677,7 +686,7 @@ jobs:
         with:
           pattern: opennow-qt-*-unsigned
           path: unsigned-artifacts
-      - name: Verify all nine packages and prepare release checksums
+      - name: Verify all nine packages and AppImage sidecars and prepare release checksums
         shell: bash
         run: |
           python3 opennow-qt/packaging/nightly_release.py assemble \

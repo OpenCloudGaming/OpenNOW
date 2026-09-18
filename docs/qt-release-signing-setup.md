@@ -1,5 +1,11 @@
 # Set up signed Qt releases
 
+The production update key is already deployed in v1.0.1 and is recorded in
+`opennow-qt/packaging/update-public-key.base64`. Reuse that key and the existing Apple
+Developer ID identity for future releases. The key-generation procedure below is for
+initial provisioning, not replacement of deployed trust. Stable publication now promotes
+a verified production candidate; see [stable promotion](qt-unsigned-stable-release.md).
+
 Use this guide for `OpenCloudGaming/OpenNOW`, the Qt desktop app. It does not configure
 the separate `OpenNOW-Mac` Swift app. Configure the release credentials before running
 `qt-release-candidate`. The workflow produces candidates, not a public GitHub release.

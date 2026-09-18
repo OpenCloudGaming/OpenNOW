@@ -18,11 +18,12 @@ create the environment, configure its protections, or install a production key.
 5. Keep signing workspaces uncached. Each signing job checks for Python 3.11 or newer,
    OpenSSL 3, `jq`, and GNU checksum tools before accessing the seed. Do not execute
    candidate programs on the signer. Both jobs have a 30-minute deadline.
-6. Generate and retain a production Ed25519 key outside CI. Add only its canonical
+6. Retain the existing production Ed25519 key outside CI; do not generate a replacement
+   for already deployed clients. Add only its canonical
    base64-encoded 32-byte private seed as the environment secret
    `OPENNOW_UPDATE_ED25519_PRIVATE_KEY`. Do not put the seed in repository secrets,
    workflow inputs, CMake arguments, build artifacts, logs, or a developer message.
-7. Record the matching canonical base64-encoded 32-byte public key for dispatches.
+7. Use the public key recorded in `opennow-qt/packaging/update-public-key.base64` for dispatches.
    The public key is not secret. The signing job derives it independently from the
    seed and rejects a mismatch.
 
@@ -38,12 +39,12 @@ programs on the signer. Only the approved release tooling may run there.
 ## Publish the first update-enabled nightly
 
 1. Select the reviewed protected revision in GitHub Actions → qt-ci → Run workflow.
-2. Set `public_key` to the recorded public key and set `publish_nightly` to `true`.
+2. Retain the default production `public_key` and set `publish_nightly` to `true`.
 3. Wait for shared checks, all platform checks, and the complete package build to pass.
-4. Inspect the source commit and the nine-package inventory before approving the
+4. Inspect the source commit, nine packages, and two AppImage sidecars before approving the
    `qt-update-signing` deployment.
-5. Confirm that the publisher verifies the signed set and uploads all 20 files before
-   making the draft prerelease public. These are nine packages, nine sibling manifests,
+5. Confirm that the publisher verifies the signed set and uploads all 24 files before
+   making the draft prerelease public. These are nine packages, two sidecars, eleven sibling manifests,
    `RELEASE-INFO.json`, and `SHA256SUMS`.
 
 For artifact-only testing, leave `publish_nightly` false. An empty `public_key` is
@@ -73,8 +74,9 @@ actionlint -color=false .github/workflows/qt-ci.yml .github/workflows/qt-checks.
   .github/workflows/qt-build.yml .github/workflows/qt-release-candidate.yml
 ```
 
-The signing tests generate ephemeral test-only keys, sign and verify all nine fixture
-packages with OpenSSL, and reject mismatched keys, incomplete inventories, changed
+The signing tests generate ephemeral test-only keys, sign and verify all eleven fixture
+nightly assets with OpenSSL. Candidate promotion tests exercise the production candidate's
+signing script with twelve fixture assets. Both reject mismatched keys, incomplete inventories, changed
 packages, changed manifests, and invalid public inputs. No production seed is needed.
 
 The platform-check action also runs `opennow-qt/tests/run_update_helper_integration.py`

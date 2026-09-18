@@ -252,7 +252,7 @@ class MacOSCandidateWorkflowTest(unittest.TestCase):
     def names(self):
         return [f"OpenNOW-Qt-1.2.3-{platform}-{arch}.{extension}"
                 for platform, arches, extensions in (
-                    ("Linux", ("x64", "arm64"), ("AppImage", "deb")),
+                    ("Linux", ("x64", "arm64"), ("AppImage", "AppImage.zsync", "deb")),
                     ("Windows", ("x64", "arm64"), ("msi", "zip")),
                     ("Darwin", ("arm64",), ("dmg", "zip")))
                 for arch in arches for extension in extensions]

@@ -88,15 +88,8 @@ fn deb_identity(package: &Path, target: &Path, version: &str) -> Result<Identity
                 .to_owned(),
         );
     }
-    let owner = output(
-        Command::new("/usr/bin/dpkg-query")
-            .arg("--search")
-            .arg(target),
-    )?;
-    if !owner.lines().any(|line| {
-        line.strip_prefix("opennow: ")
-            .is_some_and(|path| Path::new(path) == target)
-    }) {
+    let files = deb_file_owners(target)?;
+    if !deb_owns_file(&files, target) {
         return Err(
             "Running application is not owned by the installed OpenNOW DEB package".to_owned(),
         );
@@ -114,6 +107,31 @@ fn deb_identity(package: &Path, target: &Path, version: &str) -> Result<Identity
         version,
         architecture,
         installed_product: "opennow".to_owned(),
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn deb_file_owners(target: &Path) -> Result<String, String> {
+    let name = target.file_name().ok_or("Application has no file name")?;
+    let mut pattern = std::ffi::OsString::from("*");
+    pattern.push(name);
+    output(
+        Command::new("/usr/bin/dpkg-query")
+            .arg("--search")
+            .arg(pattern),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn deb_owns_file(files: &str, target: &Path) -> bool {
+    let Ok(target) = super::canonical_file(target) else {
+        return false;
+    };
+    files.lines().any(|line| {
+        line.strip_prefix("opennow: ").is_some_and(|file| {
+            Path::new(file).is_absolute()
+                && super::canonical_file(Path::new(file)).is_ok_and(|path| path == target)
+        })
     })
 }
 
@@ -509,6 +527,13 @@ pub(super) fn verify_installed(
                         .to_owned(),
                 );
             }
+            #[cfg(target_os = "linux")]
+            {
+                let files = deb_file_owners(target)?;
+                if !deb_owns_file(&files, target) {
+                    return Err("Installed OpenNOW DEB does not own the application".to_owned());
+                }
+            }
             Ok(())
         }
         InstallKind::WindowsMsi => {
@@ -535,5 +560,42 @@ pub(super) fn verify_installed(
             Err("MSI updates require Windows".to_owned())
         }
         _ => Err("Not a managed package".to_owned()),
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deb_ownership_matches_canonical_directories_but_rejects_file_symlinks() {
+        let directory = tempfile::tempdir().unwrap();
+        let actual = directory.path().join("usr/bin");
+        std::fs::create_dir_all(&actual).unwrap();
+        let target = actual.join("opennow-qt");
+        std::fs::write(&target, b"application").unwrap();
+        let alias = directory.path().join("bin");
+        std::os::unix::fs::symlink(&actual, &alias).unwrap();
+        let registered = alias.join("opennow-qt");
+        let owners = format!("opennow: {}", registered.display());
+        assert!(deb_owns_file(&owners, &target));
+        let unrelated = directory.path().join("unrelated");
+        std::fs::write(&unrelated, b"other application").unwrap();
+        assert!(!deb_owns_file(&owners, &unrelated));
+        let link = actual.join("opennow-link");
+        std::os::unix::fs::symlink(&unrelated, &link).unwrap();
+        assert!(!deb_owns_file(
+            &format!("opennow: {}", link.display()),
+            &unrelated
+        ));
+        assert!(!deb_owns_file(
+            &format!("opennow: {}", unrelated.display()),
+            &link
+        ));
+        assert!(!deb_owns_file(
+            &format!("other-package: {}", target.display()),
+            &target
+        ));
+        assert!(!deb_owns_file("opennow: relative/path", &target));
     }
 }

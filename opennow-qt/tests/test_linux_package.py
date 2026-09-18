@@ -53,6 +53,7 @@ file(WRITE "{source.as_posix()}/architecture.txt" "${{CPACK_DEBIAN_PACKAGE_ARCHI
                 subprocess.run(["cmake", "-P", str(contract)], check=True, capture_output=True)
                 dependencies = (source / "dependencies.txt").read_text().split(",")
                 self.assertIn("qt6-svg-plugins (>= 6.8)", [item.strip() for item in dependencies])
+                self.assertIn("pkexec", [item.strip() for item in dependencies])
                 self.assertEqual((source / "architecture.txt").read_text(), architecture)
                 self.assertIn("opennow-update-helper", (build / "cmake_install.cmake").read_text())
 
