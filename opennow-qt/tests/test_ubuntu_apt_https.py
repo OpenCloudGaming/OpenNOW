@@ -58,11 +58,13 @@ class UbuntuAptHttpsTest(unittest.TestCase):
         self.assertEqual(APT_HTTPS.rewrite(source, "mirrors"), expected)
 
     def test_sonic_http_ubuntu_mirror_maps_to_official_archive(self):
-        for suffix in ("", "/"):
-            with self.subTest(suffix=suffix):
-                source = f"http://mirrors.sonic.net/ubuntu{suffix}\tpriority:1\n"
-                expected = f"https://archive.ubuntu.com/ubuntu{suffix}\tpriority:1\n"
-                self.assertEqual(APT_HTTPS.rewrite(source, "mirrors"), expected)
+        for host in ("mirrors.sonic.net", "mirrors.edge.kernel.org"):
+            for scheme in ("http", "https"):
+                for suffix in ("", "/"):
+                    with self.subTest(host=host, scheme=scheme, suffix=suffix):
+                        source = f"{scheme}://{host}/ubuntu{suffix}\tpriority:1\n"
+                        expected = f"https://archive.ubuntu.com/ubuntu{suffix}\tpriority:1\n"
+                        self.assertEqual(APT_HTTPS.rewrite(source, "mirrors"), expected)
         self.assertEqual(APT_HTTPS.https_uri("https://mirrors.sonic.net/other"), "https://mirrors.sonic.net/other")
 
     def test_unverified_hosts_nonubuntu_paths_and_existing_https_are_unchanged(self):
@@ -75,7 +77,6 @@ class UbuntuAptHttpsTest(unittest.TestCase):
             "http://archive.ubuntu.com/other",
             "http://archive.ubuntu.com:80/ubuntu",
             "https://archive.ubuntu.com/ubuntu",
-            "https://mirrors.sonic.net/ubuntu",
             "mirror+file:/etc/apt/blacksmith-ubuntu-mirrors.txt",
         ):
             with self.subTest(uri=uri):
@@ -100,10 +101,18 @@ class UbuntuAptHttpsTest(unittest.TestCase):
                 path.chmod(0o640)
             originals = {path: path.stat() for path in files}
             changed = set(APT_HTTPS.prepare(apt))
+            mirrors = apt / "opennow-ubuntu-mirrors.txt"
             self.assertEqual(changed, {apt / "sources.list", sources / "ubuntu.sources",
-                                       sources / "extra.list", apt / "blacksmith-ubuntu-mirrors.txt"})
+                                       sources / "extra.list", mirrors})
             for path, text in files.items():
-                expected = text.replace("http://", "https://").replace("mirrors.sonic.net", "archive.ubuntu.com") if path in changed else text
+                expected = text
+                if path in changed:
+                    for host in ("archive.ubuntu.com", "security.ubuntu.com", "us.archive.ubuntu.com"):
+                        expected = expected.replace("http://" + host + "/ubuntu", "mirror+file:" + str(mirrors))
+                    if path.suffix == ".sources":
+                        expected += "By-Hash: force\n"
+                    else:
+                        expected = expected.replace("deb ", "deb [by-hash=force] ").replace("deb-src ", "deb-src [by-hash=force] ")
                 self.assertEqual(path.read_text(), expected)
                 self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o640)
                 self.assertEqual((path.stat().st_uid, path.stat().st_gid),
@@ -113,7 +122,34 @@ class UbuntuAptHttpsTest(unittest.TestCase):
             modified = {path: path.stat().st_mtime_ns for path in files}
             self.assertEqual(APT_HTTPS.prepare(apt), [])
             self.assertEqual({path: path.stat().st_mtime_ns for path in files}, modified)
-            self.assertEqual({path for path in apt.rglob("*") if path.is_file()}, set(files))
+            self.assertEqual({path for path in apt.rglob("*") if path.is_file()}, set(files) | {mirrors})
+            self.assertEqual(mirrors.read_text(), APT_HTTPS.FALLBACK_MIRRORS)
+            self.assertEqual(stat.S_IMODE(mirrors.stat().st_mode), 0o644)
+
+    def test_preparation_replaces_a_single_offline_blacksmith_mirror_without_altering_its_list(self):
+        with tempfile.TemporaryDirectory() as directory:
+            apt = Path(directory)
+            source = apt / "sources.list"
+            source.write_text("deb mirror+file:/etc/apt/blacksmith-ubuntu-mirrors.txt noble main\n")
+            original = apt / "blacksmith-ubuntu-mirrors.txt"
+            original.write_text("https://mirrors.edge.kernel.org/ubuntu\n")
+            APT_HTTPS.prepare(apt)
+            self.assertEqual(source.read_text(), f"deb [by-hash=force] mirror+file:{apt}/opennow-ubuntu-mirrors.txt noble main\n")
+            self.assertEqual(original.read_text(), "https://mirrors.edge.kernel.org/ubuntu\n")
+            self.assertEqual((apt / "opennow-ubuntu-mirrors.txt").read_text(), APT_HTTPS.FALLBACK_MIRRORS)
+
+    def test_preparation_rejects_linked_mirror_files_before_rewriting_sources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            apt = Path(directory)
+            source = apt / "sources.list"
+            original = "deb http://archive.ubuntu.com/ubuntu noble main\n"
+            source.write_text(original)
+            target = apt / "external"
+            target.write_text(APT_HTTPS.FALLBACK_MIRRORS)
+            (apt / "opennow-ubuntu-mirrors.txt").symlink_to(target)
+            with self.assertRaisesRegex(ValueError, "linked apt source"):
+                APT_HTTPS.prepare(apt)
+            self.assertEqual(source.read_text(), original)
 
     def test_preparation_refuses_to_replace_a_linked_source(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -125,6 +161,17 @@ class UbuntuAptHttpsTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "linked apt source"):
                 APT_HTTPS.prepare(apt)
             self.assertEqual(original.read_text(), source)
+
+    def test_immutable_index_policy_preserves_trust_options_and_other_repositories(self):
+        uri = "mirror+file:/etc/apt/opennow-ubuntu-mirrors.txt"
+        source = (f"deb [arch=amd64 signed-by=/keyring.gpg by-hash=no] {uri} noble main # keep\n"
+                  "deb [by-hash=no] https://vendor.example/repo noble main\n")
+        expected = source.replace("signed-by=/keyring.gpg by-hash=no", "signed-by=/keyring.gpg by-hash=force")
+        self.assertEqual(APT_HTTPS.require_immutable_indexes(source, "list", uri), expected)
+        sources = (f"Types: deb\r\nURIs:\r\n {uri}\r\nBy-Hash: no\r\nSigned-By: /keyring.gpg\r\n\r\n"
+                   "Types: deb\r\nURIs: https://vendor.example/repo\r\nBy-Hash: no\r\n")
+        expected = sources.replace("By-Hash: no", "By-Hash: force", 1)
+        self.assertEqual(APT_HTTPS.require_immutable_indexes(sources, "sources", uri), expected)
 
     def test_preparation_runs_before_any_apt_or_qt_install_only_on_linux_x64(self):
         command = "sudo python3 .github/scripts/prepare-ubuntu-apt-https.py"

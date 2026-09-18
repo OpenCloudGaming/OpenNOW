@@ -80,7 +80,7 @@ runs:
       shell: bash
       run: |
         sudo bash .github/scripts/configure-ubuntu-apt.sh
-        sudo apt-get update
+        sudo apt-get update --error-on=any
         sudo apt-get install -y \
           clang libclang-dev libasound2-dev libdbus-1-dev libdrm-dev libegl1-mesa-dev libgl1-mesa-dev \
           libpulse-dev libsecret-1-dev libva-dev libvulkan-dev libwayland-dev \

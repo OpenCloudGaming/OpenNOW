@@ -13,6 +13,7 @@ class UbuntuAptTest(unittest.TestCase):
         for uri in ("http://archive.ubuntu.com/ubuntu/",
                     "http://us.archive.ubuntu.com/ubuntu/",
                     "https://archive.ubuntu.com/ubuntu/",
+                    "https://mirrors.edge.kernel.org/ubuntu/",
                     "mirror+file:/etc/apt/blacksmith-ubuntu-mirrors.txt"):
             with self.subTest(uri=uri), tempfile.TemporaryDirectory() as directory:
                 apt = Path(directory)
@@ -36,12 +37,17 @@ class UbuntuAptTest(unittest.TestCase):
 
                 subprocess.run(["bash", str(SCRIPT), str(apt)], check=True)
 
-                expected = original.replace("http://security.ubuntu.com", "https://mirrors.edge.kernel.org")
-                if uri.startswith("http"):
-                    expected = expected.replace(uri, "https://mirrors.edge.kernel.org/ubuntu/")
+                mirror_uri = "mirror+file:" + str(apt / "opennow-ubuntu-mirrors.txt")
+                expected = original.replace("http://security.ubuntu.com/ubuntu/", mirror_uri).replace(uri, mirror_uri)
+                expected = expected.replace("Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n",
+                                            "Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\nBy-Hash: force\n")
+                if not uri.startswith("mirror+"):
                     self.assertFalse(mirrors.exists())
                 else:
-                    self.assertEqual(mirrors.read_text(), "https://mirrors.edge.kernel.org/ubuntu\n")
+                    self.assertEqual(mirrors.read_text(), "http://archive.ubuntu.com/ubuntu\nhttp://mirrors.sonic.net/ubuntu\n")
+                self.assertEqual((apt / "opennow-ubuntu-mirrors.txt").read_text(),
+                                 "https://archive.ubuntu.com/ubuntu\tpriority:1\n"
+                                 "https://security.ubuntu.com/ubuntu\tpriority:2\n")
                 self.assertEqual(sources.read_text(), expected)
                 self.assertEqual(other.read_text(), "URIs: https://packages.microsoft.com/ubuntu/24.04/prod\n")
                 subprocess.run(["bash", str(SCRIPT), str(apt)], check=True)
@@ -56,3 +62,4 @@ class UbuntuAptTest(unittest.TestCase):
         action = (ROOT / ".github/actions/qt-unit-tests/action.yml").read_text()
         self.assertLess(action.index("sudo bash .github/scripts/configure-ubuntu-apt.sh"),
                         action.index("sudo apt-get update"))
+        self.assertIn("sudo apt-get update --error-on=any", action)
