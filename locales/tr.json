@@ -156,6 +156,8 @@
     "lastSyncCount": "%1 games reported by the last store sync"
   },
   "providerRouting": {
+    "empty": "No providers are available. Refresh to try again.",
+    "contacting": "Contacting provider…",
     "unavailable": "Provider discovery is unavailable. Known providers are shown. Refresh to try again.",
     "knownProviders": "Provider discovery is unavailable. Known providers are shown.",
     "refresh": "Refresh providers",
