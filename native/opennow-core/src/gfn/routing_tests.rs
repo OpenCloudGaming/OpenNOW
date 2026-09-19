@@ -1115,32 +1115,28 @@ fn delayed_poll_fences_ordinary_results_but_preserves_exact_seat_termination() {
 }
 
 #[test]
-fn digevo_stale_discovery_endpoint_falls_back_to_latam_west() {
+fn digevo_unreachable_discovery_endpoint_falls_back_to_latam_west() {
     let stale = LoginProvider {
-        idp_id: DIGEVO_IDP_ID.to_owned(),
+        idp_id: PROVIDER_FALLBACKS[0].idp_id.to_owned(),
         code: "DIG".to_owned(),
         display_name: "Digevo".to_owned(),
         streaming_service_url: "https://prod.DIG.geforcenow.nvidiagrid.net/".to_owned(),
         priority: 10,
     };
+    // NXDOMAIN (out of footprint, no VPN): use the verified regional fallback.
     assert_eq!(
-        effective_provider_url(&stale),
+        effective_provider_url_with(&stale, |_| false),
         "https://latam-west.dig.geforcenow.nvidiagrid.net/"
     );
-    let base = provider_streaming_base(&stale).unwrap();
+    // Reachable (VPN / in footprint): keep the geo-steered discovery endpoint.
     assert_eq!(
-        base.as_str(),
-        "https://latam-west.dig.geforcenow.nvidiagrid.net/"
+        effective_provider_url_with(&stale, |_| true),
+        "https://prod.DIG.geforcenow.nvidiagrid.net/"
     );
-    // Normalization at discovery time also repairs the stored provider.
-    assert_eq!(
-        stale.clone().normalize().streaming_service_url,
-        "https://latam-west.dig.geforcenow.nvidiagrid.net/"
-    );
-    // Non-Digevo providers and already-correct Digevo URLs are untouched.
+    // Non-Digevo providers and already-regional Digevo URLs are untouched.
     let nvidia = LoginProvider::default_nvidia();
     assert_eq!(
-        effective_provider_url(&nvidia),
+        effective_provider_url_with(&nvidia, |_| false),
         "https://prod.cloudmatchbeta.nvidiagrid.net/"
     );
     let current = LoginProvider {
@@ -1148,7 +1144,7 @@ fn digevo_stale_discovery_endpoint_falls_back_to_latam_west() {
         ..stale
     };
     assert_eq!(
-        effective_provider_url(&current),
+        effective_provider_url_with(&current, |_| false),
         "https://latam-west.dig.geforcenow.nvidiagrid.net/"
     );
 }

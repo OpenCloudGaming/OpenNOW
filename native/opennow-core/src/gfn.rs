@@ -16,6 +16,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::env;
 use std::io::Read;
+use std::net::ToSocketAddrs;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -34,15 +35,30 @@ mod store_launch_tests;
 
 const DEFAULT_IDP_ID: &str = "PDiAhv2kJTFeQ7WOPqiQ2tRZ7lGhR2X11dXvM4TZSxg";
 const DEFAULT_STREAMING_URL: &str = "https://prod.cloudmatchbeta.nvidiagrid.net/";
-// Digevo's discovery endpoint (pcs.geforcenow.com) still advertises
-// https://prod.DIG.geforcenow.nvidiagrid.net/, but that hostname has no DNS
-// records (NODATA/NXDOMAIN globally as of Sep 2026). The working regional
-// endpoint is https://latam-west.dig.geforcenow.nvidiagrid.net/, which returns
-// serverId NPA-DIG-SCL-01 and region "LATAM West". This fallback is an HTTPS
-// NVIDIA-grid name and passes the existing trust policy.
-const DIGEVO_IDP_ID: &str = "IsvVBA3Aj8KZ7gwwuRUhB6-tOF2o2F1wncD-XjYv100";
-const DIGEVO_STALE_HOST: &str = "prod.dig.geforcenow.nvidiagrid.net";
-const DIGEVO_FALLBACK_URL: &str = "https://latam-west.dig.geforcenow.nvidiagrid.net/";
+// Alliance `prod.*` discovery endpoints are geo-steered: they resolve to the
+// nearest regional PoP from inside the partner footprint (via VPN or local
+// presence) and return NODATA/NXDOMAIN from outside it. For partners below,
+// discovery still advertises only the `prod.*` name, so out-of-footprint
+// users get no DNS at all. Each entry maps that stale name to a globally
+// reachable regional endpoint in the same `nvidiagrid.net` trust policy. The
+// fallback engages only when the advertised host fails DNS resolution, so
+// in-footprint users keep native geo-steering untouched.
+struct ProviderFallback {
+    idp_id: &'static str,
+    stale_host: &'static str,
+    fallback_url: &'static str,
+}
+
+const PROVIDER_FALLBACKS: &[ProviderFallback] = &[
+    // Verified live Sep 2026: serverId NPA-DIG-SCL-01, region "LATAM West",
+    // session create and first video frame at 1080p60 H264. Digevo also
+    // serves LATAM North (Bogota) via geo-steered `prod.dig`.
+    ProviderFallback {
+        idp_id: "IsvVBA3Aj8KZ7gwwuRUhB6-tOF2o2F1wncD-XjYv100",
+        stale_host: "prod.dig.geforcenow.nvidiagrid.net",
+        fallback_url: "https://latam-west.dig.geforcenow.nvidiagrid.net/",
+    },
+];
 const STEAM_DECK_CLIENT_ID: &str = "q61ddeJrVt7O90Nl-P-N7I36yctih4Ml6FyXLrb6j-U";
 const SCOPES: &str = "openid consent email tk_client age";
 const STEAM_DECK_USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; Steam Deck) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
@@ -125,29 +141,40 @@ impl LoginProvider {
 }
 
 pub(crate) fn effective_provider_url(provider: &LoginProvider) -> String {
+    effective_provider_url_with(provider, host_resolves)
+}
+
+fn host_resolves(host: &str) -> bool {
+    // The port is irrelevant; this only exercises DNS resolution. NXDOMAIN
+    // answers fast, and successes are OS-cached, so the probe stays cheap
+    // next to the HTTPS calls every caller issues afterwards.
+    format!("{host}:443")
+        .to_socket_addrs()
+        .is_ok_and(|mut addresses| addresses.next().is_some())
+}
+
+fn effective_provider_url_with(
+    provider: &LoginProvider,
+    resolves: impl Fn(&str) -> bool,
+) -> String {
     let raw = provider.streaming_service_url.trim();
-    if provider.idp_id == DIGEVO_IDP_ID {
-        if let Ok(url) = url::Url::parse(raw) {
-            if url
-                .host_str()
-                .unwrap_or_default()
-                .eq_ignore_ascii_case(DIGEVO_STALE_HOST)
-            {
-                eprintln!(
-                    "provider: Digevo discovery endpoint has no DNS; using LATAM West fallback"
-                );
-                return DIGEVO_FALLBACK_URL.to_owned();
-            }
-        } else if raw.eq_ignore_ascii_case("https://prod.dig.geforcenow.nvidiagrid.net")
-            || raw.eq_ignore_ascii_case("https://prod.dig.geforcenow.nvidiagrid.net/")
-            || raw.eq_ignore_ascii_case("https://prod.DIG.geforcenow.nvidiagrid.net")
-            || raw.eq_ignore_ascii_case("https://prod.DIG.geforcenow.nvidiagrid.net/")
-        {
-            eprintln!("provider: Digevo discovery endpoint has no DNS; using LATAM West fallback");
-            return DIGEVO_FALLBACK_URL.to_owned();
+    let host = url::Url::parse(raw)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .unwrap_or_default();
+    let fallback = PROVIDER_FALLBACKS.iter().find(|entry| {
+        provider.idp_id == entry.idp_id && host.eq_ignore_ascii_case(entry.stale_host)
+    });
+    match fallback {
+        Some(entry) if !resolves(&host) => {
+            eprintln!(
+                "provider: {} discovery endpoint is unreachable; using fallback {}",
+                provider.code, entry.fallback_url
+            );
+            entry.fallback_url.to_owned()
         }
+        _ => raw.to_owned(),
     }
-    raw.to_owned()
 }
 
 pub(crate) fn provider_streaming_base(provider: &LoginProvider) -> Result<url::Url, ServiceError> {
