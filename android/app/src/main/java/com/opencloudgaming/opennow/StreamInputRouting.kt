@@ -171,6 +171,18 @@ internal fun shouldConsumeNativeUiTransitionTouch(
 ): Boolean = streamUiActive && hasOwnedPointer
 
 object NativeStreamInputRouter {
+    /**
+     * Some Android mouse drivers report a secondary click as KEYCODE_BUTTON_B. A controller key
+     * code is not sufficient evidence by itself; the source device must also be a controller.
+     */
+    internal fun shouldRouteKeyAsGamepad(controllerInputDevice: Boolean, keyCode: Int): Boolean =
+        controllerInputDevice &&
+            (GamepadButtonMapping.maskForKeyCode(keyCode, controllerActivation = true) != null ||
+                AndroidControllerInput.isPrimaryActivationKey(keyCode) ||
+                keyCode == KeyEvent.KEYCODE_BUTTON_L2 ||
+                keyCode == KeyEvent.KEYCODE_BUTTON_R2 ||
+                GamepadButtonMapping.isControllerButtonKeyCode(keyCode))
+
     private data class PresentationTransform(
         val zoomScale: Float = 1f,
         val translationX: Float = 0f,

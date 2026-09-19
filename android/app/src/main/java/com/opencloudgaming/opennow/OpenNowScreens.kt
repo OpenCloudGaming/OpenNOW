@@ -778,8 +778,8 @@ fun OpenNowApp(
                         versionCheck = state.bugReportVersionCheck,
                         update = state.androidUpdate,
                         experimentalNvstEnabled = state.settings.stream.experimentalNvst,
-                        onSubmit = { title, description, knownIssueOverrideKey ->
-                            viewModel.submitBugReport(title, description, knownIssueOverrideKey)
+                        onSubmit = { title, description, knownIssueOverrideKey, details, files ->
+                            viewModel.submitBugReport(title, description, knownIssueOverrideKey, details, files)
                         },
                         onReset = viewModel::resetBugReportSubmission,
                         onVersionCheck = viewModel::verifyBugReportVersion,
@@ -831,6 +831,7 @@ fun OpenNowApp(
                     !showCompletedSessionBugReport && !diagnosticDialogVisible &&
                     state.deviceLoginPrompt == null && state.pendingStoreChoiceGame == null &&
                     state.pendingMembershipNotice == null && state.pendingPrintedWasteGame == null &&
+                    state.pendingBatteryOptimizationLaunch == null && state.pendingLaunchRecovery == null &&
                     state.error == null && !state.loginToolsVisible) {
                     state.appMessage?.let { message ->
                         AlertDialog(
@@ -874,7 +875,9 @@ private fun MainShell(
     val streamingActive = inStream && state.streamStatus != "idle"
     val modalPickerOpen = state.pendingPrintedWasteGame != null ||
         state.pendingStoreChoiceGame != null ||
-        state.pendingMembershipNotice != null
+        state.pendingMembershipNotice != null ||
+        state.pendingBatteryOptimizationLaunch != null ||
+        state.pendingLaunchRecovery != null
     val tvProfile = state.androidTvProfile
     val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = !inStream)
     val navAudioController = remember(context) { AndroidNerdAudioController(context.applicationContext) }
@@ -1277,6 +1280,28 @@ private fun MainShell(
                         )
                     }
                 }
+                state.pendingBatteryOptimizationLaunch?.let { pending ->
+                    ControllerModalDialog(onDismissRequest = viewModel::dismissBatteryOptimizationPrompt) {
+                        BatteryOptimizationQueueDialog(
+                            gameTitle = pending.game.title,
+                            onAllow = {
+                                openBatteryOptimizationSettings(context)
+                                viewModel.dismissBatteryOptimizationPrompt()
+                            },
+                            onContinueWithout = viewModel::continueWithoutBatteryOptimization,
+                            onCancel = viewModel::dismissBatteryOptimizationPrompt,
+                        )
+                    }
+                }
+                state.pendingLaunchRecovery?.let { recovery ->
+                    ControllerModalDialog(onDismissRequest = viewModel::dismissLaunchRecovery) {
+                        LaunchRecoveryDialog(
+                            recovery = recovery,
+                            onRetryLower = viewModel::retryLaunchWithLowerSettings,
+                            onDismiss = viewModel::dismissLaunchRecovery,
+                        )
+                    }
+                }
                 state.pendingStoreChoiceGame?.let { game ->
                     ControllerModalDialog(onDismissRequest = viewModel::dismissStoreChoice) {
                         AnimatedLaunchOverlay(Modifier.fillMaxSize()) {
@@ -1461,6 +1486,9 @@ internal fun shouldShowLocalAppsProfileAction(
     @Suppress("UNUSED_PARAMETER")
     localAppsEnabled: Boolean,
 ): Boolean = localAppLauncherSupported
+
+internal fun shouldShowProfileMenuDivider(gameBordersEnabled: Boolean): Boolean =
+    gameBordersEnabled
 
 internal fun shouldAnimateOpenNowAppIcon(
     codecReport: RuntimeCodecReport?,
@@ -1883,7 +1911,9 @@ private fun TopBarProfileMenu(
                     )
                 }
             }
-            HorizontalDivider(color = Color.White.copy(alpha = 0.10f))
+            if (shouldShowProfileMenuDivider(LocalGameCardBordersEnabled.current)) {
+                HorizontalDivider(color = Color.White.copy(alpha = 0.10f))
+            }
             ProfileDropdownMenuItem(
                 text = {
                     Text(

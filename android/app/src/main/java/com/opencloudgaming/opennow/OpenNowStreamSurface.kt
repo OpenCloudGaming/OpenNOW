@@ -1191,8 +1191,8 @@ internal fun StreamScreen(
                     onTouchSettingsChange = { touch ->
                         viewModel.updateSettings(state.settings.copy(androidTouch = touch))
                     },
-                    onBugReportSubmit = { title, description, knownIssueOverrideKey ->
-                        viewModel.submitBugReport(title, description, knownIssueOverrideKey)
+                    onBugReportSubmit = { title, description, knownIssueOverrideKey, details, files ->
+                        viewModel.submitBugReport(title, description, knownIssueOverrideKey, details, files)
                     },
                     onBugReportReset = viewModel::resetBugReportSubmission,
                     onBugReportVersionCheck = viewModel::verifyBugReportVersion,

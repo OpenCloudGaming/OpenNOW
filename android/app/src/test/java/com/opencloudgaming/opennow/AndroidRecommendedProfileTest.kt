@@ -1,6 +1,7 @@
 package com.opencloudgaming.opennow
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -136,7 +137,7 @@ class AndroidRecommendedProfileTest {
         assertTrue(overrides.any { it.startsWith("120 FPS") })
         assertTrue(overrides.any { it.startsWith("75 Mbps bitrate") })
         assertTrue(overrides.contains("HDR"))
-        assertTrue(overrides.contains("10-bit color"))
+        assertFalse(overrides.contains("10-bit color"))
         assertTrue(overrides.contains("stream sharpening"))
         assertTrue(recommended.performanceOverridesComparedTo(recommended, report = null).isEmpty())
     }

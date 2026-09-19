@@ -663,7 +663,7 @@ class StreamResolutionTest {
         ).withAndroidHdrCompatibility(androidTvProfile = false)
 
         assertEquals(true, adjusted.hdrEnabled)
-        assertEquals(ColorQuality.TenBit420, adjusted.colorQuality)
+        assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
     }
 
     @Test

@@ -88,6 +88,7 @@ internal data class AndroidBugReport(
     val languageCheck: AndroidBugReportLanguageCheck,
     val metadata: String,
     val files: List<AndroidBugReportAttachment>,
+    val details: AndroidBugReportDetails = AndroidBugReportDetails(),
 )
 
 internal data class AndroidBugReportReceipt(
@@ -203,7 +204,13 @@ internal fun buildAndroidBugReportRequest(
         .addFormDataPart("versionName", report.versionName)
         .addFormDataPart("versionCode", report.versionCode)
         .addFormDataPart("platform", "android")
+        .addFormDataPart("kind", report.details.kind.wireValue)
+        .addFormDataPart("area", report.details.area.wireValue)
+        .addFormDataPart("frequency", report.details.frequency.wireValue)
+        .addFormDataPart("impact", report.details.impact.wireValue)
         .addFormDataPart("reporterId", report.reporterId)
+        .addFormDataPart("termsAccepted", "true")
+        .addFormDataPart("termsVersion", ANDROID_BUG_REPORT_TERMS_VERSION)
         .addFormDataPart("metadata", report.metadata)
 
     report.files.forEach { attachment ->

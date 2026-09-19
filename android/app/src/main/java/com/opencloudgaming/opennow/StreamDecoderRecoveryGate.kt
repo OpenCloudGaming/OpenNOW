@@ -3,7 +3,9 @@ package com.opencloudgaming.opennow
 /**
  * Detects a sustained local decoder bottleneck without confusing it with a slow cloud game or a
  * network drop. The transport must keep delivering near the requested frame rate while decoder
- * output falls materially behind and consumes more than one frame budget.
+ * output falls materially behind and consumes more than one frame budget. A positive result is a
+ * one-shot diagnostic finding; callers must not tear down healthy media merely to retry the same
+ * selected codec and profile.
  */
 internal class StreamDecoderRecoveryGate(
     private val badSamplesBeforeRecovery: Int = DEFAULT_BAD_SAMPLES_BEFORE_RECOVERY,

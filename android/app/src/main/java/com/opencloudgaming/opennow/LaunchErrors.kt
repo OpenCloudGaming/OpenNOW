@@ -30,12 +30,34 @@ internal fun normalizeLaunchErrorMessage(error: Throwable, gameTitle: String? = 
         terminalSession != null ->
             "The cloud provider ended this session (status ${terminalSession.status}). " +
                 "OpenNOW did not stop it or start a replacement queue."
-        cloudMatchFailure?.isFreeTierEntitlementError() == true ->
-            "Your GeForce NOW account is on the Free tier. This game requires a Priority or Ultimate membership."
+        cloudMatchFailure?.isEntitlementError() == true ->
+            cloudMatchFailure.message ?: text
         cloudMatchFailure?.isLimitedModeStreamingError() == true -> limitedModeStreamingMessage(gameTitle)
         text.contains("patch", ignoreCase = true) || text.contains("maintenance", ignoreCase = true) ->
             "Game is patching or under maintenance. Try again when NVIDIA finishes updating it."
         else -> text
+    }
+}
+
+internal fun shouldOfferLowerSettingsRetry(
+    error: Throwable,
+    requestedSettings: StreamSettings,
+): Boolean {
+    if (requestedSettings == requestedSettings.loweredSessionLaunchProfile()) return false
+    val cloudMatchFailure = error.cloudMatchRequestStatusException()
+    return cloudMatchFailure?.isInternalServerError() == true ||
+        error.causeChainMessages().any { message ->
+            message.contains("internal server error", ignoreCase = true) ||
+                message.contains("INTERNAL_ERROR_STATUS", ignoreCase = true) ||
+                message.contains("8A8C0000", ignoreCase = true)
+        }
+}
+
+private fun Throwable.causeChainMessages(): Sequence<String> = sequence {
+    var current: Throwable? = this@causeChainMessages
+    while (current != null) {
+        current.message?.let { yield(it) }
+        current = current.cause?.takeUnless { it === current }
     }
 }
 
@@ -57,13 +79,17 @@ private fun Throwable.cloudMatchRequestStatusException(): CloudMatchRequestStatu
     return null
 }
 
-private fun CloudMatchRequestStatusException.isFreeTierEntitlementError(): Boolean =
+private fun CloudMatchRequestStatusException.isEntitlementError(): Boolean =
     statusDescriptionToken().equals("ENTITLEMENT_FAILURE_STATUS", ignoreCase = true) ||
         normalizedUnifiedErrorCode() == "8A910006"
 
 private fun CloudMatchRequestStatusException.isLimitedModeStreamingError(): Boolean =
     statusDescriptionToken().equals("STREAMING_NOT_ALLOWED_IN_LIMITED_MODE", ignoreCase = true) ||
         normalizedUnifiedErrorCode() == "8A91000D"
+
+private fun CloudMatchRequestStatusException.isInternalServerError(): Boolean =
+    statusDescriptionToken().equals("INTERNAL_ERROR_STATUS", ignoreCase = true) ||
+        normalizedUnifiedErrorCode() == "8A8C0000"
 
 private fun CloudMatchRequestStatusException.statusDescriptionToken(): String? =
     statusDescription

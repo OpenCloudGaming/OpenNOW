@@ -30,7 +30,9 @@ class AppSettingsDefaultsTest {
         // The shelf opens on first sight; folding it is a choice the reader makes and keeps.
         assertFalse(settings.localAppsCollapsed)
         assertTrue(settings.landscapeNewGamesHero)
+        assertFalse(settings.landscapeNewGamesHeroCollapsed)
         assertFalse(settings.higherPingWarningDismissed)
+        assertFalse(settings.batteryOptimizationPromptDismissed)
         // Rumble routing stays automatic until someone's hardware proves it needs forcing.
         assertEquals(HapticsOutputPreference.Auto, settings.hapticsOutput)
         assertEquals(TouchControllerStyle.V1, settings.androidTouch.touchControllerStyle)
@@ -82,7 +84,9 @@ class AppSettingsDefaultsTest {
         assertFalse(settings.stretchStreamToFit)
         assertTrue(settings.localAppPackageNames.isEmpty())
         assertTrue(settings.landscapeNewGamesHero)
+        assertFalse(settings.landscapeNewGamesHeroCollapsed)
         assertFalse(settings.higherPingWarningDismissed)
+        assertFalse(settings.batteryOptimizationPromptDismissed)
         // Developer options are a hidden gesture, never a shipped or migrated-in default.
         assertFalse(settings.developerOptionsUnlocked)
         assertTrue(settings.showSessionReportAfterStream)

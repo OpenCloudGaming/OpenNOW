@@ -37,6 +37,12 @@ class BugReportsTest {
                         bytes = "sessionId=[redacted]".toByteArray(),
                     ),
                 ),
+                details = AndroidBugReportDetails(
+                    kind = AndroidBugReportKind.Suggestion,
+                    area = AndroidBugReportArea.Input,
+                    frequency = AndroidBugReportFrequency.Always,
+                    impact = AndroidBugReportImpact.High,
+                ),
             ),
         )
 
@@ -55,7 +61,13 @@ class BugReportsTest {
         assertTrue(multipart.contains("name=\"versionName\"\r\n\r\n0.9.0"))
         assertTrue(multipart.contains("name=\"versionCode\"\r\n\r\n45"))
         assertTrue(multipart.contains("name=\"platform\"\r\n\r\nandroid"))
+        assertTrue(multipart.contains("name=\"kind\"\r\n\r\nsuggestion"))
+        assertTrue(multipart.contains("name=\"area\"\r\n\r\ninput"))
+        assertTrue(multipart.contains("name=\"frequency\"\r\n\r\nalways"))
+        assertTrue(multipart.contains("name=\"impact\"\r\n\r\nhigh"))
         assertTrue(multipart.contains("name=\"reporterId\"\r\n\r\n$reporterId"))
+        assertTrue(multipart.contains("name=\"termsAccepted\"\r\n\r\ntrue"))
+        assertTrue(multipart.contains("name=\"termsVersion\"\r\n\r\n$ANDROID_BUG_REPORT_TERMS_VERSION"))
         assertTrue(multipart.contains("name=\"files\"; filename=\"opennow.log\""))
         assertTrue(multipart.contains("sessionId=[redacted]"))
     }

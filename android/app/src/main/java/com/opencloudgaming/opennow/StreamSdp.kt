@@ -215,9 +215,8 @@ object SdpTools {
     }
 
     private fun StreamSettings.prefersTenBitVideo(): Boolean =
-        hdrEnabled ||
-            colorQuality == ColorQuality.TenBit420 ||
-            colorQuality == ColorQuality.TenBit444
+        !hdrEnabled &&
+            (colorQuality == ColorQuality.TenBit420 || colorQuality == ColorQuality.TenBit444)
 
     fun mungeAnswerSdp(sdp: String, maxBitrateKbps: Int): String {
         val lineEnding = if (sdp.contains("\r\n")) "\r\n" else "\n"
@@ -308,7 +307,7 @@ object SdpTools {
         val threshold = Regex("a=ri\\.partialReliableThresholdMs:(\\d+)").find(offerSdp)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 30
         val hidDeviceMask = parseHidDeviceMask(offerSdp)
         val partiallyReliableHidMask = parsePartiallyReliableHidMask(offerSdp)
-        val bitDepth = if (settings.hdrEnabled || settings.colorQuality == ColorQuality.TenBit420 || settings.colorQuality == ColorQuality.TenBit444) 10 else 8
+        val bitDepth = if (!settings.hdrEnabled && (settings.colorQuality == ColorQuality.TenBit420 || settings.colorQuality == ColorQuality.TenBit444)) 10 else 8
         val bitrate = StreamNetworkAdaptation.bitrateRange(settings.maxBitrateMbps)
         val maxBitrate = bitrate.maximumKbps
         val minBitrate = bitrate.minimumKbps

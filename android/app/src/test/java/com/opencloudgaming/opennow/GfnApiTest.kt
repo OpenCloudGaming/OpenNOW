@@ -864,7 +864,7 @@ class GfnApiTest {
         assertEquals(280f, monitor.getValue("displayData").jsonObject
             .getValue("desiredContentMaxFrameAverageLuminance").jsonPrimitive.float)
         assertEquals(true, features.getValue("trueHdr").jsonPrimitive.boolean)
-        assertEquals(10, features.getValue("bitDepth").jsonPrimitive.int)
+        assertEquals(0, features.getValue("bitDepth").jsonPrimitive.int)
         assertEquals(2, features.getValue("sdrColorSpace").jsonPrimitive.int)
         assertEquals(4, features.getValue("hdrColorSpace").jsonPrimitive.int)
         assertEquals(1, sessionRequestData.getValue("sdrHdrMode").jsonPrimitive.int)
@@ -1219,7 +1219,7 @@ class GfnApiTest {
         assertEquals(1, monitor.getValue("sdrHdrMode").jsonPrimitive.int)
         assertEquals(0, monitor.getValue("monitorId").jsonPrimitive.int)
         assertEquals(100, monitor.getValue("dpi").jsonPrimitive.int)
-        assertEquals(10, features.getValue("bitDepth").jsonPrimitive.int)
+        assertEquals(0, features.getValue("bitDepth").jsonPrimitive.int)
         assertEquals(true, features.getValue("trueHdr").jsonPrimitive.boolean)
         assertEquals(4, features.getValue("hdrColorSpace").jsonPrimitive.int)
     }

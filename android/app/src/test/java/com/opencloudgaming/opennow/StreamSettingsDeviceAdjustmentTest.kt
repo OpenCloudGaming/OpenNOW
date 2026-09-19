@@ -227,7 +227,7 @@ class StreamSettingsDeviceAdjustmentTest {
     }
 
     @Test
-    fun preservesTenBitWhenHdrIsEnabled() {
+    fun forcesEightBitWhenHdrIsEnabled() {
         val adjusted = StreamSettings(codec = VideoCodec.H265, colorQuality = ColorQuality.TenBit420, hdrEnabled = true)
             .adjustedForDevice(
                 codecReport(
@@ -240,7 +240,7 @@ class StreamSettingsDeviceAdjustmentTest {
             )
 
         assertEquals(VideoCodec.H265, adjusted.codec)
-        assertEquals(ColorQuality.TenBit420, adjusted.colorQuality)
+        assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
     }
 
     @Test
@@ -464,7 +464,7 @@ class StreamSettingsDeviceAdjustmentTest {
         assertEquals(240, adjusted.fps)
         assertEquals(150, adjusted.maxBitrateMbps)
         assertEquals(VideoCodec.H265, adjusted.codec)
-        assertEquals(ColorQuality.TenBit420, adjusted.colorQuality)
+        assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
         assertEquals(true, adjusted.hdrEnabled)
         assertEquals(true, adjusted.enableL4S)
     }
@@ -613,7 +613,7 @@ class StreamSettingsDeviceAdjustmentTest {
         assertEquals(120, adjusted.fps)
         assertEquals(75, adjusted.maxBitrateMbps)
         assertEquals(VideoCodec.H265, adjusted.codec)
-        assertEquals(ColorQuality.TenBit420, adjusted.colorQuality)
+        assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
         assertEquals(true, adjusted.hdrEnabled)
         assertEquals(true, adjusted.streamSharpeningEnabled)
     }
@@ -648,7 +648,7 @@ class StreamSettingsDeviceAdjustmentTest {
         assertEquals(60, adjusted.fps)
         assertEquals(75, adjusted.maxBitrateMbps)
         assertEquals(VideoCodec.H265, adjusted.codec)
-        assertEquals(ColorQuality.TenBit420, adjusted.colorQuality)
+        assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
         assertEquals(true, adjusted.hdrEnabled)
         assertEquals(true, adjusted.streamSharpeningEnabled)
     }

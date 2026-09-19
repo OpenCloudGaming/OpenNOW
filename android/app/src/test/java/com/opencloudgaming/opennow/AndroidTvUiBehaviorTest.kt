@@ -17,6 +17,12 @@ class AndroidTvUiBehaviorTest {
     }
 
     @Test
+    fun profileMenuDividerFollowsGameBorderToggle() {
+        assertFalse(shouldShowProfileMenuDivider(gameBordersEnabled = false))
+        assertTrue(shouldShowProfileMenuDivider(gameBordersEnabled = true))
+    }
+
+    @Test
     fun chosenWallpaperAlsoBacksSettingsButNeverTheStream() {
         val wallpaper = AppSettings(nerdCatalogBackground = true)
 

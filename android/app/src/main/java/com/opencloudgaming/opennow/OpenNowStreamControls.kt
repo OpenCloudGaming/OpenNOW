@@ -743,7 +743,7 @@ internal fun StreamControlsPanel(
     onTouchLayoutReset: () -> Unit,
     onTouchSettingsChange: (AndroidTouchSettings) -> Unit,
     onTouchPresetsChange: (List<TouchControlPreset>) -> Unit,
-    onBugReportSubmit: (String, String, String?) -> Unit,
+    onBugReportSubmit: (String, String, String?, AndroidBugReportDetails, List<AndroidBugReportAttachment>) -> Unit,
     onBugReportReset: () -> Unit,
     onBugReportVersionCheck: () -> Unit,
     onOpenUpdate: () -> Unit,
@@ -1400,7 +1400,7 @@ internal fun StreamControlsPanel(
             item {
                 ControlSection(stringResource(R.string.stream_panel_section_support)) {
                     ControlNavigationRow(
-                        label = stringResource(R.string.bug_report_open_label),
+                        label = stringResource(R.string.bug_report_feedback_open),
                         onClick = {
                             onButtonTone()
                             page = StreamControlsPage.ReportProblem
@@ -2111,12 +2111,16 @@ private fun BugReportPreflightDeckView(
 internal fun BugReportFormInputs(
     title: String,
     description: String,
+    details: AndroidBugReportDetails,
+    attachments: List<AndroidBugReportAttachment>,
     consentChecked: Boolean,
     knownIssueBlock: BugReportKnownIssueBlock?,
     acknowledgedKnownIssueKey: String?,
     submission: BugReportSubmissionState,
     onTitleChange: (String) -> Unit,
     onDescriptionChange: (String) -> Unit,
+    onDetailsChange: (AndroidBugReportDetails) -> Unit,
+    onAttachmentsChange: (List<AndroidBugReportAttachment>) -> Unit,
     onConsentChange: (Boolean) -> Unit,
     onKnownIssueAcknowledgementChange: (String?) -> Unit,
     onConfirm: () -> Unit,
@@ -2162,6 +2166,13 @@ internal fun BugReportFormInputs(
             description = description,
             error = descriptionError,
         )
+        BugReportOptions(
+            details = details,
+            attachments = attachments,
+            enabled = !submission.uploading,
+            onDetailsChange = onDetailsChange,
+            onAttachmentsChange = onAttachmentsChange,
+        )
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -2178,7 +2189,7 @@ internal fun BugReportFormInputs(
                 enabled = !submission.uploading,
             )
             Text(
-                stringResource(R.string.bug_report_consent_upload),
+                stringResource(R.string.bug_report_terms_consent),
                 modifier = Modifier.weight(1f),
                 color = TextMuted,
                 style = MaterialTheme.typography.bodySmall,
@@ -2226,7 +2237,7 @@ internal fun BugReportFormInputs(
                 Spacer(Modifier.width(8.dp))
                 Text(stringResource(R.string.bug_report_uploading))
             } else {
-                Text(if (knownIssueBlock == null) "Send bug report" else "Send anyway")
+                Text(if (knownIssueBlock == null) stringResource(R.string.bug_report_feedback_send) else "Send anyway")
             }
         }
     }
@@ -2277,7 +2288,7 @@ private fun StreamBugReporter(
     versionCheck: AndroidBugReportVersionCheckState,
     update: AndroidUpdateState,
     experimentalNvstEnabled: Boolean,
-    onSubmit: (String, String, String?) -> Unit,
+    onSubmit: (String, String, String?, AndroidBugReportDetails, List<AndroidBugReportAttachment>) -> Unit,
     onReset: () -> Unit,
     onVersionCheck: () -> Unit,
     onOpenUpdate: () -> Unit,
@@ -2297,6 +2308,8 @@ private fun StreamBugReporter(
     var preflightPage by rememberSaveable { mutableStateOf(0) }
     var preflightDeck by remember { mutableStateOf<BugReportPreflightDeck?>(null) }
     var acknowledgedKnownIssueKey by rememberSaveable { mutableStateOf<String?>(null) }
+    var details by rememberSaveable { mutableStateOf(AndroidBugReportDetails()) }
+    var attachments by remember { mutableStateOf(emptyList<AndroidBugReportAttachment>()) }
     val knownIssueBlock = preflightDeck?.let { deck ->
         bugReportKnownIssueBlock(title, description, deck)
     }
@@ -2313,7 +2326,7 @@ private fun StreamBugReporter(
     ControlSection(stringResource(R.string.bug_report_section)) {
         if (!expanded) {
             ControlActionRow(
-                label = stringResource(R.string.bug_report_open_label),
+                label = stringResource(R.string.bug_report_feedback_open),
                 actionLabel = stringResource(R.string.action_open),
                 onClick = {
                     onButtonTone()
@@ -2348,7 +2361,7 @@ private fun StreamBugReporter(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Icon(Icons.Rounded.Check, contentDescription = null, tint = Green)
-                        Text(stringResource(R.string.bug_report_sent), fontWeight = FontWeight.Bold)
+                        Text(stringResource(R.string.bug_report_feedback_sent), fontWeight = FontWeight.Bold)
                     }
                     submission.reference?.let { reportId ->
                         CopyableBugReportId(reportId)
@@ -2360,6 +2373,8 @@ private fun StreamBugReporter(
                                 title = ""
                                 description = ""
                                 consentChecked = false
+                                details = AndroidBugReportDetails()
+                                attachments = emptyList()
                                 acknowledgedKnownIssueKey = null
                                 confirmationOpen = false
                                 preflightReviewed = false
@@ -2458,7 +2473,7 @@ private fun StreamBugReporter(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(stringResource(R.string.bug_report_open_label), fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.bug_report_feedback_open), fontWeight = FontWeight.Bold)
                     Text(
                         stringResource(R.string.bug_report_inline_subtitle),
                         color = TextMuted,
@@ -2507,6 +2522,8 @@ private fun StreamBugReporter(
                     BugReportFormInputs(
                         title = title,
                         description = description,
+                        details = details,
+                        attachments = attachments,
                         consentChecked = consentChecked,
                         knownIssueBlock = knownIssueBlock,
                         acknowledgedKnownIssueKey = acknowledgedKnownIssueKey,
@@ -2519,6 +2536,8 @@ private fun StreamBugReporter(
                             description = value
                             if (submission.error != null) onReset()
                         },
+                        onDetailsChange = { details = it },
+                        onAttachmentsChange = { attachments = it },
                         onConsentChange = { consentChecked = it },
                         onKnownIssueAcknowledgementChange = { acknowledgedKnownIssueKey = it },
                         onConfirm = {
@@ -2534,6 +2553,8 @@ private fun StreamBugReporter(
                 BugReportFormInputs(
                     title = title,
                     description = description,
+                    details = details,
+                    attachments = attachments,
                     consentChecked = consentChecked,
                     knownIssueBlock = knownIssueBlock,
                     acknowledgedKnownIssueKey = acknowledgedKnownIssueKey,
@@ -2546,6 +2567,8 @@ private fun StreamBugReporter(
                         description = value
                         if (submission.error != null) onReset()
                     },
+                    onDetailsChange = { details = it },
+                    onAttachmentsChange = { attachments = it },
                     onConsentChange = { consentChecked = it },
                     onKnownIssueAcknowledgementChange = { acknowledgedKnownIssueKey = it },
                     onConfirm = {
@@ -2587,6 +2610,8 @@ private fun StreamBugReporter(
                             title,
                             description,
                             knownIssueBlock?.key?.takeIf { it == acknowledgedKnownIssueKey },
+                            details,
+                            attachments,
                         )
                     },
                 ) {

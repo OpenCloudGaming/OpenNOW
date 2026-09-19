@@ -223,6 +223,22 @@ private data class PendingActiveSessionLaunch(
     val returnPage: AppPage,
 )
 
+data class PendingBatteryOptimizationLaunch(
+    val game: GameInfo,
+    val streamingBaseUrlOverride: String?,
+    val skipPrintedWaste: Boolean,
+    val skipStoreChoice: Boolean,
+    val skipMembershipNotice: Boolean,
+    val streamSettingsOverride: StreamSettings?,
+)
+
+data class PendingLaunchRecovery(
+    val game: GameInfo,
+    val streamingBaseUrlOverride: String?,
+    val lowerSettings: StreamSettings,
+    val errorMessage: String,
+)
+
 @Immutable
 data class OpenNowUiState(
     val initializing: Boolean = false,
@@ -277,6 +293,8 @@ data class OpenNowUiState(
     val pendingStoreChoiceGame: GameInfo? = null,
     /** Set when Play was pressed on a game whose membership tier this account cannot meet. */
     val pendingMembershipNotice: PendingMembershipNotice? = null,
+    val pendingBatteryOptimizationLaunch: PendingBatteryOptimizationLaunch? = null,
+    val pendingLaunchRecovery: PendingLaunchRecovery? = null,
     val pendingPrintedWasteGame: GameInfo? = null,
     val printedWasteQueue: Map<String, PrintedWasteZone> = emptyMap(),
     val printedWasteMapping: Map<String, PrintedWasteServerMappingEntry> = emptyMap(),
@@ -289,6 +307,7 @@ data class OpenNowUiState(
     val androidPictureInPictureActive: Boolean = false,
     val diagnosticShare: DiagnosticShareState = DiagnosticShareState(),
     val bugReportSubmission: BugReportSubmissionState = BugReportSubmissionState(),
+    val bugReportThreads: AndroidBugReportThreadsState = AndroidBugReportThreadsState(),
     val bugReportVersionCheck: AndroidBugReportVersionCheckState = AndroidBugReportVersionCheckState(),
     val loginToolsVisible: Boolean = false,
     val localTvConnector: LocalTvConnectorState = LocalTvConnectorState(),
@@ -1070,10 +1089,113 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         _state.update { it.copy(bugReportSubmission = BugReportSubmissionState()) }
     }
 
+    fun refreshBugReportThreads() {
+        if (state.value.bugReportThreads.loading) return
+        _state.update {
+            it.copy(bugReportThreads = it.bugReportThreads.copy(loading = true, error = null))
+        }
+        viewModelScope.launch {
+            try {
+                val reports = fetchAndroidBugReportThreads(
+                    http = http,
+                    reporterId = androidBugReportReporterId(authStore.stableDeviceId()),
+                )
+                _state.update {
+                    it.copy(
+                        bugReportThreads = AndroidBugReportThreadsState(reports = reports),
+                    )
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                _state.update {
+                    it.copy(
+                        bugReportThreads = it.bugReportThreads.copy(
+                            loading = false,
+                            error = error.message ?: "Could not load bug reports",
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    fun commentOnBugReport(reportId: String, comment: String, termsAccepted: Boolean) {
+        if (state.value.bugReportThreads.postingReportId != null) return
+        if (state.value.bugReportThreads.reports.any { it.id == reportId && androidBugReportThreadClosed(it.status) }) {
+            _state.update {
+                it.copy(
+                    bugReportThreads = it.bugReportThreads.copy(
+                        error = "This report is closed and cannot receive more replies.",
+                    ),
+                )
+            }
+            return
+        }
+        if (!termsAccepted) {
+            _state.update {
+                it.copy(
+                    bugReportThreads = it.bugReportThreads.copy(
+                        error = "Agree to the bug reporting terms before commenting.",
+                    ),
+                )
+            }
+            return
+        }
+        if (comment.isBlank()) return
+        _state.update {
+            it.copy(
+                bugReportThreads = it.bugReportThreads.copy(
+                    postingReportId = reportId,
+                    error = null,
+                ),
+            )
+        }
+        viewModelScope.launch {
+            try {
+                val updated = postAndroidBugReportComment(
+                    http = http,
+                    reporterId = androidBugReportReporterId(authStore.stableDeviceId()),
+                    reportId = reportId,
+                    comment = comment,
+                )
+                _state.update { current ->
+                    val reports = current.bugReportThreads.reports
+                        .map { if (it.id == updated.id) updated else it }
+                        .sortedByDescending(AndroidBugReportThread::updatedAt)
+                    current.copy(
+                        bugReportThreads = current.bugReportThreads.copy(
+                            reports = reports,
+                            postingReportId = null,
+                            error = null,
+                        ),
+                    )
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                _state.update {
+                    it.copy(
+                        bugReportThreads = it.bugReportThreads.copy(
+                            postingReportId = null,
+                            error = error.message ?: "Could not send comment",
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
     fun submitBugReport(title: String, description: String) =
         submitBugReport(title, description, knownIssueOverrideKey = null)
 
-    fun submitBugReport(title: String, description: String, knownIssueOverrideKey: String?) {
+    internal fun submitBugReport(
+        title: String,
+        description: String,
+        knownIssueOverrideKey: String?,
+        details: AndroidBugReportDetails = AndroidBugReportDetails(),
+        additionalFiles: List<AndroidBugReportAttachment> = emptyList(),
+    ) {
         if (state.value.bugReportSubmission.uploading) return
         val snapshot = state.value
         val versionBlock = androidBugReportBlockMessage(
@@ -1130,7 +1252,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                                 contentType = "text/plain; charset=utf-8",
                                 bytes = logBytes,
                             ),
-                        ),
+                        ) + additionalFiles.take(ANDROID_BUG_REPORT_MAX_FILES - 1),
+                        details = details,
                     ),
                 )
                 recordDebugEvent(
@@ -1938,6 +2061,10 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         settingsStore.update { current -> current.copy(localAppsCollapsed = collapsed) }
     }
 
+    fun setLandscapeNewGamesHeroCollapsed(collapsed: Boolean) {
+        settingsStore.update { current -> current.copy(landscapeNewGamesHeroCollapsed = collapsed) }
+    }
+
     fun checkAndroidUpdate() {
         startAndroidUpdateCheck(automatic = false)
     }
@@ -2324,6 +2451,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         skipPrintedWaste: Boolean = false,
         skipStoreChoice: Boolean = false,
         skipMembershipNotice: Boolean = false,
+        skipBatteryOptimizationPrompt: Boolean = false,
+        streamSettingsOverride: StreamSettings? = null,
     ) {
         if (launchJob?.isActive == true) {
             recordDebugEvent("launch", "Ignored play request while another launch is active game=${game.title}")
@@ -2401,8 +2530,35 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 showPrintedWasteSelector(game)
                 return@launch
             }
+            val application = getApplication<Application>()
+            val currentSettings = state.value.settings
+            if (
+                !skipBatteryOptimizationPrompt &&
+                shouldPromptForBatteryOptimization(
+                    deviceHasBattery = deviceHasBattery(application),
+                    ignoringBatteryOptimizations = isIgnoringBatteryOptimizations(application),
+                    promptDismissed = currentSettings.batteryOptimizationPromptDismissed,
+                )
+            ) {
+                recordDebugEvent("launch", "Waiting for battery optimization choice game=${game.title}")
+                _state.update {
+                    it.copy(
+                        pendingBatteryOptimizationLaunch = PendingBatteryOptimizationLaunch(
+                            game = game,
+                            streamingBaseUrlOverride = streamingBaseUrlOverride,
+                            skipPrintedWaste = skipPrintedWaste,
+                            skipStoreChoice = skipStoreChoice,
+                            skipMembershipNotice = skipMembershipNotice,
+                            streamSettingsOverride = streamSettingsOverride,
+                        ),
+                        selectedGame = null,
+                        error = null,
+                    )
+                }
+                return@launch
+            }
             awaitDeviceCapabilityProbe()
-            val requestedSettings = streamSettingsBeforeDeviceAdjustment()
+            val requestedSettings = streamSettingsOverride ?: streamSettingsBeforeDeviceAdjustment()
             val settings = requestedSettings.adjustedForDevice(state.value.codecReport)
             prepareSessionReport(
                 gameTitle = game.title,
@@ -2445,6 +2601,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     queueAdActiveId = null,
                     pendingStoreChoiceGame = null,
                     pendingPrintedWasteGame = null,
+                    pendingLaunchRecovery = null,
                     activeSessionDecision = null,
                     printedWasteError = null,
                     printedWastePings = emptyMap(),
@@ -2558,9 +2715,21 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 if (error is CancellationException) return@onFailure
                 recordDebugEvent("launch", "Launch failed game=${game.title} error=${error.debugMessage()}")
                 val failureReturnPage = state.value.streamReturnPage ?: AppPage.Home
+                val normalizedError = normalizeLaunchError(error, game.title)
+                val recovery = if (shouldOfferLowerSettingsRetry(error, settings)) {
+                    PendingLaunchRecovery(
+                        game = game,
+                        streamingBaseUrlOverride = baseUrl,
+                        lowerSettings = settings.loweredSessionLaunchProfile(),
+                        errorMessage = normalizedError,
+                    )
+                } else {
+                    null
+                }
                 _state.update {
                     it.copy(
-                        error = normalizeLaunchError(error, game.title),
+                        error = normalizedError,
+                        pendingLaunchRecovery = recovery,
                         streamStatus = "idle",
                         activeStreamSettings = null,
                         streamReturnPage = null,
@@ -2575,6 +2744,43 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 }
             }
         }
+    }
+
+    fun dismissBatteryOptimizationPrompt() {
+        _state.update { it.copy(pendingBatteryOptimizationLaunch = null) }
+    }
+
+    fun continueWithoutBatteryOptimization() {
+        val pending = state.value.pendingBatteryOptimizationLaunch ?: return
+        settingsStore.update { it.copy(batteryOptimizationPromptDismissed = true) }
+        _state.update { it.copy(pendingBatteryOptimizationLaunch = null) }
+        play(
+            game = pending.game,
+            streamingBaseUrlOverride = pending.streamingBaseUrlOverride,
+            skipPrintedWaste = pending.skipPrintedWaste,
+            skipStoreChoice = pending.skipStoreChoice,
+            skipMembershipNotice = pending.skipMembershipNotice,
+            skipBatteryOptimizationPrompt = true,
+            streamSettingsOverride = pending.streamSettingsOverride,
+        )
+    }
+
+    fun dismissLaunchRecovery() {
+        _state.update { it.copy(pendingLaunchRecovery = null) }
+    }
+
+    fun retryLaunchWithLowerSettings() {
+        val pending = state.value.pendingLaunchRecovery ?: return
+        _state.update { it.copy(pendingLaunchRecovery = null, error = null) }
+        play(
+            game = pending.game,
+            streamingBaseUrlOverride = pending.streamingBaseUrlOverride,
+            skipPrintedWaste = true,
+            skipStoreChoice = true,
+            skipMembershipNotice = true,
+            skipBatteryOptimizationPrompt = true,
+            streamSettingsOverride = pending.lowerSettings,
+        )
     }
 
     private fun recordQueuedGame(game: GameInfo) {
@@ -2845,9 +3051,21 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 if (error is CancellationException) return@onFailure
                 recordDebugEvent("launch", "Replace active session launch failed game=${pending.game.title} error=${error.debugMessage()}")
                 val returnPage = state.value.streamReturnPage ?: pending.returnPage
+                val normalizedError = normalizeLaunchError(error, pending.game.title)
+                val recovery = if (shouldOfferLowerSettingsRetry(error, pending.settings)) {
+                    PendingLaunchRecovery(
+                        game = pending.game,
+                        streamingBaseUrlOverride = pending.baseUrl,
+                        lowerSettings = pending.settings.loweredSessionLaunchProfile(),
+                        errorMessage = normalizedError,
+                    )
+                } else {
+                    null
+                }
                 _state.update {
                     it.copy(
-                        error = normalizeLaunchError(error, pending.game.title),
+                        error = normalizedError,
+                        pendingLaunchRecovery = recovery,
                         streamStatus = "idle",
                         activeStreamSettings = null,
                         streamReturnPage = null,

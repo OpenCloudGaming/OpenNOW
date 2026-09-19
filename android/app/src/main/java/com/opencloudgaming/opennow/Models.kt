@@ -586,8 +586,10 @@ data class AppSettings(
      * the cloud catalogue most of the time wants that fold to survive leaving the Library.
      */
     val localAppsCollapsed: Boolean = false,
-    /** The New games added hero in handheld landscape; dismissible from the hero header. */
+    /** Whether the New games added hero exists at all in handheld landscape. */
     val landscapeNewGamesHero: Boolean = true,
+    /** Folded hero state, kept separately so Interface settings remain the permanent off switch. */
+    val landscapeNewGamesHeroCollapsed: Boolean = false,
     /** Catalogue presentation is user preference, not disposable screen state. */
     val catalogSortId: String = DEFAULT_CATALOG_SORT_ID,
     /** Lets the old relevance default migrate once without overriding a later explicit choice. */
@@ -612,6 +614,8 @@ data class AppSettings(
     val hideServerSelector: Boolean = false,
     /** The user acknowledged that choosing a shorter queue can increase stream latency. */
     val higherPingWarningDismissed: Boolean = false,
+    /** The user declined the pre-queue background-unlimited prompt. */
+    val batteryOptimizationPromptDismissed: Boolean = false,
     val controllerMode: Boolean = false,
     val controllerUiSounds: Boolean = true,
     val controllerMouseEmulation: Boolean = false,
@@ -1086,8 +1090,8 @@ internal fun StreamSettings.withCodecColorCompatibility(): StreamSettings {
     val compatibleHdr = hdrEnabled && codec != VideoCodec.AV1
     val compatibleColor = when {
         codec == VideoCodec.AV1 -> ColorQuality.EightBit420
+        compatibleHdr -> ColorQuality.EightBit420
         colorQuality.isChroma444() -> colorQuality.asChroma420()
-        compatibleHdr && !colorQuality.isTenBit() -> ColorQuality.TenBit420
         else -> colorQuality
     }
     return if (compatibleColor == colorQuality && compatibleHdr == hdrEnabled) {
@@ -1098,7 +1102,7 @@ internal fun StreamSettings.withCodecColorCompatibility(): StreamSettings {
 }
 
 internal fun StreamSettings.usesTenBitStreamProfile(): Boolean =
-    hdrEnabled || colorQuality.isTenBit()
+    !hdrEnabled && colorQuality.isTenBit()
 
 internal fun StreamSettings.applyingStreamPreset(preset: StreamPreset): StreamSettings {
     if (preset == StreamPreset.Custom) return this
@@ -2234,14 +2238,24 @@ internal fun StreamSettings.androidSafeVideoFallback(): StreamSettings =
         streamSharpeningEnabled = false,
     )
 
+/** Conservative one-shot retry after CloudMatch rejects a demanding launch profile. */
+internal fun StreamSettings.loweredSessionLaunchProfile(): StreamSettings =
+    copy(
+        resolution = "1920x1080",
+        aspectRatio = "16:9",
+        fps = minOf(fps, 60),
+        maxBitrateMbps = minOf(maxBitrateMbps, 75),
+        codec = VideoCodec.H264,
+        colorQuality = ColorQuality.EightBit420,
+        hdrEnabled = false,
+        enableL4S = false,
+        experimentalNvst = false,
+        streamSharpeningEnabled = false,
+    ).withCodecColorCompatibility()
+
 private fun StreamSettings.androidWebRtcColorQuality(): ColorQuality {
     val compatible = withCodecColorCompatibility()
-    if (compatible.hdrEnabled) return when (compatible.colorQuality) {
-        ColorQuality.TenBit420,
-        ColorQuality.TenBit444,
-        -> compatible.colorQuality
-        else -> ColorQuality.TenBit420
-    }
+    if (compatible.hdrEnabled) return ColorQuality.EightBit420
     return when (compatible.colorQuality) {
         ColorQuality.EightBit420,
         ColorQuality.EightBit444,

@@ -82,13 +82,13 @@ class SdpToolsTest {
     }
 
     @Test
-    fun prefersTenBitH265ProfileForHdrAndroidStream() {
+    fun prefersEightBitH265ProfileForHdrAndroidStream() {
         val munged = SdpTools.preferCodec(
             h265Offer(),
             StreamSettings(codec = VideoCodec.H265, colorQuality = ColorQuality.TenBit420, hdrEnabled = true),
         )
 
-        assertEquals("m=video 9 UDP/TLS/RTP/SAVPF 96 97", munged.lineSequence().first())
+        assertEquals("m=video 9 UDP/TLS/RTP/SAVPF 97 96", munged.lineSequence().first())
     }
 
     @Test
@@ -280,6 +280,24 @@ class SdpToolsTest {
     }
 
     @Test
+    fun affectedReportProfilesUseTheRestoredBitrateFloor() {
+        val threeMbps = StreamNetworkAdaptation.bitrateRange(3)
+        assertEquals(3_000, threeMbps.minimumKbps)
+        assertEquals(3_000, threeMbps.initialKbps)
+        assertEquals(3_000, threeMbps.maximumKbps)
+
+        val fiveMbps = StreamNetworkAdaptation.bitrateRange(5)
+        assertEquals(4_000, fiveMbps.minimumKbps)
+        assertEquals(4_000, fiveMbps.initialKbps)
+        assertEquals(5_000, fiveMbps.maximumKbps)
+
+        val sevenMbps = StreamNetworkAdaptation.bitrateRange(7)
+        assertEquals(4_000, sevenMbps.minimumKbps)
+        assertEquals(4_000, sevenMbps.initialKbps)
+        assertEquals(7_000, sevenMbps.maximumKbps)
+    }
+
+    @Test
     fun threeMbpsReportProfileKeepsItsExplicitCeiling() {
         val settings = StreamSettings(resolution = "1280x720", fps = 30, maxBitrateMbps = 3)
         val nvst = buildNvstSdp(settings)
@@ -357,6 +375,7 @@ class SdpToolsTest {
 
         assertTrue(nvst.contains("a=video.dx9EnableHdr:1"))
         assertFalse(nvst.contains("a=video.dx9EnableHdr:0"))
+        assertTrue(nvst.contains("a=video.bitDepth:8"))
     }
 
     @Test

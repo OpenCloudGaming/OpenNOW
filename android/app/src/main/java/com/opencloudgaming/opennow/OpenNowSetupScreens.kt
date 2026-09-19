@@ -298,6 +298,7 @@ private fun SetupProgressBar(step: SetupStep, onSkip: () -> Unit) {
             Text(
                 stringResource(R.string.app_name),
                 modifier = Modifier.weight(1f),
+                color = Color.White,
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold,
             )

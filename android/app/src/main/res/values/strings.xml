@@ -272,9 +272,8 @@
     <string name="stream_input_switch_native_touch">Switch to native touch</string>
     <string name="stream_input_keep_keyboard_mouse">Keep keyboard &amp; mouse</string>
     <string name="common_dont_show_again">Don\'t show again</string>
-    <string name="store_landscape_new_games_hide">Hide New games added in landscape</string>
-    <string name="store_landscape_new_games_hide_title">Hide this landscape hero?</string>
-    <string name="store_landscape_new_games_hide_body">New games added will stay hidden when this device is horizontal. You can turn it back on in Interface settings.</string>
+    <string name="store_landscape_new_games_hide">Collapse New games added hero</string>
+    <string name="store_landscape_new_games_show">Expand New games added hero</string>
 
     <!-- Reusable state words. One pair each, so the same boolean stops reading "On/Off" in one
          row and "Visible/Hidden" in the next for no reason. -->
@@ -539,6 +538,17 @@
     <string name="settings_session_proxy_warning_enable">Enable proxy</string>
     <string name="settings_experimental_streaming">Experimental streaming</string>
     <string name="settings_experimental_streaming_warning">May cause session launch failures.</string>
+    <string name="settings_hdr_ten_bit_badge">Unavailable with HDR</string>
+    <string name="settings_hdr_ten_bit_warning">GFN servers cannot process 10-bit color while HDR is enabled. OpenNOW forces 8-bit 4:2:0 for HDR sessions.</string>
+    <string name="settings_advanced_controller_customization">Advanced controller customization</string>
+    <string name="settings_advanced_controller_customization_desc">Show button mapping, visibility, gyro, size, opacity, and layout controls.</string>
+    <string name="settings_battery_optimization_title">Battery optimization</string>
+    <string name="battery_queue_prompt_title">Allow background streaming?</string>
+    <string name="battery_queue_prompt_body">Battery optimization can interrupt %1$s while you queue or stream. Allow OpenNOW to run without battery restrictions before continuing?</string>
+    <string name="battery_queue_prompt_continue">No, continue</string>
+    <string name="launch_recovery_title">Session couldn’t start</string>
+    <string name="launch_recovery_lower_settings_body">GFN rejected this stream profile before gameplay began. You can retry once with 1080p, 60 FPS, H.264, 8-bit SDR, and experimental transport features off.</string>
+    <string name="launch_recovery_try_lower">Try lower settings</string>
     <string name="settings_l4s">L4S</string>
     <string name="settings_l4s_desc">Requests NVIDIA\'s low-latency, low-loss transport path when the server and network support it. Leave off if your network gets unstable.</string>
     <string name="settings_microphone">Microphone</string>

@@ -534,9 +534,8 @@ internal fun RtpCapabilities.CodecCapability.preferenceKey(): String =
     "${openNowCodecName().orEmpty()}:${parameters.orEmpty().toSortedMap()}"
 
 internal fun StreamSettings.prefersTenBitVideo(): Boolean =
-    hdrEnabled ||
-        colorQuality == ColorQuality.TenBit420 ||
-        colorQuality == ColorQuality.TenBit444
+    !hdrEnabled &&
+        (colorQuality == ColorQuality.TenBit420 || colorQuality == ColorQuality.TenBit444)
 
 internal val WEBRTC_AUXILIARY_VIDEO_CODECS = setOf("RTX", "RED", "ULPFEC", "FLEXFEC-03")
 

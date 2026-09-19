@@ -43,6 +43,8 @@ class SettingsPersistenceTest {
         val latest = AppSettings(
             favoriteGameIds = listOf("a", "b"),
             localAppsCollapsed = true,
+            landscapeNewGamesHeroCollapsed = true,
+            batteryOptimizationPromptDismissed = true,
             hapticsOutput = HapticsOutputPreference.Device,
             androidTouch = AndroidTouchSettings(
                 touchControllerStyle = TouchControllerStyle.Neon,

@@ -40,6 +40,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.annotation.StringRes
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.DeveloperMode
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Monitor
@@ -65,6 +66,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -210,6 +212,11 @@ private enum class SettingsCategory(
     Input(R.string.settings_category_input, R.string.settings_category_input_summary, Icons.Outlined.SportsEsports),
     Interface(R.string.settings_category_interface, R.string.settings_category_interface_summary, Icons.Outlined.Palette),
     Account(R.string.settings_category_account, R.string.settings_category_account_summary, Icons.Outlined.Person),
+    BugReports(
+        R.string.settings_category_bug_reports,
+        R.string.settings_category_bug_reports_summary,
+        Icons.Outlined.BugReport,
+    ),
     TvPairing(R.string.tv_pair_settings_title, R.string.tv_pair_settings_summary, Icons.Outlined.Tv),
     Advanced(R.string.settings_category_advanced, R.string.settings_category_advanced_summary, Icons.Outlined.Science),
     About(R.string.settings_category_about, R.string.settings_category_about_summary, Icons.Outlined.Info),
@@ -658,6 +665,7 @@ private fun SettingsContent(
     val fallbackMembershipTier = state.authSession?.user?.membershipTier
     var pendingMicrophoneMode by remember { mutableStateOf<MicrophoneMode?>(null) }
     var showStreamMenuShortcutDialog by remember { mutableStateOf(false) }
+    var showAdvancedControllerSettings by rememberSaveable { mutableStateOf(false) }
     val microphonePermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
@@ -898,13 +906,15 @@ private fun SettingsContent(
                 ChoiceMenuRow(
                     label = stringResource(R.string.settings_color),
                     options = ColorQuality.entries.map { quality ->
-                        val available = quality.availableForCodec(settingsAvailableStream.codec)
+                        val available = quality.availableForCodec(settingsAvailableStream.codec) &&
+                            !(settingsAvailableStream.hdrEnabled && quality.isTenBit())
                         ChoiceMenuOption(
                             value = quality.name,
                             label = quality.label,
                             enabled = available,
                             badge = when {
                                 available -> null
+                                settingsAvailableStream.hdrEnabled && quality.isTenBit() -> stringResource(R.string.settings_hdr_ten_bit_badge)
                                 settingsAvailableStream.codec == VideoCodec.AV1 && quality == ColorQuality.TenBit420 -> h264H265OnlyLabel
                                 else -> comingSoonLabel
                             },
@@ -944,9 +954,16 @@ private fun SettingsContent(
                     viewModel.updateStreamSettings { s ->
                         s.copy(
                             hdrEnabled = enabled,
-                            colorQuality = if (enabled && !s.colorQuality.name.startsWith("TenBit")) ColorQuality.TenBit420 else s.colorQuality,
+                            colorQuality = if (enabled) ColorQuality.EightBit420 else s.colorQuality,
                         ).withCodecColorCompatibility()
                     }
+                }
+                if (settings.stream.hdrEnabled) {
+                    Text(
+                        stringResource(R.string.settings_hdr_ten_bit_warning),
+                        color = Color(0xffffb74d),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                 }
                 if (!hdrDeviceAvailable) {
                     Text(
@@ -1192,6 +1209,12 @@ private fun SettingsContent(
                     showLabels = settings.androidTouch.touchButtonLabels,
                     modifier = Modifier.padding(vertical = 8.dp),
                 )
+                SettingSwitch(
+                    label = stringResource(R.string.settings_advanced_controller_customization),
+                    checked = showAdvancedControllerSettings,
+                    description = stringResource(R.string.settings_advanced_controller_customization_desc),
+                ) { showAdvancedControllerSettings = it }
+                if (showAdvancedControllerSettings || searchQuery.isNotBlank()) {
                 val touchTintOptions = TOUCH_SKIN_TINTS.map { SettingsChoiceOption(it.id, it.label) }
                 ChoiceOptionRow(
                     stringResource(R.string.settings_touch_skin_tint),
@@ -1391,6 +1414,7 @@ private fun SettingsContent(
                 NumberSlider("Left controls vertical offset", settings.androidTouch.leftOffsetYDp, -160f, 160f, 2f, unit = "dp") { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(leftOffsetYDp = value))) }
                 NumberSlider("Right controls horizontal offset", settings.androidTouch.rightOffsetXDp, -220f, 220f, 2f, unit = "dp") { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(rightOffsetXDp = value))) }
                 NumberSlider("Right controls vertical offset", settings.androidTouch.rightOffsetYDp, -160f, 160f, 2f, unit = "dp") { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(rightOffsetYDp = value))) }
+                }
             }
     CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_appearance), "interface", "ui", "appearance", "dynamic color", "system colors", "accent", "expressive", "border", "effects", "bonanza", "cinema", "catalog", "background", "wallpaper", "image", "custom", "tv", "safe area", "screen padding", "overscan", "useless mascot", "screensaver", "inactivity") {
                 val accentOptions = selectableUiAccents().map { it to uiAccentLabel(it) }
@@ -1482,7 +1506,12 @@ private fun SettingsContent(
                     checked = settings.landscapeNewGamesHero,
                     description = stringResource(R.string.settings_landscape_new_games_desc),
                 ) { enabled ->
-                    viewModel.updateSettings(settings.copy(landscapeNewGamesHero = enabled))
+                    viewModel.updateSettings(
+                        settings.copy(
+                            landscapeNewGamesHero = enabled,
+                            landscapeNewGamesHeroCollapsed = if (enabled) false else settings.landscapeNewGamesHeroCollapsed,
+                        ),
+                    )
                 }
                 val launchPageOptions = AppLaunchPage.entries.map { page -> page to appLaunchPageLabel(page) }
                 ChoiceRow(
@@ -1590,6 +1619,13 @@ private fun SettingsContent(
                     searchMode = searchQuery.isNotBlank(),
                 )
             }
+    CategorySettingsSection(selectedCategory, SettingsCategory.BugReports, searchQuery, stringResource(R.string.bug_report_inbox_title), "bug", "report", "issue", "status", "reply", "comment", "support") {
+                BugReportThreadsSettings(
+                    state = state.bugReportThreads,
+                    onRefresh = viewModel::refreshBugReportThreads,
+                    onComment = viewModel::commentOnBugReport,
+                )
+            }
     CategorySettingsSection(selectedCategory, SettingsCategory.TvPairing, searchQuery, stringResource(R.string.tv_pair_settings_title), "tv", "pair", "phone", "qr", "code", "network") {
                 LocalTvSettingsPanel(
                     state = state,
@@ -1597,7 +1633,7 @@ private fun SettingsContent(
                     showTitle = false,
                 )
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Advanced, searchQuery, stringResource(R.string.settings_experimental_streaming), "experimental", "stream", "nvst", "l4s", "session", "launch", "failure") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.Advanced, searchQuery, stringResource(R.string.settings_experimental_streaming), "experimental", "stream", "nvst", "l4s", "session", "launch", "failure", "battery", "optimization", "background", "allow", "run") {
                 Text(
                     stringResource(R.string.settings_experimental_streaming_warning),
                     color = SettingsTextMuted,
@@ -1617,6 +1653,14 @@ private fun SettingsContent(
                 ) {
                     viewModel.updateStreamSettings { s -> s.copy(enableL4S = it) }
                 }
+                if (deviceHasBattery) {
+                    Text(
+                        text = stringResource(R.string.settings_battery_optimization_title),
+                        color = SettingsText,
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                    BatteryOptimizationPanel()
+                }
             }
     CategorySettingsSection(selectedCategory, SettingsCategory.Advanced, searchQuery, "Codec Diagnostics", "codec", "diagnostics", "probe", "av1", "h264", "h265", "hevc", "decode") {
                     CodecDiagnosticsPanel(state.codecReport)
@@ -1624,11 +1668,6 @@ private fun SettingsContent(
     CategorySettingsSection(selectedCategory, SettingsCategory.Advanced, searchQuery, "Debug Logs", "debug", "logs", "logcat", "events", "export", "json", "cloudmatch", "queue", "stream") {
                     DebugLogsPanel(state = state, viewModel = viewModel)
                 }
-    if (deviceHasBattery) {
-        CategorySettingsSection(selectedCategory, SettingsCategory.Advanced, searchQuery, "Battery Optimization", "battery", "optimization", "background", "activity", "ignore", "allow", "run") {
-                    BatteryOptimizationPanel()
-                }
-    }
     CategorySettingsSection(selectedCategory, SettingsCategory.About, searchQuery, stringResource(R.string.settings_category_about), "about", "version", "build", "app", "github", "developer", "kiefer", "zortos", "opennow", "repository") {
                 AppVersionPanel(settings = settings, onSettingsChange = viewModel::updateSettings)
                 OpenNowGitHubPanel()

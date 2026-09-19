@@ -466,6 +466,22 @@ class InputEncoderGamepadTest {
     }
 
     @Test
+    fun mouseReportedButtonBIsNotRoutedAsAGamepadClick() {
+        assertFalse(
+            NativeStreamInputRouter.shouldRouteKeyAsGamepad(
+                controllerInputDevice = false,
+                keyCode = KeyEvent.KEYCODE_BUTTON_B,
+            ),
+        )
+        assertTrue(
+            NativeStreamInputRouter.shouldRouteKeyAsGamepad(
+                controllerInputDevice = true,
+                keyCode = KeyEvent.KEYCODE_BUTTON_B,
+            ),
+        )
+    }
+
+    @Test
     fun normalizesControllerAForNativeUiActivation() {
         assertEquals(
             KeyEvent.KEYCODE_DPAD_CENTER,

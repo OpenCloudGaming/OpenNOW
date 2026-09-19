@@ -37,11 +37,9 @@ internal object StreamHdr {
                 !info.isEncoder && CodecProbe.isOpenNowHardwareDecoderAllowed(info) &&
                     runCatching {
                         val caps = info.getCapabilitiesForType("video/hevc")
-                        caps.profileLevels.any { it.profile in setOf(
-                            MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10,
-                            MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10HDR10,
-                            MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10HDR10Plus,
-                        ) } && (caps.videoCapabilities?.let { it.areSizeAndRateSupported(width, height, fps.toDouble()) || it.isSizeSupported(width, height) } ?: true)
+                        caps.profileLevels.any {
+                            it.profile == MediaCodecInfo.CodecProfileLevel.HEVCProfileMain
+                        } && (caps.videoCapabilities?.let { it.areSizeAndRateSupported(width, height, fps.toDouble()) || it.isSizeSupported(width, height) } ?: true)
                     }.getOrDefault(false)
             }?.name
         }.getOrNull()
@@ -49,7 +47,7 @@ internal object StreamHdr {
 
     fun format(width: Int, height: Int, fps: Int): MediaFormat =
         MediaFormat.createVideoFormat("video/hevc", width, height).apply {
-            setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10)
+            setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.HEVCProfileMain)
             setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT2020)
             setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_ST2084)
             setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)

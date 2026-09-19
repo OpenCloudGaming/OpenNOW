@@ -341,7 +341,7 @@ internal fun CompletedSessionBugReportDialog(
     versionCheck: AndroidBugReportVersionCheckState,
     update: AndroidUpdateState,
     experimentalNvstEnabled: Boolean,
-    onSubmit: (String, String, String?) -> Unit,
+    onSubmit: (String, String, String?, AndroidBugReportDetails, List<AndroidBugReportAttachment>) -> Unit,
     onReset: () -> Unit,
     onVersionCheck: () -> Unit,
     onOpenUpdate: () -> Unit,
@@ -356,6 +356,8 @@ internal fun CompletedSessionBugReportDialog(
     var consentChecked by rememberSaveable { mutableStateOf(false) }
     var confirmationOpen by rememberSaveable { mutableStateOf(false) }
     var acknowledgedKnownIssueKey by rememberSaveable { mutableStateOf<String?>(null) }
+    var details by rememberSaveable { mutableStateOf(AndroidBugReportDetails()) }
+    var attachments by remember { mutableStateOf(emptyList<AndroidBugReportAttachment>()) }
     val preflightDeck = remember { preflightProvider() }
     val knownIssueBlock = bugReportKnownIssueBlock(title, description, preflightDeck)
 
@@ -373,7 +375,7 @@ internal fun CompletedSessionBugReportDialog(
             Modifier
         },
         properties = DialogProperties(usePlatformDefaultWidth = !landscapeLayout),
-        title = { Text(stringResource(R.string.bug_report_dialog_title)) },
+        title = { Text(stringResource(R.string.bug_report_feedback_title)) },
         text = {
             Column(
                 modifier = Modifier
@@ -393,7 +395,7 @@ internal fun CompletedSessionBugReportDialog(
                 when {
                     submission.submitted -> {
                         Icon(Icons.Rounded.Check, contentDescription = null, tint = Green)
-                        Text(stringResource(R.string.bug_report_sent), color = Green, fontWeight = FontWeight.Bold)
+                        Text(stringResource(R.string.bug_report_feedback_sent), color = Green, fontWeight = FontWeight.Bold)
                         submission.reference?.let { reference ->
                             CopyableBugReportId(reference)
                         }
@@ -448,6 +450,13 @@ internal fun CompletedSessionBugReportDialog(
                             description = description,
                             error = androidBugReportDescriptionError(description),
                         )
+                        BugReportOptions(
+                            details = details,
+                            attachments = attachments,
+                            enabled = !submission.uploading,
+                            onDetailsChange = { details = it },
+                            onAttachmentsChange = { attachments = it },
+                        )
                         BugReportDataDisclosure(includeTypedTextWarning = true)
                         Row(
                             modifier = Modifier
@@ -464,7 +473,7 @@ internal fun CompletedSessionBugReportDialog(
                                 enabled = !submission.uploading,
                             )
                             Text(
-                                stringResource(R.string.bug_report_consent),
+                                stringResource(R.string.bug_report_terms_consent),
                                 color = TextMuted,
                                 style = MaterialTheme.typography.bodySmall,
                             )
@@ -540,6 +549,8 @@ internal fun CompletedSessionBugReportDialog(
                             title,
                             description,
                             knownIssueBlock?.key?.takeIf { it == acknowledgedKnownIssueKey },
+                            details,
+                            attachments,
                         )
                     },
                 ) {
@@ -820,6 +831,66 @@ internal fun MembershipRequirementDialog(
         },
         dismissButton = {
             TextButton(onClick = onCancel) {
+                Text(stringResource(R.string.action_cancel))
+            }
+        },
+    )
+}
+
+@Composable
+internal fun BatteryOptimizationQueueDialog(
+    gameTitle: String,
+    onAllow: () -> Unit,
+    onContinueWithout: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    BackHandler(onBack = onCancel)
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text(stringResource(R.string.battery_queue_prompt_title), fontWeight = FontWeight.Bold) },
+        text = {
+            Text(stringResource(R.string.battery_queue_prompt_body, gameTitle))
+        },
+        confirmButton = {
+            androidx.compose.material3.Button(onClick = onAllow) {
+                Text(stringResource(R.string.action_allow))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onContinueWithout) {
+                Text(stringResource(R.string.battery_queue_prompt_continue))
+            }
+        },
+    )
+}
+
+@Composable
+internal fun LaunchRecoveryDialog(
+    recovery: PendingLaunchRecovery,
+    onRetryLower: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    BackHandler(onBack = onDismiss)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.launch_recovery_title), fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(recovery.errorMessage)
+                Text(
+                    stringResource(R.string.launch_recovery_lower_settings_body),
+                    color = TextMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        },
+        confirmButton = {
+            androidx.compose.material3.Button(onClick = onRetryLower) {
+                Text(stringResource(R.string.launch_recovery_try_lower))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
                 Text(stringResource(R.string.action_cancel))
             }
         },

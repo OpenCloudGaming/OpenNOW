@@ -93,7 +93,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Cast
-import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -127,6 +126,7 @@ import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusProperties
@@ -378,11 +378,7 @@ internal fun HomeScreen(
                             onChooseStore = viewModel::chooseStore,
                             onSortChange = viewModel::setCatalogSort,
                             onFilterToggle = viewModel::toggleCatalogFilter,
-                            onHideLandscapeNewGames = {
-                                viewModel.updateSettings(
-                                    state.settings.copy(landscapeNewGamesHero = false),
-                                )
-                            },
+                            onLandscapeNewGamesCollapsedChange = viewModel::setLandscapeNewGamesHeroCollapsed,
                             onClearSearch = {
                                 viewModel.setCatalogSearch("")
                                 onSearchDismissed()
@@ -1636,7 +1632,7 @@ private fun StoreGameGrid(
     onChooseStore: (GameInfo) -> Unit,
     onSortChange: (String) -> Unit,
     onFilterToggle: (String) -> Unit,
-    onHideLandscapeNewGames: () -> Unit,
+    onLandscapeNewGamesCollapsedChange: (Boolean) -> Unit,
     onClearSearch: () -> Unit,
     onClearFilters: () -> Unit,
     gridState: androidx.compose.foundation.lazy.grid.LazyGridState,
@@ -1735,7 +1731,7 @@ private fun StoreGameGrid(
                                 onFavorite = onFavorite,
                                 onPlay = onPlay,
                                 onChooseStore = onChooseStore,
-                                onHideLandscapeNewGames = onHideLandscapeNewGames,
+                                onLandscapeNewGamesCollapsedChange = onLandscapeNewGamesCollapsedChange,
                             )
                         }
                     }
@@ -1794,7 +1790,7 @@ private fun StoreStartRails(
     onFavorite: (String) -> Unit,
     onPlay: (GameInfo) -> Unit,
     onChooseStore: (GameInfo) -> Unit,
-    onHideLandscapeNewGames: () -> Unit,
+    onLandscapeNewGamesCollapsedChange: (Boolean) -> Unit,
 ) {
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val showFeaturedHero = shouldShowStoreHero(
@@ -1815,7 +1811,6 @@ private fun StoreStartRails(
             emptyList()
         }
     }
-    var confirmHideLandscapeNewGames by remember { mutableStateOf(false) }
     if (startRails.isEmpty && featured.isEmpty()) return
     Column(
         Modifier
@@ -1838,19 +1833,10 @@ private fun StoreStartRails(
                 onFavorite = onFavorite,
                 onPlay = onPlay,
                 onChooseStore = onChooseStore,
-                trailing = if (landscape && !tvProfile) {
-                    {
-                        IconButton(onClick = { confirmHideLandscapeNewGames = true }) {
-                            Icon(
-                                imageVector = Icons.Outlined.Close,
-                                contentDescription = stringResource(R.string.store_landscape_new_games_hide),
-                                tint = Color.White,
-                            )
-                        }
-                    }
-                } else {
-                    null
-                },
+                collapsed = landscape && !tvProfile && settings.landscapeNewGamesHeroCollapsed,
+                onCollapsedChange = if (landscape && !tvProfile) {
+                    onLandscapeNewGamesCollapsedChange
+                } else null,
             )
         }
         StoreStartRail(
@@ -1893,28 +1879,6 @@ private fun StoreStartRails(
             onFavorite,
             onPlay,
             onChooseStore,
-        )
-    }
-    if (confirmHideLandscapeNewGames) {
-        AlertDialog(
-            onDismissRequest = { confirmHideLandscapeNewGames = false },
-            title = { Text(stringResource(R.string.store_landscape_new_games_hide_title)) },
-            text = { Text(stringResource(R.string.store_landscape_new_games_hide_body)) },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        confirmHideLandscapeNewGames = false
-                        onHideLandscapeNewGames()
-                    },
-                ) {
-                    Text(stringResource(R.string.common_dont_show_again))
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmHideLandscapeNewGames = false }) {
-                    Text(stringResource(R.string.action_cancel))
-                }
-            },
         )
     }
 }
@@ -2067,7 +2031,8 @@ private fun StoreComingNextCarousel(
     onFavorite: (String) -> Unit,
     onPlay: (GameInfo) -> Unit,
     onChooseStore: (GameInfo) -> Unit,
-    trailing: (@Composable () -> Unit)? = null,
+    collapsed: Boolean = false,
+    onCollapsedChange: ((Boolean) -> Unit)? = null,
 ) {
     if (games.isEmpty()) return
     val context = LocalContext.current
@@ -2082,15 +2047,16 @@ private fun StoreComingNextCarousel(
     val selectedGameId = LocalSelectedCatalogGameId.current
     val reduceMotion = LocalReduceMotion.current
     val storeScrolling = LocalCatalogImageRequestsPaused.current
+    val haptics = LocalOpenNowHaptics.current
     val carouselProgress = remember { Animatable(0f) }
     var carouselDragPx by remember { mutableFloatStateOf(0f) }
     val swipeThresholdPx = with(LocalDensity.current) { 48.dp.toPx() }
     val carouselDragState = rememberDraggableState { delta -> carouselDragPx += delta }
-    LaunchedEffect(games, page, focused, reduceMotion, storeScrolling) {
+    LaunchedEffect(games, page, focused, reduceMotion, storeScrolling, collapsed) {
         // Never auto-advance under the reader's hands: not while focused, and not at all when the
         // user has asked for reduced motion. Vertical Store motion also gets the full frame budget.
         carouselProgress.snapTo(0f)
-        if (shouldAnimateStoreHero(games.size, focused, reduceMotion, storeScrolling)) {
+        if (!collapsed && shouldAnimateStoreHero(games.size, focused, reduceMotion, storeScrolling)) {
             carouselProgress.animateTo(
                 targetValue = 1f,
                 animationSpec = tween(
@@ -2099,7 +2065,7 @@ private fun StoreComingNextCarousel(
                 ),
             )
             page = (page + 1) % games.size
-        } else if (games.size <= 1 || reduceMotion) {
+        } else if (!collapsed && (games.size <= 1 || reduceMotion)) {
             carouselProgress.snapTo(1f)
         }
     }
@@ -2111,54 +2077,90 @@ private fun StoreComingNextCarousel(
             if (landscape && !tvProfile) OpenNowSpacing.sm else OpenNowSpacing.md,
         ),
     ) {
+        val toggleCollapsed: () -> Unit = {
+            haptics?.play(HapticCue.Activate)
+            onCollapsedChange?.invoke(!collapsed)
+        }
+        val collapseDescription = if (collapsed) {
+            stringResource(R.string.store_landscape_new_games_show)
+        } else {
+            stringResource(R.string.store_landscape_new_games_hide)
+        }
+        val chevronRotation by animateFloatAsState(
+            targetValue = if (collapsed) 0f else 90f,
+            label = "store-hero-chevron",
+        )
         SectionHeader(
             title = title,
             subtitle = stringResource(R.string.store_coming_next_subtitle),
-            trailing = trailing,
-        )
-        AnimatedContent(
-            targetState = page,
-            transitionSpec = {
-                fadeIn(tween(if (reduceMotion) 0 else OpenNowMotion.DurationStandard)) togetherWith
-                    fadeOut(tween(if (reduceMotion) 0 else OpenNowMotion.DurationFast))
-            },
-            label = "coming-next-carousel",
-        ) { targetPage ->
-            val featured = games[targetPage.coerceIn(games.indices)]
-            val selected = featured.id == selectedGameId
-            val selectedOutline = shouldShowActiveSelectionOutline(selected, LocalActiveSelectionEnabled.current)
-            val shape = RoundedCornerShape(if (settings.expressiveUi) 24.dp else 16.dp)
-            val transitionRegistry = LocalGameDetailsTransitionRegistry.current
-            val transitionBounds = remember(featured.id) { arrayOfNulls<Rect>(1) }
-            val selectFromHero = {
-                transitionBounds[0]?.let {
-                    transitionRegistry?.record(featured.id, it, GameDetailsTransitionKind.Hero)
-                }
-                onSelect(featured)
-            }
-            Box(
+            modifier = if (onCollapsedChange == null) {
                 Modifier
-                    .fillMaxWidth()
-                    // Aspect ratio rather than a fixed height, so the hero scales with the screen
-                    // instead of dominating a small phone and looking stunted on a tablet.
-                    .aspectRatio(heroAspectRatio(tvProfile, landscape))
-                    .draggable(
-                        state = carouselDragState,
-                        orientation = Orientation.Horizontal,
-                        enabled = games.size > 1,
-                        onDragStarted = { carouselDragPx = 0f },
-                        onDragStopped = {
-                            if (abs(carouselDragPx) >= swipeThresholdPx) {
-                                page = if (carouselDragPx < 0f) {
-                                    (page + 1) % games.size
-                                } else {
-                                    (page - 1 + games.size) % games.size
+            } else {
+                Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable(onClick = toggleCollapsed)
+                    .semantics {
+                        role = Role.Button
+                        contentDescription = collapseDescription
+                    }
+            },
+            trailing = onCollapsedChange?.let {
+                {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_chevron_right),
+                        contentDescription = null,
+                        tint = TextMuted,
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .rotate(chevronRotation),
+                    )
+                }
+            },
+        )
+        AnimatedVisibility(visible = !collapsed) {
+            AnimatedContent(
+                targetState = page,
+                transitionSpec = {
+                    fadeIn(tween(if (reduceMotion) 0 else OpenNowMotion.DurationStandard)) togetherWith
+                        fadeOut(tween(if (reduceMotion) 0 else OpenNowMotion.DurationFast))
+                },
+                label = "coming-next-carousel",
+            ) { targetPage ->
+                val featured = games[targetPage.coerceIn(games.indices)]
+                val selected = featured.id == selectedGameId
+                val selectedOutline = shouldShowActiveSelectionOutline(selected, LocalActiveSelectionEnabled.current)
+                val shape = RoundedCornerShape(if (settings.expressiveUi) 24.dp else 16.dp)
+                val transitionRegistry = LocalGameDetailsTransitionRegistry.current
+                val transitionBounds = remember(featured.id) { arrayOfNulls<Rect>(1) }
+                val selectFromHero = {
+                    transitionBounds[0]?.let {
+                        transitionRegistry?.record(featured.id, it, GameDetailsTransitionKind.Hero)
+                    }
+                    onSelect(featured)
+                }
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        // Aspect ratio rather than a fixed height, so the hero scales with the screen
+                        // instead of dominating a small phone and looking stunted on a tablet.
+                        .aspectRatio(heroAspectRatio(tvProfile, landscape))
+                        .draggable(
+                            state = carouselDragState,
+                            orientation = Orientation.Horizontal,
+                            enabled = games.size > 1,
+                            onDragStarted = { carouselDragPx = 0f },
+                            onDragStopped = {
+                                if (abs(carouselDragPx) >= swipeThresholdPx) {
+                                    page = if (carouselDragPx < 0f) {
+                                        (page + 1) % games.size
+                                    } else {
+                                        (page - 1 + games.size) % games.size
+                                    }
                                 }
-                            }
-                            carouselDragPx = 0f
-                        },
-                    ),
-            ) {
+                                carouselDragPx = 0f
+                            },
+                        ),
+                ) {
                 Surface(
                     modifier = Modifier
                         .matchParentSize()
@@ -2301,6 +2303,7 @@ private fun StoreComingNextCarousel(
                     tint = if (selectedOutline || LocalAbsoluteCinemaEffects.current) LocalActiveSelectionColor.current else Color.White,
                     secondaryTint = if (selectedOutline || LocalAbsoluteCinemaEffects.current) LocalActiveSelectionSecondaryColor.current else Color.White,
                 )
+                }
             }
         }
     }

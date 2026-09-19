@@ -1800,7 +1800,7 @@ internal fun DebugLogsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) 
                             onFailure = { saveError = it.message ?: "Could not copy logs" },
                             onFinished = { diagnosticActionInProgress = false },
                         ) {
-                            val logs = viewModel.sanitizedDebugLogText()
+                            val logs = boundedLogClipboardText(viewModel.sanitizedDebugLogText())
                             clipboard.copyPlainText(logs)
                             copied = true
                         }
@@ -1875,7 +1875,7 @@ internal fun rememberDeviceHasBattery(): Boolean {
 internal fun shouldShowBatteryOptimization(explicitBatteryPresent: Boolean?): Boolean =
     explicitBatteryPresent != false
 
-private fun deviceHasBattery(context: Context): Boolean {
+internal fun deviceHasBattery(context: Context): Boolean {
     val batteryStatus = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         context.registerReceiver(
             null,
@@ -1892,15 +1892,35 @@ private fun deviceHasBattery(context: Context): Boolean {
     return shouldShowBatteryOptimization(explicitBatteryPresent)
 }
 
+internal fun isIgnoringBatteryOptimizations(context: Context): Boolean {
+    val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+    return powerManager?.isIgnoringBatteryOptimizations(context.packageName) == true
+}
+
+internal fun shouldPromptForBatteryOptimization(
+    deviceHasBattery: Boolean,
+    ignoringBatteryOptimizations: Boolean,
+    promptDismissed: Boolean,
+): Boolean = deviceHasBattery && !ignoringBatteryOptimizations && !promptDismissed
+
+internal fun openBatteryOptimizationSettings(context: Context) {
+    val directIntent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+        data = Uri.parse("package:${context.packageName}")
+    }
+    runCatching { context.startActivity(directIntent) }
+        .recoverCatching {
+            context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+        }
+}
+
 @Composable
 internal fun BatteryOptimizationPanel() {
     val context = LocalContext.current
     var isIgnoring by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
-        val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
         while (true) {
-            isIgnoring = pm?.isIgnoringBatteryOptimizations(context.packageName) == true
+            isIgnoring = isIgnoringBatteryOptimizations(context)
             delay(1000L)
         }
     }
@@ -1940,18 +1960,7 @@ internal fun BatteryOptimizationPanel() {
             }
             if (!isIgnoring) {
                 Button(
-                    onClick = {
-                        val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                            data = Uri.parse("package:${context.packageName}")
-                        }
-                        try {
-                            context.startActivity(intent)
-                        } catch (e: Exception) {
-                            try {
-                                context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
-                            } catch (_: Exception) {}
-                        }
-                    }
+                    onClick = { openBatteryOptimizationSettings(context) }
                 ) {
                     Text(stringResource(R.string.action_allow))
                 }

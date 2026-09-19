@@ -450,7 +450,7 @@ private fun StreamSettings.requestProfile(): StreamRequestProfile {
         height = height,
         hdrEnabled = hdrEnabled,
         hdrDisplay = compatible.hdrDisplay,
-        bitDepth = if (hdrEnabled || compatible.colorQuality.name.startsWith("TenBit")) 10 else 0,
+        bitDepth = if (compatible.colorQuality.name.startsWith("TenBit")) 10 else 0,
         chroma = if (compatible.colorQuality == ColorQuality.EightBit444 || compatible.colorQuality == ColorQuality.TenBit444) 2 else 0,
     )
 }

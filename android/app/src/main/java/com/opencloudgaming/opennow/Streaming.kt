@@ -941,7 +941,8 @@ class NativeStreamClient(
         )
         val bitrate = StreamNetworkAdaptation.bitrateRange(settings.maxBitrateMbps)
         recordStreamDiagnostic(
-            "network adaptation=prefer_fps minimumKbps=${bitrate.minimumKbps} " +
+            "network adaptation=fixed_profile dynamicMode=${StreamNetworkAdaptation.DYNAMIC_STREAMING_MODE} " +
+                "drc=${StreamNetworkAdaptation.DYNAMIC_RESOLUTION_CONTROL} minimumKbps=${bitrate.minimumKbps} " +
                 "initialKbps=${bitrate.initialKbps} maximumKbps=${bitrate.maximumKbps}",
         )
         startTransport(session, settings, transportGeneration)
@@ -3556,15 +3557,18 @@ class NativeStreamClient(
                 iceRecoveryJob?.isActive != true &&
                 !sessionRecoveryRequested,
         )
-        if (
-            decoderOverloaded &&
-            requestSelectedVideoProfileRetry(
-                message = "The decoder could not sustain ${settings.fps} FPS; retrying the selected profile without changing it",
-                diagnosticReason = "sustained decoder overload receivedFps=${snapshot.stats.receivedFps} " +
-                    "decodedFps=${snapshot.stats.decodedFps} decodeMs=${snapshot.stats.decodeMs}",
-            )
-        ) {
-            return
+        if (decoderOverloaded) {
+            // Reconnecting with the exact same codec and profile cannot relieve a sustained
+            // decoder-throughput limit. It also interrupts otherwise live media and makes the
+            // session depend on the signaling endpoint again. Keep the selected profile and the
+            // allocated cloud session intact; the session report gives the user the explicit H264
+            // or Recommended-profile mitigation without applying it silently.
+            val overloadDiagnostic =
+                "sustained decoder overload receivedFps=${snapshot.stats.receivedFps} " +
+                    "decodedFps=${snapshot.stats.decodedFps} decodeMs=${snapshot.stats.decodeMs}; " +
+                    "preserving active transport and selected profile"
+            recordStreamDiagnostic(overloadDiagnostic)
+            NativeInputDiagnostics.add(overloadDiagnostic)
         }
         if (
             rendererSinkLifecycle.isAttachRequested() &&
@@ -4847,13 +4851,10 @@ class NativeStreamClient(
     }
 
     private fun KeyEvent.isGamepadEvent(): Boolean {
-        val controllerInputDevice = isControllerInputDevice()
-        return (controllerInputDevice &&
-            (GamepadButtonMapping.maskForKeyCode(keyCode, controllerActivation = true) != null ||
-                AndroidControllerInput.isPrimaryActivationKey(keyCode) ||
-                keyCode == KeyEvent.KEYCODE_BUTTON_L2 ||
-                keyCode == KeyEvent.KEYCODE_BUTTON_R2)) ||
-            GamepadButtonMapping.isControllerButtonKeyCode(keyCode)
+        return NativeStreamInputRouter.shouldRouteKeyAsGamepad(
+            controllerInputDevice = isControllerInputDevice(),
+            keyCode = keyCode,
+        )
     }
 
     private fun KeyEvent.isHardwareKeyboardSource(): Boolean =
