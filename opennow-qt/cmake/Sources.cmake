@@ -9,6 +9,8 @@ set(OPENNOW_STREAM_PRESENTATION_SOURCES
     src/streaming/rendering/HdrOutputPass.h
     src/streaming/rendering/HdrChromeEffect.cpp
     src/streaming/rendering/HdrChromeEffect.h
+    src/streaming/PhysicalKeyMap.cpp
+    src/streaming/PhysicalKeyMap.h
     src/streaming/StreamVideoItem.cpp
     src/streaming/StreamVideoItem.h
     src/streaming/StreamVideoItemInput.cpp

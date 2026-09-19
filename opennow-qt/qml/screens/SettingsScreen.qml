@@ -373,8 +373,8 @@ FocusScope {
             }
             rows.push({t:"Mouse sensitivity", d:"Acceleration off · raw input", v:Number(settings.mouseSensitivity || 1).toFixed(1) + "×", key:"mouseSensitivity", values:[0.5,0.75,1,1.25,1.5], labels:["0.5×","0.75×","1.0×","1.25×","1.5×"], control:"slider", sliderPercent:Number(settings.mouseSensitivity || 1) / 1.5})
             rows.push(choice("Keyboard layout", "Physical key mapping requested from GeForce NOW", "keyboardLayout",
-                ["en-US","en-GB","tr-TR","de-DE","fr-FR","es-ES","es-MX","it-IT","pt-PT","pt-BR","pl-PL","da-DK","nb-NO","sv-SE","fi-FI","ru-RU","ja-JP","ko-KR","zh-CN","zh-TW"],
-                ["English (US)","English (UK)","Turkish Q","German","French","Spanish","Spanish (Latin America)","Italian","Portuguese (Portugal)","Portuguese (Brazil)","Polish","Danish","Norwegian","Swedish","Finnish","Russian","Japanese","Korean","Chinese (Simplified)","Chinese (Traditional)"]))
+                ["en-US","en-GB","tr-TR","de-DE","fr-FR","es-ES","es-MX","it-IT","pt-PT","pt-BR","pl-PL","da-DK","nb-NO","sv-SE","fi-FI","uk-UA","ja-JP","ko-KR","zh-CN","zh-TW"],
+                ["English (US)","English (UK)","Turkish Q","German","French","Spanish","Spanish (Latin America)","Italian","Portuguese (Portugal)","Portuguese (Brazil)","Polish","Danish","Norwegian","Swedish","Finnish","Ukrainian","Japanese","Korean","Chinese (Simplified)","Chinese (Traditional)"]))
             rows.push(choice("Game language", "Requested from the game when it supports it", "gameLanguage", ["en_US","en_GB","de_DE","fr_FR","es_ES","it_IT","pt_BR","ja_JP","ko_KR"], ["English (US)","English (UK)","Deutsch","Français","Español","Italiano","Português (BR)","日本語","한국어"]))
             rows.push({t:"Shortcuts", d:"Stats Ctrl+N · Pointer lock F8 · Fullscreen F11 · Screenshot Ctrl+F11", v:"Edit shortcuts", key:"shortcutToggleStats", action:"shortcut-editor"})
             rows.push(choice(qsTr("Microphone"), ShellStore.microphoneCaptureSupported ? ShellStore.microphoneDescription : qsTr("Microphone capture is unavailable in this build."),
