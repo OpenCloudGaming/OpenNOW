@@ -133,10 +133,127 @@ fn format_profile_index(codec: VideoCodec, pixel_format: PixelFormat) -> Option<
     Some(profile_index(codec, pixel_format.is_ten_bit()) + offset)
 }
 
+#[cfg(feature = "vulkan")]
+pub(crate) fn score_physical_device(
+    index: usize,
+    properties: &ash::vk::PhysicalDeviceProperties,
+    queue_families: &[ash::vk::QueueFamilyProperties],
+) -> i64 {
+    let mut score = 0i64;
+
+    // 1. Explicit user overrides (highest priority)
+    if let Ok(override_index) = std::env::var("OPENNOW_VK_DEVICE_INDEX") {
+        if let Ok(parsed) = override_index.trim().parse::<usize>() {
+            if parsed == index {
+                score += 100_000;
+            }
+        }
+    }
+
+    if let Ok(override_vendor) = std::env::var("OPENNOW_VK_VENDOR_ID") {
+        let trimmed = override_vendor.trim();
+        let parsed = if trimmed.starts_with("0x") || trimmed.starts_with("0X") {
+            u32::from_str_radix(&trimmed[2..], 16).ok()
+        } else {
+            trimmed.parse::<u32>().ok()
+        };
+        if parsed == Some(properties.vendor_id) {
+            score += 50_000;
+        }
+    }
+
+    // 2. PRIME / offload environment variables
+    let nv_prime = std::env::var("__NV_PRIME_RENDER_OFFLOAD")
+        .map(|v| v.trim() == "1")
+        .unwrap_or(false);
+    if nv_prime && properties.vendor_id == 0x10de {
+        score += 20_000;
+    }
+
+    let dri_prime = std::env::var("DRI_PRIME")
+        .map(|v| v.trim() == "1")
+        .unwrap_or(false);
+    if dri_prime
+        && (properties.device_type == ash::vk::PhysicalDeviceType::DISCRETE_GPU
+            || properties.vendor_id != 0x8086)
+    {
+        score += 15_000;
+    }
+
+    // 3. Discrete GPU preference over Integrated / CPU
+    match properties.device_type {
+        ash::vk::PhysicalDeviceType::DISCRETE_GPU => score += 3_000,
+        ash::vk::PhysicalDeviceType::INTEGRATED_GPU => score += 500,
+        ash::vk::PhysicalDeviceType::VIRTUAL_GPU => score += 200,
+        ash::vk::PhysicalDeviceType::CPU => score -= 1_000,
+        _ => {}
+    }
+
+    // 4. Queue capabilities & queue isolation evaluation
+    let has_graphics = queue_families
+        .iter()
+        .any(|q| q.queue_flags.contains(ash::vk::QueueFlags::GRAPHICS));
+    if !has_graphics {
+        score -= 50_000;
+        return score;
+    }
+
+    let has_video_decode = queue_families
+        .iter()
+        .any(|q| q.queue_flags.contains(ash::vk::QueueFlags::VIDEO_DECODE_KHR));
+    if has_video_decode {
+        score += 1_500;
+    }
+
+    let has_compute = queue_families
+        .iter()
+        .any(|q| q.queue_flags.contains(ash::vk::QueueFlags::COMPUTE));
+    let has_transfer = queue_families
+        .iter()
+        .any(|q| q.queue_flags.contains(ash::vk::QueueFlags::TRANSFER));
+    if has_compute {
+        score += 500;
+    }
+    if has_transfer {
+        score += 200;
+    }
+
+    // Isolation check:
+    // Either the graphics queue family has count > 1 (can split Qt queue from native),
+    // or if count == 1, there must be separate compute and decode queue families.
+    let can_isolate = queue_families.iter().any(|q| {
+        q.queue_flags.contains(ash::vk::QueueFlags::GRAPHICS) && q.queue_count > 1
+    }) || (has_compute && has_video_decode);
+
+    if can_isolate {
+        score += 2_000;
+    } else {
+        score -= 5_000;
+    }
+
+    score
+}
+
 #[cfg(all(feature = "ffmpeg", feature = "vulkan"))]
 impl Drop for SharedVulkanDevice {
     fn drop(&mut self) {
-        unsafe { ffmpeg_next::ffi::av_buffer_unref(&mut self.device) };
+        unsafe {
+            if !self.device.is_null() && self.info.device != 0 && self.info.instance != 0 {
+                use ash::vk::Handle as _;
+                if let Ok(entry) = ash::Entry::load() {
+                    let instance = ash::Instance::load(
+                        entry.static_fn(),
+                        ash::vk::Instance::from_raw(self.info.instance as u64),
+                    );
+                    let logical = ash::Device::load(
+                        instance.fp_v1_0(),
+                        ash::vk::Device::from_raw(self.info.device as u64),
+                    );
+                    let _ = logical.device_wait_idle();
+                }
+            }
+            ffmpeg_next::ffi::av_buffer_unref(&mut self.device);
+        }
     }
 }
 
@@ -147,19 +264,8 @@ mod implementation {
     use ffmpeg_next::ffi;
     use std::{ffi::CStr, ptr};
 
-    pub(super) fn create() -> Result<Arc<SharedVulkanDevice>> {
-        ffmpeg_next::init()
-            .map_err(|error| Error::backend(Subsystem::Ffmpeg, error.to_string()))?;
-        let mut device = ptr::null_mut();
+    fn build_options(hdr_colorspace: bool) -> *mut ffi::AVDictionary {
         let mut options = ptr::null_mut();
-        let entry = unsafe { ash::Entry::load() }
-            .map_err(|error| Error::unavailable(Subsystem::Vulkan, error.to_string()))?;
-        let extensions = unsafe { entry.enumerate_instance_extension_properties(None) }
-            .map_err(|error| Error::unavailable(Subsystem::Vulkan, error.to_string()))?;
-        let hdr_colorspace = extensions.iter().any(|extension| unsafe {
-            CStr::from_ptr(extension.extension_name.as_ptr())
-                == ash::ext::swapchain_colorspace::NAME
-        });
         let instance_extensions = if hdr_colorspace {
             c"VK_KHR_surface+VK_KHR_xlib_surface+VK_KHR_xcb_surface+VK_KHR_wayland_surface+VK_EXT_swapchain_colorspace"
         } else {
@@ -180,33 +286,106 @@ mod implementation {
             );
             ffi::av_dict_set(&mut options, c"limit_queues".as_ptr(), c"2".as_ptr(), 0);
         }
-        let result = unsafe {
-            ffi::av_hwdevice_ctx_create(
-                &mut device,
-                ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VULKAN,
-                ptr::null(),
-                options,
-                0,
-            )
-        };
-        unsafe { ffi::av_dict_free(&mut options) };
-        if result < 0 || device.is_null() {
-            return Err(Error::unavailable(
-                Subsystem::Vulkan,
-                format!(
-                    "shared Vulkan device creation failed: {}",
-                    ffmpeg_next::Error::from(result)
-                ),
-            ));
+        options
+    }
+
+    pub(super) fn create() -> Result<Arc<SharedVulkanDevice>> {
+        ffmpeg_next::init()
+            .map_err(|error| Error::backend(Subsystem::Ffmpeg, error.to_string()))?;
+        let entry = unsafe { ash::Entry::load() }
+            .map_err(|error| Error::unavailable(Subsystem::Vulkan, error.to_string()))?;
+        let extensions = unsafe { entry.enumerate_instance_extension_properties(None) }
+            .map_err(|error| Error::unavailable(Subsystem::Vulkan, error.to_string()))?;
+        let hdr_colorspace = extensions.iter().any(|extension| unsafe {
+            CStr::from_ptr(extension.extension_name.as_ptr())
+                == ash::ext::swapchain_colorspace::NAME
+        });
+
+        // Enumerate and score candidate physical devices using a temporary instance.
+        let mut candidates: Vec<(usize, String, i64)> = Vec::new();
+        let app_info = vk::ApplicationInfo::default().api_version(vk::API_VERSION_1_1);
+        let instance_create_info = vk::InstanceCreateInfo::default().application_info(&app_info);
+        if let Ok(temp_instance) = unsafe { entry.create_instance(&instance_create_info, None) } {
+            if let Ok(devices) = unsafe { temp_instance.enumerate_physical_devices() } {
+                for (index, &device) in devices.iter().enumerate() {
+                    let props = unsafe { temp_instance.get_physical_device_properties(device) };
+                    let queues = unsafe { temp_instance.get_physical_device_queue_family_properties(device) };
+                    let adapter = unsafe { CStr::from_ptr(props.device_name.as_ptr()) }
+                        .to_string_lossy()
+                        .into_owned();
+                    let score = score_physical_device(index, &props, &queues);
+                    candidates.push((index, adapter, score));
+                }
+            }
+            unsafe { temp_instance.destroy_instance(None) };
         }
-        let initialized = unsafe { initialize(device) };
-        match initialized {
-            Ok(owner) => Ok(Arc::new(owner)),
-            Err(error) => {
-                unsafe { ffi::av_buffer_unref(&mut device) };
-                Err(error)
+        candidates.sort_by(|a, b| b.2.cmp(&a.2));
+
+        let candidate_indices: Vec<(Option<usize>, String)> = if candidates.is_empty() {
+            vec![(None, "default".to_string())]
+        } else {
+            candidates
+                .into_iter()
+                .map(|(idx, name, score)| (Some(idx), format!("{name} (index {idx}, score {score})")))
+                .collect()
+        };
+
+        let mut last_error = None;
+        for (candidate_idx, candidate_name) in candidate_indices {
+            let mut device = ptr::null_mut();
+            let mut options = unsafe { build_options(hdr_colorspace) };
+
+            let device_param = candidate_idx.map(|idx| std::ffi::CString::new(idx.to_string()).unwrap());
+            let device_param_ptr = device_param.as_ref().map(|s| s.as_ptr()).unwrap_or(ptr::null());
+
+            let result = unsafe {
+                ffi::av_hwdevice_ctx_create(
+                    &mut device,
+                    ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VULKAN,
+                    device_param_ptr,
+                    options,
+                    0,
+                )
+            };
+            unsafe { ffi::av_dict_free(&mut options) };
+
+            if result < 0 || device.is_null() {
+                let err_msg = format!(
+                    "candidate Vulkan device {candidate_name} creation failed: {}",
+                    ffmpeg_next::Error::from(result)
+                );
+                eprintln!("{err_msg}");
+                last_error = Some(Error::unavailable(Subsystem::Vulkan, err_msg));
+                continue;
+            }
+
+            let initialized = unsafe { initialize(device) };
+            match initialized {
+                Ok(owner) => return Ok(Arc::new(owner)),
+                Err(error) => {
+                    eprintln!("candidate Vulkan device {candidate_name} rejected: {error}");
+                    unsafe {
+                        let context = &mut *((*device).data.cast::<ffi::AVHWDeviceContext>());
+                        let vulkan = &mut *context.hwctx.cast::<ffi::AVVulkanDeviceContext>();
+                        if !vulkan.act_dev.is_null() && !vulkan.inst.is_null() {
+                            let inst = ash::Instance::load(entry.static_fn(), vk::Instance::from_raw(vulkan.inst as u64));
+                            let log_dev = ash::Device::load(inst.fp_v1_0(), vk::Device::from_raw(vulkan.act_dev as u64));
+                            let _ = log_dev.device_wait_idle();
+                        }
+                        ffi::av_buffer_unref(&mut device);
+                    }
+                    last_error = Some(error);
+                    continue;
+                }
             }
         }
+
+        Err(last_error.unwrap_or_else(|| {
+            Error::unavailable(
+                Subsystem::Vulkan,
+                "shared Vulkan device creation failed: no suitable candidate device found",
+            )
+        }))
     }
 
     unsafe fn initialize(device: *mut ffi::AVBufferRef) -> Result<SharedVulkanDevice> {
@@ -839,5 +1018,74 @@ mod tests {
         assert!(!owner.supports_format(VideoCodec::H265, PixelFormat::Nv24, 1920, 1080));
         assert!(!owner.codec_support(VideoCodec::H265, true));
         assert!(!owner.supports(VideoCodec::H265, true, 1920, 1080));
+    }
+
+    #[test]
+    #[cfg(feature = "vulkan")]
+    fn score_physical_device_prioritizes_capable_discrete_gpu() {
+        let intel_props = ash::vk::PhysicalDeviceProperties {
+            vendor_id: 0x8086,
+            device_type: ash::vk::PhysicalDeviceType::INTEGRATED_GPU,
+            ..Default::default()
+        };
+        let intel_queues = vec![ash::vk::QueueFamilyProperties {
+            queue_flags: ash::vk::QueueFlags::GRAPHICS | ash::vk::QueueFlags::COMPUTE,
+            queue_count: 1,
+            ..Default::default()
+        }];
+
+        let nvidia_props = ash::vk::PhysicalDeviceProperties {
+            vendor_id: 0x10de,
+            device_type: ash::vk::PhysicalDeviceType::DISCRETE_GPU,
+            ..Default::default()
+        };
+        let nvidia_queues = vec![
+            ash::vk::QueueFamilyProperties {
+                queue_flags: ash::vk::QueueFlags::GRAPHICS
+                    | ash::vk::QueueFlags::COMPUTE
+                    | ash::vk::QueueFlags::TRANSFER,
+                queue_count: 8,
+                ..Default::default()
+            },
+            ash::vk::QueueFamilyProperties {
+                queue_flags: ash::vk::QueueFlags::VIDEO_DECODE_KHR,
+                queue_count: 1,
+                ..Default::default()
+            },
+        ];
+
+        let intel_score = score_physical_device(0, &intel_props, &intel_queues);
+        let nvidia_score = score_physical_device(1, &nvidia_props, &nvidia_queues);
+        assert!(nvidia_score > intel_score);
+        assert!(intel_score < 0);
+        assert!(nvidia_score > 0);
+    }
+
+    #[test]
+    #[cfg(feature = "vulkan")]
+    fn score_physical_device_respects_user_overrides() {
+        let intel_props = ash::vk::PhysicalDeviceProperties {
+            vendor_id: 0x8086,
+            device_type: ash::vk::PhysicalDeviceType::INTEGRATED_GPU,
+            ..Default::default()
+        };
+        let intel_queues = vec![ash::vk::QueueFamilyProperties {
+            queue_flags: ash::vk::QueueFlags::GRAPHICS | ash::vk::QueueFlags::COMPUTE,
+            queue_count: 2,
+            ..Default::default()
+        }];
+
+        // Test vendor override
+        unsafe { std::env::set_var("OPENNOW_VK_VENDOR_ID", "0x8086") };
+        let score_with_vendor = score_physical_device(0, &intel_props, &intel_queues);
+        unsafe { std::env::remove_var("OPENNOW_VK_VENDOR_ID") };
+        let score_without_vendor = score_physical_device(0, &intel_props, &intel_queues);
+        assert!(score_with_vendor >= score_without_vendor + 50_000);
+
+        // Test index override
+        unsafe { std::env::set_var("OPENNOW_VK_DEVICE_INDEX", "0") };
+        let score_with_index = score_physical_device(0, &intel_props, &intel_queues);
+        unsafe { std::env::remove_var("OPENNOW_VK_DEVICE_INDEX") };
+        assert!(score_with_index >= score_without_vendor + 100_000);
     }
 }

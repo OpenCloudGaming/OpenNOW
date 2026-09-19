@@ -19,6 +19,13 @@ Device::~Device()
 
 void Device::reset()
 {
+    if (m_info.device && m_instance.isValid()) {
+        auto pfnWaitIdle = reinterpret_cast<PFN_vkDeviceWaitIdle>(
+            m_instance.getInstanceProcAddr("vkDeviceWaitIdle"));
+        if (pfnWaitIdle) {
+            pfnWaitIdle(reinterpret_cast<VkDevice>(m_info.device));
+        }
+    }
     m_instance.destroy();
     if (m_device) m_api.destroy(m_device);
     m_device = nullptr;
@@ -93,6 +100,7 @@ bool Device::adopt(QQuickWindow *window)
     if (!m_instance.supportsPresent(reinterpret_cast<VkPhysicalDevice>(m_info.physical_device),
                                     m_info.graphics_queue_family_index, window)) {
         m_lastError = QStringLiteral("The native Vulkan graphics queue cannot present to this window system.");
+        window->setVulkanInstance(nullptr);
         return false;
     }
     window->setGraphicsDevice(QQuickGraphicsDevice::fromDeviceObjects(
