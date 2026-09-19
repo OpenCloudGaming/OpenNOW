@@ -162,7 +162,9 @@ mod windows {
     pub(super) fn install_root_argument(target: &Path) -> Result<String, String> {
         let path = argument_path(target)?;
         if path.contains('"') || path.contains('\n') || path.contains('\r') {
-            return Err("Windows Installer requires an installation path without quotes".to_owned());
+            return Err(
+                "Windows Installer requires an installation path without quotes".to_owned(),
+            );
         }
         if path.is_empty() || path.len() > 32767 {
             return Err("Windows Installer requires a bounded installation path".to_owned());
@@ -696,15 +698,11 @@ mod tests {
     #[test]
     fn msi_install_root_quotes_only_the_value_for_msiexec() {
         #[cfg(windows)]
-        let argument = windows::install_root_argument(Path::new(
-            r"C:\Program Files\OpenNOW Nightly",
-        ))
-        .unwrap();
+        let argument =
+            windows::install_root_argument(Path::new(r"C:\Program Files\OpenNOW Nightly")).unwrap();
         #[cfg(not(windows))]
-        let argument = msi_install_root_argument(Path::new(
-            r"C:\Program Files\OpenNOW Nightly",
-        ))
-        .unwrap();
+        let argument =
+            msi_install_root_argument(Path::new(r"C:\Program Files\OpenNOW Nightly")).unwrap();
         assert_eq!(
             argument,
             r#"INSTALL_ROOT="C:\Program Files\OpenNOW Nightly""#
