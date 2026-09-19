@@ -95,11 +95,17 @@ impl UpdaterService {
                         "idle",
                         "Ready to check GitHub Releases".to_owned(),
                     ),
-                    Err(error) => (
-                        None,
-                        "failed",
-                        format!("Could not recover update status: {error}"),
-                    ),
+                    Err(error) => {
+                        // A corrupt transaction must not block every future launch. Report it
+                        // once for this session, then drop the unreadable persistence so the
+                        // next startup begins clean. Diagnostics remain in the message.
+                        let _ = fs::remove_file(staging_dir.join("active-apply.json"));
+                        (
+                            None,
+                            "failed",
+                            format!("Could not recover update status: {error}"),
+                        )
+                    }
                 }
             };
         Ok(Self {
@@ -175,6 +181,7 @@ impl UpdaterService {
             state.transaction = None;
             state.message = "Checking GitHub Releases…".to_owned();
         }
+        let _ = fs::remove_file(self.staging_dir.join("active-apply.json"));
         let releases = self.fetch_releases(RELEASES_URL);
         let releases = match releases {
             Ok(releases) => releases,
@@ -300,6 +307,7 @@ impl UpdaterService {
             state.message = format!("Downloading OpenNOW {}…", available.version);
             available
         };
+        let _ = fs::remove_file(self.staging_dir.join("active-apply.json"));
         match self.download_verified(&available) {
             Ok(downloaded) => {
                 let mut state = self.state.lock().expect("updater state poisoned");
@@ -339,6 +347,7 @@ impl UpdaterService {
                 "Verifying and preparing a complete replacement before shutdown.".to_owned();
             state.transaction = None;
         }
+        let _ = fs::remove_file(self.staging_dir.join("active-apply.json"));
         let result = (|| {
             verify_downloaded_file(&downloaded)?;
             let application = std::env::var_os("OPENNOW_APP_EXECUTABLE")
@@ -371,6 +380,7 @@ impl UpdaterService {
             state.status = "failed";
             state.message = format!("Update preparation failed; OpenNOW remains open: {error}");
             state.transaction = None;
+            let _ = fs::remove_file(self.staging_dir.join("active-apply.json"));
             return Err(error);
         }
         Ok(self.state())
@@ -564,11 +574,15 @@ fn reconcile_transaction(state: &mut State, staging_dir: &Path) {
             state.message =
                 "The update helper outcome is missing or does not match the prepared version."
                     .to_owned();
+            // Terminal: report once for this launch, then drop persistence so the next
+            // startup does not re-show the same failure dialog.
+            clear_finished_transaction(state, staging_dir);
             return;
         }
         Err(error) => {
             state.status = "failed";
             state.message = error;
+            clear_finished_transaction(state, staging_dir);
             return;
         }
     };
@@ -605,14 +619,7 @@ fn reconcile_transaction(state: &mut State, staging_dir: &Path) {
                 state.message = format!("Could not recover native update completion: {error}");
             }
         }
-        state.transaction = None;
-        match fs::remove_file(staging_dir.join("active-apply.json")) {
-            Ok(()) => (),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
-            Err(error) => state.message.push_str(&format!(
-                "; could not remove the completed update transaction: {error}"
-            )),
-        }
+        clear_finished_transaction(state, staging_dir);
         return;
     }
     if matches!(
@@ -628,11 +635,13 @@ fn reconcile_transaction(state: &mut State, staging_dir: &Path) {
             Ok(false) => {
                 state.status = "failed";
                 state.message = "The update helper stopped before completing the transaction. OpenNOW will not close automatically.".to_owned();
+                clear_finished_transaction(state, staging_dir);
                 return;
             }
             Err(error) => {
                 state.status = "failed";
                 state.message = format!("Could not confirm update helper ownership: {error}");
+                clear_finished_transaction(state, staging_dir);
                 return;
             }
         }
@@ -649,6 +658,26 @@ fn reconcile_transaction(state: &mut State, staging_dir: &Path) {
         OutcomeStatus::RebootRequired => "reboot-required",
     };
     state.message = outcome.message;
+    if matches!(
+        outcome.status,
+        OutcomeStatus::Completed | OutcomeStatus::RolledBack | OutcomeStatus::Failed
+    ) {
+        // Terminal helper outcomes are reported for this launch only. Clearing the
+        // persisted transaction prevents the same failure dialog on every restart,
+        // matching the managed-recovery behavior documented in core-protocol.md.
+        clear_finished_transaction(state, staging_dir);
+    }
+}
+
+fn clear_finished_transaction(state: &mut State, staging_dir: &Path) {
+    state.transaction = None;
+    match fs::remove_file(staging_dir.join("active-apply.json")) {
+        Ok(()) => (),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+        Err(error) => state.message.push_str(&format!(
+            "; could not remove the completed update transaction: {error}"
+        )),
+    }
 }
 
 fn restore_downloaded_status(state: &mut State) {
@@ -1211,6 +1240,9 @@ mod tests {
             update_apply::OutcomeStatus::Installing,
             update_apply::OutcomeStatus::AwaitingStartup,
         ] {
+            // Terminal failures clear persistence after the first report, so each
+            // stale-helper case needs fresh persistence to exercise the same path.
+            save_prepared_update(&updates, &prepared).unwrap();
             fs::write(
                 &prepared.outcome_path,
                 serde_json::to_vec(&update_apply::UpdateOutcome {
@@ -1228,6 +1260,49 @@ mod tests {
             assert_eq!(updater.state()["status"], "failed");
             assert_eq!(updater.state()["exitRequired"], false);
             assert!(!updater.installation_pending());
+            // The failure is reported for this launch only; the next startup begins
+            // clean instead of re-showing the same dialog.
+            assert!(!updates.join("active-apply.json").exists());
+        }
+    }
+
+    #[test]
+    fn terminal_helper_outcomes_are_reported_once_then_cleared() {
+        for (outcome, expected) in [
+            (update_apply::OutcomeStatus::Failed, "failed"),
+            (update_apply::OutcomeStatus::RolledBack, "rolled-back"),
+            (update_apply::OutcomeStatus::Completed, "succeeded"),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let updates = directory.path().join("updates");
+            fs::create_dir(&updates).unwrap();
+            let prepared = update_apply::PreparedUpdate {
+                plan_path: directory.path().join("plan.json"),
+                outcome_path: directory.path().join("outcome.json"),
+                version: "1.1.0".to_owned(),
+            };
+            save_prepared_update(&updates, &prepared).unwrap();
+            fs::write(
+                &prepared.outcome_path,
+                serde_json::to_vec(&update_apply::UpdateOutcome {
+                    schema_version: 1,
+                    version: prepared.version.clone(),
+                    status: outcome,
+                    message: "Terminal helper result".to_owned(),
+                    installed_version: None,
+                    restarted_process: None,
+                })
+                .unwrap(),
+            )
+            .unwrap();
+            let updater = UpdaterService::new(directory.path()).unwrap();
+            assert_eq!(updater.state()["status"], expected);
+            assert!(!updater.installation_pending());
+            assert!(!updates.join("active-apply.json").exists());
+            let restarted = UpdaterService::new(directory.path()).unwrap();
+            assert_eq!(restarted.state()["status"], "idle");
+            assert_eq!(restarted.state()["canCheck"], true);
+            assert!(!restarted.installation_pending());
         }
     }
 
@@ -1244,6 +1319,11 @@ mod tests {
         assert_eq!(updater.state()["status"], "failed");
         assert_eq!(updater.state()["exitRequired"], false);
         assert_eq!(updater.state()["canCheck"], true);
+        // Corrupt persistence is dropped after the first report so the next launch
+        // starts clean instead of failing forever.
+        assert!(!directory.path().join("updates/active-apply.json").exists());
+        let restarted = UpdaterService::new(directory.path()).unwrap();
+        assert_eq!(restarted.state()["status"], "idle");
     }
 
     #[test]
