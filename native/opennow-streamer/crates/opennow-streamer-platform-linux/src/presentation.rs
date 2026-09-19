@@ -2013,7 +2013,19 @@ fn select_device(
 ) -> Result<(vk::PhysicalDevice, u32)> {
     let devices = unsafe { instance.enumerate_physical_devices() }
         .map_err(|error| vk_error("enumerate physical devices", error))?;
-    for device in devices {
+    let mut ranked: Vec<(usize, vk::PhysicalDevice, i64)> = devices
+        .into_iter()
+        .enumerate()
+        .map(|(index, device)| {
+            let props = unsafe { instance.get_physical_device_properties(device) };
+            let queues = unsafe { instance.get_physical_device_queue_family_properties(device) };
+            let score = crate::vulkan_device::score_physical_device(index, &props, &queues);
+            (index, device, score)
+        })
+        .collect();
+    ranked.sort_by(|a, b| b.2.cmp(&a.2));
+
+    for (_index, device, _score) in ranked {
         if !supports_swapchain(instance, device)
             .map_err(|error| vk_error("enumerate device extensions", error))?
         {

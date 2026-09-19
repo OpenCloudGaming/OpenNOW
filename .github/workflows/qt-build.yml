@@ -459,6 +459,10 @@ jobs:
               --icon-file build/AppDir/usr/share/icons/hicolor/scalable/apps/io.github.opencloudgaming.OpenNOW.svg \
               --library "$(pkg-config --variable=libdir libva)/libva.so.2" \
               --library "$(pkg-config --variable=libdir libva-drm)/libva-drm.so.2" \
+              --exclude-library libglib-2.0.so.0 \
+              --exclude-library libgobject-2.0.so.0 \
+              --exclude-library libgio-2.0.so.0 \
+              --exclude-library libgmodule-2.0.so.0 \
               --plugin qt \
               --output appimage
           test -f build/AppDir/usr/lib/libva.so.2
