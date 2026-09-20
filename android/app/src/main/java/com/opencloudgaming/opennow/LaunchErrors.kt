@@ -31,13 +31,16 @@ internal fun normalizeLaunchErrorMessage(error: Throwable, gameTitle: String? = 
             "The cloud provider ended this session (status ${terminalSession.status}). " +
                 "OpenNOW did not stop it or start a replacement queue."
         cloudMatchFailure?.isEntitlementError() == true ->
-            cloudMatchFailure.message ?: text
+            "No current GeForce NOW plan was found. Activate the Free plan or choose a paid membership, then try again."
         cloudMatchFailure?.isLimitedModeStreamingError() == true -> limitedModeStreamingMessage(gameTitle)
         text.contains("patch", ignoreCase = true) || text.contains("maintenance", ignoreCase = true) ->
             "Game is patching or under maintenance. Try again when NVIDIA finishes updating it."
         else -> text
     }
 }
+
+internal fun isMissingGfnPlanError(error: Throwable): Boolean =
+    error.cloudMatchRequestStatusException()?.isEntitlementError() == true
 
 internal fun shouldOfferLowerSettingsRetry(
     error: Throwable,
@@ -80,7 +83,8 @@ private fun Throwable.cloudMatchRequestStatusException(): CloudMatchRequestStatu
 }
 
 private fun CloudMatchRequestStatusException.isEntitlementError(): Boolean =
-    statusDescriptionToken().equals("ENTITLEMENT_FAILURE_STATUS", ignoreCase = true) ||
+    statusCode == 18 ||
+        statusDescriptionToken().equals("ENTITLEMENT_FAILURE_STATUS", ignoreCase = true) ||
         normalizedUnifiedErrorCode() == "8A910006"
 
 private fun CloudMatchRequestStatusException.isLimitedModeStreamingError(): Boolean =

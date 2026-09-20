@@ -109,7 +109,25 @@ internal fun QueueLoadingScreen(state: OpenNowUiState, viewModel: OpenNowViewMod
         ?: ad?.mediaUrl
     val queuePosition = activeQueuePosition(state)
     val visibleQueuePosition = rememberStableQueuePosition(queuePosition)
+    val launchStatus = queueLaunchStatus(state, visibleQueuePosition)
     val queueCopy = queueLaunchStatusText(state, visibleQueuePosition)
+    val isConnecting = launchStatus.kind == QueueLaunchStatusKind.ConnectingStream
+    val connectingProgress = remember(session?.sessionId) { Animatable(0f) }
+    val connectingProgressProvider = remember(connectingProgress) { { connectingProgress.value } }
+    LaunchedEffect(isConnecting, session?.sessionId) {
+        if (isConnecting) {
+            connectingProgress.snapTo(0f)
+            connectingProgress.animateTo(
+                targetValue = QUEUE_CONNECTING_PROGRESS_LIMIT,
+                animationSpec = tween(
+                    durationMillis = QUEUE_CONNECTING_PROGRESS_DURATION_MS,
+                    easing = LinearEasing,
+                ),
+            )
+        } else {
+            connectingProgress.snapTo(0f)
+        }
+    }
     val hasPlayableAd = ad != null && mediaUrl != null
     val reduceMotion = LocalReduceMotion.current
     val entranceState = remember(game?.id) {
@@ -160,6 +178,7 @@ internal fun QueueLoadingScreen(state: OpenNowUiState, viewModel: OpenNowViewMod
                         game = game,
                         queueCopy = queueCopy,
                         queuePosition = visibleQueuePosition,
+                        connectingProgress = connectingProgressProvider.takeIf { isConnecting },
                         error = state.error,
                         playbackKey = session?.sessionId.orEmpty(),
                         compact = useLandscapeAdLayout,
@@ -174,6 +193,7 @@ internal fun QueueLoadingScreen(state: OpenNowUiState, viewModel: OpenNowViewMod
                         game = game,
                         queueCopy = queueCopy,
                         queuePosition = visibleQueuePosition,
+                        connectingProgress = connectingProgressProvider.takeIf { isConnecting },
                         error = state.error,
                         compact = false,
                         onMinimize = viewModel::minimizeStreamLaunch,
@@ -701,6 +721,21 @@ private fun queueLaunchStatusText(state: OpenNowUiState, queuePosition: Int?): S
 }
 
 @Composable
+private fun QueueProgressIndicator(
+    connectingProgress: (() -> Float)?,
+    modifier: Modifier = Modifier,
+) {
+    if (connectingProgress == null) {
+        LinearProgressIndicator(modifier)
+    } else {
+        LinearProgressIndicator(
+            progress = connectingProgress,
+            modifier = modifier,
+        )
+    }
+}
+
+@Composable
 private fun queueIdleStatusColor(queueCopy: String): Color =
     if (queueCopy == stringResource(R.string.queue_starting_session)) Green else TextMuted
 
@@ -717,6 +752,7 @@ private fun QueueStatusPanel(
     game: GameInfo?,
     queueCopy: String,
     queuePosition: Int?,
+    connectingProgress: (() -> Float)?,
     error: String?,
     compact: Boolean,
     onMinimize: () -> Unit,
@@ -753,7 +789,10 @@ private fun QueueStatusPanel(
             compact = compact,
         )
         Spacer(Modifier.height(if (compact) 14.dp else 18.dp))
-        LinearProgressIndicator(Modifier.fillMaxWidth(if (compact) 0.9f else 0.7f))
+        QueueProgressIndicator(
+            connectingProgress = connectingProgress,
+            modifier = Modifier.fillMaxWidth(if (compact) 0.9f else 0.7f),
+        )
         Spacer(Modifier.height(12.dp))
         Row(
             Modifier.fillMaxWidth(if (compact) 0.92f else 0.7f),
@@ -846,6 +885,7 @@ private fun QueueAdPanel(
     game: GameInfo?,
     queueCopy: String,
     queuePosition: Int?,
+    connectingProgress: (() -> Float)?,
     error: String?,
     playbackKey: String,
     compact: Boolean,
@@ -882,6 +922,7 @@ private fun QueueAdPanel(
                     QueueStatusAndActions(
                         queueCopy = queueCopy,
                         queuePosition = queuePosition,
+                        connectingProgress = connectingProgress,
                         compact = true,
                         stackActions = true,
                         onMinimize = onMinimize,
@@ -911,6 +952,7 @@ private fun QueueAdPanel(
                 QueueStatusAndActions(
                     queueCopy = queueCopy,
                     queuePosition = queuePosition,
+                    connectingProgress = connectingProgress,
                     compact = false,
                     stackActions = false,
                     onMinimize = onMinimize,
@@ -980,6 +1022,7 @@ private fun QueueAdHeading(game: GameInfo?, compact: Boolean) {
 private fun QueueStatusAndActions(
     queueCopy: String,
     queuePosition: Int?,
+    connectingProgress: (() -> Float)?,
     compact: Boolean,
     stackActions: Boolean,
     onMinimize: () -> Unit,
@@ -995,7 +1038,10 @@ private fun QueueStatusAndActions(
             queuePosition = queuePosition,
             compact = compact,
         )
-        LinearProgressIndicator(Modifier.fillMaxWidth())
+        QueueProgressIndicator(
+            connectingProgress = connectingProgress,
+            modifier = Modifier.fillMaxWidth(),
+        )
         if (stackActions) {
             OutlinedButton(onClick = onMinimize, modifier = Modifier.fillMaxWidth()) {
                 Text(stringResource(R.string.action_minimize), maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -1086,6 +1132,8 @@ private fun MinimizedQueueStatusText(
 }
 
 private const val QUEUE_AD_FORCE_PLAY_TIMEOUT_MS = 10_000L
+private const val QUEUE_CONNECTING_PROGRESS_DURATION_MS = 15_000
+private const val QUEUE_CONNECTING_PROGRESS_LIMIT = 0.9f
 private const val QUEUE_AD_START_TIMEOUT_MS = 30_000L
 private const val QUEUE_AD_STUCK_TIMEOUT_MS = 30_000L
 private const val QUEUE_AD_PROGRESS_CHECK_INTERVAL_MS = 1_000L

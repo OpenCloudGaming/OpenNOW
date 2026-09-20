@@ -170,6 +170,13 @@ internal fun shouldConsumeNativeUiTransitionTouch(
     hasOwnedPointer: Boolean,
 ): Boolean = streamUiActive && hasOwnedPointer
 
+internal fun hasExternalMouseSource(eventSource: Int, deviceSources: Int): Boolean {
+    val combinedSources = eventSource or deviceSources
+    return (combinedSources and InputDevice.SOURCE_MOUSE) == InputDevice.SOURCE_MOUSE ||
+        (combinedSources and InputDevice.SOURCE_MOUSE_RELATIVE) == InputDevice.SOURCE_MOUSE_RELATIVE ||
+        (combinedSources and InputDevice.SOURCE_TOUCHPAD) == InputDevice.SOURCE_TOUCHPAD
+}
+
 object NativeStreamInputRouter {
     /**
      * Some Android mouse drivers report a secondary click as KEYCODE_BUTTON_B. A controller key
@@ -182,6 +189,18 @@ object NativeStreamInputRouter {
                 keyCode == KeyEvent.KEYCODE_BUTTON_L2 ||
                 keyCode == KeyEvent.KEYCODE_BUTTON_R2 ||
                 GamepadButtonMapping.isControllerButtonKeyCode(keyCode))
+
+    /**
+     * Cheap Android TV mouse drivers can expose the secondary button as a key instead of a
+     * MotionEvent. Keep source identity authoritative: the same codes remain Back/B on remotes
+     * and controllers, while a mouse receives a protocol mouse-button edge.
+     */
+    internal fun shouldRouteKeyAsExternalMouseSecondary(
+        keyCode: Int,
+        externalMouseInputDevice: Boolean,
+    ): Boolean =
+        externalMouseInputDevice &&
+            (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_BUTTON_B)
 
     private data class PresentationTransform(
         val zoomScale: Float = 1f,
@@ -381,7 +400,8 @@ object NativeStreamInputRouter {
         if (!streamUiActive) return null
         return when (event.keyCode) {
             KeyEvent.KEYCODE_BUTTON_A -> KeyEvent.KEYCODE_DPAD_CENTER
-            KeyEvent.KEYCODE_BUTTON_B,
+            KeyEvent.KEYCODE_BUTTON_B ->
+                KeyEvent.KEYCODE_BACK.takeIf { event.isControllerInputDevice() }
             KeyEvent.KEYCODE_BUTTON_SELECT -> KeyEvent.KEYCODE_BACK
             else -> null
         }
@@ -408,7 +428,7 @@ object NativeStreamInputRouter {
 
     fun isControllerAppBackKey(keyCode: Int, controllerSource: Boolean, streamUiActive: Boolean): Boolean =
         !streamUiActive &&
-            (keyCode == KeyEvent.KEYCODE_BUTTON_B ||
+            ((keyCode == KeyEvent.KEYCODE_BUTTON_B && controllerSource) ||
                 (keyCode == KeyEvent.KEYCODE_BACK && controllerSource))
 
     fun setUiTouchPassthroughBounds(left: Int, top: Int, right: Int, bottom: Int) {
@@ -663,7 +683,21 @@ object NativeStreamInputRouter {
             systemMenuHandler?.invoke()
             return systemMenuHandler != null
         }
-        val streamExitShortcut = event.isStreamExitShortcutKey()
+        val controllerInputDevice = event.isControllerInputDevice()
+        val externalMouseInputDevice = event.isExternalMouseInputDevice()
+        val externalMouseSecondary = shouldRouteKeyAsExternalMouseSecondary(
+            keyCode = event.keyCode,
+            externalMouseInputDevice = externalMouseInputDevice,
+        )
+        if (externalMouseSecondary) {
+            if (streamUiActive) return true
+            val current = client ?: return false
+            current.dispatchExternalMouseSecondaryKey(event)
+            // Never let a mouse's secondary-button alias escape to Android as Back, including
+            // the short interval before the stream input channel becomes ready.
+            return true
+        }
+        val streamExitShortcut = event.isStreamExitShortcutKey(externalMouseInputDevice)
         if (
             androidTvProfile &&
             event.action == KeyEvent.ACTION_DOWN &&
@@ -672,7 +706,7 @@ object NativeStreamInputRouter {
         ) {
             NativeInputDiagnostics.add(
                 "tv back key key=${event.keyCode} source=${event.source} device=${event.deviceId}:${event.device?.name.orEmpty()} " +
-                    "controller=${event.isControllerInputDevice()} dpad=${event.isDpadSource()} " +
+                    "controller=$controllerInputDevice mouse=$externalMouseInputDevice dpad=${event.isDpadSource()} " +
                     "route=${if (streamExitShortcut) "stream_overlay" else "cloud_input"}",
             )
         }
@@ -721,13 +755,14 @@ object NativeStreamInputRouter {
                 keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER ||
                 keyCode == KeyEvent.KEYCODE_DPAD_CENTER)
 
-    private fun KeyEvent.isStreamExitShortcutKey(): Boolean =
+    private fun KeyEvent.isStreamExitShortcutKey(externalMouseInputDevice: Boolean): Boolean =
         shouldHandleStreamExitKey(
             keyCode = keyCode,
             controllerInputDevice = isControllerInputDevice(),
             hardwareKeyboardSource = isHardwareKeyboardSource(),
             androidTvProfile = androidTvProfile,
             dpadSource = isDpadSource(),
+            externalMouseInputDevice = externalMouseInputDevice,
         )
 
     fun shouldOpenStreamSystemMenuKey(
@@ -758,12 +793,14 @@ object NativeStreamInputRouter {
         hardwareKeyboardSource: Boolean,
         androidTvProfile: Boolean = false,
         dpadSource: Boolean = false,
+        externalMouseInputDevice: Boolean = false,
     ): Boolean =
-        (keyCode == KeyEvent.KEYCODE_BACK && !controllerInputDevice) ||
+        (keyCode == KeyEvent.KEYCODE_BACK && !controllerInputDevice && !externalMouseInputDevice) ||
             (androidTvProfile &&
                 dpadSource &&
                 keyCode == KeyEvent.KEYCODE_BUTTON_B &&
-                !controllerInputDevice) ||
+                !controllerInputDevice &&
+                !externalMouseInputDevice) ||
             (keyCode == KeyEvent.KEYCODE_ESCAPE && !hardwareKeyboardSource)
 
     private fun KeyEvent.isControllerInputDevice(): Boolean =
@@ -776,6 +813,16 @@ object NativeStreamInputRouter {
         !isControllerInputDevice() &&
             ((source and InputDevice.SOURCE_KEYBOARD) == InputDevice.SOURCE_KEYBOARD ||
                 InputDevice.getDevice(deviceId)?.keyboardType == InputDevice.KEYBOARD_TYPE_ALPHABETIC)
+
+    private fun KeyEvent.isExternalMouseInputDevice(): Boolean {
+        // Mouse capability wins for secondary-button aliases. Several Android TV receivers also
+        // advertise stray GAMEPAD/JOYSTICK bits, which must not turn the mouse's right button into
+        // a cloud controller button or Android Back.
+        return hasExternalMouseSource(
+            eventSource = source,
+            deviceSources = InputDevice.getDevice(deviceId)?.sources ?: 0,
+        )
+    }
 
     private fun KeyEvent.shouldConsumeAsStreamKeyboard(): Boolean =
         (action == KeyEvent.ACTION_DOWN || action == KeyEvent.ACTION_UP) &&
@@ -1055,6 +1102,11 @@ internal object AndroidControllerInput {
         // bits. Advertising those idle interfaces as an XInput pad makes games switch away from
         // mouse/keyboard even though no controller exists.
         if (!knownController && isClearlyNotController(deviceName)) return false
+        // Android TV mouse/keyboard receivers often have an idle GAMEPAD collection alongside
+        // their real pointer interface. A mouse-capable unknown device is not a controller merely
+        // because that unused collection exists. Known controller families keep precedence for
+        // devices such as DualSense, whose touch surface can expose pointer-like capabilities.
+        if (!knownController && hasExternalMouseSource(eventSource = source, deviceSources = 0)) return false
         return hasControllerSource(source) ||
             (source.hasSource(InputDevice.SOURCE_DPAD) && knownController)
     }

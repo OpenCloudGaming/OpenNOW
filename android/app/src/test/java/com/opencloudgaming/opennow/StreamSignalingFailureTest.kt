@@ -11,6 +11,37 @@ import org.webrtc.PeerConnection
 
 class StreamSignalingFailureTest {
     @Test
+    fun freshSignalingUsesTheExistingProtocolWithoutReconnectMarker() {
+        assertEquals(
+            "wss://stream.example.test/nvst/sign_in?" +
+                "peer_id=peer-fresh&version=2&peer_role=1&pairing_id=session-fresh",
+            buildGfnSignInUrl(
+                signalingUrl = "wss://stream.example.test/nvst/",
+                signalingServer = "ignored.example.test:443",
+                peerName = "peer-fresh",
+                sessionId = "session-fresh",
+                reconnect = false,
+            ),
+        )
+    }
+
+    @Test
+    fun reconnectUsesCapturedVersionAndMarkerWithoutDuplicatingSignInPath() {
+        assertEquals(
+            "wss://66-22-141-142.cloudmatchbeta.nvidiagrid.net/nvst/sign_in?" +
+                "peer_id=peer-6258383480&version=3.0&peer_role=1&" +
+                "pairing_id=b6039c26-5e1d-44c8-bfdb-fee9bc75c2ab&reconnect=1",
+            buildGfnSignInUrl(
+                signalingUrl = "wss://66-22-141-142.cloudmatchbeta.nvidiagrid.net/nvst/sign_in?stale=1",
+                signalingServer = "ignored.example.test:443",
+                peerName = "peer-6258383480",
+                sessionId = "b6039c26-5e1d-44c8-bfdb-fee9bc75c2ab",
+                reconnect = true,
+            ),
+        )
+    }
+
+    @Test
     fun staleSignalingEndpointRequestsSessionRecovery() {
         assertEquals(
             SignalingFailureDisposition.RecoverSession,

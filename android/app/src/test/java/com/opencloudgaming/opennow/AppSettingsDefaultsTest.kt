@@ -18,6 +18,8 @@ class AppSettingsDefaultsTest {
         assertFalse(settings.streamKeyboardClearConfirmationDisabled)
         assertTrue(settings.externalMousePointerLock)
         assertEquals(DEFAULT_ANDROID_STREAM_MENU_SHORTCUT, settings.streamMenuShortcut)
+        assertFalse(settings.compactGameCards)
+        assertFalse(settings.showCardTitles)
         assertFalse(settings.showFavoriteIconOnGameCards)
         assertFalse(settings.liveSelectedOutlines)
         assertFalse(settings.absoluteCinemaEffects)
@@ -76,6 +78,8 @@ class AppSettingsDefaultsTest {
         assertEquals(StreamKeyboardButtonPosition(), settings.streamKeyboardButtonPosition)
         assertEquals(CatalogBackgroundPreset.ColorfulAbstract, settings.catalogBackgroundPreset)
         assertFalse(settings.systemWallpaperBackground)
+        assertFalse(settings.compactGameCards)
+        assertFalse(settings.showCardTitles)
         assertFalse(settings.showFavoriteIconOnGameCards)
         assertFalse(settings.liveSelectedOutlines)
         assertFalse(settings.absoluteCinemaEffects)
@@ -137,6 +141,19 @@ class AppSettingsDefaultsTest {
 
         assertFalse(defaulted.showFavoriteIconOnGameCards)
         assertTrue(optedIn.showFavoriteIconOnGameCards)
+    }
+
+    @Test
+    fun gameCardLayoutDefaultsOffAndPreservesExplicitOptIn() {
+        val defaulted = OpenNowJson.decodeFromString<AppSettings>("{}")
+        val optedIn = OpenNowJson.decodeFromString<AppSettings>(
+            """{"compactGameCards":true,"showCardTitles":true}""",
+        )
+
+        assertFalse(defaulted.compactGameCards)
+        assertFalse(defaulted.showCardTitles)
+        assertTrue(optedIn.compactGameCards)
+        assertTrue(optedIn.showCardTitles)
     }
 
     @Test

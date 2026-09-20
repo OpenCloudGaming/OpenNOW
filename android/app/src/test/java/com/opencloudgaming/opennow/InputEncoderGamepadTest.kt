@@ -166,6 +166,7 @@ class InputEncoderGamepadTest {
         assertFalse(AndroidControllerInput.isControllerDevice(misleadingSources, "BT5.2 Mouse"))
         assertFalse(AndroidControllerInput.isControllerDevice(misleadingSources, "Gaming KB Gaming KB Keyboard"))
         assertFalse(AndroidControllerInput.isControllerDevice(misleadingSources, "Logitech USB Receiver"))
+        assertFalse(AndroidControllerInput.isControllerDevice(misleadingSources, "2.4G Composite Device"))
         assertFalse(AndroidControllerInput.isControllerDevice(misleadingSources, "uinput-goodix"))
         assertFalse(AndroidControllerInput.isControllerDevice(misleadingSources, "uinput-fpc"))
         assertFalse(AndroidControllerInput.isControllerDevice(misleadingSources, "Fingerprint Sensor"))
@@ -482,6 +483,66 @@ class InputEncoderGamepadTest {
     }
 
     @Test
+    fun mouseReportedBackAliasesRouteAsSecondaryClickOnlyForMouseDevices() {
+        assertTrue(
+            NativeStreamInputRouter.shouldRouteKeyAsExternalMouseSecondary(
+                keyCode = KeyEvent.KEYCODE_BACK,
+                externalMouseInputDevice = true,
+            ),
+        )
+        assertTrue(
+            NativeStreamInputRouter.shouldRouteKeyAsExternalMouseSecondary(
+                keyCode = KeyEvent.KEYCODE_BUTTON_B,
+                externalMouseInputDevice = true,
+            ),
+        )
+        assertFalse(
+            NativeStreamInputRouter.shouldRouteKeyAsExternalMouseSecondary(
+                keyCode = KeyEvent.KEYCODE_BUTTON_B,
+                externalMouseInputDevice = false,
+            ),
+        )
+    }
+
+    @Test
+    fun mouseCapabilityWinsWhenAnAndroidTvReceiverAlsoLooksLikeAController() {
+        // Captured verbatim on the HG680_FJ: Android reports right-click/Back with the
+        // SOURCE_MOUSE_RELATIVE integer while the receiver also advertises a gamepad collection.
+        val hg680RelativeMouseSource = 131_076
+        assertEquals(InputDevice.SOURCE_MOUSE_RELATIVE, hg680RelativeMouseSource)
+        assertTrue(
+            hasExternalMouseSource(
+                eventSource = hg680RelativeMouseSource,
+                deviceSources = InputDevice.SOURCE_KEYBOARD or InputDevice.SOURCE_GAMEPAD,
+            ),
+        )
+        assertFalse(
+            AndroidControllerInput.isControllerDevice(
+                source = hg680RelativeMouseSource or InputDevice.SOURCE_KEYBOARD or InputDevice.SOURCE_GAMEPAD,
+                deviceName = "YICHIP 2.4G Receiver",
+            ),
+        )
+        assertTrue(
+            hasExternalMouseSource(
+                eventSource = InputDevice.SOURCE_KEYBOARD,
+                deviceSources = InputDevice.SOURCE_MOUSE or InputDevice.SOURCE_GAMEPAD,
+            ),
+        )
+        assertTrue(
+            NativeStreamInputRouter.shouldRouteKeyAsExternalMouseSecondary(
+                keyCode = KeyEvent.KEYCODE_BACK,
+                externalMouseInputDevice = true,
+            ),
+        )
+        assertTrue(
+            NativeStreamInputRouter.shouldRouteKeyAsExternalMouseSecondary(
+                keyCode = KeyEvent.KEYCODE_BUTTON_B,
+                externalMouseInputDevice = true,
+            ),
+        )
+    }
+
+    @Test
     fun normalizesControllerAForNativeUiActivation() {
         assertEquals(
             KeyEvent.KEYCODE_DPAD_CENTER,
@@ -490,8 +551,15 @@ class InputEncoderGamepadTest {
     }
 
     @Test
-    fun consumesControllerBAsNativeUiBackNavigation() {
+    fun consumesOnlyControllerBAsNativeUiBackNavigation() {
         assertTrue(
+            NativeStreamInputRouter.isControllerAppBackKey(
+                keyCode = KeyEvent.KEYCODE_BUTTON_B,
+                controllerSource = true,
+                streamUiActive = false,
+            ),
+        )
+        assertFalse(
             NativeStreamInputRouter.isControllerAppBackKey(
                 keyCode = KeyEvent.KEYCODE_BUTTON_B,
                 controllerSource = false,
@@ -548,6 +616,14 @@ class InputEncoderGamepadTest {
                 KeyEvent.KEYCODE_BACK,
                 controllerInputDevice = false,
                 hardwareKeyboardSource = false,
+            ),
+        )
+        assertFalse(
+            NativeStreamInputRouter.shouldHandleStreamExitKey(
+                KeyEvent.KEYCODE_BACK,
+                controllerInputDevice = false,
+                hardwareKeyboardSource = false,
+                externalMouseInputDevice = true,
             ),
         )
         assertFalse(

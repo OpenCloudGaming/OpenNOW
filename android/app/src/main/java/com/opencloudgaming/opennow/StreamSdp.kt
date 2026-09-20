@@ -215,8 +215,7 @@ object SdpTools {
     }
 
     private fun StreamSettings.prefersTenBitVideo(): Boolean =
-        !hdrEnabled &&
-            (colorQuality == ColorQuality.TenBit420 || colorQuality == ColorQuality.TenBit444)
+        usesTenBitStreamProfile()
 
     fun mungeAnswerSdp(sdp: String, maxBitrateKbps: Int): String {
         val lineEnding = if (sdp.contains("\r\n")) "\r\n" else "\n"
@@ -307,7 +306,7 @@ object SdpTools {
         val threshold = Regex("a=ri\\.partialReliableThresholdMs:(\\d+)").find(offerSdp)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 30
         val hidDeviceMask = parseHidDeviceMask(offerSdp)
         val partiallyReliableHidMask = parsePartiallyReliableHidMask(offerSdp)
-        val bitDepth = if (!settings.hdrEnabled && (settings.colorQuality == ColorQuality.TenBit420 || settings.colorQuality == ColorQuality.TenBit444)) 10 else 8
+        val bitDepth = if (settings.usesTenBitStreamProfile()) 10 else 8
         val bitrate = StreamNetworkAdaptation.bitrateRange(settings.maxBitrateMbps)
         val maxBitrate = bitrate.maximumKbps
         val minBitrate = bitrate.minimumKbps
@@ -341,7 +340,7 @@ object SdpTools {
             add("a=vqos.dfc.adjustResAndFps:0")
             add("a=vqos.calculateAvgVideoStreamingBitrate:1")
             add("a=video.dx9EnableNv12:1")
-            add("a=video.dx9EnableHdr:${if (settings.hdrEnabled) 1 else 0}")
+            add("a=video.dx9EnableHdr:${if (ANDROID_HDR_STREAMING_ENABLED && settings.hdrEnabled) 1 else 0}")
             add("a=vqos.qpg.enable:1")
             add("a=vqos.resControl.qp.qpg.featureSetting:7")
             add("a=video.adaptiveQuantization.spatialAQSetting:7")

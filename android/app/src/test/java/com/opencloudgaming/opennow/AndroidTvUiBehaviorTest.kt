@@ -256,9 +256,31 @@ class AndroidTvUiBehaviorTest {
     }
 
     @Test
-    fun catalogueWallpaperMakesTheHorizontalRailSubstantiallyDarker() {
-        assertEquals(OpenNowPalette.ChromeScrim, navigationRailScrim(darkenForCatalogBackground = false))
-        assertEquals(Color.Black.copy(alpha = 0.76f), navigationRailScrim(darkenForCatalogBackground = true))
+    fun horizontalRailUsesStaticOutlinesAndAQuieterOutlineFreeGlass() {
+        assertEquals(
+            Color.Black.copy(alpha = 0.10f),
+            navigationRailScrim(darkenForCatalogBackground = false, staticOutlines = false),
+        )
+        assertEquals(
+            Color.Black.copy(alpha = 0.18f),
+            navigationRailScrim(darkenForCatalogBackground = false, staticOutlines = true),
+        )
+        assertEquals(
+            Color.Black.copy(alpha = 0.58f),
+            navigationRailScrim(darkenForCatalogBackground = true, staticOutlines = false),
+        )
+        assertEquals(
+            Color.Black.copy(alpha = 0.68f),
+            navigationRailScrim(darkenForCatalogBackground = true, staticOutlines = true),
+        )
+    }
+
+    @Test
+    fun lowPowerRuntimeProfilesAutomaticallyUseReducedUiMotion() {
+        assertFalse(shouldAutomaticallyReduceUiMotion(false, false, false))
+        assertTrue(shouldAutomaticallyReduceUiMotion(true, false, false))
+        assertTrue(shouldAutomaticallyReduceUiMotion(false, true, false))
+        assertTrue(shouldAutomaticallyReduceUiMotion(false, false, true))
     }
 
     @Test

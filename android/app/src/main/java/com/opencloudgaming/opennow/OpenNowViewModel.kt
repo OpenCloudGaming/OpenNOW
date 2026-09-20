@@ -293,6 +293,8 @@ data class OpenNowUiState(
     val pendingStoreChoiceGame: GameInfo? = null,
     /** Set when Play was pressed on a game whose membership tier this account cannot meet. */
     val pendingMembershipNotice: PendingMembershipNotice? = null,
+    /** Set when CloudMatch says the signed-in NVIDIA account has no playable plan. */
+    val pendingGfnMembershipActivation: Boolean = false,
     val pendingBatteryOptimizationLaunch: PendingBatteryOptimizationLaunch? = null,
     val pendingLaunchRecovery: PendingLaunchRecovery? = null,
     val pendingPrintedWasteGame: GameInfo? = null,
@@ -1090,9 +1092,18 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun refreshBugReportThreads() {
-        if (state.value.bugReportThreads.loading) return
+        val threadState = state.value.bugReportThreads
+        // A refresh used to replace the state while a reply was in flight, re-enabling the Send
+        // button and making it possible to post the same comment twice.
+        if (threadState.loading || threadState.postingReportId != null) return
         _state.update {
-            it.copy(bugReportThreads = it.bugReportThreads.copy(loading = true, error = null))
+            it.copy(
+                bugReportThreads = it.bugReportThreads.copy(
+                    loading = true,
+                    error = null,
+                    errorReportId = null,
+                ),
+            )
         }
         viewModelScope.launch {
             try {
@@ -1102,7 +1113,12 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 )
                 _state.update {
                     it.copy(
-                        bugReportThreads = AndroidBugReportThreadsState(reports = reports),
+                        bugReportThreads = it.bugReportThreads.copy(
+                            loading = false,
+                            reports = reports,
+                            error = null,
+                            errorReportId = null,
+                        ),
                     )
                 }
             } catch (error: CancellationException) {
@@ -1113,6 +1129,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                         bugReportThreads = it.bugReportThreads.copy(
                             loading = false,
                             error = error.message ?: "Could not load bug reports",
+                            errorReportId = null,
                         ),
                     )
                 }
@@ -1120,23 +1137,14 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun commentOnBugReport(reportId: String, comment: String, termsAccepted: Boolean) {
+    fun commentOnBugReport(reportId: String, comment: String) {
         if (state.value.bugReportThreads.postingReportId != null) return
         if (state.value.bugReportThreads.reports.any { it.id == reportId && androidBugReportThreadClosed(it.status) }) {
             _state.update {
                 it.copy(
                     bugReportThreads = it.bugReportThreads.copy(
                         error = "This report is closed and cannot receive more replies.",
-                    ),
-                )
-            }
-            return
-        }
-        if (!termsAccepted) {
-            _state.update {
-                it.copy(
-                    bugReportThreads = it.bugReportThreads.copy(
-                        error = "Agree to the bug reporting terms before commenting.",
+                        errorReportId = reportId,
                     ),
                 )
             }
@@ -1148,6 +1156,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 bugReportThreads = it.bugReportThreads.copy(
                     postingReportId = reportId,
                     error = null,
+                    errorReportId = null,
                 ),
             )
         }
@@ -1168,6 +1177,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                             reports = reports,
                             postingReportId = null,
                             error = null,
+                            errorReportId = null,
                         ),
                     )
                 }
@@ -1179,6 +1189,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                         bugReportThreads = it.bugReportThreads.copy(
                             postingReportId = null,
                             error = error.message ?: "Could not send comment",
+                            errorReportId = reportId,
                         ),
                     )
                 }
@@ -2414,6 +2425,10 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         _state.update { it.copy(pendingMembershipNotice = null) }
     }
 
+    fun dismissGfnMembershipActivation() {
+        _state.update { it.copy(pendingGfnMembershipActivation = false) }
+    }
+
     /** Launches anyway. The warning informs; it does not decide for the player. */
     fun continuePastMembershipNotice() {
         val pending = state.value.pendingMembershipNotice ?: return
@@ -2597,6 +2612,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     streamReturnPage = returnPage,
                     streamLaunchMinimized = false,
                     error = null,
+                    pendingGfnMembershipActivation = false,
                     queuePosition = null,
                     queueAdActiveId = null,
                     pendingStoreChoiceGame = null,
@@ -2729,6 +2745,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 _state.update {
                     it.copy(
                         error = normalizedError,
+                        pendingGfnMembershipActivation = isMissingGfnPlanError(error),
                         pendingLaunchRecovery = recovery,
                         streamStatus = "idle",
                         activeStreamSettings = null,
@@ -3019,6 +3036,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     streamReturnPage = pending.returnPage,
                     streamLaunchMinimized = false,
                     error = null,
+                    pendingGfnMembershipActivation = false,
                     queuePosition = null,
                     queueAdActiveId = null,
                     sessionReport = null,
@@ -3065,6 +3083,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 _state.update {
                     it.copy(
                         error = normalizedError,
+                        pendingGfnMembershipActivation = isMissingGfnPlanError(error),
                         pendingLaunchRecovery = recovery,
                         streamStatus = "idle",
                         activeStreamSettings = null,
@@ -3115,6 +3134,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     pendingPrintedWasteGame = null,
                     activeSessionDecision = null,
                     error = null,
+                    pendingGfnMembershipActivation = false,
                     queuePosition = null,
                     queueAdActiveId = null,
                     sessionReport = null,
@@ -3150,9 +3170,11 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 if (error is CancellationException) return@onFailure
                 recordDebugEvent("queue", "Resume failed error=${error.debugMessage()}")
                 val failureReturnPage = state.value.streamReturnPage ?: AppPage.Home
+                val normalizedError = normalizeLaunchError(error, state.value.streamGame?.title)
                 _state.update {
                     it.copy(
-                        error = normalizeLaunchError(error, state.value.streamGame?.title),
+                        error = normalizedError,
+                        pendingGfnMembershipActivation = isMissingGfnPlanError(error),
                         streamStatus = "idle",
                         activeStreamSettings = null,
                         streamReturnPage = null,
@@ -3200,6 +3222,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     streamReturnPage = pending.returnPage,
                     streamLaunchMinimized = false,
                     error = null,
+                    pendingGfnMembershipActivation = false,
                     queuePosition = queueDisplayPosition(pendingSession),
                     queueAdActiveId = null,
                     sessionReport = null,
@@ -3213,9 +3236,11 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             }.onFailure { error ->
                 if (error is CancellationException) return@onFailure
                 recordDebugEvent("queue", "Pending resume failed error=${error.debugMessage()}")
+                val normalizedError = normalizeLaunchError(error, pending.game.title)
                 _state.update {
                     it.copy(
-                        error = normalizeLaunchError(error, pending.game.title),
+                        error = normalizedError,
+                        pendingGfnMembershipActivation = isMissingGfnPlanError(error),
                         streamStatus = "idle",
                         activeStreamSettings = null,
                         streamReturnPage = null,
@@ -3748,9 +3773,11 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             }.onFailure { error ->
                 if (error is CancellationException) return@onFailure
                 recordDebugEvent("recovery", "Recovery failed error=${error.debugMessage()}")
+                val normalizedError = normalizeLaunchError(error, game?.title)
                 _state.update {
                     it.copy(
-                        error = normalizeLaunchError(error, game?.title),
+                        error = normalizedError,
+                        pendingGfnMembershipActivation = isMissingGfnPlanError(error),
                         streamStatus = "idle",
                         activeStreamSettings = null,
                         streamReturnPage = null,
@@ -4822,20 +4849,14 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun shouldUsePrintedWasteQueue(auth: AuthSession): Boolean {
-        if (state.value.settings.hideServerSelector) return false
-        if (!auth.provider.code.equals("NVIDIA", ignoreCase = true)) return false
-        if (!isFreeTier()) return false
-        return !isAllianceStreamingBaseUrl(effectiveStreamingBaseUrl(auth))
-    }
-
-    private fun isFreeTier(): Boolean {
         val tier = state.value.subscriptionInfo?.membershipTier ?: state.value.authSession?.user?.membershipTier
-        return tier.isNullOrBlank() || tier.equals("FREE", ignoreCase = true)
-    }
-
-    private fun isAllianceStreamingBaseUrl(streamingBaseUrl: String): Boolean {
-        val host = runCatching { Uri.parse(streamingBaseUrl).host.orEmpty() }.getOrDefault("")
-        return host.isNotBlank() && !host.endsWith(".nvidiagrid.net", ignoreCase = true)
+        return shouldUsePrintedWasteQueue(
+            hideServerSelector = state.value.settings.hideServerSelector,
+            providerCode = auth.provider.code,
+            providerStreamingServiceUrl = auth.provider.streamingServiceUrl,
+            effectiveStreamingBaseUrl = effectiveStreamingBaseUrl(auth),
+            membershipTier = tier,
+        )
     }
 
     private fun chooseQueueAdActiveId(currentId: String?, session: SessionInfo?): String? {

@@ -545,7 +545,7 @@ data class AppSettings(
     val stream: StreamSettings = StreamSettings(),
     val streamPreset: StreamPreset = StreamPreset.Recommended,
     val posterSizeScale: Float = 1f,
-    val compactGameCards: Boolean = true,
+    val compactGameCards: Boolean = false,
     val handheldLandscapeFourColumnGrid: Boolean = false,
     val handheldLandscapeSquareCards: Boolean = false,
     val nerdCatalogBackground: Boolean = false,
@@ -559,7 +559,7 @@ data class AppSettings(
     val tvLayoutProfileVersion: Int = 0,
     val localTvRemoteEnabled: Boolean = false,
     /** Game titles under the poster in the catalog grid. Off makes the grid pure box art. */
-    val showCardTitles: Boolean = true,
+    val showCardTitles: Boolean = false,
     /** Optional favorite affordance over catalogue artwork on mobile, handheld, and TV layouts. */
     val showFavoriteIconOnGameCards: Boolean = false,
     val expressiveUi: Boolean = true,
@@ -1052,12 +1052,21 @@ internal fun monthlyHoursRemainingFor(subscriptionInfo: SubscriptionInfo?, fallb
     return (limit - (subscriptionInfo?.usedHours ?: 0.0)).coerceAtLeast(0.0)
 }
 
+/** Temporary Android-wide kill switch. Keep the HDR implementation dormant until it is safe to
+ * re-enable after device validation. */
+internal const val ANDROID_HDR_STREAMING_ENABLED = false
+
 internal fun StreamSettings.withHdrAllowed(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): StreamSettings =
-    if (hdrEnabled && !hasHdrStreamingPlan(subscriptionInfo, fallbackMembershipTier)) copy(hdrEnabled = false).withCodecColorCompatibility() else withCodecColorCompatibility()
+    if (hdrEnabled && (!ANDROID_HDR_STREAMING_ENABLED || !hasHdrStreamingPlan(subscriptionInfo, fallbackMembershipTier))) {
+        copy(hdrEnabled = false, hdrDisplay = null).withCodecColorCompatibility()
+    } else {
+        withCodecColorCompatibility()
+    }
 
 /** Transport envelope; the actual HDR10 display and decoder are checked at launch. */
 @Suppress("UNUSED_PARAMETER")
 internal fun StreamSettings.hdrAvailableForAndroid(androidTvProfile: Boolean): Boolean {
+    if (!ANDROID_HDR_STREAMING_ENABLED) return false
     val (width, height) = streamResolutionPixels(this)
     return codec == VideoCodec.H265 && fps <= 60 && width <= 3840 && height <= 2160
 }
@@ -1087,22 +1096,26 @@ internal fun StreamSettings.withAndroidSettingsAvailability(): StreamSettings {
 }
 
 internal fun StreamSettings.withCodecColorCompatibility(): StreamSettings {
-    val compatibleHdr = hdrEnabled && codec != VideoCodec.AV1
+    val compatibleHdr = ANDROID_HDR_STREAMING_ENABLED && hdrEnabled && codec != VideoCodec.AV1
+    val compatibleHdrDisplay = hdrDisplay.takeIf { compatibleHdr }
     val compatibleColor = when {
         codec == VideoCodec.AV1 -> ColorQuality.EightBit420
         compatibleHdr -> ColorQuality.EightBit420
         colorQuality.isChroma444() -> colorQuality.asChroma420()
         else -> colorQuality
     }
-    return if (compatibleColor == colorQuality && compatibleHdr == hdrEnabled) {
+    return if (compatibleColor == colorQuality && compatibleHdr == hdrEnabled && compatibleHdrDisplay == hdrDisplay) {
         this
     } else {
-        copy(colorQuality = compatibleColor, hdrEnabled = compatibleHdr)
+        copy(colorQuality = compatibleColor, hdrEnabled = compatibleHdr, hdrDisplay = compatibleHdrDisplay)
     }
 }
 
+/** When the HDR kill switch is enabled again, HDR must use a ten-bit HEVC profile. The separate
+ * color-quality selector remains available for ten-bit SDR while HDR is disabled. */
 internal fun StreamSettings.usesTenBitStreamProfile(): Boolean =
-    !hdrEnabled && colorQuality.isTenBit()
+    (ANDROID_HDR_STREAMING_ENABLED && hdrEnabled && codec == VideoCodec.H265) ||
+        ((!ANDROID_HDR_STREAMING_ENABLED || !hdrEnabled) && colorQuality.isTenBit())
 
 internal fun StreamSettings.applyingStreamPreset(preset: StreamPreset): StreamSettings {
     if (preset == StreamPreset.Custom) return this

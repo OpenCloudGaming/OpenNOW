@@ -2200,9 +2200,6 @@ private const val SETUP_TILE_PEEK_COUNT = 2.6f
 private val SetupPeekFadeWidth = 36.dp
 private val SetupPeekFadeColor = Color.Black.copy(alpha = 0.55f)
 private const val SETUP_PREVIEW_CARD_COUNT = 3
-private const val GFN_FAQ_URL = "https://www.nvidia.com/en-us/geforce-now/faq/"
-private const val GFN_MEMBERSHIP_URL = "https://www.nvidia.com/en-us/geforce-now/memberships/"
-
 private val SetupStep.titleRes: Int
     get() = when (this) {
         SetupStep.Welcome -> R.string.app_name

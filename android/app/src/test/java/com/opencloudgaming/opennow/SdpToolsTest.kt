@@ -82,13 +82,13 @@ class SdpToolsTest {
     }
 
     @Test
-    fun prefersEightBitH265ProfileForHdrAndroidStream() {
+    fun prefersMain10H265ProfileForHdrAndroidStream() {
         val munged = SdpTools.preferCodec(
             h265Offer(),
             StreamSettings(codec = VideoCodec.H265, colorQuality = ColorQuality.TenBit420, hdrEnabled = true),
         )
 
-        assertEquals("m=video 9 UDP/TLS/RTP/SAVPF 97 96", munged.lineSequence().first())
+        assertEquals("m=video 9 UDP/TLS/RTP/SAVPF 96 97", munged.lineSequence().first())
     }
 
     @Test
@@ -247,7 +247,7 @@ class SdpToolsTest {
     }
 
     @Test
-    fun nvstSdpHonorsConfiguredBitrateBelowTheNormalFourMbpsFloor() {
+    fun nvstSdpHonorsConfiguredBitrateBelowTheRecommendedFiveMbpsFloor() {
         val nvst = buildNvstSdp(StreamSettings(maxBitrateMbps = 1))
 
         assertTrue(nvst.contains("a=video.initialBitrateKbps:1000"))
@@ -263,7 +263,7 @@ class SdpToolsTest {
         for (mbps in 1..200) {
             val range = StreamNetworkAdaptation.bitrateRange(mbps)
             assertEquals(mbps * 1000, range.maximumKbps)
-            assertEquals(minOf(4_000, range.maximumKbps), range.minimumKbps)
+            assertEquals(minOf(5_000, range.maximumKbps), range.minimumKbps)
             assertTrue("$mbps Mbps startup out of bounds", range.initialKbps in range.minimumKbps..range.maximumKbps)
         }
         assertEquals(1000, StreamNetworkAdaptation.bitrateRange(Int.MIN_VALUE).maximumKbps)
@@ -280,6 +280,15 @@ class SdpToolsTest {
     }
 
     @Test
+    fun tenMbpsRecommendedProfileKeepsItsCeilingAndCanBackOffToFive() {
+        val range = StreamNetworkAdaptation.bitrateRange(10)
+
+        assertEquals(5_000, range.minimumKbps)
+        assertEquals(5_000, range.initialKbps)
+        assertEquals(10_000, range.maximumKbps)
+    }
+
+    @Test
     fun affectedReportProfilesUseTheRestoredBitrateFloor() {
         val threeMbps = StreamNetworkAdaptation.bitrateRange(3)
         assertEquals(3_000, threeMbps.minimumKbps)
@@ -287,13 +296,13 @@ class SdpToolsTest {
         assertEquals(3_000, threeMbps.maximumKbps)
 
         val fiveMbps = StreamNetworkAdaptation.bitrateRange(5)
-        assertEquals(4_000, fiveMbps.minimumKbps)
-        assertEquals(4_000, fiveMbps.initialKbps)
+        assertEquals(5_000, fiveMbps.minimumKbps)
+        assertEquals(5_000, fiveMbps.initialKbps)
         assertEquals(5_000, fiveMbps.maximumKbps)
 
         val sevenMbps = StreamNetworkAdaptation.bitrateRange(7)
-        assertEquals(4_000, sevenMbps.minimumKbps)
-        assertEquals(4_000, sevenMbps.initialKbps)
+        assertEquals(5_000, sevenMbps.minimumKbps)
+        assertEquals(5_000, sevenMbps.initialKbps)
         assertEquals(7_000, sevenMbps.maximumKbps)
     }
 
@@ -313,7 +322,7 @@ class SdpToolsTest {
         val nvst = buildNvstSdp(StreamSettings(maxBitrateMbps = 18))
 
         assertTrue(nvst.contains("a=vqos.bw.maximumBitrateKbps:18000"))
-        assertTrue(nvst.contains("a=vqos.bw.minimumBitrateKbps:4000"))
+        assertTrue(nvst.contains("a=vqos.bw.minimumBitrateKbps:5000"))
     }
 
     @Test
@@ -370,12 +379,12 @@ class SdpToolsTest {
     }
 
     @Test
-    fun nvstSdpEnablesHdrOnlyForHdrStream() {
+    fun nvstSdpDisablesHdrWhileAndroidKillSwitchIsActive() {
         val nvst = buildNvstSdp(StreamSettings(codec = VideoCodec.H265, hdrEnabled = true))
 
-        assertTrue(nvst.contains("a=video.dx9EnableHdr:1"))
-        assertFalse(nvst.contains("a=video.dx9EnableHdr:0"))
-        assertTrue(nvst.contains("a=video.bitDepth:8"))
+        assertFalse(nvst.contains("a=video.dx9EnableHdr:1"))
+        assertTrue(nvst.contains("a=video.dx9EnableHdr:0"))
+        assertTrue(nvst.contains("a=video.bitDepth:10"))
     }
 
     @Test

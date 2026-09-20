@@ -22,6 +22,7 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
 import org.webrtc.IceCandidate
+import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
 sealed interface SignalingEvent {
@@ -33,9 +34,48 @@ sealed interface SignalingEvent {
     data class Log(val message: String) : SignalingEvent
 }
 
+internal fun newGfnSignalingPeerName(): String =
+    "peer-${java.util.UUID.randomUUID().toString().replace("-", "").take(12)}"
+
+internal fun buildGfnSignInUrl(
+    signalingUrl: String,
+    signalingServer: String,
+    peerName: String,
+    sessionId: String,
+    reconnect: Boolean,
+): String {
+    val fallbackHost = if (signalingServer.contains(":")) signalingServer else "$signalingServer:443"
+    val suppliedBase = signalingUrl.trim().ifBlank { "wss://$fallbackHost/nvst/" }
+    val authorityAndPath = suppliedBase
+        .substringBefore('#')
+        .substringBefore('?')
+        .substringAfter("://", suppliedBase)
+        .trimStart('/')
+        .trimEnd('/')
+    val signInBase = if (authorityAndPath.endsWith("/sign_in")) {
+        "wss://$authorityAndPath"
+    } else {
+        "wss://$authorityAndPath/sign_in"
+    }
+    fun queryValue(value: String): String = URLEncoder.encode(value, Charsets.UTF_8.name())
+    val version = if (reconnect) "3.0" else "2"
+    return buildString {
+        append(signInBase)
+        append("?peer_id=")
+        append(queryValue(peerName))
+        append("&version=")
+        append(version)
+        append("&peer_role=1&pairing_id=")
+        append(queryValue(sessionId))
+        if (reconnect) append("&reconnect=1")
+    }
+}
+
 class GfnSignalingClient(
     private val session: SessionInfo,
     private val settings: StreamSettings,
+    private val reconnect: Boolean = false,
+    private val peerName: String = newGfnSignalingPeerName(),
     private val http: OkHttpClient = defaultHttpClient(),
     private val onEvent: (SignalingEvent) -> Unit,
 ) {
@@ -45,7 +85,6 @@ class GfnSignalingClient(
     private var heartbeatJob: Job? = null
     private var peerId = 0
     private var remotePeerId = 1
-    private val peerName = "peer-${java.util.UUID.randomUUID().toString().replace("-", "").take(12)}"
     private var ackCounter = 0
 
     fun connect() {
@@ -162,12 +201,13 @@ class GfnSignalingClient(
     }
 
     private fun buildSignInUrl(): String {
-        val base = session.signalingUrl.ifBlank {
-            val host = if (session.signalingServer.contains(":")) session.signalingServer else "${session.signalingServer}:443"
-            "wss://$host/nvst/"
-        }
-        val normalized = base.replace("wss://", "").trimEnd('/')
-        return "wss://$normalized/sign_in?peer_id=$peerName&version=2&peer_role=1&pairing_id=${session.sessionId}"
+        return buildGfnSignInUrl(
+            signalingUrl = session.signalingUrl,
+            signalingServer = session.signalingServer,
+            peerName = peerName,
+            sessionId = session.sessionId,
+            reconnect = reconnect,
+        )
     }
 
     private fun handleMessage(text: String) {

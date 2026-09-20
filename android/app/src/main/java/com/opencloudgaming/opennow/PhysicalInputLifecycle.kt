@@ -56,6 +56,10 @@ internal class ForwardedPhysicalInputState {
         }
     }
 
+    fun isMouseButtonPressed(button: Int): Boolean = synchronized(lock) {
+        button in pressedMouseButtons
+    }
+
     fun takeReleaseSnapshot(): ReleaseSnapshot = synchronized(lock) {
         ReleaseSnapshot(
             keys = pressedKeys.values.toList().asReversed(),

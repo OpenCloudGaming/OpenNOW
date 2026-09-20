@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.res.Configuration
 import android.media.MediaCodecInfo
 import android.media.MediaCodecList
+import android.media.MediaFormat
 import android.os.Build
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
@@ -14,6 +15,7 @@ import org.webrtc.HardwareVideoDecoderFactory
 import org.webrtc.IceCandidate
 import org.webrtc.PeerConnection
 import org.webrtc.PeerConnectionFactory
+import org.webrtc.PlatformSoftwareVideoDecoderFactory
 import org.webrtc.Predicate
 import org.webrtc.RtpCapabilities
 import org.webrtc.VideoCodecInfo
@@ -251,6 +253,12 @@ object CodecProbe {
         val name = info.name.lowercase(Locale.US)
         if (name.contains("software") || name.contains(".sw.") || name.startsWith("omx.google.")) return false
         if (name.contains("exynos")) {
+            // Exynos publishes separate AVC and HEVC decoder components. The HEVC profile gate
+            // must not reject the hardware AVC component merely because that component does not
+            // advertise video/hevc.
+            if (info.supportedTypes.any { it.equals(MediaFormat.MIMETYPE_VIDEO_AVC, ignoreCase = true) }) {
+                return true
+            }
             val hevcProfiles = runCatching {
                 info.getCapabilitiesForType(HEVC_MIME_TYPE)
                     .profileLevels
@@ -350,9 +358,11 @@ internal class OpenNowVideoDecoderFactory(
     private val requestedFps: () -> Int = { 60 },
     private val hdrEnabled: () -> Boolean = { false },
     private val hdrSurface: () -> HdrSurfaceTarget? = { null },
+    private val directJavaDecode: Boolean = false,
 ) : VideoDecoderFactory {
     private val defaultFactory = DefaultVideoDecoderFactory(sharedContext)
     private val hardwareFactory = openNowHardwareVideoDecoderFactory(sharedContext)
+    private val platformSoftwareFactory = PlatformSoftwareVideoDecoderFactory(sharedContext)
 
     override fun createDecoder(info: VideoCodecInfo): VideoDecoder? {
         val codec = info.name.toOpenNowVideoCodec()
@@ -361,12 +371,20 @@ internal class OpenNowVideoDecoderFactory(
             return if (codec == VideoCodec.H265) HdrSurfaceVideoDecoder(requestedFps(), hdrSurface) else null
         }
         val hardwareDecoder = if (codec != null) hardwareFactory.createDecoder(info) else null
+        // DefaultVideoDecoderFactory can return VideoDecoderFallback, a native-only wrapper whose
+        // Java initDecode/decode methods throw UnsupportedOperationException. NVST invokes the
+        // decoder directly from Kotlin, so its fallback must be a concrete Java decoder.
+        fun fallbackDecoder(): VideoDecoder? = if (directJavaDecode) {
+            platformSoftwareFactory.createDecoder(info)
+        } else {
+            defaultFactory.createDecoder(info)
+        }
         val decoder = when (codec) {
-            VideoCodec.H264 -> hardwareDecoder ?: defaultFactory.createDecoder(info)
+            VideoCodec.H264 -> hardwareDecoder ?: fallbackDecoder()
             VideoCodec.H265,
             VideoCodec.AV1,
             -> hardwareDecoder
-            null -> defaultFactory.createDecoder(info)
+            null -> fallbackDecoder()
         }
         val exactRequestedFps = requestedFps().coerceAtLeast(1)
         val hardwareDecoderImplementation = hardwareDecoder?.getImplementationName()

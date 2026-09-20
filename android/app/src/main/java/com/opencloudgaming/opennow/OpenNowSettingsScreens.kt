@@ -665,6 +665,7 @@ private fun SettingsContent(
     val fallbackMembershipTier = state.authSession?.user?.membershipTier
     var pendingMicrophoneMode by remember { mutableStateOf<MicrophoneMode?>(null) }
     var showStreamMenuShortcutDialog by remember { mutableStateOf(false) }
+    var showBugReportDialog by rememberSaveable { mutableStateOf(false) }
     var showAdvancedControllerSettings by rememberSaveable { mutableStateOf(false) }
     val microphonePermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -693,6 +694,48 @@ private fun SettingsContent(
                 showStreamMenuShortcutDialog = false
             },
             onDismiss = { showStreamMenuShortcutDialog = false },
+        )
+    }
+    if (showBugReportDialog) {
+        CompletedSessionBugReportDialog(
+            submission = state.bugReportSubmission,
+            versionCheck = state.bugReportVersionCheck,
+            update = state.androidUpdate,
+            experimentalNvstEnabled = state.settings.stream.experimentalNvst,
+            onSubmit = { title, description, knownIssueOverrideKey, details, files ->
+                viewModel.submitBugReport(title, description, knownIssueOverrideKey, details, files)
+            },
+            onReset = viewModel::resetBugReportSubmission,
+            onVersionCheck = viewModel::verifyBugReportVersion,
+            onOpenUpdate = viewModel::performAndroidUpdatePrimaryAction,
+            preflightProvider = {
+                buildBugReportPreflightDeck(
+                    BugReportPreflightEvidence(
+                        requestedSettings = state.settings.stream,
+                        recommendedSettings = state.recommendedStreamSettings,
+                        nativeLowLatencyDecoderEnabled = state.settings.nativeLowLatencyDecoder,
+                        runtimeDiagnostics = AndroidRuntimeDiagnostics.snapshot(context),
+                        sessionReport = state.sessionReport,
+                        codecReport = state.codecReport,
+                        androidTvProfile = state.androidTvProfile,
+                        serverZone = state.streamSession?.zone,
+                        manuallySelectedServer = state.manuallySelectedServerForReport,
+                        inputDiagnostics = NativeInputDiagnostics.snapshot(),
+                    ),
+                )
+            },
+            descriptionRes = R.string.bug_report_describe_english_from_settings,
+            titleRes = R.string.bug_report_inbox_new,
+            wideDialog = true,
+            showCommunityLink = false,
+            onDismiss = {
+                if (!state.bugReportSubmission.uploading) {
+                    val submitted = state.bugReportSubmission.submitted
+                    showBugReportDialog = false
+                    viewModel.resetBugReportSubmission()
+                    if (submitted) viewModel.refreshBugReportThreads()
+                }
+            },
         )
     }
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -958,7 +1001,7 @@ private fun SettingsContent(
                         ).withCodecColorCompatibility()
                     }
                 }
-                if (settings.stream.hdrEnabled) {
+                if (settingsAvailableStream.hdrEnabled) {
                     Text(
                         stringResource(R.string.settings_hdr_ten_bit_warning),
                         color = Color(0xffffb74d),
@@ -1431,9 +1474,9 @@ private fun SettingsContent(
                     }
                 }
                 SettingSwitch(
-                    label = stringResource(R.string.settings_live_selected_outlines),
+                    label = stringResource(R.string.settings_static_outlines),
                     checked = settings.liveSelectedOutlines,
-                    description = stringResource(R.string.settings_live_selected_outlines_desc),
+                    description = stringResource(R.string.settings_static_outlines_desc),
                 ) { enabled ->
                     viewModel.updateSettings(settings.copy(liveSelectedOutlines = enabled))
                 }
@@ -1623,6 +1666,10 @@ private fun SettingsContent(
                 BugReportThreadsSettings(
                     state = state.bugReportThreads,
                     onRefresh = viewModel::refreshBugReportThreads,
+                    onNewReport = {
+                        viewModel.resetBugReportSubmission()
+                        showBugReportDialog = true
+                    },
                     onComment = viewModel::commentOnBugReport,
                 )
             }

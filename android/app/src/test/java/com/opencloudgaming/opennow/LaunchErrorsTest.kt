@@ -7,7 +7,7 @@ import org.junit.Test
 
 class LaunchErrorsTest {
     @Test
-    fun entitlementFailureKeepsTheActualCloudMatchError() {
+    fun entitlementFailureExplainsThatNoCurrentPlanWasFound() {
         val error = CloudMatchRequestStatusException(
             statusCode = 18,
             statusDescription = "ENTITLEMENT_FAILURE_STATUS 8A910006",
@@ -15,14 +15,14 @@ class LaunchErrorsTest {
         )
 
         assertEquals(
-            "CloudMatch returned status 18: ENTITLEMENT_FAILURE_STATUS 8A910006 " +
-                "(unified error -1970208762)",
+            "No current GeForce NOW plan was found. Activate the Free plan or choose a paid membership, then try again.",
             normalizeLaunchErrorMessage(error, "Subnautica 2"),
         )
+        assertTrue(isMissingGfnPlanError(error))
     }
 
     @Test
-    fun wrappedEntitlementFailureStillShowsTheActualCloudMatchError() {
+    fun wrappedEntitlementFailureStillPromptsForAPlan() {
         val providerError = CloudMatchRequestStatusException(
             statusCode = 18,
             statusDescription = "ENTITLEMENT_FAILURE_STATUS",
@@ -31,9 +31,25 @@ class LaunchErrorsTest {
         val error = IllegalStateException("Upgrade membership", providerError)
 
         assertEquals(
-            "CloudMatch returned status 18: ENTITLEMENT_FAILURE_STATUS (unified error 8A910006)",
+            "No current GeForce NOW plan was found. Activate the Free plan or choose a paid membership, then try again.",
             normalizeLaunchErrorMessage(error, "Subnautica 2"),
         )
+        assertTrue(isMissingGfnPlanError(error))
+    }
+
+    @Test
+    fun status18AloneIsParsedAsNoCurrentPlan() {
+        val error = CloudMatchRequestStatusException(
+            statusCode = 18,
+            statusDescription = null,
+            unifiedErrorCode = null,
+        )
+
+        assertEquals(
+            "No current GeForce NOW plan was found. Activate the Free plan or choose a paid membership, then try again.",
+            normalizeLaunchErrorMessage(error),
+        )
+        assertTrue(isMissingGfnPlanError(error))
     }
 
     @Test
@@ -76,6 +92,7 @@ class LaunchErrorsTest {
             "CloudMatch returned status 42: CAPACITY_FAILURE_STATUS (unified error DEADBEEF)",
             normalizeLaunchErrorMessage(error, "Subnautica 2"),
         )
+        assertFalse(isMissingGfnPlanError(error))
     }
 
     @Test

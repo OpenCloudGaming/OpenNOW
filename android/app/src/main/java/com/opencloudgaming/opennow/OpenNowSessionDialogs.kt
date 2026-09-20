@@ -1,6 +1,7 @@
 package com.opencloudgaming.opennow
 
 import androidx.activity.compose.BackHandler
+import androidx.annotation.StringRes
 import android.content.res.Configuration
 import android.os.Build
 import androidx.compose.foundation.Canvas
@@ -347,6 +348,10 @@ internal fun CompletedSessionBugReportDialog(
     onOpenUpdate: () -> Unit,
     preflightProvider: () -> BugReportPreflightDeck,
     onDismiss: () -> Unit,
+    @StringRes descriptionRes: Int = R.string.bug_report_describe_english,
+    @StringRes titleRes: Int = R.string.bug_report_feedback_title,
+    wideDialog: Boolean = false,
+    showCommunityLink: Boolean = true,
 ) {
     val configuration = LocalConfiguration.current
     val appLocale = currentAndroidAppLocale(LocalContext.current)
@@ -369,13 +374,13 @@ internal fun CompletedSessionBugReportDialog(
         onDismissRequest = {
             if (!submission.uploading) onDismiss()
         },
-        modifier = if (landscapeLayout) {
+        modifier = if (landscapeLayout || wideDialog) {
             Modifier.widthIn(max = 960.dp).fillMaxWidth(0.94f)
         } else {
             Modifier
         },
-        properties = DialogProperties(usePlatformDefaultWidth = !landscapeLayout),
-        title = { Text(stringResource(R.string.bug_report_feedback_title)) },
+        properties = DialogProperties(usePlatformDefaultWidth = !landscapeLayout && !wideDialog),
+        title = { Text(stringResource(titleRes)) },
         text = {
             Column(
                 modifier = Modifier
@@ -389,9 +394,11 @@ internal fun CompletedSessionBugReportDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                DiscordCommunityLink(
-                    summary = stringResource(R.string.discord_community_bug_report_summary),
-                )
+                if (showCommunityLink) {
+                    DiscordCommunityLink(
+                        summary = stringResource(R.string.discord_community_bug_report_summary),
+                    )
+                }
                 when {
                     submission.submitted -> {
                         Icon(Icons.Rounded.Check, contentDescription = null, tint = Green)
@@ -409,87 +416,74 @@ internal fun CompletedSessionBugReportDialog(
                     )
                     else -> {
                         NvstBugReportWarning(experimentalNvstEnabled)
-                        Text(
-                            stringResource(R.string.bug_report_describe_english),
-                            color = TextMuted,
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                        OutlinedTextField(
-                            value = title,
-                            onValueChange = { value ->
-                                title = value
-                                if (submission.error != null) onReset()
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            enabled = !submission.uploading,
-                            singleLine = true,
-                            label = { Text(stringResource(R.string.bug_report_title_label)) },
-                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-                        )
-                        OutlinedTextField(
-                            value = description,
-                            onValueChange = { value ->
-                                description = value
-                                if (submission.error != null) onReset()
-                            },
-                            modifier = Modifier.fillMaxWidth().heightIn(min = 128.dp),
-                            enabled = !submission.uploading,
-                            minLines = 4,
-                            maxLines = 7,
-                            label = { Text(stringResource(R.string.bug_report_description_label)) },
-                            supportingText = {
-                                Text(
-                                    androidBugReportDescriptionError(description)
-                                        ?: "${androidBugReportMeaningfulCharacterCount(description)} / $ANDROID_BUG_REPORT_MIN_MEANINGFUL_CHARS meaningful characters",
-                                )
-                            },
-                            isError = description.isNotEmpty() &&
-                                androidBugReportDescriptionError(description) != null,
-                        )
-                        BugReportDescriptionFeedback(
-                            description = description,
-                            error = androidBugReportDescriptionError(description),
-                        )
-                        BugReportOptions(
-                            details = details,
-                            attachments = attachments,
-                            enabled = !submission.uploading,
-                            onDetailsChange = { details = it },
-                            onAttachmentsChange = { attachments = it },
-                        )
                         BugReportDataDisclosure(includeTypedTextWarning = true)
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
-                                .clickable(enabled = !submission.uploading) {
-                                    consentChecked = !consentChecked
-                                },
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Checkbox(
-                                checked = consentChecked,
-                                onCheckedChange = { consentChecked = it },
-                                enabled = !submission.uploading,
-                            )
+                        BugReportConsentGate(
+                            checked = consentChecked,
+                            enabled = !submission.uploading,
+                            onCheckedChange = { consentChecked = it },
+                        )
+                        if (consentChecked) {
                             Text(
-                                stringResource(R.string.bug_report_terms_consent),
+                                stringResource(descriptionRes),
                                 color = TextMuted,
                                 style = MaterialTheme.typography.bodySmall,
                             )
-                        }
-                        knownIssueBlock?.let { block ->
-                            BugReportKnownIssueOverride(
-                                block = block,
-                                checked = acknowledgedKnownIssueKey == block.key,
-                                enabled = !submission.uploading,
-                                onCheckedChange = { checked ->
-                                    acknowledgedKnownIssueKey = block.key.takeIf { checked }
+                            OutlinedTextField(
+                                value = title,
+                                onValueChange = { value ->
+                                    title = value
+                                    if (submission.error != null) onReset()
                                 },
+                                modifier = Modifier.fillMaxWidth(),
+                                enabled = !submission.uploading,
+                                singleLine = true,
+                                label = { Text(stringResource(R.string.bug_report_title_label)) },
+                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
                             )
-                        }
-                        submission.error?.let { error ->
-                            Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                            OutlinedTextField(
+                                value = description,
+                                onValueChange = { value ->
+                                    description = value
+                                    if (submission.error != null) onReset()
+                                },
+                                modifier = Modifier.fillMaxWidth().heightIn(min = 128.dp),
+                                enabled = !submission.uploading,
+                                minLines = 4,
+                                maxLines = 7,
+                                label = { Text(stringResource(R.string.bug_report_description_label)) },
+                                supportingText = {
+                                    Text(
+                                        androidBugReportDescriptionError(description)
+                                            ?: "${androidBugReportMeaningfulCharacterCount(description)} / $ANDROID_BUG_REPORT_MIN_MEANINGFUL_CHARS meaningful characters",
+                                    )
+                                },
+                                isError = description.isNotEmpty() &&
+                                    androidBugReportDescriptionError(description) != null,
+                            )
+                            BugReportDescriptionFeedback(
+                                description = description,
+                                error = androidBugReportDescriptionError(description),
+                            )
+                            BugReportOptions(
+                                details = details,
+                                attachments = attachments,
+                                enabled = !submission.uploading,
+                                onDetailsChange = { details = it },
+                                onAttachmentsChange = { attachments = it },
+                            )
+                            knownIssueBlock?.let { block ->
+                                BugReportKnownIssueOverride(
+                                    block = block,
+                                    checked = acknowledgedKnownIssueKey == block.key,
+                                    enabled = !submission.uploading,
+                                    onCheckedChange = { checked ->
+                                        acknowledgedKnownIssueKey = block.key.takeIf { checked }
+                                    },
+                                )
+                            }
+                            submission.error?.let { error ->
+                                Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                            }
                         }
                     }
                 }
@@ -832,6 +826,34 @@ internal fun MembershipRequirementDialog(
         dismissButton = {
             TextButton(onClick = onCancel) {
                 Text(stringResource(R.string.action_cancel))
+            }
+        },
+    )
+}
+
+@Composable
+internal fun GfnMembershipActivationDialog(
+    onOpenMemberships: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    BackHandler(onBack = onDismiss)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                stringResource(R.string.launch_no_gfn_plan_title),
+                fontWeight = FontWeight.Bold,
+            )
+        },
+        text = { Text(stringResource(R.string.launch_no_gfn_plan_body)) },
+        confirmButton = {
+            Button(onClick = onOpenMemberships) {
+                Text(stringResource(R.string.launch_no_gfn_plan_action))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.action_close))
             }
         },
     )

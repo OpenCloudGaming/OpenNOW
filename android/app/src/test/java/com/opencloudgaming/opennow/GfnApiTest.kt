@@ -526,7 +526,7 @@ class GfnApiTest {
 
         assertEquals("WEBRTC", headers["nv-client-streamer"])
         assertEquals("BROWSER", headers["nv-client-type"])
-        assertEquals("2.0.86.124", headers["nv-client-version"])
+        assertEquals("2.0.88.129", headers["nv-client-version"])
         assertEquals("ANDROID", headers["nv-device-os"])
         assertEquals("PHONE", headers["nv-device-type"])
         assertTrue(headers["User-Agent"].orEmpty().contains("Android"))
@@ -551,6 +551,39 @@ class GfnApiTest {
         assertTrue(portugueseUrl.contains("/v2/session/session+1?"))
         assertTrue(portugueseUrl.contains("keyboardLayout=pt-PT"))
         assertTrue(portugueseUrl.contains("languageCode=pt_PT"))
+    }
+
+    @Test
+    fun regionalCloudMatchClaimCarriesOfficialLatencyRoutingMetadata() {
+        val body = buildMinimalClaimRequestBody(
+            appId = "123",
+            deviceId = "device",
+            settings = StreamSettings(),
+            streamingBaseUrl = "https://NP-WAW-01.cloudmatchbeta.nvidiagrid.net/",
+        )
+        val metadata = body.getValue("sessionRequestData").jsonObject
+            .getValue("metaData").jsonArray
+            .associate { item ->
+                val entry = item.jsonObject
+                entry.getValue("key").jsonPrimitive.content to entry.getValue("value").jsonPrimitive.content
+            }
+
+        assertEquals("-1", metadata["latency@np-waw-01.cloudmatchbeta.nvidiagrid.net"])
+    }
+
+    @Test
+    fun providerRootClaimDoesNotInventLatencyRoutingMetadata() {
+        val body = buildMinimalClaimRequestBody(
+            appId = "123",
+            deviceId = "device",
+            settings = StreamSettings(),
+            streamingBaseUrl = "https://prod.cloudmatchbeta.nvidiagrid.net/",
+        )
+        val metadataKeys = body.getValue("sessionRequestData").jsonObject
+            .getValue("metaData").jsonArray
+            .map { it.jsonObject.getValue("key").jsonPrimitive.content }
+
+        assertFalse(metadataKeys.any { it.startsWith("latency@") })
     }
 
     @Test
@@ -841,7 +874,7 @@ class GfnApiTest {
     }
 
     @Test
-    fun claimRequestExplicitlyMarksHdrColorMetadata() {
+    fun claimRequestSuppressesHdrColorMetadataWhileKillSwitchIsActive() {
         val settings = StreamSettings(
             resolution = "1920x1080",
             codec = VideoCodec.H265,
@@ -856,19 +889,14 @@ class GfnApiTest {
             .getValue("clientRequestMonitorSettings").jsonArray.single().jsonObject
         val features = sessionRequestData.getValue("requestedStreamingFeatures").jsonObject
 
-        assertEquals(1, monitor.getValue("sdrHdrMode").jsonPrimitive.int)
-        assertEquals(650f, monitor.getValue("displayData").jsonObject
-            .getValue("desiredContentMaxLuminance").jsonPrimitive.float)
-        assertEquals(0.005f, monitor.getValue("displayData").jsonObject
-            .getValue("desiredContentMinLuminance").jsonPrimitive.float)
-        assertEquals(280f, monitor.getValue("displayData").jsonObject
-            .getValue("desiredContentMaxFrameAverageLuminance").jsonPrimitive.float)
-        assertEquals(true, features.getValue("trueHdr").jsonPrimitive.boolean)
-        assertEquals(0, features.getValue("bitDepth").jsonPrimitive.int)
+        assertEquals(0, monitor.getValue("sdrHdrMode").jsonPrimitive.int)
+        assertEquals(JsonNull, monitor.getValue("displayData"))
+        assertEquals(false, features.getValue("trueHdr").jsonPrimitive.boolean)
+        assertEquals(10, features.getValue("bitDepth").jsonPrimitive.int)
         assertEquals(2, features.getValue("sdrColorSpace").jsonPrimitive.int)
-        assertEquals(4, features.getValue("hdrColorSpace").jsonPrimitive.int)
-        assertEquals(1, sessionRequestData.getValue("sdrHdrMode").jsonPrimitive.int)
-        assertTrue(sessionRequestData.getValue("clientDisplayHdrCapabilities") is kotlinx.serialization.json.JsonObject)
+        assertEquals(0, features.getValue("hdrColorSpace").jsonPrimitive.int)
+        assertEquals(0, sessionRequestData.getValue("sdrHdrMode").jsonPrimitive.int)
+        assertEquals(JsonNull, sessionRequestData.getValue("clientDisplayHdrCapabilities"))
     }
 
     @Test
@@ -1188,7 +1216,7 @@ class GfnApiTest {
     }
 
     @Test
-    fun shieldFourKHdrClaimUsesDesktopAllocationAndPreservesRequestedProfile() {
+    fun shieldFourKHdrClaimUsesDesktopAllocationButSuppressesHdr() {
         val settings = StreamSettings(
             resolution = "3840x2160",
             aspectRatio = "16:9",
@@ -1216,12 +1244,12 @@ class GfnApiTest {
         assertEquals(3840, monitor.getValue("widthInPixels").jsonPrimitive.int)
         assertEquals(2160, monitor.getValue("heightInPixels").jsonPrimitive.int)
         assertEquals(60, monitor.getValue("framesPerSecond").jsonPrimitive.int)
-        assertEquals(1, monitor.getValue("sdrHdrMode").jsonPrimitive.int)
+        assertEquals(0, monitor.getValue("sdrHdrMode").jsonPrimitive.int)
         assertEquals(0, monitor.getValue("monitorId").jsonPrimitive.int)
         assertEquals(100, monitor.getValue("dpi").jsonPrimitive.int)
-        assertEquals(0, features.getValue("bitDepth").jsonPrimitive.int)
-        assertEquals(true, features.getValue("trueHdr").jsonPrimitive.boolean)
-        assertEquals(4, features.getValue("hdrColorSpace").jsonPrimitive.int)
+        assertEquals(10, features.getValue("bitDepth").jsonPrimitive.int)
+        assertEquals(false, features.getValue("trueHdr").jsonPrimitive.boolean)
+        assertEquals(0, features.getValue("hdrColorSpace").jsonPrimitive.int)
     }
 
     @Test

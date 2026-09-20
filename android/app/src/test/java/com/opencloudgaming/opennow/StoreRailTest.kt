@@ -143,15 +143,7 @@ class StoreRailTest {
     }
 
     @Test
-    fun catalogImageRequestsWaitDuringScrollUnlessTheImageIsAlreadyVisible() {
-        assertFalse(shouldStartCatalogImageRequest(requestsPaused = true, imageAlreadyLoaded = false))
-        assertTrue(shouldStartCatalogImageRequest(requestsPaused = true, imageAlreadyLoaded = true))
-        assertTrue(shouldStartCatalogImageRequest(requestsPaused = false, imageAlreadyLoaded = false))
-    }
-
-    @Test
-    fun catalogShimmerKeepsAnimatingWhileImageRequestsArePaused() {
-        assertFalse(shouldStartCatalogImageRequest(requestsPaused = true, imageAlreadyLoaded = false))
+    fun catalogShimmerRunsWheneverArtworkIsLoadingUnlessReducedMotionIsActive() {
         assertTrue(shouldAnimateCatalogLoading(loadingImageCount = 1, reduceMotion = false))
         assertFalse(shouldAnimateCatalogLoading(loadingImageCount = 0, reduceMotion = false))
         assertFalse(shouldAnimateCatalogLoading(loadingImageCount = 1, reduceMotion = true))

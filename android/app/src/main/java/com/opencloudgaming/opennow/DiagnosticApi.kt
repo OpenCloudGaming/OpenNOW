@@ -4,6 +4,13 @@ import kotlinx.serialization.json.*
 
 private val providerStatusCodePattern = Regex("\"statusCode\"\\s*:\\s*(-?\\d+)")
 private val graphQlErrorsPattern = Regex("\"errors\"\\s*:\\s*\\[\\s*\\{")
+private val StrictDiagnosticBodyJson = Json { isLenient = false }
+
+private fun parseDiagnosticJsonContainer(raw: String): JsonElement? {
+    val trimmed = raw.trimStart()
+    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return null
+    return runCatching { StrictDiagnosticBodyJson.parseToJsonElement(raw) }.getOrNull()
+}
 
 private fun diagnosticApiApplicationFailure(raw: String): Boolean {
     val statusStart = raw.indexOf("\"requestStatus\"")
@@ -39,12 +46,12 @@ internal class DiagnosticApiBody(raw: String, private val decodeQueryJson: Boole
         } else if (captured.isEmpty()) {
             JsonNull
         } else {
-            runCatching { OpenNowJson.parseToJsonElement(captured) }.getOrElse { JsonPrimitive(captured) }
+            parseDiagnosticJsonContainer(captured) ?: JsonPrimitive(captured)
         }
         val expanded = if (decodeQueryJson && result is JsonObject) JsonObject(result.mapValues { (key, value) ->
             if (key in setOf("variables", "extensions") && value is JsonArray) JsonArray(value.map { item ->
                 val text = (item as? JsonPrimitive)?.contentOrNull
-                if (text == null) item else runCatching { OpenNowJson.parseToJsonElement(text) }.getOrDefault(item)
+                if (text == null) item else parseDiagnosticJsonContainer(text) ?: item
             }) else value
         }) else result
         val compact = if (stripCatalogText) stripVerboseDiagnosticCatalogText(expanded) else expanded

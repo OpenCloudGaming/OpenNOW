@@ -374,6 +374,7 @@ class NativeStreamClient(
     private var transportGeneration = 0
     private var reconnectAttempts = 0
     private var transientSignalingFailures = 0
+    private var signalingPeerName = newGfnSignalingPeerName()
     /**
      * Bitrate ceiling (kbps) requested for the live transport, exposed for the overlay indicator.
      * A change is queued for the next legitimate offer. Replacing a healthy signaling/ICE
@@ -915,6 +916,7 @@ class NativeStreamClient(
         transportGeneration += 1
         reconnectAttempts = 0
         transientSignalingFailures = 0
+        signalingPeerName = newGfnSignalingPeerName()
         selectedProfileRetryApplied = false
         stableMediaStallRestarts = 0
         sessionRecoveryRequested = false
@@ -1158,11 +1160,39 @@ class NativeStreamClient(
                 pressed = event.action == KeyEvent.ACTION_DOWN,
                 sent = sent,
             )
+            if (event.keyCode == KeyEvent.KEYCODE_SPACE) {
+                NativeInputDiagnostics.retainCounted(
+                    key = "keyboard.space.${event.action}",
+                ) {
+                    "physical Space key action=${event.action} rawScan=${event.scanCode} " +
+                        "hostVk=${key.keycode} hostScan=${key.scancode} sent=$sent ${inputChannelStateSummary()}"
+                }
+            }
         }
         if (hardwareKeyboard && !sent) {
             NativeInputDiagnostics.add("hardware keyboard consumed without send key=${event.keyCode} ${inputChannelStateSummary()}")
         }
         return sent || hardwareKeyboard
+    }
+
+    fun dispatchExternalMouseSecondaryKey(event: KeyEvent): Boolean {
+        if (!hasReadyInputChannel()) {
+            NativeInputDiagnostics.addRetained(
+                key = "mouse.secondary-key.no-channel",
+                message = "external mouse secondary key consumed before input channel ready " +
+                    "key=${event.keyCode} action=${event.action} source=${event.source} device=${event.deviceId}",
+            )
+            return false
+        }
+        if (event.action != KeyEvent.ACTION_DOWN && event.action != KeyEvent.ACTION_UP) return false
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount > 0) return true
+        val pressed = event.action == KeyEvent.ACTION_DOWN
+        val sent = sendExternalMouseButton(button = 3, pressed = pressed)
+        NativeInputDiagnostics.add(
+            "external mouse secondary key key=${event.keyCode} action=${event.action} " +
+                "source=${event.source} device=${event.deviceId} sent=$sent ${inputChannelStateSummary()}",
+        )
+        return sent
     }
 
     fun dispatchMotion(event: MotionEvent): Boolean {
@@ -1509,6 +1539,10 @@ class NativeStreamClient(
     }
 
     private fun sendExternalMouseButton(button: Int, pressed: Boolean): Boolean {
+        // OEMs may emit both a MotionEvent button edge and a BACK/BUTTON_B KeyEvent for one
+        // secondary click. The cloud protocol is edge-based, so forward that physical transition
+        // once regardless of how many Android callbacks describe it.
+        if (forwardedPhysicalInput.isMouseButtonPressed(button) == pressed) return true
         val sent = sendReliableInput(
             inputEncoder.encodeMouseButton(
                 if (pressed) InputEncoder.INPUT_MOUSE_BUTTON_DOWN else InputEncoder.INPUT_MOUSE_BUTTON_UP,
@@ -2248,7 +2282,7 @@ class NativeStreamClient(
                     OpenNowVideoDecoderFactory(eglBase.eglBaseContext,
                         nativeLowLatencyDecoderEnabled = SettingsStore(appContext).settings.value.nativeLowLatencyDecoder,
                         requestedFps = { settings.fps }, hdrEnabled = { settings.hdrEnabled },
-                        hdrSurface = { renderer?.hdrTarget }),
+                        hdrSurface = { renderer?.hdrTarget }, directJavaDecode = true),
                     sink = { renderer },
                     event = { kind, detail -> scope.launch {
                         if (generation == transportGeneration) when (kind) {
@@ -2290,7 +2324,12 @@ class NativeStreamClient(
             return
         }
         emitState(if (reconnectAttempts > 0) "Reconnecting signaling" else "Connecting signaling")
-        signaling = GfnSignalingClient(session, settings = settings) { event ->
+        signaling = GfnSignalingClient(
+            session = session,
+            settings = settings,
+            reconnect = reconnectAttempts > 0 || transientSignalingFailures > 0,
+            peerName = signalingPeerName,
+        ) { event ->
             // OkHttp invokes WebSocket callbacks on its own threads. Keep transport state on the
             // existing main-owner scope; offer parsing and all PeerConnection JNI work are handed
             // to nativeLifecycleExecutor below so this does not add UI-thread SDP work.

@@ -19,7 +19,7 @@ class QueueLaunchStatusTest {
 
         assertNull(queueDisplayPosition(session))
         assertNull(queueDisplayPosition(state))
-        assertEquals("Starting session", queueLaunchStatusText(state))
+        assertEquals("Connecting...", queueLaunchStatusText(state))
     }
 
     @Test

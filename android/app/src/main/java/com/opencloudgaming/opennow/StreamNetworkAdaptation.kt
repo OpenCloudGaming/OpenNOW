@@ -9,10 +9,10 @@ internal object StreamNetworkAdaptation {
 
     fun bitrateRange(maxBitrateMbps: Int): StreamBitrateRange {
         val maximum = maxBitrateMbps.coerceIn(1, 200) * 1000
-        // Preserve the normal NVIDIA 4 Mbps floor so a standard profile does not start at
-        // one quarter of the user's limit and remain visibly over-compressed. Explicit 1-3
-        // Mbps profiles still keep their selected cap instead of being raised above it.
-        val minimum = minOf(4_000, maximum)
+        // Recommended profiles may adapt down to 5 Mbps without remaining visibly
+        // over-compressed. Explicit manual 1-4 Mbps profiles still keep their selected cap
+        // instead of being raised above it.
+        val minimum = minOf(5_000, maximum)
         val initial = maxOf(minimum, maximum / 4)
         return StreamBitrateRange(minimum, initial, maximum)
     }

@@ -319,7 +319,14 @@ class InputEncoder {
             timestampUs: Long = timestampUs(),
         ): KeyboardPayload? {
             val vk = virtualKey(keyCode, unicode)
-            val resolvedScanCode = if (scanCode > 0) scanCode else fallbackScanCode(keyCode)
+            // Space is a fixed physical key in the host protocol. Some Android TV keyboard
+            // drivers attach an OEM scan code even though the normalized key is KEYCODE_SPACE;
+            // forwarding that vendor code makes the cloud host miss an otherwise valid press.
+            val resolvedScanCode = if (keyCode == KeyEvent.KEYCODE_SPACE) {
+                fallbackScanCode(keyCode)
+            } else {
+                scanCode.takeIf { it > 0 } ?: fallbackScanCode(keyCode)
+            }
             if (vk == null || resolvedScanCode == null) return null
             var modifiers = 0
             if (shift) modifiers = modifiers or 0x01

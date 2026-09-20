@@ -1176,7 +1176,6 @@ internal fun UrlImage(
     }
     val loadingTracker = LocalImageLoadingTracker.current
     val loading = imageState == UrlImageState.Loading
-    val imageRequestsPaused = LocalCatalogImageRequestsPaused.current
     DisposableEffect(loadingTracker, loading) {
         if (loading) loadingTracker?.invoke(1)
         onDispose {
@@ -1197,7 +1196,10 @@ internal fun UrlImage(
         }
     }
     Box(modifier.background(OpenNowPalette.ImagePlaceholder), contentAlignment = Alignment.Center) {
-        if (imageData != null && shouldStartCatalogImageRequest(imageRequestsPaused, imageState == UrlImageState.Loaded)) {
+        // Always mount the request. Coil serves memory hits immediately and bounds cache misses in
+        // the application ImageLoader; skipping composition during a fling made recycled cards
+        // appear to reload when the user reversed direction.
+        if (imageData != null) {
             key(activeSource) {
                 AsyncImage(
                     model = imageData,
@@ -1233,7 +1235,12 @@ internal fun LoadingShimmer(modifier: Modifier = Modifier) {
     // individual image placeholder is actually composed.
     // Using nullable avoids treating 0f (a valid animation start value) as "not provided".
     val animateLoading = LocalImageLoadingAnimationsEnabled.current && !LocalReduceMotion.current
-    val sharedPulse = LocalTvLoadingPulse.current
+    val baseColor = OpenNowPalette.ShimmerBase
+    if (!animateLoading) {
+        Spacer(modifier = modifier.background(baseColor))
+        return
+    }
+    val sharedPulse = LocalTvLoadingPulse.current.takeIf { animateLoading }
     val localPulse = if (animateLoading && LocalTvLoadingProfile.current && sharedPulse == null) {
         val transition = rememberInfiniteTransition(label = "loading-pulse-local")
         val pulse = transition.animateFloat(
@@ -1251,7 +1258,8 @@ internal fun LoadingShimmer(modifier: Modifier = Modifier) {
     }
     val pulse = sharedPulse ?: localPulse
     // Same rule as the shared driver above: no perpetual sweep under reduced motion.
-    val shimmer = LocalShimmerOffset.current ?: if (pulse == null && animateLoading) run {
+    val sharedShimmer = LocalShimmerOffset.current.takeIf { animateLoading }
+    val shimmer = sharedShimmer ?: if (pulse == null && animateLoading) run {
         val transition = rememberInfiniteTransition(label = "shimmer-local")
         val localOffset = transition.animateFloat(
             initialValue = 0f,
@@ -1263,7 +1271,6 @@ internal fun LoadingShimmer(modifier: Modifier = Modifier) {
         )
         localOffset
     } else null
-    val baseColor = OpenNowPalette.ShimmerBase
     val highlightColor1 = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.32f)
     val highlightColor2 = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
 

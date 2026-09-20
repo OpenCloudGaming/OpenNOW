@@ -58,6 +58,8 @@ data class AndroidBugReportThreadsState(
     val reports: List<AndroidBugReportThread> = emptyList(),
     val postingReportId: String? = null,
     val error: String? = null,
+    /** Set only when [error] belongs to a reply composer rather than the inbox refresh. */
+    val errorReportId: String? = null,
 )
 
 internal suspend fun fetchAndroidBugReportThreads(

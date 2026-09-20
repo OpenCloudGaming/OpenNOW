@@ -1,10 +1,22 @@
 package com.opencloudgaming.opennow
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PhysicalInputLifecycleTest {
+    @Test
+    fun exposesForwardedMouseButtonStateForDuplicateEdgeSuppression() {
+        val state = ForwardedPhysicalInputState()
+
+        assertFalse(state.isMouseButtonPressed(3))
+        state.recordMouseButton(button = 3, pressed = true, sent = true)
+        assertTrue(state.isMouseButtonPressed(3))
+        state.recordMouseButton(button = 3, pressed = false, sent = true)
+        assertFalse(state.isMouseButtonPressed(3))
+    }
+
     @Test
     fun snapshotsOnlySuccessfullyForwardedPressedInput() {
         val state = ForwardedPhysicalInputState()

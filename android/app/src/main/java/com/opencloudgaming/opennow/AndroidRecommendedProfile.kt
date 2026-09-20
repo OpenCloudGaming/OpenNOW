@@ -184,7 +184,10 @@ internal fun StreamSettings.performanceOverridesComparedTo(
             add("$maxBitrateMbps Mbps bitrate (recommended ${recommended.maxBitrateMbps})")
         }
         if (hdrEnabled && !recommended.hdrEnabled) add("HDR")
-        if (usesTenBitStreamProfile() && !recommended.usesTenBitStreamProfile()) add("10-bit color")
+        // HDR implies a ten-bit transport, but it already has its own user-facing override label.
+        // Only call out 10-bit color when the separate SDR color-quality choice is responsible.
+        if (!hdrEnabled && colorQuality.isTenBit() &&
+            (recommended.hdrEnabled || !recommended.colorQuality.isTenBit())) add("10-bit color")
         if (streamSharpeningEnabled && !recommended.streamSharpeningEnabled) add("stream sharpening")
         if (
             codec != recommended.codec &&

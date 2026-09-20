@@ -78,6 +78,12 @@ class OpenNowApplication : Application(), SingletonImageLoader.Factory {
                     .maxSizeBytes(IMAGE_DISK_CACHE_BYTES)
                     .build()
             }
+            // Keep visible artwork requestable during a fling, but bound the work behind it. The
+            // old UI-side pause replaced every newly composed card with shimmer until scrolling
+            // stopped. A small fetch pool and an even smaller decode pool protect low-end devices
+            // without unmounting cached images as they move in and out of the Lazy grid window.
+            .fetcherCoroutineContext(Dispatchers.IO.limitedParallelism(IMAGE_FETCH_PARALLELISM))
+            .decoderCoroutineContext(Dispatchers.IO.limitedParallelism(IMAGE_DECODE_PARALLELISM))
             // Artwork that is already in memory should appear instantly; a fade on every cell makes
             // a fast grid look slower than it is.
             .crossfade(false)
@@ -105,5 +111,7 @@ class OpenNowApplication : Application(), SingletonImageLoader.Factory {
         const val IMAGE_MEMORY_CACHE_FRACTION = 0.25
         const val IMAGE_DISK_CACHE_DIR = "image_cache"
         const val IMAGE_DISK_CACHE_BYTES = 256L * 1024 * 1024
+        const val IMAGE_FETCH_PARALLELISM = 4
+        const val IMAGE_DECODE_PARALLELISM = 2
     }
 }

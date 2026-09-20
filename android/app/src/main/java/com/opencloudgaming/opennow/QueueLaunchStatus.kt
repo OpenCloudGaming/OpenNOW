@@ -24,6 +24,8 @@ internal fun queueLaunchStatus(
     return when {
         queuePosition != null -> QueueLaunchStatus(QueueLaunchStatusKind.QueuePosition, queuePosition)
         session?.seatSetupStep == 1 -> QueueLaunchStatus(QueueLaunchStatusKind.WaitingForRig)
+        session?.seatSetupStep == 5 && state.launchPhase.equals("Queue", ignoreCase = true) ->
+            QueueLaunchStatus(QueueLaunchStatusKind.ConnectingStream)
         state.launchPhase.equals("Connecting stream", ignoreCase = true) -> QueueLaunchStatus(QueueLaunchStatusKind.ConnectingStream)
         state.launchPhase.equals("Resuming session", ignoreCase = true) -> QueueLaunchStatus(QueueLaunchStatusKind.ResumingSession)
         state.launchPhase.equals("Setting up rig", ignoreCase = true) -> QueueLaunchStatus(QueueLaunchStatusKind.SettingUpRig)
@@ -36,7 +38,7 @@ internal fun queueLaunchStatusText(state: OpenNowUiState): String {
     return when (status.kind) {
         QueueLaunchStatusKind.QueuePosition -> "Queue position ${status.queuePosition}"
         QueueLaunchStatusKind.WaitingForRig -> "Waiting for a rig"
-        QueueLaunchStatusKind.ConnectingStream -> "Connecting stream"
+        QueueLaunchStatusKind.ConnectingStream -> "Connecting..."
         QueueLaunchStatusKind.ResumingSession -> "Resuming session"
         QueueLaunchStatusKind.SettingUpRig -> "Setting up rig"
         QueueLaunchStatusKind.StartingSession -> "Starting session"

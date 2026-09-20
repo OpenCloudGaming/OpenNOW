@@ -150,6 +150,7 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.layout.layout
@@ -1016,38 +1017,41 @@ internal val LocalShimmerOffset = staticCompositionLocalOf<State<Float>?> { null
 internal val LocalTvLoadingPulse = staticCompositionLocalOf<State<Float>?> { null }
 internal val LocalTvLoadingProfile = staticCompositionLocalOf { false }
 internal val LocalImageLoadingAnimationsEnabled = staticCompositionLocalOf { true }
-internal val LocalCatalogImageRequestsPaused = staticCompositionLocalOf { false }
+internal val LocalCatalogScrolling = staticCompositionLocalOf { false }
 internal val LocalImageLoadingTracker = staticCompositionLocalOf<((Int) -> Unit)?> { null }
 internal val LocalTouchControllerStyle = staticCompositionLocalOf { TouchControllerStyle.V1 }
 internal val LocalSelectedCatalogGameId = staticCompositionLocalOf<String?> { null }
 internal const val SHIMMER_CYCLE_DURATION_MS = 760
 
-/** Keep decoded artwork mounted, but do not start new fetch/decode work in the middle of a fling. */
-internal fun shouldStartCatalogImageRequest(requestsPaused: Boolean, imageAlreadyLoaded: Boolean): Boolean =
-    !requestsPaused || imageAlreadyLoaded
+/** Loading feedback stays visible while Coil's bounded worker pools fetch and decode artwork. */
+internal fun shouldAnimateCatalogLoading(
+    loadingImageCount: Int,
+    reduceMotion: Boolean,
+): Boolean = loadingImageCount > 0 && !reduceMotion
 
-/** Keep the lightweight shared placeholder clock independent from image request throttling. */
-internal fun shouldAnimateCatalogLoading(loadingImageCount: Int, reduceMotion: Boolean): Boolean =
-    loadingImageCount > 0 && !reduceMotion
-
-/**
- * One loading animation drives every visible poster. Fetch/decode work can pause during a fling
- * without freezing the lightweight shared shimmer that tells the user those posters are loading.
- */
+/** One shared loading clock for every visible placeholder. */
 @Composable
 private fun CatalogImageLoadingAnimationProvider(
     tvProfile: Boolean,
-    imageRequestsPaused: Boolean,
+    catalogScrolling: Boolean,
     content: @Composable () -> Unit,
 ) {
     var loadingImageCount by remember { mutableIntStateOf(0) }
     val updateLoadingImageCount: (Int) -> Unit = remember {
         { delta -> loadingImageCount = (loadingImageCount + delta).coerceAtLeast(0) }
     }
+    // Hundreds of images can complete during one catalog visit. Observe only the zero/non-zero
+    // boundary so each completion does not invalidate the provider and its large lazy subtree.
+    val hasLoadingImages by remember {
+        derivedStateOf { loadingImageCount > 0 }
+    }
     // The previous shared transition lived for as long as the grid was composed, even after every
     // image had loaded. On a 120 Hz display that kept the entire app scheduling frames while idle.
     // Start the one shared clock only while at least one visible image actually shows a shimmer.
-    val animate = shouldAnimateCatalogLoading(loadingImageCount, LocalReduceMotion.current)
+    val animate = shouldAnimateCatalogLoading(
+        loadingImageCount = if (hasLoadingImages) 1 else 0,
+        reduceMotion = LocalReduceMotion.current,
+    )
     val driver: State<Float>? = if (animate) {
         val transition = rememberInfiniteTransition(label = "catalog-image-loading")
         transition.animateFloat(
@@ -1067,7 +1071,7 @@ private fun CatalogImageLoadingAnimationProvider(
     }
     CompositionLocalProvider(
         LocalImageLoadingAnimationsEnabled provides animate,
-        LocalCatalogImageRequestsPaused provides imageRequestsPaused,
+        LocalCatalogScrolling provides catalogScrolling,
         LocalImageLoadingTracker provides updateLoadingImageCount,
         LocalShimmerOffset provides driver.takeUnless { tvProfile },
         LocalTvLoadingPulse provides driver.takeIf { tvProfile },
@@ -1564,7 +1568,7 @@ private fun GameGrid(
     val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = tvProfile || landscapeLayout)
     val controllerActionMode = catalogControllerActionMode(tvProfile, landscapeLayout, physicalControllerConnected)
     val artworkOnly = shouldUseArtworkOnlyCatalogCards(tvProfile, controllerActionMode)
-    val imageRequestsPaused by remember(gridState) {
+    val catalogScrolling by remember(gridState) {
         derivedStateOf { gridState.isScrollInProgress }
     }
     val favoriteIdSet = remember(favoriteIds) { favoriteIds.toHashSet() }
@@ -1581,7 +1585,7 @@ private fun GameGrid(
         val firstRowGameIds = remember(games, gridSpec.columnCount) {
             games.take(gridSpec.columnCount).mapTo(mutableSetOf()) { it.id }
         }
-        CatalogImageLoadingAnimationProvider(tvProfile, imageRequestsPaused) {
+        CatalogImageLoadingAnimationProvider(tvProfile, catalogScrolling) {
             CatalogFocusScope(enabled = tvProfile) {
                 LazyVerticalGrid(
                     modifier = Modifier.fillMaxSize(),
@@ -1681,7 +1685,7 @@ private fun StoreGameGrid(
         searchActive = state.catalogSearch.isNotBlank(),
         filterActive = state.catalogFilterIds.isNotEmpty(),
     )
-    val imageRequestsPaused by remember(gridState) {
+    val catalogScrolling by remember(gridState) {
         derivedStateOf { gridState.isScrollInProgress }
     }
     val favoriteIdSet = remember(favoriteIds) { favoriteIds.toHashSet() }
@@ -1700,7 +1704,7 @@ private fun StoreGameGrid(
         val firstRowGameIds = remember(games, gridSpec.columnCount) {
             games.take(gridSpec.columnCount).mapTo(mutableSetOf()) { it.id }
         }
-        CatalogImageLoadingAnimationProvider(tvProfile, imageRequestsPaused) {
+        CatalogImageLoadingAnimationProvider(tvProfile, catalogScrolling) {
             CatalogFocusScope(enabled = tvProfile) {
                 LazyVerticalGrid(
                     modifier = Modifier.fillMaxSize(),
@@ -2046,7 +2050,7 @@ private fun StoreComingNextCarousel(
     )
     val selectedGameId = LocalSelectedCatalogGameId.current
     val reduceMotion = LocalReduceMotion.current
-    val storeScrolling = LocalCatalogImageRequestsPaused.current
+    val storeScrolling = LocalCatalogScrolling.current
     val haptics = LocalOpenNowHaptics.current
     val carouselProgress = remember { Animatable(0f) }
     var carouselDragPx by remember { mutableFloatStateOf(0f) }
@@ -2380,7 +2384,7 @@ private fun StoreRailSection(
     val railScrolling by remember(railState) {
         derivedStateOf { railState.isScrollInProgress }
     }
-    val parentImageRequestsPaused = LocalCatalogImageRequestsPaused.current
+    val parentCatalogScrolling = LocalCatalogScrolling.current
     val favoriteIdSet = remember(favoriteIds) { favoriteIds.toHashSet() }
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm)) {
         SectionHeader(title = title)
@@ -2399,8 +2403,15 @@ private fun StoreRailSection(
                 landscapeLayout = landscapeLayout,
                 cardScale = settings.posterSizeScale,
             )
+            val density = LocalDensity.current
+            val imageRequestWidth = remember(cardWidth, density, tvProfile) {
+                catalogCardImageRequestWidth(
+                    cardWidthPx = with(density) { cardWidth.roundToPx() },
+                    tvProfile = tvProfile,
+                )
+            }
             CompositionLocalProvider(
-                LocalCatalogImageRequestsPaused provides (parentImageRequestsPaused || railScrolling),
+                LocalCatalogScrolling provides (parentCatalogScrolling || railScrolling),
             ) {
                 CatalogFocusScope(enabled = tvProfile) {
                     LazyRow(
@@ -2408,7 +2419,11 @@ private fun StoreRailSection(
                         horizontalArrangement = Arrangement.spacedBy(spacing),
                         contentPadding = PaddingValues(horizontal = contentInset),
                     ) {
-                        items(games, key = { storeRailGameKey(it) }) { game ->
+                        items(
+                            items = games,
+                            key = { storeRailGameKey(it) },
+                            contentType = { "store-rail-game" },
+                        ) { game ->
                             StoreRailGameCard(
                                 game = game,
                                 favorite = game.id in favoriteIdSet,
@@ -2417,6 +2432,7 @@ private fun StoreRailSection(
                                 liveSelectedOutlines = LocalActiveSelectionEnabled.current,
                                 showFavoriteIcon = shouldShowCatalogFavoriteIcon(settings),
                                 width = cardWidth,
+                                imageRequestWidth = imageRequestWidth,
                                 controllerActionMode = controllerActionMode,
                                 upFocusRequester = upFocusRequester,
                                 onSelect = onSelect,
@@ -2442,6 +2458,7 @@ private fun StoreRailGameCard(
     liveSelectedOutlines: Boolean,
     showFavoriteIcon: Boolean,
     width: Dp,
+    imageRequestWidth: Int,
     controllerActionMode: Boolean,
     upFocusRequester: FocusRequester?,
     onSelect: (GameInfo) -> Unit,
@@ -2483,10 +2500,12 @@ private fun StoreRailGameCard(
     )
     val dimAlpha = rememberCatalogCardAlpha(focused = focused, tvProfile = tvProfile)
     val transitionRegistry = LocalGameDetailsTransitionRegistry.current
-    val transitionBounds = remember(game.id) { arrayOfNulls<Rect>(1) }
+    val transitionCoordinates = remember(game.id) {
+        arrayOfNulls<LayoutCoordinates>(1)
+    }
     val selectFromCard = {
-        transitionBounds[0]?.let {
-            transitionRegistry?.record(game.id, it, GameDetailsTransitionKind.Card)
+        transitionCoordinates[0]?.takeIf { it.isAttached }?.let { coordinates ->
+            transitionRegistry?.record(game.id, coordinates.boundsInWindow(), GameDetailsTransitionKind.Card)
         }
         onSelect(game)
     }
@@ -2496,7 +2515,9 @@ private fun StoreRailGameCard(
             .padding(vertical = if (tvProfile) CATALOG_CONTROLLER_FOCUS_INSET else 0.dp)
             .aspectRatio(if (tvProfile) 1f else GAME_BOX_ART_ASPECT_RATIO)
             .catalogCardTransform(scale = cardScale, alpha = dimAlpha)
-            .onGloballyPositioned { transitionBounds[0] = it.boundsInWindow() }
+            // Keep the lightweight coordinates handle while scrolling and calculate the global
+            // rectangle only when the card is actually selected.
+            .onGloballyPositioned { transitionCoordinates[0] = it }
             .semantics(mergeDescendants = true) {
                 contentDescription = game.title
                 role = Role.Button
@@ -2554,7 +2575,7 @@ private fun StoreRailGameCard(
         ) {
             Box(Modifier.fillMaxSize().clip(shape)) {
                 UrlImage(
-                    catalogCardImageUrl(game, tvProfile),
+                    catalogCardImageUrl(game, tvProfile, imageRequestWidth),
                     Modifier.fillMaxSize(),
                     // Crop everywhere — see the note in GameCard.
                     contentScale = ContentScale.Crop,
@@ -2782,8 +2803,16 @@ private fun Modifier.catalogCardTransform(scale: Float, alpha: Float): Modifier 
             scaleX = scale
             scaleY = scale
             this.alpha = alpha
+            translationY = catalogCardLiftDp(scale).dp.toPx()
         }
     }
+
+/** Adds depth to the existing scale response without allocating a layer for idle cards. */
+internal fun catalogCardLiftDp(scale: Float): Float = when {
+    scale > 1f -> -4f * ((scale - 1f) / 0.08f).coerceIn(0f, 1f)
+    scale < 1f -> 2f * ((1f - scale) / 0.035f).coerceIn(0f, 1f)
+    else -> 0f
+}
 
 /**
  * Lets a child extend [bleed] past its parent's bounds on both sides without reporting the extra
@@ -3026,10 +3055,12 @@ private fun GameCard(
     )
     val dimAlpha = rememberCatalogCardAlpha(focused = focused, tvProfile = tvProfile)
     val transitionRegistry = LocalGameDetailsTransitionRegistry.current
-    val transitionBounds = remember(game.id) { arrayOfNulls<Rect>(1) }
+    val transitionCoordinates = remember(game.id) {
+        arrayOfNulls<LayoutCoordinates>(1)
+    }
     val selectFromCard = {
-        transitionBounds[0]?.let {
-            transitionRegistry?.record(game.id, it, GameDetailsTransitionKind.Card)
+        transitionCoordinates[0]?.takeIf { it.isAttached }?.let { coordinates ->
+            transitionRegistry?.record(game.id, coordinates.boundsInWindow(), GameDetailsTransitionKind.Card)
         }
         onSelect(game)
     }
@@ -3050,7 +3081,9 @@ private fun GameCard(
             Card(
                 modifier = Modifier
                     .matchParentSize()
-                    .onGloballyPositioned { transitionBounds[0] = it.boundsInWindow() }
+                    // Scrolling changes global bounds every frame. Retain coordinates and resolve
+                    // the rectangle only for the rare selection path instead of every frame.
+                    .onGloballyPositioned { transitionCoordinates[0] = it }
                     .then(
                         upFocusRequester?.let { requester ->
                             Modifier.focusProperties { up = requester }

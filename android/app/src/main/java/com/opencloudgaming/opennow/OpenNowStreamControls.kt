@@ -22,6 +22,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -94,6 +95,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
@@ -1543,6 +1545,71 @@ internal fun BugReportDataDisclosure(
     }
 }
 
+@Composable
+internal fun BugReportConsentGate(
+    checked: Boolean,
+    enabled: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(OpenNowRadius.lg))
+            .toggleable(
+                value = checked,
+                enabled = enabled,
+                role = Role.Checkbox,
+                onValueChange = onCheckedChange,
+            ),
+        shape = RoundedCornerShape(OpenNowRadius.lg),
+        color = if (checked) {
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
+        } else {
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.58f)
+        },
+        border = BorderStroke(
+            1.dp,
+            if (checked) MaterialTheme.colorScheme.primary.copy(alpha = 0.46f)
+            else TextMuted.copy(alpha = 0.20f),
+        ),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = OpenNowSpacing.md, vertical = OpenNowSpacing.sm),
+            horizontalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm),
+            verticalAlignment = Alignment.Top,
+        ) {
+            Checkbox(
+                checked = checked,
+                onCheckedChange = null,
+                enabled = enabled,
+            )
+            Column(
+                modifier = Modifier.padding(top = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.xs),
+            ) {
+                Text(
+                    stringResource(R.string.bug_report_consent_title),
+                    color = TextPrimary,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    stringResource(R.string.bug_report_consent_body),
+                    color = TextMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Text(
+                    stringResource(R.string.bug_report_terms_consent),
+                    color = if (checked) MaterialTheme.colorScheme.primary else TextMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Medium,
+                )
+            }
+        }
+    }
+}
+
 /**
  * Shared header for the main panel and every focused settings/support page. It stays put while the
  * selected page scrolls.
@@ -2132,6 +2199,13 @@ internal fun BugReportFormInputs(
         modifier = modifier,
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
+        BugReportConsentGate(
+            checked = consentChecked,
+            enabled = !submission.uploading,
+            onCheckedChange = onConsentChange,
+        )
+        if (!consentChecked) return@Column
+
         OutlinedTextField(
             value = title,
             onValueChange = onTitleChange,
@@ -2173,28 +2247,6 @@ internal fun BugReportFormInputs(
             onDetailsChange = onDetailsChange,
             onAttachmentsChange = onAttachmentsChange,
         )
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(10.dp))
-                .clickable(enabled = !submission.uploading) {
-                    onConsentChange(!consentChecked)
-                }
-                .padding(vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Checkbox(
-                checked = consentChecked,
-                onCheckedChange = onConsentChange,
-                enabled = !submission.uploading,
-            )
-            Text(
-                stringResource(R.string.bug_report_terms_consent),
-                modifier = Modifier.weight(1f),
-                color = TextMuted,
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
         knownIssueBlock?.let { block ->
             BugReportKnownIssueOverride(
                 block = block,

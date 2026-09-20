@@ -80,10 +80,10 @@ private const val GFN_ANDROID_TOUCH_USER_AGENT =
 // User-Agent used by the official GeForce NOW Android client for TV sessions.
 private const val GFN_ANDROID_TV_USER_AGENT =
     "GFN-PC/22.0 (Android-Generic-TV 14) PGC/3.8 (6.36.38319306) okhttp/4.12.0"
-private const val GFN_CLIENT_VERSION = "2.0.80.173"
+private const val GFN_CLIENT_VERSION = "2.0.88.129"
 private const val GFN_BROWSER_USER_AGENT =
     "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Mobile Safari/537.36"
-private const val GFN_BROWSER_CLIENT_VERSION = "2.0.86.124"
+private const val GFN_BROWSER_CLIENT_VERSION = GFN_CLIENT_VERSION
 private const val LCARS_CLIENT_ID = "ec7e38d4-03af-4b58-b131-cfb0495903ab"
 private const val GFN_PLAY_ORIGIN = "https://play.geforcenow.com"
 private const val GFN_PLAY_REFERER = "https://play.geforcenow.com/"
@@ -131,6 +131,12 @@ private val NVIDIA_BROWSER_CLOUD_MATCH_IDENTITY = CloudMatchClientIdentity(
     userAgent = GFN_BROWSER_USER_AGENT,
     desktopMonitorDescriptor = false,
 )
+
+private fun isNvidiaCloudMatchHost(host: String): Boolean =
+    host == "cloudmatchbeta.nvidiagrid.net" ||
+        host.endsWith(".cloudmatchbeta.nvidiagrid.net") ||
+        host == "cloudmatch.nvidiagrid.net" ||
+        host.endsWith(".cloudmatch.nvidiagrid.net")
 
 private val NVIDIA_NATIVE_CLOUD_MATCH_IDENTITY = CloudMatchClientIdentity(
     platformName = "windows",
@@ -231,11 +237,7 @@ private fun cloudMatchClientIdentity(
     }
     val host = streamingBaseUrl.toHttpUrlOrNull()?.host?.lowercase(Locale.US)
         ?: return ALLIANCE_CLOUD_MATCH_IDENTITY
-    val isNvidiaCloudMatch = host == "cloudmatchbeta.nvidiagrid.net" ||
-        host.endsWith(".cloudmatchbeta.nvidiagrid.net") ||
-        host == "cloudmatch.nvidiagrid.net" ||
-        host.endsWith(".cloudmatch.nvidiagrid.net")
-    if (!isNvidiaCloudMatch) return ALLIANCE_CLOUD_MATCH_IDENTITY
+    if (!isNvidiaCloudMatchHost(host)) return ALLIANCE_CLOUD_MATCH_IDENTITY
     return requestedNativeIdentity ?: NVIDIA_BROWSER_CLOUD_MATCH_IDENTITY
 }
 
@@ -450,7 +452,7 @@ private fun StreamSettings.requestProfile(): StreamRequestProfile {
         height = height,
         hdrEnabled = hdrEnabled,
         hdrDisplay = compatible.hdrDisplay,
-        bitDepth = if (compatible.colorQuality.name.startsWith("TenBit")) 10 else 0,
+        bitDepth = if (compatible.usesTenBitStreamProfile()) 10 else 0,
         chroma = if (compatible.colorQuality == ColorQuality.EightBit444 || compatible.colorQuality == ColorQuality.TenBit444) 2 else 0,
     )
 }
@@ -527,11 +529,28 @@ private fun JsonObjectBuilder.putStreamTransportRequest(settings: StreamSettings
     }
 }
 
-private fun baseWebRtcSessionMetadata(): JsonArray = buildJsonArray {
+private fun cloudMatchLatencyMetadataHost(streamingBaseUrl: String?): String? {
+    val host = streamingBaseUrl
+        ?.toHttpUrlOrNull()
+        ?.host
+        ?.lowercase(Locale.US)
+        ?: return null
+    return host.takeIf {
+        isNvidiaCloudMatchHost(it) &&
+            it != "cloudmatchbeta.nvidiagrid.net" &&
+            it != "cloudmatch.nvidiagrid.net" &&
+            !it.startsWith("prod.")
+    }
+}
+
+private fun baseWebRtcSessionMetadata(streamingBaseUrl: String? = null): JsonArray = buildJsonArray {
     add(metadataEntry("SubSessionId", UUID.randomUUID().toString()))
     add(metadataEntry("wssignaling", "1"))
     add(metadataEntry("GSStreamerType", "WebRTC"))
     add(metadataEntry("networkType", "Unknown"))
+    cloudMatchLatencyMetadataHost(streamingBaseUrl)?.let { host ->
+        add(metadataEntry("latency@$host", "-1"))
+    }
     add(metadataEntry("ClientImeSupport", "0"))
     add(metadataEntry("surroundAudioInfo", "2"))
 }
@@ -540,8 +559,9 @@ private fun streamSessionMetadata(
     settings: StreamSettings,
     profile: StreamRequestProfile,
     physicalDisplayResolution: Pair<Int, Int>? = null,
+    streamingBaseUrl: String? = null,
 ): JsonArray = buildJsonArray {
-    baseWebRtcSessionMetadata().forEach { entry ->
+    baseWebRtcSessionMetadata(streamingBaseUrl).forEach { entry ->
         if (!settings.experimentalNvst || entry.jsonObject["key"]?.jsonPrimitive?.content != "GSStreamerType") add(entry)
     }
     val requestedResolution = profile.width to profile.height
@@ -667,9 +687,9 @@ internal fun buildMinimalClaimRequestBody(
             put(
                 "metaData",
                 if (settings != null && profile != null) {
-                    streamSessionMetadata(settings, profile, physicalDisplayResolution)
+                    streamSessionMetadata(settings, profile, physicalDisplayResolution, streamingBaseUrl)
                 } else {
-                    baseWebRtcSessionMetadata()
+                    baseWebRtcSessionMetadata(streamingBaseUrl)
                 },
             )
             put("surroundAudioInfo", 0)
@@ -3425,7 +3445,7 @@ class GfnSessionRepository(
                 }
                 put("useOps", true)
                 put("audioMode", 2)
-                put("metaData", streamSessionMetadata(settings, profile, physicalDisplayResolution))
+                put("metaData", streamSessionMetadata(settings, profile, physicalDisplayResolution, streamingBaseUrl))
                 put("sdrHdrMode", if (profile.hdrEnabled) 1 else 0)
                 put("clientDisplayHdrCapabilities", if (profile.hdrEnabled) hdrCapabilitiesJson() else JsonNull)
                 put("surroundAudioInfo", 0)

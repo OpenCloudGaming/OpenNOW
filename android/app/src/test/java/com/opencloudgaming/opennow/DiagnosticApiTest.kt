@@ -106,6 +106,24 @@ class DiagnosticApiTest {
     }
 
     @Test
+    fun formEncodedBodiesRemainQuotedJsonStringsAndSecretsAreRedacted() {
+        val body = DiagnosticApiBody(
+            "grant_type=client_credentials&client_token=private-client-token&sub=private-account",
+        )
+        val entry = entry(1, method = "POST").copy(request = body)
+        val serialized = entry.toJson().toString()
+        val parsed = Json.parseToJsonElement(serialized).jsonObject
+        val request = parsed.getValue("request").jsonPrimitive
+
+        assertTrue(request.isString)
+        assertTrue(request.content.startsWith("grant_type=client_credentials"))
+        assertFalse(serialized.contains("private-client-token"))
+        assertFalse(serialized.contains("private-account"))
+        assertTrue(request.content.contains("client_token=[redacted]"))
+        assertTrue(request.content.contains("sub=[redacted]"))
+    }
+
+    @Test
     fun onlyVerboseGameCopyIsStrippedWhileErrorsAndMetadataStayComplete() {
         val longText = "x".repeat(4000)
         val source = buildJsonObject {

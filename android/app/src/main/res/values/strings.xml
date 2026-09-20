@@ -208,7 +208,7 @@
     <string name="queue_starting_stream">Starting stream</string>
     <string name="queue_position">Queue position %1$d</string>
     <string name="queue_waiting_for_rig">Waiting for a rig</string>
-    <string name="queue_connecting_stream">Connecting stream</string>
+    <string name="queue_connecting_stream">Connecting...</string>
     <string name="queue_resuming_session">Resuming session</string>
     <string name="queue_setting_up_rig">Setting up rig</string>
     <string name="queue_starting_session">Starting session</string>

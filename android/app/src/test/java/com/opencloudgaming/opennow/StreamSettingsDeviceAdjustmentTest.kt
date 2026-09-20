@@ -241,6 +241,7 @@ class StreamSettingsDeviceAdjustmentTest {
 
         assertEquals(VideoCodec.H265, adjusted.codec)
         assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
+        assertFalse(adjusted.usesTenBitStreamProfile())
     }
 
     @Test
@@ -465,7 +466,7 @@ class StreamSettingsDeviceAdjustmentTest {
         assertEquals(150, adjusted.maxBitrateMbps)
         assertEquals(VideoCodec.H265, adjusted.codec)
         assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
-        assertEquals(true, adjusted.hdrEnabled)
+        assertEquals(false, adjusted.hdrEnabled)
         assertEquals(true, adjusted.enableL4S)
     }
 
@@ -614,7 +615,7 @@ class StreamSettingsDeviceAdjustmentTest {
         assertEquals(75, adjusted.maxBitrateMbps)
         assertEquals(VideoCodec.H265, adjusted.codec)
         assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
-        assertEquals(true, adjusted.hdrEnabled)
+        assertEquals(false, adjusted.hdrEnabled)
         assertEquals(true, adjusted.streamSharpeningEnabled)
     }
 
@@ -649,7 +650,7 @@ class StreamSettingsDeviceAdjustmentTest {
         assertEquals(75, adjusted.maxBitrateMbps)
         assertEquals(VideoCodec.H265, adjusted.codec)
         assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
-        assertEquals(true, adjusted.hdrEnabled)
+        assertEquals(false, adjusted.hdrEnabled)
         assertEquals(true, adjusted.streamSharpeningEnabled)
     }
 
