@@ -1610,17 +1610,20 @@ fn import_nv12_dmabuf(
             "DMA-BUF plane offset exceeds its object size".to_owned(),
         ));
     }
+    // `size` must be 0 in every plane layout
+    // (VUID-VkImageDrmFormatModifierExplicitCreateInfoEXT-size-02267); see the
+    // matching import in frame_producer.rs.
     let plane_layouts = [
         vk::SubresourceLayout {
             offset: luma.offset as vk::DeviceSize,
-            size: object_size.saturating_sub(luma.offset) as vk::DeviceSize,
+            size: 0,
             row_pitch: luma.pitch as vk::DeviceSize,
             array_pitch: 0,
             depth_pitch: 0,
         },
         vk::SubresourceLayout {
             offset: chroma.offset as vk::DeviceSize,
-            size: object_size.saturating_sub(chroma.offset) as vk::DeviceSize,
+            size: 0,
             row_pitch: chroma.pitch as vk::DeviceSize,
             array_pitch: 0,
             depth_pitch: 0,

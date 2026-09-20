@@ -431,6 +431,10 @@ pub struct ImportedNv12Frame {
     pub luma_view: u64,
     pub chroma_view: u64,
     pub modifier: u64,
+    /// Height the image was created with, which may exceed the visible height
+    /// when the decoder pads the picture. Sampling must be scaled by
+    /// `visible / coded` so the padding rows stay off screen.
+    pub coded_height: u32,
     pub external_queue_family: u32,
     pub render_queue_family: u32,
     image_handle: vk::Image,
@@ -1229,7 +1233,11 @@ impl LinuxFrameProducer {
                     vk::ImageMemoryBarrier::default()
                         .old_layout(vk::ImageLayout::GENERAL)
                         .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                        .src_queue_family_index(vk::QUEUE_FAMILY_EXTERNAL)
+                        // The producer is V4L2/VA-API, not another Vulkan device, so
+                        // ownership comes from the foreign queue family. `EXTERNAL`
+                        // would promise a matching release from a Vulkan device that
+                        // never happens, leaving the contents undefined.
+                        .src_queue_family_index(vk::QUEUE_FAMILY_FOREIGN_EXT)
                         .dst_queue_family_index(self.render.queue_family)
                         .src_access_mask(vk::AccessFlags::MEMORY_WRITE)
                         .dst_access_mask(vk::AccessFlags::SHADER_READ)
@@ -1302,7 +1310,15 @@ impl LinuxFrameProducer {
                 &[],
             );
             let constants = ConversionConstants {
-                texture_scale: [1.0, 1.0],
+                // A DMA-BUF import may be taller than the visible picture when
+                // the decoder pads it; sample only the visible rows.
+                texture_scale: match prepared {
+                    PreparedLinuxFrame::DmaBuf(frame) if frame.coded_height > 0 => [
+                        1.0,
+                        frame.source.format.height as f32 / frame.coded_height as f32,
+                    ],
+                    _ => [1.0, 1.0],
+                },
                 color_matrix: match color_matrix {
                     crate::ColorMatrix::Bt601 => 0,
                     crate::ColorMatrix::Bt709 => 1,
@@ -1378,7 +1394,9 @@ impl LinuxFrameProducer {
                     .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                     .new_layout(vk::ImageLayout::GENERAL)
                     .src_queue_family_index(self.render.queue_family)
-                    .dst_queue_family_index(vk::QUEUE_FAMILY_EXTERNAL)
+                    // Released back to the foreign V4L2/VA-API producer; see the
+                    // matching acquire barrier above.
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_FOREIGN_EXT)
                     .src_access_mask(vk::AccessFlags::SHADER_READ)
                     .dst_access_mask(vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE)
                     .image(vk::Image::from_raw(frame.image))
@@ -2051,17 +2069,39 @@ fn import_nv12_dmabuf(
         ));
     }
     let p010 = source.format.pixel_format == PixelFormat::P010;
+    // The image must be created at the buffer's *coded* height, not the visible
+    // one. Drivers are not required to honour the explicit plane offsets below
+    // and may derive the chroma base from the image extent instead; when the
+    // decoder pads the picture (1080 -> 1088) a visible-height extent then puts
+    // the chroma plane `pitch * padding` bytes early, tinting the image with a
+    // vertically displaced copy of its own colour. Deriving the coded height
+    // from the exporter's own chroma offset keeps both readings identical.
+    let coded_height = if luma.pitch > 0
+        && chroma.offset > 0
+        && chroma.offset % luma.pitch == 0
+        && (chroma.offset / luma.pitch) >= source.format.height as usize
+    {
+        (chroma.offset / luma.pitch) as u32
+    } else {
+        source.format.height
+    };
+    // `size` must be 0 in every plane layout
+    // (VUID-VkImageDrmFormatModifierExplicitCreateInfoEXT-size-02267). Passing a
+    // real size makes the layout invalid, and a driver may then ignore the
+    // explicit offsets and derive its own from the image extent. For a decoder
+    // whose buffer is padded taller than the visible picture (1080 -> 1088),
+    // that puts the chroma plane a few rows off and tints the image.
     let plane_layouts = [
         vk::SubresourceLayout {
             offset: luma.offset as u64,
-            size: object_size.saturating_sub(luma.offset) as u64,
+            size: 0,
             row_pitch: luma.pitch as u64,
             array_pitch: 0,
             depth_pitch: 0,
         },
         vk::SubresourceLayout {
             offset: chroma.offset as u64,
-            size: object_size.saturating_sub(chroma.offset) as u64,
+            size: 0,
             row_pitch: chroma.pitch as u64,
             array_pitch: 0,
             depth_pitch: 0,
@@ -2084,7 +2124,7 @@ fn import_nv12_dmabuf(
         })
         .extent(vk::Extent3D {
             width: source.format.width,
-            height: source.format.height,
+            height: coded_height,
             depth: 1,
         })
         .mip_levels(1)
@@ -2197,7 +2237,8 @@ fn import_nv12_dmabuf(
         luma_view: luma_view.as_raw(),
         chroma_view: chroma_view.as_raw(),
         modifier,
-        external_queue_family: vk::QUEUE_FAMILY_EXTERNAL,
+        coded_height,
+        external_queue_family: vk::QUEUE_FAMILY_FOREIGN_EXT,
         render_queue_family,
         image_handle: image,
         luma_view_handle: luma_view,

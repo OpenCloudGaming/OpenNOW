@@ -15,7 +15,9 @@ layout(location = 0) in vec2 texture_coordinates;
 layout(location = 0) out vec4 output_color;
 
 void main() {
-    vec2 source = (texture_coordinates - vec2(0.5)) * conversion.texture_scale + vec2(0.5);
+    // Anchored at the origin rather than the centre: texture_scale crops padding
+    // rows off the bottom of a decoder buffer, which must not shift the picture.
+    vec2 source = texture_coordinates * conversion.texture_scale;
     float y = texture(luma_texture, source).r;
     vec2 uv = texture(chroma_texture, source + vec2(conversion.chroma_offset_x, 0.0)).rg;
     bool ten_bit = conversion.sample_bits != 8;
