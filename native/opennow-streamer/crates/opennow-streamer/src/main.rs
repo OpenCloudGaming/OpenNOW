@@ -67,6 +67,14 @@ fn main() -> io::Result<()> {
             .with_ansi(false)
             .try_init();
     }
+    // Headless diagnosis: the FFI path configures the file sink via
+    // opennow_streamer_set_log_file, but the standalone child never does, so
+    // all log_line diagnostics (RTSP negotiation, transport) would be lost.
+    // Point it at a file with OPENNOW_STREAMER_LOG_FILE; failures are ignored
+    // because logging must never break streaming.
+    if let Some(path) = std::env::var_os("OPENNOW_STREAMER_LOG_FILE") {
+        let _ = opennow_streamer_protocol::log::set_log_file(&path.to_string_lossy());
+    }
     let (host, media_runtime) = create_runtime().map_err(io::Error::other)?;
     let shutdown_runtime = media_runtime.clone();
     let protocol = thread::Builder::new()
