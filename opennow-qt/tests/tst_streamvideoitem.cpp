@@ -776,7 +776,8 @@ private slots:
         QVERIFY(!hasDmabufImportContract(QVersionNumber(1, 1), VK_API_VERSION_1_0,
                                          required, required));
         const QByteArrayList mandatory = {"VK_KHR_external_memory_fd", "VK_EXT_external_memory_dma_buf",
-                                         "VK_EXT_image_drm_format_modifier", "VK_KHR_image_format_list"};
+                                         "VK_EXT_image_drm_format_modifier", "VK_KHR_image_format_list",
+                                         "VK_EXT_queue_family_foreign"};
         for (const auto &extension : mandatory) {
             auto missing = required;
             missing.removeAll(extension);
@@ -787,6 +788,8 @@ private slots:
         }
         auto promoted = mandatory;
         promoted.removeAll("VK_KHR_image_format_list");
+        // VK_EXT_queue_family_foreign is never promoted, so it stays required.
+        QVERIFY(promoted.contains("VK_EXT_queue_family_foreign"));
         QVERIFY(hasDmabufImportContract(QVersionNumber(1, 2), VK_API_VERSION_1_2,
                                         promoted, promoted));
         QVERIFY(!hasDmabufImportContract(QVersionNumber(1, 1), VK_API_VERSION_1_2,

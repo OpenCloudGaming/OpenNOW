@@ -2075,16 +2075,9 @@ fn import_nv12_dmabuf(
     // decoder pads the picture (1080 -> 1088) a visible-height extent then puts
     // the chroma plane `pitch * padding` bytes early, tinting the image with a
     // vertically displaced copy of its own colour. Deriving the coded height
-    // from the exporter's own chroma offset keeps both readings identical.
-    let coded_height = if luma.pitch > 0
-        && chroma.offset > 0
-        && chroma.offset % luma.pitch == 0
-        && (chroma.offset / luma.pitch) >= source.format.height as usize
-    {
-        (chroma.offset / luma.pitch) as u32
-    } else {
-        source.format.height
-    };
+    // from the distance between the exporter's own plane offsets keeps both
+    // readings identical.
+    let coded_height = crate::format::nv12_coded_height(&luma, &chroma, source.format.height);
     // `size` must be 0 in every plane layout
     // (VUID-VkImageDrmFormatModifierExplicitCreateInfoEXT-size-02267). Passing a
     // real size makes the layout invalid, and a driver may then ignore the
