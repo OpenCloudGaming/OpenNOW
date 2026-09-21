@@ -707,7 +707,7 @@ jobs:
         with:
           pattern: opennow-qt-*-unsigned
           path: unsigned-artifacts
-      - name: Verify all nine packages and AppImage sidecars and prepare release checksums
+      - name: Verify the complete package set, including setup.exe, and prepare release checksums
         shell: bash
         run: |
           python3 opennow-qt/packaging/nightly_release.py assemble \

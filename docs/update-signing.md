@@ -76,22 +76,25 @@ For version `<version>`, the public nightly inventory contains exactly these pac
 
 - `OpenNOW-Qt-<version>-Windows-x64.msi`
 - `OpenNOW-Qt-<version>-Windows-x64.zip`
+- `OpenNOW-Qt-<version>-Windows-x64-setup.exe`
 - `OpenNOW-Qt-<version>-Windows-arm64.msi`
 - `OpenNOW-Qt-<version>-Windows-arm64.zip`
+- `OpenNOW-Qt-<version>-Windows-arm64-setup.exe`
 - `OpenNOW-Qt-<version>-Linux-x64.AppImage`
 - `OpenNOW-Qt-<version>-Linux-x64.deb`
 - `OpenNOW-Qt-<version>-Linux-arm64.AppImage`
 - `OpenNOW-Qt-<version>-Linux-arm64.deb`
 - `OpenNOW-Qt-<version>-Darwin-arm64.dmg`
 
-Both AppImages also have versioned `.AppImage.zsync` sidecars. All eleven assets have
+Both AppImages also have versioned `.AppImage.zsync` sidecars. `setup.exe` is a
+Windows install artifact for each architecture. All thirteen assets have
 exact sibling manifests. `RELEASE-INFO.json` retains the immutable
 package inventory and changes `updates` from `manual-download` to `signed-manifest`.
 `platformSigning` remains `unsigned`: update signatures do not provide Authenticode
-or macOS notarization. Final `SHA256SUMS` covers all eleven assets, all eleven manifests,
+or macOS notarization. Final `SHA256SUMS` covers all thirteen assets, all thirteen manifests,
 and the rewritten release metadata. The validation-only macOS ZIP is never published.
 
-The production `qt-release-candidate.yml` contract uses ten Linux, Windows,
+The production `qt-release-candidate.yml` contract uses twelve Linux, Windows,
 and macOS packages plus two AppImage sidecars, optional Windows platform signing and
 required macOS platform signing, isolated update signing,
 and a candidate artifact. See [Set up signed Qt releases](qt-release-signing-setup.md)
@@ -99,8 +102,8 @@ for production credentials and first-release instructions.
 `qt-stable-release.yml` promotes only a successful candidate run with the exact reviewed
 main SHA and project version. It verifies the run's repository/workflow provenance,
 candidate inventory and production-key signatures before flattening and publishing
-the unchanged packages and manifests. Its 26-file release includes twelve assets,
-twelve manifests, metadata and checksums. The macOS Developer ID identity and
+the unchanged packages and manifests. Its 30-file release includes fourteen assets,
+fourteen manifests, metadata and checksums. The macOS Developer ID identity and
 notarization from the candidate are preserved; stable releases must not replace
 these with ad-hoc packages because the update helper rejects a changed signing identity.
 Nightly release notes use GitHub-generated changelogs. Installation guidance and known
