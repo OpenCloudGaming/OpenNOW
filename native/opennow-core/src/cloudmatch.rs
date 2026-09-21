@@ -273,6 +273,7 @@ impl CloudMatchService {
             .or_else(|| base.host_str().map(ToOwned::to_owned))
             .unwrap_or_default();
         let mut info = session_info(&payload, &base, &zone, &app_id, device_id)?;
+        info["keyboardLayout"] = json!(crate::language::session_keyboard_layout(settings));
         if let Some(session_id) = network_test["sessionId"].as_str() {
             info["networkTestSessionId"] = json!(session_id);
         }
@@ -940,7 +941,8 @@ impl CloudMatchService {
             let info = session_info(&initial_payload, &control_base, "", &app_id, device_id)?;
             return Ok(json!({"session":info}));
         }
-        if session_requires_resume(initial_status)? {
+        let resumed = session_requires_resume(initial_status)?;
+        if resumed {
             let mut url = control_base
                 .join(&format!("v2/session/{session_id}"))
                 .map_err(|_| invalid("Invalid CloudMatch claim URL"))?;
@@ -965,6 +967,9 @@ impl CloudMatchService {
         // Qt schedules cancellable session.poll requests until the fresh GET
         // reports status 2/3 with native endpoints. No long blocking RPC loop.
         let mut info = session_info(&initial_payload, &control_base, zone, &app_id, device_id)?;
+        if resumed {
+            info["keyboardLayout"] = json!(crate::language::session_keyboard_layout(settings));
+        }
         info["resumePending"] = json!(true);
         info["phase"] = json!("resuming");
         self.store_active(&mut info, &control_base, zone, &app_id, client)?;
@@ -1077,6 +1082,9 @@ impl CloudMatchService {
         }
         if let Some(previous) = active.as_ref() {
             preserve_session_profile(info, &previous.info);
+            if previous.session_id == session_id && info["keyboardLayout"].is_null() {
+                info["keyboardLayout"] = previous.info["keyboardLayout"].clone();
+            }
         }
         *active = Some(ActiveSession {
             session_id,
@@ -2677,6 +2685,7 @@ mod tests {
             ("es_419", "de-DE", "es_419", "de-DE"),
             ("zh_Hant_TW", "ja-JP", "zh_Hant_TW", "ja-106"),
             ("system", "es-ES", "en_US", "es-ES_tradnl"),
+            ("uk_UA", "uk-UA", "uk_UA", "uk-UA"),
         ] {
             let settings =
                 json!({"appLanguage":"fr", "gameLanguage":game, "keyboardLayout":keyboard});
@@ -2701,7 +2710,7 @@ mod tests {
                 .build()
                 .unwrap();
             let mut service = CloudMatchService::new(client.clone());
-            service
+            let created = service
                 .create_at(
                     &json!({"appId":"123"}),
                     &settings,
@@ -2710,9 +2719,10 @@ mod tests {
                     || Ok((client, base.clone())),
                 )
                 .unwrap();
+            assert_eq!(created["session"]["keyboardLayout"], expected_keyboard);
             service.finish_create("A", false).unwrap();
             service.set_test_control_base(base);
-            service
+            let claimed = service
                 .claim(
                     &json!({"sessionId":"B"}),
                     &settings,
@@ -2720,6 +2730,7 @@ mod tests {
                     "device",
                 )
                 .unwrap();
+            assert_eq!(claimed["session"]["keyboardLayout"], expected_keyboard);
             let received = server.join().unwrap();
             assert_eq!(received.len(), 5);
             for index in [0, 1, 4] {
@@ -4879,6 +4890,39 @@ mod tests {
             .store_active(&mut omitted, &base, "auto", "123", client)
             .unwrap();
         assert_eq!(omitted["negotiatedStreamProfile"]["codec"], Value::Null);
+    }
+
+    #[test]
+    fn active_keyboard_layout_survives_polling_but_not_a_different_session() {
+        let client = Client::new();
+        let service = CloudMatchService::new(client.clone());
+        let base = Url::parse("https://prod.cloudmatchbeta.nvidiagrid.net/").unwrap();
+        let mut created = json!({"sessionId":"seat-one", "keyboardLayout":"fr-FR"});
+        service
+            .store_active(&mut created, &base, "auto", "123", client.clone())
+            .unwrap();
+
+        let mut polled = json!({"sessionId":"seat-one", "status":2});
+        service
+            .store_active(&mut polled, &base, "auto", "123", client.clone())
+            .unwrap();
+        assert_eq!(polled["keyboardLayout"], "fr-FR");
+
+        let mut resumed = json!({"sessionId":"seat-one", "keyboardLayout":"de-DE"});
+        service
+            .store_active(&mut resumed, &base, "auto", "123", client.clone())
+            .unwrap();
+        let mut polled = json!({"sessionId":"seat-one", "status":3});
+        service
+            .store_active(&mut polled, &base, "auto", "123", client.clone())
+            .unwrap();
+        assert_eq!(polled["keyboardLayout"], "de-DE");
+
+        let mut different = json!({"sessionId":"seat-two"});
+        service
+            .store_active(&mut different, &base, "auto", "123", client)
+            .unwrap();
+        assert!(different["keyboardLayout"].is_null());
     }
 
     #[test]

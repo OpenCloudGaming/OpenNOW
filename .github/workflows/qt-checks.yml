@@ -37,4 +37,4 @@ jobs:
       - name: Validate localization
         run: |
           npm run locales:check
-          node --test scripts/check-translations.test.mjs
+          node --test scripts/check-translations.test.mjs scripts/check-keyboard-layouts.test.mjs
