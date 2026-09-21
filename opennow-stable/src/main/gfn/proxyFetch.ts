@@ -1,4 +1,9 @@
-import { normalizeSessionProxyUrl, sessionProxyPartitionForUrl } from "./proxyUrl";
+import {
+  isCloudflareWebSocketProxyUrl,
+  normalizeSessionProxyUrl,
+  sessionProxyPartitionForUrl,
+} from "./proxyUrl";
+import { localProxyForCloudflareTunnel } from "./websocketProxyBridge";
 
 type ElectronSessionWithFetch = Electron.Session & {
   fetch?: typeof fetch;
@@ -16,7 +21,10 @@ export async function fetchWithOptionalProxy(
 
   const { session: electronSession } = await import("electron");
   const proxySession = electronSession.fromPartition(sessionProxyPartitionForUrl(normalizedProxyUrl), { cache: false }) as ElectronSessionWithFetch;
-  await proxySession.setProxy({ proxyRules: normalizedProxyUrl });
+  const proxyRules = isCloudflareWebSocketProxyUrl(normalizedProxyUrl)
+    ? await localProxyForCloudflareTunnel(normalizedProxyUrl)
+    : normalizedProxyUrl;
+  await proxySession.setProxy({ proxyRules });
 
   if (typeof proxySession.fetch === "function") {
     return proxySession.fetch(input, init);

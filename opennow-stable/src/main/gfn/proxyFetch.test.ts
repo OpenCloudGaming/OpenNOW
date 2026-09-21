@@ -3,7 +3,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { normalizeSessionProxyUrl, sessionProxyPartitionForUrl } from "./proxyUrl";
+import {
+  isCloudflareWebSocketProxyUrl,
+  normalizeSessionProxyUrl,
+  sessionProxyPartitionForUrl,
+} from "./proxyUrl";
 
 test("normalizes scheme-less session proxy host:port values as http proxies", () => {
   assert.equal(normalizeSessionProxyUrl("localhost:8080"), "http://localhost:8080");
@@ -13,6 +17,17 @@ test("normalizes scheme-less session proxy host:port values as http proxies", ()
 
 test("accepts supported explicit session proxy schemes", () => {
   assert.equal(normalizeSessionProxyUrl("socks5://proxy.example.com:1080"), "socks5://proxy.example.com:1080");
+});
+
+test("normalizes Cloudflare WebSocket proxy URLs with the default TLS port", () => {
+  const proxyUrl = normalizeSessionProxyUrl("wss://onproxy.example.com");
+  assert.equal(proxyUrl, "wss://onproxy.example.com:443");
+  assert.equal(isCloudflareWebSocketProxyUrl(proxyUrl!), true);
+});
+
+test("fills standard default ports when a proxy URL omits one", () => {
+  assert.equal(normalizeSessionProxyUrl("https://proxy.example.com"), "https://proxy.example.com:443");
+  assert.equal(normalizeSessionProxyUrl("http://proxy.example.com"), "http://proxy.example.com:80");
 });
 
 test("rejects unsupported explicit session proxy schemes", () => {
