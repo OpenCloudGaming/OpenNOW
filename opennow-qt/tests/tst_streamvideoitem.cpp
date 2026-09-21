@@ -997,6 +997,92 @@ private slots:
 #endif
     }
 
+#if defined(Q_OS_LINUX)
+    void linuxPhysicalKeysFollowTheRequestedKeyboardLayout_data()
+    {
+        QTest::addColumn<QString>("layout");
+        QTest::addColumn<int>("key");
+        QTest::addColumn<int>("modifiers");
+        QTest::addColumn<quint32>("xkbKeycode");
+        QTest::addColumn<quint16>("expectedKey");
+        QTest::addColumn<quint16>("expectedModifiers");
+        const auto row = [](const char *name, const char *layout, int key, int modifiers,
+                            quint32 xkbKeycode, quint16 expectedKey, quint16 expectedModifiers) {
+            QTest::newRow(name) << QString::fromLatin1(layout) << key << modifiers << xkbKeycode
+                                << expectedKey << expectedModifiers;
+        };
+        // Swedish keys that previously produced no input at all.
+        row("sv-aring", "sv-SE", Qt::Key_Aring, 0, 34, 0xdd, 0);
+        row("sv-odiaeresis", "sv-SE", Qt::Key_Odiaeresis, 0, 47, 0xc0, 0);
+        row("sv-adiaeresis", "sv-SE", Qt::Key_Adiaeresis, 0, 48, 0xde, 0);
+        row("sv-section", "sv-SE", Qt::Key_section, 0, 49, 0xdc, 0);
+        row("sv-dead-acute", "sv-SE", Qt::Key_Dead_Acute, 0, 21, 0xdb, 0);
+        row("sv-dead-diaeresis", "sv-SE", Qt::Key_Dead_Diaeresis, 0, 35, 0xba, 0);
+        row("sv-apostrophe", "sv-SE", Qt::Key_Apostrophe, 0, 51, 0xbf, 0);
+        row("sv-angle-bracket", "sv-SE", Qt::Key_Less, 0, 94, 0xe2, 0);
+        row("nb-aring", "nb-NO", Qt::Key_Aring, 0, 34, 0xdd, 0);
+        row("da-aring", "da-DK", Qt::Key_Aring, 0, 34, 0xdd, 0);
+        // The digit row is VK_0..VK_9 whatever punctuation shift produces.
+        row("sv-shift-2", "sv-SE", Qt::Key_QuoteDbl, Qt::ShiftModifier, 11, 0x32, 0x01);
+        row("sv-shift-7", "sv-SE", Qt::Key_Slash, Qt::ShiftModifier, 16, 0x37, 0x01);
+        row("sv-shift-0", "sv-SE", Qt::Key_Equal, Qt::ShiftModifier, 19, 0x30, 0x01);
+        row("us-shift-2", "en-US", Qt::Key_At, Qt::ShiftModifier, 11, 0x32, 0x01);
+        row("fr-unshifted-1", "fr-FR", Qt::Key_Ampersand, 0, 10, 0x31, 0);
+        // Layouts without a physical table keep the logical-key mapping.
+        row("us-bracket-left", "en-US", Qt::Key_BracketLeft, 0, 34, 0xdb, 0);
+        row("us-letter", "en-US", Qt::Key_W, 0, 25, 0x57, 0);
+        row("sv-letter", "sv-SE", Qt::Key_W, 0, 25, 0x57, 0);
+    }
+
+    void linuxPhysicalKeysFollowTheRequestedKeyboardLayout()
+    {
+        QFETCH(QString, layout);
+        QFETCH(int, key);
+        QFETCH(int, modifiers);
+        QFETCH(quint32, xkbKeycode);
+        QFETCH(quint16, expectedKey);
+        QFETCH(quint16, expectedModifiers);
+        static QList<QList<quint16>> inputCalls;
+        inputCalls.clear();
+        auto api = CursorSession::api();
+        api.submitKey = [](const OpenNowStreamer *, std::uint16_t vk,
+                           std::uint16_t wireModifiers, bool pressed) {
+            inputCalls.append(QList<quint16>{vk, wireModifiers, quint16(pressed)});
+            return OPENNOW_STREAMER_OK;
+        };
+        NativeStreamRuntime runtime(api);
+        QVERIFY(runtime.start());
+        StreamVideoItem::setNativeStreamRuntime(&runtime);
+        const auto reset = qScopeGuard([] { StreamVideoItem::setNativeStreamRuntime(nullptr); });
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                              {QStringLiteral("id"), QStringLiteral("physical-keyboard")}}));
+        const QByteArray ready = R"({"id":"physical-keyboard","type":"ok"})";
+        CursorSession::callbacks.response_callback(
+            reinterpret_cast<const std::uint8_t *>(ready.constData()), ready.size(),
+            CursorSession::callbacks.user_data);
+        QTRY_VERIFY(runtime.inputAllowed());
+        QQuickWindow window;
+        window.resize(640, 480);
+        auto *item = new StreamVideoItem(window.contentItem());
+        item->setRenderCallback({});
+        item->setSize(window.size());
+        item->setKeyboardLayout(layout);
+        window.showNormal();
+        window.requestActivate();
+        QTRY_VERIFY(window.isActive());
+        item->forceActiveFocus();
+        QTRY_VERIFY(item->captureActive());
+
+        QKeyEvent press(QEvent::KeyPress, key, Qt::KeyboardModifiers(modifiers), xkbKeycode, 0, 0);
+        QCoreApplication::sendEvent(&window, &press);
+        QCOMPARE(inputCalls, (QList<QList<quint16>>{{expectedKey, expectedModifiers, 1}}));
+        QKeyEvent release(QEvent::KeyRelease, Qt::Key_unknown, Qt::NoModifier, xkbKeycode, 0, 0);
+        QCoreApplication::sendEvent(&window, &release);
+        QCOMPARE(inputCalls.last().at(0), expectedKey);
+        QCOMPARE(inputCalls.last().at(2), quint16(0));
+    }
+#endif
+
     void tabDoesNotStealGameplayFocus_data()
     {
         QTest::addColumn<int>("key");

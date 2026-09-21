@@ -171,6 +171,19 @@ void StreamVideoItem::setClipboardPaste(bool enabled)
     emit clipboardPasteChanged();
 }
 
+QString StreamVideoItem::keyboardLayout() const
+{
+    return m_keyboardLayout;
+}
+
+void StreamVideoItem::setKeyboardLayout(const QString &layout)
+{
+    if (m_keyboardLayout == layout) return;
+    m_keyboardLayout = layout;
+    m_keyboardFamily = PhysicalKeyMap::familyForLayout(layout.toStdString());
+    emit keyboardLayoutChanged();
+}
+
 QString StreamVideoItem::inputCaptureError() const
 {
     return m_usesMacPointerCapture ? m_macPointer->error() : m_waylandPointer->error();

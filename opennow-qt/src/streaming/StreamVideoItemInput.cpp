@@ -161,11 +161,19 @@ void StreamVideoItem::focusOutEvent(QFocusEvent *event)
     QQuickItem::focusOutEvent(event);
 }
 
-quint16 StreamVideoItem::eventVirtualKey(const QKeyEvent *event)
+quint16 StreamVideoItem::eventVirtualKey(const QKeyEvent *event) const
 {
 #if defined(Q_OS_WIN)
     return windowsVirtualKey(event->key(), event->modifiers(), event->nativeVirtualKey());
 #else
+#if defined(Q_OS_LINUX)
+    // Synthetic events carry no scan code and fall through to the logical key.
+    const auto evdevCode = PhysicalKeyMap::evdevCodeFromNativeScanCode(event->nativeScanCode());
+    if (const auto digit = PhysicalKeyMap::digitRowVirtualKey(evdevCode)) return digit;
+    if (m_keyboardFamily == PhysicalKeyMap::Family::Nordic) {
+        if (const auto oem = PhysicalKeyMap::nordicVirtualKey(evdevCode)) return oem;
+    }
+#endif
     return windowsVirtualKey(event->key(), event->modifiers());
 #endif
 }
