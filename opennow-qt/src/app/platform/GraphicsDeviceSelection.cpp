@@ -13,6 +13,12 @@
 #include <utility>
 
 #ifdef Q_OS_WIN
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #include <d3d11_1.h>
 #include <dxgi1_6.h>
@@ -80,7 +86,8 @@ void indexAdapterDecode(IDXGIAdapter *adapter, bool *h264, bool *h265, bool *av1
         qInfo("Graphics adapter decode index has no D3D11 video device");
         return;
     }
-    const UINT count = std::min(video->GetVideoDecoderProfileCount(), 64u);
+    const UINT profileCount = video->GetVideoDecoderProfileCount();
+    const UINT count = profileCount < 64u ? profileCount : 64u;
     for (UINT profileIndex = 0; profileIndex < count; ++profileIndex) {
         GUID profile{};
         if (FAILED(video->GetVideoDecoderProfile(profileIndex, &profile))) continue;
