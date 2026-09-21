@@ -1,6 +1,6 @@
 # Session creation and CloudMatch orchestration
 
-This note records how the official GeForce NOW Linux x86_64 Flatpak creates a cloud seat and hands it to the native streamer, then maps that path onto OpenNOW. The evidence is the unpacked Flatpak commit `235a800084abb2246e4578e5b60c33397fac73152c02a5751e663ddafd00e260`, the CEF tree under `files/cef`, string and symbol extracts under `/workspace/audit/gfn-official/extracts/`, and the OpenNOW owners `native/opennow-core/src/cloudmatch.rs`, `native/opennow-core/src/streamer.rs`, and `docs/core-protocol.md`.
+This note records how the official GeForce NOW Linux x86_64 Flatpak creates a cloud seat and hands it to the native streamer, then maps that path onto OpenNOW. The evidence is the unpacked Flatpak commit `235a800084abb2246e4578e5b60c33397fac73152c02a5751e663ddafd00e260`, the CEF tree under `files/cef`, string and symbol extracts under `audit/gfn-official/extracts/`, and the OpenNOW owners `native/opennow-core/src/cloudmatch.rs`, `native/opennow-core/src/streamer.rs`, and `docs/core-protocol.md`.
 
 The binaries are stripped ELF objects. Exported C symbols, demangled C++ symbols, and adjacent read-only strings are reliable. Integer enum values are reliable only where OpenNOW already treats them as a live CloudMatch contract. Where a string table is a contiguous `Unknown …` run, this note treats the names as the vendor vocabulary and does not invent indexes from file order.
 
@@ -16,8 +16,8 @@ Sizes and identities:
 | --- | --- | --- | --- |
 | `GeForceNOW` | 2.4 MB | CEF shell, links `libcef.so`, `libGeronimo.so`, `libBifrost2.so`, SDL2 | `dad4d41dc959f65e69238bc158fc26fc04ab5d6d` |
 | `GeForceNOWContainer` | 861 KB | Separate PIE helper; dynamic section does not list Bifrost or Geronimo | xxHash `7babb5688f7eb958` |
-| `libBifrost2.so` | 19 MB | CloudMatch and NVST session SDK, SONAME `libBifrost2.so` | `fa3685038bd71962fe30ad09482bcb0721a54f35` |
-| `libGeronimo.so` | 33 MB | Streamer, decode, input, `GridApp`, SONAME `libGeronimo.so`, NEEDED `libBifrost2.so` | `15d0eebc08da503f1f37ea9cae2dbac1d760fea4` |
+| `libBifrost2.so` | 19,052,024 bytes | CloudMatch and NVST session SDK, SONAME `libBifrost2.so` | `fa3685038bd71962fe30ad09482bcb0721a54f35` |
+| `libGeronimo.so` | 34,347,824 bytes | Streamer, decode, input, `GridApp`, SONAME `libGeronimo.so`, NEEDED `libBifrost2.so` | `15d0eebc08da503f1f37ea9cae2dbac1d760fea4` |
 | `libcef.so` | 220 MB | Chromium 128 embedder | — |
 
 `GeForceNOW` does not talk to CloudMatch itself. It hosts the mall at a relative URL, receives JavaScript queries, and forwards them into `GridApp`. Source paths burned into the shell make that boundary explicit: `client/cef/src/gfn/simple_grid_app.cc`, `simple_grid_app.h`, `gfn_query_handler.cc`, `gfn_sdk_connector.cc`, `gfn/serenity/serenity.cc`, and `gfn/serenity/rtsp_handler.cc`. Shell logs say “Browser app is initializing Geronimo”, “Creating grid app”, “Geronimo GRID Init”, then later “QUERY_GFN_PREPARE values, Server:” and “QUERY_GFN_START values, Server:”.

@@ -40,7 +40,7 @@ Consolidated from the section audits. **Already aligned** items (RTSP shape, Mjo
 | Gap | Official Linux | OpenNOW Linux |
 | --- | --- | --- |
 | **Pointer capture** | XInput2 raw, XWayland `XGrabPointer`, SDL fallback | XI2 + Qt/Wayland path in app | `opennow-qt` input |
-| **Gamescope HDR env** | Flatpak sets `ENABLE_GAMESCOPE_HDR` | Compositor HDR from Qt output | packaging + settings |
+| **Gamescope HDR env** | Flatpak sets `ENABLE_GAMESCOPE=1`, `ENABLE_GAMESCOPE_HDR=1`, and `GAMESCOPE_HDR=1` | Compositor HDR from Qt output | packaging + settings |
 | **Default audio device churn** | Explicitly disabled on Linux client | WASAPI-style replug on Windows only | platform audio |
 
 ## Version skew note

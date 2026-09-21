@@ -1,6 +1,6 @@
 # Official GeForce NOW binary audit (Linux x86_64 Flatpak)
 
-Extended static reverse-engineering audit of the official GeForce NOW client shipped as the Linux Flatpak payload, for **OpenNOW feature-parity** work. Evidence is from symbols, rodata strings, radare2 disassembly, and shipped JSON—not from live gameplay on this cloud VM.
+Extended static reverse-engineering audit of the official GeForce NOW client shipped as the Linux Flatpak payload, for **OpenNOW feature-parity** work. Evidence is from symbols, rodata strings, radare2 disassembly, and shipped JSON—not from a live session.
 
 ## Artifact under test
 
@@ -11,7 +11,7 @@ Extended static reverse-engineering audit of the official GeForce NOW client shi
 | Mall config build | `2.0.84.127` (`files/mall/shared/assets/config/config.json`) |
 | Geronimo branch (embedded) | `gs_04_87` (Perforce paths in `.so` rodata) |
 | Runtime | Freedesktop Platform `24.08`, command `GeForceNOW` |
-| Primary natives | `libGeronimo.so` (~33 MB), `libBifrost2.so` (~19 MB), `libGsAudioWebRTC.so`, CEF shell `GeForceNOW` |
+| Primary natives | `libGeronimo.so` (34,347,824 bytes), `libBifrost2.so` (19,052,024 bytes), `libGsAudioWebRTC.so`, CEF shell `GeForceNOW` |
 
 Reproduce locally: download the zip, extract under `audit/gfn-official/` (gitignored), run `strings` / `nm -D` / `r2` as documented in each section.
 

@@ -9,14 +9,14 @@ From `files/manifest.json`:
 - **Runtime**: `org.freedesktop.Platform` / `24.08`
 - **Build roots** (Jenkins): `gfn-flatpack-release-job` → `/app/`
 
-Notable **finish-args**: full device/DRI, network, PulseAudio, X11, Wayland, session/system bus, home filesystem, Gamescope HDR env (`ENABLE_GAMESCOPE=1`, `GAMESCOPE_HDR=1`), broad portal/talk names.
+Notable **finish-args**: full device/DRI, network, PulseAudio, X11, Wayland, session/system bus, home filesystem, Gamescope HDR env (`ENABLE_GAMESCOPE=1`, `ENABLE_GAMESCOPE_HDR=1`, `GAMESCOPE_HDR=1`), broad portal/talk names.
 
 ## Binary map (under `files/cef/`)
 
-| File | Approx. size | SONAME / role |
+| File | Size | SONAME / role |
 | --- | ---: | --- |
-| `libGeronimo.so` | 33 MB | Stream shell: SDL window, Vulkan/LAVC/VDPAU decode, input, `GridApp`, imports **libBifrost2.so** |
-| `libBifrost2.so` | 19 MB | NVB / NVST SDK: CloudMatch HTTP, RTSP/WebSocket, Mjolnir, WebRTC bundle, `nvb*` C API |
+| `libGeronimo.so` | 34,347,824 bytes | Stream shell: SDL window, Vulkan/LAVC/VDPAU decode, input, `GridApp`, imports **libBifrost2.so** |
+| `libBifrost2.so` | 19,052,024 bytes | NVB / NVST SDK: CloudMatch HTTP, RTSP/WebSocket, Mjolnir, WebRTC bundle, `nvb*` C API |
 | `libGsAudioWebRTC.so` | ~1.5 MB | WebRTC audio device module + AEC3; **not** Opus/NetEq |
 | `libBifrost2.so` NEEDED | minimal | pthread, dl, atomic, stdc++, m — HTTP/TLS compiled in |
 | `GeForceNOW` | 2.4 MB | CEF 128 embedder; loads `libcef.so`, Geronimo, Bifrost |
