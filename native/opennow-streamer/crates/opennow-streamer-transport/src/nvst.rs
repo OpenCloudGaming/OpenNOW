@@ -6,7 +6,7 @@
 //! use the negotiated DTLS bundle. NVIDIA's systematic Reed-Solomon video FEC is repaired before
 //! access-unit assembly so isolated UDP loss does not flush the hardware decoder reference chain.
 
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -3012,6 +3012,7 @@ impl RtpReorderBuffer {
                 first_missing_index: expected,
                 last_missing_index: first_available - 1,
             });
+            ready.clear();
             self.next_index = Some(first_available);
             self.gap_wait = None;
             nack = None;
@@ -3576,6 +3577,7 @@ impl FecReorderBuffer {
                     first_missing_index: expected,
                     last_missing_index: base - 1,
                 });
+                result.ready.clear();
                 result.nack = None;
                 self.completed_through = Some(base);
                 self.gap_wait = None;
@@ -3663,6 +3665,7 @@ impl FecReorderBuffer {
                 first_missing_index,
                 last_missing_index,
             });
+            result.ready.clear();
             result.nack = None;
             self.completed_through =
                 Some(base + (failed.layout.data_shards + failed.layout.parity_shards) as u64);
@@ -5466,6 +5469,56 @@ fn matches_audio_track(track: &NvstAudioTrack, payload_type: u8, ssrc: u32) -> b
 }
 
 #[derive(Default)]
+struct NvstAudioStreams {
+    authenticated: VecDeque<u32>,
+    provisional: Option<u32>,
+}
+
+impl NvstAudioStreams {
+    fn admit(&mut self, rtc: &mut Rtc, track: &NvstAudioTrack, datagram: &[u8]) -> bool {
+        let Some(ssrc) = peek_rtp_ssrc(datagram) else {
+            return false;
+        };
+        if ssrc == 0
+            || !peek_rtp_payload_type(datagram)
+                .is_some_and(|payload_type| matches_audio_track(track, payload_type, ssrc))
+        {
+            return false;
+        }
+        self.finish_poll(rtc);
+        if !self.authenticated.contains(&ssrc) {
+            rtc.direct_api().expect_stream_rx(
+                Ssrc::from(ssrc),
+                None,
+                Mid::from(track.mid.as_str()),
+                None,
+            );
+            self.provisional = Some(ssrc);
+        }
+        true
+    }
+
+    fn authenticated(&mut self, rtc: &mut Rtc, ssrc: u32) {
+        if self.provisional != Some(ssrc) {
+            return;
+        }
+        self.provisional = None;
+        if self.authenticated.len() == 2
+            && let Some(retired) = self.authenticated.pop_front()
+        {
+            rtc.direct_api().remove_stream_rx(Ssrc::from(retired));
+        }
+        self.authenticated.push_back(ssrc);
+    }
+
+    fn finish_poll(&mut self, rtc: &mut Rtc) {
+        if let Some(rejected) = self.provisional.take() {
+            rtc.direct_api().remove_stream_rx(Ssrc::from(rejected));
+        }
+    }
+}
+
+#[derive(Default)]
 struct NvstAudioReceiver {
     last_sequence: Option<(u32, u16)>,
     discontinuity_pending: bool,
@@ -5892,7 +5945,7 @@ fn run_nvst_webrtc_bundle(
     let mut ice_responses = IceResponseTracker::default();
     let mut ice_ping_responses = 0;
     let mut last_hole_punch = Instant::now() - PING_INTERVAL_BEFORE_CONNECTION;
-    let mut seen_ssrcs = HashSet::new();
+    let mut audio_streams = NvstAudioStreams::default();
     let mut dtls_ready = false;
     let mut microphone_generation = 0;
     let mut microphone_sequence = 0_u64;
@@ -6357,7 +6410,10 @@ fn run_nvst_webrtc_bundle(
         }
         let timeout = loop {
             match rtc.poll_output() {
-                Ok(Output::Timeout(timeout)) => break timeout,
+                Ok(Output::Timeout(timeout)) => {
+                    audio_streams.finish_poll(&mut rtc);
+                    break timeout;
+                }
                 Ok(Output::Transmit(transmit)) => {
                     outbound_datagrams += 1;
                     let kind = if looks_like_stun(&transmit.contents) {
@@ -6607,6 +6663,7 @@ fn run_nvst_webrtc_bundle(
                             matches_audio_track(audio, outer_payload_type, *packet.header.ssrc)
                         });
                         if is_audio {
+                            audio_streams.authenticated(&mut rtc, *packet.header.ssrc);
                             let audio = audio_track.as_ref().expect("audio track checked above");
                             let received_at_us = packet
                                 .timestamp
@@ -6734,20 +6791,12 @@ fn run_nvst_webrtc_bundle(
                         continue;
                     }
                     if looks_like_rtp(&datagram[..length])
-                        && let Some(ssrc) = peek_rtp_ssrc(&datagram[..length])
-                        && seen_ssrcs.insert(ssrc)
+                        && (!dtls_ready
+                            || !audio_track.as_ref().is_some_and(|audio| {
+                                audio_streams.admit(&mut rtc, audio, &datagram[..length])
+                            }))
                     {
-                        let mid = audio_track
-                            .as_ref()
-                            .filter(|audio| {
-                                peek_rtp_payload_type(&datagram[..length]).is_some_and(
-                                    |payload_type| matches_audio_track(audio, payload_type, ssrc),
-                                )
-                            })
-                            .map_or_else(|| Mid::from("0"), |audio| Mid::from(audio.mid.as_str()));
-                        rtc.direct_api()
-                            .expect_stream_rx(Ssrc::from(ssrc), None, mid, None);
-                        eprintln!("NVST expecting SSRC {ssrc} on bundle mid={mid}");
+                        continue;
                     }
                     let destination = receive_destination;
                     let contents = match datagram[..length].try_into() {

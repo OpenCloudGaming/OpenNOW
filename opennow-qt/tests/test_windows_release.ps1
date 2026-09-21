@@ -110,6 +110,32 @@ include(CPack)
     Assert-OpenNowSignedPackage -Root "$root/unpacked" -SignedRoot $deployment
     Assert-OpenNowPackagePayload -Root "$root/unpacked" -DeploymentRoot $deployment
 
+    $wrappedRoot = (Get-ChildItem "$root/unpacked" -Directory).FullName
+    if ((Resolve-OpenNowSetupPayload -Root "$root/unpacked") -ne $wrappedRoot) {
+        throw "Setup did not resolve the CPack ZIP wrapper directory"
+    }
+    if ((Resolve-OpenNowSetupPayload -Root "$root/installed") -ne (Get-Item "$root/installed").FullName) {
+        throw "Setup rejected the direct installed payload"
+    }
+    foreach ($name in @("OpenNOW.exe", "opennow-core.exe", "opennow-update-helper.exe")) {
+        Remove-Item "$wrappedRoot/bin/$name"
+        Assert-Fails { Resolve-OpenNowSetupPayload -Root "$root/unpacked" } "found 0"
+        Copy-Item "$deployment/$name" "$wrappedRoot/bin"
+    }
+    Copy-Item $wrappedRoot "$root/unpacked/duplicate" -Recurse
+    Assert-Fails { Resolve-OpenNowSetupPayload -Root "$root/unpacked" } "found 2"
+    Remove-Item "$root/unpacked/duplicate" -Recurse -Force
+    Copy-Item $wrappedRoot "$root/unpacked/.hidden-duplicate" -Recurse
+    Assert-Fails { Resolve-OpenNowSetupPayload -Root "$root/unpacked" } "found 2"
+    Remove-Item "$root/unpacked/.hidden-duplicate" -Recurse -Force
+    Copy-Item "$wrappedRoot/bin" "$root/unpacked/bin" -Recurse
+    Assert-Fails { Resolve-OpenNowSetupPayload -Root "$root/unpacked" } "found 2"
+    Remove-Item "$root/unpacked/bin" -Recurse -Force
+    New-Item -ItemType Directory "$root/deep/outer" | Out-Null
+    Copy-Item $wrappedRoot "$root/deep/outer/payload" -Recurse
+    Assert-Fails { Resolve-OpenNowSetupPayload -Root "$root/deep" } "found 0"
+    Assert-Fails { Resolve-OpenNowSetupPayload -Root "$deployment/OpenNOW.exe" } "regular directory"
+
     $workflow = Get-Content "$PSScriptRoot/../../.github/workflows/qt-release-candidate.yml" -Raw
     function Get-CandidateStep {
         param([string]$Name)
@@ -178,6 +204,7 @@ include(CPack)
         }
         Remove-Item Function:Start-Process
     }
+    & "$PSScriptRoot/../../playnite/tests/test_paths.ps1"
     Write-Host "Windows package contract tests passed"
 } finally {
     Remove-Item $root -Recurse -Force

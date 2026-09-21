@@ -3,7 +3,7 @@ use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 use std::env;
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 const NATIVE_TRANSPORT: &str = "nvst";
@@ -48,8 +48,15 @@ impl SettingsStore {
         let mut values = defaults.clone();
         let mut passthrough = Map::new();
         let mut migrate_onboarding = false;
-        if path.exists() {
-            match read_persisted_settings(&path, policy) {
+        let mut recovered_backup = false;
+        let backup = path.with_extension("json.bak");
+        if path.exists() || backup.exists() {
+            let persisted = read_persisted_settings(&path, policy).or_else(|| {
+                let persisted = read_persisted_settings(&backup, policy);
+                recovered_backup = persisted.is_some();
+                persisted
+            });
+            match persisted {
                 Some(persisted) => {
                     migrate_onboarding = policy == LoadPolicy::ReadWrite
                         && !persisted.contains_key("onboardingCompleted");
@@ -134,8 +141,9 @@ impl SettingsStore {
             && (store.values["codec"] != codec_before_normalize
                 || store.values["fallbackCodec"] != fallback_before_normalize);
         if policy == LoadPolicy::ReadWrite
-            && (migrate_console_policy || migrate_onboarding || codec_color_healed)
-            && store.path.exists()
+            && (recovered_backup
+                || ((migrate_console_policy || migrate_onboarding || codec_color_healed)
+                    && store.path.exists()))
         {
             store.save()?;
         }
@@ -525,15 +533,18 @@ impl SettingsStore {
         let mut persisted = self.passthrough.clone();
         persisted.extend(self.values.clone());
         let data = serde_json::to_vec_pretty(&persisted).map_err(io::Error::other)?;
-        fs::write(&temporary, data)?;
-        if self.path.exists() {
-            let _ = fs::remove_file(&backup);
-            fs::rename(&self.path, &backup)?;
+        let mut file = fs::File::create(&temporary)?;
+        file.write_all(&data)?;
+        file.sync_all()?;
+        drop(file);
+        if read_persisted_settings(&self.path, LoadPolicy::ReadWrite).is_some() {
+            fs::copy(&self.path, &backup)?;
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&backup)?
+                .sync_all()?;
         }
-        if let Err(error) = fs::rename(&temporary, &self.path) {
-            let _ = fs::rename(&backup, &self.path);
-            return Err(error);
-        }
+        fs::rename(&temporary, &self.path)?;
         Ok(())
     }
 }
@@ -1016,6 +1027,98 @@ fn defaults() -> Map<String, Value> {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn settings_backup_recovers_missing_and_corrupt_primary_without_bootstrap_writes() {
+        for corrupt in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("settings.json");
+            let backup = path.with_extension("json.bak");
+            let temporary = path.with_extension("json.tmp");
+            let mut original = SettingsStore::load(Some(directory.path().to_owned())).unwrap();
+            original
+                .set("windowsGpuDeviceId", json!("fixture-gpu"))
+                .unwrap();
+            original.set("windowWidth", json!(1600)).unwrap();
+            let expected = original.all();
+            let bytes = fs::read(&path).unwrap();
+            fs::rename(&path, &backup).unwrap();
+            fs::write(&temporary, b"interrupted write").unwrap();
+            if corrupt {
+                fs::write(&path, b"{").unwrap();
+            }
+            assert_eq!(
+                SettingsStore::windows_gpu_device_id_read_only(Some(directory.path().to_owned()))
+                    .unwrap(),
+                "fixture-gpu"
+            );
+            assert_eq!(fs::read(&backup).unwrap(), bytes);
+            assert_eq!(fs::read(&temporary).unwrap(), b"interrupted write");
+            assert!(!path.with_extension("json.corrupt").exists());
+            if corrupt {
+                assert_eq!(fs::read(&path).unwrap(), b"{");
+            } else {
+                assert!(!path.exists());
+            }
+            let restored = SettingsStore::load(Some(directory.path().to_owned())).unwrap();
+            assert_eq!(restored.all(), expected);
+            assert_eq!(fs::read(&backup).unwrap(), bytes);
+            assert_eq!(
+                SettingsStore::load(Some(directory.path().to_owned()))
+                    .unwrap()
+                    .all(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn settings_recovery_failure_keeps_the_valid_backup() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let backup = path.with_extension("json.bak");
+        let mut store = SettingsStore::load(Some(directory.path().to_owned())).unwrap();
+        store.set("windowWidth", json!(1600)).unwrap();
+        let bytes = fs::read(&path).unwrap();
+        fs::rename(&path, &backup).unwrap();
+        fs::create_dir(path.with_extension("json.tmp")).unwrap();
+        assert!(SettingsStore::load(Some(directory.path().to_owned())).is_err());
+        assert!(!path.exists());
+        assert_eq!(fs::read(&backup).unwrap(), bytes);
+    }
+
+    #[test]
+    fn settings_backup_failure_keeps_the_primary_and_memory_unchanged() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut store = SettingsStore::load(Some(directory.path().to_owned())).unwrap();
+        store.set("windowWidth", json!(1600)).unwrap();
+        let expected = store.all();
+        let bytes = fs::read(&path).unwrap();
+        fs::create_dir(path.with_extension("json.bak")).unwrap();
+        assert!(store.set("windowWidth", json!(1800)).is_err());
+        assert_eq!(store.all(), expected);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn settings_bootstrap_does_not_recover_invalid_or_oversized_backups() {
+        let directory = tempfile::tempdir().unwrap();
+        let backup = directory.path().join("settings.json.bak");
+        for bytes in [
+            b"{".to_vec(),
+            vec![b' '; MAXIMUM_BOOTSTRAP_SETTINGS_BYTES as usize + 1],
+        ] {
+            fs::write(&backup, &bytes).unwrap();
+            assert_eq!(
+                SettingsStore::windows_gpu_device_id_read_only(Some(directory.path().to_owned()))
+                    .unwrap(),
+                ""
+            );
+            assert_eq!(fs::read(&backup).unwrap(), bytes);
+            assert!(!directory.path().join("settings.json").exists());
+        }
+    }
 
     #[test]
     fn language_preferences_are_independent_and_rejected_writes_are_atomic() {

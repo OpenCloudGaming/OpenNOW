@@ -394,9 +394,7 @@ public:
 
     void setSwapGated(bool gated, const QString &) override
     {
-        m_swapGateActive = gated;
         m_swapTimings.setGated(gated);
-        if (gated) m_swapStall.reset();
     }
 
     void frameSwapped() override
@@ -510,7 +508,8 @@ public:
         const auto snapshot = m_swapTimings.snapshot();
         const auto now = clockNs();
         StreamSwapStallWatchdog::Observation observation;
-        observation.gated = m_swapGateActive;
+        observation.gated = snapshot.gated;
+        observation.gateEpoch = snapshot.gateEpoch;
         observation.hasPendingSubmit = snapshot.hasPendingSubmit;
         observation.hasLastSwap = snapshot.hasLastSwap;
         observation.lastSwapNs = snapshot.lastSwapNs;
@@ -537,7 +536,6 @@ private:
     StreamVideoTextureRenderer m_textures;
     StreamPresentTimings m_swapTimings;
     StreamSwapStallWatchdog m_swapStall;
-    bool m_swapGateActive = false;
     bool m_resourceRearmPending = false;
     int m_sourceColorSpace = OPENNOW_STREAMER_COLOR_SPACE_SDR709;
     StreamFrameInterpolator m_interpolator;

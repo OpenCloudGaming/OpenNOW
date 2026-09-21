@@ -58,6 +58,7 @@ struct Document {
 
 pub struct ConsoleProfiles {
     path: PathBuf,
+    mutation: Mutex<()>,
     profiles: Mutex<HashMap<String, Profile>>,
 }
 
@@ -81,6 +82,7 @@ impl ConsoleProfiles {
             .unwrap_or_default();
         Self {
             path,
+            mutation: Mutex::new(()),
             profiles: Mutex::new(profiles),
         }
     }
@@ -117,6 +119,10 @@ impl ConsoleProfiles {
         pin: &str,
         current_pin: Option<&str>,
     ) -> Result<Value, String> {
+        let _mutation = self
+            .mutation
+            .lock()
+            .expect("console profile mutation poisoned");
         if !valid_pin(pin) {
             return Ok(
                 json!({"ok":false,"reason":"invalid_format","hasPin":self.has_pin(user_id)}),
@@ -158,6 +164,10 @@ impl ConsoleProfiles {
     }
 
     pub fn clear_pin(&self, user_id: &str, current_pin: &str) -> Result<Value, String> {
+        let _mutation = self
+            .mutation
+            .lock()
+            .expect("console profile mutation poisoned");
         let mut next = self
             .profiles
             .lock()
@@ -192,6 +202,10 @@ impl ConsoleProfiles {
     }
 
     pub fn verify(&self, user_id: &str, pin: &str) -> Result<Value, String> {
+        let _mutation = self
+            .mutation
+            .lock()
+            .expect("console profile mutation poisoned");
         let mut next = self
             .profiles
             .lock()
@@ -238,6 +252,10 @@ impl ConsoleProfiles {
     }
 
     pub fn forget(&self, user_id: &str) -> Result<(), String> {
+        let _mutation = self
+            .mutation
+            .lock()
+            .expect("console profile mutation poisoned");
         let mut next = self
             .profiles
             .lock()
@@ -250,6 +268,10 @@ impl ConsoleProfiles {
     }
 
     pub fn forget_all(&self) -> Result<(), String> {
+        let _mutation = self
+            .mutation
+            .lock()
+            .expect("console profile mutation poisoned");
         self.persist_and_replace(HashMap::new())
     }
 
@@ -391,6 +413,70 @@ mod tests {
             rand::random::<u64>()
         ));
         (ConsoleProfiles::load(&path), path)
+    }
+
+    #[test]
+    fn overlapping_pin_writes_preserve_every_acknowledged_account() {
+        let directory = tempfile::tempdir().unwrap();
+        let profiles = ConsoleProfiles::load(directory.path());
+        let barrier = std::sync::Barrier::new(4);
+        std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..4)
+                .map(|index| {
+                    let profiles = &profiles;
+                    let barrier = &barrier;
+                    scope.spawn(move || {
+                        barrier.wait();
+                        profiles.set_pin(&format!("user-{index}"), "1234", None)
+                    })
+                })
+                .collect();
+            for worker in workers {
+                assert_eq!(worker.join().unwrap().unwrap()["ok"], true);
+            }
+        });
+        let loaded = ConsoleProfiles::load(directory.path());
+        for index in 0..4 {
+            assert!(profiles.has_pin(&format!("user-{index}")));
+            assert!(loaded.has_pin(&format!("user-{index}")));
+        }
+    }
+
+    #[test]
+    fn overlapping_pin_failures_all_count_toward_lockout() {
+        let directory = tempfile::tempdir().unwrap();
+        let profiles = ConsoleProfiles::load(directory.path());
+        profiles.set_pin("user", "1234", None).unwrap();
+        let barrier = std::sync::Barrier::new(PIN_MAX_ATTEMPTS as usize);
+        std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..PIN_MAX_ATTEMPTS)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        profiles.verify("user", "0000")
+                    })
+                })
+                .collect();
+            for worker in workers {
+                assert_eq!(worker.join().unwrap().unwrap()["ok"], false);
+            }
+        });
+        assert_eq!(profiles.status("user")["remainingAttempts"], 0);
+        let loaded = ConsoleProfiles::load(directory.path());
+        assert_eq!(loaded.status("user")["remainingAttempts"], 0);
+    }
+
+    #[test]
+    fn profile_persistence_failure_preserves_committed_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let profiles = ConsoleProfiles::load(directory.path());
+        profiles.set_pin("user", "1234", None).unwrap();
+        let persisted = fs::read(&profiles.path).unwrap();
+        fs::create_dir(profiles.path.with_extension("json.tmp")).unwrap();
+        assert!(profiles.clear_pin("user", "1234").is_err());
+        assert!(profiles.forget_all().is_err());
+        assert!(profiles.has_pin("user"));
+        assert_eq!(fs::read(&profiles.path).unwrap(), persisted);
     }
 
     #[test]

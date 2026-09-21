@@ -34,6 +34,8 @@ mod decode_progress;
 mod microphone;
 mod nvst_rtsp;
 mod queue_drops;
+#[cfg(test)]
+mod recording_tests;
 
 use microphone::MicrophoneController;
 
@@ -209,12 +211,17 @@ pub struct Engine {
     media_worker: Option<JoinHandle<()>>,
     media_feedback: Option<Receiver<MediaFeedback>>,
     feedback_worker: Option<JoinHandle<PendingMediaFeedback>>,
-    recording_worker: Option<JoinHandle<Result<RecordingSummary, String>>>,
+    recording_worker: Option<RecordingWorker>,
     clip_worker: Option<JoinHandle<()>>,
     clip_cancelled: Arc<AtomicBool>,
     replay_budget: Arc<AtomicUsize>,
     microphone: Option<MicrophoneController>,
     hid_runtime: Arc<HidRuntime>,
+}
+
+struct RecordingWorker {
+    thread: JoinHandle<Result<RecordingSummary, String>>,
+    completed: Arc<AtomicBool>,
 }
 
 #[derive(Debug)]
@@ -1355,6 +1362,11 @@ impl Engine {
     }
 
     fn start_recording(&mut self, command: Command) -> Result<Vec<Value>, Value> {
+        if self.recording_worker.as_ref().is_some_and(|worker| {
+            worker.completed.load(Ordering::Acquire) || worker.thread.is_finished()
+        }) {
+            let _ = self.stop_recording_inner();
+        }
         if self.recording_worker.is_some() {
             return Err(error(
                 Some(&command.id),
@@ -1396,10 +1408,13 @@ impl Engine {
             .map_err(|message| error(Some(&command.id), "recording-start-failed", message))?;
         let events = self.events.clone();
         let worker_path = path.clone();
+        let completed = Arc::new(AtomicBool::new(false));
+        let worker_completed = Arc::clone(&completed);
         let worker = thread::Builder::new()
             .name("opennow-matroska-recording".to_owned())
             .spawn(move || {
                 let result = record_matroska(&worker_path, stream, receiver);
+                worker_completed.store(true, Ordering::Release);
                 let payload = match &result {
                     Ok(summary) => json!({
                         "state":"saved",
@@ -1420,7 +1435,10 @@ impl Engine {
                     spawn_error.to_string(),
                 )
             })?;
-        self.recording_worker = Some(worker);
+        self.recording_worker = Some(RecordingWorker {
+            thread: worker,
+            completed,
+        });
         Ok(vec![json!({
             "id":command.id,
             "type":"recording-started",
@@ -1490,6 +1508,7 @@ impl Engine {
             session.control().unsubscribe_recording();
         }
         worker
+            .thread
             .join()
             .map_err(|_| "native recording worker panicked".to_owned())?
             .map(Some)

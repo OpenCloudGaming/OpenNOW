@@ -88,6 +88,9 @@ StreamVideoItem::StreamVideoItem(std::unique_ptr<MacPointerCapture> pointerCaptu
         });
     }
     const auto attachWindow = [this](QQuickWindow *currentWindow) {
+        if (m_inputWindow) m_inputWindow->removeEventFilter(this);
+        m_inputWindow = currentWindow;
+        if (m_inputWindow) m_inputWindow->installEventFilter(this);
         connectFrameSwaps();
         if (currentWindow) {
             connect(currentWindow, &QWindow::activeChanged,

@@ -4,6 +4,8 @@
 #include <QTest>
 
 #include <utility>
+#include <atomic>
+#include <thread>
 
 namespace {
 StreamSwapStallWatchdog::Observation decodedProgress(
@@ -175,6 +177,75 @@ private slots:
         timings.markSwap(9'000'000);
         QVERIFY(!timings.snapshot().available);
         QCOMPARE(timings.snapshot().swappedFramesTotal, std::uint64_t(0));
+    }
+
+    void gateEpochSurvivesHideShowAndResourceReset()
+    {
+        StreamPresentTimings timings;
+        QCOMPARE(timings.snapshot().gateEpoch, std::uint64_t(0));
+        timings.setGated(true);
+        QVERIFY(timings.snapshot().gated);
+        QCOMPARE(timings.snapshot().gateEpoch, std::uint64_t(1));
+        timings.setGated(true);
+        QCOMPARE(timings.snapshot().gateEpoch, std::uint64_t(1));
+        timings.setGated(false);
+        timings.reset();
+        QVERIFY(!timings.snapshot().gated);
+        QCOMPARE(timings.snapshot().gateEpoch, std::uint64_t(1));
+        timings.setGated(true);
+        QCOMPARE(timings.snapshot().gateEpoch, std::uint64_t(2));
+    }
+
+    void watchdogResetsAfterAnUnobservedHideShow()
+    {
+        StreamPresentTimings timings;
+        StreamSwapStallWatchdog watchdog;
+        StreamSwapStallWatchdog::Observation observation;
+        observation.hasPendingSubmit = true;
+        watchdog.observe(decodedProgress(observation, 1, 1), 1'000'000'000);
+        QCOMPARE(watchdog.observe(decodedProgress(observation, 1, 2), 9'000'000'000),
+                 StreamSwapStallWatchdog::Outcome::ResourceRearm);
+        watchdog.onResourcesReleased(true, false, false);
+        timings.setGated(true);
+        timings.setGated(false);
+        const auto snapshot = timings.snapshot();
+        observation.gated = snapshot.gated;
+        observation.gateEpoch = snapshot.gateEpoch;
+        QCOMPARE(watchdog.observe(decodedProgress(observation, 1, 3), 20'000'000'000),
+                 StreamSwapStallWatchdog::Outcome::None);
+        QCOMPARE(watchdog.unrecoveredCount(), std::uint64_t(0));
+        QCOMPARE(watchdog.observe(decodedProgress(observation, 1, 4), 27'000'000'000),
+                 StreamSwapStallWatchdog::Outcome::None);
+        QCOMPARE(watchdog.observe(decodedProgress(observation, 1, 5), 28'000'000'000),
+                 StreamSwapStallWatchdog::Outcome::ResourceRearm);
+    }
+
+    void gatePublicationDoesNotMutateTheRenderOwnedWatchdog()
+    {
+        StreamPresentTimings timings;
+        StreamSwapStallWatchdog watchdog;
+        std::atomic_bool start = false;
+        std::thread publisher([&] {
+            while (!start.load()) std::this_thread::yield();
+            for (int iteration = 0; iteration < 2'000; ++iteration) {
+                timings.setGated(true);
+                timings.setGated(false);
+            }
+        });
+        start.store(true);
+        for (int iteration = 1; iteration <= 2'000; ++iteration) {
+            timings.markSubmit(iteration);
+            const auto snapshot = timings.snapshot();
+            StreamSwapStallWatchdog::Observation observation;
+            observation.gated = snapshot.gated;
+            observation.gateEpoch = snapshot.gateEpoch;
+            observation.hasPendingSubmit = snapshot.hasPendingSubmit;
+            watchdog.observe(decodedProgress(observation, 1, iteration), iteration);
+        }
+        publisher.join();
+        QCOMPARE(timings.snapshot().gateEpoch, std::uint64_t(2'000));
+        QCOMPARE(watchdog.rearmCount(), std::uint64_t(0));
+        QCOMPARE(watchdog.unrecoveredCount(), std::uint64_t(0));
     }
 
     void swapWatchdogStaysSilentWithoutOutstandingWork()

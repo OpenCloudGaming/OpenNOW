@@ -56,6 +56,54 @@ fn launch_metadata() -> Vec<(u16, Value)> {
     ]
 }
 
+#[test]
+fn owned_ad_reports_preserve_event_fields_without_accepting_foreign_session_routing() {
+    let response =
+        json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"seat-a","status":2}});
+    let (url, worker) = mock_requests(vec![(200, response); 2], |index, request| {
+        assert!(request.starts_with("PUT /v2/session/seat-a "));
+        assert!(request.contains("GFNJWT test-access"));
+        assert!(!request.contains("forged.nvidiagrid.net"));
+        let body: Value = serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        let update = &body["adUpdates"][0];
+        assert_eq!(update["adId"], "ad-a");
+        assert_eq!(update["clientTimestamp"], 123456);
+        assert_eq!(update["adAction"], if index == 0 { 4 } else { 5 });
+        assert_eq!(
+            update["watchedTimeInMs"],
+            if index == 0 { 30000 } else { 0 }
+        );
+        assert_eq!(update["pausedTimeInMs"], 250);
+        assert_eq!(
+            update["cancelReason"],
+            if index == 0 {
+                Value::Null
+            } else {
+                json!("error")
+            }
+        );
+    });
+    let (mut service, path) = service(&url);
+    service
+        .cloudmatch
+        .set_test_control_base(url::Url::parse(&url).unwrap());
+    let seat =
+        json!({"sessionId":"seat-a","status":3,"streamingBaseUrl":"https://owned.nvidiagrid.net/"});
+    service.cloudmatch.seed_owned_session(seat.clone());
+    service.session_routing.lock().unwrap().active_owner =
+        Some(ActiveSeatOwner::capture(auth_fixture("account-a"), 7, &seat, None).unwrap());
+    for action in ["finish", "cancel"] {
+        service.report_session_ad(&json!({
+            "sessionId":"seat-a","streamingBaseUrl":"https://forged.nvidiagrid.net/",
+            "action":action,"adId":"ad-a","clientTimestamp":123456,
+            "watchedTimeInMs":if action == "finish" {30000} else {-10},
+            "pausedTimeInMs":250,"cancelReason":if action == "cancel" {json!("error")} else {Value::Null}
+        })).unwrap();
+    }
+    worker.join().unwrap();
+    std::fs::remove_dir_all(path).unwrap();
+}
+
 fn reject_concurrent_create_during(discovery: bool) {
     let (entered_tx, entered_rx) = std::sync::mpsc::channel();
     let (release_tx, release_rx) = std::sync::mpsc::channel();

@@ -38,8 +38,11 @@ class WindowsSetupTests(unittest.TestCase):
 
     def test_build_script_requires_the_portable_executables(self):
         script = BUILD.read_text()
+        self.assertIn('. "$PSScriptRoot/../windows-release.ps1"', script)
+        self.assertIn("$Payload = Resolve-OpenNowSetupPayload -Root $Payload", script)
+        resolver = (ROOT / "opennow-qt/packaging/windows-release.ps1").read_text()
         for name in ("bin\\OpenNOW.exe", "bin\\opennow-core.exe", "bin\\opennow-update-helper.exe"):
-            self.assertIn(name, script)
+            self.assertIn(name, resolver)
         self.assertIn("9C73C3BAE7ED48D44112A0F48E66742C00090BDB5BEF71D9D3C056C66E97B732", script)
         self.assertIn("innosetup-6.7.3.exe", script)
 

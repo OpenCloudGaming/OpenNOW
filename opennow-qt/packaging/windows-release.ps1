@@ -1,5 +1,29 @@
 $ErrorActionPreference = "Stop"
 
+function Resolve-OpenNowSetupPayload {
+    param([Parameter(Mandatory)][string]$Root)
+
+    $rootItem = Get-Item -LiteralPath $Root
+    if (-not $rootItem.PSIsContainer -or ($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "Portable payload must be a regular directory"
+    }
+    $candidates = @($rootItem) + @(Get-ChildItem -LiteralPath $Root -Directory -Force)
+    $roots = @($candidates | Where-Object {
+        $candidate = $_
+        if ($candidate.Attributes -band [IO.FileAttributes]::ReparsePoint) { return $false }
+        foreach ($relative in @("bin\OpenNOW.exe", "bin\opennow-core.exe", "bin\opennow-update-helper.exe")) {
+            if (-not (Test-Path -LiteralPath (Join-Path $candidate.FullName $relative) -PathType Leaf)) {
+                return $false
+            }
+        }
+        return $true
+    })
+    if ($roots.Count -ne 1) {
+        throw "Expected exactly one portable application root, found $($roots.Count)"
+    }
+    return $roots[0].FullName
+}
+
 function Invoke-OpenNowSignTool {
     & signtool @args
     if ($LASTEXITCODE -ne 0) {

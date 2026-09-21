@@ -19,6 +19,7 @@
 #include <QSGSimpleRectNode>
 #include <QSignalSpy>
 #include <QTest>
+#include <qpa/qwindowsysteminterface.h>
 
 #include <atomic>
 #include <algorithm>
@@ -1273,7 +1274,7 @@ private slots:
             {"f1", 67, 0},
             {"num-lock", 77, 0},
             {"scroll-lock", 78, 0},
-            {"kp0", 90, 0},
+            {"kp0", 90, 0x60},
             {"kp-enter", 104, 0},
             {"print", 107, 0},
             {"home", 110, 0},
@@ -1645,21 +1646,34 @@ private slots:
         const auto wireModifiers = quint16(key == Qt::Key_Backtab ? 1 : 0);
         QCOMPARE(inputCalls, (QList<QList<quint16>>{
             {0x09, wireModifiers, 1}, {0x09, wireModifiers, 0}}));
+        const auto movementClick = [&window](Qt::Key key) {
+#if defined(Q_OS_MACOS)
+            const quint32 nativeKey = key == Qt::Key_W ? 0x0d
+                : key == Qt::Key_S ? 0x01 : key == Qt::Key_D ? 0x02 : 0x00;
+            for (const auto type : {QEvent::KeyPress, QEvent::KeyRelease}) {
+                QWindowSystemInterface::handleExtendedKeyEvent(
+                    &window, 1, type, key, Qt::NoModifier, 0, nativeKey, 0);
+                QWindowSystemInterface::flushWindowSystemEvents();
+            }
+#else
+            QTest::keyClick(&window, key);
+#endif
+        };
         for (const auto movement : {Qt::Key_W, Qt::Key_A, Qt::Key_S, Qt::Key_D}) {
             inputCalls.clear();
-            QTest::keyClick(&window, movement);
+            movementClick(movement);
             QCOMPARE(inputCalls, (QList<QList<quint16>>{
                 {quint16(movement), 0, 1}, {quint16(movement), 0, 0}}));
         }
         item->setInputEnabled(false);
         other->forceActiveFocus();
         inputCalls.clear();
-        QTest::keyClick(&window, Qt::Key_W);
+        movementClick(Qt::Key_W);
         QVERIFY(inputCalls.isEmpty());
         item->setInputEnabled(true);
         item->forceActiveFocus();
         QTRY_VERIFY(item->captureActive());
-        QTest::keyClick(&window, Qt::Key_W);
+        movementClick(Qt::Key_W);
         QCOMPARE(inputCalls, (QList<QList<quint16>>{{0x57, 0, 1}, {0x57, 0, 0}}));
     }
 
@@ -1802,6 +1816,153 @@ private slots:
             QCOMPARE(inputCalls.last(), (QList<quint16>{virtualKey, 1, 1}));
             item->releaseInput();
             QCOMPARE(inputCalls.size(), 4);
+        }
+    }
+
+    void mapsNativeMacZeroKeycodeWithoutChangingSyntheticFallback()
+    {
+        for (const int key : {int(Qt::Key_Q), 0x0424, int(Qt::Key_A)}) {
+            QCOMPARE(StreamVideoItem::macGameplayVirtualKey(key, Qt::NoModifier, 0, true),
+                     quint16(0x41));
+        }
+        QCOMPARE(StreamVideoItem::macGameplayVirtualKey(Qt::Key_Q, Qt::NoModifier, 0, false),
+                 quint16(0x51));
+        QCOMPARE(StreamVideoItem::macGameplayVirtualKey(Qt::Key_W, Qt::NoModifier, 0, false),
+                 quint16(0x57));
+        QCOMPARE(StreamVideoItem::macGameplayVirtualKey(0x0424, Qt::NoModifier, 0, false),
+                 quint16(0));
+        QCOMPARE(StreamVideoItem::macGameplayVirtualKey(Qt::Key_A, Qt::NoModifier, 0x0c, true),
+                 quint16(0x51));
+    }
+
+    void preservesNativeMacZeroKeycodeThroughQuickWindowDelivery()
+    {
+        class KeyProbe final : public StreamVideoItem
+        {
+        public:
+            explicit KeyProbe(QQuickItem *parent)
+                : StreamVideoItem(std::make_unique<MacPointerCapture>(), true, parent) {}
+            QList<quint16> virtualKeys;
+            QList<bool> spontaneous;
+            QList<QEvent::Type> types;
+            bool forwardToGameplay = false;
+            void keyPressEvent(QKeyEvent *event) override
+            {
+                virtualKeys.append(macGameplayVirtualKey(event));
+                spontaneous.append(event->spontaneous());
+                types.append(event->type());
+                if (forwardToGameplay) {
+                    if (event->type() == QEvent::KeyPress)
+                        StreamVideoItem::keyPressEvent(event);
+                    else
+                        StreamVideoItem::keyReleaseEvent(event);
+                    return;
+                }
+                event->accept();
+            }
+            void keyReleaseEvent(QKeyEvent *event) override { keyPressEvent(event); }
+        };
+        QQuickWindow window;
+        window.resize(320, 240);
+        auto *item = new KeyProbe(window.contentItem());
+        item->setSize(QSizeF(320, 240));
+        window.show();
+        window.requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(&window));
+        item->forceActiveFocus();
+        QVERIFY(item->hasActiveFocus());
+        for (const int key : {int(Qt::Key_Q), 0x0424}) {
+            for (const auto type : {QEvent::KeyPress, QEvent::KeyRelease}) {
+                QWindowSystemInterface::handleExtendedKeyEvent(
+                    &window, 1, type, key, Qt::NoModifier, 0, 0, 0);
+                QWindowSystemInterface::flushWindowSystemEvents();
+            }
+        }
+        QCOMPARE(item->virtualKeys, (QList<quint16>{0x41, 0x41, 0x41, 0x41}));
+        QCOMPARE(item->spontaneous, (QList<bool>{false, false, false, false}));
+        QCOMPARE(item->types, (QList<QEvent::Type>{QEvent::KeyPress, QEvent::KeyRelease,
+                                                 QEvent::KeyPress, QEvent::KeyRelease}));
+        for (const int key : {int(Qt::Key_Q), int(Qt::Key_W)}) {
+            QKeyEvent event(QEvent::KeyPress, key, Qt::NoModifier);
+            QCoreApplication::sendEvent(&window, &event);
+            QVERIFY(event.isAccepted());
+        }
+        QCOMPARE(item->virtualKeys, (QList<quint16>{0x41, 0x41, 0x41, 0x41, 0x51, 0x57}));
+        item->setInputEnabled(false);
+        QWindowSystemInterface::handleExtendedKeyEvent(
+            &window, 1, QEvent::KeyPress, Qt::Key_Q, Qt::NoModifier, 0, 0, 0);
+        QWindowSystemInterface::flushWindowSystemEvents();
+        QCOMPARE(item->virtualKeys.last(), quint16(0x51));
+        item->setInputEnabled(true);
+        item->m_captureActive = true;
+        item->forwardToGameplay = true;
+        item->setShortcutBindings({{QStringLiteral("test-action"), QStringLiteral("Q")}});
+        QSignalSpy shortcuts(item, &StreamVideoItem::localShortcutRequested);
+        for (const auto type : {QEvent::KeyPress, QEvent::KeyRelease}) {
+            QWindowSystemInterface::handleExtendedKeyEvent(
+                &window, 1, type, Qt::Key_Q, Qt::NoModifier, 0, 0, 0);
+            QWindowSystemInterface::flushWindowSystemEvents();
+        }
+        QCOMPARE(shortcuts.count(), 1);
+        QVERIFY(item->m_pressedKeys.isEmpty());
+        QVERIFY(item->m_pressedShortcuts.isEmpty());
+
+        class ShellKeyProbe final : public QQuickItem
+        {
+        public:
+            using QQuickItem::QQuickItem;
+            quint16 virtualKey = 0;
+            void keyPressEvent(QKeyEvent *event) override
+            {
+                virtualKey = StreamVideoItem::macGameplayVirtualKey(event);
+                event->accept();
+            }
+        };
+        auto *shell = new ShellKeyProbe(window.contentItem());
+        shell->forceActiveFocus();
+        QVERIFY(shell->hasActiveFocus());
+        const auto deliveredToStream = item->virtualKeys.size();
+        QWindowSystemInterface::handleExtendedKeyEvent(
+            &window, 1, QEvent::KeyPress, Qt::Key_Q, Qt::NoModifier, 0, 0, 0);
+        QWindowSystemInterface::flushWindowSystemEvents();
+        QCOMPARE(shell->virtualKey, quint16(0x51));
+        QCOMPARE(item->virtualKeys.size(), deliveredToStream);
+    }
+
+    void mapsLinuxKeypadPhysicalPositionsWithAndWithoutNumLock()
+    {
+        const quint32 scanCodes[] = {90, 87, 88, 89, 83, 84, 85, 79, 80, 81};
+        const int unlockedKeys[] = {Qt::Key_Insert, Qt::Key_End, Qt::Key_Down,
+            Qt::Key_PageDown, Qt::Key_Left, Qt::Key_Clear, Qt::Key_Right,
+            Qt::Key_Home, Qt::Key_Up, Qt::Key_PageUp};
+        for (int digit = 0; digit < 10; ++digit) {
+            const auto expected = quint16(0x60 + digit);
+            QCOMPARE(StreamVideoItem::linuxPhysicalVirtualKey(scanCodes[digit]), expected);
+            QCOMPARE(StreamVideoItem::windowsVirtualKey(Qt::Key_0 + digit, Qt::KeypadModifier),
+                     expected);
+#if defined(Q_OS_LINUX)
+            for (int key : {Qt::Key_0 + digit, unlockedKeys[digit]}) {
+                QKeyEvent event(QEvent::KeyPress, key, Qt::KeypadModifier,
+                                scanCodes[digit], 0, 0);
+                QCOMPARE(StreamVideoItem::eventVirtualKey(&event), expected);
+            }
+#else
+            Q_UNUSED(unlockedKeys);
+#endif
+        }
+        struct Operator { int key; quint32 scanCode; quint16 expected; };
+        const Operator operators[] = {{Qt::Key_Minus, 82, 0x6d},
+            {Qt::Key_Period, 91, 0x6e}, {Qt::Key_Comma, 91, 0x6e},
+            {Qt::Key_Slash, 106, 0x6f}};
+        for (const auto &entry : operators) {
+            QCOMPARE(StreamVideoItem::linuxPhysicalVirtualKey(entry.scanCode), entry.expected);
+            QCOMPARE(StreamVideoItem::windowsVirtualKey(entry.key, Qt::KeypadModifier),
+                     entry.expected);
+#if defined(Q_OS_LINUX)
+            QKeyEvent event(QEvent::KeyPress, entry.key, Qt::KeypadModifier,
+                            entry.scanCode, 0, 0);
+            QCOMPARE(StreamVideoItem::eventVirtualKey(&event), entry.expected);
+#endif
         }
     }
 

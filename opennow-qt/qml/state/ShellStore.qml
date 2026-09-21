@@ -1989,7 +1989,7 @@ QtObject {
 
     function startNativeStreamer() {
         if (!ready || !activeSession || sessionRecoveryPending || activeSession.resumePending
-                || streamerStopRequestId !== "" || streamerStartRequestId !== ""
+                || streamStopRequestId !== "" || streamerStopRequestId !== "" || streamerStartRequestId !== ""
                 || streamerPrepareRequestId !== "" || sessionClaimRequestId !== ""
                 || streamerRestartTimer.running || streamerRecoveryExhausted)
             return
@@ -2570,8 +2570,10 @@ QtObject {
         invalidateLaunchInspection()
         const discoveryRequestId = remoteSessionsRequestId
         const createRequestId = streamCreateRequestId
+        const prepareRequestId = streamerPrepareRequestId
         remoteSessionsRequestId = ""
         streamCreateRequestId = ""
+        streamerPrepareRequestId = ""
         pendingLaunchParams = null
         conflictSession = null
         conflictSessionNeedsRefresh = false
@@ -2581,6 +2583,8 @@ QtObject {
             CoreClient.cancel(discoveryRequestId)
         if (createRequestId !== "")
             CoreClient.cancel(createRequestId)
+        if (prepareRequestId !== "")
+            CoreClient.cancel(prepareRequestId)
         cancelSessionRecovery()
         if (activeSession && streamStartedAtMs > 0) {
             const snapshot = streamer || ({})
@@ -3584,7 +3588,12 @@ QtObject {
                     AppController.showOverlay("session-report")
             } else if (requestId === root.streamerPrepareRequestId) {
                 root.streamerPrepareRequestId = ""
-                if (!result.context) {
+                if (!root.ready || !root.activeSession
+                        || (result.session && String(result.session.sessionId) !== String(root.activeSession.sessionId))
+                        || root.streamStopRequestId !== "" || root.streamerStopRequestId !== ""
+                        || root.sessionRecoveryPending)
+                    return
+                if (!result.context || !result.session) {
                     root.acceptStreamerSnapshot(Object.assign({}, root.streamer || ({}), {
                         status: "error",
                         message: qsTr("The core returned an invalid embedded stream context"),
@@ -3592,8 +3601,7 @@ QtObject {
                     }))
                     return
                 }
-                if (result.session && root.activeSession && result.session.sessionId === root.activeSession.sessionId)
-                    root.activeSession = result.session
+                root.activeSession = result.session
                 const preparedSettings = result.context.settings || ({})
                 const initialMicrophoneEnabled = root.prepareMicrophoneStart(
                     root.activeSession.sessionId, preparedSettings.microphoneMode)
