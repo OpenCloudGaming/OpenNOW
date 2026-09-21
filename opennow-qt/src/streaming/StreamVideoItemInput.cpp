@@ -9,6 +9,7 @@
 #include <QFocusEvent>
 #include <QGuiApplication>
 #include <QHoverEvent>
+#include <QInputMethod>
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QMouseEvent>
@@ -825,6 +826,7 @@ void StreamVideoItem::syncCaptureState()
         const auto viewport = aspectFitRect(m_videoSize, QSize(qRound(width()), qRound(height())));
         auto region = mapRectToScene(QRectF(viewport)).toAlignedRect();
         if (window()) region.translate(window()->frameMargins().left(), window()->frameMargins().top());
+        region = waylandSurfaceRegion(region, window() ? window()->devicePixelRatio() : 1.0);
         m_waylandPointer->setCapture(window(), desired && m_relativeMouse, region);
         if (m_relativeMouse) desired = desired && m_waylandPointer->locked();
     }
@@ -835,6 +837,9 @@ void StreamVideoItem::syncCaptureState()
         if (m_relativeMouse) desired = desired && m_macPointer->locked();
     }
     bool rawInput = false;
+    if (desired && !m_captureActive) {
+        if (auto *method = QGuiApplication::inputMethod()) method->reset();
+    }
     if (s_nativeRuntime && s_nativeRuntime->running()) {
         s_nativeRuntime->setCaptureActive(
             desired, m_relativeMouse,
@@ -900,6 +905,20 @@ QRect StreamVideoItem::cursorConfinementRect(const QRect &viewport, bool rawRela
     // Pin that hidden cursor so Qt cannot hover chrome as the player looks around.
     // The non-raw relative fallback still needs room for its move/recenter events.
     return rawRelative && !viewport.isEmpty() ? QRect(viewport.center(), QSize(1, 1)) : viewport;
+}
+
+QRect StreamVideoItem::waylandSurfaceRegion(const QRect &logicalRegion, qreal devicePixelRatio)
+{
+    if (logicalRegion.isEmpty()) return {};
+    // At 200% a logical rectangle is a quarter of a device-pixel Wayland surface.
+    // That is the confined, shifting cursor box on HiDPI compositors. A surface
+    // that is already logical clips a larger region back to the window.
+    const auto scale = std::max(1.0, devicePixelRatio);
+    if (std::abs(scale - 1.0) < 0.01) return logicalRegion;
+    return QRect(qRound(logicalRegion.x() * scale),
+                 qRound(logicalRegion.y() * scale),
+                 std::max(1, qRound(logicalRegion.width() * scale)),
+                 std::max(1, qRound(logicalRegion.height() * scale)));
 }
 
 void StreamVideoItem::updateCursorConfinement()
@@ -1039,7 +1058,11 @@ void StreamVideoItem::applyRemoteCursor(const QByteArray &bytes)
     const auto metadata = remoteCursorMetadata(bytes);
     m_remoteCursorKnown = true;
     m_remoteCursorVisible = !hidden;
-    setRelativeMouse(m_manualRelativeMouse.value_or(hidden));
+    // A visible remote cursor is a pointer target (menus and the in-stream
+    // overlay). Absolute clicks must reach it, then gameplay lock returns
+    // when the cursor hides again.
+    const bool gameplayRelative = m_manualRelativeMouse.value_or(true);
+    setRelativeMouse(hidden && gameplayRelative);
     updateLocalCursor();
     if (hidden) return;
 

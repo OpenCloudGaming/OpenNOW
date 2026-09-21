@@ -90,6 +90,35 @@ TestCase {
         }
     }
 
+    function test_terminalErrorOutranksReconnectCounters() {
+        AppController.route = "stream"
+        ShellStore.sessionReconnectAttempts = 8
+        ShellStore.streamerRestartAttempts = 2
+        ShellStore.streamState = "error"
+        ShellStore.streamMessage = "The streaming session could not be recovered"
+        ShellStore.streamer = {status: "stopped"}
+        compare(screen.failed, true)
+        compare(screen.reconnecting, true)
+        compare(screen.statusText, "Session could not start")
+        compare(screen.detailText, "The streaming session could not be recovered")
+    }
+
+    function test_activeReconnectIgnoresStoppedRuntime() {
+        AppController.route = "stream"
+        ShellStore.streamState = "reconnecting"
+        ShellStore.sessionReconnectAttempts = 1
+        ShellStore.streamer = {status: "stopped", message: "The native media runtime stopped unexpectedly"}
+        compare(screen.failed, false)
+        compare(screen.statusText, "Reconnecting to your session")
+    }
+
+    function test_idleSessionIgnoresStoppedRuntime() {
+        AppController.route = "stream"
+        ShellStore.streamState = "idle"
+        ShellStore.streamer = {status: "stopped"}
+        compare(screen.failed, false)
+    }
+
     function test_nativeConnectionProgress() {
         AppController.route = "stream"
         ShellStore.activeSession = {seatSetupStep: 5}
