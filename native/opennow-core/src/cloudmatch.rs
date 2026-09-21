@@ -1730,6 +1730,12 @@ fn negotiated_profile(monitor: &Value, features: &Value) -> Value {
         value_i64(&features["dynamicStreamingMode"]).filter(|value| (0..=3).contains(value));
     json!({
         "resolution":resolution,
+        // Carried alongside `resolution` so consumers do not have to re-parse
+        // the string. The stream view sizes its video item from these, and a
+        // missing size makes it stretch the picture to the window instead of
+        // preserving the aspect ratio.
+        "width":width,
+        "height":height,
         "fps":value_i64(&monitor["framesPerSecond"]),
         "codec":codec,
         "colorQuality":color,

@@ -1,12 +1,12 @@
 use std::fmt;
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::{Arc, Mutex};
 
 use cros_codecs::backend::vaapi::decoder::VaapiBackend;
 use cros_codecs::decoder::stateless::h264::H264;
 use cros_codecs::decoder::stateless::{DecodeError, StatelessDecoder, StatelessVideoDecoder};
 use cros_codecs::decoder::{DecodedHandle, DecoderEvent};
-use cros_codecs::libva::{self, Display, DrmPrimeSurfaceDescriptor, Surface, UsageHint};
+use cros_codecs::libva::{self, Display, Surface, UsageHint};
 use cros_codecs::video_frame::{ReadMapping, VideoFrame, WriteMapping};
 use cros_codecs::{Fourcc, Resolution};
 
@@ -18,11 +18,91 @@ use crate::{
 
 const MAX_DECODE_RETRIES: usize = 16;
 
+/// One DMA-BUF object of a DRM-PRIME export. Mirrors cros-libva's descriptor,
+/// which cannot be constructed outside that crate.
+struct ExportedObject {
+    fd: OwnedFd,
+    size: u32,
+    drm_format_modifier: u64,
+}
+
+/// One layer of a DRM-PRIME export.
+struct ExportedLayer {
+    drm_format: u32,
+    num_planes: u32,
+    object_index: [u8; 4],
+    offset: [u32; 4],
+    pitch: [u32; 4],
+}
+
+struct ExportedSurface {
+    objects: Vec<ExportedObject>,
+    layers: Vec<ExportedLayer>,
+}
+
+/// Exports a VA surface as DRM-PRIME.
+///
+/// This must only be called once the surface has been decoded into. Drivers are
+/// permitted to defer the real buffer allocation until the surface is bound to
+/// a decode context, so an export taken at allocation time can describe backing
+/// that is subsequently discarded.
+fn export_prime(
+    display: &Display,
+    id: libva::VASurfaceID,
+) -> std::result::Result<ExportedSurface, String> {
+    let mut descriptor: libva::VADRMPRIMESurfaceDescriptor = Default::default();
+    // Safe because `display` is a live VADisplay, `id` is one of its surfaces,
+    // and `descriptor` matches the memory type requested below.
+    let status = unsafe {
+        libva::vaExportSurfaceHandle(
+            display.handle(),
+            id,
+            libva::VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+            libva::VA_EXPORT_SURFACE_READ_ONLY | libva::VA_EXPORT_SURFACE_COMPOSED_LAYERS,
+            &mut descriptor as *mut _ as *mut std::ffi::c_void,
+        )
+    };
+    if status != libva::VA_STATUS_SUCCESS as libva::VAStatus {
+        return Err(format!(
+            "VA-API could not export the decoded surface as DRM PRIME (status {status})"
+        ));
+    }
+    let objects = (0..descriptor.num_objects as usize)
+        .take(4)
+        .map(|index| descriptor.objects[index])
+        .map(|object| ExportedObject {
+            // Safe because `vaExportSurfaceHandle` returned this descriptor and
+            // transfers ownership of its file descriptors to the caller.
+            fd: unsafe { OwnedFd::from_raw_fd(object.fd) },
+            size: object.size,
+            drm_format_modifier: object.drm_format_modifier,
+        })
+        .collect();
+    let layers = (0..descriptor.num_layers as usize)
+        .take(4)
+        .map(|index| descriptor.layers[index])
+        .map(|layer| ExportedLayer {
+            drm_format: layer.drm_format,
+            num_planes: layer.num_planes,
+            object_index: [
+                layer.object_index[0] as u8,
+                layer.object_index[1] as u8,
+                layer.object_index[2] as u8,
+                layer.object_index[3] as u8,
+            ],
+            offset: layer.offset,
+            pitch: layer.pitch,
+        })
+        .collect();
+    Ok(ExportedSurface { objects, layers })
+}
+
 struct VaFrame {
     visible: Resolution,
     coded: Resolution,
     stride: usize,
-    exported: Mutex<Option<Arc<DrmPrimeSurfaceDescriptor>>>,
+    surface: Mutex<Option<(Arc<Display>, libva::VASurfaceID)>>,
+    exported: Mutex<Option<Arc<ExportedSurface>>>,
 }
 
 impl VaFrame {
@@ -34,16 +114,37 @@ impl VaFrame {
             visible,
             coded: Resolution::from((coded_width, coded_height)),
             stride,
+            surface: Mutex::new(None),
             exported: Mutex::new(None),
         }
     }
 
-    fn exported(&self) -> std::result::Result<Arc<DrmPrimeSurfaceDescriptor>, String> {
-        self.exported
+    /// Returns the DRM-PRIME export of this frame's surface, taking it on first
+    /// use so that it describes the buffer the decoder actually wrote to.
+    ///
+    /// Exporting at allocation time is not equivalent: a driver may back a
+    /// surface that has never been decoded into with a throwaway allocation and
+    /// drop it once the surface is bound to a real decode context, and may
+    /// negotiate the final capture format only on the first decoded frame. The
+    /// export is stable per surface afterwards, so caching it here is sound.
+    fn exported(&self) -> std::result::Result<Arc<ExportedSurface>, String> {
+        let mut exported = self
+            .exported
             .lock()
-            .map_err(|_| "VA-API export state was poisoned".to_owned())?
-            .clone()
-            .ok_or_else(|| "VA-API frame has no exported DRM PRIME surface".to_owned())
+            .map_err(|_| "VA-API export state was poisoned".to_owned())?;
+        if let Some(existing) = exported.as_ref() {
+            return Ok(existing.clone());
+        }
+        let surface = self
+            .surface
+            .lock()
+            .map_err(|_| "VA-API surface state was poisoned".to_owned())?;
+        let (display, id) = surface
+            .as_ref()
+            .ok_or_else(|| "VA-API frame has no decode surface to export".to_owned())?;
+        let fresh = Arc::new(export_prime(display, *id)?);
+        *exported = Some(fresh.clone());
+        Ok(fresh)
     }
 }
 
@@ -105,11 +206,13 @@ impl VideoFrame for VaFrame {
             .map_err(|error| error.to_string())?
             .pop()
             .ok_or_else(|| "VA-API did not create a decode surface".to_owned())?;
-        let exported = Arc::new(surface.export_prime().map_err(|error| error.to_string())?);
+        // The export is deferred to `exported()`; see its documentation for why
+        // it cannot be taken here.
         *self
-            .exported
+            .surface
             .lock()
-            .map_err(|_| "VA-API export state was poisoned".to_owned())? = Some(exported);
+            .map_err(|_| "VA-API surface state was poisoned".to_owned())? =
+            Some((display.clone(), surface.id()));
         Ok(surface)
     }
 }

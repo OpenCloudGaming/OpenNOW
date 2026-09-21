@@ -76,8 +76,13 @@ inline bool hasDmabufImportContract(const QVersionNumber &instanceVersion,
 {
     if (instanceVersion < QVersionNumber(1, 1) || physicalDeviceVersion < VK_API_VERSION_1_1)
         return false;
+    // The image import acquires and releases its DMA-BUF from
+    // VK_QUEUE_FAMILY_FOREIGN_EXT, because the producer is V4L2/VA-API rather
+    // than another Vulkan device, so the foreign queue family extension is part
+    // of the contract just as it is for the buffer import below.
     auto required = QByteArrayList{"VK_KHR_external_memory_fd", "VK_EXT_external_memory_dma_buf",
-                                  "VK_EXT_image_drm_format_modifier"};
+                                  "VK_EXT_image_drm_format_modifier",
+                                  "VK_EXT_queue_family_foreign"};
     if (instanceVersion < QVersionNumber(1, 2) || physicalDeviceVersion < VK_API_VERSION_1_2)
         required.append("VK_KHR_image_format_list");
     for (const auto &extension : required) {

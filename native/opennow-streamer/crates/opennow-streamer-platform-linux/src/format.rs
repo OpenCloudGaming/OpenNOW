@@ -222,6 +222,39 @@ pub struct DmaBufLayer {
     pub planes: Vec<DmaBufPlane>,
 }
 
+/// Number of luma rows an NV12/P010 DMA-BUF is coded at, which may exceed the
+/// visible height when the decoder pads the picture: the Apple AVD block emits
+/// 1088 rows for a 1080p stream, putting the chroma plane at `pitch * 1088`.
+///
+/// Both plane offsets are relative to the same object, so the row count is the
+/// distance *between* them over the luma pitch. Dividing `chroma.offset` alone
+/// would inflate the result for any layout whose luma plane does not start at
+/// offset 0, which the importers accept.
+///
+/// Anything that does not describe a cleanly padded pair falls back to the
+/// visible height, leaving the import exactly as it was before: a zero pitch, a
+/// chroma plane in another object or not after the luma one, a gap that is not
+/// a whole number of rows, or a row count below the visible height.
+pub(crate) fn nv12_coded_height(
+    luma: &DmaBufPlane,
+    chroma: &DmaBufPlane,
+    visible_height: u32,
+) -> u32 {
+    if luma.pitch == 0 || luma.object_index != chroma.object_index {
+        return visible_height;
+    }
+    let Some(gap) = chroma.offset.checked_sub(luma.offset) else {
+        return visible_height;
+    };
+    if gap == 0 || gap % luma.pitch != 0 {
+        return visible_height;
+    }
+    match u32::try_from(gap / luma.pitch) {
+        Ok(rows) if rows >= visible_height => rows,
+        _ => visible_height,
+    }
+}
+
 /// A decoded hardware frame exported through DRM PRIME. `owner` retains the
 /// FFmpeg/VAAPI frame and therefore the dma-buf file descriptors until the
 /// Vulkan submission that samples them has completed.
@@ -517,6 +550,65 @@ impl DecodedVideoFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn plane(offset: usize, pitch: usize) -> DmaBufPlane {
+        DmaBufPlane {
+            object_index: 0,
+            offset,
+            pitch,
+        }
+    }
+
+    #[test]
+    fn coded_height_is_the_gap_between_the_planes_not_the_chroma_offset() {
+        // Apple AVD pads 1080 to 1088 and starts luma at 0.
+        assert_eq!(
+            nv12_coded_height(&plane(0, 1920), &plane(1920 * 1088, 1920), 1080),
+            1088
+        );
+        // The same buffer placed after a header: deriving from `chroma.offset`
+        // alone would report 1089 rows and scale sampling by 1080/1089.
+        assert_eq!(
+            nv12_coded_height(&plane(1920, 1920), &plane(1920 + 1920 * 1088, 1920), 1080),
+            1088
+        );
+    }
+
+    #[test]
+    fn coded_height_falls_back_to_the_visible_height_for_unusable_layouts() {
+        // Unpadded: the gap is exactly the visible height.
+        assert_eq!(
+            nv12_coded_height(&plane(0, 1920), &plane(1920 * 1080, 1920), 1080),
+            1080
+        );
+        // Not a whole number of rows.
+        assert_eq!(
+            nv12_coded_height(&plane(0, 1920), &plane(1920 * 1088 + 7, 1920), 1080),
+            1080
+        );
+        // Fewer rows than the visible picture.
+        assert_eq!(
+            nv12_coded_height(&plane(0, 1920), &plane(1920 * 1000, 1920), 1080),
+            1080
+        );
+        // Chroma before luma, chroma coincident with luma, and a zero pitch.
+        assert_eq!(
+            nv12_coded_height(&plane(1920 * 1088, 1920), &plane(0, 1920), 1080),
+            1080
+        );
+        assert_eq!(
+            nv12_coded_height(&plane(0, 1920), &plane(0, 1920), 1080),
+            1080
+        );
+        assert_eq!(
+            nv12_coded_height(&plane(0, 0), &plane(1920 * 1088, 0), 1080),
+            1080
+        );
+        // Separate objects: the offsets are not comparable.
+        let mut chroma = plane(1920 * 1088, 1920);
+        chroma.object_index = 1;
+        assert_eq!(nv12_coded_height(&plane(0, 1920), &chroma, 1080), 1080);
+    }
 
     #[test]
     fn full_resolution_chroma_accepts_odd_dimensions_but_requires_gpu_storage() {
