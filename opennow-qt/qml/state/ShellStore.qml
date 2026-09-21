@@ -65,6 +65,7 @@ QtObject {
     }
 
     property alias settings: settingsOwner.settings
+    property alias keyboardLayoutItems: settingsOwner.keyboardLayoutItems
     property var onboardingAwdlController: MacAwdl
     readonly property bool onboardingAwdlReady: !onboardingAwdlController.busy
         && [MacAwdlController.Unsupported, MacAwdlController.Unavailable, MacAwdlController.Disabled]

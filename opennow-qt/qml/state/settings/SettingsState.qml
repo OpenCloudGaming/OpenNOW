@@ -18,6 +18,29 @@ QtObject {
     signal accessibilityAnnounced(string message)
     signal errorReported(string message)
     property var settings: ({})
+    readonly property var keyboardLayoutItems: [
+        {label: "English (US)", value: "en-US"},
+        {label: "English (UK)", value: "en-GB"},
+        {label: "Türkçe (Q)", value: "tr-TR"},
+        {label: "Deutsch", value: "de-DE"},
+        {label: "Français", value: "fr-FR"},
+        {label: "Español", value: "es-ES"},
+        {label: "Español (Latinoamérica)", value: "es-MX"},
+        {label: "Italiano", value: "it-IT"},
+        {label: "Português (Portugal)", value: "pt-PT"},
+        {label: "Português (Brasil)", value: "pt-BR"},
+        {label: "Polski", value: "pl-PL"},
+        {label: "Dansk", value: "da-DK"},
+        {label: "Norsk", value: "nb-NO"},
+        {label: "Svenska", value: "sv-SE"},
+        {label: "Suomi", value: "fi-FI"},
+        {label: "Русский", value: "ru-RU"},
+        {label: "Українська", value: "uk-UA"},
+        {label: "日本語", value: "ja-JP"},
+        {label: "한국어", value: "ko-KR"},
+        {label: "中文（简体）", value: "zh-CN"},
+        {label: "中文（繁體）", value: "zh-TW"}
+    ]
     property string previewThemePack: ""
     property string settingsRequestId: ""
     property string consoleSurfaceRequestId: ""

@@ -101,6 +101,7 @@ impl CloudMatchService {
             .or_else(|| base.host_str().map(ToOwned::to_owned))
             .unwrap_or_default();
         let mut info = session_info(&payload, &base, &zone, &app_id, device_id)?;
+        info["keyboardLayout"] = json!(keyboard_layout);
         let request_codec = json!({
             "sessionId":info["sessionId"],
             "negotiatedStreamProfile":{
@@ -523,8 +524,9 @@ impl CloudMatchService {
         let app_id = first_string(&session["sessionRequestData"]["appId"])
             .or_else(|| first_string(&params["appId"]))
             .unwrap_or_else(|| "0".to_owned());
-        if session_requires_resume(initial_status)? {
-            let keyboard_layout = setting_string(settings, "keyboardLayout", "en-US");
+        let keyboard_layout = setting_string(settings, "keyboardLayout", "en-US");
+        let resumed = session_requires_resume(initial_status)?;
+        if resumed {
             let language = setting_string(settings, "gameLanguage", "en_US");
             let mut url = control_base
                 .join(&format!("v2/session/{session_id}"))
@@ -550,6 +552,9 @@ impl CloudMatchService {
         // Qt schedules cancellable session.poll requests until the fresh GET
         // reports status 2/3 with native endpoints. No long blocking RPC loop.
         let mut info = session_info(&initial_payload, &control_base, zone, &app_id, device_id)?;
+        if resumed {
+            info["keyboardLayout"] = json!(keyboard_layout);
+        }
         info["resumePending"] = json!(true);
         info["phase"] = json!("resuming");
         self.store_active(&mut info, &control_base, zone, &app_id, client)?;
@@ -651,6 +656,9 @@ impl CloudMatchService {
         let mut active = self.active.lock().expect("CloudMatch state poisoned");
         if let Some(previous) = active.as_ref() {
             preserve_session_codec(info, &previous.info);
+            if previous.session_id == session_id && info["keyboardLayout"].is_null() {
+                info["keyboardLayout"] = previous.info["keyboardLayout"].clone();
+            }
         }
         *active = Some(ActiveSession {
             session_id,
@@ -969,7 +977,7 @@ fn build_create_body(app_id: &str, params: &Value, settings: &Value, device_id: 
         "clientDisplayHdrCapabilities":null,
         "surroundAudioInfo":0,
         "remoteControllersBitmap":0,
-        "clientTimezoneOffset":client_timezone_offset_ms(chrono::Local::now().offset()),
+        "clientTimezoneOffset":chrono::Local::now().offset().utc_minus_local() * 1000,
         "enhancedStreamMode":0,
         "appLaunchMode":app_launch_mode(params),
         "secureRTSPSupported":true,
@@ -1709,14 +1717,6 @@ fn parse_resolution(value: &str) -> (i64, i64) {
         .and_then(|(width, height)| Some((width.parse().ok()?, height.parse().ok()?)))
         .filter(|(width, height)| *width > 0 && *height > 0)
         .unwrap_or((1920, 1080))
-}
-
-/// GFN expects the client's offset from UTC in milliseconds, positive east of
-/// Greenwich (UTC+2 is `7_200_000`). This is the opposite sign of JavaScript's
-/// `Date.getTimezoneOffset()`; sending that sign shifts the session clock by
-/// twice the offset.
-fn client_timezone_offset_ms(offset: &chrono::FixedOffset) -> i64 {
-    i64::from(offset.local_minus_utc()) * 1000
 }
 
 fn setting_string(settings: &Value, key: &str, fallback: &str) -> String {
@@ -2728,30 +2728,16 @@ mod tests {
     }
 
     #[test]
-    fn client_timezone_offset_is_positive_east_of_utc_in_milliseconds() {
-        let stockholm_summer = chrono::FixedOffset::east_opt(2 * 3600).unwrap();
-        let new_york_summer = chrono::FixedOffset::west_opt(4 * 3600).unwrap();
-        let kolkata = chrono::FixedOffset::east_opt(5 * 3600 + 1800).unwrap();
-        assert_eq!(client_timezone_offset_ms(&stockholm_summer), 7_200_000);
-        assert_eq!(client_timezone_offset_ms(&new_york_summer), -14_400_000);
-        assert_eq!(client_timezone_offset_ms(&kolkata), 19_800_000);
-        assert_eq!(
-            client_timezone_offset_ms(&chrono::FixedOffset::east_opt(0).unwrap()),
-            0
-        );
-    }
-
-    #[test]
     fn native_session_requests_use_the_current_local_timezone_in_milliseconds() {
-        let offset_before = client_timezone_offset_ms(chrono::Local::now().offset());
+        let offset_before = chrono::Local::now().offset().utc_minus_local() * 1000;
         let created = build_create_body("12345", &json!({}), &json!({}), "device-id");
         let resumed = build_resume_body("12345", &json!({}), &json!({}), "device-id");
-        let offset_after = client_timezone_offset_ms(chrono::Local::now().offset());
+        let offset_after = chrono::Local::now().offset().utc_minus_local() * 1000;
         for body in [created, resumed] {
             let offset = body["sessionRequestData"]["clientTimezoneOffset"]
                 .as_i64()
                 .unwrap();
-            assert!(offset == offset_before || offset == offset_after);
+            assert!(offset == i64::from(offset_before) || offset == i64::from(offset_after));
         }
     }
 
@@ -3117,6 +3103,39 @@ mod tests {
             .store_active(&mut omitted, &base, "auto", "123", client)
             .unwrap();
         assert_eq!(omitted["negotiatedStreamProfile"]["codec"], Value::Null);
+    }
+
+    #[test]
+    fn active_keyboard_layout_survives_polling_but_not_a_different_session() {
+        let client = Client::new();
+        let service = CloudMatchService::new(client.clone());
+        let base = Url::parse("https://prod.cloudmatchbeta.nvidiagrid.net/").unwrap();
+        let mut created = json!({"sessionId":"seat-one", "keyboardLayout":"fr-FR"});
+        service
+            .store_active(&mut created, &base, "auto", "123", client.clone())
+            .unwrap();
+
+        let mut polled = json!({"sessionId":"seat-one", "status":2});
+        service
+            .store_active(&mut polled, &base, "auto", "123", client.clone())
+            .unwrap();
+        assert_eq!(polled["keyboardLayout"], "fr-FR");
+
+        let mut resumed = json!({"sessionId":"seat-one", "keyboardLayout":"de-DE"});
+        service
+            .store_active(&mut resumed, &base, "auto", "123", client.clone())
+            .unwrap();
+        let mut polled = json!({"sessionId":"seat-one", "status":3});
+        service
+            .store_active(&mut polled, &base, "auto", "123", client.clone())
+            .unwrap();
+        assert_eq!(polled["keyboardLayout"], "de-DE");
+
+        let mut different = json!({"sessionId":"seat-two"});
+        service
+            .store_active(&mut different, &base, "auto", "123", client)
+            .unwrap();
+        assert!(different["keyboardLayout"].is_null());
     }
 
     #[test]

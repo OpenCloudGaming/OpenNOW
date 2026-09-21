@@ -91,7 +91,7 @@ FocusScope {
             && !ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)
         shortcutBindings: ShellStore.streamShortcutBindings()
         clipboardPaste: ShellStore.settings.clipboardPaste === true
-        keyboardLayout: String(ShellStore.settings.keyboardLayout || "en-US")
+        keyboardLayout: String((ShellStore.activeSession || {}).keyboardLayout || "en-US")
         videoSize: Qt.size(Number(root.profile.width || 0), Number(root.profile.height || 0))
         frameGeneration: String(ShellStore.settings.frameGeneration || 'off') === '2x'
         metalFxUpscaling: Qt.platform.os === "osx" && ShellStore.settings.upscaling === "metalfx"

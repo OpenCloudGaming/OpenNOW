@@ -998,6 +998,185 @@ private slots:
     }
 
 #if defined(Q_OS_LINUX)
+    void linuxRegionalKeysUsePhysicalPositions_data()
+    {
+        QTest::addColumn<QString>("layout");
+        QTest::addColumn<int>("key");
+        QTest::addColumn<int>("modifiers");
+        QTest::addColumn<quint32>("xkbKeycode");
+        QTest::addColumn<quint16>("expectedKey");
+        QTest::addColumn<quint16>("expectedModifiers");
+        const auto row = [](const char *name, const char *layout, int key, int modifiers,
+                            quint32 evdevCode, quint16 expectedKey, quint16 expectedModifiers = 0) {
+            QTest::newRow(name) << QString::fromLatin1(layout) << key << modifiers
+                               << quint32(evdevCode ? evdevCode + 8 : 0)
+                               << expectedKey << expectedModifiers;
+        };
+        row("us-semicolon", "en-US", Qt::Key_Colon, Qt::ShiftModifier, 39, 0xba, 1);
+        row("uk-hash", "en-GB", Qt::Key_NumberSign, 0, 43, 0xde);
+        row("uk-backslash", "en-GB", Qt::Key_Backslash, 0, 86, 0xdc);
+        row("turkish-dotless-i", "tr-TR", 0x0131, 0, 23, 0x49);
+        row("turkish-dotted-i", "tr-TR", 0x0130, 0, 40, 0xde);
+        row("german-y", "de-DE", Qt::Key_Y, 0, 44, 0x59);
+        row("german-z", "de-DE", Qt::Key_Z, 0, 21, 0x5a);
+        row("german-umlaut", "de-DE", Qt::Key_Udiaeresis, 0, 26, 0xba);
+        row("french-a", "fr-FR", Qt::Key_A, 0, 16, 0x41);
+        row("french-q", "fr-FR", Qt::Key_Q, 0, 30, 0x51);
+        row("french-m", "fr-FR", Qt::Key_M, 0, 39, 0x4d);
+        row("french-e-acute", "fr-FR", Qt::Key_Eacute, 0, 3, 0x32);
+        row("spanish-enye", "es-ES", Qt::Key_Ntilde, 0, 39, 0xc0);
+        row("latin-american-dead-acute", "es-MX", Qt::Key_Dead_Acute, 0, 26, 0xba);
+        row("italian-e-grave", "it-IT", Qt::Key_Egrave, 0, 26, 0xba);
+        row("portuguese-cedilla", "pt-PT", Qt::Key_Ccedilla, 0, 39, 0xc0);
+        row("brazilian-cedilla", "pt-BR", Qt::Key_Ccedilla, 0, 39, 0xba);
+        row("brazilian-extra-slash", "pt-BR", Qt::Key_Slash, 0, 89, 0xc1);
+        row("brazilian-keypad-decimal", "pt-BR", Qt::Key_Period, Qt::KeypadModifier, 121, 0xc2);
+        row("polish-altgr-l", "pl-PL", 0x0141, Qt::GroupSwitchModifier, 38, 0x4c, 6);
+        row("danish-ae", "da-DK", Qt::Key_AE, 0, 39, 0xc0);
+        row("norwegian-oslash", "nb-NO", Qt::Key_Ooblique, 0, 39, 0xc0);
+        row("swedish-altgr-2", "sv-SE", Qt::Key_At, Qt::GroupSwitchModifier, 3, 0x32, 6);
+        row("swedish-altgr-e", "sv-SE", 0x20ac, Qt::GroupSwitchModifier, 18, 0x45, 6);
+        row("finnish-dead-diaeresis", "fi-FI", Qt::Key_Dead_Diaeresis, 0, 27, 0xba);
+        row("russian-cyrillic", "ru-RU", 0x0416, 0, 39, 0xba);
+        row("ukrainian-cyrillic", "uk-UA", 0x0406, 0, 31, 0x53);
+        row("japanese-at", "ja-JP", Qt::Key_At, 0, 26, 0xc0);
+        row("japanese-yen", "ja-JP", Qt::Key_yen, 0, 124, 0xdc);
+        row("japanese-ro", "ja-JP", Qt::Key_Backslash, 0, 89, 0xe2);
+        row("japanese-convert", "ja-JP", Qt::Key_Henkan, 0, 92, 0x1c);
+        row("japanese-nonconvert", "ja-JP", Qt::Key_Muhenkan, 0, 94, 0x1d);
+        row("korean-letter", "ko-KR", 0x3142, 0, 16, 0x51);
+        row("korean-hangul", "ko-KR", Qt::Key_Hangul, 0, 122, 0x15);
+        row("korean-hanja", "ko-KR", Qt::Key_Hangul_Hanja, 0, 123, 0x19);
+        row("chinese-simplified", "zh-CN", Qt::Key_A, 0, 30, 0x41);
+        row("chinese-traditional", "zh-TW", Qt::Key_Semicolon, 0, 39, 0xba);
+        row("right-alt", "sv-SE", Qt::Key_AltGr, Qt::GroupSwitchModifier, 100, 0xa5);
+        row("right-control", "en-US", Qt::Key_Control, Qt::ControlModifier, 97, 0xa3);
+        row("right-shift", "en-US", Qt::Key_Shift, Qt::ShiftModifier, 54, 0xa1);
+        row("keypad-digit", "fr-FR", Qt::Key_1, Qt::KeypadModifier, 79, 0x61);
+        row("keypad-navigation", "fr-FR", Qt::Key_End, Qt::KeypadModifier, 79, 0x23);
+        row("keypad-comma", "de-DE", Qt::Key_Comma, Qt::KeypadModifier, 83, 0x6e);
+        row("keypad-minus", "en-US", Qt::Key_Minus, Qt::KeypadModifier, 74, 0x6d);
+        row("keypad-divide", "en-US", Qt::Key_Slash, Qt::KeypadModifier, 98, 0x6f);
+        row("unknown-layout-fallback", "xx-YY", Qt::Key_Y, 0, 21, 0x59);
+    }
+
+    void linuxRegionalKeysUsePhysicalPositions()
+    {
+        linuxPhysicalKeysFollowTheRequestedKeyboardLayout();
+    }
+
+    void regionalLayoutLookupIsBoundedAndNormalizesLocaleNames()
+    {
+        const auto *swedish = PhysicalKeyMap::layoutFor("sv-SE");
+        QVERIFY(swedish);
+        QCOMPARE(PhysicalKeyMap::layoutFor("SV_se"), swedish);
+        QCOMPARE(PhysicalKeyMap::layoutFor("sv"), swedish);
+        QCOMPARE(PhysicalKeyMap::layoutFor("nn-NO"), PhysicalKeyMap::layoutFor("nb-NO"));
+        QCOMPARE(PhysicalKeyMap::layoutFor("no-NO"), PhysicalKeyMap::layoutFor("nb-NO"));
+        QVERIFY(!PhysicalKeyMap::layoutFor("unknown"));
+        QCOMPARE(PhysicalKeyMap::virtualKey(nullptr, 26), quint16(0));
+        QCOMPARE(PhysicalKeyMap::virtualKey(swedish, 128), quint16(0));
+        QCOMPARE(PhysicalKeyMap::virtualKey(swedish, 0xffffffff), quint16(0));
+        QCOMPARE(PhysicalKeyMap::evdevCodeFromNativeScanCode(0), quint32(0));
+        QCOMPARE(PhysicalKeyMap::evdevCodeFromNativeScanCode(7), quint32(0));
+    }
+
+    void linuxAltGrAndLayoutChangesPreserveKeyLifetimes_data()
+    {
+        QTest::addColumn<bool>("fullscreen");
+        QTest::newRow("windowed") << false;
+        QTest::newRow("fullscreen") << true;
+    }
+
+    void linuxAltGrAndLayoutChangesPreserveKeyLifetimes()
+    {
+        QFETCH(bool, fullscreen);
+        static QList<QList<quint16>> inputCalls;
+        inputCalls.clear();
+        auto api = CursorSession::api();
+        api.submitKey = [](const OpenNowStreamer *, std::uint16_t key,
+                           std::uint16_t modifiers, bool pressed) {
+            inputCalls.append({key, modifiers, quint16(pressed)});
+            return OPENNOW_STREAMER_OK;
+        };
+        NativeStreamRuntime runtime(api);
+        QVERIFY(runtime.start());
+        StreamVideoItem::setNativeStreamRuntime(&runtime);
+        const auto reset = qScopeGuard([] { StreamVideoItem::setNativeStreamRuntime(nullptr); });
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                              {QStringLiteral("id"), QStringLiteral("regional-lifetimes")}}));
+        const QByteArray ready = R"({"id":"regional-lifetimes","type":"ok"})";
+        CursorSession::callbacks.response_callback(
+            reinterpret_cast<const std::uint8_t *>(ready.constData()), ready.size(),
+            CursorSession::callbacks.user_data);
+        QTRY_VERIFY(runtime.inputAllowed());
+        QQuickWindow window;
+        window.resize(640, 480);
+        auto *item = new StreamVideoItem(window.contentItem());
+        item->setRenderCallback({});
+        item->setSize(window.size());
+        item->setKeyboardLayout(QStringLiteral("sv-SE"));
+        item->setShortcutBindings({{QStringLiteral("local-e"), QStringLiteral("E")}});
+        QSignalSpy shortcuts(item, &StreamVideoItem::localShortcutRequested);
+        if (fullscreen) window.showFullScreen();
+        else window.showNormal();
+        window.requestActivate();
+        QTRY_VERIFY(window.isActive());
+        item->forceActiveFocus();
+        QTRY_VERIFY(item->captureActive());
+        const auto send = [&](QEvent::Type type, int key, quint32 scan) {
+            QKeyEvent event(type, key, Qt::NoModifier, scan, 0, 0);
+            QCoreApplication::sendEvent(&window, &event);
+        };
+
+        send(QEvent::KeyPress, Qt::Key_AltGr, 108);
+        send(QEvent::KeyPress, Qt::Key_E, 26);
+        QCOMPARE(inputCalls, (QList<QList<quint16>>{{0xa5, 0, 1}, {0x45, 6, 1}}));
+        QVERIFY(shortcuts.isEmpty());
+        send(QEvent::KeyRelease, Qt::Key_E, 26);
+        QCOMPARE(inputCalls.last(), (QList<quint16>{0x45, 6, 0}));
+        send(QEvent::KeyPress, Qt::Key_E, 26);
+        item->setInputEnabled(false);
+        QVERIFY(item->m_pressedKeys.isEmpty());
+        QVERIFY(inputCalls.contains({0xa5, 0, 0}));
+        QVERIFY(inputCalls.contains({0x45, 0, 0}));
+        send(QEvent::KeyRelease, Qt::Key_unknown, 108);
+        send(QEvent::KeyRelease, Qt::Key_unknown, 26);
+        item->setInputEnabled(true);
+        QTRY_VERIFY(item->captureActive());
+        send(QEvent::KeyPress, Qt::Key_E, 26);
+        QCOMPARE(shortcuts.size(), 1);
+        send(QEvent::KeyRelease, Qt::Key_E, 26);
+
+        item->setKeyboardLayout(QStringLiteral("fr-FR"));
+        send(QEvent::KeyPress, Qt::Key_A, 24);
+        QCOMPARE(inputCalls.last(), (QList<quint16>{0x41, 0, 1}));
+        item->setKeyboardLayout(QStringLiteral("en-US"));
+        send(QEvent::KeyRelease, Qt::Key_unknown, 24);
+        QCOMPARE(inputCalls.last(), (QList<quint16>{0x41, 0, 0}));
+        send(QEvent::KeyPress, Qt::Key_Q, 0);
+        send(QEvent::KeyRelease, Qt::Key_Q, 0);
+        QCOMPARE(inputCalls.last(), (QList<quint16>{0x51, 0, 0}));
+        QVERIFY(item->m_pressedKeys.isEmpty());
+    }
+
+    void altGrPreservesWireModifiersWithoutTriggeringLocalShortcuts()
+    {
+        QCOMPARE(StreamVideoItem::windowsVirtualKey(Qt::Key_AltGr), quint16(0xa5));
+        QCOMPARE(StreamVideoItem::inputModifiers(Qt::GroupSwitchModifier, Qt::Key_E), quint16(6));
+        QCOMPARE(StreamVideoItem::inputModifiers(Qt::GroupSwitchModifier | Qt::ShiftModifier,
+                                                Qt::Key_E), quint16(7));
+        QCOMPARE(StreamVideoItem::inputModifiers(Qt::GroupSwitchModifier, Qt::Key_AltGr), quint16(0));
+        const QVariantMap bindings{{QStringLiteral("plain"), QStringLiteral("E")},
+                                  {QStringLiteral("modified"), QStringLiteral("Ctrl+Alt+E")}};
+        QVERIFY(StreamVideoItem::shortcutActionForInput(bindings, Qt::Key_E,
+                    Qt::GroupSwitchModifier).isEmpty());
+        QVERIFY(StreamVideoItem::shortcutActionForInput(bindings, Qt::Key_E,
+                    Qt::GroupSwitchModifier | Qt::ControlModifier | Qt::AltModifier).isEmpty());
+        QCOMPARE(StreamVideoItem::shortcutActionForInput(bindings, Qt::Key_E,
+                    Qt::ControlModifier | Qt::AltModifier), QStringLiteral("modified"));
+    }
+
     void linuxPhysicalKeysFollowTheRequestedKeyboardLayout_data()
     {
         QTest::addColumn<QString>("layout");
@@ -1186,36 +1365,39 @@ private slots:
         QTest::addColumn<int>("key");
         QTest::addColumn<int>("baseKey");
         QTest::addColumn<quint16>("virtualKey");
+        QTest::addColumn<quint32>("nativeScanCode");
         const struct {
             const char *name;
             Qt::Key key;
             Qt::Key baseKey;
             quint16 virtualKey;
+            quint32 nativeScanCode;
         } cases[] = {
-            {"!", Qt::Key_Exclam, Qt::Key_1, 0x31},
-            {"@", Qt::Key_At, Qt::Key_2, 0x32},
-            {"#", Qt::Key_NumberSign, Qt::Key_3, 0x33},
-            {"$", Qt::Key_Dollar, Qt::Key_4, 0x34},
-            {"%", Qt::Key_Percent, Qt::Key_5, 0x35},
-            {"^", Qt::Key_AsciiCircum, Qt::Key_6, 0x36},
-            {"&", Qt::Key_Ampersand, Qt::Key_7, 0x37},
-            {"*", Qt::Key_Asterisk, Qt::Key_8, 0x38},
-            {"(", Qt::Key_ParenLeft, Qt::Key_9, 0x39},
-            {")", Qt::Key_ParenRight, Qt::Key_0, 0x30},
-            {"_", Qt::Key_Underscore, Qt::Key_Minus, 0xbd},
-            {"+", Qt::Key_Plus, Qt::Key_Equal, 0xbb},
-            {"{", Qt::Key_BraceLeft, Qt::Key_BracketLeft, 0xdb},
-            {"}", Qt::Key_BraceRight, Qt::Key_BracketRight, 0xdd},
-            {"|", Qt::Key_Bar, Qt::Key_Backslash, 0xdc},
-            {":", Qt::Key_Colon, Qt::Key_Semicolon, 0xba},
-            {"\"", Qt::Key_QuoteDbl, Qt::Key_Apostrophe, 0xde},
-            {"<", Qt::Key_Less, Qt::Key_Comma, 0xbc},
-            {">", Qt::Key_Greater, Qt::Key_Period, 0xbe},
-            {"?", Qt::Key_Question, Qt::Key_Slash, 0xbf},
-            {"~", Qt::Key_AsciiTilde, Qt::Key_QuoteLeft, 0xc0},
+            {"!", Qt::Key_Exclam, Qt::Key_1, 0x31, 10},
+            {"@", Qt::Key_At, Qt::Key_2, 0x32, 11},
+            {"#", Qt::Key_NumberSign, Qt::Key_3, 0x33, 12},
+            {"$", Qt::Key_Dollar, Qt::Key_4, 0x34, 13},
+            {"%", Qt::Key_Percent, Qt::Key_5, 0x35, 14},
+            {"^", Qt::Key_AsciiCircum, Qt::Key_6, 0x36, 15},
+            {"&", Qt::Key_Ampersand, Qt::Key_7, 0x37, 16},
+            {"*", Qt::Key_Asterisk, Qt::Key_8, 0x38, 17},
+            {"(", Qt::Key_ParenLeft, Qt::Key_9, 0x39, 18},
+            {")", Qt::Key_ParenRight, Qt::Key_0, 0x30, 19},
+            {"_", Qt::Key_Underscore, Qt::Key_Minus, 0xbd, 20},
+            {"+", Qt::Key_Plus, Qt::Key_Equal, 0xbb, 21},
+            {"{", Qt::Key_BraceLeft, Qt::Key_BracketLeft, 0xdb, 34},
+            {"}", Qt::Key_BraceRight, Qt::Key_BracketRight, 0xdd, 35},
+            {"|", Qt::Key_Bar, Qt::Key_Backslash, 0xdc, 51},
+            {":", Qt::Key_Colon, Qt::Key_Semicolon, 0xba, 47},
+            {"\"", Qt::Key_QuoteDbl, Qt::Key_Apostrophe, 0xde, 48},
+            {"<", Qt::Key_Less, Qt::Key_Comma, 0xbc, 59},
+            {">", Qt::Key_Greater, Qt::Key_Period, 0xbe, 60},
+            {"?", Qt::Key_Question, Qt::Key_Slash, 0xbf, 61},
+            {"~", Qt::Key_AsciiTilde, Qt::Key_QuoteLeft, 0xc0, 49},
         };
         for (const auto &entry : cases)
-            QTest::newRow(entry.name) << int(entry.key) << int(entry.baseKey) << entry.virtualKey;
+            QTest::newRow(entry.name) << int(entry.key) << int(entry.baseKey) << entry.virtualKey
+                                     << entry.nativeScanCode;
     }
 
     void forwardsShiftedPunctuation()
@@ -1223,6 +1405,7 @@ private slots:
         QFETCH(int, key);
         QFETCH(int, baseKey);
         QFETCH(quint16, virtualKey);
+        QFETCH(quint32, nativeScanCode);
         QCOMPARE(StreamVideoItem::windowsVirtualKey(key, Qt::ShiftModifier), virtualKey);
         QCOMPARE(StreamVideoItem::windowsVirtualKey(baseKey), virtualKey);
 
@@ -1275,7 +1458,7 @@ private slots:
             QTRY_VERIFY(window.isActive());
             item->forceActiveFocus();
             QTRY_VERIFY(item->captureActive());
-            for (const quint32 scanCode : {0u, 39u}) {
+            for (const quint32 scanCode : {0u, nativeScanCode}) {
                 for (const bool shiftReleasedFirst : {false, true}) {
                     inputCalls.clear();
                     QKeyEvent press(QEvent::KeyPress, key, Qt::ShiftModifier, scanCode, 0, 0);

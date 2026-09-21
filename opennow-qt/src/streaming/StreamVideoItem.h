@@ -161,6 +161,7 @@ private:
     struct PressedKey {
         quint16 virtualKey = 0;
         quint16 modifiers = 0;
+        bool altGr = false;
     };
 
     void applyRemoteCursor(const QByteArray &bytes);
@@ -176,6 +177,7 @@ private:
     void releaseCursorConfinement();
     void submitAbsoluteMouse(const QPointF &position);
     [[nodiscard]] quint16 eventVirtualKey(const QKeyEvent *event) const;
+    [[nodiscard]] Qt::KeyboardModifiers eventModifiers(const QKeyEvent *event) const;
     [[nodiscard]] quint32 keyIdentity(const QKeyEvent *event) const;
     [[nodiscard]] static quint8 mouseButton(Qt::MouseButton button);
 
@@ -194,7 +196,7 @@ private:
     bool m_inputEnabled = true;
     bool m_clipboardPaste = false;
     QString m_keyboardLayout = QStringLiteral("en-US");
-    PhysicalKeyMap::Family m_keyboardFamily = PhysicalKeyMap::Family::Default;
+    const PhysicalKeyMap::Layout *m_keyboardMap = PhysicalKeyMap::layoutFor("en-US");
     bool m_frameGeneration = false;
     bool m_metalFxUpscaling = false;
     bool m_fsrUpscaling = false;

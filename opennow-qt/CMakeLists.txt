@@ -22,7 +22,9 @@ set(CMAKE_AUTOMOC ON)
 # CMake's MinGW AutoMoc predefine probe is unreliable when invoked through
 # cmake_autogen on Windows. All required platform and Qt definitions are already
 # propagated by the targets below, so avoid the redundant compiler subprocess.
-set(CMAKE_AUTOMOC_COMPILER_PREDEFINES OFF)
+if(MINGW)
+    set(CMAKE_AUTOMOC_COMPILER_PREDEFINES OFF)
+endif()
 
 find_package(Qt6 6.8 REQUIRED COMPONENTS Quick QuickControls2 Gui Network Multimedia Test ShaderTools)
 if(APPLE)

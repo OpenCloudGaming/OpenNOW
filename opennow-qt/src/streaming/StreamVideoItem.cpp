@@ -180,7 +180,7 @@ void StreamVideoItem::setKeyboardLayout(const QString &layout)
 {
     if (m_keyboardLayout == layout) return;
     m_keyboardLayout = layout;
-    m_keyboardFamily = PhysicalKeyMap::familyForLayout(layout.toStdString());
+    m_keyboardMap = PhysicalKeyMap::layoutFor(layout.toStdString());
     emit keyboardLayoutChanged();
 }
 
