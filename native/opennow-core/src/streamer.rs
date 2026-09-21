@@ -417,6 +417,12 @@ impl StreamerService {
                 {
                     message.push_str(&format!(" {reason}"));
                 }
+                if let Some(hint) = hybrid_gpu_hint(capabilities) {
+                    message.push(' ');
+                    message.push_str(&hint);
+                }
+                message.chars().take(480).collect()
+            } else if let Some(message) = hybrid_gpu_message(capabilities) {
                 message
             } else if software_available {
                 "No hardware video backend is available for embedded streaming on this device. Select Software (CPU) to decode on the CPU, or export diagnostics for probe failures.".to_owned()
@@ -1072,6 +1078,111 @@ pub(crate) fn requested_embedded_backend(settings: &Value) -> String {
         "software" => "software".to_owned(),
         _ => "auto".to_owned(),
     }
+}
+
+fn gpu_label(value: &str) -> String {
+    let mut cleaned = String::new();
+    for character in value.chars().take(80) {
+        if character.is_alphanumeric()
+            || matches!(
+                character,
+                ' ' | '(' | ')' | '[' | ']' | '+' | '-' | '.' | '/' | ',' | '&'
+            )
+        {
+            cleaned.push(character);
+        } else if character.is_whitespace() {
+            cleaned.push(' ');
+        }
+    }
+    let cleaned = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    if cleaned.is_empty() {
+        return String::new();
+    }
+    let redacted = crate::diagnostics::runtime_failure_reason(&cleaned);
+    if redacted.is_empty() || redacted == "[redacted]" {
+        String::new()
+    } else {
+        redacted
+    }
+}
+
+fn codec_label(codec: &str) -> Option<&'static str> {
+    match codec {
+        "h264" => Some("H.264"),
+        "h265" => Some("H.265"),
+        "av1" => Some("AV1"),
+        _ => None,
+    }
+}
+
+fn alternate_decoding_gpus(capabilities: &Value) -> Vec<String> {
+    let Some(adapters) = capabilities
+        .get("graphicsAdapters")
+        .and_then(Value::as_array)
+    else {
+        return Vec::new();
+    };
+    if adapters.len() < 2 {
+        return Vec::new();
+    }
+    let mut capable = Vec::new();
+    for adapter in adapters.iter().take(8) {
+        if adapter["active"].as_bool() == Some(true) {
+            continue;
+        }
+        let labels = adapter["codecs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|codec| codec.as_str().and_then(codec_label))
+            .collect::<Vec<_>>();
+        if labels.is_empty() {
+            continue;
+        }
+        let name = gpu_label(adapter["name"].as_str().unwrap_or(""));
+        let name = if name.is_empty() {
+            "another GPU".to_owned()
+        } else {
+            name
+        };
+        capable.push(format!("{name} ({})", labels.join(", ")));
+        if capable.len() == 3 {
+            break;
+        }
+    }
+    capable
+}
+
+fn hybrid_gpu_hint(capabilities: &Value) -> Option<String> {
+    let capable = alternate_decoding_gpus(capabilities);
+    if capable.is_empty() {
+        return None;
+    }
+    let target = if capable.len() == 1 {
+        "that GPU"
+    } else {
+        "one of those GPUs"
+    };
+    Some(format!(
+        "{} can decode. Select {target} in Settings → Stream → Graphics processor, then restart OpenNOW.",
+        capable.join("; ")
+    ))
+}
+
+fn active_gpu_label(capabilities: &Value) -> Option<String> {
+    let adapters = capabilities.get("graphicsAdapters")?.as_array()?;
+    let adapter = adapters
+        .iter()
+        .find(|adapter| adapter["active"].as_bool() == Some(true))?;
+    let name = gpu_label(adapter["name"].as_str().unwrap_or(""));
+    if name.is_empty() { None } else { Some(name) }
+}
+
+fn hybrid_gpu_message(capabilities: &Value) -> Option<String> {
+    let hint = hybrid_gpu_hint(capabilities)?;
+    let selected = active_gpu_label(capabilities).unwrap_or_else(|| "the selected GPU".to_owned());
+    let message = format!("No hardware video backend is available on {selected}. {hint}");
+    Some(message.chars().take(480).collect())
 }
 
 fn normalize_codec_name(value: &str) -> Option<&'static str> {
@@ -2465,6 +2576,63 @@ mod tests {
         )
         .unwrap_err();
         assert!(!error.message.contains("Select Auto"));
+    }
+
+    #[test]
+    fn hybrid_gpu_failure_names_the_adapter_that_can_decode() {
+        let capabilities = json!({"protocolVersion":STREAMER_PROTOCOL_VERSION,"videoBackends":[
+            {"backend":"d3d11","available":false,"reason":"Direct3D hardware decode or presentation is unavailable"}
+        ], "graphicsAdapters":[
+            {"name":"NVIDIA GeForce MX110","active":true,"codecs":[],"h265Main10":false,
+                "reason":"no supported hardware decoder profile"},
+            {"name":"Intel(R) HD Graphics 620","active":false,"codecs":["h264","h265","private-codec"],
+                "h265Main10":true},
+            {"name":"Bearer secret-token","active":false,"codecs":["h264"]}
+        ]});
+        let error = StreamerService::embedded_session_settings(
+            &json!({"nativeVideoBackend":"auto"}),
+            &capabilities,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "streamer_backend_unavailable");
+        assert!(
+            error
+                .message
+                .starts_with("No hardware video backend is available on NVIDIA GeForce MX110.")
+        );
+        assert!(
+            error
+                .message
+                .contains("Intel(R) HD Graphics 620 (H.264, H.265)")
+        );
+        assert!(error.message.contains("Graphics processor"));
+        assert!(!error.message.contains("private-codec"));
+        assert!(!error.message.contains("secret-token"));
+        assert!(!error.message.contains("Select Software"));
+        assert!(error.message.len() <= 480);
+
+        let explicit = StreamerService::embedded_session_settings(
+            &json!({"nativeVideoBackend":"d3d11"}),
+            &capabilities,
+        )
+        .unwrap_err();
+        assert!(explicit.message.contains("Select Auto"));
+        assert!(
+            explicit
+                .message
+                .contains("Intel(R) HD Graphics 620 (H.264, H.265)")
+        );
+        assert!(!explicit.message.contains("secret-token"));
+
+        let only_failed = json!({"protocolVersion":STREAMER_PROTOCOL_VERSION,"videoBackends":[
+            {"backend":"d3d11","available":false}
+        ], "graphicsAdapters":[
+            {"name":"NVIDIA GeForce MX110","active":true,"codecs":[]}
+        ]});
+        let unchanged =
+            StreamerService::embedded_session_settings(&json!({}), &only_failed).unwrap_err();
+        assert!(unchanged.message.contains("Check the hardware drivers"));
+        assert!(!unchanged.message.contains("Graphics processor"));
     }
 
     #[test]

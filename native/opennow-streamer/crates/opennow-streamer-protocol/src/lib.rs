@@ -210,6 +210,23 @@ pub struct Capabilities {
     pub supports_microphone: bool,
     pub supports_owned_nvst_negotiation: bool,
     pub video_backends: Vec<VideoBackendCapability>,
+    /// Per-adapter hardware decode profiles for the current boot. Empty on
+    /// platforms that do not enumerate adapters. LUIDs are not included.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub graphics_adapters: Vec<GraphicsAdapterCapability>,
+}
+
+/// One physical GPU and the hardware decode profiles its video device exposed.
+/// `active` is the adapter the embedded runtime is using for this process.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphicsAdapterCapability {
+    pub name: String,
+    pub active: bool,
+    pub codecs: Vec<String>,
+    pub h265_main10: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -236,6 +253,40 @@ pub struct CodecCapability {
     pub hdr_supported: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<&'static str>,
+}
+
+#[cfg(test)]
+mod graphics_adapter_tests {
+    use super::GraphicsAdapterCapability;
+
+    #[test]
+    fn graphics_adapter_index_serializes_codec_profiles_without_an_empty_reason() {
+        let decoding = GraphicsAdapterCapability {
+            name: "Intel(R) HD Graphics 620".to_owned(),
+            active: false,
+            codecs: vec!["h264".to_owned(), "h265".to_owned()],
+            h265_main10: true,
+            reason: None,
+        };
+        let value = serde_json::to_value(&decoding).unwrap();
+        assert_eq!(value["name"], "Intel(R) HD Graphics 620");
+        assert_eq!(value["active"], false);
+        assert_eq!(value["codecs"], serde_json::json!(["h264", "h265"]));
+        assert_eq!(value["h265Main10"], true);
+        assert!(value.get("reason").is_none());
+
+        let discrete = GraphicsAdapterCapability {
+            name: "NVIDIA GeForce MX110".to_owned(),
+            active: true,
+            codecs: Vec::new(),
+            h265_main10: false,
+            reason: Some("no supported hardware decoder profile".to_owned()),
+        };
+        let value = serde_json::to_value(&discrete).unwrap();
+        assert_eq!(value["codecs"], serde_json::json!([]));
+        assert_eq!(value["h265Main10"], false);
+        assert_eq!(value["reason"], "no supported hardware decoder profile");
+    }
 }
 
 #[cfg(test)]

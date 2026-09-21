@@ -11,7 +11,7 @@ if(BUILD_TESTING)
     target_include_directories(opennow-graphicsdevices-tests PRIVATE src)
     target_link_libraries(opennow-graphicsdevices-tests PRIVATE Qt6::Test Qt6::Quick)
     if(WIN32)
-        target_link_libraries(opennow-graphicsdevices-tests PRIVATE user32 dxgi)
+        target_link_libraries(opennow-graphicsdevices-tests PRIVATE user32 dxgi d3d11)
     endif()
     add_test(NAME opennow-graphicsdevices-tests COMMAND opennow-graphicsdevices-tests -o -,txt)
     set_tests_properties(opennow-graphicsdevices-tests PROPERTIES

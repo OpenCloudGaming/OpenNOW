@@ -691,8 +691,25 @@ Qt resolves the saved identity to a current-boot Windows adapter LUID. The same
 LUID selects Qt's D3D11 adapter and the native runtime's capability probes; LUIDs
 are not persisted. A missing saved GPU falls back for that launch without
 erasing the preference. The settings selector appears only with at least two
-detected hardware adapters, excluding software adapters. Saving a different GPU
-affects the next application launch, not the active graphics device or session.
+detected hardware adapters, excluding software adapters. It is on the Stream
+settings page. Saving a different GPU affects the next application launch, not
+the active graphics device or session.
+
+Adapters are enumerated high-performance first. Before that launch, each adapter
+is indexed for H.264, HEVC, and AV1 hardware decode profiles at 1920×1080 or
+1280×720. Automatic uses the first adapter in that order that exposes one of
+those profiles. A hybrid laptop whose discrete GPU has no decoder, such as a
+GeForce MX110 beside Intel HD Graphics 620, therefore uses the integrated GPU
+instead of failing the session. An explicit saved GPU is still used even when
+its index is empty. Each settings choice lists the codecs that index found.
+
+The embedded streamer's protocol-7 `hello` may include `graphicsAdapters`. The
+field is omitted when no adapters were indexed. Each entry has `name`, `active`,
+`codecs` (`h264`, `h265`, `av1`), `h265Main10`, and an optional `reason`. It does
+not include the adapter LUID. `active` marks the adapter selected for that
+process. When no hardware backend is available and another indexed adapter can
+decode, the session error names that GPU and points to Settings → Stream →
+Graphics processor. Diagnostics copy the same allowlisted fields.
 
 ### Recording and replay capture
 

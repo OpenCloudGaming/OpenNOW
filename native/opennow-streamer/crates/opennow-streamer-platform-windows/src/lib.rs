@@ -8,8 +8,12 @@ mod queue;
 #[cfg(any(windows, test))]
 mod y410_color;
 
+mod adapter_decode;
+
 #[cfg(windows)]
 mod windows;
+
+pub use adapter_decode::{AdapterDecodeIndex, graphics_adapter_capabilities};
 
 #[cfg(windows)]
 pub use windows::{

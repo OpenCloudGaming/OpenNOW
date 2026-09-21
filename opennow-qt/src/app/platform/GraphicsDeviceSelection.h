@@ -3,6 +3,7 @@
 #include <QList>
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QVariantList>
 
 class QQuickWindow;
@@ -21,6 +22,11 @@ public:
         quint64 luid = 0;
         quint64 dedicatedMemoryBytes = 0;
         bool software = false;
+        // Hardware decode profiles from ID3D11VideoDevice. These match the
+        // streamer's adapter index (H.264, HEVC Main/Main10, AV1 profile 0).
+        bool h264 = false;
+        bool h265 = false;
+        bool av1 = false;
     };
 
     static QList<Adapter> detectAdapters();
@@ -39,6 +45,13 @@ signals:
     void choicesChanged();
 
 private:
+    const Adapter *automaticAdapter() const;
+    bool canDecode(const Adapter &adapter) const;
+    QStringList codecIds(const Adapter &adapter) const;
+    QString codecSummary(const Adapter &adapter) const;
+    QString memorySummary(const Adapter &adapter) const;
+    QString adapterDetail(const Adapter &adapter) const;
+
     QList<Adapter> m_adapters;
     QString m_requestedDeviceId;
     Adapter m_active;
