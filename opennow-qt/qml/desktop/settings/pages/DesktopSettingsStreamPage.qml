@@ -34,9 +34,9 @@ Column {
         DesktopSettingsRow {
             width: parent.width; paperStyle: true; glyph: "wave"; title: qsTr("Bitrate"); description: qsTr("Maximum requested bitrate")
             DesktopSettingsSlider {
-                from: 10; to: 200; stepSize: 5
+                from: 0.22; to: 200; stepSize: 0.01; decimals: 2
                 value: Number(page.settingsScreen.valueSetting("maxBitrateMbps",75)); suffix: " Mbps"
-                onCommitted: value => page.settingsScreen.setSetting("maxBitrateMbps",Math.round(value))
+                onCommitted: value => page.settingsScreen.setSetting("maxBitrateMbps", Math.round(value * 100) / 100)
             }
         }
         DesktopSettingsRow {
