@@ -937,6 +937,114 @@ private slots:
         QCOMPARE(StreamVideoItem::windowsVirtualKey(key, Qt::NoModifier, nativeKey), expected);
     }
 
+    void mapsGermanUmlautAndMinusAwayFromLayoutVirtualKeys()
+    {
+        const auto gameplay = [](int key, quint32 scanCode, quint32 layoutVirtualKey) {
+            return StreamVideoItem::windowsGameplayVirtualKey(
+                key, Qt::NoModifier, scanCode, layoutVirtualKey);
+        };
+        // German Windows reports ü as VK_OEM_1 and the hyphen key as VK_OEM_MINUS.
+        // Those are the physical positions of ö and ß. GFN wants the US position.
+        const auto uUmlaut = gameplay(Qt::Key_Udiaeresis, 0x1a, 0xba);
+        const auto oUmlaut = gameplay(Qt::Key_Odiaeresis, 0x27, 0xc0);
+        const auto hyphen = gameplay(Qt::Key_Minus, 0x35, 0xbd);
+        const auto eszett = gameplay(Qt::Key_ssharp, 0x0c, 0xdb);
+        QCOMPARE(uUmlaut, quint16(0xdb));
+        QCOMPARE(oUmlaut, quint16(0xba));
+        QVERIFY(uUmlaut != oUmlaut);
+        QCOMPARE(hyphen, quint16(0xbf));
+        QCOMPARE(eszett, quint16(0xbd));
+        QVERIFY(hyphen != eszett);
+        QCOMPARE(gameplay(Qt::Key_Slash, 0x35, 0x6f), quint16(0x6f));
+        QCOMPARE(gameplay(Qt::Key_Y, 0x2c, 0x59), quint16(0x5a));
+        QCOMPARE(gameplay(Qt::Key_Z, 0x15, 0x5a), quint16(0x59));
+        QCOMPARE(gameplay(0x0426, 0, 0x57), quint16(0x57));
+
+        // French AZERTY assigns VK_Z to the physical W key, VK_Q to physical A,
+        // and VK_M to the semicolon key. The set-1 scan code keeps the US position.
+        const auto azertyZ = gameplay(Qt::Key_Z, 0x11, 0x5a);
+        const auto azertyQ = gameplay(Qt::Key_Q, 0x1e, 0x51);
+        const auto azertyW = gameplay(Qt::Key_W, 0x2c, 0x57);
+        const auto azertyA = gameplay(Qt::Key_A, 0x10, 0x41);
+        const auto azertyM = gameplay(Qt::Key_M, 0x27, 0x4d);
+        QCOMPARE(azertyZ, quint16(0x57));
+        QVERIFY(azertyZ != quint16(0x5a));
+        QCOMPARE(azertyQ, quint16(0x41));
+        QVERIFY(azertyQ != quint16(0x51));
+        QCOMPARE(azertyW, quint16(0x5a));
+        QVERIFY(azertyW != quint16(0x57));
+        QCOMPARE(azertyA, quint16(0x51));
+        QVERIFY(azertyA != quint16(0x41));
+        QCOMPARE(azertyM, quint16(0xba));
+        QVERIFY(azertyM != quint16(0x4d));
+        QCOMPARE(gameplay(Qt::Key_Eacute, 0x03, 0x32), quint16(0x32));
+        QCOMPARE(StreamVideoItem::windowsVirtualKey(Qt::Key_Eacute), quint16(0));
+        // Cyrillic ц sits on US W. Neither the character nor a substituted VK moves it.
+        QCOMPARE(gameplay(0x0446, 0x11, 0x5a), quint16(0x57));
+
+        const auto mac = [](int key, quint32 keyCode) {
+            return StreamVideoItem::macGameplayVirtualKey(key, Qt::NoModifier, keyCode);
+        };
+        const auto macU = mac(Qt::Key_Udiaeresis, 0x21);
+        const auto macO = mac(Qt::Key_Odiaeresis, 0x29);
+        const auto macHyphen = mac(Qt::Key_Minus, 0x2c);
+        const auto macEszett = mac(Qt::Key_ssharp, 0x1b);
+        QCOMPARE(macU, quint16(0xdb));
+        QCOMPARE(macO, quint16(0xba));
+        QVERIFY(macU != macO);
+        QCOMPARE(macHyphen, quint16(0xbf));
+        QCOMPARE(macEszett, quint16(0xbd));
+        QVERIFY(macHyphen != macEszett);
+        QCOMPARE(mac(Qt::Key_Y, 0x06), quint16(0x5a));
+        QCOMPARE(mac(Qt::Key_Z, 0x10), quint16(0x59));
+        QCOMPARE(mac(Qt::Key_Z, 0x0d), quint16(0x57));
+        QVERIFY(mac(Qt::Key_Z, 0x0d) != quint16(0x5a));
+        QCOMPARE(mac(Qt::Key_W, 0x06), quint16(0x5a));
+        QCOMPARE(mac(Qt::Key_A, 0x0c), quint16(0x51));
+        QCOMPARE(mac(Qt::Key_M, 0x29), quint16(0xba));
+        QVERIFY(mac(Qt::Key_M, 0x29) != quint16(0x4d));
+        QCOMPARE(mac(Qt::Key_Eacute, 0x13), quint16(0x32));
+        QCOMPARE(mac(0x0446, 0x0d), quint16(0x57));
+        // Key code 0 is both ANSI A and a Qt event with no native key.
+        QCOMPARE(mac(Qt::Key_A, 0), quint16(0x41));
+        QCOMPARE(mac(Qt::Key_W, 0), quint16(0x57));
+        QCOMPARE(mac(Qt::Key_Minus, 0), quint16(0xbd));
+
+#if defined(Q_OS_LINUX)
+        QKeyEvent uPress(QEvent::KeyPress, Qt::Key_Udiaeresis, Qt::NoModifier, 34, 0xba, 0);
+        QKeyEvent oPress(QEvent::KeyPress, Qt::Key_Odiaeresis, Qt::NoModifier, 47, 0xc0, 0);
+        QKeyEvent hyphenPress(QEvent::KeyPress, Qt::Key_Minus, Qt::NoModifier, 61, 0xbd, 0);
+        QKeyEvent eszettPress(QEvent::KeyPress, Qt::Key_ssharp, Qt::NoModifier, 20, 0xdb, 0);
+        QKeyEvent azertyPress(QEvent::KeyPress, Qt::Key_Z, Qt::NoModifier, 25, 0x5a, 0);
+        QKeyEvent cyrillicPress(QEvent::KeyPress, 0x0446, Qt::NoModifier, 25, 0x5a, 0);
+#elif defined(Q_OS_WIN)
+        QKeyEvent uPress(QEvent::KeyPress, Qt::Key_Udiaeresis, Qt::NoModifier, 0x1a, 0xba, 0);
+        QKeyEvent oPress(QEvent::KeyPress, Qt::Key_Odiaeresis, Qt::NoModifier, 0x27, 0xc0, 0);
+        QKeyEvent hyphenPress(QEvent::KeyPress, Qt::Key_Minus, Qt::NoModifier, 0x35, 0xbd, 0);
+        QKeyEvent eszettPress(QEvent::KeyPress, Qt::Key_ssharp, Qt::NoModifier, 0x0c, 0xdb, 0);
+        QKeyEvent azertyPress(QEvent::KeyPress, Qt::Key_Z, Qt::NoModifier, 0x11, 0x5a, 0);
+        QKeyEvent cyrillicPress(QEvent::KeyPress, 0x0446, Qt::NoModifier, 0x11, 0x5a, 0);
+#elif defined(Q_OS_MACOS)
+        QKeyEvent uPress(QEvent::KeyPress, Qt::Key_Udiaeresis, Qt::NoModifier, 0, 0x21, 0);
+        QKeyEvent oPress(QEvent::KeyPress, Qt::Key_Odiaeresis, Qt::NoModifier, 0, 0x29, 0);
+        QKeyEvent hyphenPress(QEvent::KeyPress, Qt::Key_Minus, Qt::NoModifier, 0, 0x2c, 0);
+        QKeyEvent eszettPress(QEvent::KeyPress, Qt::Key_ssharp, Qt::NoModifier, 0, 0x1b, 0);
+        QKeyEvent azertyPress(QEvent::KeyPress, Qt::Key_Z, Qt::NoModifier, 0, 0x0d, 0);
+        QKeyEvent cyrillicPress(QEvent::KeyPress, 0x0446, Qt::NoModifier, 0, 0x0d, 0);
+#endif
+#if defined(Q_OS_LINUX) || defined(Q_OS_WIN) || defined(Q_OS_MACOS)
+        QCOMPARE(StreamVideoItem::eventVirtualKey(&uPress), quint16(0xdb));
+        QCOMPARE(StreamVideoItem::eventVirtualKey(&oPress), quint16(0xba));
+        QCOMPARE(StreamVideoItem::eventVirtualKey(&hyphenPress), quint16(0xbf));
+        QCOMPARE(StreamVideoItem::eventVirtualKey(&eszettPress), quint16(0xbd));
+        QVERIFY(StreamVideoItem::eventVirtualKey(&uPress) != quint16(0xba));
+        QVERIFY(StreamVideoItem::eventVirtualKey(&hyphenPress) != quint16(0xbd));
+        QCOMPARE(StreamVideoItem::eventVirtualKey(&azertyPress), quint16(0x57));
+        QVERIFY(StreamVideoItem::eventVirtualKey(&azertyPress) != quint16(0x5a));
+        QCOMPARE(StreamVideoItem::eventVirtualKey(&cyrillicPress), quint16(0x57));
+#endif
+    }
+
     void nativeKeyboardEventsPreserveGameplayKeys_data()
     {
         QTest::addColumn<bool>("fullscreen");
@@ -995,6 +1103,25 @@ private slots:
             {0x0424, 0x1e, 0x41, 0x41},
             {0x042b, 0x1f, 0x53, 0x53},
             {0x0412, 0x20, 0x44, 0x44},
+            {Qt::Key_Udiaeresis, 0x1a, 0xba, 0xdb},
+            {Qt::Key_Odiaeresis, 0x27, 0xc0, 0xba},
+            {Qt::Key_Minus, 0x35, 0xbd, 0xbf},
+            {Qt::Key_ssharp, 0x0c, 0xdb, 0xbd},
+            {Qt::Key_Z, 0x11, 0x5a, 0x57},
+            {Qt::Key_Q, 0x1e, 0x51, 0x41},
+            {Qt::Key_M, 0x27, 0x4d, 0xba},
+            {0x0446, 0x11, 0x5a, 0x57},
+#elif defined(Q_OS_MACOS)
+            {Qt::Key_W, 1, 0x0d, 0x57},
+            {Qt::Key_S, 3, 0x01, 0x53},
+            {Qt::Key_D, 4, 0x02, 0x44},
+            {Qt::Key_Udiaeresis, 5, 0x21, 0xdb},
+            {Qt::Key_Odiaeresis, 6, 0x29, 0xba},
+            {Qt::Key_Minus, 7, 0x2c, 0xbf},
+            {Qt::Key_ssharp, 8, 0x1b, 0xbd},
+            {Qt::Key_Z, 9, 0x0d, 0x57},
+            {Qt::Key_M, 10, 0x29, 0xba},
+            {0x0446, 11, 0x0d, 0x57},
 #else
             {Qt::Key_W, 25, 0x77, 0x57},
             {Qt::Key_A, 38, 0x61, 0x41},
@@ -1055,6 +1182,17 @@ private slots:
         QCOMPARE(textCalls, (QList<QByteArray>{"native keyboard paste"}));
         QCOMPARE(inputCalls, (QList<QList<quint16>>{{0xa3, 0, 1}, {0xa3, 0, 0}}));
         QVERIFY(item->m_pressedKeys.isEmpty());
+#elif defined(Q_OS_MACOS)
+        item->setShortcutBindings({{QStringLiteral("menu"), QStringLiteral("Ctrl+G")}});
+        QSignalSpy shortcuts(item, &StreamVideoItem::localShortcutRequested);
+        inputCalls.clear();
+        QKeyEvent shortcutPress(QEvent::KeyPress, Qt::Key_G, Qt::ControlModifier, 20, 0x05, 0);
+        QKeyEvent shortcutRelease(QEvent::KeyRelease, Qt::Key_G, Qt::ControlModifier, 20, 0x05, 0);
+        QCoreApplication::sendEvent(&window, &shortcutPress);
+        QCoreApplication::sendEvent(&window, &shortcutRelease);
+        QCOMPARE(shortcuts.size(), 1);
+        QCOMPARE(shortcuts.first().first().toString(), QStringLiteral("menu"));
+        QVERIFY(inputCalls.isEmpty());
 #endif
     }
 
@@ -1172,6 +1310,10 @@ private slots:
             {"us-d", Qt::Key_D, 40, 0x44},
             {"qwertz-z-at-us-y", Qt::Key_Z, 29, 0x59},
             {"qwertz-y-at-us-z", Qt::Key_Y, 52, 0x5a},
+            {"qwertz-u-umlaut", Qt::Key_Udiaeresis, 34, 0xdb},
+            {"qwertz-o-umlaut", Qt::Key_Odiaeresis, 47, 0xba},
+            {"qwertz-hyphen", Qt::Key_Minus, 61, 0xbf},
+            {"qwertz-eszett", Qt::Key_ssharp, 20, 0xbd},
             {"azerty-z-at-us-w", Qt::Key_Z, 25, 0x57},
             {"azerty-q-at-us-a", Qt::Key_Q, 38, 0x41},
             {"azerty-w-at-us-z", Qt::Key_W, 52, 0x5a},
@@ -1252,7 +1394,8 @@ private slots:
         item->forceActiveFocus();
         QTRY_VERIFY(item->captureActive());
 #if defined(Q_OS_LINUX)
-        QKeyEvent press(QEvent::KeyPress, key, Qt::NoModifier, scanCode, 0, 0);
+        const quint32 layoutVirtualKey = virtualKey == 0xba ? quint32(0xdb) : quint32(0xba);
+        QKeyEvent press(QEvent::KeyPress, key, Qt::NoModifier, scanCode, layoutVirtualKey, 0);
         QCoreApplication::sendEvent(&window, &press);
         QVERIFY(press.isAccepted());
         QCOMPARE(inputCalls, (QList<QList<quint16>>{{virtualKey, 0, 1}}));
@@ -1262,20 +1405,20 @@ private slots:
         QCOMPARE(inputCalls, (QList<QList<quint16>>{{virtualKey, 0, 1}, {virtualKey, 0, 0}}));
         QVERIFY(item->m_pressedKeys.isEmpty());
         inputCalls.clear();
-        QKeyEvent held(QEvent::KeyPress, key, Qt::NoModifier, scanCode, 0, 0);
+        QKeyEvent held(QEvent::KeyPress, key, Qt::NoModifier, scanCode, layoutVirtualKey, 0);
         QCoreApplication::sendEvent(&window, &held);
         overlay->setVisible(true);
         overlay->forceActiveFocus();
         QTRY_VERIFY(!item->captureActive());
         QCOMPARE(inputCalls, (QList<QList<quint16>>{{virtualKey, 0, 1}, {virtualKey, 0, 0}}));
         QVERIFY(item->m_pressedKeys.isEmpty());
-        QKeyEvent blocked(QEvent::KeyPress, key, Qt::NoModifier, scanCode, 0, 0);
+        QKeyEvent blocked(QEvent::KeyPress, key, Qt::NoModifier, scanCode, layoutVirtualKey, 0);
         QCoreApplication::sendEvent(&window, &blocked);
         QCOMPARE(inputCalls.size(), 2);
         overlay->setVisible(false);
         item->forceActiveFocus();
         QTRY_VERIFY(item->captureActive());
-        QKeyEvent resumed(QEvent::KeyPress, key, Qt::NoModifier, scanCode, 0, 0);
+        QKeyEvent resumed(QEvent::KeyPress, key, Qt::NoModifier, scanCode, layoutVirtualKey, 0);
         QCoreApplication::sendEvent(&window, &resumed);
         QCOMPARE(inputCalls.last(), (QList<quint16>{virtualKey, 0, 1}));
         item->releaseInput();
