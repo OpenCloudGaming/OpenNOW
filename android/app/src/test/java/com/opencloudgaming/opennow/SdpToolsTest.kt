@@ -75,6 +75,24 @@ class SdpToolsTest {
     }
 
     @Test
+    fun nvstGamepadTransportUsesTheMaskAdvertisedByTheNativeSdp() {
+        assertEquals(
+            PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL,
+            effectivePartiallyReliableGamepadMask(
+                webRtcNegotiatedMask = 0,
+                nvstTransportActive = true,
+            ),
+        )
+        assertEquals(
+            0x03,
+            effectivePartiallyReliableGamepadMask(
+                webRtcNegotiatedMask = 0x03,
+                nvstTransportActive = false,
+            ),
+        )
+    }
+
+    @Test
     fun prefersEightBitH265ProfileForNonHdrAndroidStream() {
         val munged = SdpTools.preferCodec(h265Offer(), StreamSettings(codec = VideoCodec.H265, colorQuality = ColorQuality.EightBit420))
 

@@ -193,13 +193,16 @@ object NativeStreamInputRouter {
     /**
      * Cheap Android TV mouse drivers can expose the secondary button as a key instead of a
      * MotionEvent. Keep source identity authoritative: the same codes remain Back/B on remotes
-     * and controllers, while a mouse receives a protocol mouse-button edge.
+     * and controllers, while a mouse receives a protocol mouse-button edge. Known controllers
+     * retain precedence when an integrated touchpad also advertises pointer capability.
      */
     internal fun shouldRouteKeyAsExternalMouseSecondary(
         keyCode: Int,
         externalMouseInputDevice: Boolean,
+        controllerInputDevice: Boolean,
     ): Boolean =
         externalMouseInputDevice &&
+            !controllerInputDevice &&
             (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_BUTTON_B)
 
     private data class PresentationTransform(
@@ -688,6 +691,7 @@ object NativeStreamInputRouter {
         val externalMouseSecondary = shouldRouteKeyAsExternalMouseSecondary(
             keyCode = event.keyCode,
             externalMouseInputDevice = externalMouseInputDevice,
+            controllerInputDevice = controllerInputDevice,
         )
         if (externalMouseSecondary) {
             if (streamUiActive) return true
@@ -815,9 +819,9 @@ object NativeStreamInputRouter {
                 InputDevice.getDevice(deviceId)?.keyboardType == InputDevice.KEYBOARD_TYPE_ALPHABETIC)
 
     private fun KeyEvent.isExternalMouseInputDevice(): Boolean {
-        // Mouse capability wins for secondary-button aliases. Several Android TV receivers also
-        // advertise stray GAMEPAD/JOYSTICK bits, which must not turn the mouse's right button into
-        // a cloud controller button or Android Back.
+        // Detect pointer capability independently from controller identity. The route decision
+        // gives a known controller precedence, while unknown Android TV receivers with stray
+        // GAMEPAD/JOYSTICK bits can still deliver their right-click aliases as mouse buttons.
         return hasExternalMouseSource(
             eventSource = source,
             deviceSources = InputDevice.getDevice(deviceId)?.sources ?: 0,

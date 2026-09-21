@@ -1072,6 +1072,7 @@ private fun MainShell(
                                 },
                                 iconRes = R.drawable.ic_tab_settings,
                                 label = stringResource(R.string.nav_settings),
+                                showNotificationDot = state.appMessage != null,
                             )
                         }
                     }
@@ -1498,6 +1499,7 @@ private fun AppNavigationRail(
                         iconRes = R.drawable.ic_tab_settings,
                         label = stringResource(R.string.nav_settings),
                         iconSize = if (largeIcons) 30.dp else 24.dp,
+                        showNotificationDot = state.appMessage != null,
                         showConnectionDot = shouldShowLocalTvConnectionDot(
                             tvProfile = state.androidTvProfile,
                             pairedDeviceName = state.localTvConnector.pairedDeviceName,
@@ -1587,6 +1589,7 @@ private fun AppNavigationRailItem(
     modifier: Modifier = Modifier,
     iconSize: Dp = 24.dp,
     focusRequester: FocusRequester? = null,
+    showNotificationDot: Boolean = false,
     showConnectionDot: Boolean = false,
 ) {
     var focused by remember { mutableStateOf(false) }
@@ -1657,17 +1660,25 @@ private fun AppNavigationRailItem(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center,
             ) {
-                Icon(
-                    painter = painterResource(iconRes),
-                    contentDescription = label,
-                    tint = contentColor,
-                    modifier = Modifier
-                        .size(iconSize)
-                        .graphicsLayer {
-                            scaleX = iconScale
-                            scaleY = iconScale
-                        },
-                )
+                Box(
+                    modifier = Modifier.size(width = iconSize + 10.dp, height = iconSize),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        painter = painterResource(iconRes),
+                        contentDescription = label,
+                        tint = contentColor,
+                        modifier = Modifier
+                            .size(iconSize)
+                            .graphicsLayer {
+                                scaleX = iconScale
+                                scaleY = iconScale
+                            },
+                    )
+                    if (showNotificationDot) {
+                        NavigationNotificationDot(Modifier.align(Alignment.TopEnd))
+                    }
+                }
                 if (showConnectionDot) {
                     Spacer(Modifier.height(2.dp))
                     Box(
@@ -1709,6 +1720,7 @@ private fun RowScope.BottomNavItem(
     onClick: () -> Unit,
     iconRes: Int,
     label: String,
+    showNotificationDot: Boolean = false,
 ) {
     val haptics = LocalOpenNowHaptics.current
     // See AppNavigationRailItem: the tab bar is the rail rotated, and keeps the same fixed tint.
@@ -1750,6 +1762,13 @@ private fun RowScope.BottomNavItem(
                             scaleY = iconScale
                         },
                 )
+                if (showNotificationDot) {
+                    NavigationNotificationDot(
+                        Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(top = 3.dp, end = 5.dp),
+                    )
+                }
             }
         },
         label = {
@@ -1760,6 +1779,16 @@ private fun RowScope.BottomNavItem(
                 overflow = TextOverflow.Ellipsis,
             )
         },
+    )
+}
+
+@Composable
+private fun NavigationNotificationDot(modifier: Modifier = Modifier) {
+    Box(
+        modifier
+            .size(8.dp)
+            .clip(CircleShape)
+            .background(OpenNowPalette.AccentSwitchRed),
     )
 }
 

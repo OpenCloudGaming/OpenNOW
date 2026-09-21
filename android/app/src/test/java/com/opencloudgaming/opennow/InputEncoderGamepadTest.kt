@@ -488,18 +488,50 @@ class InputEncoderGamepadTest {
             NativeStreamInputRouter.shouldRouteKeyAsExternalMouseSecondary(
                 keyCode = KeyEvent.KEYCODE_BACK,
                 externalMouseInputDevice = true,
+                controllerInputDevice = false,
             ),
         )
         assertTrue(
             NativeStreamInputRouter.shouldRouteKeyAsExternalMouseSecondary(
                 keyCode = KeyEvent.KEYCODE_BUTTON_B,
                 externalMouseInputDevice = true,
+                controllerInputDevice = false,
             ),
         )
         assertFalse(
             NativeStreamInputRouter.shouldRouteKeyAsExternalMouseSecondary(
                 keyCode = KeyEvent.KEYCODE_BUTTON_B,
                 externalMouseInputDevice = false,
+                controllerInputDevice = false,
+            ),
+        )
+    }
+
+    @Test
+    fun controllerTouchpadDoesNotTurnButtonBIntoASecondaryMouseClick() {
+        // Captured from Wireless Controller Touchpad on the affected device.
+        val buttonEventSource = InputDevice.SOURCE_KEYBOARD or InputDevice.SOURCE_GAMEPAD
+        assertEquals(1_281, buttonEventSource)
+        val controllerSources =
+            buttonEventSource or InputDevice.SOURCE_TOUCHPAD
+
+        assertTrue(
+            AndroidControllerInput.isControllerDevice(
+                source = controllerSources,
+                deviceName = "Wireless Controller Touchpad",
+            ),
+        )
+        assertTrue(
+            hasExternalMouseSource(
+                eventSource = buttonEventSource,
+                deviceSources = controllerSources,
+            ),
+        )
+        assertFalse(
+            NativeStreamInputRouter.shouldRouteKeyAsExternalMouseSecondary(
+                keyCode = KeyEvent.KEYCODE_BUTTON_B,
+                externalMouseInputDevice = true,
+                controllerInputDevice = true,
             ),
         )
     }
@@ -532,12 +564,14 @@ class InputEncoderGamepadTest {
             NativeStreamInputRouter.shouldRouteKeyAsExternalMouseSecondary(
                 keyCode = KeyEvent.KEYCODE_BACK,
                 externalMouseInputDevice = true,
+                controllerInputDevice = false,
             ),
         )
         assertTrue(
             NativeStreamInputRouter.shouldRouteKeyAsExternalMouseSecondary(
                 keyCode = KeyEvent.KEYCODE_BUTTON_B,
                 externalMouseInputDevice = true,
+                controllerInputDevice = false,
             ),
         )
     }

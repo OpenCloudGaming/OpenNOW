@@ -29,6 +29,7 @@ private const val KEY_DEVICE_ID = "gfn_device_id"
 private const val KEY_CATALOG_CACHE_PREFIX = "catalog_cache_"
 private const val KEY_ANDROID_UPDATE_DISMISSED_NOTICE = "android_update_dismissed_notice"
 private const val KEY_QUEUED_GAME_KEYS = "queued_game_keys"
+private const val KEY_CONTINUE_PLAYING_DISMISSALS = "continue_playing_dismissals"
 private const val CATALOG_CACHE_TTL_MS = 12L * 60L * 60L * 1000L
 
 /**
@@ -51,6 +52,7 @@ private const val CATALOG_CACHE_DIRECTORY_NAME = "catalog-cache-v2"
  */
 private const val MAX_CACHED_CATALOG_GAMES = 400
 private const val QUEUED_GAME_LIMIT = 24
+private const val CONTINUE_PLAYING_DISMISSAL_LIMIT = 48
 // Keys that must never be written to the external (potentially world-readable) file.
 private val SENSITIVE_KEYS = setOf(KEY_AUTH, KEY_DEVICE_ID)
 private val AUTH_STORE_LOCK = Any()
@@ -763,6 +765,62 @@ class QueuedGameStore(context: Context) {
         val next = (listOf(normalized) + load().filterNot { it == normalized })
             .take(QUEUED_GAME_LIMIT)
         prefs.edit().putString(KEY_QUEUED_GAME_KEYS, OpenNowJson.encodeToString(next)).apply()
+        return next
+    }
+
+    fun remove(gameKey: String): List<String> {
+        val normalized = gameKey.trim()
+        if (normalized.isBlank()) return load()
+        val next = load().filterNot { it == normalized }
+        prefs.edit().putString(KEY_QUEUED_GAME_KEYS, OpenNowJson.encodeToString(next)).apply()
+        return next
+    }
+}
+
+/**
+ * Remembers which exact provider play record the player dismissed from Continue playing.
+ *
+ * The timestamp is intentional: when GFN reports a newer play for the same game, the old dismissal
+ * no longer matches and the game naturally returns to the rail. This is presentation state only;
+ * it never mutates the user's GFN library or provider history.
+ */
+class ContinuePlayingDismissalStore(context: Context) {
+    private val prefs = ExternalPrefs.get(context, STORE_NAME)
+
+    fun load(): Map<String, String> {
+        val raw = prefs.getString(KEY_CONTINUE_PLAYING_DISMISSALS, null) ?: return emptyMap()
+        return runCatching { OpenNowJson.decodeFromString<Map<String, String>>(raw) }
+            .getOrElse { emptyMap() }
+            .asSequence()
+            .map { (gameKey, lastPlayed) -> gameKey.trim() to lastPlayed.trim() }
+            .filter { (gameKey, lastPlayed) -> gameKey.isNotBlank() && lastPlayed.isNotBlank() }
+            .distinctBy { (gameKey, _) -> gameKey }
+            .take(CONTINUE_PLAYING_DISMISSAL_LIMIT)
+            .toMap(LinkedHashMap())
+    }
+
+    fun dismiss(gameKey: String, lastPlayed: String): Map<String, String> {
+        val normalizedKey = gameKey.trim()
+        val normalizedLastPlayed = lastPlayed.trim()
+        if (normalizedKey.isBlank() || normalizedLastPlayed.isBlank()) return load()
+        val next = linkedMapOf(normalizedKey to normalizedLastPlayed).apply {
+            load().forEach { (savedKey, savedLastPlayed) ->
+                if (savedKey != normalizedKey && size < CONTINUE_PLAYING_DISMISSAL_LIMIT) {
+                    put(savedKey, savedLastPlayed)
+                }
+            }
+        }
+        prefs.edit().putString(KEY_CONTINUE_PLAYING_DISMISSALS, OpenNowJson.encodeToString(next)).apply()
+        return next
+    }
+
+    fun restore(gameKey: String): Map<String, String> {
+        val normalized = gameKey.trim()
+        if (normalized.isBlank()) return load()
+        val current = load()
+        if (normalized !in current) return current
+        val next = current.filterKeys { it != normalized }
+        prefs.edit().putString(KEY_CONTINUE_PLAYING_DISMISSALS, OpenNowJson.encodeToString(next)).apply()
         return next
     }
 }

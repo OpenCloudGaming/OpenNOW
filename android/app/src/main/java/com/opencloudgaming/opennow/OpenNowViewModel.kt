@@ -257,6 +257,7 @@ data class OpenNowUiState(
     val newlyAddedGames: List<GameInfo> = emptyList(),
     val libraryGames: List<GameInfo> = emptyList(),
     val queuedGameKeys: List<String> = emptyList(),
+    val dismissedContinuePlaying: Map<String, String> = emptyMap(),
     val catalogResult: CatalogBrowseResult = CatalogBrowseResult(emptyList()),
     val catalogSearch: String = "",
     val librarySearch: String = "",
@@ -470,6 +471,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
     private val catalogCacheStore = CatalogCacheStore(application)
     private val queuedGameStore = QueuedGameStore(application)
+    private val continuePlayingDismissalStore = ContinuePlayingDismissalStore(application)
     private val subscriptionRepository = GfnSubscriptionRepository(http)
     private val accountConnectorRepository = GfnAccountConnectorRepository(http)
     private val printedWasteRepository = PrintedWasteRepository(http)
@@ -555,6 +557,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             androidUpdate = appUpdater.state.value,
             dismissedAndroidUpdateNoticeKey = androidUpdateNoticeStore.dismissedKey(),
             queuedGameKeys = queuedGameStore.load(),
+            dismissedContinuePlaying = continuePlayingDismissalStore.load(),
         ),
     )
     val state: StateFlow<OpenNowUiState> = _state.asStateFlow()
@@ -2409,6 +2412,26 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun removeQueuedGame(game: GameInfo) {
+        val next = queuedGameStore.remove(gameTrackingKey(game))
+        _state.update { it.copy(queuedGameKeys = next) }
+    }
+
+    fun dismissContinuePlaying(game: GameInfo) {
+        val lastPlayed = game.recentPlaySortKey() ?: return
+        val gameKey = gameTrackingKey(game)
+        val dismissed = continuePlayingDismissalStore.dismiss(gameKey, lastPlayed)
+        // A game can exist in both sources; clearing its old queue record prevents the same card
+        // from jumping into the next rail immediately after the player dismisses it here.
+        val queued = queuedGameStore.remove(gameKey)
+        _state.update {
+            it.copy(
+                queuedGameKeys = queued,
+                dismissedContinuePlaying = dismissed,
+            )
+        }
+    }
+
     fun setDefaultGameVariant(gameId: String, variantId: String?) {
         settingsStore.update {
             val next = it.defaultGameVariantIds.toMutableMap()
@@ -2801,8 +2824,15 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun recordQueuedGame(game: GameInfo) {
-        val next = queuedGameStore.record(gameTrackingKey(game))
-        _state.update { it.copy(queuedGameKeys = next) }
+        val gameKey = gameTrackingKey(game)
+        val next = queuedGameStore.record(gameKey)
+        val dismissed = continuePlayingDismissalStore.restore(gameKey)
+        _state.update {
+            it.copy(
+                queuedGameKeys = next,
+                dismissedContinuePlaying = dismissed,
+            )
+        }
     }
 
     private fun markSessionReadyForNativeStream(readySession: SessionInfo, settings: StreamSettings) {

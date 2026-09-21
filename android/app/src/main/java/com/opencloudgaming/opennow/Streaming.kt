@@ -2292,10 +2292,16 @@ class NativeStreamClient(
                                 emitState("Streaming")
                             }
                             "input-ready" -> {
-                                inputEncoder.setProtocolVersion(detail.toIntOrNull() ?: DEFAULT_INPUT_PROTOCOL_VERSION)
+                                val protocolVersion = detail.toIntOrNull() ?: DEFAULT_INPUT_PROTOCOL_VERSION
+                                inputEncoder.setProtocolVersion(protocolVersion)
                                 inputEncoder.resetGamepadSequences()
                                 startInputSessionClock()
                                 inputHandshakeReady = true
+                                NativeInputDiagnostics.addRetained(
+                                    key = "protocol",
+                                    message = "NVST input handshake protocol=$protocolVersion " +
+                                        "partialGamepadMask=$PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL",
+                                )
                                 updateHapticsAdvertisement(force = true)
                                 startGamepadKeepalive()
                             }
@@ -4156,7 +4162,10 @@ class NativeStreamClient(
     private fun canSendGamepadPartiallyReliable(controllerId: Int): Boolean =
         shouldUsePartiallyReliableGamepadTransport(
             controllerId = controllerId,
-            negotiatedMask = partiallyReliableGamepadMask,
+            negotiatedMask = effectivePartiallyReliableGamepadMask(
+                webRtcNegotiatedMask = partiallyReliableGamepadMask,
+                nvstTransportActive = nvstTransport != null,
+            ),
             partiallyReliableAvailable = nvstTransport?.inputReady
                 ?: (partiallyReliableInputState == DataChannel.State.OPEN),
         )

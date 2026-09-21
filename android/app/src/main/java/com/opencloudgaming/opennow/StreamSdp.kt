@@ -3,6 +3,18 @@ package com.opencloudgaming.opennow
 import java.net.InetAddress
 import java.util.Locale
 
+internal const val PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL = 0x0f
+
+/**
+ * The native NVST transport owns SDP negotiation outside [Streaming], so its negotiated gamepad
+ * mask is not parsed by the Java WebRTC path. Keep the Java sender aligned with the all-slot mask
+ * advertised by both NVST SDP builders.
+ */
+internal fun effectivePartiallyReliableGamepadMask(
+    webRtcNegotiatedMask: Int,
+    nvstTransportActive: Boolean,
+): Int = if (nvstTransportActive) PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL else webRtcNegotiatedMask
+
 object SdpTools {
     data class RewriteResult(val sdp: String, val replacements: Int)
 
@@ -471,7 +483,7 @@ object SdpTools {
             add("a=msid:input_1")
             add("a=ri.partialReliableThresholdMs:$threshold")
             add("a=ri.hidDeviceMask:${hidDeviceMask.toUInt()}")
-            add("a=ri.enablePartiallyReliableTransferGamepad:15")
+            add("a=ri.enablePartiallyReliableTransferGamepad:$PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL")
             add("a=ri.enablePartiallyReliableTransferHid:${partiallyReliableHidMask.toUInt()}")
             add("")
         }.joinToString("\n")
@@ -530,6 +542,5 @@ object SdpTools {
     }
 
     private const val HIGH_RESOLUTION_AV1_SPLIT_ENCODE_PIXELS = 2_764_800
-    private const val PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL = 0x0f
     private const val HID_DEVICE_MASK_ALL = -1
 }

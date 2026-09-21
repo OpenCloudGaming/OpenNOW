@@ -190,6 +190,8 @@
     <string name="store_coming_next_subtitle">Latest additions to GeForce NOW</string>
     <string name="store_continue_playing">Continue playing</string>
     <string name="store_in_queue">In queue</string>
+    <string name="store_remove_from_continue_playing">Remove %1$s from Continue playing</string>
+    <string name="store_remove_from_queue">Remove %1$s from In queue</string>
     <string name="store_favorites">Favorites</string>
     <string name="store_recommendations">Recommendations</string>
     <string name="store_results">Results</string>

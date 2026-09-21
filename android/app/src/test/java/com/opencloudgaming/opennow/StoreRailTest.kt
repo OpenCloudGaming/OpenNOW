@@ -8,6 +8,65 @@ import org.junit.Test
 
 class StoreRailTest {
     @Test
+    fun dismissedContinuePlayingRecordIsHiddenFromPersonalRails() {
+        val lastPlayed = "2026-09-20T12:00:00Z"
+        val game = GameInfo(id = "recent", title = "Recent", lastPlayed = lastPlayed)
+
+        val rails = storeStartRailGroups(
+            games = listOf(game),
+            libraryGames = emptyList(),
+            favoriteIds = emptyList(),
+            queuedGameKeys = listOf(gameTrackingKey(game)),
+            dismissedContinuePlaying = mapOf(gameTrackingKey(game) to lastPlayed),
+        )
+
+        assertTrue(rails.continuePlaying.isEmpty())
+        assertTrue(rails.inQueue.isEmpty())
+    }
+
+    @Test
+    fun playingDismissedGameAgainReturnsItToContinuePlaying() {
+        val game = GameInfo(
+            id = "recent",
+            title = "Recent",
+            lastPlayed = "2026-09-21T12:00:00Z",
+        )
+
+        val rails = storeStartRailGroups(
+            games = listOf(game),
+            libraryGames = emptyList(),
+            favoriteIds = emptyList(),
+            queuedGameKeys = emptyList(),
+            dismissedContinuePlaying = mapOf(
+                gameTrackingKey(game) to "2026-09-20T12:00:00Z",
+            ),
+        )
+
+        assertEquals(listOf(game), rails.continuePlaying)
+    }
+
+    @Test
+    fun removingQueueKeyRemovesGameFromQueueRail() {
+        val game = GameInfo(id = "queued", title = "Queued")
+
+        val before = storeStartRailGroups(
+            games = listOf(game),
+            libraryGames = emptyList(),
+            favoriteIds = emptyList(),
+            queuedGameKeys = listOf(gameTrackingKey(game)),
+        )
+        val after = storeStartRailGroups(
+            games = listOf(game),
+            libraryGames = emptyList(),
+            favoriteIds = emptyList(),
+            queuedGameKeys = emptyList(),
+        )
+
+        assertEquals(listOf(game), before.inQueue)
+        assertTrue(after.inQueue.isEmpty())
+    }
+
+    @Test
     fun loadingStoreUsesTheKnownPersonalRailCount() {
         val game = GameInfo(id = "game", title = "Game")
 

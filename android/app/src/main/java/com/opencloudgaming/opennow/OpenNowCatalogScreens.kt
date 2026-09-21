@@ -361,6 +361,7 @@ internal fun HomeScreen(
                                         libraryGames = state.libraryGames,
                                         favoriteIds = state.settings.favoriteGameIds,
                                         queuedGameKeys = state.queuedGameKeys,
+                                        dismissedContinuePlaying = state.dismissedContinuePlaying,
                                     ).visibleGroupCount.coerceAtLeast(1)
                                 },
                                 modifier = Modifier.weight(1f),
@@ -377,6 +378,8 @@ internal fun HomeScreen(
                             onFavorite = viewModel::updateFavorites,
                             onPlay = viewModel::play,
                             onChooseStore = viewModel::chooseStore,
+                            onDismissContinuePlaying = viewModel::dismissContinuePlaying,
+                            onRemoveQueuedGame = viewModel::removeQueuedGame,
                             onSortChange = viewModel::setCatalogSort,
                             onFilterToggle = viewModel::toggleCatalogFilter,
                             onLandscapeNewGamesCollapsedChange = viewModel::setLandscapeNewGamesHeroCollapsed,
@@ -1634,6 +1637,8 @@ private fun StoreGameGrid(
     onFavorite: (String) -> Unit,
     onPlay: (GameInfo) -> Unit,
     onChooseStore: (GameInfo) -> Unit,
+    onDismissContinuePlaying: (GameInfo) -> Unit,
+    onRemoveQueuedGame: (GameInfo) -> Unit,
     onSortChange: (String) -> Unit,
     onFilterToggle: (String) -> Unit,
     onLandscapeNewGamesCollapsedChange: (Boolean) -> Unit,
@@ -1727,6 +1732,7 @@ private fun StoreGameGrid(
                                 libraryGames = state.libraryGames,
                                 favoriteIds = favoriteIds,
                                 queuedGameKeys = state.queuedGameKeys,
+                                dismissedContinuePlaying = state.dismissedContinuePlaying,
                                 settings = settings,
                                 tvProfile = tvProfile,
                                 controllerActionMode = controllerActionMode,
@@ -1735,6 +1741,8 @@ private fun StoreGameGrid(
                                 onFavorite = onFavorite,
                                 onPlay = onPlay,
                                 onChooseStore = onChooseStore,
+                                onDismissContinuePlaying = onDismissContinuePlaying,
+                                onRemoveQueuedGame = onRemoveQueuedGame,
                                 onLandscapeNewGamesCollapsedChange = onLandscapeNewGamesCollapsedChange,
                             )
                         }
@@ -1786,6 +1794,7 @@ private fun StoreStartRails(
     libraryGames: List<GameInfo>,
     favoriteIds: List<String>,
     queuedGameKeys: List<String>,
+    dismissedContinuePlaying: Map<String, String>,
     settings: AppSettings,
     tvProfile: Boolean,
     controllerActionMode: Boolean,
@@ -1794,6 +1803,8 @@ private fun StoreStartRails(
     onFavorite: (String) -> Unit,
     onPlay: (GameInfo) -> Unit,
     onChooseStore: (GameInfo) -> Unit,
+    onDismissContinuePlaying: (GameInfo) -> Unit,
+    onRemoveQueuedGame: (GameInfo) -> Unit,
     onLandscapeNewGamesCollapsedChange: (Boolean) -> Unit,
 ) {
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
@@ -1802,8 +1813,14 @@ private fun StoreStartRails(
         landscape = landscape,
         landscapeEnabled = settings.landscapeNewGamesHero,
     )
-    val startRails = remember(games, libraryGames, favoriteIds, queuedGameKeys) {
-        storeStartRailGroups(games, libraryGames, favoriteIds, queuedGameKeys)
+    val startRails = remember(games, libraryGames, favoriteIds, queuedGameKeys, dismissedContinuePlaying) {
+        storeStartRailGroups(
+            games,
+            libraryGames,
+            favoriteIds,
+            queuedGameKeys,
+            dismissedContinuePlaying,
+        )
     }
     val featured = remember(newlyAddedGames, startRails, showFeaturedHero) {
         if (showFeaturedHero) {
@@ -1855,6 +1872,8 @@ private fun StoreStartRails(
             onFavorite,
             onPlay,
             onChooseStore,
+            onDismissContinuePlaying,
+            R.string.store_remove_from_continue_playing,
         )
         StoreStartRail(
             R.string.store_in_queue,
@@ -1868,6 +1887,8 @@ private fun StoreStartRails(
             onFavorite,
             onPlay,
             onChooseStore,
+            onRemoveQueuedGame,
+            R.string.store_remove_from_queue,
         )
         StoreStartRail(
             R.string.store_favorites,
@@ -1883,6 +1904,8 @@ private fun StoreStartRails(
             onFavorite,
             onPlay,
             onChooseStore,
+            null,
+            null,
         )
     }
 }
@@ -1932,6 +1955,8 @@ private fun StoreStartRail(
     onFavorite: (String) -> Unit,
     onPlay: (GameInfo) -> Unit,
     onChooseStore: (GameInfo) -> Unit,
+    onRemove: ((GameInfo) -> Unit)?,
+    @StringRes removeLabelRes: Int?,
 ) {
     if (games.isEmpty()) return
     StoreRailSection(
@@ -1946,6 +1971,8 @@ private fun StoreStartRail(
         onFavorite = onFavorite,
         onPlay = onPlay,
         onChooseStore = onChooseStore,
+        onRemove = onRemove,
+        removeLabelRes = removeLabelRes,
     )
 }
 
@@ -2378,6 +2405,8 @@ private fun StoreRailSection(
     onFavorite: (String) -> Unit,
     onPlay: (GameInfo) -> Unit,
     onChooseStore: (GameInfo) -> Unit,
+    onRemove: ((GameInfo) -> Unit)?,
+    @StringRes removeLabelRes: Int?,
 ) {
     val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val railState = rememberLazyListState()
@@ -2439,6 +2468,8 @@ private fun StoreRailSection(
                                 onFavorite = onFavorite,
                                 onPlay = onPlay,
                                 onChooseStore = onChooseStore,
+                                onRemove = onRemove,
+                                removeLabel = removeLabelRes?.let { stringResource(it, game.title) },
                             )
                         }
                     }
@@ -2465,6 +2496,8 @@ private fun StoreRailGameCard(
     onFavorite: (String) -> Unit,
     onPlay: (GameInfo) -> Unit,
     onChooseStore: (GameInfo) -> Unit,
+    onRemove: ((GameInfo) -> Unit)?,
+    removeLabel: String?,
 ) {
     var focused by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
@@ -2509,98 +2542,110 @@ private fun StoreRailGameCard(
         }
         onSelect(game)
     }
-    Box(
-        Modifier
-            .width(width)
-            .padding(vertical = if (tvProfile) CATALOG_CONTROLLER_FOCUS_INSET else 0.dp)
-            .aspectRatio(if (tvProfile) 1f else GAME_BOX_ART_ASPECT_RATIO)
-            .catalogCardTransform(scale = cardScale, alpha = dimAlpha)
-            // Keep the lightweight coordinates handle while scrolling and calculate the global
-            // rectangle only when the card is actually selected.
-            .onGloballyPositioned { transitionCoordinates[0] = it }
-            .semantics(mergeDescendants = true) {
-                contentDescription = game.title
-                role = Role.Button
-            },
+    Row(
+        modifier = Modifier.padding(vertical = if (tvProfile) CATALOG_CONTROLLER_FOCUS_INSET else 0.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Surface(
-            modifier = Modifier
-                .matchParentSize()
-                .then(
-                    upFocusRequester?.let { requester ->
-                        Modifier.focusProperties { up = requester }
-                    } ?: Modifier,
-                )
-                .onFocusChanged { focused = it.isFocused || it.hasFocus }
-                .focusMoveHaptics()
-                .border(
-                    width = catalogCardBorderWidthDp(
-                        controllerFocused = enhancedControllerFocus,
-                        borderEffectsEnabled = LocalAbsoluteCinemaEffects.current,
-                    ).dp,
-                    color = catalogCardBorderColor(
-                        selectionColor = LocalSelectionTintColor.current,
-                        gameBorderEnabled = LocalGameCardBordersEnabled.current,
-                        controllerFocused = enhancedControllerFocus,
-                        borderEffectsEnabled = LocalAbsoluteCinemaEffects.current,
-                    ),
-                    shape = shape,
-                )
-                .onPreviewKeyEvent { event ->
-                    when {
-                        controllerActionMode && handleCatalogControllerAction(
-                            event = event,
-                            onFavorite = { onFavorite(game.id) },
-                            onPlay = { onPlay(game) },
-                        ) -> true
-                        isTvActivateKey(event) -> {
-                            selectFromCard()
-                            true
+        Box(
+            Modifier
+                .width(width)
+                .aspectRatio(if (tvProfile) 1f else GAME_BOX_ART_ASPECT_RATIO)
+                .catalogCardTransform(scale = cardScale, alpha = dimAlpha)
+                // Keep the lightweight coordinates handle while scrolling and calculate the global
+                // rectangle only when the card is actually selected.
+                .onGloballyPositioned { transitionCoordinates[0] = it }
+                .semantics(mergeDescendants = true) {
+                    contentDescription = game.title
+                    role = Role.Button
+                },
+        ) {
+            Surface(
+                modifier = Modifier
+                    .matchParentSize()
+                    .then(
+                        upFocusRequester?.let { requester ->
+                            Modifier.focusProperties { up = requester }
+                        } ?: Modifier,
+                    )
+                    .onFocusChanged { focused = it.isFocused || it.hasFocus }
+                    .focusMoveHaptics()
+                    .border(
+                        width = catalogCardBorderWidthDp(
+                            controllerFocused = enhancedControllerFocus,
+                            borderEffectsEnabled = LocalAbsoluteCinemaEffects.current,
+                        ).dp,
+                        color = catalogCardBorderColor(
+                            selectionColor = LocalSelectionTintColor.current,
+                            gameBorderEnabled = LocalGameCardBordersEnabled.current,
+                            controllerFocused = enhancedControllerFocus,
+                            borderEffectsEnabled = LocalAbsoluteCinemaEffects.current,
+                        ),
+                        shape = shape,
+                    )
+                    .onPreviewKeyEvent { event ->
+                        when {
+                            controllerActionMode && handleCatalogControllerAction(
+                                event = event,
+                                onFavorite = { onFavorite(game.id) },
+                                onPlay = { onPlay(game) },
+                            ) -> true
+                            isTvActivateKey(event) -> {
+                                selectFromCard()
+                                true
+                            }
+                            else -> handleDpadFocusMove(event, focusManager)
                         }
-                        else -> handleDpadFocusMove(event, focusManager)
+                    }
+                    .focusable(interactionSource = interaction)
+                    .combinedClickable(
+                        interactionSource = interaction,
+                        indication = null,
+                        onClick = selectFromCard,
+                        onLongClick = { onChooseStore(game) },
+                        onLongClickLabel = stringResource(R.string.store_selector_play_long_press),
+                    ),
+                shape = shape,
+                color = OpenNowPalette.ImagePlaceholder,
+                tonalElevation = if (focused) 4.dp else 0.dp,
+                shadowElevation = if (focused) 8.dp else 1.dp,
+            ) {
+                Box(Modifier.fillMaxSize().clip(shape)) {
+                    UrlImage(
+                        catalogCardImageUrl(game, tvProfile, imageRequestWidth),
+                        Modifier.fillMaxSize(),
+                        // Crop everywhere — see the note in GameCard.
+                        contentScale = ContentScale.Crop,
+                    )
+                    if (shouldOverlayCatalogCardTitle(tvProfile)) {
+                        GameCardTitleOverlay(game.title)
+                    }
+                    if (showFavoriteIcon) {
+                        FavoriteIconButton(
+                            favorite = favorite,
+                            onClick = { onFavorite(game.id) },
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .padding(6.dp),
+                            size = actionButtonSize,
+                        )
                     }
                 }
-                .focusable(interactionSource = interaction)
-                .combinedClickable(
-                    interactionSource = interaction,
-                    indication = null,
-                    onClick = selectFromCard,
-                    onLongClick = { onChooseStore(game) },
-                    onLongClickLabel = stringResource(R.string.store_selector_play_long_press),
-                ),
-            shape = shape,
-            color = OpenNowPalette.ImagePlaceholder,
-            tonalElevation = if (focused) 4.dp else 0.dp,
-            shadowElevation = if (focused) 8.dp else 1.dp,
-        ) {
-            Box(Modifier.fillMaxSize().clip(shape)) {
-                UrlImage(
-                    catalogCardImageUrl(game, tvProfile, imageRequestWidth),
-                    Modifier.fillMaxSize(),
-                    // Crop everywhere — see the note in GameCard.
-                    contentScale = ContentScale.Crop,
-                )
-                if (shouldOverlayCatalogCardTitle(tvProfile)) {
-                    GameCardTitleOverlay(game.title)
-                }
-                if (showFavoriteIcon) {
-                    FavoriteIconButton(
-                        favorite = favorite,
-                        onClick = { onFavorite(game.id) },
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .padding(6.dp),
-                        size = actionButtonSize,
-                    )
-                }
             }
+            ControllerFocusFrame(
+                visible = enhancedControllerFocus || selectedOutline || ((focused || hovered) && LocalAbsoluteCinemaEffects.current),
+                cornerRadius = if (expressiveUi) 12.dp else 8.dp,
+                tint = if (selectedOutline || LocalAbsoluteCinemaEffects.current) LocalActiveSelectionColor.current else Color.White,
+                secondaryTint = if (selectedOutline || LocalAbsoluteCinemaEffects.current) LocalActiveSelectionSecondaryColor.current else Color.White,
+            )
         }
-        ControllerFocusFrame(
-            visible = enhancedControllerFocus || selectedOutline || ((focused || hovered) && LocalAbsoluteCinemaEffects.current),
-            cornerRadius = if (expressiveUi) 12.dp else 8.dp,
-            tint = if (selectedOutline || LocalAbsoluteCinemaEffects.current) LocalActiveSelectionColor.current else Color.White,
-            secondaryTint = if (selectedOutline || LocalAbsoluteCinemaEffects.current) LocalActiveSelectionSecondaryColor.current else Color.White,
-        )
+        if (onRemove != null && removeLabel != null) {
+            StoreRailRemoveButton(
+                label = removeLabel,
+                onClick = { onRemove(game) },
+                size = 28.dp,
+            )
+        }
     }
 }
 
@@ -2628,19 +2673,28 @@ internal fun storeStartRailGroups(
     libraryGames: List<GameInfo>,
     favoriteIds: List<String>,
     queuedGameKeys: List<String>,
+    dismissedContinuePlaying: Map<String, String> = emptyMap(),
 ): StoreStartRailGroups {
     val favoriteSet = favoriteIds.toSet()
     val combined = distinctStoreGames(libraryGames + games)
     val byKey = combined.associateBy(::storeRailGameKey)
+    val dismissedKeys = combined
+        .mapNotNullTo(mutableSetOf()) { game ->
+            val gameKey = storeRailGameKey(game)
+            val dismissedLastPlayed = dismissedContinuePlaying[gameKey] ?: return@mapNotNullTo null
+            gameKey.takeIf { dismissedLastPlayed == game.recentPlaySortKey() }
+        }
 
     val continuePlaying = combined
         .filter { it.recentPlaySortKey() != null }
+        .filterNot { storeRailGameKey(it) in dismissedKeys }
         .sortedByDescending { it.recentPlaySortKey() }
         .take(CONTINUE_PLAYING_RAIL_LIMIT)
     val continueKeys = continuePlaying.map(::storeRailGameKey).toSet()
 
     val inQueue = queuedGameKeys
         .mapNotNull(byKey::get)
+        .filterNot { storeRailGameKey(it) in dismissedKeys }
         .filterNot { storeRailGameKey(it) in continueKeys }
         .take(STORE_RAIL_GAME_LIMIT)
     val shownKeys = continueKeys + inQueue.map(::storeRailGameKey)
@@ -2670,7 +2724,7 @@ internal fun newlyAddedStoreHeroGames(
 internal fun storeHeroSubtitle(game: GameInfo): String? =
     game.publisherName?.trim()?.takeIf(String::isNotEmpty)
 
-private fun GameInfo.recentPlaySortKey(): String? =
+internal fun GameInfo.recentPlaySortKey(): String? =
     listOfNotNull(
         lastPlayed?.takeIf { it.isNotBlank() },
         variants.mapNotNull { it.lastPlayedDate?.takeIf(String::isNotBlank) }.maxOrNull(),
@@ -4226,6 +4280,49 @@ private fun FavoriteIconButton(favorite: Boolean, onClick: () -> Unit, modifier:
                 tint = if (favorite) MaterialTheme.colorScheme.primary else TextPrimary,
                 modifier = Modifier.size(size * 0.5f),
             )
+        }
+    }
+}
+
+@Composable
+private fun StoreRailRemoveButton(
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    size: Dp = 44.dp,
+) {
+    var focused by remember { mutableStateOf(false) }
+    val accent = MaterialTheme.colorScheme.primary
+    Box(
+        modifier = modifier
+            .minimumInteractiveComponentSize()
+            .size(44.dp)
+            .onFocusChanged { focused = it.isFocused }
+            .semantics {
+                contentDescription = label
+                role = Role.Button
+            }
+            .clickable(onClick = onClick)
+            .focusable(),
+        contentAlignment = Alignment.Center,
+    ) {
+        Surface(
+            modifier = Modifier
+                .size(size)
+                .then(if (focused) Modifier.border(2.dp, accent, CircleShape) else Modifier),
+            shape = CircleShape,
+            color = Color.Black.copy(alpha = 0.58f),
+            tonalElevation = 0.dp,
+            border = if (LocalAbsoluteCinemaEffects.current) BorderStroke(1.dp, accent) else null,
+        ) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_clear),
+                    contentDescription = null,
+                    tint = TextPrimary,
+                    modifier = Modifier.size(size * 0.5f),
+                )
+            }
         }
     }
 }
