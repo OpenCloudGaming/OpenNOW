@@ -437,14 +437,20 @@ impl Engine {
             .as_ref()
             .map(MediaRuntime::video_backends)
             .unwrap_or_else(video_backends);
+        let graphics_adapters = self
+            .media_runtime
+            .as_ref()
+            .map(MediaRuntime::graphics_adapters)
+            .unwrap_or_default();
         let media_ready = self.media_runtime.is_some();
         let video_ready = media_ready && backends.iter().any(|backend| backend.available);
         opennow_streamer_protocol::log::log_line(
             "INFO",
             "handshake",
             &format!(
-                "protocol={PROTOCOL_VERSION} media_runtime={media_ready} video_available={video_ready} backend_count={}",
-                backends.len()
+                "protocol={PROTOCOL_VERSION} media_runtime={media_ready} video_available={video_ready} backend_count={} graphics_adapters={}",
+                backends.len(),
+                graphics_adapters.len()
             ),
         );
         let capabilities = Capabilities {
@@ -458,6 +464,7 @@ impl Engine {
             supports_microphone: media_ready,
             supports_owned_nvst_negotiation: media_ready,
             video_backends: backends,
+            graphics_adapters,
         };
         let ready = json!({
             "id": command.id,

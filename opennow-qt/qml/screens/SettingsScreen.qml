@@ -341,10 +341,10 @@ FocusScope {
             return [
                 ...(GraphicsDevices.selectorVisible ? [choice(qsTr("Graphics processor"),
                     GraphicsDevices.savedDeviceUnavailable
-                        ? qsTr("Saved GPU unavailable; using Automatic. Changes apply after restarting OpenNOW.")
-                        : qsTr("Uses the same GPU for decoding and display. Changes apply after restarting OpenNOW."),
+                        ? qsTr("Saved GPU unavailable; using the first GPU that can hardware-decode. Changes apply after restarting OpenNOW.")
+                        : qsTr("Automatic uses the first GPU that can hardware-decode and lists each GPU's codecs. The same GPU decodes and displays. Changes apply after restarting OpenNOW."),
                     "windowsGpuDeviceId", GraphicsDevices.choices.map(item => item.value),
-                    GraphicsDevices.choices.map(item => item.label), "dropdown",
+                    GraphicsDevices.choices.map(item => item.detail ? item.label + " — " + item.detail : item.label), "dropdown",
                     GraphicsDevices.choices.filter(item => item.disabled).map(item => item.value))] : []),
                 toggle(qsTr("Steam Big Picture mode"), qsTr("Request gamepad-friendly launchers such as Steam Big Picture. Applies to new GeForce NOW sessions only."), "steamBigPictureMode"),
                 {t:"Display", d:"The Qt stream surface uses the current display", v:"Monitor 1 · current display", info:true},

@@ -149,6 +149,10 @@ impl MediaRuntime {
         }
     }
 
+    pub fn graphics_adapters(&self) -> Vec<opennow_streamer_protocol::GraphicsAdapterCapability> {
+        crate::graphics_adapter_capabilities(self.windows_adapter_luid().map(|luid| luid.get()))
+    }
+
     fn windows_adapter_luid(&self) -> Option<crate::WindowsAdapterLuid> {
         match &self.mode {
             MediaRuntimeMode::Embedded { config, .. } => config.windows_adapter_luid,
