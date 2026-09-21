@@ -624,7 +624,6 @@ impl Engine {
     fn start(&mut self, command: Command) -> Result<Vec<Value>, Value> {
         let mut context = parse_context(command.context, &command.id)?;
         validate_context(&context, &command.id)?;
-        apply_input_tuning(&context.settings);
         let audio_device =
             opennow_streamer_protocol::AudioOutputDevice::from_settings(&context.settings)
                 .map_err(|message| error(Some(&command.id), "invalid-context", message))?;
@@ -652,6 +651,8 @@ impl Engine {
                 return Err(invalid_state(&command.id, "start", lifecycle.state, "Idle"));
             }
         }
+        // Mouse tuning follows a start that has passed the idle-state guard.
+        apply_input_tuning(&context.settings);
         let wants_owned_nvst = context
             .settings
             .get("transportMode")

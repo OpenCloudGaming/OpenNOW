@@ -21,9 +21,13 @@ FocusScope {
     readonly property bool connecting: AppController.route === "stream"
     readonly property string phase: String(ShellStore.streamState || "preparing")
     readonly property bool stopping: phase === "stopping"
-    readonly property bool failed: !stopping && !reconnecting && phase !== "idle"
+    // A terminal phase stays a failure after reconnect attempts are exhausted.
+    // Those counters stay non-zero, and treating them as an active reconnect
+    // hid the interrupted state and its retry action. A stopped runtime during
+    // an active reconnect is not itself a failure.
+    readonly property bool failed: !stopping && phase !== "idle"
         && (phase === "failed" || phase === "error"
-            || (connecting && streamer.status === "error"))
+            || (connecting && !reconnecting && streamer.status === "error"))
     readonly property bool reconnecting: phase === "reconnecting"
         || ShellStore.streamerRestartAttempts > 0 || ShellStore.sessionReconnectAttempts > 0
     SessionSetupProgress {
