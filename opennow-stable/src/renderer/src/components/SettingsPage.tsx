@@ -168,6 +168,12 @@ const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string
 const POSTER_SIZE_MIN = 75;
 const POSTER_SIZE_MAX = 135;
 const POSTER_SIZE_STEP = 5;
+const COMMUNITY_PROXY_URL = "wss://onproxy.printedwaste.com";
+
+function isCommunityProxyUrl(value: string): boolean {
+  const normalized = value.trim().replace(/\/$/, "");
+  return normalized === COMMUNITY_PROXY_URL || normalized === `${COMMUNITY_PROXY_URL}:443`;
+}
 
 const codecOptions: VideoCodec[] = [...USER_FACING_VIDEO_CODEC_OPTIONS];
 
@@ -900,6 +906,25 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     },
     [onSettingChange]
   );
+
+  const communityProxySelected = isCommunityProxyUrl(settings.sessionProxyUrl);
+
+  const handleSessionProxyToggle = useCallback((enabled: boolean): void => {
+    handleChange("sessionProxyEnabled", enabled);
+    if (enabled && !settings.sessionProxyUrl.trim()) {
+      handleChange("sessionProxyUrl", COMMUNITY_PROXY_URL);
+    }
+  }, [handleChange, settings.sessionProxyUrl]);
+
+  const selectCommunityProxy = useCallback((): void => {
+    handleChange("sessionProxyUrl", COMMUNITY_PROXY_URL);
+  }, [handleChange]);
+
+  const selectCustomProxy = useCallback((): void => {
+    if (communityProxySelected) {
+      handleChange("sessionProxyUrl", "");
+    }
+  }, [communityProxySelected, handleChange]);
 
   const openNativeStreamerEnablePrompt = useCallback((): void => {
     if (nativeStreamerEnablePromptCloseTimerRef.current !== null) {
@@ -2269,7 +2294,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                       <input
                         type="checkbox"
                         checked={settings.sessionProxyEnabled}
-                        onChange={(e) => handleChange("sessionProxyEnabled", e.target.checked)}
+                        onChange={(e) => handleSessionProxyToggle(e.target.checked)}
                       />
                       <span className="settings-toggle-track" />
                     </label>
@@ -2278,13 +2303,33 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     {t("settings.video.sessionProxyHint")}
                   </span>
                   {settings.sessionProxyEnabled && (
-                    <input
-                      type="text"
-                      className="settings-text-input"
-                      placeholder="http://127.0.0.1:8080"
-                      value={settings.sessionProxyUrl}
-                      onChange={(e) => handleChange("sessionProxyUrl", e.target.value)}
-                    />
+                    <>
+                      <div className="settings-chip-row">
+                        <button
+                          type="button"
+                          className={`settings-chip ${communityProxySelected ? "active" : ""}`}
+                          onClick={selectCommunityProxy}
+                        >
+                          {t("settings.video.sessionProxyCommunity")}
+                        </button>
+                        <button
+                          type="button"
+                          className={`settings-chip ${communityProxySelected ? "" : "active"}`}
+                          onClick={selectCustomProxy}
+                        >
+                          {t("settings.video.sessionProxyCustom")}
+                        </button>
+                      </div>
+                      {!communityProxySelected && (
+                        <input
+                          type="text"
+                          className="settings-text-input"
+                          placeholder="http://127.0.0.1:8080"
+                          value={settings.sessionProxyUrl}
+                          onChange={(e) => handleChange("sessionProxyUrl", e.target.value)}
+                        />
+                      )}
+                    </>
                   )}
                 </div>
 
