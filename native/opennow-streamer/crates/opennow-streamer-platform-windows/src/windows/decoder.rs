@@ -653,6 +653,19 @@ fn video_input_type(format: VideoFormat) -> Result<IMFMediaType, String> {
     }
 }
 
+fn hardware_decoder_order<T>(
+    adapter_tagged: Vec<T>,
+    untagged_hardware: Vec<T>,
+    registered: Vec<T>,
+) -> Vec<T> {
+    let mut activations = adapter_tagged;
+    if activations.is_empty() {
+        activations.extend(untagged_hardware);
+    }
+    activations.extend(registered);
+    activations
+}
+
 fn enumerate_decoders(
     adapter_luid: LUID,
     codec: VideoCodec,
@@ -675,19 +688,31 @@ fn enumerate_decoders(
                 attributes
                     .SetBlob(&MFT_ENUM_ADAPTER_LUID, luid_bytes)
                     .map_err(|error| error.to_string())?;
-                let mut activations = enumerate_matching_decoders(
-                    MFT_ENUM_FLAG(MFT_ENUM_FLAG_HARDWARE.0 | MFT_ENUM_FLAG_SORTANDFILTER.0),
-                    Some(&attributes),
-                    codec,
-                )?;
-                // NVIDIA and AMD drive decode through DXVA2 instead of registering
-                // a hardware-flagged MFT, so on those adapters the enumeration above
-                // is empty and the D3D11-aware Microsoft MFT is the GPU path. Keep it
-                // as a fallback rather than reporting no hardware decode at all;
-                // configure_transform still rejects any MFT that cannot accept our
-                // D3D manager, so a genuinely software-only MFT never gets through.
-                activations.extend(enumerate_matching_decoders(registered, None, codec)?);
-                Ok(activations)
+                let hardware_flags =
+                    MFT_ENUM_FLAG(MFT_ENUM_FLAG_HARDWARE.0 | MFT_ENUM_FLAG_SORTANDFILTER.0);
+                let adapter_tagged =
+                    enumerate_matching_decoders(hardware_flags, Some(&attributes), codec)?;
+                // Intel Quick Sync registers as a hardware MFT but usually does not
+                // publish MFT_ENUM_ADAPTER_LUID, so the adapter filter above is empty
+                // on Iris Xe even though the D3D11 device is already that GPU. Ask for
+                // hardware transforms with no adapter attribute before the Microsoft
+                // decoder. NVIDIA and AMD have no hardware-flagged MFT and use the
+                // Microsoft MFT's DXVA path; that list stays last. configure_transform
+                // still rejects any MFT that cannot accept this device's D3D manager.
+                let untagged_hardware = if adapter_tagged.is_empty() {
+                    video_log!(
+                        "Windows hardware decoder enumeration matched no MFT for this adapter; trying hardware transforms that do not publish an adapter LUID"
+                    );
+                    enumerate_matching_decoders(hardware_flags, None, codec)?
+                } else {
+                    Vec::new()
+                };
+                let registered_decoders = enumerate_matching_decoders(registered, None, codec)?;
+                Ok(hardware_decoder_order(
+                    adapter_tagged,
+                    untagged_hardware,
+                    registered_decoders,
+                ))
             }
             WindowsDecoderMode::Software => enumerate_matching_decoders(registered, None, codec),
         }
@@ -1176,6 +1201,48 @@ mod tests {
             color_primaries: VideoColorPrimaries::Bt2020,
             color_matrix: VideoColorMatrix::Bt2020,
         }
+    }
+
+    #[test]
+    fn empty_adapter_luid_filter_tries_untagged_hardware_before_the_microsoft_decoder() {
+        let order = hardware_decoder_order(
+            Vec::<&str>::new(),
+            vec!["Intel Quick Sync Video H.264 Decoder"],
+            vec!["Microsoft H264 Video Decoder MFT"],
+        );
+        assert_eq!(
+            order,
+            [
+                "Intel Quick Sync Video H.264 Decoder",
+                "Microsoft H264 Video Decoder MFT",
+            ]
+        );
+    }
+
+    #[test]
+    fn adapter_tagged_hardware_mft_stays_ahead_of_the_microsoft_decoder() {
+        let order = hardware_decoder_order(
+            vec!["Adapter H.264 hardware decoder"],
+            vec!["Intel Quick Sync Video H.264 Decoder"],
+            vec!["Microsoft H264 Video Decoder MFT"],
+        );
+        assert_eq!(
+            order,
+            [
+                "Adapter H.264 hardware decoder",
+                "Microsoft H264 Video Decoder MFT",
+            ]
+        );
+    }
+
+    #[test]
+    fn vendor_dxva_path_keeps_the_microsoft_decoder_when_no_hardware_mft_is_registered() {
+        let order = hardware_decoder_order(
+            Vec::<&str>::new(),
+            Vec::<&str>::new(),
+            vec!["Microsoft H264 Video Decoder MFT"],
+        );
+        assert_eq!(order, ["Microsoft H264 Video Decoder MFT"]);
     }
 
     #[test]
