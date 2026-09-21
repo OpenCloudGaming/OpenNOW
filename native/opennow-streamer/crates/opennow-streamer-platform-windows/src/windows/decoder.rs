@@ -675,18 +675,38 @@ fn enumerate_decoders(
                 attributes
                     .SetBlob(&MFT_ENUM_ADAPTER_LUID, luid_bytes)
                     .map_err(|error| error.to_string())?;
-                let mut activations = enumerate_matching_decoders(
-                    MFT_ENUM_FLAG(MFT_ENUM_FLAG_HARDWARE.0 | MFT_ENUM_FLAG_SORTANDFILTER.0),
-                    Some(&attributes),
-                    codec,
-                )?;
-                // NVIDIA and AMD drive decode through DXVA2 instead of registering
-                // a hardware-flagged MFT, so on those adapters the enumeration above
-                // is empty and the D3D11-aware Microsoft MFT is the GPU path. Keep it
-                // as a fallback rather than reporting no hardware decode at all;
-                // configure_transform still rejects any MFT that cannot accept our
-                // D3D manager, so a genuinely software-only MFT never gets through.
-                activations.extend(enumerate_matching_decoders(registered, None, codec)?);
+                let hardware_flags =
+                    MFT_ENUM_FLAG(MFT_ENUM_FLAG_HARDWARE.0 | MFT_ENUM_FLAG_SORTANDFILTER.0);
+                let mut adapter_hardware =
+                    enumerate_matching_decoders(hardware_flags, Some(&attributes), codec)?;
+                let mut activations = Vec::new();
+                for source in
+                    crate::decoder_order::decoder_candidate_sources(adapter_hardware.len())
+                {
+                    match source {
+                        crate::decoder_order::DecoderCandidateSource::AdapterHardware => {
+                            activations.append(&mut adapter_hardware);
+                        }
+                        crate::decoder_order::DecoderCandidateSource::UnscopedHardware => {
+                            // Intel Iris/Arc hardware MFTs often omit MFT_ENUM_ADAPTER_LUID.
+                            // Without this step the registered fallback's first success is
+                            // "Microsoft H264 Video Decoder MFT" (software), which stalls
+                            // under GeForce NOW frame rates.
+                            activations.extend(enumerate_matching_decoders(
+                                hardware_flags,
+                                None,
+                                codec,
+                            )?);
+                        }
+                        crate::decoder_order::DecoderCandidateSource::Registered => {
+                            // NVIDIA and AMD drive decode through DXVA2 instead of
+                            // registering a hardware-flagged MFT. The D3D11-aware
+                            // Microsoft MFT is their GPU path, so it stays last.
+                            activations
+                                .extend(enumerate_matching_decoders(registered, None, codec)?);
+                        }
+                    }
+                }
                 Ok(activations)
             }
             WindowsDecoderMode::Software => enumerate_matching_decoders(registered, None, codec),

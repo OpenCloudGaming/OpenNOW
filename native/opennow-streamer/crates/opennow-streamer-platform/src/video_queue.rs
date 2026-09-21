@@ -134,6 +134,14 @@ impl VideoQueue {
         Self::invalidate_locked(&mut state);
     }
 
+    /// The caller already asked for one IDR. Keep discarding deltas until that
+    /// IDR arrives, and do not ask again for each discarded delta.
+    pub fn hold_keyframe_request(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.waiting_for_keyframe = true;
+        state.request_pending = true;
+    }
+
     pub fn close(&self) {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         Self::invalidate_locked(&mut state);
@@ -208,6 +216,20 @@ mod tests {
         let packet = queue.pop_packet().unwrap();
         assert_eq!(packet.frame.frame_index, Some(4));
         assert!(packet.reset_decoder);
+    }
+
+    #[test]
+    fn held_keyframe_request_does_not_repeat_for_each_delta() {
+        let queue = VideoQueue::new(2);
+        queue.push(frame(1, true)).unwrap();
+        queue.clear();
+        queue.hold_keyframe_request();
+        let delta = queue.push(frame(2, false)).unwrap();
+        assert_eq!(delta.dropped, 1);
+        assert!(!delta.request_keyframe);
+        let idr = queue.push(frame(3, true)).unwrap();
+        assert!(!idr.request_keyframe);
+        assert!(queue.pop_packet().unwrap().reset_decoder);
     }
 
     #[test]

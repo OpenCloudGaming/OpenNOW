@@ -155,7 +155,7 @@ impl D3d11FrameSubmitter {
         let key_frame = frame.key_frame;
         let outcome = self
             .encoded
-            .push_or_clear_on_overflow(frame, key_frame)
+            .push_or_clear_on_overflow(frame, key_frame, |queued| queued.key_frame)
             .map_err(|_| BackendError::WorkerDisconnected)?;
         if outcome == PushOutcome::DroppedOldest {
             let _ = self
