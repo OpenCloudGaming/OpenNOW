@@ -937,6 +937,50 @@ private slots:
         QCOMPARE(StreamVideoItem::windowsVirtualKey(key, Qt::NoModifier, nativeKey), expected);
     }
 
+    void mapsGermanUmlautAndMinusAwayFromLayoutVirtualKeys()
+    {
+        const auto gameplay = [](int key, quint32 scanCode, quint32 layoutVirtualKey) {
+            return StreamVideoItem::windowsGameplayVirtualKey(
+                key, Qt::NoModifier, scanCode, layoutVirtualKey);
+        };
+        // German Windows reports ü as VK_OEM_1 and the hyphen key as VK_OEM_MINUS.
+        // Those are the physical positions of ö and ß. GFN wants the US position.
+        const auto uUmlaut = gameplay(Qt::Key_Udiaeresis, 0x1a, 0xba);
+        const auto oUmlaut = gameplay(Qt::Key_Odiaeresis, 0x27, 0xc0);
+        const auto hyphen = gameplay(Qt::Key_Minus, 0x35, 0xbd);
+        const auto eszett = gameplay(Qt::Key_ssharp, 0x0c, 0xdb);
+        QCOMPARE(uUmlaut, quint16(0xdb));
+        QCOMPARE(oUmlaut, quint16(0xba));
+        QVERIFY(uUmlaut != oUmlaut);
+        QCOMPARE(hyphen, quint16(0xbf));
+        QCOMPARE(eszett, quint16(0xbd));
+        QVERIFY(hyphen != eszett);
+        QCOMPARE(gameplay(Qt::Key_Slash, 0x35, 0x6f), quint16(0x6f));
+        QCOMPARE(gameplay(Qt::Key_Y, 0x2c, 0x59), quint16(0x5a));
+        QCOMPARE(gameplay(Qt::Key_Z, 0x15, 0x5a), quint16(0x59));
+        QCOMPARE(gameplay(0x0426, 0, 0x57), quint16(0x57));
+
+#if defined(Q_OS_LINUX)
+        QKeyEvent uPress(QEvent::KeyPress, Qt::Key_Udiaeresis, Qt::NoModifier, 34, 0xba, 0);
+        QKeyEvent oPress(QEvent::KeyPress, Qt::Key_Odiaeresis, Qt::NoModifier, 47, 0xc0, 0);
+        QKeyEvent hyphenPress(QEvent::KeyPress, Qt::Key_Minus, Qt::NoModifier, 61, 0xbd, 0);
+        QKeyEvent eszettPress(QEvent::KeyPress, Qt::Key_ssharp, Qt::NoModifier, 20, 0xdb, 0);
+#elif defined(Q_OS_WIN)
+        QKeyEvent uPress(QEvent::KeyPress, Qt::Key_Udiaeresis, Qt::NoModifier, 0x1a, 0xba, 0);
+        QKeyEvent oPress(QEvent::KeyPress, Qt::Key_Odiaeresis, Qt::NoModifier, 0x27, 0xc0, 0);
+        QKeyEvent hyphenPress(QEvent::KeyPress, Qt::Key_Minus, Qt::NoModifier, 0x35, 0xbd, 0);
+        QKeyEvent eszettPress(QEvent::KeyPress, Qt::Key_ssharp, Qt::NoModifier, 0x0c, 0xdb, 0);
+#endif
+#if defined(Q_OS_LINUX) || defined(Q_OS_WIN)
+        QCOMPARE(StreamVideoItem::eventVirtualKey(&uPress), quint16(0xdb));
+        QCOMPARE(StreamVideoItem::eventVirtualKey(&oPress), quint16(0xba));
+        QCOMPARE(StreamVideoItem::eventVirtualKey(&hyphenPress), quint16(0xbf));
+        QCOMPARE(StreamVideoItem::eventVirtualKey(&eszettPress), quint16(0xbd));
+        QVERIFY(StreamVideoItem::eventVirtualKey(&uPress) != quint16(0xba));
+        QVERIFY(StreamVideoItem::eventVirtualKey(&hyphenPress) != quint16(0xbd));
+#endif
+    }
+
     void nativeKeyboardEventsPreserveGameplayKeys_data()
     {
         QTest::addColumn<bool>("fullscreen");
@@ -995,6 +1039,10 @@ private slots:
             {0x0424, 0x1e, 0x41, 0x41},
             {0x042b, 0x1f, 0x53, 0x53},
             {0x0412, 0x20, 0x44, 0x44},
+            {Qt::Key_Udiaeresis, 0x1a, 0xba, 0xdb},
+            {Qt::Key_Odiaeresis, 0x27, 0xc0, 0xba},
+            {Qt::Key_Minus, 0x35, 0xbd, 0xbf},
+            {Qt::Key_ssharp, 0x0c, 0xdb, 0xbd},
 #else
             {Qt::Key_W, 25, 0x77, 0x57},
             {Qt::Key_A, 38, 0x61, 0x41},
@@ -1172,6 +1220,10 @@ private slots:
             {"us-d", Qt::Key_D, 40, 0x44},
             {"qwertz-z-at-us-y", Qt::Key_Z, 29, 0x59},
             {"qwertz-y-at-us-z", Qt::Key_Y, 52, 0x5a},
+            {"qwertz-u-umlaut", Qt::Key_Udiaeresis, 34, 0xdb},
+            {"qwertz-o-umlaut", Qt::Key_Odiaeresis, 47, 0xba},
+            {"qwertz-hyphen", Qt::Key_Minus, 61, 0xbf},
+            {"qwertz-eszett", Qt::Key_ssharp, 20, 0xbd},
             {"azerty-z-at-us-w", Qt::Key_Z, 25, 0x57},
             {"azerty-q-at-us-a", Qt::Key_Q, 38, 0x41},
             {"azerty-w-at-us-z", Qt::Key_W, 52, 0x5a},

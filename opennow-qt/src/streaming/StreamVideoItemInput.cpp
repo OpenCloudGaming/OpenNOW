@@ -109,6 +109,80 @@ quint16 StreamVideoItem::windowsVirtualKey(int key, Qt::KeyboardModifiers modifi
     }
 }
 
+static quint16 windowsSet1VirtualKey(quint32 nativeScanCode)
+{
+    // Windows set-1 scan codes identify the physical key. GFN applies the
+    // remote layout to the US-position virtual key, so these values stay on
+    // the US positions even when the local layout assigns a different VK.
+    switch (nativeScanCode & 0xff) {
+    case 0x29: return 0xc0;
+    case 0x02: return 0x31;
+    case 0x03: return 0x32;
+    case 0x04: return 0x33;
+    case 0x05: return 0x34;
+    case 0x06: return 0x35;
+    case 0x07: return 0x36;
+    case 0x08: return 0x37;
+    case 0x09: return 0x38;
+    case 0x0a: return 0x39;
+    case 0x0b: return 0x30;
+    case 0x0c: return 0xbd;
+    case 0x0d: return 0xbb;
+    case 0x10: return 0x51;
+    case 0x11: return 0x57;
+    case 0x12: return 0x45;
+    case 0x13: return 0x52;
+    case 0x14: return 0x54;
+    case 0x15: return 0x59;
+    case 0x16: return 0x55;
+    case 0x17: return 0x49;
+    case 0x18: return 0x4f;
+    case 0x19: return 0x50;
+    case 0x1a: return 0xdb;
+    case 0x1b: return 0xdd;
+    case 0x1e: return 0x41;
+    case 0x1f: return 0x53;
+    case 0x20: return 0x44;
+    case 0x21: return 0x46;
+    case 0x22: return 0x47;
+    case 0x23: return 0x48;
+    case 0x24: return 0x4a;
+    case 0x25: return 0x4b;
+    case 0x26: return 0x4c;
+    case 0x27: return 0xba;
+    case 0x28: return 0xde;
+    case 0x2b: return 0xdc;
+    case 0x2c: return 0x5a;
+    case 0x2d: return 0x58;
+    case 0x2e: return 0x43;
+    case 0x2f: return 0x56;
+    case 0x30: return 0x42;
+    case 0x31: return 0x4e;
+    case 0x32: return 0x4d;
+    case 0x33: return 0xbc;
+    case 0x34: return 0xbe;
+    case 0x35: return 0xbf;
+    case 0x56: return 0xe2;
+    default: return 0;
+    }
+}
+
+quint16 StreamVideoItem::windowsGameplayVirtualKey(int key, Qt::KeyboardModifiers modifiers,
+                                                    quint32 nativeScanCode,
+                                                    quint32 nativeVirtualKey)
+{
+    const auto scanCode = nativeScanCode & 0xff;
+    if (nativeVirtualKey > 0 && nativeVirtualKey < 0x100) {
+        // Numpad divide shares set-1 scan code 0x35 with the main slash key.
+        // Its virtual key stays VK_DIVIDE on every layout.
+        if (scanCode == 0x35 && nativeVirtualKey == 0x6f)
+            return 0x6f;
+        if (const auto physical = windowsSet1VirtualKey(nativeScanCode))
+            return physical;
+    }
+    return windowsVirtualKey(key, modifiers, nativeVirtualKey);
+}
+
 quint16 StreamVideoItem::linuxPhysicalVirtualKey(quint32 nativeScanCode)
 {
     switch (nativeScanCode) {
@@ -234,7 +308,8 @@ void StreamVideoItem::focusOutEvent(QFocusEvent *event)
 quint16 StreamVideoItem::eventVirtualKey(const QKeyEvent *event)
 {
 #if defined(Q_OS_WIN)
-    return windowsVirtualKey(event->key(), event->modifiers(), event->nativeVirtualKey());
+    return windowsGameplayVirtualKey(event->key(), event->modifiers(),
+                                     event->nativeScanCode(), event->nativeVirtualKey());
 #elif defined(Q_OS_LINUX)
     const auto physical = linuxPhysicalVirtualKey(event->nativeScanCode());
     if (physical != 0) return physical;

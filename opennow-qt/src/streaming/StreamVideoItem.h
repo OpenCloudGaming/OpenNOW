@@ -114,6 +114,9 @@ public:
         int key, Qt::KeyboardModifiers modifiers = Qt::NoModifier,
         quint32 nativeVirtualKey = 0);
     [[nodiscard]] static quint16 linuxPhysicalVirtualKey(quint32 nativeScanCode);
+    [[nodiscard]] static quint16 windowsGameplayVirtualKey(
+        int key, Qt::KeyboardModifiers modifiers, quint32 nativeScanCode,
+        quint32 nativeVirtualKey);
     [[nodiscard]] static quint16 inputModifiers(Qt::KeyboardModifiers modifiers, int key);
     [[nodiscard]] static QString shortcutActionForInput(
         const QVariantMap &bindings, int key, Qt::KeyboardModifiers modifiers);
