@@ -22,6 +22,35 @@
 
 using namespace Qt::StringLiterals;
 
+void presentUpdateSurface(QQmlApplicationEngine &engine, QQuickWindow *window, const QString &surface)
+{
+    auto *store = engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
+    if (!store)
+        return;
+    const auto replacement = u"This OpenNOW installation is registered with Windows Installer. Replace it once with setup.exe. In-app updates do not run Windows Installer."_s;
+    QVariantMap state{{u"currentVersion"_s, QGuiApplication::applicationVersion()},
+                      {u"canCheck"_s, false}};
+    if (surface == u"confirm"_s) {
+        state.insert(u"status"_s, u"downloaded"_s);
+        state.insert(u"downloadedVersion"_s, u"1.2.3"_s);
+        state.insert(u"canInstall"_s, true);
+        state.insert(u"message"_s, u"OpenNOW 1.2.3 downloaded and verified. Ready to install."_s);
+    } else if (surface == u"progress"_s) {
+        state.insert(u"status"_s, u"downloading"_s);
+        state.insert(u"availableVersion"_s, u"1.2.3"_s);
+        state.insert(u"message"_s, u"Downloading OpenNOW 1.2.3…"_s);
+    } else {
+        state.insert(u"status"_s, u"not-available"_s);
+        state.insert(u"message"_s, replacement);
+    }
+    store->setProperty("updaterError", QString());
+    store->setProperty("updaterState", state);
+    if (surface == u"confirm"_s && window) {
+        if (auto *dialog = window->findChild<QObject *>(u"updateInstallConfirmation"_s))
+            QMetaObject::invokeMethod(dialog, "open");
+    }
+}
+
 int AcceptanceSession::startSmokeWorkload()
 {
     const auto screenshotIndex = m_arguments.indexOf(u"--screenshot"_s);
@@ -541,6 +570,31 @@ int AcceptanceSession::startSmokeWorkload()
         });
     } else if (screenshotIndex >= 0 && screenshotIndex + 1 < m_arguments.size()) {
         const auto screenshotPath = m_arguments.at(screenshotIndex + 1);
+        const auto surfaceIndex = m_arguments.indexOf(u"--smoke-update-surface"_s);
+        if (surfaceIndex >= 0 && surfaceIndex + 1 < m_arguments.size()) {
+            const auto surface = m_arguments.at(surfaceIndex + 1);
+            QTimer::singleShot(1'800, this, [this, screenshotPath, surface] {
+                auto *window = m_engine.rootObjects().isEmpty()
+                    ? nullptr
+                    : qobject_cast<QQuickWindow *>(m_engine.rootObjects().first());
+                presentUpdateSurface(m_engine, window, surface);
+                QTimer::singleShot(400, this, [this, screenshotPath, surface] {
+                    auto *window = m_engine.rootObjects().isEmpty()
+                        ? nullptr
+                        : qobject_cast<QQuickWindow *>(m_engine.rootObjects().first());
+                    presentUpdateSurface(m_engine, window, surface);
+                    QTimer::singleShot(350, this, [this, screenshotPath] {
+                        if (m_engine.rootObjects().isEmpty() || m_qmlWarningOccurred) {
+                            m_application.exit(EXIT_FAILURE);
+                            return;
+                        }
+                        auto *window = qobject_cast<QQuickWindow *>(m_engine.rootObjects().first());
+                        const auto saved = window && window->grabWindow().save(screenshotPath);
+                        m_application.exit(saved ? EXIT_SUCCESS : EXIT_FAILURE);
+                    });
+                });
+            });
+        } else {
         QTimer::singleShot(1'000, this,
                            [this, screenshotPath] {
             if (m_engine.rootObjects().isEmpty() || m_qmlWarningOccurred) {
@@ -551,6 +605,7 @@ int AcceptanceSession::startSmokeWorkload()
             const auto saved = window && window->grabWindow().save(screenshotPath);
             m_application.exit(saved ? EXIT_SUCCESS : EXIT_FAILURE);
         });
+        }
     } else if (m_smokeStreamerEvent) {
         auto *window = m_engine.rootObjects().isEmpty()
             ? nullptr : qobject_cast<QQuickWindow *>(m_engine.rootObjects().first());

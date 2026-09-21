@@ -81,14 +81,18 @@ class CandidatePromotionTest(unittest.TestCase):
         self.assertEqual(info["platformSigning"], "macos-developer-id")
         self.assertEqual(info["windowsSigningMode"], "unsigned")
         self.assertEqual(info["updates"], "signed-manifest")
-        self.assertEqual(len(info["assets"]), 12)
-        self.assertEqual(len(list(self.destination.iterdir())), 26)
+        self.assertEqual([asset["name"] for asset in info["assets"] if asset["name"].endswith("-setup.exe")], [
+            "OpenNOW-Qt-1.2.3-Windows-arm64-setup.exe",
+            "OpenNOW-Qt-1.2.3-Windows-x64-setup.exe",
+        ])
+        self.assertEqual(len(info["assets"]), 14)
+        self.assertEqual(len(list(self.destination.iterdir())), 30)
         verify_manifests(self.destination, self.version, info["assets"], self.public)
         for asset in info["assets"]:
             self.assertEqual((self.source / "packages" / asset["name"]).read_bytes(),
                              (self.destination / asset["name"]).read_bytes())
         sums = (self.destination / "SHA256SUMS").read_text().splitlines()
-        self.assertEqual(len(sums), 25)
+        self.assertEqual(len(sums), 29)
         for line in sums:
             expected, name = line.split("  ")
             self.assertEqual(digest(self.destination / name), expected)

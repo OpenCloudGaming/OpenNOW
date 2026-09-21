@@ -431,6 +431,9 @@ pub(super) fn install(plan: &Plan, directory: &Path) -> Result<(), String> {
             command
         }
         InstallKind::WindowsMsi => {
+            // apply() refuses this kind before install(), so in-app updates do not
+            // reach msiexec. The command stays while the WiX publish job still ships
+            // an MSI for manual install.
             let system =
                 std::env::var_os("SystemRoot").ok_or("Windows system directory is unavailable")?;
             let mut command = Command::new(Path::new(&system).join("System32/msiexec.exe"));

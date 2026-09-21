@@ -41,10 +41,10 @@ programs on the signer. Only the approved release tooling may run there.
 1. Select the reviewed protected revision in GitHub Actions → qt-ci → Run workflow.
 2. Retain the default production `public_key` and set `publish_nightly` to `true`.
 3. Wait for shared checks, all platform checks, and the complete package build to pass.
-4. Inspect the source commit, nine packages, and two AppImage sidecars before approving the
+4. Inspect the source commit, eleven packages, and two AppImage sidecars before approving the
    `qt-update-signing` deployment.
-5. Confirm that the publisher verifies the signed set and uploads all 24 files before
-   making the draft prerelease public. These are nine packages, two sidecars, eleven sibling manifests,
+5. Confirm that the publisher verifies the signed set and uploads all 28 files before
+   making the draft prerelease public. These are eleven packages, two sidecars, thirteen sibling manifests,
    `RELEASE-INFO.json`, and `SHA256SUMS`.
 
 For artifact-only testing, leave `publish_nightly` false. An empty `public_key` is
@@ -74,9 +74,9 @@ actionlint -color=false .github/workflows/qt-ci.yml .github/workflows/qt-checks.
   .github/workflows/qt-build.yml .github/workflows/qt-release-candidate.yml
 ```
 
-The signing tests generate ephemeral test-only keys, sign and verify all eleven fixture
+The signing tests generate ephemeral test-only keys, sign and verify all thirteen fixture
 nightly assets with OpenSSL. Candidate promotion tests exercise the production candidate's
-signing script with twelve fixture assets. Both reject mismatched keys, incomplete inventories, changed
+signing script with fourteen fixture assets. Both reject mismatched keys, incomplete inventories, changed
 packages, changed manifests, and invalid public inputs. No production seed is needed.
 
 The platform-check action also runs `opennow-qt/tests/run_update_helper_integration.py`

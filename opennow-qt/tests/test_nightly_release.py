@@ -25,6 +25,10 @@ class NightlyReleaseTest(unittest.TestCase):
                 package.parent.mkdir(parents=True, exist_ok=True)
                 package.write_bytes(f"test fixture {platform} {arch}".encode())
                 self.packages.append(package)
+        for arch in ("x64", "arm64"):
+            package = self.source / f"Windows-{arch}" / f"OpenNOW-Qt-{self.version}-Windows-{arch}-setup.exe"
+            package.write_bytes(f"test fixture setup {arch}".encode())
+            self.packages.append(package)
         package = self.source / "Darwin-arm64" / f"OpenNOW-Qt-{self.version}-Darwin-arm64.dmg"
         package.parent.mkdir(parents=True)
         package.write_bytes(b"test fixture Darwin arm64")
@@ -39,9 +43,13 @@ class NightlyReleaseTest(unittest.TestCase):
         self.assertEqual(metadata["sourceCommit"], self.commit)
         self.assertEqual(metadata["version"], self.version)
         self.assertEqual(metadata["updates"], "manual-download")
-        self.assertEqual(len(metadata["assets"]), 11)
+        self.assertEqual(len(metadata["assets"]), 13)
+        self.assertEqual(
+            [asset["name"] for asset in metadata["assets"] if asset["name"].endswith("-setup.exe")],
+            [f"OpenNOW-Qt-{self.version}-Windows-arm64-setup.exe",
+             f"OpenNOW-Qt-{self.version}-Windows-x64-setup.exe"])
         sums = (self.destination / "SHA256SUMS").read_text().splitlines()
-        self.assertEqual(len(sums), 12)
+        self.assertEqual(len(sums), 14)
         for line in sums:
             digest, name = line.split("  ")
             self.assertEqual(digest, hashlib.sha256((self.destination / name).read_bytes()).hexdigest())
