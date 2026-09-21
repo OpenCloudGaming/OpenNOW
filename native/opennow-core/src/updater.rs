@@ -85,11 +85,21 @@ impl UpdaterService {
         let staging_dir = data_dir.join("updates");
         fs::create_dir_all(&staging_dir)
             .map_err(|error| format!("Could not create the update staging directory: {error}"))?;
-        let (transaction, status, message) =
-            if let Some(message) = update_apply::external_update_message() {
-                (None, "unsupported", message.to_owned())
-            } else {
-                match read_prepared_update(&staging_dir) {
+        let (transaction, status, message) = if let Some(message) =
+            update_apply::external_update_message()
+        {
+            (None, "unsupported", message.to_owned())
+        } else {
+            match update_apply::windows_installer_replacement_message() {
+                Ok(Some(message)) => (None, "not-available", message.to_owned()),
+                Err(error) => (
+                    None,
+                    "failed",
+                    format!(
+                        "Could not determine whether Windows Installer owns this installation: {error}"
+                    ),
+                ),
+                Ok(None) => match read_prepared_update(&staging_dir) {
                     Ok(transaction) => (
                         transaction,
                         "idle",
@@ -106,8 +116,9 @@ impl UpdaterService {
                             format!("Could not recover update status: {error}"),
                         )
                     }
-                }
-            };
+                },
+            }
+        };
         Ok(Self {
             client,
             staging_dir,
@@ -148,6 +159,13 @@ impl UpdaterService {
     }
 
     pub fn request_failed(&self, message: &str) {
+        if update_apply::windows_installer_replacement_message()
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            return;
+        }
         let mut state = self.state.lock().expect("updater state poisoned");
         if !matches!(
             state.status,
@@ -167,6 +185,16 @@ impl UpdaterService {
     pub fn check(&self, params: &Value) -> Result<Value, String> {
         if update_apply::external_update_message().is_some() {
             return Ok(self.state());
+        }
+        if let Some(message) = update_apply::windows_installer_replacement_message()? {
+            let mut state = self.state.lock().expect("updater state poisoned");
+            state.status = "not-available";
+            state.available = None;
+            state.available_version = None;
+            state.downloaded = None;
+            state.transaction = None;
+            state.message = message.to_owned();
+            return Ok(state_json(&state));
         }
         let _operation = self.begin_operation()?;
         let channel = params["channel"]
@@ -398,6 +426,9 @@ impl UpdaterService {
 
     fn begin_operation(&self) -> Result<std::sync::MutexGuard<'_, ()>, String> {
         if let Some(message) = update_apply::external_update_message() {
+            return Err(message.to_owned());
+        }
+        if let Some(message) = update_apply::windows_installer_replacement_message()? {
             return Err(message.to_owned());
         }
         let operation = self

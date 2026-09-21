@@ -411,6 +411,22 @@ jobs:
           Expand-Archive $zip[0].FullName $zipExpanded
           Assert-OpenNowPackagePayload -Root $zipExpanded -DeploymentRoot build/opennow-qt-release/Release
 
+      - name: Build setup.exe
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          SETUP_VERSION: ${{ needs.metadata.outputs.version }}
+          SETUP_ARCH: ${{ matrix.label == 'windows-arm64' && 'arm64' || 'x64' }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $zip = @(Get-ChildItem build/qt-packages -Filter *.zip)
+          if ($zip.Count -ne 1) { throw "Expected one portable ZIP" }
+          $payload = Join-Path $env:RUNNER_TEMP "setup-payload"
+          if (Test-Path $payload) { Remove-Item $payload -Recurse -Force }
+          Expand-Archive $zip[0].FullName $payload
+          $setup = Join-Path (Resolve-Path build/qt-packages) ([IO.Path]::GetFileNameWithoutExtension($zip[0].Name) + "-setup.exe")
+          ./opennow-qt/packaging/windows/build-setup.ps1 -Payload $payload -Version $env:SETUP_VERSION -Arch $env:SETUP_ARCH -OutputFile $setup
+
       - name: Create Linux AppImage
         if: runner.os == 'Linux'
         shell: bash
@@ -516,6 +532,7 @@ jobs:
             build/qt-packages/*.dmg
             build/qt-packages/*.msi
             build/qt-packages/*.zip
+            build/qt-packages/*-setup.exe
           if-no-files-found: error
           retention-days: 14
           compression-level: 0
