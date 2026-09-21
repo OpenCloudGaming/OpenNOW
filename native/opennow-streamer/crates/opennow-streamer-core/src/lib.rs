@@ -5613,6 +5613,12 @@ mod tests {
 
     #[test]
     fn accepted_start_binds_the_hid_endpoint_and_termination_closes_it() {
+        // Hold a live peer for the whole test. On Windows, sending to a closed
+        // UDP port makes the next receive fail with WSAECONNRESET. That exits
+        // the bundle thread, which unbinds HID before the assertion below can
+        // observe the binding start() just installed.
+        let peer = UdpSocket::bind("127.0.0.1:0").expect("HID test peer socket");
+        let peer_port = peer.local_addr().expect("HID test peer address").port();
         let (sender, _receiver) = std::sync::mpsc::channel();
         let (media_sender, _media_receiver) = std::sync::mpsc::sync_channel(4);
         let mut engine = Engine::with_media_consumer(sender, media_sender);
@@ -5621,7 +5627,7 @@ mod tests {
         context["nvstVideo"] = json!({
             "clientUdpPort": unused_udp_port(),
             "videoPeerIp": "127.0.0.1",
-            "videoPeerPort": 5004,
+            "videoPeerPort": peer_port,
             "srtpAesKeyHex": "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F",
             "srtpSaltHex": "00000000000000009ECA935E",
             "codec": "H264"

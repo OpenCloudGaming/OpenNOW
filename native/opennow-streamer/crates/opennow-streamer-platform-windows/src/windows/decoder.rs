@@ -653,16 +653,33 @@ fn video_input_type(format: VideoFormat) -> Result<IMFMediaType, String> {
     }
 }
 
+/// Applies the shared candidate-source policy to already enumerated lists.
+/// Adapter-tagged hardware wins when any exist. Otherwise untagged hardware
+/// (Intel Quick Sync, which often omits `MFT_ENUM_ADAPTER_LUID`) comes before
+/// the registered Microsoft MFT that NVIDIA and AMD use for DXVA.
+#[cfg(test)]
 fn hardware_decoder_order<T>(
     adapter_tagged: Vec<T>,
     untagged_hardware: Vec<T>,
     registered: Vec<T>,
 ) -> Vec<T> {
-    let mut activations = adapter_tagged;
-    if activations.is_empty() {
-        activations.extend(untagged_hardware);
+    let mut adapter_tagged = adapter_tagged;
+    let mut untagged_hardware = untagged_hardware;
+    let mut registered = registered;
+    let mut activations = Vec::new();
+    for source in crate::decoder_order::decoder_candidate_sources(adapter_tagged.len()) {
+        match source {
+            crate::decoder_order::DecoderCandidateSource::AdapterHardware => {
+                activations.append(&mut adapter_tagged);
+            }
+            crate::decoder_order::DecoderCandidateSource::UnscopedHardware => {
+                activations.append(&mut untagged_hardware);
+            }
+            crate::decoder_order::DecoderCandidateSource::Registered => {
+                activations.append(&mut registered);
+            }
+        }
     }
-    activations.extend(registered);
     activations
 }
 
@@ -690,29 +707,45 @@ fn enumerate_decoders(
                     .map_err(|error| error.to_string())?;
                 let hardware_flags =
                     MFT_ENUM_FLAG(MFT_ENUM_FLAG_HARDWARE.0 | MFT_ENUM_FLAG_SORTANDFILTER.0);
-                let adapter_tagged =
+                let mut adapter_hardware =
                     enumerate_matching_decoders(hardware_flags, Some(&attributes), codec)?;
-                // Intel Quick Sync registers as a hardware MFT but usually does not
-                // publish MFT_ENUM_ADAPTER_LUID, so the adapter filter above is empty
-                // on Iris Xe even though the D3D11 device is already that GPU. Ask for
-                // hardware transforms with no adapter attribute before the Microsoft
-                // decoder. NVIDIA and AMD have no hardware-flagged MFT and use the
-                // Microsoft MFT's DXVA path; that list stays last. configure_transform
-                // still rejects any MFT that cannot accept this device's D3D manager.
-                let untagged_hardware = if adapter_tagged.is_empty() {
-                    video_log!(
-                        "Windows hardware decoder enumeration matched no MFT for this adapter; trying hardware transforms that do not publish an adapter LUID"
-                    );
-                    enumerate_matching_decoders(hardware_flags, None, codec)?
-                } else {
-                    Vec::new()
-                };
-                let registered_decoders = enumerate_matching_decoders(registered, None, codec)?;
-                Ok(hardware_decoder_order(
-                    adapter_tagged,
-                    untagged_hardware,
-                    registered_decoders,
-                ))
+                let mut activations = Vec::new();
+                // `decoder_candidate_sources` is the shared order: adapter-tagged
+                // hardware when any exist, otherwise untagged hardware, and the
+                // registered Microsoft MFT last. configure_transform still rejects
+                // any MFT that cannot accept this device's D3D manager.
+                for source in
+                    crate::decoder_order::decoder_candidate_sources(adapter_hardware.len())
+                {
+                    match source {
+                        crate::decoder_order::DecoderCandidateSource::AdapterHardware => {
+                            activations.append(&mut adapter_hardware);
+                        }
+                        crate::decoder_order::DecoderCandidateSource::UnscopedHardware => {
+                            // Intel Quick Sync / Iris / Arc hardware MFTs usually omit
+                            // MFT_ENUM_ADAPTER_LUID, so the adapter filter above is empty
+                            // even when the D3D11 device is already that GPU. Without
+                            // this step the registered fallback's first success is
+                            // "Microsoft H264 Video Decoder MFT" (software).
+                            video_log!(
+                                "Windows hardware decoder enumeration matched no MFT for this adapter; trying hardware transforms that do not publish an adapter LUID"
+                            );
+                            activations.extend(enumerate_matching_decoders(
+                                hardware_flags,
+                                None,
+                                codec,
+                            )?);
+                        }
+                        crate::decoder_order::DecoderCandidateSource::Registered => {
+                            // NVIDIA and AMD drive decode through DXVA2 instead of
+                            // registering a hardware-flagged MFT. The D3D11-aware
+                            // Microsoft MFT is their GPU path, so it stays last.
+                            activations
+                                .extend(enumerate_matching_decoders(registered, None, codec)?);
+                        }
+                    }
+                }
+                Ok(activations)
             }
             WindowsDecoderMode::Software => enumerate_matching_decoders(registered, None, codec),
         }

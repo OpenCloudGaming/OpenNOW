@@ -2,6 +2,7 @@
 
 #[cfg(any(windows, test))]
 mod aperture;
+mod decoder_order;
 mod format;
 mod queue;
 #[cfg(any(windows, test))]
@@ -34,7 +35,7 @@ pub use format::{
     SurfaceTarget, VideoChromaFormat, VideoChromaSiting, VideoCodec, VideoColorMatrix,
     VideoColorPrimaries, VideoFormat, VideoPixelFormat, VideoTransferFunction, WindowHandle,
 };
-pub use queue::PushOutcome;
+pub use queue::{CompressedAdmit, PushOutcome, admit_compressed_frame};
 
 /// Burst allowance for adaptive video delivery. The decoded presenter uses
 /// the same bound and trims stale frames before presentation, keeping latency
@@ -470,7 +471,7 @@ impl WindowsBackend {
         let outcome = self
             .shared
             .video
-            .push_or_clear_on_overflow(frame, key_frame)
+            .push_or_clear_on_overflow(frame, key_frame, |queued| queued.key_frame)
             .map_err(|_| BackendError::NotRunning(self.state()))?;
         if outcome == PushOutcome::DroppedOldest {
             let _ = self

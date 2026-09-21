@@ -185,6 +185,7 @@ pub struct VulkanPresenter {
     staging_buffer: vk::Buffer,
     staging_memory: vk::DeviceMemory,
     staging_capacity: vk::DeviceSize,
+    staging_mapped: usize,
     needs_reconfigure: bool,
     _thread_affinity: PhantomData<Rc<()>>,
 }
@@ -369,6 +370,7 @@ impl VulkanPresenter {
             staging_buffer: vk::Buffer::null(),
             staging_memory: vk::DeviceMemory::null(),
             staging_capacity: 0,
+            staging_mapped: 0,
             needs_reconfigure: false,
             _thread_affinity: PhantomData,
         };
@@ -469,29 +471,26 @@ impl VulkanPresenter {
                 Error::InvalidFormat("NV12 presentation buffer size overflow".to_owned())
             })?;
             self.ensure_staging(upload_len as vk::DeviceSize)?;
-            let mapped = unsafe {
-                self.device.map_memory(
-                    self.staging_memory,
-                    0,
-                    upload_len as vk::DeviceSize,
-                    vk::MemoryMapFlags::empty(),
-                )
+            if self.staging_mapped == 0 {
+                return Err(Error::backend(
+                    Subsystem::Vulkan,
+                    "presentation staging memory is not mapped",
+                ));
             }
-            .map_err(|error| vk_error("map staging memory", error))?;
             unsafe {
+                let mapped = self.staging_mapped as *mut u8;
                 copy_plane_rows(
                     &frame.planes[0],
-                    mapped.cast(),
+                    mapped,
                     frame.format.width as usize,
                     frame.format.height as usize,
                 );
                 copy_plane_rows(
                     &frame.planes[1],
-                    mapped.cast::<u8>().add(luma_len),
+                    mapped.add(luma_len),
                     frame.format.width as usize,
                     frame.format.height as usize / 2,
                 );
-                self.device.unmap_memory(self.staging_memory);
             }
             None
         };
@@ -1442,12 +1441,16 @@ impl VulkanPresenter {
             .map_err(|error| vk_error("wait before staging resize", error))?;
         if self.staging_buffer != vk::Buffer::null() {
             unsafe {
+                if self.staging_mapped != 0 {
+                    self.device.unmap_memory(self.staging_memory);
+                }
                 self.device.destroy_buffer(self.staging_buffer, None);
                 self.device.free_memory(self.staging_memory, None);
             }
             self.staging_buffer = vk::Buffer::null();
             self.staging_memory = vk::DeviceMemory::null();
             self.staging_capacity = 0;
+            self.staging_mapped = 0;
         }
         let buffer_info = vk::BufferCreateInfo::default()
             .size(required)
@@ -1488,9 +1491,27 @@ impl VulkanPresenter {
             }
             return Err(vk_error("bind staging memory", error));
         }
+        let staging_mapped = match unsafe {
+            self.device.map_memory(
+                staging_memory,
+                0,
+                requirements.size,
+                vk::MemoryMapFlags::empty(),
+            )
+        } {
+            Ok(mapped) => mapped as usize,
+            Err(error) => {
+                unsafe {
+                    self.device.destroy_buffer(staging_buffer, None);
+                    self.device.free_memory(staging_memory, None);
+                }
+                return Err(vk_error("map staging memory", error));
+            }
+        };
         self.staging_buffer = staging_buffer;
         self.staging_memory = staging_memory;
         self.staging_capacity = requirements.size;
+        self.staging_mapped = staging_mapped;
         Ok(())
     }
 }
@@ -1529,8 +1550,15 @@ unsafe fn copy_plane_rows(
     row_bytes: usize,
     rows: usize,
 ) {
-    for row in 0..rows {
-        unsafe {
+    if row_bytes == 0 || rows == 0 {
+        return;
+    }
+    unsafe {
+        if plane.stride == row_bytes {
+            std::ptr::copy_nonoverlapping(plane.data.as_ptr(), destination, row_bytes * rows);
+            return;
+        }
+        for row in 0..rows {
             std::ptr::copy_nonoverlapping(
                 plane.data.as_ptr().add(row * plane.stride),
                 destination.add(row * row_bytes),
@@ -1926,6 +1954,9 @@ impl Drop for VulkanPresenter {
         self.destroy_nv12_images();
         unsafe {
             if self.staging_buffer != vk::Buffer::null() {
+                if self.staging_mapped != 0 {
+                    self.device.unmap_memory(self.staging_memory);
+                }
                 self.device.destroy_buffer(self.staging_buffer, None);
                 self.device.free_memory(self.staging_memory, None);
             }
