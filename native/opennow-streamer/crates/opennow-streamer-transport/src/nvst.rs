@@ -4943,6 +4943,11 @@ fn bind_nvst_udp_socket(bind_ip: IpAddr, port: u16) -> std::io::Result<UdpSocket
         log_udp_error("bind-unavailable", port, &error);
         return Err(error);
     }
+    // Windows turns ICMP port unreachable into WSAECONNRESET on the next UDP
+    // receive. That error is not a connected socket failure, and treating it
+    // as fatal exits the receiver and drops the HID endpoint it owns.
+    #[cfg(windows)]
+    ignore_icmp_port_unreachable(&socket)?;
     opennow_streamer_protocol::log::log_async(
         "INFO",
         "nvst-udp",
@@ -4985,6 +4990,50 @@ fn set_exclusive_udp_address(socket: &Socket) -> std::io::Result<()> {
         }));
     }
     Ok(())
+}
+
+#[cfg(windows)]
+fn ignore_icmp_port_unreachable(socket: &Socket) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawSocket;
+    use windows_sys::Win32::Networking::WinSock::{
+        SIO_UDP_CONNRESET, SOCKET_ERROR, WSAGetLastError, WSAIoctl,
+    };
+
+    // FALSE disables WSAECONNRESET when ICMP says the peer port is closed.
+    let disabled: i32 = 0;
+    let mut returned = 0u32;
+    // SAFETY: `socket` is a live datagram socket. `disabled` and `returned`
+    // outlive this synchronous ioctl. A null overlapped structure and
+    // completion routine keep the call on this thread.
+    let result = unsafe {
+        WSAIoctl(
+            socket.as_raw_socket() as _,
+            SIO_UDP_CONNRESET,
+            (&disabled as *const i32).cast(),
+            std::mem::size_of_val(&disabled) as u32,
+            std::ptr::null_mut(),
+            0,
+            &mut returned,
+            std::ptr::null_mut(),
+            None,
+        )
+    };
+    if result == SOCKET_ERROR {
+        // SAFETY: read the calling thread's Winsock error immediately on failure.
+        return Err(std::io::Error::from_raw_os_error(unsafe {
+            WSAGetLastError()
+        }));
+    }
+    Ok(())
+}
+
+fn udp_receive_is_idle(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::WouldBlock
+            | std::io::ErrorKind::TimedOut
+            | std::io::ErrorKind::Interrupted
+    )
 }
 
 fn log_udp_error(operation: &str, local_port: u16, error: &std::io::Error) {
@@ -5875,6 +5924,7 @@ fn run_nvst_webrtc_bundle(
     let mut control_keepalive_at = next_control_keepalive(Instant::now());
     let mut input_timeout_reported = false;
     let mut audio_receiver = NvstAudioReceiver::default();
+    let mut reported_port_unreachable = false;
     'bundle: loop {
         let now = Instant::now();
         loop {
@@ -6704,12 +6754,15 @@ fn run_nvst_webrtc_bundle(
                         break 'bundle;
                     }
                 }
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                    ) =>
-                {
+                Err(error) if udp_receive_is_idle(&error) => {
+                    let _ = rtc.handle_input(Input::Timeout(Instant::now()));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {
+                    if !reported_port_unreachable {
+                        reported_port_unreachable = true;
+                        log_udp_error("bundle-receive-port-unreachable", local_port, &error);
+                    }
+                    thread::sleep(CONTROL_RECEIVE_POLL_INTERVAL);
                     let _ = rtc.handle_input(Input::Timeout(Instant::now()));
                 }
                 Err(error) => {
@@ -6804,6 +6857,7 @@ fn run_nvst_udp_receiver(
     let mut receiver_reports_sent = 0_u64;
     let stats_origin = Instant::now();
     let mut last_stats_log = Instant::now();
+    let mut reported_port_unreachable = false;
     loop {
         loop {
             match commands.try_recv() {
@@ -6946,8 +7000,14 @@ fn run_nvst_udp_receiver(
                     }
                 }
             }
-            Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {}
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) if udp_receive_is_idle(&error) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {
+                if !reported_port_unreachable {
+                    reported_port_unreachable = true;
+                    log_udp_error("video-receive-port-unreachable", local_port, &error);
+                }
+                thread::sleep(UDP_RECEIVE_POLL_INTERVAL);
+            }
             Err(error) => {
                 log_udp_error("video-receive", local_port, &error);
                 forward_optional(&event_sender, receiver.stop());
@@ -8337,6 +8397,45 @@ mod tests {
         assert!(bundle_addr.ip().is_unspecified());
         assert!(video_addr.ip().is_unspecified());
         assert_eq!(bundle_addr.port(), video_addr.port() + 1);
+    }
+
+    #[test]
+    fn udp_receive_keeps_timeouts_and_windows_port_unreachable_alive() {
+        let timeout = std::io::Error::new(std::io::ErrorKind::TimedOut, "poll");
+        let interrupted = std::io::Error::new(std::io::ErrorKind::Interrupted, "signal");
+        let reset = std::io::Error::new(std::io::ErrorKind::ConnectionReset, "icmp");
+        let refused = std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "fatal");
+        assert!(udp_receive_is_idle(&timeout));
+        assert!(udp_receive_is_idle(&interrupted));
+        assert!(!udp_receive_is_idle(&reset));
+        assert!(!udp_receive_is_idle(&refused));
+        assert_eq!(reset.kind(), std::io::ErrorKind::ConnectionReset);
+    }
+
+    #[test]
+    fn nvst_udp_socket_survives_a_ping_to_a_closed_peer() {
+        let socket = bind_nvst_udp_socket(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0).expect("bind");
+        socket
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .expect("timeout");
+        let closed = {
+            let probe = UdpSocket::bind("127.0.0.1:0").expect("probe");
+            let port = probe.local_addr().expect("probe address").port();
+            drop(probe);
+            SocketAddr::from(([127, 0, 0, 1], port))
+        };
+        socket.send_to(b"ping", closed).expect("send");
+        let mut buffer = [0_u8; 64];
+        let error = socket
+            .recv_from(&mut buffer)
+            .expect_err("closed peer has no datagram");
+        assert!(
+            matches!(
+                error.kind(),
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+            ),
+            "ICMP port unreachable must not reset the NVST UDP socket: {error}"
+        );
     }
 
     #[cfg(windows)]
