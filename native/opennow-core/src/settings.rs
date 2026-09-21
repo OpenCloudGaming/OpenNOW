@@ -459,7 +459,7 @@ impl SettingsStore {
             100,
         );
         clamp_integer(&mut self.values, "fps", 30, 360, 60);
-        clamp_integer(&mut self.values, "maxBitrateMbps", 1, 200, 75);
+        clamp_bitrate_mbps(&mut self.values);
         clamp_integer(&mut self.values, "windowWidth", 960, 7680, 1400);
         clamp_integer(&mut self.values, "windowHeight", 540, 4320, 900);
         clamp_integer(&mut self.values, "recordingFps", 30, 60, 30);
@@ -698,6 +698,25 @@ fn clamp_integer(
         .unwrap_or(fallback)
         .clamp(minimum, maximum);
     values.insert(key.to_owned(), Value::Number(value.into()));
+}
+
+fn clamp_bitrate_mbps(values: &mut Map<String, Value>) {
+    // 0.22 Mbps is 220 kbps. Whole numbers stay integers so existing settings
+    // and the 10–200 Mbps slider keep their previous JSON shape.
+    let raw = values
+        .get("maxBitrateMbps")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite())
+        .unwrap_or(75.0);
+    let value = (raw.clamp(0.22, 200.0) * 100.0).round() / 100.0;
+    let stored = if (value - value.round()).abs() < 1e-9 {
+        Value::from(value.round() as i64)
+    } else {
+        serde_json::Number::from_f64(value)
+            .map(Value::Number)
+            .unwrap_or_else(|| Value::from(75))
+    };
+    values.insert("maxBitrateMbps".to_owned(), stored);
 }
 
 fn clamp_number(
@@ -2223,6 +2242,12 @@ mod tests {
         assert_eq!(store.set("fps", json!(999)).unwrap(), json!(360));
         assert_eq!(store.set("fps", json!(360)).unwrap(), json!(360));
         assert_eq!(store.set("fps", json!(240)).unwrap(), json!(240));
+        assert_eq!(store.set("maxBitrateMbps", json!(200)).unwrap(), json!(200));
+        let low_bitrate = store.set("maxBitrateMbps", json!(0.22)).unwrap();
+        assert!((low_bitrate.as_f64().unwrap() - 0.22).abs() < 0.001);
+        let clamped_bitrate = store.set("maxBitrateMbps", json!(0.1)).unwrap();
+        assert!((clamped_bitrate.as_f64().unwrap() - 0.22).abs() < 0.001);
+        assert_eq!(store.set("maxBitrateMbps", json!(27)).unwrap(), json!(27));
         assert_eq!(store.set("maxBitrateMbps", json!(200)).unwrap(), json!(200));
         assert_eq!(
             store.set("launchInConsoleMode", json!(false)).unwrap(),

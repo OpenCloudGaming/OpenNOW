@@ -1227,14 +1227,14 @@ fn macos_auto_codec_candidates(settings: &Value) -> &'static [&'static str] {
         .unwrap_or((1920, 1080));
     let pixels = width.saturating_mul(height);
     let fps = settings["fps"].as_u64().unwrap_or(60);
-    let bitrate = settings["maxBitrateMbps"].as_u64().unwrap_or(75);
+    let bitrate = settings["maxBitrateMbps"].as_f64().unwrap_or(75.0);
     if fps >= 144 {
         &["h264", "h265", "av1"]
-    } else if pixels >= 3840 * 2160 || ((1..=30).contains(&bitrate) && pixels >= 2560 * 1440) {
+    } else if pixels >= 3840 * 2160 || ((0.22..=30.0).contains(&bitrate) && pixels >= 2560 * 1440) {
         &["av1", "h265", "h264"]
-    } else if (1..=30).contains(&bitrate) {
+    } else if (0.22..=30.0).contains(&bitrate) {
         &["av1", "h264", "h265"]
-    } else if pixels >= 2560 * 1440 || bitrate >= 75 {
+    } else if pixels >= 2560 * 1440 || bitrate >= 75.0 {
         &["h265", "h264", "av1"]
     } else {
         &["h264", "h265", "av1"]

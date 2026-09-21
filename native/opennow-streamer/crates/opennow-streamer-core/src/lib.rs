@@ -2787,9 +2787,13 @@ fn media_stream_config(context: &SessionContext) -> MediaStreamConfig {
     let bitrate_mbps = context
         .settings
         .get("maxBitrateMbps")
-        .and_then(Value::as_u64)
-        .and_then(|value| u32::try_from(value).ok())
-        .unwrap_or(75);
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite())
+        .unwrap_or(75.0)
+        .clamp(0.22, 200.0);
+    let bitrate_bps = (bitrate_mbps * 1_000_000.0)
+        .round()
+        .clamp(1.0, f64::from(u32::MAX)) as u32;
     let requested_cloud_gsync = match context
         .settings
         .get("nativeCloudGsyncMode")
@@ -2828,7 +2832,7 @@ fn media_stream_config(context: &SessionContext) -> MediaStreamConfig {
         width: resolution.0,
         height: resolution.1,
         fps,
-        bitrate_bps: bitrate_mbps.saturating_mul(1_000_000).max(1),
+        bitrate_bps,
         cloud_gsync,
         shortcuts: StreamShortcutBindings::from_json(&context.shortcuts),
     }
@@ -5477,6 +5481,9 @@ mod tests {
                 shortcuts: StreamShortcutBindings::default(),
             }
         );
+        let mut low_rate = context.clone();
+        low_rate.settings["maxBitrateMbps"] = json!(0.22);
+        assert_eq!(media_stream_config(&low_rate).bitrate_bps, 220_000);
 
         let fallback: SessionContext =
             serde_json::from_value(synthetic_context("fallback-config", json!([])))
