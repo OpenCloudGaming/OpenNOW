@@ -4385,7 +4385,7 @@ mod tests {
             let offset = body["sessionRequestData"]["clientTimezoneOffset"]
                 .as_i64()
                 .unwrap();
-            assert!(offset == i64::from(offset_before) || offset == i64::from(offset_after));
+            assert!(offset == offset_before || offset == offset_after);
         }
     }
 
