@@ -4933,6 +4933,13 @@ fn bind_nvst_udp_socket(bind_ip: IpAddr, port: u16) -> std::io::Result<UdpSocket
     // delivery indeterminate. Keep this exact exclusive socket through ANNOUNCE.
     #[cfg(windows)]
     set_exclusive_udp_address(&socket)?;
+    // ICMP port unreachable must not become WSAECONNRESET. Hole-punch pings
+    // run before the peer socket exists; that reset was exiting the receiver
+    // and closing the HID endpoint.
+    #[cfg(windows)]
+    if let Err(error) = disable_udp_connreset(&socket) {
+        log_udp_error("disable-connreset", port, &error);
+    }
     if let Err(error) = socket.set_recv_buffer_size(NVST_UDP_RECEIVE_BUFFER_BYTES) {
         log_udp_error("receive-buffer", port, &error);
         eprintln!(
@@ -4987,6 +4994,40 @@ fn set_exclusive_udp_address(socket: &Socket) -> std::io::Result<()> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn disable_udp_connreset(socket: &Socket) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawSocket;
+    use windows_sys::Win32::Networking::WinSock::{
+        SIO_UDP_CONNRESET, SOCKET_ERROR, WSAGetLastError, WSAIoctl,
+    };
+
+    let disabled: windows_sys::core::BOOL = 0;
+    let mut bytes_returned = 0_u32;
+    // SAFETY: socket is live and `disabled` outlives this synchronous ioctl.
+    // FALSE restores the pre-Windows 2000 behavior: ICMP port unreachable is
+    // discarded instead of failing the next recv/send with WSAECONNRESET.
+    let result = unsafe {
+        WSAIoctl(
+            socket.as_raw_socket() as _,
+            SIO_UDP_CONNRESET,
+            (&disabled as *const windows_sys::core::BOOL).cast(),
+            std::mem::size_of_val(&disabled) as u32,
+            std::ptr::null_mut(),
+            0,
+            &mut bytes_returned,
+            std::ptr::null_mut(),
+            None,
+        )
+    };
+    if result == SOCKET_ERROR {
+        // SAFETY: read the calling thread's Winsock error immediately on failure.
+        return Err(std::io::Error::from_raw_os_error(unsafe {
+            WSAGetLastError()
+        }));
+    }
+    Ok(())
+}
+
 fn log_udp_error(operation: &str, local_port: u16, error: &std::io::Error) {
     // Structured OS codes, never endpoints, payloads, or ICE credentials.
     opennow_streamer_protocol::log::log_async(
@@ -4998,6 +5039,23 @@ fn log_udp_error(operation: &str, local_port: u16, error: &std::io::Error) {
             error.raw_os_error()
         ),
     );
+}
+
+/// Windows reports ICMP port unreachable for an earlier UDP send as
+/// `WSAECONNRESET` (`ErrorKind::ConnectionReset`). A hole-punch ping toward a
+/// peer that is not listening yet is expected. Stopping the receiver on that
+/// error exits the thread and closes the HID endpoint.
+fn udp_icmp_port_unreachable(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::ConnectionReset
+}
+
+fn udp_receive_is_idle(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::WouldBlock
+            | std::io::ErrorKind::TimedOut
+            | std::io::ErrorKind::ConnectionReset
+    )
 }
 
 /// Reserves the dedicated NATT-only video (Mjolnir) socket. The native streamer
@@ -6074,6 +6132,9 @@ fn run_nvst_webrtc_bundle(
                         let ice = build_stun_binding_request(credentials, &ice_tid);
                         ice_bytes = ice.len();
                         if let Err(error) = socket.send_to(&ice, bundle_peer) {
+                            if udp_icmp_port_unreachable(&error) {
+                                continue;
+                            }
                             eprintln!("NVST ICE send failed: {error}");
                             forward_optional(&event_sender, receiver.stop());
                             break 'bundle;
@@ -6091,12 +6152,16 @@ fn run_nvst_webrtc_bundle(
                 );
                 let sent_at = Instant::now();
                 if let Err(error) = socket.send_to(&natt, bundle_peer) {
-                    eprintln!("NVST NATT send failed: {error}");
-                    forward_optional(&event_sender, receiver.stop());
-                    break 'bundle;
+                    if !udp_icmp_port_unreachable(&error) {
+                        eprintln!("NVST NATT send failed: {error}");
+                        forward_optional(&event_sender, receiver.stop());
+                        break 'bundle;
+                    }
+                    None
+                } else {
+                    ping_tracker.sent(natt_tid, sent_at);
+                    Some(natt)
                 }
-                ping_tracker.sent(natt_tid, sent_at);
-                Some(natt)
             } else {
                 None
             };
@@ -6310,6 +6375,9 @@ fn run_nvst_webrtc_bundle(
                         );
                     }
                     if let Err(error) = socket.send_to(&transmit.contents, bundle_peer) {
+                        if udp_icmp_port_unreachable(&error) {
+                            continue;
+                        }
                         if peek_rtp_ssrc(&transmit.contents) == Some(1) {
                             microphone_queue.close();
                             microphone_generation = microphone_queue.generation;
@@ -6654,7 +6722,9 @@ fn run_nvst_webrtc_bundle(
                         }
                     }
                     if datagram[..length] == *b"PING" {
-                        if let Err(error) = socket.send_to(b"PONG", source) {
+                        if let Err(error) = socket.send_to(b"PONG", source)
+                            && !udp_icmp_port_unreachable(&error)
+                        {
                             eprintln!("NVST PONG send failed: {error}");
                             forward_optional(&event_sender, receiver.stop());
                             break 'bundle;
@@ -6704,12 +6774,7 @@ fn run_nvst_webrtc_bundle(
                         break 'bundle;
                     }
                 }
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                    ) =>
-                {
+                Err(error) if udp_receive_is_idle(&error) => {
                     let _ = rtc.handle_input(Input::Timeout(Instant::now()));
                 }
                 Err(error) => {
@@ -6855,6 +6920,9 @@ fn run_nvst_udp_receiver(
                 for port in receiver.config.video_peer_ports() {
                     let peer = SocketAddr::new(receiver.config.video_peer.ip(), port);
                     if let Err(error) = socket.send_to(&ping, peer) {
+                        if udp_icmp_port_unreachable(&error) {
+                            continue;
+                        }
                         log_udp_error("video-natt-send", local_port, &error);
                         eprintln!("NVST NATT send failed: {error}");
                         forward_optional(&event_sender, receiver.stop());
@@ -6867,6 +6935,9 @@ fn run_nvst_udp_receiver(
                 for port in receiver.config.video_peer_ports() {
                     let peer = SocketAddr::new(receiver.config.video_peer.ip(), port);
                     if let Err(error) = socket.send_to(&receiver.config.ping_payload, peer) {
+                        if udp_icmp_port_unreachable(&error) {
+                            continue;
+                        }
                         log_udp_error("video-ping-send", local_port, &error);
                         eprintln!("NVST ping send failed: {error}");
                         forward_optional(&event_sender, receiver.stop());
@@ -6915,6 +6986,7 @@ fn run_nvst_udp_receiver(
                             peer_seen = true;
                             if let Some(response) = response
                                 && let Err(error) = socket.send_to(&response, source)
+                                && !udp_icmp_port_unreachable(&error)
                             {
                                 eprintln!("NVST STUN response send failed: {error}");
                                 forward_optional(&event_sender, receiver.stop());
@@ -6946,8 +7018,7 @@ fn run_nvst_udp_receiver(
                     }
                 }
             }
-            Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {}
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) if udp_receive_is_idle(&error) => {}
             Err(error) => {
                 log_udp_error("video-receive", local_port, &error);
                 forward_optional(&event_sender, receiver.stop());
@@ -6957,11 +7028,14 @@ fn run_nvst_udp_receiver(
         let now = Instant::now();
         if let Some(report) = receiver.poll_receiver_report(now) {
             if let Err(error) = socket.send_to(&report, receiver.config.video_peer) {
-                eprintln!("NVST receiver report send failed: {error}");
-                forward_optional(&event_sender, receiver.stop());
-                return;
+                if !udp_icmp_port_unreachable(&error) {
+                    eprintln!("NVST receiver report send failed: {error}");
+                    forward_optional(&event_sender, receiver.stop());
+                    return;
+                }
+            } else {
+                receiver_reports_sent += 1;
             }
-            receiver_reports_sent += 1;
         }
         if now.duration_since(last_stats_log) >= Duration::from_secs(10) {
             last_stats_log = now;
@@ -8351,6 +8425,59 @@ mod tests {
             "a sharing socket must not steal the reserved port"
         );
         assert!(bind_nvst_udp_socket(address.ip(), address.port()).is_err());
+    }
+
+    #[test]
+    fn icmp_port_unreachable_is_an_idle_udp_receive() {
+        let reset =
+            std::io::Error::new(std::io::ErrorKind::ConnectionReset, "icmp port unreachable");
+        assert!(udp_icmp_port_unreachable(&reset));
+        assert!(udp_receive_is_idle(&reset));
+        assert!(udp_receive_is_idle(&std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "timeout",
+        )));
+        assert!(udp_receive_is_idle(&std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "would block",
+        )));
+        assert!(!udp_receive_is_idle(&std::io::Error::new(
+            std::io::ErrorKind::ConnectionAborted,
+            "aborted",
+        )));
+        assert!(!udp_icmp_port_unreachable(&std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "timeout",
+        )));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_ping_to_a_closed_udp_port_does_not_reset_the_socket() {
+        let socket = bind_nvst_udp_socket(IpAddr::V4(Ipv4Addr::LOCALHOST), 0).expect("bind");
+        socket
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .expect("timeout");
+        let closed_port = {
+            let ephemeral = UdpSocket::bind("127.0.0.1:0").expect("ephemeral");
+            let port = ephemeral.local_addr().expect("ephemeral addr").port();
+            drop(ephemeral);
+            port
+        };
+        socket
+            .send_to(b"PING", SocketAddr::from(([127, 0, 0, 1], closed_port)))
+            .expect("ping closed port");
+        let mut buffer = [0_u8; 64];
+        let error = socket
+            .recv_from(&mut buffer)
+            .expect_err("closed peer produces no datagram");
+        assert!(
+            matches!(
+                error.kind(),
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+            ),
+            "ICMP port unreachable must not surface as {error}"
+        );
     }
 
     #[cfg(windows)]
