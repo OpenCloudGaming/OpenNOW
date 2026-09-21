@@ -159,6 +159,19 @@ mod windows {
         Ok(value.strip_prefix("\\\\?\\").unwrap_or(value).to_owned())
     }
 
+    pub(super) fn install_root_argument(target: &Path) -> Result<String, String> {
+        let path = argument_path(target)?;
+        if path.contains('"') || path.contains('\n') || path.contains('\r') {
+            return Err(
+                "Windows Installer requires an installation path without quotes".to_owned(),
+            );
+        }
+        if path.is_empty() || path.len() > 32767 {
+            return Err("Windows Installer requires a bounded installation path".to_owned());
+        }
+        Ok(format!("INSTALL_ROOT=\"{path}\""))
+    }
+
     struct Handle(u32);
     impl Drop for Handle {
         fn drop(&mut self) {
@@ -379,6 +392,25 @@ pub(super) fn windows_managed(target: &Path) -> Result<bool, String> {
     Ok(false)
 }
 
+#[cfg(not(windows))]
+fn msi_install_root_argument(target: &Path) -> Result<String, String> {
+    let value = target
+        .to_str()
+        .ok_or("Windows Installer requires a Unicode installation path")?;
+    let path = if let Some(unc) = value.strip_prefix("\\\\?\\UNC\\") {
+        format!("\\\\{unc}")
+    } else {
+        value.strip_prefix("\\\\?\\").unwrap_or(value).to_owned()
+    };
+    if path.contains('"') || path.contains('\n') || path.contains('\r') {
+        return Err("Windows Installer requires an installation path without quotes".to_owned());
+    }
+    if path.is_empty() || path.len() > 32767 {
+        return Err("Windows Installer requires a bounded installation path".to_owned());
+    }
+    Ok(format!("INSTALL_ROOT=\"{path}\""))
+}
+
 pub(super) fn install(plan: &Plan, directory: &Path) -> Result<(), String> {
     let identity = plan
         .managed_identity
@@ -404,17 +436,40 @@ pub(super) fn install(plan: &Plan, directory: &Path) -> Result<(), String> {
             let mut command = Command::new(Path::new(&system).join("System32/msiexec.exe"));
             command.arg("/i");
             #[cfg(windows)]
-            command.arg(windows::argument_path(&plan.package)?);
+            {
+                let package = windows::argument_path(&plan.package)?;
+                if package.contains('"') {
+                    return Err(
+                        "Windows Installer requires a package path without quotes".to_owned()
+                    );
+                }
+                command.arg(package);
+            }
             #[cfg(not(windows))]
             command.arg(&plan.package);
             command.args(["/passive", "/norestart", "REBOOT=ReallySuppress"]);
+            // msiexec parses the raw command line for PROPERTY=value tokens. A Rust
+            // Command::arg containing spaces would be quoted as a whole
+            // ("INSTALL_ROOT=C:\Program Files\..."), which msiexec rejects with 1639
+            // and a help dialog. Emit INSTALL_ROOT="..." with quotes only around the
+            // value, matching the installer contract test.
             #[cfg(windows)]
-            command.arg(format!(
-                "INSTALL_ROOT={}",
-                windows::argument_path(&plan.target)?
-            ));
+            {
+                use std::os::windows::process::CommandExt;
+                command.raw_arg(windows::install_root_argument(&plan.target)?);
+                let log = windows::argument_path(&directory.join("msiexec.log"))?;
+                if log.contains('"') {
+                    return Err("Windows Installer requires a log path without quotes".to_owned());
+                }
+                command.arg("/l*v");
+                command.arg(log);
+            }
             #[cfg(not(windows))]
-            command.arg(format!("INSTALL_ROOT={}", plan.target.display()));
+            {
+                command.arg(msi_install_root_argument(&plan.target)?);
+                command.arg("/l*v");
+                command.arg(directory.join("msiexec.log"));
+            }
             command
         }
         _ => return Err("Not a managed package update".to_owned()),
@@ -456,6 +511,12 @@ pub(super) fn install(plan: &Plan, directory: &Path) -> Result<(), String> {
     }
     if code != 0 {
         let mut message = installer_failure_message(plan.kind, code);
+        if plan.kind == InstallKind::WindowsMsi {
+            let log = directory.join("msiexec.log");
+            if log.is_file() {
+                message.push_str(&format!("; installer log: {}", log.display()));
+            }
+        }
         if prepare(plan.kind, &plan.package, &plan.target, &plan.version).is_ok()
             && super::canonical_file(&plan.application_executable).is_ok()
         {
@@ -509,6 +570,9 @@ fn installer_failure_message(kind: InstallKind, code: i32) -> String {
         }
         (InstallKind::WindowsMsi, 1602) => {
             "Windows Installer was cancelled. Try installing the update again and complete the installer prompts"
+        }
+        (InstallKind::WindowsMsi, 1639) => {
+            "Windows Installer rejected the update command line. Try installing the update again; the installer log beside the update outcome has details"
         }
         _ => "Native package manager failed",
     };
@@ -599,6 +663,11 @@ mod tests {
                 1602,
                 "Windows Installer was cancelled",
             ),
+            (
+                InstallKind::WindowsMsi,
+                1639,
+                "rejected the update command line",
+            ),
         ] {
             let message = installer_failure_message(kind, code);
             assert!(message.contains(explanation), "{message}");
@@ -611,6 +680,7 @@ mod tests {
     fn installer_failure_codes_are_interpreted_only_for_their_package_manager() {
         for (kind, code) in [
             (InstallKind::DebianPackage, 1602),
+            (InstallKind::DebianPackage, 1639),
             (InstallKind::WindowsMsi, 126),
             (InstallKind::WindowsMsi, 127),
             (InstallKind::DebianPackage, 1),
@@ -623,6 +693,29 @@ mod tests {
                 )
             );
         }
+    }
+
+    #[test]
+    fn msi_install_root_quotes_only_the_value_for_msiexec() {
+        #[cfg(windows)]
+        let argument =
+            windows::install_root_argument(Path::new(r"C:\Program Files\OpenNOW Nightly")).unwrap();
+        #[cfg(not(windows))]
+        let argument =
+            msi_install_root_argument(Path::new(r"C:\Program Files\OpenNOW Nightly")).unwrap();
+        assert_eq!(
+            argument,
+            r#"INSTALL_ROOT="C:\Program Files\OpenNOW Nightly""#
+        );
+        #[cfg(windows)]
+        let stripped = windows::install_root_argument(Path::new(r"\\?\C:\OpenNOW")).unwrap();
+        #[cfg(not(windows))]
+        let stripped = msi_install_root_argument(Path::new(r"\\?\C:\OpenNOW")).unwrap();
+        assert_eq!(stripped, r#"INSTALL_ROOT="C:\OpenNOW""#);
+        #[cfg(windows)]
+        assert!(windows::install_root_argument(Path::new("C:\\evil\"quote")).is_err());
+        #[cfg(not(windows))]
+        assert!(msi_install_root_argument(Path::new("C:\\evil\"quote")).is_err());
     }
 
     #[cfg(target_os = "linux")]

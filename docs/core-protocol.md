@@ -912,7 +912,11 @@ counts as success.
 On a later launch, the core reconciles these managed outcomes against the native
 package registration and its running version. A known live installer keeps
 `managed-pending` active. A completed installer resolves to `succeeded` or
-`failed`, and the core clears the persisted active transaction. An MSI reboot
+`failed`, and the core clears the persisted active transaction. Terminal helper
+outcomes (`succeeded`, `rolled-back`, `failed`) are likewise reported for that
+launch only; the core clears the persisted transaction after the first
+reconciliation so the same failure dialog does not reappear on every restart.
+An MSI reboot
 warning remains until Windows' per-boot sequence number changes. Sessions
 remain available, but another update must wait for the required reboot so it
 cannot overlap pending Windows file replacements. Reopening the app before
