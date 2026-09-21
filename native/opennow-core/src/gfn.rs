@@ -1927,7 +1927,14 @@ impl GfnService {
         let _operation = crate::store_requests::lock(&self.auth_operation)?;
         let (session, generation) = self.session_snapshot_locked()?;
         let mut owned = self.owned_session_params(params, &routing, &session, generation, false)?;
-        for key in ["action", "adId"] {
+        for key in [
+            "action",
+            "adId",
+            "watchedTimeInMs",
+            "pausedTimeInMs",
+            "cancelReason",
+            "clientTimestamp",
+        ] {
             if let Some(value) = params.get(key) {
                 owned[key] = value.clone();
             }

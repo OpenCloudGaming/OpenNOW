@@ -88,6 +88,9 @@ StreamVideoItem::StreamVideoItem(std::unique_ptr<MacPointerCapture> pointerCaptu
         });
     }
     const auto attachWindow = [this](QQuickWindow *currentWindow) {
+        if (m_inputWindow) m_inputWindow->removeEventFilter(this);
+        m_inputWindow = currentWindow;
+        if (m_inputWindow) m_inputWindow->installEventFilter(this);
         connectFrameSwaps();
         if (currentWindow) {
             connect(currentWindow, &QWindow::activeChanged,
@@ -176,6 +179,19 @@ void StreamVideoItem::setClipboardPaste(bool enabled)
     if (m_clipboardPaste == enabled) return;
     m_clipboardPaste = enabled;
     emit clipboardPasteChanged();
+}
+
+QString StreamVideoItem::keyboardLayout() const
+{
+    return m_keyboardLayout;
+}
+
+void StreamVideoItem::setKeyboardLayout(const QString &layout)
+{
+    if (m_keyboardLayout == layout) return;
+    m_keyboardLayout = layout;
+    m_keyboardMap = PhysicalKeyMap::layoutFor(layout.toStdString());
+    emit keyboardLayoutChanged();
 }
 
 QString StreamVideoItem::inputCaptureError() const

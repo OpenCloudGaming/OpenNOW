@@ -15,6 +15,7 @@
 #include <QPixmap>
 #include <QQuickWindow>
 #include <QWheelEvent>
+#include <private/qquickwindow_p.h>
 
 #include <algorithm>
 #include <cmath>
@@ -30,6 +31,33 @@
 #include <windows.h>
 #endif
 
+namespace {
+class NativeGameplayKeyEvent final : public QKeyEvent
+{
+public:
+    explicit NativeGameplayKeyEvent(const QKeyEvent &event) : QKeyEvent(event) {}
+};
+}
+
+bool StreamVideoItem::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == m_inputWindow && m_usesMacPointerCapture && m_inputEnabled
+        && isVisible() && hasActiveFocus() && event->spontaneous()
+        && (event->type() == QEvent::KeyPress || event->type() == QEvent::KeyRelease)) {
+        auto *keyEvent = static_cast<QKeyEvent *>(event);
+        if (keyEvent->nativeVirtualKey() == 0) {
+            auto *windowState = QQuickWindowPrivate::get(m_inputWindow);
+            if (!windowState->windowEventDispatch && windowState->deliveryAgentPrivate()) {
+                NativeGameplayKeyEvent forwarded(*keyEvent);
+                windowState->deliveryAgentPrivate()->deliverKeyEvent(&forwarded);
+                event->setAccepted(forwarded.isAccepted());
+                return true;
+            }
+        }
+    }
+    return QQuickItem::eventFilter(watched, event);
+}
+
 quint16 StreamVideoItem::windowsVirtualKey(int key, Qt::KeyboardModifiers modifiers,
                                           quint32 nativeVirtualKey)
 {
@@ -39,6 +67,17 @@ quint16 StreamVideoItem::windowsVirtualKey(int key, Qt::KeyboardModifiers modifi
         case 0x11: return 0xa2;
         case 0x12: return 0xa4;
         default: return static_cast<quint16>(nativeVirtualKey);
+        }
+    }
+    if (modifiers.testFlag(Qt::KeypadModifier)) {
+        if (key >= Qt::Key_0 && key <= Qt::Key_9)
+            return static_cast<quint16>(0x60 + key - Qt::Key_0);
+        switch (key) {
+        case Qt::Key_Minus: return 0x6d;
+        case Qt::Key_Comma:
+        case Qt::Key_Period: return 0x6e;
+        case Qt::Key_Slash: return 0x6f;
+        default: break;
         }
     }
     if (key >= Qt::Key_A && key <= Qt::Key_Z) return static_cast<quint16>(key);
@@ -92,6 +131,7 @@ quint16 StreamVideoItem::windowsVirtualKey(int key, Qt::KeyboardModifiers modifi
     case Qt::Key_Control: return 0xa2;
     case Qt::Key_Shift: return 0xa0;
     case Qt::Key_Alt: return 0xa4;
+    case Qt::Key_AltGr: return 0xa5;
     case Qt::Key_Meta: return 0x5b;
     case Qt::Key_CapsLock: return 0x14;
     case Qt::Key_NumLock: return 0x90;
@@ -185,11 +225,8 @@ quint16 StreamVideoItem::windowsGameplayVirtualKey(int key, Qt::KeyboardModifier
 
 static quint16 macPhysicalVirtualKey(quint32 keyCode)
 {
-    // macOS virtual key codes are physical positions on every layout. GFN
-    // applies the remote layout to the US-position virtual key. Key code 0 is
-    // ANSI A, which cannot be told apart from a Qt event that has no native
-    // key, so that one position stays on the character fallback below.
     switch (keyCode) {
+    case 0x00: return 0x41;
     case 0x01: return 0x53;
     case 0x02: return 0x44;
     case 0x03: return 0x46;
@@ -299,13 +336,21 @@ static quint16 macPhysicalVirtualKey(quint32 keyCode)
 }
 
 quint16 StreamVideoItem::macGameplayVirtualKey(int key, Qt::KeyboardModifiers modifiers,
-                                                quint32 nativeVirtualKey)
+                                                quint32 nativeVirtualKey, bool nativeEvent)
 {
     // Qt reports Command as Control. Match that when the hardware key is present
     // so a consumed local shortcut and the forwarded key stay on the same side.
-    if (const auto physical = macPhysicalVirtualKey(nativeVirtualKey))
-        return physical;
+    if (nativeEvent || nativeVirtualKey != 0) {
+        if (const auto physical = macPhysicalVirtualKey(nativeVirtualKey))
+            return physical;
+    }
     return windowsVirtualKey(key, modifiers);
+}
+
+quint16 StreamVideoItem::macGameplayVirtualKey(const QKeyEvent *event)
+{
+    return macGameplayVirtualKey(event->key(), event->modifiers(), event->nativeVirtualKey(),
+                                 dynamic_cast<const NativeGameplayKeyEvent *>(event) != nullptr);
 }
 
 quint16 StreamVideoItem::linuxPhysicalVirtualKey(quint32 nativeScanCode)
@@ -374,6 +419,22 @@ quint16 StreamVideoItem::linuxPhysicalVirtualKey(quint32 nativeScanCode)
 
     case 94: return 0xe2;
 
+    case 90: return 0x60;
+    case 87: return 0x61;
+    case 88: return 0x62;
+    case 89: return 0x63;
+    case 83: return 0x64;
+    case 84: return 0x65;
+    case 85: return 0x66;
+    case 79: return 0x67;
+    case 80: return 0x68;
+    case 81: return 0x69;
+    case 63: return 0x6a;
+    case 86: return 0x6b;
+    case 82: return 0x6d;
+    case 91: return 0x6e;
+    case 106: return 0x6f;
+
     default: return 0;
     }
 }
@@ -385,12 +446,14 @@ quint16 StreamVideoItem::inputModifiers(Qt::KeyboardModifiers modifiers, int key
     if (key != Qt::Key_Control && modifiers.testFlag(Qt::ControlModifier)) result |= 0x02;
     if (key != Qt::Key_Alt && modifiers.testFlag(Qt::AltModifier)) result |= 0x04;
     if (key != Qt::Key_Meta && modifiers.testFlag(Qt::MetaModifier)) result |= 0x08;
+    if (key != Qt::Key_AltGr && modifiers.testFlag(Qt::GroupSwitchModifier)) result |= 0x06;
     return result;
 }
 
 QString StreamVideoItem::shortcutActionForInput(
     const QVariantMap &bindings, int key, Qt::KeyboardModifiers modifiers)
 {
+    if (modifiers.testFlag(Qt::GroupSwitchModifier)) return {};
     constexpr auto shortcutModifiers = Qt::ControlModifier | Qt::ShiftModifier
         | Qt::AltModifier | Qt::MetaModifier;
     const auto normalizedModifiers = modifiers & shortcutModifiers;
@@ -430,18 +493,43 @@ void StreamVideoItem::focusOutEvent(QFocusEvent *event)
     QQuickItem::focusOutEvent(event);
 }
 
-quint16 StreamVideoItem::eventVirtualKey(const QKeyEvent *event)
+quint16 StreamVideoItem::eventVirtualKey(const QKeyEvent *event) const
 {
 #if defined(Q_OS_WIN)
     return windowsGameplayVirtualKey(event->key(), event->modifiers(),
                                      event->nativeScanCode(), event->nativeVirtualKey());
 #elif defined(Q_OS_LINUX)
+    const auto evdevCode = PhysicalKeyMap::evdevCodeFromNativeScanCode(event->nativeScanCode());
+    if (const auto mapped = PhysicalKeyMap::virtualKey(m_keyboardMap, evdevCode)) return mapped;
+    switch (evdevCode) {
+    case 29: return 0xa2;
+    case 42: return 0xa0;
+    case 54: return 0xa1;
+    case 56: return 0xa4;
+    case 97: return 0xa3;
+    case 100: return 0xa5;
+    case 122: return 0x15;
+    case 123: return 0x19;
+    case 125: return 0x5b;
+    case 126: return 0x5c;
+    default: break;
+    }
     const auto physical = linuxPhysicalVirtualKey(event->nativeScanCode());
-    if (physical != 0) return physical;
+    if (physical >= 0x60 && physical <= 0x6f) return physical;
     return windowsVirtualKey(event->key(), event->modifiers());
 #else
-    return macGameplayVirtualKey(event->key(), event->modifiers(), event->nativeVirtualKey());
+    return macGameplayVirtualKey(event);
 #endif
+}
+
+Qt::KeyboardModifiers StreamVideoItem::eventModifiers(const QKeyEvent *event) const
+{
+    auto modifiers = event->modifiers();
+    if (event->key() == Qt::Key_AltGr
+        || std::any_of(m_pressedKeys.cbegin(), m_pressedKeys.cend(),
+                       [](const PressedKey &key) { return key.altGr; }))
+        modifiers |= Qt::GroupSwitchModifier;
+    return modifiers;
 }
 
 quint32 StreamVideoItem::keyIdentity(const QKeyEvent *event) const
@@ -466,13 +554,14 @@ void StreamVideoItem::keyPressEvent(QKeyEvent *event)
     }
     const auto identity = keyIdentity(event);
     const auto virtualKey = eventVirtualKey(event);
+    const auto modifiers = eventModifiers(event);
     const QKeyEvent shortcutEvent(QEvent::KeyPress,
-        virtualKey >= 0x41 && virtualKey <= 0x5a ? virtualKey : event->key(), event->modifiers());
+        virtualKey >= 0x41 && virtualKey <= 0x5a ? virtualKey : event->key(), modifiers);
     auto shortcutAction = shortcutActionForInput(
-        m_shortcutBindings, event->key(), event->modifiers());
+        m_shortcutBindings, event->key(), modifiers);
     if (shortcutAction.isEmpty() && shortcutEvent.key() != event->key()) {
         shortcutAction = shortcutActionForInput(
-            m_shortcutBindings, shortcutEvent.key(), event->modifiers());
+            m_shortcutBindings, shortcutEvent.key(), modifiers);
     }
     if (!shortcutAction.isEmpty()) {
         // A fullscreen transition can prevent Windows from delivering the key-up
@@ -489,7 +578,8 @@ void StreamVideoItem::keyPressEvent(QKeyEvent *event)
         event->ignore();
         return;
     }
-    if (m_clipboardPaste && (event->matches(QKeySequence::Paste)
+    if (m_clipboardPaste && !modifiers.testFlag(Qt::GroupSwitchModifier)
+        && (event->matches(QKeySequence::Paste)
                             || shortcutEvent.matches(QKeySequence::Paste))) {
         m_pressedShortcuts.insert(identity);
         event->accept();
@@ -523,9 +613,9 @@ void StreamVideoItem::keyPressEvent(QKeyEvent *event)
         return;
     }
     if (!m_pressedKeys.contains(identity)) {
-        const auto modifiers = inputModifiers(event->modifiers(), event->key());
-        m_pressedKeys.insert(identity, {virtualKey, modifiers});
-        s_nativeRuntime->submitKey(virtualKey, modifiers, true);
+        const auto wireModifiers = inputModifiers(modifiers, event->key());
+        m_pressedKeys.insert(identity, {virtualKey, wireModifiers, event->key() == Qt::Key_AltGr});
+        s_nativeRuntime->submitKey(virtualKey, wireModifiers, true);
     }
     event->accept();
 }
@@ -547,7 +637,8 @@ void StreamVideoItem::keyReleaseEvent(QKeyEvent *event)
         return;
     }
     s_nativeRuntime->submitKey(pressed.virtualKey,
-                             inputModifiers(event->modifiers(), event->key()), false);
+                             inputModifiers(eventModifiers(event),
+                                            pressed.altGr ? Qt::Key_AltGr : event->key()), false);
     event->accept();
 }
 

@@ -11,12 +11,8 @@ $ErrorActionPreference = "Stop"
 if ($Arch -notin @("x64", "arm64")) {
     throw "Setup architecture must be x64 or arm64"
 }
-$Payload = [IO.Path]::GetFullPath($Payload)
-foreach ($relative in @("bin\OpenNOW.exe", "bin\opennow-core.exe", "bin\opennow-update-helper.exe")) {
-    if (-not (Test-Path -LiteralPath (Join-Path $Payload $relative) -PathType Leaf)) {
-        throw "Portable payload is missing $relative"
-    }
-}
+. "$PSScriptRoot/../windows-release.ps1"
+$Payload = Resolve-OpenNowSetupPayload -Root $Payload
 
 $expectedHash = "9C73C3BAE7ED48D44112A0F48E66742C00090BDB5BEF71D9D3C056C66E97B732"
 $installerUrl = "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe"

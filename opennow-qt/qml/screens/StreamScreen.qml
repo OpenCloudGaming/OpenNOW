@@ -91,6 +91,7 @@ FocusScope {
             && !ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)
         shortcutBindings: ShellStore.streamShortcutBindings()
         clipboardPaste: ShellStore.settings.clipboardPaste === true
+        keyboardLayout: String((ShellStore.activeSession || {}).keyboardLayout || "en-US")
         videoSize: Qt.size(Number(root.profile.width || 0), Number(root.profile.height || 0))
         frameGeneration: String(ShellStore.settings.frameGeneration || 'off') === '2x'
         metalFxUpscaling: Qt.platform.os === "osx" && ShellStore.settings.upscaling === "metalfx"
@@ -231,7 +232,7 @@ FocusScope {
             Row {
                 anchors.horizontalCenter: parent.horizontalCenter
                 spacing: 12
-                GlassButton { width: 260; text: qsTr("Stop session"); glyph: "B"; onClicked: ShellStore.stopStreamingSession(); Component.onCompleted: forceActiveFocus() }
+                GlassButton { width: 260; text: qsTr("Stop session"); glyph: "B"; onClicked: ShellStore.requestStreamExitConfirmation(); Component.onCompleted: forceActiveFocus() }
                 GlassButton { width: 260; text: root.failed ? qsTr("Retry media") : qsTr("Session guide"); glyph: root.failed ? "↻" : "≡"; primary: true; onClicked: root.failed ? ShellStore.retryNativeStreamer() : AppController.showOverlay("guide-session") }
             }
         }

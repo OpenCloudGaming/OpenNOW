@@ -1,5 +1,6 @@
 #pragma once
 
+#include "streaming/PhysicalKeyMap.h"
 #include "streaming/rendering/StreamVideoRenderCallback.h"
 
 #include <QQuickItem>
@@ -31,6 +32,8 @@ class StreamVideoItem : public QQuickItem
     Q_PROPERTY(bool captureActive READ captureActive NOTIFY captureActiveChanged)
     Q_PROPERTY(bool clipboardPaste READ clipboardPaste WRITE setClipboardPaste
                    NOTIFY clipboardPasteChanged)
+    Q_PROPERTY(QString keyboardLayout READ keyboardLayout WRITE setKeyboardLayout
+                   NOTIFY keyboardLayoutChanged)
     Q_PROPERTY(QString inputCaptureError READ inputCaptureError NOTIFY inputCaptureErrorChanged)
     Q_PROPERTY(bool relativeMouse READ relativeMouse WRITE setRelativeMouse
                    NOTIFY relativeMouseChanged)
@@ -71,6 +74,8 @@ public:
     [[nodiscard]] bool captureActive() const;
     [[nodiscard]] bool clipboardPaste() const;
     void setClipboardPaste(bool enabled);
+    [[nodiscard]] QString keyboardLayout() const;
+    void setKeyboardLayout(const QString &layout);
     [[nodiscard]] QString inputCaptureError() const;
     [[nodiscard]] bool relativeMouse() const;
     void setRelativeMouse(bool relative);
@@ -118,7 +123,9 @@ public:
         int key, Qt::KeyboardModifiers modifiers, quint32 nativeScanCode,
         quint32 nativeVirtualKey);
     [[nodiscard]] static quint16 macGameplayVirtualKey(
-        int key, Qt::KeyboardModifiers modifiers, quint32 nativeVirtualKey);
+        int key, Qt::KeyboardModifiers modifiers, quint32 nativeVirtualKey,
+        bool nativeEvent = false);
+    [[nodiscard]] static quint16 macGameplayVirtualKey(const QKeyEvent *event);
     [[nodiscard]] static quint16 inputModifiers(Qt::KeyboardModifiers modifiers, int key);
     [[nodiscard]] static QString shortcutActionForInput(
         const QVariantMap &bindings, int key, Qt::KeyboardModifiers modifiers);
@@ -129,6 +136,7 @@ signals:
     void inputEnabledChanged();
     void captureActiveChanged();
     void clipboardPasteChanged();
+    void keyboardLayoutChanged();
     void clipboardPasteFailed();
     void inputCaptureErrorChanged();
     void relativeMouseChanged();
@@ -156,6 +164,7 @@ protected:
     void wheelEvent(QWheelEvent *event) override;
     void itemChange(ItemChange change, const ItemChangeData &data) override;
     void geometryChange(const QRectF &newGeometry, const QRectF &oldGeometry) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     friend class StreamVideoItemTest;
@@ -164,6 +173,7 @@ private:
     struct PressedKey {
         quint16 virtualKey = 0;
         quint16 modifiers = 0;
+        bool altGr = false;
     };
 
     void applyRemoteCursor(const QByteArray &bytes);
@@ -182,7 +192,8 @@ private:
     [[nodiscard]] static QRect cursorConfinementRect(const QRect &viewport, bool rawRelative);
     void releaseCursorConfinement();
     void submitAbsoluteMouse(const QPointF &position);
-    [[nodiscard]] static quint16 eventVirtualKey(const QKeyEvent *event);
+    [[nodiscard]] quint16 eventVirtualKey(const QKeyEvent *event) const;
+    [[nodiscard]] Qt::KeyboardModifiers eventModifiers(const QKeyEvent *event) const;
     [[nodiscard]] quint32 keyIdentity(const QKeyEvent *event) const;
     [[nodiscard]] static quint8 mouseButton(Qt::MouseButton button);
 
@@ -200,6 +211,8 @@ private:
     bool m_usesMacPointerCapture = false;
     bool m_inputEnabled = true;
     bool m_clipboardPaste = false;
+    QString m_keyboardLayout = QStringLiteral("en-US");
+    const PhysicalKeyMap::Layout *m_keyboardMap = PhysicalKeyMap::layoutFor("en-US");
     bool m_frameGeneration = false;
     bool m_metalFxUpscaling = false;
     bool m_fsrUpscaling = false;
@@ -210,6 +223,7 @@ private:
     QString m_swapGateSource;
     QMetaObject::Connection m_frameSwapConnection;
     QMetaObject::Connection m_frameUpdateConnection;
+    QPointer<QQuickWindow> m_inputWindow;
     bool m_captureActive = false;
     bool m_relativeMouse = false;
     bool m_rawInputActive = false;

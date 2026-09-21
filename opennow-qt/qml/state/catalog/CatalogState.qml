@@ -695,6 +695,7 @@ QtObject {
         storeMarquee = []
         storePanels = []
         storeFilterGroups = []
+        storePresentationIndex = 0
         storeError = ""
         storeWarning = ""
         storeHasMore = false

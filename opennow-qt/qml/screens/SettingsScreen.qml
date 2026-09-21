@@ -388,7 +388,7 @@ FocusScope {
             rows.push({t:qsTr("Game language metadata"), d:ShellStore.settingsOwnerState.languageStatusText,
                 v:qsTr("Retry"), action:"retry-languages", info:!ShellStore.settingsOwnerState.ready || ShellStore.settingsOwnerState.languageState === "loading"})
             rows.push(descriptorChoice(qsTr("Keyboard layout"), ShellStore.settingsOwnerState.keyboardLayoutDescription,
-                "keyboardLayout", ShellStore.settingsOwnerState.keyboardLayoutItems))
+                "keyboardLayout", ShellStore.keyboardLayoutItems))
             rows.push({t:"Shortcuts", d:"Stats Ctrl+N · Pointer lock F8 · Fullscreen F11 · Screenshot Ctrl+F11", v:"Edit shortcuts", key:"shortcutToggleStats", action:"shortcut-editor"})
             rows.push(choice(qsTr("Microphone"), ShellStore.microphoneCaptureSupported ? ShellStore.microphoneDescription : qsTr("Microphone capture is unavailable in this build."),
                 "microphoneMode", ["disabled", "voice-activity"], [qsTr("Disabled"), qsTr("Open microphone")], "segments",

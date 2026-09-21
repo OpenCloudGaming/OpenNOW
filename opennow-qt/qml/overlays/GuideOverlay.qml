@@ -85,8 +85,7 @@ FocusScope {
         if (action === "resume") {
             AppController.showOverlay("")
         } else if (action === "end") {
-            AppController.showOverlay("")
-            ShellStore.stopStreamingSession()
+            ShellStore.requestStreamExitConfirmation()
         } else if (action === "stats") {
             AppController.showOverlay("stream-stats")
         } else if (action === "fullscreen") {

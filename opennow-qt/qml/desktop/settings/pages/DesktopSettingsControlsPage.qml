@@ -34,7 +34,7 @@ Column {
             objectName: "keyboardLayoutChoice"
             width: parent.width; title: qsTr("Keyboard layout"); glyph: "keyboard"
             description: ShellStore.settingsOwnerState.keyboardLayoutDescription
-            items: ShellStore.settingsOwnerState.keyboardLayoutItems
+            items: ShellStore.keyboardLayoutItems
             value: controlsRoot.settingsScreen.valueSetting("keyboardLayout", "en-US")
             onSelected: value => controlsRoot.settingsScreen.setChoice("keyboardLayout", value)
         }
