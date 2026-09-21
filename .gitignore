@@ -67,3 +67,8 @@ vendor/
 !native/opennow-streamer/vendor/
 !native/opennow-streamer/vendor/**
 native/opennow-streamer/vendor/**/.cargo-ok
+
+# Local GFN binary audit payloads (download separately; see docs/gfn-official-binary-audit/)
+/audit/gfn-official/x86_64/
+/audit/gfn-official/x86_64.zip
+/audit/gfn-official/extracts/
