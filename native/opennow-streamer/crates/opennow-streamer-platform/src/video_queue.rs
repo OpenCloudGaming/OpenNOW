@@ -136,6 +136,9 @@ impl VideoQueue {
 
     /// The caller already asked for one IDR. Keep discarding deltas until that
     /// IDR arrives, and do not ask again for each discarded delta.
+    ///
+    /// Embedded D3D11 is the production caller. The same gate is covered by unit tests.
+    #[cfg(any(windows, test))]
     pub fn hold_keyframe_request(&self) {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         state.waiting_for_keyframe = true;
