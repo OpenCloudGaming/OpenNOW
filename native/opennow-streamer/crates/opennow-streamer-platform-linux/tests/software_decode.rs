@@ -117,6 +117,12 @@ fn software_only_decodes_cpu_nv12_sdr_frames_for_embedded_presentation() {
         assert_eq!(frame.format.color_transfer, ColorTransfer::Sdr);
         assert!(frame.vulkan.is_none() && frame.dmabuf.is_none());
         assert_eq!(frame.planes.len(), 2);
+        assert_eq!(frame.planes[0].stride, 64);
+        assert_eq!(frame.planes[0].rows, 64);
+        assert_eq!(frame.planes[0].data.len(), 64 * 64);
+        assert_eq!(frame.planes[1].stride, 64);
+        assert_eq!(frame.planes[1].rows, 32);
+        assert_eq!(frame.planes[1].data.len(), 64 * 32);
     }
 
     let delivered = frames.len();

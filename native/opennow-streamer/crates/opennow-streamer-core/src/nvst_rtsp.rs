@@ -69,6 +69,14 @@ struct RtspResponse {
     body: String,
 }
 
+/// A failed sweep keeps the last peerless 200 (if any) so the bundle-peer
+/// fallback below can reuse its same-session ICE/ping headers. Boxed to keep
+/// the error variant small.
+struct SweepFailure {
+    error: NvstRtspError,
+    peerless_200: Option<Box<RtspResponse>>,
+}
+
 struct RtspClient {
     socket: WebSocket<MaybeTlsStream<TcpStream>>,
     cseq: u64,
@@ -113,12 +121,14 @@ impl NvstControlPing {
 }
 
 impl RtspClient {
+    #[allow(clippy::too_many_arguments)]
     fn setup_video(
         &mut self,
         control: &str,
         target: &str,
         headers: &[(&str, String)],
         client_port: u16,
+        bundle_video_peer: Option<(String, u16, u16)>,
     ) -> Result<VideoSetup, NvstRtspError> {
         self.setup_video_with_retry(
             control,
@@ -127,9 +137,11 @@ impl RtspClient {
             client_port,
             SETUP_PEER_RETRY_ROUNDS,
             SETUP_PEER_RETRY_DELAY,
+            bundle_video_peer,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn setup_video_with_retry(
         &mut self,
         control: &str,
@@ -138,6 +150,7 @@ impl RtspClient {
         client_port: u16,
         max_peer_retries: u32,
         peer_retry_delay: Duration,
+        bundle_video_peer: Option<(String, u16, u16)>,
     ) -> Result<VideoSetup, NvstRtspError> {
         // A rig whose video streamer is still starting answers SETUP with 200
         // but no Transport peer yet. Re-sweep on a bounded pace then: the
@@ -150,6 +163,7 @@ impl RtspClient {
         headers.push(("Transport", String::new()));
         let transport_index = headers.len() - 1;
         let mut round = 0u32;
+        let mut peerless_200 = None;
         loop {
             match self.setup_video_sweep(
                 &candidates,
@@ -159,9 +173,47 @@ impl RtspClient {
                 &deadline,
             ) {
                 Ok(setup) => return Ok(setup),
-                Err(error) if error.code != "missing-video-peer" => return Err(error),
-                Err(error) if round >= max_peer_retries => return Err(error),
-                Err(error) => {
+                Err(failure) => {
+                    if failure.peerless_200.is_some() {
+                        peerless_200 = failure.peerless_200;
+                    }
+                    let mut error = failure.error;
+                    if error.code != "missing-video-peer" {
+                        // A later round that degrades to pure rejections
+                        // (repeat SETUPs 400 once an earlier round drew
+                        // peerless 200s) still means the server speaks our
+                        // protocol but yields no peer. Report that so the
+                        // bundle fallback below can engage instead of
+                        // treating it as wrong forms.
+                        if error.code == "nvst-rtsp-failed" && peerless_200.is_some() {
+                            error.code = "missing-video-peer";
+                        } else {
+                            return Err(error);
+                        }
+                    }
+                    if round >= max_peer_retries {
+                        // Some alliance rigs never allocate a video Transport
+                        // peer at all. In native-bundle mode the
+                        // CloudMatch-provided bundle peer already addresses
+                        // that same media leg, so proceed with it (mirroring
+                        // the official client, which carries on when the
+                        // server omits transport) instead of failing a seat
+                        // whose signaling is otherwise healthy.
+                        if let (Some(peer), Some(response)) =
+                            (bundle_video_peer.clone(), peerless_200)
+                        {
+                            opennow_streamer_protocol::log::log_line(
+                                "WARN",
+                                "rtsps",
+                                "video-peer-fallback source=cloudmatch-bundle",
+                            );
+                            return Ok(VideoSetup {
+                                response: *response,
+                                peer,
+                            });
+                        }
+                        return Err(error);
+                    }
                     round += 1;
                     let remaining = deadline.saturating_duration_since(Instant::now());
                     if remaining.is_zero() {
@@ -190,8 +242,7 @@ impl RtspClient {
         transport_index: usize,
         client_port: u16,
         deadline: &Instant,
-    ) -> Result<VideoSetup, NvstRtspError> {
-        let mut missing_peer = false;
+    ) -> Result<VideoSetup, SweepFailure> {
         let mut last_status = 0;
         for transport in [
             String::new(),
@@ -209,13 +260,20 @@ impl RtspClient {
             for (index, candidate) in candidates.iter().enumerate() {
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 if remaining.is_zero() {
-                    return Err(NvstRtspError::new(
-                        "nvst-rtsp-timeout",
-                        "RTSPS video SETUP timed out",
-                    ));
+                    return Err(SweepFailure {
+                        error: NvstRtspError::new(
+                            "nvst-rtsp-timeout",
+                            "RTSPS video SETUP timed out",
+                        ),
+                        peerless_200: None,
+                    });
                 }
-                let response =
-                    self.request_with_timeout("SETUP", candidate, headers, "", remaining)?;
+                let response = self
+                    .request_with_timeout("SETUP", candidate, headers, "", remaining)
+                    .map_err(|error| SweepFailure {
+                        error,
+                        peerless_200: None,
+                    })?;
                 let transport = header_value(&response, "transport");
                 let peer = transport
                     .and_then(parse_video_peer)
@@ -240,7 +298,14 @@ impl RtspClient {
                         if let Some(peer) = peer {
                             return Ok(VideoSetup { response, peer });
                         }
-                        if let Some(transport) = transport {
+                        // 200 without a peer: stop sweeping immediately. Live
+                        // alliance rigs accept the first SETUP but poison the
+                        // session once further forms are tried (later rounds
+                        // degrade to pure 400s and ANNOUNCE is then rejected),
+                        // while a single SETUP followed by ANNOUNCE succeeds.
+                        // Every observed working session peers on its first
+                        // 200, so stopping here changes nothing for them.
+                        if let Some(transport) = transport.filter(|t| !t.trim().is_empty()) {
                             opennow_streamer_protocol::log::log_line(
                                 "WARN",
                                 "rtsps",
@@ -251,29 +316,39 @@ impl RtspClient {
                                 ),
                             );
                         }
-                        missing_peer = true;
+                        return Err(SweepFailure {
+                            error: NvstRtspError::new(
+                                "missing-video-peer",
+                                format!(
+                                    "SETUP stopped after a peerless 200 without a usable NVST video peer (last status {last_status})",
+                                ),
+                            ),
+                            peerless_200: Some(Box::new(response)),
+                        });
                     }
                     400 | 404 | 459 | 460 | 461 => {}
                     _ => {
-                        return Err(NvstRtspError::new(
-                            "nvst-rtsp-failed",
-                            format!("SETUP failed with status {}", response.status),
-                        ));
+                        return Err(SweepFailure {
+                            error: NvstRtspError::new(
+                                "nvst-rtsp-failed",
+                                format!("SETUP failed with status {}", response.status),
+                            ),
+                            peerless_200: None,
+                        });
                     }
                 }
             }
         }
-        Err(NvstRtspError::new(
-            if missing_peer {
-                "missing-video-peer"
-            } else {
-                "nvst-rtsp-failed"
-            },
-            format!(
-                "SETUP did not return a usable NVST video peer after {} URI forms and 2 Transport forms (last status {last_status})",
-                candidates.len(),
+        Err(SweepFailure {
+            error: NvstRtspError::new(
+                "nvst-rtsp-failed",
+                format!(
+                    "SETUP did not return a usable NVST video peer after {} URI forms and 2 Transport forms (last status {last_status})",
+                    candidates.len(),
+                ),
             ),
-        ))
+            peerless_200: None,
+        })
     }
 
     fn connect(endpoint: &str, session_id: &str) -> Result<(Self, String), NvstRtspError> {
@@ -740,6 +815,11 @@ pub fn prepare_owned_nvst(
     describe_headers.push(("x-nv-abtesting", "2".to_owned()));
     let describe = client.request("DESCRIBE", &target, &describe_headers, "")?;
     ensure_rtsp_ok("DESCRIBE", &describe)?;
+    opennow_streamer_protocol::log::log_line(
+        "INFO",
+        "rtsps",
+        &format!("describe-shape {}", describe_media_shape(&describe.body),),
+    );
     let stream = super::media_stream_config(context);
     opennow_streamer_protocol::log::log_line(
         "INFO",
@@ -793,10 +873,28 @@ pub fn prepare_owned_nvst(
     let mut setup_headers = common_headers.clone();
     setup_headers.push(("Session", rtsp_session.clone()));
     setup_headers.push(("x-nv-ping", described_ping_version.to_string()));
+    // CloudMatch bundle peer doubles as the video peer when rigs omit
+    // Transport (validated here; the substitution itself is logged where it
+    // happens inside setup_video).
+    let bundle_video_peer = context
+        .session
+        .media_connection_info
+        .as_ref()
+        .and_then(|media| {
+            let port = u16::try_from(media.port).ok().filter(|port| *port != 0)?;
+            media.ip.parse::<IpAddr>().ok()?;
+            Some((media.ip.clone(), port, port))
+        });
     let VideoSetup {
         response: setup,
         peer: (video_peer_ip, video_peer_port, video_peer_port_end),
-    } = client.setup_video(&video_control, &target, &setup_headers, mjolnir_port)?;
+    } = client.setup_video(
+        &video_control,
+        &target,
+        &setup_headers,
+        mjolnir_port,
+        bundle_video_peer,
+    )?;
     let (bundle_peer_ip, bundle_peer_port) = context
         .session
         .media_connection_info
@@ -1463,6 +1561,57 @@ fn trusted_nvst_host(host: &str) -> bool {
             trusted_ipv4,
         ),
     })
+}
+
+/// Shape-only DESCRIBE summary for diagnosing peerless SETUP responses.
+/// Logs media sections with ports, control shape classes, and connection
+/// presence. Never logs addresses, ports of the connection line, control
+/// values, or any SDP attribute values (ICE credentials, fingerprints).
+fn describe_media_shape(sdp: &str) -> String {
+    let mut sections = Vec::new();
+    let mut current: Option<(String, String)> = None;
+    let mut connection_present = false;
+    let mut control_count = 0u32;
+    let mut video_control_shape = "absent";
+    let mut in_video = false;
+    for line in sdp.lines().map(str::trim) {
+        if let Some(media) = line.strip_prefix("m=") {
+            if let Some((media, port)) = current.take() {
+                sections.push(format!("{media}/{port}"));
+            }
+            let mut parts = media.split_whitespace();
+            current = Some((
+                parts.next().unwrap_or("?").to_owned(),
+                parts.next().unwrap_or("?").to_owned(),
+            ));
+            in_video = current
+                .as_ref()
+                .is_some_and(|(media, _)| media.eq_ignore_ascii_case("video"));
+        } else if line.starts_with("c=") {
+            connection_present = true;
+        } else if let Some(value) = line.strip_prefix("a=control:") {
+            control_count += 1;
+            if in_video && video_control_shape == "absent" {
+                let lower = value.to_ascii_lowercase();
+                video_control_shape = if value == "*" || value.is_empty() {
+                    "empty"
+                } else if lower.starts_with("rtsps://") || lower.starts_with("rtsp://") {
+                    "absolute-url"
+                } else if lower.starts_with("streamid=") {
+                    "relative-streamid"
+                } else {
+                    "other"
+                };
+            }
+        }
+    }
+    if let Some((media, port)) = current.take() {
+        sections.push(format!("{media}/{port}"));
+    }
+    format!(
+        "sections=[{}] connection_present={connection_present} control_count={control_count} video_control={video_control_shape}",
+        sections.join(","),
+    )
 }
 
 fn media_control(sdp: &str, kind: &str) -> Option<String> {
@@ -2246,6 +2395,27 @@ mod tests {
         assert!(!trusted_nvst_host("localhost"));
         assert!(!trusted_nvst_host("127.0.0.1"));
         assert!(!trusted_nvst_host("10.0.0.8"));
+    }
+
+    #[test]
+    fn describe_shape_reports_sections_and_controls_without_values() {
+        let shape = describe_media_shape(
+            "v=0\r\no=- 0 0 IN IP4 203.0.113.9\r\nc=IN IP4 203.0.113.9\r\n\
+             m=video 5004 RTP/SAVPF 96\r\na=control:streamid=video/0\r\n\
+             a=x-nv-general.iceUserNameFragment:secret\r\n\
+             m=audio 5006 RTP/SAVPF 111\r\na=control:*\r\n",
+        );
+        assert_eq!(
+            shape,
+            "sections=[video/5004,audio/5006] connection_present=true \
+             control_count=2 video_control=relative-streamid"
+        );
+        assert!(!shape.contains("203.0.113.9"));
+        assert!(!shape.contains("secret"));
+        assert!(!shape.contains("streamid=video/0"));
+        let disabled = describe_media_shape("v=0\r\nm=video 0 RTP/SAVPF 96\r\n");
+        assert!(disabled.contains("video/0"));
+        assert!(disabled.contains("video_control=absent"));
     }
 
     #[test]

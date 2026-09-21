@@ -19,13 +19,14 @@ struct Reply {
 }
 
 fn scripted_setup(replies: Vec<Reply>) -> Result<VideoSetup, NvstRtspError> {
-    scripted_setup_with_retry(replies, 0, Duration::ZERO)
+    scripted_setup_with_retry(replies, 0, Duration::ZERO, None)
 }
 
 fn scripted_setup_with_retry(
     replies: Vec<Reply>,
     max_peer_retries: u32,
     peer_retry_delay: Duration,
+    bundle_video_peer: Option<(String, u16, u16)>,
 ) -> Result<VideoSetup, NvstRtspError> {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
@@ -87,6 +88,7 @@ fn scripted_setup_with_retry(
         49005,
         max_peer_retries,
         peer_retry_delay,
+        bundle_video_peer,
     );
     drop(client);
     server.join().unwrap();
@@ -110,23 +112,22 @@ fn video_setup_keeps_the_official_first_attempt_and_its_metadata() {
 }
 
 #[test]
-fn video_setup_retries_advertised_control_after_success_without_a_peer() {
-    let setup = scripted_setup(vec![
-        Reply {
-            uri: EMPTY_TRANSPORT_URIS[0],
-            transport: "",
-            status: 200,
-            headers: "",
-        },
-        Reply {
-            uri: EMPTY_TRANSPORT_URIS[1],
-            transport: "",
-            status: 200,
-            headers: VALID_PEER,
-        },
-    ])
-    .unwrap();
-    assert_eq!(setup.peer, ("192.0.2.10".to_owned(), 5004, 5005));
+fn video_setup_stops_at_first_peerless_success_to_protect_announce() {
+    // Live alliance rigs accept the first SETUP but poison the session once
+    // further forms are tried (later rounds degrade to pure 400s and ANNOUNCE
+    // is then rejected), while a single SETUP followed by ANNOUNCE succeeds.
+    // The scripted server holds exactly one reply: any extra request fails it.
+    let error = match scripted_setup(vec![Reply {
+        uri: EMPTY_TRANSPORT_URIS[0],
+        transport: "",
+        status: 200,
+        headers: "",
+    }]) {
+        Ok(_) => panic!("a peerless 200 must not yield a peer"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code, "missing-video-peer");
+    assert!(error.message.contains("peerless 200"));
 }
 
 #[test]
@@ -176,44 +177,43 @@ fn video_setup_tries_client_udp_transport_after_all_empty_transport_forms() {
 }
 
 #[test]
-fn video_setup_never_invents_a_peer_when_all_successes_omit_transport() {
-    let replies = ["", "unicast;X-GS-ClientPort=49005-49006"]
-        .iter()
-        .flat_map(|transport| {
-            EMPTY_TRANSPORT_URIS.iter().map(move |uri| Reply {
-                uri,
-                transport,
-                status: 200,
-                headers: "",
-            })
-        })
-        .collect();
-    let error = match scripted_setup(replies) {
+fn video_setup_never_invents_a_peer_when_success_omits_transport() {
+    // Single peerless 200: the sweep stops immediately (one scripted reply)
+    // instead of trying further forms that would poison strict sessions.
+    let error = match scripted_setup(vec![Reply {
+        uri: EMPTY_TRANSPORT_URIS[0],
+        transport: "",
+        status: 200,
+        headers: "",
+    }]) {
         Ok(_) => panic!("SETUP without a peer must not succeed"),
         Err(error) => error,
     };
     assert_eq!(error.code, "missing-video-peer");
-    assert!(error.message.contains("4 URI forms and 2 Transport forms"));
+    assert!(error.message.contains("peerless 200"));
 }
 
 #[test]
-fn video_setup_retries_partial_and_invalid_transport_metadata() {
-    let replies = [
+fn video_setup_rejects_partial_and_invalid_transport_metadata() {
+    // Present-but-unusable Transport (missing/invalid source or ports) also
+    // stops the sweep: no live rig has ever yielded a peer on a later form
+    // after a peerless 200, while extra SETUPs poison strict sessions.
+    for headers in [
         "Transport: unicast;X-GS-ServerPort=5004\r\n",
         "Transport: unicast;source=192.0.2.10\r\n",
         "Transport: unicast;source=not-an-ip;X-GS-ServerPort=5004\r\n",
-        VALID_PEER,
-    ]
-    .iter()
-    .zip(EMPTY_TRANSPORT_URIS)
-    .map(|(headers, uri)| Reply {
-        uri,
-        transport: "",
-        status: 200,
-        headers,
-    })
-    .collect();
-    assert_eq!(scripted_setup(replies).unwrap().peer.1, 5004);
+    ] {
+        let error = match scripted_setup(vec![Reply {
+            uri: EMPTY_TRANSPORT_URIS[0],
+            transport: "",
+            status: 200,
+            headers,
+        }]) {
+            Ok(_) => panic!("unusable Transport must not yield a peer"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code, "missing-video-peer");
+    }
 }
 
 #[test]
@@ -319,54 +319,47 @@ fn rtsp_request_deadline_bounds_a_partial_response() {
 
 #[test]
 fn video_setup_resweeps_when_successes_omit_a_peer_until_the_rig_is_ready() {
-    // Round 1: the rig 200s every form but has no video peer yet. Round 2:
-    // the first URI succeeds with a peer. Mirrors a late-starting encoder.
-    let mut replies: Vec<_> = ["", "unicast;X-GS-ClientPort=49005-49006"]
-        .iter()
-        .flat_map(|transport| {
-            EMPTY_TRANSPORT_URIS.iter().map(move |uri| Reply {
-                uri,
-                transport,
-                status: 200,
-                headers: "",
-            })
-        })
-        .collect();
-    replies.push(Reply {
-        uri: EMPTY_TRANSPORT_URIS[0],
-        transport: "",
-        status: 200,
-        headers: VALID_PEER,
-    });
-    let setup = scripted_setup_with_retry(replies, 3, Duration::ZERO).unwrap();
+    // Round 1 draws one peerless 200 and stops at it; round 2 re-sends the
+    // same form and the rig has a peer by then. Mirrors a late-starting
+    // encoder without spraying further forms that poison strict sessions.
+    let replies = vec![
+        Reply {
+            uri: EMPTY_TRANSPORT_URIS[0],
+            transport: "",
+            status: 200,
+            headers: "",
+        },
+        Reply {
+            uri: EMPTY_TRANSPORT_URIS[0],
+            transport: "",
+            status: 200,
+            headers: VALID_PEER,
+        },
+    ];
+    let setup = scripted_setup_with_retry(replies, 3, Duration::ZERO, None).unwrap();
     assert_eq!(setup.peer, ("192.0.2.10".to_owned(), 5004, 5005));
 }
 
 #[test]
 fn video_setup_peer_retry_stays_bounded_and_keeps_the_terminal_code() {
-    // Every round 200s without a peer: retries exhaust, then the original
-    // missing-video-peer error (not a timeout, not a new code) is returned.
-    let one_round: Vec<_> = ["", "unicast;X-GS-ClientPort=49005-49006"]
-        .iter()
-        .flat_map(|transport| {
-            EMPTY_TRANSPORT_URIS.iter().map(move |uri| Reply {
-                uri,
-                transport,
-                status: 200,
-                headers: "",
-            })
-        })
-        .collect();
-    let mut replies = Vec::new();
-    for _ in 0..3 {
-        replies.extend(one_round.iter().cloned());
-    }
-    let error = match scripted_setup_with_retry(replies, 2, Duration::ZERO) {
+    // Every round draws one peerless 200 and stops there: retries exhaust,
+    // then the original missing-video-peer error (not a timeout, not a new
+    // code) is returned.
+    let replies = vec![
+        Reply {
+            uri: EMPTY_TRANSPORT_URIS[0],
+            transport: "",
+            status: 200,
+            headers: "",
+        };
+        3
+    ];
+    let error = match scripted_setup_with_retry(replies, 2, Duration::ZERO, None) {
         Ok(_) => panic!("SETUP without a peer must not succeed"),
         Err(error) => error,
     };
     assert_eq!(error.code, "missing-video-peer");
-    assert!(error.message.contains("4 URI forms and 2 Transport forms"));
+    assert!(error.message.contains("peerless 200"));
 }
 
 #[test]
@@ -384,9 +377,66 @@ fn video_setup_never_retries_pure_rejections() {
             })
         })
         .collect();
-    let error = match scripted_setup_with_retry(replies, 3, Duration::ZERO) {
+    let error = match scripted_setup_with_retry(replies, 3, Duration::ZERO, None) {
         Ok(_) => panic!("rejected SETUP forms must not succeed"),
         Err(error) => error,
     };
     assert_eq!(error.code, "nvst-rtsp-failed");
+}
+
+#[test]
+fn video_setup_degraded_retry_round_keeps_missing_peer_code() {
+    // Round 1 draws a peerless 200 and stops, so a retry is scheduled; round
+    // 2 then degrades to pure 400s (repeat SETUPs rejected). The terminal code
+    // must stay missing-video-peer so callers can try the bundle peer instead
+    // of treating it as wrong forms. Round 2 sweeps all forms because it drew
+    // no 200 at all.
+    let mut replies = vec![Reply {
+        uri: EMPTY_TRANSPORT_URIS[0],
+        transport: "",
+        status: 200,
+        headers: "",
+    }];
+    replies.extend(
+        ["", "unicast;X-GS-ClientPort=49005-49006"]
+            .iter()
+            .flat_map(|transport| {
+                EMPTY_TRANSPORT_URIS.iter().map(move |uri| Reply {
+                    uri,
+                    transport,
+                    status: 400,
+                    headers: "",
+                })
+            }),
+    );
+    let error = match scripted_setup_with_retry(replies, 1, Duration::ZERO, None) {
+        Ok(_) => panic!("peerless SETUP must not succeed"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code, "missing-video-peer");
+}
+
+#[test]
+fn video_setup_uses_bundle_peer_with_peerless_ping_headers_as_last_resort() {
+    // The sweep stops at its single peerless 200, whose response carries
+    // same-session ICE/ping headers. With a bundle peer available, negotiation
+    // succeeds using the bundle address while preserving those headers.
+    let peerless = vec![Reply {
+        uri: EMPTY_TRANSPORT_URIS[0],
+        transport: "",
+        status: 200,
+        headers: "Transport: \r\nX-Nv-Ping: 6\r\nX-Nv-Ping-Payload: 00ff\r\n",
+    }];
+    let setup = scripted_setup_with_retry(
+        peerless,
+        0,
+        Duration::ZERO,
+        Some(("192.0.2.99".to_owned(), 13749, 13749)),
+    )
+    .unwrap();
+    assert_eq!(setup.peer, ("192.0.2.99".to_owned(), 13749, 13749));
+    assert_eq!(
+        header_value(&setup.response, "x-nv-ping-payload"),
+        Some("00ff")
+    );
 }
