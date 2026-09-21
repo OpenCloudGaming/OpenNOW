@@ -1768,6 +1768,12 @@ QtObject {
             checkLaunchSessions()
             return
         }
+        if (code === "region_not_supported") {
+            streamState = "error"
+            streamMessage = message
+            lastError = message
+            return
+        }
         streamState = "error"
         streamMessage = message
     }
@@ -3794,6 +3800,23 @@ QtObject {
                 root.streamPollRequestId = ""
                 if (code === "session_owner_authentication_required") {
                     root.streamPollTimer.stop()
+                    root.streamMessage = message
+                    root.lastError = message
+                    return
+                }
+                if (code === "session_ended" || code === "session_not_found") {
+                    root.streamPollTimer.stop()
+                    root.finishRemoteSession({
+                        source: "cloudmatch-http",
+                        httpStatus: 404,
+                        resumable: false,
+                        sessionId: root.activeSession ? String(root.activeSession.sessionId) : ""
+                    })
+                    return
+                }
+                if (code === "region_not_supported") {
+                    root.streamPollTimer.stop()
+                    root.streamState = "error"
                     root.streamMessage = message
                     root.lastError = message
                     return

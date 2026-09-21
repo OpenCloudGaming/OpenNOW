@@ -1098,16 +1098,21 @@ fn negotiate_microphone(context: &SessionContext, describe: &str) -> bool {
         && sdp_attribute(describe, "general.rtcMicOnNativeBundle").as_deref() == Some("1")
 }
 
+fn advertised_bitrate_kbps(settings: &Value) -> u64 {
+    let mbps = settings
+        .get("maxBitrateMbps")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite())
+        .unwrap_or(75.0)
+        .clamp(0.22, MAX_STREAM_BITRATE_MBPS as f64);
+    (mbps * 1000.0).round() as u64
+}
+
 fn build_announce(context: &SessionContext, params: AnnounceParams<'_>) -> String {
     let (width, height) = resolution(context);
     let fps = negotiated_fps(context);
-    let bitrate = context
-        .settings
-        .get("maxBitrateMbps")
-        .and_then(Value::as_u64)
-        .unwrap_or(75)
-        .clamp(1, MAX_STREAM_BITRATE_MBPS)
-        * 1000;
+    let bitrate = advertised_bitrate_kbps(&context.settings);
+    let minimum_bitrate = bitrate.min(1_000);
     let codec = negotiated_codec(context);
     let format = if codec.eq_ignore_ascii_case("AV1") {
         2
@@ -1174,7 +1179,7 @@ fn build_announce(context: &SessionContext, params: AnnounceParams<'_>) -> Strin
         format!("a=x-nv-vqos[0].dfc.adjustResAndFps:{adjust_res_and_fps}"),
         "a=x-nv-vqos[0].calculateAvgVideoStreamingBitrate:1".to_owned(),
         format!("a=x-nv-vqos[0].bw.maximumBitrateKbps:{bitrate}"),
-        "a=x-nv-vqos[0].bw.minimumBitrateKbps:1000".to_owned(),
+        format!("a=x-nv-vqos[0].bw.minimumBitrateKbps:{minimum_bitrate}"),
         "a=x-nv-vqos[0].drc.bitrateIirFilterFactor:128".to_owned(),
         "a=x-nv-vqos[0].resControl.bitrateIirFilterFactor:128".to_owned(),
         format!("a=x-nv-vqos[0].dynamicStreamingMode:{dynamic_streaming_mode}"),
@@ -2201,6 +2206,33 @@ mod tests {
         assert!(sdp.contains("a=x-nv-video[0].initialBitrateKbps:200000"));
         assert!(sdp.contains("a=x-nv-video[0].initialPeakBitrateKbps:200000"));
         assert!(sdp.contains("a=x-nv-vqos[0].bw.maximumBitrateKbps:200000"));
+        assert!(sdp.contains("a=x-nv-vqos[0].bw.minimumBitrateKbps:1000"));
+    }
+
+    #[test]
+    fn owned_announce_can_request_220_kbps_without_a_1_mbps_floor() {
+        let mut value = context();
+        value.settings["maxBitrateMbps"] = json!(0.22);
+        let sdp = build_announce(
+            &value,
+            AnnounceParams {
+                stream: stream_config(&value),
+                key: &"01".repeat(32),
+                key_id: 7,
+                port: 49006,
+                address: "192.0.2.10",
+                ufrag: "abcd",
+                password: "abcdefghijklmnopqrstuv",
+                fingerprint: "AA:BB",
+                video_port: 5004,
+                video_packet_size: 1280,
+                rtcp_on_sctp: true,
+                microphone_available: false,
+            },
+        );
+        assert!(sdp.contains("a=x-nv-video[0].initialBitrateKbps:220"));
+        assert!(sdp.contains("a=x-nv-vqos[0].bw.maximumBitrateKbps:220"));
+        assert!(sdp.contains("a=x-nv-vqos[0].bw.minimumBitrateKbps:220"));
     }
 
     #[test]

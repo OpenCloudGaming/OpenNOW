@@ -1433,7 +1433,7 @@ fn build_create_body(app_id: &str, params: &Value, settings: &Value, device_id: 
         "clientDisplayHdrCapabilities":null,
         "surroundAudioInfo":0,
         "remoteControllersBitmap":0,
-        "clientTimezoneOffset":chrono::Local::now().offset().utc_minus_local() * 1000,
+        "clientTimezoneOffset": i64::from(chrono::Local::now().offset().local_minus_utc()) * 1000,
         "enhancedStreamMode":0,
         "appLaunchMode":app_launch_mode(params),
         "secureRTSPSupported":true,
@@ -1821,6 +1821,9 @@ fn validate_cloudmatch_response(
         let description = payload["requestStatus"]["statusDescription"]
             .as_str()
             .unwrap_or("CloudMatch rejected the request");
+        if let Some(error) = described_session_error(description) {
+            return Err(error);
+        }
         let code = value_i64(&payload["requestStatus"]["unifiedErrorCode"])
             .or_else(|| value_i64(&payload["session"]["errorCode"]));
         return Err(ServiceError {
@@ -1864,6 +1867,11 @@ fn cloudmatch_http_error(
     payload: Option<&Value>,
 ) -> ServiceError {
     let detail = payload.and_then(|payload| payload["requestStatus"]["statusDescription"].as_str());
+    if let Some(description) = detail {
+        if let Some(error) = described_session_error(description) {
+            return error;
+        }
+    }
     ServiceError {
         code: if status.as_u16() == 401 {
             "http_unauthorized"
@@ -1877,6 +1885,27 @@ fn cloudmatch_http_error(
             |detail| format!("{context} ({status}): {detail}"),
         ),
     }
+}
+
+fn described_session_error(description: &str) -> Option<ServiceError> {
+    let normalized = description.to_ascii_uppercase();
+    if normalized.contains("REGION_NOT_SUPPORTED") {
+        return Some(ServiceError {
+            code: "region_not_supported",
+            message: "GeForce NOW is not available in this region. NVIDIA is blocking streaming here. Check NVIDIA's supported countries, or use a network NVIDIA allows.".to_owned(),
+        });
+    }
+    if normalized.contains("SESSION_EXPIRED")
+        || normalized.contains("TIME_LIMIT")
+        || normalized.contains("DURATION_LIMIT")
+        || normalized.contains("OUT_OF_TIME")
+    {
+        return Some(ServiceError {
+            code: "session_ended",
+            message: "The GeForce NOW session ended.".to_owned(),
+        });
+    }
+    None
 }
 
 pub(crate) fn trusted_cloudmatch_base(raw: &str) -> Result<Url, ServiceError> {
@@ -3223,6 +3252,11 @@ mod tests {
             (401, json!({}), "http_unauthorized"),
             (403, json!({}), "authentication_required"),
             (
+                403,
+                json!({"requestStatus":{"statusDescription":"REGION_NOT_SUPPORTED_FOR_STREAMING 4192C0FE"}}),
+                "region_not_supported",
+            ),
+            (
                 200,
                 json!({"requestStatus":{"statusCode":32}}),
                 "session_error",
@@ -3801,12 +3835,12 @@ mod tests {
             (
                 200,
                 r#"{"requestStatus":{"statusCode":32,"statusDescription":"SESSION_EXPIRED"}}"#,
-                "session_error",
+                "session_ended",
             ),
             (
                 409,
                 r#"{"requestStatus":{"statusCode":32,"statusDescription":"SESSION_EXPIRED"}}"#,
-                "upstream_error",
+                "session_ended",
             ),
             (502, "not JSON", "upstream_error"),
         ] {
@@ -4337,10 +4371,10 @@ mod tests {
 
     #[test]
     fn native_session_requests_use_the_current_local_timezone_in_milliseconds() {
-        let offset_before = chrono::Local::now().offset().utc_minus_local() * 1000;
+        let offset_before = i64::from(chrono::Local::now().offset().local_minus_utc()) * 1000;
         let created = build_create_body("12345", &json!({}), &json!({}), "device-id");
         let resumed = build_resume_body("12345", &json!({}), &json!({}), "device-id");
-        let offset_after = chrono::Local::now().offset().utc_minus_local() * 1000;
+        let offset_after = i64::from(chrono::Local::now().offset().local_minus_utc()) * 1000;
         for body in [created, resumed] {
             let offset = body["sessionRequestData"]["clientTimezoneOffset"]
                 .as_i64()

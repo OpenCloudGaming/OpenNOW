@@ -175,6 +175,7 @@ private:
     [[nodiscard]] QString currentSwapGateSource() const;
     void pushSwapGate();
     [[nodiscard]] static QRect cursorConfinementRect(const QRect &viewport, bool rawRelative);
+    [[nodiscard]] static QRect waylandSurfaceRegion(const QRect &logicalRegion, qreal devicePixelRatio);
     void releaseCursorConfinement();
     void submitAbsoluteMouse(const QPointF &position);
     [[nodiscard]] static quint16 eventVirtualKey(const QKeyEvent *event);

@@ -585,7 +585,7 @@ private slots:
         QCOMPARE(callback->gateSetCount.load(), 2);
     }
 
-    void manualPointerLockOutranksServerCursorMessages()
+    void visibleRemoteCursorSuspendsPointerLock()
     {
         StreamVideoItem item;
         const auto hidden = QByteArray::fromHex("0000");
@@ -603,12 +603,23 @@ private slots:
         item.togglePointerLock();
         QVERIFY(item.relativeMouse());
         item.applyRemoteCursor(visible);
+        QVERIFY(!item.relativeMouse());
+        item.applyRemoteCursor(hidden);
         QVERIFY(item.relativeMouse());
         item.setVisible(false);
         QVERIFY(!item.m_manualRelativeMouse.has_value());
         item.setVisible(true);
         item.applyRemoteCursor(visible);
         QVERIFY(!item.relativeMouse());
+    }
+
+    void waylandConstraintRegionUsesDevicePixels()
+    {
+        QCOMPARE(StreamVideoItem::waylandSurfaceRegion(QRect(10, 20, 640, 360), 1.0),
+                 QRect(10, 20, 640, 360));
+        QCOMPARE(StreamVideoItem::waylandSurfaceRegion(QRect(10, 20, 640, 360), 2.0),
+                 QRect(20, 40, 1280, 720));
+        QVERIFY(StreamVideoItem::waylandSurfaceRegion(QRect(), 2.0).isEmpty());
     }
 
     void manualPointerUnlockClearsHeldInputAndDeferredMode()

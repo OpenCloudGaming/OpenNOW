@@ -21,8 +21,9 @@ FocusScope {
     readonly property bool connecting: AppController.route === "stream"
     readonly property string phase: String(ShellStore.streamState || "preparing")
     readonly property bool stopping: phase === "stopping"
-    readonly property bool failed: !stopping && (phase === "failed" || phase === "error"
-        || (connecting && (streamer.status === "error" || streamer.status === "stopped")))
+    readonly property bool failed: !stopping && !reconnecting && phase !== "idle"
+        && (phase === "failed" || phase === "error"
+            || (connecting && streamer.status === "error"))
     readonly property bool reconnecting: phase === "reconnecting"
         || ShellStore.streamerRestartAttempts > 0 || ShellStore.sessionReconnectAttempts > 0
     SessionSetupProgress {

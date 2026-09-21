@@ -50,6 +50,9 @@ StreamVideoItem::StreamVideoItem(std::unique_ptr<MacPointerCapture> pointerCaptu
     setAcceptedMouseButtons(Qt::AllButtons);
     setKeepMouseGrab(true);
     setAcceptHoverEvents(true);
+    // Dead keys (å, ^, ´, ¨) are swallowed by the platform input method before a
+    // scan code arrives. Gameplay capture wants the physical key, not composition.
+    setFlag(ItemAcceptsInputMethod, false);
     m_frameStatsTimer.setInterval(1000);
     connect(&m_frameStatsTimer, &QTimer::timeout,
             this, &StreamVideoItem::frameGenerationStatsChanged);

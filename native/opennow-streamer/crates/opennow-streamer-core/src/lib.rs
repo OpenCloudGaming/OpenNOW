@@ -624,6 +624,7 @@ impl Engine {
     fn start(&mut self, command: Command) -> Result<Vec<Value>, Value> {
         let mut context = parse_context(command.context, &command.id)?;
         validate_context(&context, &command.id)?;
+        apply_input_tuning(&context.settings);
         let audio_device =
             opennow_streamer_protocol::AudioOutputDevice::from_settings(&context.settings)
                 .map_err(|message| error(Some(&command.id), "invalid-context", message))?;
@@ -2689,19 +2690,46 @@ struct InputTuning {
 }
 
 fn input_tuning() -> InputTuning {
-    static TUNING: OnceLock<InputTuning> = OnceLock::new();
-    *TUNING.get_or_init(|| InputTuning {
-        sensitivity: std::env::var("OPENNOW_MOUSE_SENSITIVITY")
-            .ok()
-            .and_then(|value| value.parse::<f64>().ok())
-            .unwrap_or(1.0)
+    *shared_input_tuning()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
+
+fn shared_input_tuning() -> &'static Mutex<InputTuning> {
+    static TUNING: OnceLock<Mutex<InputTuning>> = OnceLock::new();
+    TUNING.get_or_init(|| Mutex::new(tuning_from_env()))
+}
+
+fn tuning_from_env() -> InputTuning {
+    tuning_from_settings(&Value::Null)
+}
+
+fn tuning_from_settings(settings: &Value) -> InputTuning {
+    let configured = |key: &str, name: &str, fallback: f64| {
+        settings
+            .get(key)
+            .and_then(Value::as_f64)
+            .filter(|value| value.is_finite())
+            .or_else(|| {
+                std::env::var(name)
+                    .ok()
+                    .and_then(|value| value.parse::<f64>().ok())
+                    .filter(|value| value.is_finite())
+            })
+            .unwrap_or(fallback)
+    };
+    InputTuning {
+        sensitivity: configured("mouseSensitivity", "OPENNOW_MOUSE_SENSITIVITY", 1.0)
             .clamp(0.1, 3.0),
-        acceleration_percent: std::env::var("OPENNOW_MOUSE_ACCELERATION")
-            .ok()
-            .and_then(|value| value.parse::<f64>().ok())
-            .unwrap_or(1.0)
+        acceleration_percent: configured("mouseAcceleration", "OPENNOW_MOUSE_ACCELERATION", 1.0)
             .clamp(1.0, 150.0),
-    })
+    }
+}
+
+fn apply_input_tuning(settings: &Value) {
+    *shared_input_tuning()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = tuning_from_settings(settings);
 }
 
 fn tune_relative_mouse(delta_x: i16, delta_y: i16, tuning: InputTuning) -> (i16, i16) {
@@ -2780,9 +2808,13 @@ fn media_stream_config(context: &SessionContext) -> MediaStreamConfig {
     let bitrate_mbps = context
         .settings
         .get("maxBitrateMbps")
-        .and_then(Value::as_u64)
-        .and_then(|value| u32::try_from(value).ok())
-        .unwrap_or(75);
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite())
+        .unwrap_or(75.0)
+        .clamp(0.22, 200.0);
+    let bitrate_bps = (bitrate_mbps * 1_000_000.0)
+        .round()
+        .clamp(1.0, f64::from(u32::MAX)) as u32;
     let requested_cloud_gsync = match context
         .settings
         .get("nativeCloudGsyncMode")
@@ -2821,7 +2853,7 @@ fn media_stream_config(context: &SessionContext) -> MediaStreamConfig {
         width: resolution.0,
         height: resolution.1,
         fps,
-        bitrate_bps: bitrate_mbps.saturating_mul(1_000_000).max(1),
+        bitrate_bps,
         cloud_gsync,
         shortcuts: StreamShortcutBindings::from_json(&context.shortcuts),
     }
@@ -4194,12 +4226,14 @@ mod tests {
             tune_relative_mouse(
                 20,
                 -10,
-                InputTuning {
-                    sensitivity: 0.5,
-                    acceleration_percent: 1.0,
-                },
+                tuning_from_settings(&json!({"mouseSensitivity": 0.5, "mouseAcceleration": 1})),
             ),
             (10, -5)
+        );
+        assert_eq!(
+            tuning_from_settings(&json!({"mouseSensitivity": 9, "mouseAcceleration": 0}))
+                .sensitivity,
+            3.0
         );
         let accelerated = tune_relative_mouse(
             100,
