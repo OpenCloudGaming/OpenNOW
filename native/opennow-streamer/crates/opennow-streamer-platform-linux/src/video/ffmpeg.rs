@@ -173,12 +173,11 @@ impl FfmpegDecoder {
             (*raw).width = format.width as i32;
             (*raw).height = format.height as i32;
             if mode == FfmpegMode::Software {
-                // `thread_count = 0` lets libavcodec create one frame thread per
-                // logical CPU and hold about that many frames before the first
-                // output. That delay is visible on software decode. A small pool
-                // still covers 1080p60 on older quad-core CPUs.
+                // Frame threading holds about one frame per worker before the
+                // first output. Slice threading spends the same cores inside a
+                // single frame, which is the delay users see against the old client.
                 (*raw).thread_count = software_decode_thread_count();
-                (*raw).thread_type = ffi::FF_THREAD_SLICE | ffi::FF_THREAD_FRAME;
+                (*raw).thread_type = ffi::FF_THREAD_SLICE;
                 (*raw).flags |= ffi::AV_CODEC_FLAG_LOW_DELAY as i32;
             } else {
                 (*raw).thread_count = 1;
@@ -365,6 +364,9 @@ impl FfmpegDecoder {
     }
 
     fn convert_frame(&mut self, decoded: &frame::Video) -> Result<DecodedVideoFrame> {
+        if self.mode == FfmpegMode::Software {
+            reject_corrupt_software_frame(decoded)?;
+        }
         if self.mode == FfmpegMode::V4l2Request {
             let output =
                 retain_request_frame(decoded, self.last_timestamp_us, self.negotiated_format)?;
@@ -781,6 +783,19 @@ fn vulkan_cpu_nv12_fallback(
         })?;
         tight_nv12_planes(&output)
     }))
+}
+
+fn reject_corrupt_software_frame(decoded: &frame::Video) -> Result<()> {
+    unsafe {
+        let raw = &*decoded.as_ptr();
+        if raw.flags & ffi::AV_FRAME_FLAG_CORRUPT != 0 || raw.decode_error_flags != 0 {
+            return Err(Error::ReferenceLost {
+                subsystem: Subsystem::Ffmpeg,
+                reason: "software decode failed; refusing a corrupt frame".to_owned(),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn software_decode_thread_count() -> i32 {
@@ -1422,11 +1437,28 @@ mod tests {
                 (*raw).thread_count
             );
             assert_ne!((*raw).flags & ffi::AV_CODEC_FLAG_LOW_DELAY as i32, 0);
-            assert_ne!(
-                (*raw).thread_type & (ffi::FF_THREAD_FRAME | ffi::FF_THREAD_SLICE),
-                0
+            assert_eq!(
+                (*raw).thread_type & ffi::FF_THREAD_SLICE,
+                ffi::FF_THREAD_SLICE
             );
+            assert_eq!((*raw).thread_type & ffi::FF_THREAD_FRAME, 0);
         }
+    }
+
+    #[test]
+    fn software_decoder_refuses_a_corrupt_frame() {
+        let format = StreamFormat::video_default(2, 2).unwrap();
+        let mut decoder =
+            FfmpegDecoder::open(VideoCodec::H264, format, FfmpegMode::Software).unwrap();
+        let mut decoded = frame::Video::new(Pixel::NV12, 2, 2);
+        unsafe { (*decoded.as_mut_ptr()).flags |= ffi::AV_FRAME_FLAG_CORRUPT };
+        assert!(matches!(
+            decoder.convert_frame(&decoded),
+            Err(Error::ReferenceLost {
+                subsystem: Subsystem::Ffmpeg,
+                ..
+            })
+        ));
     }
 
     #[test]
