@@ -69,9 +69,6 @@ struct RtspResponse {
     body: String,
 }
 
-/// A failed sweep keeps the last peerless 200 (if any) so the bundle-peer
-/// fallback below can reuse its same-session ICE/ping headers. Boxed to keep
-/// the error variant small.
 struct SweepFailure {
     error: NvstRtspError,
     peerless_200: Option<Box<RtspResponse>>,
@@ -163,7 +160,7 @@ impl RtspClient {
         headers.push(("Transport", String::new()));
         let transport_index = headers.len() - 1;
         let mut round = 0u32;
-        let mut peerless_200 = None;
+        let mut peerless_200_seen = false;
         loop {
             match self.setup_video_sweep(
                 &candidates,
@@ -174,34 +171,9 @@ impl RtspClient {
             ) {
                 Ok(setup) => return Ok(setup),
                 Err(failure) => {
-                    if failure.peerless_200.is_some() {
-                        peerless_200 = failure.peerless_200;
-                    }
-                    let mut error = failure.error;
-                    if error.code != "missing-video-peer" {
-                        // A later round that degrades to pure rejections
-                        // (repeat SETUPs 400 once an earlier round drew
-                        // peerless 200s) still means the server speaks our
-                        // protocol but yields no peer. Report that so the
-                        // bundle fallback below can engage instead of
-                        // treating it as wrong forms.
-                        if error.code == "nvst-rtsp-failed" && peerless_200.is_some() {
-                            error.code = "missing-video-peer";
-                        } else {
-                            return Err(error);
-                        }
-                    }
-                    if round >= max_peer_retries {
-                        // Some alliance rigs never allocate a video Transport
-                        // peer at all. In native-bundle mode the
-                        // CloudMatch-provided bundle peer already addresses
-                        // that same media leg, so proceed with it (mirroring
-                        // the official client, which carries on when the
-                        // server omits transport) instead of failing a seat
-                        // whose signaling is otherwise healthy.
-                        if let (Some(peer), Some(response)) =
-                            (bundle_video_peer.clone(), peerless_200)
-                        {
+                    if let Some(response) = failure.peerless_200 {
+                        peerless_200_seen = true;
+                        if let Some(peer) = bundle_video_peer.clone() {
                             opennow_streamer_protocol::log::log_line(
                                 "WARN",
                                 "rtsps",
@@ -212,6 +184,16 @@ impl RtspClient {
                                 peer,
                             });
                         }
+                    }
+                    let mut error = failure.error;
+                    if error.code != "missing-video-peer" {
+                        if error.code == "nvst-rtsp-failed" && peerless_200_seen {
+                            error.code = "missing-video-peer";
+                        } else {
+                            return Err(error);
+                        }
+                    }
+                    if round >= max_peer_retries {
                         return Err(error);
                     }
                     round += 1;

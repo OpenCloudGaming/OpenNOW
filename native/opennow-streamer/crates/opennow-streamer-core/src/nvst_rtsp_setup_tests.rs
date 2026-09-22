@@ -417,10 +417,7 @@ fn video_setup_degraded_retry_round_keeps_missing_peer_code() {
 }
 
 #[test]
-fn video_setup_uses_bundle_peer_with_peerless_ping_headers_as_last_resort() {
-    // The sweep stops at its single peerless 200, whose response carries
-    // same-session ICE/ping headers. With a bundle peer available, negotiation
-    // succeeds using the bundle address while preserving those headers.
+fn video_setup_uses_bundle_peer_on_first_peerless_success_without_retry() {
     let peerless = vec![Reply {
         uri: EMPTY_TRANSPORT_URIS[0],
         transport: "",
@@ -429,7 +426,7 @@ fn video_setup_uses_bundle_peer_with_peerless_ping_headers_as_last_resort() {
     }];
     let setup = scripted_setup_with_retry(
         peerless,
-        0,
+        3,
         Duration::ZERO,
         Some(("192.0.2.99".to_owned(), 13749, 13749)),
     )
