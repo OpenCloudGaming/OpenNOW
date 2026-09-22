@@ -1781,7 +1781,7 @@ private slots:
         };
         QVERIFY(!shell.contains(QStringLiteral("\"request-exit\": [\"Escape\"]")));
         QVERIFY(shell.contains(QStringLiteral(
-            "\"stop-stream\": [String(settings.shortcutStopStream || \"Ctrl+Shift+Q\")]")));
+            "\"stop-stream\": [String(settings.shortcutStopStream ?? \"Ctrl+Shift+Q\")]")));
         QVERIFY(shell.contains(QStringLiteral("requestStreamExitConfirmation()")));
         QVERIFY(shell.contains(QStringLiteral("desktop-stream-exit-confirm")));
         QVERIFY(desktop.contains(QStringLiteral(
