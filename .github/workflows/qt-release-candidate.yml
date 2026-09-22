@@ -155,7 +155,9 @@ jobs:
         uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639
         with:
           key: qt-release-${{ matrix.runner }}-${{ matrix.arch }}
+          restore-keys: qt-release-${{ matrix.runner }}-${{ matrix.arch }}
           max-size: 500M
+          verbose: 1
 
       - name: Build and cache SDL3
         uses: ./.github/actions/sdl3
@@ -395,7 +397,9 @@ jobs:
         uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639
         with:
           key: qt-release-windows-2025-${{ matrix.arch }}
+          restore-keys: qt-release-windows-2025-${{ matrix.arch }}
           max-size: 1G
+          verbose: 1
 
       - name: Build and cache SDL3
         uses: ./.github/actions/sdl3
@@ -593,7 +597,9 @@ jobs:
         uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639
         with:
           key: qt-release-macos-arm64
+          restore-keys: qt-release-macos-arm64
           max-size: 1G
+          verbose: 1
 
       - name: Build and cache SDL3
         uses: ./.github/actions/sdl3

@@ -304,6 +304,20 @@ class CIWorkflowTest(unittest.TestCase):
         self.assertIn("set_property(TARGET opennow-hdrcolor-tests PROPERTY MSVC_DEBUG_INFORMATION_FORMAT Embedded)", tests)
         self.assertIn("target_compile_options(opennow-hdrcolor-tests PRIVATE /Zi)", tests)
 
+    def test_package_compile_caches_restore_their_own_timestamped_entries(self):
+        for workflow_name, job_names in (
+            ("qt-build.yml", ("packages",)),
+            ("qt-release-candidate.yml", ("linux", "windows", "macos")),
+        ):
+            workflow_jobs = jobs((WORKFLOWS / workflow_name).read_text())
+            for job_name in job_names:
+                with self.subTest(workflow=workflow_name, job=job_name):
+                    cache = workflow_jobs[job_name].split("uses: hendrikmuhs/ccache-action@", 1)[1].split("\n      -", 1)[0]
+                    key = re.search(r"^\s+key: (.+)$", cache, re.MULTILINE).group(1)
+                    self.assertIn(f"restore-keys: {key}\n", cache)
+                    self.assertIn("verbose: 1", cache)
+                    self.assertNotIn("append-timestamp: false", cache)
+
     def test_relocated_core_probe_matches_shell_protocol(self):
         header = (ROOT / "opennow-qt/src/core/CoreClient.h").read_text()
         version = int(re.search(r"CurrentProtocolVersion = (\d+);", header).group(1))
