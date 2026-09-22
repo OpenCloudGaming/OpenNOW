@@ -50,7 +50,8 @@ QtObject {
     }
     function shortcutCalls() { return client.calls.filter(call => call.method === "settings.shortcuts.update") }
     function lastCall() { return shortcutCalls()[shortcutCalls().length - 1] }
-    function same(left, right) { return JSON.stringify(left) === JSON.stringify(right) }
+    function canonical(map) { return JSON.stringify(Object.keys(map).sort().map(name => [name, map[name]])) }
+    function same(left, right) { return canonical(left) === canonical(right) }
     function respond(bindings) {
         const call = lastCall()
         check(same(call.params.bindings, bindings), "transaction payload " + JSON.stringify(call.params.bindings))

@@ -23,10 +23,10 @@ FocusScope {
     property bool restored: false
     property string pendingAnnouncement: ""
 
-    readonly property string current: binding.value(settingKey)
-    readonly property string fallback: String(binding.defaults[settingKey] ?? "")
+    readonly property string current: binding ? binding.value(settingKey) : ""
+    readonly property string fallback: binding ? String(binding.defaults[settingKey] ?? "") : ""
     readonly property bool unset: current === ""
-    readonly property bool changed: !binding.isDefault(settingKey)
+    readonly property bool changed: binding ? !binding.isDefault(settingKey) : false
     readonly property bool stripOpen: capturing || message !== ""
     readonly property color toneColor: tone === "danger" ? DesktopTokens.danger
         : tone === "amber" ? DesktopTokens.amber : Theme.focus

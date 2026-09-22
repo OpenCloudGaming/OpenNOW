@@ -33,8 +33,6 @@ Column {
             {l: qsTr("Stats overlay"), k: "Guide", gamepad: true}]}
     ]
 
-    DesktopSettingsShortcutBinding { id: shortcutBinding }
-
     function displayBinding(key) {
         const value = shortcutBinding.value(key)
         return value === "" ? qsTr("Not set") : value
@@ -342,4 +340,6 @@ Column {
             }
         }
     }
+
+    DesktopSettingsShortcutBinding { id: shortcutBinding }
 }
