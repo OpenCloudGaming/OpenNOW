@@ -3184,7 +3184,7 @@ fn run_embedded_linux_monitor(
     let mut reported_color = None;
     while !shared.stopped.load(Ordering::Acquire) {
         let report_decode_timings = last_decode_timings_report.elapsed() >= Duration::from_secs(1);
-        let (frames, events, decode_timings) = {
+        let (frame, events, decode_timings) = {
             let session = shared
                 .linux_session
                 .lock()
@@ -3192,16 +3192,13 @@ fn run_embedded_linux_monitor(
             let Some(session) = session.as_ref() else {
                 return;
             };
-            let mut decoded = Vec::new();
-            while let Some(frame) = session.try_recv_frame() {
-                decoded.push(frame);
-            }
+            let frame = session.try_recv_latest_frame();
             let mut events = Vec::new();
             while let Some(event) = session.try_recv_event() {
                 events.push(event);
             }
             let decode_timings = report_decode_timings.then(|| session.decode_timings());
-            (decoded, events, decode_timings)
+            (frame, events, decode_timings)
         };
         if let Some(timings) = decode_timings {
             last_decode_timings_report = Instant::now();
@@ -3235,27 +3232,32 @@ fn run_embedded_linux_monitor(
             }
         }
         if !shared.paused.load(Ordering::Acquire) {
-            for decoded in frames {
-                let Some(lease) = publisher.context() else {
-                    continue;
-                };
-                match producer
-                    .frame(decoded)
-                    .map_err(|error| error.to_string())
-                    .and_then(|frame| {
-                        publisher
-                            .publish(lease, Arc::new(frame))
-                            .map_err(|error| error.to_string())
-                    }) {
-                    Ok(_) if !playback_started => {
-                        playback_started = true;
-                        let _ = shared.feedback.send(MediaFeedback::PlaybackStarted {
-                            backend: backend_label,
-                        });
-                    }
-                    Ok(_) => {}
-                    Err(message) => {
-                        let _ = shared.feedback.send(MediaFeedback::OutputError { message });
+            if let Some((decoded, skipped)) = frame {
+                if skipped > 0 {
+                    let _ = shared.feedback.send(MediaFeedback::QueueDropped {
+                        media: "decoded-video",
+                        count: skipped,
+                    });
+                }
+                if let Some(lease) = publisher.context() {
+                    match producer
+                        .frame(decoded)
+                        .map_err(|error| error.to_string())
+                        .and_then(|frame| {
+                            publisher
+                                .publish(lease, Arc::new(frame))
+                                .map_err(|error| error.to_string())
+                        }) {
+                        Ok(_) if !playback_started => {
+                            playback_started = true;
+                            let _ = shared.feedback.send(MediaFeedback::PlaybackStarted {
+                                backend: backend_label,
+                            });
+                        }
+                        Ok(_) => {}
+                        Err(message) => {
+                            let _ = shared.feedback.send(MediaFeedback::OutputError { message });
+                        }
                     }
                 }
             }
