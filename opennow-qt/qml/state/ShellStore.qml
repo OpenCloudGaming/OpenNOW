@@ -158,6 +158,8 @@ QtObject {
     property alias previewThemePack: settingsOwner.previewThemePack
     property string accessibilityMessage: ""
     property alias settingsRequestId: settingsOwner.settingsRequestId
+    property alias shortcutUpdateRequestId: settingsOwner.shortcutUpdateRequestId
+    property alias shortcutUpdateError: settingsOwner.shortcutUpdateError
     property string lastError: ""
     property var focusPositions: ({})
     property var providers: []
@@ -2787,6 +2789,10 @@ QtObject {
 
     function resetSettings() {
         return settingsOwner.resetSettings()
+    }
+
+    function updateShortcuts(bindings) {
+        return settingsOwner.updateShortcuts(bindings)
     }
 
     function applyCoupledSettings(changes) {

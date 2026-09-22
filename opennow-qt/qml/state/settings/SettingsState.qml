@@ -53,6 +53,8 @@ QtObject {
     property var frameRateDescriptors: []
     property string cancellingRequestId: ""
     property var settingWrites: ({})
+    property string shortcutUpdateRequestId: ""
+    property string shortcutUpdateError: ""
     readonly property string languageContext: JSON.stringify([ready, scopeGeneration,
         providerIdpId, settings.sessionProxyEnabled, settings.sessionProxyUrl])
     readonly property string colorContext: JSON.stringify([ready, nativeRuntimeReady,
@@ -272,11 +274,22 @@ QtObject {
             clampFpsToEntitlement()
             return true
         }
+        if (id !== "" && id === shortcutUpdateRequestId) {
+            applyCoupledSettings(result.bindings)
+            shortcutUpdateRequestId = ""
+            return true
+        }
         return finishSettingWrite(id, result, "")
     }
 
     function acceptFailure(id, message) {
         if (id !== "" && id === cancellingRequestId) return true
+        if (id !== "" && id === shortcutUpdateRequestId) {
+            shortcutUpdateError = message || qsTr("The shortcut could not be saved.")
+            shortcutUpdateRequestId = ""
+            accessibilityAnnounced(shortcutUpdateError)
+            return true
+        }
         if (id !== "" && id === languageRequestId) {
             languageRequestId = ""
             languageDeadline.stop()
@@ -626,6 +639,20 @@ QtObject {
             Qt.callLater(root.refreshAccountServices)
         }
         return requestId
+    }
+
+    function updateShortcuts(bindings) {
+        if (shortcutUpdateRequestId !== "")
+            return ""
+        shortcutUpdateError = ""
+        if (!ready) {
+            shortcutUpdateError = qsTr("The OpenNOW core is not ready")
+            return ""
+        }
+        shortcutUpdateRequestId = coreClient.request("settings.shortcuts.update", {bindings: bindings}, 15000)
+        if (shortcutUpdateRequestId === "")
+            shortcutUpdateError = qsTr("The shortcut could not be saved.")
+        return shortcutUpdateRequestId
     }
 
     function resetSettings() {
