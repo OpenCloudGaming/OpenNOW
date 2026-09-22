@@ -782,7 +782,7 @@ mod tests {
     }
 
     #[test]
-    fn worker_encodes_decodable_mono_twenty_millisecond_opus() {
+    fn worker_encodes_decodable_mono_ten_millisecond_opus() {
         let shared = MicrophoneShared::new();
         let mut session = MicrophoneSession::from_shared(Arc::clone(&shared));
         let receiver = session.receiver();
