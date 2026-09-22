@@ -412,6 +412,10 @@ impl LinuxSession {
         self.decoded_frames.try_pop()
     }
 
+    pub fn try_recv_latest_frame(&self) -> Option<(DecodedVideoFrame, usize)> {
+        self.decoded_frames.try_pop_latest()
+    }
+
     pub fn recv_frame_timeout(&self, timeout: Duration) -> Option<DecodedVideoFrame> {
         self.decoded_frames.pop_timeout(timeout)
     }
