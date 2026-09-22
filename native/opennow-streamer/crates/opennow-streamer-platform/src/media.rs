@@ -251,12 +251,13 @@ pub struct StreamShortcutBindings {
 
 impl StreamShortcutBindings {
     pub fn from_json(value: &serde_json::Value) -> Self {
-        let read = |key: &str, fallback: &str| {
-            value
-                .get(key)
-                .and_then(serde_json::Value::as_str)
-                .and_then(ShortcutChord::parse)
-                .or_else(|| ShortcutChord::parse(fallback))
+        let read = |key: &str, fallback: &str| match value
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+        {
+            Some("") => None,
+            Some(chord) => ShortcutChord::parse(chord).or_else(|| ShortcutChord::parse(fallback)),
+            None => ShortcutChord::parse(fallback),
         };
         Self {
             bindings: [
@@ -4861,6 +4862,20 @@ mod tests {
         assert_eq!(
             StreamShortcutBindings::default().action(0x7a, 0x02),
             Some(StreamShortcutAction::Screenshot)
+        );
+    }
+
+    #[test]
+    fn explicitly_cleared_shortcuts_do_not_capture_gameplay_keys() {
+        let bindings = StreamShortcutBindings::from_json(&serde_json::json!({
+            "toggleStats":"", "toggleRecording":"", "saveClip":""
+        }));
+        assert_eq!(bindings.action(u16::from(b'N'), 0x02), None);
+        assert_eq!(bindings.action(0x7b, 0), None);
+        assert_eq!(bindings.action(0x7b, 0x02), None);
+        assert_eq!(
+            bindings.action(0x7a, 0),
+            Some(StreamShortcutAction::ToggleFullscreen)
         );
     }
 

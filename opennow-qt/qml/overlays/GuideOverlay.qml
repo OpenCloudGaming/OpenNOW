@@ -10,14 +10,18 @@ FocusScope {
     readonly property var game: ShellStore.selectedGame || ({title: qsTr("GeForce NOW")})
     readonly property var session: ShellStore.activeSession || ({})
     readonly property var profile: session.negotiatedStreamProfile || ({})
+    function shortcutHint(key, fallback) {
+        const value = ShellStore.settings[key] ?? fallback
+        return value === "" ? qsTr("Not set") : String(value)
+    }
     readonly property var actions: root.page === "guide-session" ? [
         {label:qsTr("Resume game"), action:"resume", glyph:"B"},
         {label:ShellStore.microphoneActionLabel, action:ShellStore.microphoneCanToggle ? "microphone" : "none", value:ShellStore.microphoneLabel},
-        {label:qsTr("Toggle stats overlay"), action:"stats", value:ShellStore.settings.shortcutToggleStats || "Ctrl+N"},
-        {label:qsTr("Toggle pointer lock"), action:"none", value:ShellStore.settings.shortcutTogglePointerLock || "F8"},
-        {label:qsTr("Toggle fullscreen"), action:"fullscreen", value:ShellStore.settings.shortcutToggleFullscreen || "F11"},
-        {label:qsTr("Take screenshot"), action:"screenshot", value:ShellStore.settings.shortcutScreenshot || "Ctrl+F11"},
-        {label:ShellStore.streamRecordingActive ? "Stop recording" : "Start recording", action:"recording", value:ShellStore.settings.shortcutToggleRecording || "F12"},
+        {label:qsTr("Toggle stats overlay"), action:"stats", value:shortcutHint("shortcutToggleStats", "Ctrl+N")},
+        {label:qsTr("Toggle pointer lock"), action:"none", value:shortcutHint("shortcutTogglePointerLock", "F8")},
+        {label:qsTr("Toggle fullscreen"), action:"fullscreen", value:shortcutHint("shortcutToggleFullscreen", "F11")},
+        {label:qsTr("Take screenshot"), action:"screenshot", value:shortcutHint("shortcutScreenshot", "Ctrl+F11")},
+        {label:ShellStore.streamRecordingActive ? "Stop recording" : "Start recording", action:"recording", value:shortcutHint("shortcutToggleRecording", "F12")},
         {label:qsTr("Screenshots & recordings"), action:"media", value:qsTr("Open library")},
         {label:qsTr("End session"), action:"end", danger:true}
     ] : root.page === "guide-controls" ? [
@@ -28,18 +32,18 @@ FocusScope {
     ] : root.page === "guide-media" ? [
         {label:qsTr("Recent captures"), action:"media", value:qsTr("%1 items").arg(ShellStore.mediaItems.length)},
         {label:qsTr("Reveal capture folder"), action:"reveal", value:ShellStore.mediaRootPath ? qsTr("Open") : qsTr("Load library")},
-        {label:qsTr("Take screenshot"), action:"screenshot", value:ShellStore.settings.shortcutScreenshot || "Ctrl+F11"},
-        {label:ShellStore.streamRecordingActive ? "Stop recording" : "Start recording", action:"recording", value:ShellStore.settings.shortcutToggleRecording || "F12"}
+        {label:qsTr("Take screenshot"), action:"screenshot", value:shortcutHint("shortcutScreenshot", "Ctrl+F11")},
+        {label:ShellStore.streamRecordingActive ? "Stop recording" : "Start recording", action:"recording", value:shortcutHint("shortcutToggleRecording", "F12")}
     ] : [
         {label:qsTr("Guide overlay"), action:"none", glyph:"GUIDE", value:"Ctrl+G"},
-        {label:qsTr("Toggle fullscreen"), action:"fullscreen", value:ShellStore.settings.shortcutToggleFullscreen || "F11"},
-        {label:qsTr("Stats overlay"), action:"stats", value:ShellStore.settings.shortcutToggleStats || "Ctrl+N"},
-        {label:qsTr("Pointer lock"), action:"none", value:ShellStore.settings.shortcutTogglePointerLock || "F8"},
-        {label:qsTr("Screenshot"), action:"screenshot", value:ShellStore.settings.shortcutScreenshot || "Ctrl+F11"},
-        {label:qsTr("Toggle recording"), action:"recording", value:ShellStore.settings.shortcutToggleRecording || "F12"},
-        {label:qsTr("Toggle Anti-AFK"), action:"none", value:ShellStore.settings.shortcutToggleAntiAfk || "Ctrl+Shift+K"},
-        {label:qsTr("Microphone"), action:ShellStore.microphoneCanToggle ? "microphone" : "none", value:ShellStore.microphoneToggleAvailable ? String(ShellStore.settings.shortcutToggleMicrophone || "Ctrl+Shift+M") : ShellStore.microphoneLabel},
-        {label:qsTr("End session"), action:"none", value:ShellStore.settings.shortcutStopStream || "Ctrl+Shift+Q"}
+        {label:qsTr("Toggle fullscreen"), action:"fullscreen", value:shortcutHint("shortcutToggleFullscreen", "F11")},
+        {label:qsTr("Stats overlay"), action:"stats", value:shortcutHint("shortcutToggleStats", "Ctrl+N")},
+        {label:qsTr("Pointer lock"), action:"none", value:shortcutHint("shortcutTogglePointerLock", "F8")},
+        {label:qsTr("Screenshot"), action:"screenshot", value:shortcutHint("shortcutScreenshot", "Ctrl+F11")},
+        {label:qsTr("Toggle recording"), action:"recording", value:shortcutHint("shortcutToggleRecording", "F12")},
+        {label:qsTr("Toggle Anti-AFK"), action:"none", value:shortcutHint("shortcutToggleAntiAfk", "Ctrl+Shift+K")},
+        {label:qsTr("Microphone"), action:ShellStore.microphoneCanToggle ? "microphone" : "none", value:ShellStore.microphoneToggleAvailable ? shortcutHint("shortcutToggleMicrophone", "Ctrl+Shift+M") : ShellStore.microphoneLabel},
+        {label:qsTr("End session"), action:"none", value:shortcutHint("shortcutStopStream", "Ctrl+Shift+Q")}
     ]
     anchors.fill: parent
     focus: visible

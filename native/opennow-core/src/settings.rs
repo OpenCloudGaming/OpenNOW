@@ -1529,11 +1529,13 @@ mod tests {
         store.set("replayBufferSeconds", json!(999)).unwrap();
         store.set("replayBufferMemoryMiB", json!(1)).unwrap();
         store.set("shortcutSaveClip", json!("Alt+F12")).unwrap();
+        store.set("shortcutToggleRecording", json!("")).unwrap();
         let mut reloaded = SettingsStore::load(Some(directory.clone())).unwrap();
         assert_eq!(reloaded.all()["replayBufferEnabled"], json!(true));
         assert_eq!(reloaded.all()["replayBufferSeconds"], json!(120));
         assert_eq!(reloaded.all()["replayBufferMemoryMiB"], json!(64));
         assert_eq!(reloaded.all()["shortcutSaveClip"], json!("Alt+F12"));
+        assert_eq!(reloaded.all()["shortcutToggleRecording"], json!(""));
         reloaded.set("replayBufferSeconds", json!(-1)).unwrap();
         reloaded.set("replayBufferMemoryMiB", json!(9999)).unwrap();
         assert_eq!(reloaded.all()["replayBufferSeconds"], json!(15));

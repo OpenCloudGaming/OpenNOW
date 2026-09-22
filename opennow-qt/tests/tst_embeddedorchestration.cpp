@@ -1804,7 +1804,9 @@ private slots:
     {
         const auto main = source(QStringLiteral("qml/Main.qml"));
         const auto shell = source(QStringLiteral("qml/state/ShellStore.qml"));
-        QVERIFY(main.contains(QStringLiteral("sequence: \"F3\"")));
+        QVERIFY(main.contains(QStringLiteral("sequence: window.configuredStatsShortcut")));
+        QVERIFY(!main.contains(QStringLiteral("sequence: \"F3\"")));
+        QVERIFY(main.contains(QStringLiteral("window.configuredStatsShortcut !== \"\"")));
         QVERIFY(main.contains(QStringLiteral("context: Qt.ApplicationShortcut")));
         QVERIFY(main.contains(QStringLiteral(
             "onActivated: ShellStore.applyStreamShortcutAction(\"toggle-stats\")")));

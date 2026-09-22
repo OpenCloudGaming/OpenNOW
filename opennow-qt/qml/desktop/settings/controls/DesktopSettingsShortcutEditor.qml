@@ -20,7 +20,7 @@ Popup {
     function edit(key, title) {
         settingKey = key
         shortcutTitle = title
-        message = qsTr("Press the new shortcut. Escape cancels.")
+        message = qsTr("Press a new shortcut or clear this binding. Escape cancels.")
         open()
     }
 
@@ -89,6 +89,14 @@ Popup {
             DesktopSettingsButton {
                 text: qsTr("Cancel")
                 onClicked: root.close()
+            }
+            DesktopSettingsButton {
+                objectName: "clearShortcutBinding"
+                text: qsTr("Clear shortcut")
+                onClicked: {
+                    ShellStore.setSetting(root.settingKey, "")
+                    root.close()
+                }
             }
         }
     }

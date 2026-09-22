@@ -86,13 +86,15 @@ Column {
                 width: parent.width; spacing: DesktopTokens.px(20)
                 DesktopKeyHint {
                     objectName: "recordingShortcutHint"
-                    keyText: String(page.settingsScreen.valueSetting("shortcutToggleRecording", "F12"))
+                    visible: ShellStore.settings.shortcutToggleRecording !== ""
+                    keyText: String(ShellStore.settings.shortcutToggleRecording ?? "F12")
                     label: qsTr("Toggle recording")
                     compact: true
                 }
                 DesktopKeyHint {
                     objectName: "replayShortcutHint"
-                    keyText: String(page.settingsScreen.valueSetting("shortcutSaveClip", "Ctrl+F12"))
+                    visible: ShellStore.settings.shortcutSaveClip !== ""
+                    keyText: String(ShellStore.settings.shortcutSaveClip ?? "Ctrl+F12")
                     label: qsTr("Save replay clip")
                     compact: true
                 }

@@ -11,9 +11,14 @@ Column {
     width: shortcutsPageRoot.availableWidth; spacing: DesktopTokens.px(14)
     property string shortcutQuery: ""
 
+    function binding(key, fallback) {
+        const value = ShellStore.settings[key] ?? fallback
+        return value === "" ? qsTr("Not set") : String(value)
+    }
+
     function allShortcutGroups() {
         return [
-            {h:"IN STREAM", rows:[{l:"Session menu",k:"Ctrl+G"},{l:"Stats overlay",k:String(shortcutsPageRoot.settingsScreen.valueSetting("shortcutToggleStats","Ctrl+N")),setting:"shortcutToggleStats"},{l:"Toggle fullscreen",k:String(shortcutsPageRoot.settingsScreen.valueSetting("shortcutToggleFullscreen","F11"))},{l:"Grab or release the mouse",k:String(shortcutsPageRoot.settingsScreen.valueSetting("shortcutTogglePointerLock","F8"))},{l:"Screenshot the stream",k:String(shortcutsPageRoot.settingsScreen.valueSetting("shortcutScreenshot","Ctrl+F11"))},{l:qsTr("Toggle recording"),k:String(shortcutsPageRoot.settingsScreen.valueSetting("shortcutToggleRecording","F12")),setting:"shortcutToggleRecording"},{l:qsTr("Save replay clip"),k:String(shortcutsPageRoot.settingsScreen.valueSetting("shortcutSaveClip","Ctrl+F12")),setting:"shortcutSaveClip"},{l:"End the session",k:String(shortcutsPageRoot.settingsScreen.valueSetting("shortcutStopStream","Ctrl+Shift+Q"))}]},
+            {h:"IN STREAM", rows:[{l:"Session menu",k:"Ctrl+G"},{l:"Stats overlay",k:binding("shortcutToggleStats","Ctrl+N"),setting:"shortcutToggleStats"},{l:"Toggle fullscreen",k:binding("shortcutToggleFullscreen","F11")},{l:"Grab or release the mouse",k:binding("shortcutTogglePointerLock","F8")},{l:"Screenshot the stream",k:binding("shortcutScreenshot","Ctrl+F11")},{l:qsTr("Toggle recording"),k:binding("shortcutToggleRecording","F12"),setting:"shortcutToggleRecording"},{l:qsTr("Save replay clip"),k:binding("shortcutSaveClip","Ctrl+F12"),setting:"shortcutSaveClip"},{l:"End the session",k:binding("shortcutStopStream","Ctrl+Shift+Q")}]},
             {h:"APP", rows:[{l:"Command palette",k:"Ctrl  K"},{l:"Search this page",k:"/"},{l:"Collapse or expand the sidebar",k:"Ctrl  B"},{l:"Switch to console mode",k:"F10"},{l:"Settings",k:"Ctrl  ,"},{l:"Quit OpenNOW",k:"Ctrl  Q"}]},
             {h:"LIBRARY AND STORE", rows:[{l:"Move through covers",k:"Arrows"},{l:"Play or resume",k:"Enter"},{l:"Game details",k:"Space"},{l:"Toggle favourite",k:"F"},{l:"Context menu",k:"Shift  F10"}]},
             {h:"GAMEPAD · CONSOLE MODE", rows:[{l:"Select · back",k:"A · B",gamepad:true},{l:"Details · favourite",k:"X · Y",gamepad:true},{l:"Switch tab",k:"LB · RB",gamepad:true},{l:"Stats overlay",k:"Guide",gamepad:true}]}
@@ -81,7 +86,7 @@ Column {
                         DesktopSettingsButton {
                             visible: Boolean(modelData.setting)
                             text: modelData.k
-                            keySequence: text
+                            keySequence: modelData.k === qsTr("Not set") ? "" : modelData.k
                             Accessible.name: modelData.l + ": " + text
                             onClicked: shortcutEditor.edit(modelData.setting, modelData.l)
                         }

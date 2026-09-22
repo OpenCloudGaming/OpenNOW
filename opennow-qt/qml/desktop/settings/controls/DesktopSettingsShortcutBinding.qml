@@ -11,7 +11,7 @@ QtObject {
     })
 
     function value(key) {
-        return String(ShellStore.settings[key] || defaults[key] || "")
+        return String(ShellStore.settings[key] ?? defaults[key] ?? "")
     }
 
     function validate(key, event) {
@@ -24,7 +24,7 @@ QtObject {
             return {error: qsTr("Add Ctrl, Shift, Alt, or Meta to letter and number shortcuts.")}
         if (chord === "Ctrl+G")
             return {error: qsTr("Ctrl+G is reserved for the in-stream Guide.")}
-        if ((chord === "F3" && key !== "shortcutToggleStats") || chord === "Shift+F3")
+        if (chord === "Shift+F3")
             return {error: qsTr("That shortcut is reserved for stream statistics.")}
         for (const otherKey of Object.keys(defaults)) {
             if (otherKey !== key && AppController.normalizeShortcut(value(otherKey)) === chord)

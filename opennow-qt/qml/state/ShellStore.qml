@@ -2400,15 +2400,15 @@ QtObject {
     function streamShortcutBindings() {
         return {
             "guide": ["Ctrl+G"],
-            "toggle-pointer-lock": [String(settings.shortcutTogglePointerLock || "F8")],
-            "toggle-fullscreen": [String(settings.shortcutToggleFullscreen || "F11")],
-            "stop-stream": [String(settings.shortcutStopStream || "Ctrl+Shift+Q")],
-            "toggle-anti-afk": [String(settings.shortcutToggleAntiAfk || "Ctrl+Shift+K")],
+            "toggle-pointer-lock": [String(settings.shortcutTogglePointerLock ?? "F8")],
+            "toggle-fullscreen": [String(settings.shortcutToggleFullscreen ?? "F11")],
+            "stop-stream": [String(settings.shortcutStopStream ?? "Ctrl+Shift+Q")],
+            "toggle-anti-afk": [String(settings.shortcutToggleAntiAfk ?? "Ctrl+Shift+K")],
             "toggle-microphone": microphoneToggleAvailable
-                ? [String(settings.shortcutToggleMicrophone || "Ctrl+Shift+M")] : [],
-            "screenshot": [String(settings.shortcutScreenshot || "Ctrl+F11")],
-            "toggle-recording": [String(settings.shortcutToggleRecording || "F12")],
-            "save-clip": [String(settings.shortcutSaveClip || "Ctrl+F12")]
+                ? [String(settings.shortcutToggleMicrophone ?? "Ctrl+Shift+M")] : [],
+            "screenshot": [String(settings.shortcutScreenshot ?? "Ctrl+F11")],
+            "toggle-recording": [String(settings.shortcutToggleRecording ?? "F12")],
+            "save-clip": [String(settings.shortcutSaveClip ?? "Ctrl+F12")]
         }
     }
 
