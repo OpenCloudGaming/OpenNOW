@@ -18,6 +18,7 @@ const INPUT_PARTIAL_LABEL: &str = "input_channel_partially_reliable";
 const CURSOR_LABEL: &str = "cursor_channel";
 const RTCP_ON_SCTP_LABEL: &str = "rtcp_on_sctp_private";
 const PARTIAL_RELIABLE_LIFETIME_MS: u16 = 300;
+const CUSTOM_PARTIAL_MAX_RETRANSMITS: u16 = 2;
 
 const COMMAND_SYSTEM_CURSOR: u16 = 0x010f;
 const COMMAND_BITMAP_CURSOR: u16 = 0x0110;
@@ -82,8 +83,8 @@ pub(crate) const NVST_CHANNEL_PROFILE: [NvstChannelDefinition; 8] = [
     NvstChannelDefinition {
         sid: 4,
         label: CUSTOM_PARTIAL_LABEL,
-        ordered: false,
-        reliability: NvstChannelReliability::Lifetime(PARTIAL_RELIABLE_LIFETIME_MS),
+        ordered: true,
+        reliability: NvstChannelReliability::MaxRetransmits(CUSTOM_PARTIAL_MAX_RETRANSMITS),
     },
     NvstChannelDefinition {
         sid: 6,
@@ -1404,14 +1405,14 @@ mod tests {
         );
         assert_eq!(
             NVST_CHANNEL_PROFILE.map(|definition| definition.ordered),
-            [true, true, false, false, false, false, true, true]
+            [true, true, true, false, false, false, true, true]
         );
         assert_eq!(
             NVST_CHANNEL_PROFILE.map(|definition| definition.reliability),
             [
                 NvstChannelReliability::Reliable,
                 NvstChannelReliability::Reliable,
-                NvstChannelReliability::Lifetime(300),
+                NvstChannelReliability::MaxRetransmits(2),
                 NvstChannelReliability::Lifetime(300),
                 NvstChannelReliability::MaxRetransmits(0),
                 NvstChannelReliability::Lifetime(300),
@@ -1422,14 +1423,14 @@ mod tests {
         let configs = NVST_CHANNEL_PROFILE.map(channel_config);
         assert_eq!(
             configs.clone().map(|config| config.ordered),
-            [true, true, false, false, false, false, true, true]
+            [true, true, true, false, false, false, true, true]
         );
         assert_eq!(
             configs.map(|config| config.reliability),
             [
                 Reliability::Reliable,
                 Reliability::Reliable,
-                Reliability::MaxPacketLifetime { lifetime: 300 },
+                Reliability::MaxRetransmits { retransmits: 2 },
                 Reliability::MaxPacketLifetime { lifetime: 300 },
                 Reliability::MaxRetransmits { retransmits: 0 },
                 Reliability::MaxPacketLifetime { lifetime: 300 },
@@ -1442,6 +1443,27 @@ mod tests {
         let channels = NvstInputChannels::create(&mut rtc);
         assert_eq!(channels.label(channels.rtcp), RTCP_ON_SCTP_LABEL);
         assert!(!channels.contains(channels.rtcp));
+    }
+
+    #[test]
+    fn custom_channel_retransmits_while_mouse_motion_stays_unordered() {
+        let custom = channel_config(NVST_CHANNEL_PROFILE[2]);
+        assert!(custom.ordered);
+        assert_eq!(
+            custom.reliability,
+            Reliability::MaxRetransmits { retransmits: 2 }
+        );
+
+        let motion_channel = channel_config(NVST_CHANNEL_PROFILE[3]);
+        assert!(!motion_channel.ordered);
+        assert_eq!(
+            motion_channel.reliability,
+            Reliability::MaxPacketLifetime { lifetime: 300 }
+        );
+        let mut motion = [0; 22];
+        motion[..4].copy_from_slice(&INPUT_MOUSE_RELATIVE.to_le_bytes());
+        let encoded = NvstInputCodec::default().encode(&motion, 0).unwrap();
+        assert_eq!(encoded[0].route, NvstInputRoute::ControlPartial);
     }
 
     #[test]
