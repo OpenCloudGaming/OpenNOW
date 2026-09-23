@@ -230,6 +230,8 @@ const STUN_MAGIC_COOKIE: u32 = 0x2112_a442;
 const STUN_BINDING_REQUEST: u16 = 0x0001;
 const STUN_BINDING_SUCCESS_RESPONSE: u16 = 0x0101;
 const STUN_ATTR_USERNAME: u16 = 0x0006;
+#[cfg(test)]
+const STUN_ATTR_PRIORITY: u16 = 0x0024;
 const STUN_ATTR_MESSAGE_INTEGRITY: u16 = 0x0008;
 const STUN_ATTR_XOR_MAPPED_ADDRESS: u16 = 0x0020;
 const STUN_ATTR_FINGERPRINT: u16 = 0x8028;
@@ -5265,6 +5267,7 @@ pub fn spawn_nvst_udp_receiver(
         None,
         None,
         hid_runtime,
+        None,
     )
 }
 
@@ -5275,6 +5278,7 @@ pub fn spawn_nvst_udp_receiver_with_socket(
     reserved_socket: Option<UdpSocket>,
     reserved_rtc: Option<Rtc>,
     hid_runtime: Arc<HidRuntime>,
+    upstream_ready: Option<Receiver<()>>,
 ) -> Result<NvstUdpReceiverSession, NvstUdpReceiverError> {
     let bind_ip = match config.video_peer.ip() {
         IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
@@ -5313,8 +5317,11 @@ pub fn spawn_nvst_udp_receiver_with_socket(
         config,
         media_consumer,
         event_sender,
-        rtc,
-        Some(hid_runtime),
+        NvstWorkerSetup {
+            rtc,
+            hid_runtime: Some(hid_runtime),
+            upstream_ready,
+        },
     )
 }
 
@@ -5348,8 +5355,11 @@ pub fn spawn_nvst_mjolnir_receiver(
         config,
         media_consumer,
         event_sender,
-        None,
-        None,
+        NvstWorkerSetup {
+            rtc: None,
+            hid_runtime: None,
+            upstream_ready: None,
+        },
     )
 }
 
@@ -5360,14 +5370,19 @@ struct NvstReceiverOutputs {
     microphone: Arc<Mutex<MicrophoneQueue>>,
 }
 
+struct NvstWorkerSetup {
+    rtc: Option<Rtc>,
+    hid_runtime: Option<Arc<HidRuntime>>,
+    upstream_ready: Option<Receiver<()>>,
+}
+
 fn spawn_receiver_thread(
     name: &str,
     socket: UdpSocket,
     config: NvstVideoConfig,
     media_consumer: MediaConsumer,
     event_sender: Sender<NvstReceiveEvent>,
-    rtc: Option<Rtc>,
-    hid_runtime: Option<Arc<HidRuntime>>,
+    setup: NvstWorkerSetup,
 ) -> Result<NvstUdpReceiverSession, NvstUdpReceiverError> {
     socket
         .set_read_timeout(Some(UDP_RECEIVE_POLL_INTERVAL))
@@ -5376,11 +5391,12 @@ fn spawn_receiver_thread(
     let input_ready = Arc::new(AtomicBool::new(false));
     let worker_input_ready = input_ready.clone();
     let microphone = Arc::new(Mutex::new(MicrophoneQueue::new(
-        config.microphone_available() && rtc.is_some(),
+        config.microphone_available() && setup.rtc.is_some(),
     )));
     let worker_microphone = microphone.clone();
     let transport_origin = Instant::now();
-    let endpoint = hid_runtime
+    let endpoint = setup
+        .hid_runtime
         .as_ref()
         .map(|runtime| (Arc::clone(runtime), runtime.open_endpoint()));
     let worker_endpoint = endpoint.clone();
@@ -5400,8 +5416,7 @@ fn spawn_receiver_thread(
                     microphone: worker_microphone.clone(),
                 },
                 transport_origin,
-                rtc,
-                hid_runtime,
+                setup,
             );
             worker_input_ready.store(false, Ordering::Release);
             if let Ok(mut queue) = worker_microphone.lock() {
@@ -5966,9 +5981,16 @@ fn run_nvst_webrtc_bundle(
     commands: Receiver<UdpReceiverCommand>,
     outputs: NvstReceiverOutputs,
     transport_origin: Instant,
-    mut rtc: Rtc,
-    hid_runtime: Option<Arc<HidRuntime>>,
+    setup: NvstWorkerSetup,
 ) {
+    let NvstWorkerSetup {
+        rtc: Some(mut rtc),
+        hid_runtime,
+        upstream_ready,
+    } = setup
+    else {
+        unreachable!("WebRTC bundle requires an RTC instance");
+    };
     let NvstReceiverOutputs {
         media_consumer,
         event_sender,
@@ -6058,10 +6080,49 @@ fn run_nvst_webrtc_bundle(
     let mut cursor_capture = NvstCursorCapture::default();
     let mut control_keepalive_at = next_control_keepalive(Instant::now());
     let mut input_timeout_reported = false;
+    let mut upstream_ready = upstream_ready;
+    let mut upstream_allowed = upstream_ready.is_none();
+    let mut pending_input_version = None;
     let mut audio_receiver = NvstAudioReceiver::default();
     let mut reported_port_unreachable = false;
     'bundle: loop {
         let now = Instant::now();
+        if let Some(ready) = upstream_ready.as_ref() {
+            match ready.try_recv() {
+                Ok(()) => {
+                    upstream_allowed = true;
+                    upstream_ready = None;
+                    control_keepalive_at = now;
+                    if sctp_started {
+                        sctp_started_at = Some(now);
+                    }
+                }
+                Err(TryRecvError::Disconnected) => {
+                    rtc.disconnect();
+                    forward_optional(&event_sender, receiver.stop());
+                    break 'bundle;
+                }
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+        if upstream_allowed
+            && let Some(channels) = input_channels
+            && let Some(version) = pending_input_version.take()
+        {
+            if !input_state.activation_sent() {
+                cursor_capture.activate(now);
+                let _ = event_sender.send(NvstReceiveEvent::CursorCapture(true));
+            }
+            finish_nvst_input_handshake(
+                &mut input_state,
+                channels,
+                &mut rtc,
+                transport_origin,
+                &input_ready,
+                &event_sender,
+                version,
+            );
+        }
         loop {
             match commands.try_recv() {
                 Ok(UdpReceiverCommand::Pause) => forward_optional(&event_sender, receiver.pause()),
@@ -6072,7 +6133,8 @@ fn run_nvst_webrtc_bundle(
                     forward_optional(&event_sender, receiver.recover())
                 }
                 Ok(UdpReceiverCommand::SendText { text, timestamp_us }) => {
-                    if !text.is_cancelled()
+                    if upstream_allowed
+                        && !text.is_cancelled()
                         && input_state.is_ready()
                         && let Some(channels) = input_channels
                         && !channels.send_text(&mut rtc, &text, timestamp_us)
@@ -6081,7 +6143,8 @@ fn run_nvst_webrtc_bundle(
                     }
                 }
                 Ok(UdpReceiverCommand::SendInput { bytes, reply }) => {
-                    if input_state.is_ready()
+                    if upstream_allowed
+                        && input_state.is_ready()
                         && let Some(channels) = input_channels
                     {
                         let input_types = native_input_types(&bytes);
@@ -6191,7 +6254,7 @@ fn run_nvst_webrtc_bundle(
 
         // Official first burst is three ICE Binding Requests, plus NATT
         // ping-string PING. After DTLS they keep pinging at 100ms.
-        if input_state.control_is_open() && now >= control_keepalive_at {
+        if upstream_allowed && input_state.control_is_open() && now >= control_keepalive_at {
             if let Some(channels) = input_channels
                 && !channels.send_keepalive(&mut rtc, 0)
             {
@@ -6199,7 +6262,8 @@ fn run_nvst_webrtc_bundle(
             }
             control_keepalive_at = next_control_keepalive(now);
         }
-        if let Some(channels) = input_channels
+        if upstream_allowed
+            && let Some(channels) = input_channels
             && cursor_capture.update(now, |command| match command {
                 CursorCommand::Capture(enabled) => {
                     channels.send_mouse_cursor_capture(&mut rtc, enabled)
@@ -6209,7 +6273,8 @@ fn run_nvst_webrtc_bundle(
         {
             let _ = event_sender.send(NvstReceiveEvent::CursorCapture(false));
         }
-        if input_state.is_ready()
+        if upstream_allowed
+            && input_state.is_ready()
             && let (Some(hid_runtime), Some(hid_session), Some(channels)) =
                 (hid_runtime.as_ref(), hid_session.as_mut(), input_channels)
         {
@@ -6237,7 +6302,10 @@ fn run_nvst_webrtc_bundle(
                 break 'bundle;
             }
         }
-        if !input_timeout_reported && input_state.handshake_timed_out(sctp_started_at, now) {
+        if upstream_allowed
+            && !input_timeout_reported
+            && input_state.handshake_timed_out(sctp_started_at, now)
+        {
             input_timeout_reported = true;
             let _ = event_sender.send(NvstReceiveEvent::InputUnavailable(
                 "input handshake timed out".to_owned(),
@@ -6303,7 +6371,10 @@ fn run_nvst_webrtc_bundle(
             last_hole_punch = now;
         }
 
-        if control_partial_open && let Some(channels) = input_channels {
+        if upstream_allowed
+            && control_partial_open
+            && let Some(channels) = input_channels
+        {
             while let Some(frame) = feedback.take_completed_frame() {
                 if now.duration_since(last_frame_pacing_send) >= FRAME_PACING_INTERVAL {
                     // Packet-completion intervals are intentionally bursty and are not display
@@ -6342,7 +6413,8 @@ fn run_nvst_webrtc_bundle(
             }
         }
 
-        if control_partial_open
+        if upstream_allowed
+            && control_partial_open
             && now.duration_since(last_qos_send) >= QOS_REPORT_INTERVAL
             && let Some(channels) = input_channels
         {
@@ -6384,7 +6456,8 @@ fn run_nvst_webrtc_bundle(
         // Send RTCP feedback over the rtcp1 SCTP channel once it is open and the
         // Mjolnir receiver has bound the video stream. A Receiver Report goes out
         // every second.
-        if rtcp_channel_open
+        if upstream_allowed
+            && rtcp_channel_open
             && now.duration_since(last_rtcp_send) >= SRTCP_RR_INTERVAL
             && let Some(report_block) = feedback.report_snapshot(true)
         {
@@ -6406,7 +6479,8 @@ fn run_nvst_webrtc_bundle(
         // Loss feedback cannot wait for the one-second Receiver Report cadence:
         // request retransmission while the reorder buffer still holds later
         // packets, then request a keyframe if bounded recovery was exhausted.
-        if now.duration_since(last_recovery_send) >= RTCP_RECOVERY_INTERVAL
+        if upstream_allowed
+            && now.duration_since(last_recovery_send) >= RTCP_RECOVERY_INTERVAL
             && let Some((media_ssrc, _)) = feedback.stream_snapshot()
         {
             if let Some(channels) = input_channels {
@@ -6432,7 +6506,7 @@ fn run_nvst_webrtc_bundle(
             rtcp_channel_open,
             input_state.control_is_open(),
         );
-        if try_pli || try_idr {
+        if upstream_allowed && (try_pli || try_idr) {
             let mut pli_queued = false;
             if try_pli && let Some((media_ssrc, _)) = feedback.stream_snapshot() {
                 let pli = build_rtcp_pli(rtcp_sender_ssrc, media_ssrc);
@@ -6463,11 +6537,11 @@ fn run_nvst_webrtc_bundle(
         }
 
         let mut microphone_queue = microphone.lock().unwrap_or_else(|error| error.into_inner());
-        if microphone_generation != microphone_queue.generation {
+        if upstream_allowed && microphone_generation != microphone_queue.generation {
             microphone_generation = microphone_queue.generation;
             rtc.direct_api().remove_stream_tx(Ssrc::from(1));
         }
-        if dtls_ready {
+        if upstream_allowed && dtls_ready {
             while let Some(frame) = microphone_queue.pop(Instant::now()) {
                 rtc.direct_api()
                     .declare_stream_tx(Ssrc::from(1), None, Mid::from("2"), None)
@@ -6561,31 +6635,13 @@ fn run_nvst_webrtc_bundle(
                         eprintln!("NVST data channel open: id={id:?} label={label}");
                         if let Some(channels) = input_channels {
                             if id == channels.control_reliable {
-                                if !channels.send_keepalive(&mut rtc, 0) {
-                                    eprintln!("NVST initial control keepalive could not be queued");
-                                }
-                                control_keepalive_at = next_control_keepalive(Instant::now());
+                                control_keepalive_at = Instant::now();
                             }
                             if id == channels.control_partial {
                                 control_partial_open = true;
                             }
                             if let Some(version) = input_state.channel_opened(channels, id) {
-                                if !input_state.activation_sent() {
-                                    cursor_capture.activate(Instant::now());
-                                    let _ =
-                                        event_sender.send(NvstReceiveEvent::CursorCapture(true));
-                                }
-                                if !finish_nvst_input_handshake(
-                                    &mut input_state,
-                                    channels,
-                                    &mut rtc,
-                                    transport_origin,
-                                    &input_ready,
-                                    &event_sender,
-                                    version,
-                                ) {
-                                    continue;
-                                }
+                                pending_input_version = Some(version);
                             }
                         }
                         if Some(id) == rtcp_channel {
@@ -6681,21 +6737,7 @@ fn run_nvst_webrtc_bundle(
                             && let Some(version) =
                                 input_state.channel_data(channels, data.id, &data.data)
                         {
-                            if !input_state.activation_sent() {
-                                cursor_capture.activate(Instant::now());
-                                let _ = event_sender.send(NvstReceiveEvent::CursorCapture(true));
-                            }
-                            if !finish_nvst_input_handshake(
-                                &mut input_state,
-                                channels,
-                                &mut rtc,
-                                transport_origin,
-                                &input_ready,
-                                &event_sender,
-                                version,
-                            ) {
-                                continue;
-                            }
+                            pending_input_version = Some(version);
                         } else if Some(data.id) == rtcp_channel {
                             eprintln!(
                                 "NVST rtcp1 inbound: id={:?} binary={} bytes={}",
@@ -6712,6 +6754,7 @@ fn run_nvst_webrtc_bundle(
                             }
                             let input_channel_closed = id == channels.input_partial;
                             if input_state.channel_closed(channels, id) || input_channel_closed {
+                                pending_input_version = None;
                                 input_ready.store(false, Ordering::Release);
                                 let reason = if input_channel_closed {
                                     "partially reliable input data channel closed"
@@ -6955,19 +6998,10 @@ fn run_nvst_udp_receiver(
     commands: Receiver<UdpReceiverCommand>,
     outputs: NvstReceiverOutputs,
     transport_origin: Instant,
-    rtc: Option<Rtc>,
-    hid_runtime: Option<Arc<HidRuntime>>,
+    setup: NvstWorkerSetup,
 ) {
-    if let Some(rtc) = rtc {
-        run_nvst_webrtc_bundle(
-            socket,
-            config,
-            commands,
-            outputs,
-            transport_origin,
-            rtc,
-            hid_runtime,
-        );
+    if setup.rtc.is_some() {
+        run_nvst_webrtc_bundle(socket, config, commands, outputs, transport_origin, setup);
         return;
     }
     let local_port = socket.local_addr().map_or(0, |addr| addr.port());
@@ -8448,6 +8482,7 @@ mod tests {
             Some(bundle),
             None,
             Arc::new(HidRuntime::new()),
+            None,
         )
         .unwrap();
         let mut datagram = [0_u8; 2048];
@@ -11060,6 +11095,7 @@ mod tests {
             Some(bundle),
             None,
             Arc::new(HidRuntime::new()),
+            None,
         )
         .unwrap();
         let video_session =
@@ -11103,6 +11139,224 @@ mod tests {
         bundle_session.stop();
     }
 
+    fn play_gate_loopback(accept_play: bool) {
+        let server = UdpSocket::bind("127.0.0.1:0").unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_millis(10)))
+            .unwrap();
+        let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let client_addr = client.local_addr().unwrap();
+        let server_addr = server.local_addr().unwrap();
+        let mut client_rtc = create_nvst_bundle_rtc(&client).unwrap();
+        let mut server_rtc = create_nvst_bundle_rtc(&server).unwrap();
+        let client_identity = nvst_local_bundle_identity(&mut client_rtc);
+        let server_identity = nvst_local_bundle_identity(&mut server_rtc);
+        let credentials = stun_credentials();
+        server_rtc
+            .add_local_candidate(Candidate::host(logical_ice_addr(server_addr, 2), "udp").unwrap());
+        server_rtc.add_remote_candidate(
+            Candidate::host(logical_ice_addr(client_addr, 1), "udp").unwrap(),
+        );
+        {
+            let mut api = server_rtc.direct_api();
+            api.set_ice_controlling(false);
+            api.set_local_ice_credentials(IceCreds {
+                ufrag: credentials.remote_username_fragment.clone(),
+                pass: credentials.remote_password.clone(),
+            });
+            api.set_remote_ice_credentials(IceCreds {
+                ufrag: credentials.local_username_fragment.clone(),
+                pass: credentials.local_password.clone(),
+            });
+            api.set_remote_fingerprint(
+                parse_nvst_fingerprint(&client_identity.dtls_fingerprint).unwrap(),
+            );
+            api.start_dtls(false).unwrap();
+        }
+        let mut config = config();
+        config.client_udp_port = client_addr.port();
+        config.video_peer = server_addr;
+        config.remote_dtls_fingerprint = Some(server_identity.dtls_fingerprint);
+        config.stun_credentials = Some(credentials);
+        let (media_consumer, _media_receiver) = mpsc::sync_channel(1);
+        let (event_sender, event_receiver) = mpsc::channel();
+        let (play_sender, play_receiver) = mpsc::sync_channel(1);
+        let session = spawn_nvst_udp_receiver_with_socket(
+            config,
+            media_consumer,
+            event_sender,
+            Some(client),
+            Some(client_rtc),
+            Arc::new(HidRuntime::new()),
+            Some(play_receiver),
+        )
+        .unwrap();
+
+        let mut version_sent = false;
+        let mut app_messages = Vec::new();
+        let mut input_ready = false;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut packet = [0_u8; 65_536];
+        while Instant::now() < deadline {
+            let now = Instant::now();
+            if let Ok((length, source)) = server.recv_from(&mut packet) {
+                assert_eq!(source, client_addr);
+                if !looks_like_stun(&packet[..length])
+                    || find_stun_attribute(&packet[..length], STUN_ATTR_PRIORITY).is_some()
+                {
+                    server_rtc
+                        .handle_input(Input::Receive(
+                            now,
+                            Receive {
+                                proto: RtcProtocol::Udp,
+                                source: logical_ice_addr(client_addr, 1),
+                                destination: logical_ice_addr(server_addr, 2),
+                                contents: packet[..length].try_into().unwrap(),
+                            },
+                        ))
+                        .unwrap();
+                }
+            }
+            server_rtc.handle_input(Input::Timeout(now)).unwrap();
+            loop {
+                match server_rtc.poll_output().unwrap() {
+                    Output::Timeout(_) => break,
+                    Output::Transmit(transmit) => {
+                        server.send_to(&transmit.contents, client_addr).unwrap();
+                    }
+                    Output::Event(Event::Connected) => server_rtc.direct_api().start_sctp(false),
+                    Output::Event(Event::ChannelOpen(id, label))
+                        if label == "control_channel_reliable" =>
+                    {
+                        version_sent = server_rtc
+                            .channel(id)
+                            .unwrap()
+                            .write(true, &[0x0e, 0x02, 0x02, 0x00])
+                            .unwrap();
+                    }
+                    Output::Event(Event::ChannelData(data)) => app_messages.push(data.data),
+                    _ => {}
+                }
+            }
+            while let Ok(event) = event_receiver.try_recv() {
+                if matches!(event, NvstReceiveEvent::InputReady(2)) {
+                    input_ready = true;
+                }
+            }
+            if version_sent {
+                break;
+            }
+        }
+        assert!(version_sent, "SCTP version exchange must precede PLAY");
+        let until = Instant::now() + Duration::from_millis(300);
+        while Instant::now() < until {
+            let now = Instant::now();
+            if let Ok((length, _)) = server.recv_from(&mut packet) {
+                if !looks_like_stun(&packet[..length]) && !looks_like_dtls(&packet[..length]) {
+                    server_rtc
+                        .handle_input(Input::Receive(
+                            now,
+                            Receive {
+                                proto: RtcProtocol::Udp,
+                                source: logical_ice_addr(client_addr, 1),
+                                destination: logical_ice_addr(server_addr, 2),
+                                contents: packet[..length].try_into().unwrap(),
+                            },
+                        ))
+                        .unwrap();
+                }
+            }
+            server_rtc.handle_input(Input::Timeout(now)).unwrap();
+            loop {
+                match server_rtc.poll_output().unwrap() {
+                    Output::Timeout(_) => break,
+                    Output::Transmit(transmit) => {
+                        server.send_to(&transmit.contents, client_addr).unwrap();
+                    }
+                    Output::Event(Event::ChannelData(data)) => app_messages.push(data.data),
+                    _ => {}
+                }
+            }
+            while let Ok(event) = event_receiver.try_recv() {
+                assert!(!matches!(event, NvstReceiveEvent::InputReady(_)));
+            }
+        }
+        assert!(app_messages.is_empty(), "application data preceded PLAY");
+        assert!(!input_ready, "input-ready event preceded PLAY");
+        assert!(!session.input_ready.load(Ordering::Acquire));
+        if accept_play {
+            play_sender.try_send(()).unwrap();
+            let until = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < until && (!input_ready || app_messages.is_empty()) {
+                let now = Instant::now();
+                if let Ok((length, _)) = server.recv_from(&mut packet)
+                    && !looks_like_stun(&packet[..length])
+                {
+                    server_rtc
+                        .handle_input(Input::Receive(
+                            now,
+                            Receive {
+                                proto: RtcProtocol::Udp,
+                                source: logical_ice_addr(client_addr, 1),
+                                destination: logical_ice_addr(server_addr, 2),
+                                contents: packet[..length].try_into().unwrap(),
+                            },
+                        ))
+                        .unwrap();
+                }
+                server_rtc.handle_input(Input::Timeout(now)).unwrap();
+                loop {
+                    match server_rtc.poll_output().unwrap() {
+                        Output::Timeout(_) => break,
+                        Output::Transmit(transmit) => {
+                            server.send_to(&transmit.contents, client_addr).unwrap();
+                        }
+                        Output::Event(Event::ChannelData(data)) => app_messages.push(data.data),
+                        _ => {}
+                    }
+                }
+                while let Ok(event) = event_receiver.try_recv() {
+                    input_ready |= matches!(event, NvstReceiveEvent::InputReady(2));
+                }
+            }
+            assert!(input_ready, "accepted PLAY must publish input readiness");
+            assert!(
+                !app_messages.is_empty(),
+                "accepted PLAY must send activation"
+            );
+        } else {
+            drop(play_sender);
+            let until = Instant::now() + Duration::from_secs(1);
+            let mut stopped = false;
+            while Instant::now() < until {
+                if let Ok(event) = event_receiver.recv_timeout(Duration::from_millis(50)) {
+                    stopped |= matches!(
+                        event,
+                        NvstReceiveEvent::Lifecycle(NvstReceiverState::Stopped)
+                    );
+                    assert!(!matches!(event, NvstReceiveEvent::InputReady(_)));
+                    if stopped {
+                        break;
+                    }
+                }
+            }
+            assert!(stopped, "failed PLAY must stop the bundle worker");
+            assert!(!session.input_ready.load(Ordering::Acquire));
+            assert!(app_messages.is_empty());
+        }
+        session.stop();
+    }
+
+    #[test]
+    fn delayed_play_gates_sctp_application_messages_and_input_activation() {
+        play_gate_loopback(true);
+    }
+
+    #[test]
+    fn failed_play_closes_the_gate_without_input_activation() {
+        play_gate_loopback(false);
+    }
+
     #[test]
     fn udp_receiver_repeats_the_negotiated_ping_before_media_arrives() {
         let server = UdpSocket::bind("127.0.0.1:0").expect("server socket");
@@ -11129,6 +11383,7 @@ mod tests {
             Some(client_reservation),
             None,
             Arc::new(HidRuntime::new()),
+            None,
         )
         .expect("UDP receiver");
 

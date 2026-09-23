@@ -373,6 +373,7 @@ fn bundle_receiver_publishes_ping_from_its_real_udp_keepalive_reply() {
         Some(client),
         None,
         Arc::new(HidRuntime::new()),
+        None,
     )
     .unwrap();
     let mut packet = [0; 2048];
