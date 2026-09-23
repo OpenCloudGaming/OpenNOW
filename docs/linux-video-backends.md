@@ -11,6 +11,12 @@ Stream settings to decode with the bundled FFmpeg software decoder. That path ac
 being downgraded, and frames are copied through a bounded CPU NV12 upload. Expect
 higher CPU load and lower frame rates than hardware decoding.
 
+If a VA-API decoder opens but its driver cannot export decoded frames as DMA-BUFs,
+8-bit 4:2:0 SDR keeps hardware decoding and downloads each frame for the bounded
+NV12 upload instead. The native log reports this fallback once; it may increase CPU
+load. HDR and 10-bit frames still require a working GPU export and fail rather
+than silently changing color depth.
+
 ## Check the host driver first
 
 Record the OpenNOW version, package format, distribution, GPU, and whether you use X11
