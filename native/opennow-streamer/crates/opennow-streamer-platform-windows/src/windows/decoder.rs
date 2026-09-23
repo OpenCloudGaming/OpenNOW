@@ -1333,16 +1333,16 @@ mod tests {
             )
             .is_ok()
         );
-        assert!(
-            output_media_format(
-                &media_type,
-                negotiated,
-                aperture,
-                VideoPixelFormat::P010,
-                false,
-            )
-            .is_err()
-        );
+        let sdr_output = output_media_format(
+            &media_type,
+            negotiated,
+            aperture,
+            VideoPixelFormat::P010,
+            false,
+        )
+        .unwrap();
+        assert_eq!(sdr_output.transfer_function, VideoTransferFunction::Sdr);
+        assert_eq!(sdr_output.pixel_format, VideoPixelFormat::P010);
     }
 
     #[test]
@@ -1383,23 +1383,34 @@ mod tests {
             )
             .is_ok()
         );
-        for transfer in [MFVideoTransFunc_709.0, 999] {
-            unsafe {
-                media_type
-                    .SetUINT32(&MF_MT_TRANSFER_FUNCTION, transfer as u32)
-                    .unwrap();
-            }
-            assert!(
-                output_media_format(
-                    &media_type,
-                    negotiated,
-                    aperture,
-                    VideoPixelFormat::P010,
-                    false,
-                )
-                .is_err()
-            );
+        unsafe {
+            media_type
+                .SetUINT32(&MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709.0 as u32)
+                .unwrap();
         }
+        let sdr_output = output_media_format(
+            &media_type,
+            negotiated,
+            aperture,
+            VideoPixelFormat::P010,
+            false,
+        )
+        .unwrap();
+        assert_eq!(sdr_output.transfer_function, VideoTransferFunction::Sdr);
+        assert_eq!(sdr_output.pixel_format, VideoPixelFormat::P010);
+        unsafe {
+            media_type.SetUINT32(&MF_MT_TRANSFER_FUNCTION, 999).unwrap();
+        }
+        assert!(
+            output_media_format(
+                &media_type,
+                negotiated,
+                aperture,
+                VideoPixelFormat::P010,
+                false,
+            )
+            .is_err()
+        );
     }
 
     #[test]
