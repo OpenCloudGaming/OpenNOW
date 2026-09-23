@@ -93,3 +93,44 @@ fn rtsps_exchanges_requests_with_tls13_only_servers() {
 fn rtsps_prefers_tls13_when_both_versions_are_available() {
     exchange_over_tls(rustls::DEFAULT_VERSIONS, rustls::ProtocolVersion::TLSv1_3);
 }
+
+#[test]
+fn partner_endpoint_does_not_bypass_tls_hostname_verification() {
+    ensure_tls_crypto_provider().unwrap();
+    let rcgen::CertifiedKey { cert, signing_key } =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
+    let server_config = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![cert.der().clone()],
+            rustls::pki_types::PrivatePkcs8KeyDer::from(signing_key.serialize_der()).into(),
+        )
+        .unwrap();
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(cert.der().clone()).unwrap();
+    let client_config = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let connection = rustls::ServerConnection::new(Arc::new(server_config)).unwrap();
+        let _ = tungstenite::accept(rustls::StreamOwned::new(connection, stream));
+    });
+    let stream = TcpStream::connect(address).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let failure = tungstenite::client_tls_with_config(
+        format!("wss://partner.example:{}/rtsp", address.port()),
+        stream,
+        None,
+        Some(tungstenite::Connector::Rustls(Arc::new(client_config))),
+    );
+    assert!(failure.is_err());
+    server.join().unwrap();
+}

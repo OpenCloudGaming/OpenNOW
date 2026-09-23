@@ -1631,27 +1631,6 @@ fn validate_context(context: &SessionContext, id: &str) -> Result<(), Value> {
             ));
         }
     }
-    if context
-        .session
-        .connection_info
-        .as_ref()
-        .is_some_and(|connections| {
-            connections.iter().any(|connection| {
-                connection.port == 0
-                    || connection.port > u16::MAX.into()
-                    || connection
-                        .ip
-                        .as_ref()
-                        .is_some_and(|ip| ip.trim().is_empty())
-            })
-        })
-    {
-        return Err(error(
-            Some(id),
-            "invalid-context",
-            "connectionInfo requires ports in 1..=65535 and non-empty hostnames when present",
-        ));
-    }
     serde_json::to_value(context).map_err(|context_error| {
         error(
             Some(id),
@@ -3155,6 +3134,31 @@ mod tests {
             assert_eq!(responses[0]["code"], "invalid-context");
             assert_eq!(lifecycle_state(&engine), State::Idle);
         }
+    }
+
+    #[test]
+    fn irrelevant_cloudmatch_connections_do_not_reject_a_valid_media_endpoint() {
+        let mut context = synthetic_context("seat", json!([]));
+        context["session"]["connectionInfo"] = json!([
+            {"usage":15,"ip":"unused.example","port":0},
+            {"usage":14,"ip":"signaling.example","port":322}
+        ]);
+        context["session"]["mediaConnectionInfo"] =
+            json!({"ip":"203.0.113.20","port":5004,"usage":17});
+        let context: SessionContext = serde_json::from_value(context).unwrap();
+        assert!(validate_context(&context, "start").is_ok());
+
+        let mut invalid_media = context;
+        invalid_media
+            .session
+            .media_connection_info
+            .as_mut()
+            .unwrap()
+            .port = 0;
+        assert_eq!(
+            validate_context(&invalid_media, "start").unwrap_err()["code"],
+            "invalid-context"
+        );
     }
 
     #[test]
