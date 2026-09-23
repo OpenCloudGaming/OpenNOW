@@ -425,6 +425,7 @@ fn udp_receive_loop_reports_frame_progress_recovery_while_partial_packets_contin
             Some(socket),
             None,
             Arc::new(HidRuntime::new()),
+            None,
         )
             .expect("receiver spawns");
 

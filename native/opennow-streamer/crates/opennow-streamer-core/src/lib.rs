@@ -840,6 +840,7 @@ impl Engine {
 
         let mut nvst_events = None;
         let mut nvst_resources = None;
+        let mut nvst_upstream_ready = None;
         if let Some(config) = nvst_config {
             let Some(media_consumer) = self.media_consumer.clone() else {
                 self.stop_media_resources();
@@ -861,6 +862,12 @@ impl Engine {
                 };
             let mjolnir_udp_port = config.mjolnir_udp_port();
             let feedback = config.feedback();
+            let (upstream_ready, upstream_waiter) = if prepared_nvst.is_some() {
+                let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+                (Some(sender), Some(receiver))
+            } else {
+                (None, None)
+            };
             let transport = match spawn_nvst_udp_receiver_with_socket(
                 config.clone(),
                 media_consumer.clone(),
@@ -868,6 +875,7 @@ impl Engine {
                 reserved_socket,
                 reserved_rtc,
                 Arc::clone(&self.hid_runtime),
+                upstream_waiter,
             ) {
                 Ok(transport) => transport,
                 Err(transport_error) => {
@@ -940,6 +948,7 @@ impl Engine {
                 media: self.media_session.as_ref().map(MediaSession::control),
             });
             nvst_events = Some(event_receiver);
+            nvst_upstream_ready = upstream_ready;
         } else {
             self.reserved_nvst_bundle = None;
             self.nvst_hole_punch_socket = None;
@@ -1015,7 +1024,20 @@ impl Engine {
         }
         if let Some(prepared) = prepared_nvst {
             match prepared.finish() {
-                Ok(active) => self.nvst_rtsp = Some(active),
+                Ok(active) => {
+                    self.nvst_rtsp = Some(active);
+                    if nvst_upstream_ready
+                        .take()
+                        .is_some_and(|ready| ready.try_send(()).is_err())
+                    {
+                        self.stop("NVST bundle exited before PLAY completed");
+                        return Err(error(
+                            Some(&command.id),
+                            "nvst-start-failed",
+                            "NVST bundle exited before PLAY completed",
+                        ));
+                    }
+                }
                 Err(negotiation_error) => {
                     self.stop("Native-owned NVST negotiation failed");
                     return Err(error(
@@ -4012,6 +4034,7 @@ mod tests {
             Some(socket),
             None,
             Arc::new(HidRuntime::new()),
+            None,
         )
         .unwrap();
         let resources = ActiveNvstResources {
