@@ -3657,6 +3657,15 @@
     "metadataCached": "Using cached game languages. This is not per-game support or entitlement.",
     "metadataStale": "Using stale cached game languages. %1"
   },
+  "qtUiLabels": {
+    "resolutionStandard": "16:9 STANDARD",
+    "resolutionWidescreen": "16:10 WIDESCREEN",
+    "resolutionUltrawide": "21:9 ULTRAWIDE",
+    "resolutionSuperUltrawide": "32:9 SUPER ULTRAWIDE",
+    "superUltrawide": "Super Ultrawide",
+    "dropdownPick": "ENTER  Pick",
+    "dropdownCancel": "ESC  Cancel"
+  },
   "shortcutEditor": {
     "s_n_is_already_used_by_n": "%1 is already used by %2.",
     "s_n_moved_to_n_n_is_now_not_set": "%1 moved to %2. %3 is now not set.",
