@@ -93,11 +93,7 @@ impl StreamFormat {
             height,
             pixel_format: PixelFormat::Nv12,
             color_range: ColorRange::Limited,
-            color_matrix: if height > 576 {
-                ColorMatrix::Bt709
-            } else {
-                ColorMatrix::Bt601
-            },
+            color_matrix: ColorMatrix::Bt709,
             chroma_location: ChromaLocation::Left,
             color_transfer: ColorTransfer::Sdr,
             color_primaries: ColorPrimaries::Bt709,
@@ -550,6 +546,21 @@ impl DecodedVideoFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sdr_defaults_remain_bt709_when_resolution_changes() {
+        for (width, height) in [(1920, 1080), (1280, 720), (960, 540), (640, 480)] {
+            for format in [
+                StreamFormat::video_default(width, height).unwrap(),
+                StreamFormat::h264_default(width, height).unwrap(),
+            ] {
+                assert_eq!(format.color_matrix, ColorMatrix::Bt709);
+                assert_eq!(format.color_primaries, ColorPrimaries::Bt709);
+                assert_eq!(format.color_range, ColorRange::Limited);
+                assert_eq!(format.color_transfer, ColorTransfer::Sdr);
+            }
+        }
+    }
 
     fn plane(offset: usize, pitch: usize) -> DmaBufPlane {
         DmaBufPlane {
