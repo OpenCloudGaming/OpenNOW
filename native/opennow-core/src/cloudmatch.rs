@@ -1329,6 +1329,7 @@ fn build_create_body(app_id: &str, params: &Value, settings: &Value, device_id: 
     let persistence = setting_bool(settings, "enablePersistingInGameSettings", true)
         && params["supportsInGameSettingsPersistence"].as_bool() == Some(true);
     let metadata = vec![
+        json!({"key":"wssignaling","value":"1"}),
         json!({"key":"SubSessionId","value":random_uuid()}),
         json!({"key":"surroundAudioInfo","value":"2"}),
     ];
@@ -4273,14 +4274,32 @@ mod tests {
     #[test]
     fn session_metadata_matches_the_official_pair_set() {
         let body = build_create_body("12345", &json!({}), &json!({}), "device-id");
-        let mut keys: Vec<&str> = body["sessionRequestData"]["metaData"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|entry| entry["key"].as_str().unwrap())
-            .collect();
-        keys.sort_unstable();
-        assert_eq!(keys, ["SubSessionId", "surroundAudioInfo"]);
+        let metadata = body["sessionRequestData"]["metaData"].as_array().unwrap();
+        assert_eq!(metadata[1]["key"], "SubSessionId");
+        assert_eq!(metadata[1]["value"].as_str().unwrap().len(), 36);
+        assert_eq!(metadata[2], json!({"key":"surroundAudioInfo","value":"2"}));
+    }
+
+    #[test]
+    fn session_metadata_contains_only_owned_values() {
+        let body = build_create_body(
+            "12345",
+            &json!({"zone":"eu-netherlands-north.cloudmatchbeta.nvidiagrid.net",
+                "networkType":"Ethernet", "ClientImeSupport":"1"}),
+            &json!({"resolution":"2560x1440", "windowWidth":2560, "windowHeight":1440}),
+            "device-id",
+        );
+        let metadata = body["sessionRequestData"]["metaData"].as_array().unwrap();
+        assert_eq!(metadata.len(), 3);
+        assert_eq!(metadata[0], json!({"key":"wssignaling","value":"1"}));
+        assert_eq!(metadata[1]["key"], "SubSessionId");
+        assert_eq!(metadata[2]["key"], "surroundAudioInfo");
+        assert!(metadata.iter().all(|entry| {
+            !matches!(
+                entry["key"].as_str(),
+                Some("networkType" | "ClientImeSupport" | "clientPhysicalResolution")
+            ) && !entry["key"].as_str().unwrap().starts_with("latency@")
+        }));
     }
 
     #[test]
