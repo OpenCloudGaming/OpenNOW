@@ -19,7 +19,7 @@ FocusScope {
     property string shortcutEditorKey: ""
     property string shortcutEditorTitle: ""
     property string shortcutEditorMessage: ""
-    property string dropdownTitle: "Choose a value"
+    property string dropdownTitle: qsTr("Choose a value")
     property string dropdownKey: ""
     property var dropdownLabels: []
     property var dropdownValues: []
@@ -31,13 +31,13 @@ FocusScope {
     readonly property real dropdownPanelHeight: dropdownKey === "resolution"
         ? 499 : Math.min(499, 91 + dropdownLabels.length * (dropdownDetails.length ? 64 : 40))
     readonly property var sections: [
-        {name:"Account", icon:"settings-account.svg", color:Theme.violet},
-        {name:"Streaming", icon:"settings-streaming.svg", color:Theme.focus},
-        {name:"Video & display", icon:"settings-video.svg", color:Theme.yellow},
-        {name:"Input & controllers", icon:"settings-input.svg", color:Theme.mint},
-        {name:"Network", icon:"settings-network.svg", color:Theme.coral},
-        {name:"Themes", icon:"settings-themes.svg", color:Theme.face},
-        {name:"Advanced", icon:"settings-advanced.svg", color:"#252A35"},
+        {name:qsTr("Account"), icon:"settings-account.svg", color:Theme.violet},
+        {name:qsTr("Streaming"), icon:"settings-streaming.svg", color:Theme.focus},
+        {name:qsTr("Video & display"), icon:"settings-video.svg", color:Theme.yellow},
+        {name:qsTr("Input & controllers"), icon:"settings-input.svg", color:Theme.mint},
+        {name:qsTr("Network"), icon:"settings-network.svg", color:Theme.coral},
+        {name:qsTr("Themes"), icon:"settings-themes.svg", color:Theme.face},
+        {name:qsTr("Advanced"), icon:"settings-advanced.svg", color:"#252A35"},
         {name:qsTr("Recording"), icon:"settings-video.svg", color:Theme.coral}
     ]
     DesktopSettingsShortcutBinding { id: shortcutBinding }
@@ -70,7 +70,7 @@ FocusScope {
     }
 
     function toggle(title, description, key, onLabel, offLabel) {
-        return {t:title, d:description, v:Boolean(ShellStore.settings[key]) ? (onLabel || "On") : (offLabel || "Off"), key:key, toggle:true, control:"toggle"}
+        return {t:title, d:description, v:Boolean(ShellStore.settings[key]) ? (onLabel || qsTr("On")) : (offLabel || qsTr("Off")), key:key, toggle:true, control:"toggle"}
     }
 
     function shortcut(title, description, key) {
@@ -127,7 +127,7 @@ FocusScope {
         if (aspect === "21:9")
             name = "UW " + height + "p"
         else if (aspect === "32:9")
-            name = "Super Ultrawide"
+            name = qsTr("Super Ultrawide")
         return name + (aspect.length ? " (" + aspect + ")" : "")
             + " · " + parts[0] + "×" + parts[1]
     }
@@ -138,18 +138,18 @@ FocusScope {
 
     function resolutionDropdownItems() {
         return [
-            {kind:"heading", label:"16:9 STANDARD", height:24},
+            {kind:"heading", label:qsTr("16:9 STANDARD"), height:24},
             {kind:"choice", label:"720p", detail:"1280×720", values:["1280x720"], height:38},
             {kind:"choice", label:"1080p", detail:"1920×1080", values:["1920x1080"], height:38},
             {kind:"choice", label:"1440p", detail:"2560×1440 · up to 120", values:["2560x1440"], height:38},
             {kind:"choice", label:"4K", detail:"3840×2160 · up to 120", values:["3840x2160"], height:38},
-            {kind:"heading", label:"16:10 WIDESCREEN", height:28},
+            {kind:"heading", label:qsTr("16:10 WIDESCREEN"), height:28},
             {kind:"choice", label:"720p · WXGA · WSXGA", detail:"1280×800 · 1440×900 · 1680×1050", values:["1280x800","1440x900","1680x1050"], height:38},
             {kind:"choice", label:"1200p · 1600p · 4K", detail:"1920×1200 · 2560×1600 · 3840×2400", values:["1920x1200","2560x1600","3840x2400"], height:38},
-            {kind:"heading", label:"21:9 ULTRAWIDE", height:28},
+            {kind:"heading", label:qsTr("21:9 ULTRAWIDE"), height:28},
             {kind:"choice", label:"UW 1080p · UW 1440p", detail:"2560×1080 · 3440×1440", values:["2560x1080","3440x1440"], height:38},
-            {kind:"heading", label:"32:9 SUPER ULTRAWIDE", height:28},
-            {kind:"choice", label:"Super Ultrawide", detail:"5120×1440", values:["5120x1440"], height:38}
+            {kind:"heading", label:qsTr("32:9 SUPER ULTRAWIDE"), height:28},
+            {kind:"choice", label:qsTr("Super Ultrawide"), detail:"5120×1440", values:["5120x1440"], height:38}
         ]
     }
 
@@ -665,7 +665,7 @@ FocusScope {
                 contentItem: Row {
                     spacing: 12
                     Rectangle { width: 30; height: 30; radius: 10; color: modelData.color
-                        Image { anchors.centerIn: parent; width: modelData.name === "Input & controllers" ? 20 : 18; height: width; source: "qrc:/qt/qml/OpenNOW/res/icons/" + modelData.icon; sourceSize: Qt.size(width, height) }
+                        Image { anchors.centerIn: parent; width: modelData.icon === "settings-input.svg" ? 20 : 18; height: width; source: "qrc:/qt/qml/OpenNOW/res/icons/" + modelData.icon; sourceSize: Qt.size(width, height) }
                     }
                     Text { anchors.verticalCenter: parent.verticalCenter; text: I18n.source(modelData.name, I18n.revision); color: root.selectedSection === index ? Theme.faceText : Theme.label; font.family: Theme.bodyFont; font.pixelSize: 17; font.weight: Font.ExtraBold }
                 }
