@@ -263,6 +263,7 @@ int AcceptanceSession::startSmokeWorkload()
                      || m_arguments.contains(u"--smoke-audio-output"_s)
                      || m_arguments.contains(u"--smoke-background-stream"_s)
                      || m_arguments.contains(u"--smoke-recording"_s)
+                     || m_arguments.contains(u"--smoke-shortcuts"_s)
                      || m_arguments.contains(u"--smoke-collections"_s)
                      || m_arguments.contains(u"--smoke-steam-big-picture"_s)
                      || m_arguments.contains(u"--smoke-persistent-in-game-settings"_s)
@@ -297,6 +298,8 @@ int AcceptanceSession::startSmokeWorkload()
             ? u"qrc:/acceptance/BackgroundStreamAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-recording"_s)
             ? u"qrc:/acceptance/RecordingAcceptance.qml"_s
+            : m_arguments.contains(u"--smoke-shortcuts"_s)
+            ? u"qrc:/acceptance/ShortcutsAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-collections"_s)
             ? u"qrc:/acceptance/CollectionsAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-steam-big-picture"_s)
@@ -332,6 +335,7 @@ int AcceptanceSession::startSmokeWorkload()
             || m_arguments.contains(u"--smoke-catalog-sync"_s)
             || m_arguments.contains(u"--smoke-push-invalidation"_s)
             || m_arguments.contains(u"--smoke-recording"_s)
+            || m_arguments.contains(u"--smoke-shortcuts"_s)
             || m_arguments.contains(u"--smoke-queue-drops"_s)
             || m_arguments.contains(u"--smoke-collections"_s)
             || m_arguments.contains(u"--smoke-steam-big-picture"_s)
@@ -360,6 +364,7 @@ int AcceptanceSession::startSmokeWorkload()
                 });
             }
             if (ok && (m_arguments.contains(u"--smoke-command-search"_s)
+                       || m_arguments.contains(u"--smoke-shortcuts"_s)
                        || m_arguments.contains(u"--smoke-game-details-layout"_s))) {
                 if (m_arguments.contains(u"--smoke-game-details-layout"_s)
                     && m_arguments.contains(u"--details-interactive"_s))

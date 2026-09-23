@@ -2298,6 +2298,21 @@ private slots:
                     bindings, Qt::Key_G, Qt::NoModifier).isEmpty());
     }
 
+    void clearedShortcutsDoNotConsumeGameplayKeys()
+    {
+        const QVariantMap bindings{
+            {QStringLiteral("guide"), QVariantList{QStringLiteral("Ctrl+G")}},
+            {QStringLiteral("toggle-recording"), QVariantList{QString{}}},
+            {QStringLiteral("toggle-stats"), QVariantList{QString{}}},
+        };
+        QVERIFY(StreamVideoItem::shortcutActionForInput(
+                    bindings, Qt::Key_F3, Qt::NoModifier).isEmpty());
+        QVERIFY(StreamVideoItem::shortcutActionForInput(
+                    bindings, Qt::Key_F12, Qt::NoModifier).isEmpty());
+        QCOMPARE(StreamVideoItem::shortcutActionForInput(
+                     bindings, Qt::Key_G, Qt::ControlModifier), QStringLiteral("guide"));
+    }
+
     void microphoneShortcutRequiresExactModifiersAndAnEnabledBinding()
     {
         const QVariantMap bindings{

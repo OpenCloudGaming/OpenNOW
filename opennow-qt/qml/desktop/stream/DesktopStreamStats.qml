@@ -39,7 +39,7 @@ Item {
         || numeric(profile.maxBitrateMbps) || numeric(ShellStore.settings.maxBitrateMbps) || 0)
     readonly property real bitrateUsage: allocatedBitrateMbps > 0 && read("bitrateMbps") !== null
         ? Math.max(0, Math.min(1, read("bitrateMbps") / allocatedBitrateMbps)) : 0
-    readonly property string toggleShortcut: String(ShellStore.settings.shortcutToggleStats || "Ctrl+N")
+    readonly property string toggleShortcut: String(ShellStore.settings.shortcutToggleStats ?? "Ctrl+N")
     readonly property var heroCards: ["Fps", "Ping", "Latency"].map(key => cards.find(card => card.key === key)).filter(card => card !== undefined)
     readonly property var unmeasuredKeys: ["Decode", "Residence", "Latency", "Swap"]
     readonly property var ledgerCards: cards.filter(card => ["Jitter", "Drops", "PacketLoss", "Decode", "Residence", "Swap", "LocalOutputFps"].includes(card.key)
@@ -304,7 +304,7 @@ Item {
             Row {
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 6
-                KeyboardGlyph { shortcut: root.toggleShortcut; keySize: 20; ink: "white" }
+                KeyboardGlyph { visible: root.toggleShortcut !== ""; shortcut: root.toggleShortcut; keySize: 20; ink: "white" }
                 Text { anchors.verticalCenter: parent.verticalCenter; text: qsTr("more"); color: "#8CFFFFFF"; font.family: Theme.bodyFont; font.pixelSize: 11; font.weight: Font.DemiBold }
             }
         }

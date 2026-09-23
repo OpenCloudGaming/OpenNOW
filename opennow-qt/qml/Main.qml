@@ -67,7 +67,7 @@ ApplicationWindow {
     property int visibilityBeforeSession: ApplicationWindow.Windowed
     property int fullscreenRestoreVisibilityBeforeSession: ApplicationWindow.Windowed
     readonly property string configuredStatsShortcut: String(
-        ShellStore.settings.shortcutToggleStats || "Ctrl+N")
+        ShellStore.settings.shortcutToggleStats ?? "Ctrl+N")
     readonly property bool streamStatsShortcutEnabled: activeRoute === "stream"
         && (AppController.overlay === ""
             || AppController.overlay === "desktop-stream-menu"
@@ -193,24 +193,12 @@ ApplicationWindow {
         value: Number(ShellStore.settings.controllerVibrationIntensity ?? 100)
     }
 
-    // StreamVideoItem normally owns gameplay keys, but fullscreen transitions
-    // can briefly leave the Qt focus chain without an active item. Register the
-    // shell-owned stats shortcuts at application scope so F3 never leaks to the
-    // remote game or depends on item focus.
-    Shortcut {
-        objectName: "streamStatsShortcut"
-        sequence: "F3"
-        context: Qt.ApplicationShortcut
-        enabled: window.streamStatsShortcutEnabled
-        onActivated: ShellStore.applyStreamShortcutAction("toggle-stats")
-    }
     Shortcut {
         objectName: "configuredStreamStatsShortcut"
         sequence: window.configuredStatsShortcut
         context: Qt.ApplicationShortcut
         enabled: window.streamStatsShortcutEnabled
             && window.configuredStatsShortcut !== ""
-            && window.configuredStatsShortcut.toUpperCase() !== "F3"
         onActivated: ShellStore.applyStreamShortcutAction("toggle-stats")
     }
     Shortcut {
@@ -223,10 +211,11 @@ ApplicationWindow {
     }
     Shortcut {
         objectName: "streamMicrophoneShortcut"
-        sequence: String(ShellStore.settings.shortcutToggleMicrophone || "Ctrl+Shift+M")
+        sequence: String(ShellStore.settings.shortcutToggleMicrophone ?? "Ctrl+Shift+M")
         context: Qt.ApplicationShortcut
         autoRepeat: false
         enabled: window.activeRoute === "stream" && ShellStore.microphoneToggleAvailable
+            && sequence !== ""
         onActivated: ShellStore.toggleMicrophone()
     }
 
@@ -612,7 +601,10 @@ ApplicationWindow {
                 event.accepted = true
                 return
             }
-            if (event.key === Qt.Key_F11 && window.activeRoute === "stream") {
+            if (event.key === Qt.Key_F11 && window.activeRoute === "stream"
+                    && (ShellStore.settings.shortcutToggleFullscreen ?? "F11") === "F11"
+                    && (event.modifiers & (Qt.ControlModifier | Qt.ShiftModifier
+                        | Qt.AltModifier | Qt.MetaModifier)) === Qt.NoModifier) {
                 window.toggleFullscreen()
                 event.accepted = true
             } else if (event.key === Qt.Key_F10) {

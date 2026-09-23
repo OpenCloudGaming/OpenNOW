@@ -277,7 +277,7 @@ qt_add_qml_module(opennow-qt
         qml/desktop/settings/controls/DesktopSettingsDropdown.qml
         qml/desktop/settings/controls/DesktopSettingsField.qml
         qml/desktop/settings/controls/DesktopSettingsShortcutBinding.qml
-        qml/desktop/settings/controls/DesktopSettingsShortcutEditor.qml
+        qml/desktop/settings/controls/DesktopSettingsShortcutRow.qml
         qml/desktop/settings/controls/DesktopSettingsIcon.qml
         qml/desktop/settings/controls/DesktopSettingsPanel.qml
         qml/desktop/settings/controls/DesktopSettingsResolution.qml

@@ -554,7 +554,7 @@ FocusScope {
         } else if (row.action === "shortcut-editor") {
             shortcutEditorKey = row.key
             shortcutEditorTitle = row.t
-            shortcutEditorMessage = qsTr("Press the new shortcut. Escape cancels.")
+            shortcutEditorMessage = qsTr("Press a new shortcut or clear this binding. Escape cancels.")
             shortcutEditorOpen = true
         } else if (row.action === "select-streamer") {
             streamerExecutableDialog.open()
@@ -1027,7 +1027,7 @@ FocusScope {
         z: 41
         anchors.centerIn: parent
         width: 560
-        height: 244
+        height: 290
         panelRadius: 30
         strong: true
         FocusScope {
@@ -1045,10 +1045,14 @@ FocusScope {
                     border.width: shortcutCapture.activeFocus ? 3 : 1
                     Text { anchors.centerIn: parent; text: qsTr("Press a key combination…"); color: Theme.label; font.family: Theme.monoFont; font.pixelSize: 18; font.weight: Font.Bold }
                 }
+                Text { width: parent.width; text: I18n.source(root.shortcutEditorMessage, I18n.revision); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 13; wrapMode: Text.WordWrap }
                 Row {
                     spacing: 14
-                    Text { width: 350; anchors.verticalCenter: parent.verticalCenter; text: I18n.source(root.shortcutEditorMessage, I18n.revision); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 13; wrapMode: Text.WordWrap }
                     GlassButton { width: 130; height: 44; text: qsTr("Cancel"); glyph: "B"; onClicked: root.shortcutEditorOpen = false }
+                    GlassButton { width: 130; height: 44; text: qsTr("Clear shortcut"); onClicked: {
+                        ShellStore.setSetting(root.shortcutEditorKey, "")
+                        root.shortcutEditorOpen = false
+                    } }
                 }
             }
         }

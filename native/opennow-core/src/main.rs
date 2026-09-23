@@ -472,6 +472,24 @@ fn dispatch(method: &str, params: &Value, core: &AppCore) -> DispatchResult {
             }
             Ok((event.clone(), Some(("settings.changed", event))))
         }
+        "settings.shortcuts.update" => {
+            let bindings = core
+                .settings
+                .lock()
+                .expect("settings poisoned")
+                .set_shortcuts(&params["bindings"])
+                .map_err(|message| ("invalid_setting".to_owned(), message))?;
+            let (key, value) = bindings
+                .iter()
+                .next()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .expect("shortcut transaction applies at least one binding");
+            let event = json!({"key":key, "value":value, "changes":bindings});
+            Ok((
+                json!({"bindings":bindings}),
+                Some(("settings.changed", event)),
+            ))
+        }
         "settings.reset" => {
             let values = core
                 .settings

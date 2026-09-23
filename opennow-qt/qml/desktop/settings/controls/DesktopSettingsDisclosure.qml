@@ -7,6 +7,7 @@ Item {
     id: root
     property bool expanded: false
     property alias sourceComponent: content.sourceComponent
+    readonly property alias item: content.item
     readonly property real revealProgress: reveal.progress
     implicitHeight: content.height * reveal.progress
     visible: reveal.present

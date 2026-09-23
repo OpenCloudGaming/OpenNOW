@@ -271,7 +271,7 @@ FocusScope {
             anchors.centerIn: parent
             spacing: 22
             ControllerGlyph { glyph: "GUIDE"; label: qsTr("Session") }
-            ControllerGlyph { glyph: "F3"; keyboard: true; label: qsTr("Stats") }
+            ControllerGlyph { visible: ShellStore.settings.shortcutToggleStats !== ""; glyph: String(ShellStore.settings.shortcutToggleStats ?? "Ctrl+N"); keyboard: true; label: qsTr("Stats") }
             ControllerGlyph { glyph: "F11"; keyboard: true; label: qsTr("Fullscreen") }
         }
     }

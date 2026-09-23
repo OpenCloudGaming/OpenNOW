@@ -11,6 +11,19 @@ const CONSOLE_POLICY_VERSION: &str = "qtConsoleModePolicyVersion";
 const WINDOWS_GPU_DEVICE_ID: &str = "windowsGpuDeviceId";
 const MAXIMUM_WINDOWS_GPU_DEVICE_ID_BYTES: usize = 1024;
 const MAXIMUM_BOOTSTRAP_SETTINGS_BYTES: u64 = 1024 * 1024;
+const MAXIMUM_SHORTCUT_BYTES: usize = 80;
+const SHORTCUT_KEYS: [&str; 9] = [
+    "shortcutToggleStats",
+    "shortcutTogglePointerLock",
+    "shortcutToggleFullscreen",
+    "shortcutStopStream",
+    "shortcutToggleAntiAfk",
+    "shortcutToggleMicrophone",
+    "shortcutScreenshot",
+    "shortcutToggleRecording",
+    "shortcutSaveClip",
+];
+const RESERVED_SHORTCUTS: [&str; 2] = ["Ctrl+G", "Shift+F3"];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LoadPolicy {
@@ -249,6 +262,69 @@ impl SettingsStore {
             return Err(format!("Could not reset settings: {error}"));
         }
         Ok(self.all())
+    }
+
+    pub fn set_shortcuts(&mut self, bindings: &Value) -> Result<Map<String, Value>, String> {
+        let bindings = bindings
+            .as_object()
+            .filter(|bindings| !bindings.is_empty())
+            .ok_or_else(|| "Shortcut bindings must be a non-empty object".to_owned())?;
+        let mut applied = Map::new();
+        for (key, value) in bindings {
+            if !SHORTCUT_KEYS.contains(&key.as_str()) {
+                return Err(format!("Unknown shortcut setting: {key}"));
+            }
+            let chord = value
+                .as_str()
+                .ok_or_else(|| format!("{key} must be a string"))?
+                .trim();
+            if chord.len() > MAXIMUM_SHORTCUT_BYTES {
+                return Err(format!("{key} is too long"));
+            }
+            if RESERVED_SHORTCUTS
+                .iter()
+                .any(|reserved| canonical_shortcut(reserved) == canonical_shortcut(chord))
+            {
+                return Err(format!("{chord} is reserved"));
+            }
+            applied.insert(key.clone(), Value::String(chord.to_owned()));
+        }
+        let chord_of = |key: &str| {
+            applied
+                .get(key)
+                .or_else(|| self.values.get(key))
+                .and_then(Value::as_str)
+                .map(canonical_shortcut)
+                .unwrap_or_default()
+        };
+        for changed in applied.keys() {
+            let chord = chord_of(changed);
+            if chord.is_empty() {
+                continue;
+            }
+            if let Some(owner) = SHORTCUT_KEYS
+                .iter()
+                .find(|key| **key != changed.as_str() && chord_of(key) == chord)
+            {
+                return Err(format!(
+                    "{} is assigned to both {changed} and {owner}",
+                    applied[changed].as_str().unwrap_or_default()
+                ));
+            }
+        }
+        let previous_values = self.values.clone();
+        for (key, value) in &applied {
+            self.values.insert(key.clone(), value.clone());
+        }
+        self.normalize();
+        if let Err(error) = self.save() {
+            self.values = previous_values;
+            return Err(format!("Could not save settings: {error}"));
+        }
+        Ok(applied
+            .keys()
+            .map(|key| (key.clone(), self.values[key].clone()))
+            .collect())
     }
 
     pub fn set_provider_region(&mut self, provider: &str, value: Value) -> Result<Value, String> {
@@ -785,6 +861,25 @@ fn normalize_optional_integer(
     );
 }
 
+fn canonical_shortcut(chord: &str) -> String {
+    let mut parts = chord
+        .split('+')
+        .map(|part| part.trim().to_ascii_lowercase())
+        .map(|part| {
+            if part == "control" {
+                "ctrl".to_owned()
+            } else {
+                part
+            }
+        })
+        .collect::<Vec<_>>();
+    let key = parts.pop().unwrap_or_default();
+    parts.sort();
+    parts.dedup();
+    parts.push(key);
+    parts.join("+")
+}
+
 fn normalize_bounded_strings(values: &mut Map<String, Value>) {
     for (key, maximum) in [
         ("region", 256_usize),
@@ -804,17 +899,7 @@ fn normalize_bounded_strings(values: &mut Map<String, Value>) {
             .collect::<String>();
         values.insert(key.to_owned(), Value::String(value));
     }
-    for key in [
-        "shortcutToggleStats",
-        "shortcutTogglePointerLock",
-        "shortcutToggleFullscreen",
-        "shortcutStopStream",
-        "shortcutToggleAntiAfk",
-        "shortcutToggleMicrophone",
-        "shortcutScreenshot",
-        "shortcutToggleRecording",
-        "shortcutSaveClip",
-    ] {
+    for key in SHORTCUT_KEYS {
         let value = values
             .get(key)
             .and_then(Value::as_str)
@@ -1513,6 +1598,55 @@ mod tests {
     }
 
     #[test]
+    fn shortcut_transaction_moves_chords_atomically() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = SettingsStore::load(Some(directory.path().to_owned())).unwrap();
+        let applied = store
+            .set_shortcuts(&json!({"shortcutToggleStats":"Ctrl+F11","shortcutScreenshot":""}))
+            .unwrap();
+        assert_eq!(applied["shortcutToggleStats"], json!("Ctrl+F11"));
+        assert_eq!(applied["shortcutScreenshot"], json!(""));
+        let reloaded = SettingsStore::load(Some(directory.path().to_owned())).unwrap();
+        assert_eq!(reloaded.all()["shortcutToggleStats"], json!("Ctrl+F11"));
+        assert_eq!(reloaded.all()["shortcutScreenshot"], json!(""));
+
+        let before = store.all();
+        for rejected in [
+            json!({"shortcutToggleFullscreen":"ctrl + f11"}),
+            json!({"shortcutToggleFullscreen":"Ctrl+G"}),
+            json!({"shortcutSaveClip":"Shift+F3"}),
+            json!({"shortcutToggleStats":"F1","appTheme":"light"}),
+            json!({"shortcutToggleStats":7}),
+            json!({"shortcutToggleStats":"x".repeat(81)}),
+            json!({}),
+            json!([]),
+        ] {
+            assert!(store.set_shortcuts(&rejected).is_err(), "{rejected}");
+            assert_eq!(store.all(), before, "{rejected} must not partially apply");
+        }
+
+        store.set("shortcutToggleRecording", json!("F8")).unwrap();
+        store
+            .set_shortcuts(&json!({"shortcutSaveClip":"Alt+F12"}))
+            .expect("an existing duplicate must not block unrelated shortcut edits");
+        assert!(
+            store
+                .set_shortcuts(&json!({"shortcutToggleRecording":"F8"}))
+                .is_err()
+        );
+
+        let defaults = defaults();
+        let reset = SHORTCUT_KEYS
+            .iter()
+            .map(|key| (key.to_string(), defaults[*key].clone()))
+            .collect::<Map<_, _>>();
+        store.set_shortcuts(&Value::Object(reset)).unwrap();
+        for key in SHORTCUT_KEYS {
+            assert_eq!(store.all()[key], defaults[key]);
+        }
+    }
+
+    #[test]
     fn replay_is_opt_in_bounded_and_persisted() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1529,11 +1663,13 @@ mod tests {
         store.set("replayBufferSeconds", json!(999)).unwrap();
         store.set("replayBufferMemoryMiB", json!(1)).unwrap();
         store.set("shortcutSaveClip", json!("Alt+F12")).unwrap();
+        store.set("shortcutToggleRecording", json!("")).unwrap();
         let mut reloaded = SettingsStore::load(Some(directory.clone())).unwrap();
         assert_eq!(reloaded.all()["replayBufferEnabled"], json!(true));
         assert_eq!(reloaded.all()["replayBufferSeconds"], json!(120));
         assert_eq!(reloaded.all()["replayBufferMemoryMiB"], json!(64));
         assert_eq!(reloaded.all()["shortcutSaveClip"], json!("Alt+F12"));
+        assert_eq!(reloaded.all()["shortcutToggleRecording"], json!(""));
         reloaded.set("replayBufferSeconds", json!(-1)).unwrap();
         reloaded.set("replayBufferMemoryMiB", json!(9999)).unwrap();
         assert_eq!(reloaded.all()["replayBufferSeconds"], json!(15));

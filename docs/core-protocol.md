@@ -344,6 +344,7 @@ and artwork only near the viewport, using the section's local category ID
 - `settings.get`
 - `settings.choices.get`
 - `settings.set`
+- `settings.shortcuts.update`
 - `settings.reset`
 - `auth.providers.list`
 - `auth.session.get`
@@ -978,6 +979,17 @@ Setting `appAccentColor` enables `themeAccentOverride` in the same save. The
 `settings.set` response and `settings.changed` event include these coupled values
 in `changes`; clients can still override appearance or restore the pack accent
 by setting `appTheme` or `themeAccentOverride` independently.
+
+`settings.shortcuts.update` writes stream shortcut bindings as one transaction:
+`{"bindings":{"shortcutToggleStats":"Ctrl+F11","shortcutScreenshot":""}}`. Only the
+existing `shortcut*` setting keys are accepted, each value is a string of at most 80
+bytes (empty means unbound), and `Ctrl+G` and `Shift+F3` stay reserved. After the
+change is merged, no two non-empty bindings may share a chord (case and modifier
+order are ignored). Any rejection leaves every binding unchanged. The core persists
+the whole map in one save and rolls it back in memory if the save fails. The response is
+`{"bindings":{...applied}}`; the `settings.changed` event names the first applied
+key and carries the full map in `changes`. Qt uses this for moving a chord from one
+command to another, clearing, resetting one binding, and resetting all bindings.
 
 Each successful settings write publishes `settings.changed` before its own
 response. A client that starts its next per-key write from that response has

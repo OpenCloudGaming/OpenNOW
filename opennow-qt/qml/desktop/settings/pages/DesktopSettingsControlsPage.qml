@@ -87,9 +87,9 @@ Column {
             expanded: controlsRoot.shortcutsOpen
             onExpansionRequested: controlsRoot.shortcutsOpen = !controlsRoot.shortcutsOpen
             Row { spacing: DesktopTokens.px(10)
-                DesktopKeyHint { keyText: String(controlsRoot.settingsScreen.valueSetting("shortcutToggleStats","Ctrl+N")); label: qsTr("stats") }
+                DesktopKeyHint { visible: ShellStore.settings.shortcutToggleStats !== ""; keyText: String(ShellStore.settings.shortcutToggleStats ?? "Ctrl+N"); label: qsTr("stats") }
                 DesktopKeyHint { keyText: "Ctrl G"; label: qsTr("menu") }
-                DesktopKeyHint { keyText: "F11"; label: qsTr("fullscreen") }
+                DesktopKeyHint { visible: ShellStore.settings.shortcutToggleFullscreen !== ""; keyText: String(ShellStore.settings.shortcutToggleFullscreen ?? "F11"); label: qsTr("fullscreen") }
             }
         }
     }
