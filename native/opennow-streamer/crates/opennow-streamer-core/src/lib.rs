@@ -1904,9 +1904,17 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
             }
         }
         if let Some(timings) = feedback_state.decode_timings {
+            let last_assembled_at = if timings.in_flight == 0 {
+                resources
+                    .frame_stage_timings()
+                    .and_then(|stage| stage.last_assembled_at)
+            } else {
+                None
+            };
             let decode_event = feedback_state.decode_progress.poll(
                 &timings,
                 feedback_state.transport_frame_progress_stalled,
+                last_assembled_at,
                 Instant::now(),
                 resources.decode_progress_policy(),
             );
