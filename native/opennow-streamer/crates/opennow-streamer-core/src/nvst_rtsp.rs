@@ -85,6 +85,105 @@ struct VideoSetup {
     peer: (String, u16, u16),
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum QosVersionOffer {
+    #[default]
+    Missing,
+    Malformed,
+    Version(u8),
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct VideoQosOffers {
+    feedback: QosVersionOffer,
+    timings: QosVersionOffer,
+    blob_stats: QosVersionOffer,
+}
+
+impl VideoQosOffers {
+    fn uses_v5_timings(&self) -> bool {
+        matches!(self.timings, QosVersionOffer::Version(5..))
+            && matches!(self.blob_stats, QosVersionOffer::Version(9..))
+    }
+
+    fn validate(&self) -> Result<(), NvstRtspError> {
+        for (offer, minimum) in [(self.feedback, 7), (self.timings, 5), (self.blob_stats, 9)] {
+            match offer {
+                QosVersionOffer::Malformed => {
+                    return Err(NvstRtspError::new(
+                        "nvst-qos-version-invalid",
+                        "Server advertised a malformed QoS version",
+                    ));
+                }
+                QosVersionOffer::Version(version) if version < minimum => {
+                    return Err(NvstRtspError::new(
+                        "nvst-qos-version-unsupported",
+                        "Server requires an older QoS wire format that is not implemented",
+                    ));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_pacing(&self, sdp: &str) -> Result<(), NvstRtspError> {
+        if self.uses_v5_timings()
+            && [
+                ("video[0].framePacing.mode", "2"),
+                ("video[0].framePacing.feedbackMode", "0"),
+            ]
+            .into_iter()
+            .any(|(name, expected)| sdp_attribute(sdp, name).is_some_and(|value| value != expected))
+        {
+            return Err(NvstRtspError::new(
+                "nvst-qos-pacing-unsupported",
+                "Server pacing mode conflicts with the negotiated QoS timings version",
+            ));
+        }
+        Ok(())
+    }
+
+    fn record(&mut self, parameter: &str) {
+        let parameter = parameter.trim();
+        let parameter = parameter.strip_prefix("a=").unwrap_or(parameter);
+        let (name, raw_version) = parameter.split_once(['=', ':']).unwrap_or((parameter, ""));
+        let offer = match name.trim() {
+            name if name.eq_ignore_ascii_case("nv-video-qos-feedback-version") => {
+                &mut self.feedback
+            }
+            name if name.eq_ignore_ascii_case("nv-video-qos-timings-version") => &mut self.timings,
+            name if name.eq_ignore_ascii_case("nv-video-qos-blob-stats-version") => {
+                &mut self.blob_stats
+            }
+            _ => return,
+        };
+        let raw_version = raw_version.trim();
+        *offer = if matches!(offer, QosVersionOffer::Missing)
+            && !raw_version.is_empty()
+            && raw_version.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            raw_version
+                .parse::<u8>()
+                .map_or(QosVersionOffer::Malformed, QosVersionOffer::Version)
+        } else {
+            QosVersionOffer::Malformed
+        };
+    }
+
+    fn add_to_handoff(&self, handoff: &mut Value) {
+        if let QosVersionOffer::Version(version) = self.feedback {
+            handoff["qosFeedbackVersion"] = json!(version);
+        }
+        if let QosVersionOffer::Version(version) = self.timings {
+            handoff["qosTimingsVersion"] = json!(version);
+        }
+        if let QosVersionOffer::Version(version) = self.blob_stats {
+            handoff["qosBlobStatsVersion"] = json!(version);
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 struct NvstControlPing {
     sample: Arc<Mutex<Option<(Instant, Duration)>>>,
@@ -916,6 +1015,9 @@ fn prepare_on_endpoint(
             "DESCRIBE did not include a video control stream",
         )
     })?;
+    let video_qos_offers = video_qos_offers(&describe.body);
+    video_qos_offers.validate()?;
+    video_qos_offers.validate_pacing(&describe.body)?;
     let described_ping_version = sdp_attribute(&describe.body, "general.pingVersion")
         .and_then(|value| value.parse::<u8>().ok())
         .unwrap_or(6);
@@ -1071,6 +1173,7 @@ fn prepare_on_endpoint(
         "timeoutMs":VIDEO_TIMEOUT_MS,
         "startupTimeoutMs":VIDEO_STARTUP_TIMEOUT_MS
     });
+    video_qos_offers.add_to_handoff(&mut handoff);
     set_bundle_natt_username(&mut handoff, &describe.body, ping_version);
     if let Some(media) = context.session.media_connection_info.as_ref() {
         handoff["bundlePeerIp"] = json!(media.ip);
@@ -1116,6 +1219,7 @@ fn prepare_on_endpoint(
                 video_packet_size,
                 rtcp_on_sctp,
                 microphone_available,
+                qos_timings_v5: video_qos_offers.uses_v5_timings(),
             },
         ),
         &describe.body,
@@ -1161,6 +1265,7 @@ struct AnnounceParams<'a> {
     video_packet_size: usize,
     rtcp_on_sctp: bool,
     microphone_available: bool,
+    qos_timings_v5: bool,
 }
 
 fn negotiate_microphone(context: &SessionContext, describe: &str) -> bool {
@@ -1310,8 +1415,14 @@ fn build_announce(context: &SessionContext, params: AnnounceParams<'_>) -> Strin
         "a=x-nv-video[0].rtpNackQueueLength:2048".to_owned(),
         "a=x-nv-video[0].rtpNackQueueMaxPackets:1024".to_owned(),
         "a=x-nv-video[0].rtpNackMaxPacketCount:64".to_owned(),
-        "a=x-nv-video[0].framePacing.mode:1".to_owned(),
-        "a=x-nv-video[0].framePacing.feedbackMode:1".to_owned(),
+        format!(
+            "a=x-nv-video[0].framePacing.mode:{}",
+            if params.qos_timings_v5 { 2 } else { 1 }
+        ),
+        format!(
+            "a=x-nv-video[0].framePacing.feedbackMode:{}",
+            if params.qos_timings_v5 { 0 } else { 1 }
+        ),
         "a=x-nv-video[0].maxNumReferenceFrames:0".to_owned(),
         "a=x-nv-video[0].prefilterParams.prefilterMode:0".to_owned(),
         "a=x-nv-video[0].prefilterParams.prefilterModel:4".to_owned(),
@@ -1758,13 +1869,24 @@ fn describe_media_shape(sdp: &str) -> String {
                 sections.push(format!("{media}/{port}"));
             }
             let mut parts = media.split_whitespace();
+            let kind = parts.next().unwrap_or("");
+            let media = if kind.eq_ignore_ascii_case("video") {
+                "video"
+            } else if kind.eq_ignore_ascii_case("audio") {
+                "audio"
+            } else if kind.eq_ignore_ascii_case("application") {
+                "application"
+            } else {
+                "other"
+            };
             current = Some((
-                parts.next().unwrap_or("?").to_owned(),
-                parts.next().unwrap_or("?").to_owned(),
+                media.to_owned(),
+                parts
+                    .next()
+                    .and_then(|port| port.parse::<u16>().ok())
+                    .map_or_else(|| "?".to_owned(), |port| port.to_string()),
             ));
-            in_video = current
-                .as_ref()
-                .is_some_and(|(media, _)| media.eq_ignore_ascii_case("video"));
+            in_video = media == "video";
         } else if line.starts_with("c=") {
             connection_present = true;
         } else if let Some(value) = line.strip_prefix("a=control:") {
@@ -1813,6 +1935,50 @@ fn media_control(sdp: &str, kind: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn video_qos_offers(sdp: &str) -> VideoQosOffers {
+    let mut offers = VideoQosOffers::default();
+    let mut video_formats = Vec::new();
+    let mut in_video = false;
+    for line in sdp
+        .split("||")
+        .next()
+        .unwrap_or_default()
+        .split(";;")
+        .next()
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+    {
+        if let Some(media) = line.strip_prefix("m=") {
+            let mut parts = media.split_whitespace();
+            if in_video {
+                break;
+            }
+            in_video = parts
+                .next()
+                .is_some_and(|kind| kind.eq_ignore_ascii_case("video"));
+            if in_video {
+                video_formats = parts.skip(2).collect();
+            }
+        } else if in_video {
+            if let Some(fmtp) = line.strip_prefix("a=fmtp:") {
+                let mut parts = fmtp.splitn(2, char::is_whitespace);
+                if parts
+                    .next()
+                    .is_some_and(|format| video_formats.contains(&format))
+                {
+                    for parameter in parts.next().unwrap_or_default().split(';') {
+                        offers.record(parameter);
+                    }
+                }
+            } else if line.starts_with("a=") {
+                offers.record(line);
+            }
+        }
+    }
+    offers
 }
 
 fn parse_hid_device_mask(value: &str) -> u32 {
@@ -2276,6 +2442,7 @@ mod tests {
                 video_packet_size: 1280,
                 rtcp_on_sctp: true,
                 microphone_available: false,
+                qos_timings_v5: false,
             },
         );
         assert!(sdp.contains("a=x-nv-video[0].maxFPS:360"));
@@ -2298,10 +2465,36 @@ mod tests {
                 video_packet_size: 1280,
                 rtcp_on_sctp: true,
                 microphone_available: false,
+                qos_timings_v5: false,
             },
         );
         assert!(sdp.contains("a=x-nv-video[0].maxFPS:360"));
         assert!(!sdp.contains("a=x-nv-video[0].maxFPS:600"));
+    }
+
+    #[test]
+    fn announce_with_v5_timings_does_not_request_legacy_pacing_feedback() {
+        let value = context();
+        let sdp = build_announce(
+            &value,
+            AnnounceParams {
+                stream: stream_config(&value),
+                key: &"01".repeat(32),
+                key_id: 7,
+                port: 49006,
+                address: "192.0.2.10",
+                ufrag: "abcd",
+                password: "abcdefghijklmnopqrstuv",
+                fingerprint: "AA:BB",
+                video_port: 5004,
+                video_packet_size: 1280,
+                rtcp_on_sctp: true,
+                microphone_available: false,
+                qos_timings_v5: true,
+            },
+        );
+        assert!(sdp.contains("a=x-nv-video[0].framePacing.mode:2\r\n"));
+        assert!(sdp.contains("a=x-nv-video[0].framePacing.feedbackMode:0\r\n"));
     }
 
     #[test]
@@ -2322,6 +2515,7 @@ mod tests {
                 video_packet_size: 1280,
                 rtcp_on_sctp: true,
                 microphone_available: false,
+                qos_timings_v5: false,
             },
         );
         assert!(sdp.contains("a=x-nv-video[0].maxFPS:120"));
@@ -2359,6 +2553,7 @@ mod tests {
                     video_packet_size,
                     rtcp_on_sctp: true,
                     microphone_available: false,
+                    qos_timings_v5: false,
                 },
             );
             assert_eq!(
@@ -2395,6 +2590,7 @@ mod tests {
                 video_packet_size: packet_size,
                 rtcp_on_sctp: true,
                 microphone_available: false,
+                qos_timings_v5: false,
             },
         );
         assert_eq!(
@@ -2458,6 +2654,7 @@ mod tests {
                     video_packet_size: 1280,
                     rtcp_on_sctp: true,
                     microphone_available: false,
+                    qos_timings_v5: false,
                 },
             );
             assert!(sdp.contains(&format!("a=x-nv-vqos[0].dynamicStreamingMode:{policy}\r\n")));
@@ -2493,6 +2690,7 @@ mod tests {
                     video_packet_size: 1280,
                     rtcp_on_sctp: true,
                     microphone_available: false,
+                    qos_timings_v5: false,
                 },
             );
             // HDR carries an explicit :1; SDR omits the line, like the official client.
@@ -2522,6 +2720,7 @@ mod tests {
                 video_packet_size: 1280,
                 rtcp_on_sctp: true,
                 microphone_available: false,
+                qos_timings_v5: false,
             },
         );
         assert!(sdp.contains("a=x-nv-video[0].initialBitrateKbps:200000"));
@@ -2549,6 +2748,7 @@ mod tests {
                 video_packet_size: 1280,
                 rtcp_on_sctp: true,
                 microphone_available: false,
+                qos_timings_v5: false,
             },
         );
         assert!(sdp.contains("a=x-nv-video[0].initialBitrateKbps:220"));
@@ -2587,6 +2787,7 @@ mod tests {
                         video_packet_size: 1280,
                         rtcp_on_sctp: true,
                         microphone_available: available,
+                        qos_timings_v5: false,
                     },
                 );
                 assert_eq!(
@@ -2667,6 +2868,7 @@ mod tests {
                     video_packet_size: 1280,
                     rtcp_on_sctp: true,
                     microphone_available: false,
+                    qos_timings_v5: false,
                 },
             );
             assert_eq!(
@@ -2719,6 +2921,7 @@ mod tests {
                 video_packet_size: 1280,
                 rtcp_on_sctp: true,
                 microphone_available: true,
+                qos_timings_v5: false,
             },
         );
         for server_value in ["0", "23"] {
@@ -2851,6 +3054,156 @@ mod tests {
             None
         );
         assert_eq!(sdp_attribute("v=0\r\n", "general.disablePlay"), None);
+    }
+
+    #[test]
+    fn describe_video_qos_offers_parse_official_fmtp_and_attributes() {
+        let describe = "v=0\r\na=nv-video-qos-feedback-version:99\r\n\
+            m=audio 5006 RTP/SAVPF 111\r\na=fmtp:111 nv-video-qos-feedback-version=99\r\n\
+            m=video 5004 RTP/SAVPF 96 97\r\n\
+            a=fmtp:111 nv-video-qos-feedback-version=99\r\n\
+            a=fmtp:96 packetization-mode=1; nv-video-qos-feedback-version=7; nv-video-qos-timings-version=5\r\n\
+            a=nv-video-qos-blob-stats-version:9\r\n\
+            m=application 6000 UDP/DTLS/SCTP webrtc-datachannel\r\n\
+            a=nv-video-qos-blob-stats-version:99\r\n";
+        let offers = video_qos_offers(describe);
+        assert_eq!(
+            offers,
+            VideoQosOffers {
+                feedback: QosVersionOffer::Version(7),
+                timings: QosVersionOffer::Version(5),
+                blob_stats: QosVersionOffer::Version(9),
+            }
+        );
+        let mut handoff = json!({});
+        offers.add_to_handoff(&mut handoff);
+        assert_eq!(
+            handoff,
+            json!({"qosFeedbackVersion":7,"qosTimingsVersion":5,"qosBlobStatsVersion":9})
+        );
+        assert!(offers.uses_v5_timings());
+        offers
+            .validate_pacing(
+                "m=video 5004 RTP/SAVPF 96\r\na=x-nv-video[0].framePacing.mode:2\r\na=x-nv-video[0].framePacing.feedbackMode:0\r\n",
+            )
+            .unwrap();
+        assert_eq!(
+            offers
+                .validate_pacing(
+                    "m=video 5004 RTP/SAVPF 96\r\na=x-nv-video[0].framePacing.feedbackMode:1\r\n"
+                )
+                .unwrap_err()
+                .code,
+            "nvst-qos-pacing-unsupported"
+        );
+    }
+
+    #[test]
+    fn describe_video_qos_offers_retain_lower_and_higher_versions() {
+        for (feedback, timings, blob_stats) in [(5, 3, 8), (8, 6, 10), (0, 255, 9)] {
+            let describe = format!(
+                "v=0\r\nm=video 5004 RTP/SAVPF 96\r\n\
+                 a=fmtp:96 nv-video-qos-feedback-version={feedback};nv-video-qos-timings-version={timings};nv-video-qos-blob-stats-version={blob_stats}\r\n"
+            );
+            let offers = video_qos_offers(&describe);
+            assert_eq!(offers.feedback, QosVersionOffer::Version(feedback));
+            assert_eq!(offers.timings, QosVersionOffer::Version(timings));
+            assert_eq!(offers.blob_stats, QosVersionOffer::Version(blob_stats));
+            if feedback < 7 || timings < 5 || blob_stats < 9 {
+                assert_eq!(
+                    offers.validate().unwrap_err().code,
+                    "nvst-qos-version-unsupported"
+                );
+            } else {
+                offers.validate().unwrap();
+            }
+            let mut handoff = json!({});
+            offers.add_to_handoff(&mut handoff);
+            assert_eq!(handoff["qosFeedbackVersion"], feedback);
+            assert_eq!(handoff["qosTimingsVersion"], timings);
+            assert_eq!(handoff["qosBlobStatsVersion"], blob_stats);
+        }
+    }
+
+    #[test]
+    fn describe_video_qos_offers_distinguish_malformed_from_missing() {
+        for malformed in [
+            "",
+            "-1",
+            "+7",
+            "7x",
+            "256",
+            "999999999999999999999999999999",
+        ] {
+            let describe = format!(
+                "m=video 5004 RTP/SAVPF 96\r\n\
+                 a=fmtp:96 nv-video-qos-feedback-version={malformed};nv-video-qos-timings-version=5\r\n"
+            );
+            let offers = video_qos_offers(&describe);
+            assert_eq!(offers.feedback, QosVersionOffer::Malformed, "{malformed}");
+            assert_eq!(
+                offers.validate().unwrap_err().code,
+                "nvst-qos-version-invalid"
+            );
+            assert_eq!(offers.timings, QosVersionOffer::Version(5));
+            assert_eq!(offers.blob_stats, QosVersionOffer::Missing);
+            let mut handoff = json!({});
+            offers.add_to_handoff(&mut handoff);
+            assert_eq!(handoff, json!({"qosTimingsVersion":5}));
+        }
+        let offers = video_qos_offers(
+            "m=video 5004 RTP/SAVPF 96\r\na=nv-video-qos-feedback-version\r\n\
+             a=nv-video-qos-timings-version:5\r\na=nv-video-qos-timings-version:6\r\n",
+        );
+        assert_eq!(offers.feedback, QosVersionOffer::Malformed);
+        assert_eq!(offers.timings, QosVersionOffer::Malformed);
+        assert_eq!(offers.blob_stats, QosVersionOffer::Missing);
+    }
+
+    #[test]
+    fn describe_video_qos_offers_read_only_first_describe_video_section() {
+        let describe = "v=0\r\nm=video 5004 RTP/SAVPF 96\r\n\
+            a=fmtp:96 nv-video-qos-feedback-version=7\r\n\
+            m=video 5006 RTP/SAVPF 97\r\na=nv-video-qos-timings-version:5\r\n\
+            ;;v=0\r\nm=video 6000 RTP/SAVPF 96\r\na=nv-video-qos-blob-stats-version:9\r\n\
+            ||v=0\r\nm=video 7000 RTP/SAVPF 96\r\na=nv-video-qos-timings-version:8\r\n";
+        assert_eq!(
+            video_qos_offers(describe),
+            VideoQosOffers {
+                feedback: QosVersionOffer::Version(7),
+                timings: QosVersionOffer::Missing,
+                blob_stats: QosVersionOffer::Missing,
+            }
+        );
+        assert_eq!(
+            video_qos_offers(
+                "v=0\r\n||m=video 5004 RTP/SAVPF 96\r\na=nv-video-qos-feedback-version:7\r\n"
+            ),
+            VideoQosOffers::default()
+        );
+    }
+
+    #[test]
+    fn describe_qos_log_shape_excludes_offers_and_credentials() {
+        let describe = "v=0\r\nm=video 5004 RTP/SAVPF 96\r\n\
+            a=fmtp:96 nv-video-qos-feedback-version=7;password=secret-credential\r\n\
+            a=nv-video-qos-timings-version:5\r\n\
+            a=x-nv-general.icePasswordV2:secret-credential\r\n";
+        let shape = describe_media_shape(describe);
+        assert_eq!(
+            shape,
+            "sections=[video/5004] connection_present=false control_count=0 video_control=absent"
+        );
+        assert!(!shape.contains("nv-video-qos"));
+        assert!(!shape.contains("secret-credential"));
+        let malformed = describe_media_shape(
+            "m=secret-credential 5004 RTP/SAVPF 96\r\nm=video secret-credential RTP/SAVPF 96\r\n",
+        );
+        assert_eq!(
+            malformed,
+            "sections=[other/5004,video/?] connection_present=false control_count=0 video_control=absent"
+        );
+        assert!(!malformed.contains("secret-credential"));
     }
 
     #[test]

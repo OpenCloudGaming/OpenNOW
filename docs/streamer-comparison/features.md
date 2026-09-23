@@ -221,7 +221,19 @@ counts nor RTP interarrival jitter substitute for these fields. Regression cover
 partial frames, rejected packets, packet loss, sequence wrap, and report baselines. These
 tests cannot establish server-side bitrate adaptation or live-session recovery.
 
+The partial-control sender concatenates frame records and QoS reports within a 1,071-byte
+message, flushing on a full batch or after 50 ms. A rejected write retains the exact
+bounded batch for retry; only an accepted write advances the QoS interval snapshot.
+DESCRIBE's video feedback, timings, and blob-stat version offers flow into the transport
+handoff. Offers below the implemented v7/v5/v9 layouts are rejected rather than sending
+a newer wire record to an older server. When v5 timings and v9 blob stats are offered,
+the client requests pacing mode 2 with feedback mode 0 and stops sending the neutral
+`0x0203` report. Missing offers preserve the existing legacy behavior. This does not
+claim complete V9 stage timings: its field order and the actual presentation timestamp
+boundary still need capture-backed verification.
+
 IDR is the recovery command OpenNOW already sends. Official also sends a reference-invalidation request. That invalidation frame is **not** in this tree and is not guessed here.
+Mjolnir video uses private NACK v2 and control IDR, not a second RTCP Receiver Report or PLI.
 
 ## Inbound cursor examples
 
