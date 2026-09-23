@@ -41,8 +41,7 @@ use str0m::{Candidate, Event, IceCreds, Input, Output, Rtc, RtcConfig};
 use super::frame_stage_timing::FrameStageTimingsAccumulator;
 use super::nvst_control::{
     DEFAULT_FRAME_TIME_US, FRAME_PACING_INTERVAL, MAX_NACK_PACKET_COUNT, QOS_REPORT_INTERVAL,
-    QOS_WARM_UP, QosPacketSnapshot, QosReport, frame_ack, frame_pacing_report, idr_request,
-    nack_v2,
+    QosPacketSnapshot, QosReport, frame_ack, frame_pacing_report, idr_request, nack_v2,
 };
 use super::nvst_cursor::{CursorCommand, NvstCursorCapture, valid_cursor_channel_message};
 use super::nvst_haptics::NvstHaptics;
@@ -799,7 +798,7 @@ impl NvstFeedbackState {
         )
     }
 
-    fn qos_report(&self, previous: &QosReport, warmed_up: bool, elapsed: Duration) -> QosReport {
+    fn qos_report(&self, previous: &QosReport, elapsed: Duration) -> QosReport {
         let (sender_frame_number, bytes_received) = self.completed_frame_snapshot();
         let packet_snapshot = self
             .reception_timing
@@ -830,8 +829,6 @@ impl NvstFeedbackState {
             bytes_received,
             loss_per_ten_thousand,
             client_time_90khz: elapsed.as_millis().wrapping_mul(90) as u32,
-            previous_bytes_received: previous.bytes_received,
-            warmed_up,
             packet_snapshot,
         }
     }
@@ -6348,7 +6345,6 @@ fn run_nvst_webrtc_bundle(
         {
             let report = feedback.qos_report(
                 &last_qos_report,
-                now.saturating_duration_since(transport_origin) >= QOS_WARM_UP,
                 now.saturating_duration_since(transport_origin),
             );
             let command = report.command().encoded();
@@ -6370,9 +6366,10 @@ fn run_nvst_webrtc_bundle(
                 ),
             );
             eprintln!(
-                "NVST control-stats elapsed={:.1}s frameAck={frame_acks_sent} lastAck={last_ack_frame:?} pacing={frame_pacing_reports_sent} qos={qos_reports_sent}",
+                "NVST control-stats elapsed={:.1}s frameAck={frame_acks_sent} lastAck={last_ack_frame:?} pacing={frame_pacing_reports_sent} qos={qos_reports_sent} assembledBytesAtLastQos={}",
                 now.saturating_duration_since(control_stats_origin)
                     .as_secs_f64(),
+                last_qos_report.bytes_received,
             );
             eprintln!(
                 "NVST frame-stage-timings {}",

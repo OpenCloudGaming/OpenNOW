@@ -58,20 +58,23 @@ fn qos_reports_measure_successive_intervals_at_50_and_75_mbps() {
                 sequence += 1;
             }
             assert_eq!(emitted, 1);
-            let report = feedback.qos_report(&previous, true, QOS_REPORT_INTERVAL * frame_index);
+            let report = feedback.qos_report(&previous, QOS_REPORT_INTERVAL * frame_index);
             assert_eq!(report.sequence, frame_index);
             assert_eq!(report.sender_frame_number, sender_frame);
             assert_eq!(word(&report, 12), sender_frame);
-            assert_eq!(word(&report, 16), frame_index * interval_bytes);
-            assert_eq!(word(&report, 48), (frame_index - 1) * interval_bytes);
-            assert_eq!(word(&report, 44), interval_bytes * 8);
+            assert_eq!(report.bytes_received, frame_index * interval_bytes);
+            assert_eq!(previous.bytes_received, (frame_index - 1) * interval_bytes);
+            assert_eq!(word(&report, 16), 0);
+            assert_eq!(word(&report, 48), 0);
+            assert_eq!(word(&report, 44), 0);
             assert_eq!(word(&report, 36), frame_index * 4_500);
             assert_eq!(report.command().encoded().len(), 56);
             previous = report;
         }
 
-        let idle = feedback.qos_report(&previous, true, QOS_REPORT_INTERVAL * 5);
-        assert_eq!(word(&idle, 16), word(&idle, 48));
+        let idle = feedback.qos_report(&previous, QOS_REPORT_INTERVAL * 5);
+        assert_eq!(idle.bytes_received, previous.bytes_received);
+        assert_eq!(word(&idle, 16), 0);
         assert_eq!(word(&idle, 44), 0);
         assert_eq!(idle.sender_frame_number, previous.sender_frame_number);
     }
@@ -88,7 +91,7 @@ fn qos_receive_progress_advances_before_frame_completion_but_not_on_invalid_pack
     let first = protect_for_test(&crypto, first, 0);
     let now = Instant::now();
     assert!(receiver.process_datagram(peer(), &first, now).is_empty());
-    let first_report = feedback.qos_report(&QosReport::default(), true, Duration::from_millis(50));
+    let first_report = feedback.qos_report(&QosReport::default(), Duration::from_millis(50));
     assert_eq!(first_report.sender_frame_number, 0);
     assert_eq!(word(&first_report, 36), 4_500);
     assert_eq!(
@@ -141,7 +144,7 @@ fn qos_receive_progress_advances_before_frame_completion_but_not_on_invalid_pack
         Some(90_000)
     );
     assert!(receiver.process_datagram(peer(), &later, now).is_empty());
-    let later_report = feedback.qos_report(&first_report, true, Duration::from_millis(100));
+    let later_report = feedback.qos_report(&first_report, Duration::from_millis(100));
     assert_eq!(
         feedback
             .reception_timing
@@ -211,7 +214,7 @@ fn qos_receive_timestamp_handles_reordering_and_sender_clock_wrap() {
     );
     assert_eq!(
         word(
-            &feedback.qos_report(&previous, true, Duration::from_millis(125)),
+            &feedback.qos_report(&previous, Duration::from_millis(125)),
             36
         ),
         11_250
@@ -238,7 +241,7 @@ fn qos_loss_tracks_only_authenticated_packets_since_the_last_successful_report()
             .process_datagram(peer(), &packet(10), now)
             .is_empty()
     );
-    let sent = feedback.qos_report(&QosReport::default(), true, Duration::from_millis(50));
+    let sent = feedback.qos_report(&QosReport::default(), Duration::from_millis(50));
     assert_eq!(halfword(&sent, 26), 0);
 
     let mut rejected = packet(11);
@@ -254,7 +257,7 @@ fn qos_loss_tracks_only_authenticated_packets_since_the_last_successful_report()
             .process_datagram(peer(), &packet(12), now)
             .is_empty()
     );
-    let unsent = feedback.qos_report(&sent, true, Duration::from_millis(100));
+    let unsent = feedback.qos_report(&sent, Duration::from_millis(100));
     assert_eq!(halfword(&unsent, 26), 5_000);
 
     assert!(
@@ -262,13 +265,13 @@ fn qos_loss_tracks_only_authenticated_packets_since_the_last_successful_report()
             .process_datagram(peer(), &packet(14), now)
             .is_empty()
     );
-    let retried = feedback.qos_report(&sent, true, Duration::from_millis(150));
+    let retried = feedback.qos_report(&sent, Duration::from_millis(150));
     assert_eq!(retried.sequence, unsent.sequence);
     assert_eq!(halfword(&retried, 26), 5_000);
 
     let _ = receiver.process_datagram(peer(), &packet(11), now);
     assert_eq!(feedback.received_packets.load(Ordering::Acquire), 4);
-    let recovered = feedback.qos_report(&retried, true, Duration::from_millis(200));
+    let recovered = feedback.qos_report(&retried, Duration::from_millis(200));
     assert_eq!(halfword(&recovered, 26), 0);
     assert_eq!(word(&recovered, 36), 18_000);
 }
@@ -278,16 +281,16 @@ fn qos_loss_resets_on_stream_and_counter_epoch_changes() {
     let feedback = NvstFeedbackState::default();
     let now = Instant::now();
     feedback.publish_stream(7, 10, 90_000, now);
-    let baseline = feedback.qos_report(&QosReport::default(), false, Duration::ZERO);
+    let baseline = feedback.qos_report(&QosReport::default(), Duration::ZERO);
     feedback.publish_stream(7, 12, 93_000, now);
-    let loss = feedback.qos_report(&baseline, true, Duration::from_millis(50));
+    let loss = feedback.qos_report(&baseline, Duration::from_millis(50));
     assert_eq!(halfword(&loss, 26), 5_000);
 
     feedback.publish_stream(8, 13, 94_000, now);
-    let new_stream = feedback.qos_report(&loss, true, Duration::from_millis(100));
+    let new_stream = feedback.qos_report(&loss, Duration::from_millis(100));
     assert_eq!(halfword(&new_stream, 26), 0);
     feedback.publish_stream(8, 14, 95_000, now);
-    let healthy = feedback.qos_report(&new_stream, true, Duration::from_millis(150));
+    let healthy = feedback.qos_report(&new_stream, Duration::from_millis(150));
     assert_eq!(halfword(&healthy, 26), 0);
 
     feedback
@@ -298,7 +301,7 @@ fn qos_loss_resets_on_stream_and_counter_epoch_changes() {
         .as_mut()
         .unwrap()
         .received = 0;
-    let reset = feedback.qos_report(&healthy, true, Duration::from_millis(200));
+    let reset = feedback.qos_report(&healthy, Duration::from_millis(200));
     assert_eq!(halfword(&reset, 26), 0);
 }
 
@@ -308,14 +311,14 @@ fn qos_client_clock_truncates_to_milliseconds_and_wraps_at_u32_ticks() {
     let baseline = QosReport::default();
     assert_eq!(
         word(
-            &feedback.qos_report(&baseline, false, Duration::from_micros(1_999)),
+            &feedback.qos_report(&baseline, Duration::from_micros(1_999)),
             36
         ),
         90
     );
     let elapsed = Duration::from_millis(u64::from(u32::MAX) / 90 + 1);
     assert_eq!(
-        word(&feedback.qos_report(&baseline, false, elapsed), 36),
+        word(&feedback.qos_report(&baseline, elapsed), 36),
         14
     );
 }
@@ -326,20 +329,24 @@ fn qos_unsent_samples_do_not_advance_the_successful_report_baseline() {
     feedback
         .completed_frame_bytes
         .store(1_000, Ordering::Release);
-    let sent = feedback.qos_report(&QosReport::default(), true, Duration::ZERO);
+    let sent = feedback.qos_report(&QosReport::default(), Duration::ZERO);
     feedback
         .completed_frame_bytes
         .store(2_000, Ordering::Release);
-    let unsent = feedback.qos_report(&sent, true, Duration::ZERO);
-    assert_eq!(word(&unsent, 44), 8_000);
+    let unsent = feedback.qos_report(&sent, Duration::ZERO);
+    assert_eq!(sent.bytes_received, 1_000);
+    assert_eq!(unsent.bytes_received, 2_000);
+    assert_eq!(word(&unsent, 44), 0);
     feedback
         .completed_frame_bytes
         .store(3_000, Ordering::Release);
-    let retry = feedback.qos_report(&sent, true, Duration::ZERO);
+    let retry = feedback.qos_report(&sent, Duration::ZERO);
     assert_eq!(retry.sequence, unsent.sequence);
-    assert_eq!(word(&retry, 48), 1_000);
-    assert_eq!(word(&retry, 44), 16_000);
-    let next = feedback.qos_report(&retry, true, Duration::ZERO);
+    assert_eq!(sent.bytes_received, 1_000);
+    assert_eq!(retry.bytes_received, 3_000);
+    assert_eq!(word(&retry, 48), 0);
+    assert_eq!(word(&retry, 44), 0);
+    let next = feedback.qos_report(&retry, Duration::ZERO);
     assert_eq!(next.sequence, retry.sequence + 1);
     assert_eq!(word(&next, 44), 0);
 }
@@ -355,17 +362,20 @@ fn qos_counters_wrap_without_zeroing_or_overflowing_interval_bits() {
         bytes_received: u32::MAX - 99,
         ..QosReport::default()
     };
-    let report = feedback.qos_report(&previous, true, Duration::ZERO);
+    let report = feedback.qos_report(&previous, Duration::ZERO);
     assert_eq!(report.sequence, 0);
-    assert_eq!(word(&report, 16), 100);
-    assert_eq!(word(&report, 48), u32::MAX - 99);
-    assert_eq!(word(&report, 44), 1_600);
+    assert_eq!(report.bytes_received, 100);
+    assert_eq!(previous.bytes_received, u32::MAX - 99);
+    assert_eq!(word(&report, 16), 0);
+    assert_eq!(word(&report, 48), 0);
+    assert_eq!(word(&report, 44), 0);
 
     feedback
         .completed_frame_bytes
         .store(u64::from(u32::MAX), Ordering::Release);
-    let saturated = feedback.qos_report(&QosReport::default(), true, Duration::ZERO);
-    assert_eq!(word(&saturated, 44), u32::MAX);
+    let saturated = feedback.qos_report(&QosReport::default(), Duration::ZERO);
+    assert_eq!(saturated.bytes_received, u32::MAX);
+    assert_eq!(word(&saturated, 44), 0);
 }
 
 #[test]
@@ -374,17 +384,18 @@ fn qos_warmup_and_new_sessions_keep_independent_baselines() {
     feedback
         .completed_frame_bytes
         .store(500_000, Ordering::Release);
-    let warmup = feedback.qos_report(&QosReport::default(), false, Duration::ZERO);
+    let warmup = feedback.qos_report(&QosReport::default(), Duration::ZERO);
     assert_eq!(word(&warmup, 44), 0);
     feedback
         .completed_frame_bytes
         .store(1_000_000, Ordering::Release);
-    let warmed_up = feedback.qos_report(&warmup, true, Duration::ZERO);
-    assert_eq!(word(&warmed_up, 48), 500_000);
-    assert_eq!(word(&warmed_up, 44), 4_000_000);
+    let warmed_up = feedback.qos_report(&warmup, Duration::ZERO);
+    assert_eq!(warmup.bytes_received, 500_000);
+    assert_eq!(word(&warmed_up, 48), 0);
+    assert_eq!(word(&warmed_up, 44), 0);
 
     let next_session = NvstFeedbackState::default();
-    let report = next_session.qos_report(&QosReport::default(), false, Duration::ZERO);
+    let report = next_session.qos_report(&QosReport::default(), Duration::ZERO);
     assert_eq!(report.sequence, 1);
     assert_eq!(report.sender_frame_number, 0);
     assert_eq!(word(&report, 16), 0);
