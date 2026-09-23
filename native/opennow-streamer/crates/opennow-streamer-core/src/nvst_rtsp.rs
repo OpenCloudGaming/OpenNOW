@@ -609,13 +609,7 @@ impl PreparedNvstRtspSession {
             .take()
             .ok_or_else(|| NvstRtspError::new("nvst-rtsp-failed", "RTSPS client is unavailable"))?;
         self.owns_session = false;
-        ActiveNvstRtspSession::spawn(
-            client,
-            self.target.clone(),
-            self.common_headers.clone(),
-            self.rtsp_session.clone(),
-            self.control_ping.clone(),
-        )
+        ActiveNvstRtspSession::spawn(client, self.control_ping.clone())
     }
 }
 
@@ -651,13 +645,7 @@ pub struct ActiveNvstRtspSession {
 }
 
 impl ActiveNvstRtspSession {
-    fn spawn(
-        mut client: RtspClient,
-        target: String,
-        common_headers: Vec<(&'static str, String)>,
-        rtsp_session: String,
-        control_ping: NvstControlPing,
-    ) -> Result<Self, NvstRtspError> {
+    fn spawn(mut client: RtspClient, control_ping: NvstControlPing) -> Result<Self, NvstRtspError> {
         set_io_timeout(&mut client.socket, CONTROL_IO_TIMEOUT);
         client.socket.set_config(|config| {
             config.max_message_size = Some(MAX_CONTROL_RESPONSE_BYTES);
@@ -669,18 +657,10 @@ impl ActiveNvstRtspSession {
             .spawn(move || {
                 let mut last_ping = Instant::now();
                 let mut outstanding: Option<(u64, Instant)> = None;
-                let mut headers = common_headers;
-                headers.push(("Session", rtsp_session));
+                let mut ping_sequence = 0u64;
                 loop {
                     if receiver.try_recv().is_ok() {
                         control_ping.clear();
-                        let _ = client.request_with_timeout(
-                            "TEARDOWN",
-                            &target,
-                            &headers,
-                            "",
-                            Duration::from_secs(1),
-                        );
                         let _ = client.socket.close(None);
                         break;
                     }
@@ -693,10 +673,15 @@ impl ActiveNvstRtspSession {
                     }
                     if outstanding.is_none() && now.duration_since(last_ping) >= KEEPALIVE_INTERVAL
                     {
-                        match client.send_request("GET_PARAMETER", &target, &headers, "") {
-                            Ok(cseq) => outstanding = Some((cseq, now)),
-                            Err(_) => break,
+                        ping_sequence = ping_sequence.wrapping_add(1);
+                        if client
+                            .socket
+                            .send(Message::Ping(ping_sequence.to_be_bytes().to_vec().into()))
+                            .is_err()
+                        {
+                            break;
                         }
+                        outstanding = Some((ping_sequence, now));
                         last_ping = now;
                     }
                     match client.socket.read() {
@@ -707,6 +692,14 @@ impl ActiveNvstRtspSession {
                         Ok(Message::Ping(bytes)) => {
                             if client.socket.send(Message::Pong(bytes)).is_err() {
                                 break;
+                            }
+                        }
+                        Ok(Message::Pong(bytes)) => {
+                            if let Some((sequence, sent_at)) = outstanding {
+                                if bytes.as_ref() == sequence.to_be_bytes() {
+                                    outstanding = None;
+                                    control_ping.record(sent_at, Instant::now());
+                                }
                             }
                         }
                         Ok(Message::Close(_)) => break,
@@ -722,18 +715,8 @@ impl ActiveNvstRtspSession {
                         break;
                     }
                     while !client.buffer.is_empty() {
-                        let expected_cseq = outstanding.map_or(client.cseq, |(cseq, _)| cseq);
-                        match take_rtsp_response(&mut client.buffer, expected_cseq) {
-                            Ok(Some(_)) => {
-                                if let Some((_, sent_at)) = outstanding.take() {
-                                    let received_at = Instant::now();
-                                    if received_at.duration_since(sent_at) < KEEPALIVE_INTERVAL {
-                                        control_ping.record(sent_at, received_at);
-                                    } else {
-                                        control_ping.clear();
-                                    }
-                                }
-                            }
+                        match take_rtsp_response(&mut client.buffer, client.cseq) {
+                            Ok(Some(_)) => {}
                             Ok(None) => break,
                             Err(error) if error.code == "nvst-rtsp-sequence-mismatch" => {}
                             Err(_) => {
@@ -1115,24 +1098,27 @@ fn prepare_on_endpoint(
         ),
     );
 
-    let announce_body = build_announce(
-        context,
-        AnnounceParams {
-            stream,
-            key: handoff["srtpAesKeyHex"].as_str().unwrap_or_default(),
-            key_id,
-            port: client_port,
-            address: &local_address,
-            ufrag: handoff["localIceUsernameFragment"]
-                .as_str()
-                .unwrap_or_default(),
-            password: handoff["localIcePassword"].as_str().unwrap_or_default(),
-            fingerprint: handoff["localDtlsFingerprint"].as_str().unwrap_or_default(),
-            video_port: video_peer_port,
-            video_packet_size,
-            rtcp_on_sctp,
-            microphone_available,
-        },
+    let announce_body = omit_server_announce_attributes(
+        &build_announce(
+            context,
+            AnnounceParams {
+                stream,
+                key: handoff["srtpAesKeyHex"].as_str().unwrap_or_default(),
+                key_id,
+                port: client_port,
+                address: &local_address,
+                ufrag: handoff["localIceUsernameFragment"]
+                    .as_str()
+                    .unwrap_or_default(),
+                password: handoff["localIcePassword"].as_str().unwrap_or_default(),
+                fingerprint: handoff["localDtlsFingerprint"].as_str().unwrap_or_default(),
+                video_port: video_peer_port,
+                video_packet_size,
+                rtcp_on_sctp,
+                microphone_available,
+            },
+        ),
+        &describe.body,
     );
     Ok(PreparedNvstRtspSession {
         control_ping: NvstControlPing::default(),
@@ -1196,6 +1182,103 @@ fn advertised_bitrate_kbps(settings: &Value) -> u64 {
     (mbps * 1000.0).round() as u64
 }
 
+fn omit_server_announce_attributes(announce: &str, describe: &str) -> String {
+    const SERVER_NEGOTIATED: &[&str] = &[
+        "video[0].updateSplitEncodeStateDynamically",
+        "video[0].enableRtpNack",
+        "video[0].rtpNackQueueLength",
+        "video[0].rtpNackQueueMaxPackets",
+        "video[0].rtpNackMaxPacketCount",
+        "video[0].framePacing.mode",
+        "video[0].framePacing.feedbackMode",
+        "video[0].initialBitrateKbps",
+        "video[0].initialPeakBitrateKbps",
+        "video[0].mapRtpTimestampsToFrames",
+        "vqos[0].fec.enable",
+        "vqos[0].fec.rateDropWindow",
+        "vqos[0].fec.minRequiredFecPackets",
+        "vqos[0].fec.repairPercent",
+        "vqos[0].fec.repairMinPercent",
+        "vqos[0].fec.repairMaxPercent",
+        "vqos[0].bllFec.enable",
+        "vqos[0].drc.enable",
+        "vqos[0].dfc.adjustResAndFps",
+        "vqos[0].calculateAvgVideoStreamingBitrate",
+        "vqos[0].bw.minimumBitrateKbps",
+        "vqos[0].drc.bitrateIirFilterFactor",
+        "vqos[0].resControl.bitrateIirFilterFactor",
+        "packetPacing.version",
+        "packetPacing.mode",
+        "packetPacing.numGroups",
+        "packetPacing.maxDelayUs",
+        "packetPacing.minNumPacketsFrame",
+        "packetPacing.minNumPacketsPerGroup",
+        "packetPacing.enableAccurateSleep",
+        "packetPacing.enableSmoothTransition",
+        "packetPacing.allowFpsBasedToggle",
+        "ri.partialReliableThresholdMs",
+        "ri.timestampsEnabled",
+        "ri.useMultipleGamepads",
+        "ri.usePartiallyReliableUdpChannel",
+        "ri.enablePartiallyReliableTransferGamepad",
+        "ri.enablePartiallyReliableTransferHid",
+        "bwe.useOwdCongestionControl",
+        "general.rtspWebSocketPerConnection",
+        "general.pingIntervalBeforeConnectionMs",
+        "general.pingIntervalAfterConnectionMs",
+        "runtime.audioSrtp",
+        "runtime.micSrtp",
+        "runtime.videoSrtp",
+        "general.nativeRtcOnBundlePort",
+        "general.rtcVideoOnNativeBundle",
+        "general.rtcAudioOnNativeBundle",
+        "general.rtcDataChannelOnNativeBundle",
+        "general.enableUnifiedSocket",
+        "general.rtcpOnSctp",
+    ];
+    let server_values: HashMap<String, &str> = describe
+        .split("||")
+        .next()
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| {
+            let (name, value) = line.trim().strip_prefix("a=")?.split_once(':')?;
+            let name = name.strip_prefix("x-nv-").unwrap_or(name);
+            let value = value.trim();
+            (!value.is_empty()).then(|| (name.to_ascii_lowercase(), value))
+        })
+        .collect();
+    let mut filtered = String::with_capacity(announce.len());
+    for line in announce.split_inclusive("\r\n") {
+        let Some((name, value)) = line
+            .strip_prefix("a=x-nv-")
+            .and_then(|attribute| attribute.split_once(':'))
+        else {
+            filtered.push_str(line);
+            continue;
+        };
+        let server_value = server_values.get(&name.to_ascii_lowercase());
+        if name == "vqos[0].bw.maximumBitrateKbps"
+            && let Some(server_value) = server_value
+        {
+            if let (Ok(requested), Ok(limit)) =
+                (value.trim().parse::<u64>(), server_value.parse::<u64>())
+                && limit > 0
+            {
+                filtered.push_str(&format!("a=x-nv-{name}:{}\r\n", requested.min(limit)));
+            } else {
+                filtered.push_str(line);
+            }
+            continue;
+        }
+        if SERVER_NEGOTIATED.contains(&name) && server_value.is_some() {
+            continue;
+        }
+        filtered.push_str(line);
+    }
+    filtered
+}
+
 fn build_announce(context: &SessionContext, params: AnnounceParams<'_>) -> String {
     let (width, height) = resolution(context);
     let fps = negotiated_fps(context);
@@ -1217,14 +1300,10 @@ fn build_announce(context: &SessionContext, params: AnnounceParams<'_>) -> Strin
         "s=NVIDIA Streaming Client".to_owned(),
         format!("a=x-nv-video[0].clientViewportWd:{width}"),
         format!("a=x-nv-video[0].clientViewportHt:{height}"),
-        // Encoder identity the seat reads before initializing: the captured
-        // official client reports profile 3 / level 61 across codecs, with the
-        // same pair on the H.264 keys.
         "a=x-nv-video[0].maxCodecProfile:3".to_owned(),
-        "a=x-nv-video[0].maxCodecLevel:61".to_owned(),
+        "a=x-nv-video[0].maxCodecLevel:51".to_owned(),
         "a=x-nv-video[0].maxH264Profile:3".to_owned(),
-        "a=x-nv-video[0].maxH264Level:61".to_owned(),
-        "a=x-nv-video[0].videoSplitEncodeStripsPerFrame:64".to_owned(),
+        "a=x-nv-video[0].maxH264Level:51".to_owned(),
         "a=x-nv-video[0].updateSplitEncodeStateDynamically:1".to_owned(),
         format!("a=x-nv-video[0].packetSize:{}", params.video_packet_size),
         "a=x-nv-video[0].enableRtpNack:1".to_owned(),
@@ -1233,16 +1312,6 @@ fn build_announce(context: &SessionContext, params: AnnounceParams<'_>) -> Strin
         "a=x-nv-video[0].rtpNackMaxPacketCount:64".to_owned(),
         "a=x-nv-video[0].framePacing.mode:1".to_owned(),
         "a=x-nv-video[0].framePacing.feedbackMode:1".to_owned(),
-        "a=x-nv-video[0].framePacing.pid.minTargetFrameTimeUs:7936".to_owned(),
-        "a=x-nv-video[0].adaptiveQuantization.spatialAQSetting:7".to_owned(),
-        "a=x-nv-video[0].adaptiveQuantization.temporalAQSetting:0".to_owned(),
-        "a=x-nv-video[0].adaptiveQuantization.spatialAQStrength:12".to_owned(),
-        "a=x-nv-video[0].adaptiveQuantization.qpThresholdAdjPercent:2".to_owned(),
-        "a=x-nv-video[0].adaptiveQuantization.saqAdaptMinQpThresholdPercent:40".to_owned(),
-        "a=x-nv-video[0].adaptiveQuantization.saqAdaptMaxQpThresholdPercent:100".to_owned(),
-        "a=x-nv-video[0].adaptiveQuantization.saqAdaptDecayStrengthX100:250".to_owned(),
-        "a=x-nv-video[0].adaptiveQuantization.perfAdjEnablement:1".to_owned(),
-        "a=x-nv-video[0].enableAv1RcPrecisionFactor:1".to_owned(),
         "a=x-nv-video[0].maxNumReferenceFrames:0".to_owned(),
         "a=x-nv-video[0].prefilterParams.prefilterMode:0".to_owned(),
         "a=x-nv-video[0].prefilterParams.prefilterModel:4".to_owned(),
@@ -1262,7 +1331,6 @@ fn build_announce(context: &SessionContext, params: AnnounceParams<'_>) -> Strin
         "a=x-nv-vqos[0].fec.repairMinPercent:20".to_owned(),
         "a=x-nv-vqos[0].fec.repairMaxPercent:35".to_owned(),
         "a=x-nv-vqos[0].bllFec.enable:0".to_owned(),
-        "a=x-nv-vqos[0].grc.enable:7".to_owned(),
         "a=x-nv-vqos[0].drc.enable:0".to_owned(),
         format!("a=x-nv-vqos[0].dfc.adjustResAndFps:{adjust_res_and_fps}"),
         "a=x-nv-vqos[0].calculateAvgVideoStreamingBitrate:1".to_owned(),
@@ -1289,11 +1357,8 @@ fn build_announce(context: &SessionContext, params: AnnounceParams<'_>) -> Strin
         "a=x-nv-ri.usePartiallyReliableUdpChannel:0".to_owned(),
         "a=x-nv-ri.enablePartiallyReliableTransferGamepad:255".to_owned(),
         "a=x-nv-ri.enablePartiallyReliableTransferHid:-1".to_owned(),
-        "a=x-nv-aqos.enableRedundancy:1".to_owned(),
-        "a=x-nv-aqos.redundancyLevel:2".to_owned(),
         "a=x-nv-bwe.useOwdCongestionControl:1".to_owned(),
         "a=x-nv-general.rtspWebSocketPerConnection:1".to_owned(),
-        "a=x-nv-general.enetControlChannel.mtuSize:1191".to_owned(),
         "a=x-nv-general.pingIntervalBeforeConnectionMs:20".to_owned(),
         "a=x-nv-general.pingIntervalAfterConnectionMs:100".to_owned(),
         "a=x-nv-runtime.audioSrtp:0".to_owned(),
@@ -1335,12 +1400,6 @@ fn build_announce(context: &SessionContext, params: AnnounceParams<'_>) -> Strin
             params.address, params.port
         ),
     ];
-    if format != 2 {
-        lines.insert(
-            26,
-            format!("a=x-nv-clientSupportHevc:{}", u8::from(format == 1)),
-        );
-    }
     if params.microphone_available {
         lines.push("a=x-nv-general.rtcMicOnNativeBundle:1".to_owned());
         lines.push("a=x-nv-mic.micSsrcConfig.senderSsrc:1".to_owned());
@@ -2269,7 +2328,11 @@ mod tests {
         assert!(sdp.contains("a=x-nv-video[0].bitDepth:10"));
         assert!(sdp.contains("a=x-nv-video[0].chromaFormat:1"));
         assert!(sdp.contains("a=x-nv-video[0].maxCodecProfile:3"));
-        assert!(sdp.contains("a=x-nv-video[0].maxCodecLevel:61"));
+        assert!(sdp.contains("a=x-nv-video[0].maxCodecLevel:51"));
+        assert!(sdp.contains("a=x-nv-video[0].maxH264Level:51"));
+        assert!(!sdp.contains("a=x-nv-video[0].videoSplitEncodeStripsPerFrame:"));
+        assert!(!sdp.contains("a=x-nv-vqos[0].grc.enable:"));
+        assert!(!sdp.contains("a=x-nv-clientSupportHevc:"));
         assert!(sdp.contains("a=x-nv-video[0].encoderCscMode:2"));
         assert!(sdp.contains("a=x-nv-vqos[0].bitStreamFormat:2"));
         assert!(sdp.contains("a=x-nv-general.clientBundlePort:49006"));
@@ -2629,12 +2692,102 @@ mod tests {
             // Encoder identity the seat reads before initializing.
             for line in [
                 "a=x-nv-video[0].maxCodecProfile:3",
-                "a=x-nv-video[0].maxCodecLevel:61",
+                "a=x-nv-video[0].maxCodecLevel:51",
                 "a=x-nv-video[0].maxH264Profile:3",
-                "a=x-nv-video[0].maxH264Level:61",
+                "a=x-nv-video[0].maxH264Level:51",
             ] {
                 assert!(sdp.contains(line), "{line}");
             }
+        }
+    }
+
+    #[test]
+    fn announce_does_not_echo_server_config_or_invent_server_owned_values() {
+        let value = context();
+        let sdp = build_announce(
+            &value,
+            AnnounceParams {
+                stream: stream_config(&value),
+                key: &"01".repeat(32),
+                key_id: 7,
+                port: 49006,
+                address: "192.0.2.10",
+                ufrag: "abcd",
+                password: "abcdefghijklmnopqrstuv",
+                fingerprint: "AA:BB",
+                video_port: 5004,
+                video_packet_size: 1280,
+                rtcp_on_sctp: true,
+                microphone_available: true,
+            },
+        );
+        for server_value in ["0", "23"] {
+            let server_bitrate = if server_value == "0" { 100_000 } else { 50_000 };
+            let describe = format!(
+                "v=0\r\na=x-nv-video[0].framePacing.mode:2\r\na=x-nv-vqos[0].fec.repairMinPercent:5\r\na=x-nv-vqos[0].grc.enable:{server_value}\r\na=x-nv-vqos[0].bw.maximumBitrateKbps:{server_bitrate}\r\na=x-nv-video[0].maxCodecLevel:61\r\na=x-nv-video[0].chromaFormat:0\r\na=x-nv-video[0].packetSize:1408\r\n;;v=0\r\na=x-nv-video[0].framePacing.feedbackMode:0\r\na=x-nv-packetPacing.maxDelayUs:1000\r\na=x-nv-packetPacing.minNumPacketsPerGroup:0\r\n||v=0\r\na=x-nv-vqos[0].fec.enable:0\r\n"
+            );
+            assert_eq!(
+                sdp_attribute(&describe, "video[0].framePacing.feedbackMode"),
+                Some("0".to_owned())
+            );
+            let announce = omit_server_announce_attributes(&sdp, &describe);
+            for field in [
+                "video[0].framePacing.mode",
+                "video[0].framePacing.feedbackMode",
+                "vqos[0].fec.repairMinPercent",
+                "vqos[0].grc.enable",
+                "packetPacing.maxDelayUs",
+                "packetPacing.minNumPacketsPerGroup",
+            ] {
+                assert_eq!(sdp_attribute(&announce, field), None, "{field}");
+            }
+            assert_eq!(
+                sdp_attribute(&announce, "vqos[0].fec.enable"),
+                Some("1".to_owned())
+            );
+            assert_eq!(
+                sdp_attribute(&announce, "video[0].maxCodecLevel"),
+                Some("51".to_owned())
+            );
+            assert_eq!(
+                sdp_attribute(&announce, "video[0].chromaFormat"),
+                Some("1".to_owned())
+            );
+            assert_eq!(
+                sdp_attribute(&announce, "vqos[0].bw.maximumBitrateKbps"),
+                Some(75_000_u64.min(server_bitrate).to_string())
+            );
+            for (field, value) in [
+                ("video[0].packetSize", "1280"),
+                ("video[0].maxFPS", "120"),
+                ("general.iceUserNameFragmentV2", "abcd"),
+                ("general.rtcMicOnNativeBundle", "1"),
+                ("mic.micSsrcConfig.senderSsrc", "1"),
+            ] {
+                assert_eq!(sdp_attribute(&announce, field).as_deref(), Some(value));
+            }
+            for server_owned in [
+                "video[0].videoSplitEncodeStripsPerFrame",
+                "video[0].adaptiveQuantization.spatialAQStrength",
+                "vqos[0].grc.enable",
+                "aqos.redundancyLevel",
+                "general.enetControlChannel.mtuSize",
+            ] {
+                assert_eq!(
+                    sdp_attribute(&announce, server_owned),
+                    None,
+                    "{server_owned}"
+                );
+            }
+        }
+        for invalid_cap in ["0", "not-a-number"] {
+            let describe = format!("a=x-nv-vqos[0].bw.maximumBitrateKbps:{invalid_cap}\r\n");
+            let announce = omit_server_announce_attributes(&sdp, &describe);
+            assert_eq!(
+                sdp_attribute(&announce, "vqos[0].bw.maximumBitrateKbps"),
+                Some("75000".to_owned()),
+                "{invalid_cap}"
+            );
         }
     }
 
