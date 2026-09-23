@@ -439,13 +439,19 @@ impl FfmpegDecoder {
             ));
         }
         let allow_cpu_conversion = cpu_conversion_allowed(metadata, actual_pixel);
+        let vaapi_cpu_transfer = vaapi_cpu_transfer_allowed(self.mode, metadata, actual_pixel);
         if matches!(self.mode, FfmpegMode::Vulkan | FfmpegMode::Vaapi) && selected_hardware {
             let output = if self.mode == FfmpegMode::Vulkan && allow_cpu_conversion {
                 let direct_vulkan =
                     map_vulkan_frame_direct(decoded, self.last_timestamp_us, metadata)
                         .ok()
                         .and_then(|frame| frame.vulkan);
-                match map_hardware_frame_to_dmabuf(decoded, self.last_timestamp_us, metadata) {
+                match map_hardware_frame_to_dmabuf(
+                    decoded,
+                    self.last_timestamp_us,
+                    metadata,
+                    self.mode,
+                ) {
                     Ok(mut frame) => {
                         frame.vulkan = direct_vulkan;
                         if !self.zero_copy_active {
@@ -472,12 +478,25 @@ impl FfmpegDecoder {
                     self.last_timestamp_us,
                     metadata,
                 )?)
+            } else if vaapi_cpu_transfer && self.zero_copy_unavailable_reported {
+                None
             } else {
-                Some(map_hardware_frame_to_dmabuf(
+                match map_hardware_frame_to_dmabuf(
                     decoded,
                     self.last_timestamp_us,
                     metadata,
-                )?)
+                    self.mode,
+                ) {
+                    Ok(frame) => Some(frame),
+                    Err(error) if vaapi_cpu_transfer => {
+                        eprintln!(
+                            "FFmpeg VAAPI DMA-BUF export unavailable; using bounded NV12 CPU transfer: {error}"
+                        );
+                        self.zero_copy_unavailable_reported = true;
+                        None
+                    }
+                    Err(error) => return Err(error),
+                }
             };
             if let Some(output) = output {
                 if self.mode == FfmpegMode::Vaapi
@@ -496,7 +515,7 @@ impl FfmpegDecoder {
                 return Ok(output);
             }
         }
-        if !allow_cpu_conversion || self.mode == FfmpegMode::Vaapi {
+        if !allow_cpu_conversion {
             return Err(Error::unavailable(
                 Subsystem::Ffmpeg,
                 "HDR/10-bit/4:4:4 frame has no supported zero-copy decode path",
@@ -526,6 +545,12 @@ impl FfmpegDecoder {
         } else {
             decoded
         };
+        if !cpu_conversion_allowed(metadata, source.format()) {
+            return Err(Error::unavailable(
+                Subsystem::Ffmpeg,
+                "downloaded video format cannot be presented as 8-bit 4:2:0 SDR",
+            ));
+        }
 
         let width = source.width().max(1);
         let height = source.height().max(1);
@@ -964,6 +989,7 @@ fn map_hardware_frame_to_dmabuf(
     decoded: &frame::Video,
     fallback_timestamp_us: u64,
     metadata: StreamFormat,
+    mode: FfmpegMode,
 ) -> Result<DecodedVideoFrame> {
     let mut mapped = frame::Video::empty();
     mapped.set_format(Pixel::DRM_PRIME);
@@ -976,7 +1002,7 @@ fn map_hardware_frame_to_dmabuf(
     };
     if map_result < 0 {
         return Err(ffmpeg_error(
-            "Vulkan Video frame DMA-BUF export failed".to_owned(),
+            format!("{} frame DMA-BUF export failed", mode.label()),
             map_result,
         ));
     }
@@ -1360,6 +1386,10 @@ fn cpu_conversion_allowed(metadata: StreamFormat, pixel: Pixel) -> bool {
                     .iter()
                     .all(|component| component.depth <= 8)
         }
+}
+
+fn vaapi_cpu_transfer_allowed(mode: FfmpegMode, metadata: StreamFormat, pixel: Pixel) -> bool {
+    mode == FfmpegMode::Vaapi && cpu_conversion_allowed(metadata, pixel)
 }
 
 fn decoded_metadata(frame: &frame::Video, defaults: StreamFormat) -> Result<StreamFormat> {
@@ -1827,6 +1857,46 @@ mod tests {
         metadata.color_transfer = ColorTransfer::Sdr;
         metadata.pixel_format = PixelFormat::P010;
         assert!(!cpu_conversion_allowed(metadata, Pixel::NV12));
+    }
+
+    #[test]
+    fn vaapi_export_failure_transfers_only_eight_bit_sdr() {
+        let mut format = StreamFormat::video_default(1920, 1080).unwrap();
+        assert!(vaapi_cpu_transfer_allowed(
+            FfmpegMode::Vaapi,
+            format,
+            Pixel::NV12
+        ));
+        for mode in [FfmpegMode::Vulkan, FfmpegMode::Cuda, FfmpegMode::Software] {
+            assert!(!vaapi_cpu_transfer_allowed(mode, format, Pixel::NV12));
+        }
+        assert!(!vaapi_cpu_transfer_allowed(
+            FfmpegMode::Vaapi,
+            format,
+            Pixel::P010LE
+        ));
+        format.pixel_format = PixelFormat::P010;
+        assert!(!vaapi_cpu_transfer_allowed(
+            FfmpegMode::Vaapi,
+            format,
+            Pixel::NV12
+        ));
+        format.pixel_format = PixelFormat::Nv12;
+        format.color_transfer = ColorTransfer::Pq;
+        assert!(!vaapi_cpu_transfer_allowed(
+            FfmpegMode::Vaapi,
+            format,
+            Pixel::NV12
+        ));
+
+        let missing_context = frame::Video::empty();
+        let error = map_hardware_frame_to_dmabuf(&missing_context, 0, format, FfmpegMode::Vaapi)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("FFmpeg VAAPI frame DMA-BUF export failed"),
+            "{error}"
+        );
     }
 
     #[test]
