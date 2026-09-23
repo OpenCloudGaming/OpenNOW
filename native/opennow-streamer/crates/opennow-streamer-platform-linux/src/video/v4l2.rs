@@ -815,7 +815,9 @@ fn negotiated_format(format: &v4l2_format) -> Result<NegotiatedFormat> {
         planes,
         color_matrix: if colorspace == v4l2_colorspace_V4L2_COLORSPACE_BT2020 {
             ColorMatrix::Bt2020
-        } else if colorspace == v4l2_colorspace_V4L2_COLORSPACE_REC709 {
+        } else if colorspace == v4l2_colorspace_V4L2_COLORSPACE_REC709
+            || colorspace == v4l2_colorspace_V4L2_COLORSPACE_DEFAULT
+        {
             ColorMatrix::Bt709
         } else {
             ColorMatrix::Bt601
@@ -1312,6 +1314,31 @@ fn fourcc_name(value: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unspecified_capture_colorspace_uses_stream_default_at_every_resolution() {
+        for (width, height) in [(1920, 1080), (960, 540), (640, 480)] {
+            let mut raw: v4l2_format = zeroed();
+            raw.type_ = v4l2_buf_type_V4L2_BUF_TYPE_VIDEO_CAPTURE;
+            let mut pixel = unsafe { raw.fmt.pix };
+            pixel.width = width;
+            pixel.height = height;
+            pixel.pixelformat = NV12;
+            pixel.colorspace = v4l2_colorspace_V4L2_COLORSPACE_DEFAULT;
+            raw.fmt.pix = pixel;
+            assert_eq!(
+                negotiated_format(&raw).unwrap().color_matrix,
+                ColorMatrix::Bt709
+            );
+
+            pixel.colorspace = v4l2_colorspace_V4L2_COLORSPACE_SMPTE170M;
+            raw.fmt.pix = pixel;
+            assert_eq!(
+                negotiated_format(&raw).unwrap().color_matrix,
+                ColorMatrix::Bt601
+            );
+        }
+    }
 
     fn decoder_without_device(drained: bool) -> V4l2Decoder {
         V4l2Decoder {

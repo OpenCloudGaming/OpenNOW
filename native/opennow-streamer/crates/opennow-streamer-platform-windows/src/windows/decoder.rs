@@ -1122,11 +1122,6 @@ fn output_color_format(
             };
         }
     }
-    if fallback.transfer_function != VideoTransferFunction::Sdr
-        && format.transfer_function == VideoTransferFunction::Sdr
-    {
-        return Err("decoder reported SDR output for a negotiated HDR stream".to_owned());
-    }
     format.validate_color().map_err(|error| error.to_string())?;
     Ok(format)
 }
@@ -1338,16 +1333,16 @@ mod tests {
             )
             .is_ok()
         );
-        assert!(
-            output_media_format(
-                &media_type,
-                negotiated,
-                aperture,
-                VideoPixelFormat::P010,
-                false,
-            )
-            .is_err()
-        );
+        let sdr_output = output_media_format(
+            &media_type,
+            negotiated,
+            aperture,
+            VideoPixelFormat::P010,
+            false,
+        )
+        .unwrap();
+        assert_eq!(sdr_output.transfer_function, VideoTransferFunction::Sdr);
+        assert_eq!(sdr_output.pixel_format, VideoPixelFormat::P010);
     }
 
     #[test]
@@ -1388,23 +1383,34 @@ mod tests {
             )
             .is_ok()
         );
-        for transfer in [MFVideoTransFunc_709.0, 999] {
-            unsafe {
-                media_type
-                    .SetUINT32(&MF_MT_TRANSFER_FUNCTION, transfer as u32)
-                    .unwrap();
-            }
-            assert!(
-                output_media_format(
-                    &media_type,
-                    negotiated,
-                    aperture,
-                    VideoPixelFormat::P010,
-                    false,
-                )
-                .is_err()
-            );
+        unsafe {
+            media_type
+                .SetUINT32(&MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709.0 as u32)
+                .unwrap();
         }
+        let sdr_output = output_media_format(
+            &media_type,
+            negotiated,
+            aperture,
+            VideoPixelFormat::P010,
+            false,
+        )
+        .unwrap();
+        assert_eq!(sdr_output.transfer_function, VideoTransferFunction::Sdr);
+        assert_eq!(sdr_output.pixel_format, VideoPixelFormat::P010);
+        unsafe {
+            media_type.SetUINT32(&MF_MT_TRANSFER_FUNCTION, 999).unwrap();
+        }
+        assert!(
+            output_media_format(
+                &media_type,
+                negotiated,
+                aperture,
+                VideoPixelFormat::P010,
+                false,
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1508,11 +1514,28 @@ mod tests {
     }
 
     #[test]
+    fn decoder_follows_explicit_sdr_hdr_output_transitions() {
+        let _runtime = super::super::MediaRuntime::initialize().unwrap();
+        let hdr = hdr_test_format();
+        let sdr = VideoFormat {
+            transfer_function: VideoTransferFunction::Sdr,
+            color_primaries: VideoColorPrimaries::Bt709,
+            color_matrix: VideoColorMatrix::Bt709,
+            ..hdr
+        };
+        let sdr_type = video_input_type(sdr).unwrap();
+        let hdr_type = video_input_type(hdr).unwrap();
+        assert_eq!(output_color_format(&sdr_type, hdr).unwrap(), sdr);
+        assert_eq!(output_color_format(&hdr_type, sdr).unwrap(), hdr);
+        let unspecified_type = unsafe { MFCreateMediaType().unwrap() };
+        assert_eq!(output_color_format(&unspecified_type, hdr).unwrap(), hdr);
+    }
+
+    #[test]
     fn decoder_rejects_hdr_downgrades_and_unsupported_metadata() {
         let _runtime = super::super::MediaRuntime::initialize().unwrap();
         let format = hdr_test_format();
         for (key, value) in [
-            (MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709.0),
             (MF_MT_TRANSFER_FUNCTION, 999),
             (MF_MT_VIDEO_PRIMARIES, MFVideoPrimaries_BT709.0),
             (MF_MT_VIDEO_PRIMARIES, 999),
