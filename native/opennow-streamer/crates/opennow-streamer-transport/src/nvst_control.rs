@@ -15,7 +15,6 @@ pub(crate) const QOS_REPORT_PAYLOAD_LEN: usize = 52;
 pub(crate) const DEFAULT_FRAME_TIME_US: u32 = 16_666;
 pub(crate) const FRAME_PACING_INTERVAL: Duration = Duration::from_micros(55_556);
 pub(crate) const QOS_REPORT_INTERVAL: Duration = Duration::from_millis(50);
-pub(crate) const QOS_WARM_UP: Duration = Duration::from_millis(1_900);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NvstControlCommand {
@@ -114,8 +113,6 @@ pub(crate) struct QosReport {
     pub(crate) bytes_received: u32,
     pub(crate) loss_per_ten_thousand: u16,
     pub(crate) client_time_90khz: u32,
-    pub(crate) previous_bytes_received: u32,
-    pub(crate) warmed_up: bool,
     pub(crate) packet_snapshot: Option<QosPacketSnapshot>,
 }
 
@@ -133,22 +130,10 @@ impl QosReport {
         put_u32(&mut payload, 0, 7);
         put_u32(&mut payload, 8, self.sequence);
         put_u32(&mut payload, 12, self.sender_frame_number);
-        put_u32(&mut payload, 16, self.bytes_received);
         put_u16(&mut payload, 26, self.loss_per_ten_thousand);
-        put_u16(&mut payload, 28, if self.warmed_up { 2 } else { 0 });
         put_u16(&mut payload, 30, 1_000);
         put_u16(&mut payload, 32, 1_000);
         put_u32(&mut payload, 36, self.client_time_90khz);
-        if self.warmed_up {
-            put_u32(
-                &mut payload,
-                44,
-                self.bytes_received
-                    .wrapping_sub(self.previous_bytes_received)
-                    .saturating_mul(8),
-            );
-        }
-        put_u32(&mut payload, 48, self.previous_bytes_received);
         NvstControlCommand {
             code: QOS_REPORT_CODE,
             payload,
@@ -339,8 +324,6 @@ mod tests {
             sender_frame_number: 2,
             bytes_received: 244_808,
             client_time_90khz: 1_818_674,
-            previous_bytes_received: 244_808,
-            warmed_up: false,
             ..QosReport::default()
         }
         .command();
@@ -348,7 +331,7 @@ mod tests {
         assert_eq!(
             command.payload,
             hex(
-                "0700000000000000060000000200000048bc030000000000000000000000e803e803000032c01b00000000000000000048bc0300"
+                "070000000000000006000000020000000000000000000000000000000000e803e803000032c01b00000000000000000000000000"
             )
         );
     }
@@ -366,6 +349,9 @@ mod tests {
         assert_eq!(&payload[26..28], &2_500_u16.to_le_bytes());
         assert_eq!(&payload[34..36], &[0, 0]);
         assert_eq!(&payload[36..40], &0x8765_4321_u32.to_le_bytes());
+        for range in [16..26, 28..30, 40..52] {
+            assert!(payload[range].iter().all(|byte| *byte == 0));
+        }
         assert_eq!(QOS_REPORT_INTERVAL, Duration::from_millis(50));
         assert_eq!(FRAME_PACING_INTERVAL, Duration::from_micros(55_556));
     }

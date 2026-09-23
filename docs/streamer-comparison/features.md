@@ -210,22 +210,16 @@ These are QoS and recovery. Same header rule. Tests in `nvst_control.rs`.
 | `0x0204` | frame ack | 102-byte payload. Full hex in `frame_ack_places_only_source_pinned_fields` |
 | `0x0207` | QoS report | 52-byte payload. Full hex in `qos_report_matches_the_source_test_layout` |
 
-QoS reports run at approximately 18 Hz. The cumulative completed-frame byte count at `+16`
-and the previous successfully queued report's byte count at `+48` are separate samples.
-After the 1.9-second warm-up, `+44` carries their wrapping difference in bits, saturated to
-the field's u32 range. This follows OpenNOW-mac's `NvstQosReport` rate-field interpretation;
-it is not a measurement of total wire traffic including FEC. Failed SCTP queue attempts do
-not advance the report baseline. A new session starts with a fresh baseline.
-
-The timestamp at `+36` tracks the newest authenticated video RTP timestamp, including
-packets whose frames are still incomplete. Reordered packets cannot move it backward,
-and sender clock wrap is preserved. The delay fields at `+20` and `+24` remain unavailable
-zeros; RTP interarrival jitter is not substituted for one-way delay. The captured `+34`
-constant remains unchanged because interpreting it as a configurable link capability is
-not established. Regression coverage in `nvst_qos_tests.rs` exercises encrypted packet
-reception at synthetic 50/75 Mbps byte volumes, partial frames, rejected packets, wrapping
-counters, warm-up, and report baselines. These tests do not reproduce the remote server's
-congestion controller or prove that a live-session bitrate oscillation is resolved.
+QoS reports run every 50 ms. The sender-authored frame number is at `+12`, interval packet
+loss per 10,000 authenticated RTP packets is at `+26`, and `+36` is the client elapsed clock
+in 90 kHz ticks, not the sender's RTP timestamp. A failed SCTP queue attempt does not advance
+the successful report's sequence or loss baseline; a new session starts fresh. Offsets
+`+16`, `+20`, `+24`, `+28`, `+40`, `+44`, and `+48` remain zero because their vendor meanings
+are unverified. `+34` is zero in the official v7 builder. Neither completed-frame byte
+counts nor RTP interarrival jitter substitute for these fields. Regression coverage in
+`nvst_qos_tests.rs` exercises authenticated encrypted reception at synthetic 50/75 Mbps,
+partial frames, rejected packets, packet loss, sequence wrap, and report baselines. These
+tests cannot establish server-side bitrate adaptation or live-session recovery.
 
 IDR is the recovery command OpenNOW already sends. Official also sends a reference-invalidation request. That invalidation frame is **not** in this tree and is not guessed here.
 
