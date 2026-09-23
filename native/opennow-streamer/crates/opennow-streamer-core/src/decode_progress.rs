@@ -33,6 +33,7 @@ pub(crate) struct DecodeProgressWatchdog {
     stage: DecodeProgressStage,
     keyframe_requested_at: Option<Instant>,
     decoder_epoch: Option<u64>,
+    unsubmitted_since: Option<Instant>,
 }
 
 impl DecodeProgressWatchdog {
@@ -44,24 +45,45 @@ impl DecodeProgressWatchdog {
         &mut self,
         timings: &DecodeTimingsReport,
         upstream_stalled: bool,
+        last_assembled_at: Option<Instant>,
         now: Instant,
         policy: DecodeProgressPolicy,
     ) -> Option<DecodeProgressEvent> {
         if self.decoder_epoch != Some(timings.epoch) {
             self.decoder_epoch = Some(timings.epoch);
             self.clear_episode();
+            self.unsubmitted_since = None;
         }
         if self.stage == DecodeProgressStage::RecoveryRequired {
             return None;
         }
         if upstream_stalled {
-            return None;
-        }
-        if timings.in_flight == 0 {
             self.clear_episode();
+            self.unsubmitted_since = None;
             return None;
         }
-        let reference = progress_reference(timings)?;
+        let reference = if timings.in_flight == 0 {
+            if !last_assembled_at.is_some_and(|assembled| {
+                now.saturating_duration_since(assembled) < policy.stall
+                    && timings
+                        .last_output_at
+                        .is_none_or(|output| assembled > output)
+            }) {
+                self.clear_episode();
+                self.unsubmitted_since = None;
+                return None;
+            }
+            let first = *self.unsubmitted_since.get_or_insert(now);
+            if timings.last_output_at.is_some_and(|output| output >= first) {
+                self.clear_episode();
+                self.unsubmitted_since = None;
+                return None;
+            }
+            first
+        } else {
+            self.unsubmitted_since = None;
+            progress_reference(timings)?
+        };
         let idle_for = now.saturating_duration_since(reference);
         if idle_for < policy.stall {
             self.clear_episode();
@@ -159,10 +181,157 @@ mod tests {
         let base = Instant::now();
         let report = timings(1, Some(base));
         assert_eq!(
-            watchdog.poll(&report, false, base + Duration::from_secs(60), policy()),
+            watchdog.poll(
+                &report,
+                false,
+                None,
+                base + Duration::from_secs(60),
+                policy()
+            ),
             None
         );
         assert_eq!(watchdog.stage(), DecodeProgressStage::Tracking);
+    }
+
+    #[test]
+    fn arriving_video_without_decoder_submissions_requests_recovery() {
+        let mut watchdog = DecodeProgressWatchdog::default();
+        let base = Instant::now();
+        let mut report = timings(1, Some(base));
+        report.last_output_at = Some(base);
+        assert_eq!(
+            watchdog.poll(
+                &report,
+                false,
+                Some(base + Duration::from_secs(1)),
+                base + Duration::from_secs(1),
+                policy()
+            ),
+            None
+        );
+        for second in 2..9 {
+            assert_eq!(
+                watchdog.poll(
+                    &report,
+                    false,
+                    Some(base + Duration::from_secs(second)),
+                    base + Duration::from_secs(second),
+                    policy()
+                ),
+                None
+            );
+        }
+        assert!(matches!(
+            watchdog.poll(
+                &report,
+                false,
+                Some(base + Duration::from_secs(9)),
+                base + Duration::from_secs(9),
+                policy()
+            ),
+            Some(DecodeProgressEvent::KeyframeRequested { in_flight: 0, .. })
+        ));
+        assert!(matches!(
+            watchdog.poll(
+                &report,
+                false,
+                Some(base + Duration::from_secs(13)),
+                base + Duration::from_secs(13),
+                policy()
+            ),
+            Some(DecodeProgressEvent::RecoveryNeeded { in_flight: 0, .. })
+        ));
+    }
+
+    #[test]
+    fn stale_assembly_and_resumed_output_do_not_trigger_recovery() {
+        let mut watchdog = DecodeProgressWatchdog::default();
+        let base = Instant::now();
+        let mut report = timings(1, Some(base));
+        report.last_output_at = Some(base);
+        assert_eq!(
+            watchdog.poll(
+                &report,
+                false,
+                Some(base + Duration::from_secs(1)),
+                base + Duration::from_secs(1),
+                policy()
+            ),
+            None
+        );
+        assert_eq!(
+            watchdog.poll(
+                &report,
+                false,
+                Some(base + Duration::from_secs(1)),
+                base + Duration::from_secs(10),
+                policy()
+            ),
+            None
+        );
+        report.last_output_at = Some(base + Duration::from_secs(11));
+        assert_eq!(
+            watchdog.poll(
+                &report,
+                false,
+                Some(base + Duration::from_secs(12)),
+                base + Duration::from_secs(12),
+                policy()
+            ),
+            None
+        );
+        assert_eq!(
+            watchdog.poll(
+                &report,
+                false,
+                Some(base + Duration::from_secs(19)),
+                base + Duration::from_secs(19),
+                policy()
+            ),
+            None
+        );
+        assert_eq!(watchdog.stage(), DecodeProgressStage::Tracking);
+    }
+
+    #[test]
+    fn upstream_stall_restarts_the_unsubmitted_frame_grace_period() {
+        let mut watchdog = DecodeProgressWatchdog::default();
+        let base = Instant::now();
+        let report = timings(1, Some(base));
+        assert_eq!(
+            watchdog.poll(&report, false, Some(base), base, policy()),
+            None
+        );
+        assert_eq!(
+            watchdog.poll(
+                &report,
+                true,
+                Some(base + Duration::from_secs(7)),
+                base + Duration::from_secs(7),
+                policy()
+            ),
+            None
+        );
+        assert_eq!(
+            watchdog.poll(
+                &report,
+                false,
+                Some(base + Duration::from_secs(10)),
+                base + Duration::from_secs(10),
+                policy()
+            ),
+            None
+        );
+        assert!(matches!(
+            watchdog.poll(
+                &report,
+                false,
+                Some(base + Duration::from_secs(18)),
+                base + Duration::from_secs(18),
+                policy()
+            ),
+            Some(DecodeProgressEvent::KeyframeRequested { in_flight: 0, .. })
+        ));
     }
 
     #[test]
@@ -171,19 +340,43 @@ mod tests {
         let base = Instant::now();
         let report = single_pending_submission(base);
         assert_eq!(
-            watchdog.poll(&report, false, base + Duration::from_secs(7), policy()),
+            watchdog.poll(
+                &report,
+                false,
+                None,
+                base + Duration::from_secs(7),
+                policy()
+            ),
             None
         );
         assert!(matches!(
-            watchdog.poll(&report, false, base + Duration::from_secs(8), policy()),
+            watchdog.poll(
+                &report,
+                false,
+                None,
+                base + Duration::from_secs(8),
+                policy()
+            ),
             Some(DecodeProgressEvent::KeyframeRequested { in_flight: 1, .. })
         ));
         assert!(matches!(
-            watchdog.poll(&report, false, base + Duration::from_secs(12), policy()),
+            watchdog.poll(
+                &report,
+                false,
+                None,
+                base + Duration::from_secs(12),
+                policy()
+            ),
             Some(DecodeProgressEvent::RecoveryNeeded { in_flight: 1, .. })
         ));
         assert_eq!(
-            watchdog.poll(&report, false, base + Duration::from_secs(60), policy()),
+            watchdog.poll(
+                &report,
+                false,
+                None,
+                base + Duration::from_secs(60),
+                policy()
+            ),
             None
         );
     }
@@ -194,13 +387,25 @@ mod tests {
         let base = Instant::now();
         let mut report = single_pending_submission(base);
         assert!(matches!(
-            watchdog.poll(&report, false, base + Duration::from_secs(8), policy()),
+            watchdog.poll(
+                &report,
+                false,
+                None,
+                base + Duration::from_secs(8),
+                policy()
+            ),
             Some(DecodeProgressEvent::KeyframeRequested { .. })
         ));
         report.last_output_at = Some(base + Duration::from_secs(9));
         report.oldest_in_flight_at = Some(base + Duration::from_secs(9));
         assert_eq!(
-            watchdog.poll(&report, false, base + Duration::from_secs(9), policy()),
+            watchdog.poll(
+                &report,
+                false,
+                None,
+                base + Duration::from_secs(9),
+                policy()
+            ),
             None
         );
         assert_eq!(watchdog.stage(), DecodeProgressStage::Tracking);
@@ -208,7 +413,13 @@ mod tests {
             report.last_output_at = Some(base + Duration::from_secs(second));
             report.oldest_in_flight_at = Some(base + Duration::from_secs(second));
             assert_eq!(
-                watchdog.poll(&report, false, base + Duration::from_secs(second), policy()),
+                watchdog.poll(
+                    &report,
+                    false,
+                    None,
+                    base + Duration::from_secs(second),
+                    policy()
+                ),
                 None
             );
         }
@@ -221,13 +432,25 @@ mod tests {
         let base = Instant::now();
         let mut report = single_pending_submission(base);
         assert!(matches!(
-            watchdog.poll(&report, false, base + Duration::from_secs(8), policy()),
+            watchdog.poll(
+                &report,
+                false,
+                None,
+                base + Duration::from_secs(8),
+                policy()
+            ),
             Some(DecodeProgressEvent::KeyframeRequested { .. })
         ));
         report.in_flight = 0;
         report.oldest_in_flight_at = None;
         assert_eq!(
-            watchdog.poll(&report, false, base + Duration::from_secs(9), policy()),
+            watchdog.poll(
+                &report,
+                false,
+                None,
+                base + Duration::from_secs(9),
+                policy()
+            ),
             None
         );
         assert_eq!(watchdog.stage(), DecodeProgressStage::Tracking);
@@ -236,12 +459,24 @@ mod tests {
         report.in_flight = 1;
         report.oldest_in_flight_at = Some(later);
         assert_eq!(
-            watchdog.poll(&report, false, later + Duration::from_secs(1), policy()),
+            watchdog.poll(
+                &report,
+                false,
+                None,
+                later + Duration::from_secs(1),
+                policy()
+            ),
             None
         );
         assert_eq!(watchdog.stage(), DecodeProgressStage::Tracking);
         assert!(matches!(
-            watchdog.poll(&report, false, later + Duration::from_secs(8), policy()),
+            watchdog.poll(
+                &report,
+                false,
+                None,
+                later + Duration::from_secs(8),
+                policy()
+            ),
             Some(DecodeProgressEvent::KeyframeRequested { .. })
         ));
     }
@@ -252,12 +487,24 @@ mod tests {
         let base = Instant::now();
         let report = single_pending_submission(base);
         assert_eq!(
-            watchdog.poll(&report, true, base + Duration::from_secs(30), policy()),
+            watchdog.poll(
+                &report,
+                true,
+                None,
+                base + Duration::from_secs(30),
+                policy()
+            ),
             None
         );
         assert_eq!(watchdog.stage(), DecodeProgressStage::Tracking);
         assert!(matches!(
-            watchdog.poll(&report, false, base + Duration::from_secs(31), policy()),
+            watchdog.poll(
+                &report,
+                false,
+                None,
+                base + Duration::from_secs(31),
+                policy()
+            ),
             Some(DecodeProgressEvent::KeyframeRequested { .. })
         ));
     }
@@ -271,7 +518,13 @@ mod tests {
         report.in_flight = 1;
         report.oldest_in_flight_at = Some(base + Duration::from_secs(10));
         assert!(matches!(
-            watchdog.poll(&report, false, base + Duration::from_secs(19), policy()),
+            watchdog.poll(
+                &report,
+                false,
+                None,
+                base + Duration::from_secs(19),
+                policy()
+            ),
             Some(DecodeProgressEvent::KeyframeRequested { .. })
         ));
     }
@@ -281,19 +534,43 @@ mod tests {
         let mut watchdog = DecodeProgressWatchdog::default();
         let base = Instant::now();
         let report = single_pending_submission(base);
-        watchdog.poll(&report, false, base + Duration::from_secs(8), policy());
-        watchdog.poll(&report, false, base + Duration::from_secs(12), policy());
+        watchdog.poll(
+            &report,
+            false,
+            None,
+            base + Duration::from_secs(8),
+            policy(),
+        );
+        watchdog.poll(
+            &report,
+            false,
+            None,
+            base + Duration::from_secs(12),
+            policy(),
+        );
         assert_eq!(watchdog.stage(), DecodeProgressStage::RecoveryRequired);
 
         let mut restarted = timings(2, Some(base + Duration::from_secs(20)));
         restarted.in_flight = 1;
         restarted.oldest_in_flight_at = Some(base + Duration::from_secs(20));
         assert_eq!(
-            watchdog.poll(&restarted, false, base + Duration::from_secs(27), policy()),
+            watchdog.poll(
+                &restarted,
+                false,
+                None,
+                base + Duration::from_secs(27),
+                policy()
+            ),
             None
         );
         assert!(matches!(
-            watchdog.poll(&restarted, false, base + Duration::from_secs(28), policy()),
+            watchdog.poll(
+                &restarted,
+                false,
+                None,
+                base + Duration::from_secs(28),
+                policy()
+            ),
             Some(DecodeProgressEvent::KeyframeRequested { .. })
         ));
     }
@@ -307,7 +584,13 @@ mod tests {
         report.epoch = 4;
         report.epoch_started_at = Some(base);
         assert_eq!(
-            watchdog.poll(&report, false, base + Duration::from_secs(1), policy()),
+            watchdog.poll(
+                &report,
+                false,
+                None,
+                base + Duration::from_secs(1),
+                policy()
+            ),
             None
         );
         assert_eq!(watchdog.stage(), DecodeProgressStage::Tracking);
@@ -328,6 +611,7 @@ mod tests {
                 watchdog.poll(
                     &report,
                     false,
+                    None,
                     base + Duration::from_secs(second + 1),
                     policy()
                 ),
