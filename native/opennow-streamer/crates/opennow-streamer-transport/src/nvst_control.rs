@@ -13,7 +13,8 @@ pub(crate) const QOS_REPORT_PAYLOAD_LEN: usize = 52;
 // The official GFN client keeps the frame-pacing PID target at 16.666 ms even for a
 // 120 FPS encoded stream. This is a renderer/feedback target, not the encoded-frame interval.
 pub(crate) const DEFAULT_FRAME_TIME_US: u32 = 16_666;
-pub(crate) const QOS_REPORT_INTERVAL: Duration = Duration::from_micros(55_556);
+pub(crate) const FRAME_PACING_INTERVAL: Duration = Duration::from_micros(55_556);
+pub(crate) const QOS_REPORT_INTERVAL: Duration = Duration::from_millis(50);
 pub(crate) const QOS_WARM_UP: Duration = Duration::from_millis(1_900);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,11 +110,21 @@ pub(crate) fn frame_pacing_report(
 #[derive(Debug, Default)]
 pub(crate) struct QosReport {
     pub(crate) sequence: u32,
-    pub(crate) frames_received: u32,
+    pub(crate) sender_frame_number: u32,
     pub(crate) bytes_received: u32,
-    pub(crate) rtp_timestamp: u32,
+    pub(crate) loss_per_ten_thousand: u16,
+    pub(crate) client_time_90khz: u32,
     pub(crate) previous_bytes_received: u32,
     pub(crate) warmed_up: bool,
+    pub(crate) packet_snapshot: Option<QosPacketSnapshot>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct QosPacketSnapshot {
+    pub(crate) ssrc: u32,
+    pub(crate) base: u32,
+    pub(crate) highest: u32,
+    pub(crate) received: u32,
 }
 
 impl QosReport {
@@ -121,13 +132,13 @@ impl QosReport {
         let mut payload = vec![0; QOS_REPORT_PAYLOAD_LEN];
         put_u32(&mut payload, 0, 7);
         put_u32(&mut payload, 8, self.sequence);
-        put_u32(&mut payload, 12, self.frames_received);
+        put_u32(&mut payload, 12, self.sender_frame_number);
         put_u32(&mut payload, 16, self.bytes_received);
+        put_u16(&mut payload, 26, self.loss_per_ten_thousand);
         put_u16(&mut payload, 28, if self.warmed_up { 2 } else { 0 });
         put_u16(&mut payload, 30, 1_000);
         put_u16(&mut payload, 32, 1_000);
-        put_u16(&mut payload, 34, 12_708);
-        put_u32(&mut payload, 36, self.rtp_timestamp);
+        put_u32(&mut payload, 36, self.client_time_90khz);
         if self.warmed_up {
             put_u32(
                 &mut payload,
@@ -325,20 +336,38 @@ mod tests {
     fn qos_report_matches_the_source_test_layout() {
         let command = QosReport {
             sequence: 6,
-            frames_received: 2,
+            sender_frame_number: 2,
             bytes_received: 244_808,
-            rtp_timestamp: 1_818_674,
+            client_time_90khz: 1_818_674,
             previous_bytes_received: 244_808,
             warmed_up: false,
+            ..QosReport::default()
         }
         .command();
         assert_eq!(command.code, QOS_REPORT_CODE);
         assert_eq!(
             command.payload,
             hex(
-                "0700000000000000060000000200000048bc030000000000000000000000e803e803a43132c01b00000000000000000048bc0300"
+                "0700000000000000060000000200000048bc030000000000000000000000e803e803000032c01b00000000000000000048bc0300"
             )
         );
+    }
+
+    #[test]
+    fn qos_report_writes_sender_frame_loss_and_client_clock_at_their_wire_offsets() {
+        let report = QosReport {
+            sender_frame_number: 0x1234_5678,
+            loss_per_ten_thousand: 2_500,
+            client_time_90khz: 0x8765_4321,
+            ..QosReport::default()
+        };
+        let payload = report.command().payload;
+        assert_eq!(&payload[12..16], &0x1234_5678_u32.to_le_bytes());
+        assert_eq!(&payload[26..28], &2_500_u16.to_le_bytes());
+        assert_eq!(&payload[34..36], &[0, 0]);
+        assert_eq!(&payload[36..40], &0x8765_4321_u32.to_le_bytes());
+        assert_eq!(QOS_REPORT_INTERVAL, Duration::from_millis(50));
+        assert_eq!(FRAME_PACING_INTERVAL, Duration::from_micros(55_556));
     }
 
     #[test]

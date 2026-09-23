@@ -347,11 +347,7 @@ impl RtspClient {
         request
             .headers_mut()
             .insert("content-length", HeaderValue::from_static("0"));
-        let (mut socket, _) = connect(request).map_err(|error| {
-            let failure = rtsp_connect_error(&error);
-            opennow_streamer_protocol::log::log_line("WARN", "rtsp", &failure.message);
-            failure
-        })?;
+        let (mut socket, _) = connect_with_retry(|| connect(request.clone()))?;
         set_io_timeout(&mut socket, REQUEST_TIMEOUT);
         Ok((
             Self {
@@ -495,11 +491,44 @@ impl RtspClient {
     }
 }
 
+fn connect_with_retry<T>(
+    mut attempt: impl FnMut() -> Result<T, tungstenite::Error>,
+) -> Result<T, NvstRtspError> {
+    for retry in 0..3 {
+        match attempt() {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                let transient = matches!(&error, tungstenite::Error::Io(_))
+                    || matches!(&error, tungstenite::Error::Http(response) if response.status().is_server_error());
+                let failure = rtsp_connect_error(&error);
+                opennow_streamer_protocol::log::log_line(
+                    "WARN",
+                    "rtsp",
+                    &format!(
+                        "signaling-connect-failed attempt={}/3 code={}",
+                        retry + 1,
+                        failure.code
+                    ),
+                );
+                if !transient || retry == 2 {
+                    return Err(failure);
+                }
+            }
+        }
+    }
+    Err(NvstRtspError::new(
+        "nvst-connect-failed",
+        "RTSPS connection attempts exhausted",
+    ))
+}
+
 fn rtsp_connect_error(error: &tungstenite::Error) -> NvstRtspError {
     if let tungstenite::Error::Http(response) = error {
         let status = response.status().as_u16();
         return NvstRtspError::new(
-            if status == 503 {
+            if status == 403 {
+                "nvst-signaling-forbidden"
+            } else if status == 503 {
                 "nvst-service-unavailable"
             } else {
                 "nvst-connect-failed"
@@ -742,21 +771,15 @@ pub fn prepare_owned_nvst(
     bundle: &mut ReservedNvstBundle,
 ) -> Result<PreparedNvstRtspSession, NvstRtspError> {
     ensure_tls_crypto_provider()?;
-    let endpoint = context
+    let endpoints = context
         .session
         .extra
         .get("rtspsEndpoints")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(Value::as_str)
-        .find(|value| value.starts_with("rtsps://") || value.starts_with("rtsp://"))
-        .ok_or_else(|| {
-            NvstRtspError::new(
-                "missing-rtsps-endpoint",
-                "CloudMatch did not provide an RTSPS endpoint for NVST",
-            )
-        })?;
+        .map(Value::as_str)
+        .collect::<Vec<_>>();
     let session_id = context.session.session_id.trim();
     if session_id.is_empty() {
         return Err(NvstRtspError::new(
@@ -765,6 +788,88 @@ pub fn prepare_owned_nvst(
         ));
     }
 
+    try_signaling_endpoints(&endpoints, |endpoint| {
+        prepare_on_endpoint(context, bundle, session_id, endpoint)
+    })
+}
+
+fn try_signaling_endpoints<T>(
+    endpoints: &[Option<&str>],
+    mut handshake: impl FnMut(&str) -> Result<T, NvstRtspError>,
+) -> Result<T, NvstRtspError> {
+    if endpoints.is_empty() {
+        return Err(NvstRtspError::new(
+            "missing-rtsps-endpoint",
+            "CloudMatch did not provide an RTSPS endpoint for NVST",
+        ));
+    }
+    let mut failures = Vec::new();
+    for (index, endpoint) in endpoints.iter().enumerate() {
+        opennow_streamer_protocol::log::log_line(
+            "INFO",
+            "rtsps",
+            &format!(
+                "signaling-attempt endpoint={}/{}",
+                index + 1,
+                endpoints.len()
+            ),
+        );
+        let attempt = endpoint
+            .ok_or_else(|| {
+                NvstRtspError::new(
+                    "invalid-rtsps-endpoint",
+                    "RTSPS endpoint is not a URL string",
+                )
+            })
+            .and_then(&mut handshake);
+        match attempt {
+            Ok(session) => return Ok(session),
+            Err(error) => {
+                opennow_streamer_protocol::log::log_line(
+                    "WARN",
+                    "rtsps",
+                    &format!(
+                        "signaling-failed endpoint={}/{} code={}",
+                        index + 1,
+                        endpoints.len(),
+                        error.code
+                    ),
+                );
+                if error.code == "nvst-signaling-forbidden" {
+                    return Err(error);
+                }
+                failures.push((index + 1, error));
+            }
+        }
+    }
+    let summary = failures
+        .iter()
+        .map(|(index, error)| format!("{index}:{}", error.code))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let (_, last) = failures.pop().ok_or_else(|| {
+        NvstRtspError::new(
+            "missing-rtsps-endpoint",
+            "CloudMatch did not provide an RTSPS endpoint for NVST",
+        )
+    })?;
+    Err(NvstRtspError::new(
+        last.code,
+        format!(
+            "All {} NVST signaling endpoints failed ({}); last: {}",
+            endpoints.len(),
+            summary,
+            last.message,
+        ),
+    ))
+}
+
+fn prepare_on_endpoint(
+    context: &SessionContext,
+    bundle: &mut ReservedNvstBundle,
+    session_id: &str,
+    endpoint: &str,
+) -> Result<PreparedNvstRtspSession, NvstRtspError> {
     let client_port = bundle
         .local_addr()
         .map_err(|error| NvstRtspError::new("nvst-bind-failed", error.to_string()))?
@@ -837,7 +942,7 @@ pub fn prepare_owned_nvst(
         .or_else(|| sdp_attribute(&describe.body, "general.iceUsernamePwd"));
     let remote_fingerprint = sdp_attribute(&describe.body, "general.dtlsFingerprintV2")
         .or_else(|| sdp_attribute(&describe.body, "general.dtlsFingerprint"));
-    let disable_play = sdp_attribute(&describe.body, "general.disablePlay").as_deref() != Some("0");
+    let disable_play = sdp_attribute(&describe.body, "general.disablePlay").as_deref() == Some("1");
     let native_bundle = sdp_attribute(&describe.body, "general.nativeRtcOnBundlePort");
     if native_bundle.as_deref() != Some("1") {
         return Err(NvstRtspError::new(
@@ -983,6 +1088,7 @@ pub fn prepare_owned_nvst(
         "timeoutMs":VIDEO_TIMEOUT_MS,
         "startupTimeoutMs":VIDEO_STARTUP_TIMEOUT_MS
     });
+    set_bundle_natt_username(&mut handoff, &describe.body, ping_version);
     if let Some(media) = context.session.media_connection_info.as_ref() {
         handoff["bundlePeerIp"] = json!(media.ip);
         handoff["bundlePeerPort"] = json!(media.port);
@@ -1500,54 +1606,71 @@ fn take_rtsp_response(
 }
 
 fn rtsp_endpoint_urls(endpoint: &str) -> Result<(String, String), NvstRtspError> {
+    if endpoint.starts_with("rtsp://") {
+        return Err(NvstRtspError::new(
+            "nvst-raw-rtsp-unsupported",
+            "Raw RTSP signaling is not supported by the NVST WebSocket client",
+        ));
+    }
     let translated = endpoint
-        .replacen("rtsps://", "https://", 1)
-        .replacen("rtsp://", "http://", 1);
+        .strip_prefix("rtsps://")
+        .map(|rest| format!("https://{rest}"))
+        .ok_or_else(|| {
+            NvstRtspError::new(
+                "invalid-rtsps-endpoint",
+                "Unsupported RTSPS endpoint scheme",
+            )
+        })?;
     let parsed = translated
         .parse::<Uri>()
         .map_err(|_| NvstRtspError::new("invalid-rtsps-endpoint", "Invalid RTSPS endpoint"))?;
     let host = parsed.host().ok_or_else(|| {
         NvstRtspError::new("invalid-rtsps-endpoint", "RTSPS endpoint has no host")
     })?;
-    let address_host = host
-        .strip_prefix('[')
-        .and_then(|host| host.strip_suffix(']'))
-        .filter(|host| host.parse::<std::net::Ipv6Addr>().is_ok())
-        .unwrap_or(host);
-    if !trusted_nvst_host(address_host) {
+    let authority = parsed.authority().ok_or_else(|| {
+        NvstRtspError::new("invalid-rtsps-endpoint", "RTSPS endpoint has no authority")
+    })?;
+    if authority.as_str().contains('@')
+        || endpoint.contains('#')
+        || endpoint.chars().any(char::is_control)
+    {
         return Err(NvstRtspError::new(
-            "untrusted-rtsps-endpoint",
-            "Refusing an untrusted RTSPS endpoint",
+            "invalid-rtsps-endpoint",
+            "RTSPS endpoint contains invalid authority or characters",
         ));
     }
-    let port = parsed.port_u16().unwrap_or(322);
+    if host.starts_with('[')
+        && host
+            .strip_prefix('[')
+            .and_then(|host| host.strip_suffix(']'))
+            .is_none_or(|host| host.parse::<std::net::Ipv6Addr>().is_err())
+    {
+        return Err(NvstRtspError::new(
+            "invalid-rtsps-endpoint",
+            "RTSPS endpoint IPv6 host is invalid",
+        ));
+    }
+    let explicit_port = authority.as_str().strip_prefix(host).unwrap_or_default();
+    let port = if explicit_port.is_empty() {
+        322
+    } else {
+        explicit_port
+            .strip_prefix(':')
+            .and_then(|value| value.parse::<u16>().ok())
+            .ok_or_else(|| {
+                NvstRtspError::new("invalid-rtsps-endpoint", "RTSPS endpoint port is invalid")
+            })?
+    };
+    if port == 0 {
+        return Err(NvstRtspError::new(
+            "invalid-rtsps-endpoint",
+            "RTSPS endpoint port is zero",
+        ));
+    }
     Ok((
         format!("wss://{host}:{port}/rtsp"),
         format!("rtsps://{host}:{port}"),
     ))
-}
-
-fn trusted_nvst_host(host: &str) -> bool {
-    let host = host.trim_end_matches('.').to_ascii_lowercase();
-    if host == "nvidiagrid.net" || host.ends_with(".nvidiagrid.net") {
-        return true;
-    }
-    let trusted_ipv4 = |ip: std::net::Ipv4Addr| {
-        !ip.is_private() && !ip.is_loopback() && !ip.is_link_local() && !ip.is_unspecified()
-    };
-    host.parse::<IpAddr>().is_ok_and(|ip| match ip {
-        IpAddr::V4(ip) => trusted_ipv4(ip),
-        IpAddr::V6(ip) => ip.to_ipv4_mapped().map_or_else(
-            || {
-                !ip.is_loopback()
-                    && !ip.is_unicast_link_local()
-                    && !ip.is_unspecified()
-                    && !ip.is_unique_local()
-                    && !ip.is_multicast()
-            },
-            trusted_ipv4,
-        ),
-    })
 }
 
 /// Shape-only DESCRIBE summary for diagnosing peerless SETUP responses.
@@ -1561,7 +1684,16 @@ fn describe_media_shape(sdp: &str) -> String {
     let mut control_count = 0u32;
     let mut video_control_shape = "absent";
     let mut in_video = false;
-    for line in sdp.lines().map(str::trim) {
+    for line in sdp
+        .split("||")
+        .next()
+        .unwrap_or_default()
+        .split(";;")
+        .next()
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+    {
         if let Some(media) = line.strip_prefix("m=") {
             if let Some((media, port)) = current.take() {
                 sections.push(format!("{media}/{port}"));
@@ -1603,7 +1735,14 @@ fn describe_media_shape(sdp: &str) -> String {
 
 fn media_control(sdp: &str, kind: &str) -> Option<String> {
     let mut current = "";
-    for line in sdp.lines().map(str::trim) {
+    for line in sdp
+        .split("||")
+        .next()?
+        .split(";;")
+        .next()?
+        .lines()
+        .map(str::trim)
+    {
         if let Some(media) = line.strip_prefix("m=") {
             current = media.split_whitespace().next().unwrap_or("");
         } else if current.eq_ignore_ascii_case(kind)
@@ -1643,17 +1782,23 @@ fn sdp_attribute(sdp: &str, name: &str) -> Option<String> {
         format!("a=x-nv-{name}:").to_ascii_lowercase(),
         format!("a={name}:").to_ascii_lowercase(),
     ];
-    sdp.lines().map(str::trim).find_map(|line| {
-        let lower = line.to_ascii_lowercase();
-        candidates.iter().find_map(|prefix| {
-            lower.strip_prefix(prefix).and_then(|_| {
-                line.get(prefix.len()..)
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(ToOwned::to_owned)
+    sdp.split("||")
+        .next()?
+        .split(";;")
+        .flat_map(str::lines)
+        .map(str::trim)
+        .filter_map(|line| {
+            let lower = line.to_ascii_lowercase();
+            candidates.iter().find_map(|prefix| {
+                lower.strip_prefix(prefix).and_then(|_| {
+                    line.get(prefix.len()..)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(ToOwned::to_owned)
+                })
             })
         })
-    })
+        .last()
 }
 
 fn official_video_setup_control(control: &str) -> String {
@@ -1754,6 +1899,34 @@ fn resolve_remote_ufrag(
         }
     }
     described_ufrag.map(ToOwned::to_owned)
+}
+
+fn bundle_natt_username(sdp: &str) -> Option<String> {
+    let ufrag = sdp_attribute(sdp, "general.iceUsernameFragment")
+        .or_else(|| sdp_attribute(sdp, "general.iceUserNameFragmentV2"))?;
+    let port = sdp_attribute(sdp, "general.serverBundlePort")?
+        .parse::<u16>()
+        .ok()
+        .filter(|port| *port != 0)?;
+    let port_text = port.to_string();
+    if ufrag.is_empty()
+        || ufrag.len() + port_text.len() > 256
+        || !ufrag
+            .bytes()
+            .all(|byte| byte.is_ascii_graphic() && byte != b':')
+    {
+        return None;
+    }
+    Some(format!("{ufrag}{port_text}"))
+}
+
+fn set_bundle_natt_username(handoff: &mut Value, sdp: &str, ping_version: u8) {
+    if ping_version != 6 {
+        return;
+    }
+    if let Some(username) = bundle_natt_username(sdp) {
+        handoff["bundleNattRemoteUsername"] = json!(username);
+    }
 }
 
 fn runtime_key(sdp: &str) -> Option<(String, u32)> {
@@ -1874,6 +2047,109 @@ mod tests {
         assert_eq!(error.code, "nvst-service-unavailable");
         assert!(error.message.contains("HTTP 503"));
         assert!(!error.message.contains("private response body"));
+    }
+
+    #[test]
+    fn forbidden_upgrade_stops_signaling_fallback() {
+        let response = tungstenite::http::Response::builder()
+            .status(403)
+            .body(Some(b"private response body".to_vec()))
+            .unwrap();
+        let failure = rtsp_connect_error(&tungstenite::Error::Http(Box::new(response)));
+        assert_eq!(failure.code, "nvst-signaling-forbidden");
+        assert!(!failure.message.contains("private response body"));
+        let mut attempted = Vec::new();
+        let error = try_signaling_endpoints(&[Some("first"), Some("second")], |endpoint| {
+            attempted.push(endpoint.to_owned());
+            Err::<(), _>(NvstRtspError::new(failure.code, failure.message.clone()))
+        })
+        .unwrap_err();
+        assert_eq!(attempted, ["first"]);
+        assert_eq!(error.code, "nvst-signaling-forbidden");
+        let mut attempts = 0;
+        let error = connect_with_retry::<()>(|| {
+            attempts += 1;
+            let response = tungstenite::http::Response::builder()
+                .status(403)
+                .body(None)
+                .unwrap();
+            Err(tungstenite::Error::Http(Box::new(response)))
+        })
+        .unwrap_err();
+        assert_eq!(attempts, 1);
+        assert_eq!(error.code, "nvst-signaling-forbidden");
+    }
+
+    #[test]
+    fn transient_connection_retries_are_bounded_per_endpoint() {
+        let mut attempts = 0;
+        let result = connect_with_retry(|| {
+            attempts += 1;
+            if attempts < 3 {
+                Err(tungstenite::Error::Io(std::io::Error::from(
+                    ErrorKind::ConnectionRefused,
+                )))
+            } else {
+                Ok(42)
+            }
+        })
+        .unwrap();
+        assert_eq!(result, 42);
+        assert_eq!(attempts, 3);
+        let mut attempts = 0;
+        let error = connect_with_retry::<()>(|| {
+            attempts += 1;
+            Err(tungstenite::Error::Io(std::io::Error::from(
+                ErrorKind::ConnectionRefused,
+            )))
+        })
+        .unwrap_err();
+        assert_eq!(attempts, 3);
+        assert_eq!(error.code, "nvst-connect-failed");
+    }
+
+    #[test]
+    fn signaling_attempts_every_endpoint_in_order_with_a_fresh_handshake() {
+        let mut attempted = Vec::new();
+        let session = try_signaling_endpoints(
+            &[None, Some("unavailable"), Some("working"), Some("unused")],
+            |endpoint| {
+                attempted.push(endpoint.to_owned());
+                match endpoint {
+                    "unavailable" => {
+                        Err(NvstRtspError::new("nvst-service-unavailable", "HTTP 503"))
+                    }
+                    _ => Ok(endpoint.to_owned()),
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(session, "working");
+        assert_eq!(attempted, ["unavailable", "working"]);
+
+        let error = try_signaling_endpoints::<()>(&[None, Some("unavailable")], |endpoint| {
+            Err(NvstRtspError::new(
+                if endpoint == "invalid" {
+                    "invalid-rtsps-endpoint"
+                } else {
+                    "nvst-service-unavailable"
+                },
+                "failed",
+            ))
+        })
+        .unwrap_err();
+        assert_eq!(error.code, "nvst-service-unavailable");
+        assert!(
+            error
+                .message
+                .contains("1:invalid-rtsps-endpoint, 2:nvst-service-unavailable")
+        );
+        assert_eq!(
+            try_signaling_endpoints::<()>(&[], |_| Ok(()))
+                .unwrap_err()
+                .code,
+            "missing-rtsps-endpoint"
+        );
     }
 
     fn context() -> SessionContext {
@@ -2403,12 +2679,25 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_policy_rejects_local_and_private_addresses() {
-        assert!(trusted_nvst_host("seat.nvidiagrid.net"));
-        assert!(trusted_nvst_host("8.8.8.8"));
-        assert!(!trusted_nvst_host("localhost"));
-        assert!(!trusted_nvst_host("127.0.0.1"));
-        assert!(!trusted_nvst_host("10.0.0.8"));
+    fn describe_features_override_main_without_reading_upstream_offer() {
+        let describe = "v=0\r\na=x-nv-general.disablePlay:0\r\na=x-nv-general.nativeRtcOnBundlePort:0\r\nm=video 5004\r\na=control:streamid=video/0\r\n;;v=0\r\na=x-nv-general.nativeRtcOnBundlePort:1\r\na=x-nv-general.disablePlay:1\r\nm=video 6000\r\na=control:wrong-control\r\n||v=0\r\na=x-nv-general.disablePlay:0\r\n";
+        assert_eq!(
+            sdp_attribute(describe, "general.nativeRtcOnBundlePort").as_deref(),
+            Some("1")
+        );
+        assert_eq!(
+            sdp_attribute(describe, "general.disablePlay").as_deref(),
+            Some("1")
+        );
+        assert_eq!(
+            media_control(describe, "video").as_deref(),
+            Some("streamid=video/0")
+        );
+        assert_eq!(
+            media_control("v=0\r\n||m=video 5004\r\na=control:upstream\r\n", "video"),
+            None
+        );
+        assert_eq!(sdp_attribute("v=0\r\n", "general.disablePlay"), None);
     }
 
     #[test]
@@ -2437,7 +2726,6 @@ mod tests {
         for (endpoint, port) in [
             ("rtsps://[2001:4860:4860::8888]:48322/session", 48322),
             ("rtsps://[2001:4860:4860::8888]/session", 322),
-            ("rtsp://[2001:4860:4860::8888]:48322/session", 48322),
         ] {
             let (wss, target) = rtsp_endpoint_urls(endpoint).unwrap();
             let authority = format!("[2001:4860:4860::8888]:{port}");
@@ -2472,27 +2760,35 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_urls_preserve_host_policy_for_ipv6_and_bracketed_non_ipv6() {
+    fn endpoint_urls_reject_malformed_authorities_not_partner_or_private_hosts() {
         for endpoint in [
-            "rtsps://[::1]:322",
-            "rtsps://[::]:322",
-            "rtsps://[fe80::1]:322",
-            "rtsps://[fc00::1]:322",
-            "rtsps://[fd00::1]:322",
-            "rtsps://[ff02::1]:322",
-            "rtsps://[::ffff:127.0.0.1]:322",
-            "rtsps://[::ffff:10.0.0.1]:322",
-            "rtsps://[::ffff:169.254.1.1]:322",
-            "rtsps://[::ffff:0.0.0.0]:322",
             "rtsps://[seat.nvidiagrid.net]:322",
             "rtsps://[8.8.8.8]:322",
             "rtsps://[[2001:4860:4860::8888]]:322",
-            "rtsps://partner.example:322",
-            "rtsps://127.0.0.1:322",
-            "rtsps://10.0.0.8:322",
+            "https://partner.example:322",
+            "rtsp://partner.example:322",
+            "rtsps://user@partner.example:322",
+            "rtsps://partner.example:65536",
+            "rtsps://partner.example:0",
+            "rtsps://partner.example:wrong",
+            "rtsps://partner.example:322/#fragment",
         ] {
             assert!(rtsp_endpoint_urls(endpoint).is_err(), "{endpoint}");
         }
+        for endpoint in [
+            "rtsps://partner.example:322",
+            "rtsps://127.0.0.1:322",
+            "rtsps://10.0.0.8:322",
+            "rtsps://[::1]:322",
+        ] {
+            assert!(rtsp_endpoint_urls(endpoint).is_ok(), "{endpoint}");
+        }
+        assert_eq!(
+            rtsp_endpoint_urls("rtsp://partner.example:322")
+                .unwrap_err()
+                .code,
+            "nvst-raw-rtsp-unsupported"
+        );
     }
 
     #[test]
@@ -2519,5 +2815,59 @@ mod tests {
             resolve_remote_ufrag(None, Some("described"), 5).as_deref(),
             Some("described")
         );
+    }
+
+    #[test]
+    fn bundle_natt_username_uses_server_ufrag_and_decimal_bundle_port() {
+        let sdp = "a=x-nv-general.iceUsernameFragment:server\r\na=x-nv-general.serverBundlePort:47998\r\n;;a=x-nv-general.serverBundlePort:47999\r\n||a=x-nv-general.serverBundlePort:1234\r\n";
+        assert_eq!(bundle_natt_username(sdp).as_deref(), Some("server47999"));
+        assert_ne!(
+            bundle_natt_username(sdp).as_deref(),
+            increment_hex("server47998").as_deref()
+        );
+        assert_eq!(bundle_natt_username("a=x-nv-general.iceUserNameFragmentV2:next\r\na=x-nv-general.serverBundlePort:5004\r\n").as_deref(), Some("next5004"));
+        for invalid in [
+            "a=x-nv-general.iceUsernameFragment:server\r\n",
+            "a=x-nv-general.serverBundlePort:47999\r\n",
+            "a=x-nv-general.iceUsernameFragment:server\r\na=x-nv-general.serverBundlePort:0\r\n",
+            "a=x-nv-general.iceUsernameFragment:server\r\na=x-nv-general.serverBundlePort:65536\r\n",
+            "a=x-nv-general.iceUsernameFragment:bad:value\r\na=x-nv-general.serverBundlePort:47999\r\n",
+        ] {
+            assert_eq!(bundle_natt_username(invalid), None);
+        }
+        let oversized = format!(
+            "a=x-nv-general.iceUsernameFragment:{}\r\na=x-nv-general.serverBundlePort:47999\r\n",
+            "a".repeat(252)
+        );
+        assert_eq!(bundle_natt_username(&oversized), None);
+    }
+
+    #[test]
+    fn bundle_natt_handoff_keeps_the_ice_fragment_distinct() {
+        let describe = "v=0\r\na=x-nv-general.iceUsernameFragment:a1b2\r\na=x-nv-general.serverBundlePort:48000\r\n;;a=x-nv-general.serverBundlePort:48001\r\n||a=x-nv-general.serverBundlePort:47000\r\n";
+        let ice_fragment = resolve_remote_ufrag(
+            Some("a1b247998"),
+            sdp_attribute(describe, "general.iceUsernameFragment").as_deref(),
+            6,
+        )
+        .unwrap();
+        let mut handoff = json!({"remoteIceUsernameFragment": ice_fragment});
+        set_bundle_natt_username(&mut handoff, describe, 6);
+        assert_eq!(handoff["remoteIceUsernameFragment"], "a1b247999");
+        assert_eq!(handoff["bundleNattRemoteUsername"], "a1b248001");
+
+        let mut missing = json!({"remoteIceUsernameFragment": "a1b247999"});
+        set_bundle_natt_username(
+            &mut missing,
+            "a=x-nv-general.iceUsernameFragment:a1b2\r\n",
+            6,
+        );
+        assert_eq!(missing["remoteIceUsernameFragment"], "a1b247999");
+        assert!(missing.get("bundleNattRemoteUsername").is_none());
+
+        let mut legacy = json!({"remoteIceUsernameFragment": "a1b2"});
+        set_bundle_natt_username(&mut legacy, describe, 5);
+        assert_eq!(legacy["remoteIceUsernameFragment"], "a1b2");
+        assert!(legacy.get("bundleNattRemoteUsername").is_none());
     }
 }

@@ -1546,28 +1546,7 @@ impl GfnService {
                 message: "Provider server info has no regions or verified VPC".into(),
             });
         }
-        let mut regions = payload["metaData"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|entry| {
-                let name = entry["key"].as_str()?;
-                let value = entry["value"].as_str()?;
-                if !value.starts_with("https://")
-                    || name == "gfn-regions"
-                    || name.starts_with("gfn-")
-                {
-                    return None;
-                }
-                Some(json!({"name":name,"url":trusted_streaming_base(value).ok()?.as_str()}))
-            })
-            .collect::<Vec<_>>();
-        regions.sort_by(|left, right| {
-            left["name"]
-                .as_str()
-                .unwrap_or("")
-                .cmp(right["name"].as_str().unwrap_or(""))
-        });
+        let regions = provider_region_entries(&payload);
         Ok(json!({"regions":regions,"vpcId":vpc_id,"providerIdpId":session.provider.idp_id}))
     }
 
@@ -3249,6 +3228,39 @@ fn parse_store_definitions(payload: &Value) -> Vec<Value> {
 
 fn trusted_streaming_base(value: &str) -> Result<url::Url, ServiceError> {
     crate::cloudmatch::trusted_cloudmatch_base(value)
+}
+
+fn provider_region_entries(payload: &Value) -> Vec<Value> {
+    let Some(metadata) = payload["metaData"].as_array() else {
+        return Vec::new();
+    };
+    let names = metadata
+        .iter()
+        .find(|entry| entry["key"] == "gfn-regions")
+        .and_then(|entry| entry["value"].as_str())
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .collect::<Vec<_>>();
+    let mut regions = metadata
+        .iter()
+        .filter_map(|entry| {
+            let name = entry["key"].as_str()?;
+            let value = entry["value"].as_str()?;
+            if !names.contains(&name) {
+                return None;
+            }
+            Some(json!({"name":name,"url":trusted_streaming_base(value).ok()?.as_str()}))
+        })
+        .collect::<Vec<_>>();
+    regions.sort_by(|left, right| {
+        left["name"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(right["name"].as_str().unwrap_or(""))
+    });
+    regions
 }
 
 fn provider_result(state: &ServiceState) -> Value {

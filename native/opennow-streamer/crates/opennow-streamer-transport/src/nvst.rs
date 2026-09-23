@@ -40,8 +40,9 @@ use str0m::{Candidate, Event, IceCreds, Input, Output, Rtc, RtcConfig};
 
 use super::frame_stage_timing::FrameStageTimingsAccumulator;
 use super::nvst_control::{
-    DEFAULT_FRAME_TIME_US, MAX_NACK_PACKET_COUNT, QOS_REPORT_INTERVAL, QOS_WARM_UP, QosReport,
-    frame_ack, frame_pacing_report, idr_request, nack_v2,
+    DEFAULT_FRAME_TIME_US, FRAME_PACING_INTERVAL, MAX_NACK_PACKET_COUNT, QOS_REPORT_INTERVAL,
+    QOS_WARM_UP, QosPacketSnapshot, QosReport, frame_ack, frame_pacing_report, idr_request,
+    nack_v2,
 };
 use super::nvst_cursor::{CursorCommand, NvstCursorCapture, valid_cursor_channel_message};
 use super::nvst_haptics::NvstHaptics;
@@ -395,6 +396,7 @@ struct ReceptionTiming {
     first_rtp_timestamp: u32,
     last_rtp_timestamp: u32,
     latest_rtp_timestamp: Option<u32>,
+    qos_packet_snapshot: Option<QosPacketSnapshot>,
     last_transit: i64,
     jitter: f64,
 }
@@ -496,7 +498,7 @@ pub struct NvstFeedbackState {
     /// Remains set through send attempts until assembly receives a fresh keyframe.
     keyframe_needed: AtomicBool,
     pending_nacks: Mutex<VecDeque<PendingNackRange>>,
-    completed_frames: AtomicU32,
+    last_sender_frame: AtomicU32,
     completed_frame_bytes: AtomicU64,
     pending_frame_acks: Mutex<VecDeque<CompletedFrameFeedback>>,
     frame_stage_timings: Mutex<FrameStageTimingsAccumulator>,
@@ -518,7 +520,7 @@ impl Default for NvstFeedbackState {
             bundle_ping: Mutex::new(None),
             keyframe_needed: AtomicBool::new(false),
             pending_nacks: Mutex::new(VecDeque::new()),
-            completed_frames: AtomicU32::new(0),
+            last_sender_frame: AtomicU32::new(0),
             completed_frame_bytes: AtomicU64::new(0),
             pending_frame_acks: Mutex::new(VecDeque::new()),
             frame_stage_timings: Mutex::new(FrameStageTimingsAccumulator::default()),
@@ -593,6 +595,21 @@ impl NvstFeedbackState {
             .reception_timing
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        timing.qos_packet_snapshot = Some(match timing.qos_packet_snapshot {
+            Some(previous) if previous.ssrc == ssrc && previous.received < u32::MAX => {
+                QosPacketSnapshot {
+                    highest: previous.highest.max(highest_sequence),
+                    received: previous.received + 1,
+                    ..previous
+                }
+            }
+            _ => QosPacketSnapshot {
+                ssrc,
+                base: highest_sequence,
+                highest: highest_sequence,
+                received: 1,
+            },
+        });
         if timing
             .latest_rtp_timestamp
             .is_none_or(|latest| rtp_timestamp.wrapping_sub(latest) as i32 > 0)
@@ -693,7 +710,8 @@ impl NvstFeedbackState {
     }
 
     fn publish_completed_frame(&self, frame: &EncodedVideoAccessUnit) {
-        self.completed_frames.fetch_add(1, Ordering::AcqRel);
+        self.last_sender_frame
+            .store(frame.frame_index, Ordering::Release);
         self.completed_frame_bytes.fetch_add(
             u64::try_from(frame.bytes.len()).unwrap_or(u64::MAX),
             Ordering::AcqRel,
@@ -774,27 +792,47 @@ impl NvstFeedbackState {
             .pop_front()
     }
 
-    fn completed_frame_snapshot(&self) -> (u32, u32, u32) {
+    fn completed_frame_snapshot(&self) -> (u32, u32) {
         (
-            self.completed_frames.load(Ordering::Acquire),
+            self.last_sender_frame.load(Ordering::Acquire),
             self.completed_frame_bytes.load(Ordering::Acquire) as u32,
-            self.reception_timing
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .latest_rtp_timestamp
-                .unwrap_or(0),
         )
     }
 
-    fn qos_report(&self, previous: &QosReport, warmed_up: bool) -> QosReport {
-        let (frames_received, bytes_received, rtp_timestamp) = self.completed_frame_snapshot();
+    fn qos_report(&self, previous: &QosReport, warmed_up: bool, elapsed: Duration) -> QosReport {
+        let (sender_frame_number, bytes_received) = self.completed_frame_snapshot();
+        let packet_snapshot = self
+            .reception_timing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .qos_packet_snapshot;
+        let loss_per_ten_thousand = previous
+            .packet_snapshot
+            .zip(packet_snapshot)
+            .filter(|(prior, current)| {
+                prior.ssrc == current.ssrc
+                    && prior.base == current.base
+                    && current.highest >= prior.highest
+                    && current.received >= prior.received
+            })
+            .map_or(0, |(prior, current)| {
+                let expected = current.highest - prior.highest;
+                let received = current.received - prior.received;
+                if expected == 0 {
+                    return 0;
+                }
+                ((u64::from(expected.saturating_sub(received)) * 10_000) / u64::from(expected))
+                    as u16
+            });
         QosReport {
             sequence: previous.sequence.wrapping_add(1),
-            frames_received,
+            sender_frame_number,
             bytes_received,
-            rtp_timestamp,
+            loss_per_ten_thousand,
+            client_time_90khz: elapsed.as_millis().wrapping_mul(90) as u32,
             previous_bytes_received: previous.bytes_received,
             warmed_up,
+            packet_snapshot,
         }
     }
 
@@ -995,6 +1033,7 @@ pub struct NvstVideoConfig {
     srtp: NvstSrtpMaterial,
     ping_payload: Vec<u8>,
     ping_version: Option<u8>,
+    bundle_natt_remote_username: Option<String>,
     stun_credentials: Option<NvstStunCredentials>,
     remote_dtls_fingerprint: Option<String>,
     /// The peer assigned RTCP feedback to the `rtcp1` SCTP data channel. When true, the
@@ -1032,6 +1071,13 @@ impl fmt::Debug for NvstVideoConfig {
             .field("srtp", &self.srtp)
             .field("ping_payload_len", &self.ping_payload.len())
             .field("ping_version", &self.ping_version)
+            .field(
+                "bundle_natt_remote_username",
+                &self
+                    .bundle_natt_remote_username
+                    .as_ref()
+                    .map(|_| "[redacted]"),
+            )
             .field("stun_credentials", &self.stun_credentials)
             .field(
                 "remote_dtls_fingerprint_bytes",
@@ -1282,6 +1328,22 @@ impl NvstVideoConfig {
             });
         }
         let ping_version = optional_u8(object, "pingVersion")?;
+        let bundle_natt_remote_username = optional_string(object, "bundleNattRemoteUsername")?
+            .map(|value| {
+                if value.is_empty()
+                    || value.len() > MAX_ICE_CREDENTIAL_BYTES
+                    || !value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_graphic() && byte != b':')
+                    || ping_version != Some(6)
+                {
+                    return Err(NvstConfigError::OutOfRange {
+                        field: "bundleNattRemoteUsername",
+                    });
+                }
+                Ok(value.to_owned())
+            })
+            .transpose()?;
         let remote_dtls_fingerprint =
             optional_string(object, "remoteDtlsFingerprint")?.map(str::to_owned);
         let rtcp_on_sctp = match object.get("rtcpOnSctp") {
@@ -1369,6 +1431,7 @@ impl NvstVideoConfig {
             srtp,
             ping_payload,
             ping_version,
+            bundle_natt_remote_username,
             stun_credentials,
             remote_dtls_fingerprint,
             rtcp_on_sctp,
@@ -5914,8 +5977,17 @@ fn run_nvst_webrtc_bundle(
     } = outputs;
     let bundle_peer = config.bundle_peer();
     let local_port = socket.local_addr().map_or(0, |addr| addr.port());
-    let ping_payload = b"PING";
-    log_udp_receiver_start("bundle", &socket, bundle_peer, &config, ping_payload);
+    let ping_payload = config
+        .bundle_natt_remote_username
+        .clone()
+        .unwrap_or_else(|| "PING".to_owned());
+    log_udp_receiver_start(
+        "bundle",
+        &socket,
+        bundle_peer,
+        &config,
+        ping_payload.as_bytes(),
+    );
     let stun_credentials = config.stun_credentials.clone();
     let feedback = config.feedback();
     // Arm startup before either feedback channel opens. In particular, control
@@ -5963,7 +6035,7 @@ fn run_nvst_webrtc_bundle(
     let mut rtcp_reports_sent = 0_u64;
     let mut last_qos_report = QosReport::default();
     let mut last_qos_send = Instant::now() - QOS_REPORT_INTERVAL;
-    let mut last_frame_pacing_send = Instant::now() - QOS_REPORT_INTERVAL;
+    let mut last_frame_pacing_send = Instant::now() - FRAME_PACING_INTERVAL;
     let control_stats_origin = Instant::now();
     let mut last_control_stats_log = Instant::now();
     let mut frame_acks_sent = 0_u64;
@@ -6201,7 +6273,7 @@ fn run_nvst_webrtc_bundle(
             let natt = if getrandom::fill(&mut natt_tid).is_ok() {
                 let natt = build_natt_hole_punch_request(
                     &credentials.local_username_fragment,
-                    ping_payload,
+                    ping_payload.as_bytes(),
                     &credentials.remote_password,
                     &natt_tid,
                 );
@@ -6233,7 +6305,7 @@ fn run_nvst_webrtc_bundle(
 
         if control_partial_open && let Some(channels) = input_channels {
             while let Some(frame) = feedback.take_completed_frame() {
-                if now.duration_since(last_frame_pacing_send) >= QOS_REPORT_INTERVAL {
+                if now.duration_since(last_frame_pacing_send) >= FRAME_PACING_INTERVAL {
                     // Packet-completion intervals are intentionally bursty and are not display
                     // pacing error. Feeding that network jitter into the server PID made its
                     // encoder cadence oscillate. Until a real vsync timestamp is available,
@@ -6277,6 +6349,7 @@ fn run_nvst_webrtc_bundle(
             let report = feedback.qos_report(
                 &last_qos_report,
                 now.saturating_duration_since(transport_origin) >= QOS_WARM_UP,
+                now.saturating_duration_since(transport_origin),
             );
             let command = report.command().encoded();
             if channels.send_partial_control(&mut rtc, &command) {
@@ -8299,6 +8372,106 @@ mod tests {
     }
 
     #[test]
+    fn bundle_natt_identity_is_optional_bounded_and_role_specific() {
+        let mut handoff = legacy_handoff();
+        handoff["pingVersion"] = json!(6);
+        handoff["localIceUsernameFragment"] = json!("loc1");
+        handoff["localIcePassword"] = json!("local-password-value-01");
+        handoff["remoteIceUsernameFragment"] = json!("remote01");
+        handoff["remoteIcePassword"] = json!("remote-password-with-36-byte-value-001");
+        let previous = NvstVideoConfig::from_legacy_handoff(&handoff, None).unwrap();
+        assert_eq!(previous.bundle_natt_remote_username, None);
+        assert_eq!(previous.ping_payload, b"PING");
+
+        handoff["bundleNattRemoteUsername"] = json!("server47999");
+        let negotiated = NvstVideoConfig::from_legacy_handoff(&handoff, None).unwrap();
+        assert_eq!(
+            negotiated.bundle_natt_remote_username.as_deref(),
+            Some("server47999")
+        );
+        assert_eq!(negotiated.ping_payload, previous.ping_payload);
+        assert!(!format!("{negotiated:?}").contains("server47999"));
+        for invalid in [
+            json!(""),
+            json!("server:47999"),
+            json!("server\n47999"),
+            json!("a".repeat(MAX_ICE_CREDENTIAL_BYTES + 1)),
+        ] {
+            handoff["bundleNattRemoteUsername"] = invalid;
+            assert!(matches!(
+                NvstVideoConfig::from_legacy_handoff(&handoff, None),
+                Err(NvstConfigError::OutOfRange {
+                    field: "bundleNattRemoteUsername"
+                })
+            ));
+        }
+        handoff["bundleNattRemoteUsername"] = json!(123);
+        assert!(matches!(
+            NvstVideoConfig::from_legacy_handoff(&handoff, None),
+            Err(NvstConfigError::InvalidFieldType {
+                field: "bundleNattRemoteUsername",
+                ..
+            })
+        ));
+        handoff["bundleNattRemoteUsername"] = json!("server47999");
+        handoff["pingVersion"] = json!(5);
+        assert!(matches!(
+            NvstVideoConfig::from_legacy_handoff(&handoff, None),
+            Err(NvstConfigError::OutOfRange {
+                field: "bundleNattRemoteUsername"
+            })
+        ));
+    }
+
+    #[test]
+    fn negotiated_bundle_natt_identity_reaches_udp_without_replacing_video_identity() {
+        let server = UdpSocket::bind("127.0.0.1:0").unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let bundle = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let mut remote = create_nvst_bundle_rtc(&server).unwrap();
+        let mut config = config();
+        config.client_udp_port = bundle.local_addr().unwrap().port();
+        config.video_peer = server.local_addr().unwrap();
+        config.remote_dtls_fingerprint =
+            Some(nvst_local_bundle_identity(&mut remote).dtls_fingerprint);
+        config.stun_credentials = Some(stun_credentials());
+        config.ping_payload = b"video47998".to_vec();
+        config.bundle_natt_remote_username = Some("server47999".to_owned());
+        let (media_consumer, _media_receiver) = mpsc::sync_channel(1);
+        let (event_sender, _event_receiver) = mpsc::channel();
+        let session = spawn_nvst_udp_receiver_with_socket(
+            config,
+            media_consumer,
+            event_sender,
+            Some(bundle),
+            None,
+            Arc::new(HidRuntime::new()),
+        )
+        .unwrap();
+        let mut datagram = [0_u8; 2048];
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            assert!(Instant::now() < deadline, "negotiated bundle NATT probe");
+            let (length, _) = server.recv_from(&mut datagram).unwrap();
+            let (_, username) =
+                find_stun_attribute(&datagram[..length], STUN_ATTR_USERNAME).unwrap();
+            if username == b"remote01:loc1" {
+                continue;
+            }
+            assert_eq!(username, b"server47999:loc1");
+            assert!(valid_stun_fingerprint(&datagram[..length]));
+            assert!(valid_stun_message_integrity(
+                &datagram[..length],
+                stun_credentials().remote_password.as_bytes()
+            ));
+            break;
+        }
+        session.stop();
+    }
+
+    #[test]
     fn microphone_requires_explicit_bundle_negotiation_and_dtls() {
         let mut handoff = legacy_handoff();
         assert!(
@@ -9515,7 +9688,7 @@ mod tests {
         assert!(frame.keyframe);
         assert_eq!(frame.bytes, [0, 0, 0, 1, 0x65, 0xaa, 0xbb]);
         assert_eq!(feedback.take_nack(Instant::now(), None), None);
-        assert_eq!(feedback.completed_frame_snapshot(), (1, 7, frame.timestamp));
+        assert_eq!(feedback.completed_frame_snapshot(), (frame.frame_index, 7));
         assert!(feedback.take_completed_frame().is_none());
         feedback.publish_accepted_frame(frame.frame_index, 7, Instant::now());
         let pending_ack = feedback

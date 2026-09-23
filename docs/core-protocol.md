@@ -786,10 +786,11 @@ the saved color preference is used, subject to exact hardware profiles and the G
 restrictions below. Callers without embedded runtime
 capabilities cannot request HDR through the external-streamer probe path.
 
-CloudMatch receives `sessionRequestData.sdrHdrMode=1`, monitor `sdrHdrMode=1`, and
-`requestedStreamingFeatures.trueHdr=true` only for this validated HDR request. CloudMatch
+CloudMatch receives `sessionRequestData.sdrHdrMode=1` and monitor `sdrHdrMode=1`
+only for this validated HDR request. `requestedStreamingFeatures.trueHdr=false` remains
+separate because TrueHDR is the server's AI SDR-to-HDR filter, not native HDR. CloudMatch
 uses bit-depth/chroma enums `1/0` for 10-bit 4:2:0 and `1/1` for 10-bit 4:4:4.
-For HDR, monitor `displayData` carries the output's validated HDR static metadata
+For HDR, monitor `displayData` carries validated output luminance
 when the current output reports it. `desiredContentMaxLuminance` and
 `desiredContentMinLuminance` come from the Wayland color-management target luminance
 range in cd/m²; this mirrors the official client's feature-gated mirroring of its
@@ -802,9 +803,9 @@ Without a validated output snapshot, HDR requests keep the fixed requested-conte
 defaults of maximum luminance 1000 nits, minimum luminance 0, and maximum frame-average
 luminance 400 nits, matching the Mac native session payload. Those defaults are requested
 content characteristics rather than measurements of the physical display and are not
-presented as calibration. SDR luminance values and all display primaries remain zero
-protocol defaults; the official typed `displayData` schema contains no primaries or white
-point fields, and no permitted capture establishes a scale for measured chromaticities.
+presented as calibration. SDR sends `displayData:null`. HDR does not invent display
+primaries or a white point: the Qt output snapshot provides luminance only, so those
+fields are omitted until validated chromaticities cross the Qt/core boundary.
 
 The validated snapshot travels from Qt in `runtimeCapabilities.nativeHdrDisplay` as
 `minimumNits` and `maximumNits` in cd/m², omitting either value the output does not

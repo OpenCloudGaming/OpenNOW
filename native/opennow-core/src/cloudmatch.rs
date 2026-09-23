@@ -29,7 +29,6 @@ const MAX_CLEANUP_RECORD_BYTES: usize = 16 * 1024;
 struct ActiveSession {
     session_id: String,
     control_base: String,
-    server_ip: Option<String>,
     zone: String,
     app_id: String,
     info: Value,
@@ -310,36 +309,6 @@ impl CloudMatchService {
         });
         preserve_session_profile(&mut info, &request_codec);
 
-        if let Some(session_id) = info["sessionId"].as_str() {
-            let mut resume_url = base
-                .join(&format!("v2/session/{session_id}"))
-                .map_err(|_| invalid("Invalid CloudMatch resume URL"))?;
-            crate::language::append_session_preferences(&mut resume_url, settings);
-            let mut resume = json!({
-                "action": 2,
-                "data": "RESUME",
-                "sessionRequestData": build_create_body(&app_id, params, settings, device_id)["sessionRequestData"],
-                "metaData": null,
-                "adUpdates": null
-            });
-            if let Some(hdr_mode) = accepted_hdr_mode(&payload["session"]) {
-                resume["sessionRequestData"]["sdrHdrMode"] = json!(hdr_mode);
-                resume["sessionRequestData"]["clientRequestMonitorSettings"][0]["sdrHdrMode"] =
-                    json!(hdr_mode);
-                resume["sessionRequestData"]["clientRequestMonitorSettings"][0]["displayData"] =
-                    monitor_display_data(hdr_mode == 1, settings);
-                resume["sessionRequestData"]["requestedStreamingFeatures"]["trueHdr"] =
-                    json!(hdr_mode == 1);
-            }
-            // Fresh native sessions remain pollable even if this compatibility
-            // mutation is not accepted by an older CloudMatch pool.
-            let _ = client
-                .put(resume_url)
-                .headers(cloudmatch_headers(token, device_id)?)
-                .json(&resume)
-                .send();
-        }
-
         if crate::requests::current().cancelled() {
             self.finish_create(info["sessionId"].as_str().unwrap_or_default(), false)?;
             return Err(cancelled_allocation());
@@ -419,6 +388,8 @@ impl CloudMatchService {
     }
 
     fn pending_cleanup(&self, auth: &AuthSession) -> Option<Value> {
+        let provider_base =
+            trusted_cloudmatch_base(&crate::gfn::effective_provider_url(&auth.provider)).ok()?;
         self.retained_cleanup
             .lock()
             .expect("CloudMatch cleanup state poisoned")
@@ -426,6 +397,20 @@ impl CloudMatchService {
             .filter(|record| record["owner"] == json!([auth.provider.idp_id, auth.user.user_id]))
             .map(|record| {
                 let mut public = record.clone();
+                if !record["streamingBaseUrl"]
+                    .as_str()
+                    .and_then(|raw| trusted_cloudmatch_base(raw).ok())
+                    .is_some_and(|base| {
+                        base == provider_base
+                            || (auth.provider.code.eq_ignore_ascii_case("NVIDIA")
+                                && base.host_str().is_some_and(|host| {
+                                    host.ends_with(".cloudmatchbeta.nvidiagrid.net")
+                                }))
+                    })
+                {
+                    public["streamingBaseUrl"] = Value::Null;
+                    public["cleanupEndpointUnverified"] = json!(true);
+                }
                 if let Some(object) = public.as_object_mut() {
                     object.remove("owner");
                 }
@@ -474,17 +459,11 @@ impl CloudMatchService {
             .map(ToOwned::to_owned)
             .or_else(|| current.as_ref().map(|state| state.session_id.clone()))
             .ok_or_else(|| invalid("session.poll requires sessionId"))?;
-        let control_base = params["streamingBaseUrl"]
-            .as_str()
-            .map(ToOwned::to_owned)
-            .or_else(|| current.as_ref().map(|state| state.control_base.clone()))
-            .ok_or_else(|| invalid("No active session control endpoint"))?;
-        let base = current
+        let control_base = current
             .as_ref()
-            .and_then(|state| state.server_ip.as_deref())
-            .filter(|server| control_base.contains(*server))
-            .and_then(|server| trusted_learned_server_base(server).ok())
-            .map_or_else(|| trusted_cloudmatch_base(&control_base), Ok)?;
+            .map(|state| state.control_base.clone())
+            .ok_or_else(|| invalid("No active session control endpoint"))?;
+        let base = trusted_cloudmatch_base(&control_base)?;
         let token = session_token(auth);
         let headers = cloudmatch_headers(token, device_id)?;
         let payload = match self.get_session(&client, &base, &session_id, &headers) {
@@ -507,20 +486,6 @@ impl CloudMatchService {
             .map(|state| state.app_id.clone())
             .unwrap_or_default();
         let mut info = session_info(&payload, &base, &zone, &app_id, device_id)?;
-
-        if matches!(info["status"].as_i64(), Some(2 | 3))
-            && is_zone_hostname(base.host_str().unwrap_or_default())
-            && let Some(server_ip) = info["serverIp"].as_str()
-            && !server_ip.is_empty()
-            && !is_zone_hostname(server_ip)
-            && let Ok(direct) = trusted_learned_server_base(server_ip)
-            && let Ok(direct_payload) = self.get_session(&client, &direct, &session_id, &headers)
-            && let Ok(mut direct_info) =
-                session_info(&direct_payload, &direct, &zone, &app_id, device_id)
-        {
-            preserve_session_profile(&mut direct_info, &info);
-            info = direct_info;
-        }
 
         info["phase"] =
             Value::String(session_phase(info["status"].as_i64().unwrap_or_default()).to_owned());
@@ -578,9 +543,16 @@ impl CloudMatchService {
             .expect("CloudMatch discovery state poisoned")
             .get(&session_id)
             .cloned();
-        let base_value = params["streamingBaseUrl"]
-            .as_str()
-            .map(ToOwned::to_owned)
+        let base_value = current
+            .as_ref()
+            .map(|state| state.control_base.clone())
+            .or_else(|| {
+                discovered
+                    .as_ref()
+                    .and_then(|session| session["serverIp"].as_str())
+                    .and_then(|host| trusted_learned_server_base(host).ok())
+                    .map(|base| base.origin().ascii_serialization())
+            })
             .or_else(|| {
                 discovered
                     .as_ref()
@@ -588,28 +560,12 @@ impl CloudMatchService {
                     .map(ToOwned::to_owned)
             })
             .or_else(|| {
-                current.as_ref().map(|state| {
-                    state
-                        .server_ip
-                        .as_deref()
-                        .filter(|host| !is_zone_hostname(host))
-                        .map(|host| format!("https://{host}"))
-                        .unwrap_or_else(|| state.control_base.clone())
-                })
+                self.pending_cleanup(auth)
+                    .filter(|pending| pending["sessionId"] == session_id)
+                    .and_then(|pending| pending["streamingBaseUrl"].as_str().map(ToOwned::to_owned))
             })
             .ok_or_else(|| invalid("No active session control endpoint"))?;
-        let base = discovered
-            .as_ref()
-            .and_then(|session| session["serverIp"].as_str())
-            .and_then(|server| trusted_learned_server_base(server).ok())
-            .or_else(|| {
-                current
-                    .as_ref()
-                    .and_then(|state| state.server_ip.as_deref())
-                    .filter(|server| base_value.contains(*server))
-                    .and_then(|server| trusted_learned_server_base(server).ok())
-            })
-            .map_or_else(|| trusted_cloudmatch_base(&base_value), Ok)?;
+        let base = trusted_cloudmatch_base(&base_value)?;
         let url = base
             .join(&format!("v2/session/{session_id}"))
             .map_err(|_| invalid("Invalid CloudMatch stop URL"))?;
@@ -927,7 +883,7 @@ impl CloudMatchService {
             })?;
         let session = &initial_payload["session"];
         let initial_status = value_i64(&session["status"]).unwrap_or_default();
-        let learned_server = session_server_ip(session);
+        let learned_server = first_string(&session["sessionControlInfo"]["ip"]);
         let control_base = learned_server
             .as_deref()
             .and_then(|server| trusted_learned_server_base(server).ok())
@@ -1010,13 +966,7 @@ impl CloudMatchService {
             .ok_or_else(|| invalid("session.ad.report requires adId"))?;
         let base = current
             .as_ref()
-            .and_then(|session| session.server_ip.as_deref())
-            .and_then(|server| trusted_learned_server_base(server).ok())
-            .or_else(|| {
-                current
-                    .as_ref()
-                    .and_then(|session| trusted_cloudmatch_base(&session.control_base).ok())
-            })
+            .and_then(|session| trusted_cloudmatch_base(&session.control_base).ok())
             .ok_or_else(|| invalid("No active session control endpoint"))?;
         let url = base
             .join(&format!("v2/session/{session_id}"))
@@ -1092,7 +1042,6 @@ impl CloudMatchService {
                 .as_str()
                 .unwrap_or_else(|| fallback_base.as_str())
                 .to_owned(),
-            server_ip: info["serverIp"].as_str().map(ToOwned::to_owned),
             zone: zone.to_owned(),
             app_id: app_id.to_owned(),
             info: info.clone(),
@@ -1167,10 +1116,6 @@ impl CloudMatchService {
         device_id: &str,
         prefer_regional: bool,
     ) -> Result<Url, ServiceError> {
-        let host = requested.host_str().unwrap_or_default();
-        if host != "prod.cloudmatchbeta.nvidiagrid.net" {
-            return Ok(requested.clone());
-        }
         let Ok(url) = requested.join("v2/serverInfo") else {
             return Ok(requested.clone());
         };
@@ -1334,12 +1279,13 @@ fn measured_display_luminance(settings: &Value, hdr: bool) -> Option<(f64, f64)>
 }
 
 fn monitor_display_data(hdr: bool, settings: &Value) -> Value {
+    if !hdr {
+        return Value::Null;
+    }
     let mut data = json!({
-        "displayPrimaryX0":0,"displayPrimaryY0":0,"displayPrimaryX1":0,"displayPrimaryY1":0,
-        "displayPrimaryX2":0,"displayPrimaryY2":0,"displayWhitePointX":0,"displayWhitePointY":0,
-        "desiredContentMaxLuminance":if hdr { 1000 } else { 0 },
+        "desiredContentMaxLuminance":1000,
         "desiredContentMinLuminance":0,
-        "desiredContentMaxFrameAverageLuminance":if hdr { 400 } else { 0 }
+        "desiredContentMaxFrameAverageLuminance":400
     });
     if let Some((minimum, maximum)) = measured_display_luminance(settings, hdr) {
         data["desiredContentMaxLuminance"] = json!(maximum);
@@ -1382,9 +1328,6 @@ fn build_create_body(app_id: &str, params: &Value, settings: &Value, device_id: 
     let reflex = cloud_gsync || fps >= 120;
     let persistence = setting_bool(settings, "enablePersistingInGameSettings", true)
         && params["supportsInGameSettingsPersistence"].as_bool() == Some(true);
-    // Session metadata, matching the official client: SubSessionId correlates the
-    // allocation, surroundAudioInfo describes the audio layout. No network, signaling,
-    // IME, or resolution hints: none of those keys exist in the official request path.
     let metadata = vec![
         json!({"key":"SubSessionId","value":random_uuid()}),
         json!({"key":"surroundAudioInfo","value":"2"}),
@@ -1411,7 +1354,7 @@ fn build_create_body(app_id: &str, params: &Value, settings: &Value, device_id: 
         "hudStreamingMode":0
     });
     features["mouseMovementFlags"] = json!(0);
-    features["trueHdr"] = json!(hdr);
+    features["trueHdr"] = json!(false);
     features["hidDevices"] = Value::Null;
     json!({"sessionRequestData":{
         "appId":app_id.parse::<i64>().unwrap_or_default(),
@@ -1472,14 +1415,11 @@ fn session_info(
         .as_array()
         .cloned()
         .unwrap_or_default();
-    let signaling_connection = connections
-        .iter()
-        .find(|connection| value_i64(&connection["usage"]) == Some(14))
-        .or_else(|| {
-            connections
-                .iter()
-                .find(|connection| connection["ip"].is_string())
-        });
+    let signaling_connection = connections.iter().find(|connection| {
+        matches!(value_i64(&connection["usage"]), Some(16))
+            || (value_i64(&connection["usage"]) == Some(14)
+                && matches!(value_i64(&connection["appLevelProtocol"]), Some(1 | 6)))
+    });
     let control_host = first_string(&session["sessionControlInfo"]["ip"]);
     let server_ip = signaling_connection
         .and_then(|connection| first_string(&connection["ip"]))
@@ -1491,21 +1431,13 @@ fn session_info(
         .or_else(|| control_host.clone())
         .or_else(|| fallback_base.host_str().map(ToOwned::to_owned))
         .unwrap_or_default();
-    let resource = signaling_connection
-        .and_then(|connection| connection["resourcePath"].as_str())
-        .unwrap_or("/nvst/");
-    let signaling_url = signaling_url(resource, &server_ip);
     let control_base = control_host
         .as_deref()
-        .filter(|host| is_zone_hostname(host))
-        .map(|host| format!("https://{}", host.to_lowercase()))
-        // Keep regional discovery separate from the learned native/control IP.
-        // Direct polling responses do not always repeat sessionControlInfo.
-        .or_else(|| {
-            trusted_cloudmatch_base(&format!("https://{zone}"))
-                .ok()
-                .map(|base| base.origin().ascii_serialization())
+        .filter(|_| {
+            value_i64(&session["sessionControlInfo"]["port"]).is_none_or(|port| port == 443)
         })
+        .and_then(|host| trusted_learned_server_base(host).ok())
+        .map(|base| base.origin().ascii_serialization())
         .unwrap_or_else(|| fallback_base.origin().ascii_serialization());
     let queue_position = queue_position(session);
     let seat_setup_step = value_i64(&session["seatSetupInfo"]["seatSetupStep"]);
@@ -1515,24 +1447,39 @@ fn session_info(
         .iter()
         .filter(|connection| {
             value_i64(&connection["usage"]) == Some(16)
-                || value_i64(&connection["appLevelProtocol"]) == Some(6)
-                || connection["resourcePath"].as_str().is_some_and(|value| {
-                    value.starts_with("rtsps://") || value.starts_with("rtsp://")
-                })
+                || (value_i64(&connection["usage"]) == Some(14)
+                    && matches!(value_i64(&connection["appLevelProtocol"]), Some(1 | 6)))
         })
         .filter_map(|connection| {
-            connection["resourcePath"]
-                .as_str()
-                .filter(|value| value.starts_with("rtsps://") || value.starts_with("rtsp://"))
-                .map(ToOwned::to_owned)
-                .or_else(|| {
-                    first_string(&connection["ip"]).map(|host| {
-                        let port = value_i64(&connection["port"]).unwrap_or(322);
-                        format!("rtsps://{host}:{port}")
-                    })
-                })
+            let address = first_string(&connection["ip"])
+                .or_else(|| first_string(&connection["resourcePath"]))?;
+            if value_i64(&connection["port"]).is_some_and(|port| !(1..=65535).contains(&port)) {
+                return None;
+            }
+            if address.starts_with("rtsps://") {
+                let url = Url::parse(&address).ok()?;
+                return (url.host_str().is_some()
+                    && url.username().is_empty()
+                    && url.password().is_none()
+                    && url.port().is_some())
+                .then_some(address);
+            }
+            if address.contains(&['/', '@', '?', '#'][..]) {
+                return None;
+            }
+            let port = value_i64(&connection["port"])?;
+            let host = if address.parse::<IpAddr>().is_ok_and(|ip| ip.is_ipv6()) {
+                format!("[{address}]")
+            } else {
+                address
+            };
+            let endpoint = format!("rtsps://{host}:{port}");
+            Url::parse(&endpoint).ok()?.host_str().map(|_| endpoint)
         })
         .collect::<Vec<_>>();
+    let signaling_url = rtsps_endpoints
+        .first()
+        .map(|endpoint| endpoint.replacen("rtsps://", "wss://", 1));
     let ice_servers = normalize_ice_servers(session);
     let media = connections
         .iter()
@@ -1895,16 +1842,11 @@ fn cloudmatch_http_error(
 
 pub(crate) fn trusted_cloudmatch_base(raw: &str) -> Result<Url, ServiceError> {
     let mut url = Url::parse(raw.trim()).map_err(|_| invalid("Invalid CloudMatch endpoint"))?;
-    let host = url
-        .host_str()
-        .unwrap_or_default()
-        .trim_end_matches('.')
-        .to_lowercase();
     if url.scheme() != "https"
         || !url.username().is_empty()
         || url.password().is_some()
         || url.port().is_some_and(|port| port != 443)
-        || !(host == "nvidiagrid.net" || host.ends_with(".nvidiagrid.net"))
+        || !url.host().is_some_and(public_session_host)
     {
         return Err(invalid("Untrusted CloudMatch endpoint"));
     }
@@ -1922,16 +1864,14 @@ fn trusted_learned_server_base(server: &str) -> Result<Url, ServiceError> {
     } else {
         format!("https://{server}")
     };
-    let mut url = Url::parse(&raw).map_err(|_| invalid("Invalid learned session endpoint"))?;
-    let host = url
-        .host_str()
-        .unwrap_or_default()
-        .trim_end_matches('.')
-        .to_lowercase();
-    let trusted_hostname = host == "nvidiagrid.net" || host.ends_with(".nvidiagrid.net");
-    let trusted_ip = match url.host() {
-        Some(url::Host::Ipv4(address)) => public_session_ipv4(address),
-        Some(url::Host::Ipv6(address)) => address.to_ipv4_mapped().map_or_else(
+    trusted_cloudmatch_base(&raw)
+}
+
+fn public_session_host(host: url::Host<&str>) -> bool {
+    match host {
+        url::Host::Domain(name) => name.contains('.') && !name.ends_with(".local"),
+        url::Host::Ipv4(address) => public_session_ipv4(address),
+        url::Host::Ipv6(address) => address.to_ipv4_mapped().map_or_else(
             || {
                 !address.is_loopback()
                     && !address.is_unicast_link_local()
@@ -1941,20 +1881,7 @@ fn trusted_learned_server_base(server: &str) -> Result<Url, ServiceError> {
             },
             public_session_ipv4,
         ),
-        _ => false,
-    };
-    if url.scheme() != "https"
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.port().is_some_and(|port| port != 443)
-        || (!trusted_hostname && !trusted_ip)
-    {
-        return Err(invalid("Untrusted learned session endpoint"));
     }
-    url.set_path("/");
-    url.set_query(None);
-    url.set_fragment(None);
-    Ok(url)
 }
 
 fn public_session_ipv4(address: std::net::Ipv4Addr) -> bool {
@@ -1971,15 +1898,17 @@ fn public_session_ipv4(address: std::net::Ipv4Addr) -> bool {
 }
 
 fn session_server_ip(session: &Value) -> Option<String> {
-    session["connectionInfo"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|connection| {
-            value_i64(&connection["usage"]) == Some(14) && first_string(&connection["ip"]).is_some()
-        })
-        .and_then(|connection| first_string(&connection["ip"]))
-        .or_else(|| first_string(&session["sessionControlInfo"]["ip"]))
+    first_string(&session["sessionControlInfo"]["ip"]).or_else(|| {
+        session["connectionInfo"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|connection| {
+                value_i64(&connection["usage"]) == Some(14)
+                    && first_string(&connection["ip"]).is_some()
+            })
+            .and_then(|connection| first_string(&connection["ip"]))
+    })
 }
 
 fn remote_session_info(session: &Value, base: &Url) -> Option<Value> {
@@ -2024,7 +1953,7 @@ fn remote_session_info(session: &Value, base: &Url) -> Option<Value> {
         "seatSetupStep":value_i64(&session["seatSetupInfo"]["seatSetupStep"]),
         "streamingBaseUrl":base.origin().ascii_serialization(),
         "serverIp":server_ip,
-        "signalingUrl":server_ip.as_deref().map(|server| format!("wss://{server}:443/nvst/")),
+        "signalingUrl":null,
         "resolution":resolution,
         "fps":value_i64(&monitor["framesPerSecond"])
     }))
@@ -2209,25 +2138,6 @@ fn host_from_resource(resource: &str) -> Option<String> {
         .ok()?
         .host_str()
         .map(ToOwned::to_owned)
-}
-
-fn signaling_url(resource: &str, server_ip: &str) -> String {
-    if resource.starts_with("rtsps://") || resource.starts_with("rtsp://") {
-        return format!(
-            "wss://{}",
-            resource
-                .split_once("://")
-                .map(|pair| pair.1)
-                .unwrap_or_default()
-        );
-    }
-    if resource.starts_with("wss://") {
-        return resource.to_owned();
-    }
-    if resource.starts_with('/') {
-        return format!("wss://{server_ip}:443{resource}");
-    }
-    format!("wss://{server_ip}:443/nvst/")
 }
 
 fn session_phase(status: i64) -> &'static str {
@@ -2562,14 +2472,6 @@ fn bifrost_user_agent() -> String {
     format!("GFN-PC/30.0 ({platform}) BifrostClientSDK/4.9 (38495286)")
 }
 
-fn is_zone_hostname(value: &str) -> bool {
-    let host = value.trim().trim_end_matches('.').to_ascii_lowercase();
-    host == "cloudmatchbeta.nvidiagrid.net"
-        || host.ends_with(".cloudmatchbeta.nvidiagrid.net")
-        || host == "cloudmatch.nvidiagrid.net"
-        || host.ends_with(".cloudmatch.nvidiagrid.net")
-}
-
 fn random_uuid() -> String {
     let mut bytes = [0_u8; 16];
     rand::rng().fill_bytes(&mut bytes);
@@ -2680,7 +2582,7 @@ mod tests {
     }
 
     #[test]
-    fn create_immediate_resume_and_claim_use_exact_independent_language_query_pairs() {
+    fn create_and_claim_use_exact_independent_language_query_pairs() {
         for (game, keyboard, expected_game, expected_keyboard) in [
             ("es_419", "de-DE", "es_419", "de-DE"),
             ("zh_Hant_TW", "ja-JP", "zh_Hant_TW", "ja-106"),
@@ -2695,7 +2597,6 @@ mod tests {
                         200,
                         json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"A","status":1}}),
                     ),
-                    (200, json!({})),
                     (204, json!({})),
                     (
                         200,
@@ -2732,8 +2633,8 @@ mod tests {
                 .unwrap();
             assert_eq!(claimed["session"]["keyboardLayout"], expected_keyboard);
             let received = server.join().unwrap();
-            assert_eq!(received.len(), 5);
-            for index in [0, 1, 4] {
+            assert_eq!(received.len(), 4);
+            for index in [0, 3] {
                 let target = received[index].split_whitespace().nth(1).unwrap();
                 let url = Url::parse(&format!("https://fixture.invalid{target}")).unwrap();
                 let pairs: std::collections::HashMap<_, _> = url.query_pairs().collect();
@@ -2742,8 +2643,8 @@ mod tests {
                 assert_eq!(pairs.len(), 2);
             }
             assert!(received[0].starts_with("POST "));
-            assert!(received[1].starts_with("PUT /v2/session/A?"));
-            assert!(received[4].starts_with("PUT /v2/session/B?"));
+            assert!(received[1].starts_with("DELETE /v2/session/A"));
+            assert!(received[3].starts_with("PUT /v2/session/B?"));
         }
     }
 
@@ -2761,7 +2662,6 @@ mod tests {
                     200,
                     json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"A","status":1}}),
                 ),
-                (200, json!({})),
                 (204, json!({})),
             ],
             move |index| {
@@ -2850,10 +2750,9 @@ mod tests {
         service.finish_create("A", false).unwrap();
         assert!(service.fresh.lock().unwrap().is_none());
         let received = server.join().unwrap();
-        assert_eq!(received.len(), 3);
+        assert_eq!(received.len(), 2);
         assert!(received[0].starts_with("POST /v2/session?"));
-        assert!(received[1].starts_with("PUT /v2/session/A?"));
-        assert_eq!(received[2], "DELETE /v2/session/A HTTP/1.1");
+        assert_eq!(received[1], "DELETE /v2/session/A HTTP/1.1");
     }
 
     #[test]
@@ -2867,7 +2766,6 @@ mod tests {
                     200,
                     json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"A","status":1}}),
                 ),
-                (200, json!({})),
             ],
             |_| {},
         );
@@ -2971,13 +2869,12 @@ mod tests {
         assert_eq!(result["session"]["sessionId"], "A");
         service.finish_create("A", true).unwrap();
         let received = server.join().unwrap();
-        assert_eq!(received.len(), 5);
+        assert_eq!(received.len(), 4);
         assert!(
             received[..4]
                 .iter()
                 .all(|request| request.starts_with("POST /v2/session?"))
         );
-        assert!(received[4].starts_with("PUT /v2/session/A?"));
     }
 
     #[test]
@@ -3000,47 +2897,40 @@ mod tests {
     }
 
     #[test]
-    fn cancelled_fresh_post_and_compatibility_resume_are_compensated() {
-        for cancel_at in [0, 1] {
-            let requests = std::sync::Arc::new(crate::requests::Requests::default());
-            let permit = requests.admit("create", "session.create").unwrap();
-            let mut replies = vec![(
-                200,
-                json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"fresh-seat","status":1}}),
-            )];
-            if cancel_at == 1 {
-                replies.push((200, json!({})));
+    fn cancelled_fresh_post_is_compensated_without_resume() {
+        let requests = std::sync::Arc::new(crate::requests::Requests::default());
+        let permit = requests.admit("create", "session.create").unwrap();
+        let mut replies = vec![(
+            200,
+            json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"fresh-seat","status":1}}),
+        )];
+        replies.push((204, json!({})));
+        let (base, server) = session_server(replies, move |index| {
+            if index == 0 {
+                requests.cancel("create");
             }
-            replies.push((204, json!({})));
-            let (base, server) = session_server(replies, move |index| {
-                if index == cancel_at {
-                    requests.cancel("create");
-                }
-            });
-            let client = Client::new();
-            let service = CloudMatchService::new(client.clone());
-            let result = crate::requests::scope(permit.token.clone(), || {
-                service.create_at(
-                    &json!({"appId":"123"}),
-                    &json!({}),
-                    &conflict_auth(),
-                    "device",
-                    || Ok((client, base)),
-                )
-            });
-            assert_eq!(result.unwrap_err().code, "cancelled");
-            let received = server.join().unwrap();
-            assert!(received[0].starts_with("POST /v2/session?"));
-            if cancel_at == 1 {
-                assert!(received[1].starts_with("PUT /v2/session/fresh-seat?"));
-            }
-            assert_eq!(
-                received.last().unwrap(),
-                "DELETE /v2/session/fresh-seat HTTP/1.1"
-            );
-            assert!(service.active()["session"].is_null());
-            assert!(service.fresh.lock().unwrap().is_none());
-        }
+        });
+        let client = Client::new();
+        let service = CloudMatchService::new(client.clone());
+        let result = crate::requests::scope(permit.token.clone(), || {
+            service.create_at(
+                &json!({"appId":"123"}),
+                &json!({}),
+                &conflict_auth(),
+                "device",
+                || Ok((client, base)),
+            )
+        });
+        assert_eq!(result.unwrap_err().code, "cancelled");
+        let received = server.join().unwrap();
+        assert!(received[0].starts_with("POST /v2/session?"));
+        assert_eq!(received.len(), 2);
+        assert_eq!(
+            received.last().unwrap(),
+            "DELETE /v2/session/fresh-seat HTTP/1.1"
+        );
+        assert!(service.active()["session"].is_null());
+        assert!(service.fresh.lock().unwrap().is_none());
     }
 
     #[test]
@@ -3051,7 +2941,6 @@ mod tests {
                     200,
                     json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"fresh-seat","status":1}}),
                 ),
-                (200, json!({})),
                 (503, json!({})),
                 (404, json!({})),
             ],
@@ -3097,20 +2986,17 @@ mod tests {
         assert!(service.fresh.lock().unwrap().is_none());
         assert!(service.discovered.lock().unwrap().is_empty());
         let received = server.join().unwrap();
-        assert_eq!(received.len(), 4);
-        assert_eq!(received[2], received[3]);
+        assert_eq!(received.len(), 3);
+        assert_eq!(received[1], received[2]);
     }
 
     #[test]
     fn accepted_allocation_is_not_deleted_and_unrelated_terminal_keeps_active_slot() {
         let (base, server) = session_server(
-            vec![
-                (
-                    200,
-                    json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"A","status":1}}),
-                ),
-                (200, json!({})),
-            ],
+            vec![(
+                200,
+                json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"A","status":1}}),
+            )],
             |_| {},
         );
         let client = Client::new();
@@ -3126,7 +3012,7 @@ mod tests {
             .unwrap();
         service.finish_create("A", true).unwrap();
         assert!(service.fresh.lock().unwrap().is_none());
-        assert_eq!(server.join().unwrap().len(), 2);
+        assert_eq!(server.join().unwrap().len(), 1);
         service.clear_active("B");
         assert_eq!(service.active()["session"]["sessionId"], "A");
         let mut finished = session_info(
@@ -3231,6 +3117,24 @@ mod tests {
         service.clear_cleanup("cancelled");
         assert!(!path.exists());
         assert!(service.pending_cleanup(&auth).is_none());
+    }
+
+    #[test]
+    fn persisted_cleanup_cannot_redirect_token_to_unverified_partner_host() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("pending-session-cleanup.json");
+        let auth = conflict_auth();
+        let record = json!({"sessionId":"seat","streamingBaseUrl":"https://attacker.example/",
+            "owner":[auth.provider.idp_id,auth.user.user_id]});
+        std::fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+        let service = CloudMatchService::with_cleanup_path(Client::new(), path);
+        let pending = service.pending_cleanup(&auth).unwrap();
+        assert!(pending["streamingBaseUrl"].is_null());
+        assert_eq!(pending["cleanupEndpointUnverified"], true);
+        assert_eq!(
+            service.admit_create().err().unwrap().code,
+            "session_cleanup_pending"
+        );
     }
 
     #[test]
@@ -3413,13 +3317,20 @@ mod tests {
             None,
             Some(json!({})),
             Some(json!({"serverIp":"localhost"})),
-            Some(json!({"serverIp":"https://example.com"})),
+            Some(json!({"serverIp":"https://127.0.0.1"})),
         ] {
             assert_eq!(
                 claim_lookup_base(session.as_ref(), &create_region),
                 create_region
             );
         }
+        assert_eq!(
+            claim_lookup_base(
+                Some(&json!({"serverIp":"https://partner.example.com"})),
+                &create_region
+            ),
+            trusted_cloudmatch_base("https://partner.example.com").unwrap()
+        );
     }
 
     #[test]
@@ -3881,14 +3792,11 @@ mod tests {
         .unwrap();
         assert_eq!(
             info["streamingBaseUrl"],
-            "https://np-sof-01.cloudmatchbeta.nvidiagrid.net"
+            direct.origin().ascii_serialization()
         );
         assert_eq!(info["serverIp"], "80.84.160.10");
         assert_eq!(info["rtspsEndpoints"][0], "rtsps://80.84.160.10:322");
-        assert!(
-            trusted_cloudmatch_base(direct.as_str()).is_err(),
-            "arbitrary caller-supplied IPs must remain rejected"
-        );
+        assert!(trusted_cloudmatch_base(direct.as_str()).is_ok());
     }
 
     #[test]
@@ -3909,7 +3817,7 @@ mod tests {
             let request = &body["sessionRequestData"];
             assert_eq!(request["sdrHdrMode"], 1);
             assert_eq!(request["clientRequestMonitorSettings"][0]["sdrHdrMode"], 1);
-            assert_eq!(request["requestedStreamingFeatures"]["trueHdr"], true);
+            assert_eq!(request["requestedStreamingFeatures"]["trueHdr"], false);
             assert_eq!(request["requestedStreamingFeatures"]["bitDepth"], 1);
             assert_eq!(request["requestedStreamingFeatures"]["chromaFormat"], 1);
         }
@@ -3945,7 +3853,7 @@ mod tests {
         let request = &body["sessionRequestData"];
         assert_eq!(request["sdrHdrMode"], 1);
         assert_eq!(request["clientRequestMonitorSettings"][0]["sdrHdrMode"], 1);
-        assert_eq!(request["requestedStreamingFeatures"]["trueHdr"], true);
+        assert_eq!(request["requestedStreamingFeatures"]["trueHdr"], false);
         assert_eq!(request["requestedStreamingFeatures"]["bitDepth"], 1);
         assert_eq!(request["requestedStreamingFeatures"]["chromaFormat"], 0);
         let display_data = &request["clientRequestMonitorSettings"][0]["displayData"];
@@ -3963,9 +3871,7 @@ mod tests {
             assert_eq!(body["sessionRequestData"]["sdrHdrMode"], 0);
             let display_data =
                 &body["sessionRequestData"]["clientRequestMonitorSettings"][0]["displayData"];
-            assert_eq!(display_data["desiredContentMaxLuminance"], 0);
-            assert_eq!(display_data["desiredContentMaxFrameAverageLuminance"], 0);
-            assert_eq!(display_data["desiredContentMinLuminance"], 0);
+            assert!(display_data.is_null());
             assert_eq!(
                 body["sessionRequestData"]["requestedStreamingFeatures"]["trueHdr"],
                 false
@@ -3995,8 +3901,8 @@ mod tests {
                 .get("desiredContentMaxFrameAverageLuminance")
                 .is_none()
         );
-        assert_eq!(display_data["displayPrimaryX0"], 0);
-        assert_eq!(display_data["displayWhitePointY"], 0);
+        assert!(display_data.get("displayPrimaryX0").is_none());
+        assert!(display_data.get("displayWhitePointY").is_none());
         assert_eq!(body["sessionRequestData"]["sdrHdrMode"], 1);
         let sdr = build_create_body(
             "123",
@@ -4005,9 +3911,7 @@ mod tests {
             "device",
         );
         let sdr_data = &sdr["sessionRequestData"]["clientRequestMonitorSettings"][0]["displayData"];
-        assert_eq!(sdr_data["desiredContentMaxLuminance"], 0);
-        assert_eq!(sdr_data["desiredContentMaxFrameAverageLuminance"], 0);
-        assert_eq!(sdr_data["desiredContentMinLuminance"], 0);
+        assert!(sdr_data.is_null());
     }
 
     #[test]
@@ -4686,10 +4590,10 @@ mod tests {
         let ready = json!({
             "requestStatus":{"statusCode":1},
             "session":{"sessionId":"one","status":2,
-                "connectionInfo":[{"usage":14,"ip":"80.1.2.3","port":443,"resourcePath":"/nvst/"}]}
+                "connectionInfo":[{"usage":14,"appLevelProtocol":6,"ip":"80.1.2.3","port":443,"resourcePath":"/nvst/"}]}
         });
         let info = session_info(&ready, &base, "auto", "123", "device").unwrap();
-        assert_eq!(info["signalingUrl"], "wss://80.1.2.3:443/nvst/");
+        assert_eq!(info["signalingUrl"], "wss://80.1.2.3:443");
         assert_eq!(info["serverIp"], "80.1.2.3");
     }
 
@@ -5032,11 +4936,16 @@ mod tests {
     #[test]
     fn rejects_untrusted_session_endpoints() {
         assert!(trusted_cloudmatch_base("http://prod.cloudmatchbeta.nvidiagrid.net").is_err());
-        assert!(trusted_cloudmatch_base("https://example.com").is_err());
-        assert!(
-            trusted_cloudmatch_base("https://prod.cloudmatchbeta.nvidiagrid.net.evil.test")
-                .is_err()
+        assert_eq!(
+            trusted_cloudmatch_base("https://partner.example.com/v2/serverInfo?q=1")
+                .unwrap()
+                .as_str(),
+            "https://partner.example.com/"
         );
+        assert!(trusted_cloudmatch_base("https://partner.example.com:8443").is_err());
+        assert!(trusted_cloudmatch_base("https://user@partner.example.com").is_err());
+        assert!(trusted_cloudmatch_base("https://127.0.0.1").is_err());
+        assert!(trusted_cloudmatch_base("https://seat.local").is_err());
         for address in [
             "10.0.0.1",
             "127.0.0.1",
@@ -5054,6 +4963,60 @@ mod tests {
         }
         assert!(trusted_learned_server_base("203.0.113.20").is_ok());
         assert!(trusted_learned_server_base("2001:db8::20").is_ok());
+    }
+
+    #[test]
+    fn partner_control_host_and_status_take_precedence_over_early_signaling() {
+        let zone = trusted_cloudmatch_base("https://zone.partner.example").unwrap();
+        let payload = json!({"session":{"sessionId":"seat","status":1,
+            "sessionControlInfo":{"ip":"control.partner.example","port":443},
+            "connectionInfo":[
+                {"usage":15,"appLevelProtocol":6,"ip":"media.partner.example","port":322},
+                {"usage":14,"appLevelProtocol":6,"ip":"signaling.partner.example","port":322,
+                    "resourcePath":"rtsps://other.partner.example:48322"}]}});
+        let info = session_info(&payload, &zone, "zone.partner.example", "123", "device").unwrap();
+        assert_eq!(info["streamingBaseUrl"], "https://control.partner.example");
+        assert_eq!(info["phase"], "preparing");
+        assert_eq!(
+            info["rtspsEndpoints"],
+            json!(["rtsps://signaling.partner.example:322"])
+        );
+        let mut ready = payload;
+        ready["session"]["status"] = json!(2);
+        ready["session"]["sessionControlInfo"]["ip"] = json!("forwarded.partner.example");
+        let next = session_info(&ready, &zone, "zone.partner.example", "123", "device").unwrap();
+        assert_eq!(
+            next["streamingBaseUrl"],
+            "https://forwarded.partner.example"
+        );
+        assert_eq!(next["phase"], "ready");
+        ready["session"]["sessionControlInfo"]["port"] = json!(8443);
+        assert_eq!(
+            session_info(&ready, &zone, "zone.partner.example", "123", "device").unwrap()["streamingBaseUrl"],
+            "https://zone.partner.example"
+        );
+    }
+
+    #[test]
+    fn signaling_entries_keep_cloudmatch_order_and_ignore_irrelevant_ports() {
+        let base = trusted_cloudmatch_base(DEFAULT_STREAMING_BASE).unwrap();
+        let payload = json!({"session":{"sessionId":"seat","status":2,"connectionInfo":[
+            {"usage":14,"appLevelProtocol":5,"ip":"not-native.example","port":322},
+            {"usage":15,"appLevelProtocol":6,"ip":"media.example","port":322},
+            {"usage":14,"appLevelProtocol":1,"ip":"first.example","port":322},
+            {"usage":16,"ip":"second.example","port":48322,"resourcePath":"rtsps://wrong.example:322"},
+            {"usage":16,"ip":"bad.example","port":0},
+            {"usage":16,"resourcePath":"rtsps://third.example:443","port":443}]}});
+        let info = session_info(&payload, &base, "", "123", "device").unwrap();
+        assert_eq!(
+            info["rtspsEndpoints"],
+            json!([
+                "rtsps://first.example:322",
+                "rtsps://second.example:48322",
+                "rtsps://third.example:443"
+            ])
+        );
+        assert_eq!(info["signalingUrl"], "wss://first.example:322");
     }
 
     fn network_test_udp_server(
@@ -5144,7 +5107,6 @@ mod tests {
             for (status, body) in [
                 (200_u16, allocation.to_string()),
                 (200, create_reply.to_string()),
-                (200, String::new()),
             ] {
                 let (mut stream, _) = listener.accept().unwrap();
                 stream
@@ -5211,7 +5173,7 @@ mod tests {
 
         server.join().unwrap();
         let received = recorded.lock().unwrap().clone();
-        assert_eq!(received.len(), 3);
+        assert_eq!(received.len(), 2);
         assert!(received[0].0.starts_with("POST /v2/nettestsession"));
         assert!(received[0].1.contains("\"clientPlatformName\""));
         assert!(received[1].0.starts_with("POST /v2/session"));
@@ -5220,7 +5182,6 @@ mod tests {
             "allocation body carries the measured session: {}",
             received[1].1
         );
-        assert!(received[2].0.starts_with("PUT /v2/session/seat-1"));
 
         assert!(
             udp_server.join().unwrap() > 0,
@@ -5250,7 +5211,6 @@ mod tests {
                     200,
                     json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"B","status":2}}),
                 ),
-                (200, json!({})),
             ],
             |_| {},
         );
@@ -5278,14 +5238,13 @@ mod tests {
             "no session is advertised without a verified measurement"
         );
         let received = server.join().unwrap();
-        assert_eq!(received.len(), 3);
+        assert_eq!(received.len(), 2);
         assert!(
             received[0].starts_with("POST /v2/nettestsession"),
             "{}",
             received[0]
         );
         assert!(received[1].starts_with("POST /v2/session"));
-        assert!(received[2].starts_with("PUT /v2/session/B"));
     }
 
     #[test]
@@ -5360,7 +5319,6 @@ mod tests {
             for (status, body) in [
                 (200_u16, allocation.to_string()),
                 (200, create_reply.to_string()),
-                (200, String::new()),
             ] {
                 let (mut stream, _) = listener.accept().unwrap();
                 stream
@@ -5415,7 +5373,7 @@ mod tests {
         assert_eq!(created["session"]["networkTestSessionId"], "nt-1");
         server.join().unwrap();
         let received = recorded.lock().unwrap().clone();
-        assert_eq!(received.len(), 3);
+        assert_eq!(received.len(), 2);
         assert!(
             received[0].starts_with("POST /v2/nettestsession"),
             "{}",
@@ -5427,13 +5385,10 @@ mod tests {
     #[test]
     fn a_zone_without_network_test_keeps_the_previous_allocation_body() {
         let (base, server) = session_server(
-            vec![
-                (
-                    200,
-                    json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"A","status":1}}),
-                ),
-                (200, json!({})),
-            ],
+            vec![(
+                200,
+                json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"A","status":1}}),
+            )],
             |_| {},
         );
         let client = Client::builder()
@@ -5523,13 +5478,11 @@ mod tests {
                     json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"A","status":1}}),
                 ),
                 (200, json!({})),
-                (200, json!({})),
                 (200, allocation),
                 (
                     200,
                     json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"B","status":2}}),
                 ),
-                (200, json!({})),
             ],
             |_| {},
         );
@@ -5570,14 +5523,14 @@ mod tests {
         assert_eq!(created["session"]["networkTestSessionId"], "nt-1");
 
         let received = server.join().unwrap();
-        assert_eq!(received.len(), 6, "{received:?}");
+        assert_eq!(received.len(), 4, "{received:?}");
         assert!(received[0].starts_with("POST /v2/session"), "{received:?}");
         let probe = received
             .iter()
             .position(|line| line.starts_with("POST /v2/nettestsession"))
             .expect("the opt-in probe runs");
         assert_eq!(
-            probe, 3,
+            probe, 2,
             "the default-off create must not probe: {received:?}"
         );
         assert!(udp_server.join().unwrap() > 0);
@@ -5611,7 +5564,6 @@ mod tests {
                     200,
                     json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"A","status":2}}),
                 ),
-                (200, json!({})),
             ],
             |_| {},
         );
