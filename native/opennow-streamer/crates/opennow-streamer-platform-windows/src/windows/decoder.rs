@@ -1122,7 +1122,25 @@ fn output_color_format(
             };
         }
     }
-    format.validate_color().map_err(|error| error.to_string())?;
+    format.validate_color().map_err(|error| {
+        let present = |key| {
+            unsafe { media_type.GetUINT32(key) }
+                .ok()
+                .is_some_and(|value| value != 0)
+        };
+        format!(
+            "{error}: negotiated={:?}/{:?}/{:?} decoded={:?}/{:?}/{:?} explicit={}/{}/{}",
+            fallback.transfer_function,
+            fallback.color_primaries,
+            fallback.color_matrix,
+            format.transfer_function,
+            format.color_primaries,
+            format.color_matrix,
+            present(&MF_MT_TRANSFER_FUNCTION),
+            present(&MF_MT_VIDEO_PRIMARIES),
+            present(&MF_MT_YUV_MATRIX),
+        )
+    })?;
     Ok(format)
 }
 
