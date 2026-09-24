@@ -27,6 +27,7 @@ pub(crate) struct LinuxFramePacer {
     display_interval: Option<Duration>,
     presentation_interval: Duration,
     fast_stream: bool,
+    framerate_mismatch: bool,
     vrr_enabled: bool,
     last_arrival: Option<(Instant, u64)>,
     jitter_ema_ns: f64,
@@ -38,12 +39,14 @@ impl LinuxFramePacer {
     pub(crate) fn new(stream_fps: u32, display_refresh_hz: Option<u32>, vrr_enabled: bool) -> Self {
         let stream_interval = frame_interval(stream_fps);
         let display_interval = display_refresh_hz.map(frame_interval);
-        let (presentation_interval, fast_stream) = pacing_mode(stream_interval, display_interval);
+        let (presentation_interval, fast_stream, framerate_mismatch) =
+            pacing_mode(stream_interval, display_interval);
         Self {
             stream_interval,
             display_interval,
             presentation_interval,
             fast_stream,
+            framerate_mismatch,
             vrr_enabled,
             last_arrival: None,
             jitter_ema_ns: 0.0,
@@ -60,8 +63,11 @@ impl LinuxFramePacer {
         }
         self.stream_interval = stream_interval;
         self.display_interval = display_interval;
-        (self.presentation_interval, self.fast_stream) =
-            pacing_mode(stream_interval, display_interval);
+        (
+            self.presentation_interval,
+            self.fast_stream,
+            self.framerate_mismatch,
+        ) = pacing_mode(stream_interval, display_interval);
         self.reset();
         true
     }
@@ -94,7 +100,7 @@ impl LinuxFramePacer {
         let stalled = self
             .next_deadline
             .is_some_and(|deadline| now.saturating_duration_since(deadline) > PACING_OUTLIER);
-        if self.fast_stream || stalled {
+        if self.fast_stream || self.framerate_mismatch || stalled {
             return PacingDecision {
                 selection: FrameSelectionPolicy::LatestReady,
                 target_queue_depth: 0,
@@ -193,14 +199,22 @@ fn frame_interval(fps: u32) -> Duration {
     Duration::from_secs_f64(1.0 / f64::from(fps.max(1)))
 }
 
-fn pacing_mode(stream_interval: Duration, display_interval: Option<Duration>) -> (Duration, bool) {
+fn pacing_mode(
+    stream_interval: Duration,
+    display_interval: Option<Duration>,
+) -> (Duration, bool, bool) {
     let Some(display_interval) = display_interval else {
-        return (stream_interval, false);
+        return (stream_interval, false, false);
     };
-    // Matches the official client's observed mismatch boundary: a server
-    // interval below 75% of the display interval is treated as a fast stream.
-    let fast_stream = stream_interval.as_secs_f64() < display_interval.as_secs_f64() * 0.75;
-    (stream_interval.max(display_interval), fast_stream)
+    let stream_ns = stream_interval.as_nanos();
+    let display_ns = display_interval.as_nanos();
+    let fast_stream = 3 * stream_ns < 2 * display_ns;
+    let framerate_mismatch = 4 * stream_ns < 3 * display_ns || 2 * stream_ns > 3 * display_ns;
+    (
+        stream_interval.max(display_interval),
+        fast_stream,
+        framerate_mismatch,
+    )
 }
 
 #[cfg(test)]
@@ -209,7 +223,7 @@ mod tests {
 
     #[test]
     fn fast_stream_samples_latest_at_display_rate() {
-        let pacer = LinuxFramePacer::new(240, Some(165), false);
+        let pacer = LinuxFramePacer::new(360, Some(165), false);
         assert!(pacer.fast_stream());
         assert_eq!(
             pacer.decision(Instant::now()).selection,
@@ -230,6 +244,46 @@ mod tests {
             }
         );
         assert!((pacer.presentation_hz() - 120.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn fast_stream_and_mismatch_boundaries_are_strict() {
+        let display = Duration::from_millis(120);
+        let ns = Duration::from_nanos(1);
+        let cases = [
+            (Duration::from_millis(80) - ns, true, true),
+            (Duration::from_millis(80), false, true),
+            (Duration::from_millis(80) + ns, false, true),
+            (Duration::from_millis(90) - ns, false, true),
+            (Duration::from_millis(90), false, false),
+            (Duration::from_millis(90) + ns, false, false),
+            (Duration::from_millis(180) - ns, false, false),
+            (Duration::from_millis(180), false, false),
+            (Duration::from_millis(180) + ns, false, true),
+        ];
+        for (stream, fast, mismatch) in cases {
+            assert_eq!(
+                pacing_mode(stream, Some(display)),
+                (stream.max(display), fast, mismatch)
+            );
+        }
+        assert_eq!(pacing_mode(display, None), (display, false, false));
+    }
+
+    #[test]
+    fn framerate_mismatch_samples_latest_without_changing_clock() {
+        for (stream_fps, display_hz) in [(240, 165), (170, 120), (60, 120)] {
+            let pacer = LinuxFramePacer::new(stream_fps, Some(display_hz), false);
+            assert!(!pacer.fast_stream());
+            assert_eq!(
+                pacer.decision(Instant::now()),
+                PacingDecision {
+                    selection: FrameSelectionPolicy::LatestReady,
+                    target_queue_depth: 0,
+                }
+            );
+            assert!((pacer.presentation_hz() - f64::from(stream_fps.min(display_hz))).abs() < 0.01);
+        }
     }
 
     #[test]
