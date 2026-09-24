@@ -83,12 +83,13 @@ impl CreateAdmission<'_> {
                 return Ok((client, base.clone()));
             }
             let requested_base = requested_streaming_base(params, settings, auth)?;
-            let base = service.resolve_create_base(
+            let base = service.create_base(
                 &client,
                 &requested_base,
+                params,
+                settings,
                 session_token(auth),
                 device_id,
-                true,
             )?;
             Ok((client, base))
         })
@@ -1120,6 +1121,21 @@ impl CloudMatchService {
         ))
     }
 
+    fn create_base(
+        &self,
+        client: &Client,
+        requested: &Url,
+        params: &Value,
+        settings: &Value,
+        token: &str,
+        device_id: &str,
+    ) -> Result<Url, ServiceError> {
+        if explicit_create_base(params, settings) {
+            return Ok(requested.clone());
+        }
+        self.resolve_create_base(client, requested, token, device_id, true)
+    }
+
     fn resolve_create_base(
         &self,
         client: &Client,
@@ -1189,6 +1205,15 @@ fn requested_streaming_base(
             }
         });
     trusted_cloudmatch_base(&raw)
+}
+
+fn explicit_create_base(params: &Value, settings: &Value) -> bool {
+    params["streamingBaseUrl"]
+        .as_str()
+        .is_some_and(|value| !value.trim().is_empty())
+        || settings["region"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("https://"))
 }
 
 fn claim_lookup_base(discovered: Option<&Value>, zone_base: &Url) -> Url {
@@ -4512,8 +4537,10 @@ mod tests {
         let body = build_create_body(
             "12345",
             &json!({"zone":"eu-netherlands-north.cloudmatchbeta.nvidiagrid.net",
-                "networkType":"Ethernet", "ClientImeSupport":"1"}),
-            &json!({"resolution":"2560x1440", "windowWidth":2560, "windowHeight":1440}),
+                "networkType":"Ethernet", "ClientImeSupport":"1",
+                "latency@eu-netherlands-north.cloudmatchbeta.nvidiagrid.net":12}),
+            &json!({"resolution":"2560x1440", "windowWidth":2560, "windowHeight":1440,
+                "nativeHdrDisplay":{"minimumNits":0.005,"maximumNits":620}}),
             "device-id",
         );
         let metadata = body["sessionRequestData"]["metaData"].as_array().unwrap();
@@ -4527,6 +4554,61 @@ mod tests {
                 Some("networkType" | "ClientImeSupport" | "clientPhysicalResolution")
             ) && !entry["key"].as_str().unwrap().starts_with("latency@")
         }));
+    }
+
+    #[test]
+    fn concrete_create_zones_bypass_local_region_but_auto_discovers_it() {
+        let selected = json!({"metaData":[
+            {"key":"local-region","value":"nearest"},
+            {"key":"nearest","value":"https://nearest.partner.example/"},
+            {"key":"gfn-regions","value":"queue"},
+            {"key":"queue","value":"https://np-queue.nvidiagrid.net/"}
+        ]});
+        let (requested, server) = session_server(vec![(200, selected)], |_| {});
+        let client = Client::builder().no_proxy().build().unwrap();
+        let service = CloudMatchService::new(client.clone());
+        let auth = conflict_auth();
+        for (params, settings, expected) in [
+            (
+                json!({"streamingBaseUrl":"https://chosen.partner.example/", "zone":"chosen"}),
+                json!({}),
+                "https://chosen.partner.example/",
+            ),
+            (
+                json!({}),
+                json!({"region":"https://chosen.partner.example/"}),
+                "https://chosen.partner.example/",
+            ),
+            (
+                json!({"streamingBaseUrl":"https://np-queue.nvidiagrid.net/", "zone":"np-queue"}),
+                json!({}),
+                "https://np-queue.nvidiagrid.net/",
+            ),
+        ] {
+            let chosen = requested_streaming_base(&params, &settings, &auth).unwrap();
+            assert_eq!(chosen.as_str(), expected);
+            assert_eq!(
+                service
+                    .create_base(&client, &chosen, &params, &settings, "token", "device")
+                    .unwrap(),
+                chosen
+            );
+        }
+        assert_eq!(
+            service
+                .create_base(
+                    &client,
+                    &requested,
+                    &json!({}),
+                    &json!({}),
+                    "token",
+                    "device"
+                )
+                .unwrap()
+                .as_str(),
+            "https://nearest.partner.example/"
+        );
+        assert_eq!(server.join().unwrap(), ["GET /v2/serverInfo HTTP/1.1"]);
     }
 
     #[test]
