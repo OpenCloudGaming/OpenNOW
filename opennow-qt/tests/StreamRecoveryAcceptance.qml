@@ -22,6 +22,47 @@ QtObject {
         function cancel(id) { return true }
     }
     function check(ok, message) { if (!ok) throw new Error("Stream recovery: " + message) }
+    function checkQueuedPollRetries() {
+        client.state = "ready"
+        const queued = {sessionId:"queue-fixture",status:1,phase:"queued",queuePosition:21,
+            connectionInfo:null,resourcePath:null}
+        ShellStore.streamer = {status:"stopped"}
+        ShellStore.acceptStreamingSession(queued)
+        ShellStore.sessionReconnectAttempts = 2
+        for (let cycle = 0; cycle < 3; ++cycle) {
+            for (let failure = 1; failure <= 4; ++failure) {
+                ShellStore.streamPollTimer.stop()
+                ShellStore.pollStreamingSession()
+                const id = ShellStore.streamPollRequestId
+                check(id !== "" && client.calls[client.calls.length - 1].method === "session.poll",
+                    "queued seat remains pollable")
+                client.requestFailed(id, "network_error", "intermittent network failure")
+                check(ShellStore.streamPollFailureAttempts === failure
+                    && ShellStore.streamState === "reconnecting" && ShellStore.streamPollTimer.running,
+                    "intermittent failures retry without ending the queue")
+            }
+            ShellStore.streamPollTimer.stop()
+            ShellStore.pollStreamingSession()
+            client.responseReceived(ShellStore.streamPollRequestId, {session:queued})
+            check(ShellStore.streamPollFailureAttempts === 0 && ShellStore.streamState === "queued"
+                && ShellStore.activeSession.queuePosition === 21 && ShellStore.streamPollTimer.running,
+                "successful queue poll resets only the consecutive failure budget")
+            check(ShellStore.sessionReconnectAttempts === 2,
+                "successful queue poll does not reset native video recovery")
+        }
+        for (let failure = 1; failure <= ShellStore.maximumStreamPollFailureAttempts + 1; ++failure) {
+            ShellStore.streamPollTimer.stop()
+            ShellStore.pollStreamingSession()
+            client.requestFailed(ShellStore.streamPollRequestId, "network_error", "connection unavailable")
+            check(ShellStore.streamState === (failure <= ShellStore.maximumStreamPollFailureAttempts
+                    ? "reconnecting" : "error"), "consecutive poll failures remain bounded")
+        }
+        check(!ShellStore.streamPollTimer.running && ShellStore.sessionReconnectAttempts === 2,
+            "exhausted poll retries stop polling without consuming video retries")
+        ShellStore.acceptStreamingSession({sessionId:"new-queue",status:1,phase:"queued",queuePosition:10})
+        check(ShellStore.streamPollFailureAttempts === 0, "a replacement seat starts with a fresh poll budget")
+        ShellStore.streamPollTimer.stop()
+    }
     function checkOwnedTerminations() {
         const owner = {generation:7,userId:"account-a",providerIdpId:"provider-a"}
         ShellStore.authGeneration = 9
@@ -183,6 +224,7 @@ QtObject {
         ShellStore.settings = {statsShowPacketLoss:false}
         check(stats.cards.every(card => card.key !== "PacketLoss"), "honor hidden metrics")
         stats.destroy()
+        checkQueuedPollRetries()
         checkOwnedTerminations()
         ShellStore.activeSession = null
         ShellStore.streamer = null
