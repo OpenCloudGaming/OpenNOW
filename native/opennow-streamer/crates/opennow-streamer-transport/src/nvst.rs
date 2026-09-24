@@ -6744,11 +6744,19 @@ fn run_nvst_webrtc_bundle(
                 "INFO",
                 "nvst-bundle",
                 &format!(
-                    "{} local_port={local_port} peer_port={} inbound={inbound_datagrams} outbound={outbound_datagrams} pings={hole_punch_pings} dtls_ready={dtls_ready} sctp_started={sctp_started} frame_ack={} pacing={frame_pacing_reports_sent} qos={}",
+                    "{} local_port={local_port} peer_port={} inbound={inbound_datagrams} outbound={outbound_datagrams} pings={hole_punch_pings} dtls_ready={dtls_ready} sctp_started={sctp_started} frame_ack={} pacing={frame_pacing_reports_sent} qos={} videoBytesAssembled={} qosBweKbps={} qosUtilPercent={} qosOwdUs={} qosJitterUs={}",
                     receiver.stats_line(control_stats_origin),
                     bundle_peer.port(),
                     control_reports.frame_acks_sent,
                     control_reports.qos_reports_sent,
+                    feedback.completed_frame_bytes.load(Ordering::Acquire),
+                    control_reports.last_qos_report.bandwidth.estimate_kbps,
+                    control_reports
+                        .last_qos_report
+                        .bandwidth
+                        .utilization_percent,
+                    control_reports.last_qos_report.bandwidth.queue_delay_us,
+                    control_reports.last_qos_report.bandwidth.jitter_us,
                 ),
             );
             eprintln!(
