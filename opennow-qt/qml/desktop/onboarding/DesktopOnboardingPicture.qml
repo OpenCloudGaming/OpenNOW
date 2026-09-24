@@ -246,7 +246,7 @@ Column {
                     BitrateSlider {
                         objectName: "onboardingBitrate"; accessibleName: qsTr("Bitrate")
                         trackWidth: Math.min(DesktopTokens.px(220), Math.max(DesktopTokens.px(100), bitrateRow.width - DesktopTokens.px(470)))
-                        from: 0.22; to: 200; stepSize: 0.01; suffix: qsTr(" Mbps")
+                        from: 0.22; to: 100; stepSize: 0.01; suffix: qsTr(" Mbps")
                         value: Number(root.settings.maxBitrateMbps ?? 75)
                         onMoved: value => root.store.setOnboardingSetting("maxBitrateMbps", Math.round(value * 100) / 100)
                     }
@@ -322,11 +322,11 @@ Column {
                     RowLayout {
                         width: parent.width
                         Copy { text: qsTr("Bitrate limit"); color: Theme.label; font.pixelSize: DesktopTokens.px(13); font.weight: Font.ExtraBold; Layout.fillWidth: true }
-                        Copy { text: qsTr("%1 / 200 Mbps").arg(root.settings.maxBitrateMbps ?? 75); font.family: Theme.monoFont; font.pixelSize: DesktopTokens.px(11) }
+                        Copy { text: qsTr("%1 / 100 Mbps").arg(root.settings.maxBitrateMbps ?? 75); font.family: Theme.monoFont; font.pixelSize: DesktopTokens.px(11) }
                     }
                     Rectangle {
                         width: parent.width; height: DesktopTokens.px(4); radius: height / 2; color: DesktopTokens.raised
-                        Rectangle { width: parent.width * Math.max(0, Math.min(1, Number(root.settings.maxBitrateMbps ?? 75) / 200)); height: parent.height; radius: height / 2; color: root.mint }
+                        Rectangle { width: parent.width * Math.max(0, Math.min(1, Number(root.settings.maxBitrateMbps ?? 75) / 100)); height: parent.height; radius: height / 2; color: root.mint }
                     }
                     Copy { width: parent.width; text: qsTr("Requested maximum, not a network test. Actual quality depends on your membership, device and connection.") }
                 }

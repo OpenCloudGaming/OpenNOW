@@ -789,13 +789,13 @@ fn clamp_integer(
 
 fn clamp_bitrate_mbps(values: &mut Map<String, Value>) {
     // 0.22 Mbps is 220 kbps. Whole numbers stay integers so existing settings
-    // and the 10–200 Mbps slider keep their previous JSON shape.
+    // and the bitrate slider keep their previous JSON shape.
     let raw = values
         .get("maxBitrateMbps")
         .and_then(Value::as_f64)
         .filter(|value| value.is_finite())
         .unwrap_or(75.0);
-    let value = (raw.clamp(0.22, 200.0) * 100.0).round() / 100.0;
+    let value = (raw.clamp(0.22, 100.0) * 100.0).round() / 100.0;
     let stored = if (value - value.round()).abs() < 1e-9 {
         Value::from(value.round() as i64)
     } else {
@@ -2418,6 +2418,31 @@ mod tests {
     }
 
     #[test]
+    fn legacy_bitrate_above_limit_is_clamped_on_load_and_preserved_on_save() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("settings.json"),
+            json!({
+                "maxBitrateMbps": 200,
+                "onboardingCompleted": true,
+                "qtConsoleModePolicyVersion": 1,
+                "legacySetting": "retained"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let mut store = SettingsStore::load(Some(directory.path().to_path_buf())).unwrap();
+        assert_eq!(store.all()["maxBitrateMbps"], json!(100));
+        assert_eq!(store.set("maxBitrateMbps", json!(100)).unwrap(), json!(100));
+        let persisted: Value =
+            serde_json::from_slice(&fs::read(directory.path().join("settings.json")).unwrap())
+                .unwrap();
+        assert_eq!(persisted["maxBitrateMbps"], json!(100));
+        assert_eq!(persisted["legacySetting"], json!("retained"));
+    }
+
+    #[test]
     fn persists_and_normalizes_settings() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -2481,13 +2506,13 @@ mod tests {
         assert_eq!(store.set("fps", json!(999)).unwrap(), json!(360));
         assert_eq!(store.set("fps", json!(360)).unwrap(), json!(360));
         assert_eq!(store.set("fps", json!(240)).unwrap(), json!(240));
-        assert_eq!(store.set("maxBitrateMbps", json!(200)).unwrap(), json!(200));
+        assert_eq!(store.set("maxBitrateMbps", json!(100)).unwrap(), json!(100));
         let low_bitrate = store.set("maxBitrateMbps", json!(0.22)).unwrap();
         assert!((low_bitrate.as_f64().unwrap() - 0.22).abs() < 0.001);
         let clamped_bitrate = store.set("maxBitrateMbps", json!(0.1)).unwrap();
         assert!((clamped_bitrate.as_f64().unwrap() - 0.22).abs() < 0.001);
         assert_eq!(store.set("maxBitrateMbps", json!(27)).unwrap(), json!(27));
-        assert_eq!(store.set("maxBitrateMbps", json!(200)).unwrap(), json!(200));
+        assert_eq!(store.set("maxBitrateMbps", json!(200)).unwrap(), json!(100));
         assert_eq!(
             store.set("launchInConsoleMode", json!(false)).unwrap(),
             json!(false)
@@ -2510,7 +2535,7 @@ mod tests {
         );
         let loaded = SettingsStore::load(Some(directory.clone())).unwrap();
         assert_eq!(loaded.all()["fps"], json!(240));
-        assert_eq!(loaded.all()["maxBitrateMbps"], json!(200));
+        assert_eq!(loaded.all()["maxBitrateMbps"], json!(100));
         assert_eq!(loaded.all()["saveBandwidth"], json!(true));
         assert_eq!(loaded.all()["launchInConsoleMode"], json!(false));
         assert_eq!(loaded.all()["reducedMotion"], json!(true));

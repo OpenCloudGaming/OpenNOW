@@ -37,7 +37,7 @@ const CONTROL_PING_EXPIRY: Duration = Duration::from_secs(5);
 const CONTROL_IO_TIMEOUT: Duration = Duration::from_millis(100);
 const MAX_REQUEST_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_CONTROL_RESPONSE_BYTES: usize = 64 * 1024;
-const MAX_STREAM_BITRATE_MBPS: u64 = 200;
+const MAX_STREAM_BITRATE_MBPS: u64 = 100;
 // GeForce NOW 2.0.87.131 reports video[0].timeoutLengthMs=8000 and
 // video[0].sendFrameTimeoutMs=7000. Waiting sixty seconds left a dead Mjolnir media leg on screen
 // while audio/control remained alive; use the official receiver timeout so the existing bounded
@@ -2755,7 +2755,7 @@ mod tests {
     }
 
     #[test]
-    fn owned_announce_preserves_the_configured_200_mbps_ceiling() {
+    fn owned_announce_clamps_legacy_200_mbps_request_to_100_mbps() {
         let mut value = context();
         value.settings["maxBitrateMbps"] = json!(200);
         let sdp = build_announce(
@@ -2776,9 +2776,9 @@ mod tests {
                 qos_timings_v5: false,
             },
         );
-        assert!(sdp.contains("a=x-nv-video[0].initialBitrateKbps:200000"));
-        assert!(sdp.contains("a=x-nv-video[0].initialPeakBitrateKbps:200000"));
-        assert!(sdp.contains("a=x-nv-vqos[0].bw.maximumBitrateKbps:200000"));
+        assert!(sdp.contains("a=x-nv-video[0].initialBitrateKbps:100000"));
+        assert!(sdp.contains("a=x-nv-video[0].initialPeakBitrateKbps:100000"));
+        assert!(sdp.contains("a=x-nv-vqos[0].bw.maximumBitrateKbps:100000"));
         assert!(sdp.contains("a=x-nv-vqos[0].bw.minimumBitrateKbps:1000"));
     }
 

@@ -12,7 +12,7 @@ FocusScope {
     Accessible.role: Accessible.Pane
     Accessible.name: qsTr("Quick settings")
 
-    readonly property var bitrates: [25, 50, 75, 100, 150, 200]
+    readonly property var bitrates: [25, 50, 75, 100]
     readonly property var controllers: ControllerInput.controllers || []
     readonly property string tier: String(ShellStore.subscription
         && ShellStore.subscription.membershipTier || qsTr("Ready"))
@@ -234,7 +234,7 @@ FocusScope {
                 title: qsTr("Max bitrate")
                 value: Number(ShellStore.settings.maxBitrateMbps || 75) + " Mbps"
                 sliderVisible: true
-                sliderProgress: Number(ShellStore.settings.maxBitrateMbps || 75) / 200
+                sliderProgress: Number(ShellStore.settings.maxBitrateMbps || 75) / 100
                 KeyNavigation.up: regionRow; KeyNavigation.down: statsRow
                 onTriggered: root.nextBitrate()
             }
