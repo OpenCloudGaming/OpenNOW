@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 
 use opennow_streamer_platform::MediaStreamConfig;
 use opennow_streamer_protocol::SessionContext;
-use opennow_streamer_transport::nvst::MAX_NVST_VIDEO_PEER_PORTS;
+use opennow_streamer_transport::nvst::{
+    MAX_CONTROL_REPORT_BYTES, MAX_NVST_VIDEO_PEER_PORTS, MIN_CONTROL_REPORT_BYTES,
+};
 use opennow_streamer_transport::{ReservedNvstBundle, nvst_video_packet_size};
 use serde_json::{Value, json};
 use tungstenite::client::IntoClientRequest;
@@ -1013,6 +1015,7 @@ fn prepare_on_endpoint(
     let video_qos_offers = video_qos_offers(&describe.body);
     video_qos_offers.validate()?;
     let pacing_feedback_mode = video_qos_offers.pacing_feedback_mode(&describe.body)?;
+    let max_control_report_bytes = qos_messages_size(&describe.body)?;
     let described_ping_version = sdp_attribute(&describe.body, "general.pingVersion")
         .and_then(|value| value.parse::<u8>().ok())
         .unwrap_or(6);
@@ -1170,6 +1173,9 @@ fn prepare_on_endpoint(
     });
     video_qos_offers.add_to_handoff(&mut handoff);
     handoff["framePacingFeedbackMode"] = json!(pacing_feedback_mode);
+    if let Some(max_control_report_bytes) = max_control_report_bytes {
+        handoff["maxQosMessagesSize"] = json!(max_control_report_bytes);
+    }
     set_bundle_natt_username(&mut handoff, &describe.body, ping_version);
     if let Some(media) = context.session.media_connection_info.as_ref() {
         handoff["bundlePeerIp"] = json!(media.ip);
@@ -1996,6 +2002,54 @@ fn parse_hid_device_mask(value: &str) -> u32 {
         (10, trimmed)
     };
     u32::from_str_radix(digits, radix).unwrap_or(0)
+}
+
+fn qos_messages_size(sdp: &str) -> Result<Option<usize>, NvstRtspError> {
+    let mut selected = None;
+    for line in sdp
+        .split("||")
+        .next()
+        .unwrap_or_default()
+        .split(";;")
+        .flat_map(str::lines)
+        .map(str::trim)
+    {
+        let Some(attribute) = line.strip_prefix("a=") else {
+            continue;
+        };
+        let (name, value) = attribute.split_once([':', '=']).unwrap_or((attribute, ""));
+        if !name.eq_ignore_ascii_case("x-nv-general.maxQosMessagesSize")
+            && !name.eq_ignore_ascii_case("general.maxQosMessagesSize")
+        {
+            continue;
+        }
+        selected = Some((
+            attribute.as_bytes().get(name.len()) == Some(&b':'),
+            value.trim(),
+        ));
+    }
+    let Some((valid_separator, value)) = selected else {
+        return Ok(None);
+    };
+    if !valid_separator || value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(NvstRtspError::new(
+            "nvst-qos-message-size-invalid",
+            "Server advertised a malformed QoS message size",
+        ));
+    }
+    let offered = value.parse::<usize>().map_err(|_| {
+        NvstRtspError::new(
+            "nvst-qos-message-size-invalid",
+            "Server advertised a malformed QoS message size",
+        )
+    })?;
+    if offered < MIN_CONTROL_REPORT_BYTES {
+        return Err(NvstRtspError::new(
+            "nvst-qos-message-size-unsupported",
+            "Server QoS message size cannot hold a complete frame report",
+        ));
+    }
+    Ok(Some(offered.min(MAX_CONTROL_REPORT_BYTES)))
 }
 
 fn sdp_attribute(sdp: &str, name: &str) -> Option<String> {
@@ -3108,6 +3162,78 @@ mod tests {
                 .code,
             "nvst-qos-pacing-unsupported"
         );
+    }
+
+    #[test]
+    fn describe_qos_message_size_defaults_and_clamps_without_exceeding_safe_limit() {
+        assert_eq!(qos_messages_size("v=0\r\n").unwrap(), None);
+        for (offer, expected) in [(106, 106), (1071, 1071), (4000, 1071)] {
+            let describe = format!(
+                "v=0\r\na=x-nv-general.maxQosMessagesSize:{offer}\r\n;;a=general.disablePlay:1\r\n"
+            );
+            assert_eq!(qos_messages_size(&describe).unwrap(), Some(expected));
+        }
+        assert_eq!(
+            qos_messages_size("a=general.maxQosMessagesSize:212\r\n").unwrap(),
+            Some(212)
+        );
+        assert_eq!(
+            qos_messages_size(
+                "a=x-nv-general.maxQosMessagesSize:106\r\n;;a=general.maxQosMessagesSize:212\r\n"
+            )
+            .unwrap(),
+            Some(212)
+        );
+        assert_eq!(
+            qos_messages_size(
+                "a=x-nv-general.maxQosMessagesSize:bad\r\n;;a=general.maxQosMessagesSize:212\r\n"
+            )
+            .unwrap(),
+            Some(212)
+        );
+        assert_eq!(
+            qos_messages_size("v=0\r\n||a=x-nv-general.maxQosMessagesSize:106\r\n").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn describe_qos_message_size_rejects_malformed_and_too_small_effective_offers() {
+        for value in ["", "-1", "+106", "106x", "999999999999999999999999999999"] {
+            let describe = format!("a=x-nv-general.maxQosMessagesSize:{value}\r\n");
+            assert_eq!(
+                qos_messages_size(&describe).unwrap_err().code,
+                "nvst-qos-message-size-invalid",
+                "{value}"
+            );
+        }
+        assert_eq!(
+            qos_messages_size("a=x-nv-general.maxQosMessagesSize\r\n")
+                .unwrap_err()
+                .code,
+            "nvst-qos-message-size-invalid"
+        );
+        assert_eq!(
+            qos_messages_size("a=x-nv-general.maxQosMessagesSize=106\r\n")
+                .unwrap_err()
+                .code,
+            "nvst-qos-message-size-invalid"
+        );
+        assert_eq!(
+            qos_messages_size(
+                "a=x-nv-general.maxQosMessagesSize:212\r\n;;a=general.maxQosMessagesSize:bad\r\n"
+            )
+            .unwrap_err()
+            .code,
+            "nvst-qos-message-size-invalid"
+        );
+        for value in [0, 56, 105] {
+            let describe = format!("a=x-nv-general.maxQosMessagesSize:{value}\r\n");
+            assert_eq!(
+                qos_messages_size(&describe).unwrap_err().code,
+                "nvst-qos-message-size-unsupported"
+            );
+        }
     }
 
     #[test]
