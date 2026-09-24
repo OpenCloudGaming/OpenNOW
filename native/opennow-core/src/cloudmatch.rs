@@ -1326,7 +1326,7 @@ fn monitor_display_data(hdr: bool, settings: &Value) -> Value {
     });
     if let Some((minimum, maximum)) = measured_display_luminance(settings, hdr) {
         data["desiredContentMaxLuminance"] = json!(maximum);
-        data["desiredContentMinLuminance"] = json!(minimum);
+        data["desiredContentMinLuminance"] = json!((minimum * 10_000.0).round() as u64);
         if let Some(object) = data.as_object_mut() {
             object.remove("desiredContentMaxFrameAverageLuminance");
         }
@@ -4148,7 +4148,7 @@ mod tests {
         let display_data =
             &body["sessionRequestData"]["clientRequestMonitorSettings"][0]["displayData"];
         assert_eq!(display_data["desiredContentMaxLuminance"], 620.0);
-        assert_eq!(display_data["desiredContentMinLuminance"], 0.005);
+        assert_eq!(display_data["desiredContentMinLuminance"], 50);
         assert!(
             display_data
                 .get("desiredContentMaxFrameAverageLuminance")
@@ -4279,7 +4279,7 @@ mod tests {
         let display_data =
             &body["sessionRequestData"]["clientRequestMonitorSettings"][0]["displayData"];
         assert_eq!(display_data["desiredContentMaxLuminance"], 400.0);
-        assert_eq!(display_data["desiredContentMinLuminance"], 0.0005);
+        assert_eq!(display_data["desiredContentMinLuminance"], 5);
         assert!(
             display_data
                 .get("desiredContentMaxFrameAverageLuminance")
