@@ -64,6 +64,17 @@ impl VideoQueue {
         let mut dropped = 0;
         if !state.waiting_for_keyframe && (!frame.contiguous || state.frames.len() == self.capacity)
         {
+            if frame.contiguous
+                && !frame.keyframe
+                && state.frames.iter().any(|queued| queued.frame.keyframe)
+            {
+                state.waiting_for_keyframe = true;
+                state.request_pending = true;
+                return Ok(VideoPush {
+                    dropped: 1,
+                    request_keyframe: true,
+                });
+            }
             dropped += Self::invalidate_locked(&mut state);
         }
         if state.waiting_for_keyframe && !frame.keyframe {
@@ -73,6 +84,9 @@ impl VideoQueue {
                 dropped: dropped + 1,
                 request_keyframe,
             });
+        }
+        if state.waiting_for_keyframe && !state.frames.is_empty() {
+            dropped += Self::invalidate_locked(&mut state);
         }
         let reset_decoder = state.waiting_for_keyframe;
         state.waiting_for_keyframe = false;
@@ -222,6 +236,29 @@ mod tests {
     }
 
     #[test]
+    fn missing_reference_discards_the_chain_until_recovery() {
+        let queue = VideoQueue::new(3);
+        queue.push(frame(1, true)).unwrap();
+        queue.push(frame(2, false)).unwrap();
+        let mut missing_reference = frame(4, false);
+        missing_reference.contiguous = false;
+        let gap = queue.push(missing_reference).unwrap();
+        assert_eq!(gap.dropped, 3);
+        assert!(gap.request_keyframe);
+        let dependent = queue.push(frame(5, false)).unwrap();
+        assert_eq!(dependent.dropped, 1);
+        assert!(!dependent.request_keyframe);
+        assert_eq!(queue.push(frame(6, true)).unwrap().dropped, 0);
+        queue.push(frame(7, false)).unwrap();
+        let recovery = queue.pop_packet().unwrap();
+        assert_eq!(recovery.frame.frame_index, Some(6));
+        assert!(recovery.reset_decoder);
+        let following = queue.pop_packet().unwrap();
+        assert_eq!(following.frame.frame_index, Some(7));
+        assert!(!following.reset_decoder);
+    }
+
+    #[test]
     fn held_keyframe_request_does_not_repeat_for_each_delta() {
         let queue = VideoQueue::new(2);
         queue.push(frame(1, true)).unwrap();
@@ -244,6 +281,42 @@ mod tests {
         assert_eq!(result.dropped, 2);
         assert!(!result.request_keyframe);
         assert_eq!(queue.pop_packet().unwrap().frame.frame_index, Some(3));
+    }
+
+    #[test]
+    fn overflow_preserves_queued_reference_and_gates_dependent_frames() {
+        let queue = VideoQueue::new(3);
+        queue.push(frame(1, true)).unwrap();
+        queue.push(frame(2, false)).unwrap();
+        queue.push(frame(3, false)).unwrap();
+        let loss = queue.push(frame(4, false)).unwrap();
+        assert_eq!(loss.dropped, 1);
+        assert!(loss.request_keyframe);
+        assert_eq!(queue.push(frame(5, false)).unwrap().dropped, 1);
+        assert!(!queue.push(frame(6, false)).unwrap().request_keyframe);
+        let first = queue.pop_packet().unwrap();
+        assert_eq!(first.frame.frame_index, Some(1));
+        assert!(first.reset_decoder);
+        assert_eq!(queue.pop_packet().unwrap().frame.frame_index, Some(2));
+        assert_eq!(queue.pop_packet().unwrap().frame.frame_index, Some(3));
+        queue.push(frame(7, true)).unwrap();
+        assert!(queue.pop_packet().unwrap().reset_decoder);
+    }
+
+    #[test]
+    fn recovery_keyframe_replaces_unconsumed_chain_after_overflow() {
+        let queue = VideoQueue::new(2);
+        queue.push(frame(1, true)).unwrap();
+        queue.push(frame(2, false)).unwrap();
+        assert!(queue.push(frame(3, false)).unwrap().request_keyframe);
+        let old = queue.pop_packet().unwrap();
+        let recovery = queue.push(frame(4, true)).unwrap();
+        assert_eq!(recovery.dropped, 1);
+        assert!(!recovery.request_keyframe);
+        assert!(queue.submit_if_current(old.generation, || ()).is_none());
+        let packet = queue.pop_packet().unwrap();
+        assert_eq!(packet.frame.frame_index, Some(4));
+        assert!(packet.reset_decoder);
     }
 
     #[test]
