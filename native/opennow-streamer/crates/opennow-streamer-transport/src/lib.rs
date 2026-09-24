@@ -7,6 +7,7 @@ use thiserror::Error;
 
 mod frame_stage_timing;
 pub mod nvst;
+mod nvst_bandwidth;
 mod nvst_budget;
 mod nvst_control;
 mod nvst_cursor;
