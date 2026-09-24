@@ -198,7 +198,9 @@ response with `{"type":"ack","id":"42"}` before delivering that response to QML.
 Cancelled or timed-out requests do not acknowledge late responses. The create worker
 retains its admission slot for at most ten seconds awaiting acceptance, then the
 CloudMatch owner deletes an unaccepted fresh allocation with an eight-second HTTP
-deadline. Cancellation before or during the compatibility RESUME uses the same cleanup.
+deadline. Fresh creation sends a CloudMatch POST without a follow-up PUT;
+cancellation after POST uses the same cleanup. PUT RESUME applies only to claims
+of existing sessions.
 The receipt does not apply to claims of existing sessions. A create response is not
 also broadcast as `session.changed`, preventing a late event from reviving a cancelled
 launch. Cleanup failure retains the seat and its scoped discovery route for explicit
@@ -828,9 +830,9 @@ returned session-request mode; missing or unsupported modes mean SDR. An explici
 SDR response wins over saved HDR intent. `trueHdr` is not used to infer accepted dynamic
 range. Resume preserves that returned mode rather than renegotiating from current settings.
 The claim request intentionally omits monitor settings and requested streaming features, so
-its only copied dynamic-range field is the accepted session `sdrHdrMode`. The initial
-compatibility RESUME carries the full request and updates its session mode, monitor mode,
-requested-content luminance, and `trueHdr` consistently when the server has returned a mode.
+its only copied dynamic-range field is the accepted session `sdrHdrMode`. Fresh creation
+sends the full request in its POST, with the requested session mode, monitor mode,
+requested-content luminance, and `trueHdr`; only an existing-session claim uses PUT RESUME.
 Attachment revalidates the session's HDR codec/color profile and current window output, so
 moving to an SDR display cannot silently resume an HDR stream as SDR.
 
