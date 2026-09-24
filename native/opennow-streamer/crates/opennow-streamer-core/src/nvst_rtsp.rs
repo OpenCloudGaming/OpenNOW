@@ -1114,9 +1114,13 @@ fn prepare_on_endpoint(
             "SETUP selected ping version 6 without an X-Nv-Ping-Payload",
         ));
     }
+    let bundle_username = (ping_version == 6)
+        .then(|| bundle_natt_username(&describe.body))
+        .flatten();
     let remote_ufrag = resolve_remote_ufrag(
         setup_ping_payload.as_deref(),
         remote_ufrag.as_deref(),
+        bundle_username.as_deref(),
         ping_version,
     )
     .ok_or_else(|| {
@@ -1170,7 +1174,9 @@ fn prepare_on_endpoint(
     });
     video_qos_offers.add_to_handoff(&mut handoff);
     handoff["framePacingFeedbackMode"] = json!(pacing_feedback_mode);
-    set_bundle_natt_username(&mut handoff, &describe.body, ping_version);
+    if let Some(username) = bundle_username {
+        handoff["bundleNattRemoteUsername"] = json!(username);
+    }
     if let Some(media) = context.session.media_connection_info.as_ref() {
         handoff["bundlePeerIp"] = json!(media.ip);
         handoff["bundlePeerPort"] = json!(media.port);
@@ -2109,8 +2115,14 @@ fn increment_hex(value: &str) -> Option<String> {
 fn resolve_remote_ufrag(
     ping_payload: Option<&str>,
     described_ufrag: Option<&str>,
+    bundle_username: Option<&str>,
     ping_version: u8,
 ) -> Option<String> {
+    if ping_version == 6
+        && let Some(username) = bundle_username
+    {
+        return Some(username.to_owned());
+    }
     if let Some(payload) = ping_payload {
         if let Some(incremented) = increment_hex(payload) {
             return Some(incremented);
@@ -2139,15 +2151,6 @@ fn bundle_natt_username(sdp: &str) -> Option<String> {
         return None;
     }
     Some(format!("{ufrag}{port_text}"))
-}
-
-fn set_bundle_natt_username(handoff: &mut Value, sdp: &str, ping_version: u8) {
-    if ping_version != 6 {
-        return;
-    }
-    if let Some(username) = bundle_natt_username(sdp) {
-        handoff["bundleNattRemoteUsername"] = json!(username);
-    }
 }
 
 fn runtime_key(sdp: &str) -> Option<(String, u32)> {
@@ -3326,11 +3329,11 @@ mod tests {
         assert_eq!(increment_hex("ffff").as_deref(), Some("10000"));
         assert_eq!(increment_hex("PING"), None);
         assert_eq!(
-            resolve_remote_ufrag(Some("00ff"), Some("described"), 6).as_deref(),
+            resolve_remote_ufrag(Some("00ff"), Some("described"), None, 6).as_deref(),
             Some("0100")
         );
         assert_eq!(
-            resolve_remote_ufrag(None, Some("described"), 5).as_deref(),
+            resolve_remote_ufrag(None, Some("described"), None, 5).as_deref(),
             Some("described")
         );
     }
@@ -3363,29 +3366,38 @@ mod tests {
     #[test]
     fn bundle_natt_handoff_keeps_the_ice_fragment_distinct() {
         let describe = "v=0\r\na=x-nv-general.iceUsernameFragment:a1b2\r\na=x-nv-general.serverBundlePort:48000\r\n;;a=x-nv-general.serverBundlePort:48001\r\n||a=x-nv-general.serverBundlePort:47000\r\n";
+        let bundle_username = bundle_natt_username(describe);
         let ice_fragment = resolve_remote_ufrag(
             Some("a1b247998"),
             sdp_attribute(describe, "general.iceUsernameFragment").as_deref(),
+            bundle_username.as_deref(),
             6,
         )
         .unwrap();
-        let mut handoff = json!({"remoteIceUsernameFragment": ice_fragment});
-        set_bundle_natt_username(&mut handoff, describe, 6);
-        assert_eq!(handoff["remoteIceUsernameFragment"], "a1b247999");
+        let handoff = json!({"remoteIceUsernameFragment": ice_fragment,
+            "bundleNattRemoteUsername": bundle_username});
+        assert_eq!(handoff["remoteIceUsernameFragment"], "a1b248001");
         assert_eq!(handoff["bundleNattRemoteUsername"], "a1b248001");
 
-        let mut missing = json!({"remoteIceUsernameFragment": "a1b247999"});
-        set_bundle_natt_username(
-            &mut missing,
-            "a=x-nv-general.iceUsernameFragment:a1b2\r\n",
-            6,
+        assert_eq!(
+            resolve_remote_ufrag(
+                Some("a1b247998"),
+                Some("a1b2"),
+                bundle_natt_username("a=x-nv-general.iceUsernameFragment:a1b2\r\n").as_deref(),
+                6,
+            )
+            .as_deref(),
+            Some("a1b247999")
         );
-        assert_eq!(missing["remoteIceUsernameFragment"], "a1b247999");
-        assert!(missing.get("bundleNattRemoteUsername").is_none());
-
-        let mut legacy = json!({"remoteIceUsernameFragment": "a1b2"});
-        set_bundle_natt_username(&mut legacy, describe, 5);
-        assert_eq!(legacy["remoteIceUsernameFragment"], "a1b2");
-        assert!(legacy.get("bundleNattRemoteUsername").is_none());
+        assert_eq!(
+            resolve_remote_ufrag(
+                None,
+                Some("a1b2"),
+                handoff["bundleNattRemoteUsername"].as_str(),
+                5
+            )
+            .as_deref(),
+            Some("a1b2")
+        );
     }
 }
