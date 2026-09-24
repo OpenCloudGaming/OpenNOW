@@ -266,9 +266,22 @@ QString CoreClient::request(const QString &method, const QJsonObject &params, in
         auto capabilities = runtimeParams.value(u"runtimeCapabilities"_s).toObject();
         capabilities.insert(u"nativeHdrSupported"_s, m_nativeHdrSupported);
         if (m_nativeHdrDisplay.available) {
-            capabilities.insert(u"nativeHdrDisplay"_s,
-                QJsonObject{{u"minimumNits"_s, m_nativeHdrDisplay.minimumNits},
-                            {u"maximumNits"_s, m_nativeHdrDisplay.maximumNits}});
+            QJsonObject display{{u"minimumNits"_s, m_nativeHdrDisplay.minimumNits},
+                                {u"maximumNits"_s, m_nativeHdrDisplay.maximumNits}};
+            if (m_nativeHdrDisplay.maximumFullFrameNits)
+                display.insert(u"maximumFullFrameNits"_s, *m_nativeHdrDisplay.maximumFullFrameNits);
+            if (m_nativeHdrDisplay.chromaticity) {
+                const auto &c = *m_nativeHdrDisplay.chromaticity;
+                display.insert(u"redX"_s, c.redX);
+                display.insert(u"redY"_s, c.redY);
+                display.insert(u"greenX"_s, c.greenX);
+                display.insert(u"greenY"_s, c.greenY);
+                display.insert(u"blueX"_s, c.blueX);
+                display.insert(u"blueY"_s, c.blueY);
+                display.insert(u"whiteX"_s, c.whiteX);
+                display.insert(u"whiteY"_s, c.whiteY);
+            }
+            capabilities.insert(u"nativeHdrDisplay"_s, display);
         } else {
             capabilities.remove(u"nativeHdrDisplay"_s);
         }

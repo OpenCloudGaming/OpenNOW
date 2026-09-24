@@ -2174,7 +2174,10 @@ mod tests {
             store
                 .set(
                     "nativeHdrDisplay",
-                    json!({"minimumNits":0.005,"maximumNits":620})
+                    json!({"minimumNits":0.005,"maximumNits":620,
+                        "maximumFullFrameNits":400,"redX":0.64,"redY":0.33,
+                        "greenX":0.30,"greenY":0.60,"blueX":0.15,"blueY":0.06,
+                        "whiteX":0.3127,"whiteY":0.329})
                 )
                 .is_err()
         );
@@ -2186,7 +2189,10 @@ mod tests {
         let path = directory.join("settings.json");
         let mut persisted: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         persisted["nativeHdrSupported"] = json!(true);
-        persisted["nativeHdrDisplay"] = json!({"minimumNits":0.005,"maximumNits":620});
+        persisted["nativeHdrDisplay"] = json!({"minimumNits":0.005,"maximumNits":620,
+            "maximumFullFrameNits":400,"redX":0.64,"redY":0.33,
+            "greenX":0.30,"greenY":0.60,"blueX":0.15,"blueY":0.06,
+            "whiteX":0.3127,"whiteY":0.329});
         fs::write(&path, serde_json::to_vec(&persisted).unwrap()).unwrap();
         let mut loaded = SettingsStore::load(Some(directory.clone())).unwrap();
         assert!(loaded.all().get("nativeHdrSupported").is_none());

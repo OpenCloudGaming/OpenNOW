@@ -556,10 +556,16 @@ impl StreamerService {
         if let Some(object) = resolved.as_object_mut() {
             object.remove("nativeHdrDisplay");
         }
-        if let Some((minimum, maximum)) =
-            validated_native_hdr_display(&capabilities["nativeHdrDisplay"])
-        {
-            resolved["nativeHdrDisplay"] = json!({"minimumNits":minimum, "maximumNits":maximum});
+        if let Some(display) = validated_native_hdr_display(&capabilities["nativeHdrDisplay"]) {
+            let mut snapshot = json!({"minimumNits":display.minimum_nits,
+                "maximumNits":display.maximum_nits});
+            if let Some(metadata) = display.metadata {
+                snapshot["maximumFullFrameNits"] = json!(metadata.maximum_full_frame_nits);
+                for (key, coordinate) in HDR_CHROMATICITY_KEYS.iter().zip(metadata.coordinates) {
+                    snapshot[*key] = json!(coordinate);
+                }
+            }
+            resolved["nativeHdrDisplay"] = snapshot;
         }
         if hdr {
             resolved["colorQuality"] = json!(color);
@@ -1641,7 +1647,22 @@ fn apply_child_telemetry(message: &Value, state: &Arc<Mutex<Snapshot>>) {
     }
 }
 
-pub(crate) fn validated_native_hdr_display(display: &Value) -> Option<(f64, f64)> {
+const HDR_CHROMATICITY_KEYS: [&str; 8] = [
+    "redX", "redY", "greenX", "greenY", "blueX", "blueY", "whiteX", "whiteY",
+];
+
+pub(crate) struct NativeHdrDisplay {
+    pub minimum_nits: f64,
+    pub maximum_nits: f64,
+    pub metadata: Option<NativeHdrMetadata>,
+}
+
+pub(crate) struct NativeHdrMetadata {
+    pub maximum_full_frame_nits: f64,
+    pub coordinates: [f64; 8],
+}
+
+pub(crate) fn validated_native_hdr_display(display: &Value) -> Option<NativeHdrDisplay> {
     let display = display.as_object()?;
     let minimum = display.get("minimumNits")?.as_f64()?;
     let maximum = display.get("maximumNits")?.as_f64()?;
@@ -1653,7 +1674,39 @@ pub(crate) fn validated_native_hdr_display(display: &Value) -> Option<(f64, f64)
     {
         return None;
     }
-    Some((minimum, maximum))
+    let metadata = (|| {
+        let full_frame = display.get("maximumFullFrameNits")?.as_f64()?;
+        if !full_frame.is_finite() || full_frame <= minimum || full_frame > maximum {
+            return None;
+        }
+        let mut coordinates = [0.0; 8];
+        for (coordinate, key) in coordinates.iter_mut().zip(HDR_CHROMATICITY_KEYS) {
+            *coordinate = display.get(key)?.as_f64()?;
+        }
+        if coordinates.chunks_exact(2).any(|xy| {
+            !xy[0].is_finite()
+                || !xy[1].is_finite()
+                || !(0.0..=1.0).contains(&xy[0])
+                || !(0.0..=1.0).contains(&xy[1])
+                || xy[0] + xy[1] > 1.0
+                || xy[1] == 0.0
+        }) {
+            return None;
+        }
+        let [rx, ry, gx, gy, bx, by, ..] = coordinates;
+        if ((gx - rx) * (by - ry) - (gy - ry) * (bx - rx)).abs() <= 1e-6 {
+            return None;
+        }
+        Some(NativeHdrMetadata {
+            maximum_full_frame_nits: full_frame,
+            coordinates,
+        })
+    })();
+    Some(NativeHdrDisplay {
+        minimum_nits: minimum,
+        maximum_nits: maximum,
+        metadata,
+    })
 }
 
 fn streamer_context(mut session: Value, settings: &Value) -> Value {

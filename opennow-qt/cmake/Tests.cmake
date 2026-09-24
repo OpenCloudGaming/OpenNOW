@@ -27,6 +27,17 @@ if(BUILD_TESTING)
     add_test(NAME opennow-waylandhdroutput-tests COMMAND opennow-waylandhdroutput-tests -o -,txt)
     set_tests_properties(opennow-waylandhdroutput-tests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 15)
+    qt_add_executable(opennow-windowshdrdisplay-tests
+        tests/tst_windowshdrdisplay.cpp
+        src/streaming/rendering/WindowsHdrDisplay.cpp)
+    target_include_directories(opennow-windowshdrdisplay-tests PRIVATE src)
+    target_link_libraries(opennow-windowshdrdisplay-tests PRIVATE Qt6::Test Qt6::Gui)
+    if(WIN32)
+        target_link_libraries(opennow-windowshdrdisplay-tests PRIVATE dxgi user32)
+    endif()
+    add_test(NAME opennow-windowshdrdisplay-tests COMMAND opennow-windowshdrdisplay-tests -o -,txt)
+    set_tests_properties(opennow-windowshdrdisplay-tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 15)
     qt_add_executable(opennow-hdrcolor-tests tests/tst_hdrcolor.cpp
         src/streaming/rendering/HdrChromeEffect.cpp src/streaming/rendering/HdrOutput.cpp)
     target_include_directories(opennow-hdrcolor-tests PRIVATE src)
