@@ -359,12 +359,22 @@ internal fun CompletedSessionBugReportDialog(
     var title by rememberSaveable { mutableStateOf("") }
     var description by rememberSaveable { mutableStateOf("") }
     var consentChecked by rememberSaveable { mutableStateOf(false) }
+    var warningsAcknowledged by rememberSaveable { mutableStateOf(false) }
+    var preflightReviewed by rememberSaveable { mutableStateOf(false) }
+    var preflightPage by rememberSaveable { mutableStateOf(0) }
     var confirmationOpen by rememberSaveable { mutableStateOf(false) }
     var acknowledgedKnownIssueKey by rememberSaveable { mutableStateOf<String?>(null) }
     var details by rememberSaveable { mutableStateOf(AndroidBugReportDetails()) }
     var attachments by remember { mutableStateOf(emptyList<AndroidBugReportAttachment>()) }
-    val preflightDeck = remember { preflightProvider() }
+    var preflightDeck by remember { mutableStateOf(preflightProvider()) }
+    val preflightComplete = preflightReviewed &&
+        canContinueBugReportPreflight(preflightDeck, consentChecked, warningsAcknowledged, experimentalNvstEnabled)
     val knownIssueBlock = bugReportKnownIssueBlock(title, description, preflightDeck)
+    val formScrollState = rememberScrollState()
+
+    LaunchedEffect(preflightComplete, preflightPage) {
+        formScrollState.scrollTo(0)
+    }
 
     LaunchedEffect(update.installSource.isGooglePlay) {
         if (update.installSource.isGooglePlay) onVersionCheck()
@@ -391,7 +401,7 @@ internal fun CompletedSessionBugReportDialog(
                             620.dp
                         },
                     )
-                    .verticalScroll(rememberScrollState()),
+                    .verticalScroll(formScrollState),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 if (showCommunityLink) {
@@ -401,10 +411,32 @@ internal fun CompletedSessionBugReportDialog(
                 }
                 when {
                     submission.submitted -> {
-                        Icon(Icons.Rounded.Check, contentDescription = null, tint = Green)
-                        Text(stringResource(R.string.bug_report_feedback_sent), color = Green, fontWeight = FontWeight.Bold)
-                        submission.reference?.let { reference ->
-                            CopyableBugReportId(reference)
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(OpenNowRadius.lg),
+                            color = Green.copy(alpha = 0.12f),
+                            border = BorderStroke(1.dp, Green.copy(alpha = 0.42f)),
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(OpenNowSpacing.lg),
+                                verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm),
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm),
+                                ) {
+                                    Icon(Icons.Rounded.Check, contentDescription = null, tint = Green)
+                                    Text(
+                                        stringResource(R.string.bug_report_feedback_sent),
+                                        color = Green,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
+                                }
+                                submission.reference?.let { reference ->
+                                    CopyableBugReportId(reference)
+                                }
+                            }
                         }
                     }
                     !appLocale.bugReportsAllowed -> BugReportLocaleGateCard()
@@ -416,13 +448,36 @@ internal fun CompletedSessionBugReportDialog(
                     )
                     else -> {
                         NvstBugReportWarning(experimentalNvstEnabled)
-                        BugReportDataDisclosure(includeTypedTextWarning = true)
-                        BugReportConsentGate(
-                            checked = consentChecked,
-                            enabled = !submission.uploading,
-                            onCheckedChange = { consentChecked = it },
-                        )
-                        if (consentChecked) {
+                        if (!preflightComplete) {
+                            BugReportPreflightDeckView(
+                                deck = preflightDeck,
+                                page = preflightPage.coerceIn(preflightDeck.cards.indices),
+                                additionalWarning = experimentalNvstEnabled,
+                                consentChecked = consentChecked,
+                                warningsAcknowledged = warningsAcknowledged,
+                                onConsentChange = { consentChecked = it },
+                                onWarningsAcknowledgedChange = { warningsAcknowledged = it },
+                                onPrevious = { preflightPage = (preflightPage - 1).coerceAtLeast(0) },
+                                onNext = {
+                                    if (preflightPage < preflightDeck.cards.lastIndex) {
+                                        preflightPage += 1
+                                    } else if (canContinueBugReportPreflight(
+                                            preflightDeck, consentChecked, warningsAcknowledged, experimentalNvstEnabled,
+                                        )) {
+                                        preflightReviewed = true
+                                    }
+                                },
+                                onRefresh = {
+                                    preflightPage = 0
+                                    warningsAcknowledged = false
+                                    preflightDeck = preflightProvider()
+                                },
+                                onCancel = onDismiss,
+                            )
+                        } else {
+                            TextButton(onClick = { preflightReviewed = false }, enabled = !submission.uploading) {
+                                Text(stringResource(R.string.bug_report_checks_tab))
+                            }
                             Text(
                                 stringResource(descriptionRes),
                                 color = TextMuted,
@@ -438,6 +493,7 @@ internal fun CompletedSessionBugReportDialog(
                                 enabled = !submission.uploading,
                                 singleLine = true,
                                 label = { Text(stringResource(R.string.bug_report_title_label)) },
+                                placeholder = { Text(stringResource(R.string.bug_report_title_placeholder)) },
                                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
                             )
                             OutlinedTextField(
@@ -451,6 +507,7 @@ internal fun CompletedSessionBugReportDialog(
                                 minLines = 4,
                                 maxLines = 7,
                                 label = { Text(stringResource(R.string.bug_report_description_label)) },
+                                placeholder = { Text(stringResource(R.string.bug_report_description_placeholder)) },
                                 supportingText = {
                                     Text(
                                         androidBugReportDescriptionError(description)
@@ -501,7 +558,7 @@ internal fun CompletedSessionBugReportDialog(
                     Spacer(Modifier.width(8.dp))
                     Text(stringResource(R.string.bug_report_sending))
                 }
-                appLocale.bugReportsAllowed && androidBugReportsAllowed(update, versionCheck) -> Button(
+                preflightComplete && appLocale.bugReportsAllowed && androidBugReportsAllowed(update, versionCheck) -> Button(
                     onClick = { confirmationOpen = true },
                     enabled = androidBugReportTitleError(title) == null &&
                         androidBugReportDescriptionError(description) == null &&

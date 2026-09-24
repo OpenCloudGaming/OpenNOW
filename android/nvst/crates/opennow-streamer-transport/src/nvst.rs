@@ -36,8 +36,8 @@ use str0m::rtp::Ssrc;
 use str0m::{Candidate, Event, IceCreds, Input, Output, Rtc, RtcConfig};
 
 use super::nvst_control::{
-    DEFAULT_FRAME_TIME_US, QOS_REPORT_INTERVAL, QOS_WARM_UP, QosReport, frame_ack,
-    frame_pacing_report, idr_request,
+    DEFAULT_FRAME_TIME_US, QOS_REPORT_INTERVAL, QosReport, batch_control_records, frame_ack,
+    idr_request,
 };
 use super::nvst_input::{
     NvstInputChannelState, NvstInputChannels, NvstInputCodec, native_input_type_is_motion,
@@ -329,6 +329,7 @@ struct PendingNackRange {
 
 #[derive(Debug)]
 pub struct NvstFeedbackState {
+    application_ready: AtomicBool,
     /// Bound video stream SSRC (0 until the first packet is authenticated).
     video_ssrc: AtomicU32,
     /// Highest extended sequence number received on the video stream.
@@ -344,12 +345,14 @@ pub struct NvstFeedbackState {
     completed_frames: AtomicU32,
     completed_frame_bytes: AtomicU64,
     last_completed_rtp_timestamp: AtomicU32,
+    last_completed_frame_number: AtomicU32,
     pending_frame_acks: Mutex<VecDeque<CompletedFrameFeedback>>,
 }
 
 impl Default for NvstFeedbackState {
     fn default() -> Self {
         Self {
+            application_ready: AtomicBool::new(true),
             video_ssrc: AtomicU32::new(0),
             highest_sequence: AtomicU32::new(0),
             base_sequence: AtomicU32::new(u32::MAX),
@@ -361,12 +364,22 @@ impl Default for NvstFeedbackState {
             completed_frames: AtomicU32::new(0),
             completed_frame_bytes: AtomicU64::new(0),
             last_completed_rtp_timestamp: AtomicU32::new(0),
+            last_completed_frame_number: AtomicU32::new(0),
             pending_frame_acks: Mutex::new(VecDeque::new()),
         }
     }
 }
 
 impl NvstFeedbackState {
+    /// ICE/DTLS/SCTP may start before PLAY; application records must wait.
+    pub fn set_application_ready(&self, ready: bool) {
+        self.application_ready.store(ready, Ordering::Release);
+    }
+
+    fn application_ready(&self) -> bool {
+        self.application_ready.load(Ordering::Acquire)
+    }
+
     fn publish_stream(&self, ssrc: u32, highest_sequence: u32, rtp_timestamp: u32, now: Instant) {
         self.video_ssrc.store(ssrc, Ordering::Release);
         let _ = self.base_sequence.compare_exchange(
@@ -477,6 +490,8 @@ impl NvstFeedbackState {
     }
 
     fn publish_completed_frame(&self, frame: &EncodedVideoAccessUnit) {
+        self.last_completed_frame_number
+            .store(frame.frame_index, Ordering::Release);
         self.completed_frames.fetch_add(1, Ordering::AcqRel);
         self.completed_frame_bytes.fetch_add(
             u64::try_from(frame.bytes.len()).unwrap_or(u64::MAX),
@@ -519,6 +534,7 @@ impl NvstFeedbackState {
             .pop_front()
     }
 
+    #[cfg(test)]
     fn completed_frame_snapshot(&self) -> (u32, u32, u32) {
         (
             self.completed_frames.load(Ordering::Acquire),
@@ -545,6 +561,22 @@ impl NvstFeedbackState {
             .saturating_add(1);
         let loss = f64::from(report.cumulative_lost.max(0)) * 100.0 / f64::from(expected.max(1));
         Some((f64::from(report.jitter) / 90.0, loss.clamp(0.0, 100.0)))
+    }
+
+    // QoS has independent interval accounting: sending RTCP or reading the UI
+    // must not consume the 50 ms loss window. Commit the snapshot only on send.
+    fn qos_packet_snapshot(&self) -> (u32, u32) {
+        let base = self.base_sequence.load(Ordering::Acquire);
+        if base == u32::MAX {
+            return (0, 0);
+        }
+        (
+            self.highest_sequence
+                .load(Ordering::Acquire)
+                .wrapping_sub(base)
+                .wrapping_add(1),
+            self.received_packets.load(Ordering::Acquire),
+        )
     }
 
     fn report_snapshot(&self, update_interval: bool) -> Option<RtcpReportBlock> {
@@ -603,7 +635,8 @@ impl NvstFeedbackState {
         rtcp_open: bool,
         control_open: bool,
     ) -> (bool, bool) {
-        if !self.keyframe_request_pending()
+        if !self.application_ready()
+            || !self.keyframe_request_pending()
             || now.saturating_duration_since(last_attempt) < KEYFRAME_REQUEST_COOLDOWN
         {
             return (false, false);
@@ -671,6 +704,15 @@ impl NvstFeedbackState {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
     }
+}
+
+fn qos_interval_loss(prior: (u32, u32), current: (u32, u32)) -> u16 {
+    let expected = current.0.wrapping_sub(prior.0);
+    let received = current.1.wrapping_sub(prior.1);
+    if expected == 0 {
+        return 0;
+    }
+    ((u64::from(expected.saturating_sub(received)) * 10_000) / u64::from(expected)) as u16
 }
 
 /// Shared handle to the NVST feedback plane (cheap to clone, shared across threads).
@@ -4900,16 +4942,18 @@ fn run_nvst_webrtc_bundle(
     } = outputs;
     let bundle_peer = config.bundle_peer();
     let local_port = socket.local_addr().map_or(0, |addr| addr.port());
-    let ping_payload = b"PING";
-    log_udp_receiver_start("bundle", &socket, bundle_peer, &config, ping_payload);
     let stun_credentials = config.stun_credentials.clone();
+    let ping_payload = stun_credentials
+        .as_ref()
+        .map(|credentials| credentials.remote_username_fragment.as_bytes())
+        .unwrap_or(b"PING");
+    log_udp_receiver_start("bundle", &socket, bundle_peer, &config, ping_payload);
     // Feedback plane shared with the Mjolnir video receiver: it publishes the
     // stream SSRC/sequence and recovery requests; this bundle sends the RTCP
     // Receiver Reports / NACK / PLI over the `rtcp1` SCTP data channel.
     let feedback = config.feedback();
-    // Arm startup before either feedback channel opens. In particular, control
-    // IDR must work even if no video packet has arrived to identify its SSRC.
-    feedback.request_keyframe();
+    // PLAY starts with an IDR. Recovery is armed only by actual loss/rejection,
+    // avoiding an extra startup IDR before the application protocol is ready.
     let audio_track = config.audio_track().cloned();
     let frame_time_us = config.frame_time_us;
     // With a dedicated Mjolnir video socket the bundle only carries
@@ -4955,16 +4999,17 @@ fn run_nvst_webrtc_bundle(
     let mut rtcp_reports_sent = 0_u64;
     let mut qos_sequence = 0_u32;
     let mut last_qos_send = Instant::now() - QOS_REPORT_INTERVAL;
-    let mut last_frame_pacing_send = Instant::now() - QOS_REPORT_INTERVAL;
     let control_stats_origin = Instant::now();
     let mut last_control_stats_log = Instant::now();
     let mut frame_acks_sent = 0_u64;
-    let mut frame_pacing_reports_sent = 0_u64;
+    let frame_pacing_reports_sent = 0_u64;
+    let mut qos_packet_prior = (0_u32, 0_u32);
     let mut qos_reports_sent = 0_u64;
     let mut last_ack_frame = None;
     let mut sctp_started_at: Option<Instant> = None;
     let mut input_channels: Option<NvstInputChannels> = None;
     let mut input_state = NvstInputChannelState::default();
+    let mut pending_input_version = None;
     let mut input_codec = NvstInputCodec::default();
     let mut last_input_types = Vec::new();
     let mut input_queue_max_us = 0_u128;
@@ -5130,10 +5175,28 @@ fn run_nvst_webrtc_bundle(
             }
         }
 
-        // Official first burst is three ICE Binding Requests, plus NATT
-        // ping-string PING. After DTLS they keep pinging at 100ms.
+        // ICE and NATT use the bundle identity, distinct from video SETUP's
+        // identity. After DTLS keep the mapping alive at 100 ms.
         let now = Instant::now();
-        if input_state.control_is_open() && now >= control_keepalive_at {
+        let application_ready = feedback.application_ready();
+        if application_ready
+            && let Some(version) = pending_input_version.take()
+            && let Some(channels) = input_channels
+            && finish_nvst_input_handshake(
+                &mut input_state,
+                channels,
+                &mut rtc,
+                transport_origin,
+                &input_ready,
+                &event_sender,
+                version,
+            )
+        {
+            pending_input_version = None;
+            cursor_capture_attempts = 1;
+            cursor_capture_retry_at = Some(now + CURSOR_CAPTURE_RETRY_INTERVAL);
+        }
+        if application_ready && input_state.control_is_open() && now >= control_keepalive_at {
             if let Some(channels) = input_channels
                 && !channels.send_keepalive(&mut rtc, 0)
             {
@@ -5141,7 +5204,8 @@ fn run_nvst_webrtc_bundle(
             }
             control_keepalive_at = next_control_keepalive(now);
         }
-        if !server_cursor_confirmed
+        if application_ready
+            && !server_cursor_confirmed
             && cursor_capture_attempts < MAX_CURSOR_CAPTURE_ATTEMPTS
             && cursor_capture_retry_at.is_some_and(|retry_at| now >= retry_at)
             && let Some(channels) = input_channels
@@ -5165,7 +5229,13 @@ fn run_nvst_webrtc_bundle(
             }
             cursor_capture_retry_at = Some(now + CURSOR_CAPTURE_RETRY_INTERVAL);
         }
-        if !input_timeout_reported && input_state.handshake_timed_out(sctp_started_at, now) {
+        if !application_ready {
+            sctp_started_at = Some(now);
+        }
+        if application_ready
+            && !input_timeout_reported
+            && input_state.handshake_timed_out(sctp_started_at, now)
+        {
             input_timeout_reported = true;
             let _ = event_sender.send(NvstReceiveEvent::InputUnavailable(
                 "input handshake timed out".to_owned(),
@@ -5222,60 +5292,55 @@ fn run_nvst_webrtc_bundle(
             last_hole_punch = now;
         }
 
-        if control_partial_open && let Some(channels) = input_channels {
+        if application_ready
+            && control_partial_open
+            && now.duration_since(last_qos_send) >= QOS_REPORT_INTERVAL
+            && let Some(channels) = input_channels
+        {
+            let mut records = Vec::new();
+            let mut ack_count = 0_u64;
+            let mut newest_ack = None;
             while let Some(frame) = feedback.take_completed_frame() {
-                if now.duration_since(last_frame_pacing_send) >= QOS_REPORT_INTERVAL {
-                    // Packet-completion intervals are intentionally bursty and are not display
-                    // pacing error. Feeding that network jitter into the server PID made its
-                    // encoder cadence oscillate. Until a real vsync timestamp is available,
-                    // report a neutral error exactly as the unavailable ACK stage metrics do.
-                    let pacing =
-                        frame_pacing_report(frame.frame_number, frame_time_us, 0).encoded();
-                    if channels.send_partial_control(&mut rtc, &pacing) {
-                        frame_pacing_reports_sent = frame_pacing_reports_sent.saturating_add(1);
-                    }
-                    last_frame_pacing_send = now;
-                }
                 let client_time_ms = frame
                     .accepted_at
                     .saturating_duration_since(transport_origin)
                     .as_secs_f64()
                     * 1_000.0;
-                let ack = frame_ack(
+                records.push(frame_ack(
                     frame.frame_number,
                     client_time_ms,
                     frame.bytes,
                     frame_time_us,
                     None,
-                )
-                .encoded();
-                if !channels.send_partial_control(&mut rtc, &ack) {
-                    break;
+                ));
+                ack_count += 1;
+                newest_ack = Some(frame.frame_number);
+            }
+            let packet_snapshot = feedback.qos_packet_snapshot();
+            records.push(
+                QosReport {
+                    sequence: qos_sequence.wrapping_add(1),
+                    last_frame_number: feedback.last_completed_frame_number.load(Ordering::Acquire),
+                    client_time_90khz: (now.saturating_duration_since(transport_origin).as_micros()
+                        * 90
+                        / 1000) as u32,
+                    loss_per_10000: qos_interval_loss(qos_packet_prior, packet_snapshot),
                 }
-                frame_acks_sent = frame_acks_sent.saturating_add(1);
-                last_ack_frame = Some(frame.frame_number);
-            }
-        }
-
-        if control_partial_open
-            && now.duration_since(last_qos_send) >= QOS_REPORT_INTERVAL
-            && let Some(channels) = input_channels
-        {
-            let (frames_received, bytes_received, rtp_timestamp) =
-                feedback.completed_frame_snapshot();
-            qos_sequence = qos_sequence.wrapping_add(1);
-            let command = QosReport {
-                sequence: qos_sequence,
-                frames_received,
-                bytes_received,
-                rtp_timestamp,
-                previous_bytes_received: bytes_received,
-                warmed_up: now.saturating_duration_since(transport_origin) >= QOS_WARM_UP,
-            }
-            .command()
-            .encoded();
-            if channels.send_partial_control(&mut rtc, &command) {
+                .command(),
+            );
+            // QoS is last, so its sequence/loss window advances only when every
+            // batch was queued. Stale ACKs stay bounded by the receiver queue.
+            if batch_control_records(records)
+                .iter()
+                .all(|batch| channels.send_partial_control(&mut rtc, batch))
+            {
+                frame_acks_sent = frame_acks_sent.saturating_add(ack_count);
+                if newest_ack.is_some() {
+                    last_ack_frame = newest_ack;
+                }
                 qos_reports_sent = qos_reports_sent.saturating_add(1);
+                qos_sequence = qos_sequence.wrapping_add(1);
+                qos_packet_prior = packet_snapshot;
             }
             last_qos_send = now;
         }
@@ -5311,7 +5376,8 @@ fn run_nvst_webrtc_bundle(
         // Send RTCP feedback over the rtcp1 SCTP channel once it is open and the
         // Mjolnir receiver has bound the video stream. A Receiver Report goes out
         // every second.
-        if rtcp_channel_open
+        if application_ready
+            && rtcp_channel_open
             && now.duration_since(last_rtcp_send) >= SRTCP_RR_INTERVAL
             && let Some(channel_id) = rtcp_channel
             && let Some(report_block) = feedback.report_snapshot(true)
@@ -5335,7 +5401,8 @@ fn run_nvst_webrtc_bundle(
         // Loss feedback cannot wait for the one-second Receiver Report cadence:
         // request retransmission while the reorder buffer still holds later
         // packets, then request a keyframe if bounded recovery was exhausted.
-        if now.duration_since(last_recovery_send) >= RTCP_RECOVERY_INTERVAL
+        if application_ready
+            && now.duration_since(last_recovery_send) >= RTCP_RECOVERY_INTERVAL
             && let Some((media_ssrc, _)) = feedback.stream_snapshot()
         {
             if rtcp_channel_open
@@ -5467,29 +5534,13 @@ fn run_nvst_webrtc_bundle(
                         eprintln!("NVST data channel open: id={id:?} label={label}");
                         if let Some(channels) = input_channels {
                             if id == channels.control_reliable {
-                                if !channels.send_keepalive(&mut rtc, 0) {
-                                    eprintln!("NVST initial control keepalive could not be queued");
-                                }
-                                control_keepalive_at = next_control_keepalive(Instant::now());
+                                control_keepalive_at = Instant::now();
                             }
                             if id == channels.control_partial {
                                 control_partial_open = true;
                             }
                             if let Some(version) = input_state.channel_opened(channels, id) {
-                                if !finish_nvst_input_handshake(
-                                    &mut input_state,
-                                    channels,
-                                    &mut rtc,
-                                    transport_origin,
-                                    &input_ready,
-                                    &event_sender,
-                                    version,
-                                ) {
-                                    continue;
-                                }
-                                cursor_capture_attempts = 1;
-                                cursor_capture_retry_at =
-                                    Some(Instant::now() + CURSOR_CAPTURE_RETRY_INTERVAL);
+                                pending_input_version = Some(version);
                             }
                         }
                         if Some(id) == rtcp_channel {
@@ -5523,7 +5574,8 @@ fn run_nvst_webrtc_bundle(
                                 if let Some(cursor) = message.normalized {
                                     cursor_capture_retry_at = None;
                                     // Android renders the server-composited cursor.
-                                    if !server_cursor_confirmed
+                                    if application_ready
+                                        && !server_cursor_confirmed
                                         && channels.send_mouse_cursor_capture(&mut rtc, true)
                                     {
                                         server_cursor_confirmed = true;
@@ -5545,7 +5597,8 @@ fn run_nvst_webrtc_bundle(
 
                             if data.id == channels.cursor {
                                 cursor_capture_retry_at = None;
-                                if !server_cursor_confirmed
+                                if application_ready
+                                    && !server_cursor_confirmed
                                     && channels.send_mouse_cursor_capture(&mut rtc, true)
                                 {
                                     server_cursor_confirmed = true;
@@ -5580,20 +5633,7 @@ fn run_nvst_webrtc_bundle(
                             && let Some(version) =
                                 input_state.channel_data(channels, data.id, &data.data)
                         {
-                            if !finish_nvst_input_handshake(
-                                &mut input_state,
-                                channels,
-                                &mut rtc,
-                                transport_origin,
-                                &input_ready,
-                                &event_sender,
-                                version,
-                            ) {
-                                continue;
-                            }
-                            cursor_capture_attempts = 1;
-                            cursor_capture_retry_at =
-                                Some(Instant::now() + CURSOR_CAPTURE_RETRY_INTERVAL);
+                            pending_input_version = Some(version);
                         } else if Some(data.id) == rtcp_channel {
                             eprintln!(
                                 "NVST rtcp1 inbound: id={:?} binary={} bytes={}",
@@ -5612,6 +5652,7 @@ fn run_nvst_webrtc_bundle(
                             }
                             let input_channel_closed = id == channels.input_partial;
                             if input_state.channel_closed(channels, id) || input_channel_closed {
+                                pending_input_version = None;
                                 input_ready.store(false, Ordering::Release);
                                 let reason = if input_channel_closed {
                                     "partially reliable input data channel closed"
@@ -5811,7 +5852,11 @@ fn run_nvst_webrtc_bundle(
                         continue;
                     }
                     if stun_credentials.as_ref().is_some_and(|credentials| {
-                        stun_response_guard.duplicate(&datagram[..length], credentials, Instant::now())
+                        stun_response_guard.duplicate(
+                            &datagram[..length],
+                            credentials,
+                            Instant::now(),
+                        )
                     }) {
                         continue;
                     }
@@ -6261,6 +6306,44 @@ mod tests {
         assert_eq!(
             feedback.keyframe_request_routes(now, previous, true, false),
             (true, false)
+        );
+    }
+
+    #[test]
+    fn qos_loss_windows_are_independent_and_recovery_cannot_underflow() {
+        let feedback = NvstFeedbackState::default();
+        let now = Instant::now();
+        assert_eq!(feedback.qos_packet_snapshot(), (0, 0));
+        feedback.publish_stream(7, 100, 0, now);
+        feedback.publish_stream(7, 103, 3000, now);
+        let first = feedback.qos_packet_snapshot();
+        assert_eq!(qos_interval_loss((0, 0), first), 5000);
+        feedback.report_snapshot(true).unwrap();
+        assert_eq!(
+            qos_interval_loss((0, 0), feedback.qos_packet_snapshot()),
+            5000
+        );
+        feedback.publish_stream(7, 102, 3000, now); // late recovery
+        assert_eq!(qos_interval_loss(first, feedback.qos_packet_snapshot()), 0);
+        feedback.publish_stream(7, 104, 6000, now);
+        assert_eq!(qos_interval_loss(first, feedback.qos_packet_snapshot()), 0);
+        assert_eq!(qos_interval_loss((u32::MAX - 1, u32::MAX), (2, 1)), 5000);
+    }
+
+    #[test]
+    fn recovery_requests_wait_for_play_acceptance() {
+        let feedback = NvstFeedbackState::default();
+        let now = Instant::now();
+        feedback.set_application_ready(false);
+        feedback.request_keyframe();
+        assert_eq!(
+            feedback.keyframe_request_routes(now, now - KEYFRAME_REQUEST_COOLDOWN, true, true),
+            (false, false)
+        );
+        feedback.set_application_ready(true);
+        assert_eq!(
+            feedback.keyframe_request_routes(now, now - KEYFRAME_REQUEST_COOLDOWN, false, true),
+            (false, true)
         );
     }
 
@@ -8636,10 +8719,9 @@ mod tests {
             spawn_nvst_mjolnir_receiver(video, config, media_consumer, event_sender).unwrap();
         let mut datagram = [0_u8; 2048];
         let mut bundle_keepalives = 0;
-        let mut bundle_ice_checks = 0;
         let mut video_keepalives = 0;
         let deadline = Instant::now() + Duration::from_secs(2);
-        while bundle_keepalives < 3 || bundle_ice_checks < 3 || video_keepalives < 3 {
+        while bundle_keepalives < 12 || video_keepalives < 3 {
             assert!(
                 Instant::now() < deadline,
                 "both socket roles must send probes"
@@ -8658,11 +8740,8 @@ mod tests {
             } else {
                 assert_eq!(source, bundle_address);
                 assert_ne!(username, b"setup-ping:loc1", "bundle must not claim video");
-                match username {
-                    b"remote01:loc1" => bundle_ice_checks += 1,
-                    b"PING:loc1" => bundle_keepalives += 1,
-                    _ => panic!("unexpected bundle probe identity"),
-                }
+                assert_eq!(username, b"remote01:loc1");
+                bundle_keepalives += 1;
             }
         }
         server.send_to(&packet, video_address).unwrap();

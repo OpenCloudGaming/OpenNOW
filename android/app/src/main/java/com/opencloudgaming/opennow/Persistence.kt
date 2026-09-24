@@ -316,6 +316,7 @@ internal fun AppSettings.normalizedForAndroid(): AppSettings {
     }
     return copy(
         uiAccent = if (uiAccent == UiAccent.LegacyOrange) UiAccent.Violet else uiAccent,
+        selectionEffectColors = selectionEffectColors?.normalized(),
         stream = lowPowerSafe,
         posterSizeScale = posterSizeScale.finiteIn(MIN_GAME_CARD_SCALE, MAX_GAME_CARD_SCALE, 1f),
         uselessMascotDelaySeconds = normalizeMascotDelaySeconds(uselessMascotDelaySeconds),
@@ -775,6 +776,17 @@ class QueuedGameStore(context: Context) {
         prefs.edit().putString(KEY_QUEUED_GAME_KEYS, OpenNowJson.encodeToString(next)).apply()
         return next
     }
+
+    fun removeAll(gameKeys: Collection<String>): List<String> {
+        val normalized = gameKeys.asSequence()
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .toSet()
+        if (normalized.isEmpty()) return load()
+        val next = load().filterNot { it in normalized }
+        prefs.edit().putString(KEY_QUEUED_GAME_KEYS, OpenNowJson.encodeToString(next)).apply()
+        return next
+    }
 }
 
 /**
@@ -810,6 +822,28 @@ class ContinuePlayingDismissalStore(context: Context) {
                 }
             }
         }
+        prefs.edit().putString(KEY_CONTINUE_PLAYING_DISMISSALS, OpenNowJson.encodeToString(next)).apply()
+        return next
+    }
+
+    fun dismissAll(records: Collection<Pair<String, String>>): Map<String, String> {
+        val normalized = linkedMapOf<String, String>()
+        records.forEach { (gameKey, lastPlayed) ->
+            val normalizedKey = gameKey.trim()
+            val normalizedLastPlayed = lastPlayed.trim()
+            if (normalizedKey.isNotBlank() && normalizedLastPlayed.isNotBlank()) {
+                normalized[normalizedKey] = normalizedLastPlayed
+            }
+        }
+        if (normalized.isEmpty()) return load()
+        load().forEach { (savedKey, savedLastPlayed) ->
+            if (savedKey !in normalized && normalized.size < CONTINUE_PLAYING_DISMISSAL_LIMIT) {
+                normalized[savedKey] = savedLastPlayed
+            }
+        }
+        val next = normalized.entries
+            .take(CONTINUE_PLAYING_DISMISSAL_LIMIT)
+            .associateTo(LinkedHashMap()) { it.key to it.value }
         prefs.edit().putString(KEY_CONTINUE_PLAYING_DISMISSALS, OpenNowJson.encodeToString(next)).apply()
         return next
     }

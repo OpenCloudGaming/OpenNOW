@@ -679,10 +679,15 @@ object NativeStreamInputRouter {
 
     fun dispatchKey(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && event.isStreamSystemMenuKey()) {
+            recordStreamMenuKey(
+                event,
+                if (androidTvProfile && event.keyCode == KeyEvent.KEYCODE_BUTTON_MODE) "tv-guide" else "configured-shortcut",
+            )
             systemMenuHandler?.invoke()
             return systemMenuHandler != null
         }
         if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && event.isStreamControlsShortcutKey()) {
+            recordStreamMenuKey(event, "tv-remote-activation")
             systemMenuHandler?.invoke()
             return systemMenuHandler != null
         }
@@ -715,6 +720,7 @@ object NativeStreamInputRouter {
             )
         }
         if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && streamExitShortcut) {
+            recordStreamMenuKey(event, "back")
             return dispatchSystemBack()
         }
         if (event.action == KeyEvent.ACTION_UP && streamExitShortcut) {
@@ -750,11 +756,45 @@ object NativeStreamInputRouter {
             metaPressed = isMetaPressed,
         )
 
+    private fun recordStreamMenuKey(event: KeyEvent, route: String) {
+        NativeInputDiagnostics.addRetained(
+            key = "stream.controls.key",
+            message = "stream controls key route=$route key=${event.keyCode} source=${event.source} " +
+                "device=${event.deviceId} meta=${event.metaState} shortcut=$streamMenuShortcut " +
+                "tv=$androidTvProfile mouse=${event.isExternalMouseInputDevice()} " +
+                "keyboard=${event.isHardwareKeyboardSource()} controller=${event.isControllerInputDevice()}",
+        )
+    }
+
     private fun KeyEvent.isStreamControlsShortcutKey(): Boolean =
-        !streamUiActive &&
-            !isControllerInputDevice() &&
-            !isHardwareKeyboardSource() &&
-            isDpadSource() &&
+        shouldOpenStreamControlsShortcutKey(
+            keyCode = keyCode,
+            streamUiActive = streamUiActive,
+            androidTvProfile = androidTvProfile,
+            controllerInputDevice = isControllerInputDevice(),
+            hardwareKeyboardSource = isHardwareKeyboardSource(),
+            externalMouseInputDevice = isExternalMouseInputDevice(),
+            dpadSource = isDpadSource(),
+        )
+
+    internal fun shouldOpenStreamControlsShortcutKey(
+        keyCode: Int,
+        streamUiActive: Boolean,
+        androidTvProfile: Boolean,
+        controllerInputDevice: Boolean,
+        hardwareKeyboardSource: Boolean,
+        externalMouseInputDevice: Boolean,
+        dpadSource: Boolean,
+    ): Boolean =
+        // This fallback is for a TV remote's OK button only. Dock/receiver devices can also
+        // advertise DPAD and deliver mouse activation as Enter/Center; they must not bypass
+        // the configured keyboard shortcut, including when that shortcut is disabled.
+        androidTvProfile &&
+            !streamUiActive &&
+            !controllerInputDevice &&
+            !hardwareKeyboardSource &&
+            !externalMouseInputDevice &&
+            dpadSource &&
             (keyCode == KeyEvent.KEYCODE_ENTER ||
                 keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER ||
                 keyCode == KeyEvent.KEYCODE_DPAD_CENTER)
@@ -1078,19 +1118,17 @@ internal fun androidGamepadConnectionBitmap(
 }
 
 /**
- * The host advertises the controller slots accepted on its partially reliable input channel.
- * Gamepad protocol v3 adds a per-slot sequence number on that path, so the host can reject stale
- * snapshots while applying the newest state without waiting behind reliable-channel retransmits.
+ * Gamepad state is a complete snapshot, so preserve the ordered reliable framing used by Android
+ * 1.7.5. NVST performs its own native low-latency routing after it decodes that wrapper; selecting
+ * the Java partial wrapper here changed the provider-facing framing on Odin after 1.7.5.
+ * The negotiated mask remains useful protocol diagnostics, but must not change Android's outer
+ * packet framing.
  */
 internal fun shouldUsePartiallyReliableGamepadTransport(
-    controllerId: Int,
-    negotiatedMask: Int,
-    partiallyReliableAvailable: Boolean,
-): Boolean {
-    if (!partiallyReliableAvailable) return false
-    val controllerMask = 1 shl (controllerId and 0x1f)
-    return (negotiatedMask and controllerMask) != 0
-}
+    @Suppress("UNUSED_PARAMETER") controllerId: Int,
+    @Suppress("UNUSED_PARAMETER") negotiatedMask: Int,
+    @Suppress("UNUSED_PARAMETER") partiallyReliableAvailable: Boolean,
+): Boolean = false
 
 internal object AndroidControllerInput {
     fun hasControllerSource(source: Int): Boolean =

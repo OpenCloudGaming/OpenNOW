@@ -82,23 +82,22 @@ pub(crate) const NVST_CHANNEL_PROFILE: [NvstChannelDefinition; 8] = [
     NvstChannelDefinition {
         sid: 4,
         label: CUSTOM_PARTIAL_LABEL,
-        ordered: false,
-        reliability: NvstChannelReliability::Lifetime(PARTIAL_RELIABLE_LIFETIME_MS),
+        ordered: true,
+        reliability: NvstChannelReliability::MaxRetransmits(2),
     },
     NvstChannelDefinition {
         sid: 6,
         label: CONTROL_PARTIAL_LABEL,
-        // Mouse motion uses this stream. It must be unordered: with ordered
-        // PR-SCTP, one lost report blocks every newer report until its 300 ms
-        // lifetime expires, producing delayed motion followed by catch-up.
-        ordered: false,
-        reliability: NvstChannelReliability::Lifetime(PARTIAL_RELIABLE_LIFETIME_MS),
+        // Official control records preserve order with only two retransmits.
+        // The unordered 300 ms input channel remains separate (SID 10).
+        ordered: true,
+        reliability: NvstChannelReliability::MaxRetransmits(2),
     },
     NvstChannelDefinition {
         sid: 8,
         label: CONTROL_UNRELIABLE_LABEL,
         ordered: false,
-        reliability: NvstChannelReliability::MaxRetransmits(0),
+        reliability: NvstChannelReliability::MaxRetransmits(1),
     },
     NvstChannelDefinition {
         sid: 10,
@@ -1114,16 +1113,16 @@ mod tests {
         );
         assert_eq!(
             NVST_CHANNEL_PROFILE.map(|definition| definition.ordered),
-            [true, true, false, false, false, false, true, true]
+            [true, true, true, true, false, false, true, true]
         );
         assert_eq!(
             NVST_CHANNEL_PROFILE.map(|definition| definition.reliability),
             [
                 NvstChannelReliability::Reliable,
                 NvstChannelReliability::Reliable,
-                NvstChannelReliability::Lifetime(300),
-                NvstChannelReliability::Lifetime(300),
-                NvstChannelReliability::MaxRetransmits(0),
+                NvstChannelReliability::MaxRetransmits(2),
+                NvstChannelReliability::MaxRetransmits(2),
+                NvstChannelReliability::MaxRetransmits(1),
                 NvstChannelReliability::Lifetime(300),
                 NvstChannelReliability::Reliable,
                 NvstChannelReliability::Reliable,
@@ -1132,16 +1131,16 @@ mod tests {
         let configs = NVST_CHANNEL_PROFILE.map(channel_config);
         assert_eq!(
             configs.clone().map(|config| config.ordered),
-            [true, true, false, false, false, false, true, true]
+            [true, true, true, true, false, false, true, true]
         );
         assert_eq!(
             configs.map(|config| config.reliability),
             [
                 Reliability::Reliable,
                 Reliability::Reliable,
-                Reliability::MaxPacketLifetime { lifetime: 300 },
-                Reliability::MaxPacketLifetime { lifetime: 300 },
-                Reliability::MaxRetransmits { retransmits: 0 },
+                Reliability::MaxRetransmits { retransmits: 2 },
+                Reliability::MaxRetransmits { retransmits: 2 },
+                Reliability::MaxRetransmits { retransmits: 1 },
                 Reliability::MaxPacketLifetime { lifetime: 300 },
                 Reliability::Reliable,
                 Reliability::Reliable,
@@ -1448,9 +1447,10 @@ mod tests {
         let mut codec = NvstInputCodec::default();
         let messages = codec.encode(&pasted, 17).unwrap();
         assert_eq!(messages.len(), email.len() * 2);
-        let typed: Vec<_> = email.iter().flat_map(|character| {
-            codec.encode(&[0x22, 23, 0, 0, 0, *character], 17).unwrap()
-        }).collect();
+        let typed: Vec<_> = email
+            .iter()
+            .flat_map(|character| codec.encode(&[0x22, 23, 0, 0, 0, *character], 17).unwrap())
+            .collect();
         assert_eq!(messages, typed);
         assert_eq!(&messages[0].bytes[20..24], &[0, b'A', 0, 0]);
         assert_eq!(&messages[6].bytes[20..24], &[0, b'2', 0, 1]); // @ = Shift+2

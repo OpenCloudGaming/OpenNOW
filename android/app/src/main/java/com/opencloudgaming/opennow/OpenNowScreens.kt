@@ -292,6 +292,7 @@ import com.opencloudgaming.opennow.ui.controls.ControlSwitchRow
 import com.opencloudgaming.opennow.ui.controls.LocalControlRowStyle
 import com.opencloudgaming.opennow.ui.controls.LocalControlSectionStyle
 import com.opencloudgaming.opennow.ui.theme.LocalReduceMotion
+import com.opencloudgaming.opennow.ui.theme.LocalReduceControllerFocusMotion
 import com.opencloudgaming.opennow.ui.theme.OpenNowMotion
 import com.opencloudgaming.opennow.ui.theme.OpenNowPalette
 import com.opencloudgaming.opennow.ui.theme.OpenNowRadius
@@ -380,11 +381,11 @@ internal val NavigationSelectionColor = Color.White
 
 /**
  * Absolute Cinema is an explicit animation toggle, not a color override. The everywhere suboption
- * broadens the same treatment to additional hovered and focused surfaces. The user's selected
- * accent remains the color owner.
+ * broadens the same treatment to additional hovered and focused surfaces. These colors provide
+ * the theme fallback; ControllerFocusFrame applies optional independent effect colors.
  *
- * [ActiveSelectionEffectStyle.tintColor] splits flat selection from animated energy. Both use the
- * selected color; enabling Cinema never changes the Material palette.
+ * [ActiveSelectionEffectStyle.tintColor] owns flat selection. Enabling Cinema or choosing custom
+ * effect colors never changes the Material palette or static artwork borders.
  */
 internal fun AppSettings.activeSelectionEffectStyle(): ActiveSelectionEffectStyle {
     val cinemaEverywhere = absoluteCinemaEffects && absoluteCinemaEverywhere
@@ -430,6 +431,8 @@ internal val LocalAbsoluteCinemaEffects = staticCompositionLocalOf { false }
 internal val LocalAbsoluteCinemaEverywhere = staticCompositionLocalOf { false }
 /** Selects the classic blue/orange palette only inside animated Absolute Cinema frames. */
 internal val LocalAbsoluteCinemaPalette = staticCompositionLocalOf { false }
+/** Custom energy colors never override static artwork borders or interface tints. */
+internal val LocalSelectionEffectColors = staticCompositionLocalOf<SelectionEffectColors?> { null }
 internal val LocalVibrationEnabled = staticCompositionLocalOf { true }
 // Leave a full control-height runway below the last item so mobile focus/hover frames do not
 // collide with the viewport edge in Settings, Library, or Store.
@@ -489,7 +492,7 @@ fun OpenNowTheme(
     // Honour the system switch, the app preference, and the existing runtime capability probe.
     // This uses the same calm rendering path for constrained devices instead of maintaining a
     // second set of animation predicates that can drift apart.
-    val reduceMotion = remember(settings.controllerBackgroundAnimations, context, automaticallyReduceMotion) {
+    val userOrSystemReduceMotion = remember(settings.controllerBackgroundAnimations, context) {
         val systemScale = runCatching {
             Settings.Global.getFloat(
                 context.contentResolver,
@@ -497,8 +500,9 @@ fun OpenNowTheme(
                 1f,
             )
         }.getOrDefault(1f)
-        systemScale == 0f || !settings.controllerBackgroundAnimations || automaticallyReduceMotion
+        shouldReduceControllerFocusMotion(systemScale, settings.controllerBackgroundAnimations)
     }
+    val reduceMotion = userOrSystemReduceMotion || automaticallyReduceMotion
     val selectionEffectStyle = settings.activeSelectionEffectStyle()
     val gamingHandheld = remember { isGamingHandheldDevice() }
     val openNowHaptics = rememberOpenNowHaptics(
@@ -508,6 +512,7 @@ fun OpenNowTheme(
     )
     CompositionLocalProvider(
         LocalReduceMotion provides reduceMotion,
+        LocalReduceControllerFocusMotion provides userOrSystemReduceMotion,
         LocalOpenNowHaptics provides openNowHaptics,
         LocalActiveSelectionColor provides selectionEffectStyle.color,
         LocalActiveSelectionSecondaryColor provides selectionEffectStyle.secondaryColor,
@@ -517,6 +522,7 @@ fun OpenNowTheme(
         LocalAbsoluteCinemaEffects provides selectionEffectStyle.absoluteCinemaActive,
         LocalAbsoluteCinemaEverywhere provides selectionEffectStyle.absoluteCinemaEverywhere,
         LocalAbsoluteCinemaPalette provides (settings.uiAccent == UiAccent.AbsoluteCinema),
+        LocalSelectionEffectColors provides settings.selectionEffectColors,
         LocalVibrationEnabled provides settings.vibrationEnabled,
     ) {
         MaterialTheme(
@@ -533,6 +539,11 @@ internal fun shouldAutomaticallyReduceUiMotion(
     constrainedRuntimeProfile: Boolean,
     lowRamDevice: Boolean,
 ): Boolean = lowPowerGpuProfile || constrainedRuntimeProfile || lowRamDevice
+
+internal fun shouldReduceControllerFocusMotion(
+    systemAnimatorScale: Float,
+    controllerBackgroundAnimations: Boolean,
+): Boolean = systemAnimatorScale == 0f || !controllerBackgroundAnimations
 
 @Composable
 fun OpenNowApp(
@@ -1286,6 +1297,29 @@ private fun MainShell(
                     }
                 }
                 state.selectedGame?.takeIf { !inStream && !modalPickerOpen }?.let { game ->
+                    val removeFromRailLabel = when (state.selectedGameRail) {
+                        StorePersonalRail.ContinuePlaying -> stringResource(
+                            R.string.store_remove_from_continue_playing,
+                            game.title,
+                        )
+                        StorePersonalRail.InQueue -> stringResource(R.string.store_remove_from_queue, game.title)
+                        null -> null
+                    }
+                    val removeFromRail = when (state.selectedGameRail) {
+                        StorePersonalRail.ContinuePlaying -> {
+                            {
+                                viewModel.dismissContinuePlaying(game)
+                                viewModel.clearSelectedGame()
+                            }
+                        }
+                        StorePersonalRail.InQueue -> {
+                            {
+                                viewModel.removeQueuedGame(game)
+                                viewModel.clearSelectedGame()
+                            }
+                        }
+                        null -> null
+                    }
                     ControllerModalOverlay(onDismissRequest = viewModel::clearSelectedGame) {
                         // Keep details in the app's window so the activated artwork and destination
                         // banner share coordinates and the first visible frame follows the haptic.
@@ -1300,6 +1334,8 @@ private fun MainShell(
                             onFavorite = viewModel::updateFavorites,
                             connectedTvName = state.localTvConnector.connectedTvName,
                             onPlayOnTv = viewModel::playOnLocalTv,
+                            removeFromRailLabel = removeFromRailLabel,
+                            onRemoveFromRail = removeFromRail,
                             onDismiss = viewModel::clearSelectedGame,
                         )
                     }
@@ -1438,13 +1474,15 @@ private fun AppNavigationRail(
             .width(APP_NAV_RAIL_WIDTH)
             .fillMaxHeight()
             .padding(start = 6.dp, top = 8.dp, end = 6.dp, bottom = 8.dp),
+        contentAlignment = if (showSettingsBack) Alignment.BottomCenter else Alignment.Center,
     ) {
         Surface(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(26.dp),
             color = navigationRailScrim(
                 darkenForCatalogBackground = darkenForCatalogBackground,
                 staticOutlines = staticOutlines,
+                tvProfile = state.androidTvProfile,
             ),
             border = if (staticOutlines) {
                 BorderStroke(1.dp, Color.White.copy(alpha = 0.62f))
@@ -1454,68 +1492,65 @@ private fun AppNavigationRail(
             tonalElevation = 0.dp,
             shadowElevation = 0.dp,
         ) {
-            Box(Modifier.fillMaxSize()) {
-                Column(
-                    modifier = Modifier
-                        .align(if (showSettingsBack) Alignment.BottomCenter else Alignment.Center)
-                        .fillMaxWidth()
-                        .padding(bottom = if (showSettingsBack) 8.dp else 0.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    AppNavigationRailItem(
-                        selected = state.page == AppPage.Home,
-                        onClick = { onNavigate(AppPage.Home) },
-                        iconRes = R.drawable.ic_tab_store,
-                        label = stringResource(R.string.nav_store),
-                        iconSize = if (largeIcons) 30.dp else 24.dp,
-                        focusRequester = streamReturnFocusRequester,
-                    )
-                    AppNavigationRailItem(
-                        // See the bottom bar: search is a mode, not a destination.
-                        selected = false,
-                        onClick = {
-                            onSearch(
-                                when (state.page) {
-                                    AppPage.Library -> SearchTarget.Library
-                                    AppPage.Settings -> SearchTarget.Settings
-                                    else -> SearchTarget.Store
-                                },
-                            )
-                        },
-                        iconRes = R.drawable.ic_search,
-                        label = stringResource(R.string.nav_search),
-                        iconSize = if (largeIcons) 30.dp else 24.dp,
-                    )
-                    AppNavigationRailItem(
-                        selected = state.page == AppPage.Library,
-                        onClick = { onNavigate(AppPage.Library) },
-                        iconRes = R.drawable.ic_tab_library,
-                        label = stringResource(R.string.nav_library),
-                        iconSize = if (largeIcons) 30.dp else 24.dp,
-                    )
-                    AppNavigationRailItem(
-                        selected = state.page == AppPage.Settings,
-                        onClick = { onNavigate(AppPage.Settings) },
-                        iconRes = R.drawable.ic_tab_settings,
-                        label = stringResource(R.string.nav_settings),
-                        iconSize = if (largeIcons) 30.dp else 24.dp,
-                        showNotificationDot = state.appMessage != null,
-                        showConnectionDot = shouldShowLocalTvConnectionDot(
-                            tvProfile = state.androidTvProfile,
-                            pairedDeviceName = state.localTvConnector.pairedDeviceName,
-                        ),
-                    )
-                    AnimatedVisibility(visible = showSettingsBack) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Spacer(Modifier.height(6.dp))
-                            AppNavigationRailItem(
-                                selected = false,
-                                onClick = onSettingsBack,
-                                iconRes = R.drawable.ic_arrow_back,
-                                label = stringResource(R.string.action_back),
-                                iconSize = if (largeIcons) 30.dp else 24.dp,
-                            )
-                        }
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                AppNavigationRailItem(
+                    selected = state.page == AppPage.Home,
+                    onClick = { onNavigate(AppPage.Home) },
+                    iconRes = R.drawable.ic_tab_store,
+                    label = stringResource(R.string.nav_store),
+                    iconSize = if (largeIcons) 30.dp else 24.dp,
+                    focusRequester = streamReturnFocusRequester,
+                )
+                AppNavigationRailItem(
+                    // See the bottom bar: search is a mode, not a destination.
+                    selected = false,
+                    onClick = {
+                        onSearch(
+                            when (state.page) {
+                                AppPage.Library -> SearchTarget.Library
+                                AppPage.Settings -> SearchTarget.Settings
+                                else -> SearchTarget.Store
+                            },
+                        )
+                    },
+                    iconRes = R.drawable.ic_search,
+                    label = stringResource(R.string.nav_search),
+                    iconSize = if (largeIcons) 30.dp else 24.dp,
+                )
+                AppNavigationRailItem(
+                    selected = state.page == AppPage.Library,
+                    onClick = { onNavigate(AppPage.Library) },
+                    iconRes = R.drawable.ic_tab_library,
+                    label = stringResource(R.string.nav_library),
+                    iconSize = if (largeIcons) 30.dp else 24.dp,
+                )
+                AppNavigationRailItem(
+                    selected = state.page == AppPage.Settings,
+                    onClick = { onNavigate(AppPage.Settings) },
+                    iconRes = R.drawable.ic_tab_settings,
+                    label = stringResource(R.string.nav_settings),
+                    iconSize = if (largeIcons) 30.dp else 24.dp,
+                    showNotificationDot = state.appMessage != null,
+                    showConnectionDot = shouldShowLocalTvConnectionDot(
+                        tvProfile = state.androidTvProfile,
+                        pairedDeviceName = state.localTvConnector.pairedDeviceName,
+                    ),
+                )
+                AnimatedVisibility(visible = showSettingsBack) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Spacer(Modifier.height(6.dp))
+                        AppNavigationRailItem(
+                            selected = false,
+                            onClick = onSettingsBack,
+                            iconRes = R.drawable.ic_arrow_back,
+                            label = stringResource(R.string.action_back),
+                            iconSize = if (largeIcons) 30.dp else 24.dp,
+                        )
                     }
                 }
             }
@@ -1526,11 +1561,15 @@ private fun AppNavigationRail(
 internal fun navigationRailScrim(
     darkenForCatalogBackground: Boolean,
     staticOutlines: Boolean = false,
-): Color = when {
-    darkenForCatalogBackground && staticOutlines -> Color.Black.copy(alpha = 0.68f)
-    darkenForCatalogBackground -> Color.Black.copy(alpha = 0.58f)
-    staticOutlines -> Color.Black.copy(alpha = 0.18f)
-    else -> Color.Black.copy(alpha = 0.10f)
+    tvProfile: Boolean = false,
+): Color {
+    val baseAlpha = when {
+        darkenForCatalogBackground && staticOutlines -> 0.68f
+        darkenForCatalogBackground -> 0.58f
+        staticOutlines -> 0.18f
+        else -> 0.10f
+    }
+    return Color.Black.copy(alpha = baseAlpha + if (tvProfile) 0.05f else 0f)
 }
 
 internal fun shouldShowLocalTvConnectionDot(tvProfile: Boolean, pairedDeviceName: String?): Boolean =
@@ -2217,8 +2256,10 @@ internal fun NativeSearchField(
     modifier: Modifier = Modifier,
     focusRequester: FocusRequester? = null,
     onOpen: (() -> Unit)? = null,
+    gamepadImeMode: Boolean = false,
 ) {
     val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     val speechLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             val spoken = result.data
@@ -2261,8 +2302,19 @@ internal fun NativeSearchField(
                 modifier = Modifier
                     .weight(1f)
                     .then(focusRequester?.let { Modifier.focusRequester(it) } ?: Modifier)
-                    .onFocusChanged { if (it.isFocused) onOpen?.invoke() }
-                    .onPreviewKeyEvent { handleDpadFocusMove(it, focusManager) },
+                    .onFocusChanged {
+                        if (it.isFocused) {
+                            onOpen?.invoke()
+                            if (gamepadImeMode) keyboardController?.show()
+                        }
+                    }
+                    .then(
+                        if (shouldMoveFocusFromSearchField(gamepadImeMode)) {
+                            Modifier.onPreviewKeyEvent { handleDpadFocusMove(it, focusManager) }
+                        } else {
+                            Modifier
+                        },
+                    ),
                 decorationBox = { innerTextField ->
                     Box(Modifier.fillMaxWidth()) {
                         if (query.isBlank()) {
@@ -2313,6 +2365,9 @@ internal fun NativeSearchField(
         }
     }
 }
+
+/** D-pad events belong to the system IME while a TV/gamepad search field is being edited. */
+internal fun shouldMoveFocusFromSearchField(gamepadImeMode: Boolean): Boolean = !gamepadImeMode
 
 internal fun handleDpadFocusMove(event: androidx.compose.ui.input.key.KeyEvent, focusManager: FocusManager): Boolean {
     if (event.type != KeyEventType.KeyDown) return false

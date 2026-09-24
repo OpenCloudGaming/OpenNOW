@@ -268,7 +268,8 @@ internal fun StreamScreen(
             viewModel.updateSettings(state.settings.copy(androidStreamGuideDismissed = true))
         }
     }
-    val openControlsForGuide = {
+    val openControls = { origin: String ->
+        NativeInputDiagnostics.addRetained("stream.controls.open", "stream controls open origin=$origin")
         // Claim UI routing before Compose replaces the launcher with the panel. Waiting for the
         // keyed effect below leaves a short window where native touch can forward the activating
         // gesture into the game or retarget its trailing event into the newly opened menu.
@@ -284,7 +285,7 @@ internal fun StreamScreen(
     }
     LaunchedEffect(state.remoteStreamMenuRequestToken) {
         if (state.remoteStreamMenuRequestToken > 0 && streamReady) {
-            openControlsForGuide()
+            openControls("remote-command")
         }
     }
     LaunchedEffect(state.remoteStatsToggleRequestToken) {
@@ -302,7 +303,7 @@ internal fun StreamScreen(
     )
     val handleStreamBack = {
         when {
-            streamGuideOpen && streamGuideStep == StreamGuideStep.OpenControls -> openControlsForGuide()
+            streamGuideOpen && streamGuideStep == StreamGuideStep.OpenControls -> openControls("guide-back")
             streamGuideOpen && streamGuideStep == StreamGuideStep.PressDone && controlsOpen -> {
                 controlsOpen = false
                 dismissStreamGuide()
@@ -314,12 +315,14 @@ internal fun StreamScreen(
             physicalControllerPromptOpen -> physicalControllerPromptOpen = false
             controlsOpen -> controlsOpen = false
             else -> {
+                NativeInputDiagnostics.addRetained("stream.controls.open", "stream controls open origin=back")
                 NativeStreamInputRouter.setStreamUiActive(true)
                 controlsOpen = true
             }
         }
     }
     BackHandler(enabled = streamReady) {
+        NativeInputDiagnostics.addRetained("stream.controls.back", "stream controls back origin=android-back-dispatcher")
         handleStreamBack()
     }
     val client = remember {
@@ -382,7 +385,7 @@ internal fun StreamScreen(
     LaunchedEffect(streamReady, streamOverlayOpen, streamGuideOpen, streamGuideStep, touchLayoutEditing) {
         NativeStreamInputRouter.setStreamUiActive(streamReady && streamOverlayOpen)
         NativeStreamInputRouter.setSystemMenuHandler {
-            openControlsForGuide()
+            openControls("input-shortcut")
         }
         NativeStreamInputRouter.setSystemBackHandler {
             handleStreamBack()
@@ -835,7 +838,7 @@ internal fun StreamScreen(
                         streamMenuShortcut = state.settings.streamMenuShortcut,
                         onOpenControls = {
                             playButtonTone()
-                            openControlsForGuide()
+                            openControls("guide-button")
                         },
                         onSkip = {
                             playButtonTone()

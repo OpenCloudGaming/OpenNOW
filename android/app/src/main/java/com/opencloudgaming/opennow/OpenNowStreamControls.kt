@@ -508,7 +508,7 @@ internal fun PhysicalControllerTouchControlsDialog(
         },
         dismissButton = {
             TextButton(onClick = onUndo) {
-                Text(stringResource(R.string.action_undo))
+                Text(stringResource(R.string.stream_controller_show_touch_controls))
             }
         },
     )
@@ -1610,6 +1610,44 @@ internal fun BugReportConsentGate(
     }
 }
 
+@Composable
+internal fun BugReportWarningsAcknowledgementGate(
+    checked: Boolean,
+    enabled: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    val warning = Color(0xffffc266)
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(OpenNowRadius.lg))
+            .toggleable(
+                value = checked,
+                enabled = enabled,
+                role = Role.Checkbox,
+                onValueChange = onCheckedChange,
+            ),
+        shape = RoundedCornerShape(OpenNowRadius.lg),
+        color = warning.copy(alpha = 0.09f),
+        border = BorderStroke(1.dp, warning.copy(alpha = 0.48f)),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = OpenNowSpacing.md, vertical = OpenNowSpacing.sm),
+            horizontalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Checkbox(checked = checked, onCheckedChange = null, enabled = enabled)
+            Text(
+                stringResource(R.string.bug_report_warnings_acknowledgement),
+                modifier = Modifier.weight(1f),
+                color = warning,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+    }
+}
+
 /**
  * Shared header for the main panel and every focused settings/support page. It stays put while the
  * selected page scrolls.
@@ -1992,9 +2030,14 @@ internal fun BugReportVersionGateCard(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun BugReportPreflightDeckView(
+internal fun BugReportPreflightDeckView(
     deck: BugReportPreflightDeck,
     page: Int,
+    additionalWarning: Boolean,
+    consentChecked: Boolean,
+    warningsAcknowledged: Boolean,
+    onConsentChange: (Boolean) -> Unit,
+    onWarningsAcknowledgedChange: (Boolean) -> Unit,
     onPrevious: () -> Unit,
     onNext: () -> Unit,
     onRefresh: () -> Unit,
@@ -2155,6 +2198,22 @@ private fun BugReportPreflightDeckView(
             style = MaterialTheme.typography.labelSmall,
         )
 
+        if (page == deck.cards.lastIndex) {
+            BugReportDataDisclosure(includeTypedTextWarning = true)
+            BugReportConsentGate(
+                checked = consentChecked,
+                enabled = true,
+                onCheckedChange = onConsentChange,
+            )
+            if (deck.hasWarnings(additionalWarning)) {
+                BugReportWarningsAcknowledgementGate(
+                    checked = warningsAcknowledged,
+                    enabled = true,
+                    onCheckedChange = onWarningsAcknowledgedChange,
+                )
+            }
+        }
+
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -2167,8 +2226,12 @@ private fun BugReportPreflightDeckView(
             OutlinedButton(onClick = if (page == 0) onCancel else onPrevious) {
                 Text(if (page == 0) stringResource(R.string.action_cancel) else stringResource(R.string.action_back))
             }
-            Button(onClick = onNext) {
-                Text(if (page == deck.cards.lastIndex) stringResource(R.string.action_continue) else stringResource(R.string.action_next))
+            Button(
+                onClick = onNext,
+                enabled = page != deck.cards.lastIndex ||
+                    canContinueBugReportPreflight(deck, consentChecked, warningsAcknowledged, additionalWarning),
+            ) {
+                Text(stringResource(R.string.action_next))
             }
         }
     }
@@ -2188,7 +2251,6 @@ internal fun BugReportFormInputs(
     onDescriptionChange: (String) -> Unit,
     onDetailsChange: (AndroidBugReportDetails) -> Unit,
     onAttachmentsChange: (List<AndroidBugReportAttachment>) -> Unit,
-    onConsentChange: (Boolean) -> Unit,
     onKnownIssueAcknowledgementChange: (String?) -> Unit,
     onConfirm: () -> Unit,
     modifier: Modifier = Modifier,
@@ -2199,13 +2261,6 @@ internal fun BugReportFormInputs(
         modifier = modifier,
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        BugReportConsentGate(
-            checked = consentChecked,
-            enabled = !submission.uploading,
-            onCheckedChange = onConsentChange,
-        )
-        if (!consentChecked) return@Column
-
         OutlinedTextField(
             value = title,
             onValueChange = onTitleChange,
@@ -2355,6 +2410,7 @@ private fun StreamBugReporter(
     var title by rememberSaveable { mutableStateOf("") }
     var description by rememberSaveable { mutableStateOf("") }
     var consentChecked by rememberSaveable { mutableStateOf(false) }
+    var warningsAcknowledged by rememberSaveable { mutableStateOf(false) }
     var confirmationOpen by rememberSaveable { mutableStateOf(false) }
     var preflightReviewed by rememberSaveable { mutableStateOf(false) }
     var preflightPage by rememberSaveable { mutableStateOf(0) }
@@ -2365,12 +2421,17 @@ private fun StreamBugReporter(
     val knownIssueBlock = preflightDeck?.let { deck ->
         bugReportKnownIssueBlock(title, description, deck)
     }
+    val preflightComplete = preflightDeck?.let { deck ->
+        preflightReviewed && canContinueBugReportPreflight(
+            deck, consentChecked, warningsAcknowledged, experimentalNvstEnabled,
+        )
+    } == true
 
     LaunchedEffect(expanded, update.installSource.isGooglePlay) {
         if (expanded && update.installSource.isGooglePlay) {
             onVersionCheck()
         }
-        if (expanded && !preflightReviewed && preflightDeck == null) {
+        if (expanded && preflightDeck == null) {
             preflightDeck = preflightProvider()
         }
     }
@@ -2384,6 +2445,7 @@ private fun StreamBugReporter(
                     onButtonTone()
                     preflightReviewed = false
                     preflightPage = 0
+                    warningsAcknowledged = false
                     preflightDeck = preflightProvider()
                     expanded = true
                 },
@@ -2425,6 +2487,7 @@ private fun StreamBugReporter(
                                 title = ""
                                 description = ""
                                 consentChecked = false
+                                warningsAcknowledged = false
                                 details = AndroidBugReportDetails()
                                 attachments = emptyList()
                                 acknowledgedKnownIssueKey = null
@@ -2472,7 +2535,7 @@ private fun StreamBugReporter(
 
         NvstBugReportWarning(experimentalNvstEnabled)
 
-        if (!preflightReviewed) {
+        if (!preflightComplete) {
             val deck = preflightDeck
             if (deck == null) {
                 Row(
@@ -2488,6 +2551,11 @@ private fun StreamBugReporter(
                 BugReportPreflightDeckView(
                     deck = deck,
                     page = preflightPage.coerceIn(deck.cards.indices),
+                    additionalWarning = experimentalNvstEnabled,
+                    consentChecked = consentChecked,
+                    warningsAcknowledged = warningsAcknowledged,
+                    onConsentChange = { consentChecked = it },
+                    onWarningsAcknowledgedChange = { warningsAcknowledged = it },
                     onPrevious = {
                         onButtonTone()
                         preflightPage = (preflightPage - 1).coerceAtLeast(0)
@@ -2496,19 +2564,23 @@ private fun StreamBugReporter(
                         onButtonTone()
                         if (preflightPage < deck.cards.lastIndex) {
                             preflightPage += 1
-                        } else {
+                        } else if (canContinueBugReportPreflight(
+                                deck, consentChecked, warningsAcknowledged, experimentalNvstEnabled,
+                            )) {
                             preflightReviewed = true
                         }
                     },
                     onRefresh = {
                         onButtonTone()
                         preflightPage = 0
+                        warningsAcknowledged = false
                         preflightDeck = preflightProvider()
                     },
                     onCancel = {
                         onButtonTone()
                         preflightReviewed = false
                         preflightPage = 0
+                        warningsAcknowledged = false
                         preflightDeck = null
                         expanded = false
                         onExpandedClose()
@@ -2538,6 +2610,7 @@ private fun StreamBugReporter(
                         onButtonTone()
                         preflightReviewed = false
                         preflightPage = 0
+                        warningsAcknowledged = false
                         preflightDeck = preflightProvider()
                     },
                 ) {
@@ -2549,6 +2622,7 @@ private fun StreamBugReporter(
                         onButtonTone()
                         preflightReviewed = false
                         preflightPage = 0
+                        warningsAcknowledged = false
                         preflightDeck = null
                         expanded = false
                         onExpandedClose()
@@ -2569,7 +2643,6 @@ private fun StreamBugReporter(
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
                         BugReportSubmissionRequirements()
-                        BugReportDataDisclosure(includeTypedTextWarning = true)
                     }
                     BugReportFormInputs(
                         title = title,
@@ -2590,7 +2663,6 @@ private fun StreamBugReporter(
                         },
                         onDetailsChange = { details = it },
                         onAttachmentsChange = { attachments = it },
-                        onConsentChange = { consentChecked = it },
                         onKnownIssueAcknowledgementChange = { acknowledgedKnownIssueKey = it },
                         onConfirm = {
                             onButtonTone()
@@ -2601,7 +2673,6 @@ private fun StreamBugReporter(
                 }
             } else {
                 BugReportSubmissionRequirements()
-                BugReportDataDisclosure(includeTypedTextWarning = true)
                 BugReportFormInputs(
                     title = title,
                     description = description,
@@ -2621,7 +2692,6 @@ private fun StreamBugReporter(
                     },
                     onDetailsChange = { details = it },
                     onAttachmentsChange = { attachments = it },
-                    onConsentChange = { consentChecked = it },
                     onKnownIssueAcknowledgementChange = { acknowledgedKnownIssueKey = it },
                     onConfirm = {
                         onButtonTone()

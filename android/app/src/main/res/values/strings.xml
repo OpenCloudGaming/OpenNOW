@@ -52,6 +52,7 @@
     <string name="app_language_german" translatable="false">Deutsch</string>
     <string name="app_language_spanish" translatable="false">Español</string>
     <string name="app_language_french" translatable="false">Français</string>
+    <string name="app_language_indonesian" translatable="false">Bahasa Indonesia</string>
     <string name="app_language_japanese" translatable="false">日本語</string>
     <string name="app_language_korean" translatable="false">한국어</string>
     <string name="app_language_dutch" translatable="false">Nederlands</string>
@@ -100,6 +101,8 @@
     <string name="dev_reset_stream_guide_desc">Reappears the next time a stream starts</string>
     <string name="dev_reset_controller_prompt">Show the controller prompt again</string>
     <string name="dev_reset_controller_prompt_desc">Reappears the next time a controller connects</string>
+    <string name="settings_show_controller_prompt_again">Show controller prompt again</string>
+    <string name="settings_show_controller_prompt_again_desc">Reopens the touch-control prompt on the next stream. Controller input is unaffected.</string>
     <string name="dev_reset_analytics_consent">Ask for analytics consent again</string>
     <string name="dev_reset_analytics_consent_desc">Opts out until the question is answered again</string>
     <string name="dev_reset_migrations">Replay upgrade migrations</string>
@@ -192,6 +195,7 @@
     <string name="store_in_queue">In queue</string>
     <string name="store_remove_from_continue_playing">Remove %1$s from Continue playing</string>
     <string name="store_remove_from_queue">Remove %1$s from In queue</string>
+    <string name="store_remove_confirm_title">Confirm removal</string>
     <string name="store_favorites">Favorites</string>
     <string name="store_recommendations">Recommendations</string>
     <string name="store_results">Results</string>
@@ -265,6 +269,7 @@
     <string name="stream_guide_press_done">Press Done</string>
     <string name="stream_controller_detected">Controller detected</string>
     <string name="stream_controller_hidden">The on-screen controller was hidden because a physical controller is connected.</string>
+    <string name="stream_controller_show_touch_controls">Show touch controls</string>
     <string name="stream_keyboard_mouse_detected">Keyboard or mouse detected</string>
     <string name="stream_keyboard_mouse_detected_body">You’re using native touch. Switch to keyboard and mouse for this stream?</string>
     <string name="stream_keyboard_mouse_disconnected">Keyboard and mouse disconnected</string>

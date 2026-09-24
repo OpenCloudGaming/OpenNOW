@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::io::ErrorKind;
-use std::net::{IpAddr, TcpStream};
+use std::net::{IpAddr, TcpStream, ToSocketAddrs};
 use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -11,8 +11,9 @@ use serde_json::{Value, json};
 use tungstenite::client::IntoClientRequest;
 use tungstenite::http::{HeaderValue, Uri};
 use tungstenite::stream::MaybeTlsStream;
-use tungstenite::{Message, WebSocket, connect};
+use tungstenite::{Message, WebSocket, client_tls};
 
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_STREAM_BITRATE_MBPS: u64 = 200;
@@ -58,9 +59,12 @@ impl RtspClient {
         let parsed = translated
             .parse::<Uri>()
             .map_err(|_| NvstRtspError::new("invalid-rtsps-endpoint", "Invalid RTSPS endpoint"))?;
-        let host = parsed.host().ok_or_else(|| {
-            NvstRtspError::new("invalid-rtsps-endpoint", "RTSPS endpoint has no host")
-        })?;
+        let host = parsed
+            .host()
+            .ok_or_else(|| {
+                NvstRtspError::new("invalid-rtsps-endpoint", "RTSPS endpoint has no host")
+            })?
+            .trim_matches(['[', ']']);
         if !trusted_nvst_host(host) {
             return Err(NvstRtspError::new(
                 "untrusted-rtsps-endpoint",
@@ -86,7 +90,55 @@ impl RtspClient {
         request
             .headers_mut()
             .insert("content-length", HeaderValue::from_static("0"));
-        let (mut socket, _) = connect(request).map_err(|error| {
+        let addresses = (host.trim_matches(['[', ']']), port)
+            .to_socket_addrs()
+            .map_err(|_| {
+                NvstRtspError::new(
+                    "nvst-connect-failed",
+                    "Could not resolve the signalling host",
+                )
+            })?;
+        let deadline = Instant::now() + CONNECT_TIMEOUT;
+        let mut stream = None;
+        for address in addresses {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            if let Ok(connected) = TcpStream::connect_timeout(&address, remaining) {
+                stream = Some(connected);
+                break;
+            }
+        }
+        let stream = stream.ok_or_else(|| {
+            NvstRtspError::new(
+                "nvst-connect-failed",
+                "Could not connect to the signalling endpoint within 6 seconds",
+            )
+        })?;
+        stream
+            .set_read_timeout(Some(REQUEST_TIMEOUT))
+            .map_err(|_| {
+                NvstRtspError::new(
+                    "nvst-connect-failed",
+                    "Could not set signalling read timeout",
+                )
+            })?;
+        stream
+            .set_write_timeout(Some(REQUEST_TIMEOUT))
+            .map_err(|_| {
+                NvstRtspError::new(
+                    "nvst-connect-failed",
+                    "Could not set signalling write timeout",
+                )
+            })?;
+        let (mut socket, _) = client_tls(request, stream).map_err(|error| {
+            let tungstenite::HandshakeError::Failure(error) = error else {
+                return NvstRtspError::new(
+                    "nvst-connect-failed",
+                    "Signalling handshake interrupted",
+                );
+            };
             let failure = rtsp_connect_error(&error);
             opennow_streamer_protocol::log::log_line("WARN", "rtsp", &failure.message);
             failure
@@ -98,7 +150,7 @@ impl RtspClient {
                 cseq: 0,
                 buffer: String::new(),
             },
-            format!("rtsps://{host}:{port}"),
+            format!("rtsps://{authority_host}:{port}"),
         ))
     }
 
@@ -196,7 +248,9 @@ fn rtsp_connect_error(error: &tungstenite::Error) -> NvstRtspError {
     if let tungstenite::Error::Http(response) = error {
         let status = response.status().as_u16();
         return NvstRtspError::new(
-            if status == 503 {
+            if status == 403 {
+                "nvst-forbidden"
+            } else if status == 503 {
                 "nvst-service-unavailable"
             } else {
                 "nvst-connect-failed"
@@ -372,9 +426,10 @@ impl Drop for ActiveNvstRtspSession {
 pub fn prepare_owned_nvst(
     context: &SessionContext,
     bundle: &mut ReservedNvstBundle,
+    cancelled: impl Fn() -> bool,
 ) -> Result<PreparedNvstRtspSession, NvstRtspError> {
     ensure_tls_crypto_provider()?;
-    let endpoint = context
+    let endpoints: Vec<_> = context
         .session
         .extra
         .get("rtspsEndpoints")
@@ -382,13 +437,57 @@ pub fn prepare_owned_nvst(
         .into_iter()
         .flatten()
         .filter_map(Value::as_str)
-        .find(|value| value.starts_with("rtsps://") || value.starts_with("rtsp://"))
-        .ok_or_else(|| {
-            NvstRtspError::new(
-                "missing-rtsps-endpoint",
-                "CloudMatch did not provide an RTSPS endpoint for NVST",
-            )
-        })?;
+        .filter(|value| value.starts_with("rtsps://") || value.starts_with("rtsp://"))
+        .take(20)
+        .collect();
+    try_signalling_endpoints(&endpoints, |endpoint| {
+        if cancelled() {
+            return Err(NvstRtspError::new(
+                "nvst-cancelled",
+                "NVST negotiation cancelled",
+            ));
+        }
+        prepare_nvst_endpoint(context, bundle, endpoint)
+    })
+}
+
+fn try_signalling_endpoints<T>(
+    endpoints: &[&str],
+    mut prepare: impl FnMut(&str) -> Result<T, NvstRtspError>,
+) -> Result<T, NvstRtspError> {
+    let mut last_error = NvstRtspError::new(
+        "missing-rtsps-endpoint",
+        "CloudMatch did not provide an RTSPS endpoint for NVST",
+    );
+    for (index, endpoint) in endpoints.iter().enumerate() {
+        match prepare(endpoint) {
+            Ok(session) => return Ok(session),
+            Err(error) => {
+                // Never log endpoint paths, session identities, or server response bodies.
+                opennow_streamer_protocol::log::log_line(
+                    "WARN",
+                    "rtsps",
+                    &format!(
+                        "handshake endpoint={} failed code={}",
+                        index + 1,
+                        error.code
+                    ),
+                );
+                if matches!(error.code, "nvst-forbidden" | "nvst-cancelled") {
+                    return Err(error);
+                }
+                last_error = error;
+            }
+        }
+    }
+    Err(last_error)
+}
+
+fn prepare_nvst_endpoint(
+    context: &SessionContext,
+    bundle: &mut ReservedNvstBundle,
+    endpoint: &str,
+) -> Result<PreparedNvstRtspSession, NvstRtspError> {
     let session_id = context.session.session_id.trim();
     if session_id.is_empty() {
         return Err(NvstRtspError::new(
@@ -454,7 +553,7 @@ pub fn prepare_owned_nvst(
         .or_else(|| sdp_attribute(&describe.body, "general.iceUsernamePwd"));
     let remote_fingerprint = sdp_attribute(&describe.body, "general.dtlsFingerprintV2")
         .or_else(|| sdp_attribute(&describe.body, "general.dtlsFingerprint"));
-    let disable_play = sdp_attribute(&describe.body, "general.disablePlay").as_deref() != Some("0");
+    let disable_play = play_disabled(&describe.body);
     let native_bundle = sdp_attribute(&describe.body, "general.nativeRtcOnBundlePort");
     if native_bundle.as_deref() != Some("1") {
         return Err(NvstRtspError::new(
@@ -524,6 +623,9 @@ pub fn prepare_owned_nvst(
         setup_ping_payload.as_deref(),
         remote_ufrag.as_deref(),
         ping_version,
+        sdp_attribute(&describe.body, "general.serverBundlePort")
+            .and_then(|value| value.parse::<u16>().ok())
+            .filter(|port| *port != 0),
     )
     .ok_or_else(|| {
         NvstRtspError::new(
@@ -538,10 +640,8 @@ pub fn prepare_owned_nvst(
             "DESCRIBE did not return NVST ICE credentials",
         )
     })?;
-    let (key, key_id) = match runtime_key(&describe.body) {
-        Some(value) => value,
-        None => random_runtime_key()?,
-    };
+    // DESCRIBE is a capability/config offer, not a source of session key material.
+    let (key, key_id) = random_runtime_key()?;
     let salt = format!("{key_id:024X}");
     let codec = negotiated_codec(context);
     let srtp_profile =
@@ -681,31 +781,20 @@ fn build_announce(context: &SessionContext, params: AnnounceParams<'_>) -> Strin
         0
     };
     let (bit_depth, chroma_format) = negotiated_color_format(context, &codec);
-    let mut lines = vec![
+    let lines = vec![
         "v=0".to_owned(),
         "o=unknown 0 14 IN IPv4 127.0.0.1".to_owned(),
         "s=NVIDIA Streaming Client".to_owned(),
         format!("a=x-nv-video[0].clientViewportWd:{width}"),
         format!("a=x-nv-video[0].clientViewportHt:{height}"),
-        "a=x-nv-video[0].videoSplitEncodeStripsPerFrame:64".to_owned(),
         "a=x-nv-video[0].updateSplitEncodeStateDynamically:1".to_owned(),
         "a=x-nv-video[0].packetSize:1280".to_owned(),
         "a=x-nv-video[0].enableRtpNack:1".to_owned(),
         "a=x-nv-video[0].rtpNackQueueLength:2048".to_owned(),
         "a=x-nv-video[0].rtpNackQueueMaxPackets:1024".to_owned(),
         "a=x-nv-video[0].rtpNackMaxPacketCount:64".to_owned(),
-        "a=x-nv-video[0].framePacing.mode:1".to_owned(),
-        "a=x-nv-video[0].framePacing.feedbackMode:1".to_owned(),
-        "a=x-nv-video[0].framePacing.pid.minTargetFrameTimeUs:7936".to_owned(),
-        "a=x-nv-video[0].adaptiveQuantization.spatialAQSetting:7".to_owned(),
-        "a=x-nv-video[0].adaptiveQuantization.temporalAQSetting:0".to_owned(),
-        "a=x-nv-video[0].adaptiveQuantization.spatialAQStrength:12".to_owned(),
-        "a=x-nv-video[0].adaptiveQuantization.qpThresholdAdjPercent:2".to_owned(),
-        "a=x-nv-video[0].adaptiveQuantization.saqAdaptMinQpThresholdPercent:40".to_owned(),
-        "a=x-nv-video[0].adaptiveQuantization.saqAdaptMaxQpThresholdPercent:100".to_owned(),
-        "a=x-nv-video[0].adaptiveQuantization.saqAdaptDecayStrengthX100:250".to_owned(),
-        "a=x-nv-video[0].adaptiveQuantization.perfAdjEnablement:1".to_owned(),
-        "a=x-nv-video[0].enableAv1RcPrecisionFactor:1".to_owned(),
+        "a=x-nv-video[0].framePacing.mode:2".to_owned(),
+        "a=x-nv-video[0].framePacing.feedbackMode:0".to_owned(),
         // Match the native Geronimo/NVST profile. CloudMatch wire values are
         // 0/1, while ANNOUNCE carries the real 8/10-bit depth and 0/1 chroma.
         "a=x-nv-video[0].maxNumReferenceFrames:0".to_owned(),
@@ -727,13 +816,11 @@ fn build_announce(context: &SessionContext, params: AnnounceParams<'_>) -> Strin
         "a=x-nv-vqos[0].fec.rateDropWindow:10".to_owned(),
         "a=x-nv-vqos[0].fec.minRequiredFecPackets:2".to_owned(),
         "a=x-nv-vqos[0].fec.repairPercent:20".to_owned(),
-        "a=x-nv-vqos[0].fec.repairMinPercent:20".to_owned(),
-        "a=x-nv-vqos[0].fec.repairMaxPercent:35".to_owned(),
+        "a=x-nv-vqos[0].fec.repairMinPercent:5".to_owned(),
+        "a=x-nv-vqos[0].fec.repairMaxPercent:40".to_owned(),
         "a=x-nv-vqos[0].bllFec.enable:0".to_owned(),
-        "a=x-nv-vqos[0].grc.enable:7".to_owned(),
         format!("a=x-nv-vqos[0].drc.enable:{dynamic_mode}"),
         "a=x-nv-vqos[0].dfc.adjustResAndFps:0".to_owned(),
-        "a=x-nv-vqos[0].calculateAvgVideoStreamingBitrate:1".to_owned(),
         format!("a=x-nv-vqos[0].bw.maximumBitrateKbps:{bitrate}"),
         format!("a=x-nv-vqos[0].bw.minimumBitrateKbps:{minimum_bitrate}"),
         "a=x-nv-vqos[0].drc.bitrateIirFilterFactor:128".to_owned(),
@@ -742,12 +829,9 @@ fn build_announce(context: &SessionContext, params: AnnounceParams<'_>) -> Strin
         "a=x-nv-packetPacing.version:3".to_owned(),
         "a=x-nv-packetPacing.mode:1".to_owned(),
         "a=x-nv-packetPacing.numGroups:5".to_owned(),
-        format!(
-            "a=x-nv-packetPacing.maxDelayUs:{}",
-            if fps >= 100 { 4000 } else { 2000 }
-        ),
+        "a=x-nv-packetPacing.maxDelayUs:1000".to_owned(),
         "a=x-nv-packetPacing.minNumPacketsFrame:10".to_owned(),
-        "a=x-nv-packetPacing.minNumPacketsPerGroup:15".to_owned(),
+        "a=x-nv-packetPacing.minNumPacketsPerGroup:0".to_owned(),
         "a=x-nv-packetPacing.enableAccurateSleep:1".to_owned(),
         "a=x-nv-packetPacing.enableSmoothTransition:1".to_owned(),
         "a=x-nv-packetPacing.allowFpsBasedToggle:1".to_owned(),
@@ -809,12 +893,6 @@ fn build_announce(context: &SessionContext, params: AnnounceParams<'_>) -> Strin
         "i=DeviceString, DeviceName".to_owned(),
         String::new(),
     ];
-    if format != 2 {
-        lines.insert(
-            26,
-            format!("a=x-nv-clientSupportHevc:{}", u8::from(format == 1)),
-        );
-    }
     lines.join("\r\n")
 }
 
@@ -917,7 +995,11 @@ fn ensure_rtsp_ok(step: &str, response: &RtspResponse) -> Result<(), NvstRtspErr
         Ok(())
     } else {
         let failure = NvstRtspError::new(
-            "nvst-rtsp-failed",
+            if response.status == 403 {
+                "nvst-forbidden"
+            } else {
+                "nvst-rtsp-failed"
+            },
             format!(
                 "{step} failed: {} {}",
                 response.status, response.status_text
@@ -1038,20 +1120,44 @@ fn take_rtsp_response(
 
 fn trusted_nvst_host(host: &str) -> bool {
     let host = host.trim_end_matches('.').to_ascii_lowercase();
-    if host == "nvidiagrid.net" || host.ends_with(".nvidiagrid.net") {
-        return true;
+    if let Ok(ip) = host.trim_matches(['[', ']']).parse::<IpAddr>() {
+        return match ip {
+            IpAddr::V4(ip) => {
+                !ip.is_private()
+                    && !ip.is_loopback()
+                    && !ip.is_link_local()
+                    && !ip.is_unspecified()
+                    && !ip.is_multicast()
+                    && !ip.is_broadcast()
+            }
+            IpAddr::V6(ip) => {
+                !ip.is_loopback()
+                    && !ip.is_unicast_link_local()
+                    && !ip.is_unique_local()
+                    && !ip.is_unspecified()
+                    && !ip.is_multicast()
+            }
+        };
     }
-    host.parse::<IpAddr>().is_ok_and(|ip| match ip {
-        IpAddr::V4(ip) => {
-            !ip.is_private() && !ip.is_loopback() && !ip.is_link_local() && !ip.is_unspecified()
-        }
-        IpAddr::V6(ip) => !ip.is_loopback() && !ip.is_unicast_link_local() && !ip.is_unspecified(),
-    })
+    // Endpoints originate in this session's authenticated CloudMatch response.
+    // Alliance providers need not use NVIDIA DNS. rustls still validates TLS.
+    host.contains('.')
+        && !host.ends_with(".localhost")
+        && !host.ends_with(".local")
+        && host.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
 }
 
 fn media_control(sdp: &str, kind: &str) -> Option<String> {
     let mut current = "";
-    for line in sdp.lines().map(str::trim) {
+    for line in describe_sections(sdp).0.lines().map(str::trim) {
         if let Some(media) = line.strip_prefix("m=") {
             current = media.split_whitespace().next().unwrap_or("");
         } else if current.eq_ignore_ascii_case(kind)
@@ -1070,17 +1176,34 @@ fn sdp_attribute(sdp: &str, name: &str) -> Option<String> {
         format!("a=x-nv-{name}:").to_ascii_lowercase(),
         format!("a={name}:").to_ascii_lowercase(),
     ];
-    sdp.lines().map(str::trim).find_map(|line| {
-        let lower = line.to_ascii_lowercase();
-        candidates.iter().find_map(|prefix| {
-            lower.strip_prefix(prefix).and_then(|_| {
-                line.get(prefix.len()..)
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(ToOwned::to_owned)
+    let (main, features) = describe_sections(sdp);
+    // Features override the main config. Upstream video has its own identity and
+    // must never overwrite the downstream transport's ICE/bundle settings.
+    features
+        .lines()
+        .rev()
+        .chain(main.lines().rev())
+        .map(str::trim)
+        .find_map(|line| {
+            let lower = line.to_ascii_lowercase();
+            candidates.iter().find_map(|prefix| {
+                lower.strip_prefix(prefix).and_then(|_| {
+                    line.get(prefix.len()..)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(ToOwned::to_owned)
+                })
             })
         })
-    })
+}
+
+fn describe_sections(sdp: &str) -> (&str, &str) {
+    let downstream = sdp.split_once("||").map_or(sdp, |(config, _)| config);
+    downstream.split_once(";;").unwrap_or((downstream, ""))
+}
+
+fn play_disabled(sdp: &str) -> bool {
+    sdp_attribute(sdp, "general.disablePlay").as_deref() == Some("1")
 }
 
 fn official_video_setup_control(control: &str) -> String {
@@ -1136,7 +1259,13 @@ fn resolve_remote_ufrag(
     ping_payload: Option<&str>,
     described_ufrag: Option<&str>,
     ping_version: u8,
+    server_bundle_port: Option<u16>,
 ) -> Option<String> {
+    if let (Some(ufrag), Some(port)) = (described_ufrag, server_bundle_port) {
+        return Some(format!("{ufrag}{port}"));
+    }
+    // Compatibility for seats missing one of the DESCRIBE fields. The explicit
+    // decimal port above must win, including non-adjacent ports and carry.
     if let Some(payload) = ping_payload {
         if let Some(incremented) = increment_hex(payload) {
             return Some(incremented);
@@ -1148,17 +1277,6 @@ fn resolve_remote_ufrag(
     described_ufrag.map(ToOwned::to_owned)
 }
 
-fn runtime_key(sdp: &str) -> Option<(String, u32)> {
-    let key = sdp_attribute(sdp, "runtime.encryptionKey")?;
-    if key.len() != 64 || !key.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return None;
-    }
-    let raw = sdp_attribute(sdp, "runtime.encryptionKeyId")?
-        .parse::<i64>()
-        .ok()?;
-    Some((key.to_ascii_uppercase(), raw as u32))
-}
-
 fn random_runtime_key() -> Result<(String, u32), NvstRtspError> {
     let mut key = [0_u8; 32];
     let mut id = [0_u8; 4];
@@ -1168,12 +1286,14 @@ fn random_runtime_key() -> Result<(String, u32), NvstRtspError> {
             format!("Could not generate the NVST runtime key: {error}"),
         )
     })?;
-    getrandom::fill(&mut id).map_err(|error| {
-        NvstRtspError::new(
-            "randomness-unavailable",
-            format!("Could not generate the NVST runtime key ID: {error}"),
-        )
-    })?;
+    while u32::from_be_bytes(id) == 0 {
+        getrandom::fill(&mut id).map_err(|error| {
+            NvstRtspError::new(
+                "randomness-unavailable",
+                format!("Could not generate the NVST runtime key ID: {error}"),
+            )
+        })?;
+    }
     Ok((
         key.iter().map(|byte| format!("{byte:02X}")).collect(),
         u32::from_be_bytes(id),
@@ -1196,6 +1316,82 @@ fn set_read_timeout(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>, timeout: 
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn describe_overrides_config_but_never_imports_upstream_identity_or_media() {
+        let body = "v=0\r\na=x-nv-general.nativeRtcOnBundlePort:0\r\na=x-nv-general.icePasswordV2:main\r\nm=video 0 RTP/AVP\r\na=control:streamid=video/0\r\n;;v=0\r\na=x-nv-general.nativeRtcOnBundlePort:1 \r\na=x-nv-general.icePasswordV2:features\r\n||v=0\r\na=x-nv-general.icePasswordV2:upstream\r\na=x-nv-general.disablePlay:1\r\nm=audio 0 RTP/AVP\r\na=control:upstream-audio";
+        assert_eq!(
+            sdp_attribute(body, "general.nativeRtcOnBundlePort").as_deref(),
+            Some("1")
+        );
+        assert_eq!(
+            sdp_attribute(body, "general.icePasswordV2").as_deref(),
+            Some("features")
+        );
+        assert_eq!(
+            media_control(body, "video").as_deref(),
+            Some("streamid=video/0")
+        );
+        assert_eq!(media_control(body, "audio"), None);
+        assert!(!play_disabled(body));
+        assert!(play_disabled(
+            "a=x-nv-general.disablePlay:0\n;;a=x-nv-general.disablePlay:1"
+        ));
+        assert!(!play_disabled(
+            "a=x-nv-general.disablePlay:1\n;;a=x-nv-general.disablePlay:0"
+        ));
+    }
+
+    #[test]
+    fn signalling_fallback_preserves_order_stops_on_success_and_respects_forbidden() {
+        let mut attempts = Vec::new();
+        let selected = try_signalling_endpoints(&["first", "second", "third"], |endpoint| {
+            attempts.push(endpoint.to_owned());
+            if endpoint == "first" {
+                Err(NvstRtspError::new("nvst-rtsp-failed", "SETUP failed"))
+            } else {
+                Ok(endpoint.to_owned())
+            }
+        })
+        .unwrap();
+        assert_eq!(selected, "second");
+        assert_eq!(attempts, ["first", "second"]);
+        let mut attempts = 0;
+        let error = try_signalling_endpoints::<()>(&["first", "second"], |_| {
+            attempts += 1;
+            Err(NvstRtspError::new("nvst-forbidden", "denied"))
+        })
+        .unwrap_err();
+        assert_eq!(error.code, "nvst-forbidden");
+        assert_eq!(attempts, 1);
+        assert_eq!(
+            try_signalling_endpoints::<()>(&[], |_| unreachable!())
+                .unwrap_err()
+                .code,
+            "missing-rtsps-endpoint"
+        );
+    }
+
+    #[test]
+    fn bundle_identity_uses_described_decimal_port_not_hex_video_increment() {
+        for port in [47999, 48000, 50000] {
+            assert_eq!(
+                resolve_remote_ufrag(Some("abcd47998"), Some("server+/"), 6, Some(port)),
+                Some(format!("server+/{port}"))
+            );
+        }
+    }
+
+    #[test]
+    fn each_negotiation_generates_a_fresh_key_and_nonzero_id() {
+        let first = random_runtime_key().unwrap();
+        let second = random_runtime_key().unwrap();
+        assert_eq!(first.0.len(), 64);
+        assert!(first.0.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_ne!(first.0, second.0);
+        assert_ne!(first.1, 0);
+        assert_ne!(second.1, 0);
+    }
 
     #[test]
     fn http_503_is_a_control_service_failure_not_a_decoder_failure() {
@@ -1266,6 +1462,14 @@ mod tests {
         assert!(sdp.contains("a=x-nv-general.rtcDataChannelOnNativeBundle:1"));
         assert!(sdp.contains("a=x-nv-runtime.encryptionKey:"));
         assert!(sdp.contains("m=video 5004"));
+        assert!(sdp.contains("framePacing.mode:2"));
+        assert!(sdp.contains("framePacing.feedbackMode:0"));
+        assert!(sdp.contains("fec.repairMinPercent:5"));
+        assert!(sdp.contains("fec.repairMaxPercent:40"));
+        assert!(sdp.contains("packetPacing.maxDelayUs:1000"));
+        assert!(!sdp.contains("videoSplitEncodeStripsPerFrame:"));
+        assert!(!sdp.contains("grc.enable:"));
+        assert!(!sdp.contains("clientSupportHevc:"));
     }
 
     #[test]
@@ -1409,10 +1613,14 @@ mod tests {
     #[test]
     fn endpoint_policy_rejects_local_and_private_addresses() {
         assert!(trusted_nvst_host("seat.nvidiagrid.net"));
+        assert!(trusted_nvst_host("seat.partner.example"));
         assert!(trusted_nvst_host("8.8.8.8"));
         assert!(!trusted_nvst_host("localhost"));
         assert!(!trusted_nvst_host("127.0.0.1"));
         assert!(!trusted_nvst_host("10.0.0.8"));
+        assert!(!trusted_nvst_host("[::1]"));
+        assert!(!trusted_nvst_host("fd00::1"));
+        assert!(!trusted_nvst_host("seat.local"));
     }
 
     #[test]
@@ -1421,11 +1629,11 @@ mod tests {
         assert_eq!(increment_hex("ffff").as_deref(), Some("10000"));
         assert_eq!(increment_hex("PING"), None);
         assert_eq!(
-            resolve_remote_ufrag(Some("00ff"), Some("described"), 6).as_deref(),
+            resolve_remote_ufrag(Some("00ff"), Some("described"), 6, None).as_deref(),
             Some("0100")
         );
         assert_eq!(
-            resolve_remote_ufrag(None, Some("described"), 5).as_deref(),
+            resolve_remote_ufrag(None, Some("described"), 5, None).as_deref(),
             Some("described")
         );
     }

@@ -40,6 +40,16 @@ internal data class BugReportPreflightDeck(
     }
 }
 
+internal fun BugReportPreflightDeck.hasWarnings(additionalWarning: Boolean = false): Boolean =
+    additionalWarning || cards.any { it.tone == BugReportPreflightTone.Warning }
+
+internal fun canContinueBugReportPreflight(
+    deck: BugReportPreflightDeck,
+    consentChecked: Boolean,
+    warningsAcknowledged: Boolean,
+    additionalWarning: Boolean = false,
+): Boolean = consentChecked && (!deck.hasWarnings(additionalWarning) || warningsAcknowledged)
+
 internal data class BugReportPreflightEvidence(
     val requestedSettings: StreamSettings,
     val recommendedSettings: StreamSettings? = null,

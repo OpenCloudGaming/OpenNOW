@@ -7,6 +7,37 @@ import org.junit.Test
 
 class StreamResolutionTest {
     @Test
+    fun androidTvResolutionMenuListsEveryAspectAndResolution() {
+        assertEquals(
+            listOf("1280x720", "1366x768", "1600x900", "1920x1080", "2560x1440", "3840x2160", "5120x2880"),
+            streamResolutionOptionsForAspect("16:9"),
+        )
+        assertTrue("21:9" in streamAspectRatioOptions())
+        assertTrue("2560x1080" in streamResolutionOptionsForAspect("21:9"))
+    }
+
+    @Test
+    fun androidTvLaunchPreservesEntitledHighResolutionSelection() {
+        val performance = StreamSettings(resolution = "2560x1440", aspectRatio = "16:9")
+            .eligibleForAndroidLaunch(
+                subscriptionInfo = SubscriptionInfo(membershipTier = "PERFORMANCE"),
+                fallbackMembershipTier = null,
+                androidTvProfile = true,
+            )
+        assertEquals("2560x1440", performance.resolution)
+        assertEquals(
+            "3840x2160",
+            StreamSettings(resolution = "3840x2160", aspectRatio = "16:9")
+                .eligibleForAndroidLaunch(
+                    subscriptionInfo = SubscriptionInfo(membershipTier = "ULTIMATE"),
+                    fallbackMembershipTier = null,
+                    androidTvProfile = true,
+                )
+                .resolution,
+        )
+    }
+
+    @Test
     fun smartSessionLimitsMatchMembershipTier() {
         val free = smartSessionLimitFor(SubscriptionInfo(membershipTier = "FREE"), null)
         val performance = smartSessionLimitFor(SubscriptionInfo(membershipTier = "PERFORMANCE"), null)

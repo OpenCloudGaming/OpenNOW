@@ -1,18 +1,16 @@
 use std::time::Duration;
 
 pub(crate) const FRAME_ACK_CODE: u16 = 0x204;
-pub(crate) const FRAME_PACING_CODE: u16 = 0x203;
 pub(crate) const QOS_REPORT_CODE: u16 = 0x207;
 pub(crate) const IDR_REQUEST_CODE: u16 = 0x302;
 
 pub(crate) const FRAME_ACK_PAYLOAD_LEN: usize = 102;
-pub(crate) const FRAME_PACING_PAYLOAD_LEN: usize = 28;
 pub(crate) const QOS_REPORT_PAYLOAD_LEN: usize = 52;
 // The official GFN client keeps the frame-pacing PID target at 16.666 ms even for a
 // 120 FPS encoded stream. This is a renderer/feedback target, not the encoded-frame interval.
 pub(crate) const DEFAULT_FRAME_TIME_US: u32 = 16_666;
-pub(crate) const QOS_REPORT_INTERVAL: Duration = Duration::from_micros(55_556);
-pub(crate) const QOS_WARM_UP: Duration = Duration::from_millis(1_900);
+pub(crate) const QOS_REPORT_INTERVAL: Duration = Duration::from_millis(50);
+pub(crate) const MAX_CONTROL_BATCH_BYTES: usize = 1071;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NvstControlCommand {
@@ -31,6 +29,31 @@ impl NvstControlCommand {
         encoded.extend_from_slice(&self.payload);
         encoded
     }
+}
+
+/// Keep record boundaries intact; a server parses consecutive code/length records.
+pub(crate) fn batch_control_records(
+    records: impl IntoIterator<Item = NvstControlCommand>,
+) -> Vec<Vec<u8>> {
+    let mut batches = Vec::new();
+    let mut batch = Vec::with_capacity(MAX_CONTROL_BATCH_BYTES);
+    for record in records {
+        let encoded = record.encoded();
+        if encoded.is_empty() || encoded.len() > MAX_CONTROL_BATCH_BYTES {
+            continue;
+        }
+        if batch.len() + encoded.len() > MAX_CONTROL_BATCH_BYTES {
+            batches.push(std::mem::replace(
+                &mut batch,
+                Vec::with_capacity(MAX_CONTROL_BATCH_BYTES),
+            ));
+        }
+        batch.extend_from_slice(&encoded);
+    }
+    if !batch.is_empty() {
+        batches.push(batch);
+    }
+    batches
 }
 
 pub(crate) fn frame_ack(
@@ -60,31 +83,11 @@ pub(crate) fn frame_ack(
     }
 }
 
-pub(crate) fn frame_pacing_report(
-    frame_number: u32,
-    target_frame_time_us: u32,
-    pacing_error_us: u32,
-) -> NvstControlCommand {
-    let mut payload = vec![0; FRAME_PACING_PAYLOAD_LEN];
-    put_u32(&mut payload, 0, 5);
-    put_u32(&mut payload, 8, 2);
-    put_u32(&mut payload, 12, frame_number);
-    put_u32(&mut payload, 16, target_frame_time_us);
-    put_u32(&mut payload, 20, pacing_error_us.min(target_frame_time_us));
-    put_u32(&mut payload, 24, 0x341a);
-    NvstControlCommand {
-        code: FRAME_PACING_CODE,
-        payload,
-    }
-}
-
 pub(crate) struct QosReport {
     pub(crate) sequence: u32,
-    pub(crate) frames_received: u32,
-    pub(crate) bytes_received: u32,
-    pub(crate) rtp_timestamp: u32,
-    pub(crate) previous_bytes_received: u32,
-    pub(crate) warmed_up: bool,
+    pub(crate) last_frame_number: u32,
+    pub(crate) client_time_90khz: u32,
+    pub(crate) loss_per_10000: u16,
 }
 
 impl QosReport {
@@ -92,14 +95,11 @@ impl QosReport {
         let mut payload = vec![0; QOS_REPORT_PAYLOAD_LEN];
         put_u32(&mut payload, 0, 7);
         put_u32(&mut payload, 8, self.sequence);
-        put_u32(&mut payload, 12, self.frames_received);
-        put_u32(&mut payload, 16, self.bytes_received);
-        put_u16(&mut payload, 28, if self.warmed_up { 2 } else { 0 });
+        put_u32(&mut payload, 12, self.last_frame_number);
+        put_u16(&mut payload, 26, self.loss_per_10000.min(10_000));
         put_u16(&mut payload, 30, 1_000);
         put_u16(&mut payload, 32, 1_000);
-        put_u16(&mut payload, 34, 12_708);
-        put_u32(&mut payload, 36, self.rtp_timestamp);
-        put_u32(&mut payload, 48, self.previous_bytes_received);
+        put_u32(&mut payload, 36, self.client_time_90khz);
         NvstControlCommand {
             code: QOS_REPORT_CODE,
             payload,
@@ -130,6 +130,24 @@ fn put_u64(payload: &mut [u8], offset: usize, value: u64) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn batching_preserves_records_and_bounds_each_sctp_message() {
+        let records: Vec<_> = (0..25)
+            .map(|frame| frame_ack(frame, 0.0, 1, 16666, None))
+            .collect();
+        let expected: Vec<_> = records
+            .iter()
+            .flat_map(NvstControlCommand::encoded)
+            .collect();
+        let batches = batch_control_records(records);
+        assert_eq!(
+            batches.iter().map(Vec::len).collect::<Vec<_>>(),
+            [1060, 1060, 530]
+        );
+        assert_eq!(batches.concat(), expected);
+        assert!(batch_control_records([]).is_empty());
+    }
+
     fn hex(value: &str) -> Vec<u8> {
         value
             .as_bytes()
@@ -148,17 +166,6 @@ mod tests {
             payload: vec![1, 2, 3],
         };
         assert_eq!(command.encoded(), [0x07, 0x02, 0x03, 0x00, 1, 2, 3]);
-    }
-
-    #[test]
-    fn frame_pacing_report_matches_the_source_test_vector() {
-        let command = frame_pacing_report(1, 16_000, 16_000);
-        assert_eq!(command.code, FRAME_PACING_CODE);
-        assert_eq!(
-            command.payload,
-            hex("05000000000000000200000001000000803e0000803e00001a340000")
-        );
-        assert_eq!(command.encoded().len(), 4 + FRAME_PACING_PAYLOAD_LEN);
     }
 
     #[test]
@@ -216,18 +223,16 @@ mod tests {
     fn qos_report_matches_the_source_test_layout() {
         let command = QosReport {
             sequence: 6,
-            frames_received: 2,
-            bytes_received: 244_808,
-            rtp_timestamp: 1_818_674,
-            previous_bytes_received: 244_808,
-            warmed_up: false,
+            last_frame_number: 42,
+            client_time_90khz: 90_000,
+            loss_per_10000: 2500,
         }
         .command();
         assert_eq!(command.code, QOS_REPORT_CODE);
         assert_eq!(
             command.payload,
             hex(
-                "0700000000000000060000000200000048bc030000000000000000000000e803e803a43132c01b00000000000000000048bc0300"
+                "0700000000000000060000002a00000000000000000000000000c4090000e803e8030000905f0100000000000000000000000000"
             )
         );
     }

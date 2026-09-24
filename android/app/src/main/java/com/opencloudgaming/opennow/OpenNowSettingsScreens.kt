@@ -452,6 +452,7 @@ internal fun SettingsScreen(
                             onQueryChange = onSearchQueryChange,
                             placeholder = stringResource(R.string.search_settings),
                             focusRequester = searchFocusRequester,
+                            gamepadImeMode = tvProfile,
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
@@ -500,6 +501,7 @@ internal fun SettingsScreen(
                                 onQueryChange = onSearchQueryChange,
                                 placeholder = stringResource(R.string.search_settings),
                                 focusRequester = searchFocusRequester,
+                                gamepadImeMode = tvProfile,
                                 modifier = Modifier.fillMaxWidth(),
                             )
                         }
@@ -769,6 +771,7 @@ private fun SettingsContent(
                     ChoiceMenuOption(ANDROID_APP_LANGUAGE_GERMAN, stringResource(R.string.app_language_german)),
                     ChoiceMenuOption(ANDROID_APP_LANGUAGE_SPANISH, stringResource(R.string.app_language_spanish)),
                     ChoiceMenuOption(ANDROID_APP_LANGUAGE_FRENCH, stringResource(R.string.app_language_french)),
+                    ChoiceMenuOption(ANDROID_APP_LANGUAGE_INDONESIAN, stringResource(R.string.app_language_indonesian)),
                     ChoiceMenuOption(ANDROID_APP_LANGUAGE_JAPANESE, stringResource(R.string.app_language_japanese)),
                     ChoiceMenuOption(ANDROID_APP_LANGUAGE_KOREAN, stringResource(R.string.app_language_korean)),
                     ChoiceMenuOption(ANDROID_APP_LANGUAGE_DUTCH, stringResource(R.string.app_language_dutch)),
@@ -1199,6 +1202,14 @@ private fun SettingsContent(
                 }
             }
     CategorySettingsSection(selectedCategory, SettingsCategory.Input, searchQuery, stringResource(R.string.settings_section_controller_touch), "input", "rumble", "touch", "controller", "style", "skin", "theme", "colour", "color", "labels", "layout", "scale", "size", "opacity", "edge", "padding", "offset", "horizontal", "vertical", "controls", "visible", "hide", "programmable", "extra", "accessibility", "guide", "home", "stick", "joystick", "analog", "dynamic", "dead zone", "button") {
+                if (settings.androidPhysicalControllerPromptDismissed) {
+                    ControlActionRow(
+                        label = stringResource(R.string.settings_show_controller_prompt_again),
+                        actionLabel = stringResource(R.string.action_reset),
+                        value = stringResource(R.string.settings_show_controller_prompt_again_desc),
+                        onClick = { viewModel.updateSettings(settings.resettingControllerPrompt()) },
+                    )
+                }
                 SettingSwitch(
                     label = stringResource(R.string.stream_panel_vibration),
                     checked = settings.vibrationEnabled,
@@ -1492,6 +1503,9 @@ private fun SettingsContent(
                         ),
                     )
                 }
+                SelectionEffectColorSetting(settings) { colors ->
+                    viewModel.updateSettings(settings.copy(selectionEffectColors = colors))
+                }
                 SettingSwitch(
                     label = stringResource(R.string.settings_im_crazy),
                     checked = settings.absoluteCinemaEverywhere,
@@ -1671,6 +1685,8 @@ private fun SettingsContent(
                         showBugReportDialog = true
                     },
                     onComment = viewModel::commentOnBugReport,
+                    onClose = viewModel::closeBugReport,
+                    onDelete = viewModel::deleteBugReport,
                 )
             }
     CategorySettingsSection(selectedCategory, SettingsCategory.TvPairing, searchQuery, stringResource(R.string.tv_pair_settings_title), "tv", "pair", "phone", "qr", "code", "network") {

@@ -239,6 +239,11 @@ data class PendingLaunchRecovery(
     val errorMessage: String,
 )
 
+enum class StorePersonalRail {
+    ContinuePlaying,
+    InQueue,
+}
+
 @Immutable
 data class OpenNowUiState(
     val initializing: Boolean = false,
@@ -275,6 +280,7 @@ data class OpenNowUiState(
     val codecReport: RuntimeCodecReport? = null,
     val recommendedStreamSettings: StreamSettings? = null,
     val selectedGame: GameInfo? = null,
+    val selectedGameRail: StorePersonalRail? = null,
     val activeSession: ActiveSessionInfo? = null,
     val activeSessionDecision: ActiveSessionDecision? = null,
     val streamSession: SessionInfo? = null,
@@ -1098,7 +1104,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         val threadState = state.value.bugReportThreads
         // A refresh used to replace the state while a reply was in flight, re-enabling the Send
         // button and making it possible to post the same comment twice.
-        if (threadState.loading || threadState.postingReportId != null) return
+        if (threadState.loading || threadState.postingReportId != null || threadState.changingReportId != null) return
         _state.update {
             it.copy(
                 bugReportThreads = it.bugReportThreads.copy(
@@ -1141,7 +1147,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun commentOnBugReport(reportId: String, comment: String) {
-        if (state.value.bugReportThreads.postingReportId != null) return
+        if (state.value.bugReportThreads.postingReportId != null || state.value.bugReportThreads.changingReportId != null) return
         if (state.value.bugReportThreads.reports.any { it.id == reportId && androidBugReportThreadClosed(it.status) }) {
             _state.update {
                 it.copy(
@@ -1195,6 +1201,56 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                             errorReportId = reportId,
                         ),
                     )
+                }
+            }
+        }
+    }
+
+    fun closeBugReport(reportId: String) = changeBugReport(reportId, delete = false)
+
+    fun deleteBugReport(reportId: String) = changeBugReport(reportId, delete = true)
+
+    private fun changeBugReport(reportId: String, delete: Boolean) {
+        val threads = state.value.bugReportThreads
+        if (threads.loading || threads.postingReportId != null || threads.changingReportId != null ||
+            threads.reports.none { it.id == reportId } ||
+            (!delete && threads.reports.any { it.id == reportId && androidBugReportThreadClosed(it.status) })
+        ) return
+        _state.update {
+            it.copy(bugReportThreads = it.bugReportThreads.copy(
+                changingReportId = reportId,
+                actionError = null,
+                actionErrorReportId = null,
+            ))
+        }
+        viewModelScope.launch {
+            try {
+                val reporterId = androidBugReportReporterId(authStore.stableDeviceId())
+                val updated = if (delete) {
+                    deleteAndroidBugReport(http, reporterId, reportId)
+                    null
+                } else {
+                    closeAndroidBugReport(http, reporterId, reportId)
+                }
+                _state.update { current ->
+                    val reports = if (delete) current.bugReportThreads.reports.filterNot { it.id == reportId }
+                    else current.bugReportThreads.reports.map { if (it.id == reportId) updated!! else it }
+                    current.copy(bugReportThreads = current.bugReportThreads.copy(
+                        reports = reports,
+                        changingReportId = null,
+                        actionError = null,
+                        actionErrorReportId = null,
+                    ))
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                _state.update {
+                    it.copy(bugReportThreads = it.bugReportThreads.copy(
+                        changingReportId = null,
+                        actionError = error.message ?: "Could not update bug report",
+                        actionErrorReportId = reportId,
+                    ))
                 }
             }
         }
@@ -2006,9 +2062,9 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         refreshCatalogDebounced()
     }
 
-    fun selectGame(game: GameInfo) {
+    fun selectGame(game: GameInfo, sourceRail: StorePersonalRail? = null) {
         gameDetailsJob?.cancel()
-        _state.update { it.copy(selectedGame = game) }
+        _state.update { it.copy(selectedGame = game, selectedGameRail = sourceRail) }
         if (!shouldHydrateGameDetails(game)) return
         val auth = state.value.authSession ?: return
         val selectedKey = gameTrackingKey(game)
@@ -2049,7 +2105,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     fun clearSelectedGame() {
         gameDetailsJob?.cancel()
         gameDetailsJob = null
-        _state.update { it.copy(selectedGame = null) }
+        _state.update { it.copy(selectedGame = null, selectedGameRail = null) }
     }
 
     fun updateSettings(next: AppSettings) {
@@ -2417,6 +2473,11 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         _state.update { it.copy(queuedGameKeys = next) }
     }
 
+    fun clearQueuedGames() {
+        val next = queuedGameStore.removeAll(state.value.queuedGameKeys)
+        _state.update { it.copy(queuedGameKeys = next) }
+    }
+
     fun dismissContinuePlaying(game: GameInfo) {
         val lastPlayed = game.recentPlaySortKey() ?: return
         val gameKey = gameTrackingKey(game)
@@ -2424,6 +2485,24 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         // A game can exist in both sources; clearing its old queue record prevents the same card
         // from jumping into the next rail immediately after the player dismisses it here.
         val queued = queuedGameStore.remove(gameKey)
+        _state.update {
+            it.copy(
+                queuedGameKeys = queued,
+                dismissedContinuePlaying = dismissed,
+            )
+        }
+    }
+
+    fun dismissContinuePlayingSection() {
+        val snapshot = state.value
+        val records = (snapshot.libraryGames + snapshot.games + snapshot.catalogResult.games)
+            .distinctBy(::gameTrackingKey)
+            .mapNotNull { game ->
+                game.recentPlaySortKey()?.let { lastPlayed -> gameTrackingKey(game) to lastPlayed }
+            }
+        if (records.isEmpty()) return
+        val dismissed = continuePlayingDismissalStore.dismissAll(records)
+        val queued = queuedGameStore.removeAll(records.map { it.first })
         _state.update {
             it.copy(
                 queuedGameKeys = queued,

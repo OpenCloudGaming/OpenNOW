@@ -27,11 +27,11 @@ import androidx.compose.material.icons.rounded.Forum
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -76,6 +76,8 @@ internal fun BugReportThreadsSettings(
     onRefresh: () -> Unit,
     onNewReport: () -> Unit,
     onComment: (reportId: String, comment: String) -> Unit,
+    onClose: (reportId: String) -> Unit,
+    onDelete: (reportId: String) -> Unit,
 ) {
     var selectedReportId by rememberSaveable { mutableStateOf<String?>(null) }
     val selectedReport = state.reports.firstOrNull { it.id == selectedReportId }
@@ -94,9 +96,13 @@ internal fun BugReportThreadsSettings(
         BugReportThreadDetail(
             report = selectedReport,
             posting = state.postingReportId == selectedReport.id,
+            changing = state.changingReportId == selectedReport.id,
             commentError = state.error.takeIf { state.errorReportId == selectedReport.id },
+            actionError = state.actionError.takeIf { state.actionErrorReportId == selectedReport.id },
             onBack = { selectedReportId = null },
             onComment = { comment -> onComment(selectedReport.id, comment) },
+            onClose = { onClose(selectedReport.id) },
+            onDelete = { onDelete(selectedReport.id) },
         )
         return
     }
@@ -130,7 +136,7 @@ internal fun BugReportThreadsSettings(
             ) {
                 IconButton(
                     onClick = onRefresh,
-                    enabled = !state.loading && state.postingReportId == null,
+                    enabled = !state.loading && state.postingReportId == null && state.changingReportId == null,
                     modifier = Modifier.size(48.dp),
                 ) {
                     if (state.loading) {
@@ -242,6 +248,7 @@ private fun InboxEmptyCard() {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun BugReportThreadListItem(
     report: AndroidBugReportThread,
@@ -256,58 +263,52 @@ private fun BugReportThreadListItem(
         border = BorderStroke(1.dp, SettingsTextMuted.copy(alpha = 0.16f)),
         onClick = onClick,
     ) {
-        ListItem(
-            colors = androidx.compose.material3.ListItemDefaults.colors(containerColor = Color.Transparent),
-            headlineContent = {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(OpenNowSpacing.md),
+            verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm),
+                verticalAlignment = Alignment.Top,
+            ) {
                 Text(
                     report.title,
+                    modifier = Modifier.weight(1f),
                     color = SettingsText,
+                    style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
-            },
-            supportingContent = {
-                Column(
-                    modifier = Modifier.padding(top = OpenNowSpacing.xs),
-                    verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.xs),
-                ) {
-                    Text(
-                        "${bugReportKindLabel(report.kind)} • ${bugReportAreaLabel(report.area)}",
-                        color = SettingsTextMuted,
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    updatedLabel?.let {
-                        Text(
-                            stringResource(R.string.bug_report_inbox_updated, it),
-                            color = SettingsTextMuted,
-                            style = MaterialTheme.typography.labelSmall,
-                        )
-                    }
-                }
-            },
-            leadingContent = { BugReportStatusDot(status.color) },
-            trailingContent = {
                 Icon(
                     Icons.Rounded.ChevronRight,
                     contentDescription = stringResource(R.string.bug_report_inbox_open_details),
                     tint = SettingsTextMuted,
                 )
-            },
-        )
-    }
-}
-
-@Composable
-private fun BugReportStatusDot(color: Color) {
-    Surface(shape = CircleShape, color = color.copy(alpha = 0.14f)) {
-        Surface(
-            modifier = Modifier.padding(9.dp).size(9.dp),
-            shape = CircleShape,
-            color = color,
-        ) {}
+            }
+            Text(
+                "${bugReportKindLabel(report.kind)} • ${bugReportAreaLabel(report.area)}",
+                color = SettingsTextMuted,
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm),
+                verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.xs),
+            ) {
+                BugReportStatusPill(status)
+                updatedLabel?.let {
+                    Text(
+                        stringResource(R.string.bug_report_inbox_updated, it),
+                        modifier = Modifier.padding(top = OpenNowSpacing.xs),
+                        color = SettingsTextMuted,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -316,12 +317,17 @@ private fun BugReportStatusDot(color: Color) {
 private fun BugReportThreadDetail(
     report: AndroidBugReportThread,
     posting: Boolean,
+    changing: Boolean,
     commentError: String?,
+    actionError: String?,
     onBack: () -> Unit,
     onComment: (String) -> Unit,
+    onClose: () -> Unit,
+    onDelete: () -> Unit,
 ) {
     var reply by rememberSaveable(report.id) { mutableStateOf("") }
     var waitingForReplyResult by rememberSaveable(report.id) { mutableStateOf(false) }
+    var confirmingAction by rememberSaveable(report.id) { mutableStateOf<String?>(null) }
     val status = bugReportStatusPresentation(report.status)
     val closed = androidBugReportThreadClosed(report.status)
 
@@ -332,6 +338,22 @@ private fun BugReportThreadDetail(
             }
             waitingForReplyResult = false
         }
+    }
+
+    if (confirmingAction != null) {
+        val deleting = confirmingAction == "delete"
+        AlertDialog(
+            onDismissRequest = { confirmingAction = null },
+            title = { Text(stringResource(if (deleting) R.string.bug_report_inbox_delete_title else R.string.bug_report_inbox_close_title)) },
+            text = { Text(stringResource(if (deleting) R.string.bug_report_inbox_delete_confirm else R.string.bug_report_inbox_close_confirm)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmingAction = null
+                    if (deleting) onDelete() else onClose()
+                }) { Text(stringResource(if (deleting) R.string.bug_report_inbox_delete else R.string.bug_report_inbox_close)) }
+            },
+            dismissButton = { TextButton(onClick = { confirmingAction = null }) { Text(stringResource(R.string.bug_report_inbox_cancel)) } },
+        )
     }
 
     Column(
@@ -361,6 +383,24 @@ private fun BugReportThreadDetail(
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
+        }
+
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm),
+            verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm),
+        ) {
+            if (!closed) {
+                TextButton(onClick = { confirmingAction = "close" }, enabled = !posting && !changing) {
+                    Text(stringResource(R.string.bug_report_inbox_close))
+                }
+            }
+            TextButton(onClick = { confirmingAction = "delete" }, enabled = !posting && !changing) {
+                Text(stringResource(R.string.bug_report_inbox_delete))
+            }
+            if (changing) CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+        }
+        actionError?.let {
+            Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         }
 
         FlowRow(
@@ -450,7 +490,7 @@ private fun BugReportThreadDetail(
         } else {
             ReplyComposer(
                 reply = reply,
-                posting = posting,
+                posting = posting || changing,
                 error = commentError,
                 onReplyChange = { if (it.length <= 3_000) reply = it },
                 onSend = {
@@ -590,6 +630,7 @@ private fun bugReportStatusPresentation(status: String): BugReportStatusPresenta
     "completed" -> BugReportStatusPresentation(stringResource(R.string.bug_report_status_completed), OpenNowPalette.StatusGood)
     "not_reproducible" -> BugReportStatusPresentation(stringResource(R.string.bug_report_status_not_reproducible), SettingsTextMuted)
     "wont_fix" -> BugReportStatusPresentation(stringResource(R.string.bug_report_status_wont_fix), SettingsTextMuted)
+    "closed_by_reporter" -> BugReportStatusPresentation(stringResource(R.string.bug_report_status_closed_by_reporter), SettingsTextMuted)
     else -> BugReportStatusPresentation(stringResource(R.string.bug_report_status_open), OpenNowPalette.AccentPixel)
 }
 

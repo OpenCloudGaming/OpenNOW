@@ -202,12 +202,10 @@ private val ALLIANCE_CLOUD_MATCH_IDENTITY = CloudMatchClientIdentity(
 )
 
 // NVIDIA's Browser/WebRTC identity preserves the standard mobile allocation, but CloudMatch limits
-// its mode matrix and rejects HDR requests from that client class. Use the internally consistent
-// desktop-native identity only for explicit gamepad launches that need the high-quality mode
-// matrix. SHIELD and the third-generation Fire TV Cube are the known TV exceptions whose
-// Android/native allocations silently provisioned 1080p for higher-resolution requests. Other
-// Android TVs retain the Android/native identity. Generic follow-up requests stay on the browser
-// identity so they cannot change an existing allocation.
+// its mode matrix and rejects HDR requests from that client class. Explicit gamepad launches that
+// need the high-quality mode matrix use the desktop-native identity on every Android TV. The
+// Android/native TV allocation has provisioned 1080p for requested higher-resolution profiles.
+// Generic follow-up requests stay on the browser identity so they cannot change an allocation.
 private fun cloudMatchClientIdentity(
     streamingBaseUrl: String?,
     appLaunchMode: Int? = null,
@@ -249,23 +247,6 @@ internal fun isNvidiaShieldTvDevice(
     androidTvProfile &&
         manufacturer?.trim()?.equals("NVIDIA", ignoreCase = true) == true &&
         model?.contains("SHIELD", ignoreCase = true) == true
-
-internal fun isThirdGenerationFireTvCubeDevice(
-    androidTvProfile: Boolean,
-    manufacturer: String?,
-    model: String?,
-): Boolean =
-    androidTvProfile &&
-        manufacturer?.trim()?.equals("Amazon", ignoreCase = true) == true &&
-        model?.trim()?.equals("AFTGAZL", ignoreCase = true) == true
-
-internal fun usesDesktopNativeTvCloudMatchIdentity(
-    androidTvProfile: Boolean,
-    manufacturer: String?,
-    model: String?,
-): Boolean =
-    isNvidiaShieldTvDevice(androidTvProfile, manufacturer, model) ||
-        isThirdGenerationFireTvCubeDevice(androidTvProfile, manufacturer, model)
 
 /**
  * Server-side values, chosen when the session is created. They decide which virtual input devices
@@ -314,6 +295,7 @@ internal fun gfnLocaleForAndroidLanguageTag(languageTag: String): String {
         "de" -> "de_DE"
         "es" -> "es_ES"
         "fr" -> "fr_FR"
+        "id" -> "id_ID"
         "ja" -> "ja_JP"
         "ko" -> "ko_KR"
         "nl" -> "nl_NL"
@@ -369,6 +351,13 @@ private val AUTH_RESTORE_MUTEX = Mutex()
 private val READY_SESSION_STATUSES = setOf(2, 3)
 internal fun shouldResumeClaimedSession(status: Int?, recoveryMode: Boolean): Boolean =
     status != 1 && !(recoveryMode && status != null && status in READY_SESSION_STATUSES)
+
+/** A failed validation cannot authorize RESUME or a minute of polling the same broken endpoint. */
+internal fun sessionClaimResponseFailure(httpStatus: Int, requestStatus: Int?, operation: String = "validation"): String? = when {
+    httpStatus !in 200..299 -> "Cloud session $operation failed (HTTP $httpStatus)."
+    requestStatus != 1 -> "Cloud session $operation failed (provider status ${requestStatus ?: "missing"})."
+    else -> null
+}
 private const val INVALID_SESSION_PROXY_MESSAGE =
     "Invalid session proxy URL. Use http://host:port, https://host:port, socks4://host:port, or socks5://host:port."
 
@@ -488,7 +477,9 @@ private fun requestedStreamingFeatures(settings: StreamSettings, profile: Stream
         // default so the request shape CloudMatch validates against is unchanged.
         put("cloudGsync", false)
         put("enabledL4S", settings.enableL4S)
-        put("trueHdr", profile.hdrEnabled)
+        // NVST trueHdr enables the server's AI SDR-to-HDR filter. Native HDR10
+        // is requested independently through sdrHdrMode and the display profile.
+        put("trueHdr", profile.hdrEnabled && !settings.experimentalNvst)
         put("mouseMovementFlags", 0)
         put("supportedHidDevices", 0)
         put("profile", 0)
@@ -3076,11 +3067,7 @@ class GfnSessionRepository(
     private val physicalDisplayResolutionProvider: () -> Pair<Int, Int>? = { null },
     private val diagnosticsSink: (GfnSessionDiagnosticResponse) -> Unit = {},
     private val isAndroidTv: Boolean = false,
-    private val useDesktopNativeTvIdentity: Boolean = usesDesktopNativeTvCloudMatchIdentity(
-        androidTvProfile = isAndroidTv,
-        manufacturer = Build.MANUFACTURER,
-        model = Build.MODEL,
-    ),
+    private val useDesktopNativeTvIdentity: Boolean = isAndroidTv,
 ) {
     suspend fun createSession(
         token: String,
@@ -3282,6 +3269,8 @@ class GfnSessionRepository(
         val (validationCode, validationText) = http.awaitText(validationRequest)
         recordDiagnosticResponse("session.claim.validation", validationRequest, validationCode, validationText)
         val validation = runCatching { OpenNowJson.parseToJsonElement(validationText).jsonObject }.getOrNull()
+        sessionClaimResponseFailure(validationCode, validation?.obj("requestStatus")?.int("statusCode"))
+            ?.let { throw IllegalStateException(it) }
         val status = validation?.obj("session")?.int("status")
         if (status != null && isTerminalSessionStatus(status)) {
             val latestSession = runCatching {
@@ -3322,6 +3311,7 @@ class GfnSessionRepository(
             recordDiagnosticResponse("session.claim.put", claimRequest, claimCode, claimText)
         }
         var latestSession: SessionInfo? = null
+        var consecutivePollFailures = 0
         repeat(60) { attempt ->
             if (attempt > 0) delay(1000)
             val poll = Request.Builder()
@@ -3330,8 +3320,16 @@ class GfnSessionRepository(
                 .build()
             val (code, text) = http.awaitText(poll)
             recordDiagnosticResponse("session.claim.poll", poll, code, text)
-            if (code in 200..299) {
-                val payload = OpenNowJson.parseToJsonElement(text).jsonObject
+            val payload = if (code in 200..299) {
+                runCatching { OpenNowJson.parseToJsonElement(text).jsonObject }.getOrNull()
+            } else null
+            val failure = sessionClaimResponseFailure(code, payload?.obj("requestStatus")?.int("statusCode"), "poll")
+            if (failure != null) {
+                consecutivePollFailures += 1
+                if (consecutivePollFailures >= 3) throw IllegalStateException(failure)
+            } else {
+                consecutivePollFailures = 0
+                checkNotNull(payload)
                 val pollStatus = payload.obj("session")?.int("status")
                 val polledSession = toSessionInfo("", sessionBase, payload, clientId, deviceId)
                 latestSession = polledSession

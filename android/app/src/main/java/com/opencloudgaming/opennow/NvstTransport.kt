@@ -11,6 +11,7 @@ import kotlinx.serialization.json.*
 import org.webrtc.*
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.net.URI
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
@@ -49,7 +50,7 @@ internal fun JsonObject.isRtspSessionConnection(): Boolean {
     val resource = (get("resourcePath") as? JsonPrimitive)?.contentOrNull.orEmpty()
     return resource.startsWith("rtsps://") || resource.startsWith("rtsp://") ||
         (get("usage") as? JsonPrimitive)?.contentOrNull == "16" ||
-        (get("appLevelProtocol") as? JsonPrimitive)?.contentOrNull == "6"
+        (get("appLevelProtocol") as? JsonPrimitive)?.contentOrNull in listOf("1", "6")
 }
 
 internal fun webRtcMediaFallbackConnections(connections: List<JsonObject>): List<JsonObject> =
@@ -60,13 +61,25 @@ internal fun webRtcMediaFallbackConnections(connections: List<JsonObject>): List
 internal fun nvstRtspEndpoints(connections: JsonArray?): List<String> = connections.orEmpty().mapNotNull { raw ->
     val item = raw as? JsonObject ?: return@mapNotNull null
     fun value(key: String) = (item[key] as? JsonPrimitive)?.contentOrNull
-    val resource = value("resourcePath").orEmpty()
-    if (resource.startsWith("rtsps://") || resource.startsWith("rtsp://")) return@mapNotNull resource
-    if (!item.isRtspSessionConnection()) return@mapNotNull null
-    val host = value("ip")?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-    val port = value("port")?.toIntOrNull()?.takeIf { it in 1..65535 } ?: 322
-    "rtsps://${if (':' in host && !host.startsWith("[")) "[$host]" else host}:$port"
-}.distinct()
+    val usage = value("usage")?.toIntOrNull()
+    val protocol = value("appLevelProtocol")?.toIntOrNull()
+    // Keep the provider's order and exclude media even when its resource looks
+    // like a signalling URL. Older responses may omit usage altogether.
+    if (usage != null && usage != 16 && !(usage == 14 && protocol in listOf(1, 6))) return@mapNotNull null
+    if (usage == null && !item.isRtspSessionConnection()) return@mapNotNull null
+    val address = value("ip")?.trim()?.takeIf { it.isNotEmpty() }
+        ?: value("resourcePath")?.trim()?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+    val scheme = if (protocol == 1) "rtsp" else "rtsps"
+    val endpoint = runCatching { URI(if ("://" in address) address else {
+        val host = if (address.count { it == ':' } > 1 && !address.startsWith("[")) "[$address]" else address
+        "$scheme://$host"
+    }) }.getOrNull() ?: return@mapNotNull null
+    if (endpoint.scheme !in listOf("rtsp", "rtsps") || endpoint.rawUserInfo != null || endpoint.rawQuery != null || endpoint.rawFragment != null) return@mapNotNull null
+    val host = endpoint.host?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+    val port = value("port")?.toIntOrNull()?.takeIf { it in 1..65535 }
+        ?: endpoint.port.takeIf { it in 1..65535 } ?: 322
+    "${endpoint.scheme}://${if (':' in host && !host.startsWith("[")) "[$host]" else host}:$port"
+}.distinct().take(20)
 
 internal fun nvstSessionContext(session: SessionInfo, settings: StreamSettings): String = buildJsonObject {
     put("session", buildJsonObject {

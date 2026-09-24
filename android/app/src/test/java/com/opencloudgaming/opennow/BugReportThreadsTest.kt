@@ -52,6 +52,7 @@ class BugReportThreadsTest {
         assertTrue(androidBugReportThreadClosed("completed"))
         assertTrue(androidBugReportThreadClosed("not_reproducible"))
         assertTrue(androidBugReportThreadClosed("wont_fix"))
+        assertTrue(androidBugReportThreadClosed("closed_by_reporter"))
         assertTrue(!androidBugReportThreadClosed("needs_info"))
     }
 

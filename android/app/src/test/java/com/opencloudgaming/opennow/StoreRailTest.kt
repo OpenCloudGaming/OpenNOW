@@ -138,13 +138,17 @@ class StoreRailTest {
     }
 
     @Test
-    fun storeHeroUsesEveryDeviceLayoutAndHonorsHandheldLandscapeOptOut() {
+    fun storeHeroUsesEveryDeviceLayoutAndHonorsHorizontalDeviceOptOut() {
         assertTrue(shouldShowStoreHero(tvProfile = false, landscape = false))
         assertTrue(shouldShowStoreHero(tvProfile = false, landscape = true))
         assertFalse(shouldShowStoreHero(tvProfile = false, landscape = true, landscapeEnabled = false))
         assertTrue(shouldShowStoreHero(tvProfile = true, landscape = false))
         assertTrue(shouldShowStoreHero(tvProfile = true, landscape = true))
-        assertTrue(shouldShowStoreHero(tvProfile = true, landscape = true, landscapeEnabled = false))
+        assertFalse(shouldShowStoreHero(tvProfile = true, landscape = true, landscapeEnabled = false))
+        assertFalse(shouldShowStoreHero(tvProfile = true, landscape = false, landscapeEnabled = false))
+        assertFalse(shouldOfferStoreHeroCollapse(tvProfile = false, landscape = false))
+        assertTrue(shouldOfferStoreHeroCollapse(tvProfile = false, landscape = true))
+        assertTrue(shouldOfferStoreHeroCollapse(tvProfile = true, landscape = true))
     }
 
     @Test

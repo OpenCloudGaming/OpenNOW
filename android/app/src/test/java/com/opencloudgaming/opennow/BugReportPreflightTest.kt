@@ -15,6 +15,32 @@ class BugReportPreflightTest {
     )
 
     @Test
+    fun reportFormRequiresConsentAndAcknowledgementOnlyWhenWarningsExist() {
+        val healthy = BugReportPreflightDeck(listOf(
+            BugReportPreflightCard(
+                area = BugReportPreflightArea.Connection,
+                label = "Connection",
+                title = "Healthy",
+                summary = "No warning",
+                facts = emptyList(),
+                recommendations = emptyList(),
+                tone = BugReportPreflightTone.Healthy,
+            ),
+        ))
+        val warning = BugReportPreflightDeck(healthy.cards + healthy.cards.first().copy(tone = BugReportPreflightTone.Warning))
+
+        assertFalse(healthy.hasWarnings())
+        assertFalse(canContinueBugReportPreflight(healthy, consentChecked = false, warningsAcknowledged = false))
+        assertTrue(canContinueBugReportPreflight(healthy, consentChecked = true, warningsAcknowledged = false))
+        assertTrue(warning.hasWarnings())
+        assertFalse(canContinueBugReportPreflight(warning, consentChecked = false, warningsAcknowledged = true))
+        assertFalse(canContinueBugReportPreflight(warning, consentChecked = true, warningsAcknowledged = false))
+        assertTrue(canContinueBugReportPreflight(warning, consentChecked = true, warningsAcknowledged = true))
+        assertFalse(canContinueBugReportPreflight(healthy, consentChecked = true, warningsAcknowledged = false, additionalWarning = true))
+        assertTrue(canContinueBugReportPreflight(healthy, consentChecked = true, warningsAcknowledged = true, additionalWarning = true))
+    }
+
+    @Test
     fun detectsManualServerFromSelectorOrConfiguredRegion() {
         assertFalse(manuallySelectedServerForReport(null, ""))
         assertFalse(manuallySelectedServerForReport("", ""))

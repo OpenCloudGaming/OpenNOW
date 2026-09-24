@@ -208,8 +208,10 @@ fn run(
         return Ok(());
     }
     let mut bundle = ReservedNvstBundle::reserve().map_err(|e| e.to_string())?;
-    let mut prepared = nvst_rtsp::prepare_owned_nvst(&context, &mut bundle)
-        .map_err(|e| format!("{}: {}", e.code, e.message))?;
+    let mut prepared = nvst_rtsp::prepare_owned_nvst(&context, &mut bundle, || {
+        state.stopped.load(Ordering::Acquire)
+    })
+    .map_err(|e| format!("{}: {}", e.code, e.message))?;
     if state.stopped.load(Ordering::Acquire) {
         return Ok(());
     }
@@ -219,7 +221,9 @@ fn run(
             .map_err(|e| e.to_string())?
             .ok_or("Missing NVST handoff")?;
     let feedback = config.feedback();
+    feedback.set_application_ready(false);
     *state.feedback.lock().unwrap() = Some(feedback.clone());
+    prepared.announce().map_err(|e| e.message)?;
     let (socket, rtc, video_socket) = bundle.into_parts();
     let (sender, media) = mpsc::sync_channel(8);
     let (events_sender, events) = mpsc::channel();
@@ -243,8 +247,8 @@ fn run(
     if state.stopped.load(Ordering::Acquire) {
         return Ok(());
     }
-    prepared.announce().map_err(|e| e.message)?;
     let _rtsp = prepared.finish().map_err(|e| e.message)?;
+    feedback.set_application_ready(true);
     event(env, callback, "connected", "NVST encrypted UDP").map_err(|e| e.to_string())?;
     let mut last_stats = Instant::now();
     let mut round_trip_ms = None;

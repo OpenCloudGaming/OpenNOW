@@ -28,3 +28,10 @@ object OpenNowMotion {
  * — an animation that never ends is the one that actually hurts.
  */
 val LocalReduceMotion = staticCompositionLocalOf { false }
+
+/**
+ * User/system motion preference for the short-lived controller focus effect. Capability-based
+ * background throttling must not silently turn an explicitly enabled focus effect into a static
+ * border on TV.
+ */
+val LocalReduceControllerFocusMotion = staticCompositionLocalOf { false }

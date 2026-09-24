@@ -159,29 +159,26 @@ class GfnApiTest {
     }
 
     @Test
-    fun thirdGenerationFireTvCubeDetectionRequiresTheExactAmazonTvModel() {
-        assertTrue(isThirdGenerationFireTvCubeDevice(true, "Amazon", "AFTGAZL"))
-        assertTrue(isThirdGenerationFireTvCubeDevice(true, " amazon ", " aftgazl "))
-        assertFalse(isThirdGenerationFireTvCubeDevice(false, "Amazon", "AFTGAZL"))
-        assertFalse(isThirdGenerationFireTvCubeDevice(true, "Amazon", "AFTKA"))
-        assertFalse(isThirdGenerationFireTvCubeDevice(true, "Google", "AFTGAZL"))
-    }
-
-    @Test
-    fun desktopNativeTvAllocationIsLimitedToKnownAffectedDevices() {
-        assertTrue(usesDesktopNativeTvCloudMatchIdentity(true, "NVIDIA", "SHIELD Android TV"))
-        assertTrue(usesDesktopNativeTvCloudMatchIdentity(true, "Amazon", "AFTGAZL"))
-        assertFalse(usesDesktopNativeTvCloudMatchIdentity(true, "Amazon", "AFTKA"))
-        assertFalse(usesDesktopNativeTvCloudMatchIdentity(true, "Google", "Chromecast"))
-    }
-
-    @Test
     fun recoveryClaimDoesNotResumeAnAlreadyReadySession() {
         assertFalse(shouldResumeClaimedSession(status = 1, recoveryMode = false))
         assertTrue(shouldResumeClaimedSession(status = 2, recoveryMode = false))
         assertFalse(shouldResumeClaimedSession(status = 2, recoveryMode = true))
         assertFalse(shouldResumeClaimedSession(status = 3, recoveryMode = true))
         assertTrue(shouldResumeClaimedSession(status = null, recoveryMode = true))
+    }
+
+    @Test
+    fun claimValidationRejectsHttpAndProviderFailuresBeforeResuming() {
+        assertEquals(
+            "Cloud session validation failed (HTTP 500).",
+            sessionClaimResponseFailure(httpStatus = 500, requestStatus = 4),
+        )
+        assertEquals(
+            "Cloud session validation failed (provider status 4).",
+            sessionClaimResponseFailure(httpStatus = 200, requestStatus = 4),
+        )
+        assertTrue(sessionClaimResponseFailure(httpStatus = 200, requestStatus = null) != null)
+        assertNull(sessionClaimResponseFailure(httpStatus = 200, requestStatus = 1))
     }
 
     @Test
@@ -620,6 +617,7 @@ class GfnApiTest {
     fun androidAppLocalesMapToCloudMatchCatalogLocales() {
         assertEquals("ar_SA", gfnLocaleForAndroidLanguageTag("ar"))
         assertEquals("fr_FR", gfnLocaleForAndroidLanguageTag("fr-CA"))
+        assertEquals("id_ID", gfnLocaleForAndroidLanguageTag("id"))
         assertEquals("pt_PT", gfnLocaleForAndroidLanguageTag("pt"))
         assertEquals("pt_BR", gfnLocaleForAndroidLanguageTag("pt-BR"))
         assertEquals("zh_CN", gfnLocaleForAndroidLanguageTag("zh-Hans"))
@@ -781,7 +779,7 @@ class GfnApiTest {
             appLaunchMode = GfnAppLaunchMode.GAMEPAD_FRIENDLY,
             preferNativeDesktopMode = true,
             isAndroidTv = true,
-            useDesktopNativeTvIdentity = usesDesktopNativeTvCloudMatchIdentity(true, "Amazon", "AFTGAZL"),
+            useDesktopNativeTvIdentity = true,
         )
 
         assertEquals("NVIDIA-CLASSIC", headers["nv-client-streamer"])
@@ -792,7 +790,7 @@ class GfnApiTest {
     }
 
     @Test
-    fun cloudMatchKeepsAndroidNativeIdentityForOtherHighQualityTvProfiles() {
+    fun cloudMatchUsesDesktopNativeIdentityForOtherHighQualityTvProfiles() {
         val headers = cloudMatchHeaders(
             token = "token",
             clientId = "client",
@@ -802,14 +800,14 @@ class GfnApiTest {
             appLaunchMode = GfnAppLaunchMode.GAMEPAD_FRIENDLY,
             preferNativeDesktopMode = true,
             isAndroidTv = true,
-            useDesktopNativeTvIdentity = false,
+            useDesktopNativeTvIdentity = true,
         )
 
         assertEquals("NVIDIA-CLASSIC", headers["nv-client-streamer"])
         assertEquals("NATIVE", headers["nv-client-type"])
-        assertEquals("ANDROID", headers["nv-device-os"])
+        assertEquals("WINDOWS", headers["nv-device-os"])
         assertEquals("DESKTOP", headers["nv-device-type"])
-        assertTrue(headers["User-Agent"].orEmpty().contains("Android-Generic-TV"))
+        assertFalse(headers["User-Agent"].orEmpty().contains("Android-Generic-TV"))
     }
 
     @Test
@@ -1298,7 +1296,7 @@ class GfnApiTest {
             streamingBaseUrl = "https://np-mia-04.cloudmatchbeta.nvidiagrid.net",
             appLaunchMode = GfnAppLaunchMode.GAMEPAD_FRIENDLY,
             isAndroidTv = true,
-            useDesktopNativeTvIdentity = usesDesktopNativeTvCloudMatchIdentity(true, "Amazon", "AFTGAZL"),
+            useDesktopNativeTvIdentity = true,
         ).getValue("sessionRequestData").jsonObject
         val monitor = sessionRequestData.getValue("clientRequestMonitorSettings").jsonArray.single().jsonObject
 
@@ -1311,7 +1309,7 @@ class GfnApiTest {
     }
 
     @Test
-    fun otherAndroidTvFourKClaimKeepsAndroidPlatformAllocation() {
+    fun otherAndroidTvFourKClaimUsesDesktopPlatformAllocation() {
         val sessionRequestData = buildMinimalClaimRequestBody(
             appId = "123",
             deviceId = "device",
@@ -1319,11 +1317,11 @@ class GfnApiTest {
             streamingBaseUrl = "https://np-sth-04.cloudmatchbeta.nvidiagrid.net",
             appLaunchMode = GfnAppLaunchMode.GAMEPAD_FRIENDLY,
             isAndroidTv = true,
-            useDesktopNativeTvIdentity = false,
+            useDesktopNativeTvIdentity = true,
         ).getValue("sessionRequestData").jsonObject
 
-        assertEquals("android", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
-        assertEquals(false, sessionRequestData.getValue("enablePersistingInGameSettings").jsonPrimitive.boolean)
+        assertEquals("windows", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
+        assertEquals(true, sessionRequestData.getValue("enablePersistingInGameSettings").jsonPrimitive.boolean)
     }
 
     @Test

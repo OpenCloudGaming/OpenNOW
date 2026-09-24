@@ -93,6 +93,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Cast
+import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -230,6 +231,10 @@ internal fun HomeScreen(
         viewModel.selectGame(game)
         haptics?.play(HapticCue.Activate)
     }
+    val selectRailGameWithHaptic: (GameInfo, StorePersonalRail) -> Unit = { game, sourceRail ->
+        viewModel.selectGame(game, sourceRail)
+        haptics?.play(HapticCue.Activate)
+    }
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val showSearch = searchRequested || state.catalogSearch.isNotBlank()
@@ -304,6 +309,7 @@ internal fun HomeScreen(
                         placeholder = stringResource(R.string.search_games),
                         searching = searchingCatalog,
                         focusRequester = searchFocusRequester,
+                        gamepadImeMode = tvProfile,
                         onOpen = {
                             if (gridState.firstVisibleItemIndex > 0 || gridState.firstVisibleItemScrollOffset > 0) {
                                 scope.launch { gridState.animateScrollToItem(0) }
@@ -375,11 +381,10 @@ internal fun HomeScreen(
                             tvProfile = tvProfile,
                             state = state,
                             onSelect = selectGameWithHaptic,
+                            onSelectFromRail = selectRailGameWithHaptic,
                             onFavorite = viewModel::updateFavorites,
                             onPlay = viewModel::play,
                             onChooseStore = viewModel::chooseStore,
-                            onDismissContinuePlaying = viewModel::dismissContinuePlaying,
-                            onRemoveQueuedGame = viewModel::removeQueuedGame,
                             onSortChange = viewModel::setCatalogSort,
                             onFilterToggle = viewModel::toggleCatalogFilter,
                             onLandscapeNewGamesCollapsedChange = viewModel::setLandscapeNewGamesHeroCollapsed,
@@ -623,6 +628,7 @@ internal fun LibraryScreen(
                         },
                         placeholder = "Search library",
                         focusRequester = searchFocusRequester,
+                        gamepadImeMode = tvProfile,
                     )
                 }
                 if (localAppsShelfVisible) {
@@ -1634,11 +1640,10 @@ private fun StoreGameGrid(
     tvProfile: Boolean,
     state: OpenNowUiState,
     onSelect: (GameInfo) -> Unit,
+    onSelectFromRail: (GameInfo, StorePersonalRail) -> Unit,
     onFavorite: (String) -> Unit,
     onPlay: (GameInfo) -> Unit,
     onChooseStore: (GameInfo) -> Unit,
-    onDismissContinuePlaying: (GameInfo) -> Unit,
-    onRemoveQueuedGame: (GameInfo) -> Unit,
     onSortChange: (String) -> Unit,
     onFilterToggle: (String) -> Unit,
     onLandscapeNewGamesCollapsedChange: (Boolean) -> Unit,
@@ -1737,12 +1742,12 @@ private fun StoreGameGrid(
                                 tvProfile = tvProfile,
                                 controllerActionMode = controllerActionMode,
                                 topFocusRequester = topFocusRequester,
-                                onSelect = onSelect,
+                                onSelect = { game, sourceRail ->
+                                    if (sourceRail == null) onSelect(game) else onSelectFromRail(game, sourceRail)
+                                },
                                 onFavorite = onFavorite,
                                 onPlay = onPlay,
                                 onChooseStore = onChooseStore,
-                                onDismissContinuePlaying = onDismissContinuePlaying,
-                                onRemoveQueuedGame = onRemoveQueuedGame,
                                 onLandscapeNewGamesCollapsedChange = onLandscapeNewGamesCollapsedChange,
                             )
                         }
@@ -1799,12 +1804,10 @@ private fun StoreStartRails(
     tvProfile: Boolean,
     controllerActionMode: Boolean,
     topFocusRequester: FocusRequester?,
-    onSelect: (GameInfo) -> Unit,
+    onSelect: (GameInfo, StorePersonalRail?) -> Unit,
     onFavorite: (String) -> Unit,
     onPlay: (GameInfo) -> Unit,
     onChooseStore: (GameInfo) -> Unit,
-    onDismissContinuePlaying: (GameInfo) -> Unit,
-    onRemoveQueuedGame: (GameInfo) -> Unit,
     onLandscapeNewGamesCollapsedChange: (Boolean) -> Unit,
 ) {
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
@@ -1842,6 +1845,7 @@ private fun StoreStartRails(
         // The exact same hero leads on handheld and TV. Its aspect ratio adapts to the surface,
         // but its feed, interaction model, and visual treatment remain shared.
         if (featured.isNotEmpty()) {
+            val collapseAvailable = shouldOfferStoreHeroCollapse(tvProfile, landscape)
             StoreComingNextCarousel(
                 title = stringResource(R.string.catalog_sort_new_games),
                 games = featured,
@@ -1850,12 +1854,12 @@ private fun StoreStartRails(
                 tvProfile = tvProfile,
                 controllerActionMode = controllerActionMode,
                 upFocusRequester = topFocusRequester,
-                onSelect = onSelect,
+                onSelect = { game -> onSelect(game, null) },
                 onFavorite = onFavorite,
                 onPlay = onPlay,
                 onChooseStore = onChooseStore,
-                collapsed = landscape && !tvProfile && settings.landscapeNewGamesHeroCollapsed,
-                onCollapsedChange = if (landscape && !tvProfile) {
+                collapsed = collapseAvailable && settings.landscapeNewGamesHeroCollapsed,
+                onCollapsedChange = if (collapseAvailable) {
                     onLandscapeNewGamesCollapsedChange
                 } else null,
             )
@@ -1872,8 +1876,7 @@ private fun StoreStartRails(
             onFavorite,
             onPlay,
             onChooseStore,
-            onDismissContinuePlaying,
-            R.string.store_remove_from_continue_playing,
+            StorePersonalRail.ContinuePlaying,
         )
         StoreStartRail(
             R.string.store_in_queue,
@@ -1887,8 +1890,7 @@ private fun StoreStartRails(
             onFavorite,
             onPlay,
             onChooseStore,
-            onRemoveQueuedGame,
-            R.string.store_remove_from_queue,
+            StorePersonalRail.InQueue,
         )
         StoreStartRail(
             R.string.store_favorites,
@@ -1905,7 +1907,6 @@ private fun StoreStartRails(
             onPlay,
             onChooseStore,
             null,
-            null,
         )
     }
 }
@@ -1917,7 +1918,10 @@ internal fun shouldShowStoreHero(
     tvProfile: Boolean,
     landscape: Boolean,
     landscapeEnabled: Boolean = true,
-): Boolean = tvProfile || !landscape || landscapeEnabled
+): Boolean = if (tvProfile) landscapeEnabled else !landscape || landscapeEnabled
+
+internal fun shouldOfferStoreHeroCollapse(tvProfile: Boolean, landscape: Boolean): Boolean =
+    tvProfile || landscape
 
 internal fun shouldShowCatalogLoadingPlaceholder(
     queryLoading: Boolean,
@@ -1951,12 +1955,11 @@ private fun StoreStartRail(
     tvProfile: Boolean,
     controllerActionMode: Boolean,
     upFocusRequester: FocusRequester?,
-    onSelect: (GameInfo) -> Unit,
+    onSelect: (GameInfo, StorePersonalRail?) -> Unit,
     onFavorite: (String) -> Unit,
     onPlay: (GameInfo) -> Unit,
     onChooseStore: (GameInfo) -> Unit,
-    onRemove: ((GameInfo) -> Unit)?,
-    @StringRes removeLabelRes: Int?,
+    sourceRail: StorePersonalRail?,
 ) {
     if (games.isEmpty()) return
     StoreRailSection(
@@ -1971,8 +1974,7 @@ private fun StoreStartRail(
         onFavorite = onFavorite,
         onPlay = onPlay,
         onChooseStore = onChooseStore,
-        onRemove = onRemove,
-        removeLabelRes = removeLabelRes,
+        sourceRail = sourceRail,
     )
 }
 
@@ -2401,12 +2403,11 @@ private fun StoreRailSection(
     tvProfile: Boolean,
     controllerActionMode: Boolean,
     upFocusRequester: FocusRequester?,
-    onSelect: (GameInfo) -> Unit,
+    onSelect: (GameInfo, StorePersonalRail?) -> Unit,
     onFavorite: (String) -> Unit,
     onPlay: (GameInfo) -> Unit,
     onChooseStore: (GameInfo) -> Unit,
-    onRemove: ((GameInfo) -> Unit)?,
-    @StringRes removeLabelRes: Int?,
+    sourceRail: StorePersonalRail?,
 ) {
     val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val railState = rememberLazyListState()
@@ -2464,12 +2465,10 @@ private fun StoreRailSection(
                                 imageRequestWidth = imageRequestWidth,
                                 controllerActionMode = controllerActionMode,
                                 upFocusRequester = upFocusRequester,
-                                onSelect = onSelect,
+                                onSelect = { selected -> onSelect(selected, sourceRail) },
                                 onFavorite = onFavorite,
                                 onPlay = onPlay,
                                 onChooseStore = onChooseStore,
-                                onRemove = onRemove,
-                                removeLabel = removeLabelRes?.let { stringResource(it, game.title) },
                             )
                         }
                     }
@@ -2496,8 +2495,6 @@ private fun StoreRailGameCard(
     onFavorite: (String) -> Unit,
     onPlay: (GameInfo) -> Unit,
     onChooseStore: (GameInfo) -> Unit,
-    onRemove: ((GameInfo) -> Unit)?,
-    removeLabel: String?,
 ) {
     var focused by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
@@ -2637,13 +2634,6 @@ private fun StoreRailGameCard(
                 cornerRadius = if (expressiveUi) 12.dp else 8.dp,
                 tint = if (selectedOutline || LocalAbsoluteCinemaEffects.current) LocalActiveSelectionColor.current else Color.White,
                 secondaryTint = if (selectedOutline || LocalAbsoluteCinemaEffects.current) LocalActiveSelectionSecondaryColor.current else Color.White,
-            )
-        }
-        if (onRemove != null && removeLabel != null) {
-            StoreRailRemoveButton(
-                label = removeLabel,
-                onClick = { onRemove(game) },
-                size = 28.dp,
             )
         }
     }
@@ -3402,6 +3392,8 @@ internal fun GameDetailsSheet(
     onFavorite: (String) -> Unit,
     connectedTvName: String?,
     onPlayOnTv: (GameInfo) -> Unit,
+    removeFromRailLabel: String? = null,
+    onRemoveFromRail: (() -> Unit)? = null,
     onDismiss: () -> Unit,
 ) {
     val transitionRegistry = LocalGameDetailsTransitionRegistry.current
@@ -3612,6 +3604,8 @@ internal fun GameDetailsSheet(
                         onFavorite = onFavorite,
                         connectedTvName = connectedTvName,
                         onPlayOnTv = onPlayOnTv,
+                        removeFromRailLabel = removeFromRailLabel,
+                        onRemoveFromRail = onRemoveFromRail,
                         onDismiss = onDismiss,
                         gameFocusRequester = gameFocusRequester,
                         playFocusRequester = playFocusRequester,
@@ -3628,6 +3622,8 @@ internal fun GameDetailsSheet(
                         onFavorite = onFavorite,
                         connectedTvName = connectedTvName,
                         onPlayOnTv = onPlayOnTv,
+                        removeFromRailLabel = removeFromRailLabel,
+                        onRemoveFromRail = onRemoveFromRail,
                         onDismiss = onDismiss,
                         gameFocusRequester = gameFocusRequester,
                         playFocusRequester = playFocusRequester,
@@ -3673,6 +3669,8 @@ private fun GameDetailsLandscapeContent(
     onFavorite: (String) -> Unit,
     connectedTvName: String?,
     onPlayOnTv: (GameInfo) -> Unit,
+    removeFromRailLabel: String?,
+    onRemoveFromRail: (() -> Unit)?,
     onDismiss: () -> Unit,
     gameFocusRequester: FocusRequester,
     playFocusRequester: FocusRequester,
@@ -3744,6 +3742,13 @@ private fun GameDetailsLandscapeContent(
                             .width(150.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
+                        if (removeFromRailLabel != null && onRemoveFromRail != null) {
+                            StoreRailRemoveButton(
+                                label = removeFromRailLabel,
+                                onClick = onRemoveFromRail,
+                                size = 48.dp,
+                            )
+                        }
                         connectedTvName?.let {
                             OutlinedButton(
                                 onClick = {
@@ -3832,6 +3837,13 @@ private fun GameDetailsLandscapeContent(
                             overflow = TextOverflow.Ellipsis
                         )
                     }
+                    if (removeFromRailLabel != null && onRemoveFromRail != null) {
+                        StoreRailRemoveButton(
+                            label = removeFromRailLabel,
+                            onClick = onRemoveFromRail,
+                            size = 48.dp,
+                        )
+                    }
                     LongPressPlayButton(
                         onClick = {
                             onDismiss()
@@ -3893,6 +3905,8 @@ private fun GameDetailsScrollableContent(
     onFavorite: (String) -> Unit,
     connectedTvName: String?,
     onPlayOnTv: (GameInfo) -> Unit,
+    removeFromRailLabel: String?,
+    onRemoveFromRail: (() -> Unit)?,
     onDismiss: () -> Unit,
     gameFocusRequester: FocusRequester,
     playFocusRequester: FocusRequester,
@@ -4018,6 +4032,13 @@ private fun GameDetailsScrollableContent(
                     onClick = { onFavorite(game.id) },
                     size = 48.dp,
                 )
+                if (removeFromRailLabel != null && onRemoveFromRail != null) {
+                    StoreRailRemoveButton(
+                        label = removeFromRailLabel,
+                        onClick = onRemoveFromRail,
+                        size = 48.dp,
+                    )
+                }
                 LongPressPlayButton(
                     onClick = {
                         onDismiss()
@@ -4292,17 +4313,18 @@ private fun StoreRailRemoveButton(
     size: Dp = 44.dp,
 ) {
     var focused by remember { mutableStateOf(false) }
+    var confirmOpen by remember(label) { mutableStateOf(false) }
     val accent = MaterialTheme.colorScheme.primary
     Box(
         modifier = modifier
             .minimumInteractiveComponentSize()
-            .size(44.dp)
+            .size(maxOf(size, 44.dp))
             .onFocusChanged { focused = it.isFocused }
             .semantics {
                 contentDescription = label
                 role = Role.Button
             }
-            .clickable(onClick = onClick)
+            .clickable { confirmOpen = true }
             .focusable(),
         contentAlignment = Alignment.Center,
     ) {
@@ -4317,13 +4339,33 @@ private fun StoreRailRemoveButton(
         ) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Icon(
-                    painter = painterResource(R.drawable.ic_clear),
+                    imageVector = Icons.Outlined.DeleteOutline,
                     contentDescription = null,
                     tint = TextPrimary,
                     modifier = Modifier.size(size * 0.5f),
                 )
             }
         }
+    }
+    if (confirmOpen) {
+        AlertDialog(
+            onDismissRequest = { confirmOpen = false },
+            title = { Text(stringResource(R.string.store_remove_confirm_title)) },
+            text = { Text(label) },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmOpen = false
+                    onClick()
+                }) {
+                    Text(stringResource(R.string.library_remove_local_app_confirm))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmOpen = false }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
     }
 }
 

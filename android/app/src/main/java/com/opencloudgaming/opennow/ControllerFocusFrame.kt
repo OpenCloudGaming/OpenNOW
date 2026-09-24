@@ -21,6 +21,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.toComposePathEffect
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.opencloudgaming.opennow.ui.theme.LocalReduceControllerFocusMotion
 import com.opencloudgaming.opennow.ui.theme.LocalReduceMotion
 import com.opencloudgaming.opennow.ui.theme.OpenNowPalette
 import kotlin.math.PI
@@ -102,7 +103,10 @@ internal fun controllerFocusEnergyColors(
     absoluteCinemaPalette: Boolean,
     tint: Color?,
     secondaryTint: Color?,
-): Pair<Color, Color> = if (absoluteCinemaPalette) {
+    customColors: SelectionEffectColors? = null,
+): Pair<Color, Color> = if (customColors != null) {
+    Color(customColors.firstRgb or 0xFF000000.toInt()) to Color(customColors.secondRgb or 0xFF000000.toInt())
+} else if (absoluteCinemaPalette) {
     OpenNowPalette.AccentCinemaOrange to OpenNowPalette.AccentCinemaBlue
 } else {
     (tint ?: Color.White) to (secondaryTint ?: tint?.focusShade() ?: Color.White)
@@ -123,16 +127,20 @@ internal fun BoxScope.ControllerFocusFrame(
     // This component used to fall back to a solid white outline. Borders now belong exclusively
     // to the opt-in Absolute Cinema mode.
     if (!visible || !LocalAbsoluteCinemaEffects.current) return
-    val absoluteCinemaPalette = LocalAbsoluteCinemaPalette.current
+    val customColors = LocalSelectionEffectColors.current
+    val absoluteCinemaPalette = LocalAbsoluteCinemaPalette.current && customColors == null
+    val (firstColor, secondColor) = controllerFocusEnergyColors(
+        absoluteCinemaPalette, tint, secondaryTint, customColors,
+    )
     val animateEnergy = shouldAnimateControllerFocusFrame(
         absoluteCinemaEnabled = LocalAbsoluteCinemaEffects.current,
-        reduceMotion = LocalReduceMotion.current,
+        reduceMotion = LocalReduceControllerFocusMotion.current,
     )
     if (!animateEnergy) {
         Canvas(Modifier.matchParentSize()) {
             val insetPx = verticalInset.toPx().coerceIn(0f, size.height / 2f)
             drawRoundRect(
-                color = (tint ?: Color.White).copy(alpha = 0.96f),
+                color = (if (customColors != null) firstColor else tint ?: Color.White).copy(alpha = 0.96f),
                 topLeft = Offset(0f, insetPx),
                 size = Size(size.width, (size.height - insetPx * 2f).coerceAtLeast(0f)),
                 cornerRadius = CornerRadius(cornerRadius.toPx(), cornerRadius.toPx()),
@@ -211,20 +219,15 @@ internal fun BoxScope.ControllerFocusFrame(
             )
         }
 
-        val (firstColor, secondColor) = controllerFocusEnergyColors(
-            absoluteCinemaPalette = absoluteCinemaPalette,
-            tint = tint,
-            secondaryTint = secondaryTint,
-        )
         val firstHotColor = if (absoluteCinemaPalette) {
             Color(0xffffd166)
         } else {
-            tint?.focusHighlight() ?: Color.White
+            if (customColors != null) firstColor.focusHighlight() else tint?.focusHighlight() ?: Color.White
         }
         val secondHotColor = if (absoluteCinemaPalette) {
             Color(0xffd9f8ff)
         } else {
-            secondaryTint?.focusHighlight() ?: tint ?: Color.White
+            if (customColors != null) secondColor.focusHighlight() else secondaryTint?.focusHighlight() ?: tint ?: Color.White
         }
         drawEnergyArc(firstColor, firstHotColor, fireArc, fireStatic)
         drawEnergyArc(secondColor, secondHotColor, blueArc, blueStatic)

@@ -6,6 +6,27 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class NvstTransportTest {
+    @Test fun nvstHdrDoesNotRequestAiHdrConversion() {
+        val settings = StreamSettings(experimentalNvst = true, codec = VideoCodec.H265,
+            colorQuality = ColorQuality.TenBit420, hdrEnabled = true)
+        val request = buildMinimalClaimRequestBody("123", "device", settings)["sessionRequestData"]!!.jsonObject
+        assertFalse(request["requestedStreamingFeatures"]!!.jsonObject["trueHdr"]!!.jsonPrimitive.boolean)
+    }
+
+    @Test fun endpointSelectionUsesSessionOrderAndIpBeforeResourceAndIgnoresMedia() {
+        val connections = OpenNowJson.parseToJsonElement("""[
+          {"usage":15,"appLevelProtocol":6,"resourcePath":"rtsps://media.example:322"},
+          {"usage":14,"appLevelProtocol":6,"ip":"seat.partner.example","resourcePath":"rtsps://stale.example:322","port":48322},
+          {"usage":14,"appLevelProtocol":6,"ip":"","resourcePath":"rtsps://seat.partner.example:322","port":0},
+          {"usage":16,"ip":"backup.partner.example","port":0},
+          {"usage":14,"appLevelProtocol":4,"ip":"webrtc.example","port":443},
+          {"usage":16,"resourcePath":"rtsps://user:password@invalid.example:322"},
+          {"usage":16,"resourcePath":"/nvst/"}
+        ]""").jsonArray
+        assertEquals(listOf("rtsps://seat.partner.example:48322", "rtsps://seat.partner.example:322",
+            "rtsps://backup.partner.example:322"), nvstRtspEndpoints(connections))
+    }
+
     @Test fun networkMetricsKeepMeasuredRttIndependentOfVideoArrival() {
         assertEquals(NvstNetworkMetrics(null, null, 23), parseNvstNetworkMetrics(",,22.6"))
         assertEquals(NvstNetworkMetrics(0.4, 0.0, 15), parseNvstNetworkMetrics("0.4,0,15.2"))
@@ -108,6 +129,8 @@ class NvstTransportTest {
         ]""").jsonArray.map { it.jsonObject }
         assertEquals(2, nvstRtspEndpoints(JsonArray(connections)).size)
         assertTrue(webRtcMediaFallbackConnections(connections).isEmpty())
+        val rawRtsp = OpenNowJson.parseToJsonElement("""{"usage":14,"appLevelProtocol":1,"ip":"8.8.8.8","port":48010}""").jsonObject
+        assertTrue(webRtcMediaFallbackConnections(listOf(rawRtsp)).isEmpty())
         val webRtc = OpenNowJson.parseToJsonElement("""{"usage":14,"ip":"8.8.8.8","port":49003,"resourcePath":"/nvst/"}""").jsonObject
         assertEquals(listOf(webRtc), webRtcMediaFallbackConnections(connections + webRtc))
         // Some responses identify RTSP only by resourcePath or by application protocol.

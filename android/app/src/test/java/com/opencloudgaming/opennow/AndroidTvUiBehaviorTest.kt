@@ -273,6 +273,22 @@ class AndroidTvUiBehaviorTest {
             Color.Black.copy(alpha = 0.68f),
             navigationRailScrim(darkenForCatalogBackground = true, staticOutlines = true),
         )
+        assertEquals(
+            Color.Black.copy(alpha = 0.15f),
+            navigationRailScrim(
+                darkenForCatalogBackground = false,
+                staticOutlines = false,
+                tvProfile = true,
+            ),
+        )
+        assertEquals(
+            Color.Black.copy(alpha = 0.63f),
+            navigationRailScrim(
+                darkenForCatalogBackground = true,
+                staticOutlines = false,
+                tvProfile = true,
+            ),
+        )
     }
 
     @Test
@@ -281,6 +297,24 @@ class AndroidTvUiBehaviorTest {
         assertTrue(shouldAutomaticallyReduceUiMotion(true, false, false))
         assertTrue(shouldAutomaticallyReduceUiMotion(false, true, false))
         assertTrue(shouldAutomaticallyReduceUiMotion(false, false, true))
+    }
+
+    @Test
+    fun capabilityThrottlingDoesNotDisableAnExplicitlyEnabledControllerEffect() {
+        assertFalse(
+            shouldReduceControllerFocusMotion(
+                systemAnimatorScale = 1f,
+                controllerBackgroundAnimations = true,
+            ),
+        )
+        assertTrue(shouldReduceControllerFocusMotion(0f, controllerBackgroundAnimations = true))
+        assertTrue(shouldReduceControllerFocusMotion(1f, controllerBackgroundAnimations = false))
+    }
+
+    @Test
+    fun tvSearchLeavesDpadEventsForTheSystemKeyboard() {
+        assertFalse(shouldMoveFocusFromSearchField(gamepadImeMode = true))
+        assertTrue(shouldMoveFocusFromSearchField(gamepadImeMode = false))
     }
 
     @Test

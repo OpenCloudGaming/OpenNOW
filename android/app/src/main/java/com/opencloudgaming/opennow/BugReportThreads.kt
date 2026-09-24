@@ -50,17 +50,75 @@ data class AndroidBugReportThread(
 )
 
 internal fun androidBugReportThreadClosed(status: String): Boolean =
-    status in setOf("completed", "not_reproducible", "wont_fix")
+    status in setOf("completed", "not_reproducible", "wont_fix", "closed_by_reporter")
 
 @Immutable
 data class AndroidBugReportThreadsState(
     val loading: Boolean = false,
     val reports: List<AndroidBugReportThread> = emptyList(),
     val postingReportId: String? = null,
+    val changingReportId: String? = null,
     val error: String? = null,
     /** Set only when [error] belongs to a reply composer rather than the inbox refresh. */
     val errorReportId: String? = null,
+    val actionError: String? = null,
+    val actionErrorReportId: String? = null,
 )
+
+internal suspend fun closeAndroidBugReport(
+    http: OkHttpClient,
+    reporterId: String,
+    reportId: String,
+    endpoint: String = ANDROID_BUG_REPORT_ENDPOINT,
+): AndroidBugReportThread {
+    val body = mutateAndroidBugReport(http, reporterId, reportId, endpoint, close = true)
+    return parseAndroidBugReportThreadResponse(body)
+        ?: throw AndroidBugReportUploadException(
+            serverCode = "INVALID_RESPONSE",
+            retryable = false,
+            message = "The bug report service returned an invalid conversation.",
+        )
+}
+
+internal suspend fun deleteAndroidBugReport(
+    http: OkHttpClient,
+    reporterId: String,
+    reportId: String,
+    endpoint: String = ANDROID_BUG_REPORT_ENDPOINT,
+) {
+    mutateAndroidBugReport(http, reporterId, reportId, endpoint, close = false)
+}
+
+private suspend fun mutateAndroidBugReport(
+    http: OkHttpClient,
+    reporterId: String,
+    reportId: String,
+    endpoint: String,
+    close: Boolean,
+): String = withContext(Dispatchers.IO) {
+    require(reporterId.matches(Regex("^br1_[0-9a-f]{64}$"))) { "Bug report installation ID is invalid" }
+    val cleanReportId = reportId.trim()
+    require(cleanReportId.isNotBlank() && cleanReportId.length <= 160) { "Bug report ID is unavailable" }
+    val url = endpoint.toHttpUrl().newBuilder().addPathSegment(cleanReportId).apply {
+        if (close) addPathSegment("close")
+    }.build()
+    val request = Request.Builder()
+        .url(url)
+        .header("Accept", "application/json")
+        .header(ANDROID_BUG_REPORT_REPORTER_HEADER, reporterId)
+        .apply {
+            if (close) post("".toRequestBody()) else delete()
+        }
+        .build()
+    http.newCall(request).execute().use { response ->
+        val body = response.body.string().take(MAX_BUG_REPORT_THREAD_RESPONSE_CHARS)
+        if (!response.isSuccessful) {
+            val serverError = parseAndroidBugReportServerError(body, response.code)
+            throw AndroidBugReportUploadException(serverError.code, serverError.retryable, serverError.message)
+        }
+        body
+    }
+}
 
 internal suspend fun fetchAndroidBugReportThreads(
     http: OkHttpClient,

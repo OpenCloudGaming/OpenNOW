@@ -420,7 +420,7 @@ class BugReportsTest {
     @Test
     fun androidAppLanguageSelectionSupportsEveryBundledLocale() {
         assertTrue(androidAppLanguageSelectionIsSupported(""))
-        listOf("en", "ar", "de", "es", "fr", "ja", "ko", "nl", "pl", "pt", "ro", "ru", "tr", "zh-Hans")
+        listOf("en", "ar", "de", "es", "fr", "id", "ja", "ko", "nl", "pl", "pt", "ro", "ru", "tr", "zh-Hans")
             .forEach { languageTag ->
                 assertTrue(languageTag, androidAppLanguageSelectionIsSupported(languageTag))
             }

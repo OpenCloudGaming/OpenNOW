@@ -569,8 +569,10 @@ data class AppSettings(
     val liveSelectedOutlines: Boolean = false,
     /** One-time migration disabling game borders; later explicit opt-ins remain untouched. */
     val gameBordersDefaultVersion: Int = 0,
-    /** Animated focus energy using the selected interface accent; never changes the accent itself. */
+    /** Animated focus energy; never changes the interface accent itself. */
     val absoluteCinemaEffects: Boolean = false,
+    /** Optional independent colors for animated selection effects. Null follows the theme. */
+    val selectionEffectColors: SelectionEffectColors? = null,
     /** Extends Absolute Cinema to pointer hover and non-controller focus surfaces throughout the UI. */
     val absoluteCinemaEverywhere: Boolean = false,
     val dynamicColor: Boolean = false,

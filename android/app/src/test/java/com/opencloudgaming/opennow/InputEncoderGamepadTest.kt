@@ -12,15 +12,15 @@ import org.junit.Test
 
 class InputEncoderGamepadTest {
     @Test
-    fun gamepadTransportHonorsTheNegotiatedSlotMask() {
-        assertTrue(
+    fun gamepadTransportPreservesTheReliableAndroid175Framing() {
+        assertFalse(
             shouldUsePartiallyReliableGamepadTransport(
                 controllerId = 0,
                 negotiatedMask = 0b1111,
                 partiallyReliableAvailable = true,
             ),
         )
-        assertTrue(
+        assertFalse(
             shouldUsePartiallyReliableGamepadTransport(
                 controllerId = 3,
                 negotiatedMask = 0b1000,

@@ -40,9 +40,17 @@ class AndroidSetupFlowTest {
 
     @Test
     fun `raising the flow version brings existing installs back through setup`() {
-        val completedOnAnOlderRelease = AppSettings(setupFlowCompletedVersion = SETUP_FLOW_VERSION - 1)
-
-        assertTrue(shouldShowSetupFlow(completedOnAnOlderRelease))
+        (1 until SETUP_FLOW_VERSION).forEach { oldVersion ->
+            val completedOnAnOlderRelease = AppSettings(setupFlowCompletedVersion = oldVersion)
+            assertTrue(shouldShowSetupFlow(completedOnAnOlderRelease))
+            assertTrue(isSetupUpgradeNotice(completedOnAnOlderRelease))
+            assertEquals(listOf(SetupStep.GeForceNow), setupStepsFor(completedOnAnOlderRelease))
+            assertEquals(SetupStep.GeForceNow, initialSetupStep(completedOnAnOlderRelease))
+            assertFalse(isSetupUpgradeNotice(completedOnAnOlderRelease.completingSetupFlow()))
+            assertFalse(shouldShowSetupFlow(completedOnAnOlderRelease.completingSetupFlow()))
+        }
+        assertFalse(isSetupUpgradeNotice(AppSettings()))
+        assertEquals(SetupStep.Welcome, initialSetupStep(AppSettings()))
     }
 
     @Test
