@@ -117,6 +117,7 @@ pub(crate) struct QosReport {
     pub(crate) loss_per_ten_thousand: u16,
     pub(crate) client_time_90khz: u32,
     pub(crate) packet_snapshot: Option<QosPacketSnapshot>,
+    pub(crate) bandwidth: crate::nvst_bandwidth::BandwidthFeedback,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,10 +134,17 @@ impl QosReport {
         put_u32(&mut payload, 0, 7);
         put_u32(&mut payload, 8, self.sequence);
         put_u32(&mut payload, 12, self.sender_frame_number);
+        put_u32(&mut payload, 16, self.bandwidth.minimum_server_time);
+        put_u32(&mut payload, 20, self.bandwidth.queue_delay_us);
+        put_u16(&mut payload, 24, self.bandwidth.jitter_us);
         put_u16(&mut payload, 26, self.loss_per_ten_thousand);
+        payload[28] = self.bandwidth.utilization_percent;
         put_u16(&mut payload, 30, 1_000);
         put_u16(&mut payload, 32, 1_000);
         put_u32(&mut payload, 36, self.client_time_90khz);
+        put_u32(&mut payload, 40, self.bandwidth.lossy_frames);
+        put_u32(&mut payload, 44, self.bandwidth.estimate_kbps);
+        put_u32(&mut payload, 48, self.bandwidth.median_server_time);
         NvstControlCommand {
             code: QOS_REPORT_CODE,
             payload,

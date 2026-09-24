@@ -39,6 +39,7 @@ use str0m::stats::CandidatePairStats;
 use str0m::{Candidate, Event, IceCreds, Input, Output, Rtc, RtcConfig};
 
 use super::frame_stage_timing::FrameStageTimingsAccumulator;
+use super::nvst_bandwidth::{BandwidthEstimator, PacketBandwidthSample};
 use super::nvst_control::{
     DEFAULT_FRAME_TIME_US, FRAME_ACK_PAYLOAD_LEN, FRAME_PACING_INTERVAL, MAX_NACK_PACKET_COUNT,
     QOS_REPORT_INTERVAL, QosPacketSnapshot, QosReport, frame_ack, frame_pacing_report, idr_request,
@@ -404,6 +405,7 @@ struct ReceptionTiming {
     qos_packet_snapshot: Option<QosPacketSnapshot>,
     last_transit: i64,
     jitter: f64,
+    bandwidth: BandwidthEstimator,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -695,7 +697,19 @@ impl NvstFeedbackState {
             })
     }
 
+    #[cfg(test)]
     fn publish_stream(&self, ssrc: u32, highest_sequence: u32, rtp_timestamp: u32, now: Instant) {
+        self.publish_stream_packet(ssrc, highest_sequence, rtp_timestamp, now, None);
+    }
+
+    fn publish_stream_packet(
+        &self,
+        ssrc: u32,
+        highest_sequence: u32,
+        rtp_timestamp: u32,
+        now: Instant,
+        video: Option<(u32, u32, usize, bool, bool, bool)>,
+    ) {
         self.video_ssrc.store(ssrc, Ordering::Release);
         let _ = self.base_sequence.compare_exchange(
             u32::MAX,
@@ -711,6 +725,31 @@ impl NvstFeedbackState {
             .reception_timing
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if timing
+            .qos_packet_snapshot
+            .is_some_and(|previous| previous.ssrc != ssrc)
+        {
+            timing.bandwidth = BandwidthEstimator::default();
+            timing.first_arrival = None;
+            timing.latest_rtp_timestamp = None;
+            timing.jitter = 0.0;
+            timing.last_transit = 0;
+        }
+        if let Some((frame_number, sequence, bytes, started, ended, parity)) = video {
+            if parity {
+                timing.bandwidth.observe_parity(frame_number, sequence);
+            } else {
+                timing.bandwidth.observe(PacketBandwidthSample {
+                    frame_number,
+                    sequence,
+                    timestamp: rtp_timestamp,
+                    bytes,
+                    started,
+                    ended,
+                    received_at: now,
+                });
+            }
+        }
         timing.qos_packet_snapshot = Some(match timing.qos_packet_snapshot {
             Some(previous) if previous.ssrc == ssrc && previous.received < u32::MAX => {
                 QosPacketSnapshot {
@@ -953,6 +992,10 @@ impl NvstFeedbackState {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .reset_epoch(Instant::now());
+        self.reception_timing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .bandwidth = BandwidthEstimator::default();
     }
 
     fn take_completed_frame(&self) -> Option<CompletedFrameFeedback> {
@@ -969,13 +1012,20 @@ impl NvstFeedbackState {
         )
     }
 
+    #[cfg(test)]
     fn qos_report(&self, previous: &QosReport, elapsed: Duration) -> QosReport {
+        self.qos_report_at(previous, elapsed, Instant::now())
+    }
+
+    fn qos_report_at(&self, previous: &QosReport, elapsed: Duration, now: Instant) -> QosReport {
         let (sender_frame_number, bytes_received) = self.completed_frame_snapshot();
-        let packet_snapshot = self
+        let timing = self
             .reception_timing
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .qos_packet_snapshot;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let packet_snapshot = timing.qos_packet_snapshot;
+        let bandwidth = timing.bandwidth.report(now);
+        drop(timing);
         let loss_per_ten_thousand = previous
             .packet_snapshot
             .zip(packet_snapshot)
@@ -1001,6 +1051,7 @@ impl NvstFeedbackState {
             loss_per_ten_thousand,
             client_time_90khz: elapsed.as_millis().wrapping_mul(90) as u32,
             packet_snapshot,
+            bandwidth,
         }
     }
 
@@ -4311,16 +4362,34 @@ impl NvstVideoReceiver {
         self.frame_progress.authenticated(now);
         self.authenticated_packets += 1;
         let sequence = u32::try_from(packet.index & 0xffff_ffff).unwrap_or(u32::MAX);
+        let reordered =
+            self.authenticated_packets > 1 && sequence <= self.highest_sequence_received;
         self.highest_sequence_received = self.highest_sequence_received.max(sequence);
-        self.config.feedback.publish_stream(
+        let retransmitted = self.config.feedback.resolve_nack(packet.index);
+        if retransmitted {
+            self.recovered_retransmissions += 1;
+        }
+        let video = (!retransmitted && !reordered)
+            .then(|| packet.header.payload(&packet.plaintext).ok())
+            .flatten()
+            .and_then(|payload| NvVideoPacket::parse(&packet.header, payload).ok())
+            .map(|(video, payload)| {
+                (
+                    video.frame_index,
+                    sequence,
+                    payload.len(),
+                    video.is_start_of_frame(),
+                    video.is_end_of_frame(),
+                    video.is_fec,
+                )
+            });
+        self.config.feedback.publish_stream_packet(
             packet.header.ssrc,
             self.highest_sequence_received,
             packet.header.timestamp,
             now,
+            video,
         );
-        if self.config.feedback.resolve_nack(packet.index) {
-            self.recovered_retransmissions += 1;
-        }
 
         let result = if let Some(layout) = FecPacketLayout::from_packet(&packet) {
             if layout.shard_index >= layout.data_shards {
@@ -6650,9 +6719,10 @@ fn run_nvst_webrtc_bundle(
                 && control_reports.qos.is_none()
                 && now.duration_since(control_reports.last_qos_send) >= QOS_REPORT_INTERVAL
             {
-                let report = feedback.qos_report(
+                let report = feedback.qos_report_at(
                     &control_reports.last_qos_report,
                     now.saturating_duration_since(transport_origin),
+                    now,
                 );
                 let command = report.command().encoded();
                 if !control_reports.fits(command.len()) {
@@ -6682,13 +6752,20 @@ fn run_nvst_webrtc_bundle(
                 ),
             );
             eprintln!(
-                "NVST control-stats elapsed={:.1}s frameAck={} lastAck={:?} pacing={frame_pacing_reports_sent} qos={} assembledBytesAtLastQos={}",
+                "NVST control-stats elapsed={:.1}s frameAck={} lastAck={:?} pacing={frame_pacing_reports_sent} qos={} assembledBytesAtLastQos={} qosBweKbps={} qosUtilPercent={} qosOwdUs={} qosJitterUs={}",
                 now.saturating_duration_since(control_stats_origin)
                     .as_secs_f64(),
                 control_reports.frame_acks_sent,
                 control_reports.last_ack_frame,
                 control_reports.qos_reports_sent,
                 control_reports.last_qos_report.bytes_received,
+                control_reports.last_qos_report.bandwidth.estimate_kbps,
+                control_reports
+                    .last_qos_report
+                    .bandwidth
+                    .utilization_percent,
+                control_reports.last_qos_report.bandwidth.queue_delay_us,
+                control_reports.last_qos_report.bandwidth.jitter_us,
             );
             eprintln!(
                 "NVST frame-stage-timings {}",

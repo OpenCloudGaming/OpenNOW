@@ -58,26 +58,70 @@ fn qos_reports_measure_successive_intervals_at_50_and_75_mbps() {
                 sequence += 1;
             }
             assert_eq!(emitted, 1);
-            let report = feedback.qos_report(&previous, QOS_REPORT_INTERVAL * frame_index);
+            let report = feedback.qos_report_at(&previous, QOS_REPORT_INTERVAL * frame_index, now);
             assert_eq!(report.sequence, frame_index);
             assert_eq!(report.sender_frame_number, sender_frame);
             assert_eq!(word(&report, 12), sender_frame);
             assert_eq!(report.bytes_received, frame_index * interval_bytes);
             assert_eq!(previous.bytes_received, (frame_index - 1) * interval_bytes);
-            assert_eq!(word(&report, 16), 0);
-            assert_eq!(word(&report, 48), 0);
+            assert!(word(&report, 16) > 0);
+            assert!(word(&report, 48) > 0);
+            assert!(word(&report, 16) >= word(&report, 48));
             assert_eq!(word(&report, 44), 0);
             assert_eq!(word(&report, 36), frame_index * 4_500);
             assert_eq!(report.command().encoded().len(), 56);
             previous = report;
         }
 
-        let idle = feedback.qos_report(&previous, QOS_REPORT_INTERVAL * 5);
+        let idle = feedback.qos_report_at(
+            &previous,
+            QOS_REPORT_INTERVAL * 5,
+            origin + QOS_REPORT_INTERVAL * 5,
+        );
         assert_eq!(idle.bytes_received, previous.bytes_received);
-        assert_eq!(word(&idle, 16), 0);
+        assert!(word(&idle, 16) > word(&previous, 16));
         assert_eq!(word(&idle, 44), 0);
         assert_eq!(idle.sender_frame_number, previous.sender_frame_number);
     }
+}
+
+#[test]
+fn authenticated_packet_train_populates_capacity_feedback_after_warmup() {
+    let config = config();
+    let feedback = config.feedback();
+    let crypto = test_srtp(&config);
+    let mut receiver = NvstVideoReceiver::new(config);
+    let origin = Instant::now();
+    for frame in 1..=101_u32 {
+        let timestamp = 90_000 + frame * 1_800;
+        let start = origin + Duration::from_millis(u64::from(frame) * 20);
+        for packet in 0..3_u16 {
+            let flags = FLAG_CONTAINS_PIC_DATA
+                | if packet == 0 { FLAG_SOF } else { 0 }
+                | if packet == 2 { FLAG_EOF } else { 0 };
+            let media = if packet == 0 {
+                vec![0, 0, 0, 1, 0x65]
+            } else {
+                vec![0x55; 200]
+            };
+            let mut plaintext =
+                build_plaintext_rtp((frame as u16 - 1) * 3 + packet, flags, frame, &media);
+            plaintext[4..8].copy_from_slice(&timestamp.to_be_bytes());
+            let received_at = start + Duration::from_micros(u64::from(packet) * 500);
+            receiver.process_datagram(peer(), &protect_for_test(&crypto, plaintext, 0), received_at);
+        }
+    }
+    let report = feedback.qos_report_at(
+        &QosReport::default(),
+        Duration::from_millis(2_041),
+        origin + Duration::from_millis(2_041),
+    );
+    assert_eq!(report.bandwidth.lossy_frames, 0);
+    assert!(report.bandwidth.estimate_kbps > 0);
+    assert!(report.bandwidth.utilization_percent > 0);
+    assert_eq!(word(&report, 44), report.bandwidth.estimate_kbps);
+    assert_eq!(report.command().payload[28], report.bandwidth.utilization_percent);
+    assert!(word(&report, 16) >= word(&report, 48));
 }
 
 #[test]

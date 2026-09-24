@@ -1363,28 +1363,16 @@ fn omit_server_announce_attributes(announce: &str, describe: &str) -> String {
         .collect();
     let mut filtered = String::with_capacity(announce.len());
     for line in announce.split_inclusive("\r\n") {
-        let Some((name, value)) = line
+        let Some((name, _value)) = line
             .strip_prefix("a=x-nv-")
             .and_then(|attribute| attribute.split_once(':'))
         else {
             filtered.push_str(line);
             continue;
         };
-        let server_value = server_values.get(&name.to_ascii_lowercase());
-        if name == "vqos[0].bw.maximumBitrateKbps"
-            && let Some(server_value) = server_value
+        if SERVER_NEGOTIATED.contains(&name)
+            && server_values.contains_key(&name.to_ascii_lowercase())
         {
-            if let (Ok(requested), Ok(limit)) =
-                (value.trim().parse::<u64>(), server_value.parse::<u64>())
-                && limit > 0
-            {
-                filtered.push_str(&format!("a=x-nv-{name}:{}\r\n", requested.min(limit)));
-            } else {
-                filtered.push_str(line);
-            }
-            continue;
-        }
-        if SERVER_NEGOTIATED.contains(&name) && server_value.is_some() {
             continue;
         }
         filtered.push_str(line);
@@ -2958,7 +2946,8 @@ mod tests {
 
     #[test]
     fn announce_does_not_echo_server_config_or_invent_server_owned_values() {
-        let value = context();
+        let mut value = context();
+        value.settings["maxBitrateMbps"] = json!(150);
         let sdp = build_announce(
             &value,
             AnnounceParams {
@@ -3011,7 +3000,7 @@ mod tests {
             );
             assert_eq!(
                 sdp_attribute(&announce, "vqos[0].bw.maximumBitrateKbps"),
-                Some(75_000_u64.min(server_bitrate).to_string())
+                Some("150000".to_owned())
             );
             for (field, value) in [
                 ("video[0].packetSize", "1280"),
@@ -3041,7 +3030,7 @@ mod tests {
             let announce = omit_server_announce_attributes(&sdp, &describe);
             assert_eq!(
                 sdp_attribute(&announce, "vqos[0].bw.maximumBitrateKbps"),
-                Some("75000".to_owned()),
+                Some("150000".to_owned()),
                 "{invalid_cap}"
             );
         }
