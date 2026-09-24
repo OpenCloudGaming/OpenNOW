@@ -421,6 +421,27 @@ struct CompletedFrameFeedback {
     bytes: u32,
     accepted_at: Instant,
     assembled_at: Option<Instant>,
+    packet_timing: Option<FramePacketTiming>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FramePacketTiming {
+    frame_number: u32,
+    first_at: Instant,
+    assembled: bool,
+}
+
+impl CompletedFrameFeedback {
+    fn command(&self, origin: Instant) -> super::nvst_control::NvstControlCommand {
+        let first_packet_time_ms = self.packet_timing.map(|timing| {
+            timing
+                .first_at
+                .saturating_duration_since(origin)
+                .as_secs_f64()
+                * 1_000.0
+        });
+        frame_ack(self.frame_number, first_packet_time_ms, self.bytes)
+    }
 }
 
 struct ControlReportBatch {
@@ -594,6 +615,7 @@ pub struct NvstFeedbackState {
     last_sender_frame: AtomicU32,
     completed_frame_bytes: AtomicU64,
     pending_frame_acks: Mutex<VecDeque<CompletedFrameFeedback>>,
+    frame_packet_timings: Mutex<VecDeque<FramePacketTiming>>,
     frame_stage_timings: Mutex<FrameStageTimingsAccumulator>,
 }
 
@@ -616,6 +638,7 @@ impl Default for NvstFeedbackState {
             last_sender_frame: AtomicU32::new(0),
             completed_frame_bytes: AtomicU64::new(0),
             pending_frame_acks: Mutex::new(VecDeque::new()),
+            frame_packet_timings: Mutex::new(VecDeque::new()),
             frame_stage_timings: Mutex::new(FrameStageTimingsAccumulator::default()),
         }
     }
@@ -829,7 +852,50 @@ impl NvstFeedbackState {
             .record_assembly(frame_number, assembled_at);
     }
 
+    fn record_frame_packet(&self, frame_number: u32, received_at: Instant) {
+        let mut timings = self
+            .frame_packet_timings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(timing) = timings
+            .iter_mut()
+            .rev()
+            .find(|entry| entry.frame_number == frame_number)
+        {
+            if !timing.assembled {
+                timing.first_at = timing.first_at.min(received_at);
+            }
+            return;
+        }
+        if timings.len() == MAX_PENDING_FRAME_ACKS {
+            timings.pop_front();
+        }
+        timings.push_back(FramePacketTiming {
+            frame_number,
+            first_at: received_at,
+            assembled: false,
+        });
+    }
+
+    fn complete_frame_packets(&self, frame_number: u32) {
+        let mut timings = self
+            .frame_packet_timings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(timing) = timings
+            .iter_mut()
+            .rev()
+            .find(|entry| entry.frame_number == frame_number)
+        {
+            timing.assembled = true;
+        }
+    }
+
     pub fn retire_undelivered_frame(&self, frame_number: u32) {
+        self.frame_packet_timings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|entry| entry.frame_number != frame_number);
         self.frame_stage_timings
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -837,6 +903,16 @@ impl NvstFeedbackState {
     }
 
     pub fn publish_accepted_frame(&self, frame_number: u32, bytes: u32, accepted_at: Instant) {
+        let packet_timing = {
+            let mut timings = self
+                .frame_packet_timings
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            timings
+                .iter()
+                .position(|entry| entry.frame_number == frame_number && entry.assembled)
+                .and_then(|position| timings.remove(position))
+        };
         let assembled_at = self
             .frame_stage_timings
             .lock()
@@ -854,6 +930,7 @@ impl NvstFeedbackState {
             bytes,
             accepted_at,
             assembled_at,
+            packet_timing,
         });
     }
 
@@ -4223,6 +4300,11 @@ impl NvstVideoReceiver {
                 actual: packet.header.ssrc,
             })];
         }
+        if let Some(extension) = packet.header.gs_video_header {
+            let frame_number =
+                u32::from_le_bytes(extension[4..8].try_into().expect("GS header length"));
+            self.config.feedback.record_frame_packet(frame_number, now);
+        }
         self.bound_ssrc.get_or_insert(packet.header.ssrc);
         self.last_authenticated_packet = Some(now);
         self.initial_timeout_pending = false;
@@ -4348,6 +4430,9 @@ impl NvstVideoReceiver {
                         events.push(NvstReceiveEvent::FrameProgressResumed);
                     }
                     self.config.feedback.publish_completed_frame(&frame);
+                    self.config
+                        .feedback
+                        .complete_frame_packets(frame.frame_index);
                     events.push(NvstReceiveEvent::Frame(frame));
                 }
                 Ok(None) => {}
@@ -4432,6 +4517,12 @@ impl NvstVideoReceiver {
         self.assembler.reset();
         self.last_stream_packet_index = None;
         self.next_frame_contiguous = false;
+        self.config
+            .feedback
+            .frame_packet_timings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
         self.config.feedback().reset_frame_stage_epoch();
         self.frame_progress.reset();
     }
@@ -6547,18 +6638,7 @@ fn run_nvst_webrtc_bundle(
                     }
                     last_frame_pacing_send = now;
                 }
-                let client_time_ms = frame
-                    .accepted_at
-                    .saturating_duration_since(transport_origin)
-                    .as_secs_f64()
-                    * 1_000.0;
-                let ack = frame_ack(
-                    frame.frame_number,
-                    client_time_ms,
-                    frame.bytes,
-                    frame_time_us,
-                )
-                .encoded();
+                let ack = frame.command(transport_origin).encoded();
                 control_reports.append_ack(frame, &ack, now);
                 if !control_reports.fits(FRAME_ACK_RECORD_LEN) {
                     writable = control_reports.flush(now, &feedback, |bytes| {
@@ -10015,17 +10095,18 @@ mod tests {
             0,
         );
         let mut receiver = NvstVideoReceiver::new(config);
+        let origin = Instant::now();
         assert!(
             receiver
-                .process_datagram(peer(), &first, Instant::now())
+                .process_datagram(peer(), &first, origin + Duration::from_millis(5))
                 .is_empty()
         );
         assert!(
             receiver
-                .process_datagram(peer(), &last, Instant::now())
+                .process_datagram(peer(), &last, origin + Duration::from_millis(13))
                 .is_empty()
         );
-        let events = receiver.process_datagram(peer(), &middle, Instant::now());
+        let events = receiver.process_datagram(peer(), &middle, origin + Duration::from_millis(11));
         assert_eq!(events.len(), 1);
         let NvstReceiveEvent::Frame(frame) = &events[0] else {
             panic!("expected frame, got {events:?}");
@@ -10036,12 +10117,16 @@ mod tests {
         assert_eq!(feedback.take_nack(Instant::now(), None), None);
         assert_eq!(feedback.completed_frame_snapshot(), (frame.frame_index, 7));
         assert!(feedback.take_completed_frame().is_none());
-        feedback.publish_accepted_frame(frame.frame_index, 7, Instant::now());
+        feedback.publish_accepted_frame(frame.frame_index, 7, origin + Duration::from_millis(30));
         let pending_ack = feedback
             .take_completed_frame()
             .expect("accepted frame acknowledgment");
         assert_eq!(pending_ack.frame_number, 9);
         assert_eq!(pending_ack.bytes, 7);
+        let ack = pending_ack.command(origin);
+        assert_eq!(&ack.payload[12..20], &5.0_f64.to_le_bytes());
+        assert_eq!(&ack.payload[56..60], &[0; 4]);
+        assert_eq!(&ack.payload[72..76], &7_u32.to_le_bytes());
     }
 
     #[test]
@@ -10064,6 +10149,60 @@ mod tests {
     }
 
     #[test]
+    fn frame_ack_timing_ignores_unauthenticated_packets_and_unknown_frames() {
+        let config = config();
+        let feedback = config.feedback();
+        let crypto = test_srtp(&config);
+        let packet = protect_for_test(
+            &crypto,
+            build_plaintext_rtp(10, FLAG_SOF | FLAG_EOF, 42, &[0, 0, 0, 1, 0x65, 0xaa]),
+            0,
+        );
+        let mut invalid = packet.clone();
+        *invalid.last_mut().unwrap() ^= 1;
+        let mut receiver = NvstVideoReceiver::new(config);
+        let origin = Instant::now();
+        assert!(matches!(
+            receiver.process_datagram(peer(), &invalid, origin + Duration::from_millis(1))[..],
+            [NvstReceiveEvent::Dropped(_)]
+        ));
+        let events = receiver.process_datagram(peer(), &packet, origin + Duration::from_millis(7));
+        assert!(matches!(events[..], [NvstReceiveEvent::Frame(_)]));
+        feedback.publish_accepted_frame(42, 6, origin + Duration::from_millis(20));
+        let ack = feedback.take_completed_frame().unwrap().command(origin);
+        assert_eq!(&ack.payload[12..20], &7.0_f64.to_le_bytes());
+        assert_eq!(&ack.payload[56..60], &[0; 4]);
+
+        feedback.publish_accepted_frame(43, 6, origin + Duration::from_millis(21));
+        let unknown = feedback.take_completed_frame().unwrap().command(origin);
+        assert_eq!(&unknown.payload[12..20], &[0; 8]);
+        assert_eq!(&unknown.payload[56..60], &[0; 4]);
+    }
+
+    #[test]
+    fn frame_ack_packet_timing_is_bounded_and_retired_on_drop() {
+        let feedback = NvstFeedbackState::default();
+        let origin = Instant::now();
+        for frame in 0..=MAX_PENDING_FRAME_ACKS as u32 {
+            feedback.record_frame_packet(frame, origin + Duration::from_millis(u64::from(frame)));
+        }
+        let timings = feedback.frame_packet_timings.lock().unwrap();
+        assert_eq!(timings.len(), MAX_PENDING_FRAME_ACKS);
+        assert_eq!(timings.front().unwrap().frame_number, 1);
+        drop(timings);
+        feedback.complete_frame_packets(1);
+        feedback.retire_undelivered_frame(1);
+        assert!(
+            feedback
+                .frame_packet_timings
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|entry| entry.frame_number != 1)
+        );
+    }
+
+    #[test]
     fn control_report_batch_concatenates_existing_records_within_1071_bytes() {
         let now = Instant::now();
         let feedback = NvstFeedbackState::default();
@@ -10075,8 +10214,9 @@ mod tests {
                 bytes: number,
                 accepted_at: now,
                 assembled_at: None,
+                packet_timing: None,
             };
-            let record = frame_ack(number, 12.0, number, DEFAULT_FRAME_TIME_US).encoded();
+            let record = frame_ack(number, Some(12.0), number).encoded();
             assert_eq!(record.len(), FRAME_ACK_RECORD_LEN);
             batch.append_ack(frame, &record, now);
             expected.extend_from_slice(&record);
@@ -10107,12 +10247,9 @@ mod tests {
                 bytes: 1,
                 accepted_at: now,
                 assembled_at: None,
+                packet_timing: None,
             };
-            batch.append_ack(
-                frame,
-                &frame_ack(number, 0.0, 1, DEFAULT_FRAME_TIME_US).encoded(),
-                now,
-            );
+            batch.append_ack(frame, &frame_ack(number, Some(0.0), 1).encoded(), now);
         }
         assert_eq!(batch.bytes.len(), 10 * FRAME_ACK_RECORD_LEN);
         assert!(!batch.fits(FRAME_ACK_RECORD_LEN));
@@ -10134,8 +10271,9 @@ mod tests {
                     bytes: 1,
                     accepted_at: now,
                     assembled_at: None,
+                    packet_timing: None,
                 },
-                &frame_ack(number, 0.0, 1, DEFAULT_FRAME_TIME_US).encoded(),
+                &frame_ack(number, Some(0.0), 1).encoded(),
                 now,
             );
         }
@@ -10158,7 +10296,7 @@ mod tests {
         assert!(batch.fits(FRAME_ACK_RECORD_LEN));
 
         let mut minimum = ControlReportBatch::new(now, MIN_CONTROL_REPORT_BYTES);
-        let record = frame_ack(3, 0.0, 1, DEFAULT_FRAME_TIME_US).encoded();
+        let record = frame_ack(3, Some(0.0), 1).encoded();
         assert!(minimum.fits(record.len()));
         minimum.append_ack(
             CompletedFrameFeedback {
@@ -10166,6 +10304,7 @@ mod tests {
                 bytes: 1,
                 accepted_at: now,
                 assembled_at: None,
+                packet_timing: None,
             },
             &record,
             now,
@@ -10207,8 +10346,9 @@ mod tests {
             bytes: 7,
             accepted_at: now,
             assembled_at: None,
+            packet_timing: None,
         };
-        let ack = frame_ack(42, 0.0, 7, DEFAULT_FRAME_TIME_US).encoded();
+        let ack = frame_ack(42, Some(0.0), 7).encoded();
         batch.append_ack(frame, &ack, now);
         assert!(!batch.flush_due(now + QOS_REPORT_INTERVAL - Duration::from_nanos(1)));
         assert!(batch.flush_due(now + QOS_REPORT_INTERVAL));
@@ -10256,11 +10396,7 @@ mod tests {
         let mut batch = ControlReportBatch::new(now, MAX_CONTROL_REPORT_BYTES);
         feedback.publish_accepted_frame(1, 1, now);
         let first = feedback.take_completed_frame().unwrap();
-        batch.append_ack(
-            first,
-            &frame_ack(1, 0.0, 1, DEFAULT_FRAME_TIME_US).encoded(),
-            now,
-        );
+        batch.append_ack(first, &frame_ack(1, Some(0.0), 1).encoded(), now);
         assert!(!batch.flush(now, &feedback, |_| false));
         for number in 2..=u32::try_from(MAX_PENDING_FRAME_ACKS + 3).unwrap() {
             feedback.publish_accepted_frame(number, 1, now);
