@@ -3056,7 +3056,7 @@ QtObject {
         if (event.peakBitrateMbps !== undefined)
             fields.peakBitrateMbps = Number(event.peakBitrateMbps)
         // Keep missing measurements unavailable instead of converting null to 0.
-        for (const key of ["pingMs", "jitterMs", "packetLossPercent", "decodeTimeMs", "decoderResidenceMs", "latencyMs"]) {
+        for (const key of ["receiveBitrateMbps", "pingMs", "jitterMs", "packetLossPercent", "decodeTimeMs", "decoderResidenceMs", "latencyMs"]) {
             if (event[key] !== undefined)
                 fields[key] = event[key] === null || !Number.isFinite(Number(event[key]))
                     ? null : Number(event[key])

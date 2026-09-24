@@ -559,6 +559,12 @@ struct RecentNetworkMetrics {
     previous: Option<(Instant, NetworkCounters)>,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum StreamSocket {
+    Bundle,
+    Video,
+}
+
 impl RecentNetworkMetrics {
     fn sample(&mut self, now: Instant, counters: NetworkCounters) -> Option<f64> {
         if counters.ssrc == 0 || counters.base == u32::MAX || counters.highest < counters.base {
@@ -607,6 +613,8 @@ pub struct NvstFeedbackState {
     received_packets: AtomicU32,
     report_prior: Mutex<(u32, u32)>,
     recent_network_metrics: Mutex<RecentNetworkMetrics>,
+    bundle_receive_bytes: AtomicU64,
+    video_receive_bytes: AtomicU64,
     reception_timing: Mutex<ReceptionTiming>,
     ice_ping: Mutex<Option<(Instant, Duration)>>,
     video_ping: Mutex<Option<(Instant, Duration)>>,
@@ -631,6 +639,8 @@ impl Default for NvstFeedbackState {
             received_packets: AtomicU32::new(0),
             report_prior: Mutex::new((0, 0)),
             recent_network_metrics: Mutex::new(RecentNetworkMetrics::default()),
+            bundle_receive_bytes: AtomicU64::new(0),
+            video_receive_bytes: AtomicU64::new(0),
             reception_timing: Mutex::new(ReceptionTiming::default()),
             ice_ping: Mutex::new(None),
             video_ping: Mutex::new(None),
@@ -647,6 +657,31 @@ impl Default for NvstFeedbackState {
 }
 
 impl NvstFeedbackState {
+    fn record_socket_receive(
+        &self,
+        socket: StreamSocket,
+        peer_matches: bool,
+        authenticated: bool,
+        length: usize,
+    ) {
+        if !peer_matches || !authenticated {
+            return;
+        }
+        let counter = match socket {
+            StreamSocket::Bundle => &self.bundle_receive_bytes,
+            StreamSocket::Video => &self.video_receive_bytes,
+        };
+        let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |bytes| {
+            Some(bytes.saturating_add(length as u64))
+        });
+    }
+
+    pub fn socket_receive_bytes(&self) -> u64 {
+        self.bundle_receive_bytes
+            .load(Ordering::Relaxed)
+            .saturating_add(self.video_receive_bytes.load(Ordering::Relaxed))
+    }
+
     fn update_ice_ping(
         &self,
         pair: Option<&CandidatePairStats>,
@@ -7215,6 +7250,7 @@ fn run_nvst_webrtc_bundle(
                     if source != bundle_peer {
                         continue;
                     }
+                    feedback.record_socket_receive(StreamSocket::Bundle, true, dtls_ready, length);
                     if let Some(credentials) = stun_credentials.as_ref() {
                         let received_at = Instant::now();
                         if let Some(elapsed) = ping_tracker.receive(
@@ -7459,6 +7495,13 @@ fn run_nvst_udp_receiver(
                     );
                 }
                 let expected_source = receiver.config.accepts_video_source(source);
+                let authenticated_before = receiver.last_authenticated_packet.is_some();
+                feedback.record_socket_receive(
+                    StreamSocket::Video,
+                    expected_source,
+                    authenticated_before,
+                    length,
+                );
                 if !expected_source {
                     wrong_source += 1;
                 }
@@ -7495,6 +7538,14 @@ fn run_nvst_udp_receiver(
                 }
                 let received_at = Instant::now();
                 let events = receiver.process_datagram(source, &datagram[..length], received_at);
+                if !authenticated_before {
+                    feedback.record_socket_receive(
+                        StreamSocket::Video,
+                        expected_source,
+                        receiver.last_authenticated_packet.is_some(),
+                        length,
+                    );
+                }
                 for event in events {
                     if !forward_receive_event(
                         &media_consumer,
@@ -7693,6 +7744,30 @@ fn forward_receive_event(
 #[cfg(test)]
 mod tests {
     static PREFERRED_NVST_PORTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn stream_socket_receive_counts_peer_datagram_lengths_once_across_sockets() {
+        use super::{NvstFeedbackState, StreamSocket};
+
+        let feedback = NvstFeedbackState::default();
+        feedback.record_socket_receive(StreamSocket::Bundle, false, true, 99_000);
+        feedback.record_socket_receive(StreamSocket::Bundle, true, false, 88_000);
+        assert_eq!(feedback.socket_receive_bytes(), 0);
+
+        let bundle_control = 1_300;
+        let bundle_audio = 800;
+        let video_data = 1_400;
+        let video_fec = 300;
+        let video_retransmission = 1_400;
+        feedback.record_socket_receive(StreamSocket::Bundle, true, true, bundle_control);
+        feedback.record_socket_receive(StreamSocket::Bundle, true, true, bundle_audio);
+        feedback.record_socket_receive(StreamSocket::Video, true, true, video_data);
+        feedback.record_socket_receive(StreamSocket::Video, true, true, video_fec);
+        feedback.record_socket_receive(StreamSocket::Video, true, true, video_retransmission);
+        feedback.record_socket_receive(StreamSocket::Video, false, true, 77_000);
+        assert_eq!(feedback.socket_receive_bytes(), 5_200);
+        assert_eq!(NvstFeedbackState::default().socket_receive_bytes(), 0);
+    }
 
     #[test]
     fn typed_text_queue_preserves_order_reservation_and_readiness() {
@@ -11785,6 +11860,7 @@ mod tests {
                 let mut config = NvstVideoConfig::from_legacy_handoff(&handoff, None).unwrap();
                 config.stun_credentials = Some(stun_credentials());
                 config.ping_payload = b"setup-ping".to_vec();
+                let feedback = config.feedback();
                 let packet = protect_for_test(
                     &test_srtp(&config),
                     build_plaintext_rtp(
@@ -11842,6 +11918,7 @@ mod tests {
                 assert_eq!(frame.frame_index, Some(42));
                 assert!(frame.keyframe);
                 session.stop();
+                assert_eq!(feedback.socket_receive_bytes(), packet.len() as u64);
             }
         }
     }
