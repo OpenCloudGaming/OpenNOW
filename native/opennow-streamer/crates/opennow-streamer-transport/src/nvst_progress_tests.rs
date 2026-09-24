@@ -86,6 +86,129 @@ fn protect_complete_frame(crypto: &SrtpReceiver, sequence: u16, frame_index: u32
 }
 
 #[test]
+fn first_keyframe_deadline_survives_continuing_non_keyframes() {
+    let config = config();
+    let crypto = test_srtp(&config);
+    let feedback = config.feedback();
+    let mut receiver = NvstVideoReceiver::new(config);
+    let mut harness = DeliveryHarness::new(feedback.clone());
+    let origin = receiver.timeout_origin;
+    let policy = progress_policy();
+    let mut events = Vec::new();
+
+    for index in 0..9_u16 {
+        let now = origin + Duration::from_millis(400) * u32::from(index);
+        let packet = protect_for_test(
+            &crypto,
+            build_plaintext_rtp(
+                400 + index,
+                FLAG_SOF | FLAG_EOF | FLAG_CONTAINS_PIC_DATA,
+                u32::from(index),
+                &[0, 0, 0, 1, 0x61, 0x11],
+            ),
+            0,
+        );
+        harness.deliver(&mut receiver, peer(), &packet, now);
+        if let Some(event) = receiver.poll_frame_progress(now, policy) {
+            events.push((now.saturating_duration_since(origin), event));
+        }
+    }
+
+    assert_eq!(feedback.frame_stage_timings().assembled_frames_total, 9);
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].0, Duration::from_secs(2));
+    assert!(matches!(events[0].1, NvstFrameProgressEvent::KeyframeRequested { .. }));
+    assert_eq!(events[1].0, Duration::from_millis(3_200));
+    assert!(matches!(events[1].1, NvstFrameProgressEvent::RecoveryNeeded { .. }));
+    assert!(feedback.keyframe_request_pending());
+}
+
+#[test]
+fn first_keyframe_inside_grace_clears_pending_recovery() {
+    let config = config();
+    let crypto = test_srtp(&config);
+    let feedback = config.feedback();
+    let mut receiver = NvstVideoReceiver::new(config);
+    let mut harness = DeliveryHarness::new(feedback.clone());
+    let origin = receiver.timeout_origin;
+    let policy = progress_policy();
+
+    for index in 0..7_u16 {
+        let now = origin + Duration::from_millis(400) * u32::from(index);
+        let packet = protect_for_test(
+            &crypto,
+            build_plaintext_rtp(
+                500 + index,
+                FLAG_SOF | FLAG_EOF | FLAG_CONTAINS_PIC_DATA,
+                u32::from(index),
+                &[0, 0, 0, 1, 0x61, 0x11],
+            ),
+            0,
+        );
+        harness.deliver(&mut receiver, peer(), &packet, now);
+        let result = receiver.poll_frame_progress(now, policy);
+        if index == 5 {
+            assert!(matches!(result, Some(NvstFrameProgressEvent::KeyframeRequested { .. })));
+        } else {
+            assert_eq!(result, None);
+        }
+    }
+    assert!(feedback.keyframe_request_pending());
+    let keyframe_at = origin + Duration::from_millis(2_800);
+    let keyframe = protect_complete_frame(&crypto, 507, 7);
+    harness.deliver(&mut receiver, peer(), &keyframe, keyframe_at);
+    assert_eq!(harness.resumed, 1);
+    assert!(!feedback.keyframe_request_pending());
+    assert_eq!(receiver.poll_frame_progress(keyframe_at + Duration::from_millis(400), policy), None);
+    assert_eq!(receiver.frame_progress().stage, NvstFrameProgressStage::Tracking);
+}
+
+#[test]
+fn incomplete_initial_idr_does_not_close_grace_before_a_complete_reference() {
+    let config = config();
+    let crypto = test_srtp(&config);
+    let feedback = config.feedback();
+    let mut receiver = NvstVideoReceiver::new(config);
+    let origin = receiver.timeout_origin;
+    let policy = progress_policy();
+    let partial = protect_for_test(
+        &crypto,
+        build_plaintext_rtp(900, FLAG_SOF | FLAG_CONTAINS_PIC_DATA, 1, &[0, 0, 0, 1, 0x65]),
+        0,
+    );
+    assert!(receiver.process_datagram(peer(), &partial, origin).is_empty());
+    assert_eq!(receiver.poll_frame_progress(origin, policy), None);
+    assert!(matches!(
+        receiver.poll_frame_progress(origin + Duration::from_secs(2), policy),
+        Some(NvstFrameProgressEvent::KeyframeRequested { .. })
+    ));
+    assert!(feedback.keyframe_request_pending());
+
+    let incomplete_at = origin + Duration::from_millis(2_400);
+    let mut missing_middle = build_plaintext_rtp(901, FLAG_EOF, 1, &[0xaa]);
+    missing_middle[16..20].copy_from_slice(&(902_u32 << 8).to_le_bytes());
+    let missing_middle = protect_for_test(&crypto, missing_middle, 0);
+    assert_eq!(
+        receiver.process_datagram(peer(), &missing_middle, incomplete_at),
+        [NvstReceiveEvent::Dropped(NvstDropReason::FrameDiscontinuity)]
+    );
+    assert_eq!(receiver.poll_frame_progress(incomplete_at, policy), None);
+    assert_eq!(receiver.frame_progress().stage, NvstFrameProgressStage::KeyframePending);
+    assert!(feedback.keyframe_request_pending());
+
+    let complete_at = origin + Duration::from_millis(2_800);
+    let next_idr = protect_complete_frame(&crypto, 902, 2);
+    assert!(matches!(
+        receiver.process_datagram(peer(), &next_idr, complete_at).as_slice(),
+        [NvstReceiveEvent::FrameProgressResumed, NvstReceiveEvent::Frame(frame)]
+            if frame.keyframe && !frame.contiguous
+    ));
+    feedback.publish_assembled_frame(2, complete_at);
+    assert!(!feedback.keyframe_request_pending());
+    assert_eq!(receiver.poll_frame_progress(complete_at, policy), None);
+}
+
+#[test]
 fn partial_packets_that_never_complete_reach_keyframe_then_recovery() {
     let config = config();
     let crypto = test_srtp(&config);

@@ -2007,6 +2007,7 @@ pub enum NvstFrameProgressEvent {
 #[derive(Debug, Clone, Copy, Default)]
 struct FrameProgressWatchdog {
     first_authenticated_at: Option<Instant>,
+    first_keyframe_assembled: bool,
     last_assembled_frame_index: Option<u32>,
     stage: NvstFrameProgressStage,
     keyframe_requested_at: Option<Instant>,
@@ -2017,9 +2018,13 @@ impl FrameProgressWatchdog {
         self.first_authenticated_at.get_or_insert(now);
     }
 
-    fn assembled(&mut self, frame_index: u32) -> bool {
-        let closed_episode = self.stage != NvstFrameProgressStage::Tracking;
+    fn assembled(&mut self, frame_index: u32, keyframe: bool) -> bool {
         self.last_assembled_frame_index = Some(frame_index);
+        if !self.first_keyframe_assembled && !keyframe {
+            return false;
+        }
+        self.first_keyframe_assembled = true;
+        let closed_episode = self.stage != NvstFrameProgressStage::Tracking;
         self.stage = NvstFrameProgressStage::Tracking;
         self.keyframe_requested_at = None;
         closed_episode
@@ -4096,10 +4101,14 @@ impl NvstVideoReceiver {
         }
         let assembled_at = self.config.feedback().last_assembled_frame_at();
         let epoch_at = self.frame_progress.first_authenticated_at;
-        let base = match (assembled_at, epoch_at) {
-            (Some(assembled), Some(epoch)) => assembled.max(epoch),
-            (Some(assembled), None) => assembled,
-            (None, epoch) => epoch?,
+        let base = if !self.frame_progress.first_keyframe_assembled {
+            epoch_at?
+        } else {
+            match (assembled_at, epoch_at) {
+                (Some(assembled), Some(epoch)) => assembled.max(epoch),
+                (Some(assembled), None) => assembled,
+                (None, epoch) => epoch?,
+            }
         };
         let idle_for = now.saturating_duration_since(base);
         match self.frame_progress.stage {
@@ -4303,7 +4312,10 @@ impl NvstVideoReceiver {
                     frame.contiguous = self.next_frame_contiguous;
                     self.next_frame_contiguous = true;
                     self.frames_emitted += 1;
-                    if self.frame_progress.assembled(frame.frame_index) {
+                    if self
+                        .frame_progress
+                        .assembled(frame.frame_index, frame.keyframe)
+                    {
                         events.push(NvstReceiveEvent::FrameProgressResumed);
                     }
                     self.config.feedback.publish_completed_frame(&frame);
@@ -6118,9 +6130,6 @@ fn run_nvst_webrtc_bundle(
     );
     let stun_credentials = config.stun_credentials.clone();
     let feedback = config.feedback();
-    // Arm startup before either feedback channel opens. In particular, control
-    // IDR must work even if no video packet has arrived to identify its SSRC.
-    feedback.request_keyframe();
     let audio_track = config.audio_track().cloned();
     let frame_time_us = config.frame_time_us;
     // With a dedicated Mjolnir video socket the bundle only carries
@@ -7205,32 +7214,28 @@ fn run_nvst_udp_receiver(
                     &transaction_id,
                 );
                 let sent_at = Instant::now();
-                for port in receiver.config.video_peer_ports() {
-                    let peer = SocketAddr::new(receiver.config.video_peer.ip(), port);
-                    if let Err(error) = socket.send_to(&ping, peer) {
-                        if udp_icmp_port_unreachable(&error) {
-                            continue;
-                        }
+                if let Err(error) = socket.send_to(&ping, receiver.config.video_peer) {
+                    if !udp_icmp_port_unreachable(&error) {
                         log_udp_error("video-natt-send", local_port, &error);
                         eprintln!("NVST NATT send failed: {error}");
                         forward_optional(&event_sender, receiver.stop());
                         return;
                     }
+                } else {
                     pings_sent += 1;
                 }
                 ping_tracker.sent(transaction_id, sent_at);
             } else {
-                for port in receiver.config.video_peer_ports() {
-                    let peer = SocketAddr::new(receiver.config.video_peer.ip(), port);
-                    if let Err(error) = socket.send_to(&receiver.config.ping_payload, peer) {
-                        if udp_icmp_port_unreachable(&error) {
-                            continue;
-                        }
+                if let Err(error) =
+                    socket.send_to(&receiver.config.ping_payload, receiver.config.video_peer)
+                {
+                    if !udp_icmp_port_unreachable(&error) {
                         log_udp_error("video-ping-send", local_port, &error);
                         eprintln!("NVST ping send failed: {error}");
                         forward_optional(&event_sender, receiver.stop());
                         return;
                     }
+                } else {
                     pings_sent += 1;
                 }
             }
@@ -7797,6 +7802,17 @@ mod tests {
         assert_eq!(
             feedback.keyframe_request_routes(now, previous, true, false),
             (true, false)
+        );
+    }
+
+    #[test]
+    fn healthy_startup_does_not_request_idr() {
+        let feedback = NvstFeedbackState::default();
+        let now = Instant::now();
+        assert!(!feedback.keyframe_request_pending());
+        assert_eq!(
+            feedback.keyframe_request_routes(now, now - KEYFRAME_REQUEST_COOLDOWN, true, true,),
+            (false, false)
         );
     }
 
@@ -11053,15 +11069,38 @@ mod tests {
     #[test]
     fn startup_without_authenticated_packets_times_out() {
         let mut receiver = NvstVideoReceiver::new(config());
-        receiver.timeout_origin = Instant::now() - Duration::from_secs(1);
+        let feedback = receiver.config.feedback();
+        let origin = receiver.timeout_origin;
+        let deadline = origin + receiver.config.startup_timeout;
+
+        assert!(!feedback.keyframe_request_pending());
+        assert_eq!(
+            feedback.keyframe_request_routes(deadline, origin, true, true),
+            (false, false)
+        );
+        assert_eq!(
+            receiver.poll_frame_progress(
+                deadline,
+                NvstFrameProgressPolicy {
+                    stall: receiver.config.timeout,
+                    keyframe_grace: receiver.config.timeout,
+                },
+            ),
+            None
+        );
+        assert_eq!(
+            receiver.poll_timeout(deadline - Duration::from_millis(1)),
+            None
+        );
 
         assert!(matches!(
-            receiver.poll_timeout(Instant::now()),
+            receiver.poll_timeout(deadline),
             Some(NvstReceiveEvent::RecoveryNeeded(
                 NvstRecovery::Timeout { .. }
             ))
         ));
         assert_eq!(receiver.state(), NvstReceiverState::RecoveryRequired);
+        assert!(!feedback.keyframe_request_pending());
     }
 
     #[test]
@@ -11311,6 +11350,9 @@ mod tests {
                 let first_port = first.local_addr().unwrap().port();
                 let second_port = second.local_addr().unwrap().port();
                 let server = if use_second_port { &second } else { &first };
+                first
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
                 server
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .unwrap();
@@ -11342,9 +11384,9 @@ mod tests {
                     spawn_nvst_mjolnir_receiver(client, config, media_consumer, event_sender)
                         .unwrap();
                 let mut datagram = [0_u8; 512];
-                let (length, client_address) = server
+                let (length, client_address) = first
                     .recv_from(&mut datagram)
-                    .expect("NAT probe to selected server port");
+                    .expect("NAT probe to first server port");
                 let (_, username) =
                     find_stun_attribute(&datagram[..length], STUN_ATTR_USERNAME).unwrap();
                 assert_eq!(username, b"setup-ping:loc1");
@@ -11760,6 +11802,53 @@ mod tests {
         assert_eq!(repeated_username, b"setup-ping:loc1");
 
         session.stop();
+    }
+
+    #[test]
+    fn video_natt_targets_first_port_while_media_accepts_the_range() {
+        for authenticated in [false, true] {
+            let (first, second) = (0..64)
+                .find_map(|_| {
+                    let first = UdpSocket::bind("127.0.0.1:0").ok()?;
+                    let next = first.local_addr().ok()?.port().checked_add(1)?;
+                    let second = UdpSocket::bind(("127.0.0.1", next)).ok()?;
+                    Some((first, second))
+                })
+                .expect("consecutive UDP ports");
+            first
+                .set_read_timeout(Some(Duration::from_millis(250)))
+                .unwrap();
+            second
+                .set_read_timeout(Some(Duration::from_millis(100)))
+                .unwrap();
+            let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+            let mut config = config();
+            config.client_udp_port = client.local_addr().unwrap().port();
+            config.video_peer = first.local_addr().unwrap();
+            config.video_peer_port_end = Some(second.local_addr().unwrap().port());
+            config.ping_payload = b"setup-ping".to_vec();
+            config.stun_credentials = authenticated.then(stun_credentials);
+            assert!(config.accepts_video_source(second.local_addr().unwrap()));
+            let (media_consumer, _media_receiver) = mpsc::sync_channel(1);
+            let (event_sender, _event_receiver) = mpsc::channel();
+            let session =
+                spawn_nvst_mjolnir_receiver(client, config, media_consumer, event_sender).unwrap();
+
+            let mut datagram = [0_u8; 512];
+            let (length, _) = first.recv_from(&mut datagram).expect("first port NATT");
+            if authenticated {
+                let (_, username) = find_stun_attribute(&datagram[..length], STUN_ATTR_USERNAME)
+                    .expect("NATT identity");
+                assert_eq!(username, b"setup-ping:loc1");
+            } else {
+                assert_eq!(&datagram[..length], b"setup-ping");
+            }
+            assert!(
+                second.recv_from(&mut datagram).is_err(),
+                "no NATT to later ports"
+            );
+            session.stop();
+        }
     }
 
     #[test]
