@@ -1065,6 +1065,7 @@ fn output_color_format(
     fallback: VideoFormat,
 ) -> Result<VideoFormat, String> {
     let mut format = fallback;
+    let mut matrix_specified = false;
     for key in [
         MF_MT_TRANSFER_FUNCTION,
         MF_MT_VIDEO_PRIMARIES,
@@ -1102,6 +1103,7 @@ fn output_color_format(
                 _ => return Err(format!("unsupported decoder color primaries {value}")),
             };
         } else if key == MF_MT_YUV_MATRIX {
+            matrix_specified = true;
             format.color_matrix = match value {
                 value if value == MFVideoTransferMatrix_BT601.0 => VideoColorMatrix::Bt601,
                 value if value == MFVideoTransferMatrix_BT709.0 => VideoColorMatrix::Bt709,
@@ -1122,7 +1124,31 @@ fn output_color_format(
             };
         }
     }
-    format.validate_color().map_err(|error| error.to_string())?;
+    if !matrix_specified
+        && format.transfer_function == VideoTransferFunction::Sdr
+        && format.color_primaries == VideoColorPrimaries::Bt709
+    {
+        format.color_matrix = VideoColorMatrix::Bt709;
+    }
+    format.validate_color().map_err(|error| {
+        let present = |key| {
+            unsafe { media_type.GetUINT32(key) }
+                .ok()
+                .is_some_and(|value| value != 0)
+        };
+        format!(
+            "{error}: negotiated={:?}/{:?}/{:?} decoded={:?}/{:?}/{:?} explicit={}/{}/{}",
+            fallback.transfer_function,
+            fallback.color_primaries,
+            fallback.color_matrix,
+            format.transfer_function,
+            format.color_primaries,
+            format.color_matrix,
+            present(&MF_MT_TRANSFER_FUNCTION),
+            present(&MF_MT_VIDEO_PRIMARIES),
+            present(&MF_MT_YUV_MATRIX),
+        )
+    })?;
     Ok(format)
 }
 
@@ -1529,6 +1555,38 @@ mod tests {
         assert_eq!(output_color_format(&hdr_type, sdr).unwrap(), hdr);
         let unspecified_type = unsafe { MFCreateMediaType().unwrap() };
         assert_eq!(output_color_format(&unspecified_type, hdr).unwrap(), hdr);
+    }
+
+    #[test]
+    fn decoder_uses_sdr_matrix_when_hdr_output_switches_to_sdr_without_one() {
+        let _runtime = super::super::MediaRuntime::initialize().unwrap();
+        let hdr = hdr_test_format();
+        let media_type = unsafe { MFCreateMediaType().unwrap() };
+        unsafe {
+            media_type
+                .SetUINT32(&MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709.0 as u32)
+                .unwrap();
+            media_type
+                .SetUINT32(&MF_MT_VIDEO_PRIMARIES, MFVideoPrimaries_BT709.0 as u32)
+                .unwrap();
+        }
+        let sdr = VideoFormat {
+            transfer_function: VideoTransferFunction::Sdr,
+            color_primaries: VideoColorPrimaries::Bt709,
+            color_matrix: VideoColorMatrix::Bt709,
+            ..hdr
+        };
+        assert_eq!(output_color_format(&media_type, hdr).unwrap(), sdr);
+        unsafe {
+            media_type.SetUINT32(&MF_MT_YUV_MATRIX, 0).unwrap();
+        }
+        assert_eq!(output_color_format(&media_type, hdr).unwrap(), sdr);
+        unsafe {
+            media_type
+                .SetUINT32(&MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT2020_10.0 as u32)
+                .unwrap();
+        }
+        assert!(output_color_format(&media_type, hdr).is_err());
     }
 
     #[test]
