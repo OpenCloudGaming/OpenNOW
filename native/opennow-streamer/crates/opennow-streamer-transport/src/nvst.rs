@@ -1128,6 +1128,7 @@ pub struct NvstVideoConfig {
     /// dedicated Mjolnir socket must not send a second raw SRTCP Receiver Report.
     rtcp_on_sctp: bool,
     qos_timings_v5: bool,
+    frame_pacing_feedback: bool,
     hid_device_mask: u32,
     /// Dedicated NATT-only video (Mjolnir) socket port in the official two-socket
     /// cloud model. When set, video RTP/SRTP arrives on this socket while the
@@ -1174,6 +1175,7 @@ impl fmt::Debug for NvstVideoConfig {
             )
             .field("rtcp_on_sctp", &self.rtcp_on_sctp)
             .field("qos_timings_v5", &self.qos_timings_v5)
+            .field("frame_pacing_feedback", &self.frame_pacing_feedback)
             .field("hid_device_mask", &self.hid_device_mask)
             .field("mjolnir_udp_port", &self.mjolnir_udp_port)
             .field("codec", &self.codec)
@@ -1459,6 +1461,16 @@ impl NvstVideoConfig {
             }
         }
         let qos_timings_v5 = timings_version.is_some() && blob_version.is_some();
+        let frame_pacing_feedback = match optional_u8(object, "framePacingFeedbackMode")? {
+            Some(0) => false,
+            Some(1) => true,
+            Some(_) => {
+                return Err(NvstConfigError::OutOfRange {
+                    field: "framePacingFeedbackMode",
+                });
+            }
+            None => !qos_timings_v5,
+        };
         let mjolnir_udp_port = optional_u16(object, "mjolnirUdpPort")?;
         if mjolnir_udp_port == Some(0) {
             return Err(NvstConfigError::OutOfRange {
@@ -1539,6 +1551,7 @@ impl NvstVideoConfig {
             remote_dtls_fingerprint,
             rtcp_on_sctp,
             qos_timings_v5,
+            frame_pacing_feedback,
             mjolnir_udp_port,
             hid_device_mask,
             codec,
@@ -6135,7 +6148,7 @@ fn run_nvst_webrtc_bundle(
     );
     let receive_destination = logical_ice_addr(physical_local, 1);
     let receive_source = logical_ice_addr(bundle_peer, 2);
-    let qos_timings_v5 = config.qos_timings_v5;
+    let frame_pacing_feedback = config.frame_pacing_feedback;
     let mut receiver = NvstVideoReceiver::new(config);
     let mut video_delivery_gap = false;
     let mut datagram = vec![0_u8; 65_536];
@@ -6494,7 +6507,7 @@ fn run_nvst_webrtc_bundle(
                 let Some(frame) = feedback.take_completed_frame() else {
                     break;
                 };
-                if !qos_timings_v5
+                if frame_pacing_feedback
                     && now.duration_since(last_frame_pacing_send) >= FRAME_PACING_INTERVAL
                 {
                     // Packet-completion intervals are intentionally bursty and are not display
@@ -8319,6 +8332,34 @@ mod tests {
                 .unwrap()
                 .qos_timings_v5
         );
+        assert!(
+            !NvstVideoConfig::from_legacy_handoff(&handoff, None)
+                .unwrap()
+                .frame_pacing_feedback
+        );
+        handoff["framePacingFeedbackMode"] = serde_json::json!(1);
+        assert!(
+            NvstVideoConfig::from_legacy_handoff(&handoff, None)
+                .unwrap()
+                .frame_pacing_feedback
+        );
+        handoff["framePacingFeedbackMode"] = serde_json::json!(0);
+        assert!(
+            !NvstVideoConfig::from_legacy_handoff(&handoff, None)
+                .unwrap()
+                .frame_pacing_feedback
+        );
+        handoff["framePacingFeedbackMode"] = serde_json::json!(2);
+        assert!(matches!(
+            NvstVideoConfig::from_legacy_handoff(&handoff, None),
+            Err(NvstConfigError::OutOfRange {
+                field: "framePacingFeedbackMode"
+            })
+        ));
+        handoff
+            .as_object_mut()
+            .unwrap()
+            .remove("framePacingFeedbackMode");
         handoff["qosFeedbackVersion"] = serde_json::json!(8);
         handoff["qosTimingsVersion"] = serde_json::json!(6);
         handoff["qosBlobStatsVersion"] = serde_json::json!(10);
