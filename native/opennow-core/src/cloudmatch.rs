@@ -277,12 +277,16 @@ impl CloudMatchService {
             info["networkTestSessionId"] = json!(session_id);
         }
         info["networkTest"] = network_test;
+        let control_base = info["streamingBaseUrl"]
+            .as_str()
+            .and_then(|raw| trusted_cloudmatch_base(raw).ok())
+            .unwrap_or_else(|| base.clone());
         *self
             .fresh
             .lock()
             .expect("CloudMatch allocation state poisoned") = Some(FreshAllocation {
             info: info.clone(),
-            base: base.clone(),
+            base: control_base,
             client: client.clone(),
             headers: cloudmatch_headers(token, device_id)?,
             owner: (auth.provider.idp_id.clone(), auth.user.user_id.clone()),
@@ -524,6 +528,19 @@ impl CloudMatchService {
         let Some(session_id) = session_id else {
             return Ok(json!({"session":null,"stopped":false}));
         };
+        if self
+            .retained_cleanup
+            .lock()
+            .expect("CloudMatch cleanup state poisoned")
+            .as_ref()
+            .is_some_and(|record| record["sessionId"] == session_id)
+        {
+            return Err(ServiceError {
+                code: "session_cleanup_pending",
+                message: "The pending session cannot be safely verified after restart. Cleanup remains pending."
+                    .to_owned(),
+            });
+        }
         let client = current
             .as_ref()
             .map(|state| state.client.clone())
@@ -558,11 +575,6 @@ impl CloudMatchService {
                     .as_ref()
                     .and_then(|session| session["streamingBaseUrl"].as_str())
                     .map(ToOwned::to_owned)
-            })
-            .or_else(|| {
-                self.pending_cleanup(auth)
-                    .filter(|pending| pending["sessionId"] == session_id)
-                    .and_then(|pending| pending["streamingBaseUrl"].as_str().map(ToOwned::to_owned))
             })
             .ok_or_else(|| invalid("No active session control endpoint"))?;
         let base = trusted_cloudmatch_base(&base_value)?;
@@ -2898,6 +2910,175 @@ mod tests {
     }
 
     #[test]
+    fn fresh_allocation_uses_validated_response_control_host() {
+        for (control, expected) in [
+            (
+                json!({"ip":"control.partner.example","port":443}),
+                "https://control.partner.example/",
+            ),
+            (
+                json!({"ip":"forwarded.partner.example"}),
+                "https://forwarded.partner.example/",
+            ),
+            (json!({"ip":"localhost","port":443}), ""),
+            (json!({"ip":"control.partner.example","port":8443}), ""),
+            (json!({"ip":"https://user@control.partner.example"}), ""),
+            (Value::Null, ""),
+        ] {
+            let (base, server) = session_server(
+                vec![(
+                    200,
+                    json!({"requestStatus":{"statusCode":1},"session":{
+                        "sessionId":"fresh-seat","status":1,"sessionControlInfo":control
+                    }}),
+                )],
+                |_| {},
+            );
+            let client = Client::new();
+            let service = CloudMatchService::new(client.clone());
+            let result = service
+                .create_at(
+                    &json!({"appId":"123"}),
+                    &json!({}),
+                    &conflict_auth(),
+                    "device",
+                    || Ok((client, base.clone())),
+                )
+                .unwrap();
+            assert_eq!(
+                result["session"]["streamingBaseUrl"],
+                if expected.is_empty() {
+                    base.origin().ascii_serialization()
+                } else {
+                    expected.trim_end_matches('/').to_owned()
+                }
+            );
+            assert_eq!(
+                service
+                    .fresh
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .base
+                    .as_str(),
+                if expected.is_empty() {
+                    base.as_str()
+                } else {
+                    expected
+                }
+            );
+            service.finish_create("fresh-seat", true).unwrap();
+            assert_eq!(server.join().unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn cancelled_allocation_retries_response_control_host_and_persists_guarded_cleanup() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("pending-session-cleanup.json");
+        let requests = std::sync::Arc::new(crate::requests::Requests::default());
+        let permit = requests.admit("create", "session.create").unwrap();
+        let (base, post_server) = session_server(
+            vec![(
+                200,
+                json!({"requestStatus":{"statusCode":1},"session":{
+                    "sessionId":"fresh-seat","status":1,
+                    "sessionControlInfo":{"ip":"203.0.113.20","port":443}
+                }}),
+            )],
+            move |_| requests.cancel("create"),
+        );
+        let proxy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let proxy_base = format!("http://{}", proxy.local_addr().unwrap());
+        let proxy_server = thread::spawn(move || {
+            use std::io::{BufRead, BufReader, Write};
+            let mut targets = Vec::new();
+            for _ in 0..2 {
+                let (mut stream, _) = proxy.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = BufReader::new(&stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                targets.push(line.trim().to_owned());
+                loop {
+                    line.clear();
+                    assert!(reader.read_line(&mut line).unwrap() > 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                    assert!(!line.to_ascii_lowercase().starts_with("authorization:"));
+                }
+                let _ = stream.write_all(
+                    b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+            }
+            targets
+        });
+        let client = Client::builder()
+            .proxy(reqwest::Proxy::https(&proxy_base).unwrap())
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap();
+        let service = CloudMatchService::with_cleanup_path(client.clone(), path.clone());
+        let result = crate::requests::scope(permit.token.clone(), || {
+            service.create_at(
+                &json!({"appId":"123"}),
+                &json!({}),
+                &conflict_auth(),
+                "device",
+                || Ok((client, base)),
+            )
+        });
+        assert_eq!(result.unwrap_err().code, "session_cleanup_pending");
+        assert_eq!(
+            service
+                .fresh
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .base
+                .as_str(),
+            "https://203.0.113.20/"
+        );
+        assert!(service.active()["session"].is_null());
+        assert_eq!(
+            service.discovered.lock().unwrap()["fresh-seat"]["cleanupPending"],
+            true
+        );
+        assert_eq!(
+            service.finish_create("fresh-seat", false).unwrap_err().code,
+            "session_cleanup_pending"
+        );
+        assert_eq!(
+            service.retained_cleanup.lock().unwrap().as_ref().unwrap()["streamingBaseUrl"],
+            "https://203.0.113.20"
+        );
+        let persisted: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted["streamingBaseUrl"], "https://203.0.113.20");
+        let restarted = CloudMatchService::with_cleanup_path(Client::new(), path);
+        let pending = restarted.pending_cleanup(&conflict_auth()).unwrap();
+        assert_eq!(pending["sessionId"], "fresh-seat");
+        assert!(pending["streamingBaseUrl"].is_null());
+        assert_eq!(pending["cleanupEndpointUnverified"], true);
+        assert_eq!(
+            restarted.admit_create().err().unwrap().code,
+            "session_cleanup_pending"
+        );
+        assert_eq!(post_server.join().unwrap().len(), 1);
+        assert_eq!(
+            proxy_server.join().unwrap(),
+            [
+                "CONNECT 203.0.113.20:443 HTTP/1.1",
+                "CONNECT 203.0.113.20:443 HTTP/1.1",
+            ]
+        );
+    }
+
+    #[test]
     fn cancelled_fresh_post_is_compensated_without_resume() {
         let requests = std::sync::Arc::new(crate::requests::Requests::default());
         let permit = requests.admit("create", "session.create").unwrap();
@@ -2936,6 +3117,8 @@ mod tests {
 
     #[test]
     fn unaccepted_allocation_retains_failed_cleanup_and_retries_exact_seat() {
+        let directory = tempfile::tempdir().unwrap();
+        let cleanup_path = directory.path().join("pending-session-cleanup.json");
         let (base, server) = session_server(
             vec![
                 (
@@ -2948,7 +3131,7 @@ mod tests {
             |_| {},
         );
         let client = Client::new();
-        let service = CloudMatchService::new(client.clone());
+        let service = CloudMatchService::with_cleanup_path(client.clone(), cleanup_path.clone());
         let result = service
             .create_at(
                 &json!({"appId":"123"}),
@@ -2968,6 +3151,19 @@ mod tests {
             service.discovered.lock().unwrap()["fresh-seat"]["cleanupPending"],
             true
         );
+        assert!(cleanup_path.exists());
+        assert_eq!(
+            service
+                .stop(
+                    &json!({"sessionId":"fresh-seat"}),
+                    &json!({}),
+                    &conflict_auth(),
+                    "device"
+                )
+                .unwrap_err()
+                .code,
+            "session_cleanup_pending"
+        );
         assert_eq!(
             service
                 .create_at(
@@ -2984,6 +3180,7 @@ mod tests {
         service.finish_create("other-seat", false).unwrap();
         assert!(service.fresh.lock().unwrap().is_some());
         service.finish_create("fresh-seat", false).unwrap();
+        assert!(!cleanup_path.exists());
         assert!(service.fresh.lock().unwrap().is_none());
         assert!(service.discovered.lock().unwrap().is_empty());
         let received = server.join().unwrap();
@@ -3136,6 +3333,36 @@ mod tests {
             service.admit_create().err().unwrap().code,
             "session_cleanup_pending"
         );
+    }
+
+    #[test]
+    fn persisted_cleanup_stop_never_uses_marker_or_synthetic_endpoint() {
+        let auth = conflict_auth();
+        for (id, marker_url) in [
+            ("seat", DEFAULT_STREAMING_BASE),
+            ("seat/other?forged=1", "https://attacker.example/"),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("pending-session-cleanup.json");
+            let record = json!({"sessionId":id,"streamingBaseUrl":marker_url,
+                "owner":[auth.provider.idp_id,auth.user.user_id]});
+            std::fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+            let service = CloudMatchService::with_cleanup_path(Client::new(), path.clone());
+            service.store_discovered(&[json!({"sessionId":id,
+                "serverIp":"seat.nvidiagrid.net","streamingBaseUrl":marker_url})]);
+            assert_eq!(
+                service
+                    .stop(&json!({"sessionId":id}), &json!({}), &auth, "device")
+                    .unwrap_err()
+                    .code,
+                "session_cleanup_pending"
+            );
+            assert!(path.exists());
+            assert_eq!(
+                service.admit_create().err().unwrap().code,
+                "session_cleanup_pending"
+            );
+        }
     }
 
     #[test]
