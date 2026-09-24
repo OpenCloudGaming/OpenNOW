@@ -502,14 +502,22 @@ int AcceptanceSession::startSmokeWorkload()
         auto *window = m_engine.rootObjects().isEmpty()
             ? nullptr : qobject_cast<QQuickWindow *>(m_engine.rootObjects().first());
         if (!window) return EXIT_FAILURE;
+        const bool configuredShortcut = m_arguments.contains(u"--smoke-configured-stats-shortcut"_s);
+        if (configuredShortcut) {
+            auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
+            if (!store) return EXIT_FAILURE;
+            auto settings = store->property("settings").toMap();
+            settings.insert(u"shortcutToggleStats"_s, u"F3"_s);
+            store->setProperty("settings", settings);
+        }
         window->showFullScreen();
         window->requestActivate();
-        auto *statsShortcut = window->findChild<QObject *>(
-            m_arguments.contains(u"--smoke-configured-stats-shortcut"_s)
-                ? u"configuredStreamStatsShortcut"_s : u"streamStatsShortcut"_s);
+        auto *statsShortcut = window->findChild<QObject *>(u"configuredStreamStatsShortcut"_s);
         auto *copyShortcut = window->findChild<QObject *>(u"streamStatsCopyShortcut"_s);
         auto *streamSurface = window->findChild<QObject *>(u"streamSurfaceHost"_s);
         if (!statsShortcut || !copyShortcut || !streamSurface) return EXIT_FAILURE;
+        if (statsShortcut->property("sequence").toString()
+                != (configuredShortcut ? u"F3"_s : u"Ctrl+N"_s)) return EXIT_FAILURE;
         const auto activateStatsShortcut = [statsShortcut] {
             return QMetaObject::invokeMethod(statsShortcut, "activated", Qt::DirectConnection);
         };
