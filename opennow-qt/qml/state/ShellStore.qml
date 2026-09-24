@@ -631,6 +631,8 @@ QtObject {
     property bool streamerRecoveryExhausted: false
     property int sessionReconnectAttempts: 0
     readonly property int maximumSessionReconnectAttempts: 8
+    property int streamPollFailureAttempts: 0
+    readonly property int maximumStreamPollFailureAttempts: 8
     property bool sessionRecoveryPending: false
     property string recoverySessionId: ""
     property string recoveryDiscoveryRequestId: ""
@@ -1908,6 +1910,7 @@ QtObject {
             streamerRestartTimer.stop()
             streamerRestartAttempts = 0
             sessionReconnectAttempts = 0
+            streamPollFailureAttempts = 0
             streamerRecoveryExhausted = false
         }
         if (!activeSession) {
@@ -3569,6 +3572,7 @@ QtObject {
             } else if (requestId === root.streamPollRequestId) {
                 root.streamPollRequestId = ""
                 if (!root.acceptsSessionScope(result.scope)) return
+                root.streamPollFailureAttempts = 0
                 if (root.isRemoteSessionTermination(result.termination))
                     root.finishRemoteSession(result.termination)
                 else
@@ -3818,8 +3822,9 @@ QtObject {
                     root.streamPollTimer.restart()
                     return
                 }
-                root.sessionReconnectAttempts += 1
-                root.streamState = root.activeSession && root.sessionReconnectAttempts <= 8 ? "reconnecting" : "error"
+                root.streamPollFailureAttempts += 1
+                root.streamState = root.activeSession
+                    && root.streamPollFailureAttempts <= root.maximumStreamPollFailureAttempts ? "reconnecting" : "error"
                 root.streamMessage = root.streamState === "reconnecting"
                     ? qsTr("Connection interrupted. Retrying…")
                     : message
