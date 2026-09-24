@@ -87,7 +87,8 @@ const MAX_NACK_ATTEMPTS: u8 = 3;
 const KEYFRAME_REQUEST_COOLDOWN: Duration = Duration::from_millis(250);
 const MAX_PENDING_NACK_RANGES: usize = 16;
 const MAX_PENDING_FRAME_ACKS: usize = 512;
-const MAX_CONTROL_REPORT_BYTES: usize = 1_071;
+pub const MAX_CONTROL_REPORT_BYTES: usize = 1_071;
+pub const MIN_CONTROL_REPORT_BYTES: usize = 4 + FRAME_ACK_PAYLOAD_LEN;
 const FRAME_ACK_RECORD_LEN: usize = 4 + FRAME_ACK_PAYLOAD_LEN;
 const STREAM_PING_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_PENDING_STREAM_PINGS: usize = 64;
@@ -423,6 +424,7 @@ struct CompletedFrameFeedback {
 }
 
 struct ControlReportBatch {
+    max_bytes: usize,
     bytes: Vec<u8>,
     queued_at: Option<Instant>,
     frames: Vec<CompletedFrameFeedback>,
@@ -435,11 +437,12 @@ struct ControlReportBatch {
 }
 
 impl ControlReportBatch {
-    fn new(now: Instant) -> Self {
+    fn new(now: Instant, max_bytes: usize) -> Self {
         Self {
-            bytes: Vec::with_capacity(MAX_CONTROL_REPORT_BYTES),
+            max_bytes,
+            bytes: Vec::with_capacity(max_bytes),
             queued_at: None,
-            frames: Vec::with_capacity(MAX_CONTROL_REPORT_BYTES / FRAME_ACK_RECORD_LEN),
+            frames: Vec::with_capacity(max_bytes / FRAME_ACK_RECORD_LEN),
             qos: None,
             last_qos_report: QosReport::default(),
             last_qos_send: now - QOS_REPORT_INTERVAL,
@@ -450,7 +453,7 @@ impl ControlReportBatch {
     }
 
     fn fits(&self, record_len: usize) -> bool {
-        self.bytes.len().saturating_add(record_len) <= MAX_CONTROL_REPORT_BYTES
+        self.bytes.len().saturating_add(record_len) <= self.max_bytes
     }
 
     fn append(&mut self, record: &[u8], now: Instant) {
@@ -1129,6 +1132,7 @@ pub struct NvstVideoConfig {
     rtcp_on_sctp: bool,
     qos_timings_v5: bool,
     frame_pacing_feedback: bool,
+    max_control_report_bytes: usize,
     hid_device_mask: u32,
     /// Dedicated NATT-only video (Mjolnir) socket port in the official two-socket
     /// cloud model. When set, video RTP/SRTP arrives on this socket while the
@@ -1176,6 +1180,7 @@ impl fmt::Debug for NvstVideoConfig {
             .field("rtcp_on_sctp", &self.rtcp_on_sctp)
             .field("qos_timings_v5", &self.qos_timings_v5)
             .field("frame_pacing_feedback", &self.frame_pacing_feedback)
+            .field("max_control_report_bytes", &self.max_control_report_bytes)
             .field("hid_device_mask", &self.hid_device_mask)
             .field("mjolnir_udp_port", &self.mjolnir_udp_port)
             .field("codec", &self.codec)
@@ -1471,6 +1476,14 @@ impl NvstVideoConfig {
             }
             None => !qos_timings_v5,
         };
+        let max_control_report_bytes =
+            optional_usize(object, "maxQosMessagesSize")?.unwrap_or(MAX_CONTROL_REPORT_BYTES);
+        if max_control_report_bytes < MIN_CONTROL_REPORT_BYTES {
+            return Err(NvstConfigError::OutOfRange {
+                field: "maxQosMessagesSize",
+            });
+        }
+        let max_control_report_bytes = max_control_report_bytes.min(MAX_CONTROL_REPORT_BYTES);
         let mjolnir_udp_port = optional_u16(object, "mjolnirUdpPort")?;
         if mjolnir_udp_port == Some(0) {
             return Err(NvstConfigError::OutOfRange {
@@ -1552,6 +1565,7 @@ impl NvstVideoConfig {
             rtcp_on_sctp,
             qos_timings_v5,
             frame_pacing_feedback,
+            max_control_report_bytes,
             mjolnir_udp_port,
             hid_device_mask,
             codec,
@@ -6149,6 +6163,7 @@ fn run_nvst_webrtc_bundle(
     let receive_destination = logical_ice_addr(physical_local, 1);
     let receive_source = logical_ice_addr(bundle_peer, 2);
     let frame_pacing_feedback = config.frame_pacing_feedback;
+    let max_control_report_bytes = config.max_control_report_bytes;
     let mut receiver = NvstVideoReceiver::new(config);
     let mut video_delivery_gap = false;
     let mut datagram = vec![0_u8; 65_536];
@@ -6175,7 +6190,7 @@ fn run_nvst_webrtc_bundle(
     let mut keyframe_attempts = 0_u64;
     let mut last_keyframe_attempt_log: Option<Instant> = None;
     let mut rtcp_reports_sent = 0_u64;
-    let mut control_reports = ControlReportBatch::new(Instant::now());
+    let mut control_reports = ControlReportBatch::new(Instant::now(), max_control_report_bytes);
     let mut last_frame_pacing_send = Instant::now() - FRAME_PACING_INTERVAL;
     let control_stats_origin = Instant::now();
     let mut last_control_stats_log = Instant::now();
@@ -8378,6 +8393,43 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn qos_message_size_handoff_defaults_clamps_and_rejects_unusable_values() {
+        let mut handoff = legacy_handoff();
+        assert_eq!(
+            NvstVideoConfig::from_legacy_handoff(&handoff, None)
+                .unwrap()
+                .max_control_report_bytes,
+            MAX_CONTROL_REPORT_BYTES
+        );
+        for (offered, selected) in [(106, 106), (212, 212), (1071, 1071), (4000, 1071)] {
+            handoff["maxQosMessagesSize"] = serde_json::json!(offered);
+            assert_eq!(
+                NvstVideoConfig::from_legacy_handoff(&handoff, None)
+                    .unwrap()
+                    .max_control_report_bytes,
+                selected
+            );
+        }
+        for offered in [0, 56, 105] {
+            handoff["maxQosMessagesSize"] = serde_json::json!(offered);
+            assert!(matches!(
+                NvstVideoConfig::from_legacy_handoff(&handoff, None),
+                Err(NvstConfigError::OutOfRange {
+                    field: "maxQosMessagesSize"
+                })
+            ));
+        }
+        handoff["maxQosMessagesSize"] = serde_json::json!("212");
+        assert!(matches!(
+            NvstVideoConfig::from_legacy_handoff(&handoff, None),
+            Err(NvstConfigError::InvalidFieldType {
+                field: "maxQosMessagesSize",
+                ..
+            })
+        ));
+    }
+
     fn peer() -> SocketAddr {
         SocketAddr::new(TEST_PEER.parse().expect("test IP"), 5004)
     }
@@ -9993,7 +10045,7 @@ mod tests {
     fn control_report_batch_concatenates_existing_records_within_1071_bytes() {
         let now = Instant::now();
         let feedback = NvstFeedbackState::default();
-        let mut batch = ControlReportBatch::new(now);
+        let mut batch = ControlReportBatch::new(now, MAX_CONTROL_REPORT_BYTES);
         let mut expected = Vec::new();
         for number in 1..=9 {
             let frame = CompletedFrameFeedback {
@@ -10026,7 +10078,7 @@ mod tests {
     fn full_control_batch_flushes_before_collecting_another_ack() {
         let now = Instant::now();
         let feedback = NvstFeedbackState::default();
-        let mut batch = ControlReportBatch::new(now);
+        let mut batch = ControlReportBatch::new(now, MAX_CONTROL_REPORT_BYTES);
         for number in 1..=10 {
             let frame = CompletedFrameFeedback {
                 frame_number: number,
@@ -10049,10 +10101,85 @@ mod tests {
     }
 
     #[test]
+    fn lower_control_cap_flushes_at_boundary_and_preserves_failed_batch_for_retry() {
+        let now = Instant::now();
+        let feedback = NvstFeedbackState::default();
+        let mut batch = ControlReportBatch::new(now, 2 * FRAME_ACK_RECORD_LEN);
+        for number in 1..=2 {
+            batch.append_ack(
+                CompletedFrameFeedback {
+                    frame_number: number,
+                    bytes: 1,
+                    accepted_at: now,
+                    assembled_at: None,
+                },
+                &frame_ack(number, 0.0, 1, DEFAULT_FRAME_TIME_US).encoded(),
+                now,
+            );
+        }
+        assert_eq!(batch.bytes.len(), batch.max_bytes);
+        assert!(!batch.fits(FRAME_ACK_RECORD_LEN));
+        let pending = batch.bytes.clone();
+        assert!(!batch.flush(now, &feedback, |bytes| {
+            assert_eq!(bytes, pending);
+            false
+        }));
+        assert_eq!(batch.bytes, pending);
+        assert_eq!(batch.frames.len(), 2);
+        assert_eq!(batch.frame_acks_sent, 0);
+        assert!(batch.flush(now, &feedback, |bytes| {
+            assert_eq!(bytes, pending);
+            true
+        }));
+        assert_eq!(batch.frame_acks_sent, 2);
+        assert_eq!(batch.last_ack_frame, Some(2));
+        assert!(batch.fits(FRAME_ACK_RECORD_LEN));
+
+        let mut minimum = ControlReportBatch::new(now, MIN_CONTROL_REPORT_BYTES);
+        let record = frame_ack(3, 0.0, 1, DEFAULT_FRAME_TIME_US).encoded();
+        assert!(minimum.fits(record.len()));
+        minimum.append_ack(
+            CompletedFrameFeedback {
+                frame_number: 3,
+                bytes: 1,
+                accepted_at: now,
+                assembled_at: None,
+            },
+            &record,
+            now,
+        );
+        assert!(!minimum.fits(1));
+        assert!(minimum.flush(now, &feedback, |bytes| bytes == record));
+        assert_eq!(minimum.last_ack_frame, Some(3));
+
+        let report = feedback.qos_report(&minimum.last_qos_report, QOS_REPORT_INTERVAL);
+        let qos_bytes = report.command().encoded();
+        assert!(minimum.fits(qos_bytes.len()));
+        minimum.append_qos(report, &qos_bytes, now + QOS_REPORT_INTERVAL);
+        assert!(
+            !minimum.flush(now + QOS_REPORT_INTERVAL, &feedback, |bytes| {
+                assert_eq!(bytes, qos_bytes);
+                false
+            })
+        );
+        assert_eq!(minimum.qos_reports_sent, 0);
+        assert_eq!(minimum.last_qos_report.sequence, 0);
+        assert_eq!(minimum.bytes, qos_bytes);
+        assert!(
+            minimum.flush(now + QOS_REPORT_INTERVAL, &feedback, |bytes| {
+                assert_eq!(bytes, qos_bytes);
+                true
+            })
+        );
+        assert_eq!(minimum.qos_reports_sent, 1);
+        assert_eq!(minimum.last_qos_report.sequence, 1);
+    }
+
+    #[test]
     fn failed_control_batch_retries_without_committing_ack_or_qos() {
         let now = Instant::now();
         let feedback = NvstFeedbackState::default();
-        let mut batch = ControlReportBatch::new(now);
+        let mut batch = ControlReportBatch::new(now, MAX_CONTROL_REPORT_BYTES);
         let frame = CompletedFrameFeedback {
             frame_number: 42,
             bytes: 7,
@@ -10104,7 +10231,7 @@ mod tests {
     fn failed_batch_stays_bounded_while_new_frame_queue_evicts_oldest() {
         let now = Instant::now();
         let feedback = NvstFeedbackState::default();
-        let mut batch = ControlReportBatch::new(now);
+        let mut batch = ControlReportBatch::new(now, MAX_CONTROL_REPORT_BYTES);
         feedback.publish_accepted_frame(1, 1, now);
         let first = feedback.take_completed_frame().unwrap();
         batch.append_ack(
