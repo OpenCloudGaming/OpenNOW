@@ -535,7 +535,10 @@ impl StreamerService {
                 "10bit_420" => &["av1", "h265"],
                 _ => &["av1", "h265", "h264"],
             };
-            candidates.iter().find(|codec| codec_available(&selected, codec)).copied()
+            let av1_eligible = auto_av1_eligible(settings, &selected, hdr);
+            candidates.iter().find(|codec| {
+                (**codec != "av1" || av1_eligible) && codec_available(&selected, codec)
+            }).copied()
                 .ok_or_else(|| StreamerError { code: "streamer_codec_unavailable",
                     message: "No available codec supports the requested color mode. Try 8-bit 4:2:0 in Stream settings.".to_owned() })?
         } else {
@@ -1219,15 +1222,15 @@ fn available_codecs(capabilities: &Value) -> Vec<&'static str> {
 }
 
 fn macos_auto_codec_candidates(settings: &Value) -> &'static [&'static str] {
-    let (width, height) = settings["resolution"]
-        .as_str()
-        .and_then(|value| value.split_once('x'))
-        .and_then(|(width, height)| Some((width.parse::<u64>().ok()?, height.parse::<u64>().ok()?)))
-        .filter(|(width, height)| *width > 0 && *height > 0)
-        .unwrap_or((1920, 1080));
-    let pixels = width.saturating_mul(height);
-    let fps = settings["fps"].as_u64().unwrap_or(60);
-    let bitrate = settings["maxBitrateMbps"].as_f64().unwrap_or(75.0);
+    let Some(pixels) = requested_resolution_pixels(settings) else {
+        return &["h264", "h265", "av1"];
+    };
+    let (Some(fps), Some(bitrate)) = (
+        settings["fps"].as_u64(),
+        settings["maxBitrateMbps"].as_f64(),
+    ) else {
+        return &["h264", "h265", "av1"];
+    };
     if fps >= 144 {
         &["h264", "h265", "av1"]
     } else if pixels >= 3840 * 2160 || ((0.22..=30.0).contains(&bitrate) && pixels >= 2560 * 1440) {
@@ -1239,6 +1242,39 @@ fn macos_auto_codec_candidates(settings: &Value) -> &'static [&'static str] {
     } else {
         &["h264", "h265", "av1"]
     }
+}
+
+fn requested_resolution_pixels(settings: &Value) -> Option<u64> {
+    let (width, height) = settings["resolution"].as_str()?.split_once('x')?;
+    let width = width.parse::<u64>().ok().filter(|width| *width > 0)?;
+    let height = height.parse::<u64>().ok().filter(|height| *height > 0)?;
+    width.checked_mul(height)
+}
+
+fn auto_av1_eligible(settings: &Value, capabilities: &Value, hdr: bool) -> bool {
+    if !settings["fps"]
+        .as_u64()
+        .is_some_and(|fps| (1..=120).contains(&fps))
+    {
+        return false;
+    };
+    if !requested_resolution_pixels(settings).is_some_and(|pixels| pixels <= 5120 * 2880) {
+        return false;
+    }
+    capabilities["videoBackends"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|backend| backend["available"].as_bool() == Some(true))
+        .filter(|backend| matches!(backend["platform"].as_str(), Some("windows" | "macos")))
+        .flat_map(|backend| backend["codecs"].as_array().into_iter().flatten())
+        .any(|codec| {
+            codec["codec"]
+                .as_str()
+                .is_some_and(|name| name.eq_ignore_ascii_case("av1"))
+                && codec["available"].as_bool() == Some(true)
+                && (!hdr || codec["hdrSupported"].as_bool() == Some(true))
+        })
 }
 
 fn codec_available(capabilities: &Value, codec: &str) -> bool {
@@ -2182,11 +2218,11 @@ mod tests {
     #[test]
     fn embedded_auto_selects_only_supported_codecs_and_preserves_manual_choices() {
         let mut caps = json!({"protocolVersion":7,"videoBackends":[{
-            "backend":"d3d11","available":true,"codecs":[
+            "backend":"d3d11","platform":"windows","available":true,"codecs":[
                 {"codec":"h264","available":true}, {"codec":"h265","available":true},
                 {"codec":"av1","available":false}]}]});
-        let settings =
-            json!({"codec":"auto","nativeVideoBackend":"auto","colorQuality":"8bit_420"});
+        let settings = json!({"codec":"auto","nativeVideoBackend":"auto","colorQuality":"8bit_420",
+                "resolution":"1920x1080","fps":60});
         let resolve = |settings: &Value, caps: &Value| {
             StreamerService::embedded_session_settings(settings, caps)
         };
@@ -2401,13 +2437,14 @@ mod tests {
     #[test]
     fn hdr_requires_explicit_output_and_ten_bit_hardware_support() {
         let capabilities = json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
-            "backend":"d3d11","available":true,"codecs":[
+            "backend":"d3d11","platform":"windows","available":true,"codecs":[
                 {"codec":"h264","available":true,"colorQualities":["8bit_420"]},
                 {"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420"]},
                 {"codec":"av1","available":true,"colorQualities":["8bit_420","10bit_420"]}
             ]
         }]});
-        let settings = json!({"codec":"auto","colorQuality":"8bit_420","enableHdr":true});
+        let settings = json!({"codec":"auto","colorQuality":"8bit_420","enableHdr":true,
+            "resolution":"1920x1080","fps":60});
         let resolved =
             StreamerService::embedded_session_settings(&settings, &capabilities).unwrap();
         assert_eq!(resolved["codec"], "h265");
@@ -2529,7 +2566,96 @@ mod tests {
         }
         assert_eq!(
             StreamerService::embedded_session_settings(&json!({"codec":"auto"}), &caps).unwrap()["codec"],
-            "h265"
+            "h264"
+        );
+    }
+
+    #[test]
+    fn embedded_auto_av1_requires_supported_platform_fps_and_resolution() {
+        for (platform, resolution, fps, expected) in [
+            ("windows", "1920x1080", Some(60), "av1"),
+            ("windows", "5120x2880", Some(120), "av1"),
+            ("windows", "5120x2880", Some(121), "h265"),
+            ("windows", "5120x2881", Some(120), "h265"),
+            ("windows", "7680x4320", Some(60), "h265"),
+            ("windows", "1920x1080", None, "h265"),
+            ("windows", "1920x1080", Some(0), "h265"),
+            ("windows", "invalid", Some(60), "h265"),
+            ("windows", "0x1080", Some(60), "h265"),
+            ("windows", "18446744073709551615x2", Some(60), "h265"),
+            ("macos", "1920x1080", Some(60), "av1"),
+            ("linux", "1920x1080", Some(60), "h265"),
+            ("steamos", "1920x1080", Some(60), "h265"),
+            ("", "1920x1080", Some(60), "h265"),
+            ("unknown", "1920x1080", Some(60), "h265"),
+        ] {
+            let backend = match platform {
+                "macos" => "videotoolbox",
+                "linux" | "steamos" => "vulkan",
+                _ => "d3d11",
+            };
+            let caps = json!({"protocolVersion":STREAMER_PROTOCOL_VERSION,
+                "videoBackends":[{"backend":backend,"platform":platform,"available":true,
+                    "codecs":[{"codec":"h264","available":true},
+                        {"codec":"h265","available":true},
+                        {"codec":"av1","available":true}]}]});
+            let settings = json!({"codec":"auto","colorQuality":"8bit_420",
+                "resolution":resolution,"fps":fps,"maxBitrateMbps":20});
+            assert_eq!(
+                StreamerService::embedded_session_settings(&settings, &caps).unwrap()["codec"],
+                expected,
+                "{platform} {settings}"
+            );
+            let mut without_resolution = settings.clone();
+            without_resolution
+                .as_object_mut()
+                .unwrap()
+                .remove("resolution");
+            assert_eq!(
+                StreamerService::embedded_session_settings(&without_resolution, &caps).unwrap()["codec"],
+                if platform == "macos" { "h264" } else { "h265" },
+                "{platform} missing resolution"
+            );
+        }
+    }
+
+    #[test]
+    fn embedded_auto_av1_hdr_needs_probed_support_without_restricting_explicit_choice() {
+        let mut caps = json!({"protocolVersion":STREAMER_PROTOCOL_VERSION,
+            "nativeHdrSupported":true,"videoBackends":[{
+                "backend":"d3d11","platform":"windows","available":true,"codecs":[
+                    {"codec":"h265","available":false,"hdrSupported":true,
+                        "colorQualities":["10bit_420"],"hdrColorQualities":["10bit_420"]},
+                    {"codec":"av1","available":true,"hdrSupported":true,
+                        "colorQualities":["10bit_420"],"hdrColorQualities":["10bit_420"]}]}]});
+        let settings = json!({"codec":"auto","enableHdr":true,"resolution":"3840x2160","fps":120});
+        assert_eq!(
+            StreamerService::embedded_session_settings(&settings, &caps).unwrap()["codec"],
+            "av1"
+        );
+        for (platform, fps, hdr_supported) in [
+            ("linux", 120, Some(true)),
+            ("windows", 144, Some(true)),
+            ("windows", 120, None),
+        ] {
+            caps["videoBackends"][0]["platform"] = json!(platform);
+            caps["videoBackends"][0]["codecs"][1]["hdrSupported"] = json!(hdr_supported);
+            let mut candidate = settings.clone();
+            candidate["fps"] = json!(fps);
+            assert_eq!(
+                StreamerService::embedded_session_settings(&candidate, &caps)
+                    .unwrap_err()
+                    .code,
+                "streamer_codec_unavailable",
+                "{platform} {candidate}"
+            );
+        }
+        caps["videoBackends"][0]["platform"] = json!("linux");
+        caps["videoBackends"][0]["codecs"][1]["hdrSupported"] = json!(true);
+        let explicit = json!({"codec":"av1","enableHdr":true,"resolution":"3840x2160","fps":144});
+        assert_eq!(
+            StreamerService::embedded_session_settings(&explicit, &caps).unwrap()["codec"],
+            "av1"
         );
     }
 
@@ -2715,7 +2841,7 @@ mod tests {
         );
         assert_eq!(
             StreamerService::embedded_session_settings(
-                &json!({"codec":"auto", "maxBitrateMbps":20, "resolution":"3840x2160"}),
+                &json!({"codec":"auto", "maxBitrateMbps":20, "resolution":"3840x2160", "fps":60}),
                 &caps
             )
             .unwrap()["codec"],
