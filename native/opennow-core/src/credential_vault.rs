@@ -7,7 +7,12 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+#[cfg(any(windows, test))]
+mod encrypted_secret_store;
+
 const SERVICE_NAME: &str = "app.opennow.auth";
+#[cfg(windows)]
+const KEY_SERVICE_NAME: &str = "app.opennow.auth.session-keys";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -53,11 +58,13 @@ trait SecretStore: Send + Sync {
     fn delete(&self, user_id: &str) -> Result<(), String>;
 }
 
-struct OsSecretStore;
+struct OsSecretStore {
+    service: &'static str,
+}
 
 impl SecretStore for OsSecretStore {
     fn get(&self, user_id: &str) -> Result<Option<String>, String> {
-        match credential(user_id)?.get_password() {
+        match credential(self.service, user_id)?.get_password() {
             Ok(value) => Ok(Some(value)),
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(_) => Err("OS credential store is unavailable or locked".into()),
@@ -65,13 +72,13 @@ impl SecretStore for OsSecretStore {
     }
 
     fn set(&self, user_id: &str, encoded: &str) -> Result<(), String> {
-        credential(user_id)?
+        credential(self.service, user_id)?
             .set_password(encoded)
             .map_err(|_| "OS credential store could not save the session".into())
     }
 
     fn delete(&self, user_id: &str) -> Result<(), String> {
-        match credential(user_id)?.delete_credential() {
+        match credential(self.service, user_id)?.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(_) => Err("OS credential store could not remove the session".into()),
         }
@@ -88,7 +95,20 @@ impl CredentialVault {
     pub fn new(data_dir: PathBuf) -> Self {
         Self {
             metadata_path: data_dir.join("accounts.json"),
-            store: Box::new(OsSecretStore),
+            #[cfg(windows)]
+            store: Box::new(encrypted_secret_store::EncryptedSecretStore::new(
+                data_dir.join("secure-sessions"),
+                Box::new(OsSecretStore {
+                    service: KEY_SERVICE_NAME,
+                }),
+                Box::new(OsSecretStore {
+                    service: SERVICE_NAME,
+                }),
+            )),
+            #[cfg(not(windows))]
+            store: Box::new(OsSecretStore {
+                service: SERVICE_NAME,
+            }),
             warnings: Mutex::new(std::collections::BTreeMap::new()),
             suppressed: Mutex::new(Vec::new()),
         }
@@ -701,8 +721,8 @@ fn parse_legacy_auth_state(bytes: &[u8]) -> Result<LegacyAuthState, String> {
     Ok(legacy)
 }
 
-fn credential(user_id: &str) -> Result<Entry, String> {
-    Entry::new(SERVICE_NAME, &format!("session:{user_id}"))
+fn credential(service: &str, user_id: &str) -> Result<Entry, String> {
+    Entry::new(service, &format!("session:{user_id}"))
         .map_err(|error| format!("OS credential store is unavailable: {error}"))
 }
 
@@ -938,7 +958,7 @@ mod tests {
         assert!(vault.load("other-user").is_err());
     }
 
-    fn sample_identity(user_id: &str) -> SavedIdentity {
+    pub(super) fn sample_identity(user_id: &str) -> SavedIdentity {
         SavedIdentity {
             user_id: user_id.to_owned(),
             display_name: user_id.to_owned(),
@@ -957,7 +977,7 @@ mod tests {
         let _ = fs::remove_dir_all(path);
     }
 
-    fn sample_session(user_id: &str) -> AuthSession {
+    pub(super) fn sample_session(user_id: &str) -> AuthSession {
         serde_json::from_value(serde_json::json!({
             "provider": {
                 "idpId": "idp", "code": "NVIDIA", "displayName": "NVIDIA",
