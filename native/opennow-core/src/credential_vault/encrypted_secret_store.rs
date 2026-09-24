@@ -166,6 +166,7 @@ mod tests {
     struct TestStore {
         entries: Arc<Mutex<HashMap<String, String>>>,
         limit: Option<usize>,
+        fail_set: bool,
     }
 
     impl SecretStore for TestStore {
@@ -174,9 +175,10 @@ mod tests {
         }
 
         fn set(&self, user_id: &str, encoded: &str) -> Result<(), String> {
-            if self
-                .limit
-                .is_some_and(|limit| encoded.encode_utf16().count() * 2 > limit)
+            if self.fail_set
+                || self
+                    .limit
+                    .is_some_and(|limit| encoded.encode_utf16().count() * 2 > limit)
             {
                 return Err("credential write failed".into());
             }
@@ -233,15 +235,23 @@ mod tests {
         let keys = TestStore::default();
         let legacy = TestStore::default();
         legacy.set("account", "legacy-session").unwrap();
-        fs::write(&root, []).unwrap();
-        let blocked = store(&root, keys.clone(), legacy.clone());
-        assert!(blocked.get("account").is_err());
+        let blocked = store(
+            &root,
+            TestStore {
+                fail_set: true,
+                ..keys.clone()
+            },
+            legacy.clone(),
+        );
+        assert_eq!(
+            blocked.get("account").unwrap().as_deref(),
+            Some("legacy-session")
+        );
         assert_eq!(
             legacy.get("account").unwrap().as_deref(),
             Some("legacy-session")
         );
         assert!(keys.get("account").unwrap().is_none());
-        fs::remove_file(&root).unwrap();
         keys.set("account", &STANDARD.encode(rand::random::<[u8; 32]>()))
             .unwrap();
         assert_eq!(
