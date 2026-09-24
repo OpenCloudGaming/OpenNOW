@@ -2677,10 +2677,12 @@ fn send_pending_nack(
     sender_ssrc: u32,
     media_ssrc: u32,
 ) {
-    let channel = if mjolnir {
-        channels.control_partial
+    let Some(channel) = (if mjolnir {
+        Some(channels.control_partial)
     } else {
         channels.rtcp
+    }) else {
+        return;
     };
     if rtc.channel(channel).is_none() {
         return;
@@ -6783,11 +6785,15 @@ fn run_nvst_webrtc_bundle(
                             sctp_started = true;
                             sctp_started_at = Some(Instant::now());
                             rtc.direct_api().start_sctp(true);
-                            let channels = NvstInputChannels::create(&mut rtc);
-                            rtcp_channel = Some(channels.rtcp);
+                            let channels = NvstInputChannels::create(&mut rtc, !mjolnir);
+                            rtcp_channel = channels.rtcp;
                             input_channels = Some(channels);
                             let _ = event_sender.send(NvstReceiveEvent::TransportReady("sctp"));
-                            eprintln!("NVST SCTP started with the eight-channel Bifrost profile");
+                            eprintln!(
+                                "NVST SCTP started with {} data channels",
+                                6 + usize::from(channels.cursor.is_some())
+                                    + usize::from(channels.rtcp.is_some())
+                            );
                         }
                     }
                     Event::ChannelOpen(id, label) => {
@@ -6831,7 +6837,7 @@ fn run_nvst_webrtc_bundle(
                                     );
                                 });
                             }
-                            let cursor_messages = if data.id == channels.cursor {
+                            let cursor_messages = if Some(data.id) == channels.cursor {
                                 Vec::new()
                             } else {
                                 server_cursor_messages(&data.data)
@@ -6861,7 +6867,7 @@ fn run_nvst_webrtc_bundle(
                                 }
                             }
 
-                            if data.id == channels.cursor {
+                            if Some(data.id) == channels.cursor {
                                 if !valid_cursor_channel_message(&data.data) {
                                     eprintln!(
                                         "NVST malformed cursor-channel notification ignored: bytes={}",
@@ -11091,6 +11097,28 @@ mod tests {
         let _ = receiver.process_datagram(peer(), &packet, now);
 
         assert!(receiver.poll_receiver_report(now).is_none());
+    }
+
+    #[test]
+    fn negotiated_rtcp_flag_does_not_strand_bundle_loss_feedback() {
+        for rtcp_on_sctp in [false, true] {
+            let mut handoff = legacy_handoff();
+            handoff["rtcpOnSctp"] = json!(rtcp_on_sctp);
+            let config =
+                NvstVideoConfig::from_legacy_handoff(&handoff, None).expect("valid config");
+            assert_eq!(config.rtcp_on_sctp(), rtcp_on_sctp);
+            let mut rtc = Rtc::new(Instant::now());
+            let channels = NvstInputChannels::create(&mut rtc, config.mjolnir_udp_port.is_none());
+            assert!(channels.rtcp.is_some());
+
+            handoff["mjolnirUdpPort"] = json!(49006);
+            let config =
+                NvstVideoConfig::from_legacy_handoff(&handoff, None).expect("valid config");
+            let mut rtc = Rtc::new(Instant::now());
+            let channels = NvstInputChannels::create(&mut rtc, config.mjolnir_udp_port.is_none());
+            assert!(channels.rtcp.is_none());
+            assert!(channels.cursor.is_none());
+        }
     }
 
     #[test]

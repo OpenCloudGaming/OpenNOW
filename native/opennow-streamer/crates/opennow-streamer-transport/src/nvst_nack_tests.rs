@@ -52,9 +52,10 @@ fn mjolnir_nack_uses_partial_control_and_preserves_wrapping_rtp_sequences() {
         config.reliability,
         Reliability::MaxPacketLifetime { lifetime: 300 }
     );
-    local.direct_api().close_data_channel(channels.rtcp);
+    let rtcp = channels.rtcp.expect("bundle RTCP channel");
+    local.direct_api().close_data_channel(rtcp);
     receive_messages(&mut local, &mut remote, now);
-    assert!(local.channel(channels.rtcp).is_none());
+    assert!(local.channel(rtcp).is_none());
 
     let feedback = NvstFeedbackState::default();
     feedback.request_nack(65534, 65537, now);
@@ -104,7 +105,7 @@ fn a_closed_nack_channel_does_not_spend_an_attempt_or_fall_back() {
         local.direct_api().close_data_channel(if mjolnir {
             channels.control_partial
         } else {
-            channels.rtcp
+            channels.rtcp.expect("bundle RTCP channel")
         });
         receive_messages(&mut local, &mut remote, now);
         let feedback = NvstFeedbackState::default();
