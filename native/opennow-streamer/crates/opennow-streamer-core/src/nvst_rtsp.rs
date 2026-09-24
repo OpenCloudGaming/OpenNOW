@@ -127,21 +127,16 @@ impl VideoQosOffers {
         Ok(())
     }
 
-    fn validate_pacing(&self, sdp: &str) -> Result<(), NvstRtspError> {
-        if self.uses_v5_timings()
-            && [
-                ("video[0].framePacing.mode", "2"),
-                ("video[0].framePacing.feedbackMode", "0"),
-            ]
-            .into_iter()
-            .any(|(name, expected)| sdp_attribute(sdp, name).is_some_and(|value| value != expected))
-        {
-            return Err(NvstRtspError::new(
+    fn pacing_feedback_mode(&self, sdp: &str) -> Result<u8, NvstRtspError> {
+        match sdp_attribute(sdp, "video[0].framePacing.feedbackMode").as_deref() {
+            Some("0") => Ok(0),
+            Some("1") => Ok(1),
+            None => Ok(u8::from(!self.uses_v5_timings())),
+            _ => Err(NvstRtspError::new(
                 "nvst-qos-pacing-unsupported",
-                "Server pacing mode conflicts with the negotiated QoS timings version",
-            ));
+                "Server advertised an unsupported frame pacing feedback mode",
+            )),
         }
-        Ok(())
     }
 
     fn record(&mut self, parameter: &str) {
@@ -1017,7 +1012,7 @@ fn prepare_on_endpoint(
     })?;
     let video_qos_offers = video_qos_offers(&describe.body);
     video_qos_offers.validate()?;
-    video_qos_offers.validate_pacing(&describe.body)?;
+    let pacing_feedback_mode = video_qos_offers.pacing_feedback_mode(&describe.body)?;
     let described_ping_version = sdp_attribute(&describe.body, "general.pingVersion")
         .and_then(|value| value.parse::<u8>().ok())
         .unwrap_or(6);
@@ -1174,6 +1169,7 @@ fn prepare_on_endpoint(
         "startupTimeoutMs":VIDEO_STARTUP_TIMEOUT_MS
     });
     video_qos_offers.add_to_handoff(&mut handoff);
+    handoff["framePacingFeedbackMode"] = json!(pacing_feedback_mode);
     set_bundle_natt_username(&mut handoff, &describe.body, ping_version);
     if let Some(media) = context.session.media_connection_info.as_ref() {
         handoff["bundlePeerIp"] = json!(media.ip);
@@ -3082,16 +3078,32 @@ mod tests {
             json!({"qosFeedbackVersion":7,"qosTimingsVersion":5,"qosBlobStatsVersion":9})
         );
         assert!(offers.uses_v5_timings());
-        offers
-            .validate_pacing(
-                "m=video 5004 RTP/SAVPF 96\r\na=x-nv-video[0].framePacing.mode:2\r\na=x-nv-video[0].framePacing.feedbackMode:0\r\n",
-            )
-            .unwrap();
         assert_eq!(
             offers
-                .validate_pacing(
-                    "m=video 5004 RTP/SAVPF 96\r\na=x-nv-video[0].framePacing.feedbackMode:1\r\n"
+                .pacing_feedback_mode(
+                    "m=video 5004 RTP/SAVPF 96\r\na=x-nv-video[0].framePacing.mode:2\r\na=x-nv-video[0].framePacing.feedbackMode:0\r\n",
                 )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            offers
+                .pacing_feedback_mode(
+                    "m=video 5004 RTP/SAVPF 96\r\na=x-nv-video[0].framePacing.mode:1\r\na=x-nv-video[0].framePacing.feedbackMode:1\r\n",
+                )
+                .unwrap(),
+            1
+        );
+        assert_eq!(offers.pacing_feedback_mode("v=0\r\n").unwrap(), 0);
+        assert_eq!(
+            VideoQosOffers::default()
+                .pacing_feedback_mode("v=0\r\n")
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            offers
+                .pacing_feedback_mode("a=x-nv-video[0].framePacing.feedbackMode:2\r\n")
                 .unwrap_err()
                 .code,
             "nvst-qos-pacing-unsupported"
