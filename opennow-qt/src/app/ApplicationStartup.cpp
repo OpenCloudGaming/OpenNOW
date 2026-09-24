@@ -225,6 +225,8 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
         snapshot.available = display.available;
         snapshot.minimumNits = display.minimumNits;
         snapshot.maximumNits = display.maximumNits;
+        snapshot.maximumFullFrameNits = display.maximumFullFrameNits;
+        snapshot.chromaticity = display.chromaticity;
         coreClient.setNativeHdrDisplay(snapshot);
     });
     qmlRegisterType<HdrChromeEffect>("OpenNOW", 1, 0, "HdrChromeEffect");

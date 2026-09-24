@@ -9,6 +9,8 @@
 #include <QQueue>
 #include <QStringList>
 #include <QTimer>
+#include <optional>
+#include "streaming/rendering/WindowsHdrDisplay.h"
 
 class CoreClient final : public QObject
 {
@@ -34,6 +36,8 @@ public:
         bool available = false;
         double minimumNits = 0.0;
         double maximumNits = 0.0;
+        std::optional<double> maximumFullFrameNits;
+        std::optional<HdrChromaticity> chromaticity;
     };
 
     Q_INVOKABLE bool start(const QString &program, const QStringList &arguments = {});

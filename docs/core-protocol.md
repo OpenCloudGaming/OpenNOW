@@ -793,26 +793,37 @@ only for this validated HDR request. `requestedStreamingFeatures.trueHdr=false` 
 separate because TrueHDR is the server's AI SDR-to-HDR filter, not native HDR. CloudMatch
 uses bit-depth/chroma enums `1/0` for 10-bit 4:2:0 and `1/1` for 10-bit 4:4:4.
 For HDR, monitor `displayData` carries validated output luminance
-when the current output reports it. `desiredContentMaxLuminance` and
-`desiredContentMinLuminance` come from the Wayland color-management target luminance
-range in cd/m²; this mirrors the official client's feature-gated mirroring of its
-system display properties into the same fields. `desiredContentMaxFrameAverageLuminance`
-is omitted while a validated output snapshot is in use, because the output description
-exposes no comparable sustained full-frame value and no permitted capture establishes
-that mapping.
+when the current output reports it. `desiredContentMaxLuminance` is the peak in nits;
+`desiredContentMinLuminance` is the minimum in 0.0001-nit units, rounded after
+multiplication by 10000. Wayland color-management supplies only this luminance pair.
+`desiredContentMaxFrameAverageLuminance` is omitted for a pair-only snapshot because
+Wayland exposes no comparable sustained full-frame value. When the runtime supplies
+a complete validated optional group, the core also writes its full-frame nits into
+that field and writes the red, green, blue, and white chromaticities as rounded
+`xy * 50000` integers in `displayPrimaryX0/Y0`, `displayPrimaryX1/Y1`,
+`displayPrimaryX2/Y2`, and `displayWhitePointX/Y`, respectively. The official PC
+client's Bifrost serializer confirms the field order and scales; the mapping from
+the display's maximum full-frame luminance to the frame-average field is inferred
+from native struct offsets, not an observed HDR session.
 
 Without a validated output snapshot, HDR requests keep the fixed requested-content
 defaults of maximum luminance 1000 nits, minimum luminance 0, and maximum frame-average
 luminance 400 nits, matching the Mac native session payload. Those defaults are requested
 content characteristics rather than measurements of the physical display and are not
 presented as calibration. SDR sends `displayData:null`. HDR does not invent display
-primaries or a white point: the Qt output snapshot provides luminance only, so those
-fields are omitted until validated chromaticities cross the Qt/core boundary.
+primaries or a white point; those fields require validated chromaticities from the
+current runtime output.
 
 The validated snapshot travels from Qt in `runtimeCapabilities.nativeHdrDisplay` as
 `minimumNits` and `maximumNits` in cd/m², omitting either value the output does not
-report. The core validates the pair again and drops it when the bounds are not finite,
-negative, above 10000 cd/m², or not strictly increasing. The snapshot is transient:
+report. Optionally it also carries `maximumFullFrameNits` and normalized floating-point
+`redX/redY`, `greenX/greenY`, `blueX/blueY`, and `whiteX/whiteY`. The core validates
+the pair again and drops it when the bounds are not finite, negative, above 10000 cd/m²,
+or not strictly increasing. It accepts the optional group only when every coordinate
+is finite, within [0, 1], has a valid xy sum and positive y, the primaries form a
+nondegenerate triangle, and `minimumNits < maximumFullFrameNits <= maximumNits`.
+Missing or invalid optional fields discard the entire group but retain a valid pair.
+The snapshot is transient:
 `settings.set` rejects it, the settings loader discards persisted copies, and the core
 never saves runtime capability results.
 

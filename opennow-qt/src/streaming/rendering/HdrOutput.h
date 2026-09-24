@@ -5,6 +5,8 @@
 #include <QTimer>
 #include <atomic>
 #include <memory>
+#include <optional>
+#include "streaming/rendering/WindowsHdrDisplay.h"
 
 class QQuickWindow;
 class HdrOutputPass;
@@ -46,6 +48,10 @@ public:
         bool available = false;
         double minimumNits = 0.0;
         double maximumNits = 0.0;
+        std::optional<double> maximumFullFrameNits;
+        std::optional<HdrChromaticity> chromaticity;
+
+        bool operator==(const DisplayData &) const = default;
     };
     [[nodiscard]] DisplayData displayData() const;
 
@@ -56,6 +62,7 @@ private:
     void updateOutput();
     void publish(State state);
     void requestChrome(bool required);
+    void invalidateDisplay();
     QPointer<QQuickWindow> m_window;
     QTimer m_probeTimer;
     std::atomic<bool> m_probeRequested{true};
