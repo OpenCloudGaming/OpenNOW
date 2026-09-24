@@ -42,7 +42,7 @@ Item {
     readonly property string toggleShortcut: String(ShellStore.settings.shortcutToggleStats ?? "Ctrl+N")
     readonly property var heroCards: ["Fps", "Ping", "Latency"].map(key => cards.find(card => card.key === key)).filter(card => card !== undefined)
     readonly property var unmeasuredKeys: ["Decode", "Residence", "Latency", "Swap"]
-    readonly property var ledgerCards: cards.filter(card => ["Jitter", "Drops", "PacketLoss", "Decode", "Residence", "Swap", "LocalOutputFps"].includes(card.key)
+    readonly property var ledgerCards: cards.filter(card => ["Receive", "Jitter", "Drops", "PacketLoss", "Decode", "Residence", "Swap", "LocalOutputFps"].includes(card.key)
         && (card.key !== "Drops" || card.field === "videoDropCount" || card.value > 0))
     readonly property var featureBadges: {
         const badges = []
@@ -130,7 +130,8 @@ Item {
         const cards = [
             {key:"Ping", label:qsTr("PING"), value:read("pingMs"), unit:"ms", field:"pingMs"},
             {key:"Fps", label:qsTr("STREAM FPS"), value:read("framesPerSecond"), unit:"fps", field:"framesPerSecond"},
-            {key:"Bitrate", label:qsTr("BITRATE"), value:read("bitrateMbps"), unit:"Mbps", field:"bitrateMbps", decimals:1},
+            {key:"Bitrate", label:qsTr("VIDEO BITRATE"), value:read("bitrateMbps"), unit:"Mbps", field:"bitrateMbps", decimals:1},
+            {key:"Receive", label:qsTr("STREAM UDP RECEIVE"), value:read("receiveBitrateMbps"), unit:"Mbps", field:"receiveBitrateMbps", decimals:1},
             {key:"Jitter", label:qsTr("JITTER"), value:read("jitterMs"), unit:"ms", field:"jitterMs", decimals:1},
             {key:"Drops", label:qsTr("VIDEO DROPS"), value:read("videoDropCount"), unit:qsTr("frames"), field:"videoDropCount"},
             {key:"Drops", label:qsTr("AUDIO DISCARDED"), value:read("audioDiscardedMs"), unit:"ms", field:"audioDiscardedMs", decimals:1},
@@ -146,7 +147,7 @@ Item {
             cards.push({key:"Drops", label:qsTr("UNCLASSIFIED DROPS"), value:read("otherQueueDropCount"), unit:qsTr("items"), field:"otherQueueDropCount"})
         if (frameGenerationEnabled)
             cards.push({key:"LocalOutputFps", label:qsTr("LOCAL OUTPUT FPS"), value:frameGenerationOutputFps(), unit:"fps", field:"frameGenerationOutputFps"})
-        return cards.filter(item => shown(item.key)
+        return cards.filter(item => shown(item.key === "Receive" ? "Bitrate" : item.key)
             && (!unmeasuredKeys.includes(item.key) || item.value !== null
                 || (item.key === "Swap" && swapGated)))
     }
@@ -179,6 +180,7 @@ Item {
         history = next
     }
     function ledgerDetail(card) {
+        if (card.field === "receiveBitrateMbps") return qsTr("known session peer · UDP datagram bytes")
         if (card.field === "jitterMs") {
             const samples = (history.jitterMs || []).filter(value => value !== null)
             return samples.length ? qsTr("max %1 · 60 s").arg(format(Math.max(...samples), 1)) : ""
@@ -263,6 +265,7 @@ Item {
                     const metrics = []
                     if (root.shown("Fps")) metrics.push({value:root.format(root.read("framesPerSecond")), unit:"fps"})
                     if (root.shown("Ping")) metrics.push({value:root.format(root.read("pingMs")), unit:"ms"})
+                    if (root.shown("Bitrate")) metrics.push({value:qsTr("UDP RX") + " " + root.format(root.read("receiveBitrateMbps"), 1), unit:"Mbps", socketReceive:true})
                     if (root.shown("Region")) metrics.push({value:root.region, unit:"", region:true})
                     if (root.shown("Video")) {
                         const h = Number(root.profile.height || String(root.profile.resolution || "").split("x")[1] || root.live.outputHeight || 0)
@@ -282,6 +285,7 @@ Item {
                         Image { visible: compactMetric.modelData.region === true; anchors.verticalCenter: parent.verticalCenter; width: 11; height: 11; sourceSize: Qt.size(22, 22); source: "qrc:/qt/qml/OpenNOW/res/icons/stats-globe.svg" }
                         Mono {
                             id: compactValue
+                            objectName: compactMetric.modelData.socketReceive === true ? "compactSocketReceive" : ""
                             text: compactMetric.modelData.value
                             width: Math.min(implicitWidth, compactMetric.modelData.region ? 180 : 100)
                             font.pixelSize: compactMetric.modelData.region ? 10.5 : 12.5
@@ -374,7 +378,7 @@ Item {
                 Item {
                     visible: root.shown("Bitrate")
                     width: parent.width; height: 41
-                    Mono { x: 16; y: 2; text: qsTr("BITRATE"); font.pixelSize: 10; font.letterSpacing: 0.95; color: "#80FFFFFF" }
+                    Mono { x: 16; y: 2; text: qsTr("VIDEO BITRATE"); font.pixelSize: 10; font.letterSpacing: 0.95; color: "#80FFFFFF" }
                     Row {
                         anchors.right: parent.right; anchors.rightMargin: 16; spacing: 4
                         Mono { id: bitrateValue; text: root.format(root.read("bitrateMbps"), 1); font.pixelSize: 12; color: root.metricColor }

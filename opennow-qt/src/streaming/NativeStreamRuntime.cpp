@@ -886,19 +886,18 @@ void NativeStreamRuntime::drainCallbacks(const std::shared_ptr<CallbackState> &s
         if (message.event && kind == u"telemetry"_s) {
             const auto object = document.object();
             const auto startId = object.value(u"startId"_s).toString();
-            if (presentationAllowed() && !startId.isEmpty()
-                && startId == d->acceptedSessionStartId) {
-                const auto stage = object.value(u"decodeProgressStage"_s).toString();
-                const bool stalled =
-                    object.value(u"transportFrameProgressStalled"_s).toBool()
-                    || stage == u"keyframe-pending"_s
-                    || stage == u"recovery-required"_s;
-                const auto decodeTimings = object.value(u"decodeTimings"_s).toObject();
-                const auto epoch = decodedCounterFromJson(decodeTimings.value(u"epoch"_s));
-                const auto outputs = decodedCounterFromJson(decodeTimings.value(u"outputsTotal"_s));
-                d->upstreamProgressSamples.publish(stalled, epoch.has_value() && outputs.has_value(),
-                                                   epoch.value_or(0), outputs.value_or(0));
-            }
+            if (!presentationAllowed() || startId.isEmpty()
+                || startId != d->acceptedSessionStartId) continue;
+            const auto stage = object.value(u"decodeProgressStage"_s).toString();
+            const bool stalled =
+                object.value(u"transportFrameProgressStalled"_s).toBool()
+                || stage == u"keyframe-pending"_s
+                || stage == u"recovery-required"_s;
+            const auto decodeTimings = object.value(u"decodeTimings"_s).toObject();
+            const auto epoch = decodedCounterFromJson(decodeTimings.value(u"epoch"_s));
+            const auto outputs = decodedCounterFromJson(decodeTimings.value(u"outputsTotal"_s));
+            d->upstreamProgressSamples.publish(stalled, epoch.has_value() && outputs.has_value(),
+                                               epoch.value_or(0), outputs.value_or(0));
         }
         const auto status = document.object().value(u"status"_s).toString();
         if (message.event && kind == u"cursor-capture"_s) {

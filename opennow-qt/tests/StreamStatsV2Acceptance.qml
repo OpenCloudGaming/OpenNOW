@@ -138,7 +138,7 @@ QtObject {
         ShellStore.runtimeStreamProfile = {maxBitrateMbps:75}
         ShellStore.streamStartedAtMs = Date.now() - 6130000
         ShellStore.streamer = {status:"streaming", framesPerSecond:120, pingMs:9, latencyMs:31,
-            bitrateMbps:74.6, jitterMs:1.2, packetLossPercent:0, decodeTimeMs:2.1, decoderResidenceMs:6.4,
+            bitrateMbps:74.6, receiveBitrateMbps:82.1, jitterMs:1.2, packetLossPercent:0, decodeTimeMs:2.1, decoderResidenceMs:6.4,
             mediaBackend:"Vulkan"}
         ShellStore.connectionHealth.clock = () => fixture.sampleTime
         sample(0)
@@ -146,6 +146,22 @@ QtObject {
         check(stats !== null, "overlay created")
         check(stats.allocatedBitrateMbps === 75, "allocation uses prepared session, not editable settings")
         check(Math.abs(stats.bitrateUsage - 74.6 / 75) < 0.000001, "bar uses measured / allocated bitrate")
+        check(stats.cards.find(card => card.field === "bitrateMbps").label === qsTr("VIDEO BITRATE")
+            && stats.cards.find(card => card.field === "receiveBitrateMbps").label === qsTr("STREAM UDP RECEIVE")
+            && stats.ledgerCards.some(card => card.field === "receiveBitrateMbps" && card.value === 82.1)
+            && stats.ledgerDetail(stats.cards.find(card => card.field === "receiveBitrateMbps"))
+                === qsTr("known session peer · UDP datagram bytes")
+            && stats.report().includes("STREAM UDP RECEIVE: 82.1 Mbps"),
+            "video and peer-filtered socket rates remain distinct in the expanded panel and report")
+        const compactReceive = find(stats, "compactSocketReceive")
+        const compactBar = find(stats, "compactStatsBar")
+        check(compactReceive && compactReceive.text === qsTr("UDP RX") + " 82.1"
+            && compactBar && compactBar.x >= 0 && compactBar.x + compactBar.width <= stats.width,
+            "default compact F3 shows the measured socket rate within the viewport")
+        ShellStore.acceptNativeEvent({type:"telemetry", receiveBitrateMbps:null})
+        check(stats.read("receiveBitrateMbps") === null && stats.report().includes("STREAM UDP RECEIVE: N/A Mbps"),
+            "unavailable socket samples must not retain a previous rate")
+        ShellStore.acceptNativeEvent({type:"telemetry", receiveBitrateMbps:82.1})
         check(stats.healthKnown && !stats.degraded, "zero packet loss is healthy")
         check(stats.videoText === "AV1 · 2560×1440 · 10-bit 4:2:0 · HDR", "real negotiated profile fields format correctly")
         check(stats.featureBadges.length === 1 && stats.featureBadges[0].text === "HDR", "only enabled features are advertised")

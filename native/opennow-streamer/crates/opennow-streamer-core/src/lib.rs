@@ -100,6 +100,9 @@ trait NvstSessionResources {
     fn network_metrics(&self) -> Option<(f64, f64)> {
         None
     }
+    fn socket_receive_bytes(&self) -> Option<u64> {
+        None
+    }
     fn frame_stage_timings(&self) -> Option<FrameStageTimings> {
         None
     }
@@ -138,6 +141,9 @@ impl NvstSessionResources for ActiveNvstResources {
     }
     fn network_metrics(&self) -> Option<(f64, f64)> {
         self.feedback.recent_network_metrics(Instant::now())
+    }
+    fn socket_receive_bytes(&self) -> Option<u64> {
+        Some(self.feedback.socket_receive_bytes())
     }
     fn frame_stage_timings(&self) -> Option<FrameStageTimings> {
         let timings = self.feedback.frame_stage_timings();
@@ -1744,6 +1750,7 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
         transport: resources,
     } = event_resources;
     let mut feedback_state = NvstMediaFeedbackState::new(false);
+    feedback_state.previous_socket_receive_bytes = resources.socket_receive_bytes().unwrap_or(0);
     feedback_state.start_id = start_id.clone();
     if let Some(queue) = captured_input.as_ref() {
         queue.set_text_ready(generation, false);
@@ -1956,6 +1963,14 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
                     }
                 }
             }
+        }
+        if feedback_state.telemetry_started
+            || resources
+                .socket_receive_bytes()
+                .is_some_and(|bytes| bytes > feedback_state.previous_socket_receive_bytes)
+        {
+            feedback_state.telemetry_started = true;
+            flush_nvst_telemetry(output, &resources, &mut feedback_state);
         }
     }
     if let Some(queue) = captured_input.as_ref() {
@@ -2331,6 +2346,8 @@ struct NvstMediaFeedbackState {
     telemetry_window_started: Instant,
     telemetry_frames: u64,
     telemetry_bytes: u64,
+    telemetry_started: bool,
+    previous_socket_receive_bytes: u64,
     peak_bitrate_mbps: f64,
     decode_timings: Option<DecodeTimingsReport>,
     decode_progress: DecodeProgressWatchdog,
@@ -2348,6 +2365,8 @@ impl NvstMediaFeedbackState {
             telemetry_window_started: Instant::now(),
             telemetry_frames: 0,
             telemetry_bytes: 0,
+            telemetry_started: false,
+            previous_socket_receive_bytes: 0,
             peak_bitrate_mbps: 0.0,
             decode_timings: None,
             decode_progress: DecodeProgressWatchdog::default(),
@@ -2369,6 +2388,15 @@ fn flush_nvst_telemetry<R: NvstSessionResources>(
     let elapsed_seconds = elapsed.as_secs_f64();
     let frames_per_second = state.telemetry_frames as f64 / elapsed_seconds;
     let bitrate_mbps = state.telemetry_bytes as f64 * 8.0 / elapsed_seconds / 1_000_000.0;
+    let socket_bytes = resources.socket_receive_bytes();
+    let receive_bitrate_mbps = socket_bytes.and_then(|bytes| {
+        bytes
+            .checked_sub(state.previous_socket_receive_bytes)
+            .map(|delta| delta as f64 * 8.0 / elapsed_seconds / 1_000_000.0)
+    });
+    if let Some(bytes) = socket_bytes {
+        state.previous_socket_receive_bytes = bytes;
+    }
     state.peak_bitrate_mbps = state.peak_bitrate_mbps.max(bitrate_mbps);
     let network = resources.network_metrics();
     let _ = output.send(event(
@@ -2376,6 +2404,7 @@ fn flush_nvst_telemetry<R: NvstSessionResources>(
         json!({
             "framesPerSecond": frames_per_second,
             "bitrateMbps": bitrate_mbps,
+            "receiveBitrateMbps": receive_bitrate_mbps,
             "peakBitrateMbps": state.peak_bitrate_mbps,
             "pingMs": resources.ping_ms(),
             "jitterMs": network.map(|metrics| metrics.0),
@@ -2427,6 +2456,7 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
             }
             state.telemetry_frames = state.telemetry_frames.saturating_add(1);
             state.telemetry_bytes = state.telemetry_bytes.saturating_add(u64::from(bytes));
+            state.telemetry_started = true;
             flush_nvst_telemetry(output, resources, state);
         }
         MediaFeedback::PlaybackStarted { backend } => {
@@ -2977,7 +3007,7 @@ fn consume_encoded_media(
 mod tests {
     use super::*;
     use std::net::UdpSocket;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::time::Instant;
 
     fn command(value: Value) -> Command {
@@ -3241,6 +3271,7 @@ mod tests {
     struct TestNvstResources {
         rumble: Arc<Mutex<[Option<NvstControllerRumble>; 4]>>,
         ping_ms: Option<f64>,
+        socket_bytes: Option<Arc<AtomicU64>>,
         frame_stage_timings: Option<FrameStageTimings>,
         decode_progress_policy: Option<DecodeProgressPolicy>,
         keyframe_requests: Arc<AtomicUsize>,
@@ -3257,6 +3288,12 @@ mod tests {
         }
         fn ping_ms(&self) -> Option<f64> {
             self.ping_ms
+        }
+
+        fn socket_receive_bytes(&self) -> Option<u64> {
+            self.socket_bytes
+                .as_ref()
+                .map(|bytes| bytes.load(Ordering::Relaxed))
         }
 
         fn frame_stage_timings(&self) -> Option<FrameStageTimings> {
@@ -3571,6 +3608,61 @@ mod tests {
                 .is_some_and(|value| (0.9..=1.0).contains(&value))
         );
         assert_eq!(telemetry["peakBitrateMbps"], telemetry["bitrateMbps"]);
+    }
+
+    #[test]
+    fn socket_receive_rate_tracks_cumulative_bytes_through_idle_and_reset() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = EventSender::unbounded(sender);
+        let bytes = Arc::new(AtomicU64::new(50_000));
+        let resources = TestNvstResources {
+            socket_bytes: Some(Arc::clone(&bytes)),
+            ..Default::default()
+        };
+        let mut state = NvstMediaFeedbackState::new(true);
+        state.previous_socket_receive_bytes = resources.socket_receive_bytes().unwrap();
+        bytes.store(300_000, Ordering::Relaxed);
+        state.telemetry_window_started = Instant::now() - Duration::from_secs(2);
+        flush_nvst_telemetry(&sender, &resources, &mut state);
+        let first = receiver.recv().unwrap();
+        assert!((first["receiveBitrateMbps"].as_f64().unwrap() - 1.0).abs() < 0.01);
+        assert_eq!(first["bitrateMbps"], json!(0.0));
+
+        bytes.store(550_000, Ordering::Relaxed);
+        state.telemetry_window_started = Instant::now() - Duration::from_secs(1);
+        flush_nvst_telemetry(&sender, &resources, &mut state);
+        let second = receiver.recv().unwrap();
+        assert!((second["receiveBitrateMbps"].as_f64().unwrap() - 2.0).abs() < 0.02);
+
+        state.telemetry_window_started = Instant::now() - Duration::from_secs(1);
+        flush_nvst_telemetry(&sender, &resources, &mut state);
+        assert_eq!(receiver.recv().unwrap()["receiveBitrateMbps"], json!(0.0));
+
+        bytes.store(100, Ordering::Relaxed);
+        state.telemetry_window_started = Instant::now() - Duration::from_secs(1);
+        flush_nvst_telemetry(&sender, &resources, &mut state);
+        assert_eq!(receiver.recv().unwrap()["receiveBitrateMbps"], Value::Null);
+
+        bytes.store(125_100, Ordering::Relaxed);
+        state.telemetry_window_started = Instant::now() - Duration::from_secs(1);
+        flush_nvst_telemetry(&sender, &resources, &mut state);
+        assert!(
+            (receiver.recv().unwrap()["receiveBitrateMbps"]
+                .as_f64()
+                .unwrap()
+                - 1.0)
+                .abs()
+                < 0.01
+        );
+
+        let mut next_session = NvstMediaFeedbackState::new(true);
+        let new_resources = TestNvstResources {
+            socket_bytes: Some(Arc::new(AtomicU64::new(0))),
+            ..Default::default()
+        };
+        next_session.telemetry_window_started = Instant::now() - Duration::from_secs(1);
+        flush_nvst_telemetry(&sender, &new_resources, &mut next_session);
+        assert_eq!(receiver.recv().unwrap()["receiveBitrateMbps"], json!(0.0));
     }
 
     #[test]
