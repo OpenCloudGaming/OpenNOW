@@ -664,6 +664,8 @@ data class AppSettings(
     val autoCheckForUpdates: Boolean = true,
     val allowEscapeToExitFullscreen: Boolean = false,
     val nativeLowLatencyDecoder: Boolean = false,
+    /** Playback route for new streams; false uses Android's standard media output path. */
+    val lowLatencyGameAudio: Boolean = true,
     /**
      * Highest [SETUP_FLOW_VERSION] whose first-run setup this install has been through. Versioned
      * rather than a boolean so a later release that adds a step can show the flow again, and so

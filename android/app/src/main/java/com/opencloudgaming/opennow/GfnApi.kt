@@ -2330,6 +2330,29 @@ class GfnCatalogRepository(
         return confirmedVariantId
     }
 
+    suspend fun removeOwnedVariant(token: String, variantId: String): String {
+        val query = """
+            mutation RemoveOwnedVariant(${'$'}cmsId: String!, ${'$'}locale: String!) {
+              removeOwnedVariant(language: ${'$'}locale, variantId: ${'$'}cmsId) { app { id } }
+            }
+        """.trimIndent()
+        val payload = postGraphQl(
+            query = query,
+            variables = buildJsonObject {
+                put("cmsId", variantId)
+                put("locale", requestLocale())
+            },
+            token = token,
+            endpoint = GFN_APPS_GRAPHQL_URL,
+        ).checkGraphQlErrors("Remove game from library")
+        val confirmedVariantId = payload.obj("data")?.obj("removeOwnedVariant")?.obj("app")?.string("id")
+            ?: error("GFN did not confirm that the game was removed from the library")
+        check(confirmedVariantId == variantId) {
+            "GFN confirmed a different removed variant ($confirmedVariantId instead of $variantId)"
+        }
+        return confirmedVariantId
+    }
+
     suspend fun resolveLaunchAppId(token: String, appIdOrUuid: String, providerStreamingBaseUrl: String): String? {
         if (appIdOrUuid.all(Char::isDigit)) return appIdOrUuid
         val vpcId = getVpcId(token, providerStreamingBaseUrl)

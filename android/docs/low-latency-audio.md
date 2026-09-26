@@ -7,6 +7,12 @@ including TVs. Stereo output and `USAGE_GAME` are preserved. Android 6/7 retain
 the normal AudioTrack path. The OS still decides whether the output route can
 actually deliver low latency.
 
+Settings > Audio and keyboard offers **Low latency game audio**. It defaults on
+for existing and new installs. Turning it off routes WebRTC and experimental NVST
+playback through `USAGE_MEDIA` and disables their low-latency AudioTrack request
+starting with the next stream. This is a route choice, not a volume boost; compare
+the same game and output device before judging loudness.
+
 ## Pinned WebRTC teardown guard
 
 In `io.github.webrtc-sdk:android:144.7559.14`, `stopPlayout()` stops the playback

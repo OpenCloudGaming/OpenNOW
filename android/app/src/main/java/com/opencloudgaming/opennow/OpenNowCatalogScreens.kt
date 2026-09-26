@@ -88,6 +88,7 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material.icons.Icons
@@ -3392,8 +3393,10 @@ internal fun GameDetailsSheet(
     onFavorite: (String) -> Unit,
     connectedTvName: String?,
     onPlayOnTv: (GameInfo) -> Unit,
-    removeFromRailLabel: String? = null,
-    onRemoveFromRail: (() -> Unit)? = null,
+    removeLabel: String? = null,
+    removeConfirmationText: String? = null,
+    removeEnabled: Boolean = true,
+    onRemove: (() -> Unit)? = null,
     onDismiss: () -> Unit,
 ) {
     val transitionRegistry = LocalGameDetailsTransitionRegistry.current
@@ -3604,8 +3607,10 @@ internal fun GameDetailsSheet(
                         onFavorite = onFavorite,
                         connectedTvName = connectedTvName,
                         onPlayOnTv = onPlayOnTv,
-                        removeFromRailLabel = removeFromRailLabel,
-                        onRemoveFromRail = onRemoveFromRail,
+                        removeLabel = removeLabel,
+                        removeConfirmationText = removeConfirmationText,
+                        removeEnabled = removeEnabled,
+                        onRemove = onRemove,
                         onDismiss = onDismiss,
                         gameFocusRequester = gameFocusRequester,
                         playFocusRequester = playFocusRequester,
@@ -3622,8 +3627,10 @@ internal fun GameDetailsSheet(
                         onFavorite = onFavorite,
                         connectedTvName = connectedTvName,
                         onPlayOnTv = onPlayOnTv,
-                        removeFromRailLabel = removeFromRailLabel,
-                        onRemoveFromRail = onRemoveFromRail,
+                        removeLabel = removeLabel,
+                        removeConfirmationText = removeConfirmationText,
+                        removeEnabled = removeEnabled,
+                        onRemove = onRemove,
                         onDismiss = onDismiss,
                         gameFocusRequester = gameFocusRequester,
                         playFocusRequester = playFocusRequester,
@@ -3669,8 +3676,10 @@ private fun GameDetailsLandscapeContent(
     onFavorite: (String) -> Unit,
     connectedTvName: String?,
     onPlayOnTv: (GameInfo) -> Unit,
-    removeFromRailLabel: String?,
-    onRemoveFromRail: (() -> Unit)?,
+    removeLabel: String?,
+    removeConfirmationText: String?,
+    removeEnabled: Boolean,
+    onRemove: (() -> Unit)?,
     onDismiss: () -> Unit,
     gameFocusRequester: FocusRequester,
     playFocusRequester: FocusRequester,
@@ -3742,10 +3751,12 @@ private fun GameDetailsLandscapeContent(
                             .width(150.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        if (removeFromRailLabel != null && onRemoveFromRail != null) {
-                            StoreRailRemoveButton(
-                                label = removeFromRailLabel,
-                                onClick = onRemoveFromRail,
+                        if (removeLabel != null && onRemove != null) {
+                            GameRemoveButton(
+                                label = removeLabel,
+                                confirmationText = removeConfirmationText,
+                                enabled = removeEnabled,
+                                onClick = onRemove,
                                 size = 48.dp,
                             )
                         }
@@ -3837,10 +3848,12 @@ private fun GameDetailsLandscapeContent(
                             overflow = TextOverflow.Ellipsis
                         )
                     }
-                    if (removeFromRailLabel != null && onRemoveFromRail != null) {
-                        StoreRailRemoveButton(
-                            label = removeFromRailLabel,
-                            onClick = onRemoveFromRail,
+                    if (removeLabel != null && onRemove != null) {
+                        GameRemoveButton(
+                            label = removeLabel,
+                            confirmationText = removeConfirmationText,
+                            enabled = removeEnabled,
+                            onClick = onRemove,
                             size = 48.dp,
                         )
                     }
@@ -3905,8 +3918,10 @@ private fun GameDetailsScrollableContent(
     onFavorite: (String) -> Unit,
     connectedTvName: String?,
     onPlayOnTv: (GameInfo) -> Unit,
-    removeFromRailLabel: String?,
-    onRemoveFromRail: (() -> Unit)?,
+    removeLabel: String?,
+    removeConfirmationText: String?,
+    removeEnabled: Boolean,
+    onRemove: (() -> Unit)?,
     onDismiss: () -> Unit,
     gameFocusRequester: FocusRequester,
     playFocusRequester: FocusRequester,
@@ -4032,10 +4047,12 @@ private fun GameDetailsScrollableContent(
                     onClick = { onFavorite(game.id) },
                     size = 48.dp,
                 )
-                if (removeFromRailLabel != null && onRemoveFromRail != null) {
-                    StoreRailRemoveButton(
-                        label = removeFromRailLabel,
-                        onClick = onRemoveFromRail,
+                if (removeLabel != null && onRemove != null) {
+                    GameRemoveButton(
+                        label = removeLabel,
+                        confirmationText = removeConfirmationText,
+                        enabled = removeEnabled,
+                        onClick = onRemove,
                         size = 48.dp,
                     )
                 }
@@ -4306,8 +4323,10 @@ private fun FavoriteIconButton(favorite: Boolean, onClick: () -> Unit, modifier:
 }
 
 @Composable
-private fun StoreRailRemoveButton(
+private fun GameRemoveButton(
     label: String,
+    confirmationText: String? = null,
+    enabled: Boolean = true,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     size: Dp = 44.dp,
@@ -4324,8 +4343,8 @@ private fun StoreRailRemoveButton(
                 contentDescription = label
                 role = Role.Button
             }
-            .clickable { confirmOpen = true }
-            .focusable(),
+            .clickable(enabled = enabled) { confirmOpen = true }
+            .focusable(enabled = enabled),
         contentAlignment = Alignment.Center,
     ) {
         Surface(
@@ -4338,12 +4357,20 @@ private fun StoreRailRemoveButton(
             border = if (LocalAbsoluteCinemaEffects.current) BorderStroke(1.dp, accent) else null,
         ) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Icon(
-                    imageVector = Icons.Outlined.DeleteOutline,
-                    contentDescription = null,
-                    tint = TextPrimary,
-                    modifier = Modifier.size(size * 0.5f),
-                )
+                if (enabled) {
+                    Icon(
+                        imageVector = Icons.Outlined.DeleteOutline,
+                        contentDescription = null,
+                        tint = TextPrimary,
+                        modifier = Modifier.size(size * 0.5f),
+                    )
+                } else {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(size * 0.5f),
+                        color = accent,
+                        strokeWidth = 2.dp,
+                    )
+                }
             }
         }
     }
@@ -4351,9 +4378,9 @@ private fun StoreRailRemoveButton(
         AlertDialog(
             onDismissRequest = { confirmOpen = false },
             title = { Text(stringResource(R.string.store_remove_confirm_title)) },
-            text = { Text(label) },
+            text = { Text(confirmationText ?: label) },
             confirmButton = {
-                TextButton(onClick = {
+                TextButton(enabled = enabled, onClick = {
                     confirmOpen = false
                     onClick()
                 }) {

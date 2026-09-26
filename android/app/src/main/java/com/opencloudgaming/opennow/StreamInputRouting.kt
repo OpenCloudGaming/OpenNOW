@@ -3,6 +3,9 @@ package com.opencloudgaming.opennow
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.os.Handler
+import android.os.Looper
+import android.view.ViewConfiguration
 import kotlinx.coroutines.cancel
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -250,6 +253,24 @@ object NativeStreamInputRouter {
     private var captureAllTouch = false
     @Volatile
     private var systemMenuHandler: (() -> Unit)? = null
+    private val controllerMenuHoldHandler by lazy { Handler(Looper.getMainLooper()) }
+    private var controllerMenuHold: Runnable? = null
+    private var controllerMenuHoldDownEvent: KeyEvent? = null
+    private var controllerMenuHoldDeviceId: Int? = null
+    private var consumedControllerMenuHoldDeviceId: Int? = null
+
+    private fun cancelControllerMenuHold(releaseForwardedStart: Boolean = false) {
+        controllerMenuHold?.let(controllerMenuHoldHandler::removeCallbacks)
+        if (releaseForwardedStart) {
+            controllerMenuHoldDownEvent?.let { down ->
+                client?.dispatchKey(KeyEvent.changeAction(down, KeyEvent.ACTION_UP))
+                consumedControllerMenuHoldDeviceId = down.deviceId
+            }
+        }
+        controllerMenuHold = null
+        controllerMenuHoldDownEvent = null
+        controllerMenuHoldDeviceId = null
+    }
 
     @Volatile
     private var systemBackHandler: (() -> Unit)? = null
@@ -278,6 +299,7 @@ object NativeStreamInputRouter {
     fun detach(next: NativeStreamClient) {
         if (client === next) {
             releaseInputForLifecycle("stream-detached")
+            consumedControllerMenuHoldDeviceId = null
             client = null
             touchMouseState.forgetCursorPosition()
             decodedStreamResolution = 0 to 0
@@ -287,6 +309,7 @@ object NativeStreamInputRouter {
 
     /** Releases held touch, mouse, and keyboard input when focus or lifecycle changes. */
     fun releaseInputForLifecycle(reason: String) {
+        cancelControllerMenuHold(releaseForwardedStart = true)
         client?.releasePhysicalInputForLifecycle(reason)
         touchMouseState.reset(client)
         releaseAllNativeTouches()
@@ -389,6 +412,7 @@ object NativeStreamInputRouter {
 
     fun setStreamUiActive(active: Boolean) {
         if (active && !streamUiActive) {
+            cancelControllerMenuHold(releaseForwardedStart = true)
             // A system/menu action can open app UI while a native game touch is still held. The
             // host will not receive that finger's eventual UP once UI routing takes over, so cancel
             // it at the transition instead of leaving a stuck press in the game.
@@ -678,6 +702,47 @@ object NativeStreamInputRouter {
     }
 
     fun dispatchKey(event: KeyEvent): Boolean {
+        val controllerInputDevice = event.isControllerInputDevice()
+        if (event.keyCode == KeyEvent.KEYCODE_BUTTON_START && controllerInputDevice) {
+            when (event.action) {
+                KeyEvent.ACTION_DOWN -> if (event.repeatCount == 0 &&
+                    shouldTrackControllerStartHold(event.keyCode, controllerInputDevice, streamUiActive)
+                ) {
+                    consumedControllerMenuHoldDeviceId = null
+                    cancelControllerMenuHold()
+                    if (!streamUiActive && systemMenuHandler != null) {
+                        val deviceId = event.deviceId
+                        val hold = Runnable {
+                            controllerMenuHold = null
+                            controllerMenuHoldDownEvent = null
+                            controllerMenuHoldDeviceId = null
+                            val openMenu = systemMenuHandler
+                            if (!streamUiActive && openMenu != null) {
+                                consumedControllerMenuHoldDeviceId = deviceId
+                                recordStreamMenuKey(event, "controller-start-hold")
+                                // The short press already reached the game. End it before local
+                                // controls take input ownership; the physical UP is consumed below.
+                                client?.dispatchKey(KeyEvent.changeAction(event, KeyEvent.ACTION_UP))
+                                setStreamUiActive(true)
+                                openMenu()
+                            }
+                        }
+                        controllerMenuHold = hold
+                        controllerMenuHoldDownEvent = event
+                        controllerMenuHoldDeviceId = deviceId
+                        controllerMenuHoldHandler.postDelayed(hold, ViewConfiguration.getLongPressTimeout().toLong())
+                    }
+                }
+                KeyEvent.ACTION_UP -> {
+                    if (controllerMenuHoldDeviceId == event.deviceId) cancelControllerMenuHold()
+                    if (consumedControllerMenuHoldDeviceId == event.deviceId) {
+                        consumedControllerMenuHoldDeviceId = null
+                        return true
+                    }
+                }
+            }
+            if (consumedControllerMenuHoldDeviceId == event.deviceId) return true
+        }
         if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && event.isStreamSystemMenuKey()) {
             recordStreamMenuKey(
                 event,
@@ -691,7 +756,6 @@ object NativeStreamInputRouter {
             systemMenuHandler?.invoke()
             return systemMenuHandler != null
         }
-        val controllerInputDevice = event.isControllerInputDevice()
         val externalMouseInputDevice = event.isExternalMouseInputDevice()
         val externalMouseSecondary = shouldRouteKeyAsExternalMouseSecondary(
             keyCode = event.keyCode,
@@ -733,6 +797,12 @@ object NativeStreamInputRouter {
         }
         return current.dispatchKey(event)
     }
+
+    internal fun shouldTrackControllerStartHold(
+        keyCode: Int,
+        controllerInputDevice: Boolean,
+        streamUiActive: Boolean,
+    ): Boolean = keyCode == KeyEvent.KEYCODE_BUTTON_START && controllerInputDevice && !streamUiActive
 
     fun dispatchMotion(event: MotionEvent): Boolean {
         if (streamUiActive && event.isExternalMousePointerEvent()) {

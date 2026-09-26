@@ -150,6 +150,7 @@ internal class NvstTransport(
     context: android.content.Context,
     private val session: SessionInfo,
     private val settings: StreamSettings,
+    private val lowLatencyGameAudio: Boolean,
     private val decoderFactory: VideoDecoderFactory,
     private val sink: () -> VideoSink?,
     private val event: (String, String) -> Unit,
@@ -289,7 +290,7 @@ internal class NvstTransport(
     @Keep fun onNativeMedia(codec: String, bytes: ByteBuffer, timestampNs: Long, keyframe: Boolean, contiguous: Boolean): Boolean {
         if (stopped) return false
         if (codec.equals("opus", true)) {
-            val output = audio ?: NvstAudioOutput().also { audio = it }
+            val output = audio ?: NvstAudioOutput(lowLatencyGameAudio).also { audio = it }
             output.feed(bytes, timestampNs / 1000, muted)
             return true
         }
@@ -333,7 +334,7 @@ internal class NvstTransport(
 }
 
 /** Android's Opus decoder; partial writes retain PCM within a bounded 100 ms queue. */
-private class NvstAudioOutput {
+private class NvstAudioOutput(private val lowLatencyGameAudio: Boolean) {
     private val codec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_AUDIO_OPUS)
     private val track: AudioTrack
     private val info = MediaCodec.BufferInfo()
@@ -352,11 +353,15 @@ private class NvstAudioOutput {
             codec.configure(format, null, null, 0)
             codec.start()
             openedTrack = AudioTrack.Builder()
-                .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME).setContentType(AudioAttributes.CONTENT_TYPE_MOVIE).build())
+                .setAudioAttributes(AudioAttributes.Builder().setUsage(streamAudioUsage(lowLatencyGameAudio)).setContentType(AudioAttributes.CONTENT_TYPE_MOVIE).build())
                 .setAudioFormat(AudioFormat.Builder().setSampleRate(48000).setChannelMask(AudioFormat.CHANNEL_OUT_STEREO).setEncoding(AudioFormat.ENCODING_PCM_16BIT).build())
                 .setBufferSizeInBytes(maxOf(3840, AudioTrack.getMinBufferSize(48000, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT)))
                 .setTransferMode(AudioTrack.MODE_STREAM)
-                .apply { if (android.os.Build.VERSION.SDK_INT >= 26) setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY) }
+                .apply {
+                    if (shouldUseLowLatencyStreamAudio(android.os.Build.VERSION.SDK_INT, lowLatencyGameAudio)) {
+                        setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
+                    }
+                }
                 .build()
             check(openedTrack.state == AudioTrack.STATE_INITIALIZED) { "NVST audio output unavailable" }
             openedTrack.play()

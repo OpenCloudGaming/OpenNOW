@@ -8,6 +8,7 @@
     <string name="profile_identity">%1$s • %2$s</string>
     <string name="profile_not_available">Not available</string>
     <string name="app_name">OpenNOW</string>
+    <string name="action_close_opennow">Close OpenNOW</string>
     <string name="status_starting_opennow">Starting OpenNOW</string>
     <string name="login_with_provider">Sign in with %1$s</string>
     <string name="login_tv_start">Sign in on another device with %1$s</string>
@@ -196,6 +197,10 @@
     <string name="store_remove_from_continue_playing">Remove %1$s from Continue playing</string>
     <string name="store_remove_from_queue">Remove %1$s from In queue</string>
     <string name="store_remove_confirm_title">Confirm removal</string>
+    <string name="library_remove_gfn_game">Remove %1$s from GeForce NOW Library</string>
+    <string name="library_remove_gfn_game_body">Remove %1$s from your GeForce NOW Library? Store entries: %2$s.</string>
+    <string name="library_remove_gfn_game_failed">Could not remove this game from your GeForce NOW Library.</string>
+    <string name="library_remove_gfn_game_partial">Removed %1$d of %2$d store entries. Refreshing your library.</string>
     <string name="store_favorites">Favorites</string>
     <string name="store_recommendations">Recommendations</string>
     <string name="store_results">Results</string>
@@ -489,6 +494,8 @@
     <string name="settings_section_stream_video">Video</string>
     <string name="settings_section_stream_connection">Connection</string>
     <string name="settings_section_audio_keyboard">Audio and keyboard</string>
+    <string name="settings_low_latency_game_audio">Low latency game audio</string>
+    <string name="settings_low_latency_game_audio_desc">On requests low latency Android game audio when supported. Off uses standard media audio; try it if streams sound too quiet. Applies to the next stream.</string>
     <string name="settings_keyboard_layout">Keyboard layout</string>
     <string name="settings_game_language">Game language</string>
     <string name="settings_clipboard_paste">Clipboard paste</string>

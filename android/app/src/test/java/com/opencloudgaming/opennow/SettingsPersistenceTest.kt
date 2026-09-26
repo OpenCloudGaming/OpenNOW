@@ -73,6 +73,15 @@ class SettingsPersistenceTest {
     }
 
     @Test
+    fun standardMediaAudioChoiceSurvivesSettingsReload() {
+        val saved = AppSettings(lowLatencyGameAudio = false)
+        val restored = OpenNowJson.decodeFromString<AppSettings>(OpenNowJson.encodeToString(saved))
+
+        assertFalse(restored.normalizedForAndroid().lowLatencyGameAudio)
+        assertTrue(OpenNowJson.decodeFromString<AppSettings>("{}").lowLatencyGameAudio)
+    }
+
+    @Test
     fun normalizationIsStableSoRepeatedWritesDoNotOscillate() {
         // update() normalizes before storing; a normalize that changed its own output would emit
         // forever under a conflated collector.

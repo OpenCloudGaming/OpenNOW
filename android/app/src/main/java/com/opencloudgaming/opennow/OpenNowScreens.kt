@@ -1297,15 +1297,26 @@ private fun MainShell(
                     }
                 }
                 state.selectedGame?.takeIf { !inStream && !modalPickerOpen }?.let { game ->
-                    val removeFromRailLabel = when (state.selectedGameRail) {
+                    val libraryVariants = game.variants.filter(::isOwnedGameVariant)
+                    val libraryRemoval = state.page == AppPage.Library &&
+                        state.libraryGames.any { gameTrackingKey(it) == gameTrackingKey(game) } &&
+                        libraryVariants.isNotEmpty()
+                    val removeLabel = when (state.selectedGameRail) {
                         StorePersonalRail.ContinuePlaying -> stringResource(
                             R.string.store_remove_from_continue_playing,
                             game.title,
                         )
                         StorePersonalRail.InQueue -> stringResource(R.string.store_remove_from_queue, game.title)
-                        null -> null
+                        null -> if (libraryRemoval) stringResource(R.string.library_remove_gfn_game, game.title) else null
                     }
-                    val removeFromRail = when (state.selectedGameRail) {
+                    val removeConfirmationText = if (libraryRemoval) {
+                        stringResource(
+                            R.string.library_remove_gfn_game_body,
+                            game.title,
+                            libraryVariants.map { gameStoreDisplayName(it.store) }.distinct().joinToString(", "),
+                        )
+                    } else null
+                    val onRemove = when (state.selectedGameRail) {
                         StorePersonalRail.ContinuePlaying -> {
                             {
                                 viewModel.dismissContinuePlaying(game)
@@ -1318,7 +1329,7 @@ private fun MainShell(
                                 viewModel.clearSelectedGame()
                             }
                         }
-                        null -> null
+                        null -> if (libraryRemoval) ({ viewModel.removeLibraryGame(game) }) else null
                     }
                     ControllerModalOverlay(onDismissRequest = viewModel::clearSelectedGame) {
                         // Keep details in the app's window so the activated artwork and destination
@@ -1334,8 +1345,10 @@ private fun MainShell(
                             onFavorite = viewModel::updateFavorites,
                             connectedTvName = state.localTvConnector.connectedTvName,
                             onPlayOnTv = viewModel::playOnLocalTv,
-                            removeFromRailLabel = removeFromRailLabel,
-                            onRemoveFromRail = removeFromRail,
+                            removeLabel = removeLabel,
+                            removeConfirmationText = removeConfirmationText,
+                            removeEnabled = state.removingLibraryGameId == null,
+                            onRemove = onRemove,
                             onDismiss = viewModel::clearSelectedGame,
                         )
                     }
@@ -1960,6 +1973,7 @@ private fun TopBarProfileMenu(
     onOpenSettings: () -> Unit,
     onOpenLocalApps: () -> Unit,
 ) {
+    val activity = LocalContext.current as? Activity
     var expanded by remember { mutableStateOf(false) }
     BackHandler(enabled = expanded) { expanded = false }
     var focused by remember { mutableStateOf(false) }
@@ -2095,6 +2109,16 @@ private fun TopBarProfileMenu(
                     expanded = false
                     haptics?.play(HapticCue.Activate)
                     onOpenSettings()
+                },
+            )
+            ProfileDropdownMenuItem(
+                text = {
+                    Text(stringResource(R.string.action_close_opennow), fontWeight = FontWeight.SemiBold)
+                },
+                onClick = {
+                    expanded = false
+                    haptics?.play(HapticCue.Activate)
+                    activity?.finishAndRemoveTask()
                 },
             )
         }

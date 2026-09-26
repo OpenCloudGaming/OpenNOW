@@ -13,6 +13,22 @@ class StreamControlsShortcutRoutingTest {
     )
 
     @Test
+    fun startHoldBelongsOnlyToControllerGameplay() {
+        assertTrue(NativeStreamInputRouter.shouldTrackControllerStartHold(
+            KeyEvent.KEYCODE_BUTTON_START, controllerInputDevice = true, streamUiActive = false,
+        ))
+        assertFalse(NativeStreamInputRouter.shouldTrackControllerStartHold(
+            KeyEvent.KEYCODE_BUTTON_START, controllerInputDevice = false, streamUiActive = false,
+        ))
+        assertFalse(NativeStreamInputRouter.shouldTrackControllerStartHold(
+            KeyEvent.KEYCODE_BUTTON_START, controllerInputDevice = true, streamUiActive = true,
+        ))
+        assertFalse(NativeStreamInputRouter.shouldTrackControllerStartHold(
+            KeyEvent.KEYCODE_DPAD_UP, controllerInputDevice = true, streamUiActive = false,
+        ))
+    }
+
+    @Test
     fun tabletDockActivationCannotBypassReboundOrDisabledShortcut() {
         for (shortcut in listOf("F8", DISABLED_ANDROID_STREAM_MENU_SHORTCUT)) {
             for (key in activationKeys + KeyEvent.KEYCODE_DPAD_UP) {

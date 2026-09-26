@@ -1079,6 +1079,13 @@ private fun SettingsContent(
             }
     CategorySettingsSection(selectedCategory, SettingsCategory.Input, searchQuery, stringResource(R.string.settings_section_audio_keyboard), "input", "microphone", "mic", "voice", "audio", "keyboard", "shortcut", "layout", "language", "clipboard", "paste") {
                 SettingSwitch(
+                    label = stringResource(R.string.settings_low_latency_game_audio),
+                    checked = settings.lowLatencyGameAudio,
+                    description = stringResource(R.string.settings_low_latency_game_audio_desc),
+                ) { enabled ->
+                    viewModel.updateSettings(settings.copy(lowLatencyGameAudio = enabled))
+                }
+                SettingSwitch(
                     label = stringResource(R.string.settings_microphone),
                     checked = settings.stream.microphoneMode != MicrophoneMode.Disabled,
                     description = stringResource(R.string.settings_microphone_desc),

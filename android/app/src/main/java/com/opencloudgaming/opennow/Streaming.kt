@@ -231,6 +231,7 @@ internal fun usesPlayStationRumbleCompatibility(
 
 class NativeStreamClient(
     context: Context,
+    private val lowLatencyGameAudio: Boolean,
     private val onState: (String) -> Unit,
     private val onError: (String) -> Unit,
     private val onSessionRecoveryRequired: (String) -> Unit = {},
@@ -256,7 +257,7 @@ class NativeStreamClient(
     private val inputEncoder = InputEncoder()
     private val audioDeviceModule: AudioDeviceModule =
         JavaAudioDeviceModule.builder(appContext)
-            .setUseLowLatency(shouldUseLowLatencyStreamAudio(Build.VERSION.SDK_INT))
+            .setUseLowLatency(shouldUseLowLatencyStreamAudio(Build.VERSION.SDK_INT, lowLatencyGameAudio))
             .setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
             .setUseStereoInput(false)
             .setUseStereoOutput(true)
@@ -313,7 +314,7 @@ class NativeStreamClient(
             )
             .setAudioAttributes(
                 AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_GAME)
+                    .setUsage(streamAudioUsage(lowLatencyGameAudio))
                     .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                     .build(),
             )
@@ -570,7 +571,10 @@ class NativeStreamClient(
 
     init {
         WebRtcRuntime.ensureInitialized(appContext)
-        recordStreamDiagnostic("audio playback lowLatencyRequested=${shouldUseLowLatencyStreamAudio(Build.VERSION.SDK_INT)} usage=game stereo=true")
+        recordStreamDiagnostic(
+            "audio playback lowLatencyRequested=${shouldUseLowLatencyStreamAudio(Build.VERSION.SDK_INT, lowLatencyGameAudio)} " +
+                "usage=${if (lowLatencyGameAudio) "game" else "media"} stereo=true",
+        )
         val lowLatencyEnabled = SettingsStore(appContext).settings.value.nativeLowLatencyDecoder
         factory = PeerConnectionFactory.builder()
             .setOptions(PeerConnectionFactory.Options())
@@ -2278,7 +2282,7 @@ class NativeStreamClient(
             }
             emitState("Connecting experimental NVST")
             runCatching {
-                NvstTransport(appContext, session, settings,
+                NvstTransport(appContext, session, settings, lowLatencyGameAudio,
                     OpenNowVideoDecoderFactory(eglBase.eglBaseContext,
                         nativeLowLatencyDecoderEnabled = SettingsStore(appContext).settings.value.nativeLowLatencyDecoder,
                         requestedFps = { settings.fps }, hdrEnabled = { settings.hdrEnabled },

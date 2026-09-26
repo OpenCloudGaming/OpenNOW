@@ -328,6 +328,7 @@ internal fun StreamScreen(
     val client = remember {
         NativeStreamClient(
             context = context.applicationContext,
+            lowLatencyGameAudio = state.settings.lowLatencyGameAudio,
             onState = {
                 streamState = it
                 viewModel.recordNativeStreamState(it)
@@ -835,6 +836,7 @@ internal fun StreamScreen(
                         step = streamGuideStep,
                         controlsOpen = controlsOpen,
                         touchControlsEnabled = touchControlsVisible,
+                        controllerConnected = physicalControllerConnected,
                         streamMenuShortcut = state.settings.streamMenuShortcut,
                         onOpenControls = {
                             playButtonTone()

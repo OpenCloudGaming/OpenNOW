@@ -289,6 +289,7 @@ internal fun StreamFirstLaunchGuide(
     step: StreamGuideStep,
     controlsOpen: Boolean,
     touchControlsEnabled: Boolean,
+    controllerConnected: Boolean,
     streamMenuShortcut: String,
     onOpenControls: () -> Unit,
     onSkip: () -> Unit,
@@ -320,20 +321,23 @@ internal fun StreamFirstLaunchGuide(
             val keyboardShortcut = streamMenuShortcut.takeUnless {
                 it.equals(DISABLED_ANDROID_STREAM_MENU_SHORTCUT, ignoreCase = true)
             }?.let(::androidKeyboardShortcutDisplay)
+            val controllerHint = if (controllerConnected) "Hold Start on your controller to open controls. " else ""
             StreamGuideEdgeCue(Modifier.align(Alignment.CenterStart))
             StreamGuideCard(
                 stepLabel = "Step 1 of 2",
                 title = "Open the stream menu",
                 body = if (keyboardShortcut == null) {
-                    "Press Android Back or swipe from the left edge. That opens the menu without exiting the stream."
+                    "${controllerHint}Press Android Back or swipe from the left edge. That opens the menu without exiting the stream."
                 } else {
-                    "Press Android Back, $keyboardShortcut, or swipe from the left edge. That opens the menu without exiting the stream."
+                    "${controllerHint}Press Android Back, $keyboardShortcut, or swipe from the left edge. That opens the menu without exiting the stream."
                 },
                 details = listOf(
                     if (keyboardShortcut == null) {
-                        "Back or the left-edge gesture opens controls."
+                        if (controllerConnected) "Hold Start, press Back, or swipe from the left edge to open controls."
+                        else "Back or the left-edge gesture opens controls."
                     } else {
-                        "Back, $keyboardShortcut, or the left-edge gesture opens controls."
+                        if (controllerConnected) "Hold Start, press Back or $keyboardShortcut, or swipe from the left edge to open controls."
+                        else "Back, $keyboardShortcut, or the left-edge gesture opens controls."
                     },
                     if (touchControlsEnabled) {
                         "Touch controls pause while this guide is up."

@@ -281,6 +281,7 @@ data class OpenNowUiState(
     val recommendedStreamSettings: StreamSettings? = null,
     val selectedGame: GameInfo? = null,
     val selectedGameRail: StorePersonalRail? = null,
+    val removingLibraryGameId: String? = null,
     val activeSession: ActiveSessionInfo? = null,
     val activeSessionDecision: ActiveSessionDecision? = null,
     val streamSession: SessionInfo? = null,
@@ -2106,6 +2107,61 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         gameDetailsJob?.cancel()
         gameDetailsJob = null
         _state.update { it.copy(selectedGame = null, selectedGameRail = null) }
+    }
+
+    fun removeLibraryGame(game: GameInfo) {
+        val session = state.value.authSession ?: return
+        val variantIds = game.variants.filter(::isOwnedGameVariant).map { it.id }.filter { it.isNotBlank() }.distinct()
+        if (variantIds.isEmpty() || state.value.removingLibraryGameId != null) return
+        val gameKey = gameTrackingKey(game)
+        _state.update { it.copy(removingLibraryGameId = gameKey) }
+        viewModelScope.launch {
+            var removedCount = 0
+            var removalError: Exception? = null
+            try {
+                val token = session.tokens.idToken ?: session.tokens.accessToken
+                withContext(Dispatchers.IO) {
+                    for (variantId in variantIds) {
+                        catalogRepository.removeOwnedVariant(token, variantId)
+                        removedCount++
+                    }
+                }
+            } catch (error: CancellationException) {
+                _state.update { it.copy(removingLibraryGameId = null) }
+                throw error
+            } catch (error: Exception) {
+                removalError = error
+                recordDebugEvent("catalog", "Library removal failed game=${game.title} removed=$removedCount/${variantIds.size} error=${error.debugMessage()}")
+            }
+            if (removedCount > 0) {
+                // Cached main/catalog pages also carry ownership flags. Reusing any of them
+                // after the mutation can put the removed game straight back into Library.
+                runCatching { withContext(Dispatchers.IO) { catalogCacheStore.clear() } }
+                    .onFailure { error -> recordDebugEvent("catalog", "Library cache invalidation failed error=${error.debugMessage()}") }
+            }
+            if (removalError == null) {
+                _state.update { current ->
+                    if (current.authSession?.user?.userId != session.user.userId) return@update current
+                    val removedGameStillSelected = current.selectedGame?.let { gameTrackingKey(it) == gameKey } == true
+                    current.copy(
+                        libraryGames = current.libraryGames.filterNot { gameTrackingKey(it) == gameKey },
+                        selectedGame = if (removedGameStillSelected) null else current.selectedGame,
+                        selectedGameRail = if (removedGameStillSelected) null else current.selectedGameRail,
+                    )
+                }
+            } else {
+                val message = if (removedCount > 0) {
+                    getApplication<Application>().getString(R.string.library_remove_gfn_game_partial, removedCount, variantIds.size)
+                } else {
+                    getApplication<Application>().getString(R.string.library_remove_gfn_game_failed)
+                }
+                Toast.makeText(getApplication(), message, Toast.LENGTH_LONG).show()
+            }
+            _state.update { it.copy(removingLibraryGameId = null) }
+            if (removedCount > 0 && state.value.authSession?.user?.userId == session.user.userId) {
+                refreshGames()
+            }
+        }
     }
 
     fun updateSettings(next: AppSettings) {
