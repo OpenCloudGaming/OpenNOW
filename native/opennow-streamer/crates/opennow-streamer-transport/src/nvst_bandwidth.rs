@@ -1,6 +1,7 @@
 use std::time::Instant;
 
 const TRANSIT_SAMPLES: usize = 16;
+const MIN_MEASURABLE_TRAIN_MS: f64 = 1.0;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PacketBandwidthSample {
@@ -170,10 +171,18 @@ impl BandwidthEstimator {
                     .max(0.5);
                 if frame_ms > 0.0 && frame_ms < 1_000.0 {
                     self.average_frame_ms = Some(smooth(self.average_frame_ms, frame_ms));
-                    self.average_receive_kbps = Some(smooth(
-                        self.average_receive_kbps,
-                        previous.bytes as f64 * 8.0 / received_ms,
-                    ));
+                    let receive_kbps = previous.bytes as f64 * 8.0 / received_ms;
+                    // A train shorter than the receive clock can resolve, such as a
+                    // single-packet frame in a static scene, only bounds capacity from
+                    // below, so it may raise the estimate but must not drag it down.
+                    if received_ms >= MIN_MEASURABLE_TRAIN_MS
+                        || self
+                            .average_receive_kbps
+                            .is_none_or(|average| receive_kbps > average)
+                    {
+                        self.average_receive_kbps =
+                            Some(smooth(self.average_receive_kbps, receive_kbps));
+                    }
                     self.average_utilization_percent = Some(smooth(
                         self.average_utilization_percent,
                         (100.0 * received_ms / self.average_frame_ms.unwrap()).min(100.0),
@@ -287,6 +296,39 @@ mod tests {
         assert!(report.jitter_us > 0);
         assert_eq!(report.lossy_frames, 0);
         assert_ne!(report.minimum_server_time, report.median_server_time);
+    }
+
+    #[test]
+    fn unresolvable_single_packet_frames_do_not_lower_the_estimate() {
+        let mut estimator = BandwidthEstimator::default();
+        let origin = Instant::now();
+        for frame in 0..=100_u32 {
+            let at = origin + Duration::from_millis(u64::from(frame) * 20);
+            let timestamp = 90_000 + frame * 1_800;
+            for part in 0..3_u32 {
+                estimator.observe(packet(
+                    frame,
+                    frame * 3 + part,
+                    timestamp,
+                    200,
+                    (part == 0, part == 2),
+                    at + Duration::from_micros(u64::from(part) * 500),
+                ));
+            }
+        }
+        let measured = estimator.average_receive_kbps.unwrap();
+        for frame in 101..=200_u32 {
+            estimator.observe(packet(
+                frame,
+                202 + frame,
+                90_000 + frame * 1_800,
+                200,
+                (true, true),
+                origin + Duration::from_millis(u64::from(frame) * 20),
+            ));
+        }
+        assert_eq!(estimator.average_receive_kbps, Some(measured));
+        assert_eq!(estimator.frames_observed, 200);
     }
 
     #[test]
