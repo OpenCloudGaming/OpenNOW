@@ -1437,7 +1437,7 @@ fn build_create_body(app_id: &str, params: &Value, settings: &Value, device_id: 
         "clientDisplayHdrCapabilities":null,
         "surroundAudioInfo":0,
         "remoteControllersBitmap":0,
-        "clientTimezoneOffset":chrono::Local::now().offset().utc_minus_local() * 1000,
+        "clientTimezoneOffset":client_timezone_offset_ms(*chrono::Local::now().offset()),
         "enhancedStreamMode":0,
         "appLaunchMode":app_launch_mode(params),
         "secureRTSPSupported":true,
@@ -2466,6 +2466,12 @@ fn color_quality_wire(value: &str) -> (i64, i64) {
         "10bit_444" => (1, 1),
         _ => (0, 0),
     }
+}
+
+/// CloudMatch applies `clientTimezoneOffset` as local minus UTC in milliseconds, so
+/// UTC-5 is sent as -18,000,000. The opposite sign puts the VM clock at UTC+5.
+fn client_timezone_offset_ms(offset: chrono::FixedOffset) -> i64 {
+    i64::from(offset.local_minus_utc()) * 1000
 }
 
 fn app_launch_mode(params: &Value) -> i64 {
@@ -4667,16 +4673,26 @@ mod tests {
 
     #[test]
     fn native_session_requests_use_the_current_local_timezone_in_milliseconds() {
-        let offset_before = chrono::Local::now().offset().utc_minus_local() * 1000;
+        let offset_before = client_timezone_offset_ms(*chrono::Local::now().offset());
         let created = build_create_body("12345", &json!({}), &json!({}), "device-id");
         let resumed = build_resume_body("12345", &json!({}), &json!({}), "device-id");
-        let offset_after = chrono::Local::now().offset().utc_minus_local() * 1000;
+        let offset_after = client_timezone_offset_ms(*chrono::Local::now().offset());
         for body in [created, resumed] {
             let offset = body["sessionRequestData"]["clientTimezoneOffset"]
                 .as_i64()
                 .unwrap();
-            assert!(offset == i64::from(offset_before) || offset == i64::from(offset_after));
+            assert!(offset == offset_before || offset == offset_after);
         }
+    }
+
+    #[test]
+    fn client_timezone_offset_is_local_minus_utc_in_milliseconds() {
+        let hours = |h: i32| chrono::FixedOffset::east_opt(h * 3600).unwrap();
+        assert_eq!(client_timezone_offset_ms(hours(-5)), -18_000_000);
+        assert_eq!(client_timezone_offset_ms(hours(0)), 0);
+        assert_eq!(client_timezone_offset_ms(hours(1)), 3_600_000);
+        let kathmandu = chrono::FixedOffset::east_opt(5 * 3600 + 45 * 60).unwrap();
+        assert_eq!(client_timezone_offset_ms(kathmandu), 20_700_000);
     }
 
     #[test]
