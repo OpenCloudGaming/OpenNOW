@@ -1,0 +1,202 @@
+import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
+
+struct AuthSession {
+    struct Tokens {
+        let idToken: String? = "fixture-id-token"
+        let accessToken = "fixture-access-token"
+    }
+    let tokens = Tokens()
+}
+
+__PRODUCTION_TYPES__
+
+enum GFNConstants {
+    static let graphQL = "https://fixture.invalid/graphql"
+    static let lcarsClientId = "fixture-client"
+    static let gfnClientVersion = "fixture-version"
+    static let userAgent = "fixture-agent"
+}
+
+struct FixtureFailure: Error {}
+
+actor GFNAPIClient {
+    var requests: [[String: Any]] = []
+    var panelRequests = 0
+    let pages: [[String: Any]]
+    let failAt: Int?
+    let status: Int
+    let pauseAt: Int?
+    let pauseEnrichment: Bool
+    var pause: CheckedContinuation<Void, Never>?
+    var pauseWaiter: CheckedContinuation<Void, Never>?
+
+    init(pages: [[String: Any]], failAt: Int? = nil, status: Int = 200, pauseAt: Int? = nil, pauseEnrichment: Bool = false) {
+        self.pages = pages
+        self.failAt = failAt
+        self.status = status
+        self.pauseAt = pauseAt
+        self.pauseEnrichment = pauseEnrichment
+    }
+
+    __PRODUCTION_METHODS__
+
+    func waitUntilPaused() async {
+        if pause != nil { return }
+        await withCheckedContinuation { pauseWaiter = $0 }
+    }
+
+    func resume() {
+        pause?.resume()
+        pause = nil
+    }
+
+    private func suspend() async {
+        await withCheckedContinuation {
+            pause = $0
+            pauseWaiter?.resume()
+            pauseWaiter = nil
+        }
+    }
+
+    private func fetchPanels(token: String, panelNames: [String], vpcId: String) async throws -> [String: Any] {
+        panelRequests += 1
+        let items = ((pages[0]["data"] as! [String: Any])["apps"] as! [String: Any])["items"]!
+        return Self.searchResultsAsPanelPayload(items as! [[String: Any]])
+    }
+
+    private func request(url: URL, method: String = "GET", headers: [String: String], body: Data? = nil) async throws -> (Data, HTTPURLResponse) {
+        precondition(url.absoluteString == GFNConstants.graphQL)
+        precondition(method == "POST")
+        precondition(headers["Authorization"] == "GFNJWT fixture-id-token")
+        let document = try JSONSerialization.jsonObject(with: body!) as! [String: Any]
+        let variables = document["variables"] as! [String: Any]
+        precondition(variables["vpcId"] as! String == "fixture-vpc")
+        precondition(variables["locale"] as! String == "en_US")
+        let filters = variables["filters"] as! [String: Any]
+        let variants = filters["variants"] as! [String: Any]
+        let gfn = variants["gfn"] as! [String: Any]
+        let library = gfn["library"] as! [String: Any]
+        precondition((library["status"] as! [String: String])["notEquals"] == "NOT_OWNED")
+        let index = requests.count
+        requests.append(variables)
+        if index == pauseAt { await suspend() }
+        if index == failAt { throw FixtureFailure() }
+        guard index < pages.count else { throw FixtureFailure() }
+        return (try JSONSerialization.data(withJSONObject: pages[index]), HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: nil)!)
+    }
+
+    private func parseJSON(_ data: Data) throws -> [String: Any] {
+        try JSONSerialization.jsonObject(with: data) as! [String: Any]
+    }
+
+    private func enrichGamesWithMetadata(token: String, vpcId: String, games: [CloudGame]) async throws -> [CloudGame] {
+        if pauseEnrichment { await suspend() }
+        return games
+    }
+
+}
+
+func app(_ id: Int) -> [String: Any] {
+    ["id": "game-\(id)", "title": "Game \(id)", "variants": [["id": "\(id)", "appStore": "STEAM", "gfn": ["library": ["status": "OWNED", "selected": true]]]]]
+}
+
+func page(_ ids: [Int], next: Bool, cursor: Any = NSNull()) -> [String: Any] {
+    ["data": ["apps": ["items": ids.map(app), "pageInfo": ["hasNextPage": next, "endCursor": cursor]]]]
+}
+
+@main
+struct LibraryServiceFixture {
+    static func reject(_ pages: [[String: Any]], name: String, failAt: Int? = nil, status: Int = 200, expectedRequests: Int? = nil) async throws {
+        let api = GFNAPIClient(pages: pages, failAt: failAt, status: status)
+        let previous = ["previous-complete-library"]
+        var snapshot = previous
+        do {
+            snapshot = try await api.fetchLibraryGames(session: AuthSession(), vpcId: "fixture-vpc").map(\.id)
+            preconditionFailure("\(name) unexpectedly published an incomplete library")
+        } catch {
+            precondition(snapshot == previous)
+            if let expectedRequests {
+                let count = await api.requests.count
+                precondition(count == expectedRequests)
+            }
+        }
+        print("PASS: \(name) throws without returning a partial snapshot")
+    }
+
+    static func cancellation(enrichment: Bool) async throws {
+        let api = GFNAPIClient(pages: [page([0], next: false)], pauseAt: enrichment ? nil : 0, pauseEnrichment: enrichment)
+        let task = Task { try await api.fetchLibraryGames(session: AuthSession(), vpcId: "fixture-vpc") }
+        await api.waitUntilPaused()
+        task.cancel()
+        await api.resume()
+        do {
+            _ = try await task.value
+            preconditionFailure("Cancelled library refresh returned a snapshot")
+        } catch is CancellationError {
+            print("PASS: cancellation during \(enrichment ? "metadata" : "page fetch") propagates")
+        }
+    }
+
+    static func main() async throws {
+        let api = GFNAPIClient(pages: [
+            page(Array(0..<40), next: true, cursor: "page-2"),
+            page(Array(39..<80), next: true, cursor: "page-3"),
+            page(Array(80..<96), next: false)
+        ])
+        let games = try await api.fetchLibraryGames(session: AuthSession(), vpcId: "fixture-vpc")
+        guard games.map(\.uuid) == (0..<96).map({ "game-\($0)" }) else {
+            print("FAIL: production fetchLibraryGames returned \(games.count) games, expected 96 exact ordered IDs")
+            exit(1)
+        }
+        let panelRequests = await api.panelRequests
+        precondition(panelRequests == 0)
+        let requests = await api.requests
+        precondition(requests.map { $0["cursor"] as! String } == ["", "page-2", "page-3"])
+        precondition(games[12].launchAppId == "12")
+        precondition(games[12].launchOptions.first?.storefront == "STEAM")
+        print("PASS: production service traverses 96 games in order, deduplicates, and keeps account/VPC/filter headers")
+
+        let empty = GFNAPIClient(pages: [page([], next: false)])
+        let emptyGames = try await empty.fetchLibraryGames(session: AuthSession(), vpcId: "fixture-vpc")
+        precondition(emptyGames.isEmpty)
+        let emptyPage = GFNAPIClient(pages: [page([], next: true, cursor: "next"), page([1], next: false, cursor: "")])
+        let advanced = try await emptyPage.fetchLibraryGames(session: AuthSession(), vpcId: "fixture-vpc")
+        precondition(advanced.map(\.uuid) == ["game-1"])
+        print("PASS: empty terminal library and empty advancing page")
+
+        try await reject([page([0], next: true, cursor: "")], name: "empty nonterminal cursor")
+        try await reject([page([0], next: true, cursor: "  ")], name: "blank nonterminal cursor")
+        try await reject([page([0], next: true)], name: "missing nonterminal cursor")
+        try await reject([page([0], next: true, cursor: String(repeating: "x", count: 4097))], name: "oversized cursor")
+        try await reject([page([0], next: true, cursor: "same"), page([1], next: true, cursor: "same")], name: "repeated cursor", expectedRequests: 2)
+        try await reject([page([0], next: true, cursor: "a"), page([1], next: true, cursor: "b"), page([2], next: true, cursor: "a")], name: "cursor cycle", expectedRequests: 3)
+        try await reject([page([0], next: true, cursor: "next"), page([1], next: false)], name: "second-page transport failure", failAt: 1)
+        try await reject([page([0], next: false)], name: "HTTP failure", status: 401)
+        try await reject([["errors": [["message": "fixture failure"]], "data": page([0], next: false)["data"]!]], name: "GraphQL partial-data error")
+        try await reject([["data": ["apps": ["items": [app(0)]]]]], name: "missing pageInfo")
+        try await reject([["data": ["apps": ["items": [app(0)], "pageInfo": ["endCursor": "next"]]]]], name: "missing hasNextPage")
+        try await reject([["data": ["apps": ["items": [["title": "missing ID"]], "pageInfo": ["hasNextPage": false]]]]], name: "malformed app")
+        try await reject([page(Array(0...100), next: false)], name: "oversized item page")
+        try await reject([["padding": String(repeating: "x", count: 8 * 1024 * 1024), "data": page([0], next: false)["data"]!]], name: "oversized response")
+        try await reject((0..<100).map { page([$0], next: true, cursor: "cursor-\($0)") }, name: "bounded 100-page traversal", expectedRequests: 100)
+        try await cancellation(enrichment: false)
+        try await cancellation(enrichment: true)
+
+        let cancelledAPI = GFNAPIClient(pages: [page([0], next: false)])
+        let cancelled = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await cancelledAPI.fetchLibraryGames(session: AuthSession(), vpcId: "fixture-vpc")
+        }
+        do {
+            _ = try await cancelled.value
+            preconditionFailure("Pre-cancelled traversal returned")
+        } catch is CancellationError {
+            let count = await cancelledAPI.requests.count
+            precondition(count == 0)
+            print("PASS: pre-cancelled traversal performs no request")
+        }
+    }
+}
