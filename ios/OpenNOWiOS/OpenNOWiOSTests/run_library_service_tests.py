@@ -20,7 +20,7 @@ def method(name):
     return source[start:start + 1 + end.start()]
 
 
-methods = [method("func fetchLibraryGames("), method("private func enrichGamesWithMetadata(")]
+methods = [method("func fetchLibraryGames("), method("private func enrichGamesWithMetadata("), method("private func fetchAppMetadataWithRegistryRetry(")]
 if "    private func fetchLibraryPage(" in source:
     methods.append(method("private func fetchLibraryPage("))
 for name in ("searchResultsAsPanelPayload", "flattenPanels", "extractGameMetadata", "mergeGameMetadata", "selectedVariant", "launchOptions", "extractFeatureLabels", "toOptionalStringArray", "imageURLs", "mergedImageURLs", "formatReleaseDate", "optimizedImageURL", "toOptionalString"):
@@ -37,5 +37,5 @@ with tempfile.TemporaryDirectory(prefix="opennow-library-") as directory:
     swift = Path(directory) / "LibraryServiceFixture.swift"
     executable = Path(directory) / "library-tests"
     swift.write_text(harness)
-    subprocess.run([os.environ.get("SWIFTC", "swiftc"), "-swift-version", "5", "-parse-as-library", str(swift), "-o", str(executable)], check=True)
+    subprocess.run([os.environ.get("SWIFTC", "swiftc"), "-swift-version", "5", "-warnings-as-errors", "-parse-as-library", str(swift), "-o", str(executable)], check=True)
     subprocess.run([str(executable)], check=True)

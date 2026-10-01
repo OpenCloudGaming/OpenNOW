@@ -46,10 +46,11 @@ actor GFNAPIClient {
     let pauseEnrichment: Bool
     let metadataError: Bool
     let metadataCancellation: Bool
+    let splitCancellation: Bool
     var pause: CheckedContinuation<Void, Never>?
     var pauseWaiter: CheckedContinuation<Void, Never>?
 
-    init(pages: [[String: Any]], failAt: Int? = nil, status: Int = 200, pauseAt: Int? = nil, pauseEnrichment: Bool = false, metadataError: Bool = false, metadataCancellation: Bool = false) {
+    init(pages: [[String: Any]], failAt: Int? = nil, status: Int = 200, pauseAt: Int? = nil, pauseEnrichment: Bool = false, metadataError: Bool = false, metadataCancellation: Bool = false, splitCancellation: Bool = false) {
         self.pages = pages
         self.failAt = failAt
         self.status = status
@@ -57,6 +58,7 @@ actor GFNAPIClient {
         self.pauseEnrichment = pauseEnrichment
         self.metadataError = metadataError
         self.metadataCancellation = metadataCancellation
+        self.splitCancellation = splitCancellation
     }
 
     __PRODUCTION_METHODS__
@@ -110,8 +112,12 @@ actor GFNAPIClient {
         try JSONSerialization.jsonObject(with: data) as! [String: Any]
     }
 
-    private func fetchAppMetadataWithRegistryRetry(token: String, appIds: [String], vpcId: String, deadline: Date) async throws -> [String: Any] {
+    private func fetchAppMetadata(token: String, appIds: [String], vpcId: String, timeoutInterval: TimeInterval? = nil) async throws -> [String: Any] {
         metadataRequests += 1
+        if splitCancellation {
+            if metadataRequests <= 3 { return ["errors": [["message": "PersistedQueryNotFound"]]] }
+            throw URLError(.cancelled)
+        }
         if pauseEnrichment && metadataRequests == 1 { await suspend() }
         if metadataCancellation { throw URLError(.cancelled) }
         if metadataError { throw FixtureFailure() }
@@ -226,6 +232,17 @@ struct LibraryServiceFixture {
             let requests = await cancelledMetadata.metadataRequests
             precondition(requests == 1)
             print("PASS: cancelled metadata request stops at first chunk even without task cancellation")
+        }
+
+        let cancelledSplit = GFNAPIClient(pages: [page(Array(0..<40), next: false)], splitCancellation: true)
+        do {
+            _ = try await cancelledSplit.fetchLibraryGames(session: AuthSession(), vpcId: "fixture-vpc")
+            preconditionFailure("Cancelled split metadata request returned a snapshot")
+        } catch {
+            precondition(OpenNOWErrorPresenter.isCancellation(error))
+            let requests = await cancelledSplit.metadataRequests
+            precondition(requests == 4)
+            print("PASS: cancellation in registry split propagates without fetching the other subchunk")
         }
 
         let cancelledAPI = GFNAPIClient(pages: [page([0], next: false)])

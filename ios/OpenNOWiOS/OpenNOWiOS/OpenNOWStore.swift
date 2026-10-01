@@ -4878,6 +4878,7 @@ private actor GFNAPIClient {
         var lastPayload: [String: Any] = [:]
         var lastRegistryError: Error?
         for attempt in 0..<3 {
+            try Task.checkCancellation()
             let remainingTime = deadline.timeIntervalSinceNow
             guard remainingTime > 0 else {
                 throw NSError(
@@ -4925,6 +4926,7 @@ private actor GFNAPIClient {
             var combinedItems: [[String: Any]] = []
             var successfulSubchunks = 0
             for subchunk in subchunks where !subchunk.isEmpty {
+                try Task.checkCancellation()
                 let payload: [String: Any]
                 do {
                     payload = try await fetchAppMetadataWithRegistryRetry(
@@ -4934,6 +4936,8 @@ private actor GFNAPIClient {
                         deadline: deadline,
                         allowSplit: false
                     )
+                } catch where OpenNOWErrorPresenter.isCancellation(error) {
+                    throw error
                 } catch {
                     logger.warning("Catalog metadata subchunk unavailable size=\(subchunk.count, privacy: .public)")
                     continue
