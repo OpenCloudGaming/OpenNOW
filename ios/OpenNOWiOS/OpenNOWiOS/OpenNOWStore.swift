@@ -1,4 +1,5 @@
 import AuthenticationServices
+import CoreFoundation
 import CryptoKit
 import Foundation
 import ImageIO
@@ -3409,9 +3410,102 @@ private actor GFNAPIClient {
 
     func fetchLibraryGames(session: AuthSession, vpcId: String) async throws -> [CloudGame] {
         let token = session.tokens.idToken ?? session.tokens.accessToken
-        let payload = try await fetchPanels(token: token, panelNames: ["LIBRARY"], vpcId: vpcId)
-        let games = Self.flattenPanels(payload: payload)
-        return (try? await enrichGamesWithMetadata(token: token, vpcId: vpcId, games: games)) ?? games
+        var cursor = ""
+        var cursors = Set<String>()
+        var appIds = Set<String>()
+        var items: [[String: Any]] = []
+        for _ in 0..<100 {
+            try Task.checkCancellation()
+            let page = try await fetchLibraryPage(token: token, vpcId: vpcId, cursor: cursor)
+            try Task.checkCancellation()
+            for app in page.items {
+                if let id = app["id"] as? String, appIds.insert(id).inserted {
+                    items.append(app)
+                }
+            }
+            if !page.hasNextPage {
+                let games = Self.flattenPanels(payload: Self.searchResultsAsPanelPayload(items))
+                let enriched: [CloudGame]
+                do {
+                    enriched = try await enrichGamesWithMetadata(token: token, vpcId: vpcId, games: games)
+                } catch where OpenNOWErrorPresenter.isCancellation(error) {
+                    throw error
+                } catch {
+                    enriched = games
+                }
+                try Task.checkCancellation()
+                return enriched
+            }
+            guard let next = page.endCursor,
+                  !next.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  next.utf8.count <= 4096,
+                  cursors.insert(next).inserted else {
+                throw NSError(domain: "OpenNOW.Library", code: 1, userInfo: [NSLocalizedDescriptionKey: "The library returned an invalid pagination cursor. Please retry."])
+            }
+            cursor = next
+        }
+        throw NSError(domain: "OpenNOW.Library", code: 2, userInfo: [NSLocalizedDescriptionKey: "The library exceeded the refresh limit. The previous library has been kept."])
+    }
+
+    private func fetchLibraryPage(token: String, vpcId: String, cursor: String) async throws -> (items: [[String: Any]], hasNextPage: Bool, endCursor: String?) {
+        let document = """
+        query GetLibraryApps($vpcId: String!, $locale: String!, $sortString: String!, $fetchCount: Int!, $cursor: String!, $filters: AppFilterFields!) {
+          apps(vpcId: $vpcId, language: $locale, orderBy: $sortString, first: $fetchCount, after: $cursor, filters: $filters) {
+            pageInfo { hasNextPage endCursor }
+            items {
+              id title publisherName genres
+              images { KEY_ART GAME_BOX_ART TV_BANNER HERO_IMAGE SCREENSHOTS }
+              variants { id appStore supportedControls gfn { status library { status selected lastPlayedDate } } }
+              gfn { playType playabilityState minimumMembershipTierLabel }
+            }
+          }
+        }
+        """
+        let body: [String: Any] = [
+            "query": document,
+            "variables": [
+                "vpcId": vpcId,
+                "locale": "en_US",
+                "sortString": "variants.gfn.library.lastPlayedDate:DESC,computedValues.libraryAddedDate:DESC,sortName:ASC",
+                "fetchCount": 100,
+                "cursor": cursor,
+                "filters": ["variants": ["gfn": ["library": ["status": ["notEquals": "NOT_OWNED"]]]]]
+            ]
+        ]
+        let (data, response) = try await request(
+            url: URL(string: GFNConstants.graphQL)!,
+            method: "POST",
+            headers: [
+                "Accept": "application/json, text/plain, */*",
+                "Content-Type": "application/json",
+                "Origin": "https://play.geforcenow.com",
+                "Referer": "https://play.geforcenow.com/",
+                "Authorization": "GFNJWT \(token)",
+                "nv-client-id": GFNConstants.lcarsClientId,
+                "nv-client-type": "NATIVE",
+                "nv-client-version": GFNConstants.gfnClientVersion,
+                "nv-client-streamer": "NVIDIA-CLASSIC",
+                "nv-device-os": "WINDOWS",
+                "nv-device-type": "DESKTOP",
+                "nv-browser-type": "CHROME",
+                "User-Agent": GFNConstants.userAgent
+            ],
+            body: try JSONSerialization.data(withJSONObject: body)
+        )
+        guard response.statusCode == 200, data.count <= 8 * 1024 * 1024 else {
+            throw NSError(domain: "OpenNOW.Library", code: 3, userInfo: [NSLocalizedDescriptionKey: "The library page could not be loaded. Please retry."])
+        }
+        let payload = try parseJSON(data)
+        guard (payload["errors"] == nil || (payload["errors"] as? [Any])?.isEmpty == true),
+              let apps = (payload["data"] as? [String: Any])?["apps"] as? [String: Any],
+              let items = apps["items"] as? [[String: Any]], items.count <= 100,
+              items.allSatisfy({ ($0["id"] as? String)?.isEmpty == false && ($0["title"] as? String) != nil }),
+              let pageInfo = apps["pageInfo"] as? [String: Any],
+              let hasNextPage = pageInfo["hasNextPage"] as? NSNumber,
+              CFGetTypeID(hasNextPage) == CFBooleanGetTypeID() else {
+            throw NSError(domain: "OpenNOW.Library", code: 4, userInfo: [NSLocalizedDescriptionKey: "The library returned an incomplete page. Please retry."])
+        }
+        return (items, hasNextPage.boolValue, pageInfo["endCursor"] as? String)
     }
 
     func fetchSubscription(session: AuthSession, vpcId: String) async throws -> SubscriptionSnapshot {
@@ -4784,6 +4878,7 @@ private actor GFNAPIClient {
         var lastPayload: [String: Any] = [:]
         var lastRegistryError: Error?
         for attempt in 0..<3 {
+            try Task.checkCancellation()
             let remainingTime = deadline.timeIntervalSinceNow
             guard remainingTime > 0 else {
                 throw NSError(
@@ -4831,6 +4926,7 @@ private actor GFNAPIClient {
             var combinedItems: [[String: Any]] = []
             var successfulSubchunks = 0
             for subchunk in subchunks where !subchunk.isEmpty {
+                try Task.checkCancellation()
                 let payload: [String: Any]
                 do {
                     payload = try await fetchAppMetadataWithRegistryRetry(
@@ -4840,6 +4936,8 @@ private actor GFNAPIClient {
                         deadline: deadline,
                         allowSplit: false
                     )
+                } catch where OpenNOWErrorPresenter.isCancellation(error) {
+                    throw error
                 } catch {
                     logger.warning("Catalog metadata subchunk unavailable size=\(subchunk.count, privacy: .public)")
                     continue
@@ -4873,6 +4971,7 @@ private actor GFNAPIClient {
         let deadline = Date().addingTimeInterval(20)
         let chunkSize = 40
         for start in stride(from: 0, to: appIds.count, by: chunkSize) {
+            try Task.checkCancellation()
             guard Date() < deadline else {
                 logger.warning("Catalog metadata enrichment stopped at its 20-second deadline")
                 break
@@ -4897,6 +4996,8 @@ private actor GFNAPIClient {
                         metadataById[id] = app
                     }
                 }
+            } catch where OpenNOWErrorPresenter.isCancellation(error) {
+                throw error
             } catch {
                 lastError = error
                 logger.warning(
@@ -6433,6 +6534,7 @@ final class OpenNOWStore: ObservableObject {
             let (fetchedMainGames, vpcId, regions) = try await api.fetchMainGames(session: refreshed)
             let mainGames = preservingCatalogMetadata(in: fetchedMainGames, from: allGames)
             let fetchedLibrary = try await api.fetchLibraryGames(session: refreshed, vpcId: vpcId)
+            try Task.checkCancellation()
             let library = preservingCatalogMetadata(in: fetchedLibrary, from: libraryGames + allGames)
             let filteredRegions = regions.filter {
                 !StreamZonePolicy.isBlocked($0.url) && !StreamZonePolicy.isBlocked($0.name)
