@@ -358,6 +358,10 @@ QtObject {
 
     function acceptAccountLinkStart(result) {
         root.accountLinkStartRequestId = ""
+        accountLinkPollTimer.stop()
+        const previousPoll = accountLinkPollRequestId
+        accountLinkPollRequestId = ""
+        if (previousPoll !== "") coreClient.cancel(previousPoll)
         root.accountLinkAttempt = result
         if (!appController.openExternalUrl(result.loginUrl || "")) {
             root.gameAccountMessage = qsTr("Open the provider sign-in URL in your browser.")
