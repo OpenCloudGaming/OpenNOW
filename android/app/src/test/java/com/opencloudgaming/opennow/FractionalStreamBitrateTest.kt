@@ -11,6 +11,57 @@ import org.junit.Test
 
 class FractionalStreamBitrateTest {
     @Test
+    fun wholeBitrateSessionSignaturesKeepTheLegacyIntegerRepresentation() {
+        for (mbps in listOf(1, 75, 150)) {
+            val settings = StreamSettings(maxBitrateMbps = mbps.toDouble(), colorQuality = ColorQuality.EightBit420)
+            assertEquals(
+                "opennow-android-stream-v1;res=1920x1080;fps=60;bitrate=$mbps;codec=H264;color=EightBit420;hdr=0;l4s=0;keyboard=en-US;language=en_US",
+                streamSettingsSessionSignature(settings),
+            )
+        }
+    }
+
+    @Test
+    fun legacyWholeBitrateSessionsStillMatchAndCanBeSelectedForRecovery() {
+        for (mbps in listOf(1, 75, 150)) {
+            val settings = StreamSettings(maxBitrateMbps = mbps.toDouble(), colorQuality = ColorQuality.EightBit420)
+            val legacySignature = "opennow-android-stream-v1;res=1920x1080;fps=60;bitrate=$mbps;codec=H264;color=EightBit420;hdr=0;l4s=0;keyboard=en-US;language=en_US"
+            val legacy = ActiveSessionInfo(
+                sessionId = "legacy-$mbps",
+                appId = 123,
+                status = 3,
+                serverIp = "streamer.example",
+                resolution = "1920x1080",
+                fps = 60,
+                settingsSignature = legacySignature,
+            )
+            val wrongBitrate = legacy.copy(sessionId = "wrong", settingsSignature = legacySignature.replace("bitrate=$mbps;", "bitrate=35;"))
+            assertTrue(legacy.matchesStreamGeometry(settings))
+            assertTrue(legacy.matchesStreamSettings(settings))
+            assertFalse(wrongBitrate.matchesStreamSettings(settings))
+            assertEquals(legacy, activeSessionRecoveryCandidate(listOf(wrongBitrate, legacy), "missing", 123, settings))
+        }
+    }
+
+    @Test
+    fun fractionalSessionSignaturesRemainDistinctAndMatchOnlyTheConfiguredRate() {
+        val signatures = listOf(0.22, 0.8, 1.0).map { mbps ->
+            val settings = StreamSettings(maxBitrateMbps = mbps)
+            val signature = streamSettingsSessionSignature(settings)
+            val active = ActiveSessionInfo(
+                sessionId = "fractional-$mbps", appId = 123, status = 3, serverIp = "streamer.example",
+                resolution = "1920x1080", fps = 60, settingsSignature = signature,
+            )
+            assertTrue(signature.contains(";bitrate=${StreamBitrate.formatMbps(mbps)};"))
+            assertTrue(active.matchesStreamSettings(settings))
+            assertFalse(active.matchesStreamSettings(settings.copy(maxBitrateMbps = 75.0)))
+            assertEquals(active, activeSessionRecoveryCandidate(listOf(active), "missing", 123, settings))
+            signature
+        }
+        assertEquals(3, signatures.toSet().size)
+    }
+
+    @Test
     fun wholeNumberProfilesRemainIntegerEncodedAndOldIntegersDecodeIdentically() {
         for (mbps in 1..200) {
             val settings = OpenNowJson.decodeFromString<StreamSettings>("""{"maxBitrateMbps":$mbps}""")

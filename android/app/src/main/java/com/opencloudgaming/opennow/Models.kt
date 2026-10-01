@@ -917,7 +917,7 @@ internal fun streamSettingsSessionSignature(settings: StreamSettings): String {
         "opennow-android-stream-v1",
         "res=${width}x$height",
         "fps=${compatible.fps}",
-        "bitrate=${compatible.maxBitrateMbps}",
+        "bitrate=${StreamBitrate.formatMbps(compatible.maxBitrateMbps)}",
         "codec=${compatible.codec.name}",
         "color=${compatible.colorQuality.name}",
         "hdr=${if (compatible.hdrEnabled) 1 else 0}",
