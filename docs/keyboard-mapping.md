@@ -40,6 +40,58 @@ Alt, with Control+Alt modifier bits on the accompanying keys. It must not match
 an unmodified local shortcut. Key-up uses the virtual key saved on key-down,
 even if the logical key or selected map changes before release.
 
+## Swedish OEM wire keys
+
+The Linux Swedish map uses US physical-position identifiers for the twelve
+classic OEM keys before consulting the generated Windows table. Windows layout
+VKs and GFN wire identifiers are not interchangeable here. The generated Swedish
+table remains an accurate Windows table; it is not the wire oracle.
+
+This correction is limited to Swedish. It preserves regional letters, digits,
+keypad keys, modifiers, other layouts, and the session's requested layout.
+Layout aliases resolve to the same Swedish map. Synthetic events without a native
+scan code keep their logical-key fallback.
+
+The independent evidence is the official Linux x86_64 payload audited in
+[OpenNOW #1003](https://github.com/OpenCloudGaming/OpenNOW/pull/1003), from
+`https://files.zortos.me/x86_64.zip`. The archive SHA-256 is
+`47ddbe0425b9ab560f64fa42a0052794c9de335ded0fd59637f082dd7a161ad4`.
+Geronimo's build ID is `15d0eebc08da503f1f37ea9cae2dbac1d760fea4`, and
+Bifrost's is `fa3685038bd71962fe30ad09482bcb0721a54f35`.
+
+An offline x86_64 execution of Geronimo's scancode-table initializer at `0x368980`
+and Bifrost's key converter at `0x3bf280` produced the values below. Geronimo's
+`InputEvent(SDL_Event...)` constructor reads the SDL scancode at `0x369567` and
+indexes that table at `0x3695df`. Bifrost's event dispatcher at `0x319d84` routes
+keyboard input through `0x319ad0`, `0x319a06`, and `0x319996` to the serializer
+at `0x43de84`. Executing that path produces the same big-endian key field for
+both type 3 key-down and type 4 key-up. These addresses identify this binary
+build only; they are not stable SDK entry points.
+
+| Swedish key | SDL physical scancode | XKB keycode | Wire VK |
+| --- | ---: | ---: | ---: |
+| + / ? | 45 | 20 | `0xbd` |
+| Acute / grave dead key | 46 | 21 | `0xbb` |
+| å | 47 | 34 | `0xdb` |
+| Diaeresis dead key | 48 | 35 | `0xdd` |
+| Apostrophe / asterisk | 49 | 51 | `0xdc` |
+| ö | 51 | 47 | `0xba` |
+| ä | 52 | 48 | `0xde` |
+| § / ½ | 53 | 49 | `0xc0` |
+| Comma | 54 | 59 | `0xbc` |
+| Period | 55 | 60 | `0xbe` |
+| Minus / underscore | 56 | 61 | `0xbf` |
+| ISO angle brackets | 100 | 94 | `0xe2` |
+
+These are independently executed official-client values, not a live server
+capture or a public frozen NVST specification. They agree with the
+[#924 reporter's known-good .673 behavior](https://github.com/OpenCloudGaming/OpenNOW/issues/924#issuecomment-5835203003).
+The .717/.810 regional-table path changed å from `0xdb` to `0xdd`, ö from
+`0xba` to `0xc0`, and § from `0xc0` to `0xdc`, while ä stayed `0xde`.
+The reporter observed the corresponding regression. A fresh Swedish GFN session
+is still required to confirm the corrected release remotely, including dead-key
+composition and AltGr. This evidence does not validate the other regional tables.
+
 Regenerate or compare with the published tables:
 
 ```sh
@@ -57,6 +109,7 @@ builds nor the application fetch these files.
 ```sh
 cmake --build build/opennow-qt --target opennow-streamvideo-tests
 QT_QPA_PLATFORM=offscreen build/opennow-qt/opennow-streamvideo-tests \
+  swedishOemKeysMatchOfficialNativeInput \
   linuxRegionalKeysUsePhysicalPositions \
   linuxPhysicalKeysFollowTheRequestedKeyboardLayout \
   regionalLayoutLookupIsBoundedAndNormalizesLocaleNames \
