@@ -672,12 +672,22 @@ impl MainThreadHost {
                     reply,
                 }) => {
                     static SURFACE_LOG_REMAINING: AtomicU64 = AtomicU64::new(12);
-                    if SURFACE_LOG_REMAINING
-                        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
-                            remaining.checked_sub(1)
-                        })
-                        .is_ok()
-                    {
+                    let mut remaining = SURFACE_LOG_REMAINING.load(Ordering::Relaxed);
+                    let log_surface = loop {
+                        let Some(next) = remaining.checked_sub(1) else {
+                            break false;
+                        };
+                        match SURFACE_LOG_REMAINING.compare_exchange_weak(
+                            remaining,
+                            next,
+                            Ordering::Relaxed,
+                            Ordering::Relaxed,
+                        ) {
+                            Ok(_) => break true,
+                            Err(current) => remaining = current,
+                        }
+                    };
+                    if log_surface {
                         eprintln!(
                             "NVST surface-update visible={} rect={:?}",
                             new_surface.visible, new_surface.screen_rect
