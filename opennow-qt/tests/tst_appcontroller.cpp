@@ -15,6 +15,18 @@ class AppControllerTest final : public QObject
     Q_OBJECT
 
 private slots:
+    void authorizedRestartAnnouncesExitBeforeDelegation()
+    {
+        AppController controller;
+        QStringList events;
+        connect(&controller, &AppController::applicationExitCommitted,
+                &controller, [&] { events.append(QStringLiteral("exit")); });
+        connect(&controller, &AppController::restartRequested,
+                &controller, [&] { events.append(QStringLiteral("restart")); });
+        controller.restartApplication();
+        QCOMPARE(events, QStringList({QStringLiteral("exit"), QStringLiteral("restart")}));
+    }
+
     void backgroundAttentionDoesNotActivateOrShowWindow()
     {
         AppController controller;

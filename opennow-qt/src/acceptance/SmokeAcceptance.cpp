@@ -22,6 +22,35 @@
 
 using namespace Qt::StringLiterals;
 
+void presentUpdateSurface(QQmlApplicationEngine &engine, QQuickWindow *window, const QString &surface)
+{
+    auto *store = engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
+    if (!store)
+        return;
+    const auto replacement = u"This OpenNOW installation is registered with Windows Installer. Replace it once with setup.exe. In-app updates do not run Windows Installer."_s;
+    QVariantMap state{{u"currentVersion"_s, QGuiApplication::applicationVersion()},
+                      {u"canCheck"_s, false}};
+    if (surface == u"confirm"_s) {
+        state.insert(u"status"_s, u"downloaded"_s);
+        state.insert(u"downloadedVersion"_s, u"1.2.3"_s);
+        state.insert(u"canInstall"_s, true);
+        state.insert(u"message"_s, u"OpenNOW 1.2.3 downloaded and verified. Ready to install."_s);
+    } else if (surface == u"progress"_s) {
+        state.insert(u"status"_s, u"downloading"_s);
+        state.insert(u"availableVersion"_s, u"1.2.3"_s);
+        state.insert(u"message"_s, u"Downloading OpenNOW 1.2.3…"_s);
+    } else {
+        state.insert(u"status"_s, u"not-available"_s);
+        state.insert(u"message"_s, replacement);
+    }
+    store->setProperty("updaterError", QString());
+    store->setProperty("updaterState", state);
+    if (surface == u"confirm"_s && window) {
+        if (auto *dialog = window->findChild<QObject *>(u"updateInstallConfirmation"_s))
+            QMetaObject::invokeMethod(dialog, "open");
+    }
+}
+
 int AcceptanceSession::startSmokeWorkload()
 {
     const auto screenshotIndex = m_arguments.indexOf(u"--screenshot"_s);
@@ -234,6 +263,7 @@ int AcceptanceSession::startSmokeWorkload()
                      || m_arguments.contains(u"--smoke-audio-output"_s)
                      || m_arguments.contains(u"--smoke-background-stream"_s)
                      || m_arguments.contains(u"--smoke-recording"_s)
+                     || m_arguments.contains(u"--smoke-shortcuts"_s)
                      || m_arguments.contains(u"--smoke-collections"_s)
                      || m_arguments.contains(u"--smoke-steam-big-picture"_s)
                      || m_arguments.contains(u"--smoke-persistent-in-game-settings"_s)
@@ -268,6 +298,8 @@ int AcceptanceSession::startSmokeWorkload()
             ? u"qrc:/acceptance/BackgroundStreamAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-recording"_s)
             ? u"qrc:/acceptance/RecordingAcceptance.qml"_s
+            : m_arguments.contains(u"--smoke-shortcuts"_s)
+            ? u"qrc:/acceptance/ShortcutsAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-collections"_s)
             ? u"qrc:/acceptance/CollectionsAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-steam-big-picture"_s)
@@ -303,6 +335,7 @@ int AcceptanceSession::startSmokeWorkload()
             || m_arguments.contains(u"--smoke-catalog-sync"_s)
             || m_arguments.contains(u"--smoke-push-invalidation"_s)
             || m_arguments.contains(u"--smoke-recording"_s)
+            || m_arguments.contains(u"--smoke-shortcuts"_s)
             || m_arguments.contains(u"--smoke-queue-drops"_s)
             || m_arguments.contains(u"--smoke-collections"_s)
             || m_arguments.contains(u"--smoke-steam-big-picture"_s)
@@ -331,6 +364,7 @@ int AcceptanceSession::startSmokeWorkload()
                 });
             }
             if (ok && (m_arguments.contains(u"--smoke-command-search"_s)
+                       || m_arguments.contains(u"--smoke-shortcuts"_s)
                        || m_arguments.contains(u"--smoke-game-details-layout"_s))) {
                 if (m_arguments.contains(u"--smoke-game-details-layout"_s)
                     && m_arguments.contains(u"--details-interactive"_s))
@@ -468,14 +502,22 @@ int AcceptanceSession::startSmokeWorkload()
         auto *window = m_engine.rootObjects().isEmpty()
             ? nullptr : qobject_cast<QQuickWindow *>(m_engine.rootObjects().first());
         if (!window) return EXIT_FAILURE;
+        const bool configuredShortcut = m_arguments.contains(u"--smoke-configured-stats-shortcut"_s);
+        if (configuredShortcut) {
+            auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
+            if (!store) return EXIT_FAILURE;
+            auto settings = store->property("settings").toMap();
+            settings.insert(u"shortcutToggleStats"_s, u"F3"_s);
+            store->setProperty("settings", settings);
+        }
         window->showFullScreen();
         window->requestActivate();
-        auto *statsShortcut = window->findChild<QObject *>(
-            m_arguments.contains(u"--smoke-configured-stats-shortcut"_s)
-                ? u"configuredStreamStatsShortcut"_s : u"streamStatsShortcut"_s);
+        auto *statsShortcut = window->findChild<QObject *>(u"configuredStreamStatsShortcut"_s);
         auto *copyShortcut = window->findChild<QObject *>(u"streamStatsCopyShortcut"_s);
         auto *streamSurface = window->findChild<QObject *>(u"streamSurfaceHost"_s);
         if (!statsShortcut || !copyShortcut || !streamSurface) return EXIT_FAILURE;
+        if (statsShortcut->property("sequence").toString()
+                != (configuredShortcut ? u"F3"_s : u"Ctrl+N"_s)) return EXIT_FAILURE;
         const auto activateStatsShortcut = [statsShortcut] {
             return QMetaObject::invokeMethod(statsShortcut, "activated", Qt::DirectConnection);
         };
@@ -541,6 +583,31 @@ int AcceptanceSession::startSmokeWorkload()
         });
     } else if (screenshotIndex >= 0 && screenshotIndex + 1 < m_arguments.size()) {
         const auto screenshotPath = m_arguments.at(screenshotIndex + 1);
+        const auto surfaceIndex = m_arguments.indexOf(u"--smoke-update-surface"_s);
+        if (surfaceIndex >= 0 && surfaceIndex + 1 < m_arguments.size()) {
+            const auto surface = m_arguments.at(surfaceIndex + 1);
+            QTimer::singleShot(1'800, this, [this, screenshotPath, surface] {
+                auto *window = m_engine.rootObjects().isEmpty()
+                    ? nullptr
+                    : qobject_cast<QQuickWindow *>(m_engine.rootObjects().first());
+                presentUpdateSurface(m_engine, window, surface);
+                QTimer::singleShot(400, this, [this, screenshotPath, surface] {
+                    auto *window = m_engine.rootObjects().isEmpty()
+                        ? nullptr
+                        : qobject_cast<QQuickWindow *>(m_engine.rootObjects().first());
+                    presentUpdateSurface(m_engine, window, surface);
+                    QTimer::singleShot(350, this, [this, screenshotPath] {
+                        if (m_engine.rootObjects().isEmpty() || m_qmlWarningOccurred) {
+                            m_application.exit(EXIT_FAILURE);
+                            return;
+                        }
+                        auto *window = qobject_cast<QQuickWindow *>(m_engine.rootObjects().first());
+                        const auto saved = window && window->grabWindow().save(screenshotPath);
+                        m_application.exit(saved ? EXIT_SUCCESS : EXIT_FAILURE);
+                    });
+                });
+            });
+        } else {
         QTimer::singleShot(1'000, this,
                            [this, screenshotPath] {
             if (m_engine.rootObjects().isEmpty() || m_qmlWarningOccurred) {
@@ -551,6 +618,7 @@ int AcceptanceSession::startSmokeWorkload()
             const auto saved = window && window->grabWindow().save(screenshotPath);
             m_application.exit(saved ? EXIT_SUCCESS : EXIT_FAILURE);
         });
+        }
     } else if (m_smokeStreamerEvent) {
         auto *window = m_engine.rootObjects().isEmpty()
             ? nullptr : qobject_cast<QQuickWindow *>(m_engine.rootObjects().first());

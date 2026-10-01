@@ -144,7 +144,7 @@ Column {
         }
         Text {
             width: DesktopTokens.px(72); height: DesktopTokens.px(28)
-            text: Math.round(slider.value) + control.suffix
+            text: (Math.round(slider.value * 100) / 100) + control.suffix
             color: Theme.label; font.family: Theme.monoFont; font.pixelSize: DesktopTokens.px(14); font.weight: Font.Bold
             verticalAlignment: Text.AlignVCenter; horizontalAlignment: Text.AlignRight
         }
@@ -246,9 +246,9 @@ Column {
                     BitrateSlider {
                         objectName: "onboardingBitrate"; accessibleName: qsTr("Bitrate")
                         trackWidth: Math.min(DesktopTokens.px(220), Math.max(DesktopTokens.px(100), bitrateRow.width - DesktopTokens.px(470)))
-                        from: 10; to: 200; stepSize: 5; suffix: qsTr(" Mbps")
+                        from: 0.22; to: 200; stepSize: 0.01; suffix: qsTr(" Mbps")
                         value: Number(root.settings.maxBitrateMbps ?? 75)
-                        onMoved: value => root.store.setOnboardingSetting("maxBitrateMbps", Math.round(value))
+                        onMoved: value => root.store.setOnboardingSetting("maxBitrateMbps", Math.round(value * 100) / 100)
                     }
                 }
             }

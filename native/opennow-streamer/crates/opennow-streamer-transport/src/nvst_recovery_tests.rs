@@ -1,5 +1,71 @@
 use super::*;
 
+#[test]
+fn multiple_reorder_gaps_do_not_revalidate_post_gap_references() {
+    for fec in [false, true] {
+        let mut config = config();
+        config.reorder_window_packets = DEFAULT_REORDER_WINDOW;
+        let crypto = test_srtp(&config);
+        let mut receiver = NvstVideoReceiver::new(config);
+        let now = Instant::now();
+        let sequences = if fec {
+            [0, 4, 2055, 2057]
+        } else {
+            [0, 2, 1028, 1029]
+        };
+        let mut result = Vec::new();
+        for (index, (sequence, frame, keyframe)) in sequences
+            .into_iter()
+            .zip([0, 2, 100, 101])
+            .zip([true, true, false, false])
+            .map(|((sequence, frame), keyframe)| (sequence, frame, keyframe))
+            .enumerate()
+        {
+            let plaintext = if fec {
+                reference_fec_block(sequence, frame, 1, 100, keyframe).remove(0)
+            } else {
+                build_plaintext_rtp(
+                    sequence,
+                    FLAG_SOF | FLAG_EOF | FLAG_CONTAINS_PIC_DATA,
+                    frame,
+                    &[0, 0, 0, 1, if keyframe { 0x65 } else { 0x61 }, 0x88],
+                )
+            };
+            let at = if index == 3 {
+                now + MJOLNIR_REORDER_DEQUEUE_TIMEOUT + Duration::from_millis(1)
+            } else {
+                now
+            };
+            let events =
+                receiver.process_datagram(peer(), &protect_for_test(&crypto, plaintext, 0), at);
+            if index == 3 {
+                result = events;
+            }
+        }
+        assert!(matches!(
+            result.first(),
+            Some(NvstReceiveEvent::RecoveryNeeded(
+                NvstRecovery::PacketGap { .. }
+            ))
+        ));
+        let frames: Vec<_> = result
+            .into_iter()
+            .filter_map(|event| match event {
+                NvstReceiveEvent::Frame(frame) => {
+                    Some((frame.frame_index, frame.keyframe, frame.contiguous))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            frames,
+            [(100, false, false), (101, false, true)],
+            "fec={fec}"
+        );
+        assert!(receiver.config.feedback.keyframe_request_pending());
+    }
+}
+
 fn reference_fec_block(
     base: u16,
     frame: u32,

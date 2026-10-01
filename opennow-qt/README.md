@@ -11,6 +11,10 @@ The separate **Qt Flatpak build** workflow produces an installable bundle withou
 If Linux Stream settings show no usable video backend, follow
 [Troubleshoot unavailable Linux video backends](../docs/linux-video-backends.md).
 
+On a Windows hybrid laptop, Stream settings → Graphics processor lists each GPU's
+hardware decode codecs. Automatic uses the first high-performance adapter that
+can decode, so a discrete GPU without a decoder does not hide the integrated GPU.
+
 ## CI checks and manual builds
 
 Pull requests and pushes to `dev` or `main` run workflow lint, packaging-contract

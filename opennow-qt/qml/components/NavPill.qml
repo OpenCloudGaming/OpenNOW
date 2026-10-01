@@ -12,11 +12,11 @@ GlassPanel {
     strong: true
 
     readonly property var destinations: [
-        { route: "home", icon: "nav-home.svg", label: "Home" },
-        { route: "library", icon: "nav-library.svg", label: "Library" },
-        { route: "store", icon: "nav-controller.svg", label: "Store" },
-        { route: "friends", icon: "nav-friends.svg", label: "Friends" },
-        { route: "settings", icon: "nav-settings.svg", label: "Settings" },
+        { route: "home", icon: "nav-home.svg", label: qsTr("Home") },
+        { route: "library", icon: "nav-library.svg", label: qsTr("Library") },
+        { route: "store", icon: "nav-controller.svg", label: qsTr("Store") },
+        { route: "friends", icon: "nav-friends.svg", label: qsTr("Friends") },
+        { route: "settings", icon: "nav-settings.svg", label: qsTr("Settings") },
         { route: "computer", icon: "nav-computer.svg", label: qsTr("Computer mode") }
     ]
 
@@ -46,7 +46,7 @@ GlassPanel {
                 height: 43
                 padding: 0
                 focusPolicy: Qt.StrongFocus
-                Accessible.name: I18n.source(destination.modelData.label, I18n.revision)
+                Accessible.name: destination.modelData.label
                 Accessible.role: Accessible.Button
                 onClicked: root.routeRequested(modelData.route)
                 Keys.onReturnPressed: clicked()

@@ -128,6 +128,17 @@ impl<T> BoundedQueue<T> {
             .pop_front()
     }
 
+    pub fn try_pop_latest(&self) -> Option<(T, usize)> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let latest = state.items.pop_back()?;
+        let skipped = state.items.len();
+        state.items.clear();
+        Some((latest, skipped))
+    }
+
     pub fn wait_pop(&self, timeout: Duration) -> QueuePop<T> {
         let start = Instant::now();
         let mut state = self
@@ -203,6 +214,19 @@ impl<T> BoundedQueue<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn latest_pop_discards_stale_frames_and_counts_them() {
+        let queue = BoundedQueue::new(3);
+        assert_eq!(queue.try_pop_latest(), None);
+        for frame in 1..=3 {
+            assert_eq!(queue.push(frame), QueuePush::Added);
+        }
+        assert_eq!(queue.try_pop_latest(), Some((3, 2)));
+        assert_eq!(queue.try_pop_latest(), None);
+        assert_eq!(queue.push(4), QueuePush::Added);
+        assert_eq!(queue.try_pop_latest(), Some((4, 0)));
+    }
 
     #[test]
     fn keeps_newest_items_at_capacity() {

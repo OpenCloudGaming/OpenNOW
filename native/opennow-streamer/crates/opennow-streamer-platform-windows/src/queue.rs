@@ -6,7 +6,44 @@ use std::time::Duration;
 pub enum PushOutcome {
     Queued,
     DroppedOldest,
+    /// The incoming delta was dropped and the queue was left unchanged because
+    /// it already holds a keyframe. Clearing that keyframe to admit one more
+    /// P-frame makes the decoder wait forever for a reference it just lost.
+    Backpressured,
     Paused,
+}
+
+/// How one compressed access unit is admitted into a bounded decode queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompressedAdmit {
+    Append,
+    ReplaceWithKeyframe { dropped: usize },
+    PreserveQueuedKeyframe,
+    DiscardChain { dropped: usize },
+}
+
+/// A full queue that already holds a keyframe keeps that keyframe. An incoming
+/// keyframe still replaces the stale chain. A full queue with no keyframe is
+/// discarded, because every remaining delta depends on a frame that will not
+/// be decoded.
+pub fn admit_compressed_frame(
+    len: usize,
+    capacity: usize,
+    incoming_is_keyframe: bool,
+    queue_has_keyframe: bool,
+) -> CompressedAdmit {
+    if len < capacity {
+        return CompressedAdmit::Append;
+    }
+    if incoming_is_keyframe {
+        return CompressedAdmit::ReplaceWithKeyframe { dropped: len };
+    }
+    if queue_has_keyframe {
+        return CompressedAdmit::PreserveQueuedKeyframe;
+    }
+    CompressedAdmit::DiscardChain {
+        dropped: len.saturating_add(1),
+    }
 }
 
 #[derive(Debug)]
@@ -53,32 +90,45 @@ impl<T> BoundedQueue<T> {
     }
 
     /// Queues compressed inter-frame video without creating a broken reference
-    /// chain. Once full, every pending access unit and the incoming unit are
-    /// stale; retaining any of them after dropping an older reference frame can
-    /// make the hardware decoder reject the stream. The caller requests a new
-    /// keyframe after receiving `DroppedOldest`. When the incoming value is already that recovery
-    /// keyframe, `retain_incoming` keeps it after clearing the stale reference chain so recovery
-    /// does not require a second round trip.
+    /// chain. A full queue with no keyframe is discarded: retaining a delta
+    /// after dropping its reference makes the decoder reject the stream. An
+    /// incoming keyframe replaces that stale chain. A full queue that already
+    /// holds a keyframe stays intact (`Backpressured`); wiping it to admit one
+    /// more delta drops the only frame the decoder can restart from.
     pub(crate) fn push_or_clear_on_overflow(
         &self,
         value: T,
-        retain_incoming: bool,
+        incoming_is_keyframe: bool,
+        queued_is_keyframe: impl Fn(&T) -> bool,
     ) -> Result<PushOutcome, T> {
         let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         if inner.closed {
             return Err(value);
         }
-        if inner.values.len() == self.capacity {
-            inner.values.clear();
-            if retain_incoming {
+        let queue_has_keyframe = inner.values.iter().any(queued_is_keyframe);
+        match admit_compressed_frame(
+            inner.values.len(),
+            self.capacity,
+            incoming_is_keyframe,
+            queue_has_keyframe,
+        ) {
+            CompressedAdmit::Append => {
                 inner.values.push_back(value);
                 self.ready.notify_one();
+                Ok(PushOutcome::Queued)
             }
-            return Ok(PushOutcome::DroppedOldest);
+            CompressedAdmit::ReplaceWithKeyframe { .. } => {
+                inner.values.clear();
+                inner.values.push_back(value);
+                self.ready.notify_one();
+                Ok(PushOutcome::DroppedOldest)
+            }
+            CompressedAdmit::PreserveQueuedKeyframe => Ok(PushOutcome::Backpressured),
+            CompressedAdmit::DiscardChain { .. } => {
+                inner.values.clear();
+                Ok(PushOutcome::DroppedOldest)
+            }
         }
-        inner.values.push_back(value);
-        self.ready.notify_one();
-        Ok(PushOutcome::Queued)
     }
 
     pub(crate) fn try_pop(&self) -> Option<T> {
@@ -167,15 +217,15 @@ mod tests {
     fn video_overflow_discards_the_pending_reference_chain() {
         let queue = BoundedQueue::new(2);
         assert_eq!(
-            queue.push_or_clear_on_overflow(1, false),
+            queue.push_or_clear_on_overflow(1, false, |_| false),
             Ok(PushOutcome::Queued)
         );
         assert_eq!(
-            queue.push_or_clear_on_overflow(2, false),
+            queue.push_or_clear_on_overflow(2, false, |_| false),
             Ok(PushOutcome::Queued)
         );
         assert_eq!(
-            queue.push_or_clear_on_overflow(3, false),
+            queue.push_or_clear_on_overflow(3, false, |_| false),
             Ok(PushOutcome::DroppedOldest)
         );
         assert_eq!(queue.try_pop(), None);
@@ -185,19 +235,62 @@ mod tests {
     fn video_overflow_retains_an_incoming_recovery_keyframe() {
         let queue = BoundedQueue::new(2);
         assert_eq!(
-            queue.push_or_clear_on_overflow(1, false),
+            queue.push_or_clear_on_overflow(1, false, |_| false),
             Ok(PushOutcome::Queued)
         );
         assert_eq!(
-            queue.push_or_clear_on_overflow(2, false),
+            queue.push_or_clear_on_overflow(2, false, |_| false),
             Ok(PushOutcome::Queued)
         );
         assert_eq!(
-            queue.push_or_clear_on_overflow(3, true),
+            queue.push_or_clear_on_overflow(3, true, |_| false),
             Ok(PushOutcome::DroppedOldest)
         );
         assert_eq!(queue.try_pop(), Some(3));
         assert_eq!(queue.try_pop(), None);
+    }
+
+    #[test]
+    fn video_overflow_keeps_a_queued_keyframe_when_a_delta_does_not_fit() {
+        let queue = BoundedQueue::new(2);
+        fn is_keyframe(value: &i32) -> bool {
+            *value < 0
+        }
+        assert_eq!(
+            queue.push_or_clear_on_overflow(-1, true, is_keyframe),
+            Ok(PushOutcome::Queued)
+        );
+        assert_eq!(
+            queue.push_or_clear_on_overflow(2, false, is_keyframe),
+            Ok(PushOutcome::Queued)
+        );
+        assert_eq!(
+            queue.push_or_clear_on_overflow(3, false, is_keyframe),
+            Ok(PushOutcome::Backpressured)
+        );
+        assert_eq!(queue.try_pop(), Some(-1));
+        assert_eq!(queue.try_pop(), Some(2));
+        assert_eq!(queue.try_pop(), None);
+    }
+
+    #[test]
+    fn admit_compressed_frame_preserves_a_queued_keyframe() {
+        assert_eq!(
+            admit_compressed_frame(7, 7, false, true),
+            CompressedAdmit::PreserveQueuedKeyframe
+        );
+        assert_eq!(
+            admit_compressed_frame(7, 7, true, true),
+            CompressedAdmit::ReplaceWithKeyframe { dropped: 7 }
+        );
+        assert_eq!(
+            admit_compressed_frame(7, 7, false, false),
+            CompressedAdmit::DiscardChain { dropped: 8 }
+        );
+        assert_eq!(
+            admit_compressed_frame(3, 7, false, false),
+            CompressedAdmit::Append
+        );
     }
 
     #[test]

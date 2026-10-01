@@ -108,7 +108,48 @@ pub fn native_runtime_evidence(capabilities: &Value) -> Value {
         backends.push(Value::Object(entry));
     }
     evidence.insert("videoBackends".to_owned(), json!(backends));
+    if let Some(adapters) = graphics_adapter_evidence(capabilities) {
+        evidence.insert("graphicsAdapters".to_owned(), Value::Array(adapters));
+    }
     Value::Object(evidence)
+}
+
+fn graphics_adapter_evidence(capabilities: &Value) -> Option<Vec<Value>> {
+    let source = capabilities.get("graphicsAdapters")?.as_array()?;
+    if source.is_empty() {
+        return None;
+    }
+    let mut adapters = Vec::new();
+    for adapter in source.iter().take(8) {
+        let mut entry = serde_json::Map::new();
+        if let Some(name) = adapter["name"].as_str() {
+            entry.insert("name".to_owned(), json!(runtime_failure_reason(name)));
+        }
+        if let Some(active) = adapter["active"].as_bool() {
+            entry.insert("active".to_owned(), json!(active));
+        }
+        if let Some(main10) = adapter["h265Main10"].as_bool() {
+            entry.insert("h265Main10".to_owned(), json!(main10));
+        }
+        let codecs = adapter["codecs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|codec| {
+                codec
+                    .as_str()
+                    .filter(|name| matches!(*name, "h264" | "h265" | "av1"))
+                    .map(|name| json!(name))
+            })
+            .take(4)
+            .collect::<Vec<_>>();
+        entry.insert("codecs".to_owned(), json!(codecs));
+        if let Some(reason) = adapter["reason"].as_str() {
+            entry.insert("reason".to_owned(), json!(runtime_failure_reason(reason)));
+        }
+        adapters.push(Value::Object(entry));
+    }
+    Some(adapters)
 }
 
 pub fn runtime_failure_reason(value: &str) -> String {
@@ -741,6 +782,27 @@ mod tests {
             native_runtime_evidence(&Value::Null),
             json!({"videoBackends":[]})
         );
+        let indexed = native_runtime_evidence(&json!({
+            "videoBackends":[],
+            "graphicsAdapters":[
+                {"name":"NVIDIA GeForce MX110","active":true,"codecs":[],"h265Main10":false,
+                    "reason":"no supported hardware decoder profile","luid":"private-luid"},
+                {"name":"Intel(R) HD Graphics 620 path=/home/alice/gpu","active":false,
+                    "codecs":["h264","h265","private-codec"],"h265Main10":true}
+            ]
+        }));
+        assert!(indexed.get("graphicsAdapters").is_some());
+        assert_eq!(indexed["graphicsAdapters"][0]["codecs"], json!([]));
+        assert_eq!(
+            indexed["graphicsAdapters"][1]["codecs"],
+            json!(["h264", "h265"])
+        );
+        assert_eq!(indexed["graphicsAdapters"][1]["h265Main10"], true);
+        let rendered = indexed.to_string();
+        assert!(rendered.contains("NVIDIA GeForce MX110"));
+        assert!(!rendered.contains("private-luid"));
+        assert!(!rendered.contains("alice"));
+        assert!(!rendered.contains("private-codec"));
     }
 
     #[test]

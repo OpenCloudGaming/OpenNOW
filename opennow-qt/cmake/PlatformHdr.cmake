@@ -4,6 +4,13 @@ add_library(opennow-platform-hdr STATIC
 target_link_libraries(opennow-platform-hdr PUBLIC Qt6::Gui PRIVATE Qt6::GuiPrivate)
 target_include_directories(opennow-platform-hdr PUBLIC "${CMAKE_CURRENT_LIST_DIR}/../src")
 
+if(WIN32)
+    target_sources(opennow-platform-hdr PRIVATE
+        "${CMAKE_CURRENT_LIST_DIR}/../src/streaming/rendering/WindowsHdrDisplay.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/../src/streaming/rendering/WindowsHdrDisplay.h")
+    target_link_libraries(opennow-platform-hdr PRIVATE dxgi user32)
+endif()
+
 if(APPLE)
     enable_language(OBJCXX)
     set_property(TARGET opennow-platform-hdr PROPERTY OBJCXX_STANDARD 20)

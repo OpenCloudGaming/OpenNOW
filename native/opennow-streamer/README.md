@@ -149,8 +149,9 @@ audio. This follows the native bundle findings documented in OpenNOW-Mac's
 `docs/StreamTransportArchitecture.md` (reference revision `88a09bd68598651b367aa4744e7528da9c074d28`).
 Legacy RTSP/UDP microphone carriage is not implemented.
 
-Capture produces mono 48 kHz PCM and an off-callback encoder produces 20 ms Opus
-frames at 32 kbps. PCM, encoded audio, and transport queues each hold at most five
+Capture produces mono 48 kHz PCM and an off-callback encoder produces 10 ms Opus
+frames at 32 kbps. The frame size must match the server's `mic.frameSize:10`: the
+cloud PC's microphone stays silent when it receives 20 ms frames. PCM, encoded audio, and transport queues each hold at most five
 frames and drop old data under load. Mute closes capture and clears pending audio;
 unmute preserves the RTP clock and transport sequence lifetime. Capture or uplink
 failure disables only the microphone, not game audio/video. Session termination

@@ -29,6 +29,7 @@ public:
     struct Observation
     {
         bool gated = false;
+        std::uint64_t gateEpoch = 0;
         bool hasPendingSubmit = false;
         bool hasLastSwap = false;
         std::int64_t lastSwapNs = 0;
@@ -45,6 +46,10 @@ public:
 
     Outcome observe(const Observation &observation, std::int64_t nowNs)
     {
+        if (observation.gateEpoch != m_gateEpoch) {
+            reset();
+            m_gateEpoch = observation.gateEpoch;
+        }
         if (observation.gated || observation.upstreamStalled) {
             reset();
             return Outcome::None;
@@ -140,6 +145,7 @@ private:
     }
 
     Policy m_policy;
+    std::uint64_t m_gateEpoch = 0;
     Stage m_stage = Stage::Tracking;
     std::int64_t m_episodeStartNs = 0;
     bool m_hasBaseline = false;

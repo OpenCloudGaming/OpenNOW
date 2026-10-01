@@ -17,6 +17,7 @@ const KEYBOARDS: &[(&str, &str, &[&str])] = &[
     ("sv-SE", "Swedish", &[]),
     ("fi-FI", "Finnish", &[]),
     ("ru-RU", "Russian", &[]),
+    ("uk-UA", "Ukrainian", &[]),
     ("ja-106", "Japanese 106", &["ja-JP", "Japanese106"]),
     ("ko-KR", "Korean", &[]),
     ("zh-CN", "Chinese (Simplified)", &[]),
@@ -64,17 +65,20 @@ pub fn keyboard_choices() -> Value {
     )
 }
 
+pub fn session_keyboard_layout(settings: &Value) -> &'static str {
+    settings["keyboardLayout"]
+        .as_str()
+        .and_then(keyboard_wire_id)
+        .unwrap_or("en-US")
+}
+
 pub fn append_session_preferences(url: &mut url::Url, settings: &Value) {
     let language = settings["gameLanguage"]
         .as_str()
         .filter(|value| valid_game_language(value))
         .unwrap_or("en_US");
-    let keyboard = settings["keyboardLayout"]
-        .as_str()
-        .and_then(keyboard_wire_id)
-        .unwrap_or("en-US");
     url.query_pairs_mut()
-        .append_pair("keyboardLayout", keyboard)
+        .append_pair("keyboardLayout", session_keyboard_layout(settings))
         .append_pair("languageCode", language);
 }
 

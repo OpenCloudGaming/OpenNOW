@@ -431,6 +431,10 @@ pub struct ImportedNv12Frame {
     pub luma_view: u64,
     pub chroma_view: u64,
     pub modifier: u64,
+    /// Height the image was created with, which may exceed the visible height
+    /// when the decoder pads the picture. Sampling must be scaled by
+    /// `visible / coded` so the padding rows stay off screen.
+    pub coded_height: u32,
     pub external_queue_family: u32,
     pub render_queue_family: u32,
     image_handle: vk::Image,
@@ -506,6 +510,10 @@ struct CpuUploadResources {
     chroma: GpuImage,
     staging_buffer: vk::Buffer,
     staging_memory: vk::DeviceMemory,
+    /// Host address for the staging allocation. Mapping once avoids the
+    /// per-frame `vkMapMemory`/`vkUnmapMemory` round trip on the software path.
+    /// Stored as an address so the producer keeps its previous thread bounds.
+    staging_mapped: usize,
     initialized: bool,
 }
 
@@ -1229,7 +1237,11 @@ impl LinuxFrameProducer {
                     vk::ImageMemoryBarrier::default()
                         .old_layout(vk::ImageLayout::GENERAL)
                         .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                        .src_queue_family_index(vk::QUEUE_FAMILY_EXTERNAL)
+                        // The producer is V4L2/VA-API, not another Vulkan device, so
+                        // ownership comes from the foreign queue family. `EXTERNAL`
+                        // would promise a matching release from a Vulkan device that
+                        // never happens, leaving the contents undefined.
+                        .src_queue_family_index(vk::QUEUE_FAMILY_FOREIGN_EXT)
                         .dst_queue_family_index(self.render.queue_family)
                         .src_access_mask(vk::AccessFlags::MEMORY_WRITE)
                         .dst_access_mask(vk::AccessFlags::SHADER_READ)
@@ -1302,7 +1314,15 @@ impl LinuxFrameProducer {
                 &[],
             );
             let constants = ConversionConstants {
-                texture_scale: [1.0, 1.0],
+                // A DMA-BUF import may be taller than the visible picture when
+                // the decoder pads it; sample only the visible rows.
+                texture_scale: match prepared {
+                    PreparedLinuxFrame::DmaBuf(frame) if frame.coded_height > 0 => [
+                        1.0,
+                        frame.source.format.height as f32 / frame.coded_height as f32,
+                    ],
+                    _ => [1.0, 1.0],
+                },
                 color_matrix: match color_matrix {
                     crate::ColorMatrix::Bt601 => 0,
                     crate::ColorMatrix::Bt709 => 1,
@@ -1378,7 +1398,9 @@ impl LinuxFrameProducer {
                     .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                     .new_layout(vk::ImageLayout::GENERAL)
                     .src_queue_family_index(self.render.queue_family)
-                    .dst_queue_family_index(vk::QUEUE_FAMILY_EXTERNAL)
+                    // Released back to the foreign V4L2/VA-API producer; see the
+                    // matching acquire barrier above.
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_FOREIGN_EXT)
                     .src_access_mask(vk::AccessFlags::SHADER_READ)
                     .dst_access_mask(vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE)
                     .image(vk::Image::from_raw(frame.image))
@@ -1408,6 +1430,9 @@ impl LinuxFrameProducer {
                 self.device.destroy_image_view(view, None);
             }
             if let Some(cpu) = resources.cpu.take() {
+                if cpu.staging_mapped != 0 {
+                    self.device.unmap_memory(cpu.staging_memory);
+                }
                 self.device.destroy_buffer(cpu.staging_buffer, None);
                 self.device.free_memory(cpu.staging_memory, None);
                 destroy_gpu_image(&self.device, cpu.chroma);
@@ -1649,13 +1674,35 @@ fn create_cpu_upload_resources(
         )
     }
     .map_err(|error| vk_error("allocate NV12 upload buffer", error))?;
-    unsafe { device.bind_buffer_memory(buffer, memory, 0) }
-        .map_err(|error| vk_error("bind NV12 upload buffer", error))?;
+    if let Err(error) = unsafe { device.bind_buffer_memory(buffer, memory, 0) } {
+        unsafe {
+            device.destroy_buffer(buffer, None);
+            device.free_memory(memory, None);
+            destroy_gpu_image(device, chroma);
+            destroy_gpu_image(device, luma);
+        }
+        return Err(vk_error("bind NV12 upload buffer", error));
+    }
+    let staging_mapped = match unsafe {
+        device.map_memory(memory, 0, requirements.size, vk::MemoryMapFlags::empty())
+    } {
+        Ok(mapped) => mapped as usize,
+        Err(error) => {
+            unsafe {
+                device.destroy_buffer(buffer, None);
+                device.free_memory(memory, None);
+                destroy_gpu_image(device, chroma);
+                destroy_gpu_image(device, luma);
+            }
+            return Err(vk_error("map NV12 upload buffer", error));
+        }
+    };
     Ok(CpuUploadResources {
         luma,
         chroma,
         staging_buffer: buffer,
         staging_memory: memory,
+        staging_mapped,
         initialized: false,
     })
 }
@@ -1669,25 +1716,21 @@ fn upload_cpu_nv12(
     height: u32,
 ) -> Result<()> {
     let luma_len = width as usize * height as usize;
-    let total_len = luma_len + luma_len / 2;
-    let mapped = unsafe {
-        device.map_memory(
-            resources.staging_memory,
-            0,
-            total_len as u64,
-            vk::MemoryMapFlags::empty(),
-        )
+    if resources.staging_mapped == 0 {
+        return Err(Error::backend(
+            Subsystem::Vulkan,
+            "NV12 upload buffer is not mapped",
+        ));
     }
-    .map_err(|error| vk_error("map NV12 upload buffer", error))?;
     unsafe {
-        copy_plane_rows(&frame.luma, mapped.cast(), width as usize, height as usize);
+        let mapped = resources.staging_mapped as *mut u8;
+        copy_plane_rows(&frame.luma, mapped, width as usize, height as usize);
         copy_plane_rows(
             &frame.chroma,
-            mapped.cast::<u8>().add(luma_len),
+            mapped.add(luma_len),
             width as usize,
             height as usize / 2,
         );
-        device.unmap_memory(resources.staging_memory);
     }
     let source_stage = if resources.initialized {
         vk::PipelineStageFlags::FRAGMENT_SHADER
@@ -1783,8 +1826,15 @@ fn upload_cpu_nv12(
 }
 
 unsafe fn copy_plane_rows(plane: &FramePlane, destination: *mut u8, row_bytes: usize, rows: usize) {
-    for row in 0..rows {
-        unsafe {
+    if row_bytes == 0 || rows == 0 {
+        return;
+    }
+    unsafe {
+        if plane.stride == row_bytes {
+            std::ptr::copy_nonoverlapping(plane.data.as_ptr(), destination, row_bytes * rows);
+            return;
+        }
+        for row in 0..rows {
             std::ptr::copy_nonoverlapping(
                 plane.data.as_ptr().add(row * plane.stride),
                 destination.add(row * row_bytes),
@@ -2051,17 +2101,32 @@ fn import_nv12_dmabuf(
         ));
     }
     let p010 = source.format.pixel_format == PixelFormat::P010;
+    // The image must be created at the buffer's *coded* height, not the visible
+    // one. Drivers are not required to honour the explicit plane offsets below
+    // and may derive the chroma base from the image extent instead; when the
+    // decoder pads the picture (1080 -> 1088) a visible-height extent then puts
+    // the chroma plane `pitch * padding` bytes early, tinting the image with a
+    // vertically displaced copy of its own colour. Deriving the coded height
+    // from the distance between the exporter's own plane offsets keeps both
+    // readings identical.
+    let coded_height = crate::format::nv12_coded_height(&luma, &chroma, source.format.height);
+    // `size` must be 0 in every plane layout
+    // (VUID-VkImageDrmFormatModifierExplicitCreateInfoEXT-size-02267). Passing a
+    // real size makes the layout invalid, and a driver may then ignore the
+    // explicit offsets and derive its own from the image extent. For a decoder
+    // whose buffer is padded taller than the visible picture (1080 -> 1088),
+    // that puts the chroma plane a few rows off and tints the image.
     let plane_layouts = [
         vk::SubresourceLayout {
             offset: luma.offset as u64,
-            size: object_size.saturating_sub(luma.offset) as u64,
+            size: 0,
             row_pitch: luma.pitch as u64,
             array_pitch: 0,
             depth_pitch: 0,
         },
         vk::SubresourceLayout {
             offset: chroma.offset as u64,
-            size: object_size.saturating_sub(chroma.offset) as u64,
+            size: 0,
             row_pitch: chroma.pitch as u64,
             array_pitch: 0,
             depth_pitch: 0,
@@ -2084,7 +2149,7 @@ fn import_nv12_dmabuf(
         })
         .extent(vk::Extent3D {
             width: source.format.width,
-            height: source.format.height,
+            height: coded_height,
             depth: 1,
         })
         .mip_levels(1)
@@ -2197,7 +2262,8 @@ fn import_nv12_dmabuf(
         luma_view: luma_view.as_raw(),
         chroma_view: chroma_view.as_raw(),
         modifier,
-        external_queue_family: vk::QUEUE_FAMILY_EXTERNAL,
+        coded_height,
+        external_queue_family: vk::QUEUE_FAMILY_FOREIGN_EXT,
         render_queue_family,
         image_handle: image,
         luma_view_handle: luma_view,
@@ -2250,6 +2316,30 @@ fn decode_readiness(result: std::result::Result<(), vk::Result>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn packed_nv12_rows_copy_as_one_span() {
+        let mut destination = [0u8; 6];
+        let plane = FramePlane {
+            data: Arc::from([1u8, 2, 3, 4, 5, 6].as_slice()),
+            stride: 3,
+            rows: 2,
+        };
+        unsafe { copy_plane_rows(&plane, destination.as_mut_ptr(), 3, 2) };
+        assert_eq!(destination, [1, 2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn padded_nv12_rows_skip_the_stride_gap() {
+        let mut destination = [0u8; 4];
+        let plane = FramePlane {
+            data: Arc::from([1u8, 2, 9, 3, 4, 9].as_slice()),
+            stride: 3,
+            rows: 2,
+        };
+        unsafe { copy_plane_rows(&plane, destination.as_mut_ptr(), 2, 2) };
+        assert_eq!(destination, [1, 2, 3, 4]);
+    }
 
     #[test]
     fn embedded_output_format_preserves_source_precision() {

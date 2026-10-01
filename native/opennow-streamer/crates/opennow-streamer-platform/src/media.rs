@@ -23,8 +23,7 @@ use crate::video_queue::VideoQueue;
 use crate::linux_backend::{LinuxVideoPath, LinuxVideoSelection};
 
 const VIDEO_QUEUE_CAPACITY: usize = 2;
-#[cfg(target_os = "macos")]
-const MAC_VIDEO_QUEUE_MAX_CAPACITY: usize = 60;
+const VIDEO_QUEUE_MAX_CAPACITY: usize = 60;
 // Ten 20 ms Opus packets cover the official client's 200 ms adaptive ceiling.
 // The queue remains bounded and drop-oldest, so recovery cannot grow latency
 // without limit under a stalled decoder.
@@ -112,16 +111,11 @@ impl RecordingTap {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn macos_video_queue_capacity(fps: u32) -> usize {
-    // FEC/NACK intentionally holds an incomplete block for up to 150 ms. Once repaired, several
-    // encoded frames can be released together, so keep 250 ms of compressed video to absorb that
-    // bounded recovery burst plus AppKit scheduling jitter. Decoded IOSurfaces remain in the small
-    // VideoToolbox/Metal queues and never pass through this buffer.
+fn video_queue_capacity(fps: u32) -> usize {
     let frames_for_recovery_burst = fps.max(1).div_ceil(4);
     usize::try_from(frames_for_recovery_burst)
-        .unwrap_or(MAC_VIDEO_QUEUE_MAX_CAPACITY)
-        .clamp(VIDEO_QUEUE_CAPACITY, MAC_VIDEO_QUEUE_MAX_CAPACITY)
+        .unwrap_or(VIDEO_QUEUE_MAX_CAPACITY)
+        .clamp(VIDEO_QUEUE_CAPACITY, VIDEO_QUEUE_MAX_CAPACITY)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -251,12 +245,13 @@ pub struct StreamShortcutBindings {
 
 impl StreamShortcutBindings {
     pub fn from_json(value: &serde_json::Value) -> Self {
-        let read = |key: &str, fallback: &str| {
-            value
-                .get(key)
-                .and_then(serde_json::Value::as_str)
-                .and_then(ShortcutChord::parse)
-                .or_else(|| ShortcutChord::parse(fallback))
+        let read = |key: &str, fallback: &str| match value
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+        {
+            Some("") => None,
+            Some(chord) => ShortcutChord::parse(chord).or_else(|| ShortcutChord::parse(fallback)),
+            None => ShortcutChord::parse(fallback),
         };
         Self {
             bindings: [
@@ -942,7 +937,7 @@ impl MediaSession {
         let video_decoder = (!use_windows_backend).then(H264Decoder::new).transpose()?;
         let audio_decoder = OpusDecoder::new(2)?;
         let shared = Arc::new(SharedPipeline {
-            video: Arc::new(VideoQueue::new(VIDEO_QUEUE_CAPACITY)),
+            video: Arc::new(VideoQueue::new(video_queue_capacity(stream.fps))),
             audio: Arc::new(BoundedQueue::new(AUDIO_QUEUE_CAPACITY)),
             output,
             feedback,
@@ -1019,7 +1014,7 @@ impl MediaSession {
         let shared = Arc::new(SharedPipeline {
             // Keep a bounded scheduler-burst reserve. The VideoToolbox worker drains this queue
             // asynchronously; decoded frames remain latest-first at the Metal presentation edge.
-            video: Arc::new(VideoQueue::new(macos_video_queue_capacity(stream.fps))),
+            video: Arc::new(VideoQueue::new(video_queue_capacity(stream.fps))),
             audio: Arc::new(BoundedQueue::new(AUDIO_QUEUE_CAPACITY)),
             output,
             feedback,
@@ -1101,7 +1096,7 @@ impl MediaSession {
         let session = opennow_streamer_platform_linux::LinuxSession::start(config)
             .map_err(|error| error.to_string())?;
         let shared = Arc::new(SharedPipeline {
-            video: Arc::new(VideoQueue::new(VIDEO_QUEUE_CAPACITY)),
+            video: Arc::new(VideoQueue::new(video_queue_capacity(stream.fps))),
             audio: Arc::new(BoundedQueue::new(AUDIO_QUEUE_CAPACITY)),
             output,
             feedback,
@@ -1297,7 +1292,7 @@ impl MediaSession {
         let session = opennow_streamer_platform_linux::LinuxSession::start(config)
             .map_err(|error| error.to_string())?;
         let shared = Arc::new(SharedPipeline {
-            video: Arc::new(VideoQueue::new(VIDEO_QUEUE_CAPACITY)),
+            video: Arc::new(VideoQueue::new(video_queue_capacity(stream.fps))),
             audio: Arc::new(BoundedQueue::new(AUDIO_QUEUE_CAPACITY)),
             output,
             feedback,
@@ -1384,7 +1379,7 @@ impl MediaSession {
             );
         }
         let shared = Arc::new(SharedPipeline {
-            video: Arc::new(VideoQueue::new(macos_video_queue_capacity(stream.fps))),
+            video: Arc::new(VideoQueue::new(video_queue_capacity(stream.fps))),
             audio: Arc::new(BoundedQueue::new(AUDIO_QUEUE_CAPACITY)),
             output,
             feedback,
@@ -1579,7 +1574,7 @@ impl MediaSession {
     ) -> Result<Self, String> {
         let bridge = Arc::new(WindowsBridge::new());
         let shared = Arc::new(SharedPipeline {
-            video: Arc::new(VideoQueue::new(VIDEO_QUEUE_CAPACITY)),
+            video: Arc::new(VideoQueue::new(video_queue_capacity(stream.fps))),
             audio: Arc::new(BoundedQueue::new(AUDIO_QUEUE_CAPACITY)),
             output,
             feedback,
@@ -1698,7 +1693,7 @@ impl MediaSession {
                         eprintln!(
                             "Embedded D3D11 compressed queue overflow: dropped={} recoveryKeyframeRetained={}",
                             submission.dropped,
-                            submission.queued && frame.keyframe,
+                            (submission.queued && frame.keyframe) || submission.preserved_keyframe,
                         );
                         let _ = video_shared.feedback.send(MediaFeedback::QueueDropped {
                             media: "d3d11-video",
@@ -1706,12 +1701,30 @@ impl MediaSession {
                         });
                     }
                     if !submission.queued {
-                        invalidate_embedded_video(
-                            &video_shared,
-                            &frame.mid,
-                            "embedded D3D11 compressed-video queue overflow",
-                        );
+                        // One request per gap. Repeating this for every delta
+                        // clears `request_pending` and asks the sender for a
+                        // new IDR faster than the decoder can consume the last
+                        // one, which is what freezes the picture.
+                        if !video_shared
+                            .keyframe_requested
+                            .swap(true, Ordering::AcqRel)
+                        {
+                            invalidate_embedded_video(
+                                &video_shared,
+                                &frame.mid,
+                                if submission.preserved_keyframe {
+                                    "embedded D3D11 compressed queue retained its keyframe under backpressure"
+                                } else {
+                                    "embedded D3D11 compressed-video queue overflow"
+                                },
+                            );
+                        }
                         continue;
+                    }
+                    if frame.keyframe {
+                        video_shared
+                            .keyframe_requested
+                            .store(false, Ordering::Release);
                     }
                     report_video_frame_accepted(&video_shared, &frame);
                     if submission.needs_graphics {
@@ -1759,7 +1772,7 @@ impl MediaSession {
         #[cfg(target_os = "linux")] linux_software_fallback: Arc<AtomicBool>,
     ) -> Result<Self, String> {
         let shared = Arc::new(SharedPipeline {
-            video: Arc::new(VideoQueue::new(VIDEO_QUEUE_CAPACITY)),
+            video: Arc::new(VideoQueue::new(video_queue_capacity(stream.fps))),
             audio: Arc::new(BoundedQueue::new(AUDIO_QUEUE_CAPACITY)),
             output,
             feedback,
@@ -1932,6 +1945,9 @@ struct EmbeddedD3d11SubmissionOutcome {
     queued: bool,
     dropped: usize,
     needs_graphics: bool,
+    /// The decoder queue already holds a keyframe, so this delta was dropped
+    /// without erasing that recovery point.
+    preserved_keyframe: bool,
 }
 
 #[cfg(target_os = "windows")]
@@ -2171,6 +2187,15 @@ impl EmbeddedD3d11Submission {
                             queued: true,
                             dropped: 0,
                             needs_graphics: false,
+                            preserved_keyframe: false,
+                        }
+                    }
+                    opennow_streamer_platform_windows::PushOutcome::Backpressured => {
+                        EmbeddedD3d11SubmissionOutcome {
+                            queued: false,
+                            dropped: 1,
+                            needs_graphics: false,
+                            preserved_keyframe: true,
                         }
                     }
                     opennow_streamer_platform_windows::PushOutcome::DroppedOldest => {
@@ -2180,30 +2205,57 @@ impl EmbeddedD3d11Submission {
                                 opennow_streamer_platform_windows::ADAPTIVE_VIDEO_QUEUE_CAPACITY
                                     + usize::from(!key_frame),
                             needs_graphics: false,
+                            preserved_keyframe: false,
                         }
                     }
                 })
                 .map_err(|error| error.to_string());
         }
-        if self.pending.len() == opennow_streamer_platform_windows::ADAPTIVE_VIDEO_QUEUE_CAPACITY {
-            let key_frame = frame.key_frame;
-            let dropped = self.pending.len().saturating_add(usize::from(!key_frame));
-            self.pending.clear();
-            if key_frame {
+        let has_keyframe = self.pending.iter().any(|queued| queued.key_frame);
+        let key_frame = frame.key_frame;
+        match opennow_streamer_platform_windows::admit_compressed_frame(
+            self.pending.len(),
+            opennow_streamer_platform_windows::ADAPTIVE_VIDEO_QUEUE_CAPACITY,
+            key_frame,
+            has_keyframe,
+        ) {
+            opennow_streamer_platform_windows::CompressedAdmit::Append => {
                 self.pending.push_back(frame);
+                Ok(EmbeddedD3d11SubmissionOutcome {
+                    queued: true,
+                    dropped: 0,
+                    needs_graphics: true,
+                    preserved_keyframe: false,
+                })
             }
-            return Ok(EmbeddedD3d11SubmissionOutcome {
-                queued: key_frame,
-                dropped,
-                needs_graphics: true,
-            });
+            opennow_streamer_platform_windows::CompressedAdmit::ReplaceWithKeyframe { dropped } => {
+                self.pending.clear();
+                self.pending.push_back(frame);
+                Ok(EmbeddedD3d11SubmissionOutcome {
+                    queued: true,
+                    dropped,
+                    needs_graphics: true,
+                    preserved_keyframe: false,
+                })
+            }
+            opennow_streamer_platform_windows::CompressedAdmit::PreserveQueuedKeyframe => {
+                Ok(EmbeddedD3d11SubmissionOutcome {
+                    queued: false,
+                    dropped: 1,
+                    needs_graphics: true,
+                    preserved_keyframe: true,
+                })
+            }
+            opennow_streamer_platform_windows::CompressedAdmit::DiscardChain { dropped } => {
+                self.pending.clear();
+                Ok(EmbeddedD3d11SubmissionOutcome {
+                    queued: false,
+                    dropped,
+                    needs_graphics: true,
+                    preserved_keyframe: false,
+                })
+            }
         }
-        self.pending.push_back(frame);
-        Ok(EmbeddedD3d11SubmissionOutcome {
-            queued: true,
-            dropped: 0,
-            needs_graphics: true,
-        })
     }
 
     fn reset(&mut self) {
@@ -2217,7 +2269,14 @@ impl EmbeddedD3d11Submission {
             let outcome = submitter
                 .submit_video(frame)
                 .map_err(|error| error.to_string())?;
-            if outcome == opennow_streamer_platform_windows::PushOutcome::DroppedOldest {
+            if matches!(
+                outcome,
+                opennow_streamer_platform_windows::PushOutcome::DroppedOldest
+                    | opennow_streamer_platform_windows::PushOutcome::Backpressured
+            ) {
+                // The decoder queue rejected this access unit. Later pending
+                // deltas reference it, so they must not follow a preserved or
+                // discarded chain.
                 dropped = dropped
                     .max(opennow_streamer_platform_windows::ADAPTIVE_VIDEO_QUEUE_CAPACITY + 1);
                 self.pending.clear();
@@ -2478,6 +2537,19 @@ fn run_windows_video(shared: Arc<SharedPipeline>, maximum_fps: u32) {
                 }
             }
             Ok(WindowsPushOutcome::Paused) => {}
+            Ok(WindowsPushOutcome::Backpressured) => {
+                let _ = shared.feedback.send(MediaFeedback::QueueDropped {
+                    media: "d3d11-video",
+                    count: 1,
+                });
+                shared.video_desynced.store(true, Ordering::Release);
+                shared.windows_bridge.require_keyframe();
+                request_keyframe(
+                    &shared,
+                    &frame.mid,
+                    "D3D11 input queue kept its keyframe under backpressure",
+                );
+            }
             Ok(WindowsPushOutcome::DroppedOldest) => {
                 let _ = shared.feedback.send(MediaFeedback::QueueDropped {
                     media: "d3d11-video",
@@ -2574,8 +2646,11 @@ fn media_timestamp_100ns(timestamp: u64, clock_rate_hz: u32) -> i64 {
 #[cfg(target_os = "windows")]
 fn invalidate_embedded_video(shared: &SharedPipeline, mid: &str, reason: &str) {
     // Invalidate queued AND already-dequeued access units. An older keyframe
-    // submission must never clear a newer decoder/transport failure.
+    // submission must never clear a newer decoder/transport failure. The hold
+    // keeps the following deltas from each requesting another IDR; `clear`
+    // alone re-arms that request.
     shared.video.clear();
+    shared.video.hold_keyframe_request();
     opennow_streamer_protocol::log::log_async("WARN", "video-reference", reason);
     let _ = shared.feedback.send(MediaFeedback::RequestKeyframe {
         mid: mid.to_owned(),
@@ -2599,9 +2674,14 @@ impl Drop for MediaSession {
     }
 }
 
+#[cfg(test)]
+type TestVideoDecode = Box<dyn FnMut(&[u8]) -> Result<Option<DecodedVideoFrame>, String> + Send>;
+
 struct H264Decoder {
     decoder: OpenH264Decoder,
     parameter_sets: crate::h264::H264ParameterSets,
+    #[cfg(test)]
+    decode_for_test: Option<TestVideoDecode>,
 }
 
 impl H264Decoder {
@@ -2613,6 +2693,8 @@ impl H264Decoder {
         .map(|decoder| Self {
             decoder,
             parameter_sets: crate::h264::H264ParameterSets::default(),
+            #[cfg(test)]
+            decode_for_test: None,
         })
         .map_err(|error| format!("OpenH264 decoder initialization failed: {error}"))
     }
@@ -2631,6 +2713,10 @@ impl H264Decoder {
     }
 
     fn decode(&mut self, encoded: &[u8]) -> Result<Option<DecodedVideoFrame>, String> {
+        #[cfg(test)]
+        if let Some(decode) = self.decode_for_test.as_mut() {
+            return decode(encoded);
+        }
         let yuv = self
             .decoder
             .decode(encoded)
@@ -2733,14 +2819,17 @@ fn run_video_decoder_from(
                         codec: "h264",
                         message,
                     });
+                    request_software_keyframe(&shared, &frame.mid);
                     continue;
                 }
             }
-            shared.video_desynced.store(false, Ordering::Release);
-            shared.keyframe_requested.store(false, Ordering::Release);
         }
         match decoder.decode(&frame.data) {
             Ok(Some(decoded)) => {
+                if frame.keyframe {
+                    shared.video_desynced.store(false, Ordering::Release);
+                }
+                shared.keyframe_requested.store(false, Ordering::Release);
                 report_video_frame_accepted(&shared, &frame);
                 if shared.output.replace_video(decoded) {
                     let _ = shared.feedback.send(MediaFeedback::QueueDropped {
@@ -2749,21 +2838,29 @@ fn run_video_decoder_from(
                     });
                 }
             }
-            Ok(None) => {}
+            Ok(None) => {
+                if frame.keyframe {
+                    shared.video_desynced.store(false, Ordering::Release);
+                }
+            }
             Err(message) => {
                 let _ = shared.feedback.send(MediaFeedback::DecoderError {
                     codec: "h264",
                     message,
                 });
                 shared.video_desynced.store(true, Ordering::Release);
-                if !shared.keyframe_requested.swap(true, Ordering::AcqRel) {
-                    let _ = shared.feedback.send(MediaFeedback::RequestKeyframe {
-                        mid: frame.mid,
-                        reason: "H.264 decoder rejected an access unit".to_owned(),
-                    });
-                }
+                request_software_keyframe(&shared, &frame.mid);
             }
         }
+    }
+}
+
+fn request_software_keyframe(shared: &SharedPipeline, mid: &str) {
+    if !shared.keyframe_requested.swap(true, Ordering::AcqRel) {
+        let _ = shared.feedback.send(MediaFeedback::RequestKeyframe {
+            mid: mid.to_owned(),
+            reason: "H.264 decoder rejected an access unit".to_owned(),
+        });
     }
 }
 
@@ -2855,7 +2952,11 @@ fn submit_decoded_audio(shared: &SharedPipeline, samples: Vec<f32>, channels: u8
                     count: 1,
                 });
             }
-            Ok(WindowsPushOutcome::Queued | WindowsPushOutcome::Paused) => {}
+            Ok(
+                WindowsPushOutcome::Queued
+                | WindowsPushOutcome::Paused
+                | WindowsPushOutcome::Backpressured,
+            ) => {}
             Err(error) => {
                 let _ = shared.feedback.send(MediaFeedback::DecoderError {
                     codec: "opus",
@@ -3100,7 +3201,7 @@ fn run_embedded_linux_monitor(
     let mut reported_color = None;
     while !shared.stopped.load(Ordering::Acquire) {
         let report_decode_timings = last_decode_timings_report.elapsed() >= Duration::from_secs(1);
-        let (frames, events, decode_timings) = {
+        let (frame, events, decode_timings) = {
             let session = shared
                 .linux_session
                 .lock()
@@ -3108,16 +3209,13 @@ fn run_embedded_linux_monitor(
             let Some(session) = session.as_ref() else {
                 return;
             };
-            let mut decoded = Vec::new();
-            while let Some(frame) = session.try_recv_frame() {
-                decoded.push(frame);
-            }
+            let frame = session.try_recv_latest_frame();
             let mut events = Vec::new();
             while let Some(event) = session.try_recv_event() {
                 events.push(event);
             }
             let decode_timings = report_decode_timings.then(|| session.decode_timings());
-            (decoded, events, decode_timings)
+            (frame, events, decode_timings)
         };
         if let Some(timings) = decode_timings {
             last_decode_timings_report = Instant::now();
@@ -3151,27 +3249,32 @@ fn run_embedded_linux_monitor(
             }
         }
         if !shared.paused.load(Ordering::Acquire) {
-            for decoded in frames {
-                let Some(lease) = publisher.context() else {
-                    continue;
-                };
-                match producer
-                    .frame(decoded)
-                    .map_err(|error| error.to_string())
-                    .and_then(|frame| {
-                        publisher
-                            .publish(lease, Arc::new(frame))
-                            .map_err(|error| error.to_string())
-                    }) {
-                    Ok(_) if !playback_started => {
-                        playback_started = true;
-                        let _ = shared.feedback.send(MediaFeedback::PlaybackStarted {
-                            backend: backend_label,
-                        });
-                    }
-                    Ok(_) => {}
-                    Err(message) => {
-                        let _ = shared.feedback.send(MediaFeedback::OutputError { message });
+            if let Some((decoded, skipped)) = frame {
+                if skipped > 0 {
+                    let _ = shared.feedback.send(MediaFeedback::QueueDropped {
+                        media: "decoded-video",
+                        count: skipped,
+                    });
+                }
+                if let Some(lease) = publisher.context() {
+                    match producer
+                        .frame(decoded)
+                        .map_err(|error| error.to_string())
+                        .and_then(|frame| {
+                            publisher
+                                .publish(lease, Arc::new(frame))
+                                .map_err(|error| error.to_string())
+                        }) {
+                        Ok(_) if !playback_started => {
+                            playback_started = true;
+                            let _ = shared.feedback.send(MediaFeedback::PlaybackStarted {
+                                backend: backend_label,
+                            });
+                        }
+                        Ok(_) => {}
+                        Err(message) => {
+                            let _ = shared.feedback.send(MediaFeedback::OutputError { message });
+                        }
                     }
                 }
             }
@@ -4650,11 +4753,12 @@ mod tests {
         let capacity = opennow_streamer_platform_windows::ADAPTIVE_VIDEO_QUEUE_CAPACITY;
         for index in 0..capacity {
             assert_eq!(
-                state.push(embedded_h264_frame(index as i64, index == 0)),
+                state.push(embedded_h264_frame(index as i64, false)),
                 Ok(EmbeddedD3d11SubmissionOutcome {
                     queued: true,
                     dropped: 0,
                     needs_graphics: true,
+                    preserved_keyframe: false,
                 })
             );
         }
@@ -4666,6 +4770,7 @@ mod tests {
                 queued: false,
                 dropped: capacity + 1,
                 needs_graphics: true,
+                preserved_keyframe: false,
             })
         );
         assert!(state.pending.is_empty());
@@ -4676,9 +4781,35 @@ mod tests {
                 queued: true,
                 dropped: 0,
                 needs_graphics: true,
+                preserved_keyframe: false,
             })
         );
         assert_eq!(state.pending.len(), 1);
+        assert!(state.pending.front().is_some_and(|frame| frame.key_frame));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn embedded_d3d11_overflow_keeps_a_queued_keyframe() {
+        let mut state = EmbeddedD3d11Submission::new();
+        let capacity = opennow_streamer_platform_windows::ADAPTIVE_VIDEO_QUEUE_CAPACITY;
+        for index in 0..capacity {
+            assert!(
+                state
+                    .push(embedded_h264_frame(index as i64, index == 0))
+                    .is_ok_and(|outcome| outcome.queued && !outcome.preserved_keyframe)
+            );
+        }
+        assert_eq!(
+            state.push(embedded_h264_frame(capacity as i64, false)),
+            Ok(EmbeddedD3d11SubmissionOutcome {
+                queued: false,
+                dropped: 1,
+                needs_graphics: true,
+                preserved_keyframe: true,
+            })
+        );
+        assert_eq!(state.pending.len(), capacity);
         assert!(state.pending.front().is_some_and(|frame| frame.key_frame));
     }
 
@@ -4701,6 +4832,7 @@ mod tests {
                 queued: true,
                 dropped: capacity,
                 needs_graphics: true,
+                preserved_keyframe: false,
             })
         );
         assert_eq!(state.pending.len(), 1);
@@ -4748,6 +4880,20 @@ mod tests {
         assert_eq!(
             StreamShortcutBindings::default().action(0x7a, 0x02),
             Some(StreamShortcutAction::Screenshot)
+        );
+    }
+
+    #[test]
+    fn explicitly_cleared_shortcuts_do_not_capture_gameplay_keys() {
+        let bindings = StreamShortcutBindings::from_json(&serde_json::json!({
+            "toggleStats":"", "toggleRecording":"", "saveClip":""
+        }));
+        assert_eq!(bindings.action(u16::from(b'N'), 0x02), None);
+        assert_eq!(bindings.action(0x7b, 0), None);
+        assert_eq!(bindings.action(0x7b, 0x02), None);
+        assert_eq!(
+            bindings.action(0x7a, 0),
+            Some(StreamShortcutAction::ToggleFullscreen)
         );
     }
 
@@ -4843,10 +4989,17 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_encoded_queue_keeps_bounded_scheduler_burst_tolerance() {
-        assert_eq!(macos_video_queue_capacity(30), 8);
-        assert_eq!(macos_video_queue_capacity(60), 15);
-        assert_eq!(macos_video_queue_capacity(120), 30);
-        assert_eq!(macos_video_queue_capacity(240), 60);
+        assert_eq!(video_queue_capacity(30), 8);
+        assert_eq!(video_queue_capacity(60), 15);
+        assert_eq!(video_queue_capacity(120), 30);
+        assert_eq!(video_queue_capacity(240), 60);
+    }
+
+    #[test]
+    fn video_ingress_capacity_stays_bounded_for_invalid_and_extreme_fps() {
+        assert_eq!(video_queue_capacity(0), 2);
+        assert_eq!(video_queue_capacity(60), 15);
+        assert_eq!(video_queue_capacity(u32::MAX), 60);
     }
 
     #[test]
@@ -5090,6 +5243,136 @@ mod tests {
         );
         assert!(shared.video_desynced.load(Ordering::Acquire));
         assert!(shared.output.take_video().is_none());
+        assert!(feedback.try_recv().is_err());
+    }
+
+    #[test]
+    fn software_worker_requests_once_until_a_keyframe_decodes() {
+        let rgb = vec![96_u8; 32 * 32 * 3];
+        let yuv = YUVBuffer::from_rgb_source(RgbSliceU8::new(&rgb, (32, 32)));
+        let valid_keyframe: Arc<[u8]> = Encoder::new()
+            .unwrap()
+            .encode(&yuv)
+            .unwrap()
+            .to_vec()
+            .into();
+        let (shared, feedback) = software_test_pipeline();
+        let worker_shared = Arc::clone(&shared);
+        let worker = std::thread::spawn(move || {
+            run_video_decoder(worker_shared, H264Decoder::new().unwrap());
+        });
+        let make_frame = |id, data: Arc<[u8]>| EncodedFrame {
+            mid: "video".to_owned(),
+            codec: MediaCodec::H264,
+            data,
+            frame_index: Some(id),
+            timestamp: u64::from(id) * 750,
+            clock_rate_hz: 90_000,
+            keyframe: true,
+            contiguous: true,
+            ssrc: None,
+        };
+        let malformed: Arc<[u8]> = Arc::from([0, 0, 1, 0x67, 0xff]);
+        for id in 1..=3 {
+            shared
+                .video
+                .push(make_frame(id, Arc::clone(&malformed)))
+                .unwrap();
+            assert!(matches!(
+                feedback.recv_timeout(std::time::Duration::from_secs(2)),
+                Ok(MediaFeedback::DecoderError { codec: "h264", .. })
+            ));
+            if id == 1 {
+                assert!(matches!(
+                    feedback.recv_timeout(std::time::Duration::from_secs(2)),
+                    Ok(MediaFeedback::RequestKeyframe { .. })
+                ));
+            } else {
+                assert!(feedback.try_recv().is_err());
+            }
+            assert!(shared.video_desynced.load(Ordering::Acquire));
+            assert!(shared.output.take_video().is_none());
+        }
+        shared.video.push(make_frame(4, valid_keyframe)).unwrap();
+        assert!(matches!(
+            feedback.recv_timeout(std::time::Duration::from_secs(2)),
+            Ok(MediaFeedback::VideoFrameAccepted {
+                frame_index: Some(4),
+                ..
+            })
+        ));
+        shared.video.close();
+        worker.join().unwrap();
+        assert!(!shared.video_desynced.load(Ordering::Acquire));
+        assert!(!shared.keyframe_requested.load(Ordering::Acquire));
+        assert!(shared.output.take_video().is_some());
+        assert!(feedback.try_recv().is_err());
+    }
+
+    #[test]
+    fn software_worker_accepts_a_buffered_keyframe_before_output() {
+        let (shared, feedback) = software_test_pipeline();
+        shared.keyframe_requested.store(true, Ordering::Release);
+        let mut decoder = H264Decoder::new().unwrap();
+        let decoder_shared = Arc::clone(&shared);
+        let mut has_reference = false;
+        decoder.decode_for_test = Some(Box::new(move |encoded| match encoded {
+            b"idr" => {
+                has_reference = true;
+                Ok(None)
+            }
+            b"delta" if has_reference => {
+                assert!(decoder_shared.keyframe_requested.load(Ordering::Acquire));
+                Ok(Some(DecodedVideoFrame {
+                    width: 1,
+                    height: 1,
+                    rgb: vec![96; 3],
+                }))
+            }
+            _ => Err("missing reference".to_owned()),
+        }));
+        let worker_shared = Arc::clone(&shared);
+        let worker = std::thread::spawn(move || run_video_decoder(worker_shared, decoder));
+        shared
+            .video
+            .push(EncodedFrame {
+                mid: "video".to_owned(),
+                codec: MediaCodec::H264,
+                data: Arc::from(&b"idr"[..]),
+                frame_index: Some(1),
+                timestamp: 750,
+                clock_rate_hz: 90_000,
+                keyframe: true,
+                contiguous: true,
+                ssrc: None,
+            })
+            .unwrap();
+        shared
+            .video
+            .push(EncodedFrame {
+                mid: "video".to_owned(),
+                codec: MediaCodec::H264,
+                data: Arc::from(&b"delta"[..]),
+                frame_index: Some(2),
+                timestamp: 1500,
+                clock_rate_hz: 90_000,
+                keyframe: false,
+                contiguous: true,
+                ssrc: None,
+            })
+            .unwrap();
+        assert!(matches!(
+            feedback.recv_timeout(std::time::Duration::from_secs(2)),
+            Ok(MediaFeedback::VideoFrameAccepted {
+                frame_index: Some(2),
+                ..
+            })
+        ));
+        shared.video.close();
+        worker.join().unwrap();
+        assert!(!shared.video_desynced.load(Ordering::Acquire));
+        assert!(!shared.keyframe_requested.load(Ordering::Acquire));
+        assert!(shared.output.take_video().is_some());
         assert!(feedback.try_recv().is_err());
     }
 

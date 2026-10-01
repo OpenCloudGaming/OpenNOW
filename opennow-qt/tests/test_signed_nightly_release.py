@@ -53,8 +53,10 @@ class SignedNightlyReleaseTest(unittest.TestCase):
     def test_signs_and_verifies_every_exact_package_without_changing_bytes(self):
         self.sign()
         self.verify()
-        self.assertEqual(len(list(self.destination.iterdir())), 24)
-        self.assertEqual(len((self.destination / "SHA256SUMS").read_text().splitlines()), 23)
+        self.assertEqual(len(list(self.destination.iterdir())), 28)
+        self.assertEqual(len((self.destination / "SHA256SUMS").read_text().splitlines()), 27)
+        self.assertTrue((self.destination / f"OpenNOW-Qt-{self.version}-Windows-x64-setup.exe.manifest.json").is_file())
+        self.assertTrue((self.destination / f"OpenNOW-Qt-{self.version}-Windows-arm64-setup.exe.manifest.json").is_file())
         info = json.loads((self.destination / "RELEASE-INFO.json").read_text())
         self.assertEqual(info["updates"], "signed-manifest")
         self.assertEqual(info["platformSigning"], "unsigned")

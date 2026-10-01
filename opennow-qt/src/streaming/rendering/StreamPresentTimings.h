@@ -28,6 +28,8 @@ public:
         std::int64_t lastSwapNs = 0;
         bool hasPendingSubmit = false;
         std::uint64_t epoch = 0;
+        bool gated = false;
+        std::uint64_t gateEpoch = 0;
     };
 
     void markSubmit(std::int64_t nowNs)
@@ -62,6 +64,8 @@ public:
         result.lastSwapNs = m_lastSwapNs;
         result.hasPendingSubmit = m_hasPendingSubmit;
         result.epoch = m_epoch;
+        result.gated = m_gated;
+        result.gateEpoch = m_gateEpoch;
         if (m_windowSamples == 0) return result;
         std::vector<std::int64_t> sorted(m_samples.begin(), m_samples.begin() + m_windowSamples);
         std::sort(sorted.begin(), sorted.end());
@@ -75,6 +79,7 @@ public:
     void setGated(bool gated)
     {
         const std::lock_guard lock(m_mutex);
+        if (gated && !m_gated) ++m_gateEpoch;
         m_gated = gated;
         if (gated) m_hasPendingSubmit = false;
     }
@@ -111,5 +116,6 @@ private:
     std::int64_t m_lastSwapNs = 0;
     bool m_hasLastSwap = false;
     bool m_gated = false;
+    std::uint64_t m_gateEpoch = 0;
     std::uint64_t m_epoch = 0;
 };

@@ -235,14 +235,14 @@ Item {
                         anchors.verticalCenter: parent.verticalCenter
                         spacing: DesktopTokens.px(12)
                         Text {
-                            text: "ENTER  Pick"
+                            text: qsTr("ENTER  Pick")
                             color: Theme.textMuted
                             font.family: DesktopTokens.monoFont
                             font.pixelSize: DesktopTokens.tinySize
                             font.weight: Font.DemiBold
                         }
                         Text {
-                            text: "ESC  Cancel"
+                            text: qsTr("ESC  Cancel")
                             color: Theme.textMuted
                             font.family: DesktopTokens.monoFont
                             font.pixelSize: DesktopTokens.tinySize

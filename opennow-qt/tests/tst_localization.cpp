@@ -44,8 +44,11 @@ private slots:
         localization.setLocale(QStringLiteral("de-DE"));
         QCOMPARE(localization.effectiveLocale(), QStringLiteral("de"));
         QCOMPARE(localization.translate(nullptr, "Back"), QStringLiteral("Zurück"));
+        QCOMPARE(localization.translate(nullptr, "Reset to defaults"),
+                 QStringLiteral("Auf Standardeinstellungen zurücksetzen"));
 
         localization.setLocale(QStringLiteral("en"));
+        QCOMPARE(localization.translate(nullptr, "Reset to defaults"), QStringLiteral("Reset to defaults"));
         QCOMPARE(localization.text(QStringLiteral("library.gameCount"), {{QStringLiteral("count"), 2}}),
                  QStringLiteral("2 games"));
     }

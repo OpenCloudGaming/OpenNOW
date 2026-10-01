@@ -9,7 +9,8 @@ use sdl2::audio::AudioCallback;
 use sdl2::sys::{self, SDL_AudioStatus};
 
 pub const MICROPHONE_SAMPLE_RATE: u32 = 48_000;
-pub const MICROPHONE_FRAME_SAMPLES: usize = 960;
+// The server describes `mic.frameSize:10`: 10 ms at 48 kHz.
+pub const MICROPHONE_FRAME_SAMPLES: usize = 480;
 const QUEUE_CAPACITY: usize = 5;
 const MAX_FRAME_AGE: Duration = Duration::from_millis(100);
 
@@ -691,28 +692,30 @@ mod tests {
 
     #[test]
     fn callback_assembles_exact_frames_and_preserves_sample_clock_wrap() {
+        const HALF: usize = MICROPHONE_FRAME_SAMPLES / 2;
         let shared = MicrophoneShared::new();
         let mut callback = CaptureCallback::new(Arc::clone(&shared));
-        callback.timestamp = u32::MAX - 479;
-        callback.callback(&mut [11; 480]);
+        callback.timestamp = u32::MAX - (HALF as u32 - 1);
+        callback.callback(&mut [11; HALF]);
         assert!(shared.state.lock().unwrap().pcm.is_empty());
-        callback.callback(&mut [22; 1440]);
+        callback.callback(&mut [22; 3 * HALF]);
         let first = shared.pop_pcm().unwrap();
-        assert_eq!(first.timestamp, u32::MAX - 479);
-        assert_eq!(&first.samples[..480], &[11; 480]);
-        assert_eq!(&first.samples[480..], &[22; 480]);
+        assert_eq!(first.timestamp, u32::MAX - (HALF as u32 - 1));
+        assert_eq!(&first.samples[..HALF], &[11; HALF]);
+        assert_eq!(&first.samples[HALF..], &[22; HALF]);
         let second = shared.pop_pcm().unwrap();
-        assert_eq!(second.timestamp, 480);
+        assert_eq!(second.timestamp, HALF as u32);
         assert_eq!(second.samples, [22; MICROPHONE_FRAME_SAMPLES]);
     }
 
     #[test]
     fn partial_frame_retains_capture_age_across_callback_stall() {
+        const HALF: usize = MICROPHONE_FRAME_SAMPLES / 2;
         let shared = MicrophoneShared::new();
         let mut callback = CaptureCallback::new(Arc::clone(&shared));
-        callback.callback(&mut [1; 480]);
+        callback.callback(&mut [1; HALF]);
         callback.captured_at = Instant::now() - Duration::from_secs(1);
-        callback.callback(&mut [2; 1440]);
+        callback.callback(&mut [2; 3 * HALF]);
         let frame = shared.pop_pcm().unwrap();
         assert_eq!(frame.timestamp, MICROPHONE_FRAME_SAMPLES as u32);
         assert_eq!(frame.samples, [2; MICROPHONE_FRAME_SAMPLES]);
@@ -779,7 +782,7 @@ mod tests {
     }
 
     #[test]
-    fn worker_encodes_decodable_mono_twenty_millisecond_opus() {
+    fn worker_encodes_decodable_mono_ten_millisecond_opus() {
         let shared = MicrophoneShared::new();
         let mut session = MicrophoneSession::from_shared(Arc::clone(&shared));
         let receiver = session.receiver();

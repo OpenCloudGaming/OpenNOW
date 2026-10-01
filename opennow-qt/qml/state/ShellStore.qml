@@ -86,6 +86,7 @@ QtObject {
 
     property alias settings: settingsOwner.settings
     readonly property string selectedRegion: settingsOwner.selectedRegion
+    property alias keyboardLayoutItems: settingsOwner.keyboardLayoutItems
     property var onboardingAwdlController: MacAwdl
     readonly property bool onboardingAwdlReady: !onboardingAwdlController.busy
         && [MacAwdlController.Unsupported, MacAwdlController.Unavailable, MacAwdlController.Disabled]
@@ -157,6 +158,8 @@ QtObject {
     property alias previewThemePack: settingsOwner.previewThemePack
     property string accessibilityMessage: ""
     property alias settingsRequestId: settingsOwner.settingsRequestId
+    property alias shortcutUpdateRequestId: settingsOwner.shortcutUpdateRequestId
+    property alias shortcutUpdateError: settingsOwner.shortcutUpdateError
     property string lastError: ""
     property var focusPositions: ({})
     property var providers: []
@@ -628,6 +631,8 @@ QtObject {
     property bool streamerRecoveryExhausted: false
     property int sessionReconnectAttempts: 0
     readonly property int maximumSessionReconnectAttempts: 8
+    property int streamPollFailureAttempts: 0
+    readonly property int maximumStreamPollFailureAttempts: 8
     property bool sessionRecoveryPending: false
     property string recoverySessionId: ""
     property string recoveryDiscoveryRequestId: ""
@@ -1905,6 +1910,7 @@ QtObject {
             streamerRestartTimer.stop()
             streamerRestartAttempts = 0
             sessionReconnectAttempts = 0
+            streamPollFailureAttempts = 0
             streamerRecoveryExhausted = false
         }
         if (!activeSession) {
@@ -1989,7 +1995,7 @@ QtObject {
 
     function startNativeStreamer() {
         if (!ready || !activeSession || sessionRecoveryPending || activeSession.resumePending
-                || streamerStopRequestId !== "" || streamerStartRequestId !== ""
+                || streamStopRequestId !== "" || streamerStopRequestId !== "" || streamerStartRequestId !== ""
                 || streamerPrepareRequestId !== "" || sessionClaimRequestId !== ""
                 || streamerRestartTimer.running || streamerRecoveryExhausted)
             return
@@ -2399,15 +2405,15 @@ QtObject {
     function streamShortcutBindings() {
         return {
             "guide": ["Ctrl+G"],
-            "toggle-pointer-lock": [String(settings.shortcutTogglePointerLock || "F8")],
-            "toggle-fullscreen": [String(settings.shortcutToggleFullscreen || "F11")],
-            "stop-stream": [String(settings.shortcutStopStream || "Ctrl+Shift+Q")],
-            "toggle-anti-afk": [String(settings.shortcutToggleAntiAfk || "Ctrl+Shift+K")],
+            "toggle-pointer-lock": [String(settings.shortcutTogglePointerLock ?? "F8")],
+            "toggle-fullscreen": [String(settings.shortcutToggleFullscreen ?? "F11")],
+            "stop-stream": [String(settings.shortcutStopStream ?? "Ctrl+Shift+Q")],
+            "toggle-anti-afk": [String(settings.shortcutToggleAntiAfk ?? "Ctrl+Shift+K")],
             "toggle-microphone": microphoneToggleAvailable
-                ? [String(settings.shortcutToggleMicrophone || "Ctrl+Shift+M")] : [],
-            "screenshot": [String(settings.shortcutScreenshot || "Ctrl+F11")],
-            "toggle-recording": [String(settings.shortcutToggleRecording || "F12")],
-            "save-clip": [String(settings.shortcutSaveClip || "Ctrl+F12")]
+                ? [String(settings.shortcutToggleMicrophone ?? "Ctrl+Shift+M")] : [],
+            "screenshot": [String(settings.shortcutScreenshot ?? "Ctrl+F11")],
+            "toggle-recording": [String(settings.shortcutToggleRecording ?? "F12")],
+            "save-clip": [String(settings.shortcutSaveClip ?? "Ctrl+F12")]
         }
     }
 
@@ -2570,8 +2576,10 @@ QtObject {
         invalidateLaunchInspection()
         const discoveryRequestId = remoteSessionsRequestId
         const createRequestId = streamCreateRequestId
+        const prepareRequestId = streamerPrepareRequestId
         remoteSessionsRequestId = ""
         streamCreateRequestId = ""
+        streamerPrepareRequestId = ""
         pendingLaunchParams = null
         conflictSession = null
         conflictSessionNeedsRefresh = false
@@ -2581,6 +2589,8 @@ QtObject {
             CoreClient.cancel(discoveryRequestId)
         if (createRequestId !== "")
             CoreClient.cancel(createRequestId)
+        if (prepareRequestId !== "")
+            CoreClient.cancel(prepareRequestId)
         cancelSessionRecovery()
         if (activeSession && streamStartedAtMs > 0) {
             const snapshot = streamer || ({})
@@ -2782,6 +2792,10 @@ QtObject {
 
     function resetSettings() {
         return settingsOwner.resetSettings()
+    }
+
+    function updateShortcuts(bindings) {
+        return settingsOwner.updateShortcuts(bindings)
     }
 
     function applyCoupledSettings(changes) {
@@ -3042,7 +3056,7 @@ QtObject {
         if (event.peakBitrateMbps !== undefined)
             fields.peakBitrateMbps = Number(event.peakBitrateMbps)
         // Keep missing measurements unavailable instead of converting null to 0.
-        for (const key of ["pingMs", "jitterMs", "packetLossPercent", "decodeTimeMs", "decoderResidenceMs", "latencyMs"]) {
+        for (const key of ["receiveBitrateMbps", "pingMs", "jitterMs", "packetLossPercent", "decodeTimeMs", "decoderResidenceMs", "latencyMs"]) {
             if (event[key] !== undefined)
                 fields[key] = event[key] === null || !Number.isFinite(Number(event[key]))
                     ? null : Number(event[key])
@@ -3558,6 +3572,7 @@ QtObject {
             } else if (requestId === root.streamPollRequestId) {
                 root.streamPollRequestId = ""
                 if (!root.acceptsSessionScope(result.scope)) return
+                root.streamPollFailureAttempts = 0
                 if (root.isRemoteSessionTermination(result.termination))
                     root.finishRemoteSession(result.termination)
                 else
@@ -3584,7 +3599,12 @@ QtObject {
                     AppController.showOverlay("session-report")
             } else if (requestId === root.streamerPrepareRequestId) {
                 root.streamerPrepareRequestId = ""
-                if (!result.context) {
+                if (!root.ready || !root.activeSession
+                        || (result.session && String(result.session.sessionId) !== String(root.activeSession.sessionId))
+                        || root.streamStopRequestId !== "" || root.streamerStopRequestId !== ""
+                        || root.sessionRecoveryPending)
+                    return
+                if (!result.context || !result.session) {
                     root.acceptStreamerSnapshot(Object.assign({}, root.streamer || ({}), {
                         status: "error",
                         message: qsTr("The core returned an invalid embedded stream context"),
@@ -3592,8 +3612,7 @@ QtObject {
                     }))
                     return
                 }
-                if (result.session && root.activeSession && result.session.sessionId === root.activeSession.sessionId)
-                    root.activeSession = result.session
+                root.activeSession = result.session
                 const preparedSettings = result.context.settings || ({})
                 const initialMicrophoneEnabled = root.prepareMicrophoneStart(
                     root.activeSession.sessionId, preparedSettings.microphoneMode)
@@ -3637,7 +3656,7 @@ QtObject {
                 root.remoteSessions = []
                 return
             }
-            root.lastError = message
+            if (code !== "cancelled") root.lastError = message
             if (requestId === root.consoleSurfaceRequestId) {
                 settingsOwner.failConsoleSurface(message)
             } else if (requestId === root.catalogRequestId) {
@@ -3803,8 +3822,9 @@ QtObject {
                     root.streamPollTimer.restart()
                     return
                 }
-                root.sessionReconnectAttempts += 1
-                root.streamState = root.activeSession && root.sessionReconnectAttempts <= 8 ? "reconnecting" : "error"
+                root.streamPollFailureAttempts += 1
+                root.streamState = root.activeSession
+                    && root.streamPollFailureAttempts <= root.maximumStreamPollFailureAttempts ? "reconnecting" : "error"
                 root.streamMessage = root.streamState === "reconnecting"
                     ? qsTr("Connection interrupted. Retrying…")
                     : message

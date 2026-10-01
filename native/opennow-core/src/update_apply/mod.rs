@@ -125,6 +125,38 @@ struct Acknowledgement {
     application: ProcessIdentity,
 }
 
+pub const WINDOWS_INSTALLER_REPLACEMENT_MESSAGE: &str = "This OpenNOW installation is registered with Windows Installer. Replace it once with setup.exe. In-app updates do not run Windows Installer.";
+
+pub fn windows_installer_replacement_message() -> Result<Option<&'static str>, String> {
+    #[cfg(windows)]
+    {
+        let Some(executable) = std::env::var_os("OPENNOW_APP_EXECUTABLE") else {
+            return Ok(None);
+        };
+        let Ok(executable) = canonical_file(Path::new(&executable)) else {
+            return Ok(None);
+        };
+        let Ok(root) = installation_target(InstallKind::WindowsMsi, &executable) else {
+            return Ok(None);
+        };
+        if managed::windows_managed(&root)? {
+            return Ok(Some(WINDOWS_INSTALLER_REPLACEMENT_MESSAGE));
+        }
+    }
+    Ok(None)
+}
+
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+pub(super) fn windows_update_package_extension(
+    msi_registered: bool,
+) -> Result<&'static str, String> {
+    if msi_registered {
+        Err(WINDOWS_INSTALLER_REPLACEMENT_MESSAGE.to_owned())
+    } else {
+        Ok("zip")
+    }
+}
+
 pub fn external_update_message() -> Option<&'static str> {
     if cfg!(target_os = "linux")
         && is_flatpak_installation(
@@ -199,16 +231,15 @@ pub fn compatible_package_extension() -> Result<&'static str, String> {
             .ok_or("Missing trusted application executable")?;
         let executable = canonical_file(Path::new(&executable))?;
         let root = installation_target(InstallKind::WindowsMsi, &executable)?;
-        Ok(if managed::windows_managed(&root)? {
-            "msi"
-        } else {
-            "zip"
-        })
+        windows_update_package_extension(managed::windows_managed(&root)?)
     }
 }
 
 pub fn prepare_update(request: PrepareRequest) -> Result<PreparedUpdate, String> {
     require_native_updates()?;
+    if request.kind == InstallKind::WindowsMsi {
+        return Err(WINDOWS_INSTALLER_REPLACEMENT_MESSAGE.to_owned());
+    }
     #[cfg(target_os = "linux")]
     validate_linux_install_kind(request.kind, std::env::var_os("APPIMAGE").as_deref())?;
     let package = canonical_file(&request.package)?;
@@ -229,9 +260,7 @@ pub fn prepare_update(request: PrepareRequest) -> Result<PreparedUpdate, String>
         .matches_executable(&std::env::current_exe().map_err(|error| error.to_string())?)?;
     let target = installation_target(request.kind, &application)?;
     if request.kind == InstallKind::WindowsPortable && managed::windows_managed(&target)? {
-        return Err(
-            "Windows Installer owns this installation; a portable ZIP cannot replace it".to_owned(),
-        );
+        return Err(WINDOWS_INSTALLER_REPLACEMENT_MESSAGE.to_owned());
     }
     let data_dir = fs::canonicalize(&request.data_dir).map_err(|error| error.to_string())?;
     if (data_dir.starts_with(&target) && request.kind != InstallKind::WindowsPortable)
@@ -590,6 +619,9 @@ fn validate_plan(plan: &Plan, directory: &Path) -> Result<(), String> {
 }
 
 fn apply(plan: &Plan, directory: &Path) -> Result<(), String> {
+    if plan.kind == InstallKind::WindowsMsi {
+        return Err(WINDOWS_INSTALLER_REPLACEMENT_MESSAGE.to_owned());
+    }
     let previous =
         read_outcome(&directory.join("outcome.json"))?.ok_or("Missing prepared update outcome")?;
     if previous.status != OutcomeStatus::Prepared {

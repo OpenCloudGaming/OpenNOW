@@ -172,7 +172,16 @@ impl FfmpegDecoder {
             let raw = context.as_mut_ptr();
             (*raw).width = format.width as i32;
             (*raw).height = format.height as i32;
-            (*raw).thread_count = if mode == FfmpegMode::Software { 0 } else { 1 };
+            if mode == FfmpegMode::Software {
+                // Frame threading holds about one frame per worker before the
+                // first output. Slice threading spends the same cores inside a
+                // single frame, which is the delay users see against the old client.
+                (*raw).thread_count = software_decode_thread_count();
+                (*raw).thread_type = ffi::FF_THREAD_SLICE;
+                (*raw).flags |= ffi::AV_CODEC_FLAG_LOW_DELAY as i32;
+            } else {
+                (*raw).thread_count = 1;
+            }
             if mode == FfmpegMode::V4l2Request {
                 (*raw).extra_hw_frames = 6;
             }
@@ -355,6 +364,9 @@ impl FfmpegDecoder {
     }
 
     fn convert_frame(&mut self, decoded: &frame::Video) -> Result<DecodedVideoFrame> {
+        if self.mode == FfmpegMode::Software {
+            reject_corrupt_software_frame(decoded)?;
+        }
         if self.mode == FfmpegMode::V4l2Request {
             let output =
                 retain_request_frame(decoded, self.last_timestamp_us, self.negotiated_format)?;
@@ -427,13 +439,19 @@ impl FfmpegDecoder {
             ));
         }
         let allow_cpu_conversion = cpu_conversion_allowed(metadata, actual_pixel);
+        let vaapi_cpu_transfer = vaapi_cpu_transfer_allowed(self.mode, metadata, actual_pixel);
         if matches!(self.mode, FfmpegMode::Vulkan | FfmpegMode::Vaapi) && selected_hardware {
             let output = if self.mode == FfmpegMode::Vulkan && allow_cpu_conversion {
                 let direct_vulkan =
                     map_vulkan_frame_direct(decoded, self.last_timestamp_us, metadata)
                         .ok()
                         .and_then(|frame| frame.vulkan);
-                match map_hardware_frame_to_dmabuf(decoded, self.last_timestamp_us, metadata) {
+                match map_hardware_frame_to_dmabuf(
+                    decoded,
+                    self.last_timestamp_us,
+                    metadata,
+                    self.mode,
+                ) {
                     Ok(mut frame) => {
                         frame.vulkan = direct_vulkan;
                         if !self.zero_copy_active {
@@ -460,12 +478,25 @@ impl FfmpegDecoder {
                     self.last_timestamp_us,
                     metadata,
                 )?)
+            } else if vaapi_cpu_transfer && self.zero_copy_unavailable_reported {
+                None
             } else {
-                Some(map_hardware_frame_to_dmabuf(
+                match map_hardware_frame_to_dmabuf(
                     decoded,
                     self.last_timestamp_us,
                     metadata,
-                )?)
+                    self.mode,
+                ) {
+                    Ok(frame) => Some(frame),
+                    Err(error) if vaapi_cpu_transfer => {
+                        eprintln!(
+                            "FFmpeg VAAPI DMA-BUF export unavailable; using bounded NV12 CPU transfer: {error}"
+                        );
+                        self.zero_copy_unavailable_reported = true;
+                        None
+                    }
+                    Err(error) => return Err(error),
+                }
             };
             if let Some(output) = output {
                 if self.mode == FfmpegMode::Vaapi
@@ -484,7 +515,7 @@ impl FfmpegDecoder {
                 return Ok(output);
             }
         }
-        if !allow_cpu_conversion || self.mode == FfmpegMode::Vaapi {
+        if !allow_cpu_conversion {
             return Err(Error::unavailable(
                 Subsystem::Ffmpeg,
                 "HDR/10-bit/4:4:4 frame has no supported zero-copy decode path",
@@ -514,15 +545,21 @@ impl FfmpegDecoder {
         } else {
             decoded
         };
+        if !cpu_conversion_allowed(metadata, source.format()) {
+            return Err(Error::unavailable(
+                Subsystem::Ffmpeg,
+                "downloaded video format cannot be presented as 8-bit 4:2:0 SDR",
+            ));
+        }
 
         let width = source.width().max(1);
         let height = source.height().max(1);
-        // NVDEC and Vulkan Video normally download NV12 already. Avoid a full
-        // swscale pass in that hot path; conversion is only needed for formats
-        // such as software-decoded YUV420P or 10-bit hardware output.
-        let converted;
-        let nv12 = if source.format() == Pixel::NV12 {
-            source
+        // Software H.264 emits planar 4:2:0. Packing that into NV12 is a copy
+        // plus a chroma interleave. swscale's bilinear scaler does the same
+        // conversion with a much larger per-frame cost on CPUs that have no
+        // hardware decoder.
+        let planes = if let Some(planes) = direct_cpu_nv12_planes(source)? {
+            planes
         } else {
             let scaler_changed = self.scaler.as_ref().is_none_or(|scaler| {
                 scaler.input().format != source.format()
@@ -538,7 +575,7 @@ impl FfmpegDecoder {
                         Pixel::NV12,
                         width,
                         height,
-                        ScaleFlags::BILINEAR,
+                        ScaleFlags::FAST_BILINEAR,
                     )
                     .map_err(|error| {
                         Error::backend(
@@ -559,8 +596,7 @@ impl FfmpegDecoder {
                         format!("NV12 conversion failed: {error}"),
                     )
                 })?;
-            converted = frame;
-            &converted
+            tight_nv12_planes(&frame)?
         };
 
         let output_format = StreamFormat {
@@ -580,18 +616,7 @@ impl FfmpegDecoder {
             .unwrap_or(self.last_timestamp_us);
         Ok(DecodedVideoFrame {
             format: output_format,
-            planes: vec![
-                FramePlane {
-                    data: Arc::from(nv12.data(0).to_vec()),
-                    stride: nv12.stride(0),
-                    rows: height as usize,
-                },
-                FramePlane {
-                    data: Arc::from(nv12.data(1).to_vec()),
-                    stride: nv12.stride(1),
-                    rows: height as usize / 2,
-                },
-            ],
+            planes,
             dmabuf: None,
             vulkan: None,
             timestamp_us,
@@ -754,56 +779,217 @@ fn vulkan_cpu_nv12_fallback(
                 transfer_result,
             ));
         }
+        if let Some(planes) = direct_cpu_nv12_planes(&transferred)? {
+            return Ok(planes);
+        }
         let width = transferred.width().max(1);
         let height = transferred.height().max(1);
-        let converted;
-        let nv12 = if transferred.format() == Pixel::NV12 {
-            &transferred
-        } else {
-            let mut scaler = Scaler::get(
-                transferred.format(),
-                width,
-                height,
-                Pixel::NV12,
-                width,
-                height,
-                ScaleFlags::BILINEAR,
+        let mut scaler = Scaler::get(
+            transferred.format(),
+            width,
+            height,
+            Pixel::NV12,
+            width,
+            height,
+            ScaleFlags::FAST_BILINEAR,
+        )
+        .map_err(|error| {
+            Error::backend(
+                Subsystem::Ffmpeg,
+                format!("Vulkan CPU fallback conversion setup failed: {error}"),
             )
-            .map_err(|error| {
-                Error::backend(
-                    Subsystem::Ffmpeg,
-                    format!("Vulkan CPU fallback conversion setup failed: {error}"),
-                )
-            })?;
-            let mut output = frame::Video::empty();
-            scaler.run(&transferred, &mut output).map_err(|error| {
-                Error::backend(
-                    Subsystem::Ffmpeg,
-                    format!("Vulkan CPU fallback NV12 conversion failed: {error}"),
-                )
-            })?;
-            converted = output;
-            &converted
-        };
-        Ok(vec![
-            FramePlane {
-                data: Arc::from(nv12.data(0).to_vec()),
-                stride: nv12.stride(0),
-                rows: height as usize,
-            },
-            FramePlane {
-                data: Arc::from(nv12.data(1).to_vec()),
-                stride: nv12.stride(1),
-                rows: height as usize / 2,
-            },
-        ])
+        })?;
+        let mut output = frame::Video::empty();
+        scaler.run(&transferred, &mut output).map_err(|error| {
+            Error::backend(
+                Subsystem::Ffmpeg,
+                format!("Vulkan CPU fallback NV12 conversion failed: {error}"),
+            )
+        })?;
+        tight_nv12_planes(&output)
     }))
+}
+
+fn reject_corrupt_software_frame(decoded: &frame::Video) -> Result<()> {
+    unsafe {
+        let raw = &*decoded.as_ptr();
+        if raw.flags & ffi::AV_FRAME_FLAG_CORRUPT != 0 || raw.decode_error_flags != 0 {
+            return Err(Error::ReferenceLost {
+                subsystem: Subsystem::Ffmpeg,
+                reason: "software decode failed; refusing a corrupt frame".to_owned(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn software_decode_thread_count() -> i32 {
+    let cores = std::thread::available_parallelism()
+        .map(|count| i32::try_from(count.get()).unwrap_or(i32::MAX))
+        .unwrap_or(2);
+    cores.clamp(2, 4)
+}
+
+fn direct_cpu_nv12_planes(source: &frame::Video) -> Result<Option<Vec<FramePlane>>> {
+    let width = usize::try_from(source.width()).unwrap_or(0);
+    let height = usize::try_from(source.height()).unwrap_or(0);
+    if width == 0 || height == 0 {
+        return Err(Error::backend(
+            Subsystem::Ffmpeg,
+            "decoded frame has no dimensions",
+        ));
+    }
+    if source.format() == Pixel::NV12 {
+        return tight_nv12_planes(source).map(Some);
+    }
+    let planar_420 = source.format() == Pixel::YUV420P || source.format() == Pixel::YUVJ420P;
+    if planar_420 && width % 2 == 0 && height % 2 == 0 {
+        return pack_yuv420p(source, width, height).map(Some);
+    }
+    Ok(None)
+}
+
+fn tight_nv12_planes(source: &frame::Video) -> Result<Vec<FramePlane>> {
+    let width = usize::try_from(source.width().max(1)).unwrap_or(0);
+    let height = usize::try_from(source.height().max(1)).unwrap_or(0);
+    let chroma_rows = height / 2;
+    let luma = pack_plane(source.data(0), source.stride(0), width, height)?;
+    let chroma = pack_plane(source.data(1), source.stride(1), width, chroma_rows)?;
+    Ok(vec![luma, chroma])
+}
+
+fn pack_yuv420p(source: &frame::Video, width: usize, height: usize) -> Result<Vec<FramePlane>> {
+    let chroma_width = width / 2;
+    let chroma_rows = height / 2;
+    let luma = pack_plane(source.data(0), source.stride(0), width, height)?;
+    let chroma = interleave_chroma(
+        source.data(1),
+        source.stride(1),
+        source.data(2),
+        source.stride(2),
+        chroma_width,
+        chroma_rows,
+    )?;
+    Ok(vec![luma, chroma])
+}
+
+fn pack_plane(src: &[u8], stride: usize, row_bytes: usize, rows: usize) -> Result<FramePlane> {
+    if row_bytes == 0 || rows == 0 || stride < row_bytes {
+        return Err(Error::backend(
+            Subsystem::Ffmpeg,
+            "decoded plane layout is incomplete",
+        ));
+    }
+    let src_len = stride
+        .checked_mul(rows)
+        .ok_or_else(|| Error::backend(Subsystem::Ffmpeg, "decoded plane size overflow"))?;
+    let dst_len = row_bytes
+        .checked_mul(rows)
+        .ok_or_else(|| Error::backend(Subsystem::Ffmpeg, "NV12 plane size overflow"))?;
+    if src.len() < src_len {
+        return Err(Error::backend(
+            Subsystem::Ffmpeg,
+            "decoded plane is shorter than its stride",
+        ));
+    }
+    let mut data = Vec::<u8>::with_capacity(dst_len);
+    unsafe {
+        let dst = data.as_mut_ptr();
+        if stride == row_bytes {
+            std::ptr::copy_nonoverlapping(src.as_ptr(), dst, dst_len);
+        } else {
+            for row in 0..rows {
+                std::ptr::copy_nonoverlapping(
+                    src.as_ptr().add(row * stride),
+                    dst.add(row * row_bytes),
+                    row_bytes,
+                );
+            }
+        }
+        data.set_len(dst_len);
+    }
+    Ok(FramePlane {
+        data: Arc::from(data),
+        stride: row_bytes,
+        rows,
+    })
+}
+
+fn interleave_chroma(
+    u_plane: &[u8],
+    u_stride: usize,
+    v_plane: &[u8],
+    v_stride: usize,
+    chroma_width: usize,
+    rows: usize,
+) -> Result<FramePlane> {
+    if chroma_width == 0 || rows == 0 || u_stride < chroma_width || v_stride < chroma_width {
+        return Err(Error::backend(
+            Subsystem::Ffmpeg,
+            "decoded chroma layout is incomplete",
+        ));
+    }
+    let u_len = u_stride
+        .checked_mul(rows)
+        .ok_or_else(|| Error::backend(Subsystem::Ffmpeg, "decoded chroma size overflow"))?;
+    let v_len = v_stride
+        .checked_mul(rows)
+        .ok_or_else(|| Error::backend(Subsystem::Ffmpeg, "decoded chroma size overflow"))?;
+    if u_plane.len() < u_len || v_plane.len() < v_len {
+        return Err(Error::backend(
+            Subsystem::Ffmpeg,
+            "decoded chroma plane is shorter than its stride",
+        ));
+    }
+    let row_bytes = chroma_width
+        .checked_mul(2)
+        .ok_or_else(|| Error::backend(Subsystem::Ffmpeg, "NV12 chroma size overflow"))?;
+    let dst_len = row_bytes
+        .checked_mul(rows)
+        .ok_or_else(|| Error::backend(Subsystem::Ffmpeg, "NV12 chroma size overflow"))?;
+    let mut data = vec![0u8; dst_len];
+    for row in 0..rows {
+        let u = &u_plane[row * u_stride..row * u_stride + chroma_width];
+        let v = &v_plane[row * v_stride..row * v_stride + chroma_width];
+        let dst = &mut data[row * row_bytes..row * row_bytes + row_bytes];
+        let mut column = 0;
+        while column + 8 <= chroma_width {
+            dst[column * 2] = u[column];
+            dst[column * 2 + 1] = v[column];
+            dst[column * 2 + 2] = u[column + 1];
+            dst[column * 2 + 3] = v[column + 1];
+            dst[column * 2 + 4] = u[column + 2];
+            dst[column * 2 + 5] = v[column + 2];
+            dst[column * 2 + 6] = u[column + 3];
+            dst[column * 2 + 7] = v[column + 3];
+            dst[column * 2 + 8] = u[column + 4];
+            dst[column * 2 + 9] = v[column + 4];
+            dst[column * 2 + 10] = u[column + 5];
+            dst[column * 2 + 11] = v[column + 5];
+            dst[column * 2 + 12] = u[column + 6];
+            dst[column * 2 + 13] = v[column + 6];
+            dst[column * 2 + 14] = u[column + 7];
+            dst[column * 2 + 15] = v[column + 7];
+            column += 8;
+        }
+        while column < chroma_width {
+            dst[column * 2] = u[column];
+            dst[column * 2 + 1] = v[column];
+            column += 1;
+        }
+    }
+    Ok(FramePlane {
+        data: Arc::from(data),
+        stride: row_bytes,
+        rows,
+    })
 }
 
 fn map_hardware_frame_to_dmabuf(
     decoded: &frame::Video,
     fallback_timestamp_us: u64,
     metadata: StreamFormat,
+    mode: FfmpegMode,
 ) -> Result<DecodedVideoFrame> {
     let mut mapped = frame::Video::empty();
     mapped.set_format(Pixel::DRM_PRIME);
@@ -816,7 +1002,7 @@ fn map_hardware_frame_to_dmabuf(
     };
     if map_result < 0 {
         return Err(ffmpeg_error(
-            "Vulkan Video frame DMA-BUF export failed".to_owned(),
+            format!("{} frame DMA-BUF export failed", mode.label()),
             map_result,
         ));
     }
@@ -1202,6 +1388,10 @@ fn cpu_conversion_allowed(metadata: StreamFormat, pixel: Pixel) -> bool {
         }
 }
 
+fn vaapi_cpu_transfer_allowed(mode: FfmpegMode, metadata: StreamFormat, pixel: Pixel) -> bool {
+    mode == FfmpegMode::Vaapi && cpu_conversion_allowed(metadata, pixel)
+}
+
 fn decoded_metadata(frame: &frame::Video, defaults: StreamFormat) -> Result<StreamFormat> {
     use ffmpeg::color::{Primaries, Range, Space, TransferCharacteristic as Transfer};
     let unsupported =
@@ -1258,6 +1448,69 @@ mod tests {
     use std::process::Command;
 
     use super::*;
+
+    #[test]
+    fn software_decode_thread_count_stays_within_the_latency_budget() {
+        let threads = software_decode_thread_count();
+        assert!((2..=4).contains(&threads));
+    }
+
+    #[test]
+    fn software_decoder_opens_with_low_delay_and_a_bounded_thread_pool() {
+        let format = StreamFormat::video_default(64, 64).unwrap();
+        let decoder = FfmpegDecoder::open(VideoCodec::H264, format, FfmpegMode::Software).unwrap();
+        unsafe {
+            let raw = decoder.decoder.as_ptr();
+            assert!(
+                (2..=4).contains(&(*raw).thread_count),
+                "thread_count {}",
+                (*raw).thread_count
+            );
+            assert_ne!((*raw).flags & ffi::AV_CODEC_FLAG_LOW_DELAY as i32, 0);
+            assert_eq!(
+                (*raw).thread_type & ffi::FF_THREAD_SLICE,
+                ffi::FF_THREAD_SLICE
+            );
+            assert_eq!((*raw).thread_type & ffi::FF_THREAD_FRAME, 0);
+        }
+    }
+
+    #[test]
+    fn software_decoder_refuses_a_corrupt_frame() {
+        let format = StreamFormat::video_default(2, 2).unwrap();
+        let mut decoder =
+            FfmpegDecoder::open(VideoCodec::H264, format, FfmpegMode::Software).unwrap();
+        let mut decoded = frame::Video::new(Pixel::NV12, 2, 2);
+        unsafe { (*decoded.as_mut_ptr()).flags |= ffi::AV_FRAME_FLAG_CORRUPT };
+        assert!(matches!(
+            decoder.convert_frame(&decoded),
+            Err(Error::ReferenceLost {
+                subsystem: Subsystem::Ffmpeg,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn yuv420p_pack_interleaves_chroma_and_drops_stride_padding() {
+        let y = [1u8, 2, 3, 4, 9, 9, 5, 6, 7, 8, 9, 9];
+        let u = [20u8, 21, 0, 22, 23, 0];
+        let v = [30u8, 31, 0, 32, 33, 0];
+        let luma = pack_plane(&y, 6, 4, 2).unwrap();
+        let chroma = interleave_chroma(&u, 3, &v, 3, 2, 2).unwrap();
+        assert_eq!(luma.stride, 4);
+        assert_eq!(luma.data.as_ref(), &[1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(chroma.stride, 4);
+        assert_eq!(chroma.rows, 2);
+        assert_eq!(chroma.data.as_ref(), &[20, 30, 21, 31, 22, 32, 23, 33]);
+    }
+
+    #[test]
+    fn contiguous_nv12_plane_is_a_single_copy() {
+        let packed = pack_plane(&[1, 2, 3, 4, 5, 6], 3, 3, 2).unwrap();
+        assert_eq!(packed.stride, 3);
+        assert_eq!(packed.data.as_ref(), &[1, 2, 3, 4, 5, 6]);
+    }
 
     #[test]
     fn vaapi_device_policy_only_requires_a_profile_where_one_was_negotiated() {
@@ -1604,6 +1857,46 @@ mod tests {
         metadata.color_transfer = ColorTransfer::Sdr;
         metadata.pixel_format = PixelFormat::P010;
         assert!(!cpu_conversion_allowed(metadata, Pixel::NV12));
+    }
+
+    #[test]
+    fn vaapi_export_failure_transfers_only_eight_bit_sdr() {
+        let mut format = StreamFormat::video_default(1920, 1080).unwrap();
+        assert!(vaapi_cpu_transfer_allowed(
+            FfmpegMode::Vaapi,
+            format,
+            Pixel::NV12
+        ));
+        for mode in [FfmpegMode::Vulkan, FfmpegMode::Cuda, FfmpegMode::Software] {
+            assert!(!vaapi_cpu_transfer_allowed(mode, format, Pixel::NV12));
+        }
+        assert!(!vaapi_cpu_transfer_allowed(
+            FfmpegMode::Vaapi,
+            format,
+            Pixel::P010LE
+        ));
+        format.pixel_format = PixelFormat::P010;
+        assert!(!vaapi_cpu_transfer_allowed(
+            FfmpegMode::Vaapi,
+            format,
+            Pixel::NV12
+        ));
+        format.pixel_format = PixelFormat::Nv12;
+        format.color_transfer = ColorTransfer::Pq;
+        assert!(!vaapi_cpu_transfer_allowed(
+            FfmpegMode::Vaapi,
+            format,
+            Pixel::NV12
+        ));
+
+        let missing_context = frame::Video::empty();
+        let error = map_hardware_frame_to_dmabuf(&missing_context, 0, format, FfmpegMode::Vaapi)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("FFmpeg VAAPI frame DMA-BUF export failed"),
+            "{error}"
+        );
     }
 
     #[test]

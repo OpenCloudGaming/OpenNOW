@@ -15,6 +15,7 @@
 #include <QPixmap>
 #include <QQuickWindow>
 #include <QWheelEvent>
+#include <private/qquickwindow_p.h>
 
 #include <algorithm>
 #include <cmath>
@@ -30,6 +31,33 @@
 #include <windows.h>
 #endif
 
+namespace {
+class NativeGameplayKeyEvent final : public QKeyEvent
+{
+public:
+    explicit NativeGameplayKeyEvent(const QKeyEvent &event) : QKeyEvent(event) {}
+};
+}
+
+bool StreamVideoItem::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == m_inputWindow && m_usesMacPointerCapture && m_inputEnabled
+        && isVisible() && hasActiveFocus() && event->spontaneous()
+        && (event->type() == QEvent::KeyPress || event->type() == QEvent::KeyRelease)) {
+        auto *keyEvent = static_cast<QKeyEvent *>(event);
+        if (keyEvent->nativeVirtualKey() == 0) {
+            auto *windowState = QQuickWindowPrivate::get(m_inputWindow);
+            if (!windowState->windowEventDispatch && windowState->deliveryAgentPrivate()) {
+                NativeGameplayKeyEvent forwarded(*keyEvent);
+                windowState->deliveryAgentPrivate()->deliverKeyEvent(&forwarded);
+                event->setAccepted(forwarded.isAccepted());
+                return true;
+            }
+        }
+    }
+    return QQuickItem::eventFilter(watched, event);
+}
+
 quint16 StreamVideoItem::windowsVirtualKey(int key, Qt::KeyboardModifiers modifiers,
                                           quint32 nativeVirtualKey)
 {
@@ -39,6 +67,17 @@ quint16 StreamVideoItem::windowsVirtualKey(int key, Qt::KeyboardModifiers modifi
         case 0x11: return 0xa2;
         case 0x12: return 0xa4;
         default: return static_cast<quint16>(nativeVirtualKey);
+        }
+    }
+    if (modifiers.testFlag(Qt::KeypadModifier)) {
+        if (key >= Qt::Key_0 && key <= Qt::Key_9)
+            return static_cast<quint16>(0x60 + key - Qt::Key_0);
+        switch (key) {
+        case Qt::Key_Minus: return 0x6d;
+        case Qt::Key_Comma:
+        case Qt::Key_Period: return 0x6e;
+        case Qt::Key_Slash: return 0x6f;
+        default: break;
         }
     }
     if (key >= Qt::Key_A && key <= Qt::Key_Z) return static_cast<quint16>(key);
@@ -92,6 +131,7 @@ quint16 StreamVideoItem::windowsVirtualKey(int key, Qt::KeyboardModifiers modifi
     case Qt::Key_Control: return 0xa2;
     case Qt::Key_Shift: return 0xa0;
     case Qt::Key_Alt: return 0xa4;
+    case Qt::Key_AltGr: return 0xa5;
     case Qt::Key_Meta: return 0x5b;
     case Qt::Key_CapsLock: return 0x14;
     case Qt::Key_NumLock: return 0x90;
@@ -107,6 +147,210 @@ quint16 StreamVideoItem::windowsVirtualKey(int key, Qt::KeyboardModifiers modifi
     case Qt::Key_Menu: return 0x5d;
     default: return 0;
     }
+}
+
+static quint16 windowsSet1VirtualKey(quint32 nativeScanCode)
+{
+    // Windows set-1 scan codes identify the physical key. GFN applies the
+    // remote layout to the US-position virtual key, so these values stay on
+    // the US positions even when the local layout assigns a different VK.
+    switch (nativeScanCode & 0xff) {
+    case 0x29: return 0xc0;
+    case 0x02: return 0x31;
+    case 0x03: return 0x32;
+    case 0x04: return 0x33;
+    case 0x05: return 0x34;
+    case 0x06: return 0x35;
+    case 0x07: return 0x36;
+    case 0x08: return 0x37;
+    case 0x09: return 0x38;
+    case 0x0a: return 0x39;
+    case 0x0b: return 0x30;
+    case 0x0c: return 0xbd;
+    case 0x0d: return 0xbb;
+    case 0x10: return 0x51;
+    case 0x11: return 0x57;
+    case 0x12: return 0x45;
+    case 0x13: return 0x52;
+    case 0x14: return 0x54;
+    case 0x15: return 0x59;
+    case 0x16: return 0x55;
+    case 0x17: return 0x49;
+    case 0x18: return 0x4f;
+    case 0x19: return 0x50;
+    case 0x1a: return 0xdb;
+    case 0x1b: return 0xdd;
+    case 0x1e: return 0x41;
+    case 0x1f: return 0x53;
+    case 0x20: return 0x44;
+    case 0x21: return 0x46;
+    case 0x22: return 0x47;
+    case 0x23: return 0x48;
+    case 0x24: return 0x4a;
+    case 0x25: return 0x4b;
+    case 0x26: return 0x4c;
+    case 0x27: return 0xba;
+    case 0x28: return 0xde;
+    case 0x2b: return 0xdc;
+    case 0x2c: return 0x5a;
+    case 0x2d: return 0x58;
+    case 0x2e: return 0x43;
+    case 0x2f: return 0x56;
+    case 0x30: return 0x42;
+    case 0x31: return 0x4e;
+    case 0x32: return 0x4d;
+    case 0x33: return 0xbc;
+    case 0x34: return 0xbe;
+    case 0x35: return 0xbf;
+    case 0x56: return 0xe2;
+    default: return 0;
+    }
+}
+
+quint16 StreamVideoItem::windowsGameplayVirtualKey(int key, Qt::KeyboardModifiers modifiers,
+                                                    quint32 nativeScanCode,
+                                                    quint32 nativeVirtualKey)
+{
+    const auto scanCode = nativeScanCode & 0xff;
+    if (nativeVirtualKey > 0 && nativeVirtualKey < 0x100) {
+        // Numpad divide shares set-1 scan code 0x35 with the main slash key.
+        // Its virtual key stays VK_DIVIDE on every layout.
+        if (scanCode == 0x35 && nativeVirtualKey == 0x6f)
+            return 0x6f;
+        if (const auto physical = windowsSet1VirtualKey(nativeScanCode))
+            return physical;
+    }
+    return windowsVirtualKey(key, modifiers, nativeVirtualKey);
+}
+
+static quint16 macPhysicalVirtualKey(quint32 keyCode)
+{
+    switch (keyCode) {
+    case 0x00: return 0x41;
+    case 0x01: return 0x53;
+    case 0x02: return 0x44;
+    case 0x03: return 0x46;
+    case 0x04: return 0x48;
+    case 0x05: return 0x47;
+    case 0x06: return 0x5a;
+    case 0x07: return 0x58;
+    case 0x08: return 0x43;
+    case 0x09: return 0x56;
+    case 0x0a: return 0xe2;
+    case 0x0b: return 0x42;
+    case 0x0c: return 0x51;
+    case 0x0d: return 0x57;
+    case 0x0e: return 0x45;
+    case 0x0f: return 0x52;
+    case 0x10: return 0x59;
+    case 0x11: return 0x54;
+    case 0x12: return 0x31;
+    case 0x13: return 0x32;
+    case 0x14: return 0x33;
+    case 0x15: return 0x34;
+    case 0x16: return 0x36;
+    case 0x17: return 0x35;
+    case 0x18: return 0xbb;
+    case 0x19: return 0x39;
+    case 0x1a: return 0x37;
+    case 0x1b: return 0xbd;
+    case 0x1c: return 0x38;
+    case 0x1d: return 0x30;
+    case 0x1e: return 0xdd;
+    case 0x1f: return 0x4f;
+    case 0x20: return 0x55;
+    case 0x21: return 0xdb;
+    case 0x22: return 0x49;
+    case 0x23: return 0x50;
+    case 0x24: return 0x0d;
+    case 0x25: return 0x4c;
+    case 0x26: return 0x4a;
+    case 0x27: return 0xde;
+    case 0x28: return 0x4b;
+    case 0x29: return 0xba;
+    case 0x2a: return 0xdc;
+    case 0x2b: return 0xbc;
+    case 0x2c: return 0xbf;
+    case 0x2d: return 0x4e;
+    case 0x2e: return 0x4d;
+    case 0x2f: return 0xbe;
+    case 0x30: return 0x09;
+    case 0x31: return 0x20;
+    case 0x32: return 0xc0;
+    case 0x33: return 0x08;
+    case 0x35: return 0x1b;
+    case 0x36: return 0xa3;
+    case 0x37: return 0xa2;
+    case 0x38: return 0xa0;
+    case 0x39: return 0x14;
+    case 0x3a: return 0xa4;
+    case 0x3b: return 0x5b;
+    case 0x3c: return 0xa1;
+    case 0x3d: return 0xa5;
+    case 0x3e: return 0x5c;
+    case 0x41: return 0x6e;
+    case 0x43: return 0x6a;
+    case 0x45: return 0x6b;
+    case 0x47: return 0x90;
+    case 0x4b: return 0x6f;
+    case 0x4c: return 0x0d;
+    case 0x4e: return 0x6d;
+    case 0x52: return 0x60;
+    case 0x53: return 0x61;
+    case 0x54: return 0x62;
+    case 0x55: return 0x63;
+    case 0x56: return 0x64;
+    case 0x57: return 0x65;
+    case 0x58: return 0x66;
+    case 0x59: return 0x67;
+    case 0x5b: return 0x68;
+    case 0x5c: return 0x69;
+    case 0x60: return 0x74;
+    case 0x61: return 0x75;
+    case 0x62: return 0x76;
+    case 0x63: return 0x72;
+    case 0x64: return 0x77;
+    case 0x65: return 0x78;
+    case 0x67: return 0x7a;
+    case 0x69: return 0x7c;
+    case 0x6a: return 0x7f;
+    case 0x6b: return 0x7d;
+    case 0x6d: return 0x79;
+    case 0x6f: return 0x7b;
+    case 0x71: return 0x7e;
+    case 0x72: return 0x2d;
+    case 0x73: return 0x24;
+    case 0x74: return 0x21;
+    case 0x75: return 0x2e;
+    case 0x76: return 0x73;
+    case 0x77: return 0x23;
+    case 0x78: return 0x71;
+    case 0x79: return 0x22;
+    case 0x7a: return 0x70;
+    case 0x7b: return 0x25;
+    case 0x7c: return 0x27;
+    case 0x7d: return 0x28;
+    case 0x7e: return 0x26;
+    default: return 0;
+    }
+}
+
+quint16 StreamVideoItem::macGameplayVirtualKey(int key, Qt::KeyboardModifiers modifiers,
+                                                quint32 nativeVirtualKey, bool nativeEvent)
+{
+    // Qt reports Command as Control. Match that when the hardware key is present
+    // so a consumed local shortcut and the forwarded key stay on the same side.
+    if (nativeEvent || nativeVirtualKey != 0) {
+        if (const auto physical = macPhysicalVirtualKey(nativeVirtualKey))
+            return physical;
+    }
+    return windowsVirtualKey(key, modifiers);
+}
+
+quint16 StreamVideoItem::macGameplayVirtualKey(const QKeyEvent *event)
+{
+    return macGameplayVirtualKey(event->key(), event->modifiers(), event->nativeVirtualKey(),
+                                 dynamic_cast<const NativeGameplayKeyEvent *>(event) != nullptr);
 }
 
 quint16 StreamVideoItem::linuxPhysicalVirtualKey(quint32 nativeScanCode)
@@ -175,6 +419,22 @@ quint16 StreamVideoItem::linuxPhysicalVirtualKey(quint32 nativeScanCode)
 
     case 94: return 0xe2;
 
+    case 90: return 0x60;
+    case 87: return 0x61;
+    case 88: return 0x62;
+    case 89: return 0x63;
+    case 83: return 0x64;
+    case 84: return 0x65;
+    case 85: return 0x66;
+    case 79: return 0x67;
+    case 80: return 0x68;
+    case 81: return 0x69;
+    case 63: return 0x6a;
+    case 86: return 0x6b;
+    case 82: return 0x6d;
+    case 91: return 0x6e;
+    case 106: return 0x6f;
+
     default: return 0;
     }
 }
@@ -186,12 +446,14 @@ quint16 StreamVideoItem::inputModifiers(Qt::KeyboardModifiers modifiers, int key
     if (key != Qt::Key_Control && modifiers.testFlag(Qt::ControlModifier)) result |= 0x02;
     if (key != Qt::Key_Alt && modifiers.testFlag(Qt::AltModifier)) result |= 0x04;
     if (key != Qt::Key_Meta && modifiers.testFlag(Qt::MetaModifier)) result |= 0x08;
+    if (key != Qt::Key_AltGr && modifiers.testFlag(Qt::GroupSwitchModifier)) result |= 0x06;
     return result;
 }
 
 QString StreamVideoItem::shortcutActionForInput(
     const QVariantMap &bindings, int key, Qt::KeyboardModifiers modifiers)
 {
+    if (modifiers.testFlag(Qt::GroupSwitchModifier)) return {};
     constexpr auto shortcutModifiers = Qt::ControlModifier | Qt::ShiftModifier
         | Qt::AltModifier | Qt::MetaModifier;
     const auto normalizedModifiers = modifiers & shortcutModifiers;
@@ -231,17 +493,49 @@ void StreamVideoItem::focusOutEvent(QFocusEvent *event)
     QQuickItem::focusOutEvent(event);
 }
 
-quint16 StreamVideoItem::eventVirtualKey(const QKeyEvent *event)
+quint16 StreamVideoItem::eventVirtualKey(const QKeyEvent *event) const
 {
 #if defined(Q_OS_WIN)
-    return windowsVirtualKey(event->key(), event->modifiers(), event->nativeVirtualKey());
+    return windowsGameplayVirtualKey(event->key(), event->modifiers(),
+                                     event->nativeScanCode(), event->nativeVirtualKey());
 #elif defined(Q_OS_LINUX)
+    const auto evdevCode = PhysicalKeyMap::evdevCodeFromNativeScanCode(event->nativeScanCode());
+    if (m_keyboardMap && m_keyboardMap->locale == "sv-SE") {
+        const auto physical = linuxPhysicalVirtualKey(event->nativeScanCode());
+        if ((physical >= 0xba && physical <= 0xc0)
+            || (physical >= 0xdb && physical <= 0xde) || physical == 0xe2)
+            return physical;
+    }
+    if (const auto mapped = PhysicalKeyMap::virtualKey(m_keyboardMap, evdevCode)) return mapped;
+    switch (evdevCode) {
+    case 29: return 0xa2;
+    case 42: return 0xa0;
+    case 54: return 0xa1;
+    case 56: return 0xa4;
+    case 97: return 0xa3;
+    case 100: return 0xa5;
+    case 122: return 0x15;
+    case 123: return 0x19;
+    case 125: return 0x5b;
+    case 126: return 0x5c;
+    default: break;
+    }
     const auto physical = linuxPhysicalVirtualKey(event->nativeScanCode());
-    if (physical != 0) return physical;
+    if (physical >= 0x60 && physical <= 0x6f) return physical;
     return windowsVirtualKey(event->key(), event->modifiers());
 #else
-    return windowsVirtualKey(event->key(), event->modifiers());
+    return macGameplayVirtualKey(event);
 #endif
+}
+
+Qt::KeyboardModifiers StreamVideoItem::eventModifiers(const QKeyEvent *event) const
+{
+    auto modifiers = event->modifiers();
+    if (event->key() == Qt::Key_AltGr
+        || std::any_of(m_pressedKeys.cbegin(), m_pressedKeys.cend(),
+                       [](const PressedKey &key) { return key.altGr; }))
+        modifiers |= Qt::GroupSwitchModifier;
+    return modifiers;
 }
 
 quint32 StreamVideoItem::keyIdentity(const QKeyEvent *event) const
@@ -266,13 +560,14 @@ void StreamVideoItem::keyPressEvent(QKeyEvent *event)
     }
     const auto identity = keyIdentity(event);
     const auto virtualKey = eventVirtualKey(event);
+    const auto modifiers = eventModifiers(event);
     const QKeyEvent shortcutEvent(QEvent::KeyPress,
-        virtualKey >= 0x41 && virtualKey <= 0x5a ? virtualKey : event->key(), event->modifiers());
+        virtualKey >= 0x41 && virtualKey <= 0x5a ? virtualKey : event->key(), modifiers);
     auto shortcutAction = shortcutActionForInput(
-        m_shortcutBindings, event->key(), event->modifiers());
+        m_shortcutBindings, event->key(), modifiers);
     if (shortcutAction.isEmpty() && shortcutEvent.key() != event->key()) {
         shortcutAction = shortcutActionForInput(
-            m_shortcutBindings, shortcutEvent.key(), event->modifiers());
+            m_shortcutBindings, shortcutEvent.key(), modifiers);
     }
     if (!shortcutAction.isEmpty()) {
         // A fullscreen transition can prevent Windows from delivering the key-up
@@ -289,7 +584,8 @@ void StreamVideoItem::keyPressEvent(QKeyEvent *event)
         event->ignore();
         return;
     }
-    if (m_clipboardPaste && (event->matches(QKeySequence::Paste)
+    if (m_clipboardPaste && !modifiers.testFlag(Qt::GroupSwitchModifier)
+        && (event->matches(QKeySequence::Paste)
                             || shortcutEvent.matches(QKeySequence::Paste))) {
         m_pressedShortcuts.insert(identity);
         event->accept();
@@ -323,9 +619,9 @@ void StreamVideoItem::keyPressEvent(QKeyEvent *event)
         return;
     }
     if (!m_pressedKeys.contains(identity)) {
-        const auto modifiers = inputModifiers(event->modifiers(), event->key());
-        m_pressedKeys.insert(identity, {virtualKey, modifiers});
-        s_nativeRuntime->submitKey(virtualKey, modifiers, true);
+        const auto wireModifiers = inputModifiers(modifiers, event->key());
+        m_pressedKeys.insert(identity, {virtualKey, wireModifiers, event->key() == Qt::Key_AltGr});
+        s_nativeRuntime->submitKey(virtualKey, wireModifiers, true);
     }
     event->accept();
 }
@@ -347,7 +643,8 @@ void StreamVideoItem::keyReleaseEvent(QKeyEvent *event)
         return;
     }
     s_nativeRuntime->submitKey(pressed.virtualKey,
-                             inputModifiers(event->modifiers(), event->key()), false);
+                             inputModifiers(eventModifiers(event),
+                                            pressed.altGr ? Qt::Key_AltGr : event->key()), false);
     event->accept();
 }
 

@@ -487,6 +487,7 @@ private slots:
                 QCOMPARE(actual.value(QStringLiteral("appId")), params.value(QStringLiteral("appId")));
                 const auto runtime = actual.value(QStringLiteral("runtimeCapabilities")).toObject();
                 QCOMPARE(runtime.value(QStringLiteral("nativeHdrSupported")).toBool(), supported);
+                QVERIFY(!runtime.contains(QStringLiteral("nativeHdrDisplay")));
                 QCOMPARE(runtime.value(QStringLiteral("protocolVersion")).toInt(), 7);
                 QVERIFY(!actual.contains(QStringLiteral("settings")));
                 QCOMPARE(params.value(QStringLiteral("runtimeCapabilities")).toObject(), capabilities);
@@ -508,6 +509,9 @@ private slots:
             display.available = true;
             display.minimumNits = 0.005;
             display.maximumNits = 620;
+            display.maximumFullFrameNits = 400;
+            display.chromaticity = HdrChromaticity{0.68, 0.32, 0.265, 0.69,
+                                                   0.15, 0.06, 0.3127, 0.329};
             client.setNativeHdrDisplay(display);
             QVERIFY(!client.request(method, {{QStringLiteral("appId"), QStringLiteral("123")}}).isEmpty());
             QTRY_COMPARE_WITH_TIMEOUT(responses.size(), 1, 2'000);
@@ -517,7 +521,17 @@ private slots:
             const auto injected = runtime.value(QStringLiteral("nativeHdrDisplay")).toObject();
             QCOMPARE(injected.value(QStringLiteral("minimumNits")).toDouble(), 0.005);
             QCOMPARE(injected.value(QStringLiteral("maximumNits")).toDouble(), 620.0);
+            QCOMPARE(injected.value(QStringLiteral("maximumFullFrameNits")).toDouble(), 400.0);
+            QCOMPARE(injected.value(QStringLiteral("redX")).toDouble(), 0.68);
+            QCOMPARE(injected.value(QStringLiteral("redY")).toDouble(), 0.32);
+            QCOMPARE(injected.value(QStringLiteral("greenX")).toDouble(), 0.265);
+            QCOMPARE(injected.value(QStringLiteral("greenY")).toDouble(), 0.69);
+            QCOMPARE(injected.value(QStringLiteral("blueX")).toDouble(), 0.15);
+            QCOMPARE(injected.value(QStringLiteral("blueY")).toDouble(), 0.06);
+            QCOMPARE(injected.value(QStringLiteral("whiteX")).toDouble(), 0.3127);
+            QCOMPARE(injected.value(QStringLiteral("whiteY")).toDouble(), 0.329);
             responses.clear();
+            client.setNativeHdrSupported(true);
             client.setNativeHdrDisplay({});
             const QJsonObject stale{
                 {QStringLiteral("runtimeCapabilities"),
@@ -530,6 +544,7 @@ private slots:
             const auto absent = responses.first().at(1).toJsonObject()
                 .value(QStringLiteral("params")).toObject()
                 .value(QStringLiteral("runtimeCapabilities")).toObject();
+            QCOMPARE(absent.value(QStringLiteral("nativeHdrSupported")).toBool(), true);
             QVERIFY(!absent.contains(QStringLiteral("nativeHdrDisplay")));
         }
         client.stop();

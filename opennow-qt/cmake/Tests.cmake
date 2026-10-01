@@ -11,7 +11,7 @@ if(BUILD_TESTING)
     target_include_directories(opennow-graphicsdevices-tests PRIVATE src)
     target_link_libraries(opennow-graphicsdevices-tests PRIVATE Qt6::Test Qt6::Quick)
     if(WIN32)
-        target_link_libraries(opennow-graphicsdevices-tests PRIVATE user32 dxgi)
+        target_link_libraries(opennow-graphicsdevices-tests PRIVATE user32 dxgi d3d11)
     endif()
     add_test(NAME opennow-graphicsdevices-tests COMMAND opennow-graphicsdevices-tests -o -,txt)
     set_tests_properties(opennow-graphicsdevices-tests PROPERTIES
@@ -26,6 +26,17 @@ if(BUILD_TESTING)
     target_link_libraries(opennow-waylandhdroutput-tests PRIVATE Qt6::Test opennow-platform-hdr)
     add_test(NAME opennow-waylandhdroutput-tests COMMAND opennow-waylandhdroutput-tests -o -,txt)
     set_tests_properties(opennow-waylandhdroutput-tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 15)
+    qt_add_executable(opennow-windowshdrdisplay-tests
+        tests/tst_windowshdrdisplay.cpp
+        src/streaming/rendering/WindowsHdrDisplay.cpp)
+    target_include_directories(opennow-windowshdrdisplay-tests PRIVATE src)
+    target_link_libraries(opennow-windowshdrdisplay-tests PRIVATE Qt6::Test Qt6::Gui)
+    if(WIN32)
+        target_link_libraries(opennow-windowshdrdisplay-tests PRIVATE dxgi user32)
+    endif()
+    add_test(NAME opennow-windowshdrdisplay-tests COMMAND opennow-windowshdrdisplay-tests -o -,txt)
+    set_tests_properties(opennow-windowshdrdisplay-tests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 15)
     qt_add_executable(opennow-hdrcolor-tests tests/tst_hdrcolor.cpp
         src/streaming/rendering/HdrChromeEffect.cpp src/streaming/rendering/HdrOutput.cpp)
@@ -414,11 +425,15 @@ if(BUILD_TESTING)
         set_tests_properties(qml-push-invalidation-${width} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
     endforeach()
     qt_add_resources(opennow-qt "store-paging-acceptance"
-        PREFIX "/acceptance" BASE tests FILES tests/RegionPingAcceptance.qml tests/RegionChoicesAcceptance.qml tests/StorePagingAcceptance.qml tests/BackendAvailabilityAcceptance.qml tests/StreamRecoveryAcceptance.qml tests/IdleModeAcceptance.qml tests/FrameGenerationAcceptance.qml tests/AudioOutputAcceptance.qml tests/CollectionsAcceptance.qml tests/SteamBigPictureAcceptance.qml tests/PersistentInGameSettingsAcceptance.qml tests/NetworkTestAcceptance.qml tests/SaveBandwidthAcceptance.qml tests/StoreLaunchAcceptance.qml tests/ControllerMetadataAcceptance.qml tests/MicrophoneAcceptance.qml tests/RecordingAcceptance.qml)
+        PREFIX "/acceptance" BASE tests FILES tests/RegionPingAcceptance.qml tests/RegionChoicesAcceptance.qml tests/StorePagingAcceptance.qml tests/BackendAvailabilityAcceptance.qml tests/StreamRecoveryAcceptance.qml tests/IdleModeAcceptance.qml tests/FrameGenerationAcceptance.qml tests/AudioOutputAcceptance.qml tests/CollectionsAcceptance.qml tests/SteamBigPictureAcceptance.qml tests/PersistentInGameSettingsAcceptance.qml tests/NetworkTestAcceptance.qml tests/SaveBandwidthAcceptance.qml tests/StoreLaunchAcceptance.qml tests/ControllerMetadataAcceptance.qml tests/MicrophoneAcceptance.qml tests/RecordingAcceptance.qml tests/ShortcutsAcceptance.qml)
     add_test(NAME qml-recording
         COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
             --route settings --smoke-recording --reduced-motion)
     set_tests_properties(qml-recording PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+    add_test(NAME qml-shortcuts
+        COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+            --route settings --smoke-shortcuts --reduced-motion)
+    set_tests_properties(qml-shortcuts PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
     add_test(NAME qml-microphone
         COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
             --route settings-audio --smoke-microphone --reduced-motion)
@@ -1298,6 +1313,22 @@ if(BUILD_TESTING)
     endforeach()
     foreach(surface desktop console)
         foreach(mode windowed fullscreen)
+            foreach(route stream inserting home)
+                add_test(NAME "qml-window-close-${surface}-${mode}-${route}"
+                    COMMAND opennow-qt --smoke-test --allow-multiple-instances
+                        --${surface} --route ${route} --smoke-stream-exit
+                        --smoke-exit-window-close --smoke-exit-${mode} --reduced-motion)
+                set_tests_properties("qml-window-close-${surface}-${mode}-${route}" PROPERTIES
+                    ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+                if(mode STREQUAL "windowed")
+                    add_test(NAME "qml-authorized-quit-${surface}-${route}"
+                        COMMAND opennow-qt --smoke-test --allow-multiple-instances
+                            --${surface} --route ${route} --smoke-stream-exit
+                            --smoke-exit-window-close --smoke-exit-authorized-quit --reduced-motion)
+                    set_tests_properties("qml-authorized-quit-${surface}-${route}" PROPERTIES
+                        ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+                endif()
+            endforeach()
             foreach(key return enter tab-space)
                 add_test(NAME "qml-stream-exit-${surface}-${mode}-${key}"
                     COMMAND opennow-qt --smoke-test --allow-multiple-instances

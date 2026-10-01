@@ -653,6 +653,36 @@ fn video_input_type(format: VideoFormat) -> Result<IMFMediaType, String> {
     }
 }
 
+/// Applies the shared candidate-source policy to already enumerated lists.
+/// Adapter-tagged hardware wins when any exist. Otherwise untagged hardware
+/// (Intel Quick Sync, which often omits `MFT_ENUM_ADAPTER_LUID`) comes before
+/// the registered Microsoft MFT that NVIDIA and AMD use for DXVA.
+#[cfg(test)]
+fn hardware_decoder_order<T>(
+    adapter_tagged: Vec<T>,
+    untagged_hardware: Vec<T>,
+    registered: Vec<T>,
+) -> Vec<T> {
+    let mut adapter_tagged = adapter_tagged;
+    let mut untagged_hardware = untagged_hardware;
+    let mut registered = registered;
+    let mut activations = Vec::new();
+    for source in crate::decoder_order::decoder_candidate_sources(adapter_tagged.len()) {
+        match source {
+            crate::decoder_order::DecoderCandidateSource::AdapterHardware => {
+                activations.append(&mut adapter_tagged);
+            }
+            crate::decoder_order::DecoderCandidateSource::UnscopedHardware => {
+                activations.append(&mut untagged_hardware);
+            }
+            crate::decoder_order::DecoderCandidateSource::Registered => {
+                activations.append(&mut registered);
+            }
+        }
+    }
+    activations
+}
+
 fn enumerate_decoders(
     adapter_luid: LUID,
     codec: VideoCodec,
@@ -675,18 +705,46 @@ fn enumerate_decoders(
                 attributes
                     .SetBlob(&MFT_ENUM_ADAPTER_LUID, luid_bytes)
                     .map_err(|error| error.to_string())?;
-                let mut activations = enumerate_matching_decoders(
-                    MFT_ENUM_FLAG(MFT_ENUM_FLAG_HARDWARE.0 | MFT_ENUM_FLAG_SORTANDFILTER.0),
-                    Some(&attributes),
-                    codec,
-                )?;
-                // NVIDIA and AMD drive decode through DXVA2 instead of registering
-                // a hardware-flagged MFT, so on those adapters the enumeration above
-                // is empty and the D3D11-aware Microsoft MFT is the GPU path. Keep it
-                // as a fallback rather than reporting no hardware decode at all;
-                // configure_transform still rejects any MFT that cannot accept our
-                // D3D manager, so a genuinely software-only MFT never gets through.
-                activations.extend(enumerate_matching_decoders(registered, None, codec)?);
+                let hardware_flags =
+                    MFT_ENUM_FLAG(MFT_ENUM_FLAG_HARDWARE.0 | MFT_ENUM_FLAG_SORTANDFILTER.0);
+                let mut adapter_hardware =
+                    enumerate_matching_decoders(hardware_flags, Some(&attributes), codec)?;
+                let mut activations = Vec::new();
+                // `decoder_candidate_sources` is the shared order: adapter-tagged
+                // hardware when any exist, otherwise untagged hardware, and the
+                // registered Microsoft MFT last. configure_transform still rejects
+                // any MFT that cannot accept this device's D3D manager.
+                for source in
+                    crate::decoder_order::decoder_candidate_sources(adapter_hardware.len())
+                {
+                    match source {
+                        crate::decoder_order::DecoderCandidateSource::AdapterHardware => {
+                            activations.append(&mut adapter_hardware);
+                        }
+                        crate::decoder_order::DecoderCandidateSource::UnscopedHardware => {
+                            // Intel Quick Sync / Iris / Arc hardware MFTs usually omit
+                            // MFT_ENUM_ADAPTER_LUID, so the adapter filter above is empty
+                            // even when the D3D11 device is already that GPU. Without
+                            // this step the registered fallback's first success is
+                            // "Microsoft H264 Video Decoder MFT" (software).
+                            video_log!(
+                                "Windows hardware decoder enumeration matched no MFT for this adapter; trying hardware transforms that do not publish an adapter LUID"
+                            );
+                            activations.extend(enumerate_matching_decoders(
+                                hardware_flags,
+                                None,
+                                codec,
+                            )?);
+                        }
+                        crate::decoder_order::DecoderCandidateSource::Registered => {
+                            // NVIDIA and AMD drive decode through DXVA2 instead of
+                            // registering a hardware-flagged MFT. The D3D11-aware
+                            // Microsoft MFT is their GPU path, so it stays last.
+                            activations
+                                .extend(enumerate_matching_decoders(registered, None, codec)?);
+                        }
+                    }
+                }
                 Ok(activations)
             }
             WindowsDecoderMode::Software => enumerate_matching_decoders(registered, None, codec),
@@ -1007,6 +1065,7 @@ fn output_color_format(
     fallback: VideoFormat,
 ) -> Result<VideoFormat, String> {
     let mut format = fallback;
+    let mut matrix_specified = false;
     for key in [
         MF_MT_TRANSFER_FUNCTION,
         MF_MT_VIDEO_PRIMARIES,
@@ -1044,6 +1103,7 @@ fn output_color_format(
                 _ => return Err(format!("unsupported decoder color primaries {value}")),
             };
         } else if key == MF_MT_YUV_MATRIX {
+            matrix_specified = true;
             format.color_matrix = match value {
                 value if value == MFVideoTransferMatrix_BT601.0 => VideoColorMatrix::Bt601,
                 value if value == MFVideoTransferMatrix_BT709.0 => VideoColorMatrix::Bt709,
@@ -1064,12 +1124,31 @@ fn output_color_format(
             };
         }
     }
-    if fallback.transfer_function != VideoTransferFunction::Sdr
+    if !matrix_specified
         && format.transfer_function == VideoTransferFunction::Sdr
+        && format.color_primaries == VideoColorPrimaries::Bt709
     {
-        return Err("decoder reported SDR output for a negotiated HDR stream".to_owned());
+        format.color_matrix = VideoColorMatrix::Bt709;
     }
-    format.validate_color().map_err(|error| error.to_string())?;
+    format.validate_color().map_err(|error| {
+        let present = |key| {
+            unsafe { media_type.GetUINT32(key) }
+                .ok()
+                .is_some_and(|value| value != 0)
+        };
+        format!(
+            "{error}: negotiated={:?}/{:?}/{:?} decoded={:?}/{:?}/{:?} explicit={}/{}/{}",
+            fallback.transfer_function,
+            fallback.color_primaries,
+            fallback.color_matrix,
+            format.transfer_function,
+            format.color_primaries,
+            format.color_matrix,
+            present(&MF_MT_TRANSFER_FUNCTION),
+            present(&MF_MT_VIDEO_PRIMARIES),
+            present(&MF_MT_YUV_MATRIX),
+        )
+    })?;
     Ok(format)
 }
 
@@ -1179,6 +1258,48 @@ mod tests {
     }
 
     #[test]
+    fn empty_adapter_luid_filter_tries_untagged_hardware_before_the_microsoft_decoder() {
+        let order = hardware_decoder_order(
+            Vec::<&str>::new(),
+            vec!["Intel Quick Sync Video H.264 Decoder"],
+            vec!["Microsoft H264 Video Decoder MFT"],
+        );
+        assert_eq!(
+            order,
+            [
+                "Intel Quick Sync Video H.264 Decoder",
+                "Microsoft H264 Video Decoder MFT",
+            ]
+        );
+    }
+
+    #[test]
+    fn adapter_tagged_hardware_mft_stays_ahead_of_the_microsoft_decoder() {
+        let order = hardware_decoder_order(
+            vec!["Adapter H.264 hardware decoder"],
+            vec!["Intel Quick Sync Video H.264 Decoder"],
+            vec!["Microsoft H264 Video Decoder MFT"],
+        );
+        assert_eq!(
+            order,
+            [
+                "Adapter H.264 hardware decoder",
+                "Microsoft H264 Video Decoder MFT",
+            ]
+        );
+    }
+
+    #[test]
+    fn vendor_dxva_path_keeps_the_microsoft_decoder_when_no_hardware_mft_is_registered() {
+        let order = hardware_decoder_order(
+            Vec::<&str>::new(),
+            Vec::<&str>::new(),
+            vec!["Microsoft H264 Video Decoder MFT"],
+        );
+        assert_eq!(order, ["Microsoft H264 Video Decoder MFT"]);
+    }
+
+    #[test]
     fn provisional_nv12_allows_hdr_startup_but_never_validated_output() {
         let _runtime = super::super::MediaRuntime::initialize().unwrap();
         let negotiated = hdr_test_format();
@@ -1238,16 +1359,16 @@ mod tests {
             )
             .is_ok()
         );
-        assert!(
-            output_media_format(
-                &media_type,
-                negotiated,
-                aperture,
-                VideoPixelFormat::P010,
-                false,
-            )
-            .is_err()
-        );
+        let sdr_output = output_media_format(
+            &media_type,
+            negotiated,
+            aperture,
+            VideoPixelFormat::P010,
+            false,
+        )
+        .unwrap();
+        assert_eq!(sdr_output.transfer_function, VideoTransferFunction::Sdr);
+        assert_eq!(sdr_output.pixel_format, VideoPixelFormat::P010);
     }
 
     #[test]
@@ -1288,23 +1409,34 @@ mod tests {
             )
             .is_ok()
         );
-        for transfer in [MFVideoTransFunc_709.0, 999] {
-            unsafe {
-                media_type
-                    .SetUINT32(&MF_MT_TRANSFER_FUNCTION, transfer as u32)
-                    .unwrap();
-            }
-            assert!(
-                output_media_format(
-                    &media_type,
-                    negotiated,
-                    aperture,
-                    VideoPixelFormat::P010,
-                    false,
-                )
-                .is_err()
-            );
+        unsafe {
+            media_type
+                .SetUINT32(&MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709.0 as u32)
+                .unwrap();
         }
+        let sdr_output = output_media_format(
+            &media_type,
+            negotiated,
+            aperture,
+            VideoPixelFormat::P010,
+            false,
+        )
+        .unwrap();
+        assert_eq!(sdr_output.transfer_function, VideoTransferFunction::Sdr);
+        assert_eq!(sdr_output.pixel_format, VideoPixelFormat::P010);
+        unsafe {
+            media_type.SetUINT32(&MF_MT_TRANSFER_FUNCTION, 999).unwrap();
+        }
+        assert!(
+            output_media_format(
+                &media_type,
+                negotiated,
+                aperture,
+                VideoPixelFormat::P010,
+                false,
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1408,11 +1540,60 @@ mod tests {
     }
 
     #[test]
+    fn decoder_follows_explicit_sdr_hdr_output_transitions() {
+        let _runtime = super::super::MediaRuntime::initialize().unwrap();
+        let hdr = hdr_test_format();
+        let sdr = VideoFormat {
+            transfer_function: VideoTransferFunction::Sdr,
+            color_primaries: VideoColorPrimaries::Bt709,
+            color_matrix: VideoColorMatrix::Bt709,
+            ..hdr
+        };
+        let sdr_type = video_input_type(sdr).unwrap();
+        let hdr_type = video_input_type(hdr).unwrap();
+        assert_eq!(output_color_format(&sdr_type, hdr).unwrap(), sdr);
+        assert_eq!(output_color_format(&hdr_type, sdr).unwrap(), hdr);
+        let unspecified_type = unsafe { MFCreateMediaType().unwrap() };
+        assert_eq!(output_color_format(&unspecified_type, hdr).unwrap(), hdr);
+    }
+
+    #[test]
+    fn decoder_uses_sdr_matrix_when_hdr_output_switches_to_sdr_without_one() {
+        let _runtime = super::super::MediaRuntime::initialize().unwrap();
+        let hdr = hdr_test_format();
+        let media_type = unsafe { MFCreateMediaType().unwrap() };
+        unsafe {
+            media_type
+                .SetUINT32(&MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709.0 as u32)
+                .unwrap();
+            media_type
+                .SetUINT32(&MF_MT_VIDEO_PRIMARIES, MFVideoPrimaries_BT709.0 as u32)
+                .unwrap();
+        }
+        let sdr = VideoFormat {
+            transfer_function: VideoTransferFunction::Sdr,
+            color_primaries: VideoColorPrimaries::Bt709,
+            color_matrix: VideoColorMatrix::Bt709,
+            ..hdr
+        };
+        assert_eq!(output_color_format(&media_type, hdr).unwrap(), sdr);
+        unsafe {
+            media_type.SetUINT32(&MF_MT_YUV_MATRIX, 0).unwrap();
+        }
+        assert_eq!(output_color_format(&media_type, hdr).unwrap(), sdr);
+        unsafe {
+            media_type
+                .SetUINT32(&MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT2020_10.0 as u32)
+                .unwrap();
+        }
+        assert!(output_color_format(&media_type, hdr).is_err());
+    }
+
+    #[test]
     fn decoder_rejects_hdr_downgrades_and_unsupported_metadata() {
         let _runtime = super::super::MediaRuntime::initialize().unwrap();
         let format = hdr_test_format();
         for (key, value) in [
-            (MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709.0),
             (MF_MT_TRANSFER_FUNCTION, 999),
             (MF_MT_VIDEO_PRIMARIES, MFVideoPrimaries_BT709.0),
             (MF_MT_VIDEO_PRIMARIES, 999),

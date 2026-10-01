@@ -23,6 +23,25 @@ fn directory(id: &str, host: &str) -> Value {
     }]}})
 }
 
+#[test]
+fn provider_regions_only_include_named_authenticated_zones() {
+    let payload = json!({"metaData":[
+        {"key":"gfn-regions","value":"North, South"},
+        {"key":"local-region","value":"North"},
+        {"key":"North","value":"https://north.partner.example"},
+        {"key":"South","value":"https://south.partner.example"},
+        {"key":"unlisted","value":"https://unlisted.partner.example"},
+        {"key":"unsafe","value":"http://unsafe.partner.example"}
+    ]});
+    assert_eq!(
+        json!(provider_region_entries(&payload)),
+        json!([
+            {"name":"North","url":"https://north.partner.example/"},
+            {"name":"South","url":"https://south.partner.example/"}
+        ])
+    );
+}
+
 fn expire_discovery(service: &GfnService) {
     let mut state = service.state.lock().unwrap();
     state.providers_expires = None;
@@ -54,6 +73,54 @@ fn launch_metadata() -> Vec<(u16, Value)> {
             json!({"data":{"userAccount":{"storesData":[],"subscriptions":[]}}}),
         ),
     ]
+}
+
+#[test]
+fn owned_ad_reports_preserve_event_fields_without_accepting_foreign_session_routing() {
+    let response =
+        json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"seat-a","status":2}});
+    let (url, worker) = mock_requests(vec![(200, response); 2], |index, request| {
+        assert!(request.starts_with("PUT /v2/session/seat-a "));
+        assert!(request.contains("GFNJWT test-access"));
+        assert!(!request.contains("forged.nvidiagrid.net"));
+        let body: Value = serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        let update = &body["adUpdates"][0];
+        assert_eq!(update["adId"], "ad-a");
+        assert_eq!(update["clientTimestamp"], 123456);
+        assert_eq!(update["adAction"], if index == 0 { 4 } else { 5 });
+        assert_eq!(
+            update["watchedTimeInMs"],
+            if index == 0 { 30000 } else { 0 }
+        );
+        assert_eq!(update["pausedTimeInMs"], 250);
+        assert_eq!(
+            update["cancelReason"],
+            if index == 0 {
+                Value::Null
+            } else {
+                json!("error")
+            }
+        );
+    });
+    let (mut service, path) = service(&url);
+    service
+        .cloudmatch
+        .set_test_control_base(url::Url::parse(&url).unwrap());
+    let seat =
+        json!({"sessionId":"seat-a","status":3,"streamingBaseUrl":"https://owned.nvidiagrid.net/"});
+    service.cloudmatch.seed_owned_session(seat.clone());
+    service.session_routing.lock().unwrap().active_owner =
+        Some(ActiveSeatOwner::capture(auth_fixture("account-a"), 7, &seat, None).unwrap());
+    for action in ["finish", "cancel"] {
+        service.report_session_ad(&json!({
+            "sessionId":"seat-a","streamingBaseUrl":"https://forged.nvidiagrid.net/",
+            "action":action,"adId":"ad-a","clientTimestamp":123456,
+            "watchedTimeInMs":if action == "finish" {30000} else {-10},
+            "pausedTimeInMs":250,"cancelReason":if action == "cancel" {json!("error")} else {Value::Null}
+        })).unwrap();
+    }
+    worker.join().unwrap();
+    std::fs::remove_dir_all(path).unwrap();
 }
 
 fn reject_concurrent_create_during(discovery: bool) {
@@ -263,7 +330,7 @@ fn discovery_transport_schema_and_untrusted_endpoints_remain_retryable_failures(
     for payload in [
         json!("invalid discovery"),
         json!({"gfnServiceInfo":{"gfnServiceEndpoints":[]}}),
-        directory("outside", "outside.invalid"),
+        directory("local", "localhost"),
     ] {
         let (url, worker) = mock_requests(vec![(200, payload)], |_, _| {});
         let (service, path) = service(&url);
@@ -275,6 +342,18 @@ fn discovery_transport_schema_and_untrusted_endpoints_remain_retryable_failures(
         worker.join().unwrap();
         std::fs::remove_dir_all(path).unwrap();
     }
+    let (url, worker) = mock_requests(
+        vec![(200, directory("outside", "outside.invalid"))],
+        |_, _| {},
+    );
+    let (external_service, path) = service(&url);
+    expire_discovery(&external_service);
+    assert_eq!(
+        external_service.providers().unwrap()["discovery"]["state"],
+        "ready"
+    );
+    worker.join().unwrap();
+    std::fs::remove_dir_all(path).unwrap();
     let (service, path) = service("http://127.0.0.1:1");
     expire_discovery(&service);
     assert_eq!(
@@ -707,6 +786,7 @@ fn region_overrides_require_current_provider_membership_and_preserve_saved_prefe
         vec![(
             200,
             json!({"requestStatus":{"serverId":"alliance-vpc"},"metaData":[
+                {"key":"gfn-regions","value":"Alliance region"},
                 {"key":"Alliance region","value":"https://alliance-region.nvidiagrid.net/"},
                 {"key":"Untrusted","value":"https://outside.invalid/"}
             ]}),
@@ -726,7 +806,7 @@ fn region_overrides_require_current_provider_membership_and_preserve_saved_prefe
     assert_eq!(effective["region"], "");
     let (params, _) = service
         .scoped_session_route(
-            &json!({"streamingBaseUrl":"https://nvidia-region.nvidiagrid.net/"}),
+            &json!({"streamingBaseUrl":"https://outside.invalid/"}),
             &settings,
             &session,
         )
@@ -738,24 +818,54 @@ fn region_overrides_require_current_provider_membership_and_preserve_saved_prefe
 }
 
 #[test]
-fn endpoint_validation_is_shared_and_rejects_credential_exfiltration_shapes() {
+fn endpoint_validation_preserves_https_authority_constraints_for_partner_hosts() {
     for url in [
         "https://prod.cloudmatchbeta.nvidiagrid.net/",
         "https://provider.nvidiagrid.net/",
         "https://region.geforcenow.nvidiagrid.net/",
+        "https://partner.example.com/",
     ] {
         assert!(trusted_streaming_base(url).is_ok());
     }
     for url in [
         "http://provider.nvidiagrid.net/",
-        "https://provider.nvidiagrid.net.evil.test/",
         "https://user@provider.nvidiagrid.net/",
         "https://provider.nvidiagrid.net:8443/",
         "https://127.0.0.1/",
-        "https://partner.invalid/",
+        "https://partner.example.com:8443/",
     ] {
         assert!(trusted_streaming_base(url).is_err(), "{url}");
     }
+}
+
+#[test]
+fn authenticated_client_does_not_follow_redirects_with_credentials() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let directory = tempfile::tempdir().unwrap();
+    let service = GfnService::new(directory.path().to_path_buf()).unwrap();
+    let source = TcpListener::bind("127.0.0.1:0").unwrap();
+    let target = TcpListener::bind("127.0.0.1:0").unwrap();
+    target.set_nonblocking(true).unwrap();
+    let source_url = format!("http://{}/original", source.local_addr().unwrap());
+    let target_url = format!("http://{}/stolen", target.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = source.accept().unwrap();
+        let mut buffer = [0_u8; 4096];
+        let length = stream.read(&mut buffer).unwrap();
+        assert!(String::from_utf8_lossy(&buffer[..length]).contains("GFNJWT secret-for-test"));
+        write!(stream, "HTTP/1.1 302 Found\r\nLocation: {target_url}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+    });
+    let response = service
+        .client
+        .get(source_url)
+        .header(AUTHORIZATION, "GFNJWT secret-for-test")
+        .send()
+        .unwrap();
+    server.join().unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::FOUND);
+    assert!(target.accept().is_err());
 }
 
 #[test]
@@ -947,11 +1057,10 @@ fn durable_seat_republication_does_not_renew_allocation_receipt_authority() {
     let mut responses = launch_metadata();
     responses.extend([
         (200, json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"fresh-seat","status":1}})),
-        (200, json!({})),
         (204, json!({})),
     ]);
     let (url, worker) = mock_requests(responses, |index, request| {
-        if index == 8 {
+        if index == 7 {
             assert!(request.starts_with("DELETE /v2/session/fresh-seat "));
         }
     });

@@ -5,6 +5,7 @@ layout(set = 0, binding = 1) uniform sampler2D chroma_texture;
 
 layout(push_constant) uniform Conversion {
     vec2 texture_scale;
+    vec2 coded_scale;
     uint color_matrix;
     uint full_range;
 } conversion;
@@ -13,11 +14,17 @@ layout(location = 0) in vec2 texture_coordinates;
 layout(location = 0) out vec4 output_color;
 
 void main() {
+    // Letterbox first, about the centre, and paint the bars black.
     vec2 source = (texture_coordinates - vec2(0.5)) * conversion.texture_scale + vec2(0.5);
     if (any(lessThan(source, vec2(0.0))) || any(greaterThan(source, vec2(1.0)))) {
         output_color = vec4(0.0, 0.0, 0.0, 1.0);
         return;
     }
+
+    // Then crop the decoder's padding rows, about the origin: the bounds test
+    // above is in visible coordinates, and this maps them on to the coded
+    // buffer the image was imported at. coded_scale is 1.0 when unpadded.
+    source *= conversion.coded_scale;
 
     float y = texture(luma_texture, source).r;
     vec2 uv = texture(chroma_texture, source).rg;

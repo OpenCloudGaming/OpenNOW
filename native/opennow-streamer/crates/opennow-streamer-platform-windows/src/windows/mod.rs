@@ -8,12 +8,15 @@ macro_rules! video_log {
     }};
 }
 
+mod adapter_index;
 mod audio;
 mod color;
 mod decoder;
 mod embedded;
 mod graphics;
 mod y410;
+
+pub(crate) use adapter_index::probe_adapter_decode;
 
 pub(crate) unsafe fn d3d11_adapter_luid(
     device: *mut std::ffi::c_void,

@@ -396,9 +396,8 @@ FocusScope {
                     border.color: root.selectedIndex === 5 ? DesktopTokens.focus : "#17FFFFFF"
                     Text { x: 14; y: 13; text: qsTr("STREAM STATS OVERLAY"); color: DesktopTokens.textFaint; font.family: DesktopTokens.monoFont; font.pixelSize: 8; font.weight: Font.Bold; font.letterSpacing: 1 }
                     Text { x: 14; y: 39; text: qsTr("See frame rate, latency and bitrate\nwithout leaving the game."); color: DesktopTokens.textBody; font.family: DesktopTokens.bodyFont; font.pixelSize: 11; font.weight: Font.DemiBold; lineHeight: 1.25 }
-                    KeyboardGlyph { x: 14; y: 83; shortcut: "F3"; keySize: 21; ink: DesktopTokens.textHigh }
-                    Text { x: 49; y: 87; text: qsTr("Cycle"); color: DesktopTokens.textMuted; font.family: DesktopTokens.bodyFont; font.pixelSize: 10; font.weight: Font.DemiBold }
-                    Text { anchors.right: parent.right; anchors.rightMargin: 14; y: 87; text: qsTr("Hold F3 for details"); color: DesktopTokens.textFaint; font.family: DesktopTokens.bodyFont; font.pixelSize: 10 }
+                    KeyboardGlyph { id: statsShortcutGlyph; x: 14; y: 83; visible: ShellStore.settings.shortcutToggleStats !== ""; shortcut: String(ShellStore.settings.shortcutToggleStats ?? "Ctrl+N"); keySize: 21; ink: DesktopTokens.textHigh }
+                    Text { x: statsShortcutGlyph.visible ? statsShortcutGlyph.x + statsShortcutGlyph.implicitWidth + 8 : 14; y: 87; text: qsTr("Cycle"); color: DesktopTokens.textMuted; font.family: DesktopTokens.bodyFont; font.pixelSize: 10; font.weight: Font.DemiBold }
                     HoverHandler { id: statsHover; onHoveredChanged: if (hovered) root.selectedIndex = 5 }
                     TapHandler { onTapped: root.runAction(5) }
                 }
@@ -470,9 +469,6 @@ FocusScope {
             event.accepted = true
         } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
             root.runAction(root.selectedIndex)
-            event.accepted = true
-        } else if (event.key === Qt.Key_F3) {
-            root.runAction(5)
             event.accepted = true
         } else if (event.key === Qt.Key_Q
                 && (event.modifiers & (Qt.ControlModifier | Qt.ShiftModifier

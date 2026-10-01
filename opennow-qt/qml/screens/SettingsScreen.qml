@@ -19,7 +19,7 @@ FocusScope {
     property string shortcutEditorKey: ""
     property string shortcutEditorTitle: ""
     property string shortcutEditorMessage: ""
-    property string dropdownTitle: "Choose a value"
+    property string dropdownTitle: qsTr("Choose a value")
     property string dropdownKey: ""
     property var dropdownLabels: []
     property var dropdownValues: []
@@ -31,13 +31,13 @@ FocusScope {
     readonly property real dropdownPanelHeight: dropdownKey === "resolution"
         ? 499 : Math.min(499, 91 + dropdownLabels.length * (dropdownDetails.length ? 64 : 40))
     readonly property var sections: [
-        {name:"Account", icon:"settings-account.svg", color:Theme.violet},
-        {name:"Streaming", icon:"settings-streaming.svg", color:Theme.focus},
-        {name:"Video & display", icon:"settings-video.svg", color:Theme.yellow},
-        {name:"Input & controllers", icon:"settings-input.svg", color:Theme.mint},
-        {name:"Network", icon:"settings-network.svg", color:Theme.coral},
-        {name:"Themes", icon:"settings-themes.svg", color:Theme.face},
-        {name:"Advanced", icon:"settings-advanced.svg", color:"#252A35"},
+        {name:qsTr("Account"), icon:"settings-account.svg", color:Theme.violet},
+        {name:qsTr("Streaming"), icon:"settings-streaming.svg", color:Theme.focus},
+        {name:qsTr("Video & display"), icon:"settings-video.svg", color:Theme.yellow},
+        {name:qsTr("Input & controllers"), icon:"settings-input.svg", color:Theme.mint},
+        {name:qsTr("Network"), icon:"settings-network.svg", color:Theme.coral},
+        {name:qsTr("Themes"), icon:"settings-themes.svg", color:Theme.face},
+        {name:qsTr("Advanced"), icon:"settings-advanced.svg", color:"#252A35"},
         {name:qsTr("Recording"), icon:"settings-video.svg", color:Theme.coral}
     ]
     DesktopSettingsShortcutBinding { id: shortcutBinding }
@@ -70,7 +70,7 @@ FocusScope {
     }
 
     function toggle(title, description, key, onLabel, offLabel) {
-        return {t:title, d:description, v:Boolean(ShellStore.settings[key]) ? (onLabel || "On") : (offLabel || "Off"), key:key, toggle:true, control:"toggle"}
+        return {t:title, d:description, v:Boolean(ShellStore.settings[key]) ? (onLabel || qsTr("On")) : (offLabel || qsTr("Off")), key:key, toggle:true, control:"toggle"}
     }
 
     function shortcut(title, description, key) {
@@ -127,7 +127,7 @@ FocusScope {
         if (aspect === "21:9")
             name = "UW " + height + "p"
         else if (aspect === "32:9")
-            name = "Super Ultrawide"
+            name = qsTr("Super Ultrawide")
         return name + (aspect.length ? " (" + aspect + ")" : "")
             + " · " + parts[0] + "×" + parts[1]
     }
@@ -138,18 +138,18 @@ FocusScope {
 
     function resolutionDropdownItems() {
         return [
-            {kind:"heading", label:"16:9 STANDARD", height:24},
+            {kind:"heading", label:qsTr("16:9 STANDARD"), height:24},
             {kind:"choice", label:"720p", detail:"1280×720", values:["1280x720"], height:38},
             {kind:"choice", label:"1080p", detail:"1920×1080", values:["1920x1080"], height:38},
             {kind:"choice", label:"1440p", detail:"2560×1440 · up to 120", values:["2560x1440"], height:38},
             {kind:"choice", label:"4K", detail:"3840×2160 · up to 120", values:["3840x2160"], height:38},
-            {kind:"heading", label:"16:10 WIDESCREEN", height:28},
+            {kind:"heading", label:qsTr("16:10 WIDESCREEN"), height:28},
             {kind:"choice", label:"720p · WXGA · WSXGA", detail:"1280×800 · 1440×900 · 1680×1050", values:["1280x800","1440x900","1680x1050"], height:38},
             {kind:"choice", label:"1200p · 1600p · 4K", detail:"1920×1200 · 2560×1600 · 3840×2400", values:["1920x1200","2560x1600","3840x2400"], height:38},
-            {kind:"heading", label:"21:9 ULTRAWIDE", height:28},
+            {kind:"heading", label:qsTr("21:9 ULTRAWIDE"), height:28},
             {kind:"choice", label:"UW 1080p · UW 1440p", detail:"2560×1080 · 3440×1440", values:["2560x1080","3440x1440"], height:38},
-            {kind:"heading", label:"32:9 SUPER ULTRAWIDE", height:28},
-            {kind:"choice", label:"Super Ultrawide", detail:"5120×1440", values:["5120x1440"], height:38}
+            {kind:"heading", label:qsTr("32:9 SUPER ULTRAWIDE"), height:28},
+            {kind:"choice", label:qsTr("Super Ultrawide"), detail:"5120×1440", values:["5120x1440"], height:38}
         ]
     }
 
@@ -305,7 +305,7 @@ FocusScope {
                 choice("Fallback codec", "Used when the preferred codec isn't offered by the rig", "fallbackCodec", ["auto","h264","h265"], ["Auto","H.264","H.265"], "dropdown", disabledCodecs),
                 descriptorChoice(qsTr("Color quality"), ShellStore.settingsOwnerState.colorDescription, "colorQuality", ShellStore.settingsOwnerState.colorQualityItems),
                 {t:qsTr("HDR"), d:hdrDescription, v:Boolean(settings.enableHdr) ? qsTr("On") : qsTr("Off"), key:"enableHdr", values:[false,true], labels:[qsTr("Off"),qsTr("On")], control:"segments", selectedIndex:Boolean(settings.enableHdr) ? 1 : 0, disabledValues:(hdrAvailable && hdrTierOk) ? [] : [true]},
-                {t:"Max bitrate", d:"Maximum requested stream bitrate", v:Number(settings.maxBitrateMbps || 75) + " Mbps", key:"maxBitrateMbps", values:[25,50,75,100,150,200], labels:["25 Mbps","50 Mbps","75 Mbps","100 Mbps","150 Mbps","200 Mbps"], control:"slider", sliderPercent:Number(settings.maxBitrateMbps || 75) / 106},
+                {t:"Max bitrate", d:"Maximum requested stream bitrate", v:Number(settings.maxBitrateMbps || 75) + " Mbps", key:"maxBitrateMbps", values:[0.22,1,5,10,25,50,75,100,150,200], labels:["0.22 Mbps","1 Mbps","5 Mbps","10 Mbps","25 Mbps","50 Mbps","75 Mbps","100 Mbps","150 Mbps","200 Mbps"], control:"slider", sliderPercent:Number(settings.maxBitrateMbps || 75) / 200},
                 toggle(qsTr("Save bandwidth"), qsTr("Lets the server trade resolution and image quality for a steadier frame rate when your connection cannot sustain the selected profile. Off requests no dynamic adjustment. Applies to new sessions."), "saveBandwidth"),
                 {t:qsTr("Frame generation (Experimental)"), d:qsTr("Targets 120 displayed FPS from a 60 FPS stream. Requires a fast GPU and 120 Hz display; adds latency and artifacts."), v:frameGeneration ? qsTr("2×") : qsTr("Off"), key:"frameGeneration", values:["off","2x"], labels:[qsTr("Off"),qsTr("2×")], control:"segments", selectedIndex:frameGeneration ? 1 : 0},
                 choice(qsTr("Upscaling"), Qt.platform.os === "osx"
@@ -341,10 +341,10 @@ FocusScope {
             return [
                 ...(GraphicsDevices.selectorVisible ? [choice(qsTr("Graphics processor"),
                     GraphicsDevices.savedDeviceUnavailable
-                        ? qsTr("Saved GPU unavailable; using Automatic. Changes apply after restarting OpenNOW.")
-                        : qsTr("Uses the same GPU for decoding and display. Changes apply after restarting OpenNOW."),
+                        ? qsTr("Saved GPU unavailable; using the first GPU that can hardware-decode. Changes apply after restarting OpenNOW.")
+                        : qsTr("Automatic uses the first GPU that can hardware-decode and lists each GPU's codecs. The same GPU decodes and displays. Changes apply after restarting OpenNOW."),
                     "windowsGpuDeviceId", GraphicsDevices.choices.map(item => item.value),
-                    GraphicsDevices.choices.map(item => item.label), "dropdown",
+                    GraphicsDevices.choices.map(item => item.detail ? item.label + " — " + item.detail : item.label), "dropdown",
                     GraphicsDevices.choices.filter(item => item.disabled).map(item => item.value))] : []),
                 toggle(qsTr("Steam Big Picture mode"), qsTr("Request gamepad-friendly launchers such as Steam Big Picture. Applies to new GeForce NOW sessions only."), "steamBigPictureMode"),
                 {t:"Display", d:"The Qt stream surface uses the current display", v:"Monitor 1 · current display", info:true},
@@ -388,7 +388,7 @@ FocusScope {
             rows.push({t:qsTr("Game language metadata"), d:ShellStore.settingsOwnerState.languageStatusText,
                 v:qsTr("Retry"), action:"retry-languages", info:!ShellStore.settingsOwnerState.ready || ShellStore.settingsOwnerState.languageState === "loading"})
             rows.push(descriptorChoice(qsTr("Keyboard layout"), ShellStore.settingsOwnerState.keyboardLayoutDescription,
-                "keyboardLayout", ShellStore.settingsOwnerState.keyboardLayoutItems))
+                "keyboardLayout", ShellStore.keyboardLayoutItems))
             rows.push({t:"Shortcuts", d:"Stats Ctrl+N · Pointer lock F8 · Fullscreen F11 · Screenshot Ctrl+F11", v:"Edit shortcuts", key:"shortcutToggleStats", action:"shortcut-editor"})
             rows.push(choice(qsTr("Microphone"), ShellStore.microphoneCaptureSupported ? ShellStore.microphoneDescription : qsTr("Microphone capture is unavailable in this build."),
                 "microphoneMode", ["disabled", "voice-activity"], [qsTr("Disabled"), qsTr("Open microphone")], "segments",
@@ -554,7 +554,7 @@ FocusScope {
         } else if (row.action === "shortcut-editor") {
             shortcutEditorKey = row.key
             shortcutEditorTitle = row.t
-            shortcutEditorMessage = qsTr("Press the new shortcut. Escape cancels.")
+            shortcutEditorMessage = qsTr("Press a new shortcut or clear this binding. Escape cancels.")
             shortcutEditorOpen = true
         } else if (row.action === "select-streamer") {
             streamerExecutableDialog.open()
@@ -665,7 +665,7 @@ FocusScope {
                 contentItem: Row {
                     spacing: 12
                     Rectangle { width: 30; height: 30; radius: 10; color: modelData.color
-                        Image { anchors.centerIn: parent; width: modelData.name === "Input & controllers" ? 20 : 18; height: width; source: "qrc:/qt/qml/OpenNOW/res/icons/" + modelData.icon; sourceSize: Qt.size(width, height) }
+                        Image { anchors.centerIn: parent; width: modelData.icon === "settings-input.svg" ? 20 : 18; height: width; source: "qrc:/qt/qml/OpenNOW/res/icons/" + modelData.icon; sourceSize: Qt.size(width, height) }
                     }
                     Text { anchors.verticalCenter: parent.verticalCenter; text: I18n.source(modelData.name, I18n.revision); color: root.selectedSection === index ? Theme.faceText : Theme.label; font.family: Theme.bodyFont; font.pixelSize: 17; font.weight: Font.ExtraBold }
                 }
@@ -1027,7 +1027,7 @@ FocusScope {
         z: 41
         anchors.centerIn: parent
         width: 560
-        height: 244
+        height: 290
         panelRadius: 30
         strong: true
         FocusScope {
@@ -1045,10 +1045,14 @@ FocusScope {
                     border.width: shortcutCapture.activeFocus ? 3 : 1
                     Text { anchors.centerIn: parent; text: qsTr("Press a key combination…"); color: Theme.label; font.family: Theme.monoFont; font.pixelSize: 18; font.weight: Font.Bold }
                 }
+                Text { width: parent.width; text: I18n.source(root.shortcutEditorMessage, I18n.revision); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 13; wrapMode: Text.WordWrap }
                 Row {
                     spacing: 14
-                    Text { width: 350; anchors.verticalCenter: parent.verticalCenter; text: I18n.source(root.shortcutEditorMessage, I18n.revision); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 13; wrapMode: Text.WordWrap }
                     GlassButton { width: 130; height: 44; text: qsTr("Cancel"); glyph: "B"; onClicked: root.shortcutEditorOpen = false }
+                    GlassButton { width: 130; height: 44; text: qsTr("Clear shortcut"); onClicked: {
+                        ShellStore.setSetting(root.shortcutEditorKey, "")
+                        root.shortcutEditorOpen = false
+                    } }
                 }
             }
         }

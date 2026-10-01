@@ -69,6 +69,10 @@ struct ImportedDmaBufImage {
     memory: vk::DeviceMemory,
     luma_view: vk::ImageView,
     chroma_view: vk::ImageView,
+    /// Height the image was created with, which exceeds the visible height when
+    /// the decoder pads the picture. Sampling is scaled by `visible / coded` so
+    /// the padding rows stay off screen.
+    coded_height: u32,
 }
 
 struct DirectVulkanViews {
@@ -185,6 +189,7 @@ pub struct VulkanPresenter {
     staging_buffer: vk::Buffer,
     staging_memory: vk::DeviceMemory,
     staging_capacity: vk::DeviceSize,
+    staging_mapped: usize,
     needs_reconfigure: bool,
     _thread_affinity: PhantomData<Rc<()>>,
 }
@@ -276,6 +281,13 @@ impl VulkanPresenter {
             ash::khr::external_memory_fd::NAME,
             ash::ext::external_memory_dma_buf::NAME,
             ash::ext::image_drm_format_modifier::NAME,
+            // An imported DMA-BUF is owned by V4L2/VA-API, not by another
+            // Vulkan device, so acquiring and releasing it is a transfer to and
+            // from `VK_QUEUE_FAMILY_FOREIGN_EXT`, which this extension defines.
+            // Without it the import has no legal way to take ownership, so it
+            // is required rather than optional, matching the contract the Qt
+            // renderer already applies to its own DMA-BUF buffer import.
+            ash::ext::queue_family_foreign::NAME,
         ];
         let dmabuf_import_supported =
             supports_device_extensions(&instance, physical_device, &dma_buf_extensions)
@@ -369,6 +381,7 @@ impl VulkanPresenter {
             staging_buffer: vk::Buffer::null(),
             staging_memory: vk::DeviceMemory::null(),
             staging_capacity: 0,
+            staging_mapped: 0,
             needs_reconfigure: false,
             _thread_affinity: PhantomData,
         };
@@ -434,6 +447,9 @@ impl VulkanPresenter {
 
         let luma_len = frame.format.width as usize * frame.format.height as usize;
         let direct_vulkan = frame.vulkan.as_ref().map(Arc::clone);
+        // Set only for a DMA-BUF import, and only when the decoder padded the
+        // buffer taller than the visible picture.
+        let mut imported_coded_height = None;
         let direct_image = if let Some(vulkan) = direct_vulkan.as_ref() {
             if self.device.handle().as_raw() != vulkan.device as u64 {
                 return Err(Error::backend(
@@ -460,6 +476,7 @@ impl VulkanPresenter {
                 )
             })?;
             let handles = (imported.image, imported.luma_view, imported.chroma_view);
+            imported_coded_height = Some(imported.coded_height);
             self.update_descriptors(handles.1, handles.2);
             Some(handles.0)
         } else {
@@ -469,29 +486,26 @@ impl VulkanPresenter {
                 Error::InvalidFormat("NV12 presentation buffer size overflow".to_owned())
             })?;
             self.ensure_staging(upload_len as vk::DeviceSize)?;
-            let mapped = unsafe {
-                self.device.map_memory(
-                    self.staging_memory,
-                    0,
-                    upload_len as vk::DeviceSize,
-                    vk::MemoryMapFlags::empty(),
-                )
+            if self.staging_mapped == 0 {
+                return Err(Error::backend(
+                    Subsystem::Vulkan,
+                    "presentation staging memory is not mapped",
+                ));
             }
-            .map_err(|error| vk_error("map staging memory", error))?;
             unsafe {
+                let mapped = self.staging_mapped as *mut u8;
                 copy_plane_rows(
                     &frame.planes[0],
-                    mapped.cast(),
+                    mapped,
                     frame.format.width as usize,
                     frame.format.height as usize,
                 );
                 copy_plane_rows(
                     &frame.planes[1],
-                    mapped.cast::<u8>().add(luma_len),
+                    mapped.add(luma_len),
                     frame.format.width as usize,
                     frame.format.height as usize / 2,
                 );
-                self.device.unmap_memory(self.staging_memory);
             }
             None
         };
@@ -582,7 +596,12 @@ impl VulkanPresenter {
                 let acquire = [vk::ImageMemoryBarrier::default()
                     .old_layout(vk::ImageLayout::GENERAL)
                     .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                    .src_queue_family_index(vk::QUEUE_FAMILY_EXTERNAL)
+                    // The producer is V4L2/VA-API, not another Vulkan device,
+                    // so ownership comes from the foreign queue family.
+                    // `EXTERNAL` would promise a matching release from a Vulkan
+                    // device that never happens, leaving the contents
+                    // undefined.
+                    .src_queue_family_index(vk::QUEUE_FAMILY_FOREIGN_EXT)
                     .dst_queue_family_index(self.queue_family)
                     .src_access_mask(vk::AccessFlags::MEMORY_WRITE)
                     .dst_access_mask(vk::AccessFlags::SHADER_READ)
@@ -727,7 +746,7 @@ impl VulkanPresenter {
                 &[self.descriptor_set],
                 &[],
             );
-            let constants = conversion_constants(frame, self.extent);
+            let constants = conversion_constants(frame, self.extent, imported_coded_height);
             let constants = std::slice::from_raw_parts(
                 (&constants as *const ConversionConstants).cast::<u8>(),
                 std::mem::size_of::<ConversionConstants>(),
@@ -784,7 +803,9 @@ impl VulkanPresenter {
                     .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                     .new_layout(vk::ImageLayout::GENERAL)
                     .src_queue_family_index(self.queue_family)
-                    .dst_queue_family_index(vk::QUEUE_FAMILY_EXTERNAL)
+                    // Released back to the foreign V4L2/VA-API producer; see
+                    // the matching acquire barrier above.
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_FOREIGN_EXT)
                     .src_access_mask(vk::AccessFlags::SHADER_READ)
                     .dst_access_mask(vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE)
                     .image(image)
@@ -1442,12 +1463,16 @@ impl VulkanPresenter {
             .map_err(|error| vk_error("wait before staging resize", error))?;
         if self.staging_buffer != vk::Buffer::null() {
             unsafe {
+                if self.staging_mapped != 0 {
+                    self.device.unmap_memory(self.staging_memory);
+                }
                 self.device.destroy_buffer(self.staging_buffer, None);
                 self.device.free_memory(self.staging_memory, None);
             }
             self.staging_buffer = vk::Buffer::null();
             self.staging_memory = vk::DeviceMemory::null();
             self.staging_capacity = 0;
+            self.staging_mapped = 0;
         }
         let buffer_info = vk::BufferCreateInfo::default()
             .size(required)
@@ -1488,32 +1513,69 @@ impl VulkanPresenter {
             }
             return Err(vk_error("bind staging memory", error));
         }
+        let staging_mapped = match unsafe {
+            self.device.map_memory(
+                staging_memory,
+                0,
+                requirements.size,
+                vk::MemoryMapFlags::empty(),
+            )
+        } {
+            Ok(mapped) => mapped as usize,
+            Err(error) => {
+                unsafe {
+                    self.device.destroy_buffer(staging_buffer, None);
+                    self.device.free_memory(staging_memory, None);
+                }
+                return Err(vk_error("map staging memory", error));
+            }
+        };
         self.staging_buffer = staging_buffer;
         self.staging_memory = staging_memory;
         self.staging_capacity = requirements.size;
+        self.staging_mapped = staging_mapped;
         Ok(())
     }
 }
 
 #[repr(C)]
 struct ConversionConstants {
+    /// Letterbox scale, applied about the centre of the target so the picture
+    /// keeps its aspect ratio; the shader paints anything outside the source
+    /// black.
     texture_scale: [f32; 2],
+    /// Padding crop, applied about the origin *after* the letterbox mapping so
+    /// the rows a decoder padded on to the bottom of its buffer are never
+    /// sampled. `[1.0, 1.0]` for every unpadded source, which is every upload
+    /// path and any DMA-BUF whose planes sit exactly one visible picture apart.
+    coded_scale: [f32; 2],
     color_matrix: u32,
     full_range: u32,
 }
 
-fn conversion_constants(frame: &DecodedVideoFrame, extent: vk::Extent2D) -> ConversionConstants {
+fn conversion_constants(
+    frame: &DecodedVideoFrame,
+    extent: vk::Extent2D,
+    coded_height: Option<u32>,
+) -> ConversionConstants {
     let (_, _, fitted_width, fitted_height) = aspect_fit_extent(
         frame.format.width,
         frame.format.height,
         extent.width,
         extent.height,
     );
+    let coded_scale_y = match coded_height {
+        Some(coded) if coded > frame.format.height && frame.format.height > 0 => {
+            frame.format.height as f32 / coded as f32
+        }
+        _ => 1.0,
+    };
     ConversionConstants {
         texture_scale: [
             extent.width as f32 / fitted_width.max(1) as f32,
             extent.height as f32 / fitted_height.max(1) as f32,
         ],
+        coded_scale: [1.0, coded_scale_y],
         color_matrix: match frame.format.color_matrix {
             ColorMatrix::Bt601 => 0,
             ColorMatrix::Bt709 => 1,
@@ -1529,8 +1591,15 @@ unsafe fn copy_plane_rows(
     row_bytes: usize,
     rows: usize,
 ) {
-    for row in 0..rows {
-        unsafe {
+    if row_bytes == 0 || rows == 0 {
+        return;
+    }
+    unsafe {
+        if plane.stride == row_bytes {
+            std::ptr::copy_nonoverlapping(plane.data.as_ptr(), destination, row_bytes * rows);
+            return;
+        }
+        for row in 0..rows {
             std::ptr::copy_nonoverlapping(
                 plane.data.as_ptr().add(row * plane.stride),
                 destination.add(row * row_bytes),
@@ -1610,17 +1679,26 @@ fn import_nv12_dmabuf(
             "DMA-BUF plane offset exceeds its object size".to_owned(),
         ));
     }
+    // The image must be created at the buffer's *coded* height, not the visible
+    // one: a driver that derives the chroma base from the image extent rather
+    // than the explicit layout below would otherwise read a padded plane
+    // `pitch * padding` bytes early. See the matching import in
+    // frame_producer.rs.
+    let coded_height = crate::format::nv12_coded_height(&luma, &chroma, height);
+    // `size` must be 0 in every plane layout
+    // (VUID-VkImageDrmFormatModifierExplicitCreateInfoEXT-size-02267); see the
+    // matching import in frame_producer.rs.
     let plane_layouts = [
         vk::SubresourceLayout {
             offset: luma.offset as vk::DeviceSize,
-            size: object_size.saturating_sub(luma.offset) as vk::DeviceSize,
+            size: 0,
             row_pitch: luma.pitch as vk::DeviceSize,
             array_pitch: 0,
             depth_pitch: 0,
         },
         vk::SubresourceLayout {
             offset: chroma.offset as vk::DeviceSize,
-            size: object_size.saturating_sub(chroma.offset) as vk::DeviceSize,
+            size: 0,
             row_pitch: chroma.pitch as vk::DeviceSize,
             array_pitch: 0,
             depth_pitch: 0,
@@ -1639,7 +1717,7 @@ fn import_nv12_dmabuf(
         .format(vk::Format::G8_B8R8_2PLANE_420_UNORM)
         .extent(vk::Extent3D {
             width,
-            height,
+            height: coded_height,
             depth: 1,
         })
         .mip_levels(1)
@@ -1750,6 +1828,7 @@ fn import_nv12_dmabuf(
         memory,
         luma_view,
         chroma_view,
+        coded_height,
     })
 }
 
@@ -1926,6 +2005,9 @@ impl Drop for VulkanPresenter {
         self.destroy_nv12_images();
         unsafe {
             if self.staging_buffer != vk::Buffer::null() {
+                if self.staging_mapped != 0 {
+                    self.device.unmap_memory(self.staging_memory);
+                }
                 self.device.destroy_buffer(self.staging_buffer, None);
                 self.device.free_memory(self.staging_memory, None);
             }
@@ -2361,17 +2443,26 @@ mod tests {
             vulkan: None,
             timestamp_us: 0,
         };
-        let constants = conversion_constants(
-            &frame,
-            vk::Extent2D {
-                width: 1024,
-                height: 768,
-            },
-        );
+        let extent = vk::Extent2D {
+            width: 1024,
+            height: 768,
+        };
+        let constants = conversion_constants(&frame, extent, None);
         assert_eq!(constants.texture_scale, [1.0, 768.0 / 576.0]);
         assert_eq!(constants.color_matrix, 2);
         assert_eq!(constants.full_range, 1);
-        assert_eq!(std::mem::size_of::<ConversionConstants>(), 16);
+        assert_eq!(std::mem::size_of::<ConversionConstants>(), 24);
+
+        // An unpadded import, and one padded the way the Apple AVD block pads:
+        // only the latter crops, and the letterbox scale is untouched either
+        // way.
+        assert_eq!(
+            conversion_constants(&frame, extent, Some(1080)).coded_scale,
+            [1.0, 1.0]
+        );
+        let padded = conversion_constants(&frame, extent, Some(1088));
+        assert_eq!(padded.coded_scale, [1.0, 1080.0 / 1088.0]);
+        assert_eq!(padded.texture_scale, constants.texture_scale);
     }
 
     #[test]

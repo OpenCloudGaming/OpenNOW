@@ -33,6 +33,7 @@ mod thanks;
 mod updater;
 mod version;
 
+use fs2::FileExt;
 use gfn::GfnService;
 use opennow_core::update_apply;
 use rand::RngCore;
@@ -41,13 +42,14 @@ use settings::{SettingsStore, resolve_data_dir};
 use std::env;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::thread;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use streamer::StreamerService;
 
 const PROTOCOL_VERSION: i64 = 5;
 const MAXIMUM_LINE_BYTES: usize = 1024 * 1024;
+static PROFILE_LOCK: OnceLock<std::fs::File> = OnceLock::new();
 
 struct AppCore {
     session_update_gate: Mutex<()>,
@@ -83,6 +85,23 @@ fn run() -> Result<(), String> {
             &json!({"version":1,"windowsGpuDeviceId":windows_gpu_device_id}),
         );
     }
+    std::fs::create_dir_all(&data_dir)
+        .map_err(|error| format!("Could not initialize the data directory: {error}"))?;
+    let profile_lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(data_dir.join("core.lock"))
+        .map_err(|error| format!("Could not open the data directory lock: {error}"))?;
+    profile_lock.try_lock_exclusive().map_err(|error| {
+        if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() {
+            "The OpenNOW data directory is already in use".to_owned()
+        } else {
+            format!("Could not lock the data directory: {error}")
+        }
+    })?;
+    PROFILE_LOCK.get_or_init(|| profile_lock);
     let (output_tx, output_rx) = mpsc::channel::<Value>();
     thread::Builder::new()
         .name("opennow-core-writer".to_owned())
@@ -471,6 +490,24 @@ fn dispatch(method: &str, params: &Value, core: &AppCore) -> DispatchResult {
                 event["changes"] = json!({"microphoneDeviceId": ""});
             }
             Ok((event.clone(), Some(("settings.changed", event))))
+        }
+        "settings.shortcuts.update" => {
+            let bindings = core
+                .settings
+                .lock()
+                .expect("settings poisoned")
+                .set_shortcuts(&params["bindings"])
+                .map_err(|message| ("invalid_setting".to_owned(), message))?;
+            let (key, value) = bindings
+                .iter()
+                .next()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .expect("shortcut transaction applies at least one binding");
+            let event = json!({"key":key, "value":value, "changes":bindings});
+            Ok((
+                json!({"bindings":bindings}),
+                Some(("settings.changed", event)),
+            ))
         }
         "settings.reset" => {
             let values = core

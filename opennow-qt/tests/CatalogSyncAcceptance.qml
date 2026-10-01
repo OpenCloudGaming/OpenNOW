@@ -158,11 +158,82 @@ QtObject {
             "pending direct launch created a first-page error retry loop")
         ShellStore.pendingDirectLaunch = null
     }
+    function verifyAccountLinkReplacement(accounts) {
+        ShellStore.lastError = ""
+        accounts.startAccountLink("UPLAY")
+        client.responseReceived(accounts.accountLinkStartRequestId,
+            {attemptId:"first-link",provider:"UPLAY",loginUrl:""})
+        accounts.accountLinkPollTimer.stop()
+        accounts.pollAccountLink()
+        const oldPoll = accounts.accountLinkPollRequestId
+        accounts.startAccountLink("EPIC")
+        client.responseReceived(accounts.accountLinkStartRequestId,
+            {attemptId:"replacement-link",provider:"EPIC",loginUrl:""})
+        check(ShellStore.lastError === "", "retired link poll cancellation was reported as a global error")
+        accounts.accountLinkPollTimer.stop()
+        client.responseReceived(oldPoll, {status:"complete"})
+        check(accounts.accountLinkAttempt && accounts.accountLinkAttempt.attemptId === "replacement-link",
+            "old link completion discarded the replacement sign-in")
+        check(client.cancellations.some(item => item.id === oldPoll), "replacement retained the old link poll")
+        accounts.pollAccountLink()
+        const newPoll = accounts.accountLinkPollRequestId
+        check(client.requests.find(item => item.id === newPoll).params.attemptId === "replacement-link",
+            "replacement sign-in polled the old attempt")
+        client.requestFailed(oldPoll, "link_attempt_not_found", "Old attempt expired")
+        check(accounts.accountLinkPollRequestId === newPoll && accounts.accountLinkAttempt !== null,
+            "old link failure stopped the replacement sign-in")
+        client.responseReceived(newPoll, {status:"complete"})
+        check(accounts.accountLinkAttempt === null && !accounts.accountLinkPollTimer.running,
+            "replacement sign-in did not finish")
+    }
+    function verifyStoreActions(host, accounts) {
+        const stores = namedChild(host, "desktopStoresSettings")
+        if (!stores) {
+            check(AppController.route !== "settings-account", "account settings did not create the stores page")
+            return
+        }
+        const fixtures = [
+            {provider:"STEAM",label:"Fixture Steam",isConnected:true,status:"connected",supportsSync:true,supportsLinking:false},
+            {provider:"UPLAY",label:"Fixture Ubisoft",isConnected:false,status:"not_connected",supportsSync:true,supportsLinking:true}
+        ]
+        accounts.refreshGameAccounts()
+        client.responseReceived(accounts.gameAccountsRequestId, {accounts:fixtures,subscriptions:[],definitions:{}})
+        for (const account of fixtures) {
+            const button = storeActionButton(stores, account.label)
+            check(button && button.enabled, "supported store action is disabled or missing")
+            button.clicked()
+            const id = account.provider === "STEAM" ? accounts.gameAccountActionRequestId : accounts.accountLinkStartRequestId
+            const request = client.requests.find(item => item.id === id)
+            check(request && request.method === (account.provider === "STEAM" ? "account.connections.sync" : "account.connections.link.start")
+                && request.params.provider === account.provider, "store button did not dispatch its core RPC")
+            const notice = namedChild(stores, "storeSyncNotice")
+            check(notice.text === accounts.gameAccountMessage && notice.text !== "", "store action did not display progress")
+            client.requestFailed(id, "upstream_error", "Fixture account action failure")
+            check(notice.text === "Fixture account action failure", "store action failure was not displayed")
+            button.clicked()
+            const retry = account.provider === "STEAM" ? accounts.gameAccountActionRequestId : accounts.accountLinkStartRequestId
+            check(retry !== "" && retry !== id, "store action could not retry after a core failure")
+            client.requestFailed(retry, "upstream_error", "Fixture retry failure")
+        }
+    }
+    function storeActionButton(item, label) {
+        if (item.title === label) {
+            for (const child of item.trailing || [])
+                if (child.clicked !== undefined && child.text === item.status.action) return child
+        }
+        for (const child of item.children || []) {
+            const found = storeActionButton(child, label)
+            if (found) return found
+        }
+        return null
+    }
     function run(host) {
         const route = AppController.route
         ShellStore.authSession = {user:{userId:"catalog-fixture",displayName:"Catalog fixture"},provider:{idpId:"fixture"}}
         const owner = ShellStore.catalogOwnerState
         const accounts = ShellStore.accountServicesOwnerState
+        verifyAccountLinkReplacement(accounts)
+        verifyStoreActions(host, accounts)
         verifyAccountChangeDuringTraversal(owner, accounts)
         verifyDirectLaunchPaging(owner)
         ShellStore.lastError = ""

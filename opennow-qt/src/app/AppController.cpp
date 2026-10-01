@@ -418,11 +418,13 @@ void AppController::activateWindow()
 
 void AppController::quitApplication()
 {
+    emit applicationExitCommitted();
     QCoreApplication::quit();
 }
 
 void AppController::restartApplication()
 {
+    emit applicationExitCommitted();
     emit restartRequested();
 }
 
@@ -564,6 +566,7 @@ const QStringList &AppController::primaryRoutes()
 const QStringList &AppController::overlays()
 {
     static const QStringList value{
+        u"application-quit-confirm"_s,
         u"friends"_s,
         u"friend-actions"_s,
         u"quick-settings"_s,

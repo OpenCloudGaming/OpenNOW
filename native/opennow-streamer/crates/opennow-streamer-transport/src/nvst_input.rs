@@ -18,6 +18,7 @@ const INPUT_PARTIAL_LABEL: &str = "input_channel_partially_reliable";
 const CURSOR_LABEL: &str = "cursor_channel";
 const RTCP_ON_SCTP_LABEL: &str = "rtcp_on_sctp_private";
 const PARTIAL_RELIABLE_LIFETIME_MS: u16 = 300;
+const CUSTOM_PARTIAL_MAX_RETRANSMITS: u16 = 2;
 
 const COMMAND_SYSTEM_CURSOR: u16 = 0x010f;
 const COMMAND_BITMAP_CURSOR: u16 = 0x0110;
@@ -82,8 +83,8 @@ pub(crate) const NVST_CHANNEL_PROFILE: [NvstChannelDefinition; 8] = [
     NvstChannelDefinition {
         sid: 4,
         label: CUSTOM_PARTIAL_LABEL,
-        ordered: false,
-        reliability: NvstChannelReliability::Lifetime(PARTIAL_RELIABLE_LIFETIME_MS),
+        ordered: true,
+        reliability: NvstChannelReliability::MaxRetransmits(CUSTOM_PARTIAL_MAX_RETRANSMITS),
     },
     NvstChannelDefinition {
         sid: 6,
@@ -128,8 +129,8 @@ pub(crate) struct NvstInputChannels {
     pub(crate) control_partial: ChannelId,
     pub(crate) control_unreliable: ChannelId,
     pub(crate) input_partial: ChannelId,
-    pub(crate) cursor: ChannelId,
-    pub(crate) rtcp: ChannelId,
+    pub(crate) cursor: Option<ChannelId>,
+    pub(crate) rtcp: Option<ChannelId>,
 }
 
 impl NvstInputChannels {
@@ -159,14 +160,22 @@ impl NvstInputChannels {
             .all(|message| channel.write(true, &message.bytes).unwrap_or(false))
     }
 
-    pub(crate) fn create(rtc: &mut Rtc) -> Self {
-        let mut ids = Vec::with_capacity(NVST_CHANNEL_PROFILE.len());
-        for definition in NVST_CHANNEL_PROFILE {
+    pub(crate) fn create(rtc: &mut Rtc, bundle_video: bool) -> Self {
+        let mut ids = Vec::with_capacity(6);
+        for definition in &NVST_CHANNEL_PROFILE[..6] {
             ids.push(
                 rtc.direct_api()
-                    .create_data_channel(channel_config(definition)),
+                    .create_data_channel(channel_config(*definition)),
             );
         }
+        let cursor = bundle_video.then(|| {
+            rtc.direct_api()
+                .create_data_channel(channel_config(NVST_CHANNEL_PROFILE[6]))
+        });
+        let rtcp = bundle_video.then(|| {
+            rtc.direct_api()
+                .create_data_channel(channel_config(NVST_CHANNEL_PROFILE[7]))
+        });
         Self {
             control_reliable: ids[0],
             custom_reliable: ids[1],
@@ -174,13 +183,13 @@ impl NvstInputChannels {
             control_partial: ids[3],
             control_unreliable: ids[4],
             input_partial: ids[5],
-            cursor: ids[6],
-            rtcp: ids[7],
+            cursor,
+            rtcp,
         }
     }
 
     pub(crate) fn contains(self, id: ChannelId) -> bool {
-        self.all().contains(&id)
+        self.rtcp != Some(id) && self.all().any(|channel| channel == id)
     }
 
     pub(crate) fn label(self, id: ChannelId) -> &'static str {
@@ -196,9 +205,9 @@ impl NvstInputChannels {
             CONTROL_UNRELIABLE_LABEL
         } else if id == self.input_partial {
             INPUT_PARTIAL_LABEL
-        } else if id == self.cursor {
+        } else if Some(id) == self.cursor {
             CURSOR_LABEL
-        } else if id == self.rtcp {
+        } else if Some(id) == self.rtcp {
             RTCP_ON_SCTP_LABEL
         } else {
             "unknown"
@@ -214,7 +223,8 @@ impl NvstInputChannels {
     }
 
     pub(crate) fn send_rtcp(self, rtc: &mut Rtc, bytes: &[u8]) -> bool {
-        self.write(rtc, self.rtcp, bytes, WriteClass::Normal)
+        self.rtcp
+            .is_some_and(|id| self.write(rtc, id, bytes, WriteClass::Normal))
     }
 
     pub(crate) fn send_partial_control(self, rtc: &mut Rtc, bytes: &[u8]) -> bool {
@@ -258,22 +268,23 @@ impl NvstInputChannels {
 
     pub(crate) fn buffered_total(self, rtc: &mut Rtc) -> usize {
         self.all()
-            .into_iter()
-            .chain([self.rtcp])
             .filter_map(|id| rtc.channel(id).map(|mut channel| channel.buffered_amount()))
             .sum()
     }
 
-    fn all(self) -> [ChannelId; 7] {
+    fn all(self) -> impl Iterator<Item = ChannelId> {
         [
-            self.control_reliable,
-            self.custom_reliable,
-            self.custom_partial,
-            self.control_partial,
-            self.control_unreliable,
-            self.input_partial,
+            Some(self.control_reliable),
+            Some(self.custom_reliable),
+            Some(self.custom_partial),
+            Some(self.control_partial),
+            Some(self.control_unreliable),
+            Some(self.input_partial),
             self.cursor,
+            self.rtcp,
         ]
+        .into_iter()
+        .flatten()
     }
 }
 
@@ -1404,14 +1415,14 @@ mod tests {
         );
         assert_eq!(
             NVST_CHANNEL_PROFILE.map(|definition| definition.ordered),
-            [true, true, false, false, false, false, true, true]
+            [true, true, true, false, false, false, true, true]
         );
         assert_eq!(
             NVST_CHANNEL_PROFILE.map(|definition| definition.reliability),
             [
                 NvstChannelReliability::Reliable,
                 NvstChannelReliability::Reliable,
-                NvstChannelReliability::Lifetime(300),
+                NvstChannelReliability::MaxRetransmits(2),
                 NvstChannelReliability::Lifetime(300),
                 NvstChannelReliability::MaxRetransmits(0),
                 NvstChannelReliability::Lifetime(300),
@@ -1422,14 +1433,14 @@ mod tests {
         let configs = NVST_CHANNEL_PROFILE.map(channel_config);
         assert_eq!(
             configs.clone().map(|config| config.ordered),
-            [true, true, false, false, false, false, true, true]
+            [true, true, true, false, false, false, true, true]
         );
         assert_eq!(
             configs.map(|config| config.reliability),
             [
                 Reliability::Reliable,
                 Reliability::Reliable,
-                Reliability::MaxPacketLifetime { lifetime: 300 },
+                Reliability::MaxRetransmits { retransmits: 2 },
                 Reliability::MaxPacketLifetime { lifetime: 300 },
                 Reliability::MaxRetransmits { retransmits: 0 },
                 Reliability::MaxPacketLifetime { lifetime: 300 },
@@ -1439,9 +1450,79 @@ mod tests {
         );
 
         let mut rtc = Rtc::new(Instant::now());
-        let channels = NvstInputChannels::create(&mut rtc);
-        assert_eq!(channels.label(channels.rtcp), RTCP_ON_SCTP_LABEL);
-        assert!(!channels.contains(channels.rtcp));
+        let channels = NvstInputChannels::create(&mut rtc, true);
+        let rtcp = channels.rtcp.expect("negotiated RTCP channel");
+        assert_eq!(channels.label(rtcp), RTCP_ON_SCTP_LABEL);
+        assert!(!channels.contains(rtcp));
+    }
+
+    #[test]
+    fn custom_channel_retransmits_while_mouse_motion_stays_unordered() {
+        let custom = channel_config(NVST_CHANNEL_PROFILE[2]);
+        assert!(custom.ordered);
+        assert_eq!(
+            custom.reliability,
+            Reliability::MaxRetransmits { retransmits: 2 }
+        );
+
+        let motion_channel = channel_config(NVST_CHANNEL_PROFILE[3]);
+        assert!(!motion_channel.ordered);
+        assert_eq!(
+            motion_channel.reliability,
+            Reliability::MaxPacketLifetime { lifetime: 300 }
+        );
+        let mut motion = [0; 22];
+        motion[..4].copy_from_slice(&INPUT_MOUSE_RELATIVE.to_le_bytes());
+        let encoded = NvstInputCodec::default().encode(&motion, 0).unwrap();
+        assert_eq!(encoded[0].route, NvstInputRoute::ControlPartial);
+    }
+
+    #[test]
+    fn optional_channels_follow_video_route_without_dropping_bundle_feedback() {
+        for (bundle_video, expected_count) in [(false, 6), (true, 8)] {
+            let mut rtc = Rtc::new(Instant::now());
+            let channels = NvstInputChannels::create(&mut rtc, bundle_video);
+            assert_eq!(channels.all().count(), expected_count);
+            assert_eq!(channels.cursor.is_some(), bundle_video);
+            assert_eq!(channels.rtcp.is_some(), bundle_video);
+            for id in channels.all() {
+                assert_eq!(channels.contains(id), Some(id) != channels.rtcp);
+                assert_ne!(channels.label(id), "unknown");
+            }
+            if let Some(cursor) = channels.cursor {
+                assert_eq!(channels.label(cursor), CURSOR_LABEL);
+            }
+            if let Some(rtcp) = channels.rtcp {
+                assert_eq!(channels.label(rtcp), RTCP_ON_SCTP_LABEL);
+                assert!(channels.all().any(|id| id == rtcp));
+                assert!(!channels.contains(rtcp));
+            } else {
+                assert!(!channels.send_rtcp(&mut rtc, &[0x80, 0xc9]));
+            }
+        }
+    }
+
+    #[test]
+    fn optional_channel_closure_preserves_input_until_control_shutdown() {
+        for bundle_video in [false, true] {
+            let mut rtc = Rtc::new(Instant::now());
+            let channels = NvstInputChannels::create(&mut rtc, bundle_video);
+            let mut state = NvstInputChannelState::default();
+            state.channel_opened(channels, channels.control_reliable);
+            state.channel_data(
+                channels,
+                channels.control_reliable,
+                &[0x0e, 0x02, 0x02, 0x00, 0x03, 0x00],
+            );
+            assert!(state.is_ready());
+            for id in [channels.cursor, channels.rtcp].into_iter().flatten() {
+                assert!(!state.channel_closed(channels, id));
+                assert!(state.is_ready());
+            }
+            assert!(state.channel_closed(channels, channels.control_reliable));
+            assert!(!state.is_ready());
+            assert!(!state.channel_closed(channels, channels.control_reliable));
+        }
     }
 
     #[test]
@@ -1460,7 +1541,7 @@ mod tests {
         );
 
         let mut rtc = Rtc::new(Instant::now());
-        let channels = NvstInputChannels::create(&mut rtc);
+        let channels = NvstInputChannels::create(&mut rtc, false);
         let mut state = NvstInputChannelState::default();
         assert_eq!(
             state.channel_opened(channels, channels.control_reliable),
@@ -1916,7 +1997,7 @@ mod tests {
     fn closure_and_timeout_state_are_predictable() {
         let now = Instant::now();
         let mut rtc = Rtc::new(now);
-        let channels = NvstInputChannels::create(&mut rtc);
+        let channels = NvstInputChannels::create(&mut rtc, false);
         let mut state = NvstInputChannelState::default();
         state.channel_opened(channels, channels.control_reliable);
         assert!(!state.handshake_timed_out(Some(now), now + Duration::from_millis(4_999)));

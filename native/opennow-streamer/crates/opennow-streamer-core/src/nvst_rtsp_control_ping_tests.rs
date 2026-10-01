@@ -32,51 +32,21 @@ fn socket_pair() -> (RtspClient, WebSocket<TcpStream>) {
 }
 
 fn active_session(client: RtspClient, ping: &NvstControlPing) -> ActiveNvstRtspSession {
-    ActiveNvstRtspSession::spawn(
-        client,
-        "rtsps://seat.nvidiagrid.net:322".to_owned(),
-        vec![
-            ("X-GS-Version", "14.2".to_owned()),
-            ("x-nv-sessionid", "nv-session".to_owned()),
-        ],
-        "rtsp-session".to_owned(),
-        ping.clone(),
-    )
-    .unwrap()
-}
-
-fn read_request(server: &mut WebSocket<TcpStream>, method: &str) -> u64 {
-    let message = server.read().unwrap();
-    let Message::Text(text) = message else {
-        panic!("expected RTSP request, received {message:?}");
-    };
-    assert!(text.starts_with(&format!(
-        "{method} rtsps://seat.nvidiagrid.net:322 RTSP/1.0\r\n"
-    )));
-    assert!(text.contains("\r\nSession: rtsp-session\r\n"));
-    assert!(text.contains("\r\nX-GS-Version: 14.2\r\n"));
-    assert!(text.contains("\r\nx-nv-sessionid: nv-session\r\n"));
-    let cseq = text
-        .lines()
-        .find_map(|line| line.strip_prefix("CSeq: "))
-        .unwrap()
-        .parse()
-        .unwrap();
-    assert!(text.contains(&format!("\r\nRequest-Id: {cseq}\r\n")));
-    cseq
-}
-
-fn response(server: &mut WebSocket<TcpStream>, cseq: u64, status: u16) {
-    server
-        .send(Message::Text(
-            format!("RTSP/1.0 {status} Response\r\nCSeq: {cseq}\r\n\r\n").into(),
-        ))
-        .unwrap();
+    ActiveNvstRtspSession::spawn(client, ping.clone()).unwrap()
 }
 
 fn server_ping(server: &mut WebSocket<TcpStream>) {
     server.send(Message::Ping(vec![1, 2, 3].into())).unwrap();
     assert_eq!(server.read().unwrap(), Message::Pong(vec![1, 2, 3].into()));
+}
+
+fn client_ping(server: &mut WebSocket<TcpStream>) -> Vec<u8> {
+    let message = server.read().unwrap();
+    let Message::Ping(bytes) = message else {
+        panic!("expected WebSocket ping, received {message:?}");
+    };
+    assert_eq!(bytes.len(), 8);
+    bytes.to_vec()
 }
 
 fn wait_until(mut condition: impl FnMut() -> bool) {
@@ -233,26 +203,15 @@ fn control_ping_samples_are_shared_expiring_and_clearable() {
 }
 
 #[test]
-fn live_control_ping_uses_session_rtsp_and_accepts_551_not_wrong_sequences() {
+fn live_control_ping_uses_websocket_without_rtsp_requests() {
     let (client, mut server) = socket_pair();
     let ping = NvstControlPing::default();
     let mut active = active_session(client, &ping);
     server_ping(&mut server);
-    let cseq = read_request(&mut server, "GET_PARAMETER");
-    assert_eq!(cseq, 8);
-    response(&mut server, cseq + 1, 551);
-    server_ping(&mut server);
+    let payload = client_ping(&mut server);
+    server.send(Message::Pong(vec![0; 8].into())).unwrap();
     assert_eq!(ping.ping_ms(Instant::now()), None);
-    server
-        .send(Message::Binary(
-            format!("RTSP/1.0 551 Option Not Supported\r\nRequest-Id: {cseq}\r\n")
-                .into_bytes()
-                .into(),
-        ))
-        .unwrap();
-    server
-        .send(Message::Binary(b"\r\n".to_vec().into()))
-        .unwrap();
+    server.send(Message::Pong(payload.into())).unwrap();
     wait_until(|| ping.ping_ms(Instant::now()).is_some());
     assert!(ping.ping_ms(Instant::now()).unwrap() < 1000.0);
     server_ping(&mut server);
@@ -265,22 +224,26 @@ fn live_control_ping_uses_session_rtsp_and_accepts_551_not_wrong_sequences() {
 }
 
 #[test]
-fn live_control_ping_times_out_without_accepting_late_replies() {
+fn live_control_ping_times_out_without_accepting_late_pongs() {
     let (client, mut server) = socket_pair();
     let ping = NvstControlPing::default();
     let mut active = active_session(client, &ping);
-    let first = read_request(&mut server, "GET_PARAMETER");
-    response(&mut server, first, 200);
+    let first = client_ping(&mut server);
+    server.send(Message::Pong(first.into())).unwrap();
     wait_until(|| ping.ping_ms(Instant::now()).is_some());
-    let missing = read_request(&mut server, "GET_PARAMETER");
-    assert_eq!(missing, first + 1);
-    let next = read_request(&mut server, "GET_PARAMETER");
-    assert_eq!(next, missing + 1);
+    let missing = client_ping(&mut server);
+    server.send(Message::Pong(vec![0; 8].into())).unwrap();
+    let next = client_ping(&mut server);
+    server.send(Message::Pong(vec![0; 8].into())).unwrap();
+    assert_eq!(
+        u64::from_be_bytes(next.clone().try_into().unwrap()),
+        u64::from_be_bytes(missing.clone().try_into().unwrap()) + 1
+    );
     assert_eq!(ping.ping_ms(Instant::now()), None);
-    response(&mut server, missing, 551);
+    server.send(Message::Pong(missing.into())).unwrap();
     server_ping(&mut server);
     assert_eq!(ping.ping_ms(Instant::now()), None);
-    response(&mut server, next, 551);
+    server.send(Message::Pong(next.into())).unwrap();
     wait_until(|| ping.ping_ms(Instant::now()).is_some());
     drop(server);
     wait_until(|| active.worker.as_ref().unwrap().is_finished());
@@ -289,50 +252,62 @@ fn live_control_ping_times_out_without_accepting_late_replies() {
 }
 
 #[test]
-fn live_control_ping_shutdown_sends_teardown_with_pending_probe() {
+fn unanswered_websocket_ping_does_not_end_the_session() {
     let (client, mut server) = socket_pair();
     let ping = NvstControlPing::default();
     let mut active = active_session(client, &ping);
-    let cseq = read_request(&mut server, "GET_PARAMETER");
+    let first = client_ping(&mut server);
+    server.send(Message::Pong(vec![0; 8].into())).unwrap();
+    let second = client_ping(&mut server);
+    server.send(Message::Pong(vec![0; 8].into())).unwrap();
+    assert_ne!(first, second);
+    assert_eq!(ping.ping_ms(Instant::now()), None);
+    assert!(!active.worker.as_ref().unwrap().is_finished());
+    let shutdown = thread::spawn(move || active.shutdown());
+    assert!(matches!(server.read().unwrap(), Message::Close(_)));
+    shutdown.join().unwrap();
+}
+
+#[test]
+fn live_control_ping_shutdown_closes_without_rtsp_teardown() {
+    let (client, mut server) = socket_pair();
+    let ping = NvstControlPing::default();
+    let mut active = active_session(client, &ping);
+    client_ping(&mut server);
     let shutdown_started = Instant::now();
     let shutdown = thread::spawn(move || active.shutdown());
-    assert_eq!(read_request(&mut server, "TEARDOWN"), cseq + 1);
+    assert!(matches!(server.read().unwrap(), Message::Close(_)));
     shutdown.join().unwrap();
-    assert!(shutdown_started.elapsed() < Duration::from_secs(2));
+    assert!(shutdown_started.elapsed() < Duration::from_secs(1));
     assert_eq!(ping.ping_ms(Instant::now()), None);
 }
 
 #[test]
-fn live_control_ping_shutdown_waits_past_pending_probe_reply_for_teardown() {
+fn live_control_ping_shutdown_does_not_wait_for_pending_pong() {
     let (client, mut server) = socket_pair();
     let ping = NvstControlPing::default();
     let mut active = active_session(client, &ping);
-    let probe = read_request(&mut server, "GET_PARAMETER");
+    client_ping(&mut server);
     let shutdown_started = Instant::now();
     let shutdown = thread::spawn(move || active.shutdown());
-    let teardown = read_request(&mut server, "TEARDOWN");
-    response(&mut server, probe, 551);
-    server_ping(&mut server);
-    assert!(!shutdown.is_finished());
+    assert!(matches!(server.read().unwrap(), Message::Close(_)));
     assert_eq!(ping.ping_ms(Instant::now()), None);
-    response(&mut server, teardown, 200);
     shutdown.join().unwrap();
     assert!(shutdown_started.elapsed() < Duration::from_secs(1));
 }
 
 #[test]
-fn live_control_ping_shutdown_clears_sample_and_accepts_teardown_response() {
+fn live_control_ping_shutdown_clears_sample() {
     let (client, mut server) = socket_pair();
     let ping = NvstControlPing::default();
     let mut active = active_session(client, &ping);
-    let cseq = read_request(&mut server, "GET_PARAMETER");
-    response(&mut server, cseq, 551);
+    let payload = client_ping(&mut server);
+    server.send(Message::Pong(payload.into())).unwrap();
     wait_until(|| ping.ping_ms(Instant::now()).is_some());
     let shutdown_started = Instant::now();
     let shutdown = thread::spawn(move || active.shutdown());
-    let teardown = read_request(&mut server, "TEARDOWN");
+    assert!(matches!(server.read().unwrap(), Message::Close(_)));
     assert_eq!(ping.ping_ms(Instant::now()), None);
-    response(&mut server, teardown, 200);
     shutdown.join().unwrap();
     assert!(shutdown_started.elapsed() < Duration::from_secs(1));
 }
@@ -342,8 +317,8 @@ fn live_control_ping_rejects_unbounded_partial_response() {
     let (client, mut server) = socket_pair();
     let ping = NvstControlPing::default();
     let mut active = active_session(client, &ping);
-    let cseq = read_request(&mut server, "GET_PARAMETER");
-    response(&mut server, cseq, 551);
+    let payload = client_ping(&mut server);
+    server.send(Message::Pong(payload.into())).unwrap();
     wait_until(|| ping.ping_ms(Instant::now()).is_some());
     server
         .send(Message::Text("x".repeat(MAX_CONTROL_RESPONSE_BYTES).into()))

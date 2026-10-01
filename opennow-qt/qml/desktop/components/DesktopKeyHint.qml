@@ -5,7 +5,7 @@ Row {
     id: root
     property string keyText: "Enter"
     property string shortcut: keyText
-    property string label: "Play"
+    property string label: qsTr("Play")
     property bool compact: false
     spacing: compact ? 6 : 8
 

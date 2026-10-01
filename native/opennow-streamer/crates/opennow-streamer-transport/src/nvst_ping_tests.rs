@@ -1,5 +1,82 @@
 use super::*;
 
+fn continuous_stun_media_deadline(valid: bool, first_frame: bool) {
+    let server = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let client_address = client.local_addr().unwrap();
+    let mut config = config();
+    config.client_udp_port = client_address.port();
+    config.video_peer = server.local_addr().unwrap();
+    config.timeout = Duration::from_millis(100);
+    config.startup_timeout = config.timeout;
+    config.stun_credentials = Some(stun_credentials());
+    let first = protect_for_test(
+        &test_srtp(&config),
+        build_plaintext_rtp(
+            1,
+            FLAG_SOF | FLAG_EOF | FLAG_CONTAINS_PIC_DATA,
+            42,
+            &[0, 0, 1, 0x65],
+        ),
+        0,
+    );
+    let (media, frames) = mpsc::sync_channel(8);
+    let (events, received) = mpsc::channel();
+    let session = spawn_nvst_mjolnir_receiver(client, config, media, events).unwrap();
+    if first_frame {
+        server.send_to(&first, client_address).unwrap();
+        assert_eq!(
+            frames.recv_timeout(Duration::from_secs(1)).unwrap().frame_index,
+            Some(42)
+        );
+    }
+    let mut stun = build_authenticated_stun_packet(
+        STUN_BINDING_REQUEST,
+        &[0x11; 12],
+        stun_credentials().local_password.as_bytes(),
+        &[(STUN_ATTR_USERNAME, b"loc1:remote01".to_vec())],
+    );
+    if !valid {
+        *stun.last_mut().unwrap() ^= 1;
+        assert!(matches!(
+            handle_stun_datagram(&stun, server.local_addr().unwrap(), &stun_credentials()),
+            StunDatagram::Invalid
+        ));
+    }
+    let deadline = Instant::now() + Duration::from_millis(450);
+    while Instant::now() < deadline {
+        server.send_to(&stun, client_address).unwrap();
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert!(matches!(
+        received.try_recv().expect("media timeout during continuous STUN"),
+        NvstReceiveEvent::RecoveryNeeded(NvstRecovery::Timeout { .. })
+    ));
+    assert!(received.try_recv().is_err());
+    assert!(frames.try_recv().is_err());
+    session.stop();
+}
+
+#[test]
+fn valid_stun_does_not_starve_startup_media_timeout() {
+    continuous_stun_media_deadline(true, false);
+}
+
+#[test]
+fn invalid_stun_does_not_starve_startup_media_timeout() {
+    continuous_stun_media_deadline(false, false);
+}
+
+#[test]
+fn valid_stun_does_not_starve_media_timeout_after_first_frame() {
+    continuous_stun_media_deadline(true, true);
+}
+
+#[test]
+fn invalid_stun_does_not_starve_media_timeout_after_first_frame() {
+    continuous_stun_media_deadline(false, true);
+}
+
 #[test]
 fn selected_ice_ping_does_not_count_duplicate_replies_as_new_round_trips() {
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -373,6 +450,7 @@ fn bundle_receiver_publishes_ping_from_its_real_udp_keepalive_reply() {
         Some(client),
         None,
         Arc::new(HidRuntime::new()),
+        None,
     )
     .unwrap();
     let mut packet = [0; 2048];

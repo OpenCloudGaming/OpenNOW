@@ -198,7 +198,9 @@ response with `{"type":"ack","id":"42"}` before delivering that response to QML.
 Cancelled or timed-out requests do not acknowledge late responses. The create worker
 retains its admission slot for at most ten seconds awaiting acceptance, then the
 CloudMatch owner deletes an unaccepted fresh allocation with an eight-second HTTP
-deadline. Cancellation before or during the compatibility RESUME uses the same cleanup.
+deadline. Fresh creation sends a CloudMatch POST without a follow-up PUT;
+cancellation after POST uses the same cleanup. PUT RESUME applies only to claims
+of existing sessions.
 The receipt does not apply to claims of existing sessions. A create response is not
 also broadcast as `session.changed`, preventing a late event from reviving a cancelled
 launch. Cleanup failure retains the seat and its scoped discovery route for explicit
@@ -344,6 +346,7 @@ and artwork only near the viewport, using the section's local category ID
 - `settings.get`
 - `settings.choices.get`
 - `settings.set`
+- `settings.shortcuts.update`
 - `settings.reset`
 - `auth.providers.list`
 - `auth.session.get`
@@ -691,8 +694,25 @@ Qt resolves the saved identity to a current-boot Windows adapter LUID. The same
 LUID selects Qt's D3D11 adapter and the native runtime's capability probes; LUIDs
 are not persisted. A missing saved GPU falls back for that launch without
 erasing the preference. The settings selector appears only with at least two
-detected hardware adapters, excluding software adapters. Saving a different GPU
-affects the next application launch, not the active graphics device or session.
+detected hardware adapters, excluding software adapters. It is on the Stream
+settings page. Saving a different GPU affects the next application launch, not
+the active graphics device or session.
+
+Adapters are enumerated high-performance first. Before that launch, each adapter
+is indexed for H.264, HEVC, and AV1 hardware decode profiles at 1920×1080 or
+1280×720. Automatic uses the first adapter in that order that exposes one of
+those profiles. A hybrid laptop whose discrete GPU has no decoder, such as a
+GeForce MX110 beside Intel HD Graphics 620, therefore uses the integrated GPU
+instead of failing the session. An explicit saved GPU is still used even when
+its index is empty. Each settings choice lists the codecs that index found.
+
+The embedded streamer's protocol-7 `hello` may include `graphicsAdapters`. The
+field is omitted when no adapters were indexed. Each entry has `name`, `active`,
+`codecs` (`h264`, `h265`, `av1`), `h265Main10`, and an optional `reason`. It does
+not include the adapter LUID. `active` marks the adapter selected for that
+process. When no hardware backend is available and another indexed adapter can
+decode, the session error names that GPU and points to Settings → Stream →
+Graphics processor. Diagnostics copy the same allowlisted fields.
 
 ### Recording and replay capture
 
@@ -768,30 +788,42 @@ the saved color preference is used, subject to exact hardware profiles and the G
 restrictions below. Callers without embedded runtime
 capabilities cannot request HDR through the external-streamer probe path.
 
-CloudMatch receives `sessionRequestData.sdrHdrMode=1`, monitor `sdrHdrMode=1`, and
-`requestedStreamingFeatures.trueHdr=true` only for this validated HDR request. CloudMatch
+CloudMatch receives `sessionRequestData.sdrHdrMode=1` and monitor `sdrHdrMode=1`
+only for this validated HDR request. `requestedStreamingFeatures.trueHdr=false` remains
+separate because TrueHDR is the server's AI SDR-to-HDR filter, not native HDR. CloudMatch
 uses bit-depth/chroma enums `1/0` for 10-bit 4:2:0 and `1/1` for 10-bit 4:4:4.
-For HDR, monitor `displayData` carries the output's validated HDR static metadata
-when the current output reports it. `desiredContentMaxLuminance` and
-`desiredContentMinLuminance` come from the Wayland color-management target luminance
-range in cd/m²; this mirrors the official client's feature-gated mirroring of its
-system display properties into the same fields. `desiredContentMaxFrameAverageLuminance`
-is omitted while a validated output snapshot is in use, because the output description
-exposes no comparable sustained full-frame value and no permitted capture establishes
-that mapping.
+For HDR, monitor `displayData` carries validated output luminance
+when the current output reports it. `desiredContentMaxLuminance` is the peak in nits;
+`desiredContentMinLuminance` is the minimum in 0.0001-nit units, rounded after
+multiplication by 10000. Wayland color-management supplies only this luminance pair.
+`desiredContentMaxFrameAverageLuminance` is omitted for a pair-only snapshot because
+Wayland exposes no comparable sustained full-frame value. When the runtime supplies
+a complete validated optional group, the core also writes its full-frame nits into
+that field and writes the red, green, blue, and white chromaticities as rounded
+`xy * 50000` integers in `displayPrimaryX0/Y0`, `displayPrimaryX1/Y1`,
+`displayPrimaryX2/Y2`, and `displayWhitePointX/Y`, respectively. The official PC
+client's Bifrost serializer confirms the field order and scales; the mapping from
+the display's maximum full-frame luminance to the frame-average field is inferred
+from native struct offsets, not an observed HDR session.
 
 Without a validated output snapshot, HDR requests keep the fixed requested-content
 defaults of maximum luminance 1000 nits, minimum luminance 0, and maximum frame-average
 luminance 400 nits, matching the Mac native session payload. Those defaults are requested
 content characteristics rather than measurements of the physical display and are not
-presented as calibration. SDR luminance values and all display primaries remain zero
-protocol defaults; the official typed `displayData` schema contains no primaries or white
-point fields, and no permitted capture establishes a scale for measured chromaticities.
+presented as calibration. SDR sends `displayData:null`. HDR does not invent display
+primaries or a white point; those fields require validated chromaticities from the
+current runtime output.
 
 The validated snapshot travels from Qt in `runtimeCapabilities.nativeHdrDisplay` as
 `minimumNits` and `maximumNits` in cd/m², omitting either value the output does not
-report. The core validates the pair again and drops it when the bounds are not finite,
-negative, above 10000 cd/m², or not strictly increasing. The snapshot is transient:
+report. Optionally it also carries `maximumFullFrameNits` and normalized floating-point
+`redX/redY`, `greenX/greenY`, `blueX/blueY`, and `whiteX/whiteY`. The core validates
+the pair again and drops it when the bounds are not finite, negative, above 10000 cd/m²,
+or not strictly increasing. It accepts the optional group only when every coordinate
+is finite, within [0, 1], has a valid xy sum and positive y, the primaries form a
+nondegenerate triangle, and `minimumNits < maximumFullFrameNits <= maximumNits`.
+Missing or invalid optional fields discard the entire group but retain a valid pair.
+The snapshot is transient:
 `settings.set` rejects it, the settings loader discards persisted copies, and the core
 never saves runtime capability results.
 
@@ -809,11 +841,18 @@ returned session-request mode; missing or unsupported modes mean SDR. An explici
 SDR response wins over saved HDR intent. `trueHdr` is not used to infer accepted dynamic
 range. Resume preserves that returned mode rather than renegotiating from current settings.
 The claim request intentionally omits monitor settings and requested streaming features, so
-its only copied dynamic-range field is the accepted session `sdrHdrMode`. The initial
-compatibility RESUME carries the full request and updates its session mode, monitor mode,
-requested-content luminance, and `trueHdr` consistently when the server has returned a mode.
+its only copied dynamic-range field is the accepted session `sdrHdrMode`. Fresh creation
+sends the full request in its POST, with the requested session mode, monitor mode,
+requested-content luminance, and `trueHdr`; only an existing-session claim uses PUT RESUME.
 Attachment revalidates the session's HDR codec/color profile and current window output, so
 moving to an SDR display cannot silently resume an HDR stream as SDR.
+
+The normalized session also carries `keyboardLayout` when this core created or resumed
+the session. It records the exact layout sent in the CloudMatch request, not the current
+saved preference. Polls and ad updates preserve it only for the same session ID; a successful
+resume replaces it with the newly requested layout. Qt uses this value for physical key
+mapping, so changing settings during a stream does not change input before the remote
+layout changes. An unclaimed session whose layout is unknown omits this field.
 
 Color negotiation overlays each returned `finalizedStreamingFeatures` field on the server's
 returned `sessionRequestData.requestedStreamingFeatures`. An empty or partial finalized object
@@ -912,7 +951,11 @@ counts as success.
 On a later launch, the core reconciles these managed outcomes against the native
 package registration and its running version. A known live installer keeps
 `managed-pending` active. A completed installer resolves to `succeeded` or
-`failed`, and the core clears the persisted active transaction. An MSI reboot
+`failed`, and the core clears the persisted active transaction. Terminal helper
+outcomes (`succeeded`, `rolled-back`, `failed`) are likewise reported for that
+launch only; the core clears the persisted transaction after the first
+reconciliation so the same failure dialog does not reappear on every restart.
+An MSI reboot
 warning remains until Windows' per-boot sequence number changes. Sessions
 remain available, but another update must wait for the required reboot so it
 cannot overlap pending Windows file replacements. Reopening the app before
@@ -950,6 +993,17 @@ Setting `appAccentColor` enables `themeAccentOverride` in the same save. The
 `settings.set` response and `settings.changed` event include these coupled values
 in `changes`; clients can still override appearance or restore the pack accent
 by setting `appTheme` or `themeAccentOverride` independently.
+
+`settings.shortcuts.update` writes stream shortcut bindings as one transaction:
+`{"bindings":{"shortcutToggleStats":"Ctrl+F11","shortcutScreenshot":""}}`. Only the
+existing `shortcut*` setting keys are accepted, each value is a string of at most 80
+bytes (empty means unbound), and `Ctrl+G` and `Shift+F3` stay reserved. After the
+change is merged, no two non-empty bindings may share a chord (case and modifier
+order are ignored). Any rejection leaves every binding unchanged. The core persists
+the whole map in one save and rolls it back in memory if the save fails. The response is
+`{"bindings":{...applied}}`; the `settings.changed` event names the first applied
+key and carries the full map in `changes`. Qt uses this for moving a chord from one
+command to another, clearing, resetting one binding, and resetting all bindings.
 
 Each successful settings write publishes `settings.changed` before its own
 response. A client that starts its next per-key write from that response has

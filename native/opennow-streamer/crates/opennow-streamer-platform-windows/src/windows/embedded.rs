@@ -65,17 +65,21 @@ static LIVE_DECODER_WORKERS: AtomicUsize = AtomicUsize::new(0);
 struct DecoderWorkerLease;
 impl DecoderWorkerLease {
     fn acquire() -> Result<Self, BackendError> {
-        LIVE_DECODER_WORKERS
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                (count < 4).then_some(count + 1)
-            })
-            .map(|_| Self)
-            .map_err(|_| {
-                BackendError::Startup(
-                    "Previous decoder workers are still stopping; restart OpenNOW before retrying"
-                        .into(),
-                )
-            })
+        let mut count = LIVE_DECODER_WORKERS.load(Ordering::Acquire);
+        while let Some(next) = (count < 4).then_some(count + 1) {
+            match LIVE_DECODER_WORKERS.compare_exchange_weak(
+                count,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Ok(Self),
+                Err(current) => count = current,
+            }
+        }
+        Err(BackendError::Startup(
+            "Previous decoder workers are still stopping; restart OpenNOW before retrying".into(),
+        ))
     }
 }
 impl Drop for DecoderWorkerLease {
@@ -155,7 +159,7 @@ impl D3d11FrameSubmitter {
         let key_frame = frame.key_frame;
         let outcome = self
             .encoded
-            .push_or_clear_on_overflow(frame, key_frame)
+            .push_or_clear_on_overflow(frame, key_frame, |queued| queued.key_frame)
             .map_err(|_| BackendError::WorkerDisconnected)?;
         if outcome == PushOutcome::DroppedOldest {
             let _ = self

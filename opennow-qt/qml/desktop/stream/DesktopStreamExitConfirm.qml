@@ -5,13 +5,14 @@ import OpenNOW
 FocusScope {
     id: root
     property bool opened: false
+    property bool quittingApplication: false
     readonly property bool present: reveal.present
     visible: present
     enabled: opened
     focus: opened
     MotionProgress { id: reveal; shown: root.opened }
     Accessible.role: Accessible.Dialog
-    Accessible.name: qsTr("End cloud session confirmation")
+    Accessible.name: root.quittingApplication ? qsTr("Quit OpenNOW confirmation") : qsTr("End cloud session confirmation")
 
     signal cancelRequested()
     signal confirmRequested()
@@ -49,7 +50,7 @@ FocusScope {
             spacing: 0
 
             Text {
-                text: qsTr("END SESSION")
+                text: root.quittingApplication ? qsTr("QUIT OPENNOW") : qsTr("END SESSION")
                 color: DesktopTokens.danger
                 font.family: DesktopTokens.monoFont
                 font.pixelSize: 10
@@ -59,7 +60,7 @@ FocusScope {
             Text {
                 width: parent.width
                 topPadding: 10
-                text: qsTr("End this cloud session?")
+                text: root.quittingApplication ? qsTr("Quit OpenNOW?") : qsTr("End this cloud session?")
                 color: DesktopTokens.text
                 font.family: DesktopTokens.displayFont
                 font.pixelSize: 28
@@ -68,7 +69,9 @@ FocusScope {
             Text {
                 width: parent.width
                 topPadding: 10
-                text: AppController.route === "inserting"
+                text: root.quittingApplication
+                    ? qsTr("OpenNOW will close and disconnect from any active cloud session.")
+                    : AppController.route === "inserting"
                     ? qsTr("Your session request will be cancelled and you will leave the queue.")
                     : qsTr("Your game will close on the remote rig. This session cannot be resumed after it ends.")
                 color: DesktopTokens.textBody
@@ -85,8 +88,9 @@ FocusScope {
                 spacing: 10
                 DesktopButton {
                     id: keepPlayingButton
-                    objectName: "streamExitKeepPlaying"
-                    text: AppController.route === "inserting" ? qsTr("Keep waiting") : qsTr("Keep playing")
+                    objectName: root.quittingApplication ? "quitConfirmKeepOpen" : "streamExitKeepPlaying"
+                    text: root.quittingApplication ? qsTr("Keep OpenNOW open")
+                        : AppController.route === "inserting" ? qsTr("Keep waiting") : qsTr("Keep playing")
                     shortcutText: qsTr("Esc")
                     primary: true
                     onClicked: root.cancelRequested()
@@ -94,8 +98,8 @@ FocusScope {
                 }
                 DesktopButton {
                     id: endButton
-                    objectName: "streamExitEndSession"
-                    text: qsTr("End session")
+                    objectName: root.quittingApplication ? "quitConfirmQuit" : "streamExitEndSession"
+                    text: root.quittingApplication ? qsTr("Quit OpenNOW") : qsTr("End session")
                     shortcutText: qsTr("Enter")
                     danger: true
                     onClicked: root.confirmRequested()

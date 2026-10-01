@@ -20,6 +20,173 @@ fn header(sequence_number: u16) -> BundleRtpHeader {
     }
 }
 
+#[test]
+fn rejected_audio_ssrcs_do_not_fill_admission_or_evict_authenticated_streams() {
+    install_crypto();
+    let mut rtc = RtcConfig::new().set_rtp_mode(true).build(Instant::now());
+    let track = track();
+    rtc.direct_api()
+        .declare_media(Mid::from(track.mid.as_str()), MediaKind::Audio);
+    let mut streams = NvstAudioStreams::default();
+    let mut datagram = [0x80, GFN_OPUS_PAYLOAD_TYPE, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    for ssrc in 1_u32..=10_000 {
+        datagram[8..12].copy_from_slice(&ssrc.to_be_bytes());
+        assert!(streams.admit(&mut rtc, &track, &datagram));
+        streams.finish_poll(&mut rtc);
+        assert!(rtc.direct_api().stream_rx(&ssrc.into()).is_none());
+    }
+    assert!(streams.authenticated.is_empty());
+    let mut pinned = track.clone();
+    pinned.ssrc = Some(42);
+    assert!(!streams.admit(&mut rtc, &pinned, &datagram));
+    datagram[8..12].copy_from_slice(&42_u32.to_be_bytes());
+    datagram[1] = 96;
+    assert!(!streams.admit(&mut rtc, &pinned, &datagram));
+    datagram[1] = GFN_RED_PAYLOAD_TYPE;
+    assert!(streams.admit(&mut rtc, &pinned, &datagram));
+    streams.finish_poll(&mut rtc);
+}
+
+#[test]
+fn audio_ssrc_admission_recovers_after_invalid_tags_and_authenticated_source_changes() {
+    fn exchange(
+        from: &mut Rtc,
+        to: &mut Rtc,
+        now: Instant,
+        inbound: bool,
+        forged_ssrc: Option<u32>,
+        streams: &mut NvstAudioStreams,
+        received: &mut Vec<u32>,
+    ) {
+        loop {
+            match from.poll_output().unwrap() {
+                Output::Timeout(_) => {
+                    if !inbound {
+                        streams.finish_poll(from);
+                    }
+                    break;
+                }
+                Output::Transmit(packet) => {
+                    let mut bytes = packet.contents.to_vec();
+                    if inbound && looks_like_rtp(&bytes) {
+                        if let Some(ssrc) = forged_ssrc {
+                            bytes[8..12].copy_from_slice(&ssrc.to_be_bytes());
+                        }
+                        assert!(streams.admit(to, &track(), &bytes));
+                    }
+                    to.handle_input(Input::Receive(
+                        now,
+                        Receive {
+                            proto: packet.proto,
+                            source: packet.source,
+                            destination: packet.destination,
+                            contents: bytes.as_slice().try_into().unwrap(),
+                        },
+                    ))
+                    .unwrap();
+                }
+                Output::Event(Event::RtpPacket(packet)) if !inbound => {
+                    let ssrc = *packet.header.ssrc;
+                    streams.authenticated(from, ssrc);
+                    received.push(ssrc);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let mut local = create_nvst_bundle_rtc(&socket).unwrap();
+    let mut remote = create_nvst_bundle_rtc(&socket).unwrap();
+    let local_candidate = Candidate::host("192.0.2.1:1000".parse().unwrap(), "udp").unwrap();
+    let remote_candidate = Candidate::host("192.0.2.2:2000".parse().unwrap(), "udp").unwrap();
+    local.add_local_candidate(local_candidate.clone());
+    local.add_remote_candidate(remote_candidate.clone());
+    remote.add_local_candidate(remote_candidate);
+    remote.add_remote_candidate(local_candidate);
+    let local_identity = local.direct_api().local_dtls_fingerprint().clone();
+    let remote_identity = remote.direct_api().local_dtls_fingerprint().clone();
+    let local_ice = local.direct_api().local_ice_credentials();
+    let remote_ice = remote.direct_api().local_ice_credentials();
+    local.direct_api().set_remote_fingerprint(remote_identity);
+    remote.direct_api().set_remote_fingerprint(local_identity);
+    local.direct_api().set_remote_ice_credentials(remote_ice);
+    remote.direct_api().set_remote_ice_credentials(local_ice);
+    local.direct_api().set_ice_controlling(true);
+    remote.direct_api().set_ice_controlling(false);
+    local.direct_api().start_dtls(true).unwrap();
+    remote.direct_api().start_dtls(false).unwrap();
+    let mid = Mid::from("audio");
+    for rtc in [&mut local, &mut remote] {
+        rtc.direct_api().declare_media(mid, MediaKind::Audio);
+    }
+    let mut streams = NvstAudioStreams::default();
+    let mut received = Vec::new();
+    let mut previous_sender = None;
+    let origin = Instant::now();
+    for tick in 0..1800_u64 {
+        let now = origin + Duration::from_millis(tick);
+        local.handle_input(Input::Timeout(now)).unwrap();
+        remote.handle_input(Input::Timeout(now)).unwrap();
+        let send_ssrc = match tick {
+            1200 | 1250..=1349 | 1400 | 1600 => Some(1),
+            1450 => Some(2),
+            1500 => Some(3),
+            _ => None,
+        };
+        if let Some(ssrc) = send_ssrc {
+            if let Some(previous) = previous_sender.replace(ssrc)
+                && previous != ssrc
+            {
+                remote.direct_api().remove_stream_tx(previous.into());
+            }
+            remote
+                .direct_api()
+                .declare_stream_tx(ssrc.into(), None, mid, None)
+                .write_rtp(str0m::rtp::RtpWrite::new(
+                    GFN_OPUS_PAYLOAD_TYPE.into(),
+                    tick.into(),
+                    (tick * 48) as u32,
+                    now,
+                    vec![0xf8, 0xff, 0xfe],
+                ));
+        }
+        exchange(
+            &mut local,
+            &mut remote,
+            now,
+            false,
+            None,
+            &mut streams,
+            &mut received,
+        );
+        let forged = (1250..=1349).contains(&tick).then_some(tick as u32);
+        exchange(
+            &mut remote,
+            &mut local,
+            now,
+            true,
+            forged,
+            &mut streams,
+            &mut received,
+        );
+        if (1251..=1350).contains(&tick) {
+            assert!(local.direct_api().stream_rx(&1.into()).is_some());
+            assert_eq!(streams.authenticated.len(), 1);
+        }
+        assert!(streams.authenticated.len() <= 2);
+    }
+    assert_eq!(received, [1, 1, 2, 3, 1]);
+    assert_eq!(
+        streams.authenticated.iter().copied().collect::<Vec<_>>(),
+        [3, 1]
+    );
+    assert!(streams.provisional.is_none());
+    for ssrc in 1250..=1349 {
+        assert!(local.direct_api().stream_rx(&ssrc.into()).is_none());
+    }
+}
+
 fn red_packet(
     receiver: &mut NvstAudioReceiver,
     sequence: u16,
@@ -133,12 +300,7 @@ fn burst_losses_stay_measurable_from_the_preserved_timestamps() {
     for jump in [2_u16, 4, 6, 20] {
         sequence = sequence.wrapping_add(jump);
         let frames = receiver
-            .depacketize(
-                &track(),
-                &header(sequence),
-                Arc::from([0xf8]),
-                123_456,
-            )
+            .depacketize(&track(), &header(sequence), Arc::from([0xf8]), 123_456)
             .unwrap();
         assert_eq!(frames.len(), 1);
         assert!(!frames[0].contiguous);

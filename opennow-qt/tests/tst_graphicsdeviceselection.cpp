@@ -53,6 +53,40 @@ private slots:
         QCOMPARE(selection.requestedDeviceId(), u"unplugged"_s);
     }
 
+    void automaticUsesTheFirstAdapterThatCanDecode()
+    {
+        const GraphicsDeviceSelection::Adapter discrete{
+            u"mx110"_s, u"NVIDIA GeForce MX110"_s, 2, 2ULL << 30, false, false, false, false};
+        const GraphicsDeviceSelection::Adapter integrated{
+            u"hd620"_s, u"Intel(R) HD Graphics 620"_s, 1, 0, false, true, true, false};
+        GraphicsDeviceSelection hybrid({discrete, integrated}, {});
+        QCOMPARE(hybrid.adapterLuid(), 1ULL);
+        QCOMPARE(hybrid.activeDeviceId(), u"hd620"_s);
+        const auto choices = hybrid.choices();
+        QCOMPARE(choices[0].toMap().value(u"codecs"_s).toStringList(),
+                 QStringList({u"h264"_s, u"h265"_s}));
+        QVERIFY(choices[0].toMap().value(u"detail"_s).toString().contains(u"HD Graphics 620"_s));
+        QVERIFY(choices[0].toMap().value(u"detail"_s).toString().contains(u"H.264"_s));
+        QCOMPARE(choices[1].toMap().value(u"codecs"_s).toStringList(), QStringList());
+        QVERIFY(choices[1].toMap().value(u"detail"_s).toString().contains(u"No hardware decoder"_s));
+        QVERIFY(choices[1].toMap().value(u"detail"_s).toString().contains(u"2.0 GB"_s));
+        QCOMPARE(choices[2].toMap().value(u"codecs"_s).toStringList(),
+                 QStringList({u"h264"_s, u"h265"_s}));
+        QVERIFY(choices[2].toMap().value(u"detail"_s).toString().contains(u"H.265"_s));
+        QVERIFY(choices[2].toMap().value(u"detail"_s).toString().contains(u"Shared graphics memory"_s));
+
+        GraphicsDeviceSelection explicitDiscrete({discrete, integrated}, u"mx110"_s);
+        QCOMPARE(explicitDiscrete.adapterLuid(), 2ULL);
+        QCOMPARE(explicitDiscrete.activeDeviceId(), u"mx110"_s);
+        QCOMPARE(explicitDiscrete.choices()[0].toMap().value(u"codecs"_s).toStringList(),
+                 QStringList({u"h264"_s, u"h265"_s}));
+
+        const GraphicsDeviceSelection::Adapter discreteDecoder{
+            u"rtx"_s, u"NVIDIA GeForce RTX"_s, 5, 8ULL << 30, false, true, true, true};
+        GraphicsDeviceSelection highPerformanceCanDecode({discreteDecoder, integrated}, {});
+        QCOMPARE(highPerformanceCanDecode.adapterLuid(), 5ULL);
+    }
+
     void unidentifiedHardwareDoesNotDisableAutomatic()
     {
         GraphicsDeviceSelection selection({{{}, u"Unidentified GPU"_s, 7}, {u"known"_s, u"Known GPU"_s, 8}}, {});

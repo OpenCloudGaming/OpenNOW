@@ -60,8 +60,8 @@ pub(super) fn connect_bundle_pair() -> (Rtc, Rtc, NvstInputChannels, NvstInputCh
     remote.direct_api().set_ice_controlling(false);
     local.direct_api().start_dtls(true).unwrap();
     remote.direct_api().start_dtls(false).unwrap();
-    let local_channels = NvstInputChannels::create(&mut local);
-    let remote_channels = NvstInputChannels::create(&mut remote);
+    let local_channels = NvstInputChannels::create(&mut local, true);
+    let remote_channels = NvstInputChannels::create(&mut remote, true);
     local.direct_api().start_sctp(true);
     remote.direct_api().start_sctp(false);
     let origin = Instant::now();

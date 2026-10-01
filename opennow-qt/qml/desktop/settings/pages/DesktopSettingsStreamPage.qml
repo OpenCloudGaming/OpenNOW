@@ -34,9 +34,9 @@ Column {
         DesktopSettingsRow {
             width: parent.width; paperStyle: true; glyph: "wave"; title: qsTr("Bitrate"); description: qsTr("Maximum requested bitrate")
             DesktopSettingsSlider {
-                from: 10; to: 200; stepSize: 5
+                from: 0.22; to: 200; stepSize: 0.01; decimals: 2
                 value: Number(page.settingsScreen.valueSetting("maxBitrateMbps",75)); suffix: " Mbps"
-                onCommitted: value => page.settingsScreen.setSetting("maxBitrateMbps",Math.round(value))
+                onCommitted: value => page.settingsScreen.setSetting("maxBitrateMbps", Math.round(value * 100) / 100)
             }
         }
         DesktopSettingsRow {
@@ -55,6 +55,21 @@ Column {
             runtimeReady: ShellStore.nativeRuntimeReady
             capabilities: ShellStore.nativeRuntimeCapabilities
             onOpenStoreRequested: url => Qt.openUrlExternally(url)
+        }
+        DesktopSettingsChoice {
+            objectName: "graphicsProcessorSelector"
+            visible: GraphicsDevices.selectorVisible
+            width: parent.width
+            title: qsTr("Graphics processor")
+            description: GraphicsDevices.savedDeviceUnavailable
+                ? qsTr("Saved GPU unavailable; using the first GPU that can hardware-decode. Changes apply after restarting OpenNOW.")
+                : qsTr("Automatic uses the first GPU that can hardware-decode and lists each GPU's codecs. The same GPU decodes and displays. Changes apply after restarting OpenNOW.")
+            glyph: "monitor"
+            items: GraphicsDevices.choices
+            maximumColumns: 2
+            readonly property string preferredId: String(page.settingsScreen.valueSetting("windowsGpuDeviceId", ""))
+            value: items.some(item => item.value === preferredId && !item.disabled) ? preferredId : ""
+            onSelected: value => ShellStore.setSetting("windowsGpuDeviceId", value)
         }
         DesktopSettingsRow {
             width: parent.width; paperStyle: true; glyph: "drop"; title: qsTr("Save bandwidth")
@@ -216,7 +231,7 @@ Column {
         sourceComponent: page.statsSettingsPageComponent
     }
     DesktopSettingsAdvanced {
-        detail: qsTr("Graphics processor · Decoder · Steam Deck identity")
+        detail: qsTr("Decoder · Steam Deck identity")
         expanded: page.settingsScreen.advancedOpen
         onClicked: page.settingsScreen.advancedOpen = !page.settingsScreen.advancedOpen
     }
@@ -224,21 +239,6 @@ Column {
         width: parent.width; expanded: page.settingsScreen.advancedOpen
         sourceComponent: DesktopSettingsPanel {
             width: page.availableWidth; paperStyle: true
-            DesktopSettingsChoice {
-                objectName: "graphicsProcessorSelector"
-                visible: GraphicsDevices.selectorVisible
-                width: parent.width
-                title: qsTr("Graphics processor")
-                description: GraphicsDevices.savedDeviceUnavailable
-                    ? qsTr("Saved GPU unavailable; using Automatic. Changes apply after restarting OpenNOW.")
-                    : qsTr("Uses the same GPU for decoding and display. Changes apply after restarting OpenNOW.")
-                glyph: "monitor"
-                items: GraphicsDevices.choices
-                maximumColumns: 2
-                readonly property string preferredId: String(page.settingsScreen.valueSetting("windowsGpuDeviceId", ""))
-                value: items.some(item => item.value === preferredId && !item.disabled) ? preferredId : ""
-                onSelected: value => ShellStore.setSetting("windowsGpuDeviceId", value)
-            }
             DesktopSettingsChoice {
                 objectName: "streamBackendChoice"
                 width: parent.width; glyph: "chip"; title: qsTr("Video backend")

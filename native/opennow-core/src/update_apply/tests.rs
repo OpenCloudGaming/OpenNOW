@@ -19,6 +19,125 @@ fn linux_update_preparation_rejects_cross_format_replacement() {
 }
 
 #[test]
+fn windows_zip_is_selected_until_the_install_is_msi_registered() {
+    assert_eq!(windows_update_package_extension(false).unwrap(), "zip");
+    assert_eq!(
+        windows_update_package_extension(true).unwrap_err(),
+        WINDOWS_INSTALLER_REPLACEMENT_MESSAGE
+    );
+    assert!(WINDOWS_INSTALLER_REPLACEMENT_MESSAGE.contains("setup.exe"));
+}
+
+#[test]
+fn msi_registered_install_never_reaches_msiexec() {
+    let directory = TempDir::new().unwrap();
+    let plan = plan(directory.path(), InstallKind::WindowsMsi);
+    assert_eq!(
+        apply(&plan, directory.path()).unwrap_err(),
+        WINDOWS_INSTALLER_REPLACEMENT_MESSAGE
+    );
+    assert!(!directory.path().join("install-boot.json").exists());
+    assert_eq!(
+        prepare_update(PrepareRequest {
+            package: directory.path().join("package.msi"),
+            expected_version: "1.2.3".to_owned(),
+            application_executable: plan.application_executable,
+            application_pid: 1,
+            core_pid: 1,
+            kind: InstallKind::WindowsMsi,
+            data_dir: plan.data_dir,
+        })
+        .unwrap_err(),
+        WINDOWS_INSTALLER_REPLACEMENT_MESSAGE
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn prepared_windows_swap_replaces_runtime_binaries_and_missing_ack_restores_them() {
+    let directory = TempDir::new().unwrap();
+    let plan = plan(directory.path(), InstallKind::WindowsPortable);
+    let names = [
+        "OpenNOW.exe",
+        "opennow-core.exe",
+        "opennow-update-helper.exe",
+    ];
+    let old_core = b"old-opennow-core";
+    let old_helper = b"old-opennow-update-helper";
+    let new_core = b"new-opennow-core";
+    let new_helper = b"new-opennow-update-helper";
+    let old_app = b"#!/bin/sh\nexit 0\n";
+    let new_app = b"#!/bin/sh\nbin=$(CDPATH= cd -- \"$(dirname \"$0\")\" && pwd)\nmkdir -p \"$OPENNOW_DATA_DIR\"\ncp \"$bin/OpenNOW.exe\" \"$OPENNOW_DATA_DIR/seen-OpenNOW.exe\"\ncp \"$bin/opennow-core.exe\" \"$OPENNOW_DATA_DIR/seen-opennow-core.exe\"\ncp \"$bin/opennow-update-helper.exe\" \"$OPENNOW_DATA_DIR/seen-opennow-update-helper.exe\"\nsleep 30\n";
+    let old = [
+        old_app.as_slice(),
+        old_core.as_slice(),
+        old_helper.as_slice(),
+    ];
+    let new = [
+        new_app.as_slice(),
+        new_core.as_slice(),
+        new_helper.as_slice(),
+    ];
+    for (name, bytes) in names.iter().zip(old) {
+        let path = plan.target.join("bin").join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, bytes).unwrap();
+        make_executable(&path).unwrap();
+    }
+    let payload = directory.path().join("payload");
+    for (name, bytes) in names.iter().zip(new) {
+        let path = payload.join("bin").join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, bytes).unwrap();
+        make_executable(&path).unwrap();
+    }
+    let error = replace_and_restart(
+        &plan,
+        directory.path(),
+        &payload,
+        Duration::from_millis(1500),
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("did not acknowledge healthy startup"),
+        "{error}"
+    );
+    for (name, bytes) in names.iter().zip(old) {
+        assert_eq!(
+            fs::read(plan.target.join("bin").join(name)).unwrap(),
+            bytes,
+            "{name} was not restored"
+        );
+    }
+    for (name, bytes) in names.iter().zip(new) {
+        assert_eq!(
+            fs::read(directory.path().join("failed").join("bin").join(name)).unwrap(),
+            bytes,
+            "{name} was not swapped into place before rollback"
+        );
+        let seen = match *name {
+            "OpenNOW.exe" => "seen-OpenNOW.exe",
+            "opennow-core.exe" => "seen-opennow-core.exe",
+            "opennow-update-helper.exe" => "seen-opennow-update-helper.exe",
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            fs::read(plan.data_dir.join(seen)).unwrap(),
+            bytes,
+            "the replacement process did not observe {name}"
+        );
+    }
+    assert!(!directory.path().join("previous").exists());
+    assert_eq!(
+        read_outcome(&directory.path().join("outcome.json"))
+            .unwrap()
+            .unwrap()
+            .status,
+        OutcomeStatus::RolledBack
+    );
+}
+
+#[test]
 fn flatpak_detection_accepts_environment_or_sandbox_marker() {
     use std::ffi::OsStr;
 

@@ -35,7 +35,7 @@ gh workflow run qt-ci --repo OpenCloudGaming/OpenNOW --ref dev \
 
 An empty, malformed, or different production key fails preflight. After checks and package builds pass, approve the
 exact source/workflow revision in the protected `qt-update-signing` environment. Its isolated
-signer verifies the complete nine-package inventory and two AppImage sidecars, signs each asset's sibling manifest,
+signer verifies the complete eleven-package inventory and two AppImage sidecars, signs each asset's sibling manifest,
 and uploads `opennow-qt-<version>-complete-update-signed`. The publisher independently verifies
 that finalized set before uploading it. Missing signing configuration blocks publication; it
 does not fall back to an unsigned public update.
@@ -57,11 +57,14 @@ an existing tag or asset. Remove abandoned drafts separately if needed.
 
 ## Download formats
 
-Each release contains nine packages with distinct version/platform/architecture filenames:
+Each release contains eleven packages with distinct version/platform/architecture filenames:
 
 - `OpenNOW-Qt-<version>-Windows-x64.zip` and `...-Windows-arm64.zip` are unsigned portable builds.
   Extract the entire archive, then launch `bin/OpenNOW.exe`. Windows may display SmartScreen or
   unknown-publisher warnings.
+- `OpenNOW-Qt-<version>-Windows-x64-setup.exe` and `...-Windows-arm64-setup.exe` install that
+  same portable layout into `%LOCALAPPDATA%\OpenNOW`. They do not register a Windows Installer
+  product.
 - `OpenNOW-Qt-<version>-Windows-x64.msi` and `...-Windows-arm64.msi` install **OpenNOW Nightly**
   into a separate **OpenNOW Nightly** directory. They do not replace a stable OpenNOW installation.
   Newer runs and retries upgrade the nightly installation; older nightlies are rejected.
@@ -81,9 +84,9 @@ Each release contains nine packages with distinct version/platform/architecture 
   macOS offers it. Do not disable Gatekeeper globally. CI also retains a separate macOS ZIP for
   validation; that ZIP is not a public release asset.
 
-The public signed set contains 24 files: nine packages, two `.AppImage.zsync` sidecars,
-eleven `<asset>.manifest.json` siblings, `RELEASE-INFO.json`, and `SHA256SUMS`.
-Its checksums cover all 23 other files. The no-key
+The public signed set contains 28 files: eleven packages, two `.AppImage.zsync` sidecars,
+thirteen `<asset>.manifest.json` siblings, `RELEASE-INFO.json`, and `SHA256SUMS`.
+Its checksums cover all 27 other files. The no-key
 artifact-only inventory has no manifests; its checksums cover the packages and release metadata.
 Checksums detect corruption; they do not replace a publisher signature. The inventory rejects
 missing platforms, duplicate basenames, wrong versions, empty files, and unexpected assets

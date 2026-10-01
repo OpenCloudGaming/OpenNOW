@@ -67,7 +67,15 @@ pub use runtime::{
 #[cfg(feature = "test-runtime")]
 pub use runtime::{TestMediaRuntimeHost, create_test_runtime};
 
-use opennow_streamer_protocol::{CodecCapability, VideoBackendCapability};
+use opennow_streamer_protocol::{
+    CodecCapability, GraphicsAdapterCapability, VideoBackendCapability,
+};
+
+pub(crate) fn graphics_adapter_capabilities(
+    active_luid: Option<u64>,
+) -> Vec<GraphicsAdapterCapability> {
+    opennow_streamer_platform_windows::graphics_adapter_capabilities(active_luid)
+}
 
 pub fn video_backends() -> Vec<VideoBackendCapability> {
     #[cfg(target_os = "linux")]

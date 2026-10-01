@@ -361,7 +361,7 @@ Column {
             id: hints
             x: DesktopTokens.px(18); y: DesktopTokens.px(12); width: parent.width - DesktopTokens.px(36)
             spacing: DesktopTokens.px(12)
-            Badge { text: "F3" }
+            Badge { text: String(root.settings.shortcutToggleStats ?? "Ctrl+N"); visible: text !== "" }
             Copy { height: Math.max(DesktopTokens.px(24), implicitHeight); verticalAlignment: Text.AlignVCenter; text: qsTr("Check stream statistics mid-game to compare received and displayed FPS."); font.pixelSize: DesktopTokens.px(12); width: Math.min(implicitWidth, hints.width) }
             Badge { text: "Ctrl G" }
             Copy { height: Math.max(DesktopTokens.px(24), implicitHeight); verticalAlignment: Text.AlignVCenter; text: qsTr("Open the stream menu without leaving your game."); font.pixelSize: DesktopTokens.px(12); width: Math.min(implicitWidth, hints.width) }

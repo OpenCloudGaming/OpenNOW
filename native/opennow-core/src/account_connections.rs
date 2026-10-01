@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -38,6 +38,7 @@ impl Drop for LinkAttempt {
 
 pub struct AccountConnectionsService {
     attempts: Mutex<HashMap<String, LinkAttempt>>,
+    link_generation: AtomicU64,
     syncs: Mutex<HashMap<String, SyncOperation>>,
 }
 
@@ -112,10 +113,11 @@ impl SyncOperation {
 
 impl AccountConnectionsService {
     pub fn cancel_pending(&self) {
-        self.attempts
-            .lock()
-            .expect("account-link state poisoned")
-            .clear();
+        {
+            let mut attempts = self.attempts.lock().expect("account-link state poisoned");
+            self.link_generation.fetch_add(1, Ordering::Relaxed);
+            attempts.clear();
+        }
         self.syncs
             .lock()
             .expect("account-sync state poisoned")
@@ -124,6 +126,7 @@ impl AccountConnectionsService {
     pub fn new() -> Self {
         Self {
             attempts: Mutex::new(HashMap::new()),
+            link_generation: AtomicU64::new(0),
             syncs: Mutex::new(HashMap::new()),
         }
     }
@@ -385,6 +388,15 @@ impl AccountConnectionsService {
     ) -> Result<Value, ServiceError> {
         let provider = required_provider(params)?;
         ensure_provider_feature(&context.providers(), &provider, "supportsLinking")?;
+        (context.check)()?;
+        let generation = {
+            let mut attempts = self.attempts.lock().expect("account-link state poisoned");
+            attempts.retain(|_, attempt| attempt.expires > Instant::now());
+            if attempts.len() >= 8 {
+                return Err(invalid("Too many account-link attempts"));
+            }
+            self.link_generation.load(Ordering::Relaxed)
+        };
         let (listener, port) = bind_callback()?;
         let redirect_uri = format!("http://localhost:{port}/");
         let mut url =
@@ -410,13 +422,11 @@ impl AccountConnectionsService {
             .ok_or_else(|| upstream("Account-linking URL response was incomplete"))?;
         crate::requests::check()?;
         (context.check)()?;
-        if self
-            .attempts
-            .lock()
-            .expect("account-link state poisoned")
-            .len()
-            >= 8
-        {
+        let mut attempts = self.attempts.lock().expect("account-link state poisoned");
+        if self.link_generation.load(Ordering::Relaxed) != generation {
+            return Err(invalid("Account-link attempt was cancelled"));
+        }
+        if attempts.len() >= 8 {
             return Err(invalid("Too many account-link attempts"));
         }
         let attempt_id = random_id();
@@ -431,21 +441,18 @@ impl AccountConnectionsService {
                 let _ = sender.send(result);
             })
             .map_err(|error| network("Could not start account-link callback", error))?;
-        self.attempts
-            .lock()
-            .expect("account-link state poisoned")
-            .insert(
-                attempt_id.clone(),
-                LinkAttempt {
-                    provider: provider.clone(),
-                    scope: context.scope(),
-                    receiver,
-                    expires: Instant::now() + Duration::from_secs(300),
-                    cancelled,
-                    callback: None,
-                    next_check: Instant::now(),
-                },
-            );
+        attempts.insert(
+            attempt_id.clone(),
+            LinkAttempt {
+                provider: provider.clone(),
+                scope: context.scope(),
+                receiver,
+                expires: Instant::now() + Duration::from_secs(300),
+                cancelled,
+                callback: None,
+                next_check: Instant::now(),
+            },
+        );
         Ok(
             json!({"attemptId":attempt_id,"provider":provider,"loginUrl":login_url,"expiresInSeconds":300}),
         )
@@ -1105,6 +1112,167 @@ mod tests {
         );
         service.cancel_pending();
         assert!(service.sync_status(&params, &context).is_err());
+    }
+
+    #[test]
+    fn abandoned_link_attempts_are_pruned_before_admission() {
+        let (url, worker) = crate::gfn::tests::mock_requests(
+            vec![(200, json!({"login_url":"https://example.com/link"}))],
+            |_, _| {},
+        );
+        let service = AccountConnectionsService::new();
+        let cancellations = seed_link_attempts(&service, 8);
+        let client = Client::builder().no_proxy().build().unwrap();
+        let auth = crate::gfn::tests::auth_fixture("account-a");
+        let definitions = json!({"stores":{"items":[{"store":"STEAM","label":"Steam",
+            "features":[{"__typename":"AccountLinkingSso","supported":true}]}]}});
+        let requests = crate::store_requests::StoreRequests::default();
+        let context = AccountContext {
+            client: &client,
+            auth: &auth,
+            generation: 1,
+            graphql: &url,
+            als: &url,
+            definitions: &definitions,
+            requests: &requests,
+            check: &|| Ok(()),
+        };
+        let params = json!({"provider":"STEAM"});
+        assert_eq!(
+            service.start_link(&params, &context).unwrap_err().message,
+            "Too many account-link attempts"
+        );
+        for attempt in service.attempts.lock().unwrap().values_mut() {
+            attempt.expires = Instant::now() - Duration::from_secs(1);
+        }
+        let result = service.start_link(&params, &context).unwrap();
+        assert!(result["attemptId"].is_string());
+        assert_eq!(service.attempts.lock().unwrap().len(), 1);
+        assert!(
+            cancellations
+                .iter()
+                .all(|cancelled| cancelled.load(Ordering::Acquire))
+        );
+        service.cancel_pending();
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn cancellation_during_link_url_fetch_cannot_install_an_attempt() {
+        let service = Arc::new(AccountConnectionsService::new());
+        let cancelling = Arc::clone(&service);
+        let (url, worker) = crate::gfn::tests::mock_requests(
+            vec![(200, json!({"login_url":"https://example.com/link"}))],
+            move |_, _| cancelling.cancel_pending(),
+        );
+        let client = Client::builder().no_proxy().build().unwrap();
+        let auth = crate::gfn::tests::auth_fixture("account-a");
+        let definitions = json!({"stores":{"items":[{"store":"STEAM","label":"Steam",
+            "features":[{"__typename":"AccountLinkingSso","supported":true}]}]}});
+        let requests = crate::store_requests::StoreRequests::default();
+        let context = AccountContext {
+            client: &client,
+            auth: &auth,
+            generation: 1,
+            graphql: &url,
+            als: &url,
+            definitions: &definitions,
+            requests: &requests,
+            check: &|| Ok(()),
+        };
+        assert_eq!(
+            service
+                .start_link(&json!({"provider":"STEAM"}), &context)
+                .unwrap_err()
+                .message,
+            "Account-link attempt was cancelled"
+        );
+        assert!(service.attempts.lock().unwrap().is_empty());
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn overlapping_link_admission_never_exceeds_the_limit() {
+        let (url, worker) = crate::gfn::tests::mock_requests(
+            vec![(200, json!({"login_url":"https://example.com/link"})); 2],
+            |_, _| {},
+        );
+        let service = AccountConnectionsService::new();
+        seed_link_attempts(&service, 7);
+        let barrier = std::sync::Barrier::new(2);
+        let client = Client::builder().no_proxy().build().unwrap();
+        let auth = crate::gfn::tests::auth_fixture("account-a");
+        let definitions = json!({"stores":{"items":[{"store":"STEAM","label":"Steam",
+            "features":[{"__typename":"AccountLinkingSso","supported":true}]}]}});
+        let requests = crate::store_requests::StoreRequests::default();
+        std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..2)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let checks = std::cell::Cell::new(0);
+                        let check = || {
+                            checks.set(checks.get() + 1);
+                            if checks.get() == 2 {
+                                barrier.wait();
+                            }
+                            Ok(())
+                        };
+                        let context = AccountContext {
+                            client: &client,
+                            auth: &auth,
+                            generation: 1,
+                            graphql: &url,
+                            als: &url,
+                            definitions: &definitions,
+                            requests: &requests,
+                            check: &check,
+                        };
+                        service.start_link(&json!({"provider":"STEAM"}), &context)
+                    })
+                })
+                .collect();
+            let results: Vec<_> = workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .collect();
+            assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+            assert_eq!(
+                results
+                    .iter()
+                    .find_map(|result| result.as_ref().err())
+                    .unwrap()
+                    .message,
+                "Too many account-link attempts"
+            );
+        });
+        assert_eq!(service.attempts.lock().unwrap().len(), 8);
+        service.cancel_pending();
+        worker.join().unwrap();
+    }
+
+    fn seed_link_attempts(
+        service: &AccountConnectionsService,
+        count: usize,
+    ) -> Vec<Arc<AtomicBool>> {
+        (0..count)
+            .map(|index| {
+                let cancelled = Arc::new(AtomicBool::new(false));
+                let (_, receiver) = mpsc::channel();
+                service.attempts.lock().unwrap().insert(
+                    format!("abandoned-{index}"),
+                    LinkAttempt {
+                        provider: "STEAM".into(),
+                        scope: "fixture".into(),
+                        receiver,
+                        expires: Instant::now() + Duration::from_secs(300),
+                        cancelled: cancelled.clone(),
+                        callback: None,
+                        next_check: Instant::now(),
+                    },
+                );
+                cancelled
+            })
+            .collect()
     }
 
     #[test]

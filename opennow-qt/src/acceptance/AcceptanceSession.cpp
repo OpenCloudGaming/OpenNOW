@@ -79,9 +79,12 @@ void AcceptanceSession::configureContext()
         const auto count = qBound(0, m_arguments.at(gpuCountIndex + 1).toInt(), 4);
         QList<GraphicsDeviceSelection::Adapter> adapters;
         for (int index = 0; index < count; ++index) {
+            const bool integrated = index > 0;
             adapters.append({u"fixture-gpu-%1"_s.arg(index),
-                index == 0 ? u"Intel UHD Graphics (fixture)"_s : u"NVIDIA GeForce RTX (fixture %1)"_s.arg(index),
-                quint64(index + 1), index == 0 ? 0ULL : 8ULL << 30, false});
+                index == 0 ? u"NVIDIA GeForce MX110 (fixture)"_s
+                           : u"Intel(R) HD Graphics 620 (fixture %1)"_s.arg(index),
+                quint64(index + 1), index == 0 ? 2ULL << 30 : 0ULL, false,
+                integrated, integrated, false});
         }
         adapters.append({u"fixture-software"_s, u"Software adapter (fixture)"_s, 99, 0, true});
         auto *devices = new GraphicsDeviceSelection(adapters, {}, &m_engine);

@@ -709,6 +709,7 @@ private slots:
         };
         NativeStreamRuntime runtime(api);
         QVERIFY(runtime.start());
+        QSignalSpy delivered(&runtime, &NativeStreamRuntime::eventReceived);
         const auto start = [&](const QString &id) {
             return runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
                                  {QStringLiteral("id"), id}});
@@ -741,6 +742,8 @@ private slots:
 
         deliver(telemetry(QStringLiteral("session-a"), true, QString(), timings));
         QCOMPARE(sample(), (std::pair{false, false}));
+        QCoreApplication::processEvents();
+        QCOMPARE(delivered.size(), 0);
 
         QVERIFY(start(QStringLiteral("session-a")));
         QTRY_VERIFY(runtime.presentationAllowed());
@@ -748,6 +751,7 @@ private slots:
 
         deliver(telemetry(QStringLiteral("session-a"), true, QStringLiteral("tracking"), timings));
         QTRY_COMPARE(sample(), (std::pair{true, true}));
+        QTRY_COMPARE(delivered.size(), 1);
         deliver(telemetry(QStringLiteral("session-a"), false, QStringLiteral("tracking"), timings));
         QTRY_COMPARE(sample(), (std::pair{true, false}));
         QCOMPARE(runtime.upstreamProgress().decodeEpoch, quint64(4));
@@ -763,6 +767,8 @@ private slots:
         QCOMPARE(sample(), (std::pair{true, true}));
         deliver(telemetry(QString(), false, QStringLiteral("tracking"), timings));
         QCOMPARE(sample(), (std::pair{true, true}));
+        QCoreApplication::processEvents();
+        QCOMPARE(delivered.size(), 4);
         deliver(telemetry(QStringLiteral("session-a"), false, QStringLiteral("tracking"),
                           QJsonObject{{QStringLiteral("epoch"), -1},
                                       {QStringLiteral("outputsTotal"), 1.5}}));
@@ -774,8 +780,12 @@ private slots:
         QVERIFY(start(QStringLiteral("session-b")));
         QTRY_VERIFY(runtime.presentationAllowed());
         QCOMPARE(sample(), (std::pair{false, false}));
+        deliver(telemetry(QStringLiteral("session-a"), false, QStringLiteral("tracking"), timings));
+        QCoreApplication::processEvents();
+        QCOMPARE(delivered.size(), 6);
         deliver(telemetry(QStringLiteral("session-b"), false, QStringLiteral("tracking"), timings));
         QTRY_COMPARE(sample(), (std::pair{true, false}));
+        QTRY_COMPARE(delivered.size(), 7);
         QVERIFY(runtime.shutdown());
     }
 

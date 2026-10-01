@@ -20,14 +20,6 @@ Localization::Localization(QObject *parent)
     if (!m_availableLocales.contains(u"en"_s)) {
         m_availableLocales.push_front(u"en"_s);
     }
-    auto fallbackKeys = m_fallback.keys();
-    fallbackKeys.sort();
-    for (const auto &key : fallbackKeys) {
-        const auto source = m_fallback.value(key);
-        if (!m_sourceToKey.contains(source)) {
-            m_sourceToKey.insert(source, key);
-        }
-    }
     setLocale(u"system"_s);
 }
 
@@ -58,6 +50,17 @@ void Localization::setLocale(const QString &locale)
     m_locale = requested;
     m_effectiveLocale = effective;
     m_active = effective == u"en"_s ? m_fallback : loadLocale(effective);
+    m_sourceToKey.clear();
+    auto fallbackKeys = m_fallback.keys();
+    fallbackKeys.sort();
+    for (const auto &key : fallbackKeys) {
+        const auto source = m_fallback.value(key);
+        const auto existingKey = m_sourceToKey.value(source);
+        if (existingKey.isEmpty() || (m_active.value(existingKey, source) == source
+                                      && m_active.value(key, source) != source)) {
+            m_sourceToKey.insert(source, key);
+        }
+    }
     ++m_revision;
     emit localeChanged();
 }

@@ -3,7 +3,7 @@ use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 use std::env;
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 const NATIVE_TRANSPORT: &str = "nvst";
@@ -11,6 +11,19 @@ const CONSOLE_POLICY_VERSION: &str = "qtConsoleModePolicyVersion";
 const WINDOWS_GPU_DEVICE_ID: &str = "windowsGpuDeviceId";
 const MAXIMUM_WINDOWS_GPU_DEVICE_ID_BYTES: usize = 1024;
 const MAXIMUM_BOOTSTRAP_SETTINGS_BYTES: u64 = 1024 * 1024;
+const MAXIMUM_SHORTCUT_BYTES: usize = 80;
+const SHORTCUT_KEYS: [&str; 9] = [
+    "shortcutToggleStats",
+    "shortcutTogglePointerLock",
+    "shortcutToggleFullscreen",
+    "shortcutStopStream",
+    "shortcutToggleAntiAfk",
+    "shortcutToggleMicrophone",
+    "shortcutScreenshot",
+    "shortcutToggleRecording",
+    "shortcutSaveClip",
+];
+const RESERVED_SHORTCUTS: [&str; 2] = ["Ctrl+G", "Shift+F3"];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LoadPolicy {
@@ -48,8 +61,15 @@ impl SettingsStore {
         let mut values = defaults.clone();
         let mut passthrough = Map::new();
         let mut migrate_onboarding = false;
-        if path.exists() {
-            match read_persisted_settings(&path, policy) {
+        let mut recovered_backup = false;
+        let backup = path.with_extension("json.bak");
+        if path.exists() || backup.exists() {
+            let persisted = read_persisted_settings(&path, policy).or_else(|| {
+                let persisted = read_persisted_settings(&backup, policy);
+                recovered_backup = persisted.is_some();
+                persisted
+            });
+            match persisted {
                 Some(persisted) => {
                     migrate_onboarding = policy == LoadPolicy::ReadWrite
                         && !persisted.contains_key("onboardingCompleted");
@@ -134,8 +154,9 @@ impl SettingsStore {
             && (store.values["codec"] != codec_before_normalize
                 || store.values["fallbackCodec"] != fallback_before_normalize);
         if policy == LoadPolicy::ReadWrite
-            && (migrate_console_policy || migrate_onboarding || codec_color_healed)
-            && store.path.exists()
+            && (recovered_backup
+                || ((migrate_console_policy || migrate_onboarding || codec_color_healed)
+                    && store.path.exists()))
         {
             store.save()?;
         }
@@ -241,6 +262,69 @@ impl SettingsStore {
             return Err(format!("Could not reset settings: {error}"));
         }
         Ok(self.all())
+    }
+
+    pub fn set_shortcuts(&mut self, bindings: &Value) -> Result<Map<String, Value>, String> {
+        let bindings = bindings
+            .as_object()
+            .filter(|bindings| !bindings.is_empty())
+            .ok_or_else(|| "Shortcut bindings must be a non-empty object".to_owned())?;
+        let mut applied = Map::new();
+        for (key, value) in bindings {
+            if !SHORTCUT_KEYS.contains(&key.as_str()) {
+                return Err(format!("Unknown shortcut setting: {key}"));
+            }
+            let chord = value
+                .as_str()
+                .ok_or_else(|| format!("{key} must be a string"))?
+                .trim();
+            if chord.len() > MAXIMUM_SHORTCUT_BYTES {
+                return Err(format!("{key} is too long"));
+            }
+            if RESERVED_SHORTCUTS
+                .iter()
+                .any(|reserved| canonical_shortcut(reserved) == canonical_shortcut(chord))
+            {
+                return Err(format!("{chord} is reserved"));
+            }
+            applied.insert(key.clone(), Value::String(chord.to_owned()));
+        }
+        let chord_of = |key: &str| {
+            applied
+                .get(key)
+                .or_else(|| self.values.get(key))
+                .and_then(Value::as_str)
+                .map(canonical_shortcut)
+                .unwrap_or_default()
+        };
+        for changed in applied.keys() {
+            let chord = chord_of(changed);
+            if chord.is_empty() {
+                continue;
+            }
+            if let Some(owner) = SHORTCUT_KEYS
+                .iter()
+                .find(|key| **key != changed.as_str() && chord_of(key) == chord)
+            {
+                return Err(format!(
+                    "{} is assigned to both {changed} and {owner}",
+                    applied[changed].as_str().unwrap_or_default()
+                ));
+            }
+        }
+        let previous_values = self.values.clone();
+        for (key, value) in &applied {
+            self.values.insert(key.clone(), value.clone());
+        }
+        self.normalize();
+        if let Err(error) = self.save() {
+            self.values = previous_values;
+            return Err(format!("Could not save settings: {error}"));
+        }
+        Ok(applied
+            .keys()
+            .map(|key| (key.clone(), self.values[key].clone()))
+            .collect())
     }
 
     pub fn set_provider_region(&mut self, provider: &str, value: Value) -> Result<Value, String> {
@@ -459,7 +543,7 @@ impl SettingsStore {
             100,
         );
         clamp_integer(&mut self.values, "fps", 30, 360, 60);
-        clamp_integer(&mut self.values, "maxBitrateMbps", 1, 200, 75);
+        clamp_bitrate_mbps(&mut self.values);
         clamp_integer(&mut self.values, "windowWidth", 960, 7680, 1400);
         clamp_integer(&mut self.values, "windowHeight", 540, 4320, 900);
         clamp_integer(&mut self.values, "recordingFps", 30, 60, 30);
@@ -525,15 +609,18 @@ impl SettingsStore {
         let mut persisted = self.passthrough.clone();
         persisted.extend(self.values.clone());
         let data = serde_json::to_vec_pretty(&persisted).map_err(io::Error::other)?;
-        fs::write(&temporary, data)?;
-        if self.path.exists() {
-            let _ = fs::remove_file(&backup);
-            fs::rename(&self.path, &backup)?;
+        let mut file = fs::File::create(&temporary)?;
+        file.write_all(&data)?;
+        file.sync_all()?;
+        drop(file);
+        if read_persisted_settings(&self.path, LoadPolicy::ReadWrite).is_some() {
+            fs::copy(&self.path, &backup)?;
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&backup)?
+                .sync_all()?;
         }
-        if let Err(error) = fs::rename(&temporary, &self.path) {
-            let _ = fs::rename(&backup, &self.path);
-            return Err(error);
-        }
+        fs::rename(&temporary, &self.path)?;
         Ok(())
     }
 }
@@ -700,6 +787,25 @@ fn clamp_integer(
     values.insert(key.to_owned(), Value::Number(value.into()));
 }
 
+fn clamp_bitrate_mbps(values: &mut Map<String, Value>) {
+    // 0.22 Mbps is 220 kbps. Whole numbers stay integers so existing settings
+    // and the 10–200 Mbps slider keep their previous JSON shape.
+    let raw = values
+        .get("maxBitrateMbps")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite())
+        .unwrap_or(75.0);
+    let value = (raw.clamp(0.22, 200.0) * 100.0).round() / 100.0;
+    let stored = if (value - value.round()).abs() < 1e-9 {
+        Value::from(value.round() as i64)
+    } else {
+        serde_json::Number::from_f64(value)
+            .map(Value::Number)
+            .unwrap_or_else(|| Value::from(75))
+    };
+    values.insert("maxBitrateMbps".to_owned(), stored);
+}
+
 fn clamp_number(
     values: &mut Map<String, Value>,
     key: &str,
@@ -755,6 +861,25 @@ fn normalize_optional_integer(
     );
 }
 
+fn canonical_shortcut(chord: &str) -> String {
+    let mut parts = chord
+        .split('+')
+        .map(|part| part.trim().to_ascii_lowercase())
+        .map(|part| {
+            if part == "control" {
+                "ctrl".to_owned()
+            } else {
+                part
+            }
+        })
+        .collect::<Vec<_>>();
+    let key = parts.pop().unwrap_or_default();
+    parts.sort();
+    parts.dedup();
+    parts.push(key);
+    parts.join("+")
+}
+
 fn normalize_bounded_strings(values: &mut Map<String, Value>) {
     for (key, maximum) in [
         ("region", 256_usize),
@@ -774,17 +899,7 @@ fn normalize_bounded_strings(values: &mut Map<String, Value>) {
             .collect::<String>();
         values.insert(key.to_owned(), Value::String(value));
     }
-    for key in [
-        "shortcutToggleStats",
-        "shortcutTogglePointerLock",
-        "shortcutToggleFullscreen",
-        "shortcutStopStream",
-        "shortcutToggleAntiAfk",
-        "shortcutToggleMicrophone",
-        "shortcutScreenshot",
-        "shortcutToggleRecording",
-        "shortcutSaveClip",
-    ] {
+    for key in SHORTCUT_KEYS {
         let value = values
             .get(key)
             .and_then(Value::as_str)
@@ -997,6 +1112,98 @@ fn defaults() -> Map<String, Value> {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn settings_backup_recovers_missing_and_corrupt_primary_without_bootstrap_writes() {
+        for corrupt in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("settings.json");
+            let backup = path.with_extension("json.bak");
+            let temporary = path.with_extension("json.tmp");
+            let mut original = SettingsStore::load(Some(directory.path().to_owned())).unwrap();
+            original
+                .set("windowsGpuDeviceId", json!("fixture-gpu"))
+                .unwrap();
+            original.set("windowWidth", json!(1600)).unwrap();
+            let expected = original.all();
+            let bytes = fs::read(&path).unwrap();
+            fs::rename(&path, &backup).unwrap();
+            fs::write(&temporary, b"interrupted write").unwrap();
+            if corrupt {
+                fs::write(&path, b"{").unwrap();
+            }
+            assert_eq!(
+                SettingsStore::windows_gpu_device_id_read_only(Some(directory.path().to_owned()))
+                    .unwrap(),
+                "fixture-gpu"
+            );
+            assert_eq!(fs::read(&backup).unwrap(), bytes);
+            assert_eq!(fs::read(&temporary).unwrap(), b"interrupted write");
+            assert!(!path.with_extension("json.corrupt").exists());
+            if corrupt {
+                assert_eq!(fs::read(&path).unwrap(), b"{");
+            } else {
+                assert!(!path.exists());
+            }
+            let restored = SettingsStore::load(Some(directory.path().to_owned())).unwrap();
+            assert_eq!(restored.all(), expected);
+            assert_eq!(fs::read(&backup).unwrap(), bytes);
+            assert_eq!(
+                SettingsStore::load(Some(directory.path().to_owned()))
+                    .unwrap()
+                    .all(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn settings_recovery_failure_keeps_the_valid_backup() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let backup = path.with_extension("json.bak");
+        let mut store = SettingsStore::load(Some(directory.path().to_owned())).unwrap();
+        store.set("windowWidth", json!(1600)).unwrap();
+        let bytes = fs::read(&path).unwrap();
+        fs::rename(&path, &backup).unwrap();
+        fs::create_dir(path.with_extension("json.tmp")).unwrap();
+        assert!(SettingsStore::load(Some(directory.path().to_owned())).is_err());
+        assert!(!path.exists());
+        assert_eq!(fs::read(&backup).unwrap(), bytes);
+    }
+
+    #[test]
+    fn settings_backup_failure_keeps_the_primary_and_memory_unchanged() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut store = SettingsStore::load(Some(directory.path().to_owned())).unwrap();
+        store.set("windowWidth", json!(1600)).unwrap();
+        let expected = store.all();
+        let bytes = fs::read(&path).unwrap();
+        fs::create_dir(path.with_extension("json.bak")).unwrap();
+        assert!(store.set("windowWidth", json!(1800)).is_err());
+        assert_eq!(store.all(), expected);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn settings_bootstrap_does_not_recover_invalid_or_oversized_backups() {
+        let directory = tempfile::tempdir().unwrap();
+        let backup = directory.path().join("settings.json.bak");
+        for bytes in [
+            b"{".to_vec(),
+            vec![b' '; MAXIMUM_BOOTSTRAP_SETTINGS_BYTES as usize + 1],
+        ] {
+            fs::write(&backup, &bytes).unwrap();
+            assert_eq!(
+                SettingsStore::windows_gpu_device_id_read_only(Some(directory.path().to_owned()))
+                    .unwrap(),
+                ""
+            );
+            assert_eq!(fs::read(&backup).unwrap(), bytes);
+            assert!(!directory.path().join("settings.json").exists());
+        }
+    }
 
     #[test]
     fn language_preferences_are_independent_and_rejected_writes_are_atomic() {
@@ -1391,6 +1598,55 @@ mod tests {
     }
 
     #[test]
+    fn shortcut_transaction_moves_chords_atomically() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = SettingsStore::load(Some(directory.path().to_owned())).unwrap();
+        let applied = store
+            .set_shortcuts(&json!({"shortcutToggleStats":"Ctrl+F11","shortcutScreenshot":""}))
+            .unwrap();
+        assert_eq!(applied["shortcutToggleStats"], json!("Ctrl+F11"));
+        assert_eq!(applied["shortcutScreenshot"], json!(""));
+        let reloaded = SettingsStore::load(Some(directory.path().to_owned())).unwrap();
+        assert_eq!(reloaded.all()["shortcutToggleStats"], json!("Ctrl+F11"));
+        assert_eq!(reloaded.all()["shortcutScreenshot"], json!(""));
+
+        let before = store.all();
+        for rejected in [
+            json!({"shortcutToggleFullscreen":"ctrl + f11"}),
+            json!({"shortcutToggleFullscreen":"Ctrl+G"}),
+            json!({"shortcutSaveClip":"Shift+F3"}),
+            json!({"shortcutToggleStats":"F1","appTheme":"light"}),
+            json!({"shortcutToggleStats":7}),
+            json!({"shortcutToggleStats":"x".repeat(81)}),
+            json!({}),
+            json!([]),
+        ] {
+            assert!(store.set_shortcuts(&rejected).is_err(), "{rejected}");
+            assert_eq!(store.all(), before, "{rejected} must not partially apply");
+        }
+
+        store.set("shortcutToggleRecording", json!("F8")).unwrap();
+        store
+            .set_shortcuts(&json!({"shortcutSaveClip":"Alt+F12"}))
+            .expect("an existing duplicate must not block unrelated shortcut edits");
+        assert!(
+            store
+                .set_shortcuts(&json!({"shortcutToggleRecording":"F8"}))
+                .is_err()
+        );
+
+        let defaults = defaults();
+        let reset = SHORTCUT_KEYS
+            .iter()
+            .map(|key| (key.to_string(), defaults[*key].clone()))
+            .collect::<Map<_, _>>();
+        store.set_shortcuts(&Value::Object(reset)).unwrap();
+        for key in SHORTCUT_KEYS {
+            assert_eq!(store.all()[key], defaults[key]);
+        }
+    }
+
+    #[test]
     fn replay_is_opt_in_bounded_and_persisted() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1407,11 +1663,13 @@ mod tests {
         store.set("replayBufferSeconds", json!(999)).unwrap();
         store.set("replayBufferMemoryMiB", json!(1)).unwrap();
         store.set("shortcutSaveClip", json!("Alt+F12")).unwrap();
+        store.set("shortcutToggleRecording", json!("")).unwrap();
         let mut reloaded = SettingsStore::load(Some(directory.clone())).unwrap();
         assert_eq!(reloaded.all()["replayBufferEnabled"], json!(true));
         assert_eq!(reloaded.all()["replayBufferSeconds"], json!(120));
         assert_eq!(reloaded.all()["replayBufferMemoryMiB"], json!(64));
         assert_eq!(reloaded.all()["shortcutSaveClip"], json!("Alt+F12"));
+        assert_eq!(reloaded.all()["shortcutToggleRecording"], json!(""));
         reloaded.set("replayBufferSeconds", json!(-1)).unwrap();
         reloaded.set("replayBufferMemoryMiB", json!(9999)).unwrap();
         assert_eq!(reloaded.all()["replayBufferSeconds"], json!(15));
@@ -1916,7 +2174,10 @@ mod tests {
             store
                 .set(
                     "nativeHdrDisplay",
-                    json!({"minimumNits":0.005,"maximumNits":620})
+                    json!({"minimumNits":0.005,"maximumNits":620,
+                        "maximumFullFrameNits":400,"redX":0.64,"redY":0.33,
+                        "greenX":0.30,"greenY":0.60,"blueX":0.15,"blueY":0.06,
+                        "whiteX":0.3127,"whiteY":0.329})
                 )
                 .is_err()
         );
@@ -1928,7 +2189,10 @@ mod tests {
         let path = directory.join("settings.json");
         let mut persisted: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         persisted["nativeHdrSupported"] = json!(true);
-        persisted["nativeHdrDisplay"] = json!({"minimumNits":0.005,"maximumNits":620});
+        persisted["nativeHdrDisplay"] = json!({"minimumNits":0.005,"maximumNits":620,
+            "maximumFullFrameNits":400,"redX":0.64,"redY":0.33,
+            "greenX":0.30,"greenY":0.60,"blueX":0.15,"blueY":0.06,
+            "whiteX":0.3127,"whiteY":0.329});
         fs::write(&path, serde_json::to_vec(&persisted).unwrap()).unwrap();
         let mut loaded = SettingsStore::load(Some(directory.clone())).unwrap();
         assert!(loaded.all().get("nativeHdrSupported").is_none());
@@ -2223,6 +2487,12 @@ mod tests {
         assert_eq!(store.set("fps", json!(999)).unwrap(), json!(360));
         assert_eq!(store.set("fps", json!(360)).unwrap(), json!(360));
         assert_eq!(store.set("fps", json!(240)).unwrap(), json!(240));
+        assert_eq!(store.set("maxBitrateMbps", json!(200)).unwrap(), json!(200));
+        let low_bitrate = store.set("maxBitrateMbps", json!(0.22)).unwrap();
+        assert!((low_bitrate.as_f64().unwrap() - 0.22).abs() < 0.001);
+        let clamped_bitrate = store.set("maxBitrateMbps", json!(0.1)).unwrap();
+        assert!((clamped_bitrate.as_f64().unwrap() - 0.22).abs() < 0.001);
+        assert_eq!(store.set("maxBitrateMbps", json!(27)).unwrap(), json!(27));
         assert_eq!(store.set("maxBitrateMbps", json!(200)).unwrap(), json!(200));
         assert_eq!(
             store.set("launchInConsoleMode", json!(false)).unwrap(),
