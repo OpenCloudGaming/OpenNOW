@@ -85,7 +85,7 @@ Video confidentiality is SRTP on that socket. OpenNOW’s receiver comments reco
 
 FEC is configured in the same ANNOUNCE block and applied before access-unit assembly. Bifrost exposes `fec.enable`, repair percents, `minRequiredFecPackets`, `maxAllowedFecPackets`, `numSrcPackets`, `rateDropWindow`, and `fec.type`, including an `rtcMultiStream` mode. OpenNOW enables systematic Reed-Solomon with repair 20 percent, floor 20, ceiling 35, minimum two FEC packets, and a rate-drop window of 10. The Windows log in `video.md` recorded dynamic FEC on and, for that session, zero recovered FEC packets against 639 used of 677 NACKed packets. FEC and NACK are both advertised. A session can run with NACK doing the work and FEC idle.
 
-`ServerControlReliableUdp` and `ServerControlReliableUdpAggregated` are still linked. They observe enet connect, readable, peer-disconnected, error, and telemetry notifications. That is the pre-bundle control transport. It remains in the binary next to the native data-channel path. OpenNOW does not implement enet. It only advertises an MTU and disables the partially reliable UDP channel.
+`ServerControlReliableUdp` and `ServerControlReliableUdpAggregated` remain linked beside the native data-channel path. Their enet connect/readable/disconnect/error strings identify the older control transport capability. OpenNOW does not implement enet, and its ANNOUNCE builder does not emit the old enet MTU attribute. The fallback `usePartiallyReliableUdpChannel:0` value is a separate attribute, subject to the negotiated offer’s server-owned-field filtering.
 
 ## ICE, DTLS, and SCTP
 

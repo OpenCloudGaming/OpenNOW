@@ -14,8 +14,8 @@ Consolidated from the section audits at the exact OpenNOW comparison commit in [
 
 ## Session orchestration
 
-| Gap | Official | OpenNOW |
-| --- | --- | --- |
+| Gap | Official | OpenNOW | Primary owner |
+| --- | --- | --- | --- |
 | **Auth refresh during POST/poll** | `NVB_EVT_UPDATE_AUTH_TOKEN` blocks until mall refreshes JWT | Token captured once at create | `opennow-core` CloudMatch |
 | **Setup progress vocabulary** | `NVB_SSS_*`, `seatSetupEta` ms | `phase`, `queuePosition`, `seatSetupStep` only | core session normalization + Qt UI |
 | **Poll failure → DELETE** | Bifrost DELETE on poll network error | Poll continues; separate cancel path | CloudMatch poller policy |
@@ -26,19 +26,19 @@ Consolidated from the section audits at the exact OpenNOW comparison commit in [
 
 ## Media and devices
 
-| Gap | Official | OpenNOW |
-| --- | --- | --- |
+| Gap | Official | OpenNOW | Primary owner |
+| --- | --- | --- | --- |
 | **Audio TimestampAudioBuffer** | Adaptive threshold, stale drops, overbuffer flush | RED + PLC; no equivalent vendor adaptive policy established | Existing platform audio owner |
 | **Microphone AEC / redundancy** | GsAudioWebRTC reverse-stream AEC; prior Windows mic RED level 3 | Negotiated SDL capture, mono 48 kHz Opus at 32 kbps, bounded uplink; no reverse-stream AEC or mic RED | Existing native microphone owners; target acceptance still required |
 | **Gamepad aggregation** | Timer + destructive aggregation settings | Event-driven + 100 ms keepalive | input queue policy |
 | **GSHID / DS4 synth** | `GamepadHIDSynthesizer`, cross-synth DS4/DS5 | DS4 report commands exist; no generic→Sony synth | `nvst_input` / HID |
-| **HUD second decoder set** | `HudVideoDecoderSet` | Single queue | streamer (if product needs HUD video) |
+| **HUD second decoder set** | `HudVideoDecoderSet` | One embedded stream; no vendor HUD decoder-set equivalent established | Streamer, only if product scope requires HUD video |
 | **Serenity H.264 local record** | CEF transcode path when live codec not recordable | Matroska of negotiated stream | out of scope unless product asks |
 
 ## Platform and packaging
 
-| Gap | Official Linux | OpenNOW Linux |
-| --- | --- | --- |
+| Gap | Official Linux | OpenNOW Linux | Primary owner |
+| --- | --- | --- | --- |
 | **Pointer capture** | XInput2 raw, XWayland `XGrabPointer`, SDL fallback | XI2 + Qt/Wayland path in app | `opennow-qt` input |
 | **Gamescope HDR env** | Flatpak sets `ENABLE_GAMESCOPE=1`, `ENABLE_GAMESCOPE_HDR=1`, and `GAMESCOPE_HDR=1` | Compositor HDR from Qt output | packaging + settings |
 | **Default audio device churn** | Explicitly disabled on Linux client | WASAPI-style replug on Windows only | platform audio |

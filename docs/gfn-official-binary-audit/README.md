@@ -34,7 +34,7 @@ Current-product comparisons refer to the exact OpenNOW commit above. The support
 | [video-streaming-decode-recovery.md](video-streaming-decode-recovery.md) | Decode, present queues, DJB, dynamic streaming, recovery vs OpenNOW |
 | [audio-opus-red-jitter.md](audio-opus-red-jitter.md) | Opus, RED, TimestampAudioBuffer, GsAudioWebRTC, SDL sink |
 | [input-mouse-gamepad-features.md](input-mouse-gamepad-features.md) | XInput2/SDL, type 7/12, NVB features 0/6/8/10, activation chain |
-| [opennow-parity-gaps.md](opennow-parity-gaps.md) | Consolidated gap list and recommended closure order |
+| [opennow-parity-gaps.md](opennow-parity-gaps.md) | Candidate gaps, ownership, and evidence gates |
 | [index.html](index.html) | Same corpus as a navigable HTML report |
 
 ## Methods and limits

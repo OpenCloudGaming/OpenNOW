@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import html
 from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
@@ -50,17 +51,32 @@ SOURCE_CHECKS = {
 
 
 class ReportHTML(HTMLParser):
-    def __init__(self):
+    def __init__(self, template=False):
         super().__init__()
         self.ids = set()
         self.hrefs = []
+        self.allowed = {
+            tag: {"id", "class"} for tag in (
+                "section", "h1", "h2", "h3", "h4", "h5", "h6", "p", "strong", "em",
+                "code", "pre", "table", "thead", "tbody", "tr", "ul", "ol", "li",
+                "blockquote", "hr", "br", "del",
+            )
+        }
+        self.allowed.update({"a": {"id", "class", "href", "title"}, "th": {"id", "class", "style"}, "td": {"id", "class", "style"}})
+        if template:
+            self.allowed.update({tag: {"id", "class"} for tag in ("head", "title", "body", "div", "nav", "main")})
+            self.allowed["style"] = set()
+            self.allowed.update({"html": {"lang"}, "meta": {"charset", "name", "content"}})
 
     def handle_starttag(self, tag, attrs):
+        if tag not in self.allowed:
+            raise ValueError(f"Unsupported HTML element: {tag}")
+        keys = [key for key, _ in attrs]
+        if len(set(keys)) != len(keys):
+            raise ValueError(f"Duplicate HTML attribute on {tag}")
+        if set(keys) - self.allowed[tag]:
+            raise ValueError(f"Unsupported HTML attribute on {tag}")
         attrs = dict(attrs)
-        if tag in {"script", "iframe", "object", "embed", "form", "base", "link"}:
-            raise ValueError(f"Active or external-loading HTML element: {tag}")
-        if any(key in attrs for key in ("src", "srcset", "poster", "data", "background")) or any(key.lower().startswith("on") for key in attrs):
-            raise ValueError(f"Active HTML attribute on {tag}")
         if "style" in attrs:
             alignment = re.sub(r"\s", "", attrs["style"])
             if tag not in {"th", "td"} or alignment not in {"text-align:left;", "text-align:right;", "text-align:center;"}:
@@ -139,19 +155,23 @@ def main():
     sources = {name: bounded_text(DOCS / f"{name}.md") for name, _ in SECTIONS}
     comparison = check_sources(sources["README"])
     navigation = "".join(f'<li><a href="#{name}">{html.escape(title)}</a></li>' for name, title in SECTIONS)
-    sections = "".join(
-        f'<section id="{name}"><h1 class="section-title">{html.escape(title)}</h1>'
-        + markdown.markdown(sources[name], extensions=["tables", "fenced_code"])
-        + "</section>" for name, title in SECTIONS
-    )
+    sections = []
+    for name, title in SECTIONS:
+        section = f'<section id="{name}"><h1 class="section-title">{html.escape(title)}</h1>'
+        section += markdown.markdown(sources[name], extensions=["tables", "fenced_code"]) + "</section>"
+        ReportHTML().feed(section)
+        sections.append(section)
     template = bounded_text(DOCS / "report-template.html")
+    styles = re.findall(r"<style>(.*?)</style>", template, re.DOTALL)
+    if re.findall(r"<style\b[^>]*>", template, re.IGNORECASE) != ["<style>"] or re.findall(r"</style\s*>", template, re.IGNORECASE) != ["</style>"]:
+        raise ValueError("Template must contain exactly one reviewed stylesheet")
+    if len(styles) != 1 or hashlib.sha256(styles[0].encode("utf-8")).hexdigest() != "117dfc069d79817820e048846df79e9b7a278229bd693ca97ace3667dd1d311a":
+        raise ValueError("Template must use the reviewed passive stylesheet")
     for marker in ("{{navigation}}", "{{sections}}"):
         if template.count(marker) != 1:
             raise ValueError(f"Template needs exactly one {marker}")
-    report = template.replace("{{navigation}}", navigation).replace("{{sections}}", sections)
-    if re.search(r"\burl\s*\(|@import|javascript:", report, re.IGNORECASE):
-        raise ValueError("External-loading CSS or active URL in report")
-    document = ReportHTML()
+    report = template.replace("{{navigation}}", navigation).replace("{{sections}}", "".join(sections))
+    document = ReportHTML(template=True)
     document.feed(report)
     missing = [href for href in document.hrefs if href.startswith("#") and href[1:] not in document.ids]
     if missing:

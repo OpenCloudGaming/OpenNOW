@@ -116,7 +116,7 @@ th { background:#161b22; }
 </tr>
 <tr>
 <td><a href="opennow-parity-gaps.md">opennow-parity-gaps.md</a></td>
-<td>Consolidated gap list and recommended closure order</td>
+<td>Candidate gaps, ownership, and evidence gates</td>
 </tr>
 <tr>
 <td><a href="index.html">index.html</a></td>
@@ -623,7 +623,7 @@ th { background:#161b22; }
 <p>The header OpenNOW parses is the same object Bifrost names <code>MjolnirGsFrameHeader</code>. In <code>nvst.rs</code> the profile constant is <code>GS_VIDEO_EXTENSION_PROFILE = 0x4753</code> (“GS”), a fixed 16-byte RTP extension, not an in-payload prefix. Flags inside that header are SOF (<code>0x04</code>), EOF (<code>0x02</code>), and picture data (<code>0x01</code>). Frame assembly uses those bits plus the stream packet index. Bifrost’s “invalid extension length” and “not enough bytes” strings are the official parser rejecting a short or mistyped extension before decode. OpenNOW’s assembler resets, marks the access unit non-contiguous, and asks for an IDR when the GS header is bad. Both sides refuse to invent a frame from a truncated header.</p>
 <p>Video confidentiality is SRTP on that socket. OpenNOW’s receiver comments record Bifrost’s <code>SecureRtp</code> mapping: <code>sec_serv_conf_and_auth</code> with a 256-bit key selects <code>srtp_crypto_policy_set_aes_gcm_256_8_auth</code>, an 8-byte tag, not the 16-byte tag of RFC 7714 <code>AEAD_AES_GCM</code>. RTP key derivation uses labels <code>0x00</code> and <code>0x02</code>. SRTCP, if used, uses <code>0x03</code> and <code>0x05</code> on a separate session derived from the same master key. ANNOUNCE carries <code>x-nv-runtime.videoSrtp:1</code> and the key id. Audio and mic SRTP are advertised off (<code>audioSrtp:0</code>, <code>micSrtp:0</code>) because those flows are DTLS-protected inside the bundle instead. A replay window attribute exists (<code>srtpReplayWindowSize</code>). OpenNOW sizes its replay bitmap to the reorder window (2048 packets). A 64-packet bitmap, which an earlier receiver used, rejected legitimate retransmissions after a few milliseconds at high bitrate and turned every NACK into a keyframe.</p>
 <p>FEC is configured in the same ANNOUNCE block and applied before access-unit assembly. Bifrost exposes <code>fec.enable</code>, repair percents, <code>minRequiredFecPackets</code>, <code>maxAllowedFecPackets</code>, <code>numSrcPackets</code>, <code>rateDropWindow</code>, and <code>fec.type</code>, including an <code>rtcMultiStream</code> mode. OpenNOW enables systematic Reed-Solomon with repair 20 percent, floor 20, ceiling 35, minimum two FEC packets, and a rate-drop window of 10. The Windows log in <code>video.md</code> recorded dynamic FEC on and, for that session, zero recovered FEC packets against 639 used of 677 NACKed packets. FEC and NACK are both advertised. A session can run with NACK doing the work and FEC idle.</p>
-<p><code>ServerControlReliableUdp</code> and <code>ServerControlReliableUdpAggregated</code> are still linked. They observe enet connect, readable, peer-disconnected, error, and telemetry notifications. That is the pre-bundle control transport. It remains in the binary next to the native data-channel path. OpenNOW does not implement enet. It only advertises an MTU and disables the partially reliable UDP channel.</p>
+<p><code>ServerControlReliableUdp</code> and <code>ServerControlReliableUdpAggregated</code> remain linked beside the native data-channel path. Their enet connect/readable/disconnect/error strings identify the older control transport capability. OpenNOW does not implement enet, and its ANNOUNCE builder does not emit the old enet MTU attribute. The fallback <code>usePartiallyReliableUdpChannel:0</code> value is a separate attribute, subject to the negotiated offer’s server-owned-field filtering.</p>
 <h2>ICE, DTLS, and SCTP</h2>
 <p>The bundle is a normal ICE/DTLS association that then carries SCTP data channels and Opus audio. SDP names both credential generations: <code>iceUsernameFragment</code> and <code>iceUserNameFragmentV2</code>, <code>icePasswordV2</code>, <code>iceUsernamePwd</code>, <code>dtlsFingerprint</code> and <code>dtlsFingerprintV2</code>, plus <code>iceTransportPolicy</code>. OpenNOW publishes V2 attributes and the standard <code>a=ice-*</code> / <code>a=fingerprint</code> lines from the same ufrag, password, and SHA-256 fingerprint, with <code>a=setup:actpass</code> and <code>a=ice-options:trickle</code>. One host candidate is written at priority <code>2122260223</code>. STUN in <code>nvst.rs</code> is RFC 5389: magic cookie <code>0x2112a442</code>, binding request <code>0x0001</code>, success <code>0x0101</code>, attributes username <code>0x0006</code>, message-integrity <code>0x0008</code>, XOR-mapped-address <code>0x0020</code>, and fingerprint <code>0x8028</code> XORed with <code>0x5354554e</code>. Integrity is checked against the remote ICE password. A response that does not match a sent transaction is ignored. Displayed RTT prefers the selected ICE pair, then video STUN, then bundle STUN, and samples expire after five seconds. That order is what NACK-v2 retry timing uses.</p>
 <p>DTLS protects everything on the bundle socket: audio RTP, microphone RTP, and every data channel. Video does not join that DTLS session when <code>rtcVideoOnNativeBundle</code> is 0. Diagnostics have to keep those facts apart. Bundle audio running, or DTLS handshake complete, does not mean a Mjolnir datagram has arrived. <code>docs/streamer-comparison/windows-udp-diagnostics.md</code> records a capture that reached PLAY, DTLS, and SCTP with zero video datagrams.</p>
@@ -886,7 +886,7 @@ th { background:#161b22; }
 </ul>
 <p>Colorspace values <code>2</code> and <code>4</code> take separate branches before a virtual call at slot <code>+0x198</code> on the object at <code>this+0x78</code>. The other colorspace values fall through with the HDR byte zero-extended as an extra argument. The official session described in <code>video.md</code> (10-bit, chroma 3, colorspace 2, limited range, HDR off) is exactly the tuple this logger is built to print. OpenNOW’s Linux session adopts a decoder format change immediately and emits <code>BackendEvent::FormatChanged</code>, then <code>LinuxFrameProducer::ensure_slot</code> reallocates the output image. It does not debounce resolution across five frames, and it does not keep a separate colorspace/HDR/range cache that is compared field by field before the presenter is told. The practical difference shows up on a dynamic-resolution stream: Geronimo will keep the previous announced size until the new size has been stable for five samples, while still updating chroma and depth immediately. OpenNOW resizes the Vulkan image on the first accepted format change.</p>
 <p>Two parser strings, <code>Invalid SPS change at non-IDR</code> and <code>Invalid PPS change at non-IDR</code>, are present twice (the decoder and a second copy of the same parser). A mid-stream parameter-set change that is not an IDR is rejected rather than applied. OpenNOW’s keyframe rule is the access-unit classifier in <code>nvst.rs</code> (H.264 NAL type 5, HEVC IRAP 16–21, AV1 SOF header byte 2). It will still submit a non-IDR access unit that happens to carry a new SPS unless the assembler has already declared the frame non-contiguous and dropped inter frames until a keyframe. Geronimo’s parser makes that rejection itself, inside the decode library, even when the transport delivered a complete access unit.</p>
-<p><code>VideoDecoder::getNextFrame(bool, unsigned int)</code> is the exported consumer at <code>0x3d6840</code>, about 5808 bytes, and <code>VideoDecoderSet</code> multiplexes streams above it. The set also has <code>setWaitTimeoutMs</code>, <code>updateDecoderSize</code>, and <code>requestProcessedFrame</code>. HUD video is a separate <code>HudVideoDecoderSet</code>. OpenNOW has a single video queue in <code>output.rs</code> and no second decoder set for HUD. Overlay video, if the server sends it, has nowhere to go except the same frame queue.</p>
+<p><code>VideoDecoder::getNextFrame(bool, unsigned int)</code> is the exported consumer at <code>0x3d6840</code>, about 5808 bytes, and <code>VideoDecoderSet</code> multiplexes streams above it. The set also exports <code>setWaitTimeoutMs</code>, <code>updateDecoderSize</code>, and <code>requestProcessedFrame</code>; HUD video has a separate <code>HudVideoDecoderSet</code>. The inspected OpenNOW Qt path presents one embedded stream through the GPU publisher and scene graph. This audit does not establish a separate vendor-HUD decoder-set equivalent or the handling of an unnegotiated second video stream.</p>
 <h2>Presentation</h2>
 <p><code>VulkanDecoder::decode</code> returns a <code>VulkanRenderer</code>. The queue that owns presentation timing is <code>AsyncFrameQueue</code>. <code>flush(bool)</code> is the recovery-side view of that queue, and it also shows the state the presenter keeps. The function takes the mutex at <code>this+0x30</code> when <code>pthread_key_create</code> resolved, calls an internal drain at <code>0x1db150</code> with the bool widened to 0 or 1, then logs <code>Total video frames dropped : %u</code> from the counter at <code>this+0x1c8</code> at level 3 under the tag <code>AsyncFrameQueue</code>. It then zeroes that counter and a qword at <code>this+0x1c0</code>. An xmm constant from <code>0x19055b0</code> (a 1-ulp denormal in the low double and zero in the high double) is written to <code>this+0x220</code>, and a zero xmm is written to <code>this+0x230</code>. The dword at <code>this+0x200</code> becomes <code>0xffffffff</code>. Qwords at <code>this+0x208</code> and <code>this+0x210</code> become zero. The byte at <code>this+0x21a</code> becomes zero. The qword at <code>this+0x250</code> becomes zero. The abs-mask constant at <code>0x18ae370</code> (<code>0x7fffffffffffffff</code> in the low qword, zero in the high) is stored at <code>this+0x240</code>. Two further subobjects, at <code>this+0x290</code> and <code>this+0x2c0</code>, are reset through <code>0x1d72e0</code>. <code>std::condition_variable::notify_one</code> runs on the condition variable at <code>this+0x58</code>. If the byte at <code>this+0x1b8</code> is nonzero, a second condition variable at <code>this+0x88</code> is notified as well. If the pointer at offset 0 is non-null, <code>flush</code> calls it with the same bool. The mutex is unlocked on the way out. A failed <code>pthread_mutex_lock</code> throws <code>std::__throw_system_error</code>.</p>
 <p>The inspected vendor queue contains a drop counter, a pacing block of about 0x90 bytes at <code>this+0x1c0</code>, two condition variables, and an optional child queue. Its flush resets presentation state without destroying the decoder or sending an IDR. That does not specify the policy of OpenNOW’s encoded queue or Qt render thread. OpenNOW’s embedded decoder publishes into the replaceable GPU-frame slot in <code>graphics.rs</code>; stale epochs are rejected and replaced frames are released through that ownership. A comparison with the standalone <code>output.rs</code> queue must not be used to prescribe a second queue or presenter for Qt.</p>
@@ -905,7 +905,7 @@ th { background:#161b22; }
 <li>The earlier Windows session log contains IDR and reference-invalidation messages. Their relationship to these decoder-state reports is a hypothesis until Bifrost’s state-to-command path or a paired wire exchange is traced. Geronimo’s parser strings prove local rejection of particular SPS/PPS changes, not that server-command sequence.</li>
 <li>There is no device-lost path in the functions that were listed. <code>video.md</code> already notes that the sampled official session had no device-lost log. This library’s Vulkan decoder returns null and frees the frame on <code>Stream/Decode Error!</code>. It does not rebuild a device inside <code>decode</code>.</li>
 </ol>
-<p>OpenNOW’s ladder is shorter and more local. A gap inside the NACK window is retried. An unrecoverable gap resets the assembler, sets <code>contiguous=false</code>, and requests a keyframe. Inter frames are dropped until that keyframe, and the keyframe rebuilds the transform. Encoded overflow clears the reference chain. A decoder error rebuilds the transform on the same device, then recreates graphics plus decoder for up to five seconds, then becomes fatal. There is no invalidation range, no “freeze the display on a bad reference” request, and no <code>flush</code> that preserves the decoder while wiping only the present queue. The closest OpenNOW operation to <code>AsyncFrameQueue::flush</code> is <code>clear_linux_video</code> on pause or hide, which drops queued frames without telling the server and without zeroing a pacing estimator beyond <code>LinuxFramePacer::reset</code> on stop and on a pacing-mode change.</p>
+<p>The current embedded Linux recovery contract is decoder-specific, not a universal five-second transform/graphics ladder. <code>opennow-streamer-platform-linux/src/session.rs</code> handles <code>ReferenceLost</code> by clearing decoded frames, reopening the decoder, and requesting a keyframe. Its <code>ReferenceRecovery</code> permits three attempts without decoded output and resets that budget when decoded output resumes; exhausting the budget reports a worker error. <code>MediaSession::set_paused</code> clears the encoded/audio/output queues and the embedded GPU-frame publisher, then pauses the Linux session. These active contracts differ from the standalone <code>clear_linux_video</code> and <code>LinuxFramePacer</code> policy. Local overlays are Qt composition above the same stream, not an instruction to pause media. Vendor invalidation or display-freeze behavior still needs a recovered wire/state contract before it can be compared to these paths.</p>
 <p>The earlier Windows Media Foundation comparison describes decoder reset after damaged references. A vendor present-queue flush is not itself a valid reference frame. OpenNOW’s recovery must still respect decoder-specific reference health and obtain a usable keyframe when required. Its dedicated-video control IDR and optional bundle-video PLI are route-specific requests. No reference-invalidation encoder is established by the current OpenNOW comparison, and this audit does not recover its vendor wire format.</p>
 <h2>Mjolnir</h2>
 <p>Mjolnir, in the sense that matters for video, is the dedicated UDP socket that carries video SRTP, separate from the ICE bundle. <code>video.md</code> records that both clients prefer local port 49005 and that ANNOUNCE sets <code>rtcVideoOnNativeBundle:0</code>. OpenNOW implements that socket inside <code>NvstVideoReceiver</code>. SRTP key derivation uses labels <code>0x00</code> and <code>0x02</code> for RTP video, and <code>0x03</code> and <code>0x05</code> for SRTCP, matching the libsrtp split. The GameStream header is 16 bytes. FEC coordinates live in that header. The reorder window defaults to 1024 packets and is capped at 2048. The Mjolnir dequeue timeout while a gap is open is 52 ms. The SRTP replay window is the full 2048-packet cap so that a retransmission is not rejected as a replay. The UDP receive buffer is 8 MB. Access units are capped at 2 MB by default and 16 MB absolute.</p>
@@ -974,7 +974,7 @@ th { background:#161b22; }
 <p>The buffer also tracks arrival versus RTP time. A CSV header lists <code>CurrentTime, InterPacketArrivalTime, Source Timestamp, Buffering delay, Decode delay, Render delay, Write delay, audioStatus, MinTsInJb, MaxTsInJb, JbCount, droppedPackets, expectedTs, movingAverage, longtermAvgJitter, burstCount, maxBurstJitter, avgBurstJitter, adaptationCount, currentJBThreshold, newJBThreshold</code>. A second row schema is <code>arrivalTimestampUS, arrivalTimeValid, rtpTimestamp, seqNo, Reference RTPTS, Reference Arrival Time, jitter</code>. Runtime lines include “Jitter value: %f, index: %f”, “Jitter was less than %d (=%u), setting to %d”, “Jitter was greater than %d (=%u), setting to %d”, “Audio JB reset timestamp: %f ms”, “Resetting jitter buffer”, “Audio Timestamp Rollover”, and “Inconsistency in timestamp, current unwrapped ts: %lu previous unwrapped ts: %lu”. “Possible first packet” and “Possible new sequence” cover the start and the wrap. “Audio: N/W Blackout observed. Last payload received: %lf ms ago” is the receive stall, distinct from a jitter underrun.</p>
 <p>A file <code>tsjb.conf</code> can override the compiled policy. The keys are <code>JITTER_BUFFER_MIN_THRESHOLD</code>, <code>JITTER_BUFFER_MAX_THRESHOLD</code>, <code>ANDROID_JITTER</code>, <code>MIN_ADAPTATION_DELTA</code>, <code>MIN_ADAPTATION_TIMEGAP</code>, <code>MIN_THRESHOLD_BASE</code>, <code>INTERPACKET_DELAY_THRESHOLD</code>, <code>MA_JITTER_BUFFER_SIZE</code>, <code>ALPHA_JITTER</code>, <code>BURST_FACTOR</code>, <code>BURSTS_SAMPLE_DURATION</code>, <code>BURST_ABSENCE_SAMPLE_DURATION</code>, <code>ALLOWABLE_BUFFER_SIZE</code>, <code>COUNT_VAR_ALPHA</code>, <code>COUNT_VAR_FACTOR</code>, <code>COUNT_VAR_IDEAL_FACTOR</code>, <code>COUNT_VAR_WINDOW_SIZE</code>, <code>LAST_STATE_WINDOW_SIZE</code>, <code>EMPTY_INCREASE_VALUE</code>, <code>INTOLERABLE_SILENCE_PLAYED</code>, <code>JITTER_FACTOR</code>, and <code>INTOLERABLE_UNDERFLOW_TIMEGAP</code>. Each prints as “NAME: %g”. “AConfig read skipped” and “Failed to open config file %s” mean the defaults still apply when the file is absent. Adaptation refuses to move on an empty buffer (“Failed to adapt due to empty buffer, will retry”) and refuses a zero variance (“Var = 0, not changing”). Pruning is logged as “Pruning: was %d vs %d” and “Pruning: %u -&gt; %u”.</p>
 <p>There is also “Audio Stats JB Max : %u , JB Median : %u”, “Average Write Delay for the session %f ms”, and “Setting audio frame duration: %u” with “Unsupported packet duration (%u ms), setting to default (%u ms)”. The encoder side logs “Audio streamer parameters: m_packetDuration = %u, bitrate = %u, channels = %u, multimappingmode = %d, useVBR = %d”. Twenty milliseconds is the frame the Windows mic note recorded. “Client E2E: frameAssembly %f, decodeAndDejitter %f, render %f, present %f, rxToPresent %f” and the metric name <code>ClientE2EDecodeAndDejitterTime</code> put audio dejitter in the same end-to-end bucket as video, which is why a video <code>FrameTiming</code> jitter and an audio JB threshold can both move in one session and still be different controllers.</p>
-<p>OpenNOW has no TimestampAudioBuffer and does not advertise <code>x-nv-audio.jbConfig.*</code> or <code>enableTimestampAudioBuffer</code>. Loss recovery is RED plus PLC, as above. Arrival jitter is measured for video RTCP (the 90 kHz interarrival estimate in <code>nvst.rs</code>) and is explicitly not substituted for one-way delay in the QoS report. The audio note’s “there is no A/V sync; video uses PresentationClock; audio is decode-and-push” still describes the render clock. RED recovery preserves RTP timestamps so PLC and the Linux gap measurement can see them. It does not hold audio until a target queue depth.</p>
+<p>OpenNOW has no vendor <code>TimestampAudioBuffer</code> equivalent and does not emit <code>x-nv-audio.jbConfig.*</code> or <code>enableTimestampAudioBuffer</code>. Loss recovery is RED plus PLC; preserved RTP timestamps allow gap measurement and concealment. Video RTCP arrival jitter is not substituted for one-way delay in QoS. The earlier audio note’s <code>PresentationClock</code> description is historical/standalone material, not a description of the supported Qt embedded GPU-frame path. This static audit does not establish an equivalent vendor A/V synchronization controller or prove its absence from every backend.</p>
 <h2>What Geronimo’s SDL sink does with the PCM</h2>
 <p>Once <code>NvstAudioFrame_t</code> reaches <code>SDLAudio</code>, the jitter policy is over. The sink prefers PipeWire (<code>Preferring SDL audio driver: pipewire</code>, <code>SDL_AUDIODRIVER</code>, “SDL audio driver active: %s”). It opens with <code>SDL_OpenAudioDevice</code> and logs “SDL: Opened audio device id %u” or <code>GERONIMO_SDLAUDIO_OPEN</code>. The device line is “Default audio device name: %s, channel count: %u, sample rate: %u, samples: %u, audio buffer size: %u”. “Recommended sample frame count is %d (=%f ms), allocating %u for audio channel count %d” is the callback quantum. “Unable to get default audio device info, will prefer default Stereo channels” is the fallback. “Default device change upon notificaition is disabled for Linux Client” (the typo is in the binary) means <code>onDefaultDeviceChanged</code> does not retarget the Linux sink the way a Windows WASAPI default-endpoint poll does. OpenNOW’s Windows path polls the default endpoint every 250 ms and calls <code>begin_audio_recovery</code> on unplug. The Linux official client logs that it will not.</p>
 <p>The queue is explicit and logged at byte granularity. <code>PUT, %d, %d, %d, %d</code> and <code>GET, %d, %d, %d, %d</code> and <code>DROP, %u</code> are the buffer. “Clearing buffer”, “Reset buffer complete”, “Starting Playback”, “Stopping Playback”, “Pausing audio playback”, “Resuming audio playback”, “Volume ramp is active”, and “setVolume %.03f over %.03fs” are the control plane. <code>setVolume(double, double)</code> matches a level and a ramp duration. Silence is a first-class state: <code>resetSilence</code> and <code>s_silencePlayed</code> versus <code>s_audioPlayed</code>, plus <code>getAudioPlayedInBytes</code>. “Shutting down SDLAUDIO” and “SDLAUDIO is destroyed” are teardown. <code>AudioStreamProvider</code> can record the same <code>NvstAudioFrame_t</code> (<code>sendDataToRecorder</code>, <code>notifyRecorderStreamBegin</code> / <code>End</code>). Bifrost can also write <code>audioOutputPCM-%s.pcm</code> and <code>clientAudioQosAlgoData-%s.csv</code> when “PCM Audio recording” is on. That PCM file is post-decode, so it cannot show whether a gap was filled by RED, by PLC, or by SDL silence. The counters that can are the RED fail count, the stale/overflow/maxsize drop line, and <code>s_silencePlayed</code>.</p>
@@ -1088,6 +1088,7 @@ th { background:#161b22; }
 <th>Gap</th>
 <th>Official</th>
 <th>OpenNOW</th>
+<th>Primary owner</th>
 </tr>
 </thead>
 <tbody>
@@ -1095,36 +1096,43 @@ th { background:#161b22; }
 <td><strong>Auth refresh during POST/poll</strong></td>
 <td><code>NVB_EVT_UPDATE_AUTH_TOKEN</code> blocks until mall refreshes JWT</td>
 <td>Token captured once at create</td>
+<td><code>opennow-core</code> CloudMatch</td>
 </tr>
 <tr>
 <td><strong>Setup progress vocabulary</strong></td>
 <td><code>NVB_SSS_*</code>, <code>seatSetupEta</code> ms</td>
 <td><code>phase</code>, <code>queuePosition</code>, <code>seatSetupStep</code> only</td>
+<td>core session normalization + Qt UI</td>
 </tr>
 <tr>
 <td><strong>Poll failure → DELETE</strong></td>
 <td>Bifrost DELETE on poll network error</td>
 <td>Poll continues; separate cancel path</td>
+<td>CloudMatch poller policy</td>
 </tr>
 <tr>
 <td><strong>Join / transfer / rating</strong></td>
 <td><code>nvbJoinSession</code>, FORWARD, TRANSFER, SESSION_RATING</td>
 <td>RESUME claim only</td>
+<td>core protocol</td>
 </tr>
 <tr>
 <td><strong>Network test + LBR</strong></td>
 <td><code>nvbTestNetwork*</code>, <code>QUERY_GFN_LATENCY_BASED_ROUTING</code>, cached latency</td>
 <td>Optional <code>networkTestSessionId</code>; separate zone selector</td>
+<td>core + QML</td>
 </tr>
 <tr>
 <td><strong>Remote config override of session params</strong></td>
 <td><code>GeronimoSettingsImpl::overrideNVbSessionParams</code> after mall fill</td>
 <td>Settings resolved pre-POST; server <code>finalizedStreamingFeatures</code> overlay</td>
+<td>core + streamer ANNOUNCE</td>
 </tr>
 <tr>
 <td><strong>Stream session IDs in normalized seat</strong></td>
 <td>Requires <code>networkSessionId</code>, <code>rtspSessionId</code>, <code>streamSessionId</code>, <code>streamSubSessionIds</code></td>
 <td>Raw <code>connectionInfo</code> + derived URLs</td>
+<td><code>session_info</code> normalization</td>
 </tr>
 </tbody>
 </table>
@@ -1135,6 +1143,7 @@ th { background:#161b22; }
 <th>Gap</th>
 <th>Official</th>
 <th>OpenNOW</th>
+<th>Primary owner</th>
 </tr>
 </thead>
 <tbody>
@@ -1142,31 +1151,37 @@ th { background:#161b22; }
 <td><strong>Audio TimestampAudioBuffer</strong></td>
 <td>Adaptive threshold, stale drops, overbuffer flush</td>
 <td>RED + PLC; no equivalent vendor adaptive policy established</td>
+<td>Existing platform audio owner</td>
 </tr>
 <tr>
 <td><strong>Microphone AEC / redundancy</strong></td>
 <td>GsAudioWebRTC reverse-stream AEC; prior Windows mic RED level 3</td>
 <td>Negotiated SDL capture, mono 48 kHz Opus at 32 kbps, bounded uplink; no reverse-stream AEC or mic RED</td>
+<td>Existing native microphone owners; target acceptance still required</td>
 </tr>
 <tr>
 <td><strong>Gamepad aggregation</strong></td>
 <td>Timer + destructive aggregation settings</td>
 <td>Event-driven + 100 ms keepalive</td>
+<td>input queue policy</td>
 </tr>
 <tr>
 <td><strong>GSHID / DS4 synth</strong></td>
 <td><code>GamepadHIDSynthesizer</code>, cross-synth DS4/DS5</td>
 <td>DS4 report commands exist; no generic→Sony synth</td>
+<td><code>nvst_input</code> / HID</td>
 </tr>
 <tr>
 <td><strong>HUD second decoder set</strong></td>
 <td><code>HudVideoDecoderSet</code></td>
-<td>Single queue</td>
+<td>One embedded stream; no vendor HUD decoder-set equivalent established</td>
+<td>Streamer, only if product scope requires HUD video</td>
 </tr>
 <tr>
 <td><strong>Serenity H.264 local record</strong></td>
 <td>CEF transcode path when live codec not recordable</td>
 <td>Matroska of negotiated stream</td>
+<td>out of scope unless product asks</td>
 </tr>
 </tbody>
 </table>
@@ -1177,6 +1192,7 @@ th { background:#161b22; }
 <th>Gap</th>
 <th>Official Linux</th>
 <th>OpenNOW Linux</th>
+<th>Primary owner</th>
 </tr>
 </thead>
 <tbody>
@@ -1184,16 +1200,19 @@ th { background:#161b22; }
 <td><strong>Pointer capture</strong></td>
 <td>XInput2 raw, XWayland <code>XGrabPointer</code>, SDL fallback</td>
 <td>XI2 + Qt/Wayland path in app</td>
+<td><code>opennow-qt</code> input</td>
 </tr>
 <tr>
 <td><strong>Gamescope HDR env</strong></td>
 <td>Flatpak sets <code>ENABLE_GAMESCOPE=1</code>, <code>ENABLE_GAMESCOPE_HDR=1</code>, and <code>GAMESCOPE_HDR=1</code></td>
 <td>Compositor HDR from Qt output</td>
+<td>packaging + settings</td>
 </tr>
 <tr>
 <td><strong>Default audio device churn</strong></td>
 <td>Explicitly disabled on Linux client</td>
 <td>WASAPI-style replug on Windows only</td>
+<td>platform audio</td>
 </tr>
 </tbody>
 </table>
