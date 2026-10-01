@@ -159,6 +159,7 @@ QtObject {
         ShellStore.pendingDirectLaunch = null
     }
     function verifyAccountLinkReplacement(accounts) {
+        ShellStore.lastError = ""
         accounts.startAccountLink("UPLAY")
         client.responseReceived(accounts.accountLinkStartRequestId,
             {attemptId:"first-link",provider:"UPLAY",loginUrl:""})
@@ -168,6 +169,7 @@ QtObject {
         accounts.startAccountLink("EPIC")
         client.responseReceived(accounts.accountLinkStartRequestId,
             {attemptId:"replacement-link",provider:"EPIC",loginUrl:""})
+        check(ShellStore.lastError === "", "retired link poll cancellation was reported as a global error")
         accounts.accountLinkPollTimer.stop()
         client.responseReceived(oldPoll, {status:"complete"})
         check(accounts.accountLinkAttempt && accounts.accountLinkAttempt.attemptId === "replacement-link",
@@ -186,7 +188,10 @@ QtObject {
     }
     function verifyStoreActions(host, accounts) {
         const stores = namedChild(host, "desktopStoresSettings")
-        if (!stores) return
+        if (!stores) {
+            check(AppController.route !== "settings-account", "account settings did not create the stores page")
+            return
+        }
         const fixtures = [
             {provider:"STEAM",label:"Fixture Steam",isConnected:true,status:"connected",supportsSync:true,supportsLinking:false},
             {provider:"UPLAY",label:"Fixture Ubisoft",isConnected:false,status:"not_connected",supportsSync:true,supportsLinking:true}
