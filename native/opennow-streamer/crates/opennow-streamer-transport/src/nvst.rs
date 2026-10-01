@@ -671,9 +671,14 @@ impl NvstFeedbackState {
             StreamSocket::Bundle => &self.bundle_receive_bytes,
             StreamSocket::Video => &self.video_receive_bytes,
         };
-        let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |bytes| {
-            Some(bytes.saturating_add(length as u64))
-        });
+        let mut bytes = counter.load(Ordering::Relaxed);
+        loop {
+            let next = bytes.saturating_add(length as u64);
+            match counter.compare_exchange_weak(bytes, next, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => break,
+                Err(current) => bytes = current,
+            }
+        }
     }
 
     pub fn socket_receive_bytes(&self) -> u64 {
@@ -7478,7 +7483,7 @@ fn run_nvst_udp_receiver(
         }
 
         match socket.recv_from(&mut datagram) {
-            Ok((length, source)) => {
+            Ok((length, source)) => 'datagram: {
                 inbound_datagrams += 1;
                 if inbound_datagrams == 1 {
                     log_udp_first_inbound(
@@ -7527,11 +7532,11 @@ fn run_nvst_udp_receiver(
                                 forward_optional(&event_sender, receiver.stop());
                                 return;
                             }
-                            continue;
+                            break 'datagram;
                         }
                         StunDatagram::Invalid => {
                             invalid_stun += 1;
-                            continue;
+                            break 'datagram;
                         }
                         StunDatagram::NotStun => non_stun += 1,
                     }
@@ -7744,6 +7749,35 @@ fn forward_receive_event(
 #[cfg(test)]
 mod tests {
     static PREFERRED_NVST_PORTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn stream_socket_receive_byte_counts_saturate_without_losing_updates() {
+        use super::{NvstFeedbackState, StreamSocket};
+        use std::sync::atomic::Ordering;
+
+        let feedback = NvstFeedbackState::default();
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let feedback = &feedback;
+                scope.spawn(move || {
+                    for _ in 0..1_000 {
+                        feedback.record_socket_receive(StreamSocket::Bundle, true, true, 7);
+                    }
+                });
+            }
+        });
+        assert_eq!(feedback.socket_receive_bytes(), 56_000);
+
+        feedback
+            .bundle_receive_bytes
+            .store(u64::MAX - 1, Ordering::Relaxed);
+        feedback.record_socket_receive(StreamSocket::Bundle, true, true, 0);
+        assert_eq!(feedback.socket_receive_bytes(), u64::MAX - 1);
+        feedback.record_socket_receive(StreamSocket::Bundle, true, true, 2);
+        assert_eq!(feedback.socket_receive_bytes(), u64::MAX);
+        feedback.record_socket_receive(StreamSocket::Bundle, true, true, 1);
+        assert_eq!(feedback.socket_receive_bytes(), u64::MAX);
+    }
 
     #[test]
     fn stream_socket_receive_counts_peer_datagram_lengths_once_across_sockets() {

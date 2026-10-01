@@ -8,7 +8,7 @@
 class VirtualPad final
 {
 public:
-    VirtualPad()
+    explicit VirtualPad(bool sony = false)
     {
         SDL_VirtualJoystickDesc descriptor{};
         SDL_INIT_INTERFACE(&descriptor);
@@ -18,6 +18,10 @@ public:
         descriptor.axis_mask = 1u << SDL_GAMEPAD_AXIS_LEFTX;
         descriptor.button_mask = (1u << SDL_GAMEPAD_BUTTON_COUNT) - 1;
         descriptor.name = "OpenNOW duplicate-source test pad";
+        if (sony) {
+            descriptor.vendor_id = 0x054c;
+            descriptor.product_id = 0x05c4;
+        }
         id = SDL_AttachVirtualJoystick(&descriptor);
     }
 
@@ -190,22 +194,29 @@ private slots:
         input.setInputControllerId(mapped.id);
         input.setShellCaptureEnabled(false);
         QSignalSpy selectionChanges(&input, &ControllerInput::inputControllerIdChanged);
+        const auto selected = mapped.id;
         snapshots.clear();
         QVERIFY(SDL_DetachVirtualJoystick(mapped.id));
         mapped.id = 0;
         QTRY_COMPARE(input.availableControllers().size(), 1);
         auto *pollTimer = input.findChild<QTimer *>(QStringLiteral("controllerPollTimer"));
         QVERIFY(pollTimer);
-        QCOMPARE(pollTimer->interval(), 4);
-        QCOMPARE(input.inputControllerId(), 0u);
-        QCOMPARE(selectionChanges.size(), 1);
-        QCOMPARE(input.controllerCount(), 1);
-        QCOMPARE(input.controllers().size(), 1);
+        QCOMPARE(pollTimer->interval(), 100);
+        QCOMPARE(input.inputControllerId(), selected);
+        QCOMPARE(selectionChanges.size(), 0);
+        QCOMPARE(input.controllerCount(), 0);
+        QCOMPARE(input.controllers().size(), 0);
         QVERIFY(!snapshots.isEmpty());
         QCOMPARE(snapshots.first().at(0).toUInt(), 0u);
         QCOMPARE(snapshots.first().at(1).toUInt(), 0u);
         for (int index = 2; index < 9; ++index)
             QCOMPARE(snapshots.first().at(index).toInt(), 0);
+        QCOMPARE(snapshots.size(), 1);
+        input.setInputControllerId(0);
+        QCOMPARE(input.inputControllerId(), 0u);
+        QCOMPARE(selectionChanges.size(), 1);
+        QCOMPARE(input.controllerCount(), 1);
+        QCOMPARE(pollTimer->interval(), 4);
         QCOMPARE(snapshots.last().at(1).toUInt(), 0x0101u);
         snapshots.clear();
         VirtualPad reconnected;
@@ -223,6 +234,132 @@ private slots:
         QCOMPARE(pollTimer->interval(), 4);
         QCOMPARE(snapshots.last().at(0).toUInt(), 0u);
         QCOMPARE(snapshots.last().at(2).toUInt(), 0x1000u);
+    }
+
+    void disconnectedExclusiveSourceBlocksOtherDevices_data()
+    {
+        QTest::addColumn<bool>("sony");
+        QTest::addColumn<bool>("shell");
+        QTest::newRow("generic-gameplay") << false << false;
+        QTest::newRow("generic-shell") << false << true;
+        QTest::newRow("sony-gameplay") << true << false;
+        QTest::newRow("sony-shell") << true << true;
+    }
+
+    void disconnectedExclusiveSourceBlocksOtherDevices()
+    {
+        QFETCH(bool, sony);
+        QFETCH(bool, shell);
+        ControllerInput input;
+        SourceKeySink sink;
+        QSignalSpy snapshots(&input, &ControllerInput::gamepadSnapshot);
+        QSignalSpy sonySnapshots(&input, &ControllerInput::sonySnapshot);
+        QSignalSpy actions(&input, &ControllerInput::localActionRequested);
+        QSignalSpy activity(&input, &ControllerInput::controllerActivity);
+        QSignalSpy selectionChanges(&input, &ControllerInput::inputControllerIdChanged);
+        VirtualPad other(sony);
+        VirtualPad selected(sony);
+        QVERIFY(other.id && selected.id);
+        QTRY_COMPARE(input.controllerCount(), 2);
+        const auto selectedId = selected.id;
+        input.setInputControllerId(selectedId);
+        input.setShellCaptureEnabled(shell);
+        QVERIFY(selected.button(true));
+        QVERIFY(selected.axis(-24000));
+        if (shell) {
+            QTRY_COMPARE(sink.presses.value(Qt::Key_Return), 1);
+            QTRY_VERIFY(sink.presses.value(Qt::Key_Left) > 0);
+        } else if (sony) {
+            QTRY_VERIFY(!sonySnapshots.isEmpty()
+                && sonySnapshots.last().at(0).value<ControllerInput::SonySnapshot>().buttons == 0x1000
+                && sonySnapshots.last().at(0).value<ControllerInput::SonySnapshot>().leftStickX < 0);
+        } else {
+            QTRY_VERIFY(!snapshots.isEmpty() && snapshots.last().at(2).toUInt() == 0x1000u
+                && snapshots.last().at(5).toInt() < 0);
+        }
+        snapshots.clear();
+        sonySnapshots.clear();
+        selectionChanges.clear();
+        QVERIFY(SDL_DetachVirtualJoystick(selected.id));
+        selected.id = 0;
+        QTRY_COMPARE(input.availableControllers().size(), 1);
+        QCOMPARE(input.inputControllerId(), selectedId);
+        QCOMPARE(selectionChanges.size(), 0);
+        QCOMPARE(input.controllerCount(), 0);
+        QVERIFY(input.controllers().isEmpty());
+        QVERIFY(input.deviceClaims().isEmpty());
+        if (shell) QTRY_COMPARE(sink.releases.value(Qt::Key_Return), 1);
+        if (sony && !shell) {
+            QVERIFY(!sonySnapshots.isEmpty());
+            const auto neutral = sonySnapshots.last().at(0).value<ControllerInput::SonySnapshot>();
+            QCOMPARE(neutral.slot, 0);
+            QCOMPARE(neutral.buttons, 0);
+            QCOMPARE(neutral.leftStickX, 0);
+            QVERIFY(!neutral.touchpadClick);
+            for (const auto &contact : neutral.contacts) QVERIFY(!contact.active);
+        } else if (!sony) {
+            QVERIFY(!snapshots.isEmpty());
+            QCOMPARE(snapshots.last().at(0).toUInt(), 0u);
+            for (int index = 1; index < 9; ++index)
+                QCOMPARE(snapshots.last().at(index).toInt(), 0);
+        }
+        snapshots.clear();
+        sonySnapshots.clear();
+        activity.clear();
+        const auto presses = sink.presses;
+        VirtualPad reconnected(sony);
+        QVERIFY(reconnected.id && reconnected.id != selectedId);
+        QTRY_COMPARE(input.availableControllers().size(), 2);
+        QVERIFY(other.button(true));
+        QVERIFY(other.axis(-24000));
+        QVERIFY(other.button(true, SDL_GAMEPAD_BUTTON_GUIDE));
+        QVERIFY(reconnected.button(true));
+        QVERIFY(reconnected.axis(-24000));
+        QVERIFY(reconnected.button(true, SDL_GAMEPAD_BUTTON_GUIDE));
+        QTest::qWait(350);
+        QCOMPARE(input.inputControllerId(), selectedId);
+        QCOMPARE(input.controllerCount(), 0);
+        QVERIFY(input.deviceClaims().isEmpty());
+        QCOMPARE(selectionChanges.size(), 0);
+        QCOMPARE(snapshots.size(), 0);
+        QCOMPARE(sonySnapshots.size(), 0);
+        QCOMPARE(actions.size(), 0);
+        QCOMPARE(activity.size(), 0);
+        QCOMPARE(sink.presses, presses);
+
+        input.setInputControllerId(reconnected.id);
+        QCOMPARE(input.controllerCount(), 1);
+        QCOMPARE(input.deviceClaims().size(), 1);
+        QCOMPARE(input.deviceClaims().first().slot, 0);
+        QCOMPARE(selectionChanges.size(), 1);
+        if (shell) {
+            QVERIFY(reconnected.button(false));
+            QTest::qWait(100);
+            QVERIFY(reconnected.button(true));
+            QTRY_COMPARE(sink.presses.value(Qt::Key_Return), 2);
+            input.setInputControllerId(other.id);
+            QTRY_COMPARE(sink.releases.value(Qt::Key_Return), 2);
+        } else if (sony) {
+            QCOMPARE(sonySnapshots.last().at(0).value<ControllerInput::SonySnapshot>().buttons, 0x1000);
+            sonySnapshots.clear();
+            input.setInputControllerId(other.id);
+            QCOMPARE(sonySnapshots.size(), 2);
+            QCOMPARE(sonySnapshots.first().at(0).value<ControllerInput::SonySnapshot>().buttons, 0);
+            QCOMPARE(sonySnapshots.first().at(0).value<ControllerInput::SonySnapshot>().leftStickX, 0);
+            QCOMPARE(sonySnapshots.last().at(0).value<ControllerInput::SonySnapshot>().buttons, 0x1000);
+        } else {
+            QCOMPARE(snapshots.last().at(2).toUInt(), 0x1000u);
+            snapshots.clear();
+            input.setInputControllerId(other.id);
+            QCOMPARE(snapshots.size(), 2);
+            for (int index = 2; index < 9; ++index)
+                QCOMPARE(snapshots.first().at(index).toInt(), 0);
+            QCOMPARE(snapshots.last().at(2).toUInt(), 0x1000u);
+        }
+        QCOMPARE(input.controllers().first().toMap().value(QStringLiteral("instanceId")).toUInt(), other.id);
+        input.setInputControllerId(0);
+        QCOMPARE(input.controllerCount(), 2);
+        QCOMPARE(input.deviceClaims().size(), 2);
     }
 
     void repeatedReplacementUsesPlayerOne_data()
@@ -247,11 +384,13 @@ private slots:
         for (int cycle = 0; cycle < 3; ++cycle) {
             VirtualPad pad;
             QVERIFY(pad.id && pad.id != previous);
+            const auto previousSelection = previous;
             previous = pad.id;
-            QTRY_COMPARE(input.controllerCount(), 1);
-            QCOMPARE(input.inputControllerId(), 0u);
-            QCOMPARE(input.controllers().first().toMap().value(QStringLiteral("slot")).toInt(), 1);
+            QTRY_COMPARE(input.availableControllers().size(), 1);
+            QCOMPARE(input.inputControllerId(), selected && cycle > 0 ? previousSelection : 0u);
             if (selected) input.setInputControllerId(pad.id);
+            QCOMPARE(input.controllerCount(), 1);
+            QCOMPARE(input.controllers().first().toMap().value(QStringLiteral("slot")).toInt(), 1);
             QVERIFY(pad.button(true));
             if (shell) {
                 QTRY_COMPARE(sink.presses.value(Qt::Key_Return), cycle + 1);
@@ -264,7 +403,7 @@ private slots:
             QVERIFY(SDL_DetachVirtualJoystick(pad.id));
             pad.id = 0;
             QTRY_COMPARE(input.controllerCount(), 0);
-            QCOMPARE(input.inputControllerId(), 0u);
+            QCOMPARE(input.inputControllerId(), selected ? previous : 0u);
             QVERIFY(input.controllers().isEmpty());
             QVERIFY(input.availableControllers().isEmpty());
             if (shell) QTRY_COMPARE(sink.releases.value(Qt::Key_Return), cycle + 1);

@@ -97,11 +97,17 @@ struct InFlight {
 
 impl InFlight {
     fn try_acquire(&self) -> bool {
-        self.count
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                (count < self.maximum).then_some(count + 1)
-            })
-            .is_ok()
+        let mut count = self.count.load(Ordering::Acquire);
+        while let Some(next) = (count < self.maximum).then_some(count + 1) {
+            match self
+                .count
+                .compare_exchange_weak(count, next, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return true,
+                Err(current) => count = current,
+            }
+        }
+        false
     }
 
     fn release(&self) {
@@ -619,8 +625,54 @@ fn check_status(api: &'static str, status: i32) -> Result<(), BackendError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{frame_duration_seconds, time_to_100ns};
+    use super::{InFlight, frame_duration_seconds, time_to_100ns};
     use objc2_core_media::{CMTime, CMTimeFlags};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn in_flight_admission_preserves_zero_limit_and_releases_capacity() {
+        let disabled = InFlight {
+            count: AtomicUsize::new(0),
+            maximum: 0,
+        };
+        assert!(!disabled.try_acquire());
+        assert_eq!(disabled.count.load(Ordering::Acquire), 0);
+
+        let in_flight = InFlight {
+            count: AtomicUsize::new(0),
+            maximum: 2,
+        };
+        assert!(in_flight.try_acquire());
+        assert!(in_flight.try_acquire());
+        assert!(!in_flight.try_acquire());
+        in_flight.release();
+        assert!(in_flight.try_acquire());
+        assert_eq!(in_flight.count.load(Ordering::Acquire), 2);
+    }
+
+    #[test]
+    fn concurrent_in_flight_admission_never_exceeds_the_limit() {
+        let in_flight = InFlight {
+            count: AtomicUsize::new(0),
+            maximum: 3,
+        };
+        let acquired = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..16 {
+                scope.spawn(|| {
+                    if in_flight.try_acquire() {
+                        acquired.fetch_add(1, Ordering::Relaxed);
+                    }
+                });
+            }
+        });
+        assert_eq!(acquired.load(Ordering::Relaxed), 3);
+        assert_eq!(in_flight.count.load(Ordering::Acquire), 3);
+        for _ in 0..3 {
+            in_flight.release();
+        }
+        assert_eq!(in_flight.count.load(Ordering::Acquire), 0);
+    }
 
     #[test]
     fn converts_120_hz_core_media_duration_to_seconds() {

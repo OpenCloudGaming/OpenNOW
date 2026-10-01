@@ -139,17 +139,43 @@ impl FailureReporter {
 }
 
 fn increment_streak(streak: &AtomicUsize) -> usize {
-    streak
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
-            Some(value.saturating_add(1))
-        })
-        .unwrap_or(usize::MAX)
-        .saturating_add(1)
+    let mut value = streak.load(Ordering::Acquire);
+    loop {
+        let next = value.saturating_add(1);
+        match streak.compare_exchange_weak(value, next, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return next,
+            Err(current) => value = current,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn streak_increment_returns_the_new_value_and_saturates() {
+        for value in [0, 1, usize::MAX - 1, usize::MAX] {
+            let streak = AtomicUsize::new(value);
+            assert_eq!(increment_streak(&streak), value.saturating_add(1));
+            assert_eq!(streak.load(Ordering::Acquire), value.saturating_add(1));
+        }
+    }
+
+    #[test]
+    fn concurrent_streak_increments_are_not_lost() {
+        let streak = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    for _ in 0..1_000 {
+                        increment_streak(&streak);
+                    }
+                });
+            }
+        });
+        assert_eq!(streak.load(Ordering::Acquire), 8_000);
+    }
 
     #[test]
     fn decode_loss_queue_keeps_only_the_bounded_tail() {

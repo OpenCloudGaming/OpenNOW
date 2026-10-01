@@ -3698,6 +3698,110 @@ mod tests {
     }
 
     #[test]
+    fn sanitized_progress_distinguishes_assembly_submission_output_and_restart() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = EventSender::unbounded(sender);
+        let lifecycle = connected_lifecycle();
+        let mut state = NvstMediaFeedbackState::new(true);
+        state.start_id = "private-start-id".to_owned();
+        for (assembled, submissions, outputs, in_flight, epoch) in [
+            (100, 98, 97, 1, 2),
+            (200, 98, 97, 1, 2),
+            (300, 200, 97, 103, 2),
+            (1, 1, 0, 1, 3),
+        ] {
+            let resources = TestNvstResources {
+                frame_stage_timings: Some(FrameStageTimings {
+                    assembled_frames_total: assembled,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            let now = Instant::now();
+            state.telemetry_window_started = now;
+            forward_nvst_media_feedback(
+                &sender,
+                &lifecycle,
+                7,
+                &resources,
+                MediaFeedback::DecodeTimings(DecodeTimingsReport {
+                    call: None,
+                    residence: None,
+                    call_window_samples: 0,
+                    residence_window_samples: 0,
+                    submissions_total: submissions,
+                    outputs_total: outputs,
+                    output_calls_total: outputs,
+                    last_submission_at: Some(now),
+                    last_output_at: (outputs > 0).then_some(now),
+                    in_flight,
+                    oldest_in_flight_at: Some(now),
+                    epoch,
+                    epoch_started_at: Some(now),
+                    unmatched_outputs: 0,
+                    unmatched_submissions: 0,
+                }),
+                &mut state,
+            );
+            assert!(receiver.try_recv().is_err());
+            state.telemetry_window_started = now - Duration::from_secs(1);
+            flush_nvst_telemetry(&sender, &resources, &mut state);
+            let summary =
+                opennow_streamer_protocol::log::message_summary(&receiver.try_recv().unwrap());
+            for field in [
+                format!("frameStageTimings.assembledFramesTotal={assembled}"),
+                format!("decodeTimings.submissionsTotal={submissions}"),
+                format!("decodeTimings.outputsTotal={outputs}"),
+                format!("decodeTimings.inFlight={in_flight}"),
+                format!("decodeTimings.epoch={epoch}"),
+            ] {
+                assert!(summary.split(' ').any(|entry| entry == field), "{summary}");
+            }
+            assert!(!summary.contains("private-start-id"));
+        }
+    }
+
+    #[test]
+    fn sanitized_keyframe_feedback_preserves_only_known_recovery_codes() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = EventSender::unbounded(sender);
+        let lifecycle = connected_lifecycle();
+        let resources = TestNvstResources::default();
+        let mut state = NvstMediaFeedbackState::new(true);
+        for (reason, expected) in [
+            (
+                "embedded Linux decoder queue overflow",
+                "type=log event=keyframe-request reasonCode=decoder-queue-overflow",
+            ),
+            (
+                "Linux decoder requires a fresh keyframe",
+                "type=log event=keyframe-request reasonCode=decoder-reference-required",
+            ),
+            (
+                "private session token https://private.example",
+                "type=log event=keyframe-request",
+            ),
+        ] {
+            forward_nvst_media_feedback(
+                &sender,
+                &lifecycle,
+                7,
+                &resources,
+                MediaFeedback::RequestKeyframe {
+                    mid: "private-media-id".to_owned(),
+                    reason: reason.to_owned(),
+                },
+                &mut state,
+            );
+            assert_eq!(
+                opennow_streamer_protocol::log::message_summary(&receiver.try_recv().unwrap()),
+                expected
+            );
+        }
+        assert_eq!(resources.keyframe_requests.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
     fn telemetry_reports_only_measured_frame_stage_timings() {
         let (sender, receiver) = std::sync::mpsc::channel();
         let sender = EventSender::unbounded(sender);
@@ -5389,6 +5493,82 @@ mod tests {
                 .iter()
                 .any(|message| { message["type"] == "status" && message["status"] == "stopped" })
         );
+    }
+
+    #[test]
+    fn repeated_decode_stall_after_resumed_output_exhausts_session_recovery() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = EventSender::unbounded(sender);
+        let lifecycle = connected_lifecycle();
+        let resources = TestNvstResources::default();
+        let mut recovery_attempts = 0;
+        let mut watchdog = DecodeProgressWatchdog::default();
+        let base = Instant::now();
+        let policy = resources.decode_progress_policy();
+        let mut report = DecodeTimingsReport {
+            call: None,
+            residence: None,
+            call_window_samples: 0,
+            residence_window_samples: 0,
+            submissions_total: 1,
+            outputs_total: 0,
+            output_calls_total: 0,
+            last_submission_at: Some(base),
+            last_output_at: None,
+            in_flight: 1,
+            oldest_in_flight_at: Some(base),
+            epoch: 1,
+            epoch_started_at: Some(base),
+            unmatched_outputs: 0,
+            unmatched_submissions: 0,
+        };
+
+        let mut episode_started_at = base;
+        for episode in 0..2 {
+            let stalled_at = episode_started_at + policy.stall;
+            assert!(matches!(
+                watchdog.poll(&report, false, None, stalled_at, policy),
+                Some(DecodeProgressEvent::KeyframeRequested { .. })
+            ));
+            resources.request_keyframe();
+            let recovery_at = stalled_at + policy.keyframe_grace;
+            assert!(matches!(
+                watchdog.poll(&report, false, None, recovery_at, policy),
+                Some(DecodeProgressEvent::RecoveryNeeded { .. })
+            ));
+            assert_eq!(
+                attempt_nvst_recovery(
+                    &sender,
+                    &lifecycle,
+                    7,
+                    &resources,
+                    &mut recovery_attempts,
+                    "scripted decoder stall".to_owned(),
+                ),
+                episode == 1
+            );
+            if episode == 0 {
+                episode_started_at = recovery_at + Duration::from_secs(1);
+                report.last_output_at = Some(episode_started_at);
+                report.outputs_total = 1;
+                report.oldest_in_flight_at = Some(episode_started_at);
+                assert_eq!(
+                    watchdog.poll(&report, false, None, episode_started_at, policy),
+                    None
+                );
+            }
+        }
+
+        assert_eq!(recovery_attempts, 1);
+        assert_eq!(resources.recoveries.load(Ordering::Relaxed), 1);
+        assert_eq!(resources.stops.load(Ordering::Relaxed), 1);
+        assert_eq!(lock_lifecycle(&lifecycle).state, State::Idle);
+        assert!(lock_lifecycle(&lifecycle).context.is_none());
+        assert!(receiver.try_iter().any(|message| {
+            message["type"] == "status"
+                && message["status"] == "stopped"
+                && message["termination"]["code"] == "nvst-recovery-exhausted"
+        }));
     }
 
     #[test]

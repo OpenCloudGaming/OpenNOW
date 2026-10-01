@@ -227,10 +227,7 @@ pub(crate) struct VaApiDecoder {
 
 impl VaApiDecoder {
     pub fn probe() -> std::result::Result<String, String> {
-        let display = Display::open().ok_or_else(|| {
-            "no /dev/dri/renderD* or /dev/dri/card* node initialized through VA-API".to_owned()
-        })?;
-        validate_h264_display(&display)?;
+        let (display, decoder) = open_h264_device()?;
         let probe_frame = VaFrame::new(Resolution::from((16, 16)), Resolution::from((16, 16)));
         drop(
             probe_frame
@@ -240,7 +237,7 @@ impl VaApiDecoder {
         let vendor = display
             .query_vendor_string()
             .unwrap_or_else(|_| "VA-API H.264 device".to_owned());
-        drop(open_h264_decoder(Arc::clone(&display))?);
+        drop(decoder);
         Ok(vendor)
     }
 
@@ -254,16 +251,8 @@ impl VaApiDecoder {
                 "native H.264 VAAPI decoder only supports SDR NV12; HDR requires FFmpeg VAAPI",
             ));
         }
-        let display = Display::open().ok_or_else(|| {
-            Error::unavailable(
-                Subsystem::VaApi,
-                "no DRM node could be initialized through VA-API",
-            )
-        })?;
-        validate_h264_display(&display)
-            .map_err(|error| Error::unavailable(Subsystem::VaApi, error))?;
-        let decoder = open_h264_decoder(display)
-            .map_err(|error| Error::unavailable(Subsystem::VaApi, error))?;
+        let (_, decoder) =
+            open_h264_device().map_err(|error| Error::unavailable(Subsystem::VaApi, error))?;
         let resolution = Resolution::from((format.width, format.height));
         Ok(Self {
             decoder,
@@ -346,6 +335,21 @@ impl VaApiDecoder {
 }
 
 type H264VaapiDecoder = StatelessDecoder<H264, VaapiBackend<VaFrame>>;
+
+fn open_h264_device() -> std::result::Result<(Arc<Display>, H264VaapiDecoder), String> {
+    let mut reason = "no /dev/dri/renderD* node initialized through VA-API".to_owned();
+    for index in 128..192 {
+        let Ok(display) = Display::open_drm_display(format!("/dev/dri/renderD{index}")) else {
+            continue;
+        };
+        match validate_h264_display(&display).and_then(|()| open_h264_decoder(Arc::clone(&display)))
+        {
+            Ok(decoder) => return Ok((display, decoder)),
+            Err(error) => reason = error,
+        }
+    }
+    Err(reason)
+}
 
 fn open_h264_decoder(display: Arc<Display>) -> std::result::Result<H264VaapiDecoder, String> {
     // cros-codecs creates a 16x16 context without render targets in its
@@ -455,4 +459,39 @@ fn validate_h264_display(display: &Display) -> std::result::Result<(), String> {
         return Err("VA-API device exposes no H.264 VLD entrypoint".to_owned());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires the isolated VA-API mock driver harness"]
+    fn mocked_driver_h264_probe_accepts_a_usable_device() {
+        assert_eq!(VaApiDecoder::probe().unwrap(), "OpenNOW mock VA-API");
+        assert!(VaApiDecoder::open(StreamFormat::video_default(1920, 1080).unwrap()).is_ok());
+    }
+
+    #[test]
+    #[ignore = "requires the isolated VA-API mock driver harness"]
+    fn mocked_driver_h264_probe_rejects_the_initial_context_without_panicking() {
+        let error = VaApiDecoder::probe().unwrap_err();
+        assert!(error.contains("initial H.264 decoder context"), "{error}");
+        assert!(VaApiDecoder::open(StreamFormat::video_default(1920, 1080).unwrap()).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires the isolated VA-API mock driver harness"]
+    fn mocked_driver_h264_probe_constructor_still_requires_the_initial_context() {
+        let display = Display::open_drm_display("/dev/dri/renderD128").unwrap();
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                H264VaapiDecoder::new_vaapi(
+                    display,
+                    cros_codecs::decoder::BlockingMode::NonBlocking,
+                )
+            }))
+            .is_err()
+        );
+    }
 }

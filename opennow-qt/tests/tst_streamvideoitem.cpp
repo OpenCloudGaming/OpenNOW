@@ -1569,6 +1569,111 @@ private slots:
     }
 
 #if defined(Q_OS_LINUX)
+    void swedishOemKeysMatchOfficialNativeInput_data()
+    {
+        QTest::addColumn<bool>("fullscreen");
+        QTest::newRow("windowed") << false;
+        QTest::newRow("fullscreen") << true;
+    }
+
+    void swedishOemKeysMatchOfficialNativeInput()
+    {
+        QFETCH(bool, fullscreen);
+        static QList<QList<quint16>> inputCalls;
+        inputCalls.clear();
+        auto api = CursorSession::api();
+        api.submitKey = [](const OpenNowStreamer *, std::uint16_t vk,
+                           std::uint16_t modifiers, bool pressed) {
+            inputCalls.append({vk, modifiers, quint16(pressed)});
+            return OPENNOW_STREAMER_OK;
+        };
+        NativeStreamRuntime runtime(api);
+        QVERIFY(runtime.start());
+        StreamVideoItem::setNativeStreamRuntime(&runtime);
+        const auto reset = qScopeGuard([] { StreamVideoItem::setNativeStreamRuntime(nullptr); });
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                              {QStringLiteral("id"), QStringLiteral("swedish-oem")}}));
+        const QByteArray ready = R"({"id":"swedish-oem","type":"ok"})";
+        CursorSession::callbacks.response_callback(
+            reinterpret_cast<const std::uint8_t *>(ready.constData()), ready.size(),
+            CursorSession::callbacks.user_data);
+        QTRY_VERIFY(runtime.inputAllowed());
+        QQuickWindow window;
+        window.resize(640, 480);
+        auto *item = new StreamVideoItem(window.contentItem());
+        item->setRenderCallback({});
+        item->setSize(window.size());
+        item->setKeyboardLayout(QStringLiteral("sv-SE"));
+        auto *overlay = new QQuickItem(window.contentItem());
+        overlay->setVisible(false);
+        if (fullscreen) window.showFullScreen();
+        else window.showNormal();
+        window.requestActivate();
+        QTRY_VERIFY(window.isActive());
+        item->forceActiveFocus();
+        QTRY_VERIFY(item->captureActive());
+        const struct {
+            int key;
+            quint32 xkbKeycode;
+            quint16 virtualKey;
+        } officialPositions[] = {
+            {Qt::Key_Aring, 34, 0xdb},
+            {Qt::Key_Odiaeresis, 47, 0xba},
+            {Qt::Key_section, 49, 0xc0},
+            {Qt::Key_Adiaeresis, 48, 0xde},
+            {Qt::Key_Plus, 20, 0xbd},
+            {Qt::Key_Dead_Acute, 21, 0xbb},
+            {Qt::Key_Dead_Diaeresis, 35, 0xdd},
+            {Qt::Key_Apostrophe, 51, 0xdc},
+            {Qt::Key_Comma, 59, 0xbc},
+            {Qt::Key_Period, 60, 0xbe},
+            {Qt::Key_Minus, 61, 0xbf},
+            {Qt::Key_Less, 94, 0xe2},
+        };
+        for (const auto &position : officialPositions) {
+            for (const auto &alias : {QStringLiteral("sv-SE"), QStringLiteral("SV_se"),
+                                      QStringLiteral("sv")}) {
+                item->setKeyboardLayout(alias);
+                QKeyEvent event(QEvent::KeyPress, position.key, Qt::NoModifier,
+                                position.xkbKeycode, 0, 0);
+                QCOMPARE(item->eventVirtualKey(&event), position.virtualKey);
+            }
+            for (const auto modifiers : {Qt::NoModifier, Qt::ShiftModifier,
+                                         Qt::GroupSwitchModifier}) {
+                const quint16 wireModifiers = modifiers == Qt::ShiftModifier ? 1
+                    : modifiers == Qt::GroupSwitchModifier ? 6 : 0;
+                inputCalls.clear();
+                QKeyEvent press(QEvent::KeyPress, position.key, modifiers,
+                                position.xkbKeycode, 0, 0);
+                QCoreApplication::sendEvent(&window, &press);
+                QCOMPARE(inputCalls, (QList<QList<quint16>>{
+                    {position.virtualKey, wireModifiers, 1}}));
+                QKeyEvent release(QEvent::KeyRelease, Qt::Key_unknown, modifiers,
+                                  position.xkbKeycode, 0, 0);
+                QCoreApplication::sendEvent(&window, &release);
+                QCOMPARE(inputCalls.last(), (QList<quint16>{position.virtualKey, wireModifiers, 0}));
+                QVERIFY(item->m_pressedKeys.isEmpty());
+            }
+            inputCalls.clear();
+            QKeyEvent held(QEvent::KeyPress, position.key, Qt::NoModifier,
+                           position.xkbKeycode, 0, 0);
+            QCoreApplication::sendEvent(&window, &held);
+            overlay->setVisible(true);
+            overlay->forceActiveFocus();
+            QTRY_VERIFY(!item->captureActive());
+            QCOMPARE(inputCalls, (QList<QList<quint16>>{
+                {position.virtualKey, 0, 1}, {position.virtualKey, 0, 0}}));
+            QVERIFY(item->m_pressedKeys.isEmpty());
+            QCoreApplication::sendEvent(&window, &held);
+            QCOMPARE(inputCalls.size(), 2);
+            overlay->setVisible(false);
+            item->forceActiveFocus();
+            QTRY_VERIFY(item->captureActive());
+        }
+        QKeyEvent synthetic(QEvent::KeyPress, Qt::Key_BracketLeft, Qt::NoModifier);
+        QCOMPARE(item->eventVirtualKey(&synthetic), quint16(0xdb));
+    }
+
     void linuxRegionalKeysUsePhysicalPositions_data()
     {
         QTest::addColumn<QString>("layout");
@@ -1779,13 +1884,13 @@ private slots:
                                 << expectedKey << expectedModifiers;
         };
         // Swedish keys that previously produced no input at all.
-        row("sv-aring", "sv-SE", Qt::Key_Aring, 0, 34, 0xdd, 0);
-        row("sv-odiaeresis", "sv-SE", Qt::Key_Odiaeresis, 0, 47, 0xc0, 0);
+        row("sv-aring", "sv-SE", Qt::Key_Aring, 0, 34, 0xdb, 0);
+        row("sv-odiaeresis", "sv-SE", Qt::Key_Odiaeresis, 0, 47, 0xba, 0);
         row("sv-adiaeresis", "sv-SE", Qt::Key_Adiaeresis, 0, 48, 0xde, 0);
-        row("sv-section", "sv-SE", Qt::Key_section, 0, 49, 0xdc, 0);
-        row("sv-dead-acute", "sv-SE", Qt::Key_Dead_Acute, 0, 21, 0xdb, 0);
-        row("sv-dead-diaeresis", "sv-SE", Qt::Key_Dead_Diaeresis, 0, 35, 0xba, 0);
-        row("sv-apostrophe", "sv-SE", Qt::Key_Apostrophe, 0, 51, 0xbf, 0);
+        row("sv-section", "sv-SE", Qt::Key_section, 0, 49, 0xc0, 0);
+        row("sv-dead-acute", "sv-SE", Qt::Key_Dead_Acute, 0, 21, 0xbb, 0);
+        row("sv-dead-diaeresis", "sv-SE", Qt::Key_Dead_Diaeresis, 0, 35, 0xdd, 0);
+        row("sv-apostrophe", "sv-SE", Qt::Key_Apostrophe, 0, 51, 0xdc, 0);
         row("sv-angle-bracket", "sv-SE", Qt::Key_Less, 0, 94, 0xe2, 0);
         row("nb-aring", "nb-NO", Qt::Key_Aring, 0, 34, 0xdd, 0);
         row("da-aring", "da-DK", Qt::Key_Aring, 0, 34, 0xdd, 0);

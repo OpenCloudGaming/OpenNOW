@@ -113,9 +113,10 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     application.setFont(applicationFont);
     const auto arguments = application.arguments();
     SingleInstance singleInstance;
-    if (!arguments.contains(u"--allow-multiple-instances"_s)
-            && !singleInstance.acquire(arguments)) {
-        return EXIT_SUCCESS;
+    if (!arguments.contains(u"--allow-multiple-instances"_s)) {
+        const auto acquisition = singleInstance.acquire(arguments);
+        if (acquisition == SingleInstance::Acquisition::Forwarded) return EXIT_SUCCESS;
+        if (acquisition == SingleInstance::Acquisition::Failed) return EXIT_FAILURE;
     }
     AppController controller;
     QObject::connect(&controller, &AppController::restartRequested, &application, [&] {

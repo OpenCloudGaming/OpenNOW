@@ -2,6 +2,7 @@
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
+#include <QDir>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLocalSocket>
@@ -15,9 +16,29 @@ SingleInstance::SingleInstance(QObject *parent)
     connect(&m_server, &QLocalServer::newConnection, this, &SingleInstance::acceptConnection);
 }
 
-bool SingleInstance::acquire(const QStringList &arguments)
+SingleInstance::Acquisition SingleInstance::acquire(const QStringList &arguments)
 {
     const auto name = serverName();
+    if (forwardToPrimary(name, arguments)) return Acquisition::Forwarded;
+    m_lock = std::make_unique<QLockFile>(QDir::temp().filePath(name + u".lock"_s));
+    m_lock->setStaleLockTime(0);
+    if (!m_lock->tryLock()) {
+        if (forwardToPrimary(name, arguments)) return Acquisition::Forwarded;
+        qWarning("Could not acquire the single-instance endpoint ownership");
+        return Acquisition::Failed;
+    }
+
+    QLocalServer::removeServer(name);
+    if (!m_server.listen(name)) {
+        qWarning("Could not create the single-instance endpoint: %s",
+                 qUtf8Printable(m_server.errorString()));
+        return Acquisition::Failed;
+    }
+    return Acquisition::Primary;
+}
+
+bool SingleInstance::forwardToPrimary(const QString &name, const QStringList &arguments)
+{
     QLocalSocket peer;
     peer.connectToServer(name, QIODevice::ReadWrite);
     if (peer.waitForConnected(250)) {
@@ -37,17 +58,9 @@ bool SingleInstance::acquire(const QStringList &arguments)
             qWarning("The primary instance did not acknowledge the activation payload");
         }
         peer.disconnectFromServer();
-        return false;
-    }
-
-    // Only remove a stale endpoint after proving that no peer accepts it.
-    QLocalServer::removeServer(name);
-    if (!m_server.listen(name)) {
-        qWarning("Could not create the single-instance endpoint: %s",
-                 qUtf8Printable(m_server.errorString()));
         return true;
     }
-    return true;
+    return false;
 }
 
 void SingleInstance::acceptConnection()

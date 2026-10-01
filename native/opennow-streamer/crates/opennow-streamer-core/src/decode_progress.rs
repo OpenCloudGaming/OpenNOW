@@ -31,7 +31,7 @@ pub enum DecodeProgressEvent {
 #[derive(Debug, Default)]
 pub(crate) struct DecodeProgressWatchdog {
     stage: DecodeProgressStage,
-    keyframe_requested_at: Option<Instant>,
+    stage_started_at: Option<Instant>,
     decoder_epoch: Option<u64>,
     unsubmitted_since: Option<Instant>,
 }
@@ -55,7 +55,14 @@ impl DecodeProgressWatchdog {
             self.unsubmitted_since = None;
         }
         if self.stage == DecodeProgressStage::RecoveryRequired {
-            return None;
+            if !timings.last_output_at.is_some_and(|output| {
+                self.stage_started_at
+                    .is_some_and(|started| output > started)
+            }) {
+                return None;
+            }
+            self.clear_episode();
+            self.unsubmitted_since = None;
         }
         if upstream_stalled {
             self.clear_episode();
@@ -92,18 +99,19 @@ impl DecodeProgressWatchdog {
         match self.stage {
             DecodeProgressStage::Tracking => {
                 self.stage = DecodeProgressStage::KeyframePending;
-                self.keyframe_requested_at = Some(now);
+                self.stage_started_at = Some(now);
                 Some(DecodeProgressEvent::KeyframeRequested {
                     idle_for,
                     in_flight: timings.in_flight,
                 })
             }
             DecodeProgressStage::KeyframePending => {
-                let grace_started = self.keyframe_requested_at.unwrap_or(now);
+                let grace_started = self.stage_started_at.unwrap_or(now);
                 if now.saturating_duration_since(grace_started) < policy.keyframe_grace {
                     return None;
                 }
                 self.stage = DecodeProgressStage::RecoveryRequired;
+                self.stage_started_at = Some(now);
                 Some(DecodeProgressEvent::RecoveryNeeded {
                     idle_for,
                     in_flight: timings.in_flight,
@@ -115,7 +123,7 @@ impl DecodeProgressWatchdog {
 
     fn clear_episode(&mut self) {
         self.stage = DecodeProgressStage::Tracking;
-        self.keyframe_requested_at = None;
+        self.stage_started_at = None;
     }
 }
 
@@ -573,6 +581,80 @@ mod tests {
             ),
             Some(DecodeProgressEvent::KeyframeRequested { .. })
         ));
+    }
+
+    #[test]
+    fn same_epoch_output_rearms_recovery_for_a_later_stall() {
+        let mut watchdog = DecodeProgressWatchdog::default();
+        let base = Instant::now();
+        let mut report = single_pending_submission(base);
+        assert!(matches!(
+            watchdog.poll(&report, false, None, base + policy().stall, policy()),
+            Some(DecodeProgressEvent::KeyframeRequested { .. })
+        ));
+        let recovery_at = base + policy().stall + policy().keyframe_grace;
+        assert!(matches!(
+            watchdog.poll(&report, false, None, recovery_at, policy()),
+            Some(DecodeProgressEvent::RecoveryNeeded { .. })
+        ));
+        report.last_output_at = Some(recovery_at - Duration::from_secs(1));
+        assert_eq!(
+            watchdog.poll(&report, false, None, recovery_at, policy()),
+            None
+        );
+        assert_eq!(watchdog.stage(), DecodeProgressStage::RecoveryRequired);
+
+        let resumed_at = recovery_at + Duration::from_secs(1);
+        report.last_output_at = Some(resumed_at);
+        report.outputs_total = 1;
+        report.in_flight = 0;
+        report.oldest_in_flight_at = None;
+        assert_eq!(
+            watchdog.poll(&report, false, None, resumed_at, policy()),
+            None
+        );
+        assert_eq!(watchdog.stage(), DecodeProgressStage::Tracking);
+
+        report.in_flight = 1;
+        report.oldest_in_flight_at = Some(resumed_at);
+        let stalled_at = resumed_at + policy().stall;
+        assert!(matches!(
+            watchdog.poll(&report, false, None, stalled_at, policy()),
+            Some(DecodeProgressEvent::KeyframeRequested { .. })
+        ));
+        assert!(matches!(
+            watchdog.poll(
+                &report,
+                false,
+                None,
+                stalled_at + policy().keyframe_grace,
+                policy()
+            ),
+            Some(DecodeProgressEvent::RecoveryNeeded { .. })
+        ));
+    }
+
+    #[test]
+    fn outstanding_work_changes_do_not_rearm_without_recovered_output() {
+        let mut watchdog = DecodeProgressWatchdog::default();
+        let base = Instant::now();
+        let mut report = single_pending_submission(base);
+        watchdog.poll(&report, false, None, base + policy().stall, policy());
+        let recovery_at = base + policy().stall + policy().keyframe_grace;
+        assert!(matches!(
+            watchdog.poll(&report, false, None, recovery_at, policy()),
+            Some(DecodeProgressEvent::RecoveryNeeded { .. })
+        ));
+        for second in 1..30 {
+            let now = recovery_at + Duration::from_secs(second);
+            report.in_flight = usize::from(second % 2 != 0);
+            report.oldest_in_flight_at = (report.in_flight != 0).then_some(now);
+            assert_eq!(
+                watchdog.poll(&report, false, Some(now), now, policy()),
+                None
+            );
+            assert_eq!(watchdog.stage(), DecodeProgressStage::RecoveryRequired);
+        }
     }
 
     #[test]

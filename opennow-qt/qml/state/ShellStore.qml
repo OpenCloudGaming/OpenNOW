@@ -3656,7 +3656,7 @@ QtObject {
                 root.remoteSessions = []
                 return
             }
-            root.lastError = message
+            if (code !== "cancelled") root.lastError = message
             if (requestId === root.consoleSurfaceRequestId) {
                 settingsOwner.failConsoleSurface(message)
             } else if (requestId === root.catalogRequestId) {

@@ -12,6 +12,13 @@ ApplicationWindow {
     visibility: ApplicationWindow.Windowed
     color: "black"
     title: qsTr("OpenNOW")
+    property bool applicationCloseConfirmed: false
+    onClosing: event => {
+        if (!applicationCloseConfirmed) {
+            event.accepted = false
+            AppController.showOverlay("application-quit-confirm")
+        }
+    }
 
     Component { id: hdrPopupEffect; HdrChromeEffect {} }
     Binding { target: window.Overlay.overlay.layer; property: "enabled"; value: HdrOutput.chromeRequired }
@@ -551,6 +558,7 @@ ApplicationWindow {
 
         Connections {
             target: AppController
+            function onApplicationExitCommitted() { window.applicationCloseConfirmed = true }
             function onRouteChanged() {
                 window.updateSessionWindowMode()
                 window.updateStreamSurfaceLock()
@@ -678,6 +686,21 @@ ApplicationWindow {
         z: 1100
         onVisibleChanged: if (visible && inputBlocking) forceActiveFocus()
         onInputBlockingChanged: if (visible && inputBlocking) forceActiveFocus()
+    }
+
+    DesktopStreamExitConfirm {
+        objectName: "applicationQuitConfirmation"
+        anchors.fill: parent
+        layer.enabled: HdrOutput.chromeRequired
+        layer.effect: HdrChromeEffect {}
+        quittingApplication: true
+        opened: AppController.overlay === "application-quit-confirm"
+        z: 1200
+        onCancelRequested: AppController.showOverlay("")
+        onConfirmRequested: {
+            window.applicationCloseConfirmed = true
+            window.close()
+        }
     }
 
     Rectangle {
