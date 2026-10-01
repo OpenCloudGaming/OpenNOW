@@ -13,6 +13,51 @@ import org.junit.Test
  */
 class SettingsPersistenceTest {
     @Test
+    fun manuallyConfiguredFractionalBitratesSurviveProductionNormalizationAndWrites() {
+        for (mbps in listOf(0.22, 0.8, 1.0, 75.0, 150.0)) {
+            val saved = AppSettings(
+                stream = StreamSettings(maxBitrateMbps = mbps, fps = 120, mouseSensitivity = 1.75f),
+                favoriteGameIds = listOf("a", "b"),
+                localAppsCollapsed = true,
+                nvstOptInVersion = NVST_OPT_IN_VERSION,
+            ).normalizedForAndroid()
+            val raw = OpenNowJson.encodeToString(saved)
+            val loaded = loadSettingsWithNvstDefault(raw) { throw AssertionError("Unexpected migration") }
+                .normalizedForAndroid()
+            assertEquals(saved, loaded)
+            assertEquals(mbps, loaded.stream.maxBitrateMbps, 0.0)
+            assertEquals(120, loaded.stream.fps)
+            assertEquals(1.75f, loaded.stream.mouseSensitivity, 0f)
+            assertEquals(listOf("a", "b"), loaded.favoriteGameIds)
+            assertTrue(loaded.localAppsCollapsed)
+            assertEquals(raw, OpenNowJson.encodeToString(loaded))
+        }
+    }
+
+    @Test
+    fun bitrateNormalizationUsesTheSettingsCeilingWithoutResettingTheProfile() {
+        for ((input, expected) in listOf(
+            Double.NaN to 75.0,
+            Double.POSITIVE_INFINITY to 75.0,
+            Double.NEGATIVE_INFINITY to 75.0,
+            -1.0 to 0.22,
+            0.0 to 0.22,
+            Double.MAX_VALUE to 150.0,
+            200.0 to 150.0,
+        )) {
+            val saved = AppSettings(
+                stream = StreamSettings(maxBitrateMbps = input, fps = 120),
+                favoriteGameIds = listOf("keep-me"),
+            )
+            val normalized = saved.normalizedForAndroid()
+            assertEquals(expected, normalized.stream.maxBitrateMbps, 0.0)
+            assertEquals(120, normalized.stream.fps)
+            assertEquals(saved.favoriteGameIds, normalized.favoriteGameIds)
+            assertEquals(normalized, normalized.normalizedForAndroid())
+        }
+    }
+
+    @Test
     fun `system wallpaper normalization disables OpenNOW backgrounds`() {
         val normalized = AppSettings(
             nerdCatalogBackground = true,

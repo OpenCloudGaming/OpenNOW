@@ -187,9 +187,7 @@ internal fun isCurrentPeerOperation(
         (expectedPeer == null || expectedPeer === activePeer)
 
 internal fun normalizedLiveBitrateKbps(maxBitrateKbps: Int): Int =
-    maxBitrateKbps.coerceAtLeast(1_000).let { value ->
-        ((value + 500) / 1_000) * 1_000
-    }
+    maxBitrateKbps.coerceIn(StreamBitrate.MIN_KBPS, StreamBitrate.TRANSPORT_MAX_KBPS)
 
 internal enum class HapticsOutputTarget {
     Controller,
@@ -1961,7 +1959,7 @@ class NativeStreamClient(
         bitrateUpdateJob = scope.launch {
             delay(LIVE_BITRATE_UPDATE_DEBOUNCE_MS)
             bitrateUpdateJob = null
-            val updatedSettings = settings.copy(maxBitrateMbps = normalizedKbps / 1_000)
+            val updatedSettings = settings.copy(maxBitrateMbps = normalizedKbps / 1_000.0)
             if (updatedSettings == settings) return@launch
             settings = updatedSettings
             recordStreamDiagnostic("live bitrate limit queued for next offer $normalizedKbps kbps")
@@ -2589,7 +2587,7 @@ class NativeStreamClient(
                                         }
                                         val munged = SdpTools.mungeAnswerSdp(
                                             rawDescription.description,
-                                            settings.maxBitrateMbps * 1000,
+                                            StreamBitrate.maximumKbps(settings.maxBitrateMbps),
                                         )
                                         recordStreamDiagnostic(sdpDiagnosticSummary("created answer", munged))
                                         if (

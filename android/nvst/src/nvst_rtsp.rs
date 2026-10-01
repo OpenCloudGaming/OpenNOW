@@ -16,7 +16,7 @@ use tungstenite::{Message, WebSocket, client_tls};
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(2);
-const MAX_STREAM_BITRATE_MBPS: u64 = 200;
+const MAX_STREAM_BITRATE_MBPS: f64 = 200.0;
 // GeForce NOW 2.0.87.131 reports video[0].timeoutLengthMs=8000 and
 // video[0].sendFrameTimeoutMs=7000. Waiting sixty seconds left a dead Mjolnir media leg on screen
 // while audio/control remained alive; use the official receiver timeout so the existing bounded
@@ -756,10 +756,11 @@ fn build_announce(context: &SessionContext, params: AnnounceParams<'_>) -> Strin
     let bitrate = context
         .settings
         .get("maxBitrateMbps")
-        .and_then(Value::as_u64)
-        .unwrap_or(75)
-        .clamp(1, MAX_STREAM_BITRATE_MBPS)
-        * 1000;
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite())
+        .unwrap_or(75.0)
+        .clamp(0.22, MAX_STREAM_BITRATE_MBPS);
+    let bitrate = (bitrate * 1000.0).round() as u64;
     // Android owns the adaptation policy. Clamp its transport values to the negotiated
     // ceiling here, and retain compatibility with contexts from older callers.
     let adaptation = &context.settings["networkAdaptation"];
@@ -1521,6 +1522,59 @@ mod tests {
                 assert!(sdp.contains("a=x-nv-video[0].maxFPS:120\r\n"));
                 assert_eq!(value.settings["maxBitrateMbps"], json!(maximum_mbps));
             }
+        }
+    }
+
+    #[test]
+    fn announce_preserves_fractional_mbps_and_bounds_numeric_inputs() {
+        for (maximum_mbps, maximum_kbps) in [
+            (json!(0.22), 220),
+            (json!(0.8), 800),
+            (json!(0.8005), 801),
+            (json!(1.0), 1000),
+            (json!(75), 75000),
+            (json!(200), 200000),
+            (json!(0), 220),
+            (json!(-1), 220),
+            (json!(1e100), 200000),
+            (Value::Null, 75000),
+            (json!("invalid"), 75000),
+        ] {
+            let mut value = context();
+            value.settings["maxBitrateMbps"] = maximum_mbps.clone();
+            value.settings["networkAdaptation"] = json!({
+                "dynamicStreamingMode": 0,
+                "minimumBitrateKbps": 5000,
+                "initialBitrateKbps": 18750,
+            });
+            let sdp = build_announce(
+                &value,
+                AnnounceParams {
+                    key: &"01".repeat(32),
+                    key_id: 7,
+                    port: 49006,
+                    address: "192.0.2.10",
+                    ufrag: "abcd",
+                    password: "abcdefghijklmnopqrstuv",
+                    fingerprint: "AA:BB",
+                    video_port: 5004,
+                    rtcp_on_sctp: true,
+                },
+            );
+            let minimum = maximum_kbps.min(5000);
+            let initial = maximum_kbps.min(18750).max(minimum);
+            for attribute in [
+                format!("a=x-nv-vqos[0].bw.maximumBitrateKbps:{maximum_kbps}\r\n"),
+                format!("a=x-nv-vqos[0].bw.minimumBitrateKbps:{minimum}\r\n"),
+                format!("a=x-nv-video[0].initialBitrateKbps:{initial}\r\n"),
+                format!("a=x-nv-video[0].initialPeakBitrateKbps:{initial}\r\n"),
+            ] {
+                assert!(
+                    sdp.contains(&attribute),
+                    "input {maximum_mbps}: {attribute}"
+                );
+            }
+            assert_eq!(value.settings["maxBitrateMbps"], maximum_mbps);
         }
     }
 

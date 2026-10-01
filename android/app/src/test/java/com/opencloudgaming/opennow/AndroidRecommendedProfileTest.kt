@@ -24,7 +24,7 @@ class AndroidRecommendedProfileTest {
 
         assertEquals("1280x720", recommendation.stream.resolution)
         assertEquals(30, recommendation.stream.fps)
-        assertEquals(12, recommendation.stream.maxBitrateMbps)
+        assertEquals(12.0, recommendation.stream.maxBitrateMbps, 0.0)
         assertEquals(VideoCodec.H264, recommendation.stream.codec)
     }
 
@@ -44,7 +44,7 @@ class AndroidRecommendedProfileTest {
 
         assertEquals("2560x1440", recommendation.stream.resolution)
         assertEquals(60, recommendation.stream.fps)
-        assertEquals(45, recommendation.stream.maxBitrateMbps)
+        assertEquals(45.0, recommendation.stream.maxBitrateMbps, 0.0)
         assertEquals(VideoCodec.H265, recommendation.stream.codec)
     }
 
@@ -109,7 +109,7 @@ class AndroidRecommendedProfileTest {
 
         assertEquals("3840x2160", recommendation.stream.resolution)
         assertEquals(VideoCodec.H265, recommendation.stream.codec)
-        assertEquals(75, recommendation.stream.maxBitrateMbps)
+        assertEquals(75.0, recommendation.stream.maxBitrateMbps, 0.0)
     }
 
     @Test
@@ -118,14 +118,14 @@ class AndroidRecommendedProfileTest {
             resolution = "1920x1080",
             aspectRatio = "16:9",
             fps = 60,
-            maxBitrateMbps = 35,
+            maxBitrateMbps = 35.0,
             codec = VideoCodec.H264,
             colorQuality = ColorQuality.EightBit420,
         )
         val selected = recommended.copy(
             resolution = "2560x1440",
             fps = 120,
-            maxBitrateMbps = 75,
+            maxBitrateMbps = 75.0,
             hdrEnabled = true,
             colorQuality = ColorQuality.TenBit420,
             streamSharpeningEnabled = true,

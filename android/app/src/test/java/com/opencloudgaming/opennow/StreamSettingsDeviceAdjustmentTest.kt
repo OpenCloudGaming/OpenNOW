@@ -188,7 +188,7 @@ class StreamSettingsDeviceAdjustmentTest {
         assertEquals("1680x720", low.resolution)
         assertEquals("21:9", low.aspectRatio)
         assertEquals(30, low.fps)
-        assertEquals(12, low.maxBitrateMbps)
+        assertEquals(12.0, low.maxBitrateMbps, 0.0)
         assertEquals(VideoCodec.AV1, low.codec)
         assertEquals(ColorQuality.EightBit420, low.colorQuality)
         assertFalse(low.enableL4S)
@@ -196,13 +196,13 @@ class StreamSettingsDeviceAdjustmentTest {
         val medium = base.applyingStreamPreset(StreamPreset.Medium)
         assertEquals("2560x1080", medium.resolution)
         assertEquals(60, medium.fps)
-        assertEquals(35, medium.maxBitrateMbps)
+        assertEquals(35.0, medium.maxBitrateMbps, 0.0)
         assertFalse(medium.enableL4S)
 
         val high = base.applyingStreamPreset(StreamPreset.High)
         assertEquals("3440x1440", high.resolution)
         assertEquals(360, high.fps)
-        assertEquals(75, high.maxBitrateMbps)
+        assertEquals(75.0, high.maxBitrateMbps, 0.0)
         assertFalse(high.enableL4S)
 
         val recommended = base.applyingStreamPreset(StreamPreset.Recommended)
@@ -246,17 +246,17 @@ class StreamSettingsDeviceAdjustmentTest {
 
     @Test
     fun fallsBackToH264WhenSelectedDecoderHasNoHardwarePath() {
-        val adjusted = StreamSettings(codec = VideoCodec.AV1, colorQuality = ColorQuality.TenBit420, maxBitrateMbps = 90)
+        val adjusted = StreamSettings(codec = VideoCodec.AV1, colorQuality = ColorQuality.TenBit420, maxBitrateMbps = 90.0)
             .adjustedForDevice(codecReport(VideoCodec.AV1, hardwareDecoder = false, realtimeSafe = false))
 
         assertEquals(VideoCodec.H264, adjusted.codec)
         assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
-        assertEquals(90, adjusted.maxBitrateMbps)
+        assertEquals(90.0, adjusted.maxBitrateMbps, 0.0)
     }
 
     @Test
     fun fallsBackToH264WhenH265WebRtcDecoderIsSoftwareOnly() {
-        val adjusted = StreamSettings(codec = VideoCodec.H265, colorQuality = ColorQuality.TenBit420, maxBitrateMbps = 90)
+        val adjusted = StreamSettings(codec = VideoCodec.H265, colorQuality = ColorQuality.TenBit420, maxBitrateMbps = 90.0)
             .adjustedForDevice(
                 codecReport(
                     VideoCodec.H265,
@@ -269,7 +269,7 @@ class StreamSettingsDeviceAdjustmentTest {
 
         assertEquals(VideoCodec.H264, adjusted.codec)
         assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
-        assertEquals(90, adjusted.maxBitrateMbps)
+        assertEquals(90.0, adjusted.maxBitrateMbps, 0.0)
     }
 
     @Test
@@ -279,7 +279,7 @@ class StreamSettingsDeviceAdjustmentTest {
             aspectRatio = "21:9",
             codec = VideoCodec.H265,
             colorQuality = ColorQuality.TenBit420,
-            maxBitrateMbps = 90,
+            maxBitrateMbps = 90.0,
         )
             .adjustedForDevice(
                 codecReport(
@@ -295,22 +295,22 @@ class StreamSettingsDeviceAdjustmentTest {
         assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
         assertEquals("1680x720", adjusted.resolution)
         assertEquals("21:9", adjusted.aspectRatio)
-        assertEquals(90, adjusted.maxBitrateMbps)
+        assertEquals(90.0, adjusted.maxBitrateMbps, 0.0)
     }
 
     @Test
     fun fallsBackToH264WhenH265OnlyHasPlatformHardwareDecoder() {
-        val adjusted = StreamSettings(codec = VideoCodec.H265, colorQuality = ColorQuality.TenBit420, maxBitrateMbps = 90)
+        val adjusted = StreamSettings(codec = VideoCodec.H265, colorQuality = ColorQuality.TenBit420, maxBitrateMbps = 90.0)
             .adjustedForDevice(codecReport(VideoCodec.H265, hardwareDecoder = true, realtimeSafe = true))
 
         assertEquals(VideoCodec.H264, adjusted.codec)
         assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
-        assertEquals(90, adjusted.maxBitrateMbps)
+        assertEquals(90.0, adjusted.maxBitrateMbps, 0.0)
     }
 
     @Test
     fun preservesH265WhenWebRtcHardwareDecoderWorksButNativeProbeFails() {
-        val adjusted = StreamSettings(codec = VideoCodec.H265, colorQuality = ColorQuality.TenBit420, maxBitrateMbps = 90)
+        val adjusted = StreamSettings(codec = VideoCodec.H265, colorQuality = ColorQuality.TenBit420, maxBitrateMbps = 90.0)
             .adjustedForDevice(
                 codecReport(
                     VideoCodec.H265,
@@ -324,7 +324,7 @@ class StreamSettingsDeviceAdjustmentTest {
 
         assertEquals(VideoCodec.H265, adjusted.codec)
         assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
-        assertEquals(90, adjusted.maxBitrateMbps)
+        assertEquals(90.0, adjusted.maxBitrateMbps, 0.0)
     }
 
     @Test
@@ -369,7 +369,7 @@ class StreamSettingsDeviceAdjustmentTest {
 
     @Test
     fun keepsSelectedCodecOnLowPowerDevicesWhenWebRtcHardwareDecoderExists() {
-        val adjusted = StreamSettings(codec = VideoCodec.H265, colorQuality = ColorQuality.TenBit420, maxBitrateMbps = 90)
+        val adjusted = StreamSettings(codec = VideoCodec.H265, colorQuality = ColorQuality.TenBit420, maxBitrateMbps = 90.0)
             .adjustedForDevice(
                 codecReport(
                     VideoCodec.H265,
@@ -383,12 +383,12 @@ class StreamSettingsDeviceAdjustmentTest {
 
         assertEquals(VideoCodec.H265, adjusted.codec)
         assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
-        assertEquals(90, adjusted.maxBitrateMbps)
+        assertEquals(90.0, adjusted.maxBitrateMbps, 0.0)
     }
 
     @Test
     fun preservesHighRefreshRateForSupportedAndroidStreams() {
-        val adjusted = StreamSettings(codec = VideoCodec.AV1, fps = 120, maxBitrateMbps = 90)
+        val adjusted = StreamSettings(codec = VideoCodec.AV1, fps = 120, maxBitrateMbps = 90.0)
             .adjustedForDevice(
                 codecReport(
                     VideoCodec.AV1,
@@ -401,16 +401,16 @@ class StreamSettingsDeviceAdjustmentTest {
 
         assertEquals(VideoCodec.AV1, adjusted.codec)
         assertEquals(120, adjusted.fps)
-        assertEquals(90, adjusted.maxBitrateMbps)
+        assertEquals(90.0, adjusted.maxBitrateMbps, 0.0)
     }
 
     @Test
     fun preservesSelectedH264BitrateCeiling() {
-        val adjusted = StreamSettings(codec = VideoCodec.H264, maxBitrateMbps = 150)
+        val adjusted = StreamSettings(codec = VideoCodec.H264, maxBitrateMbps = 150.0)
             .adjustedForDevice(codecReport(VideoCodec.H264, hardwareDecoder = true, realtimeSafe = true))
 
         assertEquals(VideoCodec.H264, adjusted.codec)
-        assertEquals(150, adjusted.maxBitrateMbps)
+        assertEquals(150.0, adjusted.maxBitrateMbps, 0.0)
     }
 
     @Test
@@ -419,7 +419,7 @@ class StreamSettingsDeviceAdjustmentTest {
             resolution = "5120x1440",
             aspectRatio = "32:9",
             fps = 240,
-            maxBitrateMbps = 150,
+            maxBitrateMbps = 150.0,
             codec = VideoCodec.H264,
             colorQuality = ColorQuality.TenBit444,
             hdrEnabled = true,
@@ -430,7 +430,7 @@ class StreamSettingsDeviceAdjustmentTest {
         assertEquals("5120x1440", adjusted.resolution)
         assertEquals("32:9", adjusted.aspectRatio)
         assertEquals(240, adjusted.fps)
-        assertEquals(150, adjusted.maxBitrateMbps)
+        assertEquals(150.0, adjusted.maxBitrateMbps, 0.0)
         assertEquals(VideoCodec.H264, adjusted.codec)
         assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
         assertEquals(false, adjusted.hdrEnabled)
@@ -443,7 +443,7 @@ class StreamSettingsDeviceAdjustmentTest {
             resolution = "5120x2160",
             aspectRatio = "21:9",
             fps = 240,
-            maxBitrateMbps = 150,
+            maxBitrateMbps = 150.0,
             codec = VideoCodec.H265,
             colorQuality = ColorQuality.TenBit420,
             hdrEnabled = true,
@@ -463,7 +463,7 @@ class StreamSettingsDeviceAdjustmentTest {
         assertEquals("5120x2160", adjusted.resolution)
         assertEquals("21:9", adjusted.aspectRatio)
         assertEquals(240, adjusted.fps)
-        assertEquals(150, adjusted.maxBitrateMbps)
+        assertEquals(150.0, adjusted.maxBitrateMbps, 0.0)
         assertEquals(VideoCodec.H265, adjusted.codec)
         assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
         assertEquals(false, adjusted.hdrEnabled)
@@ -476,7 +476,7 @@ class StreamSettingsDeviceAdjustmentTest {
             resolution = "3840x2160",
             aspectRatio = "16:9",
             fps = 120,
-            maxBitrateMbps = 150,
+            maxBitrateMbps = 150.0,
             codec = VideoCodec.H265,
             colorQuality = ColorQuality.TenBit420,
             hdrEnabled = true,
@@ -486,7 +486,7 @@ class StreamSettingsDeviceAdjustmentTest {
         assertEquals("3840x2160", fallback.resolution)
         assertEquals("16:9", fallback.aspectRatio)
         assertEquals(60, fallback.fps)
-        assertEquals(150, fallback.maxBitrateMbps)
+        assertEquals(150.0, fallback.maxBitrateMbps, 0.0)
         assertEquals(VideoCodec.H264, fallback.codec)
         assertEquals(ColorQuality.EightBit420, fallback.colorQuality)
         assertEquals(false, fallback.hdrEnabled)
@@ -499,7 +499,7 @@ class StreamSettingsDeviceAdjustmentTest {
             resolution = "1680x720",
             aspectRatio = "21:9",
             fps = 60,
-            maxBitrateMbps = 75,
+            maxBitrateMbps = 75.0,
             codec = VideoCodec.H265,
             colorQuality = ColorQuality.TenBit420,
             hdrEnabled = true,
@@ -509,7 +509,7 @@ class StreamSettingsDeviceAdjustmentTest {
         assertEquals("1680x720", fallback.resolution)
         assertEquals("21:9", fallback.aspectRatio)
         assertEquals(60, fallback.fps)
-        assertEquals(75, fallback.maxBitrateMbps)
+        assertEquals(75.0, fallback.maxBitrateMbps, 0.0)
         assertEquals(VideoCodec.H264, fallback.codec)
         assertEquals(ColorQuality.EightBit420, fallback.colorQuality)
     }
@@ -521,7 +521,7 @@ class StreamSettingsDeviceAdjustmentTest {
                 resolution = option.value,
                 aspectRatio = option.aspectRatio,
                 fps = 240,
-                maxBitrateMbps = 150,
+                maxBitrateMbps = 150.0,
                 codec = VideoCodec.AV1,
                 colorQuality = ColorQuality.TenBit420,
             ).androidSafeVideoFallback()
@@ -538,7 +538,7 @@ class StreamSettingsDeviceAdjustmentTest {
             resolution = "2560x1440",
             aspectRatio = "16:9",
             fps = 60,
-            maxBitrateMbps = 75,
+            maxBitrateMbps = 75.0,
             codec = VideoCodec.H265,
             colorQuality = ColorQuality.TenBit420,
         ).adjustedForDevice(
@@ -569,7 +569,7 @@ class StreamSettingsDeviceAdjustmentTest {
             resolution = "3840x2160",
             aspectRatio = "16:9",
             fps = 120,
-            maxBitrateMbps = 90,
+            maxBitrateMbps = 90.0,
             codec = VideoCodec.H265,
             colorQuality = ColorQuality.TenBit420,
             streamSharpeningEnabled = true,
@@ -580,7 +580,7 @@ class StreamSettingsDeviceAdjustmentTest {
         assertEquals("3840x2160", adjusted.resolution)
         assertEquals("16:9", adjusted.aspectRatio)
         assertEquals(60, adjusted.fps)
-        assertEquals(90, adjusted.maxBitrateMbps)
+        assertEquals(90.0, adjusted.maxBitrateMbps, 0.0)
         assertEquals(false, adjusted.streamSharpeningEnabled)
     }
 
@@ -590,7 +590,7 @@ class StreamSettingsDeviceAdjustmentTest {
             resolution = "3840x2160",
             aspectRatio = "16:9",
             fps = 120,
-            maxBitrateMbps = 75,
+            maxBitrateMbps = 75.0,
             codec = VideoCodec.H265,
             colorQuality = ColorQuality.TenBit420,
             hdrEnabled = true,
@@ -612,7 +612,7 @@ class StreamSettingsDeviceAdjustmentTest {
         assertEquals("3840x2160", adjusted.resolution)
         assertEquals("16:9", adjusted.aspectRatio)
         assertEquals(120, adjusted.fps)
-        assertEquals(75, adjusted.maxBitrateMbps)
+        assertEquals(75.0, adjusted.maxBitrateMbps, 0.0)
         assertEquals(VideoCodec.H265, adjusted.codec)
         assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
         assertEquals(false, adjusted.hdrEnabled)
@@ -625,7 +625,7 @@ class StreamSettingsDeviceAdjustmentTest {
             resolution = "2560x1440",
             aspectRatio = "16:9",
             fps = 60,
-            maxBitrateMbps = 75,
+            maxBitrateMbps = 75.0,
             codec = VideoCodec.H265,
             colorQuality = ColorQuality.TenBit420,
             hdrEnabled = true,
@@ -647,7 +647,7 @@ class StreamSettingsDeviceAdjustmentTest {
 
         assertEquals("2560x1440", adjusted.resolution)
         assertEquals(60, adjusted.fps)
-        assertEquals(75, adjusted.maxBitrateMbps)
+        assertEquals(75.0, adjusted.maxBitrateMbps, 0.0)
         assertEquals(VideoCodec.H265, adjusted.codec)
         assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
         assertEquals(false, adjusted.hdrEnabled)
@@ -660,7 +660,7 @@ class StreamSettingsDeviceAdjustmentTest {
             resolution = "1920x1080",
             aspectRatio = "16:9",
             fps = 60,
-            maxBitrateMbps = 35,
+            maxBitrateMbps = 35.0,
             hdrEnabled = true,
             streamSharpeningEnabled = true,
         )
@@ -690,7 +690,7 @@ class StreamSettingsDeviceAdjustmentTest {
             resolution = "1280x720",
             aspectRatio = "16:9",
             fps = 30,
-            maxBitrateMbps = 12,
+            maxBitrateMbps = 12.0,
         )
         val report = codecReport(
             VideoCodec.H264,
@@ -709,7 +709,7 @@ class StreamSettingsDeviceAdjustmentTest {
             resolution = "3840x2160",
             aspectRatio = "16:9",
             fps = 120,
-            maxBitrateMbps = 90,
+            maxBitrateMbps = 90.0,
             codec = VideoCodec.H265,
             colorQuality = ColorQuality.TenBit420,
             hdrEnabled = true,
@@ -731,7 +731,7 @@ class StreamSettingsDeviceAdjustmentTest {
         assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
         assertEquals("3840x2160", adjusted.resolution)
         assertEquals(60, adjusted.fps)
-        assertEquals(90, adjusted.maxBitrateMbps)
+        assertEquals(90.0, adjusted.maxBitrateMbps, 0.0)
         assertEquals(false, adjusted.hdrEnabled)
         assertEquals(false, adjusted.streamSharpeningEnabled)
     }
@@ -743,7 +743,7 @@ class StreamSettingsDeviceAdjustmentTest {
             aspectRatio = "16:9",
             codec = VideoCodec.H265,
             colorQuality = ColorQuality.TenBit420,
-            maxBitrateMbps = 75,
+            maxBitrateMbps = 75.0,
             fps = 120,
             streamSharpeningEnabled = true,
         ).adjustedForDevice(
@@ -765,7 +765,7 @@ class StreamSettingsDeviceAdjustmentTest {
         assertEquals("16:9", adjusted.aspectRatio)
         assertEquals(VideoCodec.H265, adjusted.codec)
         assertEquals(60, adjusted.fps)
-        assertEquals(75, adjusted.maxBitrateMbps)
+        assertEquals(75.0, adjusted.maxBitrateMbps, 0.0)
         assertEquals(false, adjusted.streamSharpeningEnabled)
     }
 
@@ -776,7 +776,7 @@ class StreamSettingsDeviceAdjustmentTest {
             aspectRatio = "16:9",
             codec = VideoCodec.H265,
             colorQuality = ColorQuality.TenBit420,
-            maxBitrateMbps = 75,
+            maxBitrateMbps = 75.0,
             fps = 60,
         ).adjustedForDevice(
             codecReport(
@@ -794,7 +794,7 @@ class StreamSettingsDeviceAdjustmentTest {
         assertEquals("16:9", adjusted.aspectRatio)
         assertEquals(VideoCodec.H265, adjusted.codec)
         assertEquals(60, adjusted.fps)
-        assertEquals(75, adjusted.maxBitrateMbps)
+        assertEquals(75.0, adjusted.maxBitrateMbps, 0.0)
     }
 
     @Test
@@ -804,7 +804,7 @@ class StreamSettingsDeviceAdjustmentTest {
             aspectRatio = "16:9",
             codec = VideoCodec.H265,
             colorQuality = ColorQuality.TenBit420,
-            maxBitrateMbps = 75,
+            maxBitrateMbps = 75.0,
             fps = 60,
         ).adjustedForDevice(
             codecReport(
@@ -844,7 +844,7 @@ class StreamSettingsDeviceAdjustmentTest {
     fun disablesRendererSharpeningForAndroidTvLaunchProfiles() {
         val adjusted = StreamSettings(
             codec = VideoCodec.AV1,
-            maxBitrateMbps = 75,
+            maxBitrateMbps = 75.0,
             streamSharpeningEnabled = true,
         ).adjustedForDevice(
             codecReport(
@@ -858,7 +858,7 @@ class StreamSettingsDeviceAdjustmentTest {
         )
 
         assertEquals(VideoCodec.AV1, adjusted.codec)
-        assertEquals(75, adjusted.maxBitrateMbps)
+        assertEquals(75.0, adjusted.maxBitrateMbps, 0.0)
         assertEquals(false, adjusted.streamSharpeningEnabled)
     }
 

@@ -377,7 +377,7 @@ class GfnApiTest {
                     resolution = resolution,
                     aspectRatio = aspectRatio,
                     fps = 60,
-                    maxBitrateMbps = 75,
+                    maxBitrateMbps = 75.0,
                     codec = codec,
                     colorQuality = if (codec == VideoCodec.H264) ColorQuality.EightBit420 else ColorQuality.TenBit420,
                 )
@@ -933,7 +933,7 @@ class GfnApiTest {
             resolution = "1920x1080",
             aspectRatio = "16:9",
             fps = 120,
-            maxBitrateMbps = 75,
+            maxBitrateMbps = 75.0,
             codec = VideoCodec.H264,
             colorQuality = ColorQuality.EightBit420,
         )
@@ -959,7 +959,7 @@ class GfnApiTest {
             resolution = "1920x1080",
             aspectRatio = "16:9",
             fps = 360,
-            maxBitrateMbps = 75,
+            maxBitrateMbps = 75.0,
             codec = VideoCodec.AV1,
             colorQuality = ColorQuality.EightBit420,
         )
@@ -1066,7 +1066,7 @@ class GfnApiTest {
 
     @Test
     fun activeSessionSettingsSignatureReadsSessionRequestMetadata() {
-        val settings = StreamSettings(resolution = "1680x720", aspectRatio = "21:9", fps = 60, maxBitrateMbps = 150, codec = VideoCodec.H265)
+        val settings = StreamSettings(resolution = "1680x720", aspectRatio = "21:9", fps = 60, maxBitrateMbps = 150.0, codec = VideoCodec.H265)
         val signature = streamSettingsSessionSignature(settings)
         val session = OpenNowJson.parseToJsonElement(
             """
@@ -1290,7 +1290,7 @@ class GfnApiTest {
                 aspectRatio = "16:9",
                 fps = 60,
                 codec = VideoCodec.H265,
-                maxBitrateMbps = 75,
+                maxBitrateMbps = 75.0,
             ),
             physicalDisplayResolution = 1920 to 1080,
             streamingBaseUrl = "https://np-mia-04.cloudmatchbeta.nvidiagrid.net",

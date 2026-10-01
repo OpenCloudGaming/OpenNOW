@@ -210,7 +210,7 @@ class StreamResolutionTest {
             resolution = "3840x2160",
             aspectRatio = "16:9",
             fps = 120,
-            maxBitrateMbps = 150,
+            maxBitrateMbps = 150.0,
             codec = VideoCodec.AV1,
             colorQuality = ColorQuality.TenBit420,
         )
@@ -805,8 +805,8 @@ class StreamResolutionTest {
 
     @Test
     fun activeSessionWithDifferentOpenNowSettingsSignatureIsNotReusedForLaunch() {
-        val settings = StreamSettings(resolution = "1680x720", aspectRatio = "21:9", fps = 60, codec = VideoCodec.H265, maxBitrateMbps = 150)
-        val otherSettings = settings.copy(codec = VideoCodec.H264, maxBitrateMbps = 75)
+        val settings = StreamSettings(resolution = "1680x720", aspectRatio = "21:9", fps = 60, codec = VideoCodec.H265, maxBitrateMbps = 150.0)
+        val otherSettings = settings.copy(codec = VideoCodec.H264, maxBitrateMbps = 75.0)
         val active = activeSession(
             resolution = "1680x720",
             fps = 60,
@@ -850,7 +850,7 @@ class StreamResolutionTest {
             resolution = "1376x590",
             aspectRatio = "21:9",
             fps = 60,
-            maxBitrateMbps = 7,
+            maxBitrateMbps = 7.0,
         )
         val running = SessionInfo(
             sessionId = "running-session",

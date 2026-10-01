@@ -6,6 +6,17 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class NvstTransportTest {
+    @Test
+    fun fractionalClaimBitratesAreExactIntegerKbps() {
+        for ((mbps, kbps) in listOf(0.22 to 220, 0.8 to 800, 0.8005 to 801, 75.0 to 75000, 200.0 to 200000)) {
+            val settings = StreamSettings(maxBitrateMbps = mbps, experimentalNvst = true)
+            val request = buildMinimalClaimRequestBody("123", "device", settings)["sessionRequestData"]!!.jsonObject
+            val features = request["requestedStreamingFeatures"]!!.jsonObject
+            assertEquals(kbps.toString(), features["maxBitrateKbps"]!!.jsonPrimitive.content)
+            assertFalse(features["maxBitrateKbps"]!!.jsonPrimitive.isString)
+        }
+    }
+
     @Test fun nvstHdrDoesNotRequestAiHdrConversion() {
         val settings = StreamSettings(experimentalNvst = true, codec = VideoCodec.H265,
             colorQuality = ColorQuality.TenBit420, hdrEnabled = true)
@@ -47,7 +58,7 @@ class NvstTransportTest {
 
     @Test fun upgradePersistsResetWithoutRequiringASettingsEdit() {
         val previous = AppSettings(
-            stream = StreamSettings(experimentalNvst = true, fps = 120, maxBitrateMbps = 42),
+            stream = StreamSettings(experimentalNvst = true, fps = 120, maxBitrateMbps = 42.0),
             favoriteGameIds = listOf("123"),
         )
         var disk = OpenNowJson.encodeToString(previous)

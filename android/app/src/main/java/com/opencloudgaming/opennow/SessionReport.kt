@@ -492,7 +492,7 @@ internal fun buildSessionRecommendations(
     averageFps: Double?,
     averageDecodeMs: Double?,
     targetFps: Int,
-    targetBitrateMbps: Int,
+    targetBitrateMbps: Double,
     averageBitrateKbps: Int?,
     networkKind: AndroidNetworkKind,
     wifiBand: AndroidWifiBand,
@@ -568,7 +568,7 @@ internal fun buildSessionRecommendations(
             SessionReportFinding(
                 reasonCode = "link_capacity",
                 title = "Lower the maximum bitrate",
-                detail = "Android estimated about ${formatMbps(estimatedLinkDownstreamKbps)} Mbps of link capacity for a $targetBitrateMbps Mbps profile.$actual Leave headroom for network variation.",
+                detail = "Android estimated about ${formatMbps(estimatedLinkDownstreamKbps)} Mbps of link capacity for a ${StreamBitrate.formatMbps(targetBitrateMbps)} Mbps profile.$actual Leave headroom for network variation.",
                 kind = SessionReportFindingKind.Warning,
             ),
         )
@@ -649,7 +649,7 @@ private fun normalizeResolutionLabel(value: String): String =
 private fun profileSummary(settings: StreamSettings): String =
     buildString {
         append("${streamResolutionLabel(settings)}@${settings.fps} ${settings.codec.name}/${settings.colorQuality.name}")
-        append(" ${settings.maxBitrateMbps} Mbps")
+        append(" ${StreamBitrate.formatMbps(settings.maxBitrateMbps)} Mbps")
         if (settings.hdrEnabled) append(" HDR")
     }
 

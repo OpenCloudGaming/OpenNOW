@@ -909,12 +909,15 @@ private fun SettingsContent(
                 NumberSlider(
                     label = stringResource(R.string.settings_bitrate),
                     value = settings.stream.maxBitrateMbps.toFloat(),
+                    valueFormatter = StreamBitrate::formatSliderMbps,
                     min = 1f,
                     max = 150f,
                     step = 1f,
                     descriptionProvider = { mbps -> streamBitrateUsageEstimate(mbps) },
                 ) {
-                    viewModel.updateStreamSettings { s -> s.copy(maxBitrateMbps = it.roundToInt()) }
+                    StreamBitrate.sliderChangeMbps(settings.stream.maxBitrateMbps, it)?.let { bitrate ->
+                        viewModel.updateStreamSettings { s -> s.copy(maxBitrateMbps = bitrate) }
+                    }
                 }
             }
     CategorySettingsSection(selectedCategory, SettingsCategory.Stream, searchQuery, stringResource(R.string.settings_section_stream_video), "stream", "video", "codec", "color", "hdr", "sharpening", "native streamer", "low latency", "native decoder", "decoder") {

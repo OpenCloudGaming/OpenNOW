@@ -10,7 +10,7 @@ class BugReportPreflightTest {
         resolution = "1920x1080",
         aspectRatio = "16:9",
         fps = 60,
-        maxBitrateMbps = 35,
+        maxBitrateMbps = 35.0,
         codec = VideoCodec.H264,
     )
 
@@ -124,8 +124,10 @@ class BugReportPreflightTest {
 
     @Test
     fun runtimeBitrateStatusShowsActualAndRequestedMaximum() {
-        assertEquals("28.4 Mbps / 35 Mbps max", formatRuntimeBitrateStatus(28_400, 35))
-        assertEquals("-- / 35 Mbps max", formatRuntimeBitrateStatus(null, 35))
+        assertEquals("28.4 Mbps / 35 Mbps max", formatRuntimeBitrateStatus(28_400, 35.0))
+        assertEquals("-- / 35 Mbps max", formatRuntimeBitrateStatus(null, 35.0))
+        assertEquals("220 Kbps / 0.22 Mbps max", formatRuntimeBitrateStatus(220, 0.22))
+        assertEquals("800 Kbps / 0.8 Mbps max", formatRuntimeBitrateStatus(800, 0.8))
     }
 
     @Test
@@ -306,7 +308,7 @@ class BugReportPreflightTest {
         val selected = settings.copy(
             resolution = "2560x1440",
             fps = 120,
-            maxBitrateMbps = 75,
+            maxBitrateMbps = 75.0,
         )
         val deck = buildBugReportPreflightDeck(
             BugReportPreflightEvidence(

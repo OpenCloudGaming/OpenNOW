@@ -195,7 +195,8 @@ data class StreamSettings(
     val resolution: String = "1920x1080",
     val aspectRatio: String = "16:9",
     val fps: Int = 60,
-    val maxBitrateMbps: Int = 75,
+    @Serializable(with = StreamBitrateMbpsSerializer::class)
+    val maxBitrateMbps: Double = StreamBitrate.DEFAULT_MBPS,
     val codec: VideoCodec = VideoCodec.H264,
     val colorQuality: ColorQuality = ColorQuality.TenBit420,
     val hdrEnabled: Boolean = false,
@@ -733,7 +734,7 @@ internal data class ActiveStreamTransportProfile(
     val resolution: String,
     val aspectRatio: String,
     val fps: Int,
-    val maxBitrateMbps: Int,
+    val maxBitrateMbps: Double,
     val codec: VideoCodec,
     val colorQuality: ColorQuality,
     val hdrEnabled: Boolean,
@@ -1128,7 +1129,7 @@ internal fun StreamSettings.applyingStreamPreset(preset: StreamPreset): StreamSe
         resolution = target.resolution,
         aspectRatio = target.aspectRatio,
         fps = target.fps,
-        maxBitrateMbps = target.maxBitrateMbps,
+        maxBitrateMbps = target.maxBitrateMbps.toDouble(),
         colorQuality = ColorQuality.EightBit420,
         hdrEnabled = false,
     ).withoutExperimentalTransportRequests()
@@ -2261,7 +2262,7 @@ internal fun StreamSettings.loweredSessionLaunchProfile(): StreamSettings =
         resolution = "1920x1080",
         aspectRatio = "16:9",
         fps = minOf(fps, 60),
-        maxBitrateMbps = minOf(maxBitrateMbps, 75),
+        maxBitrateMbps = minOf(maxBitrateMbps, 75.0),
         codec = VideoCodec.H264,
         colorQuality = ColorQuality.EightBit420,
         hdrEnabled = false,
@@ -2304,7 +2305,7 @@ internal fun StreamSettings.lowPowerPerformanceWarningReasons(report: RuntimeCod
     return buildList {
         if (width * height > LOW_POWER_RECOMMENDED_PIXEL_COUNT) add("$normalizedResolution resolution")
         if (fps > LOW_POWER_RECOMMENDED_FPS) add("$fps FPS")
-        if (maxBitrateMbps > LOW_POWER_RECOMMENDED_BITRATE_MBPS) add("$maxBitrateMbps Mbps bitrate")
+        if (maxBitrateMbps > LOW_POWER_RECOMMENDED_BITRATE_MBPS) add("${StreamBitrate.formatMbps(maxBitrateMbps)} Mbps bitrate")
         if (hdrEnabled) add("HDR")
         if (streamSharpeningEnabled) add("stream sharpening")
     }

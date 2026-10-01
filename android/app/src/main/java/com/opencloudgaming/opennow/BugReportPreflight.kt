@@ -323,7 +323,7 @@ private fun buildVideoDevicePreflightCard(
     }.distinctBy { it.title }
     val facts = buildList {
         add("Requested $requestedResolution@${evidence.requestedSettings.fps}")
-        add("Requested max ${evidence.requestedSettings.maxBitrateMbps} Mbps")
+        add("Requested max ${StreamBitrate.formatMbps(evidence.requestedSettings.maxBitrateMbps)} Mbps")
         evidence.recommendedSettings?.let { add("Detected Recommended ${it.recommendationSummary()}") }
         if (recommendationOverrides.isNotEmpty()) {
             add("Above recommendation: ${recommendationOverrides.joinToString()}")

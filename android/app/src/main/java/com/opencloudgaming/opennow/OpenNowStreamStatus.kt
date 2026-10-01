@@ -719,8 +719,8 @@ internal fun activeStreamModeDisplayChanges(status: ActiveStreamModeStatus): Lis
             add(
                 ActiveStreamModeDisplayChange(
                     "Bitrate",
-                    "${requested.maxBitrateMbps} Mbps",
-                    "${actual.maxBitrateMbps} Mbps",
+                    "${StreamBitrate.formatMbps(requested.maxBitrateMbps)} Mbps",
+                    "${StreamBitrate.formatMbps(actual.maxBitrateMbps)} Mbps",
                     ActiveStreamModeChangeKind.Bitrate,
                 ),
             )
@@ -1139,8 +1139,8 @@ internal fun formatRuntimeBitrate(bitrateKbps: Int?): String {
 
 internal fun formatRuntimeBitrateStatus(
     actualBitrateKbps: Int?,
-    requestedMaxBitrateMbps: Int,
-): String = "${formatRuntimeBitrate(actualBitrateKbps)} / ${requestedMaxBitrateMbps.coerceAtLeast(1)} Mbps max"
+    requestedMaxBitrateMbps: Double,
+): String = "${formatRuntimeBitrate(actualBitrateKbps)} / ${StreamBitrate.formatMbps(requestedMaxBitrateMbps)} Mbps max"
 
 internal fun shouldHideStreamStatusText(status: String): Boolean =
     status.trim().replace('_', ' ').let {

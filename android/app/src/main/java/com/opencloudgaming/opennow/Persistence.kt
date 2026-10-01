@@ -294,7 +294,7 @@ internal fun AppSettings.normalizedForAndroid(): AppSettings {
     val lowPowerSafe = compatibleStream.copy(
         codec = compatibleStream.codec,
         sessionProxyUrl = stream.sessionProxyUrl.trim(),
-        maxBitrateMbps = compatibleStream.maxBitrateMbps.coerceIn(1, 150),
+        maxBitrateMbps = StreamBitrate.normalizedMbps(compatibleStream.maxBitrateMbps),
         fps = compatibleStream.fps.coerceIn(30, 360),
         mouseSensitivity = compatibleStream.mouseSensitivity.finiteIn(0.25f, 3f, streamDefaults.mouseSensitivity),
         mouseAcceleration = compatibleStream.mouseAcceleration.coerceIn(1, 150),
