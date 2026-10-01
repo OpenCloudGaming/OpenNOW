@@ -70,6 +70,7 @@ signals:
     void controllerCountChanged();
     void inputModeChanged();
     void activationRequested();
+    void applicationExitCommitted();
     void restartRequested();
     void directLaunchRequested(const QString &appId, const QString &title);
 

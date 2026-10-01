@@ -64,7 +64,7 @@ int AcceptanceSession::startStreamExitWorkload()
             || !require(window->visibility() == (fullscreen && state->step < 6
                             ? QWindow::FullScreen : QWindow::Windowed),
                         "confirmation or completed exit has the wrong window mode")) return;
-        if (state->step == 0)
+        if (state->step == 0 && (!windowClose || originalRoute == u"stream"_s))
             state->surface = window->findChild<QQuickItem *>(u"streamSurfaceHost"_s);
         if (state->step < 6 && (!windowClose || originalRoute == u"stream"_s)
                 && !require(state->surface && state->surface->isVisible()
@@ -82,6 +82,13 @@ int AcceptanceSession::startStreamExitWorkload()
                 if (!require(window->isVisible() && m_controller.overlay().isEmpty()
                         && (!state->surface || state->surface->property("inputEnabled").toBool()),
                         "window close or cancellation did not retain the shell and input")) return;
+                if (state->step == 3 && m_arguments.contains(u"--smoke-exit-authorized-quit"_s)) {
+                    m_controller.quitApplication();
+                    if (!require(window->property("applicationCloseConfirmed").toBool()
+                            && m_controller.overlay().isEmpty(), "authorized quit requested another confirmation")) return;
+                    timer->stop();
+                    return;
+                }
                 if (!require(!window->close(), "native window close bypassed confirmation")) return;
                 break;
             case 1:
