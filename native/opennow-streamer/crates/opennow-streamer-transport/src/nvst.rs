@@ -7478,7 +7478,7 @@ fn run_nvst_udp_receiver(
         }
 
         match socket.recv_from(&mut datagram) {
-            Ok((length, source)) => {
+            Ok((length, source)) => 'datagram: {
                 inbound_datagrams += 1;
                 if inbound_datagrams == 1 {
                     log_udp_first_inbound(
@@ -7527,11 +7527,11 @@ fn run_nvst_udp_receiver(
                                 forward_optional(&event_sender, receiver.stop());
                                 return;
                             }
-                            continue;
+                            break 'datagram;
                         }
                         StunDatagram::Invalid => {
                             invalid_stun += 1;
-                            continue;
+                            break 'datagram;
                         }
                         StunDatagram::NotStun => non_stun += 1,
                     }
