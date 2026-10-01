@@ -381,10 +381,6 @@ void ControllerInput::closeController(SDL_JoystickID id)
     emit deviceClaimsChanged();
     if (accepted && !sony)
         emit gamepadSnapshot(static_cast<quint8>(publishedSlot), gamepadBitmap(), 0, 0, 0, 0, 0, 0, 0);
-    if (m_inputControllerId == id) {
-        setInputControllerId(0);
-        return;
-    }
     emit controllerCountChanged(controllerCount());
     updatePollInterval();
     refreshControllerMetadata();
