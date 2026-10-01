@@ -17,7 +17,7 @@ Notable **finish-args**: full device/DRI, network, PulseAudio, X11, Wayland, ses
 | --- | ---: | --- |
 | `libGeronimo.so` | 34,347,824 bytes | Stream shell: SDL window, Vulkan/LAVC/VDPAU decode, input, `GridApp`, imports **libBifrost2.so** |
 | `libBifrost2.so` | 19,052,024 bytes | NVB / NVST SDK: CloudMatch HTTP, RTSP/WebSocket, Mjolnir, WebRTC bundle, `nvb*` C API |
-| `libGsAudioWebRTC.so` | ~1.5 MB | WebRTC audio device module + AEC3; **not** Opus/NetEq |
+| `libGsAudioWebRTC.so` | 884,640 bytes | WebRTC audio device module + AEC3; **not** Opus/NetEq |
 | `libBifrost2.so` NEEDED | minimal | pthread, dl, atomic, stdc++, m — HTTP/TLS compiled in |
 | `GeForceNOW` | 2.4 MB | CEF 128 embedder; loads `libcef.so`, Geronimo, Bifrost |
 | `GeForceNOWContainer` | 861 KB | Helper PIE; does not link Geronimo/Bifrost |
@@ -27,6 +27,16 @@ Notable **finish-args**: full device/DRI, network, PulseAudio, X11, Wayland, ses
 
 - Bifrost: `fa3685038bd71962fe30ad09482bcb0721a54f35`
 - Geronimo: `15d0eebc08da503f1f37ea9cae2dbac1d760fea4`
+
+SHA-256 identities from the user-supplied archive:
+
+| File | SHA-256 |
+| --- | --- |
+| `libGeronimo.so` | `4863f02ed7d82b06b8152b23e8683dd9b77bcd63165890ce4c6c1cd883fc0cd1` |
+| `libBifrost2.so` | `8400714f98b7db928ef4377515b1ed35be12523b7fa306566e776b76965537c9` |
+| `libGsAudioWebRTC.so` | `c6d4d8cad31fae556ba59a90c34511ef095965c6f856ce72249c6f759dbd6f5b` |
+
+These hashes make the static findings reproducible against one payload. They do not authenticate NVIDIA publisher provenance or establish redistribution rights.
 
 Embedded toolchain strings: GCC 9/10, OpenSSL **3.5.6**, Mjolnir vcpkg snapshot **2025-04-09**, Chromium **128.4.13** (`128.0.6613.138.nv27`), product path `gfn_release/2f4a4c46`.
 

@@ -1,18 +1,18 @@
-# OpenNOW parity gaps (official Linux `gs_04_87` vs current tree)
+# OpenNOW parity candidates (Linux `gs_04_87` vs recorded source)
 
-Consolidated from the section audits. **Already aligned** items (RTSP shape, Mjolnir socket, NACK-v2 `0x0317`, eight-channel profile subset, activation chain through window state 19, RED parse/recover on audio, type 7/12 wire layouts) are omitted here; see [transport-rtsp-mjolnir.md](transport-rtsp-mjolnir.md) and [input-mouse-gamepad-features.md](input-mouse-gamepad-features.md).
+Consolidated from the section audits at the exact OpenNOW comparison commit in [README.md](README.md). Existing source contracts include the classic RTSP flow, Mjolnir transport, tested NACK-v2 encoder, route-specific SCTP profile, activation commands, and RED recovery. These are not proof of live vendor compatibility. The candidates below are grouped by owner, not ranked by measured quality or treated as ready implementation specifications.
 
-## P0 — Session feel and server policy
+## Input, presentation, and server policy
 
 | Gap | Official behavior | OpenNOW today | Primary owner |
 | --- | --- | --- | --- |
 | **Mouse host settings (NVB feature 10)** | `sendMouseSettings` → `nvbFeatureControl`; logs `accel=0, speed=10` on focus | Client-side `tune_relative_mouse` only; no type-10 blob on wire | `opennow-streamer` control + activation |
 | **Mid-session feature control** | `nvbFeatureControl` types `0x0F` (DRC/DFC), `0x10` (max bitrate), `0x13` (L4S) | Values fixed at ANNOUNCE; core rejects mid-session bitrate IPC | `nvst_control` / core streamer RPC |
-| **Server DJB (de-jitter buffer)** | `nvbUpdateDJBState`; min/max depth in µs; QOS/MODE + FIXED/VVSYNC reasons | `LinuxFramePacer` local depth ≤2; no `jbConfig` ANNOUNCE | `linux_frame_pacing.rs` |
-| **Reference invalidation + display freeze** | After NACK failure: IDR + invalidation commands (session logs) | PLI + `0x0302` only; no invalidation | `nvst_control.rs` |
-| **Decoder state → server** | `nvbUpdateVideoDecoderState` provokes official IDR/invalidation ladder | Local transform rebuild + PLI | streamer transport + control |
+| **Server DJB (de-jitter buffer)** | Forced µs queue-bound overrides, reporting API, and separate local-adaptation evidence | Embedded GPU publication into Qt; no equivalent vendor DJB API established | Embedded media + Qt scene graph; recover wire/limits before implementation |
+| **Reference invalidation + display freeze** | Names in prior Windows logs; Linux state/wire contract untraced | Control IDR on Mjolnir, optional bundle-video PLI; no invalidation encoder | `nvst_control.rs`, after wire/state evidence |
+| **Decoder state → server** | `nvbUpdateVideoDecoderState` API; causal IDR/invalidation sequence not established | Decoder-specific local recovery and route-specific keyframe requests | Streamer decoder/transport owners |
 
-## P1 — Session orchestration
+## Session orchestration
 
 | Gap | Official | OpenNOW |
 | --- | --- | --- |
@@ -24,18 +24,18 @@ Consolidated from the section audits. **Already aligned** items (RTSP shape, Mjo
 | **Remote config override of session params** | `GeronimoSettingsImpl::overrideNVbSessionParams` after mall fill | Settings resolved pre-POST; server `finalizedStreamingFeatures` overlay | core + streamer ANNOUNCE |
 | **Stream session IDs in normalized seat** | Requires `networkSessionId`, `rtspSessionId`, `streamSessionId`, `streamSubSessionIds` | Raw `connectionInfo` + derived URLs | `session_info` normalization |
 
-## P2 — Media and devices
+## Media and devices
 
 | Gap | Official | OpenNOW |
 | --- | --- | --- |
-| **Audio TimestampAudioBuffer** | Adaptive threshold, stale drops, overbuffer flush | RED + PLC; no JB stats | platform audio / future Bifrost parity layer |
-| **Microphone upstream** | GsAudioWebRTC AEC + `nvbSendMicAudioFrame` + Opus + mic RED 3 | ANNOUNCE mic bundle possible; no capture path | streamer + platform |
+| **Audio TimestampAudioBuffer** | Adaptive threshold, stale drops, overbuffer flush | RED + PLC; no equivalent vendor adaptive policy established | Existing platform audio owner |
+| **Microphone AEC / redundancy** | GsAudioWebRTC reverse-stream AEC; prior Windows mic RED level 3 | Negotiated SDL capture, mono 48 kHz Opus at 32 kbps, bounded uplink; no reverse-stream AEC or mic RED | Existing native microphone owners; target acceptance still required |
 | **Gamepad aggregation** | Timer + destructive aggregation settings | Event-driven + 100 ms keepalive | input queue policy |
 | **GSHID / DS4 synth** | `GamepadHIDSynthesizer`, cross-synth DS4/DS5 | DS4 report commands exist; no generic→Sony synth | `nvst_input` / HID |
 | **HUD second decoder set** | `HudVideoDecoderSet` | Single queue | streamer (if product needs HUD video) |
 | **Serenity H.264 local record** | CEF transcode path when live codec not recordable | Matroska of negotiated stream | out of scope unless product asks |
 
-## P3 — Platform / packaging
+## Platform and packaging
 
 | Gap | Official Linux | OpenNOW Linux |
 | --- | --- | --- |
@@ -45,15 +45,15 @@ Consolidated from the section audits. **Already aligned** items (RTSP shape, Mjo
 
 ## Version skew note
 
-This audit binary is mall **2.0.84.127** / **gs_04_87**. OpenNOW CloudMatch headers often impersonate **2.0.87.131** / Windows **`gs_04_90`**. Parity tests should record which build is under test; command IDs and log strings can move between branches without renaming the English message.
+The supplied payload identifies itself as mall **2.0.84.127** / **gs_04_87**; its publisher provenance was not authenticated. The compared OpenNOW source advertises newer client identity values, and the earlier Windows logs use **`gs_04_90`**. Record both source and vendor build when testing. Command IDs and log strings can change between branches without changing the English message.
 
-## Suggested closure order
+## Evidence needed before follow-up implementation
 
-1. Capture **feature type 10** on wire (pcap or instrumented Bifrost) → implement in activation or post-focus path.
-2. Implement **DJB receive/send** paired with **`nvbUpdateDJBState`-equivalent** control messages.
-3. Add **invalidation** command alongside IDR after unrecoverable video gap.
-4. Expose **mid-session** `0x0F` / `0x10` / `0x13` feature writes from settings changes.
-5. **Auth refresh callback** during long poll/setup.
-6. **Microphone** path end-to-end once product enables it.
+1. Recover the **feature-type-10** wire payload and compare controlled sessions before assigning an aim-feel cause or adding a focus/activation write.
+2. Trace **DJB** force/local-adaptation behavior and its wire representation. Assess bounded queue/deadline policy through the embedded GPU publisher and Qt, not the standalone frame pacer.
+3. Trace the **decoder-state/invalidation** call path or paired wire exchange before choosing a new recovery command. Keep route-specific IDR and PLI distinctions.
+4. Verify negotiated **live feature writes** for `0x0F`, `0x10`, and `0x13`, including failures, before exposing new mid-session settings actions.
+5. Verify the **auth-refresh** retry contract during POST/poll before changing account/session orchestration.
+6. Validate the existing **microphone uplink** on a target device and live seat. Assess reverse-stream AEC and mic redundancy as separate additions, not a missing capture path.
 
 Cross-links: [session-creation-cloudmatch.md](session-creation-cloudmatch.md), [video-streaming-decode-recovery.md](video-streaming-decode-recovery.md), [docs/streamer-comparison/README.md](../streamer-comparison/README.md).
