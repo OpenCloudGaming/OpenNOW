@@ -214,6 +214,70 @@ pub fn message_summary(value: &serde_json::Value) -> String {
             fields.push(format!("{key}={value}"));
         }
     }
+    if value["type"] == "log" && value["event"] == "keyframe-request" {
+        let code = match value["reason"].as_str() {
+            Some("compressed video discontinuity or queue overflow") => {
+                Some("compressed-video-discontinuity-or-overflow")
+            }
+            Some("H.264 decoder rejected an access unit") => Some("decoder-access-unit-rejected"),
+            Some("Linux decoder rejected encoded video framing") => Some("invalid-video-framing"),
+            Some("embedded Linux decoder queue overflow") => Some("decoder-queue-overflow"),
+            Some("embedded Linux video submission failed") => Some("video-submission-failed"),
+            Some("Linux decoder requires a fresh keyframe") => Some("decoder-reference-required"),
+            Some("Linux decoder device was lost") => Some("decoder-device-lost"),
+            Some("Linux decoder fallback requires a fresh keyframe") => Some("decoder-fallback"),
+            _ => None,
+        };
+        if let Some(code) = code {
+            fields.push(format!("reasonCode={code}"));
+        }
+    }
+    if value["type"] == "telemetry" {
+        if let Some(stage @ ("tracking" | "keyframe-pending" | "recovery-required")) =
+            value["decodeProgressStage"].as_str()
+        {
+            fields.push(format!("decodeProgressStage={stage}"));
+        }
+        if let Some(stalled) = value["transportFrameProgressStalled"].as_bool() {
+            fields.push(format!("transportFrameProgressStalled={stalled}"));
+        }
+        for (group, keys) in [
+            (
+                "decodeTimings",
+                [
+                    "epoch",
+                    "submissionsTotal",
+                    "outputsTotal",
+                    "outputCallsTotal",
+                    "inFlight",
+                    "unmatchedOutputs",
+                    "unmatchedSubmissions",
+                ],
+            ),
+            (
+                "frameStageTimings",
+                [
+                    "assembledFramesTotal",
+                    "admittedFramesTotal",
+                    "queuedAckFramesTotal",
+                    "undeliveredFramesTotal",
+                    "pendingDeliveries",
+                    "unmatchedDeliveries",
+                    "unmatchedAdmissions",
+                ],
+            ),
+        ] {
+            for key in keys {
+                if let Some(counter) = value
+                    .get(group)
+                    .and_then(|timings| timings.get(key))
+                    .and_then(serde_json::Value::as_u64)
+                {
+                    fields.push(format!("{group}.{key}={counter}"));
+                }
+            }
+        }
+    }
     fields.join(" ")
 }
 
@@ -335,6 +399,202 @@ mod tests {
             "count": "credential", "sampleRate": -1, "channels": {"token": "secret"}
         }));
         assert!(summary.is_empty(), "{summary}");
+    }
+
+    #[test]
+    fn telemetry_summaries_preserve_typed_pipeline_progress() {
+        let summary = message_summary(&serde_json::json!({
+            "type": "telemetry",
+            "decodeProgressStage": "keyframe-pending",
+            "transportFrameProgressStalled": false,
+            "frameStageTimings": {
+                "assembledFramesTotal": 900, "admittedFramesTotal": 897,
+                "queuedAckFramesTotal": 896, "undeliveredFramesTotal": 1,
+                "pendingDeliveries": 2, "unmatchedDeliveries": 1,
+                "unmatchedAdmissions": 3
+            },
+            "decodeTimings": {
+                "epoch": 2, "submissionsTotal": 850, "outputsTotal": 820,
+                "outputCallsTotal": 800, "inFlight": 30,
+                "unmatchedOutputs": 1, "unmatchedSubmissions": 2
+            }
+        }));
+        for field in [
+            "decodeProgressStage=keyframe-pending",
+            "transportFrameProgressStalled=false",
+            "frameStageTimings.assembledFramesTotal=900",
+            "frameStageTimings.admittedFramesTotal=897",
+            "frameStageTimings.queuedAckFramesTotal=896",
+            "frameStageTimings.undeliveredFramesTotal=1",
+            "frameStageTimings.pendingDeliveries=2",
+            "frameStageTimings.unmatchedDeliveries=1",
+            "frameStageTimings.unmatchedAdmissions=3",
+            "decodeTimings.epoch=2",
+            "decodeTimings.submissionsTotal=850",
+            "decodeTimings.outputsTotal=820",
+            "decodeTimings.outputCallsTotal=800",
+            "decodeTimings.inFlight=30",
+            "decodeTimings.unmatchedOutputs=1",
+            "decodeTimings.unmatchedSubmissions=2",
+        ] {
+            assert!(summary.split(' ').any(|entry| entry == field), "{summary}");
+        }
+    }
+
+    #[test]
+    fn keyframe_summaries_map_only_exact_known_reasons_to_codes() {
+        for (reason, code) in [
+            (
+                "compressed video discontinuity or queue overflow",
+                "compressed-video-discontinuity-or-overflow",
+            ),
+            (
+                "H.264 decoder rejected an access unit",
+                "decoder-access-unit-rejected",
+            ),
+            (
+                "Linux decoder rejected encoded video framing",
+                "invalid-video-framing",
+            ),
+            (
+                "embedded Linux decoder queue overflow",
+                "decoder-queue-overflow",
+            ),
+            (
+                "embedded Linux video submission failed",
+                "video-submission-failed",
+            ),
+            (
+                "Linux decoder requires a fresh keyframe",
+                "decoder-reference-required",
+            ),
+            ("Linux decoder device was lost", "decoder-device-lost"),
+            (
+                "Linux decoder fallback requires a fresh keyframe",
+                "decoder-fallback",
+            ),
+        ] {
+            let summary = message_summary(&serde_json::json!({
+                "type": "log", "event": "keyframe-request", "reason": reason,
+                "message": "private payload", "sessionId": "secret"
+            }));
+            assert_eq!(
+                summary,
+                format!("type=log event=keyframe-request reasonCode={code}")
+            );
+        }
+        for reason in [
+            "credential",
+            "https://private.example",
+            "/home/private/file",
+            "embedded Linux decoder queue overflow\nsecret",
+            "embedded Linux decoder queue overflow secret",
+        ] {
+            let summary = message_summary(&serde_json::json!({
+                "type": "log", "event": "keyframe-request", "reason": reason,
+                "reasonCode": "credential"
+            }));
+            assert_eq!(summary, "type=log event=keyframe-request");
+        }
+        for value in [
+            serde_json::json!({"reason": "embedded Linux decoder queue overflow"}),
+            serde_json::json!({"type": "error", "event": "keyframe-request", "reason": "embedded Linux decoder queue overflow"}),
+            serde_json::json!({"type": "log", "event": "backend-fallback", "reason": "embedded Linux decoder queue overflow"}),
+        ] {
+            assert!(!message_summary(&value).contains("reasonCode="));
+        }
+    }
+
+    #[test]
+    fn pipeline_summaries_reject_untrusted_types_and_nested_payloads() {
+        for invalid in [
+            serde_json::json!("credential"),
+            serde_json::json!("123"),
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::json!(true),
+            serde_json::json!(null),
+            serde_json::json!([1]),
+            serde_json::json!({"token": "secret"}),
+        ] {
+            let summary = message_summary(&serde_json::json!({
+                "type": "telemetry", "decodeProgressStage": invalid,
+                "transportFrameProgressStalled": invalid,
+                "frameStageTimings": {
+                    "assembledFramesTotal": invalid, "admittedFramesTotal": invalid,
+                    "queuedAckFramesTotal": invalid, "undeliveredFramesTotal": invalid,
+                    "pendingDeliveries": invalid, "unmatchedDeliveries": invalid,
+                    "unmatchedAdmissions": invalid
+                },
+                "decodeTimings": {
+                    "epoch": invalid, "submissionsTotal": invalid, "outputsTotal": invalid,
+                    "outputCallsTotal": invalid, "inFlight": invalid,
+                    "unmatchedOutputs": invalid, "unmatchedSubmissions": invalid
+                }
+            }));
+            let expected = if invalid.is_boolean() {
+                "type=telemetry transportFrameProgressStalled=true"
+            } else {
+                "type=telemetry"
+            };
+            assert_eq!(summary, expected);
+        }
+        let summary = message_summary(&serde_json::json!({
+            "type": "telemetry", "decodeProgressStage": "credential",
+            "startId": "secret", "sessionId": "secret", "accountId": "secret",
+            "reason": "private", "context": {"token": "credential"},
+            "frameStageTimings": {"assembledFramesTotal": 0, "url": "https://private.example"},
+            "decodeTimings": {"outputsTotal": 0, "path": "/home/private/file", "token": "credential"}
+        }));
+        assert_eq!(
+            summary,
+            "type=telemetry decodeTimings.outputsTotal=0 frameStageTimings.assembledFramesTotal=0"
+        );
+        for group in [
+            serde_json::json!(null),
+            serde_json::json!("secret"),
+            serde_json::json!([1]),
+        ] {
+            assert_eq!(
+                message_summary(&serde_json::json!({
+                    "type": "telemetry", "decodeTimings": group, "frameStageTimings": group
+                })),
+                "type=telemetry"
+            );
+        }
+        assert_eq!(
+            message_summary(&serde_json::json!({
+                "type": "log", "decodeProgressStage": "tracking",
+                "transportFrameProgressStalled": true,
+                "decodeTimings": {"inFlight": 1}, "frameStageTimings": {"pendingDeliveries": 1}
+            })),
+            "type=log"
+        );
+    }
+
+    #[test]
+    fn pipeline_summary_size_is_bounded_and_missing_values_stay_unavailable() {
+        let mut telemetry = serde_json::json!({"type": "telemetry"});
+        assert_eq!(message_summary(&telemetry), "type=telemetry");
+        telemetry["decodeTimings"] = serde_json::json!({
+            "epoch": u64::MAX, "submissionsTotal": u64::MAX, "outputsTotal": u64::MAX,
+            "outputCallsTotal": u64::MAX, "inFlight": u64::MAX,
+            "unmatchedOutputs": u64::MAX, "unmatchedSubmissions": u64::MAX
+        });
+        telemetry["frameStageTimings"] = serde_json::json!({
+            "assembledFramesTotal": u64::MAX, "admittedFramesTotal": u64::MAX,
+            "queuedAckFramesTotal": u64::MAX, "undeliveredFramesTotal": u64::MAX,
+            "pendingDeliveries": u64::MAX, "unmatchedDeliveries": u64::MAX,
+            "unmatchedAdmissions": u64::MAX
+        });
+        telemetry["decodeProgressStage"] = serde_json::json!("recovery-required");
+        telemetry["transportFrameProgressStalled"] = serde_json::json!(true);
+        let summary = message_summary(&telemetry);
+        assert!(summary.len() < 1024, "{}", summary.len());
+        assert_eq!(summary.split(' ').count(), 17);
+        assert!(summary.contains(&format!("decodeTimings.outputsTotal={}", u64::MAX)));
+        telemetry["decodeTimings"]["private"] = serde_json::json!("secret".repeat(10_000));
+        assert_eq!(message_summary(&telemetry), summary);
     }
 
     #[test]
