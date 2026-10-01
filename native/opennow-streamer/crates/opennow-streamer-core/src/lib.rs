@@ -5496,6 +5496,82 @@ mod tests {
     }
 
     #[test]
+    fn repeated_decode_stall_after_resumed_output_exhausts_session_recovery() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = EventSender::unbounded(sender);
+        let lifecycle = connected_lifecycle();
+        let resources = TestNvstResources::default();
+        let mut recovery_attempts = 0;
+        let mut watchdog = DecodeProgressWatchdog::default();
+        let base = Instant::now();
+        let policy = resources.decode_progress_policy();
+        let mut report = DecodeTimingsReport {
+            call: None,
+            residence: None,
+            call_window_samples: 0,
+            residence_window_samples: 0,
+            submissions_total: 1,
+            outputs_total: 0,
+            output_calls_total: 0,
+            last_submission_at: Some(base),
+            last_output_at: None,
+            in_flight: 1,
+            oldest_in_flight_at: Some(base),
+            epoch: 1,
+            epoch_started_at: Some(base),
+            unmatched_outputs: 0,
+            unmatched_submissions: 0,
+        };
+
+        let mut episode_started_at = base;
+        for episode in 0..2 {
+            let stalled_at = episode_started_at + policy.stall;
+            assert!(matches!(
+                watchdog.poll(&report, false, None, stalled_at, policy),
+                Some(DecodeProgressEvent::KeyframeRequested { .. })
+            ));
+            resources.request_keyframe();
+            let recovery_at = stalled_at + policy.keyframe_grace;
+            assert!(matches!(
+                watchdog.poll(&report, false, None, recovery_at, policy),
+                Some(DecodeProgressEvent::RecoveryNeeded { .. })
+            ));
+            assert_eq!(
+                attempt_nvst_recovery(
+                    &sender,
+                    &lifecycle,
+                    7,
+                    &resources,
+                    &mut recovery_attempts,
+                    "scripted decoder stall".to_owned(),
+                ),
+                episode == 1
+            );
+            if episode == 0 {
+                episode_started_at = recovery_at + Duration::from_secs(1);
+                report.last_output_at = Some(episode_started_at);
+                report.outputs_total = 1;
+                report.oldest_in_flight_at = Some(episode_started_at);
+                assert_eq!(
+                    watchdog.poll(&report, false, None, episode_started_at, policy),
+                    None
+                );
+            }
+        }
+
+        assert_eq!(recovery_attempts, 1);
+        assert_eq!(resources.recoveries.load(Ordering::Relaxed), 1);
+        assert_eq!(resources.stops.load(Ordering::Relaxed), 1);
+        assert_eq!(lock_lifecycle(&lifecycle).state, State::Idle);
+        assert!(lock_lifecycle(&lifecycle).context.is_none());
+        assert!(receiver.try_iter().any(|message| {
+            message["type"] == "status"
+                && message["status"] == "stopped"
+                && message["termination"]["code"] == "nvst-recovery-exhausted"
+        }));
+    }
+
+    #[test]
     fn assembled_keyframe_does_not_reset_recovery_episode_budget() {
         let (sender, _receiver) = std::sync::mpsc::channel();
         let sender = EventSender::unbounded(sender);
