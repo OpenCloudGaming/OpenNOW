@@ -20,10 +20,10 @@ def method(name):
     return source[start:start + 1 + end.start()]
 
 
-methods = [method("func fetchLibraryGames(")]
+methods = [method("func fetchLibraryGames("), method("private func enrichGamesWithMetadata(")]
 if "    private func fetchLibraryPage(" in source:
     methods.append(method("private func fetchLibraryPage("))
-for name in ("searchResultsAsPanelPayload", "flattenPanels", "extractGameMetadata", "extractFeatureLabels", "toOptionalStringArray", "imageURLs", "mergedImageURLs", "formatReleaseDate", "optimizedImageURL", "toOptionalString"):
+for name in ("searchResultsAsPanelPayload", "flattenPanels", "extractGameMetadata", "mergeGameMetadata", "selectedVariant", "launchOptions", "extractFeatureLabels", "toOptionalStringArray", "imageURLs", "mergedImageURLs", "formatReleaseDate", "optimizedImageURL", "toOptionalString"):
     methods.append(method(f"private static func {name}("))
 
 types = []

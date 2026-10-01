@@ -1,4 +1,5 @@
 import AuthenticationServices
+import CoreFoundation
 import CryptoKit
 import Foundation
 import ImageIO
@@ -3424,7 +3425,14 @@ private actor GFNAPIClient {
             }
             if !page.hasNextPage {
                 let games = Self.flattenPanels(payload: Self.searchResultsAsPanelPayload(items))
-                let enriched = (try? await enrichGamesWithMetadata(token: token, vpcId: vpcId, games: games)) ?? games
+                let enriched: [CloudGame]
+                do {
+                    enriched = try await enrichGamesWithMetadata(token: token, vpcId: vpcId, games: games)
+                } catch where OpenNOWErrorPresenter.isCancellation(error) {
+                    throw error
+                } catch {
+                    enriched = games
+                }
                 try Task.checkCancellation()
                 return enriched
             }
@@ -3493,10 +3501,11 @@ private actor GFNAPIClient {
               let items = apps["items"] as? [[String: Any]], items.count <= 100,
               items.allSatisfy({ ($0["id"] as? String)?.isEmpty == false && ($0["title"] as? String) != nil }),
               let pageInfo = apps["pageInfo"] as? [String: Any],
-              let hasNextPage = pageInfo["hasNextPage"] as? Bool else {
+              let hasNextPage = pageInfo["hasNextPage"] as? NSNumber,
+              CFGetTypeID(hasNextPage) == CFBooleanGetTypeID() else {
             throw NSError(domain: "OpenNOW.Library", code: 4, userInfo: [NSLocalizedDescriptionKey: "The library returned an incomplete page. Please retry."])
         }
-        return (items, hasNextPage, pageInfo["endCursor"] as? String)
+        return (items, hasNextPage.boolValue, pageInfo["endCursor"] as? String)
     }
 
     func fetchSubscription(session: AuthSession, vpcId: String) async throws -> SubscriptionSnapshot {
@@ -4958,6 +4967,7 @@ private actor GFNAPIClient {
         let deadline = Date().addingTimeInterval(20)
         let chunkSize = 40
         for start in stride(from: 0, to: appIds.count, by: chunkSize) {
+            try Task.checkCancellation()
             guard Date() < deadline else {
                 logger.warning("Catalog metadata enrichment stopped at its 20-second deadline")
                 break
@@ -4982,6 +4992,8 @@ private actor GFNAPIClient {
                         metadataById[id] = app
                     }
                 }
+            } catch where OpenNOWErrorPresenter.isCancellation(error) {
+                throw error
             } catch {
                 lastError = error
                 logger.warning(

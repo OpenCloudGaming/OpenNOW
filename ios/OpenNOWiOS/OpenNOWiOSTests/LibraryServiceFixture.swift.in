@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
@@ -22,23 +23,40 @@ enum GFNConstants {
 
 struct FixtureFailure: Error {}
 
+enum Privacy { case `public` }
+extension String.StringInterpolation {
+    mutating func appendInterpolation<T>(_ value: T, privacy: Privacy) { appendInterpolation(value) }
+}
+struct Logger { func warning(_ message: String) {} }
+enum OpenNOWErrorPresenter {
+    static func isCancellation(_ error: Error) -> Bool {
+        error is CancellationError || ((error as NSError).domain == NSURLErrorDomain && (error as NSError).code == NSURLErrorCancelled)
+    }
+}
+
 actor GFNAPIClient {
     var requests: [[String: Any]] = []
+    var metadataRequests = 0
+    let logger = Logger()
     var panelRequests = 0
     let pages: [[String: Any]]
     let failAt: Int?
     let status: Int
     let pauseAt: Int?
     let pauseEnrichment: Bool
+    let metadataError: Bool
+    let metadataCancellation: Bool
     var pause: CheckedContinuation<Void, Never>?
     var pauseWaiter: CheckedContinuation<Void, Never>?
 
-    init(pages: [[String: Any]], failAt: Int? = nil, status: Int = 200, pauseAt: Int? = nil, pauseEnrichment: Bool = false) {
+    init(pages: [[String: Any]], failAt: Int? = nil, status: Int = 200, pauseAt: Int? = nil, pauseEnrichment: Bool = false, metadataError: Bool = false, metadataCancellation: Bool = false) {
         self.pages = pages
         self.failAt = failAt
         self.status = status
         self.pauseAt = pauseAt
         self.pauseEnrichment = pauseEnrichment
+        self.metadataError = metadataError
+        self.metadataCancellation = metadataCancellation
     }
 
     __PRODUCTION_METHODS__
@@ -92,9 +110,12 @@ actor GFNAPIClient {
         try JSONSerialization.jsonObject(with: data) as! [String: Any]
     }
 
-    private func enrichGamesWithMetadata(token: String, vpcId: String, games: [CloudGame]) async throws -> [CloudGame] {
-        if pauseEnrichment { await suspend() }
-        return games
+    private func fetchAppMetadataWithRegistryRetry(token: String, appIds: [String], vpcId: String, deadline: Date) async throws -> [String: Any] {
+        metadataRequests += 1
+        if pauseEnrichment && metadataRequests == 1 { await suspend() }
+        if metadataCancellation { throw URLError(.cancelled) }
+        if metadataError { throw FixtureFailure() }
+        return ["data": ["apps": ["items": []]]]
     }
 
 }
@@ -127,7 +148,7 @@ struct LibraryServiceFixture {
     }
 
     static func cancellation(enrichment: Bool) async throws {
-        let api = GFNAPIClient(pages: [page([0], next: false)], pauseAt: enrichment ? nil : 0, pauseEnrichment: enrichment)
+        let api = GFNAPIClient(pages: [page(Array(0..<96), next: false)], pauseAt: enrichment ? nil : 0, pauseEnrichment: enrichment)
         let task = Task { try await api.fetchLibraryGames(session: AuthSession(), vpcId: "fixture-vpc") }
         await api.waitUntilPaused()
         task.cancel()
@@ -136,6 +157,10 @@ struct LibraryServiceFixture {
             _ = try await task.value
             preconditionFailure("Cancelled library refresh returned a snapshot")
         } catch is CancellationError {
+            if enrichment {
+                let requests = await api.metadataRequests
+                precondition(requests == 1)
+            }
             print("PASS: cancellation during \(enrichment ? "metadata" : "page fetch") propagates")
         }
     }
@@ -178,12 +203,30 @@ struct LibraryServiceFixture {
         try await reject([["errors": [["message": "fixture failure"]], "data": page([0], next: false)["data"]!]], name: "GraphQL partial-data error")
         try await reject([["data": ["apps": ["items": [app(0)]]]]], name: "missing pageInfo")
         try await reject([["data": ["apps": ["items": [app(0)], "pageInfo": ["endCursor": "next"]]]]], name: "missing hasNextPage")
+        for value in [0, 1] {
+            try await reject([["data": ["apps": ["items": [app(0)], "pageInfo": ["hasNextPage": value, "endCursor": "next"]]]]], name: "numeric hasNextPage=\(value)")
+        }
         try await reject([["data": ["apps": ["items": [["title": "missing ID"]], "pageInfo": ["hasNextPage": false]]]]], name: "malformed app")
         try await reject([page(Array(0...100), next: false)], name: "oversized item page")
         try await reject([["padding": String(repeating: "x", count: 8 * 1024 * 1024), "data": page([0], next: false)["data"]!]], name: "oversized response")
         try await reject((0..<100).map { page([$0], next: true, cursor: "cursor-\($0)") }, name: "bounded 100-page traversal", expectedRequests: 100)
         try await cancellation(enrichment: false)
         try await cancellation(enrichment: true)
+
+        let failedMetadata = GFNAPIClient(pages: [page([0], next: false)], metadataError: true)
+        let unenriched = try await failedMetadata.fetchLibraryGames(session: AuthSession(), vpcId: "fixture-vpc")
+        precondition(unenriched.map(\.uuid) == ["game-0"])
+        print("PASS: optional metadata failure preserves complete library")
+        let cancelledMetadata = GFNAPIClient(pages: [page(Array(0..<96), next: false)], metadataCancellation: true)
+        do {
+            _ = try await cancelledMetadata.fetchLibraryGames(session: AuthSession(), vpcId: "fixture-vpc")
+            preconditionFailure("Cancelled metadata request returned a snapshot")
+        } catch {
+            precondition(OpenNOWErrorPresenter.isCancellation(error))
+            let requests = await cancelledMetadata.metadataRequests
+            precondition(requests == 1)
+            print("PASS: cancelled metadata request stops at first chunk even without task cancellation")
+        }
 
         let cancelledAPI = GFNAPIClient(pages: [page([0], next: false)])
         let cancelled = Task {
