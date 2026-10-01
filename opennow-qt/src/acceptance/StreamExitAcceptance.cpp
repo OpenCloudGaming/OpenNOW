@@ -21,8 +21,15 @@ int AcceptanceSession::startStreamExitWorkload()
         : qobject_cast<QQuickWindow *>(m_engine.rootObjects().first());
     auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
     if (!window || !store) return EXIT_FAILURE;
-    store->setProperty("streamer", QVariantMap{{u"status"_s, u"streaming"_s}});
-    store->setProperty("streamState", u"streaming"_s);
+    const bool windowClose = m_arguments.contains(u"--smoke-exit-window-close"_s);
+    const auto originalRoute = m_controller.route();
+    const auto originalState = windowClose && originalRoute != u"stream"_s
+        ? (originalRoute == u"inserting"_s ? u"queued"_s : u"idle"_s) : u"streaming"_s;
+    store->setProperty("streamer", QVariantMap{{u"status"_s,
+        originalState == u"streaming"_s ? u"streaming"_s : u"stopped"_s}});
+    store->setProperty("streamState", originalState);
+    if (windowClose && originalRoute != u"home"_s)
+        store->setProperty("activeSession", QVariantMap{{u"sessionId"_s, u"window-close-fixture"_s}, {u"status"_s, 3}});
     const bool fullscreen = m_arguments.contains(u"--smoke-exit-fullscreen"_s);
     if (fullscreen) window->showFullScreen();
     window->requestActivate();
@@ -33,7 +40,7 @@ int AcceptanceSession::startStreamExitWorkload()
     const auto state = std::make_shared<State>();
     auto *timer = new QTimer(this);
     timer->setInterval(150);
-    connect(timer, &QTimer::timeout, this, [this, window, store, fullscreen, state, timer] {
+    connect(timer, &QTimer::timeout, this, [this, window, store, fullscreen, windowClose, originalRoute, originalState, state, timer] {
         const auto require = [this, state, timer](bool ok, const char *message) {
             if (!ok) {
                 qCritical("Stream exit step %d: %s", state->step, message);
@@ -59,10 +66,46 @@ int AcceptanceSession::startStreamExitWorkload()
                         "confirmation or completed exit has the wrong window mode")) return;
         if (state->step == 0)
             state->surface = window->findChild<QQuickItem *>(u"streamSurfaceHost"_s);
-        if (state->step < 6 && !require(state->surface && state->surface->isVisible()
+        if (state->step < 6 && (!windowClose || originalRoute == u"stream"_s)
+                && !require(state->surface && state->surface->isVisible()
                 && window->findChild<QQuickItem *>(u"streamSurfaceHost"_s) == state->surface
                 && m_controller.route() == u"stream"_s,
                 "confirmation recreated or left the stream surface")) return;
+        if (windowClose) {
+            if (!require(store->property("streamState").toString() == originalState
+                    && m_controller.route() == originalRoute,
+                    "window confirmation changed the session or route")) return;
+            switch (state->step++) {
+            case 0:
+            case 2:
+            case 4:
+                if (!require(window->isVisible() && m_controller.overlay().isEmpty()
+                        && (!state->surface || state->surface->property("inputEnabled").toBool()),
+                        "window close or cancellation did not retain the shell and input")) return;
+                if (!require(!window->close(), "native window close bypassed confirmation")) return;
+                break;
+            case 1:
+            case 3:
+            case 5:
+                if (!require(window->isVisible() && m_controller.overlay() == u"application-quit-confirm"_s
+                        && (!state->surface || !state->surface->property("inputEnabled").toBool())
+                        && window->activeFocusItem()
+                        && window->activeFocusItem()->objectName() == u"quitConfirmKeepOpen"_s,
+                        "application confirmation did not retain the window and own input")) return;
+                if (state->step == 2) keyClick(Qt::Key_Space);
+                else if (state->step == 4) keyClick(Qt::Key_Escape);
+                else {
+                    auto *confirmation = window->findChild<QQuickItem *>(u"applicationQuitConfirmation"_s);
+                    if (!require(confirmation && QMetaObject::invokeMethod(confirmation, "confirmRequested"),
+                            "application confirmation action unavailable")) return;
+                    if (!require(!window->isVisible() && window->property("applicationCloseConfirmed").toBool(),
+                            "confirmed native close did not close the window")) return;
+                    timer->stop();
+                }
+                break;
+            }
+            return;
+        }
         switch (state->step++) {
         case 0:
             if (!require(state->surface->property("inputEnabled").toBool(),

@@ -1313,6 +1313,14 @@ if(BUILD_TESTING)
     endforeach()
     foreach(surface desktop console)
         foreach(mode windowed fullscreen)
+            foreach(route stream inserting home)
+                add_test(NAME "qml-window-close-${surface}-${mode}-${route}"
+                    COMMAND opennow-qt --smoke-test --allow-multiple-instances
+                        --${surface} --route ${route} --smoke-stream-exit
+                        --smoke-exit-window-close --smoke-exit-${mode} --reduced-motion)
+                set_tests_properties("qml-window-close-${surface}-${mode}-${route}" PROPERTIES
+                    ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+            endforeach()
             foreach(key return enter tab-space)
                 add_test(NAME "qml-stream-exit-${surface}-${mode}-${key}"
                     COMMAND opennow-qt --smoke-test --allow-multiple-instances
