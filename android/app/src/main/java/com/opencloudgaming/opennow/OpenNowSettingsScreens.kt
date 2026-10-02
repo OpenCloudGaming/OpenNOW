@@ -24,12 +24,17 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -77,6 +82,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
@@ -95,6 +101,7 @@ import com.opencloudgaming.opennow.ui.controls.ControlActionRow
 import com.opencloudgaming.opennow.ui.theme.LocalReduceMotion
 import com.opencloudgaming.opennow.ui.theme.OpenNowMotion
 import com.opencloudgaming.opennow.ui.theme.OpenNowPalette
+import androidx.compose.ui.graphics.Brush
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
@@ -426,7 +433,19 @@ internal fun SettingsScreen(
                 },
             )
         }
-        if (tvProfile) {
+        if (LocalDualScreenTopLayout.current && !tvProfile && searchQuery.isBlank()) {
+            DualScreenSettings(
+                state = state,
+                viewModel = viewModel,
+                controllerFamily = controllerFamily,
+                selectedCategory = selectedCategory,
+                categories = categories,
+                listState = listState,
+                detailFocusRequester = detailFocusRequester,
+                onSelectCategory = { selectedCategory = it },
+                showSessionProxyWarning = { showSessionProxyWarning = true },
+            )
+        } else if (tvProfile) {
             SwipeToRefreshContainer(
                 refreshing = state.settingsRefreshing,
                 onRefresh = viewModel::refreshSettings,
@@ -529,6 +548,295 @@ internal fun SettingsScreen(
                 }
             }
         }
+    }
+}
+
+/**
+ * AYN Tour Settings (boards 11 and 12): the landing is the account card over a two-column category
+ * grid; a category keeps the rail on the left so every page stays one D-pad move away.
+ */
+@Composable
+private fun DualScreenSettings(
+    state: OpenNowUiState,
+    viewModel: OpenNowViewModel,
+    controllerFamily: AndroidControllerFamily?,
+    selectedCategory: SettingsCategory?,
+    categories: List<SettingsCategory>,
+    listState: LazyListState,
+    detailFocusRequester: FocusRequester,
+    onSelectCategory: (SettingsCategory?) -> Unit,
+    showSessionProxyWarning: () -> Unit,
+) {
+    val contentPadding = PaddingValues(start = 14.dp, top = 8.dp, end = 14.dp, bottom = AppScrollEndSpacing)
+    if (selectedCategory == null) {
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            state = listState,
+            contentPadding = contentPadding,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            item { DualSettingsAccountCard(state) { onSelectCategory(SettingsCategory.Account) } }
+            item {
+                AndroidUpdateNoticeRow(
+                    update = state.androidUpdate,
+                    dismissedKey = state.dismissedAndroidUpdateNoticeKey,
+                    onOpenUpdates = { onSelectCategory(SettingsCategory.General) },
+                    onDismiss = viewModel::dismissAndroidUpdateNotice,
+                )
+            }
+            items(categories.filterNot { it == SettingsCategory.Account }.chunked(2)) { pair ->
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    pair.forEach { category ->
+                        DualSettingsCategoryTile(category, Modifier.weight(1f)) { onSelectCategory(category) }
+                    }
+                    if (pair.size == 1) Spacer(Modifier.weight(1f))
+                }
+            }
+        }
+        return
+    }
+    val railCategory = settingsCategoryParent(selectedCategory) ?: selectedCategory
+    Row(
+        Modifier
+            .fillMaxSize()
+            .padding(start = 14.dp, top = 8.dp, end = 14.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Column(
+            Modifier
+                .width(DualSettingsRailWidth)
+                .fillMaxHeight()
+                .padding(bottom = 10.dp)
+                .clip(RoundedCornerShape(20.dp))
+                .background(Color.White.copy(alpha = 0.04f))
+                .border(1.dp, OpenNowPalette.Seam, RoundedCornerShape(20.dp))
+                .verticalScroll(rememberScrollState())
+                .padding(6.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            categories.forEach { category ->
+                DualSettingsRailItem(category, selected = category == railCategory) {
+                    if (category != selectedCategory) onSelectCategory(category)
+                }
+            }
+        }
+        LazyColumn(
+            Modifier.weight(1f).fillMaxHeight(),
+            state = listState,
+            contentPadding = PaddingValues(bottom = AppScrollEndSpacing),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            item {
+                Column {
+                    Text(
+                        stringResource(selectedCategory.titleRes),
+                        color = SettingsText,
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Black,
+                        maxLines = 1,
+                    )
+                    Text(
+                        stringResource(selectedCategory.summaryRes),
+                        color = SettingsTextMuted,
+                        style = MaterialTheme.typography.labelMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            item {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .focusRequester(detailFocusRequester)
+                        .focusGroup(),
+                ) {
+                    val density = LocalDensity.current
+                    // Phone-sized rows read as a list at the Tour's density, like board 12.
+                    CompositionLocalProvider(
+                        LocalDensity provides Density(density.density * DUAL_SETTINGS_CONTENT_SCALE, density.fontScale),
+                    ) {
+                        SettingsContent(
+                            state = state,
+                            viewModel = viewModel,
+                            searchQuery = "",
+                            selectedCategory = selectedCategory,
+                            onSelectCategory = onSelectCategory,
+                            showSessionProxyWarning = showSessionProxyWarning,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private const val DUAL_SETTINGS_CONTENT_SCALE = 0.8f
+
+private val DualSettingsRailWidth = 168.dp
+
+@Composable
+private fun DualSettingsRailItem(category: SettingsCategory, selected: Boolean, onClick: () -> Unit) {
+    var focused by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(14.dp)
+    Box(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .height(38.dp)
+                .clip(shape)
+                .background(if (selected || focused) Color.White.copy(alpha = 0.12f) else Color.Transparent)
+                .onFocusChanged { focused = it.isFocused }
+                .clickable(onClick = onClick)
+                .padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Box(
+                Modifier
+                    .size(6.dp)
+                    .clip(CircleShape)
+                    .background(if (selected) OpenNowPalette.PastelCoral else Color.White.copy(alpha = 0.35f)),
+            )
+            Text(
+                stringResource(category.titleRes),
+                color = if (selected) Color.White else SettingsTextMuted,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = if (selected) FontWeight.Black else FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        FocusRing(visible = focused, cornerRadius = 14.dp)
+    }
+}
+
+@Composable
+private fun DualSettingsAccountCard(state: OpenNowUiState, onClick: () -> Unit) {
+    val user = state.authSession?.user
+    val account = state.savedAccounts.firstOrNull { it.userId == user?.userId } ?: state.savedAccounts.firstOrNull()
+    val displayName = user?.displayName?.takeIf { it.isNotBlank() }
+        ?: account?.displayName?.takeIf { it.isNotBlank() }
+        ?: stringResource(R.string.settings_category_account)
+    val email = user?.email?.takeIf { it.isNotBlank() } ?: account?.email?.takeIf { it.isNotBlank() }
+    val subscription = state.subscriptionInfo
+    val tier = subscription?.membershipTier?.takeIf { it.isNotBlank() } ?: user?.membershipTier ?: account?.membershipTier
+    val hours = when {
+        subscription == null -> null
+        subscription.isUnlimited -> stringResource(R.string.dual_unlimited)
+        else -> stringResource(
+            R.string.dual_hours_left,
+            String.format(java.util.Locale.getDefault(), "%.1f", subscription.remainingHours),
+        )
+    }
+    var focused by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(20.dp)
+    Box(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clip(shape)
+                .background(
+                    Brush.horizontalGradient(
+                        listOf(OpenNowPalette.PastelViolet.copy(alpha = 0.28f), Color.White.copy(alpha = 0.04f)),
+                    ),
+                )
+                .border(1.dp, OpenNowPalette.Seam, shape)
+                .onFocusChanged { focused = it.isFocused }
+                .clickable(onClick = onClick)
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Box(
+                Modifier
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(OpenNowPalette.PastelViolet)
+                    .border(2.dp, Color.White, CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    displayName.first().uppercaseChar().toString(),
+                    color = OpenNowPalette.Background,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Black,
+                )
+            }
+            Column(Modifier.weight(1f)) {
+                Text(displayName, color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Black, maxLines = 1)
+                Text(
+                    listOfNotNull(stringResource(R.string.settings_category_account), email).joinToString(" · "),
+                    color = SettingsTextMuted,
+                    style = MaterialTheme.typography.labelMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (!tier.isNullOrBlank()) {
+                Text(
+                    listOfNotNull(membershipTierLabel(tier), hours).joinToString(" · "),
+                    color = OpenNowPalette.PastelYellow,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Black,
+                    maxLines = 1,
+                )
+            }
+        }
+        FocusRing(visible = focused, cornerRadius = 20.dp)
+    }
+}
+
+@Composable
+private fun DualSettingsCategoryTile(category: SettingsCategory, modifier: Modifier, onClick: () -> Unit) {
+    var focused by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(16.dp)
+    Box(modifier) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .height(58.dp)
+                .clip(shape)
+                .background(Color.White.copy(alpha = if (focused) 0.12f else 0.05f))
+                .onFocusChanged { focused = it.isFocused }
+                .clickable(onClick = onClick)
+                .padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Box(
+                Modifier
+                    .size(34.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(OpenNowPalette.PastelCoral.copy(alpha = 0.16f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(category.icon, contentDescription = null, tint = OpenNowPalette.PastelCoral, modifier = Modifier.size(18.dp))
+            }
+            Column(Modifier.weight(1f)) {
+                Text(
+                    stringResource(category.titleRes),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Black,
+                    maxLines = 1,
+                )
+                Text(
+                    stringResource(category.summaryRes),
+                    color = SettingsTextMuted,
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Icon(
+                painter = painterResource(R.drawable.ic_chevron_right),
+                contentDescription = null,
+                tint = SettingsTextMuted,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+        FocusRing(visible = focused, cornerRadius = 16.dp)
     }
 }
 

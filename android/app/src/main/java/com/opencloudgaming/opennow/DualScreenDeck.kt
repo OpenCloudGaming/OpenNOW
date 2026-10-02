@@ -14,6 +14,8 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -34,6 +36,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Backspace
 import androidx.compose.material.icons.automirrored.rounded.KeyboardReturn
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.GridView
 import androidx.compose.material.icons.rounded.Keyboard
@@ -82,7 +85,10 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalViewConfiguration
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -195,14 +201,31 @@ private fun HomeDeck(snapshot: DualScreenSnapshot, onAction: (DualScreenAction) 
         draft = next
         onAction(DualScreenAction.Search(next))
     }
+    var sortFilterOpen by remember(snapshot.page) { mutableStateOf(false) }
+    val activeFilters = if (libraryPage) snapshot.libraryFilterIds.size else snapshot.catalogFilterIds.size
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        SearchField(
-            query = query,
-            hint = stringResource(if (libraryPage) R.string.dual_search_library_hint else R.string.dual_search_store_hint),
-            active = typing,
-            onTap = { typing = !typing },
-            onClear = { search("") },
-        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            SearchField(
+                query = query,
+                hint = stringResource(if (libraryPage) R.string.dual_search_library_hint else R.string.dual_search_store_hint),
+                active = typing,
+                onTap = {
+                    sortFilterOpen = false
+                    typing = !typing
+                },
+                onClear = { search("") },
+                modifier = Modifier.weight(1f),
+            )
+            SortFilterButton(activeCount = activeFilters, open = sortFilterOpen) {
+                typing = false
+                sortFilterOpen = !sortFilterOpen
+            }
+        }
+        if (sortFilterOpen) {
+            SortFilterPanel(snapshot, Modifier.weight(1f), onAction)
+            DeckTabBar(snapshot.page, onSearch = { typing = true }, onAction = onAction)
+            return@Column
+        }
         if (typing) {
             DeckKeyboard(
                 modifier = Modifier.weight(1f),
@@ -235,6 +258,128 @@ private fun HomeDeck(snapshot: DualScreenSnapshot, onAction: (DualScreenAction) 
             RigCard(snapshot, Modifier.weight(1f).fillMaxHeight())
         }
         DeckTabBar(snapshot.page, onSearch = { typing = true }, onAction = onAction)
+    }
+}
+
+// Sort and filter (board 06): the whole surface lives here so the top screen stays art only. --
+
+@Composable
+private fun SortFilterButton(activeCount: Int, open: Boolean, onClick: () -> Unit) {
+    val label = if (activeCount == 0) {
+        stringResource(R.string.catalog_sort_filter)
+    } else {
+        stringResource(R.string.catalog_sort_filter_active, activeCount)
+    }
+    Box(
+        Modifier
+            .size(44.dp)
+            .clip(CircleShape)
+            .background(if (open) Color.White else Color.White.copy(alpha = 0.08f))
+            .border(1.dp, if (open) Color.Transparent else DeckSeam, CircleShape)
+            .semantics { contentDescription = label }
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            painter = painterResource(R.drawable.ic_sort_filter),
+            contentDescription = null,
+            tint = if (open) DeckBackground else Color.White,
+            modifier = Modifier.size(20.dp),
+        )
+        if (activeCount > 0) {
+            Box(
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .size(16.dp)
+                    .clip(CircleShape)
+                    .background(DeckSky),
+                contentAlignment = Alignment.Center,
+            ) {
+                DeckText(activeCount.toString(), 9.sp, FontWeight.Black, DeckBackground)
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun SortFilterPanel(snapshot: DualScreenSnapshot, modifier: Modifier, onAction: (DualScreenAction) -> Unit) {
+    val libraryPage = snapshot.page == AppPage.Library
+    val sortOptions = if (libraryPage) {
+        librarySortOptions()
+    } else {
+        snapshot.catalogSortOptions.distinctBy { it.id }.ifEmpty {
+            listOf(CatalogSortOption(DEFAULT_CATALOG_SORT_ID, stringResource(R.string.catalog_sort_popular), ""))
+        }
+    }
+    val selectedSort = if (libraryPage) snapshot.librarySortId else snapshot.catalogSortId
+    val selectedFilters = if (libraryPage) snapshot.libraryFilterIds else snapshot.catalogFilterIds
+    val touchLabel = stringResource(R.string.catalog_filter_touch_controls)
+    val filterOptions = if (libraryPage) {
+        remember(snapshot.libraryGames, touchLabel) { libraryStoreFilterOptions(snapshot.libraryGames, touchLabel) }
+    } else {
+        rememberCatalogFilterOptions(snapshot.catalogFilterGroups)
+    }
+    Column(
+        modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .background(DeckTile)
+            .border(1.dp, DeckSeam, RoundedCornerShape(20.dp))
+            .verticalScroll(rememberScrollState())
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            DeckText(stringResource(R.string.catalog_sort_filter), 18.sp, FontWeight.Black, modifier = Modifier.weight(1f))
+            if (selectedFilters.isNotEmpty()) {
+                SmallPill(stringResource(R.string.dual_filters_reset, selectedFilters.size)) {
+                    onAction(DualScreenAction.ClearFilters)
+                }
+            }
+        }
+        SectionLabel(stringResource(R.string.catalog_sort_section))
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            sortOptions.forEach { option ->
+                DeckChip(
+                    label = catalogSortDisplayLabel(option.id, option.label),
+                    selected = option.id == selectedSort,
+                    selectedColor = Color.White,
+                ) {
+                    onAction(DualScreenAction.SetSort(option.id))
+                }
+            }
+        }
+        filterOptions.groupBy { it.groupLabel }.forEach { (group, options) ->
+            SectionLabel("${stringResource(R.string.catalog_filter_section)} · $group")
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                options.forEach { option ->
+                    DeckChip(label = option.label, selected = option.id in selectedFilters, selectedColor = DeckSky, check = true) {
+                        onAction(DualScreenAction.ToggleFilter(option.id))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DeckChip(label: String, selected: Boolean, selectedColor: Color, check: Boolean = false, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .height(38.dp)
+            .clip(CircleShape)
+            .background(if (selected) selectedColor else Color.White.copy(alpha = 0.06f))
+            .border(1.dp, if (selected) Color.Transparent else DeckSeam, CircleShape)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (selected && check) {
+            Icon(Icons.Rounded.Check, contentDescription = null, tint = DeckBackground, modifier = Modifier.size(14.dp))
+            Spacer(Modifier.width(4.dp))
+        }
+        DeckText(label, 13.sp, FontWeight.Black, if (selected) DeckBackground else Color.White, maxLines = 1)
     }
 }
 
@@ -291,7 +436,7 @@ private fun RigCard(snapshot: DualScreenSnapshot, modifier: Modifier) {
             }
             DeckText(name, 14.sp, FontWeight.Black, maxLines = 1)
         }
-        RigLine(DeckYellow, stringResource(R.string.dual_rig_plan), tierLabel(snapshot.membershipTier), hoursLabel(snapshot))
+        RigLine(DeckYellow, stringResource(R.string.dual_rig_plan), membershipTierLabel(snapshot.membershipTier), hoursLabel(snapshot))
         RigLine(
             DeckMint,
             stringResource(R.string.dual_rig_region),
@@ -313,9 +458,6 @@ private fun RigLine(dot: Color, label: String, value: String, detail: String?) {
     }
 }
 
-private fun tierLabel(tier: String?): String =
-    tier?.lowercase(Locale.getDefault())?.replaceFirstChar { it.titlecase(Locale.getDefault()) } ?: "–"
-
 @Composable
 private fun hoursLabel(snapshot: DualScreenSnapshot): String? = when {
     snapshot.unlimitedHours -> stringResource(R.string.dual_unlimited)
@@ -327,10 +469,16 @@ private fun hoursLabel(snapshot: DualScreenSnapshot): String? = when {
 }
 
 @Composable
-private fun SearchField(query: String, hint: String, active: Boolean, onTap: () -> Unit, onClear: () -> Unit) {
+private fun SearchField(
+    query: String,
+    hint: String,
+    active: Boolean,
+    onTap: () -> Unit,
+    onClear: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     Row(
-        Modifier
-            .fillMaxWidth()
+        modifier
             .height(44.dp)
             .clip(CircleShape)
             .background(Color.White.copy(alpha = if (active) 0.10f else 0.08f))
