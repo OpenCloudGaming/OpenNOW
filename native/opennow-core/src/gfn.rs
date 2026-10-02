@@ -846,12 +846,13 @@ impl GfnService {
             } else {
                 PersistenceIntent::MemoryOnly
             };
-            state.persistence_state = if persist && self.vault.save(&session).is_ok() {
-                "secure-store"
-            } else {
-                if !persist {
-                    let _ = self.vault.remove(&session.user.user_id);
+            state.persistence_state = if persist {
+                match self.vault.save(&session) {
+                    Ok(()) => self.vault.persistence_state(&session),
+                    Err(_) => self.vault.failed_save_state(&session),
                 }
+            } else {
+                let _ = self.vault.remove(&session.user.user_id);
                 "memory-only"
             }
             .into();
@@ -937,17 +938,11 @@ impl GfnService {
                 match self.vault.load_active() {
                     Ok(session) => {
                         let mut state = self.state.lock().expect("GFN state poisoned");
-                        state.persistence_state = if session
+                        state.persistence_state = session
                             .as_ref()
-                            .is_some_and(|session| self.vault.durable(session))
-                        {
-                            "secure-store"
-                        } else if session.is_some() {
-                            "migration-pending"
-                        } else {
-                            "none"
-                        }
-                        .to_owned();
+                            .map(|session| self.vault.persistence_state(session))
+                            .unwrap_or("none")
+                            .to_owned();
                         state.persistence_intent = PersistenceIntent::SecureStore;
                         state.generation += 1;
                         state.session = session;
@@ -1212,8 +1207,7 @@ impl GfnService {
         let next = self.vault.load_active().ok().flatten();
         let mut state = self.state.lock().expect("GFN state poisoned");
         state.persistence_state = match &next {
-            Some(session) if self.vault.durable(session) => "secure-store",
-            Some(_) => "migration-pending",
+            Some(session) => self.vault.persistence_state(session),
             None => "none",
         }
         .into();
@@ -1340,12 +1334,7 @@ impl GfnService {
             })?;
         {
             let mut state = self.state.lock().expect("GFN state poisoned");
-            state.persistence_state = if self.vault.durable(&session) {
-                "secure-store"
-            } else {
-                "migration-pending"
-            }
-            .to_owned();
+            state.persistence_state = self.vault.persistence_state(&session).to_owned();
             state.persistence_intent = PersistenceIntent::SecureStore;
             state.session = Some(session);
         }
@@ -2733,10 +2722,10 @@ impl GfnService {
         };
         let persistence = if persist {
             match self.vault.save(&session) {
-                Ok(()) => "secure-store",
+                Ok(()) => self.vault.persistence_state(&session),
                 Err(error) => {
-                    eprintln!("auth: refreshed session remains memory-only: {error}");
-                    "memory-only"
+                    eprintln!("auth: refreshed session persistence failed: {error}");
+                    self.vault.failed_save_state(&session)
                 }
             }
         } else {
@@ -3763,6 +3752,101 @@ pub(crate) mod tests {
                 .is_ok()
         );
         std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn partial_json_login_and_refresh_keep_plaintext_warning_and_hide_tokens() {
+        let (mut service, path) = test_service("http://127.0.0.1:1");
+        service.vault = CredentialVault::without_os_store(path.clone());
+        std::fs::create_dir_all(path.join("accounts.json.tmp")).unwrap();
+        let session = auth_fixture("user");
+        service
+            .state
+            .lock()
+            .unwrap()
+            .attempts
+            .insert("login".into(), pending_attempt(Some(session.clone())));
+        let response = service
+            .complete_device_login(&json!({"attemptId":"login","staySignedIn":true}))
+            .unwrap();
+        assert_eq!(response["persistence"], "local-file");
+        assert!(!response["warnings"].as_array().unwrap().is_empty());
+        assert_public_auth(&response);
+        assert!(service.vault.durable(&session));
+        assert!(!path.join("accounts.json").exists());
+
+        let mut renewed = auth_fixture("user");
+        renewed.tokens.refresh_token = Some("renewed-private-refresh-sentinel".into());
+        service.store_refreshed_session(renewed.clone()).unwrap();
+        let refreshed = service.session().unwrap();
+        assert_eq!(refreshed["persistence"], "local-file");
+        assert!(!refreshed["warnings"].as_array().unwrap().is_empty());
+        assert_public_auth(&refreshed);
+        assert!(
+            !refreshed
+                .to_string()
+                .contains("renewed-private-refresh-sentinel")
+        );
+        assert!(service.vault.durable(&renewed));
+        assert_eq!(
+            service
+                .vault
+                .load("user")
+                .unwrap()
+                .unwrap()
+                .tokens
+                .refresh_token,
+            renewed.tokens.refresh_token
+        );
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn unavailable_vault_keeps_temporary_login_and_refresh_out_of_json() {
+        for previously_saved in [false, true] {
+            let (mut service, path) = test_service("http://127.0.0.1:1");
+            service.vault = CredentialVault::without_os_store(path.clone());
+            if previously_saved {
+                service.vault.save(&auth_fixture("user")).unwrap();
+                assert_eq!(
+                    std::fs::read_dir(path.join("fallback-sessions"))
+                        .unwrap()
+                        .count(),
+                    1
+                );
+            }
+            service
+                .state
+                .lock()
+                .unwrap()
+                .attempts
+                .insert("login".into(), pending_attempt(Some(auth_fixture("user"))));
+            let response = service
+                .complete_device_login(&json!({"attemptId":"login","staySignedIn":false}))
+                .unwrap();
+            assert_eq!(response["persistence"], "memory-only");
+            assert_public_auth(&response);
+            service
+                .store_refreshed_session(auth_fixture("user"))
+                .unwrap();
+            let refreshed = service.session().unwrap();
+            assert_eq!(refreshed["persistence"], "memory-only");
+            assert_public_auth(&refreshed);
+            if previously_saved {
+                assert_eq!(
+                    std::fs::read_dir(path.join("fallback-sessions"))
+                        .unwrap()
+                        .count(),
+                    0
+                );
+            } else {
+                assert!(!path.join("fallback-sessions").exists());
+            }
+            let reopened = CredentialVault::without_os_store(path.clone());
+            assert!(reopened.load("user").unwrap().is_none());
+            assert!(reopened.load_active().unwrap().is_none());
+            std::fs::remove_dir_all(path).unwrap();
+        }
     }
 
     #[test]

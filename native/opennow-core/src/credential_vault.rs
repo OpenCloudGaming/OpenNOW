@@ -9,6 +9,7 @@ use std::sync::Mutex;
 
 #[cfg(any(windows, test))]
 mod encrypted_secret_store;
+mod json_secret_store;
 
 const SERVICE_NAME: &str = "app.opennow.auth";
 #[cfg(windows)]
@@ -56,6 +57,9 @@ trait SecretStore: Send + Sync {
     fn get(&self, user_id: &str) -> Result<Option<String>, String>;
     fn set(&self, user_id: &str, encoded: &str) -> Result<(), String>;
     fn delete(&self, user_id: &str) -> Result<(), String>;
+    fn is_plaintext(&self, _user_id: &str) -> bool {
+        false
+    }
 }
 
 struct OsSecretStore {
@@ -92,24 +96,46 @@ impl CredentialVault {
         vault.store = Box::<MemorySecretStore>::default();
         vault
     }
+
+    #[cfg(test)]
+    pub(crate) fn without_os_store(data_dir: PathBuf) -> Self {
+        Self::with_store(
+            data_dir,
+            Box::new(MemorySecretStore {
+                unavailable: true,
+                ..Default::default()
+            }),
+        )
+    }
     pub fn new(data_dir: PathBuf) -> Self {
-        Self {
-            metadata_path: data_dir.join("accounts.json"),
-            #[cfg(windows)]
-            store: Box::new(encrypted_secret_store::EncryptedSecretStore::new(
-                data_dir.join("secure-sessions"),
-                Box::new(OsSecretStore {
-                    service: KEY_SERVICE_NAME,
-                }),
-                Box::new(OsSecretStore {
-                    service: SERVICE_NAME,
-                }),
-            )),
-            #[cfg(not(windows))]
-            store: Box::new(OsSecretStore {
+        #[cfg(windows)]
+        let store = Box::new(encrypted_secret_store::EncryptedSecretStore::new(
+            data_dir.join("secure-sessions"),
+            Box::new(OsSecretStore {
+                service: KEY_SERVICE_NAME,
+            }),
+            Box::new(OsSecretStore {
                 service: SERVICE_NAME,
             }),
-            warnings: Mutex::new(std::collections::BTreeMap::new()),
+        ));
+        #[cfg(not(windows))]
+        let store = Box::new(OsSecretStore {
+            service: SERVICE_NAME,
+        });
+        Self::with_store(data_dir, store)
+    }
+
+    fn with_store(data_dir: PathBuf, store: Box<dyn SecretStore>) -> Self {
+        let store =
+            json_secret_store::JsonFallbackStore::new(data_dir.join("fallback-sessions"), store);
+        let mut warnings = std::collections::BTreeMap::new();
+        if let Err(error) = store.cleanup_temporary_files() {
+            warnings.insert("cleanup:local-temporary-files".into(), error);
+        }
+        Self {
+            metadata_path: data_dir.join("accounts.json"),
+            store: Box::new(store),
+            warnings: Mutex::new(warnings),
             suppressed: Mutex::new(Vec::new()),
         }
     }
@@ -140,8 +166,12 @@ impl CredentialVault {
         } else {
             metadata.accounts.push(identity);
         }
-        self.write_metadata(&metadata)
-            .map_err(|error| format!("Could not save account metadata: {error}"))?;
+        if let Err(error) = self.write_metadata(&metadata) {
+            self.warn(format!("persistence:{}", session.user.user_id),
+                "Session credentials were saved, but the account list could not be updated. Restoring this account may fail.".into());
+            return Err(format!("Could not save account metadata: {error}"));
+        }
+        self.clear_warning(&format!("persistence:{}", session.user.user_id));
         self.suppressed
             .lock()
             .expect("vault suppression poisoned")
@@ -334,6 +364,24 @@ impl CredentialVault {
             .is_some_and(|encoded| serde_json::to_string(session).ok().as_deref() == Some(&encoded))
     }
 
+    pub fn persistence_state(&self, session: &AuthSession) -> &'static str {
+        if !self.durable(session) {
+            "migration-pending"
+        } else if self.store.is_plaintext(&session.user.user_id) {
+            "local-file"
+        } else {
+            "secure-store"
+        }
+    }
+
+    pub fn failed_save_state(&self, session: &AuthSession) -> &'static str {
+        if self.store.is_plaintext(&session.user.user_id) {
+            "local-file"
+        } else {
+            "memory-only"
+        }
+    }
+
     pub fn warnings(&self) -> Vec<String> {
         self.warnings
             .lock()
@@ -410,6 +458,7 @@ impl CredentialVault {
         let secret = self.store.delete(user_id);
         let legacy = self.remove_session_file(user_id);
         let result = suppression.and(secret).and(legacy);
+        self.clear_warning(&format!("persistence:{user_id}"));
         if result.is_err() {
             self.warn(
                 format!("cleanup:{user_id}"),
@@ -749,6 +798,35 @@ fn write_private_file(path: &Path, data: &[u8]) -> io::Result<()> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn unavailable_vault_persists_and_restores_json_after_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let unavailable = || {
+            Box::new(MemorySecretStore {
+                unavailable: true,
+                ..Default::default()
+            }) as Box<dyn SecretStore>
+        };
+        let vault = CredentialVault::with_store(directory.path().into(), unavailable());
+        let session = sample_session("fallback-user");
+        vault.save(&session).unwrap();
+        drop(vault);
+        let restored = CredentialVault::with_store(directory.path().into(), unavailable());
+        assert_eq!(
+            restored.load_active().unwrap().unwrap().user.user_id,
+            "fallback-user"
+        );
+        assert!(restored.durable(&session));
+        assert!(restored.remove("fallback-user").is_err());
+        drop(restored);
+        assert!(
+            CredentialVault::with_store(directory.path().into(), unavailable())
+                .load_active()
+                .unwrap()
+                .is_none()
+        );
+    }
 
     #[test]
     fn secure_restore_survives_failed_legacy_cleanup_and_retries() {

@@ -92,6 +92,30 @@ class EmbeddedOrchestrationTest final : public QObject
     Q_OBJECT
 
 private slots:
+    void localFilePersistenceWarnsAboutUnencryptedTokens()
+    {
+        const auto shell = source(QStringLiteral("qml/state/ShellStore.qml"));
+        const auto match = QRegularExpression(QStringLiteral(
+            "    readonly property string sessionPersistenceMessage: (\\{.*?\\n    \\})"),
+            QRegularExpression::DotMatchesEverythingOption).match(shell);
+        QVERIFY(match.hasMatch());
+        QJSEngine engine;
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            var sessionPersistence = 'local-file', authWarnings = [];
+            function qsTr(text) {return text;}
+        )JS")).isError());
+        QVERIFY(!engine.evaluate(QStringLiteral("function persistenceMessage() ") + match.captured(1)).isError());
+        const auto warning = QStringLiteral("Your session tokens are saved unencrypted on disk because the OS keychain is unavailable. Anyone who can read this file can access your account.");
+        QCOMPARE(engine.evaluate(QStringLiteral("persistenceMessage()")).toString(), warning);
+        QCOMPARE(engine.evaluate(QStringLiteral("authWarnings = ['cleanup pending']; persistenceMessage()")).toString(), warning);
+        QCOMPARE(engine.evaluate(QStringLiteral("authWarnings = []; sessionPersistence = 'secure-store'; persistenceMessage()")).toString(), QString());
+        QCOMPARE(engine.evaluate(QStringLiteral("sessionPersistence = 'memory-only'; persistenceMessage()")).toString(),
+            QStringLiteral("This session is memory-only and will not last after you quit."));
+        const auto signIn = source(QStringLiteral("qml/desktop/auth/DesktopSignInScreen.qml"));
+        QCOMPARE(signIn.count(QStringLiteral("OpenNOW prefers the OS keychain for saved session tokens. If it is unavailable, tokens are saved unencrypted on disk.")), 2);
+        QVERIFY(!signIn.contains(QStringLiteral("The refresh token is encrypted with the OS keychain.")));
+    }
+
     void providerRpcFailureOffersBoundedAndManualRecovery()
     {
         QJSEngine engine;

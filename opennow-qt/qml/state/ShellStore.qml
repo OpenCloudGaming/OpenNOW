@@ -773,8 +773,10 @@ QtObject {
     readonly property int streamerRecoveryCount: streamerRestartRecoveryCount
         + Number(streamer && streamer.deviceRecoveryCount || 0)
     readonly property string sessionPersistenceMessage: {
+        if (sessionPersistence === "local-file")
+            return qsTr("Your session tokens are saved unencrypted on disk because the OS keychain is unavailable. Anyone who can read this file can access your account.")
         if (sessionPersistence === "unavailable")
-            return qsTr("Your system credential store is unavailable. Unlock it and restart OpenNOW, or sign in for a memory-only session.")
+            return qsTr("Your saved session could not be restored. Unlock your OS keychain and restart OpenNOW, or sign in again.")
         if (sessionPersistence === "memory-only")
             return qsTr("This session is memory-only and will not last after you quit.")
         if (sessionPersistence === "migration-pending")

@@ -213,7 +213,7 @@ FocusScope {
             HeaderLink {
                 text: qsTr("Privacy")
                 explanation: qsTr("OpenNOW never sees your password. Sign-in happens on your provider's own page and only a session token comes back.")
-                    + "\n\n" + qsTr("The refresh token is encrypted with the OS keychain.")
+                    + "\n\n" + qsTr("OpenNOW prefers the OS keychain for saved session tokens. If it is unavailable, tokens are saved unencrypted on disk.")
             }
         }
     }
@@ -421,7 +421,7 @@ FocusScope {
                                 anchors.verticalCenter: parent.verticalCenter
                                 spacing: DesktopTokens.px(2)
                                 BodyText { width: parent.width; text: qsTr("Stay signed in on this PC"); color: DesktopTokens.text; font.weight: Font.ExtraBold; lineHeight: DesktopTokens.px(17) }
-                                BodyText { width: parent.width; text: qsTr("The refresh token is encrypted with the OS keychain."); color: root.mutedInk; font.pixelSize: DesktopTokens.px(12); lineHeight: DesktopTokens.px(16) }
+                                BodyText { width: parent.width; text: qsTr("OpenNOW prefers the OS keychain for saved session tokens. If it is unavailable, tokens are saved unencrypted on disk."); color: root.mutedInk; font.pixelSize: DesktopTokens.px(12); lineHeight: DesktopTokens.px(16) }
                             }
                             Rectangle {
                                 anchors.right: parent.right

@@ -50,6 +50,7 @@ _tmp-*
 # Sensitive data
 *.tokens.json
 gfn_tokens.json
+fallback-sessions/
 
 # Test files
 test/

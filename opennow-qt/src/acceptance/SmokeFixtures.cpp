@@ -53,7 +53,7 @@ int AcceptanceSession::prepareWindow()
         if (persistenceIndex >= 0) {
             if (persistenceIndex + 1 >= m_arguments.size()) return EXIT_FAILURE;
             const auto persistence = m_arguments.at(persistenceIndex + 1);
-            if (persistence != u"memory-only"_s && persistence != u"migration-pending"_s
+            if (persistence != u"local-file"_s && persistence != u"memory-only"_s && persistence != u"migration-pending"_s
                     && persistence != u"unavailable"_s) return EXIT_FAILURE;
             auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
             if (!store) return EXIT_FAILURE;

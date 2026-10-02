@@ -1146,7 +1146,7 @@ if(BUILD_TESTING)
                 ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT ${OPENNOW_QT_SMOKE_TIMEOUT})
         endforeach()
     endforeach()
-    foreach(persistence memory-only migration-pending unavailable)
+    foreach(persistence local-file memory-only migration-pending unavailable)
         add_test(NAME "qml-auth-persistence-${persistence}"
             COMMAND opennow-qt --smoke-test --allow-multiple-instances
                 --desktop --route sign-in --reduced-motion --smoke-width 960 --smoke-height 640

@@ -168,6 +168,9 @@
   },
   "credentialPersistence": {
     "migrationPending": "Secure account migration is pending. Unlock your system credential store and restart OpenNOW.",
+    "localFilePersistence": "Your session tokens are saved unencrypted on disk because the OS keychain is unavailable. Anyone who can read this file can access your account.",
+    "savedSessionStorage": "OpenNOW prefers the OS keychain for saved session tokens. If it is unavailable, tokens are saved unencrypted on disk.",
+    "restoreUnavailable": "Your saved session could not be restored. Unlock your OS keychain and restart OpenNOW, or sign in again.",
     "cleanupPending": "Account credential cleanup is pending. Your saved data has been retained for recovery."
   },
   "sessionSetupProgress": {

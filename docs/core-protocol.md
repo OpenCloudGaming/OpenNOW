@@ -143,22 +143,37 @@ Once the fence is entered, completion is committed under auth ownership; cancell
 its response does not undo that login. The shell reconciles such cancellation with
 `auth.session.get`. Logout or account replacement invalidates pending login/link work.
 
-Persistence intent is independent of outcome. `secure-store` means the session was
-written to and verified in the OS credential store and its nonsecret index committed.
+Persistence intent is independent of outcome. Persistent sessions prefer the OS
+credential store on every desktop platform, including Windows. `secure-store` means
+the session was written to and verified in that store and its nonsecret index committed.
+`local-file` means session tokens are saved in unencrypted JSON because the OS store
+is unavailable. The per-account file is under
+`data_dir/fallback-sessions/<sha256 user>.json`, with private file access permissions.
+Those permissions do not encrypt the tokens. The shell warns that anyone who can read
+the file can access the account. Fallback reads take priority over stale OS-store entries.
+The next successful secure save verifies the OS-store entry before removing the JSON
+fallback.
+If the account-index commit fails after JSON is written, persistence remains
+`local-file` and warnings report that account restoration may fail. Interrupted
+JSON temporary files are removed on startup and during account cleanup.
+
 `memory-only` never writes a plaintext credential fallback. `migration-pending` means
-a recoverable legacy source remains because secure migration could not finish.
-`unavailable` means restoration failed; warnings identify deferred cleanup without
-containing credentials. An explicitly temporary login suppresses automatic restoration
-of older saved grants for that identity. Legacy sources are removed only after verified
-secure persistence and metadata commit, or explicit account removal. This is file
-cleanup, not guaranteed secure erasure of backups or snapshots.
+a recoverable legacy source remains because migration could not finish. `unavailable`
+means restoration failed. Warnings identify deferred cleanup without containing
+credentials, and the auth envelope never includes tokens. An explicitly temporary
+login suppresses automatic restoration of older saved grants for that identity.
+Legacy sources are removed only after verified persistence and metadata commit, or
+explicit account removal. This is file cleanup, not guaranteed secure erasure of
+backups or snapshots.
 
 Logout always ends local auth ownership and reports `remoteRevoke` separately from
 `localCleanup`. Revocation is best-effort DELETE of the selected client grant with an
 access bearer; all-account revocation has a five-second total network budget. Failed
 local deletion remains suppressed in the nonsecret account index and is retried on
-startup. A metadata write failure reports pending cleanup and cannot guarantee that
-suppression survives restart. Logout still selects the next saved account when available.
+startup. Logout removes the JSON fallback even if the OS store remains inaccessible;
+deferred OS-store cleanup keeps the existing suppression semantics. A metadata write
+failure reports pending cleanup and cannot guarantee that suppression survives restart.
+Logout still selects the next saved account when available.
 
 The core persists one versioned 64-hex device identity. Upgrades freeze the previously
 derived identity using the current environment; if that environment changed before the
