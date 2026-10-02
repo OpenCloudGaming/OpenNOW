@@ -19,6 +19,10 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
@@ -73,14 +77,38 @@ internal fun SettingSwitch(
     indentLevel: Int = 0,
     onCheckedChange: (Boolean) -> Unit,
 ) {
-    ControlSwitchRow(
-        label = label,
-        checked = checked,
-        onCheckedChange = onCheckedChange,
-        description = description,
-        enabled = enabled,
-        indentLevel = indentLevel,
-    )
+    InspectableSetting(SettingInspection.Switch(label, description, checked, enabled, onCheckedChange)) {
+        ControlSwitchRow(
+            label = label,
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            description = description,
+            enabled = enabled,
+            indentLevel = indentLevel,
+        )
+    }
+}
+
+/**
+ * Publishes a large touch version of a setting to the bottom screen while the setting holds
+ * controller focus on the top screen. Single-screen devices simply never read it.
+ */
+@Composable
+private fun InspectableSetting(inspection: SettingInspection, content: @Composable () -> Unit) {
+    val owner = remember { Any() }
+    var focused by remember { mutableStateOf(false) }
+    Box(Modifier.fillMaxWidth().onFocusChanged { focused = it.hasFocus }) {
+        content()
+    }
+    if (focused) {
+        SideEffect { DualScreenBridge.inspect(owner, inspection) }
+    }
+    LaunchedEffect(focused) {
+        if (!focused) DualScreenBridge.clearInspection(owner)
+    }
+    DisposableEffect(owner) {
+        onDispose { DualScreenBridge.clearInspection(owner) }
+    }
 }
 
 @Composable
@@ -157,18 +185,30 @@ internal fun NumberSlider(
     descriptionProvider: ((Float) -> String?)? = null,
     onChange: (Float) -> Unit,
 ) {
-    ControlSliderRow(
+    val inspection = SettingInspection.Slider(
         label = label,
+        description = descriptionProvider?.invoke(value) ?: description,
         value = value,
         min = min,
         max = max,
         step = step,
+        valueText = formatSliderValue(value, min, max, step, unit, valueFormatter),
         onChange = onChange,
-        unit = unit,
-        valueFormatter = valueFormatter,
-        description = description,
-        descriptionProvider = descriptionProvider,
     )
+    InspectableSetting(inspection) {
+        ControlSliderRow(
+            label = label,
+            value = value,
+            min = min,
+            max = max,
+            step = step,
+            onChange = onChange,
+            unit = unit,
+            valueFormatter = valueFormatter,
+            description = description,
+            descriptionProvider = descriptionProvider,
+        )
+    }
 }
 
 @Composable
@@ -207,6 +247,7 @@ internal fun ChoiceMenuRow(
     BackHandler(enabled = expanded) { expanded = false }
     val autoLabel = stringResource(R.string.option_auto)
     // Outer chrome comes from the shared row; the dropdown body below is specific to this control.
+    InspectableSetting(SettingInspection.Choice(label, description, options, selectedLabel.ifBlank { autoLabel }, onSelect)) {
     ControlRow(onClick = { expanded = true }) {
         ControlRowLabels(
             label = label,
@@ -295,6 +336,7 @@ internal fun ChoiceMenuRow(
             }
         }
     }
+}
 }
 
 @Composable

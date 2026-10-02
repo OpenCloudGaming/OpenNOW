@@ -933,6 +933,19 @@
     "dual_right_click": "Right click",
     "dual_key_space": "space",
     "dual_key_enter": "Enter",
-    "dual_wake_hint": "Bottom screen is off. Tap to wake it."
+    "dual_wake_hint": "Bottom screen is off. Tap to wake it.",
+    "dual_play": "Play",
+    "dual_play_hold_hint": "Hold to choose a store",
+    "dual_choose_store": "Choose store",
+    "dual_favorite": "Favorite",
+    "dual_favorited": "Saved",
+    "dual_close": "Close",
+    "dual_detail_publisher": "Publisher",
+    "dual_detail_membership": "Membership",
+    "dual_detail_stores": "Stores",
+    "dual_settings_hint_title": "Move to a setting on the top screen",
+    "dual_settings_hint_body": "Its controls show up here as big touch targets.",
+    "dual_switch_on": "On",
+    "dual_switch_off": "Off"
   }
 }

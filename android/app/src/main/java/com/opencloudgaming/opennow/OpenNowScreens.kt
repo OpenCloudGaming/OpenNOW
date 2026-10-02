@@ -913,6 +913,7 @@ private fun MainShell(
     val context = LocalContext.current
     val inStream = state.page == AppPage.Stream
     val streamingActive = inStream && state.streamStatus != "idle"
+    val bottomScreenHosting = rememberBottomScreenHosting(state.settings)
     val modalPickerOpen = state.pendingPrintedWasteGame != null ||
         state.pendingStoreChoiceGame != null ||
         state.pendingMembershipNotice != null ||
@@ -1359,6 +1360,10 @@ private fun MainShell(
                             PrintedWasteSelector(state, game, viewModel)
                         }
                     }
+                    // Touch copy under the player's thumbs; the top stays controller-driven.
+                    if (bottomScreenHosting) {
+                        HostOnBottomScreen(BOTTOM_SCREEN_PICKER_SCALE) { PrintedWasteSelector(state, game, viewModel) }
+                    }
                 }
                 state.pendingMembershipNotice?.let { notice ->
                     ControllerModalDialog(onDismissRequest = viewModel::dismissMembershipNotice) {
@@ -1392,16 +1397,20 @@ private fun MainShell(
                     }
                 }
                 state.pendingStoreChoiceGame?.let { game ->
+                    val launchSelector: @Composable () -> Unit = {
+                        StoreLaunchSelector(
+                            game = game,
+                            defaultVariantId = state.settings.defaultGameVariantIds[game.id],
+                            onLaunch = viewModel::playVariant,
+                            onSetDefaultStore = viewModel::setDefaultGameVariant,
+                            onDismiss = viewModel::dismissStoreChoice,
+                        )
+                    }
                     ControllerModalDialog(onDismissRequest = viewModel::dismissStoreChoice) {
-                        AnimatedLaunchOverlay(Modifier.fillMaxSize()) {
-                            StoreLaunchSelector(
-                                game = game,
-                                defaultVariantId = state.settings.defaultGameVariantIds[game.id],
-                                onLaunch = viewModel::playVariant,
-                                onSetDefaultStore = viewModel::setDefaultGameVariant,
-                                onDismiss = viewModel::dismissStoreChoice,
-                            )
-                        }
+                        AnimatedLaunchOverlay(Modifier.fillMaxSize()) { launchSelector() }
+                    }
+                    if (bottomScreenHosting) {
+                        HostOnBottomScreen(BOTTOM_SCREEN_PICKER_SCALE, launchSelector)
                     }
                 }
             }

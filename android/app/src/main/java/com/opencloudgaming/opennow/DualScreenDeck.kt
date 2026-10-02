@@ -27,7 +27,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -43,6 +48,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.res.painterResource
@@ -77,6 +85,21 @@ private enum class StreamPanel { Deck, Trackpad, Keyboard, Off }
 @Composable
 fun DualScreenDeck(onAction: (DualScreenAction) -> Unit) {
     val snapshot by DualScreenBridge.snapshot.collectAsState()
+    val hosted = DualScreenBridge.hostedContent.value
+    val currentSnapshot = snapshot
+    if (hosted != null && currentSnapshot != null) {
+        // Top-screen UI moved here (Stream Controls, store and server pickers). It needs the
+        // app theme because it is the exact composable the top screen would otherwise draw.
+        OpenNowTheme(settings = currentSnapshot.settings, physicalControllerConnected = false) {
+            val density = LocalDensity.current
+            CompositionLocalProvider(LocalDensity provides Density(density.density * hosted.scale, density.fontScale)) {
+                Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+                    hosted.content()
+                }
+            }
+        }
+        return
+    }
     Box(
         Modifier
             .fillMaxSize()
@@ -86,7 +109,11 @@ fun DualScreenDeck(onAction: (DualScreenAction) -> Unit) {
         val current = snapshot
         when (current?.phase) {
             null, DualScreenPhase.SignedOut -> SignedOutDeck()
-            DualScreenPhase.Browse -> BrowseDeck(current, onAction)
+            DualScreenPhase.Browse -> when {
+                current.selectedGame != null -> GameActionsDeck(current, current.selectedGame, onAction)
+                current.page == AppPage.Settings -> SettingsInspectorDeck(current, onAction)
+                else -> BrowseDeck(current, onAction)
+            }
             DualScreenPhase.Launching -> LaunchingDeck(current, onAction)
             DualScreenPhase.Streaming -> StreamingDeck(current, onAction)
         }
@@ -685,5 +712,189 @@ private fun DeckButton(label: String, modifier: Modifier = Modifier, onClick: ()
         contentAlignment = Alignment.Center,
     ) {
         Text(label, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Black, maxLines = 1)
+    }
+}
+
+/** Actions for the game whose details sheet is open on the top screen. */
+@Composable
+private fun GameActionsDeck(snapshot: DualScreenSnapshot, game: GameInfo, onAction: (DualScreenAction) -> Unit) {
+    val favorite = game.id in snapshot.settings.favoriteGameIds
+    val stores = game.variants.map { it.store }.distinct()
+    val haptics = LocalHapticFeedback.current
+    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                game.title,
+                color = Color.White,
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Black,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            DeckChip(stringResource(R.string.dual_close)) { onAction(DualScreenAction.CloseGameDetails) }
+        }
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(72.dp)
+                .clip(RoundedCornerShape(24.dp))
+                .background(Color.White)
+                .pointerInput(game.id) {
+                    detectTapGestures(
+                        onTap = { onAction(DualScreenAction.Play(game)) },
+                        onLongPress = {
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onAction(DualScreenAction.ChooseStore(game))
+                        },
+                    )
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(stringResource(R.string.dual_play), color = DeckBackground, fontSize = 22.sp, fontWeight = FontWeight.Black)
+                if (stores.size > 1) {
+                    Text(stringResource(R.string.dual_play_hold_hint), color = DeckBackground.copy(alpha = 0.6f), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+        Row(Modifier.height(48.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            DeckButton(
+                stringResource(if (favorite) R.string.dual_favorited else R.string.dual_favorite),
+                Modifier.weight(1f),
+            ) { onAction(DualScreenAction.ToggleFavorite(game.id)) }
+            if (stores.size > 1) {
+                DeckButton(stringResource(R.string.dual_choose_store), Modifier.weight(1f)) { onAction(DualScreenAction.ChooseStore(game)) }
+            }
+        }
+        Column(
+            Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(18.dp))
+                .background(DeckTile)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+        ) {
+            game.publisherName?.let { DetailLine(R.string.dual_detail_publisher, it) }
+            game.membershipTierLabel?.let { DetailLine(R.string.dual_detail_membership, it) }
+            if (stores.isNotEmpty()) DetailLine(R.string.dual_detail_stores, stores.joinToString(" · "))
+            if (game.genres.isNotEmpty()) {
+                Text(game.genres.joinToString(" · "), color = DeckMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(vertical = 6.dp))
+            }
+            (game.description ?: game.longDescription)?.let {
+                Text(it, color = Color.White.copy(alpha = 0.75f), fontSize = 13.sp, maxLines = 6, overflow = TextOverflow.Ellipsis)
+            }
+        }
+    }
+}
+
+@Composable
+private fun DetailLine(@StringRes label: Int, value: String) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(stringResource(label), color = DeckMuted, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.width(12.dp))
+        Text(value, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Black, textAlign = TextAlign.End, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/** Big touch controls for whichever setting has controller focus on the top screen. */
+@Composable
+private fun SettingsInspectorDeck(snapshot: DualScreenSnapshot, onAction: (DualScreenAction) -> Unit) {
+    val inspection = DualScreenBridge.inspection.value?.second
+    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(
+            Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(22.dp))
+                .background(DeckTile)
+                .border(1.dp, if (inspection != null) DeckSky.copy(alpha = 0.5f) else DeckSeam, RoundedCornerShape(22.dp))
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            if (inspection == null) {
+                Spacer(Modifier.weight(1f))
+                Text(stringResource(R.string.dual_settings_hint_title), color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.Black)
+                Text(stringResource(R.string.dual_settings_hint_body), color = DeckMuted, fontSize = 13.sp)
+                Spacer(Modifier.weight(1f))
+            } else {
+                Text(inspection.label, color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Black)
+                inspection.description?.takeIf { it.isNotBlank() }?.let {
+                    Text(it, color = DeckMuted, fontSize = 13.sp, maxLines = 4, overflow = TextOverflow.Ellipsis)
+                }
+                when (inspection) {
+                    is SettingInspection.Switch -> Segmented(
+                        options = listOf(stringResource(R.string.dual_switch_off), stringResource(R.string.dual_switch_on)),
+                        selected = if (inspection.checked) 1 else 0,
+                        onSelect = { index -> if (inspection.enabled) inspection.onCheckedChange(index == 1) },
+                    )
+                    is SettingInspection.Choice -> Column(
+                        Modifier.weight(1f).verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        inspection.options.forEach { option ->
+                            val selected = option.label == inspection.selectedLabel
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(if (selected) Color.White else Color.White.copy(alpha = 0.06f))
+                                    .clickable(enabled = option.enabled) { inspection.onSelect(option.value) }
+                                    .padding(horizontal = 14.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    option.label,
+                                    color = when {
+                                        selected -> DeckBackground
+                                        option.enabled -> Color.White
+                                        else -> DeckMuted
+                                    },
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Black,
+                                    modifier = Modifier.weight(1f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                option.badge?.let {
+                                    Text(it, color = if (selected) DeckBackground.copy(alpha = 0.6f) else DeckMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+                    is SettingInspection.Slider -> SliderInspector(inspection)
+                }
+            }
+        }
+        DeckTabBar(snapshot.page, onAction)
+    }
+}
+
+@Composable
+private fun SliderInspector(inspection: SettingInspection.Slider) {
+    val stepCount = if (inspection.step > 0f) ((inspection.max - inspection.min) / inspection.step).roundToInt() else 0
+    fun nudge(direction: Int) {
+        val next = (inspection.value + direction * inspection.step).coerceIn(inspection.min, inspection.max)
+        inspection.onChange(next)
+    }
+    Text(inspection.valueText, color = DeckSky, fontSize = 34.sp, fontWeight = FontWeight.Black)
+    Slider(
+        value = inspection.value,
+        onValueChange = inspection.onChange,
+        valueRange = inspection.min..inspection.max,
+        steps = if (stepCount in 2..200) stepCount - 1 else 0,
+        colors = SliderDefaults.colors(
+            thumbColor = Color.White,
+            activeTrackColor = DeckSky,
+            inactiveTrackColor = Color.White.copy(alpha = 0.14f),
+            activeTickColor = Color.Transparent,
+            inactiveTickColor = Color.Transparent,
+        ),
+    )
+    Row(Modifier.height(48.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        DeckButton("−", Modifier.weight(1f)) { nudge(-1) }
+        DeckButton("+", Modifier.weight(1f)) { nudge(1) }
     }
 }

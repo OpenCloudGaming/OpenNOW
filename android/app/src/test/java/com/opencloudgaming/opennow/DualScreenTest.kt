@@ -57,6 +57,16 @@ class DualScreenTest {
     }
 
     @Test
+    fun gameActionsFollowTheDetailsSheetOnlyWhileBrowsing() {
+        val game = GameInfo(id = "elden", title = "Elden Ring")
+        val browsing = signedIn.copy(page = AppPage.Library, selectedGame = game)
+
+        assertEquals(game, dualScreenSnapshot(browsing, stats = null).selectedGame)
+        assertNull(dualScreenSnapshot(browsing.copy(page = AppPage.Settings), stats = null).selectedGame)
+        assertNull(dualScreenSnapshot(browsing.copy(streamStatus = "queue"), stats = null).selectedGame)
+    }
+
+    @Test
     fun bottomScreenIsOnWithTheStreamDeckByDefault() {
         val settings = AppSettings()
 
