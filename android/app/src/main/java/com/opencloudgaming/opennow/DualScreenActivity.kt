@@ -46,17 +46,25 @@ class DualScreenActivity : ComponentActivity() {
         DualScreenBridge.attachDeck(this)
         lifecycleScope.launch {
             snapshotFlow { DualScreenBridge.hostedContent.value != null }.collect { hosting ->
+                val wasHosting = hostingPanel
                 hostingPanel = hosting
                 if (hosting) {
                     window.clearFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE)
                 } else {
                     window.addFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE)
+                    if (wasHosting) DualScreenBridge.returnFocusToTopScreen()
                 }
             }
         }
         setContent {
             DualScreenDeck(onAction = DualScreenBridge::dispatch)
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Starting this activity moved the bottom display to the front; hand it back.
+        if (!hostingPanel) window.decorView.post { DualScreenBridge.returnFocusToTopScreen() }
     }
 
     override fun onDestroy() {
