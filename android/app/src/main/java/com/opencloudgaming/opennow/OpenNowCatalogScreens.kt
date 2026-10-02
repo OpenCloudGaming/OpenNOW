@@ -176,6 +176,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -429,11 +430,13 @@ private fun StoreScrollableControls(
             catalogVisibleFilterGroups(state.catalogResult.filterGroups)
         },
     )
-    val hasSelectedFilters = state.catalogFilterIds.isNotEmpty()
+    val controlsOnBottomScreen = LocalDualScreenTopLayout.current
+    val toolbarVisible = showToolbar && !controlsOnBottomScreen
+    val hasSelectedFilters = state.catalogFilterIds.isNotEmpty() && !controlsOnBottomScreen
     val hasError = !state.error.isNullOrBlank()
-    if (!showToolbar && !hasSelectedFilters && !hasError) return
+    if (!toolbarVisible && !hasSelectedFilters && !hasError) return
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        if (showToolbar) {
+        if (toolbarVisible) {
             StoreCatalogToolbar(
                 state = state,
                 onSortChange = onSortChange,
@@ -441,7 +444,9 @@ private fun StoreScrollableControls(
                 modifier = Modifier.fillMaxWidth(),
             )
         }
-        SelectedFilterChips(options = filterOptions, selectedIds = state.catalogFilterIds, onToggle = onFilterToggle)
+        if (hasSelectedFilters) {
+            SelectedFilterChips(options = filterOptions, selectedIds = state.catalogFilterIds, onToggle = onFilterToggle)
+        }
         InlineErrorNotice(error = state.error)
     }
 }
@@ -793,6 +798,7 @@ internal fun LibraryFilterControls(
     showToolbar: Boolean = true,
     showSelectedChips: Boolean = true,
 ) {
+    if (LocalDualScreenTopLayout.current) return
     if (!showToolbar && (!showSelectedChips || selectedIds.isEmpty())) return
     Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (showToolbar) {
@@ -1146,7 +1152,7 @@ private fun GameGridSkeleton(
         LocalTvLoadingPulse provides tvPulse,
     ) {
         BoxWithConstraints(modifier.fillMaxSize()) {
-            val gridSpec = gameGridSpec(maxWidth, compact, landscapeLayout, settings, handheldLayout = !tvProfile)
+            val gridSpec = gameGridSpec(maxWidth, compact, landscapeLayout, settings, handheldLayout = !tvProfile, dualScreenTop = LocalDualScreenTopLayout.current)
             val contentPadding = gridSpec.contentPadding.withTop(
                 when {
                     storeLayout && landscapeLayout && !tvProfile -> 0.dp
@@ -1341,7 +1347,11 @@ private fun StoreRailSectionSkeleton(
                 .horizontalBleed(contentInset)
                 .clipToBounds(),
         ) {
-            val cardWidth = storeRailCardWidth(tvProfile, landscapeLayout, cardScale)
+            val cardWidth = if (LocalDualScreenTopLayout.current) {
+                dualScreenTopRailCardWidth(maxWidth - contentInset * 2, spacing)
+            } else {
+                storeRailCardWidth(tvProfile, landscapeLayout, cardScale)
+            }
             val visibleCount = storeRailVisibleCardCount(
                 availableWidthDp = (maxWidth - contentInset * 2).coerceAtLeast(1.dp).value,
                 cardWidthDp = cardWidth.value,
@@ -1584,7 +1594,7 @@ private fun GameGrid(
     val favoriteIdSet = remember(favoriteIds) { favoriteIds.toHashSet() }
     val density = LocalDensity.current
     BoxWithConstraints(modifier.fillMaxSize()) {
-        val gridSpec = gameGridSpec(maxWidth, compact, landscapeLayout, settings, handheldLayout = !tvProfile)
+        val gridSpec = gameGridSpec(maxWidth, compact, landscapeLayout, settings, handheldLayout = !tvProfile, dualScreenTop = LocalDualScreenTopLayout.current)
         val cardRequestWidth = catalogGridCardImageRequestWidth(
             availableWidth = maxWidth,
             gridSpec = gridSpec,
@@ -1691,7 +1701,8 @@ private fun StoreGameGrid(
     val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = tvProfile || landscapeLayout)
     val controllerActionMode = catalogControllerActionMode(tvProfile, landscapeLayout, physicalControllerConnected)
     val artworkOnly = shouldUseArtworkOnlyCatalogCards(tvProfile, controllerActionMode)
-    val showControlsHeader = showToolbar || state.catalogFilterIds.isNotEmpty() || !state.error.isNullOrBlank()
+    val showControlsHeader = !state.error.isNullOrBlank() ||
+        (!LocalDualScreenTopLayout.current && (showToolbar || state.catalogFilterIds.isNotEmpty()))
     val showDiscoverySections = shouldShowStoreDiscoverySections(
         searchActive = state.catalogSearch.isNotBlank(),
         filterActive = state.catalogFilterIds.isNotEmpty(),
@@ -1702,7 +1713,7 @@ private fun StoreGameGrid(
     val favoriteIdSet = remember(favoriteIds) { favoriteIds.toHashSet() }
     val density = LocalDensity.current
     BoxWithConstraints(modifier.fillMaxSize()) {
-        val gridSpec = gameGridSpec(maxWidth, compact, landscapeLayout, settings, handheldLayout = !tvProfile)
+        val gridSpec = gameGridSpec(maxWidth, compact, landscapeLayout, settings, handheldLayout = !tvProfile, dualScreenTop = LocalDualScreenTopLayout.current)
         val cardRequestWidth = catalogGridCardImageRequestWidth(
             availableWidth = maxWidth,
             gridSpec = gridSpec,
@@ -1759,7 +1770,10 @@ private fun StoreGameGrid(
                                 title = stringResource(
                                     if (showDiscoverySections) R.string.store_recommendations else R.string.store_results,
                                 ),
-                                modifier = Modifier.padding(top = OpenNowSpacing.lg, bottom = OpenNowSpacing.sm),
+                                modifier = Modifier.padding(
+                                    top = if (LocalDualScreenTopLayout.current) 0.dp else OpenNowSpacing.lg,
+                                    bottom = OpenNowSpacing.sm,
+                                ),
                             )
                         }
                     }
@@ -2013,6 +2027,19 @@ private fun CatalogSectionHeaderText(
     showSubtitle: Boolean,
     modifier: Modifier = Modifier,
 ) {
+    if (title != null && LocalDualScreenTopLayout.current) {
+        Text(
+            text = title.uppercase(Locale.getDefault()),
+            color = Color.White.copy(alpha = 0.55f),
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Black,
+            letterSpacing = 1.2.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = modifier,
+        )
+        return
+    }
     Column(modifier) {
         Box(Modifier.fillMaxWidth()) {
             Text(
@@ -2071,6 +2098,7 @@ private fun StoreComingNextCarousel(
     if (games.isEmpty()) return
     val context = LocalContext.current
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val dualScreenTop = LocalDualScreenTopLayout.current
     var page by remember(games) { mutableIntStateOf(0) }
     var focused by remember { mutableStateOf(false) }
     val enhancedControllerFocus = shouldShowEnhancedControllerFocus(
@@ -2124,7 +2152,7 @@ private fun StoreComingNextCarousel(
             targetValue = if (collapsed) 0f else 90f,
             label = "store-hero-chevron",
         )
-        SectionHeader(
+        if (!dualScreenTop) SectionHeader(
             title = title,
             subtitle = stringResource(R.string.store_coming_next_subtitle),
             modifier = if (onCollapsedChange == null) {
@@ -2151,7 +2179,11 @@ private fun StoreComingNextCarousel(
                 }
             },
         )
-        AnimatedVisibility(visible = !collapsed) {
+        AnimatedVisibility(visible = !collapsed || dualScreenTop) {
+          Row(
+            if (dualScreenTop) Modifier.fillMaxWidth().height(DUAL_SCREEN_HERO_HEIGHT) else Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(OpenNowSpacing.md),
+          ) {
             AnimatedContent(
                 targetState = page,
                 transitionSpec = {
@@ -2159,6 +2191,7 @@ private fun StoreComingNextCarousel(
                         fadeOut(tween(if (reduceMotion) 0 else OpenNowMotion.DurationFast))
                 },
                 label = "coming-next-carousel",
+                modifier = Modifier.weight(if (dualScreenTop) 2.4f else 1f),
             ) { targetPage ->
                 val featured = games[targetPage.coerceIn(games.indices)]
                 val selected = featured.id == selectedGameId
@@ -2177,7 +2210,7 @@ private fun StoreComingNextCarousel(
                         .fillMaxWidth()
                         // Aspect ratio rather than a fixed height, so the hero scales with the screen
                         // instead of dominating a small phone and looking stunted on a tablet.
-                        .aspectRatio(heroAspectRatio(tvProfile, landscape))
+                        .then(if (dualScreenTop) Modifier.fillMaxHeight() else Modifier.aspectRatio(heroAspectRatio(tvProfile, landscape)))
                         .draggable(
                             state = carouselDragState,
                             orientation = Orientation.Horizontal,
@@ -2282,6 +2315,16 @@ private fun StoreComingNextCarousel(
                                 .padding(18.dp),
                             verticalArrangement = Arrangement.spacedBy(5.dp),
                         ) {
+                            if (dualScreenTop) {
+                                Text(
+                                    title.uppercase(Locale.getDefault()),
+                                    color = OpenNowPalette.PastelYellow,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Black,
+                                    letterSpacing = 1.2.sp,
+                                    maxLines = 1,
+                                )
+                            }
                             Text(
                                 featured.title,
                                 color = Color.White,
@@ -2339,9 +2382,60 @@ private fun StoreComingNextCarousel(
                 )
                 }
             }
+            if (dualScreenTop && games.size > 1) {
+                Column(
+                    Modifier.weight(1f).fillMaxHeight(),
+                    verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.md),
+                ) {
+                    (1..minOf(2, games.size - 1)).forEach { offset ->
+                        val next = games[(page + offset) % games.size]
+                        StoreHeroNextTile(next, Modifier.weight(1f).fillMaxWidth()) { onSelect(next) }
+                    }
+                }
+            }
+          }
         }
     }
 }
+
+/** The AYN Tour hero's side column: the next featured games, one tap from details. */
+@Composable
+private fun StoreHeroNextTile(game: GameInfo, modifier: Modifier, onClick: () -> Unit) {
+    val context = LocalContext.current
+    var focused by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(16.dp)
+    Box(
+        modifier
+            .onFocusChanged { focused = it.isFocused }
+            .focusMoveHaptics()
+            .semantics(mergeDescendants = true) {
+                contentDescription = game.title
+                role = Role.Button
+            }
+            .clickable(onClick = onClick),
+    ) {
+        Box(Modifier.matchParentSize().clip(shape).border(1.5.dp, Color.White.copy(alpha = 0.85f), shape)) {
+            UrlImage(gameHeroImageUrl(context, game), Modifier.fillMaxSize())
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .background(Brush.verticalGradient(0.45f to Color.Transparent, 1f to Color.Black.copy(alpha = 0.8f))),
+            )
+            Text(
+                game.title,
+                color = Color.White,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Black,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.align(Alignment.BottomStart).padding(horizontal = 10.dp, vertical = 7.dp),
+            )
+        }
+        FocusRing(visible = focused, cornerRadius = 16.dp)
+    }
+}
+
+private val DUAL_SCREEN_HERO_HEIGHT = 150.dp
 
 internal fun shouldAnimateStoreHero(
     pageCount: Int,
@@ -2429,11 +2523,15 @@ private fun StoreRailSection(
             // it only to choose a whole-number card count, then stretched cards to fill the row;
             // most slider movements therefore appeared to do nothing. Matching the handheld rail
             // base to the adaptive grid also keeps Continue playing from towering over the grid.
-            val cardWidth = storeRailCardWidth(
-                tvProfile = tvProfile,
-                landscapeLayout = landscapeLayout,
-                cardScale = settings.posterSizeScale,
-            )
+            val cardWidth = if (LocalDualScreenTopLayout.current) {
+                dualScreenTopRailCardWidth(maxWidth - contentInset * 2, spacing)
+            } else {
+                storeRailCardWidth(
+                    tvProfile = tvProfile,
+                    landscapeLayout = landscapeLayout,
+                    cardScale = settings.posterSizeScale,
+                )
+            }
             val density = LocalDensity.current
             val imageRequestWidth = remember(cardWidth, density, tvProfile) {
                 catalogCardImageRequestWidth(
@@ -2500,7 +2598,7 @@ private fun StoreRailGameCard(
     var focused by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
     // Same V3 tile as GameCard: generous rounding and a resting white edge.
-    val cardRadius = if (expressiveUi) OpenNowRadius.xl else OpenNowRadius.lg
+    val cardRadius = if (LocalDualScreenTopLayout.current) OpenNowRadius.md else if (expressiveUi) OpenNowRadius.xl else OpenNowRadius.lg
     val shape = RoundedCornerShape(cardRadius)
     val actionButtonSize = 34.dp
     val enhancedControllerFocus = shouldShowEnhancedControllerFocus(
@@ -2550,7 +2648,7 @@ private fun StoreRailGameCard(
         Box(
             Modifier
                 .width(width)
-                .aspectRatio(if (tvProfile) 1f else GAME_BOX_ART_ASPECT_RATIO)
+                .aspectRatio(if (tvProfile || LocalDualScreenTopLayout.current) 1f else GAME_BOX_ART_ASPECT_RATIO)
                 .catalogCardTransform(scale = cardScale, alpha = dimAlpha)
                 // Keep the lightweight coordinates handle while scrolling and calculate the global
                 // rectangle only when the card is actually selected.
@@ -2884,6 +2982,12 @@ private fun Modifier.horizontalBleed(bleed: Dp): Modifier = this.layout { measur
     }
 }
 
+/** Seven tiles across the AYN Thor's top screen, as on the AYN Tour Store and Library boards. */
+private const val DUAL_SCREEN_TOP_COLUMNS = 7
+
+private fun dualScreenTopRailCardWidth(contentWidth: Dp, spacing: Dp): Dp =
+    ((contentWidth - spacing * (DUAL_SCREEN_TOP_COLUMNS - 1)) / DUAL_SCREEN_TOP_COLUMNS).coerceAtLeast(1.dp)
+
 private fun storeRailCardWidth(
     tvProfile: Boolean,
     landscapeLayout: Boolean,
@@ -2962,6 +3066,7 @@ private fun gameGridSpec(
     landscapeLayout: Boolean,
     settings: AppSettings,
     handheldLayout: Boolean,
+    dualScreenTop: Boolean = false,
 ): GameGridSpec {
     val horizontalSpacing = if (compact) OpenNowSpacing.sm else OpenNowSpacing.GridGutter
     val verticalSpacing = if (compact) OpenNowSpacing.md else OpenNowSpacing.GridRowGap
@@ -2975,11 +3080,12 @@ private fun gameGridSpec(
         handheldLayout = handheldLayout,
     )
 
+    val columnCount = if (dualScreenTop) DUAL_SCREEN_TOP_COLUMNS else metrics.columnCount
     return GameGridSpec(
         // Fixed uses the exact count resolved above but still shares remaining width evenly, which
         // is the same responsive presentation as Adaptive without a second independent decision.
-        cells = GridCells.Fixed(metrics.columnCount),
-        columnCount = metrics.columnCount,
+        cells = GridCells.Fixed(columnCount),
+        columnCount = columnCount,
         horizontalSpacing = horizontalSpacing,
         verticalSpacing = verticalSpacing,
         contentPadding = PaddingValues(
@@ -2990,7 +3096,7 @@ private fun gameGridSpec(
         ),
         // TV grid cards match the TV rail cards, which have always been square — this is the shape
         // NVIDIA's tvCardImageUrl assets are cut for.
-        squareCards = !handheldLayout,
+        squareCards = !handheldLayout || dualScreenTop,
     )
 }
 
@@ -3066,7 +3172,7 @@ private fun GameCard(
     var focused by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
     // V3 tiles: generous rounding and a resting white edge, so art reads as a physical card.
-    val cardRadius = if (expressiveUi) OpenNowRadius.xl else OpenNowRadius.lg
+    val cardRadius = if (LocalDualScreenTopLayout.current) OpenNowRadius.md else if (expressiveUi) OpenNowRadius.xl else OpenNowRadius.lg
     val cardShape = RoundedCornerShape(cardRadius)
     val handheldPosterCard = !tvProfile
     val launcherTile = handheldPosterCard && thumbnailFavoriteOverlay

@@ -968,6 +968,7 @@
     "dual_stat_bitrate_label": "Bitrate",
     "dual_stat_loss_label": "Loss",
     "dual_settings_eyebrow": "Focused setting",
-    "dual_preset_auto": "Auto"
+    "dual_preset_auto": "Auto",
+    "dual_filters_reset": "%1$d active · Reset"
   }
 }

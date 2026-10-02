@@ -1006,8 +1006,11 @@ private fun MainShell(
         val wallpaperPage = scrollChromePage || state.page == AppPage.Settings
         val tvCatalogChrome = tvProfile && scrollChromePage
         val mobileCatalogControlsInTopBar = !tvProfile && portraitChrome
-        val storeControlsInTopBar = (mobileCatalogControlsInTopBar || phoneLandscapeChrome || tvCatalogChrome) && state.page == AppPage.Home
-        val libraryControlsInTopBar = (mobileCatalogControlsInTopBar || phoneLandscapeChrome || tvCatalogChrome) && state.page == AppPage.Library
+        // With the deck up, sort and filter live on the bottom screen and the top bar holds none.
+        val catalogControlsInTopBar = !bottomScreenHosting && (mobileCatalogControlsInTopBar || phoneLandscapeChrome || tvCatalogChrome)
+        val storeControlsInTopBar = catalogControlsInTopBar && state.page == AppPage.Home
+        val libraryControlsInTopBar = catalogControlsInTopBar && state.page == AppPage.Library
+        val hideChromeWhenScrolled = phoneLandscapeChrome && !bottomScreenHosting
         val screenEdgePadding = appContentEdgePaddingDp(
             settings = state.settings,
             inStream = inStream,
@@ -1134,8 +1137,20 @@ private fun MainShell(
                             .weight(1f)
                             .fillMaxHeight(),
                     ) {
+                        if (bottomScreenHosting && !inStream) {
+                            DualScreenTopBar(
+                                state = state,
+                                profileFocusRequester = topBarProfileFocusRequester,
+                                onResumeActiveSession = viewModel::resumeActiveSession,
+                                onOpenSettings = { navigateFromAppChrome(AppPage.Settings) },
+                                onOpenLocalApps = {
+                                    visibleSearchTarget = null
+                                    viewModel.openInterfaceSettings()
+                                },
+                            )
+                        }
                         AnimatedVisibility(
-                            visible = shouldShowTopStatusBar(
+                            visible = !bottomScreenHosting && shouldShowTopStatusBar(
                                 inStream = inStream,
                                 portraitChrome = portraitChrome,
                                 phoneLandscapeChrome = phoneLandscapeChrome,
@@ -1225,7 +1240,10 @@ private fun MainShell(
                                 .weight(1f)
                                 .fillMaxWidth(),
                         ) {
-                            CompositionLocalProvider(LocalSelectedCatalogGameId provides state.selectedGame?.id) {
+                            CompositionLocalProvider(
+                                LocalSelectedCatalogGameId provides state.selectedGame?.id,
+                                LocalDualScreenTopLayout provides bottomScreenHosting,
+                            ) {
                                 AppPageMotionContent(
                                     targetState = state.page,
                                     modifier = Modifier.fillMaxSize(),
@@ -1235,7 +1253,7 @@ private fun MainShell(
                                             state = state,
                                             viewModel = viewModel,
                                             tvProfile = tvProfile,
-                                            hideChromeWhenScrolled = phoneLandscapeChrome,
+                                            hideChromeWhenScrolled = hideChromeWhenScrolled,
                                             controlsInTopBar = storeControlsInTopBar,
                                             topBarFocusRequester = catalogFilterFocusRequester.takeIf {
                                                 storeControlsInTopBar
@@ -1252,7 +1270,7 @@ private fun MainShell(
                                             state = state,
                                             viewModel = viewModel,
                                             tvProfile = tvProfile,
-                                            hideChromeWhenScrolled = phoneLandscapeChrome,
+                                            hideChromeWhenScrolled = hideChromeWhenScrolled,
                                             controlsInTopBar = libraryControlsInTopBar,
                                             topBarFocusRequester = catalogFilterFocusRequester.takeIf {
                                                 libraryControlsInTopBar
@@ -1852,6 +1870,142 @@ private fun NavigationNotificationDot(modifier: Modifier = Modifier) {
             .clip(CircleShape)
             .background(OpenNowPalette.AccentSwitchRed),
     )
+}
+
+/** AYN Tour top bar: account, page title and connection pills, with no controls to catch a scroll. */
+@Composable
+private fun DualScreenTopBar(
+    state: OpenNowUiState,
+    profileFocusRequester: FocusRequester,
+    onResumeActiveSession: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onOpenLocalApps: () -> Unit,
+) {
+    val user = state.authSession?.user
+    val tier = state.subscriptionInfo?.membershipTier?.takeIf { it.isNotBlank() } ?: user?.membershipTier
+    val title = when (state.page) {
+        AppPage.Library -> "${stringResource(R.string.nav_library)} · ${stringResource(R.string.library_count, state.libraryGames.size)}"
+        AppPage.Settings -> stringResource(R.string.nav_settings)
+        else -> stringResource(R.string.nav_store)
+    }
+    val region = state.regions.firstOrNull { it.url == state.settings.stream.region }
+    val pingMs = region?.pingMs ?: state.regions.mapNotNull { it.pingMs }.minOrNull()
+    val regionLabel = listOfNotNull(
+        region?.name ?: stringResource(R.string.option_auto),
+        pingMs?.let { stringResource(R.string.dual_ping_ms, it.toInt()) },
+    ).joinToString(" · ")
+    val context = LocalContext.current
+    val clock by produceState(initialValue = "" to null as Int?) {
+        val format = android.text.format.DateFormat.getTimeFormat(context)
+        while (true) {
+            val battery = context.registerReceiver(null, android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            val level = battery?.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1) ?: -1
+            val scale = battery?.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, -1) ?: -1
+            value = format.format(Date()) to (if (level >= 0 && scale > 0) level * 100 / scale else null)
+            delay(DUAL_TOP_BAR_TICK_MS)
+        }
+    }
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 12.dp, top = 8.dp, end = 12.dp, bottom = 6.dp),
+    ) {
+        DualTopBarPill(Modifier.align(Alignment.CenterStart), startPadding = 2.dp) {
+            TopBarProfileMenu(
+                state = state,
+                focusRequester = profileFocusRequester,
+                nextFocusRequester = null,
+                onOpenSettings = onOpenSettings,
+                onOpenLocalApps = onOpenLocalApps,
+            )
+            Text(
+                user?.displayName.orEmpty(),
+                color = Color.White,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.ExtraBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 140.dp),
+            )
+            if (!tier.isNullOrBlank()) {
+                DualTopBarSeam()
+                Text(
+                    membershipTierLabel(tier),
+                    color = OpenNowPalette.PastelYellow,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.ExtraBold,
+                    maxLines = 1,
+                )
+            }
+        }
+        DualTopBarPill(Modifier.align(Alignment.Center), startPadding = 22.dp) {
+            Text(
+                title,
+                color = Color.White,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Black,
+                maxLines = 1,
+                modifier = Modifier.padding(end = 8.dp),
+            )
+        }
+        Row(
+            Modifier.align(Alignment.CenterEnd),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (state.activeSession != null) {
+                Surface(
+                    onClick = onResumeActiveSession,
+                    shape = CircleShape,
+                    color = Color.White,
+                    modifier = Modifier.height(36.dp),
+                ) {
+                    Box(Modifier.padding(horizontal = 14.dp), contentAlignment = Alignment.Center) {
+                        Text(
+                            stringResource(R.string.action_resume),
+                            color = OpenNowPalette.Background,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Black,
+                        )
+                    }
+                }
+            }
+            DualTopBarPill(Modifier, startPadding = 14.dp) {
+                Box(Modifier.size(7.dp).clip(CircleShape).background(OpenNowPalette.PastelMint))
+                Text(regionLabel, color = Color.White, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.ExtraBold, maxLines = 1)
+                if (clock.first.isNotEmpty()) {
+                    DualTopBarSeam()
+                    Text(clock.first, color = Color.White, style = MaterialTheme.typography.labelMedium.numeric(), fontWeight = FontWeight.ExtraBold)
+                }
+                clock.second?.let { percent ->
+                    DualTopBarSeam()
+                    Text("$percent%", color = Color.White, style = MaterialTheme.typography.labelMedium.numeric(), fontWeight = FontWeight.ExtraBold)
+                }
+            }
+        }
+    }
+}
+
+private const val DUAL_TOP_BAR_TICK_MS = 30_000L
+
+@Composable
+private fun DualTopBarPill(modifier: Modifier, startPadding: Dp, content: @Composable RowScope.() -> Unit) {
+    Row(
+        modifier
+            .height(36.dp)
+            .clip(CircleShape)
+            .background(OpenNowPalette.GlassStrong)
+            .border(1.dp, OpenNowPalette.Seam, CircleShape)
+            .padding(start = startPadding, end = 14.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        content = content,
+    )
+}
+
+@Composable
+private fun DualTopBarSeam() {
+    Box(Modifier.width(1.dp).height(14.dp).background(OpenNowPalette.Seam))
 }
 
 @Composable

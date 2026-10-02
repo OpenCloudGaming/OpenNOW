@@ -101,7 +101,7 @@ import kotlin.math.max
 import kotlin.math.sin
 
 @Composable
-private fun catalogSortDisplayLabel(sortId: String, fallback: String): String =
+internal fun catalogSortDisplayLabel(sortId: String, fallback: String): String =
     when (catalogSortKind(sortId)) {
         CatalogSortKind.Relevance -> fallback
         CatalogSortKind.Popular -> stringResource(R.string.catalog_sort_popular)

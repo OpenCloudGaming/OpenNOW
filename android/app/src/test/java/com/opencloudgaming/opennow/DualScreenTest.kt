@@ -67,6 +67,23 @@ class DualScreenTest {
     }
 
     @Test
+    fun deckSortAndFilterOnlyOffersTheStoreGroupsTheTopScreenShowed() {
+        val store = CatalogFilterGroup("digital_store", "Store", listOf(CatalogFilterOption("steam", "STEAM", "Steam", "digital_store", "Store")))
+        val hidden = CatalogFilterGroup("maturity", "Maturity", listOf(CatalogFilterOption("m", "M", "Mature", "maturity", "Maturity")))
+        val state = signedIn.copy(
+            catalogResult = CatalogBrowseResult(games = emptyList(), filterGroups = listOf(store, hidden)),
+            catalogFilterIds = listOf("steam"),
+            librarySortId = LIBRARY_SORT_TITLE,
+        )
+
+        val snapshot = dualScreenSnapshot(state, stats = null)
+
+        assertEquals(listOf(store), snapshot.catalogFilterGroups)
+        assertEquals(listOf("steam"), snapshot.catalogFilterIds)
+        assertEquals(LIBRARY_SORT_TITLE, snapshot.librarySortId)
+    }
+
+    @Test
     fun bottomScreenIsOnWithTheStreamDeckByDefault() {
         val settings = AppSettings()
 

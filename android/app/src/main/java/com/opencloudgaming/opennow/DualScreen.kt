@@ -17,6 +17,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -30,6 +31,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import java.lang.ref.WeakReference
+import java.util.Locale
 
 private const val DUAL_SCREEN_LOG_TAG = "OpenNOWDualScreen"
 private const val DECK_RELAUNCH_GUARD_MS = 2_000L
@@ -72,6 +74,14 @@ data class DualScreenSnapshot(
     val launchMinimized: Boolean,
     /** Settings the running or starting session uses. */
     val sessionSettings: StreamSettings,
+    val catalogSortOptions: List<CatalogSortOption>,
+    val catalogSortId: String,
+    val catalogFilterGroups: List<CatalogFilterGroup>,
+    val catalogFilterIds: List<String>,
+    val librarySortId: String,
+    val libraryFilterIds: List<String>,
+    /** Library games the deck derives its launcher filters from. */
+    val libraryGames: List<GameInfo>,
 )
 
 internal fun dualScreenPhase(state: OpenNowUiState): DualScreenPhase = when {
@@ -121,6 +131,13 @@ internal fun dualScreenSnapshot(state: OpenNowUiState, stats: StreamRuntimeStats
         sessionStartedAtMs = state.streamSession?.timerStartedAtMs,
         launchMinimized = state.streamLaunchMinimized,
         sessionSettings = state.activeStreamSettings ?: state.settings.stream,
+        catalogSortOptions = state.catalogResult.sortOptions,
+        catalogSortId = state.catalogSortId,
+        catalogFilterGroups = catalogVisibleFilterGroups(state.catalogResult.filterGroups),
+        catalogFilterIds = state.catalogFilterIds,
+        librarySortId = state.librarySortId,
+        libraryFilterIds = state.libraryFilterIds,
+        libraryGames = state.libraryGames,
     )
 }
 
@@ -142,6 +159,10 @@ sealed interface DualScreenAction {
     data object RestoreLaunch : DualScreenAction
     data object SignIn : DualScreenAction
     data object SignInWithCode : DualScreenAction
+    /** Sort and filter apply to the Library while it is open, otherwise to the Store. */
+    data class SetSort(val sortId: String) : DualScreenAction
+    data class ToggleFilter(val filterId: String) : DualScreenAction
+    data object ClearFilters : DualScreenAction
 }
 
 /**
@@ -364,6 +385,8 @@ class DualScreenController(
         }
     }
 
+    private fun libraryPageOpen(): Boolean = viewModel.state.value.page == AppPage.Library
+
     private fun finishDeck() {
         DualScreenBridge.runningDeck()?.finish()
     }
@@ -396,9 +419,25 @@ class DualScreenController(
             DualScreenAction.RestoreLaunch -> viewModel.restoreStreamLaunch()
             DualScreenAction.SignIn -> viewModel.login()
             DualScreenAction.SignInWithCode -> viewModel.loginWithCode()
+            is DualScreenAction.SetSort -> if (libraryPageOpen()) viewModel.setLibrarySort(action.sortId) else viewModel.setCatalogSort(action.sortId)
+            is DualScreenAction.ToggleFilter -> if (libraryPageOpen()) {
+                viewModel.toggleLibraryFilter(action.filterId)
+            } else {
+                viewModel.toggleCatalogFilter(action.filterId)
+            }
+            DualScreenAction.ClearFilters -> if (libraryPageOpen()) viewModel.clearLibraryFilters() else viewModel.clearCatalogFilters()
         }
     }
 }
+
+internal fun membershipTierLabel(tier: String?): String =
+    tier?.lowercase(Locale.getDefault())?.replaceFirstChar { it.titlecase(Locale.getDefault()) } ?: "–"
+
+/**
+ * True on the top screen while the deck is up: sort and filter live on the deck, and the catalog
+ * uses the AYN Tour layout (dense square tiles, label headers, split hero).
+ */
+internal val LocalDualScreenTopLayout = staticCompositionLocalOf { false }
 
 /** Whether top-screen UI should currently render on the bottom screen instead. */
 @Composable
