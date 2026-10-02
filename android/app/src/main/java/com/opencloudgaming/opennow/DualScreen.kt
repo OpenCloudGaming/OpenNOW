@@ -33,6 +33,7 @@ import java.lang.ref.WeakReference
 
 private const val DUAL_SCREEN_LOG_TAG = "OpenNOWDualScreen"
 private const val DECK_RELAUNCH_GUARD_MS = 2_000L
+private const val DECK_UP_NEXT_LIMIT = 2
 
 enum class DualScreenPhase {
     SignedOut,
@@ -61,6 +62,16 @@ data class DualScreenSnapshot(
     val settings: AppSettings,
     /** Game whose details sheet is open on the top screen. */
     val selectedGame: GameInfo?,
+    val streamGame: GameInfo?,
+    /** Most recently played games, the same list the Store's Continue playing rail shows. */
+    val upNext: List<GameInfo>,
+    /** Configured region, or null for automatic routing. */
+    val regionName: String?,
+    val regionPingMs: Long?,
+    val sessionStartedAtMs: Long?,
+    val launchMinimized: Boolean,
+    /** Settings the running or starting session uses. */
+    val sessionSettings: StreamSettings,
 )
 
 internal fun dualScreenPhase(state: OpenNowUiState): DualScreenPhase = when {
@@ -91,6 +102,25 @@ internal fun dualScreenSnapshot(state: OpenNowUiState, stats: StreamRuntimeStats
         stats = stats.takeIf { phase == DualScreenPhase.Streaming },
         settings = state.settings,
         selectedGame = state.selectedGame.takeIf { phase == DualScreenPhase.Browse && state.page != AppPage.Settings },
+        streamGame = state.streamGame,
+        // Only the home deck shows it; skip the sort while stats tick during a stream.
+        upNext = if (phase == DualScreenPhase.Browse) {
+            storeStartRailGroups(
+                games = state.games,
+                libraryGames = state.libraryGames,
+                favoriteIds = state.settings.favoriteGameIds,
+                queuedGameKeys = state.queuedGameKeys,
+                dismissedContinuePlaying = state.dismissedContinuePlaying,
+            ).continuePlaying.take(DECK_UP_NEXT_LIMIT)
+        } else {
+            emptyList()
+        },
+        regionName = state.regions.firstOrNull { it.url == state.settings.stream.region }?.name,
+        regionPingMs = state.regions.firstOrNull { it.url == state.settings.stream.region }?.pingMs
+            ?: state.regions.mapNotNull { it.pingMs }.minOrNull(),
+        sessionStartedAtMs = state.streamSession?.timerStartedAtMs,
+        launchMinimized = state.streamLaunchMinimized,
+        sessionSettings = state.activeStreamSettings ?: state.settings.stream,
     )
 }
 
@@ -108,6 +138,10 @@ sealed interface DualScreenAction {
     data class ChooseStore(val game: GameInfo) : DualScreenAction
     data class ToggleFavorite(val gameId: String) : DualScreenAction
     data object CloseGameDetails : DualScreenAction
+    data class OpenGame(val game: GameInfo) : DualScreenAction
+    data object RestoreLaunch : DualScreenAction
+    data object SignIn : DualScreenAction
+    data object SignInWithCode : DualScreenAction
 }
 
 /**
@@ -358,6 +392,10 @@ class DualScreenController(
             is DualScreenAction.ChooseStore -> viewModel.chooseStore(action.game)
             is DualScreenAction.ToggleFavorite -> viewModel.updateFavorites(action.gameId)
             DualScreenAction.CloseGameDetails -> viewModel.clearSelectedGame()
+            is DualScreenAction.OpenGame -> viewModel.selectGame(action.game)
+            DualScreenAction.RestoreLaunch -> viewModel.restoreStreamLaunch()
+            DualScreenAction.SignIn -> viewModel.login()
+            DualScreenAction.SignInWithCode -> viewModel.loginWithCode()
         }
     }
 }

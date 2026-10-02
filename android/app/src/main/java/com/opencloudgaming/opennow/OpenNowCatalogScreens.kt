@@ -2499,7 +2499,9 @@ private fun StoreRailGameCard(
 ) {
     var focused by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
-    val shape = RoundedCornerShape(if (expressiveUi) OpenNowRadius.md else OpenNowRadius.sm)
+    // Same V3 tile as GameCard: generous rounding and a resting white edge.
+    val cardRadius = if (expressiveUi) OpenNowRadius.xl else OpenNowRadius.lg
+    val shape = RoundedCornerShape(cardRadius)
     val actionButtonSize = 34.dp
     val enhancedControllerFocus = shouldShowEnhancedControllerFocus(
         focused = focused,
@@ -2568,6 +2570,7 @@ private fun StoreRailGameCard(
                     )
                     .onFocusChanged { focused = it.isFocused || it.hasFocus }
                     .focusMoveHaptics()
+                    .border(2.dp, Color.White.copy(alpha = 0.9f), shape)
                     .border(
                         width = catalogCardBorderWidthDp(
                             controllerFocused = enhancedControllerFocus,
@@ -2630,9 +2633,13 @@ private fun StoreRailGameCard(
                     }
                 }
             }
+            FocusRing(
+                visible = enhancedControllerFocus && !LocalAbsoluteCinemaEffects.current,
+                cornerRadius = cardRadius,
+            )
             ControllerFocusFrame(
                 visible = enhancedControllerFocus || selectedOutline || ((focused || hovered) && LocalAbsoluteCinemaEffects.current),
-                cornerRadius = if (expressiveUi) 12.dp else 8.dp,
+                cornerRadius = cardRadius,
                 tint = if (selectedOutline || LocalAbsoluteCinemaEffects.current) LocalActiveSelectionColor.current else Color.White,
                 secondaryTint = if (selectedOutline || LocalAbsoluteCinemaEffects.current) LocalActiveSelectionSecondaryColor.current else Color.White,
             )
@@ -3058,7 +3065,9 @@ private fun GameCard(
 ) {
     var focused by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
-    val cardShape = RoundedCornerShape(if (expressiveUi) OpenNowRadius.md else OpenNowRadius.sm)
+    // V3 tiles: generous rounding and a resting white edge, so art reads as a physical card.
+    val cardRadius = if (expressiveUi) OpenNowRadius.xl else OpenNowRadius.lg
+    val cardShape = RoundedCornerShape(cardRadius)
     val handheldPosterCard = !tvProfile
     val launcherTile = handheldPosterCard && thumbnailFavoriteOverlay
     val overlayActionSize = if (launcherTile) 34.dp else 44.dp
@@ -3136,6 +3145,7 @@ private fun GameCard(
                     )
                     .onFocusChanged { focused = it.isFocused || it.hasFocus }
                     .focusMoveHaptics()
+                    .border(2.dp, Color.White.copy(alpha = 0.9f), cardShape)
                     .border(
                         width = catalogCardBorderWidthDp(
                             controllerFocused = enhancedControllerFocus,
@@ -3204,9 +3214,13 @@ private fun GameCard(
                     }
                 }
             }
+            FocusRing(
+                visible = enhancedControllerFocus && !LocalAbsoluteCinemaEffects.current,
+                cornerRadius = cardRadius,
+            )
             ControllerFocusFrame(
                 visible = enhancedControllerFocus || selectedOutline || ((focused || hovered) && LocalAbsoluteCinemaEffects.current),
-                cornerRadius = if (expressiveUi) OpenNowRadius.md else OpenNowRadius.sm,
+                cornerRadius = cardRadius,
                 tint = if (selectedOutline || LocalAbsoluteCinemaEffects.current) LocalActiveSelectionColor.current else Color.White,
                 secondaryTint = if (selectedOutline || LocalAbsoluteCinemaEffects.current) LocalActiveSelectionSecondaryColor.current else Color.White,
             )

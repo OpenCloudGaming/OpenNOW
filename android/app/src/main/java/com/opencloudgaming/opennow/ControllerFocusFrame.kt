@@ -277,15 +277,34 @@ internal fun BoxScope.InteractionFocusFrame(
         return
     }
     if (!shouldDrawStaticInteractionFocus(visible, cinemaEffectActive)) return
+    FocusRing(visible = true, cornerRadius = cornerRadius, verticalInset = verticalInset)
+}
+
+/**
+ * The V3 focus cue: a navy gap hugging the element, then a sky ring outside it, so focus reads on
+ * bright box art and on dark panels alike. Drawn outside the parent's bounds; keep the parent
+ * unclipped, like [ControllerFocusFrame].
+ */
+@Composable
+internal fun BoxScope.FocusRing(
+    visible: Boolean,
+    cornerRadius: Dp,
+    verticalInset: Dp = 0.dp,
+) {
+    if (!visible) return
     Canvas(Modifier.matchParentSize()) {
         val insetPx = verticalInset.toPx().coerceIn(0f, size.height / 2f)
-        drawRoundRect(
-            color = Color.White.copy(alpha = 0.96f),
-            topLeft = Offset(0f, insetPx),
-            size = Size(size.width, (size.height - insetPx * 2f).coerceAtLeast(0f)),
-            cornerRadius = CornerRadius(cornerRadius.toPx(), cornerRadius.toPx()),
-            style = Stroke(width = 3.dp.toPx()),
+        val gap = 3.dp.toPx()
+        val ring = 4.dp.toPx()
+        fun ringAt(outset: Float, width: Float, color: Color) = drawRoundRect(
+            color = color,
+            topLeft = Offset(-outset, insetPx - outset),
+            size = Size(size.width + outset * 2f, (size.height - insetPx * 2f + outset * 2f).coerceAtLeast(0f)),
+            cornerRadius = CornerRadius(cornerRadius.toPx() + outset, cornerRadius.toPx() + outset),
+            style = Stroke(width = width),
         )
+        ringAt(gap / 2f, gap, OpenNowPalette.Background)
+        ringAt(gap + ring / 2f, ring, OpenNowPalette.FocusRing)
     }
 }
 
