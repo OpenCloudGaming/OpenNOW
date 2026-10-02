@@ -1000,7 +1000,8 @@ private fun MainShell(
         val horizontalChrome = maxWidth > maxHeight
         val phoneLandscapeChrome = !tvProfile && !inStream && isPhoneLandscape(maxWidth, maxHeight)
         val portraitChrome = !inStream && maxHeight >= maxWidth
-        val showNavigationRail = !inStream && (tvProfile || phoneLandscapeChrome)
+        // On a dual-screen device the tabs live on the bottom screen; the top keeps only content.
+        val showNavigationRail = !inStream && !bottomScreenHosting && (tvProfile || phoneLandscapeChrome)
         val scrollChromePage = state.page == AppPage.Home || state.page == AppPage.Library
         val wallpaperPage = scrollChromePage || state.page == AppPage.Settings
         val tvCatalogChrome = tvProfile && scrollChromePage
@@ -1039,7 +1040,7 @@ private fun MainShell(
             containerColor = Color.Transparent,
             contentWindowInsets = if (streamingActive || tvProfile) WindowInsets(0, 0, 0, 0) else ScaffoldDefaults.contentWindowInsets,
             bottomBar = {
-                if (!inStream && !showNavigationRail) {
+                if (!inStream && !showNavigationRail && !bottomScreenHosting) {
                     Column {
                         if (showMinimizedQueueDock) {
                             MinimizedQueueDock(
@@ -1869,15 +1870,16 @@ private fun TopStatusBar(
     showChromeScrim: Boolean = true,
     content: @Composable RowScope.() -> Unit = {},
 ) {
-    val barScrim = if (showChromeScrim) ChromeScrim else Color.Transparent
+    // V3 chrome: one glass pill with a white seam, floating over the art.
+    val barScrim = if (showChromeScrim) OpenNowPalette.GlassStrong else Color.Transparent
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .padding(start = 8.dp, top = 8.dp, end = 8.dp, bottom = 5.dp),
-        shape = RoundedCornerShape(24.dp),
+        shape = RoundedCornerShape(OpenNowRadius.full),
         color = barScrim,
-        border = if (LocalGameCardBordersEnabled.current) {
-            BorderStroke(0.5.dp, Color.White)
+        border = if (showChromeScrim || LocalGameCardBordersEnabled.current) {
+            BorderStroke(1.dp, OpenNowPalette.Seam)
         } else {
             null
         },

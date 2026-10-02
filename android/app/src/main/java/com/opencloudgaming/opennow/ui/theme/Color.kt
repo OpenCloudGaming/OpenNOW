@@ -11,21 +11,35 @@ import com.opencloudgaming.opennow.StreamQualityLevel
  * `Color(0x..)` literals were scattered inline. Anything that appears more than once belongs here.
  */
 object OpenNowPalette {
-    // Core surfaces
-    val Background = Color(0xff090b0d)
-    val Panel = Color(0xff11161a)
-    val PanelAlt = Color(0xff171d22)
+    // Core surfaces (OpenNOW V3 "console" look: deep navy, glass, white seams)
+    val Background = Color(0xff0b0f1a)
+    val Panel = Color(0xff141826)
+    val PanelAlt = Color(0xff1b2030)
 
     // Text
-    val TextPrimary = Color(0xffeef3f5)
-    val TextMuted = Color(0xff98a4aa)
+    val TextPrimary = Color(0xfff5f7fb)
+    val TextMuted = Color(0xff9aa3b5)
+
+    // V3 glass chrome and pastel accents, shared by the top screen and the bottom-screen deck.
+    /** Pill and panel fill over art or video. */
+    val Glass = Color(0x9e0e1018)
+    val GlassStrong = Color(0xd10e1018)
+    /** 14% white hairline around glass pills and tiles. */
+    val Seam = Color.White.copy(alpha = 0.14f)
+    /** Controller focus ring: sky ring separated from the tile by a navy gap. */
+    val FocusRing = Color(0xff7fd4ff)
+    val PastelViolet = Color(0xffa78bfa)
+    val PastelSky = Color(0xff7fd4ff)
+    val PastelYellow = Color(0xffffd166)
+    val PastelMint = Color(0xff6ee7b7)
+    val PastelCoral = Color(0xffff8a80)
 
     /** Sits on top of the accent — near-black so bright accents stay legible. */
     val OnAccent = Color(0xff08090c)
 
     // Accents (mirrors UiAccent in Models.kt)
-    val AccentDefault = Color(0xff6af0a0)
-    val AccentDefaultSecondary = Color(0xfff4fff7)
+    val AccentDefault = Color(0xff7fd4ff)
+    val AccentDefaultSecondary = Color(0xffffffff)
     val AccentPixel = Color(0xff8ab4f8)
     val AccentHotPink = Color(0xffff4fb8)
     val AccentLime = Color(0xffc7ef6b)
@@ -50,9 +64,9 @@ object OpenNowPalette {
      * stop disagreeing about what "bad" looks like. Good deliberately has no tint of its own —
      * colouring the normal case just makes the abnormal one harder to spot.
      */
-    val StatusGood = AccentDefault
+    val StatusGood = PastelMint
     val StatusFair = Color(0xffffc95a)
-    val StatusPoor = AccentCoral
+    val StatusPoor = PastelCoral
 
     /** Advisory notices that are neither an error nor a quality reading — privacy disclosures. */
     val StatusNotice = Color(0xffffc266)
@@ -69,24 +83,24 @@ object OpenNowPalette {
      * Row fills inside a panel over video. Opaque tones rather than translucent white, which used
      * to composite differently against every frame of the game behind it.
      */
-    val PanelRowRest = Color(0xff1b2228)
-    val PanelRowFocused = Color(0xff28323a)
+    val PanelRowRest = Color(0xff1b2131)
+    val PanelRowFocused = Color(0xff283044)
 
     /** Hairline that keeps an overlay's edge visible against a bright frame. */
-    val PanelHairline = Color.White.copy(alpha = 0.08f)
+    val PanelHairline = Seam
 
     /** Full-screen wash behind a stream overlay. */
     val StreamScrim = Color.Black.copy(alpha = 0.55f)
 
     // Imagery
     /** Backdrop for box art that is still loading, empty, or failed. */
-    val ImagePlaceholder = Color(0xff0e1317)
+    val ImagePlaceholder = Color(0xff111626)
 
     /** Base tone the shimmer band sweeps across. */
-    val ShimmerBase = Color(0xff0d1216)
+    val ShimmerBase = Color(0xff0f1422)
 
     /** Backdrop behind the catalog wallpaper. */
-    val WallpaperBackdrop = Color(0xff07100b)
+    val WallpaperBackdrop = Color(0xff080b14)
 }
 
 /**
