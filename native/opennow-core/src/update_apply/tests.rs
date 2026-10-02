@@ -847,6 +847,63 @@ fn advisory_lock_distinguishes_live_helper_from_stale_outcomes() {
     assert!(!helper_is_running(&prepared).unwrap());
 }
 
+#[cfg(windows)]
+#[test]
+fn atomic_metadata_publication_waits_for_a_windows_reader() {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::sync::mpsc::{RecvTimeoutError, channel};
+    use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+
+    for share_mode in [None, Some(FILE_SHARE_READ)] {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("outcome.json");
+        atomic_json(&path, &"prepared").unwrap();
+        let mut options = OpenOptions::new();
+        options.read(true);
+        if let Some(mode) = share_mode {
+            options.share_mode(mode);
+        }
+        let reader = options.open(&path).unwrap();
+        std::thread::scope(|scope| {
+            let (sender, receiver) = channel();
+            let path = &path;
+            scope.spawn(move || {
+                sender.send(atomic_json(path, &"waitingForExit")).unwrap();
+            });
+            let pending = receiver.recv_timeout(Duration::from_millis(100));
+            assert_eq!(fs::read(path).unwrap(), b"\"prepared\"");
+            drop(reader);
+            assert!(
+                matches!(pending, Err(RecvTimeoutError::Timeout)),
+                "{pending:?}"
+            );
+            receiver
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+        });
+        assert_eq!(read_json::<String>(&path, 1024).unwrap(), "waitingForExit");
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn atomic_metadata_publication_fails_safely_for_a_persistent_windows_reader() {
+    let directory = TempDir::new().unwrap();
+    let path = directory.path().join("outcome.json");
+    atomic_json(&path, &"prepared").unwrap();
+    let reader = File::open(&path).unwrap();
+    let start = Instant::now();
+    assert!(atomic_json(&path, &"waitingForExit").is_err());
+    assert!(start.elapsed() < Duration::from_secs(5));
+    assert_eq!(read_json::<String>(&path, 1024).unwrap(), "prepared");
+    assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    drop(reader);
+    atomic_json(&path, &"waitingForExit").unwrap();
+    assert_eq!(read_json::<String>(&path, 1024).unwrap(), "waitingForExit");
+}
+
 #[cfg(unix)]
 #[test]
 fn transaction_lock_releases_ownership_with_an_inherited_descriptor_open() {

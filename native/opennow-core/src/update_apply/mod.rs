@@ -1473,12 +1473,14 @@ fn atomic_json(path: &Path, value: &impl Serialize) -> Result<(), String> {
         #[cfg(windows)]
         {
             use std::os::windows::ffi::OsStrExt;
+            use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION};
             use windows_sys::Win32::Storage::FileSystem::{
                 MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
             };
             let old: Vec<_> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
             let new: Vec<_> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-            if unsafe {
+            let start = Instant::now();
+            while unsafe {
                 MoveFileExW(
                     old.as_ptr(),
                     new.as_ptr(),
@@ -1486,7 +1488,18 @@ fn atomic_json(path: &Path, value: &impl Serialize) -> Result<(), String> {
                 )
             } == 0
             {
-                return Err(std::io::Error::last_os_error().to_string());
+                let error = std::io::Error::last_os_error();
+                if !matches!(
+                    error.raw_os_error().map(|code| code as u32),
+                    Some(ERROR_ACCESS_DENIED | ERROR_SHARING_VIOLATION)
+                ) || start.elapsed() >= Duration::from_secs(1)
+                {
+                    return Err(format!(
+                        "Cannot publish update metadata at {}: {error}",
+                        path.display()
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(10));
             }
         }
         #[cfg(not(windows))]
