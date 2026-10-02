@@ -4520,6 +4520,185 @@ internal fun gameDescriptionForDetails(game: GameInfo): String? =
     game.description?.takeIf { it.isNotBlank() }
         ?: game.longDescription?.takeIf { it.isNotBlank() }
 
+/** Detail rows for the bottom screen's control panel, in the details sheet's order. */
+internal fun gameDetailPairs(game: GameInfo): List<Pair<String, String>> =
+    gameDetailRows(game).map { it.label to it.value }
+
+/** Store the Play button launches without a long press: the saved default, else the first one. */
+internal fun defaultPlayStoreName(game: GameInfo, defaultVariantId: String?): String? {
+    val variants = launchableGameVariants(game.variants)
+    val variant = variants.firstOrNull { it.id == defaultVariantId } ?: variants.firstOrNull()
+    return variant?.store?.let(::gameStoreDisplayName)?.takeIf { it.isNotBlank() }
+}
+
+/**
+ * AYN Tour board 08, top screen: the details sheet as a poster. Every action lives on the bottom
+ * screen, so nothing here covers the art; A still plays and Y still favorites for controller use,
+ * and L1/R1 page the backdrop through the screenshots.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun DualScreenGamePoster(
+    game: GameInfo,
+    onPlay: () -> Unit,
+    onFavorite: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val context = LocalContext.current
+    val screenshots = remember(game.id) {
+        game.screenshotUrls.map(String::trim).filter(String::isNotBlank).distinct()
+    }
+    var shot by remember(game.id) { mutableIntStateOf(-1) }
+    val backdrop = screenshots.getOrNull(shot)?.let { optimizedNvidiaImageUrl(it, wideImageRequestWidth(context)) }
+        ?: gameHeroImageUrl(context, game)
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(game.id) { runCatching { focusRequester.requestFocus() } }
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Background)
+            .focusRequester(focusRequester)
+            .onPreviewKeyEvent { event ->
+                if (event.type != KeyEventType.KeyUp) return@onPreviewKeyEvent false
+                when {
+                    isTvActivateKey(event) -> onPlay()
+                    event.key == Key.ButtonY -> onFavorite()
+                    event.key == Key.ButtonL1 && screenshots.isNotEmpty() -> shot = (shot - 1).coerceAtLeast(-1)
+                    event.key == Key.ButtonR1 && screenshots.isNotEmpty() -> shot = (shot + 1).coerceAtMost(screenshots.lastIndex)
+                    else -> return@onPreviewKeyEvent false
+                }
+                true
+            }
+            .focusable(),
+    ) {
+        UrlImage(backdrop, Modifier.fillMaxSize())
+        Box(
+            Modifier
+                .matchParentSize()
+                .background(Brush.horizontalGradient(listOf(Background.copy(alpha = 0.9f), Background.copy(alpha = 0.35f), Color.Transparent))),
+        )
+        Box(
+            Modifier
+                .matchParentSize()
+                .background(Brush.verticalGradient(0.55f to Color.Transparent, 1f to Background.copy(alpha = 0.9f))),
+        )
+        Column(
+            Modifier
+                .fillMaxHeight()
+                .fillMaxWidth(0.66f)
+                .padding(start = 20.dp, top = 12.dp, end = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(
+                Modifier
+                    .clip(CircleShape)
+                    .background(OpenNowPalette.GlassStrong)
+                    .border(1.dp, OpenNowPalette.Seam, CircleShape)
+                    .clickable(onClick = onDismiss)
+                    .padding(start = 4.dp, top = 4.dp, end = 12.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Box(Modifier.size(22.dp).clip(CircleShape).background(Color.White), contentAlignment = Alignment.Center) {
+                    Text("B", color = Background, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Black)
+                }
+                Text(stringResource(R.string.action_back), color = Color.White, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Black)
+            }
+            val genres = game.genres.map(String::trim).filter(String::isNotBlank).map(::formatGameMetadataLabel)
+                .filterNot(::isNoisyGameTag).distinctBy { it.lowercase(Locale.US) }.take(4)
+            if (genres.isNotEmpty()) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    genres.forEach { genre ->
+                        Text(
+                            genre,
+                            color = Color.White,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Black,
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .background(Color.White.copy(alpha = 0.14f))
+                                .padding(horizontal = 10.dp, vertical = 4.dp),
+                        )
+                    }
+                }
+            }
+            Text(
+                game.title,
+                color = Color.White,
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Black,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            val owned = ownedStoreLabels(game)
+            val stores = (owned.ifEmpty { availableStoreLabels(game) }).joinToString(", ")
+            if (stores.isNotBlank()) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Box(
+                        Modifier.size(7.dp).clip(CircleShape)
+                            .background(if (owned.isEmpty()) OpenNowPalette.PastelCoral else OpenNowPalette.PastelMint),
+                    )
+                    Text(
+                        if (owned.isEmpty()) "${stringResource(R.string.catalog_not_owned)} · $stores" else "Owned on $stores",
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.ExtraBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            gameDescriptionForDetails(game)?.let {
+                Text(
+                    it,
+                    color = Color.White.copy(alpha = 0.78f),
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        if (screenshots.isNotEmpty()) {
+            Row(
+                Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(start = 20.dp, bottom = 14.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                screenshots.take(POSTER_SHOT_COUNT).forEachIndexed { index, url ->
+                    val shape = RoundedCornerShape(12.dp)
+                    Box(
+                        Modifier
+                            .width(96.dp)
+                            .aspectRatio(16f / 9f)
+                            .clip(shape)
+                            .border(if (index == shot) 2.dp else 1.dp, Color.White.copy(alpha = if (index == shot) 1f else 0.4f), shape)
+                            .clickable { shot = if (shot == index) -1 else index },
+                    ) {
+                        UrlImage(optimizedNvidiaImageUrl(url, POSTER_THUMB_REQUEST_WIDTH), Modifier.fillMaxSize())
+                    }
+                }
+                if (screenshots.size > POSTER_SHOT_COUNT) {
+                    Box(
+                        Modifier
+                            .width(64.dp)
+                            .aspectRatio(16f / 9f * 64f / 96f)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(OpenNowPalette.GlassStrong)
+                            .border(1.dp, OpenNowPalette.Seam, RoundedCornerShape(12.dp)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text("+${screenshots.size - POSTER_SHOT_COUNT}", color = Color.White, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Black)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private const val POSTER_SHOT_COUNT = 4
+private const val POSTER_THUMB_REQUEST_WIDTH = 320
+
 private fun gameHeroImageUrl(context: Context, game: GameInfo?): String? {
     val url = game?.screenshotUrl?.takeIf { it.isNotBlank() }
         ?: game?.tvBannerUrl?.takeIf { it.isNotBlank() }

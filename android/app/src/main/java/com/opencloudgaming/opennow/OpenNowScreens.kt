@@ -1351,7 +1351,47 @@ private fun MainShell(
                         }
                         null -> if (libraryRemoval) ({ viewModel.removeLibraryGame(game) }) else null
                     }
-                    ControllerModalOverlay(onDismissRequest = viewModel::clearSelectedGame) {
+                    if (bottomScreenHosting) {
+                        // Board 08: the poster stays on top and every control moves to the bottom.
+                        val favorite = game.id in state.settings.favoriteGameIds
+                        val playGame = {
+                            viewModel.clearSelectedGame()
+                            viewModel.play(game)
+                        }
+                        val details = remember(game) { gameDetailPairs(game) }
+                        ControllerModalOverlay(onDismissRequest = viewModel::clearSelectedGame) {
+                            DualScreenGamePoster(
+                                game = game,
+                                onPlay = playGame,
+                                onFavorite = { viewModel.updateFavorites(game.id) },
+                                onDismiss = viewModel::clearSelectedGame,
+                            )
+                        }
+                        HostOnBottomScreen(scale = 1f) {
+                            DualScreenGameDetailsPanel(
+                                game = game,
+                                favorite = favorite,
+                                playStore = defaultPlayStoreName(game, state.settings.defaultGameVariantIds[game.id]),
+                                details = details,
+                                connectedTvName = state.localTvConnector.connectedTvName,
+                                removeLabel = removeLabel,
+                                removeConfirmationText = removeConfirmationText,
+                                removeEnabled = state.removingLibraryGameId == null,
+                                onPlay = playGame,
+                                onChooseStore = {
+                                    viewModel.clearSelectedGame()
+                                    viewModel.chooseStore(game)
+                                },
+                                onFavorite = { viewModel.updateFavorites(game.id) },
+                                onPlayOnTv = {
+                                    viewModel.clearSelectedGame()
+                                    viewModel.playOnLocalTv(game)
+                                },
+                                onRemove = onRemove,
+                                onClose = viewModel::clearSelectedGame,
+                            )
+                        }
+                    } else ControllerModalOverlay(onDismissRequest = viewModel::clearSelectedGame) {
                         // Keep details in the app's window so the activated artwork and destination
                         // banner share coordinates and the first visible frame follows the haptic.
                         GameDetailsSheet(

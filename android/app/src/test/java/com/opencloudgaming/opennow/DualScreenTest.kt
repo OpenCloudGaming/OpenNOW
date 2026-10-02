@@ -57,16 +57,6 @@ class DualScreenTest {
     }
 
     @Test
-    fun gameActionsFollowTheDetailsSheetOnlyWhileBrowsing() {
-        val game = GameInfo(id = "elden", title = "Elden Ring")
-        val browsing = signedIn.copy(page = AppPage.Library, selectedGame = game)
-
-        assertEquals(game, dualScreenSnapshot(browsing, stats = null).selectedGame)
-        assertNull(dualScreenSnapshot(browsing.copy(page = AppPage.Settings), stats = null).selectedGame)
-        assertNull(dualScreenSnapshot(browsing.copy(streamStatus = "queue"), stats = null).selectedGame)
-    }
-
-    @Test
     fun deckSortAndFilterOnlyOffersTheStoreGroupsTheTopScreenShowed() {
         val store = CatalogFilterGroup("digital_store", "Store", listOf(CatalogFilterOption("steam", "STEAM", "Steam", "digital_store", "Store")))
         val hidden = CatalogFilterGroup("maturity", "Maturity", listOf(CatalogFilterOption("m", "M", "Mature", "maturity", "Maturity")))

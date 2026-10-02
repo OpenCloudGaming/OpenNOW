@@ -936,12 +936,9 @@
     "dual_wake_hint": "Bottom screen is off. Tap to wake it.",
     "dual_play": "Play",
     "dual_play_hold_hint": "Hold to choose a store",
-    "dual_choose_store": "Choose store",
     "dual_favorite": "Favorite",
     "dual_favorited": "Saved",
     "dual_close": "Close",
-    "dual_detail_publisher": "Publisher",
-    "dual_detail_membership": "Membership",
     "dual_detail_stores": "Stores",
     "dual_settings_hint_title": "Move to a setting on the top screen",
     "dual_settings_hint_body": "Its controls show up here as big touch targets.",
@@ -958,7 +955,6 @@
     "dual_region_auto": "Automatic",
     "dual_ping_ms": "%1$d ms",
     "dual_details": "Details",
-    "dual_detail_genres": "Genres",
     "dual_in_queue": "In queue",
     "dual_starting": "Starting",
     "dual_profile_resolution": "Resolution",
@@ -969,6 +965,7 @@
     "dual_stat_loss_label": "Loss",
     "dual_settings_eyebrow": "Focused setting",
     "dual_preset_auto": "Auto",
-    "dual_filters_reset": "%1$d active · Reset"
+    "dual_filters_reset": "%1$d active · Reset",
+    "dual_play_on_store": "Play on %1$s"
   }
 }
