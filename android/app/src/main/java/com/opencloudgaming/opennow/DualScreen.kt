@@ -10,6 +10,13 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.view.Display
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -51,6 +58,9 @@ data class DualScreenSnapshot(
     val queuePosition: Int?,
     val targetFps: Int?,
     val stats: StreamRuntimeStats?,
+    val settings: AppSettings,
+    /** Game whose details sheet is open on the top screen. */
+    val selectedGame: GameInfo?,
 )
 
 internal fun dualScreenPhase(state: OpenNowUiState): DualScreenPhase = when {
@@ -79,6 +89,8 @@ internal fun dualScreenSnapshot(state: OpenNowUiState, stats: StreamRuntimeStats
         queuePosition = state.queuePosition,
         targetFps = (state.activeStreamSettings ?: state.settings.stream).fps,
         stats = stats.takeIf { phase == DualScreenPhase.Streaming },
+        settings = state.settings,
+        selectedGame = state.selectedGame.takeIf { phase == DualScreenPhase.Browse && state.page != AppPage.Settings },
     )
 }
 
@@ -92,7 +104,50 @@ sealed interface DualScreenAction {
     data object OpenStreamMenu : DualScreenAction
     data object ToggleStatsOverlay : DualScreenAction
     data object EndSession : DualScreenAction
+    data class Play(val game: GameInfo) : DualScreenAction
+    data class ChooseStore(val game: GameInfo) : DualScreenAction
+    data class ToggleFavorite(val gameId: String) : DualScreenAction
+    data object CloseGameDetails : DualScreenAction
 }
+
+/**
+ * A large touch version of the setting that holds controller focus on the top screen. The
+ * callbacks are the setting's own, so the bottom screen writes through exactly the same path.
+ */
+internal sealed interface SettingInspection {
+    val label: String
+    val description: String?
+
+    data class Switch(
+        override val label: String,
+        override val description: String?,
+        val checked: Boolean,
+        val enabled: Boolean,
+        val onCheckedChange: (Boolean) -> Unit,
+    ) : SettingInspection
+
+    data class Choice(
+        override val label: String,
+        override val description: String?,
+        val options: List<ChoiceMenuOption>,
+        val selectedLabel: String,
+        val onSelect: (String) -> Unit,
+    ) : SettingInspection
+
+    data class Slider(
+        override val label: String,
+        override val description: String?,
+        val value: Float,
+        val min: Float,
+        val max: Float,
+        val step: Float,
+        val valueText: String,
+        val onChange: (Float) -> Unit,
+    ) : SettingInspection
+}
+
+/** Top-screen UI whose rendering currently lives on the bottom screen. */
+internal class HostedBottomContent(val owner: Any, val scale: Float, val content: @Composable () -> Unit)
 
 /**
  * Process-wide link between MainActivity (top screen, owns the ViewModel) and
@@ -109,6 +164,14 @@ object DualScreenBridge {
     )
     val actions: SharedFlow<DualScreenAction> = _actions.asSharedFlow()
 
+    private val _deckReady = MutableStateFlow(false)
+    /** True while the deck activity exists, so top-screen UI may move onto the bottom screen. */
+    val deckReady: StateFlow<Boolean> = _deckReady.asStateFlow()
+
+    /** Compose state, read by the deck's composition and written by the top screen's. */
+    internal val hostedContent = mutableStateOf<HostedBottomContent?>(null)
+    internal val inspection = mutableStateOf<Pair<Any, SettingInspection>?>(null)
+
     private var deck: WeakReference<Activity>? = null
     private var mainDispatcher: WeakReference<Activity>? = null
 
@@ -122,10 +185,30 @@ object DualScreenBridge {
 
     internal fun attachDeck(activity: Activity) {
         deck = WeakReference(activity)
+        _deckReady.value = true
     }
 
     internal fun detachDeck(activity: Activity) {
-        if (deck?.get() === activity) deck = null
+        if (deck?.get() === activity) {
+            deck = null
+            _deckReady.value = false
+        }
+    }
+
+    internal fun host(owner: Any, scale: Float, content: @Composable () -> Unit) {
+        hostedContent.value = HostedBottomContent(owner, scale, content)
+    }
+
+    internal fun release(owner: Any) {
+        if (hostedContent.value?.owner === owner) hostedContent.value = null
+    }
+
+    internal fun inspect(owner: Any, inspection: SettingInspection) {
+        this.inspection.value = owner to inspection
+    }
+
+    internal fun clearInspection(owner: Any) {
+        if (inspection.value?.first === owner) inspection.value = null
     }
 
     internal fun runningDeck(): Activity? = deck?.get()?.takeUnless { it.isFinishing || it.isDestroyed }
@@ -271,6 +354,35 @@ class DualScreenController(
             DualScreenAction.OpenStreamMenu -> viewModel.requestStreamMenu()
             DualScreenAction.ToggleStatsOverlay -> viewModel.toggleStreamStatsOverlay()
             DualScreenAction.EndSession -> viewModel.stopStream()
+            is DualScreenAction.Play -> viewModel.play(action.game)
+            is DualScreenAction.ChooseStore -> viewModel.chooseStore(action.game)
+            is DualScreenAction.ToggleFavorite -> viewModel.updateFavorites(action.gameId)
+            DualScreenAction.CloseGameDetails -> viewModel.clearSelectedGame()
         }
+    }
+}
+
+/** Whether top-screen UI should currently render on the bottom screen instead. */
+@Composable
+internal fun rememberBottomScreenHosting(settings: AppSettings): Boolean {
+    val deckReady by DualScreenBridge.deckReady.collectAsState()
+    return deckReady && settings.bottomScreenEnabled
+}
+
+/** Panels laid out for the 6" screen get a denser scale so they fit the 3.92" one unchanged. */
+internal const val BOTTOM_SCREEN_PANEL_SCALE = 0.85f
+internal const val BOTTOM_SCREEN_PICKER_SCALE = 0.72f
+
+/**
+ * Renders [content] on the bottom screen while this call stays in the composition. The content
+ * keeps reading the caller's state, so both screens see one source of truth.
+ */
+@Composable
+internal fun HostOnBottomScreen(scale: Float = BOTTOM_SCREEN_PANEL_SCALE, content: @Composable () -> Unit) {
+    val latest by rememberUpdatedState(content)
+    val owner = remember { Any() }
+    DisposableEffect(owner, scale) {
+        DualScreenBridge.host(owner, scale) { latest() }
+        onDispose { DualScreenBridge.release(owner) }
     }
 }

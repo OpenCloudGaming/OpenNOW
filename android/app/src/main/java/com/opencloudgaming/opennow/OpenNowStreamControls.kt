@@ -680,6 +680,9 @@ private fun ControlBitrateLiveHint(
     }
 }
 
+/** Size of Stream Controls when it floats over the video on a single screen. */
+internal val StreamControlsOverlayModifier = Modifier.padding(14.dp).fillMaxWidth(0.94f).fillMaxHeight(0.72f)
+
 @Composable
 internal fun StreamControlsPanel(
     gameTitle: String,
@@ -755,6 +758,8 @@ internal fun StreamControlsPanel(
     onOpenUpdate: () -> Unit,
     onButtonTone: () -> Unit,
     highlightDone: Boolean = false,
+    /** Floating overlay size by default; the bottom screen passes a full-size modifier. */
+    modifier: Modifier = StreamControlsOverlayModifier,
     onClose: () -> Unit,
 ) {
     val doneFocusRequester = remember { FocusRequester() }
@@ -769,11 +774,7 @@ internal fun StreamControlsPanel(
         runCatching { doneFocusRequester.requestFocus() }
     }
     Surface(
-        modifier = Modifier
-            .padding(14.dp)
-            .fillMaxWidth(0.94f)
-            .fillMaxHeight(0.72f)
-            .streamTouchPassthrough(PASSTHROUGH_ID_PANEL),
+        modifier = modifier.streamTouchPassthrough(PASSTHROUGH_ID_PANEL),
         shape = RoundedCornerShape(OpenNowRadius.lg + 2.dp),
         // Firmer than the old 0.93: at that alpha TextMuted did not reliably clear 4.5:1 over
         // bright gameplay. The hairline keeps the panel's edge visible against a light frame.

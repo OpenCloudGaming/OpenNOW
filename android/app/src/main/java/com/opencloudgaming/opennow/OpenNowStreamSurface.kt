@@ -115,6 +115,7 @@ internal fun StreamScreen(
         initialVideoFrameRendered = true
     }
     var controlsOpen by remember { mutableStateOf(false) }
+    val controlsOnBottomScreen = rememberBottomScreenHosting(state.settings)
     var exitConfirmOpen by remember { mutableStateOf(false) }
     var keyboardOpen by remember { mutableStateOf(false) }
     var keyboardValue by remember(session?.sessionId) { mutableStateOf(TextFieldValue()) }
@@ -895,12 +896,7 @@ internal fun StreamScreen(
             // Keep the decoded frame untouched when the Quick Menu is open. A full-screen
             // translucent wash over SurfaceViewRenderer looked like a stuck grey compositor
             // layer on physical devices; the panel has its own opaque fill and border.
-            AnimatedVisibility(
-                visible = controlsOpen,
-                enter = fadeIn() + slideInVertically(initialOffsetY = { it / 4 }) + scaleIn(initialScale = 0.96f),
-                exit = fadeOut() + slideOutVertically(targetOffsetY = { it / 4 }) + scaleOut(targetScale = 0.96f),
-                modifier = Modifier.align(Alignment.BottomEnd),
-            ) {
+            val streamControlsPanel: @Composable (Modifier?) -> Unit = { panelModifier ->
                 StreamControlsPanel(
                     gameTitle = game?.title ?: stringResource(R.string.settings_section_stream),
                     status = (state.queuePosition?.let { "Queue $it" } ?: streamState).takeUnless(::shouldHideStreamStatusText),
@@ -1204,6 +1200,7 @@ internal fun StreamScreen(
                     onOpenUpdate = viewModel::performAndroidUpdatePrimaryAction,
                     onButtonTone = playButtonTone,
                     highlightDone = streamGuideOpen && streamGuideStep == StreamGuideStep.PressDone,
+                    modifier = panelModifier ?: StreamControlsOverlayModifier,
                     onClose = {
                         controlsOpen = false
                         if (streamGuideOpen && streamGuideStep == StreamGuideStep.PressDone) {
@@ -1211,6 +1208,20 @@ internal fun StreamScreen(
                         }
                     },
                 )
+            }
+            if (controlsOnBottomScreen) {
+                // Dual-screen devices: the panel renders on the bottom screen and the video on
+                // this one stays uncovered. Same composable and state, so behaviour is identical.
+                if (controlsOpen) HostOnBottomScreen { streamControlsPanel(Modifier.fillMaxSize()) }
+            } else {
+                AnimatedVisibility(
+                    visible = controlsOpen,
+                    enter = fadeIn() + slideInVertically(initialOffsetY = { it / 4 }) + scaleIn(initialScale = 0.96f),
+                    exit = fadeOut() + slideOutVertically(targetOffsetY = { it / 4 }) + scaleOut(targetScale = 0.96f),
+                    modifier = Modifier.align(Alignment.BottomEnd),
+                ) {
+                    streamControlsPanel(null)
+                }
             }
             if (keyboardOpen) {
                 if (streamKeyboardImeVisible) {
