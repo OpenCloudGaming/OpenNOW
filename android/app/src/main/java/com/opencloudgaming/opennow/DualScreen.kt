@@ -1,6 +1,7 @@
 package com.opencloudgaming.opennow
 
 import android.app.Activity
+import android.app.ActivityManager
 import android.app.ActivityOptions
 import android.content.Context
 import android.content.Intent
@@ -28,7 +29,10 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
 import java.lang.ref.WeakReference
 import java.util.Locale
@@ -270,6 +274,19 @@ object DualScreenBridge {
         if (mainDispatcher?.get() === activity) mainDispatcher = null
     }
 
+    /**
+     * Gives the top screen back the system's focused display. A touch on the bottom screen while
+     * its window is focusable, or launching the deck, makes the bottom display the focused one;
+     * once the deck is non-focusable again the next controller button has no focused window to go
+     * to, which Android reports as "OpenNOW isn't responding" after five seconds.
+     */
+    internal fun returnFocusToTopScreen() {
+        val main = mainDispatcher?.get()?.takeUnless { it.isFinishing || it.isDestroyed } ?: return
+        val manager = main.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager ?: return
+        runCatching { manager.moveTaskToFront(main.taskId, 0) }
+            .onFailure { Log.w(DUAL_SCREEN_LOG_TAG, "Could not return focus to the top screen", it) }
+    }
+
     /** Hardware buttons that land on the bottom screen are handed to the game window instead. */
     internal fun forwardToMain(dispatch: (Activity) -> Boolean): Boolean {
         val main = mainDispatcher?.get()?.takeUnless { it.isFinishing || it.isDestroyed } ?: return false
@@ -324,15 +341,17 @@ class DualScreenController(
                     launch {
                         DualScreenBridge.actions.collect(::apply)
                     }
+                    // The snapshot sorts the whole catalogue for Up next; build it off the main
+                    // thread so a busy state stream cannot starve input dispatch.
                     combine(viewModel.state, viewModel.streamRuntimeStats, bottomDisplay) { state, stats, displayId ->
-                        Triple(state, stats, displayId)
-                    }.collect { (state, stats, displayId) ->
-                        DualScreenBridge.publish(dualScreenSnapshot(state, stats))
                         val wanted = displayId != null &&
                             state.settings.bottomScreenEnabled &&
                             !state.androidPictureInPictureActive &&
                             !state.androidTvProfile
-                        if (wanted) showDeck(displayId!!) else finishDeck()
+                        dualScreenSnapshot(state, stats) to displayId.takeIf { wanted }
+                    }.conflate().flowOn(Dispatchers.Default).collect { (snapshot, displayId) ->
+                        DualScreenBridge.publish(snapshot)
+                        if (displayId != null) showDeck(displayId) else finishDeck()
                     }
                 } finally {
                     displayManager.unregisterDisplayListener(displayListener)
