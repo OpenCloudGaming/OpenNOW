@@ -505,6 +505,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private val authRestoreMutex = Mutex()
     @Volatile
     private var latestStreamRuntimeStats: TimedStreamRuntimeStats? = null
+    private val _streamRuntimeStats = MutableStateFlow<StreamRuntimeStats?>(null)
+    val streamRuntimeStats: StateFlow<StreamRuntimeStats?> = _streamRuntimeStats.asStateFlow()
     private var streamReportLaunchProfile: StreamReportLaunchProfile? = null
     private val diagnosticStreamHistory = DiagnosticStreamHistory()
     @Volatile private var lastDiagnosticSession: SessionInfo? = null
@@ -1504,15 +1506,20 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         localTvConnector.sendRemoteAction(action, value)
     }
 
+    /** Opens Stream Controls over the running stream; used by the TV remote and the bottom screen. */
+    fun requestStreamMenu() {
+        _state.update { it.copy(remoteStreamMenuRequestToken = it.remoteStreamMenuRequestToken + 1) }
+    }
+
+    fun toggleStreamStatsOverlay() {
+        _state.update { it.copy(remoteStatsToggleRequestToken = it.remoteStatsToggleRequestToken + 1) }
+    }
+
     private fun handleLocalTvRemoteRequest(request: LocalTvRemoteRequest) {
         recordDebugEvent("tv-remote", "Accepted encrypted action=${request.action}")
         when (request.action) {
-            "open_stream_menu" -> _state.update {
-                it.copy(remoteStreamMenuRequestToken = it.remoteStreamMenuRequestToken + 1)
-            }
-            "toggle_stream_stats" -> _state.update {
-                it.copy(remoteStatsToggleRequestToken = it.remoteStatsToggleRequestToken + 1)
-            }
+            "open_stream_menu" -> requestStreamMenu()
+            "toggle_stream_stats" -> toggleStreamStatsOverlay()
             "stop_stream" -> stopStream()
             "apply_recommended" -> applyStreamPreset(StreamPreset.Recommended)
             "set_codec" -> request.value
@@ -3005,6 +3012,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         lastDiagnosticSessionReport = null
         lastDiagnosticSession = null
         latestStreamRuntimeStats = null
+        _streamRuntimeStats.value = null
         diagnosticStreamHistory.clear()
         streamReportLaunchProfile = StreamReportLaunchProfile(
             gameTitle = gameTitle,
@@ -3636,6 +3644,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             sessionId = sessionId,
             stats = stats,
         )
+        _streamRuntimeStats.value = stats
         if (accumulator == null || sessionId == null) return
         streamRuntimeDiagnosticsSampler.sampleIfDue { diagnostics, includeDevice ->
             // A completed sample belongs only to the session/report that requested it.

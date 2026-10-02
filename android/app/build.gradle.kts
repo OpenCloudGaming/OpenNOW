@@ -119,7 +119,8 @@ val generateTouchButtonResources = tasks.register("generateTouchButtonResources"
         val source = groovy.json.JsonSlurper().parse(inputs.files.singleFile) as Map<*, *>
         val strings = (source["androidTouchButtons"] as Map<*, *>) +
             (source["androidStreamInput"] as Map<*, *>) +
-            (source["androidSetup"] as Map<*, *>)
+            (source["androidSetup"] as Map<*, *>) +
+            (source["androidDualScreen"] as Map<*, *>)
         fun xml(value: String) = value.replace("&", "&amp;").replace("<", "&lt;")
             .replace(">", "&gt;").replace("\"", "\\\"").replace("'", "\\'")
         val output = outputs.files.singleFile.resolve("values/touch_buttons.xml")

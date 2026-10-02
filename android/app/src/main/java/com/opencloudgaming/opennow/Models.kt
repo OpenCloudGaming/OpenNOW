@@ -38,6 +38,18 @@ enum class ColorQuality {
 }
 
 @Serializable
+enum class BottomScreenPlayMode {
+    @kotlinx.serialization.SerialName("stream_deck")
+    StreamDeck,
+
+    @kotlinx.serialization.SerialName("trackpad")
+    Trackpad,
+
+    @kotlinx.serialization.SerialName("off")
+    Off,
+}
+
+@Serializable
 enum class StreamPreset {
     @kotlinx.serialization.SerialName("recommended")
     Recommended,
@@ -588,6 +600,10 @@ data class AppSettings(
      * the cloud catalogue most of the time wants that fold to survive leaving the Library.
      */
     val localAppsCollapsed: Boolean = false,
+    /** Shows the companion deck on a second built-in display such as the AYN Thor's bottom screen. */
+    val bottomScreenEnabled: Boolean = true,
+    /** What the second display shows while a stream is running. */
+    val bottomScreenPlayMode: BottomScreenPlayMode = BottomScreenPlayMode.StreamDeck,
     /** Whether the New games added hero exists at all in handheld landscape. */
     val landscapeNewGamesHero: Boolean = true,
     /** Folded hero state, kept separately so Interface settings remain the permanent off switch. */
