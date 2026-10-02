@@ -57,6 +57,12 @@ trait SecretStore: Send + Sync {
     fn get(&self, user_id: &str) -> Result<Option<String>, String>;
     fn set(&self, user_id: &str, encoded: &str) -> Result<(), String>;
     fn delete(&self, user_id: &str) -> Result<(), String>;
+    fn remove_all_local(
+        &self,
+        _remove_account: &dyn Fn(&str) -> Result<(), String>,
+    ) -> Result<(), String> {
+        Ok(())
+    }
     fn is_plaintext(&self, _user_id: &str) -> bool {
         false
     }
@@ -472,14 +478,26 @@ impl CredentialVault {
     }
 
     pub fn remove_all(&self) -> Result<(), String> {
-        let metadata = self.read_metadata()?;
-        let mut user_ids = self.discovered_user_ids()?;
-        user_ids.extend(metadata.suppressed);
         let mut failures = Vec::new();
+        let discovered = self.read_metadata().and_then(|metadata| {
+            let mut user_ids = self.discovered_user_ids()?;
+            user_ids.extend(metadata.suppressed);
+            Ok(user_ids)
+        });
+        let user_ids = match discovered {
+            Ok(ids) => ids,
+            Err(error) => {
+                failures.push(error);
+                Vec::new()
+            }
+        };
         for user_id in user_ids {
             if let Err(error) = self.remove(&user_id) {
                 failures.push(error);
             }
+        }
+        if let Err(error) = self.store.remove_all_local(&|user_id| self.remove(user_id)) {
+            failures.push(error);
         }
         if failures.is_empty() {
             Ok(())

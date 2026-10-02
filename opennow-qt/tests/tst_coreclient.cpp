@@ -34,6 +34,27 @@ class CoreClientTest final : public QObject
     Q_OBJECT
 
 private slots:
+    void deliversSettingsChangesBeforeTheirAcknowledgements()
+    {
+        CoreClient client;
+        QVERIFY(client.start(fakeCorePath()));
+        QTRY_COMPARE_WITH_TIMEOUT(client.state(), QStringLiteral("ready"), 2'000);
+        QStringList delivered;
+        connect(&client, &CoreClient::eventReceived, this, [&](const QString &name, const QJsonObject &) {
+            if (name == QStringLiteral("settings.changed"))
+                delivered.append(QStringLiteral("event"));
+        });
+        connect(&client, &CoreClient::responseReceived, this, [&](const QString &, const QJsonObject &result) {
+            if (result.value(QStringLiteral("key")).toString() == QStringLiteral("launchInConsoleMode"))
+                delivered.append(QStringLiteral("response"));
+        });
+        QVERIFY(!client.request(QStringLiteral("settings.set"),
+            {{QStringLiteral("key"), QStringLiteral("launchInConsoleMode")},
+             {QStringLiteral("value"), true}}).isEmpty());
+        QTRY_COMPARE_WITH_TIMEOUT(delivered.size(), 2, 2'000);
+        QCOMPARE(delivered, (QStringList{QStringLiteral("event"), QStringLiteral("response")}));
+    }
+
     void acknowledgesOnlyAcceptedCreateResponses()
     {
         CoreClient client;

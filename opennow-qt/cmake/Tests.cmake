@@ -254,6 +254,8 @@ if(BUILD_TESTING)
     set_tests_properties(opennow-theme-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
     qt_add_resources(opennow-qt "theme-settings-acceptance"
         PREFIX "/acceptance" BASE tests FILES tests/ThemeSettingsAcceptance.qml)
+    qt_add_resources(opennow-qt "pending-settings-client"
+        PREFIX "/acceptance" BASE tests FILES tests/PendingSettingsClient.qml)
     qt_add_resources(opennow-qt "gpu-settings-acceptance"
         PREFIX "/acceptance" BASE tests FILES tests/GpuSettingsAcceptance.qml)
     foreach(surface desktop console)

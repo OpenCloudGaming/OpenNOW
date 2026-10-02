@@ -7,6 +7,7 @@ QtObject {
     property var picker: null
     property var owner: ShellStore.settingsOwnerState
     property int settingAccountRefreshes: 0
+    property Component consoleSettings: Component { SettingsScreen { visible: false } }
     property QtObject hdrOutput: QtObject {
         property bool supported: false
         property int outputMode: 0
@@ -45,12 +46,12 @@ QtObject {
     }
     function verifyOrdinarySettingWrites() {
         const saved = owner.settings
-        owner.settings = Object.assign({}, owner.settings, {windowWidth:900})
+        owner.acceptSettings({settings:Object.assign({}, owner.settings, {windowWidth:900}), keyboardLayouts:owner.keyboardLayouts})
         const before = client.calls.length
         for (const width of [1000, 1010, 1020, 1030]) {
-            owner.applySetting("windowWidth", width)
             owner.setSetting("windowWidth", width)
         }
+        check(owner.settings.windowWidth === 1030, "ordinary setters publish the latest optimistic value")
         check(client.calls.length === before + 1, "ordinary writes have only one request in flight per key")
         check(!owner.ownsConfirmedSetting("windowWidth"), "ordinary controls retain their optimistic policy")
         const first = client.calls[before].id
@@ -62,6 +63,8 @@ QtObject {
         check(client.calls.length === before + 2 && client.calls[before + 1].params.value === 1030,
             "ordinary writes coalesce to the last intent")
         const latest = client.calls[before + 1].id
+        owner.acceptSettingsChange({key:"windowWidth", value:1000})
+        check(owner.settings.windowWidth === 1030, "a delayed prior event cannot replace the in-flight latest intent")
         owner.acceptSettingsChange({key:"windowWidth", value:1030})
         owner.acceptResponse(latest, {key:"windowWidth", value:1030})
         check(!owner.acceptResponse(first, {key:"windowWidth", value:1000}), "late ordinary replies are unowned")
@@ -80,10 +83,23 @@ QtObject {
             "a rejected older write still dispatches the latest intent")
         owner.acceptSettingsChange({key:"windowWidth", value:1060})
         owner.acceptResponse(retry, {key:"windowWidth", value:1060})
+        owner.setSetting("windowWidth", 1065)
+        const successfulHead = owner.settingWrites.windowWidth.id
+        owner.setSetting("windowWidth", 1069)
+        owner.acceptSettingsChange({key:"windowWidth", value:1065})
+        owner.acceptResponse(successfulHead, {key:"windowWidth", value:1065})
+        owner.acceptFailure(owner.settingWrites.windowWidth.id, "Synthetic failed tail")
+        check(owner.settings.windowWidth === 1065, "a rejected tail restores the successful head rather than the unsaved intent")
+        owner.setSetting("windowWidth", 1060)
+        owner.acceptResponse(owner.settingWrites.windowWidth.id, {key:"windowWidth",value:1060})
         owner.setSetting("windowWidth", 1070)
         const disconnected = owner.settingWrites.windowWidth.id
         owner.setSetting("windowWidth", 1080)
         const beforeDisconnect = client.calls.length
+        owner.acceptSettings({settings:Object.assign({}, owner.confirmedSettings, {windowWidth:900, windowHeight:901}),
+            keyboardLayouts:owner.keyboardLayouts})
+        check(owner.settings.windowWidth === 1080 && owner.confirmedSettings.windowWidth === 1060
+            && owner.settings.windowHeight === 901, "a settings snapshot preserves pending intent and its confirmed rollback value")
         owner.ready = false
         check(!owner.settingWrites.windowWidth, "readiness loss releases pending writes before failure callbacks")
         owner.acceptFailure(disconnected, "Synthetic core disconnect")
@@ -142,13 +158,17 @@ QtObject {
             fixture.settingAccountRefreshes += 1
             owner.refreshAccountServices = refresh
         }
-        owner.applySetting("identifyAsSteamDeck", true)
+        owner.acceptSettingsChange({key:"identifyAsSteamDeck", value:false})
         owner.setSetting("identifyAsSteamDeck", true)
         const identity = owner.settingWrites.identifyAsSteamDeck.id
+        owner.setSetting("identifyAsSteamDeck", false)
         check(settingAccountRefreshes === 0, "device identity does not refresh entitlements before saving")
         owner.acceptSettingsChange({key:"identifyAsSteamDeck", value:true})
         check(settingAccountRefreshes === 0, "owned identity events wait for acknowledgement")
         owner.acceptResponse(identity, {key:"identifyAsSteamDeck", value:true})
+        owner.acceptFailure(owner.settingWrites.identifyAsSteamDeck.id, "Synthetic rejected identity tail")
+        check(owner.settings.identifyAsSteamDeck === true,
+            "a failed identity tail restores the persisted head before refreshing entitlements")
         owner.setSetting("gameCollections", [{id:"settings-test", name:"Settings test", gameIds:[]}])
         const collection = owner.settingWrites.gameCollections.id
         check(!owner.acceptResponse(collection, {key:"gameCollections", value:[]})
@@ -164,7 +184,85 @@ QtObject {
         check(reconnectedCollection !== disconnectedCollection,
             "collection saves after reconnect do not wait for a disconnected request")
         owner.acceptResponse(reconnectedCollection, {key:"gameCollections", value:[]})
-        owner.settings = saved
+        owner.acceptSettings({settings:saved, keyboardLayouts:owner.keyboardLayouts})
+    }
+    function verifyRapidSettingCallers(parent) {
+        const saved = owner.settings
+        const catalog = ShellStore.catalogOwnerState
+        owner.acceptSettings({settings:Object.assign({}, saved, {favoriteGameIds:[], hiddenGameIds:[],
+            homeTileSizes:{}, reducedMotion:false}), keyboardLayouts:owner.keyboardLayouts})
+        for (const game of [{id:"rapid-a"}, {id:"rapid-b"}]) {
+            catalog.addToHome(game)
+            catalog.toggleHidden(game)
+            catalog.setHomeTileSize(game, "wide")
+        }
+        check(JSON.stringify(owner.settings.favoriteGameIds) === '["rapid-a","rapid-b"]'
+            && JSON.stringify(owner.settings.hiddenGameIds) === '["rapid-a","rapid-b"]',
+            "real catalog actions derive each new replacement from the latest optimistic arrays")
+        check(owner.settings.homeTileSizes["rapid-a"] === "wide" && owner.settings.homeTileSizes["rapid-b"] === "wide",
+            "real tile edits preserve independently edited map entries")
+        for (const key of ["favoriteGameIds", "hiddenGameIds", "homeTileSizes"]) {
+            while (owner.settingWrites[key]) {
+                const write = owner.settingWrites[key]
+                owner.acceptSettingsChange({key:key,value:write.value})
+                owner.acceptResponse(write.id, {key:key,value:write.value})
+            }
+        }
+        check(owner.settings.favoriteGameIds.length === 2 && owner.settings.hiddenGameIds.length === 2,
+            "serialized catalog writes persist both independent edits")
+        const consolePage = consoleSettings.createObject(parent)
+        check(consolePage, "production console settings can be created")
+        consolePage.activate({toggle:true,key:"reducedMotion"})
+        const first = owner.settingWrites.reducedMotion.id
+        consolePage.activate({toggle:true,key:"reducedMotion"})
+        check(owner.settings.reducedMotion === false && owner.settingWrites.reducedMotion.next === false,
+            "two production console toggles return to the original value before persistence")
+        owner.acceptResponse(first, {key:"reducedMotion",value:true})
+        owner.acceptSettingsChange({key:"reducedMotion",value:true})
+        check(owner.settings.reducedMotion === false, "an older delayed event cannot undo the second console toggle")
+        owner.acceptResponse(owner.settingWrites.reducedMotion.id, {key:"reducedMotion",value:false})
+        consolePage.destroy()
+        owner.acceptSettings({settings:saved, keyboardLayouts:owner.keyboardLayouts})
+    }
+    function verifyCoupledSettingWrites() {
+        const saved = owner.settings
+        for (const disconnect of [false, true]) {
+            for (const acknowledged of [false, true]) {
+                owner.acceptSettings({settings:Object.assign({}, saved, {themePack:"nocturne", appTheme:"dark",
+                    themeAccentOverride:false}), keyboardLayouts:owner.keyboardLayouts})
+                owner.setSetting("themePack", "bone")
+                const theme = owner.settingWrites.themePack.id
+                owner.setSetting("appTheme", "auto")
+                const appearance = owner.settingWrites.appTheme.id
+                if (acknowledged) owner.acceptResponse(appearance, {key:"appTheme", value:"auto"})
+                if (disconnect) owner.ready = false
+                else owner.acceptFailure(theme, "Synthetic rejected theme")
+                check(owner.settings.themePack === "nocturne"
+                    && owner.settings.appTheme === (acknowledged || !disconnect ? "auto" : "dark"),
+                    "theme rollback uses current confirmed values and preserves surviving sibling intent")
+                if (disconnect) owner.ready = true
+                else if (!acknowledged) {
+                    owner.acceptFailure(appearance, "Synthetic rejected appearance")
+                    check(owner.settings.appTheme === "dark", "a rejected sibling restores its own confirmed value")
+                }
+            }
+        }
+        owner.acceptSettings({settings:Object.assign({}, saved, {themePack:"nocturne", appTheme:"auto",
+            themeAccentOverride:true}), keyboardLayouts:owner.keyboardLayouts})
+        owner.setSetting("themePack", "nocturne")
+        check(owner.settings.appTheme === "dark" && owner.settings.themeAccentOverride === false,
+            "reselecting the current theme resets its appearance and accent overrides optimistically")
+        owner.acceptFailure(owner.settingWrites.themePack.id, "Synthetic rejected same-theme reset")
+        check(owner.settings.appTheme === "auto" && owner.settings.themeAccentOverride === true,
+            "a rejected same-theme reset restores confirmed overrides")
+        owner.setSetting("appAccentColor", "blue")
+        const accent = owner.settingWrites.appAccentColor.id
+        owner.setSetting("themePack", "bone")
+        owner.acceptFailure(owner.settingWrites.themePack.id, "Synthetic rejected later theme")
+        check(owner.settings.themeAccentOverride === true,
+            "rollback restores an earlier pending accent write's coupled intent")
+        owner.acceptFailure(accent, "Synthetic rejected accent")
+        owner.acceptSettings({settings:saved, keyboardLayouts:owner.keyboardLayouts})
     }
     function run(parent) {
         owner.settingsActive = false
@@ -245,6 +343,8 @@ QtObject {
         check(owner.settings.gameLanguage === "it_IT", "legitimate unowned settings events still apply")
         owner.acceptSettingsChange({key:"gameLanguage",value:"zh_Hant_TW"})
         verifyOrdinarySettingWrites()
+        verifyRapidSettingCallers(parent)
+        verifyCoupledSettingWrites()
         const beforeCoupled = owner.settings
         owner.acceptSettingsChange({key:"themePack",value:"bone",changes:{appTheme:"light",themeAccentOverride:false}})
         check(owner.settings.themePack === "bone" && owner.settings.appTheme === "light"

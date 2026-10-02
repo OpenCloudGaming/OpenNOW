@@ -110,6 +110,7 @@ trait NvstSessionResources {
         DecodeProgressPolicy {
             stall: Duration::from_millis(nvst_rtsp::VIDEO_TIMEOUT_MS),
             keyframe_grace: Duration::from_millis(nvst_rtsp::VIDEO_TIMEOUT_MS),
+            recovery_grace: Duration::from_millis(nvst_rtsp::VIDEO_TIMEOUT_MS),
         }
     }
     fn request_keyframe(&self);
@@ -1919,12 +1920,13 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
             } else {
                 None
             };
+            let policy = resources.decode_progress_policy();
             let decode_event = feedback_state.decode_progress.poll(
                 &timings,
                 feedback_state.transport_frame_progress_stalled,
                 last_assembled_at,
                 Instant::now(),
-                resources.decode_progress_policy(),
+                policy,
             );
             if let Some(decode_event) = decode_event {
                 match decode_event {
@@ -1960,8 +1962,27 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
                         ) {
                             break;
                         }
+                        feedback_state.decode_recovery_deadline =
+                            Some(Instant::now() + policy.recovery_grace);
                     }
                 }
+            }
+            if feedback_state.decode_progress.stage() != DecodeProgressStage::RecoveryRequired {
+                feedback_state.decode_recovery_deadline = None;
+            }
+            if feedback_state
+                .decode_recovery_deadline
+                .is_some_and(|deadline| Instant::now() >= deadline)
+            {
+                emit_nvst_terminal(
+                    output,
+                    lifecycle,
+                    generation,
+                    &resources,
+                    "nvst-recovery-exhausted",
+                    "Decoder did not resume output after NVST recovery".into(),
+                );
+                break;
             }
         }
         if feedback_state.telemetry_started
@@ -2351,6 +2372,7 @@ struct NvstMediaFeedbackState {
     peak_bitrate_mbps: f64,
     decode_timings: Option<DecodeTimingsReport>,
     decode_progress: DecodeProgressWatchdog,
+    decode_recovery_deadline: Option<Instant>,
     transport_frame_progress_stalled: bool,
     start_id: String,
 }
@@ -2370,6 +2392,7 @@ impl NvstMediaFeedbackState {
             peak_bitrate_mbps: 0.0,
             decode_timings: None,
             decode_progress: DecodeProgressWatchdog::default(),
+            decode_recovery_deadline: None,
             transport_frame_progress_stalled: false,
             start_id: String::new(),
         }
@@ -3305,6 +3328,7 @@ mod tests {
                 .unwrap_or_else(|| DecodeProgressPolicy {
                     stall: Duration::from_millis(nvst_rtsp::VIDEO_TIMEOUT_MS),
                     keyframe_grace: Duration::from_millis(nvst_rtsp::VIDEO_TIMEOUT_MS),
+                    recovery_grace: Duration::from_millis(nvst_rtsp::VIDEO_TIMEOUT_MS),
                 })
         }
 
@@ -4543,6 +4567,118 @@ mod tests {
     }
 
     #[test]
+    fn decode_recovery_has_a_terminal_deadline_unless_output_resumes() {
+        for resumes in [false, true] {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let sender = EventSender::unbounded(sender);
+            let lifecycle = Arc::new(connected_lifecycle());
+            let (feedback_sender, feedback) = std::sync::mpsc::channel();
+            let (transport_sender, nvst_events) = std::sync::mpsc::channel();
+            let resources = TestNvstResources {
+                decode_progress_policy: Some(DecodeProgressPolicy {
+                    stall: Duration::from_millis(200),
+                    keyframe_grace: Duration::from_millis(50),
+                    recovery_grace: Duration::from_millis(300),
+                }),
+                ..Default::default()
+            };
+            let recoveries = Arc::clone(&resources.recoveries);
+            let keyframes = Arc::clone(&resources.keyframe_requests);
+            let stalled_at = Instant::now() - Duration::from_secs(5);
+            let mut report = DecodeTimingsReport {
+                call: None,
+                residence: None,
+                call_window_samples: 0,
+                residence_window_samples: 0,
+                submissions_total: 1,
+                outputs_total: 0,
+                output_calls_total: 0,
+                last_submission_at: Some(stalled_at),
+                last_output_at: None,
+                in_flight: 1,
+                oldest_in_flight_at: Some(stalled_at),
+                epoch: 1,
+                epoch_started_at: Some(stalled_at),
+                unmatched_outputs: 0,
+                unmatched_submissions: 0,
+            };
+            feedback_sender
+                .send(MediaFeedback::DecodeTimings(report))
+                .unwrap();
+            let worker_lifecycle = lifecycle.clone();
+            let worker = thread::spawn(move || {
+                forward_nvst_session_events(
+                    &sender,
+                    &worker_lifecycle,
+                    7,
+                    NvstSessionEventResources {
+                        start_id: "decode-deadline".into(),
+                        nvst_events,
+                        media_feedback: Some(feedback),
+                        captured_input: None,
+                        shortcut_runtime: None,
+                        transport: resources,
+                    },
+                )
+            });
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let mut messages = Vec::new();
+            let mut resumed = false;
+            while Instant::now() < deadline {
+                if let Ok(message) = receiver.recv_timeout(Duration::from_millis(20)) {
+                    let stopped = message["status"] == "stopped";
+                    messages.push(message);
+                    if stopped {
+                        break;
+                    }
+                }
+                if resumes && !resumed && recoveries.load(Ordering::Relaxed) == 1 {
+                    report.last_output_at = Some(Instant::now());
+                    report.outputs_total = 1;
+                    report.in_flight = 0;
+                    report.oldest_in_flight_at = None;
+                    feedback_sender
+                        .send(MediaFeedback::DecodeTimings(report))
+                        .unwrap();
+                    resumed = true;
+                }
+            }
+            let final_state = lock_lifecycle(&lifecycle).state;
+            lock_lifecycle(&lifecycle).generation += 1;
+            worker.join().unwrap();
+            drop(transport_sender);
+            assert_eq!(recoveries.load(Ordering::Relaxed), 1);
+            assert_eq!(keyframes.load(Ordering::Relaxed), 2);
+            if resumes {
+                assert!(resumed);
+                assert_eq!(final_state, State::Connected);
+                assert!(
+                    !messages
+                        .iter()
+                        .any(|message| message["status"] == "stopped")
+                );
+            } else {
+                assert_eq!(final_state, State::Idle);
+                assert_eq!(
+                    messages
+                        .iter()
+                        .filter(|message| message["type"] == "error"
+                            && message["code"] == "nvst-recovery-exhausted")
+                        .count(),
+                    1
+                );
+                assert_eq!(
+                    messages
+                        .iter()
+                        .filter(|message| message["status"] == "stopped")
+                        .count(),
+                    1
+                );
+            }
+        }
+    }
+
+    #[test]
     fn decode_stall_escalates_from_keyframe_to_bounded_recovery() {
         let (sender, receiver) = std::sync::mpsc::channel();
         let sender = EventSender::unbounded(sender);
@@ -4554,6 +4690,7 @@ mod tests {
             decode_progress_policy: Some(DecodeProgressPolicy {
                 stall: Duration::from_millis(200),
                 keyframe_grace: Duration::from_millis(200),
+                recovery_grace: Duration::from_secs(8),
             }),
             frame_stage_timings: Some(FrameStageTimings {
                 last_assembled_at: Some(stalled_at),
@@ -4672,6 +4809,7 @@ mod tests {
             decode_progress_policy: Some(DecodeProgressPolicy {
                 stall: Duration::from_millis(200),
                 keyframe_grace: Duration::from_millis(200),
+                recovery_grace: Duration::from_secs(8),
             }),
             ..Default::default()
         };
@@ -4772,6 +4910,7 @@ mod tests {
             decode_progress_policy: Some(DecodeProgressPolicy {
                 stall: Duration::from_millis(200),
                 keyframe_grace: Duration::from_millis(200),
+                recovery_grace: Duration::from_secs(8),
             }),
             ..Default::default()
         };
@@ -4904,6 +5043,7 @@ mod tests {
             decode_progress_policy: Some(DecodeProgressPolicy {
                 stall: Duration::from_millis(200),
                 keyframe_grace: Duration::from_millis(200),
+                recovery_grace: Duration::from_secs(8),
             }),
             ..Default::default()
         };
@@ -5008,6 +5148,7 @@ mod tests {
             decode_progress_policy: Some(DecodeProgressPolicy {
                 stall: Duration::from_millis(100),
                 keyframe_grace: Duration::from_millis(100),
+                recovery_grace: Duration::from_secs(8),
             }),
             ..Default::default()
         };

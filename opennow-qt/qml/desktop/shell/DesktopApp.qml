@@ -5,6 +5,7 @@ import OpenNOW
 
 FocusScope {
     id: root
+    objectName: "desktopApp"
     anchors.fill: parent
     focus: true
     property bool commandOpen: false
@@ -21,14 +22,16 @@ FocusScope {
         if (requestedContentRoute !== "inserting" && requestedContentRoute !== "stream")
             contentRoute = requestedContentRoute
     }
-    readonly property bool signInVisible: !ShellStore.authRestorePending && (!ShellStore.signedIn || route === "sign-in")
+    readonly property bool profileRouteVisible: route === "accounts" || route === "profile-pin"
+    readonly property bool signInVisible: !profileRouteVisible && !ShellStore.authRestorePending
+        && (!ShellStore.signedIn || route === "sign-in")
     readonly property bool sessionStartingVisible: !signInVisible
         && (route === "inserting" || (streamVisible && !desktopStream.videoReady))
     readonly property bool streamVisible: !signInVisible && route === "stream"
     readonly property bool streamPointerLocked: streamVisible && desktopStream.streamPointerLocked
     readonly property var frameGenerationStats: streamVisible ? desktopStream.frameGenerationStats : ({})
     readonly property var swapStats: streamVisible ? desktopStream.swapStats : ({})
-    readonly property bool shellVisible: !signInVisible && !sessionStartingVisible && !streamVisible
+    readonly property bool shellVisible: !profileRouteVisible && !signInVisible && !sessionStartingVisible && !streamVisible
 
     function titleForRoute(value) {
         if (value === "updates") return qsTr("Updates")
@@ -105,11 +108,28 @@ FocusScope {
         anchors.fill: parent
         visible: root.signInVisible
         z: 50
-        // Restoring an existing session must not discard a requested deep link
-        // (including screenshot/smoke-test routes). A completed interactive
-        // sign-in still returns to Home as expected.
-        onSignedIn: if (root.route === "sign-in") AppController.navigate("home")
+        onSignedIn: if (root.route === "sign-in")
+            AppController.navigate(ShellStore.activeSession && ShellStore.sessionOwnerSignedIn() ? "stream" : "home")
     }
+
+    Item {
+        anchors.fill: parent
+        visible: root.profileRouteVisible
+        z: 150
+        ShellViewport {
+            objectName: "desktopProfileViewport"
+            desktopSurfaceActive: false
+            Loader {
+                objectName: "desktopProfileLoader"
+                anchors.fill: parent
+                active: root.profileRouteVisible
+                sourceComponent: root.route === "profile-pin" ? profilePinComponent : accountsComponent
+                onLoaded: item.forceActiveFocus()
+            }
+        }
+    }
+    Component { id: accountsComponent; AccountsScreen {} }
+    Component { id: profilePinComponent; ProfilePinScreen {} }
 
     DesktopShell {
         id: shell

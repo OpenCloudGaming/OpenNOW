@@ -6,6 +6,7 @@ use opennow_streamer_platform::DecodeTimingsReport;
 pub struct DecodeProgressPolicy {
     pub stall: Duration,
     pub keyframe_grace: Duration,
+    pub recovery_grace: Duration,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -171,6 +172,7 @@ mod tests {
         DecodeProgressPolicy {
             stall: Duration::from_secs(8),
             keyframe_grace: Duration::from_secs(4),
+            recovery_grace: Duration::from_secs(8),
         }
     }
 

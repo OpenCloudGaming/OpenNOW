@@ -5,6 +5,7 @@
 #include <QHash>
 #include <QJSValue>
 #include <QQmlApplicationEngine>
+#include <QQmlComponent>
 #include <QQmlContext>
 #include <QQuickItem>
 #include <QQuickWindow>
@@ -22,6 +23,21 @@ int AcceptanceSession::prepareWindow()
 {
     // Isolated visual acceptance options never start or alter a real account.
     if (m_smokeTest && !m_engine.rootObjects().isEmpty()) {
+        if (m_arguments.contains(u"--smoke-theme-settings"_s)
+                || m_arguments.contains(u"--smoke-renew-settings-actions"_s)
+                || m_arguments.contains(u"--smoke-upscaling"_s)
+                || m_arguments.contains(u"--smoke-background-stream"_s)
+                || m_arguments.contains(u"--smoke-controller-metadata"_s)
+                || m_arguments.contains(u"--smoke-custom-background"_s)
+                || m_arguments.contains(u"--smoke-frame-generation"_s)) {
+            QQmlComponent component(&m_engine, QUrl(u"qrc:/acceptance/PendingSettingsClient.qml"_s));
+            auto *client = component.create();
+            if (!client) {
+                qCritical() << component.errors();
+                return EXIT_FAILURE;
+            }
+            client->setParent(&m_engine);
+        }
         auto *window = qobject_cast<QQuickWindow *>(m_engine.rootObjects().first());
         const auto dimension = [this](const QString &option, int fallback) {
             const auto index = m_arguments.indexOf(option);

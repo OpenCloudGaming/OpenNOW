@@ -84,6 +84,25 @@ start new closes it only after you choose that action. Repeat with the session i
 different region and while the network is unavailable. A failed lookup must offer a
 retry rather than create another session. Verify windowed and fullscreen presentation.
 
+Run `ctest --test-dir build/opennow-qt --output-on-failure -R 'stream-recovery|language-settings|coreclient'`
+for authentication changes during claim/preparation, stale recovery responses, rapid
+settings edits, and settings event/response ordering. With a real account, repeat
+reauthentication during a reconnect: recovery must either continue under the seat's
+original account or wait for that account, without resuming a different account's seat.
+
+With a PIN-protected saved account, restart the application and verify that the account
+picker appears without activating that account. Enter its PIN to unlock it. During a
+stream, restart only the core process and open **Saved accounts** from sign-in. Verify
+that Accounts and PIN entry retain the same native video item, and that a successful
+unlock returns to the stream. Repeat in windowed and fullscreen modes. An explicit
+add-account flow must stay on sign-in rather than reopen the saved-account picker.
+
+Run `cargo test --manifest-path native/opennow-streamer/Cargo.toml -p opennow-streamer-core decode_recovery_has_a_terminal_deadline_unless_output_resumes`
+to inject permanently silent decoder feedback into the real engine loop. The failed
+case must emit one terminal error and stopped status after its recovery grace; resumed
+output must keep the session connected. This fixture does not validate a physical
+driver hung inside a codec call.
+
 ## Alliance login and stream negotiation
 
 Run the native negotiation and Qt orchestration checks before testing an affected provider:

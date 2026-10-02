@@ -508,6 +508,10 @@ void CoreClient::processLine(const QByteArray &line)
 
     if (type == u"event"_s && message.value(u"name"_s).isString()
             && message.value(u"payload"_s).isObject()) {
+        if (message.value(u"name"_s).toString() == u"settings.changed"_s) {
+            emit eventReceived(u"settings.changed"_s, message.value(u"payload"_s).toObject());
+            return;
+        }
         if (m_events.size() >= MaximumQueuedEvents) {
             m_events.dequeue();
             ++m_droppedEvents;

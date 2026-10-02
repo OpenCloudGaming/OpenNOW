@@ -1264,7 +1264,7 @@ fn auto_av1_eligible(settings: &Value, capabilities: &Value, hdr: bool) -> bool 
     {
         return false;
     };
-    if !requested_resolution_pixels(settings).is_some_and(|pixels| pixels <= 5120 * 2880) {
+    if requested_resolution_pixels(settings).is_none_or(|pixels| pixels > 5120 * 2880) {
         return false;
     }
     capabilities["videoBackends"]

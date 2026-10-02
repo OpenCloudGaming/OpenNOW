@@ -177,6 +177,7 @@ ApplicationWindow {
 
     function syncInputOwnership() {
         const shellOwnsInput = !window.active || AppController.route !== "stream"
+            || (window.desktopSurfaceActive && !ShellStore.authRestorePending && !ShellStore.signedIn)
             || ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)
         ControllerInput.inputSuspended = !window.active
             || (shellOwnsInput && ShellStore.settings.controllerMode === false)
@@ -402,7 +403,8 @@ ApplicationWindow {
             if (!window.streamSurfaceLocked)
                 window.lockedStreamDesktopSurface = window.desktopSurfaceActive
             window.streamSurfaceLocked = true
-        } else {
+        } else if (!ShellStore.activeSession
+                   || ["sign-in", "accounts", "profile-pin"].indexOf(window.activeRoute) < 0) {
             window.streamSurfaceLocked = false
         }
         window.synchronizeRenderedSurface()
@@ -587,6 +589,9 @@ ApplicationWindow {
         }
         Connections {
             target: ShellStore
+            function onActiveSessionChanged() { window.updateStreamSurfaceLock() }
+            function onSignedInChanged() { window.syncInputOwnership() }
+            function onAuthRestorePendingChanged() { window.syncInputOwnership() }
             function onStreamerChanged() { window.showConfiguredStreamStats() }
             function onConsoleSurfaceRequested(enabled) { window.applyConsoleSurface(enabled) }
             function onOnboardingCompleted() {

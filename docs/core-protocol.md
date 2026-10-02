@@ -173,7 +173,20 @@ local deletion remains suppressed in the nonsecret account index and is retried 
 startup. Logout removes the JSON fallback even if the OS store remains inaccessible;
 deferred OS-store cleanup keeps the existing suppression semantics. A metadata write
 failure reports pending cleanup and cannot guarantee that suppression survives restart.
-Logout still selects the next saved account when available.
+Logout selects the next saved account only when it does not require a profile PIN.
+Automatic restoration, including a new core process, never activates a PIN-protected
+profile. Its credentials remain saved for an explicit PIN-verified switch. An already
+unlocked session remains active within the current core process.
+
+Qt loads saved profiles independently of signed-in account services. After a signed-out
+startup completes, saved profiles open in the existing account picker. An active stream
+does not trigger automatic navigation. Its user can open saved accounts explicitly from
+sign-in and unlock a profile without replacing the native video item.
+
+Logout-all also scans local fallback files independently of the account index. Missing
+or corrupt metadata cannot prevent best-effort plaintext cleanup. Recoverable identities
+are suppressed and removed from the OS store too. Unreadable identities or failed cleanup
+remain `pending`; corrupt metadata is not silently overwritten.
 
 The core persists one versioned 64-hex device identity. Upgrades freeze the previously
 derived identity using the current environment; if that environment changed before the
@@ -250,6 +263,12 @@ saved preferences. Incomplete or unsupported accepted color is rejected before n
 attachment. The native ABI and protocol version are unchanged; transport terminal
 events add `termination: {source: "nvst-transport", code, resumable: null}`, preserving
 unknown cloud-session disposition rather than assigning a normal-exit reason to EOF.
+
+After a decoder-stall recovery attempt, the native engine allows one further video-timeout
+interval for decoded output to resume. Output progress or a decoder-epoch change clears
+that deadline. Otherwise the engine emits `nvst-recovery-exhausted` and a stopped status
+once, allowing Qt to recover the session instead of leaving silent media connected forever.
+This does not classify the remote cloud session as ended.
 
 ## Implemented core methods
 
@@ -1053,6 +1072,13 @@ Each successful settings write publishes `settings.changed` before its own
 response. A client that starts its next per-key write from that response has
 already consumed the previous event. Other response/event pairs, including
 `settings.reset`, retain their existing response-first order.
+
+Qt delivers `settings.changed` before the corresponding response rather than deferring
+it through the general event queue. The settings owner serializes writes per key, keeps
+ordinary controls optimistic, and retains a confirmed snapshot for failure rollback.
+Later edits use the latest intended value; a failed queued tail restores the last confirmed
+value and its coupled changes. Confirmation-sensitive settings and collection callbacks
+retain their existing behavior.
 
 Settings writes use a temporary file plus recoverable backup and normalize
 compatibility-sensitive values. `audioOutputDevice` is an opaque native output identifier

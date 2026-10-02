@@ -60,8 +60,6 @@ FocusScope {
     }
 
     function setSetting(key, value) {
-        if (!ShellStore.settingsOwnerState.ownsConfirmedSetting(key))
-            ShellStore.applySetting(key, value)
         ShellStore.setSetting(key, value)
         if (key === "resolution")
             Qt.callLater(root.clampFpsToEntitlement)

@@ -127,6 +127,74 @@ impl SecretStore for JsonFallbackStore {
         local.and(secure)
     }
 
+    fn remove_all_local(
+        &self,
+        remove_account: &dyn Fn(&str) -> Result<(), String>,
+    ) -> Result<(), String> {
+        match fs::symlink_metadata(&self.root) {
+            Ok(metadata) if metadata.is_dir() => (),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            _ => return Err("Local session directory cleanup is pending".into()),
+        }
+        let entries =
+            fs::read_dir(&self.root).map_err(|_| "Local session directory cleanup is pending")?;
+        let mut failure = None;
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => {
+                    failure.get_or_insert_with(|| "Local session entry cleanup is pending".into());
+                    continue;
+                }
+            };
+            let path = entry.path();
+            let Some(extension @ ("json" | "tmp")) =
+                path.extension().and_then(|value| value.to_str())
+            else {
+                continue;
+            };
+            if !path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .is_some_and(|stem| {
+                    stem.len() == 64 && stem.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+            {
+                continue;
+            }
+            let session = if entry.file_type().is_ok_and(|kind| kind.is_file()) {
+                match read_bounded(&path) {
+                    Ok(bytes) => serde_json::from_slice::<super::AuthSession>(&bytes).ok(),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                    Err(_) => None,
+                }
+            } else {
+                None
+            };
+            if let Some(session) = session.filter(|session| {
+                !session.user.user_id.trim().is_empty()
+                    && self.path(&session.user.user_id).with_extension(extension) == path
+            }) {
+                if let Err(error) = remove_account(&session.user.user_id) {
+                    failure.get_or_insert(error);
+                }
+            } else {
+                failure.get_or_insert_with(|| {
+                    "Local session identity could not be recovered; secure cleanup is pending"
+                        .into()
+                });
+            }
+            match fs::remove_file(&path) {
+                Ok(()) => (),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+                Err(_) => {
+                    failure.get_or_insert_with(|| "Could not remove the local session file".into());
+                }
+            }
+        }
+        failure.map_or(Ok(()), Err)
+    }
+
     fn is_plaintext(&self, user_id: &str) -> bool {
         self.path(user_id).exists()
     }
@@ -249,6 +317,94 @@ mod tests {
         vault.save(&session).unwrap();
         assert_eq!(vault.persistence_state(&session), "secure-store");
         assert!(!directory.path().join("fallback-sessions").exists());
+    }
+
+    #[test]
+    fn logout_all_cleans_orphans_without_readable_metadata() {
+        for corrupt in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let secure = Store::default();
+            let vault =
+                CredentialVault::with_store(directory.path().into(), Box::new(secure.clone()));
+            let session = sample_session("orphan");
+            vault.save(&session).unwrap();
+            secure.unavailable.store(true, Ordering::SeqCst);
+            vault.save(&session).unwrap();
+            secure.unavailable.store(false, Ordering::SeqCst);
+            if corrupt {
+                fs::write(directory.path().join("accounts.json"), "invalid metadata").unwrap();
+            } else {
+                fs::remove_file(directory.path().join("accounts.json")).unwrap();
+            }
+            let result = vault.remove_all();
+            assert_eq!(result.is_err(), corrupt);
+            assert_eq!(
+                fs::read_dir(directory.path().join("fallback-sessions"))
+                    .unwrap()
+                    .count(),
+                0
+            );
+            assert!(secure.get("orphan").unwrap().is_none());
+            if corrupt {
+                assert_eq!(
+                    fs::read_to_string(directory.path().join("accounts.json")).unwrap(),
+                    "invalid metadata"
+                );
+            } else {
+                assert!(vault.load("orphan").unwrap().is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn logout_all_suppresses_orphans_when_secure_delete_fails() {
+        let directory = tempfile::tempdir().unwrap();
+        let secure = Store::default();
+        let vault = CredentialVault::with_store(directory.path().into(), Box::new(secure.clone()));
+        let session = sample_session("orphan");
+        vault.save(&session).unwrap();
+        secure.unavailable.store(true, Ordering::SeqCst);
+        vault.save(&session).unwrap();
+        fs::remove_file(directory.path().join("accounts.json")).unwrap();
+        assert!(vault.remove_all().is_err());
+        assert_eq!(
+            fs::read_dir(directory.path().join("fallback-sessions"))
+                .unwrap()
+                .count(),
+            0
+        );
+        secure.unavailable.store(false, Ordering::SeqCst);
+        assert!(secure.get("orphan").unwrap().is_some());
+        let reopened =
+            CredentialVault::with_store(directory.path().into(), Box::new(secure.clone()));
+        assert!(reopened.load_active().unwrap().is_none());
+        assert!(reopened.load("orphan").unwrap().is_none());
+        reopened.remove_all().unwrap();
+        assert!(secure.get("orphan").unwrap().is_none());
+    }
+
+    #[test]
+    fn logout_all_removes_invalid_and_partial_local_files_without_skipping_valid_accounts() {
+        let directory = tempfile::tempdir().unwrap();
+        let secure = Store::default();
+        let vault = CredentialVault::with_store(directory.path().into(), Box::new(secure.clone()));
+        let root = directory.path().join("fallback-sessions");
+        let store = JsonFallbackStore::new(root.clone(), Box::new(secure.clone()));
+        fs::create_dir_all(&root).unwrap();
+        let invalid = store.path("invalid");
+        fs::write(&invalid, "invalid-json").unwrap();
+        let encoded = serde_json::to_string(&sample_session("partial")).unwrap();
+        secure.set("partial", &encoded).unwrap();
+        let partial = store.path("partial").with_extension("tmp");
+        fs::write(&partial, encoded).unwrap();
+        let other = root.join("unrelated.json");
+        fs::write(&other, "unrelated").unwrap();
+        assert!(vault.remove_all().is_err());
+        assert!(!invalid.exists());
+        assert!(!partial.exists());
+        assert!(other.exists());
+        assert!(secure.get("partial").unwrap().is_none());
+        assert!(vault.load("partial").unwrap().is_none());
     }
 
     #[test]

@@ -19,9 +19,17 @@ QtObject {
     signal accessibilityAnnounced(string message)
     signal errorReported(string message)
     property var settings: ({})
+    property var confirmedSettings: ({})
     property string providerIdpId: ""
     property string providerCode: ""
     readonly property string selectedRegion: {
+        const write = settingWrites.region
+        if (write) {
+            const provider = write.queued ? write.nextProviderIdpId : write.providerIdpId
+            const generation = write.queued ? write.nextScopeGeneration : write.scopeGeneration
+            if (provider === providerIdpId && generation === scopeGeneration)
+                return String(write.queued ? write.next : write.value)
+        }
         const saved = settings.providerRegions || {}
         if (saved[providerIdpId] !== undefined)
             return String(saved[providerIdpId])
@@ -53,6 +61,7 @@ QtObject {
     property var frameRateDescriptors: []
     property string cancellingRequestId: ""
     property var settingWrites: ({})
+    property double settingWriteSequence: 0
     property string shortcutUpdateRequestId: ""
     property string shortcutUpdateError: ""
     readonly property string languageContext: JSON.stringify([ready, scopeGeneration,
@@ -170,7 +179,16 @@ QtObject {
         if (settingsActive && ready) Qt.callLater(root.ensureGameLanguages)
     }
     onSettingsActiveChanged: if (settingsActive) ensureGameLanguages()
-    onReadyChanged: if (!ready) settingWrites = ({})
+    onReadyChanged: {
+        if (!ready) {
+            const writes = settingWrites
+            settingWrites = ({})
+            for (const key of Object.keys(writes)) {
+                if (!ownsConfirmedSetting(key) && key !== "gameCollections")
+                    reconcileSetting(key, writes[key].coupledKeys)
+            }
+        }
+    }
     onCapabilitiesActiveChanged: if (capabilitiesActive) colorRefresh.restart()
     onColorContextChanged: {
         const request = colorRequestId
@@ -221,17 +239,30 @@ QtObject {
             "nativeVideoBackend", "decoderPreference", "enableHdr"].includes(key)
     }
 
-    function beginSettingWrite(key, value) {
+    function beginSettingWrite(key, value, previousWrite) {
         const writes = Object.assign({}, settingWrites)
         if (writes[key]) {
             writes[key] = Object.assign({}, writes[key], {next:value, queued:true,
-                nextProviderIdpId:providerIdpId, nextScopeGeneration:scopeGeneration})
+                nextProviderIdpId:providerIdpId, nextScopeGeneration:scopeGeneration,
+                sequence:++settingWriteSequence})
             settingWrites = writes
             return writes[key].id
         }
         const id = coreClient.request("settings.set", {key:key, value:value, providerIdpId:providerIdpId}, 15000)
         if (id === "") { errorReported(qsTr("The setting could not be saved.")); return "" }
-        writes[key] = {id:id, value:value, queued:false}
+        const coupledKeys = previousWrite ? previousWrite.coupledKeys
+            : Object.keys(settingValues(key, value)).filter(changedKey => changedKey !== key)
+        const baseline = Object.assign({}, confirmedSettings)
+        for (const changedKey of [key].concat(coupledKeys)) {
+            if (!Object.prototype.hasOwnProperty.call(baseline, changedKey))
+                baseline[changedKey] = settings[changedKey]
+        }
+        confirmedSettings = baseline
+        writes[key] = {id:id, value:value, queued:false, providerIdpId:providerIdpId,
+            scopeGeneration:scopeGeneration,
+            sequence:previousWrite ? previousWrite.sequence : ++settingWriteSequence,
+            coupledKeys:coupledKeys,
+            initialValue:previousWrite ? previousWrite.initialValue : confirmedSettings[key]}
         settingWrites = writes
         return id
     }
@@ -246,6 +277,10 @@ QtObject {
         const writes = Object.assign({}, settingWrites)
         delete writes[key]
         settingWrites = writes
+        if (result) {
+            confirmedSettings = Object.assign({}, confirmedSettings, result.changes || {}, {[key]:result.value})
+            write.coupledKeys = Array.from(new Set(write.coupledKeys.concat(Object.keys(result.changes || {}))))
+        }
         if (result && confirmed) {
             // Coupled values first (per protocol): core repairs persisted together
             // with the primary key, e.g. an explicit codec the new color mode
@@ -253,10 +288,33 @@ QtObject {
             applyCoupledSettings(result.changes)
             applySetting(key, result.value)
         } else if (!result && confirmed && !dispatchNext) errorReported(message)
-        if (result && key === "identifyAsSteamDeck" && !write.queued)
-            Qt.callLater(root.refreshAccountServices)
-        if (dispatchNext) beginSettingWrite(key, write.next)
+        const nextId = dispatchNext ? beginSettingWrite(key, write.next, write) : ""
+        if (!nextId) {
+            if (!confirmed && key !== "gameCollections")
+                reconcileSetting(key, write.coupledKeys)
+            if (key === "identifyAsSteamDeck" && confirmedSettings[key] !== write.initialValue)
+                Qt.callLater(root.refreshAccountServices)
+        }
         return confirmed
+    }
+
+    function reconcileSetting(key, coupledKeys) {
+        const keys = [key].concat(coupledKeys)
+        const values = ({})
+        for (const changedKey of keys)
+            values[changedKey] = confirmedSettings[changedKey]
+        const pendingKeys = Object.keys(settingWrites).sort((a, b) => settingWrites[a].sequence - settingWrites[b].sequence)
+        for (const pendingKey of pendingKeys) {
+            if (ownsConfirmedSetting(pendingKey) || pendingKey === "gameCollections") continue
+            const pending = settingWrites[pendingKey]
+            const changes = settingValues(pendingKey, pending.queued ? pending.next : pending.value)
+            for (const changedKey of keys) {
+                if (Object.prototype.hasOwnProperty.call(changes, changedKey))
+                    values[changedKey] = changes[changedKey]
+            }
+        }
+        for (const changedKey of keys)
+            applySetting(changedKey, values[changedKey])
     }
 
     function acceptResponse(id, result) {
@@ -635,10 +693,18 @@ QtObject {
         if (key === "launchInConsoleMode")
             return requestConsoleSurface(Boolean(value))
         if (!ready) {
+            if (!ownsConfirmedSetting(key) && Object.prototype.hasOwnProperty.call(confirmedSettings, key))
+                reconcileSetting(key, Object.keys(settingValues(key, value)).filter(changedKey => changedKey !== key))
             errorReported(qsTr("The OpenNOW core is not ready"))
             return ""
         }
-        return beginSettingWrite(key, value)
+        const id = beginSettingWrite(key, value)
+        if (id !== "" && !ownsConfirmedSetting(key) && key !== "gameCollections")
+            applySetting(key, value)
+        else if (id === "" && !ownsConfirmedSetting(key)
+                 && Object.prototype.hasOwnProperty.call(confirmedSettings, key))
+            reconcileSetting(key, Object.keys(settingValues(key, value)).filter(changedKey => changedKey !== key))
+        return id
     }
 
     function updateShortcuts(bindings) {
@@ -668,16 +734,19 @@ QtObject {
             root.applySetting(key, changes[key])
     }
 
-    function applySetting(key, value) {
-        const updated = Object.assign({}, settings)
-        updated[key] = value
+    function settingValues(key, value) {
+        const updated = {[key]:value}
         if (key === "themePack") {
             updated.appTheme = value === "bone" || value === "cobalt" ? "light" : "dark"
             updated.themeAccentOverride = false
         } else if (key === "appAccentColor") {
             updated.themeAccentOverride = true
         }
-        settings = updated
+        return updated
+    }
+
+    function applySetting(key, value) {
+        settings = Object.assign({}, settings, settingValues(key, value))
         if (["nativeStreamerExecutablePath", "nativeVideoBackend", "decoderPreference"].indexOf(key) >= 0)
             Qt.callLater(root.refreshStreamerDetection)
         accessibilityAnnounced(qsTr("%1 updated").arg(String(key).split(/(?=[A-Z])/).join(" ")))
@@ -692,13 +761,29 @@ QtObject {
     }
 
     function acceptSettings(result) {
-        root.settings = Object.assign({}, result.settings)
+        const confirmed = Object.assign({}, result.settings)
+        const displayed = Object.assign({}, result.settings)
+        for (const key of Object.keys(settingWrites)) {
+            confirmed[key] = confirmedSettings[key]
+            displayed[key] = settings[key]
+            for (const coupledKey of settingWrites[key].coupledKeys) {
+                confirmed[coupledKey] = confirmedSettings[coupledKey]
+                displayed[coupledKey] = settings[coupledKey]
+            }
+        }
+        if (consoleSurfaceRequestId !== "") {
+            confirmed.launchInConsoleMode = consoleSurfaceConfirmedValue
+            displayed.launchInConsoleMode = consoleSurfaceDesiredValue
+        } else {
+            root.consoleSurfaceConfirmedValue = Boolean(result.settings.launchInConsoleMode)
+            root.consoleSurfaceDesiredValue = root.consoleSurfaceConfirmedValue
+            root.consoleSurfaceInitialized = true
+        }
+        root.confirmedSettings = confirmed
+        root.settings = displayed
         root.keyboardLayouts = result.keyboardLayouts || []
-        root.consoleSurfaceConfirmedValue = Boolean(result.settings.launchInConsoleMode)
-        root.consoleSurfaceDesiredValue = root.consoleSurfaceConfirmedValue
-        root.consoleSurfaceInitialized = true
-        appController.reducedMotion = Boolean(result.settings.reducedMotion)
-        i18n.setLocale(String(result.settings.appLanguage || "system"))
+        appController.reducedMotion = Boolean(displayed.reducedMotion)
+        i18n.setLocale(String(displayed.appLanguage || "system"))
         root.settingsRequestId = ""
     }
 
@@ -729,7 +814,8 @@ QtObject {
 
     function acceptSettingsChange(payload) {
         const write = root.settingWrites[payload.key]
-        if (write && (ownsConfirmedSetting(payload.key) || write.queued)) return
+        if (write) return
+        confirmedSettings = Object.assign({}, confirmedSettings, payload.changes || {}, {[payload.key]:payload.value})
         // Coupled preferences are saved atomically by the core.
         root.applyCoupledSettings(payload.changes)
         if (payload.key === "launchInConsoleMode") {

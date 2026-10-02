@@ -2,6 +2,9 @@ import QtQuick
 import OpenNOW
 
 QtObject {
+    property var unlockSurface: null
+    property var unlockDesktop: null
+    property int unlockCommandCount: 0
     property QtObject runtime: QtObject {
         property bool running: false
         property string lastError: ""
@@ -38,6 +41,88 @@ QtObject {
         }
     }
     function check(ok, message) { if (!ok) throw new Error("Stream recovery: " + message) }
+    function find(item, name) {
+        if (item.objectName === name) return item
+        for (const child of item.children || []) {
+            const result = find(child, name)
+            if (result) return result
+        }
+        return null
+    }
+    function beginLiveProfileUnlock(parent) {
+        ShellStore.cancelSessionRecovery()
+        ShellStore.activeSession = null
+        AppController.navigate("home")
+        const owner = {generation:7,userId:"unlock-owner",providerIdpId:"unlock-provider"}
+        ShellStore.authSession = {user:{userId:owner.userId,displayName:"Locked player"},provider:{idpId:owner.providerIdpId}}
+        ShellStore.authGeneration = 7
+        ShellStore.authRestorePending = false
+        ShellStore.addingAccount = false
+        ShellStore.authState = "signed-in"
+        ShellStore.activeSession = {sessionId:"unlock-seat",status:3,phase:"streaming",ownerScope:owner}
+        ShellStore.streamer = {sessionId:"unlock-seat",status:"streaming",firstFrameLatencyMs:1,marker:"surviving-native"}
+        ShellStore.streamState = "streaming"
+        ShellStore.streamerStopRequestId = ""
+        ShellStore.streamerStartRequestId = ""
+        ShellStore.streamerPrepareRequestId = ""
+        ShellStore.streamStopRequestId = ""
+        ShellStore.sessionStopIntentId = ""
+        ShellStore.streamerStopExpected = false
+        ShellStore.streamerRecoveryExhausted = false
+        ShellStore.coreSessionRestoreId = "unlock-seat"
+        ShellStore.savedAccounts = [{userId:owner.userId,displayName:"Locked player",hasPin:true}]
+        runtime.running = true
+        AppController.navigate("stream")
+        unlockDesktop = find(parent, "desktopApp")
+        unlockSurface = find(parent, "streamSurfaceHost")
+        check(unlockDesktop && unlockSurface, "desktop stream exists before explicit profile unlock")
+        unlockCommandCount = runtime.commands.length
+        ShellStore.authSession = null
+        ShellStore.authState = "idle"
+        const entry = find(parent, "savedAccountsButton")
+        check(entry && entry.visible && entry.width > 0 && entry.height > 0,
+            "saved profiles remain reachable when a protected owner cannot auto-restore")
+        const entryPosition = entry.mapToItem(unlockDesktop, 0, 0)
+        check(entryPosition.x >= 0 && entryPosition.y >= 0
+            && entryPosition.x + entry.width <= unlockDesktop.width
+            && entryPosition.y + entry.height <= unlockDesktop.height,
+            "saved profile entry is on screen without scrolling past provider sign-in")
+        entry.clicked()
+        check(AppController.route === "accounts" && find(parent, "desktopApp") === unlockDesktop
+            && find(parent, "streamSurfaceHost") === unlockSurface,
+            "explicit account navigation retains the desktop and native video item")
+        const loader = find(parent, "desktopProfileLoader")
+        const viewport = find(parent, "desktopProfileViewport")
+        check(loader && loader.item && viewport && viewport.scale > 0
+            && Math.abs(viewport.width * viewport.scale - unlockDesktop.width) < 1
+            && Math.abs(viewport.height * viewport.scale - unlockDesktop.height) < 1,
+            "existing account screens scale to the locked desktop stream window")
+        check(!unlockDesktop.signInVisible && !unlockDesktop.shellVisible && !unlockSurface.inputEnabled
+            && !unlockSurface.captureActive && (ControllerInput.shellCaptureEnabled || ControllerInput.inputSuspended),
+            "account selection owns keyboard, pointer, and controller input instead of gameplay")
+        ShellStore.openPin("unlock", ShellStore.savedAccounts[0])
+        check(AppController.route === "profile-pin" && loader.item && loader.item.heading.indexOf("Locked player") >= 0
+            && find(parent, "streamSurfaceHost") === unlockSurface,
+            "the existing PIN screen replaces only the profile loader")
+        return true
+    }
+    function finishLiveProfileUnlock(parent) {
+        ShellStore.submitPin("1234")
+        check(ShellStore.accountSwitchRequestId !== "", "PIN submission uses the existing account switch request")
+        const owner = {generation:8,userId:"unlock-owner",providerIdpId:"unlock-provider"}
+        client.responseReceived(ShellStore.accountSwitchRequestId, {generation:8,
+            session:{user:{userId:owner.userId,displayName:"Locked player"},provider:{idpId:owner.providerIdpId}}})
+        check(AppController.route === "stream" && find(parent, "desktopApp") === unlockDesktop
+            && find(parent, "streamSurfaceHost") === unlockSurface && unlockSurface.inputEnabled,
+            "unlock returns to the same embedded stream rather than home or a new presenter")
+        ShellStore.pollStreamingSession()
+        client.responseReceived(ShellStore.streamPollRequestId,
+            {scope:owner,session:{sessionId:"unlock-seat",status:3,phase:"streaming",ownerScope:owner}})
+        check(ShellStore.streamer.marker === "surviving-native" && ShellStore.activeSession.sessionId === "unlock-seat"
+            && runtime.commands.slice(unlockCommandCount).every(command => command.type !== "start" && command.type !== "stop"),
+            "PIN unlock and exact-seat reconciliation preserve the native media connection")
+        return true
+    }
     function checkActiveTimerExhaustion() {
         ShellStore.streamPollRequestId = ""
         ShellStore.streamer = {status:"stopped"}
@@ -226,6 +311,180 @@ QtObject {
         ShellStore.streamerStopRequestId = ""
         ShellStore.acceptStreamingSession(null)
         runtime.running = false
+    }
+    function checkAuthenticationRecovery() {
+        const auth = {user:{userId:"recovery-owner",displayName:"Recovery owner"},provider:{idpId:"recovery-provider"}}
+        const owner = {generation:7,userId:"recovery-owner",providerIdpId:"recovery-provider"}
+        const currentOwner = Object.assign({}, owner, {generation:8})
+        const seat = {sessionId:"auth-recovery-seat",status:3,phase:"streaming",ownerScope:owner}
+        for (const phase of ["discovery", "claim", "claim-refresh", "prepare"]) {
+            ShellStore.cancelSessionRecovery()
+            ShellStore.activeSession = seat
+            ShellStore.authSession = auth
+            ShellStore.authGeneration = 7
+            ShellStore.coreSessionRestoreId = ""
+            ShellStore.sessionStopIntentId = ""
+            ShellStore.streamerStopRequestId = ""
+            ShellStore.streamerPrepareRequestId = ""
+            ShellStore.streamerStartRequestId = ""
+            ShellStore.streamStopRequestId = ""
+            ShellStore.streamPollRequestId = ""
+            ShellStore.authSessionRequestId = ""
+            ShellStore.streamerRecoveryExhausted = false
+            ShellStore.sessionReconnectAttempts = 2
+            ShellStore.nativeRuntimeReady = true
+            ShellStore.streamer = {sessionId:seat.sessionId,status:"stopped"}
+            runtime.commands = []
+            if (phase === "prepare") {
+                ShellStore.startNativeStreamer()
+            } else {
+                ShellStore.recoverStreamingSession("recover authentication fixture")
+                if (phase === "claim" || phase === "claim-refresh")
+                    client.responseReceived(ShellStore.recoveryDiscoveryRequestId,
+                        {scope:phase === "claim-refresh" ? currentOwner : owner,session:seat})
+            }
+            const abandoned = phase === "prepare" ? ShellStore.streamerPrepareRequestId
+                : phase.startsWith("claim") ? ShellStore.sessionClaimRequestId : ShellStore.recoveryDiscoveryRequestId
+            const attempts = ShellStore.sessionReconnectAttempts
+            check(abandoned !== "", phase + " starts a real outstanding operation")
+            if (phase === "claim-refresh") {
+                check(ShellStore.authSessionRequestId !== "", "newer recovery scope requests authentication synchronization")
+                client.responseReceived(ShellStore.authSessionRequestId, {session:auth,generation:8})
+            } else {
+                client.eventReceived("auth.session.changed", {session:auth,generation:8})
+            }
+            check(client.cancelled.includes(abandoned) && ShellStore.recoveryDiscoveryRequestId === ""
+                && ShellStore.sessionClaimRequestId === "" && ShellStore.streamerPrepareRequestId === ""
+                && !ShellStore.sessionRecoveryPending,
+                phase + " authentication change retires the operation and its recovery ownership")
+            check(ShellStore.streamerRestartTimer.running && ShellStore.sessionReconnectAttempts === attempts,
+                phase + " authentication change schedules bounded recovery without resetting its budget")
+            client.responseReceived(abandoned, {scope:owner,session:seat})
+            ShellStore.streamerRestartTimer.triggered()
+            check(ShellStore.recoveryDiscoveryRequestId !== "" && ShellStore.sessionReconnectAttempts === attempts + 1,
+                phase + " automatically retries discovery after the matching owner returns")
+            const stale = ShellStore.recoveryDiscoveryRequestId
+            client.responseReceived(stale, {scope:owner,session:seat})
+            check(ShellStore.recoveryDiscoveryRequestId === "" && !ShellStore.sessionRecoveryPending
+                && ShellStore.streamerRestartTimer.running,
+                phase + " rejected stale discovery releases its slot and schedules another bounded retry")
+            ShellStore.retryNativeStreamer()
+            check(ShellStore.recoveryDiscoveryRequestId !== "", phase + " explicit Retry is not blocked by the rejected reply")
+            client.responseReceived(ShellStore.recoveryDiscoveryRequestId,
+                {scope:currentOwner,session:Object.assign({}, seat, {ownerScope:currentOwner})})
+            check(ShellStore.sessionClaimRequestId !== "", phase + " current owner can reclaim the same seat")
+            const foreign = {user:{userId:"different-owner",displayName:"Other owner"},provider:auth.provider}
+            client.eventReceived("auth.session.changed", {session:foreign,generation:9})
+            const beforeForeignRetry = client.calls.length
+            ShellStore.streamerRestartTimer.triggered()
+            ShellStore.retryNativeStreamer()
+            ShellStore.acceptStreamingSession(seat)
+            check(client.calls.slice(beforeForeignRetry).every(call => ["session.poll", "session.claim", "streamer.prepare"].indexOf(call.method) < 0)
+                && ShellStore.sessionClaimRequestId === ""
+                && ShellStore.recoveryDiscoveryRequestId === "" && !ShellStore.streamerRestartTimer.running,
+                phase + " neither automatic nor explicit Retry can claim a foreign account's seat")
+            client.eventReceived("auth.session.changed", {session:auth,generation:10})
+            check(ShellStore.streamerRestartTimer.running, phase + " returning owner rearms suspended media recovery")
+            ShellStore.sessionReconnectAttempts = ShellStore.maximumSessionReconnectAttempts
+            ShellStore.streamerRestartTimer.triggered()
+            check(!ShellStore.streamerRestartTimer.running && ShellStore.streamerRecoveryExhausted,
+                phase + " authentication recovery still exhausts its bounded retry budget")
+        }
+        ShellStore.cancelSessionRecovery()
+        ShellStore.streamerRecoveryExhausted = false
+        ShellStore.sessionReconnectAttempts = 0
+        ShellStore.streamer = {sessionId:seat.sessionId,status:"streaming",marker:"healthy-media"}
+        const commandsBefore = runtime.commands.length
+        client.eventReceived("auth.session.changed", {session:null,generation:11})
+        client.eventReceived("auth.session.changed", {session:auth,generation:12})
+        check(ShellStore.streamer.marker === "healthy-media" && !ShellStore.streamerRestartTimer.running
+            && runtime.commands.length === commandsBefore,
+            "account changes do not stop or restart surviving native media")
+        runtime.running = true
+        ShellStore.recoverStreamingSession("native cleanup during account switch")
+        const nativeStop = ShellStore.streamerStopRequestId
+        check(nativeStop !== "" && ShellStore.sessionRecoveryPending, "native cleanup owns recovery until its acknowledgement")
+        client.eventReceived("auth.session.changed", {session:null,generation:13})
+        runtime.responseReceived({id:nativeStop,type:"ok"})
+        check(!ShellStore.sessionRecoveryPending && ShellStore.recoveryDiscoveryRequestId === ""
+            && ShellStore.sessionRecoveryAwaitingAuth, "native cleanup parks discovery until the owner signs back in")
+        client.eventReceived("auth.session.changed", {session:auth,generation:14})
+        check(ShellStore.streamerRestartTimer.running, "native cleanup recovery resumes for the returning owner")
+        ShellStore.stopStreamingSession()
+        client.eventReceived("auth.session.changed", {session:auth,generation:15})
+        check(!ShellStore.streamerRestartTimer.running && ShellStore.sessionStopIntentId === seat.sessionId,
+            "owner authentication cannot override an explicit stop intent")
+        client.responseReceived(ShellStore.streamStopRequestId, {session:null})
+        ShellStore.streamer = {status:"stopped"}
+        ShellStore.acceptStreamingSession(null)
+        ShellStore.authSession = null
+        ShellStore.authGeneration = 0
+        runtime.running = false
+    }
+    function checkSavedProfileBootstrap() {
+        const profiles = [{userId:"locked-owner",displayName:"Locked profile",hasPin:true}]
+        for (const order of ["accounts-first", "auth-first"]) {
+            const initialRoute = order === "accounts-first" ? "home" : "sign-in"
+            client.state = "stopped"
+            ShellStore.activeSession = null
+            ShellStore.authSession = null
+            ShellStore.savedAccounts = []
+            ShellStore.accountsRequestId = ""
+            ShellStore.authSessionRequestId = ""
+            ShellStore.streamStopRequestId = ""
+            ShellStore.streamCreateRequestId = ""
+            ShellStore.addingAccount = false
+            ShellStore.authState = "idle"
+            ShellStore.authRestorePending = true
+            AppController.navigate(initialRoute)
+            const before = client.calls.length
+            client.state = "ready"
+            const accountsId = ShellStore.accountsRequestId
+            const authId = ShellStore.authSessionRequestId
+            check(accountsId !== "" && authId !== "", order + " independently loads saved profiles during authentication bootstrap")
+            if (order === "accounts-first") {
+                client.responseReceived(accountsId, {accounts:profiles})
+                check(AppController.route === initialRoute, "saved profiles cannot interrupt unfinished authentication restoration")
+                client.responseReceived(authId, {session:null,generation:1})
+            } else {
+                client.responseReceived(authId, {session:null,generation:1})
+                check(AppController.route === initialRoute, "null authentication waits for the saved profile list")
+                client.responseReceived(accountsId, {accounts:profiles})
+            }
+            check(AppController.route === "accounts" && !ShellStore.signedIn,
+                order + " exposes the existing PIN profile selection without bypassing authentication")
+            check(client.calls.slice(before).every(call => !["account.subscription.get", "network.regions.list", "account.connections.list"].includes(call.method)),
+                "loading saved profiles does not require signed-in network services")
+            ShellStore.beginAddAccount()
+            ShellStore.refreshSavedAccounts(true)
+            client.responseReceived(ShellStore.accountsRequestId, {accounts:profiles})
+            check(AppController.route === "sign-in" && ShellStore.addingAccount,
+                "a fresh profile list cannot redirect explicit add-account login")
+            ShellStore.addingAccount = false
+            ShellStore.activeSession = {sessionId:"surviving-seat"}
+            ShellStore.refreshSavedAccounts(true)
+            client.responseReceived(ShellStore.accountsRequestId, {accounts:profiles})
+            check(AppController.route === "sign-in", "saved profile selection cannot reroute an active session")
+            ShellStore.activeSession = null
+            AppController.navigate("home")
+            ShellStore.refreshSavedAccounts(true)
+            const stale = ShellStore.accountsRequestId
+            ShellStore.logoutRequestId = "logout-bootstrap"
+            client.responseReceived("logout-bootstrap", {session:null,generation:2})
+            check(client.cancelled.includes(stale) && ShellStore.accountsRequestId !== stale,
+                "logout retires an older profile list before refreshing it")
+            client.responseReceived(stale, {accounts:profiles})
+            client.responseReceived(ShellStore.accountsRequestId, {accounts:[]})
+            check(ShellStore.savedAccounts.length === 0 && AppController.route === "home",
+                "an empty post-logout profile list cannot resurrect removed accounts")
+            ShellStore.accountRemoveRequestId = "remove-bootstrap"
+            client.responseReceived("remove-bootstrap", {session:null,generation:3})
+            client.responseReceived(ShellStore.accountsRequestId, {accounts:profiles})
+            check(AppController.route === "home", "profile removal waits for its authentication refresh")
+            client.responseReceived(ShellStore.authSessionRequestId, {session:null,generation:3})
+            check(AppController.route === "accounts", "profile removal can expose another saved PIN profile")
+        }
+        ShellStore.savedAccounts = []
     }
     function checkQueuedPollRetries() {
         client.state = "ready"
@@ -435,8 +694,12 @@ QtObject {
         checkCoreRestartPreservesSession()
         checkReconciliationAuthAndExit()
         checkExitAfterExhaustedRestore()
+        checkAuthenticationRecovery()
+        checkSavedProfileBootstrap()
         ShellStore.activeSession = null
         ShellStore.streamer = null
+        beginLiveProfileUnlock(parent)
+        finishLiveProfileUnlock(parent)
         return true
     }
 }

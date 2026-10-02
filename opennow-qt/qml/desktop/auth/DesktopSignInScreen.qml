@@ -304,6 +304,24 @@ FocusScope {
                     }
 
                     Column {
+                        x: DesktopTokens.px(26)
+                        width: parent.width - DesktopTokens.px(52)
+                        bottomPadding: DesktopTokens.px(24)
+                        visible: ShellStore.savedAccounts.length > 0
+                        AuthButton {
+                            objectName: "savedAccountsButton"
+                            width: parent.width
+                            enabled: ShellStore.ready
+                            text: qsTr("Saved accounts")
+                            onClicked: {
+                                ShellStore.cancelDeviceLogin()
+                                root.providerOpen = false
+                                AppController.navigate("accounts")
+                            }
+                        }
+                    }
+
+                    Column {
                         id: providerColumn
                         x: DesktopTokens.px(26)
                         width: parent.width - DesktopTokens.px(52)

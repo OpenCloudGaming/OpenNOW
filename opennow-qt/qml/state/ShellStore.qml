@@ -634,6 +634,7 @@ QtObject {
     property int streamPollFailureAttempts: 0
     readonly property int maximumStreamPollFailureAttempts: 8
     property bool sessionRecoveryPending: false
+    property bool sessionRecoveryAwaitingAuth: false
     property string recoverySessionId: ""
     property string recoveryDiscoveryRequestId: ""
     property int resumePollAttempts: 0
@@ -924,6 +925,7 @@ QtObject {
         refreshSettings()
         providersRequestId = CoreClient.request("auth.providers.list", {}, 25000)
         authSessionRequestId = CoreClient.request("auth.session.get", {})
+        refreshSavedAccounts()
         coreSessionRestoreId = activeSession && activeSession.ownerScope
             ? String(activeSession.sessionId || "") : ""
         if (coreSessionRestoreId !== "") {
@@ -1206,15 +1208,32 @@ QtObject {
         return catalogOwner.reloadStoreForSession()
     }
 
+    function refreshSavedAccounts(invalidate) {
+        if (!ready || (accountsRequestId !== "" && !invalidate))
+            return
+        const previous = accountsRequestId
+        accountsRequestId = ""
+        if (previous !== "") CoreClient.cancel(previous)
+        accountsRequestId = CoreClient.request("auth.accounts.list", {})
+    }
+
+    function showSavedAccountSelection() {
+        if (!ready || authRestorePending || authSessionRequestId !== "" || accountsRequestId !== ""
+                || signedIn || addingAccount || authState !== "idle" || activeSession || streamBusy
+                || savedAccounts.length === 0)
+            return
+        if (AppController.route === "home" || AppController.route === "sign-in")
+            AppController.navigate("accounts")
+    }
+
     function refreshAccountServices() {
+        refreshSavedAccounts()
         if (!ready || !signedIn)
             return
         if (subscriptionRequestId === "")
             subscriptionRequestId = CoreClient.request("account.subscription.get", {}, 30000)
         if (regionsRequestId === "")
             regionsRequestId = CoreClient.request("network.regions.list", {}, 30000)
-        if (accountsRequestId === "")
-            accountsRequestId = CoreClient.request("auth.accounts.list", {})
         if (gameAccountsRequestId === "") {
             gameAccountsState = gameAccounts.length ? "refreshing" : "loading"
             gameAccountsRequestId = CoreClient.request("account.connections.list", {}, 30000)
@@ -1931,6 +1950,7 @@ QtObject {
             streamerRestartTimer.stop()
             streamerRestartAttempts = 0
             sessionReconnectAttempts = 0
+            sessionRecoveryAwaitingAuth = false
             streamPollFailureAttempts = 0
             streamerRecoveryExhausted = false
         }
@@ -2015,7 +2035,7 @@ QtObject {
     }
 
     function startNativeStreamer() {
-        if (!ready || !activeSession || sessionRecoveryPending || activeSession.resumePending
+        if (!ready || !activeSession || sessionRecoveryPending || sessionRecoveryAwaitingAuth || activeSession.resumePending
                 || coreSessionRestoreId !== "" || sessionStopIntentId === String(activeSession.sessionId)
                 || streamStopRequestId !== "" || streamerStopRequestId !== "" || streamerStartRequestId !== ""
                 || streamerPrepareRequestId !== "" || sessionClaimRequestId !== ""
@@ -2145,6 +2165,12 @@ QtObject {
         if (!activeSession || sessionClaimRequestId !== "" || recoveryDiscoveryRequestId !== ""
                 || streamerStopRequestId !== "" || sessionStopIntentId === String(activeSession.sessionId))
             return
+        if (!sessionOwnerSignedIn()) {
+            sessionRecoveryAwaitingAuth = true
+            streamerRestartTimer.stop()
+            return
+        }
+        sessionRecoveryAwaitingAuth = false
         if (!ready) {
             streamerRestartTimer.restart()
             return
@@ -2203,6 +2229,11 @@ QtObject {
     function discoverRecoverySession() {
         if (!sessionRecoveryPending || !activeSession
                 || String(activeSession.sessionId) !== recoverySessionId) return
+        if (!sessionOwnerSignedIn()) {
+            sessionRecoveryPending = false
+            sessionRecoveryAwaitingAuth = true
+            return
+        }
         recoveryDiscoveryRequestId = CoreClient.request("session.poll", {
             sessionId: recoverySessionId,
             streamingBaseUrl: activeSession.streamingBaseUrl,
@@ -2243,6 +2274,7 @@ QtObject {
         recoveryDiscoveryRequestId = ""
         sessionClaimRequestId = ""
         sessionRecoveryPending = false
+        sessionRecoveryAwaitingAuth = false
         sessionClaimIsRecovery = false
         recoverySessionId = ""
         resumePollAttempts = 0
@@ -2803,7 +2835,13 @@ QtObject {
             && Number(activeSession.ownerScope.generation) === generation
             && String(activeSession.ownerScope.userId) === String(next.user.userId)
             && String(activeSession.ownerScope.providerIdpId) === String(next.provider.idpId)
+        const interruptedRecovery = changed && activeSession
+            && (recoveryDiscoveryRequestId !== ""
+                || (sessionClaimIsRecovery && sessionClaimRequestId !== "")
+                || (streamerPrepareRequestId !== "" && !keepPreparedOwner))
         if (changed) {
+            if (interruptedRecovery)
+                cancelSessionRecovery()
             accountServicesOwner.invalidateAccount()
             for (const key of ["remoteSessionsRequestId", "remoteSessionDiscoveryRequestId", "sessionClaimRequestId", "streamCreateRequestId", "streamerPrepareRequestId"]) {
                 if (key === "streamerPrepareRequestId" && keepPreparedOwner) continue
@@ -2820,6 +2858,12 @@ QtObject {
         authSession = payload.session || null
         sessionPersistence = payload.persistence || "none"
         authWarnings = payload.warnings || []
+        if (interruptedRecovery)
+            sessionRecoveryAwaitingAuth = true
+        if (changed && coreSessionRestoreId === "" && sessionRecoveryAwaitingAuth && sessionOwnerSignedIn()) {
+            sessionRecoveryAwaitingAuth = false
+            scheduleSessionRecovery(streamMessage)
+        }
         if (changed && coreSessionRestoreId !== "" && activeSession && activeSession.ownerScope && next
                 && String(activeSession.ownerScope.userId) === String(next.user.userId)
                 && String(activeSession.ownerScope.providerIdpId) === String(next.provider.idpId)) {
@@ -2837,6 +2881,13 @@ QtObject {
         return !scope || (Number(scope.generation) === authGeneration && authSession
             && String(scope.userId) === String(authSession.user.userId)
             && String(scope.providerIdpId) === String(authSession.provider.idpId))
+    }
+
+    function sessionOwnerSignedIn() {
+        const owner = activeSession && activeSession.ownerScope
+        return !owner || Boolean(authSession
+            && String(owner.userId) === String(authSession.user.userId)
+            && String(owner.providerIdpId) === String(authSession.provider.idpId))
     }
 
     function acceptsSessionScope(scope) {
@@ -3333,6 +3384,10 @@ QtObject {
                 if (Number(result.scope.generation) > root.authGeneration && root.authSessionRequestId === "")
                     root.authSessionRequestId = CoreClient.request("auth.session.get", {})
                 if (requestId === root.streamPollRequestId) root.streamPollRequestId = ""
+                if (requestId === root.recoveryDiscoveryRequestId) {
+                    root.recoveryDiscoveryRequestId = ""
+                    root.scheduleSessionRecovery(root.streamMessage)
+                }
                 return
             }
             const authRequests = ["authSessionRequestId", "deviceCompleteRequestId", "logoutRequestId",
@@ -3390,6 +3445,7 @@ QtObject {
                 if (root.coreSessionRestoreId !== "")
                     root.pollStreamingSession()
                 root.resolveDirectLaunch()
+                root.showSavedAccountSelection()
             } else if (requestId === root.catalogRequestId) {
                 catalogOwner.acceptCatalog(result)
                 root.resolveDirectLaunch()
@@ -3446,7 +3502,8 @@ QtObject {
                     root.refreshAccountServices()
                 if (root.authSession) {
                     root.addingAccount = false
-                    if (AppController.route === "sign-in") AppController.navigate("home")
+                    if (AppController.route === "sign-in")
+                        AppController.navigate(root.activeSession && root.sessionOwnerSignedIn() ? "stream" : "home")
                 }
                 root.resolveDirectLaunch()
             } else if (requestId === root.logoutRequestId) {
@@ -3460,6 +3517,7 @@ QtObject {
                 root.regions = []
                 root.resetRegionPing()
                 root.reloadCatalogForSession()
+                root.refreshSavedAccounts(true)
                 if (root.authSession)
                     root.refreshAccountServices()
             } else if (requestId === root.logoutAllRequestId) {
@@ -3473,6 +3531,7 @@ QtObject {
                 root.regions = []
                 root.resetRegionPing()
                 root.reloadCatalogForSession()
+                root.refreshSavedAccounts(true)
                 root.accessibilityMessage = qsTr("All saved accounts signed out")
             } else if (requestId === root.subscriptionRequestId) {
                 accountServicesOwner.acceptSubscription(result)
@@ -3483,6 +3542,7 @@ QtObject {
             } else if (requestId === root.accountsRequestId) {
                 root.savedAccounts = result.accounts || []
                 root.accountsRequestId = ""
+                root.showSavedAccountSelection()
             } else if (requestId === root.accountSwitchRequestId) {
                 root.resetRegionPing()
                 root.regions = []
@@ -3495,19 +3555,20 @@ QtObject {
                 root.reloadCatalogForSession()
                 root.refreshAccountServices()
                 root.pinMessage = qsTr("")
-                if (AppController.route === "profile-pin")
+                if (root.authSession && root.activeSession && root.sessionOwnerSignedIn()
+                        && ["accounts", "profile-pin"].indexOf(AppController.route) >= 0)
+                    AppController.navigate("stream")
+                else if (AppController.route === "profile-pin")
                     AppController.navigate("accounts")
             } else if (requestId === root.accountRemoveRequestId) {
                 root.accountRemoveRequestId = ""
-                if (root.accountsRequestId === "")
-                    root.accountsRequestId = CoreClient.request("auth.accounts.list", {})
+                root.refreshSavedAccounts(true)
                 root.authSessionRequestId = CoreClient.request("auth.session.get", {})
             } else if (requestId === root.pinRequestId) {
                 root.pinRequestId = ""
                 if (result.ok) {
                     root.pinMessage = qsTr("")
-                    if (root.accountsRequestId === "")
-                        root.accountsRequestId = CoreClient.request("auth.accounts.list", {})
+                    root.refreshSavedAccounts(true)
                     AppController.navigate("accounts")
                 } else {
                     root.pinMessage = result.reason === "locked_out"
@@ -3667,6 +3728,7 @@ QtObject {
                     return
                 }
                 root.coreSessionRestoreId = ""
+                root.sessionRecoveryAwaitingAuth = false
                 root.streamPollFailureAttempts = 0
                 if (root.isRemoteSessionTermination(result.termination))
                     root.finishRemoteSession(result.termination)

@@ -951,6 +951,8 @@ impl GfnService {
                 drop(state);
                 match self.vault.load_active() {
                     Ok(session) => {
+                        let session =
+                            session.filter(|session| !self.profiles.has_pin(&session.user.user_id));
                         let mut state = self.state.lock().expect("GFN state poisoned");
                         state.persistence_state = session
                             .as_ref()
@@ -1218,7 +1220,12 @@ impl GfnService {
     }
 
     fn restore_next_account(&self) {
-        let next = self.vault.load_active().ok().flatten();
+        let next = self
+            .vault
+            .load_active()
+            .ok()
+            .flatten()
+            .filter(|session| !self.profiles.has_pin(&session.user.user_id));
         let mut state = self.state.lock().expect("GFN state poisoned");
         state.persistence_state = match &next {
             Some(session) => self.vault.persistence_state(session),
@@ -3852,6 +3859,100 @@ pub(crate) mod tests {
                 .is_ok()
         );
         std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn automatic_account_restoration_requires_profile_pin() {
+        for remove in [false, true] {
+            let (mut service, path) = test_service("http://127.0.0.1:1");
+            service.vault = CredentialVault::without_os_store(path.clone());
+            service.vault.save(&auth_fixture("protected")).unwrap();
+            service.vault.save(&auth_fixture("current")).unwrap();
+            service.profiles.set_pin("protected", "1234", None).unwrap();
+            service.state.lock().unwrap().session = Some(auth_fixture("current"));
+            service.state.lock().unwrap().restore_attempted = true;
+            assert_eq!(
+                service
+                    .switch_account(&json!({"userId":"protected"}))
+                    .unwrap_err()
+                    .code,
+                "profile_pin_required"
+            );
+            let result = if remove {
+                service
+                    .remove_account(&json!({"userId":"current"}))
+                    .unwrap()
+            } else {
+                service.logout().unwrap()
+            };
+            assert!(result["session"].is_null());
+            assert!(
+                service
+                    .authenticated_snapshot(TokenPurpose::StarfleetAccess, false)
+                    .is_err()
+            );
+            assert!(service.vault.load("protected").unwrap().is_some());
+            assert!(service.profiles.has_pin("protected"));
+            drop(service);
+            let (mut restarted, unused_path) = test_service("http://127.0.0.1:1");
+            restarted.vault = CredentialVault::without_os_store(path.clone());
+            restarted.profiles = ConsoleProfiles::load(&path);
+            assert!(restarted.session().unwrap()["session"].is_null());
+            assert!(restarted.vault.load("protected").unwrap().is_some());
+            assert_eq!(
+                restarted
+                    .switch_account(&json!({"userId":"protected"}))
+                    .unwrap_err()
+                    .code,
+                "profile_pin_required"
+            );
+            assert_eq!(
+                restarted
+                    .switch_account(&json!({"userId":"protected","pin":"1234"}))
+                    .unwrap()["session"]["user"]["userId"],
+                "protected"
+            );
+            assert_eq!(
+                restarted.session().unwrap()["session"]["user"]["userId"],
+                "protected"
+            );
+            std::fs::remove_dir_all(path).unwrap();
+            std::fs::remove_dir_all(unused_path).unwrap();
+        }
+    }
+
+    #[test]
+    fn logout_all_cleans_partial_json_saves_after_restart() {
+        let (mut service, path) = test_service("http://127.0.0.1:1");
+        service.vault = CredentialVault::without_os_store(path.clone());
+        std::fs::create_dir_all(path.join("accounts.json.tmp")).unwrap();
+        service.state.lock().unwrap().attempts.insert(
+            "login".into(),
+            pending_attempt(Some(auth_fixture("orphan"))),
+        );
+        let login = service
+            .complete_device_login(&json!({"attemptId":"login","staySignedIn":true}))
+            .unwrap();
+        assert_eq!(login["persistence"], "local-file");
+        assert!(!path.join("accounts.json").exists());
+        drop(service);
+        std::fs::remove_dir(path.join("accounts.json.tmp")).unwrap();
+        let (mut reopened, unused_path) = test_service("http://127.0.0.1:1");
+        reopened.vault = CredentialVault::without_os_store(path.clone());
+        assert!(reopened.session().unwrap()["session"].is_null());
+        let logout = reopened.logout_all().unwrap();
+        assert_eq!(logout["localCleanup"], "pending");
+        assert_eq!(
+            std::fs::read_dir(path.join("fallback-sessions"))
+                .unwrap()
+                .count(),
+            0
+        );
+        assert!(reopened.vault.load("orphan").unwrap().is_none());
+        let restarted = CredentialVault::without_os_store(path.clone());
+        assert!(restarted.load("orphan").unwrap().is_none());
+        std::fs::remove_dir_all(path).unwrap();
+        std::fs::remove_dir_all(unused_path).unwrap();
     }
 
     #[test]
