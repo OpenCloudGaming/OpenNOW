@@ -62,8 +62,6 @@ data class DualScreenSnapshot(
     val targetFps: Int?,
     val stats: StreamRuntimeStats?,
     val settings: AppSettings,
-    /** Game whose details sheet is open on the top screen. */
-    val selectedGame: GameInfo?,
     val streamGame: GameInfo?,
     /** Most recently played games, the same list the Store's Continue playing rail shows. */
     val upNext: List<GameInfo>,
@@ -111,7 +109,6 @@ internal fun dualScreenSnapshot(state: OpenNowUiState, stats: StreamRuntimeStats
         targetFps = (state.activeStreamSettings ?: state.settings.stream).fps,
         stats = stats.takeIf { phase == DualScreenPhase.Streaming },
         settings = state.settings,
-        selectedGame = state.selectedGame.takeIf { phase == DualScreenPhase.Browse && state.page != AppPage.Settings },
         streamGame = state.streamGame,
         // Only the home deck shows it; skip the sort while stats tick during a stream.
         upNext = if (phase == DualScreenPhase.Browse) {
@@ -152,9 +149,6 @@ sealed interface DualScreenAction {
     data object ToggleStatsOverlay : DualScreenAction
     data object EndSession : DualScreenAction
     data class Play(val game: GameInfo) : DualScreenAction
-    data class ChooseStore(val game: GameInfo) : DualScreenAction
-    data class ToggleFavorite(val gameId: String) : DualScreenAction
-    data object CloseGameDetails : DualScreenAction
     data class OpenGame(val game: GameInfo) : DualScreenAction
     data object RestoreLaunch : DualScreenAction
     data object SignIn : DualScreenAction
@@ -412,9 +406,6 @@ class DualScreenController(
             DualScreenAction.ToggleStatsOverlay -> viewModel.toggleStreamStatsOverlay()
             DualScreenAction.EndSession -> viewModel.stopStream()
             is DualScreenAction.Play -> viewModel.play(action.game)
-            is DualScreenAction.ChooseStore -> viewModel.chooseStore(action.game)
-            is DualScreenAction.ToggleFavorite -> viewModel.updateFavorites(action.gameId)
-            DualScreenAction.CloseGameDetails -> viewModel.clearSelectedGame()
             is DualScreenAction.OpenGame -> viewModel.selectGame(action.game)
             DualScreenAction.RestoreLaunch -> viewModel.restoreStreamLaunch()
             DualScreenAction.SignIn -> viewModel.login()

@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -37,6 +38,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Backspace
 import androidx.compose.material.icons.automirrored.rounded.KeyboardReturn
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.GridView
 import androidx.compose.material.icons.rounded.Keyboard
@@ -49,12 +51,15 @@ import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.StarBorder
 import androidx.compose.material.icons.rounded.TouchApp
 import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -112,7 +117,9 @@ private val DeckTile = Color.White.copy(alpha = 0.06f)
 private val DeckTileStrong = Color.White.copy(alpha = 0.12f)
 private val DeckSeam = OpenNowPalette.Seam
 private val DeckMuted = Color.White.copy(alpha = 0.6f)
-private val DeckSky = OpenNowPalette.PastelSky
+/** The user's accent, so the deck follows the same theme as the top screen. */
+private val DeckAccent: Color
+    @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.primary
 private val DeckMint = OpenNowPalette.PastelMint
 private val DeckYellow = OpenNowPalette.PastelYellow
 private val DeckCoral = OpenNowPalette.PastelCoral
@@ -142,28 +149,37 @@ fun DualScreenDeck(onAction: (DualScreenAction) -> Unit) {
             }
             return@OpenNowTheme
         }
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(DeckBackground)
-                .background(
-                    Brush.radialGradient(
-                        listOf(DeckViolet.copy(alpha = 0.16f), Color.Transparent),
-                        center = Offset(600f, 0f),
-                        radius = 900f,
+        BoxWithConstraints(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+            val settings = current?.settings ?: AppSettings()
+            val browsing = current?.phase != DualScreenPhase.Streaming && current?.phase != DualScreenPhase.Launching
+            // Same backdrop choice as the top screen: the user's wallpaper, else ambient, else an accent glow.
+            when {
+                browsing && current != null && shouldShowAppWallpaper(current.page, inStream = false, settings) -> {
+                    CatalogWallpaperBackdrop(settings, tvProfile = false, width = maxWidth, height = maxHeight)
+                    Box(Modifier.matchParentSize().background(DeckBackground.copy(alpha = 0.55f)))
+                }
+                browsing && settings.ambientBackgroundEnabled -> AmbientBackground()
+                else -> Box(
+                    Modifier.matchParentSize().background(
+                        Brush.radialGradient(
+                            listOf(DeckAccent.copy(alpha = 0.16f), Color.Transparent),
+                            center = Offset(600f, 0f),
+                            radius = 900f,
+                        ),
                     ),
                 )
-                .padding(12.dp),
-        ) {
-            when (current?.phase) {
-                null, DualScreenPhase.SignedOut -> SignedOutDeck(onAction)
-                DualScreenPhase.Browse -> when {
-                    current.selectedGame != null -> GameActionsDeck(current, current.selectedGame, onAction)
-                    current.page == AppPage.Settings -> SettingsInspectorDeck(current, onAction)
-                    else -> HomeDeck(current, onAction)
+            }
+            Box(Modifier.fillMaxSize().padding(12.dp)) {
+                when (current?.phase) {
+                    null, DualScreenPhase.SignedOut -> SignedOutDeck(onAction)
+                    DualScreenPhase.Browse -> if (current.page == AppPage.Settings) {
+                        SettingsInspectorDeck(current, onAction)
+                    } else {
+                        HomeDeck(current, onAction)
+                    }
+                    DualScreenPhase.Launching -> LaunchingDeck(current, onAction)
+                    DualScreenPhase.Streaming -> StreamingDeck(current, onAction)
                 }
-                DualScreenPhase.Launching -> LaunchingDeck(current, onAction)
-                DualScreenPhase.Streaming -> StreamingDeck(current, onAction)
             }
         }
     }
@@ -292,7 +308,7 @@ private fun SortFilterButton(activeCount: Int, open: Boolean, onClick: () -> Uni
                     .align(Alignment.TopEnd)
                     .size(16.dp)
                     .clip(CircleShape)
-                    .background(DeckSky),
+                    .background(DeckAccent),
                 contentAlignment = Alignment.Center,
             ) {
                 DeckText(activeCount.toString(), 9.sp, FontWeight.Black, DeckBackground)
@@ -354,7 +370,7 @@ private fun SortFilterPanel(snapshot: DualScreenSnapshot, modifier: Modifier, on
             SectionLabel("${stringResource(R.string.catalog_filter_section)} · $group")
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 options.forEach { option ->
-                    DeckChip(label = option.label, selected = option.id in selectedFilters, selectedColor = DeckSky, check = true) {
+                    DeckChip(label = option.label, selected = option.id in selectedFilters, selectedColor = DeckAccent, check = true) {
                         onAction(DualScreenAction.ToggleFilter(option.id))
                     }
                 }
@@ -482,7 +498,7 @@ private fun SearchField(
             .height(44.dp)
             .clip(CircleShape)
             .background(Color.White.copy(alpha = if (active) 0.10f else 0.08f))
-            .border(if (active) 2.dp else 1.dp, if (active) DeckSky else DeckSeam, CircleShape)
+            .border(if (active) 2.dp else 1.dp, if (active) DeckAccent else DeckSeam, CircleShape)
             .clickable(onClick = onTap)
             .padding(start = 14.dp, end = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -539,7 +555,7 @@ private fun DeckTabBar(page: AppPage, onSearch: () -> Unit, onAction: (DualScree
             onAction(DualScreenAction.Navigate(AppPage.Home))
         }
         DeckTab(false, Icons.Rounded.Search, DeckViolet, R.string.nav_search, onClick = onSearch)
-        DeckTab(page == AppPage.Library, Icons.Rounded.GridView, DeckSky, R.string.nav_library) {
+        DeckTab(page == AppPage.Library, Icons.Rounded.GridView, OpenNowPalette.PastelSky, R.string.nav_library) {
             onAction(DualScreenAction.Navigate(AppPage.Library))
         }
         DeckTab(page == AppPage.Settings, Icons.Rounded.Settings, DeckCoral, R.string.nav_settings) {
@@ -555,7 +571,7 @@ private fun RowScope.DeckTab(selected: Boolean, icon: ImageVector, tint: Color, 
             .weight(1f)
             .fillMaxHeight()
             .clip(CircleShape)
-            .background(if (selected) DeckTileStrong else Color.Transparent)
+            .background(if (selected) DeckAccent.copy(alpha = 0.22f) else Color.Transparent)
             .clickable(onClick = onClick),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -565,62 +581,10 @@ private fun RowScope.DeckTab(selected: Boolean, icon: ImageVector, tint: Color, 
     }
 }
 
-// Game details actions (board 08) -------------------------------------------------------------
-
-@Composable
-private fun GameActionsDeck(snapshot: DualScreenSnapshot, game: GameInfo, onAction: (DualScreenAction) -> Unit) {
-    val favorite = game.id in snapshot.settings.favoriteGameIds
-    val stores = game.variants.map { it.store }.distinct()
-    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            GameArt(game, Modifier.size(44.dp), radius = 13.dp)
-            Column(Modifier.weight(1f)) {
-                DeckText(game.title, 17.sp, FontWeight.Black, maxLines = 1)
-                if (stores.isNotEmpty()) DeckText(stores.joinToString(" · "), 11.sp, FontWeight.Bold, DeckMuted, maxLines = 1)
-            }
-            SmallPill(stringResource(R.string.dual_close)) { onAction(DualScreenAction.CloseGameDetails) }
-        }
-        HoldPlayButton(
-            label = stringResource(R.string.dual_play),
-            hint = stringResource(R.string.dual_play_hold_hint).takeIf { stores.size > 1 },
-            onTap = { onAction(DualScreenAction.Play(game)) },
-            onHeld = { onAction(DualScreenAction.ChooseStore(game)) },
-        )
-        Row(Modifier.height(46.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            PillButton(
-                stringResource(if (favorite) R.string.dual_favorited else R.string.dual_favorite),
-                icon = if (favorite) Icons.Rounded.Star else Icons.Rounded.StarBorder,
-                iconTint = DeckYellow,
-                modifier = Modifier.weight(1f),
-            ) { onAction(DualScreenAction.ToggleFavorite(game.id)) }
-            if (stores.size > 1) {
-                PillButton(stringResource(R.string.dual_choose_store), modifier = Modifier.weight(1f)) { onAction(DualScreenAction.ChooseStore(game)) }
-            }
-        }
-        Column(
-            Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(20.dp))
-                .background(Color.White.copy(alpha = 0.04f))
-                .border(1.dp, DeckSeam, RoundedCornerShape(20.dp))
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 12.dp, vertical = 6.dp),
-        ) {
-            SectionLabel(stringResource(R.string.dual_details), Modifier.padding(vertical = 4.dp))
-            game.publisherName?.let { DetailLine(R.string.dual_detail_publisher, it) }
-            game.membershipTierLabel?.let { DetailLine(R.string.dual_detail_membership, it) }
-            if (game.genres.isNotEmpty()) DetailLine(R.string.dual_detail_genres, game.genres.joinToString(" · "))
-            (game.description ?: game.longDescription)?.let {
-                DeckText(it, 12.sp, FontWeight.SemiBold, Color.White.copy(alpha = 0.72f), maxLines = 5, modifier = Modifier.padding(vertical = 6.dp))
-            }
-        }
-    }
-}
-
 /** Tap plays; holding fills the button and opens the store chooser, like the details sheet. */
 @Composable
 private fun HoldPlayButton(label: String, hint: String?, onTap: () -> Unit, onHeld: () -> Unit) {
+    val holdFill = DeckAccent.copy(alpha = 0.55f)
     val progress = remember { Animatable(0f) }
     val scope = rememberCoroutineScope()
     val haptics = LocalHapticFeedback.current
@@ -630,7 +594,7 @@ private fun HoldPlayButton(label: String, hint: String?, onTap: () -> Unit, onHe
             .height(66.dp)
             .clip(RoundedCornerShape(22.dp))
             .background(Color.White)
-            .drawBehind { drawRect(DeckSky.copy(alpha = 0.55f), size = size.copy(width = size.width * progress.value)) }
+            .drawBehind { drawRect(holdFill, size = size.copy(width = size.width * progress.value)) }
             .pointerInput(hint) {
                 detectTapGestures(
                     onPress = {
@@ -664,16 +628,113 @@ private fun HoldPlayButton(label: String, hint: String?, onTap: () -> Unit, onHe
     }
 }
 
+// Game details controls (board 08): the top screen is the poster, this is the control panel. ---
+
+/** Hosted on the bottom screen by the top screen's details overlay, which owns every callback. */
 @Composable
-private fun DetailLine(@StringRes label: Int, value: String) {
-    Row(
-        Modifier.fillMaxWidth().padding(vertical = 5.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        DeckText(stringResource(label), 12.sp, FontWeight.Bold, DeckMuted)
-        Spacer(Modifier.width(12.dp))
-        DeckText(value, 12.sp, FontWeight.Black, textAlign = TextAlign.End, maxLines = 1)
+internal fun DualScreenGameDetailsPanel(
+    game: GameInfo,
+    favorite: Boolean,
+    playStore: String?,
+    details: List<Pair<String, String>>,
+    connectedTvName: String?,
+    removeLabel: String?,
+    removeConfirmationText: String?,
+    removeEnabled: Boolean,
+    onPlay: () -> Unit,
+    onChooseStore: () -> Unit,
+    onFavorite: () -> Unit,
+    onPlayOnTv: () -> Unit,
+    onRemove: (() -> Unit)?,
+    onClose: () -> Unit,
+) {
+    val multipleStores = launchableGameVariants(game.variants).map { it.store }.distinct().size > 1
+    var confirmRemove by remember(game.id) { mutableStateOf(false) }
+    Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        HoldPlayButton(
+            label = playStore?.let { stringResource(R.string.dual_play_on_store, it) } ?: stringResource(R.string.dual_play),
+            hint = stringResource(R.string.dual_play_hold_hint).takeIf { multipleStores },
+            onTap = onPlay,
+            onHeld = onChooseStore,
+        )
+        Row(Modifier.height(46.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            PillButton(
+                stringResource(if (favorite) R.string.dual_favorited else R.string.dual_favorite),
+                icon = if (favorite) Icons.Rounded.Star else Icons.Rounded.StarBorder,
+                iconTint = DeckYellow,
+                modifier = Modifier.weight(1f),
+                onClick = onFavorite,
+            )
+            if (connectedTvName != null) {
+                PillButton(stringResource(R.string.action_play_on_tv_generic), modifier = Modifier.weight(1.4f), onClick = onPlayOnTv)
+            }
+            if (removeLabel != null && onRemove != null) {
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .clip(CircleShape)
+                        .border(2.dp, DeckCoral, CircleShape)
+                        .semantics { contentDescription = removeLabel }
+                        .clickable(enabled = removeEnabled) { confirmRemove = true }
+                        .padding(horizontal = 12.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    DeckText(stringResource(R.string.library_remove_local_app_confirm), 14.sp, FontWeight.Black, DeckCoral, maxLines = 1)
+                }
+            }
+            Box(
+                Modifier
+                    .size(46.dp)
+                    .clip(CircleShape)
+                    .background(Color.White.copy(alpha = 0.08f))
+                    .border(1.dp, DeckSeam, CircleShape)
+                    .clickable(onClick = onClose),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Rounded.Close, contentDescription = stringResource(R.string.dual_close), tint = Color.White, modifier = Modifier.size(20.dp))
+            }
+        }
+        Column(
+            Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(20.dp))
+                .background(Color.White.copy(alpha = 0.04f))
+                .border(1.dp, DeckSeam, RoundedCornerShape(20.dp))
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 14.dp, vertical = 8.dp),
+        ) {
+            SectionLabel(stringResource(R.string.dual_details), Modifier.padding(vertical = 4.dp))
+            details.forEach { (label, value) ->
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 7.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    DeckText(label, 12.sp, FontWeight.Bold, DeckMuted)
+                    Spacer(Modifier.width(12.dp))
+                    DeckText(value, 12.sp, FontWeight.Black, textAlign = TextAlign.End, maxLines = 2)
+                }
+                Box(Modifier.fillMaxWidth().height(1.dp).background(DeckSeam))
+            }
+        }
+    }
+    if (confirmRemove && removeLabel != null && onRemove != null) {
+        AlertDialog(
+            onDismissRequest = { confirmRemove = false },
+            title = { Text(stringResource(R.string.store_remove_confirm_title)) },
+            text = { Text(removeConfirmationText ?: removeLabel) },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmRemove = false
+                    onRemove()
+                }) { Text(stringResource(R.string.library_remove_local_app_confirm)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmRemove = false }) { Text(stringResource(R.string.action_cancel)) }
+            },
+        )
     }
 }
 
@@ -846,7 +907,7 @@ private fun StreamDeckPanel(
             Sparkline(pingHistory, Modifier.fillMaxWidth().height(26.dp))
         }
         Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            ActionTile(R.string.dual_action_stream_menu, Icons.Rounded.Tune, DeckSky, Modifier.weight(1f)) { onAction(DualScreenAction.OpenStreamMenu) }
+            ActionTile(R.string.dual_action_stream_menu, Icons.Rounded.Tune, DeckAccent, Modifier.weight(1f)) { onAction(DualScreenAction.OpenStreamMenu) }
             ActionTile(R.string.dual_action_stats, Icons.Rounded.QueryStats, DeckViolet, Modifier.weight(1f)) { onAction(DualScreenAction.ToggleStatsOverlay) }
             ActionTile(R.string.dual_action_keyboard, Icons.Rounded.Keyboard, DeckYellow, Modifier.weight(1f)) { openPanel(StreamPanel.Keyboard) }
         }
@@ -1181,7 +1242,7 @@ private fun KeyCap(label: String?, modifier: Modifier, tone: KeyTone = KeyTone.N
     val background = when (tone) {
         KeyTone.Normal -> Color.White.copy(alpha = 0.11f)
         KeyTone.Muted -> Color.White.copy(alpha = 0.06f)
-        KeyTone.Accent -> DeckSky
+        KeyTone.Accent -> DeckAccent
     }
     val content = if (tone == KeyTone.Accent) DeckBackground else Color.White
     Box(
@@ -1217,7 +1278,7 @@ private fun SettingsInspectorDeck(snapshot: DualScreenSnapshot, onAction: (DualS
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(24.dp))
                 .background(Color.White.copy(alpha = 0.05f))
-                .border(1.dp, if (inspection != null) DeckSky.copy(alpha = 0.45f) else DeckSeam, RoundedCornerShape(24.dp))
+                .border(1.dp, if (inspection != null) DeckAccent.copy(alpha = 0.45f) else DeckSeam, RoundedCornerShape(24.dp))
                 .padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
@@ -1227,7 +1288,7 @@ private fun SettingsInspectorDeck(snapshot: DualScreenSnapshot, onAction: (DualS
                 DeckText(stringResource(R.string.dual_settings_hint_body), 13.sp, FontWeight.SemiBold, DeckMuted)
                 Spacer(Modifier.weight(1f))
             } else {
-                SectionLabel(stringResource(R.string.dual_settings_eyebrow), color = DeckSky)
+                SectionLabel(stringResource(R.string.dual_settings_eyebrow), color = DeckAccent)
                 DeckText(inspection.label, 21.sp, FontWeight.Black, maxLines = 2)
                 inspection.description?.takeIf { it.isNotBlank() }?.let {
                     DeckText(it, 12.sp, FontWeight.SemiBold, DeckMuted, maxLines = 3)
@@ -1292,7 +1353,7 @@ private fun ColumnScope.SliderInspector(inspection: SettingInspection.Slider) {
     fun nudge(direction: Int) {
         inspection.onChange((inspection.value + direction * inspection.step).coerceIn(inspection.min, inspection.max))
     }
-    DeckText(inspection.valueText, 36.sp, FontWeight.Black, DeckSky)
+    DeckText(inspection.valueText, 36.sp, FontWeight.Black, DeckAccent)
     Slider(
         value = inspection.value,
         onValueChange = inspection.onChange,
@@ -1300,7 +1361,7 @@ private fun ColumnScope.SliderInspector(inspection: SettingInspection.Slider) {
         steps = if (stepCount in 2..200) stepCount - 1 else 0,
         colors = SliderDefaults.colors(
             thumbColor = Color.White,
-            activeTrackColor = DeckSky,
+            activeTrackColor = DeckAccent,
             inactiveTrackColor = Color.White.copy(alpha = 0.14f),
             activeTickColor = Color.Transparent,
             inactiveTickColor = Color.Transparent,
