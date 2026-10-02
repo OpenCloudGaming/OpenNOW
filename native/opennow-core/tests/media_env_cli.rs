@@ -2,29 +2,27 @@ use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
+use tempfile::TempDir;
 
 struct Session {
     child: Child,
     stdin: ChildStdin,
     lines: mpsc::Receiver<String>,
+    _directory: TempDir,
 }
 
 impl Session {
     fn start(environment: &[(&str, &str)]) -> Self {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let directory = std::env::temp_dir().join(format!("opennow-media-env-{unique}"));
+        let directory = TempDir::new().unwrap();
         let mut command = Command::new(env!("CARGO_BIN_EXE_opennow-core"));
         command
             .arg("--data-dir")
-            .arg(&directory)
+            .arg(directory.path())
             .env_remove("OPENNOW_PICTURES_DIR")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stderr(Stdio::inherit());
         for (name, value) in environment {
             command.env(name, value);
         }
@@ -44,6 +42,7 @@ impl Session {
             child,
             stdin,
             lines,
+            _directory: directory,
         }
     }
 
@@ -96,46 +95,38 @@ fn empty_pictures_override_keeps_unrelated_startup_working_while_media_is_unavai
 
 #[test]
 fn explicit_pictures_override_is_published_by_the_running_core() {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let directory = std::env::temp_dir().join(format!("opennow-media-root-{unique}"));
+    let directory = TempDir::new().unwrap();
     {
-        let mut session = Session::start(&[("OPENNOW_PICTURES_DIR", directory.to_str().unwrap())]);
+        let mut session =
+            Session::start(&[("OPENNOW_PICTURES_DIR", directory.path().to_str().unwrap())]);
         session.handshake();
         let media = session.request("media", "media.root.get", json!({}));
         assert_eq!(media["ok"], true);
         assert_eq!(
             media["result"]["path"],
-            directory.join("OpenNOW").to_string_lossy().as_ref()
+            directory.path().join("OpenNOW").to_string_lossy().as_ref()
         );
     }
-    let _ = std::fs::remove_dir_all(directory);
 }
 
 #[test]
 fn absent_pictures_override_keeps_the_platform_fallback() {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let home = std::env::temp_dir().join(format!("opennow-media-home-{unique}"));
+    let home = TempDir::new().unwrap();
     {
         let mut session = Session::start(&[
-            ("HOME", home.to_str().unwrap()),
-            ("USERPROFILE", home.to_str().unwrap()),
+            ("HOME", home.path().to_str().unwrap()),
+            ("USERPROFILE", home.path().to_str().unwrap()),
         ]);
         session.handshake();
         let media = session.request("media", "media.root.get", json!({}));
         assert_eq!(media["ok"], true);
         assert_eq!(
             media["result"]["path"],
-            home.join("Pictures")
+            home.path()
+                .join("Pictures")
                 .join("OpenNOW")
                 .to_string_lossy()
                 .as_ref()
         );
     }
-    let _ = std::fs::remove_dir_all(home);
 }
