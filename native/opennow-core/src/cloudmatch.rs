@@ -49,6 +49,12 @@ struct FreshAllocation {
     owner: (String, String),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AttachMode {
+    Claim,
+    Reconcile,
+}
+
 pub struct CloudMatchService {
     client: Client,
     active: Mutex<Option<ActiveSession>>,
@@ -770,12 +776,13 @@ impl CloudMatchService {
             recovery_region.map_or_else(|| requested_streaming_base(params, settings, auth), Ok)?;
         let headers = cloudmatch_headers(session_token(auth), device_id)?;
         let mut bases = vec![requested.clone()];
+        let server_info_url = requested
+            .join("v2/serverInfo")
+            .map_err(|_| invalid("Invalid server-info URL"))?;
+        #[cfg(test)]
+        let server_info_url = self.fixture_url(server_info_url);
         let server_info = client
-            .get(
-                requested
-                    .join("v2/serverInfo")
-                    .map_err(|_| invalid("Invalid server-info URL"))?,
-            )
+            .get(server_info_url)
             .headers(headers.clone())
             .timeout(DISCOVERY_REQUEST_TIMEOUT)
             .send()
@@ -813,6 +820,8 @@ impl CloudMatchService {
             let url = base
                 .join("v2/session")
                 .map_err(|_| invalid("Invalid active-session URL"))?;
+            #[cfg(test)]
+            let url = self.fixture_url(url);
             let response = client
                 .get(url)
                 .headers(headers.clone())
@@ -860,6 +869,38 @@ impl CloudMatchService {
         auth: &AuthSession,
         device_id: &str,
     ) -> Result<Value, ServiceError> {
+        self.attach(params, settings, auth, device_id, AttachMode::Claim, || {
+            Ok(())
+        })
+    }
+
+    pub(crate) fn reconcile(
+        &self,
+        params: &Value,
+        settings: &Value,
+        auth: &AuthSession,
+        device_id: &str,
+        check: impl Fn() -> Result<(), ServiceError>,
+    ) -> Result<Value, ServiceError> {
+        self.attach(
+            params,
+            settings,
+            auth,
+            device_id,
+            AttachMode::Reconcile,
+            check,
+        )
+    }
+
+    fn attach(
+        &self,
+        params: &Value,
+        settings: &Value,
+        auth: &AuthSession,
+        device_id: &str,
+        mode: AttachMode,
+        check: impl Fn() -> Result<(), ServiceError>,
+    ) -> Result<Value, ServiceError> {
         let client = client_for_settings(&self.client, settings).map_err(invalid)?;
         let session_id = params["sessionId"]
             .as_str()
@@ -893,8 +934,21 @@ impl CloudMatchService {
                     initial_base = zone_base.clone();
                     Ok(payload)
                 }
-            })?;
+            });
+        let initial_payload = match initial_payload {
+            Err(error) if mode == AttachMode::Reconcile && error.code == "session_not_found" => {
+                check()?;
+                return Ok(json!({"session":null,"termination":{
+                    "source":"cloudmatch-http","httpStatus":404,
+                    "sessionId":session_id,"resumable":false
+                }}));
+            }
+            result => result?,
+        };
         let session = &initial_payload["session"];
+        if session["sessionId"] != session_id {
+            return Err(upstream("CloudMatch returned a different session ID"));
+        }
         let initial_status = value_i64(&session["status"]).unwrap_or_default();
         let learned_server = first_string(&session["sessionControlInfo"]["ip"]);
         let control_base = learned_server
@@ -906,8 +960,17 @@ impl CloudMatchService {
             .or_else(|| first_string(&params["appId"]))
             .unwrap_or_else(|| "0".to_owned());
         if initial_status == 7 {
+            check()?;
             self.clear_active(session_id);
             let info = session_info(&initial_payload, &control_base, "", &app_id, device_id)?;
+            return Ok(json!({"session":info}));
+        }
+        if mode == AttachMode::Reconcile {
+            session_requires_resume(initial_status)?;
+            let zone = zone_base.host_str().unwrap_or_default();
+            let mut info = session_info(&initial_payload, &control_base, zone, &app_id, device_id)?;
+            check()?;
+            self.store_active(&mut info, &control_base, zone, &app_id, client)?;
             return Ok(json!({"session":info}));
         }
         let resumed = session_requires_resume(initial_status)?;

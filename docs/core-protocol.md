@@ -418,6 +418,35 @@ fields or treat an empty process-streamer snapshot as the embedded capabilities.
 
 ### Session resume and reconnect
 
+`session.active.get` without hints remains a local-only lookup. After a core
+restart, Qt can reconcile an existing native stream by supplying
+`{sessionId, ownerScope: {userId, providerIdpId}}` after authentication is restored.
+Both hints are required together. The session ID must contain 1–256 ASCII letters,
+digits, hyphens, or underscores; each owner identity must contain 1–1024 bytes and
+match the authenticated selected account. An optional old `ownerScope.generation`
+is ignored because generations are process-local. Caller-supplied endpoints are
+ignored.
+
+Hinted reconciliation discovers the exact seat through authenticated, core-owned
+provider routes and reads its current state with GET. It restores local control
+context and ownership without RESUME/PUT, allocation, or native transport changes.
+An already-owned matching seat returns its current local state. Another seat or
+owner fails with `session_owner_mismatch`. Successful results use the existing
+`{session, scope}` shape and publish the current generation in `scope` and
+`session.ownerScope`, preserving the remote phase without adding `resumePending`.
+
+A missing discovery match fails with `session_discovery_failed`; authentication,
+network, cancellation, and stale-account failures remain errors. Local absence is
+not termination. Only an exact-seat GET reporting status 7 or HTTP 404 confirms
+termination. Status 7 includes `session.termination`; HTTP 404 returns
+`{session: null, termination: {source: "cloudmatch-http", httpStatus: 404,
+sessionId, resumable: false}, scope}`. Qt keeps the native stream alive while
+retrying reconciliation errors and resumes ordinary session polling after local
+ownership is restored.
+Scope-checked discovery also authorizes exact-seat cleanup if reconciliation is
+cancelled before active ownership is adopted. A later account generation cannot
+reuse that discovery to stop a seat.
+
 `session.remote.list` checks the selected endpoint and the regions advertised by
 CloudMatch instead of treating the first empty regional response as authoritative.
 Discovery deduplicates session IDs and uses at most four concurrent requests, a

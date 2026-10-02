@@ -320,7 +320,8 @@ int AcceptanceSession::startSmokeWorkload()
         auto *fixture = component.create();
         if (!fixture) { qCritical() << component.errors(); return EXIT_FAILURE; }
         fixture->setParent(&m_engine);
-        if (m_arguments.contains(u"--smoke-microphone"_s)
+        if (m_arguments.contains(u"--smoke-stream-recovery"_s)
+            || m_arguments.contains(u"--smoke-microphone"_s)
             || m_arguments.contains(u"--smoke-recording"_s)
             || m_arguments.contains(u"--smoke-queue-drops"_s)) {
             auto *runtime = fixture->property("runtime").value<QObject *>();

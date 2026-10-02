@@ -6,6 +6,7 @@ QtObject {
     property var screen: null
     property var picker: null
     property var owner: ShellStore.settingsOwnerState
+    property int settingAccountRefreshes: 0
     property QtObject hdrOutput: QtObject {
         property bool supported: false
         property int outputMode: 0
@@ -41,6 +42,129 @@ QtObject {
         owner.acceptResponse(owner.languageRequestId, Object.assign({languages:languages,
             status:status, source:"overallGfnSupportedLanguages", scopeGeneration:owner.scopeGeneration,
             fetchedAt:Date.now(), expiresAt:Date.now() + 1200000}, extra || {}))
+    }
+    function verifyOrdinarySettingWrites() {
+        const saved = owner.settings
+        owner.settings = Object.assign({}, owner.settings, {windowWidth:900})
+        const before = client.calls.length
+        for (const width of [1000, 1010, 1020, 1030]) {
+            owner.applySetting("windowWidth", width)
+            owner.setSetting("windowWidth", width)
+        }
+        check(client.calls.length === before + 1, "ordinary writes have only one request in flight per key")
+        check(!owner.ownsConfirmedSetting("windowWidth"), "ordinary controls retain their optimistic policy")
+        const first = client.calls[before].id
+        owner.acceptSettingsChange({key:"windowWidth", value:1000})
+        check(owner.settings.windowWidth === 1030, "an older event cannot undo the latest optimistic intent")
+        check(!owner.acceptResponse(first, {key:"windowWidth", value:1000}),
+            "ordinary completions remain available to their callers")
+        check(owner.settings.windowWidth === 1030, "an older response cannot undo the latest optimistic intent")
+        check(client.calls.length === before + 2 && client.calls[before + 1].params.value === 1030,
+            "ordinary writes coalesce to the last intent")
+        const latest = client.calls[before + 1].id
+        owner.acceptSettingsChange({key:"windowWidth", value:1030})
+        owner.acceptResponse(latest, {key:"windowWidth", value:1030})
+        check(!owner.acceptResponse(first, {key:"windowWidth", value:1000}), "late ordinary replies are unowned")
+        check(!owner.acceptFailure(first, "Late old failure") && owner.settings.windowWidth === 1030,
+            "late ordinary failures cannot roll back the latest value")
+        owner.setSetting("windowWidth", 1040)
+        check(!owner.acceptFailure(owner.settingWrites.windowWidth.id, "Synthetic ordinary write failure"),
+            "ordinary failures remain available to their callers")
+        check(owner.settings.windowWidth === 1030, "failed ordinary writes preserve the confirmed value")
+        owner.setSetting("windowWidth", 1050)
+        const failed = owner.settingWrites.windowWidth.id
+        owner.setSetting("windowWidth", 1060)
+        owner.acceptFailure(failed, "Synthetic superseded write failure")
+        const retry = owner.settingWrites.windowWidth.id
+        check(retry !== failed && client.calls[client.calls.length - 1].params.value === 1060,
+            "a rejected older write still dispatches the latest intent")
+        owner.acceptSettingsChange({key:"windowWidth", value:1060})
+        owner.acceptResponse(retry, {key:"windowWidth", value:1060})
+        owner.setSetting("windowWidth", 1070)
+        const disconnected = owner.settingWrites.windowWidth.id
+        owner.setSetting("windowWidth", 1080)
+        const beforeDisconnect = client.calls.length
+        owner.ready = false
+        check(!owner.settingWrites.windowWidth, "readiness loss releases pending writes before failure callbacks")
+        owner.acceptFailure(disconnected, "Synthetic core disconnect")
+        owner.ready = true
+        check(client.calls.length === beforeDisconnect && !owner.settingWrites.windowWidth,
+            "disconnect drops queued writes instead of replaying them after reconnect")
+        check(!owner.acceptResponse(disconnected, {key:"windowWidth", value:1070})
+            && owner.settings.windowWidth === 1060, "a disconnected reply cannot restore an older value")
+
+        const provider = owner.providerIdpId
+        owner.providerIdpId = "settings-provider-a"
+        owner.setSetting("region", "region-a")
+        const region = owner.settingWrites.region.id
+        check(client.calls[client.calls.length - 1].params.providerIdpId === "settings-provider-a",
+            "region writes retain their provider")
+        owner.setSetting("region", "region-a-newer")
+        owner.providerIdpId = "settings-provider-b"
+        const beforeSwitch = client.calls.length
+        owner.acceptSettingsChange({key:"region", value:"region-a", changes:{
+            regionProviderIdpId:"settings-provider-a", providerRegions:{"settings-provider-a":"region-a"}}})
+        owner.acceptResponse(region, {key:"region", value:"region-a", changes:{
+            regionProviderIdpId:"settings-provider-a", providerRegions:{"settings-provider-a":"region-a"}}})
+        check(client.calls.length === beforeSwitch && owner.selectedRegion === "",
+            "a provider switch never replays the old provider's queued region")
+        owner.setSetting("region", "region-b")
+        const regionB = owner.settingWrites.region.id
+        owner.setSetting("region", "region-b-newer")
+        owner.acceptFailure(regionB, "Synthetic rejected region")
+        check(client.calls[client.calls.length - 1].params.providerIdpId === "settings-provider-b"
+            && client.calls[client.calls.length - 1].params.value === "region-b-newer",
+            "queued region writes keep the current provider context")
+        owner.acceptSettingsChange({key:"region", value:"region-b-newer", changes:{
+            regionProviderIdpId:"settings-provider-b", providerRegions:{"settings-provider-b":"region-b-newer"}}})
+        owner.acceptResponse(owner.settingWrites.region.id, {key:"region", value:"region-b-newer", changes:{
+            regionProviderIdpId:"settings-provider-b", providerRegions:{"settings-provider-b":"region-b-newer"}}})
+        check(owner.selectedRegion === "region-b-newer", "confirmed region updates retain coupled provider metadata")
+        owner.setSetting("region", "region-b")
+        const oldScope = owner.settingWrites.region.id
+        owner.setSetting("region", "region-b-latest")
+        owner.scopeGeneration += 1
+        const beforeAccountChange = client.calls.length
+        owner.acceptFailure(oldScope, "Synthetic account change")
+        check(client.calls.length === beforeAccountChange && !owner.settingWrites.region,
+            "changing accounts within a provider discards the old account's queued region")
+        owner.providerIdpId = provider
+
+        owner.setSetting("colorQuality", "10bit_420")
+        owner.acceptResponse(owner.settingWrites.colorQuality.id,
+            {key:"colorQuality", value:"10bit_420", changes:{codec:"auto", fallbackCodec:"h265"}})
+        check(owner.settings.colorQuality === "10bit_420" && owner.settings.codec === "auto"
+            && owner.settings.fallbackCodec === "h265", "confirmed writes retain coupled codec repairs")
+        check(!owner.ownsConfirmedSetting("launchInConsoleMode"), "console mode retains its separate optimistic path")
+
+        const refresh = owner.refreshAccountServices
+        owner.refreshAccountServices = function() {
+            fixture.settingAccountRefreshes += 1
+            owner.refreshAccountServices = refresh
+        }
+        owner.applySetting("identifyAsSteamDeck", true)
+        owner.setSetting("identifyAsSteamDeck", true)
+        const identity = owner.settingWrites.identifyAsSteamDeck.id
+        check(settingAccountRefreshes === 0, "device identity does not refresh entitlements before saving")
+        owner.acceptSettingsChange({key:"identifyAsSteamDeck", value:true})
+        check(settingAccountRefreshes === 0, "owned identity events wait for acknowledgement")
+        owner.acceptResponse(identity, {key:"identifyAsSteamDeck", value:true})
+        owner.setSetting("gameCollections", [{id:"settings-test", name:"Settings test", gameIds:[]}])
+        const collection = owner.settingWrites.gameCollections.id
+        check(!owner.acceptResponse(collection, {key:"gameCollections", value:[]})
+            && !owner.settingWrites.gameCollections, "collection saves release the queue without consuming the caller's response")
+        owner.setSetting("gameCollections", [])
+        check(!owner.acceptFailure(owner.settingWrites.gameCollections.id, "Synthetic collection failure")
+            && !owner.settingWrites.gameCollections, "collection errors release the queue without consuming the caller's failure")
+        owner.setSetting("gameCollections", [])
+        const disconnectedCollection = owner.settingWrites.gameCollections.id
+        owner.ready = false
+        owner.ready = true
+        const reconnectedCollection = owner.setSetting("gameCollections", [])
+        check(reconnectedCollection !== disconnectedCollection,
+            "collection saves after reconnect do not wait for a disconnected request")
+        owner.acceptResponse(reconnectedCollection, {key:"gameCollections", value:[]})
+        owner.settings = saved
     }
     function run(parent) {
         owner.settingsActive = false
@@ -120,6 +244,7 @@ QtObject {
         owner.acceptSettingsChange({key:"gameLanguage",value:"it_IT"})
         check(owner.settings.gameLanguage === "it_IT", "legitimate unowned settings events still apply")
         owner.acceptSettingsChange({key:"gameLanguage",value:"zh_Hant_TW"})
+        verifyOrdinarySettingWrites()
         const beforeCoupled = owner.settings
         owner.acceptSettingsChange({key:"themePack",value:"bone",changes:{appTheme:"light",themeAccentOverride:false}})
         check(owner.settings.themePack === "bone" && owner.settings.appTheme === "light"
@@ -218,6 +343,7 @@ QtObject {
     }
 
     function verify() {
+        check(settingAccountRefreshes === 1, "confirmed device identity refreshes entitlements once")
         check(picker ? !picker.expanded : !screen.dropdownOpen, "keyboard interaction closes the real production picker")
         if (Qt.application.arguments.indexOf("--language-keyboard-selection") >= 0) {
             check(owner.settingWrites.gameLanguage && owner.settingWrites.gameLanguage.value === "es_419",

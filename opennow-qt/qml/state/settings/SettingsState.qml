@@ -170,6 +170,7 @@ QtObject {
         if (settingsActive && ready) Qt.callLater(root.ensureGameLanguages)
     }
     onSettingsActiveChanged: if (settingsActive) ensureGameLanguages()
+    onReadyChanged: if (!ready) settingWrites = ({})
     onCapabilitiesActiveChanged: if (capabilitiesActive) colorRefresh.restart()
     onColorContextChanged: {
         const request = colorRequestId
@@ -223,11 +224,12 @@ QtObject {
     function beginSettingWrite(key, value) {
         const writes = Object.assign({}, settingWrites)
         if (writes[key]) {
-            writes[key] = Object.assign({}, writes[key], {next:value, queued:true})
+            writes[key] = Object.assign({}, writes[key], {next:value, queued:true,
+                nextProviderIdpId:providerIdpId, nextScopeGeneration:scopeGeneration})
             settingWrites = writes
             return writes[key].id
         }
-        const id = coreClient.request("settings.set", {key:key, value:value}, 15000)
+        const id = coreClient.request("settings.set", {key:key, value:value, providerIdpId:providerIdpId}, 15000)
         if (id === "") { errorReported(qsTr("The setting could not be saved.")); return "" }
         writes[key] = {id:id, value:value, queued:false}
         settingWrites = writes
@@ -238,18 +240,23 @@ QtObject {
         const key = Object.keys(settingWrites).find(key => settingWrites[key].id === id)
         if (!key) return false
         const write = settingWrites[key]
+        const confirmed = ownsConfirmedSetting(key)
+        const dispatchNext = write.queued && ready && (key !== "region"
+            || (write.nextProviderIdpId === providerIdpId && write.nextScopeGeneration === scopeGeneration))
         const writes = Object.assign({}, settingWrites)
         delete writes[key]
         settingWrites = writes
-        if (result) {
+        if (result && confirmed) {
             // Coupled values first (per protocol): core repairs persisted together
             // with the primary key, e.g. an explicit codec the new color mode
             // cannot use is healed toward Auto in the same save.
             applyCoupledSettings(result.changes)
             applySetting(key, result.value)
-        } else if (!write.queued) errorReported(message)
-        if (write.queued && ready) beginSettingWrite(key, write.next)
-        return true
+        } else if (!result && confirmed && !dispatchNext) errorReported(message)
+        if (result && key === "identifyAsSteamDeck" && !write.queued)
+            Qt.callLater(root.refreshAccountServices)
+        if (dispatchNext) beginSettingWrite(key, write.next)
+        return confirmed
     }
 
     function acceptResponse(id, result) {
@@ -631,14 +638,7 @@ QtObject {
             errorReported(qsTr("The OpenNOW core is not ready"))
             return ""
         }
-        if (ownsConfirmedSetting(key)) return beginSettingWrite(key, value)
-        const requestId = coreClient.request("settings.set", { key: key, value: value, providerIdpId: providerIdpId })
-        if (key === "identifyAsSteamDeck") {
-            // MES serves a different resolution catalog per device identity
-            // (Steam Deck unlocks 90 FPS tuples), so re-read entitlements.
-            Qt.callLater(root.refreshAccountServices)
-        }
-        return requestId
+        return beginSettingWrite(key, value)
     }
 
     function updateShortcuts(bindings) {
@@ -728,7 +728,8 @@ QtObject {
     }
 
     function acceptSettingsChange(payload) {
-        if (root.settingWrites[payload.key]) return
+        const write = root.settingWrites[payload.key]
+        if (write && (ownsConfirmedSetting(payload.key) || write.queued)) return
         // Coupled preferences are saved atomically by the core.
         root.applyCoupledSettings(payload.changes)
         if (payload.key === "launchInConsoleMode") {

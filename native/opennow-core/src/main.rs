@@ -807,11 +807,13 @@ fn dispatch(method: &str, params: &Value, core: &AppCore) -> DispatchResult {
                 .map(|value| (value.clone(), Some(("session.changed", value))))
                 .map_err(gfn_error)
         }
-        "session.active.get" => core
-            .gfn
-            .active_session()
-            .map(|value| (value, None))
-            .map_err(gfn_error),
+        "session.active.get" => {
+            let settings = core.settings.lock().expect("settings poisoned").all();
+            core.gfn
+                .reconcile_active_session(params, &settings)
+                .map(|value| (value, None))
+                .map_err(gfn_error)
+        }
         "session.remote.list" => {
             let settings = core.settings.lock().expect("settings poisoned").all();
             core.gfn

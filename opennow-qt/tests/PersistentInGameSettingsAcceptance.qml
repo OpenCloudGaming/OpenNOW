@@ -44,6 +44,7 @@ QtObject {
             check(write.method === "settings.set" && write.params.key === "enablePersistingInGameSettings"
                 && write.params.value === enabled, "desktop requests the persisted preference")
             client.eventReceived("settings.changed", {key:"enablePersistingInGameSettings", value:enabled})
+            client.responseReceived(write.id, {key:"enablePersistingInGameSettings", value:enabled})
             check(toggle.checked === enabled && ShellStore.settings.enablePersistingInGameSettings === enabled,
                 "desktop reflects the saved value")
             check(consolePage.settingsModel().find(item => item.key === "enablePersistingInGameSettings").v
@@ -54,6 +55,7 @@ QtObject {
         check(write.method === "settings.set" && write.params.key === "enablePersistingInGameSettings"
             && write.params.value === true, "console writes the same preference")
         client.eventReceived("settings.changed", {key:"enablePersistingInGameSettings", value:true})
+        client.responseReceived(write.id, {key:"enablePersistingInGameSettings", value:true})
         check(toggle.checked, "desktop reflects console changes")
         consolePage.destroy()
 

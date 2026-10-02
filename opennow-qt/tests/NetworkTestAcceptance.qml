@@ -44,6 +44,7 @@ QtObject {
         check(write.method === "settings.set" && write.params.key === "networkTest"
             && write.params.value === true, "the desktop toggle persists the opt-in")
         client.eventReceived("settings.changed", {key:"networkTest", value:true})
+        client.responseReceived(write.id, {key:"networkTest", value:true})
         check(toggle.checked && ShellStore.settings.networkTest === true,
             "the desktop toggle reflects the saved value")
 
@@ -56,6 +57,7 @@ QtObject {
         check(write.method === "settings.set" && write.params.key === "networkTest"
             && write.params.value === false, "the console writes the same opt-in")
         client.eventReceived("settings.changed", {key:"networkTest", value:false})
+        client.responseReceived(write.id, {key:"networkTest", value:false})
         check(!toggle.checked, "the desktop toggle reflects console changes")
         consolePage.destroy()
         return true

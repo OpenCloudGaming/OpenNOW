@@ -19,6 +19,7 @@ bool prepareLaunchGuards(QJSEngine &engine)
         var signedIn=true;
         var desktopUiActive=false, queueLaunchWaitingForSubscription=false;
         var remoteSessionsRequestId='', streamerPrepareRequestId='';
+        var coreSessionRestoreId='', sessionStopIntentId='';
         var queueSelector={opened:false,begin:function(title){return false}};
     )JS")).isError()) return false;
     const auto shell = source(QStringLiteral("qml/state/ShellStore.qml"));
@@ -51,6 +52,7 @@ bool prepareAuthentication(QJSEngine &engine)
         var root = this, ready = true, providersRequestId = '', providerRetryAttempts = 0;
         var providers = [{idpId:'alliance',displayName:'Alliance'}], selectedProviderIdpId = 'alliance';
         var providerDiscoveryDegraded = false, authGeneration = 0, authSessionRequestId = '';
+        var coreSessionRestoreId = '', sessionStopIntentId = '';
         var authSession = {user:{userId:'old',displayName:'Old'},provider:{idpId:'alliance'}};
         Object.defineProperty(root, 'signedIn', {get: function() { return authSession !== null; }});
         var addingAccount = false, authState = 'signed-in', authMessage = '', accountMessage = '';
@@ -256,6 +258,7 @@ private slots:
             var streamStopRequestId='',streamerRecoveryExhausted=false,lastError='',streamerRestartAttempts=0;
             var recoveryDiscoveryRequestId='',sessionClaimRequestId='',streamerStopRequestId='',recoverySessionId='';
             var sessionClaimIsRecovery=false,resumePollAttempts=0,resumePollDeadlineMs=0,ready=true;
+            var coreSessionRestoreId='',sessionStopIntentId='',streamPollFailureAttempts=0;
             var NativeStreamRuntime={running:false},requests=[];
             var CoreClient={cancel:function() {},request:function(method,params) {requests.push({method:method,params:params});return 'recovery';}};
             var streamerRestartTimer={running:false,restart:function() {this.running=true;},stop:function() {this.running=false;}};
@@ -689,6 +692,7 @@ private slots:
         QJSEngine engine;
         QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
             var ready = true, activeSession = {sessionId:'seat'}, sessionRecoveryPending = false;
+            var coreSessionRestoreId = '', sessionStopIntentId = '';
             var streamStopRequestId = 'cloud-stop', streamerStopRequestId = '', streamerStartRequestId = '';
             var streamerPrepareRequestId = '', sessionClaimRequestId = '', streamerRecoveryExhausted = false;
             var streamerRestartTimer = {running:false}, streamer = null, nativeRuntimeReady = true;
@@ -1517,6 +1521,7 @@ private slots:
             var streamer = {status: 'starting', sessionId: 'seat'};
             var runtimeStreamProfile = {}, streamMessage = '', streamState = '', lastError = '';
             var streamerRestartAttempts = 0, sessionReconnectAttempts = 0;
+            var coreSessionRestoreId = '', sessionStopIntentId = '', streamPollFailureAttempts = 0;
             var streamerRecoveryExhausted = false, streamerRestartRecoveryCount = 0, sessionRecoveryCount = 0;
             var streamerStopExpected = false, streamInputStateKnown = false, streamRecordingActive = false;
             var streamStartedAtMs = 1, desiredStreamInputPaused = false, sessionClaimRequestId = '';

@@ -364,6 +364,20 @@ struct ActiveSeatOwner {
     allocation_generation: Option<u64>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionReconciliationHint {
+    session_id: String,
+    owner_scope: SessionReconciliationOwner,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionReconciliationOwner {
+    user_id: String,
+    provider_idp_id: String,
+}
+
 impl ActiveSeatOwner {
     fn capture(
         auth: AuthSession,
@@ -1832,6 +1846,92 @@ impl GfnService {
         self.cloudmatch
             .stop(&params, settings, &session, &self.device_id)
             .map(|result| scoped_result(result, &session, generation))
+    }
+
+    pub fn reconcile_active_session(
+        &self,
+        params: &Value,
+        settings: &Value,
+    ) -> Result<Value, ServiceError> {
+        if params.get("sessionId").is_none() && params.get("ownerScope").is_none() {
+            return self.active_session();
+        }
+        let hint: SessionReconciliationHint =
+            serde_json::from_value(params.clone()).map_err(|_| {
+                ServiceError::invalid("Session reconciliation requires sessionId and ownerScope")
+            })?;
+        if hint.session_id.is_empty()
+            || hint.session_id.len() > 256
+            || !hint
+                .session_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            || hint.owner_scope.user_id.is_empty()
+            || hint.owner_scope.user_id.len() > 1024
+            || hint.owner_scope.provider_idp_id.is_empty()
+            || hint.owner_scope.provider_idp_id.len() > 1024
+        {
+            return Err(ServiceError::invalid(
+                "Invalid session reconciliation identity",
+            ));
+        }
+        self.providers()?;
+        let mut routing = crate::store_requests::lock(&self.session_routing)?;
+        let _operation = crate::store_requests::lock(&self.auth_operation)?;
+        let (result, session, generation) = self.session_read_locked(|session, generation| {
+            if hint.owner_scope.user_id != session.user.user_id
+                || hint.owner_scope.provider_idp_id != session.provider.idp_id
+                || routing
+                    .active_owner
+                    .as_ref()
+                    .is_some_and(|owner| !owner.matches(session, &hint.session_id))
+            {
+                return Err(session_owner_error());
+            }
+            let active = self.cloudmatch.active();
+            if !active["session"].is_null() {
+                if active["session"]["sessionId"] != hint.session_id
+                    || !routing
+                        .active_owner
+                        .as_ref()
+                        .is_some_and(|owner| owner.matches(session, &hint.session_id))
+                {
+                    return Err(session_owner_error());
+                }
+                self.check_scope(session, generation)?;
+                return Ok(active);
+            }
+            let (params, settings) = self.scoped_session_route(&json!({}), settings, session)?;
+            self.cloudmatch
+                .remote_sessions(&params, &settings, session, &self.device_id)?;
+            self.check_scope(session, generation)?;
+            routing.discovery_owner = Some((
+                session.provider.idp_id.clone(),
+                session.user.user_id.clone(),
+                generation,
+            ));
+            let discovered = self
+                .cloudmatch
+                .discovered_session(&hint.session_id)
+                .ok_or_else(|| ServiceError {
+                    code: "session_discovery_failed",
+                    message: "The existing stream's session was not found. Retry reconciliation."
+                        .into(),
+                })?;
+            self.cloudmatch
+                .reconcile(&discovered, &settings, session, &self.device_id, || {
+                    self.check_scope(session, generation)
+                })
+        })?;
+        if routing.active_owner.is_none() && !self.cloudmatch.active()["session"].is_null() {
+            routing.active_owner = Some(ActiveSeatOwner::capture(
+                session.clone(),
+                generation,
+                &self.cloudmatch.active()["session"],
+                None,
+            )?);
+        }
+        self.publish_active_result(&mut routing, &session, generation, result)
     }
 
     pub fn active_session(&self) -> Result<Value, ServiceError> {

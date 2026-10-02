@@ -2,6 +2,17 @@ import QtQuick
 import OpenNOW
 
 QtObject {
+    property QtObject runtime: QtObject {
+        property bool running: false
+        property string lastError: ""
+        property var commands: []
+        signal presentationError(string message)
+        signal responseReceived(var response)
+        signal eventReceived(var event)
+        signal callbacksDropped(int count)
+        function start() { return true }
+        function send(command) { commands = commands.concat([command]); return true }
+    }
     property Component statsComponent: Component {
         DesktopStreamStats { width: 1280; height: 720 }
     }
@@ -9,6 +20,7 @@ QtObject {
         property string state: "stopped"
         property string lastError: ""
         property var calls: []
+        property var cancelled: []
         signal responseReceived(string requestId, var result)
         signal requestFailed(string requestId, string code, string message)
         signal eventReceived(string name, var payload)
@@ -19,9 +31,202 @@ QtObject {
             calls = calls.concat([{id:id, method:method, params:params}])
             return id
         }
-        function cancel(id) { return true }
+        function cancel(id) {
+            cancelled = cancelled.concat([id])
+            requestFailed(id, "cancelled", "Cancelled")
+            return true
+        }
     }
     function check(ok, message) { if (!ok) throw new Error("Stream recovery: " + message) }
+    function checkActiveTimerExhaustion() {
+        ShellStore.streamPollRequestId = ""
+        ShellStore.streamer = {status:"stopped"}
+        ShellStore.acceptStreamingSession({sessionId:"active-timer-seat",status:1,phase:"queued"})
+        const before = client.calls.length
+        for (let tick = 0; tick < ShellStore.maximumStreamPollFailureAttempts + 4; ++tick) {
+            ShellStore.streamPollTimer.triggered()
+            const id = ShellStore.streamPollRequestId
+            if (id !== "") client.requestFailed(id, "network_error", "offline")
+        }
+        check(!ShellStore.streamPollTimer.running && ShellStore.streamState === "error",
+              "a running repeating timer stops when consecutive failures exhaust the budget")
+        check(client.calls.length - before === ShellStore.maximumStreamPollFailureAttempts + 1,
+              "late timer deliveries cannot send polls after exhaustion")
+        ShellStore.acceptStreamingSession({sessionId:"replacement-timer-seat",status:1,phase:"queued"})
+        ShellStore.streamPollTimer.triggered()
+        check(ShellStore.streamPollRequestId !== "", "a replacement seat has a fresh poll budget")
+        client.responseReceived(ShellStore.streamPollRequestId,
+            {session:{sessionId:"replacement-timer-seat",status:1,phase:"queued"}})
+        ShellStore.streamPollTimer.stop()
+    }
+    function checkCoreRestartPreservesSession() {
+        client.state = "stopped"
+        const oldOwner = {generation:7,userId:"restart-owner",providerIdpId:"restart-provider"}
+        const auth = {user:{userId:"restart-owner",displayName:"Restart owner"},
+            provider:{idpId:"restart-provider"}}
+        ShellStore.authSession = auth
+        ShellStore.authGeneration = 7
+        ShellStore.activeSession = {sessionId:"restart-seat",status:3,phase:"streaming",
+            ownerScope:oldOwner,keyboardLayout:"de-DE"}
+        ShellStore.streamer = {sessionId:"restart-seat",status:"streaming",marker:"surviving-media"}
+        ShellStore.streamState = "streaming"
+        ShellStore.streamerPrepareRequestId = ""
+        ShellStore.streamerStartRequestId = ""
+        ShellStore.streamerStopRequestId = ""
+        ShellStore.streamStopRequestId = ""
+        ShellStore.streamPollRequestId = ""
+        runtime.running = true
+        runtime.commands = []
+        client.state = "ready"
+        if (ShellStore.activeSessionRequestId !== "")
+            client.responseReceived(ShellStore.activeSessionRequestId, {session:null})
+        check(ShellStore.activeSession && ShellStore.activeSession.sessionId === "restart-seat",
+              "a fresh core cache cannot erase a surviving remote seat")
+        check(runtime.commands.every(command => command.type !== "stop"),
+              "core restart cannot stop healthy native media")
+        client.responseReceived(ShellStore.authSessionRequestId,
+            {session:auth,generation:1,persistence:"encrypted-file"})
+        const request = client.calls.find(call => call.id === ShellStore.streamPollRequestId)
+        check(request && request.method === "session.active.get"
+            && request.params.sessionId === "restart-seat"
+            && request.params.ownerScope.userId === "restart-owner"
+            && request.params.ownerScope.providerIdpId === "restart-provider",
+            "restore only the exact seat and original owner after authentication is ready")
+        client.requestFailed(request.id, "network_error", "temporary discovery failure")
+        check(ShellStore.activeSession.sessionId === "restart-seat" && ShellStore.streamPollTimer.running,
+              "failed reconciliation retains the seat and retries through bounded polling")
+        ShellStore.streamPollTimer.triggered()
+        client.responseReceived(ShellStore.streamPollRequestId, {session:null})
+        check(ShellStore.activeSession && ShellStore.activeSession.sessionId === "restart-seat"
+            && ShellStore.streamPollTimer.running,
+            "an unconfirmed null reconciliation cannot end the surviving seat")
+        ShellStore.streamPollTimer.triggered()
+        const restoredOwner = {generation:1,userId:"restart-owner",providerIdpId:"restart-provider"}
+        client.responseReceived(ShellStore.streamPollRequestId, {scope:restoredOwner,
+            session:{sessionId:"restart-seat",status:3,phase:"streaming",ownerScope:restoredOwner}})
+        check(ShellStore.activeSession.ownerScope.generation === 1
+            && ShellStore.streamer.marker === "surviving-media"
+            && ShellStore.streamerPrepareRequestId === "" && !ShellStore.streamPollTimer.running,
+            "restored control ownership preserves native media without preparing or claiming it again")
+        check(runtime.commands.every(command => command.type !== "stop" && command.type !== "start"),
+              "reconciliation sends no media lifecycle commands")
+        check(ShellStore.activeSession.keyboardLayout === "de-DE",
+              "read-only reconciliation preserves the live session's keyboard layout")
+        ShellStore.acceptStreamingSession(Object.assign({}, ShellStore.activeSession, {keyboardLayout:null}))
+        check(ShellStore.activeSession.keyboardLayout === "de-DE",
+              "later core polls with a null layout preserve the launch-time layout")
+        client.state = "stopped"
+        client.state = "ready"
+        client.responseReceived(ShellStore.authSessionRequestId,
+            {session:auth,generation:2,persistence:"encrypted-file"})
+        const staleId = ShellStore.streamPollRequestId
+        ShellStore.streamer = {sessionId:"replacement-seat",status:"streaming",marker:"replacement-media"}
+        ShellStore.acceptStreamingSession({sessionId:"replacement-seat",status:3,phase:"streaming",ownerScope:restoredOwner})
+        client.responseReceived(staleId, {scope:restoredOwner,
+            session:{sessionId:"restart-seat",status:3,ownerScope:restoredOwner}})
+        check(client.cancelled.includes(staleId) && ShellStore.activeSession.sessionId === "replacement-seat"
+            && ShellStore.streamer.marker === "replacement-media",
+            "replacing a seat cancels reconciliation and ignores its late reply")
+        client.state = "stopped"
+        client.state = "ready"
+        client.responseReceived(ShellStore.authSessionRequestId,
+            {session:auth,generation:3,persistence:"encrypted-file"})
+        const terminalOwner = {generation:3,userId:"restart-owner",providerIdpId:"restart-provider"}
+        client.responseReceived(ShellStore.streamPollRequestId, {scope:terminalOwner,session:null,
+            termination:{source:"cloudmatch-http",httpStatus:404,sessionId:"replacement-seat",resumable:false}})
+        check(!ShellStore.activeSession && ShellStore.coreSessionRestoreId === ""
+            && !ShellStore.streamPollTimer.running,
+            "authoritative termination still ends the exact seat during reconciliation")
+        runtime.running = false
+        ShellStore.streamer = {status:"stopped"}
+        ShellStore.acceptStreamingSession(null)
+        ShellStore.authSession = null
+        ShellStore.authGeneration = 0
+    }
+    function checkReconciliationAuthAndExit() {
+        client.state = "stopped"
+        const owner = {generation:7,userId:"restore-owner",providerIdpId:"restore-provider"}
+        const auth = {user:{userId:"restore-owner",displayName:"Restore owner"},
+            provider:{idpId:"restore-provider"}}
+        ShellStore.activeSession = {sessionId:"restore-seat",status:3,phase:"streaming",ownerScope:owner}
+        ShellStore.authSession = auth
+        ShellStore.authGeneration = 7
+        ShellStore.streamer = {sessionId:"restore-seat",status:"streaming"}
+        ShellStore.streamerStopRequestId = ""
+        ShellStore.streamerPrepareRequestId = ""
+        ShellStore.streamerStartRequestId = ""
+        ShellStore.streamerStopExpected = false
+        runtime.running = true
+        runtime.commands = []
+        client.state = "ready"
+        client.responseReceived(ShellStore.authSessionRequestId, {session:auth,generation:1})
+        for (let attempt = 0; attempt <= ShellStore.maximumStreamPollFailureAttempts; ++attempt) {
+            client.requestFailed(ShellStore.streamPollRequestId, "session_owner_mismatch", "Sign in to the owner account")
+            if (attempt < ShellStore.maximumStreamPollFailureAttempts)
+                ShellStore.streamPollTimer.triggered()
+        }
+        check(!ShellStore.streamPollTimer.running, "authentication failures remain bounded")
+        const beforeUnchangedAuth = client.calls.length
+        client.eventReceived("auth.session.changed", {session:auth,generation:1})
+        ShellStore.pollStreamingSession()
+        check(client.calls.length === beforeUnchangedAuth, "an unchanged authentication context cannot reset exhausted retries")
+        client.eventReceived("auth.session.changed", {session:null,generation:2})
+        client.eventReceived("auth.session.changed", {session:auth,generation:3})
+        ShellStore.pollStreamingSession()
+        check(ShellStore.streamPollRequestId !== "" && ShellStore.streamPollFailureAttempts === 0,
+              "returning to the original account re-arms control reconciliation")
+        const abandoned = ShellStore.streamPollRequestId
+        ShellStore.stopStreamingSession()
+        check(client.cancelled.includes(abandoned), "explicit exit retires the in-flight reconciliation request")
+        check(!ShellStore.streamPollTimer.running && ShellStore.streamPollFailureAttempts === 0,
+              "synchronous cancellation cannot restart polling or consume the failure budget")
+        check(ShellStore.streamPollRequestId !== "", "explicit exit reconciles missing control ownership before cleanup")
+        const currentOwner = {generation:3,userId:"restore-owner",providerIdpId:"restore-provider"}
+        const currentSeat = {sessionId:"restore-seat",status:3,phase:"streaming",ownerScope:currentOwner}
+        const callsBeforeRestore = client.calls.length
+        client.responseReceived(ShellStore.streamPollRequestId, {scope:currentOwner,session:currentSeat})
+        check(ShellStore.streamStopRequestId !== ""
+            && client.calls.slice(callsBeforeRestore).some(call => call.method === "session.stop")
+            && client.calls.slice(callsBeforeRestore).every(call => call.method !== "streamer.prepare"),
+            "restoring ownership after exit ends the cloud session without restarting media")
+        client.requestFailed(ShellStore.streamStopRequestId, "network_error", "Temporary stop failure")
+        const afterStopFailure = client.calls.length
+        ShellStore.acceptStreamingSession(currentSeat)
+        ShellStore.streamPollTimer.triggered()
+        check(client.calls.length === afterStopFailure && ShellStore.streamerPrepareRequestId === "",
+              "a failed stop and late session snapshot cannot restart media")
+        ShellStore.stopStreamingSession()
+        client.responseReceived(ShellStore.streamStopRequestId, {session:null})
+        check(!ShellStore.activeSession, "explicit cleanup can be retried after a stop failure")
+        ShellStore.streamerStopRequestId = ""
+        ShellStore.streamer = {status:"stopped"}
+        ShellStore.authSession = null
+        ShellStore.authGeneration = 0
+        runtime.running = false
+    }
+    function checkExitAfterExhaustedRestore() {
+        const owner = {generation:1,userId:"cleanup-owner",providerIdpId:"cleanup-provider"}
+        ShellStore.activeSession = {sessionId:"cleanup-seat",status:3,phase:"streaming",ownerScope:owner}
+        ShellStore.streamer = {sessionId:"cleanup-seat",status:"streaming"}
+        ShellStore.coreSessionRestoreId = "cleanup-seat"
+        ShellStore.streamPollFailureAttempts = ShellStore.maximumStreamPollFailureAttempts + 1
+        ShellStore.streamerStopRequestId = ""
+        ShellStore.streamStopRequestId = ""
+        ShellStore.streamPollRequestId = ""
+        ShellStore.authSessionRequestId = ""
+        runtime.running = true
+        ShellStore.stopStreamingSession()
+        check(ShellStore.streamPollRequestId !== "" && ShellStore.streamPollFailureAttempts === 0
+            && ShellStore.sessionStopIntentId === "cleanup-seat",
+            "explicit exit starts fresh bounded cleanup after reconciliation was exhausted")
+        client.requestFailed(ShellStore.streamPollRequestId, "network_error", "Cleanup unavailable")
+        check(ShellStore.streamPollFailureAttempts === 1 && ShellStore.streamPollTimer.running,
+              "cleanup failures still consume the bounded retry budget")
+        ShellStore.streamer = {status:"stopped"}
+        ShellStore.streamerStopRequestId = ""
+        ShellStore.acceptStreamingSession(null)
+        runtime.running = false
+    }
     function checkQueuedPollRetries() {
         client.state = "ready"
         const queued = {sessionId:"queue-fixture",status:1,phase:"queued",queuePosition:21,
@@ -226,6 +431,10 @@ QtObject {
         stats.destroy()
         checkQueuedPollRetries()
         checkOwnedTerminations()
+        checkActiveTimerExhaustion()
+        checkCoreRestartPreservesSession()
+        checkReconciliationAuthAndExit()
+        checkExitAfterExhaustedRestore()
         ShellStore.activeSession = null
         ShellStore.streamer = null
         return true

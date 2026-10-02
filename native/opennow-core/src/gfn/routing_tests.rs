@@ -23,6 +23,416 @@ fn directory(id: &str, host: &str) -> Value {
     }]}})
 }
 
+fn reconciliation_hint() -> Value {
+    json!({"sessionId":"seat-a","ownerScope":{
+        "userId":"account-a","providerIdpId":DEFAULT_IDP_ID,"generation":999
+    },"streamingBaseUrl":"https://forged.nvidiagrid.net/"})
+}
+
+#[test]
+fn hinted_active_get_restores_control_without_resuming_media() {
+    let payload = json!({"requestStatus":{"statusCode":1},"session":{
+        "sessionId":"seat-a","status":3,"sessionRequestData":{"appId":"123"},
+        "sessionControlInfo":{"ip":"owned.nvidiagrid.net","port":443},
+        "connectionInfo":[{"usage":16,"ip":"owned.nvidiagrid.net","port":443}]
+    }});
+    let (url, worker) = mock_requests(
+        vec![
+            (200, json!({"metaData":[]})),
+            (
+                200,
+                json!({"requestStatus":{"statusCode":1},"sessions":[payload["session"].clone()]}),
+            ),
+            (200, payload.clone()),
+            (200, payload),
+        ],
+        |index, request| {
+            let path = match index {
+                0 => "/v2/serverInfo",
+                1 => "/v2/session",
+                _ => "/v2/session/seat-a",
+            };
+            assert!(request.starts_with(&format!("GET {path} ")), "{request}");
+            assert!(request.contains("GFNJWT test-access"));
+            assert!(!request.contains("forged.nvidiagrid.net"));
+        },
+    );
+    let (mut service, path) = service(&url);
+    service
+        .cloudmatch
+        .set_test_control_base(url::Url::parse(&url).unwrap());
+    assert!(service.active_session().unwrap()["session"].is_null());
+    let restored = service
+        .reconcile_active_session(&reconciliation_hint(), &json!({}))
+        .unwrap();
+    assert_eq!(restored["session"]["sessionId"], "seat-a");
+    assert_eq!(restored["session"]["status"], 3);
+    assert_ne!(restored["session"]["resumePending"], true);
+    assert_ne!(restored["session"]["phase"], "resuming");
+    assert_eq!(restored["session"]["ownerScope"]["generation"], 7);
+    assert_eq!(
+        service
+            .reconcile_active_session(&reconciliation_hint(), &json!({}))
+            .unwrap(),
+        restored
+    );
+    assert_eq!(
+        service
+            .poll_session(&json!({"sessionId":"seat-a"}))
+            .unwrap()["session"]["sessionId"],
+        "seat-a"
+    );
+    worker.join().unwrap();
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+fn reconciliation_discovery() -> Vec<(u16, Value)> {
+    vec![
+        (200, json!({"metaData":[]})),
+        (
+            200,
+            json!({"requestStatus":{"statusCode":1},"sessions":[{
+                "sessionId":"seat-a","status":3,"sessionRequestData":{"appId":"123"}
+            }]}),
+        ),
+    ]
+}
+
+#[test]
+fn hinted_active_get_validates_identity_and_keeps_unhinted_lookup_local() {
+    let (service, path) = service("http://127.0.0.1:1");
+    assert_eq!(
+        service
+            .reconcile_active_session(&json!({}), &json!({}))
+            .unwrap(),
+        json!({"session":null})
+    );
+    for hint in [
+        json!({"sessionId":"seat-a"}),
+        json!({"ownerScope":reconciliation_hint()["ownerScope"]}),
+        json!({"sessionId":null,"ownerScope":reconciliation_hint()["ownerScope"]}),
+        json!({"sessionId":"seat-a","ownerScope":{"userId":"","providerIdpId":DEFAULT_IDP_ID}}),
+    ] {
+        assert_eq!(
+            service
+                .reconcile_active_session(&hint, &json!({}))
+                .unwrap_err()
+                .code,
+            "invalid_params"
+        );
+    }
+    for id in [
+        "",
+        "../other",
+        "seat/a",
+        "seat?other",
+        "seat#other",
+        "seat%2fother",
+        " ",
+        &"x".repeat(257),
+    ] {
+        let mut hint = reconciliation_hint();
+        hint["sessionId"] = json!(id);
+        assert_eq!(
+            service
+                .reconcile_active_session(&hint, &json!({}))
+                .unwrap_err()
+                .code,
+            "invalid_params"
+        );
+    }
+    for key in ["userId", "providerIdpId"] {
+        let mut hint = reconciliation_hint();
+        hint["ownerScope"][key] = json!("other");
+        assert_eq!(
+            service
+                .reconcile_active_session(&hint, &json!({}))
+                .unwrap_err()
+                .code,
+            "session_owner_mismatch"
+        );
+        hint["ownerScope"][key] = json!("x".repeat(1025));
+        assert_eq!(
+            service
+                .reconcile_active_session(&hint, &json!({}))
+                .unwrap_err()
+                .code,
+            "invalid_params"
+        );
+    }
+    service.state.lock().unwrap().session = None;
+    assert_eq!(
+        service
+            .reconcile_active_session(&reconciliation_hint(), &json!({}))
+            .unwrap_err()
+            .code,
+        "authentication_required"
+    );
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn hinted_active_get_rebinds_existing_owner_but_rejects_other_seats() {
+    let (service, path) = service("http://127.0.0.1:1");
+    let seat = json!({"sessionId":"seat-a","status":3});
+    service.cloudmatch.seed_owned_session(seat.clone());
+    service.session_routing.lock().unwrap().active_owner =
+        Some(ActiveSeatOwner::capture(auth_fixture("account-a"), 7, &seat, None).unwrap());
+    service.state.lock().unwrap().generation = 8;
+    let result = service
+        .reconcile_active_session(&reconciliation_hint(), &json!({}))
+        .unwrap();
+    assert_eq!(result["session"]["ownerScope"]["generation"], 8);
+    assert_eq!(
+        service
+            .session_routing
+            .lock()
+            .unwrap()
+            .active_owner
+            .as_ref()
+            .unwrap()
+            .last_published_generation,
+        8
+    );
+    let mut hint = reconciliation_hint();
+    hint["sessionId"] = json!("seat-b");
+    assert_eq!(
+        service
+            .reconcile_active_session(&hint, &json!({}))
+            .unwrap_err()
+            .code,
+        "session_owner_mismatch"
+    );
+    service.state.lock().unwrap().session = Some(auth_fixture("account-b"));
+    hint = reconciliation_hint();
+    hint["ownerScope"]["userId"] = json!("account-b");
+    assert_eq!(
+        service
+            .reconcile_active_session(&hint, &json!({}))
+            .unwrap_err()
+            .code,
+        "session_owner_mismatch"
+    );
+    assert_eq!(service.cloudmatch.active()["session"], seat);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn hinted_active_get_preserves_phases_and_requires_authoritative_end() {
+    for status in [1, 2, 3, 4, 5, 6, 7, 404] {
+        let mut responses = reconciliation_discovery();
+        responses.push((
+            if status == 404 { 404 } else { 200 },
+            json!({
+                "requestStatus":{"statusCode":1},"session":{"sessionId":"seat-a","status":status}
+            }),
+        ));
+        let (url, worker) =
+            mock_requests(responses, |_, request| assert!(request.starts_with("GET ")));
+        let (mut service, path) = service(&url);
+        service
+            .cloudmatch
+            .set_test_control_base(url::Url::parse(&url).unwrap());
+        let result = service
+            .reconcile_active_session(&reconciliation_hint(), &json!({}))
+            .unwrap();
+        assert_eq!(result["scope"]["generation"], 7);
+        if status == 404 {
+            assert!(result["session"].is_null());
+            assert_eq!(
+                result["termination"],
+                json!({"source":"cloudmatch-http","httpStatus":404,"sessionId":"seat-a","resumable":false})
+            );
+        } else {
+            let phase = match status {
+                1 => "preparing",
+                2 => "ready",
+                3 => "streaming",
+                4 | 5 => "paused",
+                6 => "resuming",
+                _ => "finished",
+            };
+            assert_eq!(result["session"]["status"], status);
+            assert_eq!(result["session"]["phase"], phase);
+            assert_eq!(
+                result["session"]["streamingBaseUrl"],
+                DEFAULT_STREAMING_URL.trim_end_matches('/')
+            );
+            assert_ne!(result["session"]["resumePending"], true);
+            if status == 7 {
+                assert_eq!(
+                    result["session"]["termination"],
+                    json!({"source":"cloudmatch-session-status","status":7,"sessionId":"seat-a","resumable":false})
+                );
+            }
+        }
+        assert_eq!(
+            service.cloudmatch.active()["session"].is_null(),
+            status >= 7
+        );
+        assert_eq!(
+            service
+                .session_routing
+                .lock()
+                .unwrap()
+                .active_owner
+                .is_none(),
+            status >= 7
+        );
+        worker.join().unwrap();
+        std::fs::remove_dir_all(path).unwrap();
+    }
+}
+
+#[test]
+fn hinted_active_get_never_treats_discovery_or_read_errors_as_termination() {
+    for scenario in [
+        "missing",
+        "other-seat",
+        "forbidden",
+        "discovery-forbidden",
+        "network-error",
+        "server-error",
+        "wrong-get-seat",
+        "invalid-status",
+    ] {
+        let mut responses = reconciliation_discovery();
+        let expected = match scenario {
+            "missing" | "other-seat" => {
+                responses[1].1["sessions"] = if scenario == "missing" {
+                    json!([])
+                } else {
+                    json!([{"sessionId":"seat-b","status":3}])
+                };
+                "session_discovery_failed"
+            }
+            "forbidden" => {
+                responses.push((403, json!({})));
+                "authentication_required"
+            }
+            "discovery-forbidden" => {
+                responses = vec![(403, json!({}))];
+                "authentication_required"
+            }
+            "network-error" => "network_error",
+            "server-error" => {
+                responses.extend(vec![(503, json!({})); 3]);
+                "upstream_error"
+            }
+            _ => {
+                responses.push((
+                    200,
+                    json!({"requestStatus":{"statusCode":1},"session":{
+                        "sessionId":if scenario == "wrong-get-seat" {"seat-b"} else {"seat-a"},
+                        "status":if scenario == "invalid-status" {0} else {3}
+                    }}),
+                ));
+                "upstream_error"
+            }
+        };
+        let (url, worker) =
+            mock_requests(responses, |_, request| assert!(request.starts_with("GET ")));
+        let (mut service, path) = service(&url);
+        service
+            .cloudmatch
+            .set_test_control_base(url::Url::parse(&url).unwrap());
+        let error = service
+            .reconcile_active_session(&reconciliation_hint(), &json!({}))
+            .unwrap_err();
+        assert_eq!(error.code, expected, "{scenario}: {error:?}");
+        assert!(service.cloudmatch.active()["session"].is_null());
+        assert!(
+            service
+                .session_routing
+                .lock()
+                .unwrap()
+                .active_owner
+                .is_none()
+        );
+        worker.join().unwrap();
+        std::fs::remove_dir_all(path).unwrap();
+    }
+}
+
+#[test]
+fn hinted_active_get_fences_cancellation_and_account_changes_before_adoption() {
+    for cancel in [false, true] {
+        for status in [3, 7, 404] {
+            let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let mut responses = reconciliation_discovery();
+            responses.push((if status == 404 {404} else {200}, json!({
+                "requestStatus":{"statusCode":1},"session":{"sessionId":"seat-a","status":status}
+            })));
+            if cancel && status == 3 {
+                responses.push((204, json!({})));
+            }
+            let (url, worker) = mock_requests(responses, move |index, request| {
+                assert!(request.starts_with(if index == 3 {
+                    "DELETE /v2/session/seat-a "
+                } else {
+                    "GET "
+                }));
+                if index == 2 {
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                }
+            });
+            let (mut service, path) = service(&url);
+            service
+                .cloudmatch
+                .set_test_control_base(url::Url::parse(&url).unwrap());
+            let requests = std::sync::Arc::new(crate::requests::Requests::default());
+            let permit = requests.admit("restore", "session.active.get").unwrap();
+            std::thread::scope(|threads| {
+                let restoring = threads.spawn(|| {
+                    crate::requests::scope(permit.token.clone(), || {
+                        service.reconcile_active_session(&reconciliation_hint(), &json!({}))
+                    })
+                });
+                entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                if cancel {
+                    requests.cancel("restore");
+                } else {
+                    service.clear_cache();
+                }
+                release_tx.send(()).unwrap();
+                assert_eq!(
+                    restoring.join().unwrap().unwrap_err().code,
+                    if cancel { "cancelled" } else { "stale_account" }
+                );
+            });
+            assert!(service.cloudmatch.active()["session"].is_null());
+            assert!(
+                service
+                    .session_routing
+                    .lock()
+                    .unwrap()
+                    .active_owner
+                    .is_none()
+            );
+            if cancel && status == 3 {
+                assert_eq!(
+                    service
+                        .stop_session(&reconciliation_hint(), &json!({}))
+                        .unwrap()["stopped"],
+                    true
+                );
+            } else if !cancel {
+                assert_eq!(
+                    service
+                        .stop_session(&reconciliation_hint(), &json!({}))
+                        .unwrap_err()
+                        .code,
+                    "session_owner_mismatch"
+                );
+            }
+            worker.join().unwrap();
+            std::fs::remove_dir_all(path).unwrap();
+        }
+    }
+}
+
 #[test]
 fn provider_regions_only_include_named_authenticated_zones() {
     let payload = json!({"metaData":[

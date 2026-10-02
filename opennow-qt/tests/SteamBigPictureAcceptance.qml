@@ -44,8 +44,15 @@ QtObject {
         const write = client.calls[client.calls.length - 1]
         check(write.method === "settings.set" && write.params.key === "steamBigPictureMode" && write.params.value === true,
             "desktop toggle requests persistence")
+        client.eventReceived("settings.changed", {key:"steamBigPictureMode", value:true})
+        client.responseReceived(write.id, {key:"steamBigPictureMode", value:true})
         toggle.clicked()
         check(ShellStore.settings.steamBigPictureMode === false && !toggle.checked, "desktop toggle opts out")
+        const disabledWrite = client.calls[client.calls.length - 1]
+        check(disabledWrite.method === "settings.set" && disabledWrite.params.value === false,
+            "desktop opt-out requests persistence")
+        client.eventReceived("settings.changed", {key:"steamBigPictureMode", value:false})
+        client.responseReceived(disabledWrite.id, {key:"steamBigPictureMode", value:false})
         const consolePage = consoleSettings.createObject(parent)
         const row = consolePage.settingsModel().find(item => item.key === "steamBigPictureMode")
         check(row && row.toggle && row.v === "Off", "console Video page exposes the same default-off preference")
@@ -54,6 +61,7 @@ QtObject {
         check(consoleWrite.method === "settings.set" && consoleWrite.params.key === "steamBigPictureMode"
             && consoleWrite.params.value === true, "console toggle requests the same persisted opt-in")
         client.eventReceived("settings.changed", {key:"steamBigPictureMode", value:true})
+        client.responseReceived(consoleWrite.id, {key:"steamBigPictureMode", value:true})
         check(consolePage.settingsModel().find(item => item.key === "steamBigPictureMode").v === "On" && toggle.checked,
             "both controls reflect the persisted value")
         consolePage.destroy()

@@ -645,6 +645,8 @@ QtObject {
     property string providersRequestId: ""
     property string authSessionRequestId: ""
     property string activeSessionRequestId: ""
+    property string coreSessionRestoreId: ""
+    property string sessionStopIntentId: ""
     property string remoteSessionDiscoveryRequestId: ""
     property string remoteSessionsRequestId: ""
     property string sessionClaimRequestId: ""
@@ -920,7 +922,14 @@ QtObject {
         refreshSettings()
         providersRequestId = CoreClient.request("auth.providers.list", {}, 25000)
         authSessionRequestId = CoreClient.request("auth.session.get", {})
-        activeSessionRequestId = CoreClient.request("session.active.get", {})
+        coreSessionRestoreId = activeSession && activeSession.ownerScope
+            ? String(activeSession.sessionId || "") : ""
+        if (coreSessionRestoreId !== "") {
+            streamPollTimer.stop()
+            streamPollFailureAttempts = 0
+        } else {
+            activeSessionRequestId = CoreClient.request("session.active.get", {})
+        }
         ensureNativeRuntimeReady()
         updaterStateRequestId = CoreClient.request("updater.state.get", {})
         socialCapabilitiesRequestId = CoreClient.request("social.capabilities.get", {})
@@ -1905,8 +1914,18 @@ QtObject {
             return
         }
         const previousSession = activeSession
-        activeSession = normalizedStreamingSession(session)
+        const nextSession = normalizedStreamingSession(session)
+        if (nextSession && previousSession && nextSession.sessionId === previousSession.sessionId
+                && (nextSession.keyboardLayout === undefined || nextSession.keyboardLayout === null)
+                && previousSession.keyboardLayout !== undefined && previousSession.keyboardLayout !== null)
+            nextSession.keyboardLayout = previousSession.keyboardLayout
+        activeSession = nextSession
         if (!activeSession || !previousSession || previousSession.sessionId !== activeSession.sessionId) {
+            const pollId = streamPollRequestId
+            streamPollRequestId = ""
+            coreSessionRestoreId = ""
+            sessionStopIntentId = ""
+            if (pollId !== "") CoreClient.cancel(pollId)
             streamerRestartTimer.stop()
             streamerRestartAttempts = 0
             sessionReconnectAttempts = 0
@@ -1995,6 +2014,7 @@ QtObject {
 
     function startNativeStreamer() {
         if (!ready || !activeSession || sessionRecoveryPending || activeSession.resumePending
+                || coreSessionRestoreId !== "" || sessionStopIntentId === String(activeSession.sessionId)
                 || streamStopRequestId !== "" || streamerStopRequestId !== "" || streamerStartRequestId !== ""
                 || streamerPrepareRequestId !== "" || sessionClaimRequestId !== ""
                 || streamerRestartTimer.running || streamerRecoveryExhausted)
@@ -2040,6 +2060,8 @@ QtObject {
         streamerRestartTimer.stop()
         streamerRestartAttempts = 0
         sessionReconnectAttempts = 0
+        streamPollFailureAttempts = 0
+        sessionStopIntentId = ""
         streamerRecoveryExhausted = false
         recoverStreamingSession(streamMessage)
     }
@@ -2119,10 +2141,14 @@ QtObject {
 
     function recoverStreamingSession(reason) {
         if (!activeSession || sessionClaimRequestId !== "" || recoveryDiscoveryRequestId !== ""
-                || streamerStopRequestId !== "")
+                || streamerStopRequestId !== "" || sessionStopIntentId === String(activeSession.sessionId))
             return
         if (!ready) {
             streamerRestartTimer.restart()
+            return
+        }
+        if (coreSessionRestoreId !== "") {
+            pollStreamingSession()
             return
         }
         if (sessionReconnectAttempts >= maximumSessionReconnectAttempts) {
@@ -2140,10 +2166,11 @@ QtObject {
         streamState = "reconnecting"
         streamMessage = qsTr("Reconnecting to the GeForce NOW session…")
         streamPollTimer.stop()
-        for (const id of [streamerPrepareRequestId, streamPollRequestId])
-            if (id !== "") CoreClient.cancel(id)
+        const pendingRequests = [streamerPrepareRequestId, streamPollRequestId]
         streamerPrepareRequestId = ""
         streamPollRequestId = ""
+        for (const id of pendingRequests)
+            if (id !== "") CoreClient.cancel(id)
         // Stop/reap the previous native connection before claiming fresh keys.
         // This is NOT session.stop: the cloud game must remain alive.
         if (NativeStreamRuntime.running && streamer && streamer.status !== "stopped") {
@@ -2158,7 +2185,8 @@ QtObject {
     function scheduleSessionRecovery(reason) {
         sessionRecoveryPending = false
         streamMessage = reason || qsTr("Connection lost. Waiting to reconnect…")
-        if (!activeSession || streamStopRequestId !== "") return
+        if (!activeSession || streamStopRequestId !== ""
+                || sessionStopIntentId === String(activeSession.sessionId)) return
         if (sessionReconnectAttempts >= maximumSessionReconnectAttempts) {
             streamerRecoveryExhausted = true
             streamerRestartTimer.stop()
@@ -2233,10 +2261,11 @@ QtObject {
         if (termination.sessionId && activeSession
                 && String(termination.sessionId) !== String(activeSession.sessionId))
             return
-        for (const id of [streamerPrepareRequestId, streamPollRequestId])
-            if (id !== "") CoreClient.cancel(id)
+        const pendingRequests = [streamerPrepareRequestId, streamPollRequestId]
         streamerPrepareRequestId = ""
         streamPollRequestId = ""
+        for (const id of pendingRequests)
+            if (id !== "") CoreClient.cancel(id)
         acceptStreamingSession(null)
         if (AppController.route === "stream" || AppController.route === "inserting") {
             AppController.showOverlay("")
@@ -2560,6 +2589,21 @@ QtObject {
     function pollStreamingSession() {
         if (!ready || !activeSession || streamPollRequestId !== "" || streamStopRequestId !== "")
             return
+        if (sessionStopIntentId === String(activeSession.sessionId) && coreSessionRestoreId === "")
+            return
+        if (!(activeSession.resumePending && coreSessionRestoreId === "")
+                && streamPollFailureAttempts > maximumStreamPollFailureAttempts) {
+            streamPollTimer.stop()
+            return
+        }
+        if (coreSessionRestoreId !== "") {
+            if (authSessionRequestId !== "") return
+            streamPollRequestId = CoreClient.request("session.active.get", {
+                sessionId: coreSessionRestoreId,
+                ownerScope: activeSession.ownerScope
+            }, 35000)
+            return
+        }
         if (activeSession.resumePending && (++resumePollAttempts > 60
                 || (resumePollDeadlineMs > 0 && Date.now() >= resumePollDeadlineMs))) {
             streamPollTimer.stop()
@@ -2572,7 +2616,34 @@ QtObject {
         }, 35000)
     }
 
+    function handleStreamPollFailure(code, message) {
+        if (code === "session_owner_authentication_required") {
+            streamPollTimer.stop()
+            streamMessage = message
+            lastError = message
+            return
+        }
+        if (activeSession && activeSession.resumePending && coreSessionRestoreId === "") {
+            streamMessage = qsTr("Waiting for the resumed session…")
+            streamPollTimer.restart()
+            return
+        }
+        streamPollFailureAttempts += 1
+        const retry = activeSession && streamPollFailureAttempts <= maximumStreamPollFailureAttempts
+        if (coreSessionRestoreId === "" || !streamer || streamer.status !== "streaming")
+            streamState = retry ? "reconnecting" : "error"
+        streamMessage = retry ? qsTr("Connection interrupted. Retrying…") : message
+        if (retry) {
+            streamPollTimer.restart()
+        } else {
+            streamPollTimer.stop()
+            lastError = message
+        }
+    }
+
     function stopStreamingSession() {
+        sessionStopIntentId = activeSession ? String(activeSession.sessionId) : ""
+        if (coreSessionRestoreId !== "") streamPollFailureAttempts = 0
         invalidateLaunchInspection()
         const discoveryRequestId = remoteSessionsRequestId
         const createRequestId = streamCreateRequestId
@@ -2622,8 +2693,9 @@ QtObject {
         streamPollTimer.stop()
         stopNativeStreamer("User stopped the session")
         if (streamPollRequestId !== "") {
-            CoreClient.cancel(streamPollRequestId)
+            const pollId = streamPollRequestId
             streamPollRequestId = ""
+            CoreClient.cancel(pollId)
         }
         if (!activeSession) {
             streamState = "idle"
@@ -2632,6 +2704,10 @@ QtObject {
         }
         if (!ready || streamStopRequestId !== "")
             return
+        if (coreSessionRestoreId !== "") {
+            pollStreamingSession()
+            return
+        }
         streamState = "stopping"
         streamMessage = qsTr("Closing the remote session…")
         streamStopRequestId = CoreClient.request("session.stop", {
@@ -2742,6 +2818,12 @@ QtObject {
         authSession = payload.session || null
         sessionPersistence = payload.persistence || "none"
         authWarnings = payload.warnings || []
+        if (changed && coreSessionRestoreId !== "" && activeSession && activeSession.ownerScope && next
+                && String(activeSession.ownerScope.userId) === String(next.user.userId)
+                && String(activeSession.ownerScope.providerIdpId) === String(next.provider.idpId)) {
+            streamPollFailureAttempts = 0
+            Qt.callLater(root.pollStreamingSession)
+        }
         if (changed) {
             Qt.callLater(root.reloadCatalogForSession)
             if (next) Qt.callLater(root.refreshAccountServices)
@@ -3303,6 +3385,8 @@ QtObject {
                     root.refreshRemoteSessions()
                 else
                     root.remoteSessions = []
+                if (root.coreSessionRestoreId !== "")
+                    root.pollStreamingSession()
                 root.resolveDirectLaunch()
             } else if (requestId === root.catalogRequestId) {
                 catalogOwner.acceptCatalog(result)
@@ -3535,7 +3619,8 @@ QtObject {
                     AppController.showOverlay("")
             } else if (requestId === root.activeSessionRequestId) {
                 root.activeSessionRequestId = ""
-                root.acceptStreamingSession(result.session || null)
+                if (!root.activeSession)
+                    root.acceptStreamingSession(result.session || null)
             } else if (requestId === root.remoteSessionDiscoveryRequestId) {
                 root.remoteSessionDiscoveryRequestId = ""
                 root.remoteSessions = result.sessions || []
@@ -3572,11 +3657,30 @@ QtObject {
             } else if (requestId === root.streamPollRequestId) {
                 root.streamPollRequestId = ""
                 if (!root.acceptsSessionScope(result.scope)) return
+                const restoring = root.coreSessionRestoreId !== ""
+                if (restoring && (!result.session
+                        || String(result.session.sessionId) !== root.coreSessionRestoreId)) {
+                    root.handleStreamPollFailure("session_restore_failed",
+                        qsTr("We couldn't check whether your game is still running. Check your connection, then try again."))
+                    return
+                }
+                root.coreSessionRestoreId = ""
                 root.streamPollFailureAttempts = 0
                 if (root.isRemoteSessionTermination(result.termination))
                     root.finishRemoteSession(result.termination)
-                else
+                else if (restoring && root.sessionStopIntentId === String(result.session.sessionId)) {
+                    root.acceptStreamingSession(result.session)
+                    root.stopStreamingSession()
+                }
+                else if (restoring && root.streamer && !root.streamerStopExpected
+                        && (root.streamer.status === "error" || root.streamer.status === "stopped")) {
+                    root.sessionRecoveryPending = true
+                    root.acceptStreamingSession(result.session)
+                    root.sessionRecoveryPending = false
+                    root.scheduleSessionRecovery(root.streamer.message)
+                } else {
                     root.acceptStreamingSession(result.session || null)
+                }
             } else if (requestId === root.streamStopRequestId) {
                 root.streamStopRequestId = ""
                 const wasForceNewAfterStop = root.forceNewAfterStop
@@ -3672,6 +3776,8 @@ QtObject {
                 root.authState = root.authSession ? "signed-in" : "idle"
                 if (code !== "cancelled")
                     root.authMessage = message
+                if (root.coreSessionRestoreId !== "" && code !== "cancelled")
+                    root.handleStreamPollFailure(code, message)
             } else if (requestId === root.deviceStartRequestId
                        || requestId === root.devicePollRequestId
                        || requestId === root.deviceCompleteRequestId) {
@@ -3811,25 +3917,7 @@ QtObject {
                 root.handleSessionCreateFailure(code, message)
             } else if (requestId === root.streamPollRequestId) {
                 root.streamPollRequestId = ""
-                if (code === "session_owner_authentication_required") {
-                    root.streamPollTimer.stop()
-                    root.streamMessage = message
-                    root.lastError = message
-                    return
-                }
-                if (root.activeSession && root.activeSession.resumePending) {
-                    root.streamMessage = qsTr("Waiting for the resumed session…")
-                    root.streamPollTimer.restart()
-                    return
-                }
-                root.streamPollFailureAttempts += 1
-                root.streamState = root.activeSession
-                    && root.streamPollFailureAttempts <= root.maximumStreamPollFailureAttempts ? "reconnecting" : "error"
-                root.streamMessage = root.streamState === "reconnecting"
-                    ? qsTr("Connection interrupted. Retrying…")
-                    : message
-                if (root.streamState === "reconnecting")
-                    root.streamPollTimer.restart()
+                root.handleStreamPollFailure(code, message)
             } else if (requestId === root.streamStopRequestId) {
                 root.streamStopRequestId = ""
                 root.forceNewAfterStop = false

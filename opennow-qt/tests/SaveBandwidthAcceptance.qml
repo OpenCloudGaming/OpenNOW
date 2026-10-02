@@ -44,6 +44,7 @@ QtObject {
             check(write.method === "settings.set" && write.params.key === "saveBandwidth"
                 && write.params.value === enabled, "desktop requests the persisted preference")
             client.eventReceived("settings.changed", {key:"saveBandwidth", value:enabled})
+            client.responseReceived(write.id, {key:"saveBandwidth", value:enabled})
             check(toggle.checked === enabled && ShellStore.settings.saveBandwidth === enabled,
                 "desktop reflects the saved value")
             check(consoleRow().v === (enabled ? "On" : "Off"), "console reflects desktop changes")
@@ -53,12 +54,14 @@ QtObject {
         check(write.method === "settings.set" && write.params.key === "saveBandwidth"
             && write.params.value === false, "console writes the same preference")
         client.eventReceived("settings.changed", {key:"saveBandwidth", value:false})
+        client.responseReceived(write.id, {key:"saveBandwidth", value:false})
         check(!toggle.checked, "desktop reflects console changes")
         consolePage.activate(consoleRow())
         write = client.calls[client.calls.length - 1]
         check(write.method === "settings.set" && write.params.key === "saveBandwidth"
             && write.params.value === true, "console writes the preference back on")
         client.eventReceived("settings.changed", {key:"saveBandwidth", value:true})
+        client.responseReceived(write.id, {key:"saveBandwidth", value:true})
         check(toggle.checked && consoleRow().v === "On",
             "both surfaces agree once the preference is enabled")
         consolePage.destroy()
