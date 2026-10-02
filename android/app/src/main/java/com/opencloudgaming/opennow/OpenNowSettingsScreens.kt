@@ -662,6 +662,7 @@ private fun SettingsContent(
 ) {
     val settings = state.settings
     val context = LocalContext.current
+    val bottomScreenAvailable = remember(context) { context.hasBottomScreenDisplay() }
     val gyroscopeAvailable = remember(context) { hasMobileGyroscope(context) }
     val deviceHasBattery = rememberDeviceHasBattery()
     val fallbackMembershipTier = state.authSession?.user?.membershipTier
@@ -1627,6 +1628,33 @@ private fun SettingsContent(
                     }
                 }
             }
+    if (bottomScreenAvailable) {
+        CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.dual_settings_section), "interface", "bottom screen", "second screen", "dual screen", "thor", "ayn", "deck", "trackpad") {
+            SettingSwitch(
+                label = stringResource(R.string.dual_settings_enabled),
+                checked = settings.bottomScreenEnabled,
+                description = stringResource(R.string.dual_settings_enabled_desc),
+            ) { enabled ->
+                viewModel.updateSettings(settings.copy(bottomScreenEnabled = enabled))
+            }
+            if (settings.bottomScreenEnabled) {
+                val playModes = listOf(
+                    BottomScreenPlayMode.StreamDeck to stringResource(R.string.dual_play_mode_deck),
+                    BottomScreenPlayMode.Trackpad to stringResource(R.string.dual_play_mode_trackpad),
+                    BottomScreenPlayMode.Off to stringResource(R.string.dual_play_mode_off),
+                )
+                ChoiceRow(
+                    stringResource(R.string.dual_settings_play_mode),
+                    playModes.map { it.second },
+                    playModes.first { it.first == settings.bottomScreenPlayMode }.second,
+                ) { label ->
+                    playModes.firstOrNull { it.second == label }?.let { (mode, _) ->
+                        viewModel.updateSettings(settings.copy(bottomScreenPlayMode = mode))
+                    }
+                }
+            }
+        }
+    }
     CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_sounds_sessions), "interface", "controller", "sounds", "button", "tone", "session counter", "session report", "quality summary", "intro", "music", "queue") {
                 SettingSwitch(
                     label = stringResource(R.string.settings_button_press_tones),

@@ -316,6 +316,32 @@ object NativeStreamInputRouter {
         nativeUiTouchRouting.endPointerGesture()
     }
 
+    /**
+     * Bottom-screen trackpad and keys (AYN Thor and other dual-screen devices). These reuse the
+     * touch-mouse and text paths of the attached client, so they share its queues and are dropped
+     * while no stream is attached.
+     */
+    fun sendCompanionMouseMove(dx: Int, dy: Int): Boolean =
+        client?.sendTouchMouseMove(dx, dy) ?: false
+
+    fun sendCompanionClick(secondary: Boolean) {
+        val target = client ?: return
+        if (secondary) target.sendTouchMouseRightClick() else target.sendTouchMouseClick()
+    }
+
+    fun sendCompanionWheel(delta: Int) {
+        client?.sendTouchMouseWheel(delta)
+    }
+
+    fun sendCompanionKey(keyCode: Int) {
+        client?.sendKeyCode(keyCode)
+    }
+
+    fun sendCompanionText(text: String) {
+        if (text.isEmpty()) return
+        client?.syncText(syncedText = "", draft = text)
+    }
+
     fun setTouchMouseEnabled(enabled: Boolean) {
         touchMouseEnabled = enabled
         if (!enabled) {

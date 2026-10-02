@@ -51,6 +51,7 @@ import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val viewModel: OpenNowViewModel by viewModels()
+    private val dualScreenController by lazy { DualScreenController(this, viewModel) }
     private val mascotActivity = MascotActivityTracker()
     private val queueStatusNotifier by lazy { AndroidQueueStatusNotifier(this) }
     private val streamKeepAliveNotifier by lazy { AndroidStreamKeepAliveNotifier(this) }
@@ -118,6 +119,7 @@ class MainActivity : ComponentActivity() {
             openNowApplication.awaitStartupData()
             startupDataReady = true
             viewModel.setAndroidPictureInPictureActive(isAndroidPictureInPictureActive())
+            dualScreenController.start()
             pendingExternalLaunchIntent?.let(::handleExternalLaunchIntent)
             pendingExternalLaunchIntent = null
             viewModel.state.collect { state ->
@@ -403,6 +405,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        dualScreenController.destroy()
         if (isFinishing) {
             queueStatusNotifier.cancel()
             // Keep the foreground service alive long enough for onTaskRemoved()

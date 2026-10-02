@@ -104,6 +104,16 @@
                 <data android:scheme="http" android:host="127.0.0.1" android:port="9096" />
             </intent-filter>
         </activity>
+        <!-- Companion deck for a second built-in screen (AYN Thor). Launched by MainActivity
+             on that display only; it is not a launcher entry and never takes input focus. -->
+        <activity
+            android:name=".DualScreenActivity"
+            android:configChanges="density|keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleInstance"
+            android:resizeableActivity="true"
+            android:taskAffinity="${applicationId}.bottomscreen" />
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.updates"
