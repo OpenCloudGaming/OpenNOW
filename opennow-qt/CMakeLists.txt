@@ -7,7 +7,7 @@ if(POLICY CMP0207)
     cmake_policy(SET CMP0207 NEW)
 endif()
 
-project(OpenNOWQt VERSION 1.0.2 LANGUAGES CXX)
+project(OpenNOWQt VERSION 1.0.3 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 include(cmake/BuildMetadata.cmake)

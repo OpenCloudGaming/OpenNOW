@@ -11,7 +11,7 @@ foreach(required IN ITEMS
     usr/bin/opennow-acceptance-verify usr/bin/opennow-streamer
     usr/bin/libopennow_streamer_ffi.so usr/bin/qt.conf
     usr/lib/libQt6Core.so.6 usr/lib/libSDL3.so.0
-    usr/lib/libva.so.2 usr/lib/libva-drm.so.2
+    usr/lib/libva-fallback/libva.so.2 usr/lib/libva-fallback/libva-drm.so.2
     usr/plugins/imageformats/libqsvg.so
     usr/plugins/platforms/libqxcb.so usr/plugins/platforms/libqoffscreen.so
     usr/plugins/platforms/libqwayland-egl.so usr/plugins/platforms/libqwayland-generic.so
