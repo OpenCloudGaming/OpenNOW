@@ -359,6 +359,17 @@ QtObject {
         check(owner.settings.gameLanguage === "zh_Hant_TW" && owner.languageState === "idle", "logout/readiness loss preserves saved values")
         owner.ready = true
         check(owner.colorQualityItems.length === 4 && owner.colorQualityItems.every(item => item.disabled), "unknown capability is not support")
+        check(owner.colorQualityItems.filter(item => item.value.endsWith("_444"))
+            .every(item => item.detail === qsTr("Coming soon")), "unconfirmed 4:4:4 profiles are marked coming soon")
+        owner.colorDescriptors = ["8bit_420", "8bit_444", "10bit_420", "10bit_444"]
+            .map(value => ({value:value, disabled:false, reason:"Supported"}))
+        check(owner.colorQualityItems.filter(item => item.value.endsWith("_444"))
+            .every(item => item.detail === qsTr("Coming soon")), "4:4:4 never advertises support from capability descriptors")
+        check(owner.colorQualityItems.filter(item => item.value.endsWith("_420"))
+            .every(item => item.detail === (owner.colorQualityGate(item.value) || "Supported")), "4:2:0 retains its existing availability status")
+        check(owner.colorQualityItems.every(item => item.disabled === (owner.colorQualityGate(item.value) !== "")),
+            "coming soon labels preserve the existing selection gates")
+        owner.colorDescriptors = []
         owner.colorRequestId = "old-colors"
         owner.settings = Object.assign({}, owner.settings, {codec:"h264"})
         check(owner.colorRequestId === "" && !owner.acceptResponse("old-colors", {colorQualities:[{value:"8bit_444",disabled:false}]}),

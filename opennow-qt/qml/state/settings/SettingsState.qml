@@ -130,7 +130,7 @@ QtObject {
         const gateReason = colorQualityGate(pair[0])
         const blocked = gateReason !== "" || !descriptor || descriptor.disabled
         return {value:pair[0], label:pair[1], disabled:blocked,
-            detail: gateReason !== ""
+            detail: pair[0].endsWith("_444") ? qsTr("Coming soon") : gateReason !== ""
                 ? gateReason
                 : descriptor ? String(descriptor.reason || qsTr("Supported by the current profile")) : qsTr("Capability not confirmed")}
     })
