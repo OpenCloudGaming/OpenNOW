@@ -144,7 +144,7 @@ class LaunchErrorsTest {
         val demanding = StreamSettings(
             resolution = "3840x2160",
             fps = 120,
-            maxBitrateMbps = 150,
+            maxBitrateMbps = 150.0,
             codec = VideoCodec.H265,
             colorQuality = ColorQuality.TenBit420,
             hdrEnabled = true,
@@ -157,7 +157,7 @@ class LaunchErrorsTest {
         assertEquals("1920x1080", lower.resolution)
         assertEquals("16:9", lower.aspectRatio)
         assertEquals(60, lower.fps)
-        assertEquals(75, lower.maxBitrateMbps)
+        assertEquals(75.0, lower.maxBitrateMbps, 0.0)
         assertEquals(VideoCodec.H264, lower.codec)
         assertEquals(ColorQuality.EightBit420, lower.colorQuality)
         assertFalse(lower.hdrEnabled)

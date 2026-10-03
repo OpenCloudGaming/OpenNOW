@@ -1860,12 +1860,15 @@ private fun SetupCustomStreamControls(
         NumberSlider(
             label = stringResource(R.string.settings_bitrate),
             value = stream.maxBitrateMbps.toFloat(),
+            valueFormatter = StreamBitrate::formatSliderMbps,
             min = 1f,
             max = 150f,
             step = 1f,
             descriptionProvider = { mbps -> streamBitrateUsageEstimate(mbps) },
         ) { value ->
-            viewModel.updateStreamSettings { it.copy(maxBitrateMbps = value.roundToInt()) }
+            StreamBitrate.sliderChangeMbps(stream.maxBitrateMbps, value)?.let { bitrate ->
+                viewModel.updateStreamSettings { it.copy(maxBitrateMbps = bitrate) }
+            }
         }
     }
 }

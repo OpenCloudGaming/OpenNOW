@@ -93,7 +93,7 @@ internal fun nvstSessionContext(session: SessionInfo, settings: StreamSettings):
         put("fps", settings.fps)
         put("codec", settings.codec.name)
         put("colorQuality", OpenNowJson.encodeToJsonElement(settings.colorQuality))
-        put("maxBitrateMbps", settings.maxBitrateMbps)
+        put("maxBitrateMbps", StreamBitrate.jsonMbps(settings.maxBitrateMbps))
         put("networkAdaptation", buildJsonObject {
             val bitrate = StreamNetworkAdaptation.bitrateRange(settings.maxBitrateMbps)
             put("dynamicStreamingMode", StreamNetworkAdaptation.DYNAMIC_STREAMING_MODE)

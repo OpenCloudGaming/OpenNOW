@@ -70,7 +70,7 @@ class SessionReportTest {
         val settings = StreamSettings(
             resolution = "1920x1080",
             fps = 60,
-            maxBitrateMbps = 50,
+            maxBitrateMbps = 50.0,
             codec = VideoCodec.H264,
             colorQuality = ColorQuality.EightBit420,
         )
@@ -126,13 +126,13 @@ class SessionReportTest {
         val selected = StreamSettings(
             resolution = "3840x2160",
             fps = 120,
-            maxBitrateMbps = 75,
+            maxBitrateMbps = 75.0,
             codec = VideoCodec.H265,
             colorQuality = ColorQuality.TenBit420,
             hdrEnabled = true,
         )
         val eligible = selected.copy(resolution = "2560x1440", fps = 60, hdrEnabled = false)
-        val initial = eligible.copy(maxBitrateMbps = 35)
+        val initial = eligible.copy(maxBitrateMbps = 35.0)
         val safe = initial.copy(codec = VideoCodec.H264, colorQuality = ColorQuality.EightBit420)
         val accumulator = StreamSessionReportAccumulator(
             launchProfile = StreamReportLaunchProfile(
@@ -220,7 +220,7 @@ class SessionReportTest {
             averageFps = 34.0,
             averageDecodeMs = 38.0,
             targetFps = 60,
-            targetBitrateMbps = 75,
+            targetBitrateMbps = 75.0,
             averageBitrateKbps = 8_000,
             networkKind = AndroidNetworkKind.Wifi,
             wifiBand = AndroidWifiBand.TwoPointFourGhz,

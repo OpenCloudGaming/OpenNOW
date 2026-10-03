@@ -7,10 +7,10 @@ internal object StreamNetworkAdaptation {
     const val DYNAMIC_STREAMING_MODE = 0
     const val DYNAMIC_RESOLUTION_CONTROL = 0
 
-    fun bitrateRange(maxBitrateMbps: Int): StreamBitrateRange {
-        val maximum = maxBitrateMbps.coerceIn(1, 200) * 1000
+    fun bitrateRange(maxBitrateMbps: Double): StreamBitrateRange {
+        val maximum = StreamBitrate.maximumKbps(maxBitrateMbps)
         // Recommended profiles may adapt down to 5 Mbps without remaining visibly
-        // over-compressed. Explicit manual 1-4 Mbps profiles still keep their selected cap
+        // over-compressed. Explicit manual profiles below 5 Mbps still keep their selected cap
         // instead of being raised above it.
         val minimum = minOf(5_000, maximum)
         val initial = maxOf(minimum, maximum / 4)

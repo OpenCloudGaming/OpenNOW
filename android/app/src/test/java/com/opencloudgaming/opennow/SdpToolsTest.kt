@@ -266,7 +266,7 @@ class SdpToolsTest {
 
     @Test
     fun nvstSdpHonorsConfiguredBitrateBelowTheRecommendedFiveMbpsFloor() {
-        val nvst = buildNvstSdp(StreamSettings(maxBitrateMbps = 1))
+        val nvst = buildNvstSdp(StreamSettings(maxBitrateMbps = 1.0))
 
         assertTrue(nvst.contains("a=video.initialBitrateKbps:1000"))
         assertTrue(nvst.contains("a=video.initialPeakBitrateKbps:1000"))
@@ -279,18 +279,18 @@ class SdpToolsTest {
     @Test
     fun everyBitrateCeilingHasTheNormalFloorAndABoundedStartupRate() {
         for (mbps in 1..200) {
-            val range = StreamNetworkAdaptation.bitrateRange(mbps)
+            val range = StreamNetworkAdaptation.bitrateRange(mbps.toDouble())
             assertEquals(mbps * 1000, range.maximumKbps)
             assertEquals(minOf(5_000, range.maximumKbps), range.minimumKbps)
             assertTrue("$mbps Mbps startup out of bounds", range.initialKbps in range.minimumKbps..range.maximumKbps)
         }
-        assertEquals(1000, StreamNetworkAdaptation.bitrateRange(Int.MIN_VALUE).maximumKbps)
-        assertEquals(200000, StreamNetworkAdaptation.bitrateRange(Int.MAX_VALUE).maximumKbps)
+        assertEquals(220, StreamNetworkAdaptation.bitrateRange(Int.MIN_VALUE.toDouble()).maximumKbps)
+        assertEquals(200000, StreamNetworkAdaptation.bitrateRange(Int.MAX_VALUE.toDouble()).maximumKbps)
     }
 
     @Test
     fun fourMbpsProfileStartsAndStaysAtTheSelectedRate() {
-        val range = StreamNetworkAdaptation.bitrateRange(4)
+        val range = StreamNetworkAdaptation.bitrateRange(4.0)
 
         assertEquals(4_000, range.minimumKbps)
         assertEquals(4_000, range.initialKbps)
@@ -299,7 +299,7 @@ class SdpToolsTest {
 
     @Test
     fun tenMbpsRecommendedProfileKeepsItsCeilingAndCanBackOffToFive() {
-        val range = StreamNetworkAdaptation.bitrateRange(10)
+        val range = StreamNetworkAdaptation.bitrateRange(10.0)
 
         assertEquals(5_000, range.minimumKbps)
         assertEquals(5_000, range.initialKbps)
@@ -308,17 +308,17 @@ class SdpToolsTest {
 
     @Test
     fun affectedReportProfilesUseTheRestoredBitrateFloor() {
-        val threeMbps = StreamNetworkAdaptation.bitrateRange(3)
+        val threeMbps = StreamNetworkAdaptation.bitrateRange(3.0)
         assertEquals(3_000, threeMbps.minimumKbps)
         assertEquals(3_000, threeMbps.initialKbps)
         assertEquals(3_000, threeMbps.maximumKbps)
 
-        val fiveMbps = StreamNetworkAdaptation.bitrateRange(5)
+        val fiveMbps = StreamNetworkAdaptation.bitrateRange(5.0)
         assertEquals(5_000, fiveMbps.minimumKbps)
         assertEquals(5_000, fiveMbps.initialKbps)
         assertEquals(5_000, fiveMbps.maximumKbps)
 
-        val sevenMbps = StreamNetworkAdaptation.bitrateRange(7)
+        val sevenMbps = StreamNetworkAdaptation.bitrateRange(7.0)
         assertEquals(5_000, sevenMbps.minimumKbps)
         assertEquals(5_000, sevenMbps.initialKbps)
         assertEquals(7_000, sevenMbps.maximumKbps)
@@ -326,18 +326,18 @@ class SdpToolsTest {
 
     @Test
     fun threeMbpsReportProfileKeepsItsExplicitCeiling() {
-        val settings = StreamSettings(resolution = "1280x720", fps = 30, maxBitrateMbps = 3)
+        val settings = StreamSettings(resolution = "1280x720", fps = 30, maxBitrateMbps = 3.0)
         val nvst = buildNvstSdp(settings)
         assertTrue(nvst.lineSequence().contains("a=vqos.bw.minimumBitrateKbps:3000"))
         assertTrue(nvst.lineSequence().contains("a=vqos.bw.maximumBitrateKbps:3000"))
         assertTrue(nvst.lineSequence().contains("a=video.maxFPS:30"))
-        assertEquals(3, settings.maxBitrateMbps)
+        assertEquals(3.0, settings.maxBitrateMbps, 0.0)
         assertEquals("1280x720", settings.resolution)
     }
 
     @Test
     fun nvstSdpAllowsHigherBitrateProfilesToBackOffDuringCongestion() {
-        val nvst = buildNvstSdp(StreamSettings(maxBitrateMbps = 18))
+        val nvst = buildNvstSdp(StreamSettings(maxBitrateMbps = 18.0))
 
         assertTrue(nvst.contains("a=vqos.bw.maximumBitrateKbps:18000"))
         assertTrue(nvst.contains("a=vqos.bw.minimumBitrateKbps:5000"))

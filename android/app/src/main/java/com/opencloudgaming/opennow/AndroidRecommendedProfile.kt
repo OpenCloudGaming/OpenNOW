@@ -117,7 +117,7 @@ internal fun recommendedAndroidStreamProfile(
         resolution = selected.value,
         aspectRatio = selected.aspectRatio,
         fps = fps,
-        maxBitrateMbps = bitrate,
+        maxBitrateMbps = bitrate.toDouble(),
         codec = selectedCodec,
         colorQuality = ColorQuality.EightBit420,
     ).adjustedForDevice(report)
@@ -181,7 +181,7 @@ internal fun StreamSettings.performanceOverridesComparedTo(
         }
         if (fps > recommended.fps) add("$fps FPS (recommended ${recommended.fps})")
         if (maxBitrateMbps > recommended.maxBitrateMbps) {
-            add("$maxBitrateMbps Mbps bitrate (recommended ${recommended.maxBitrateMbps})")
+            add("${StreamBitrate.formatMbps(maxBitrateMbps)} Mbps bitrate (recommended ${StreamBitrate.formatMbps(recommended.maxBitrateMbps)})")
         }
         if (hdrEnabled && !recommended.hdrEnabled) add("HDR")
         // HDR implies a ten-bit transport, but it already has its own user-facing override label.
@@ -200,4 +200,4 @@ internal fun StreamSettings.performanceOverridesComparedTo(
 }
 
 internal fun StreamSettings.recommendationSummary(): String =
-    "$resolution@$fps ${codec.name}, $maxBitrateMbps Mbps"
+    "$resolution@$fps ${codec.name}, ${StreamBitrate.formatMbps(maxBitrateMbps)} Mbps"

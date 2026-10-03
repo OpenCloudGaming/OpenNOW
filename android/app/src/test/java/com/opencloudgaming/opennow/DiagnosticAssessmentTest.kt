@@ -13,7 +13,7 @@ class DiagnosticAssessmentTest {
         request = DiagnosticApiBody(""), response = DiagnosticApiBody(body), error = error,
     )
     private fun accumulator(): StreamSessionReportAccumulator {
-        val settings = StreamSettings(resolution = "1920x1080", fps = 60, maxBitrateMbps = 30)
+        val settings = StreamSettings(resolution = "1920x1080", fps = 60, maxBitrateMbps = 30.0)
         return StreamSessionReportAccumulator(StreamReportLaunchProfile("Preview game", settings, settings, settings), now - 60_000).also { accumulator ->
             repeat(10) {
                 accumulator.record(StreamRuntimeStats(pingMs = 95, jitterMs = 22.0, packetLossPct = 2.0,
@@ -99,7 +99,7 @@ class DiagnosticAssessmentTest {
         val calls = listOf(api(503, """{"requestStatus":{"statusCode":-1,"statusDescription":"SERVICE_UNAVAILABLE"},"access_token":"private-preview-token"}"""))
         val score = diagnosticSessionScore(report, "completed", true)
         val assessment = diagnosticFailureAssessment(calls, "Provider request failed during the session", report)
-        val settings = StreamSettings(resolution = "1920x1080", fps = 60, maxBitrateMbps = 30)
+        val settings = StreamSettings(resolution = "1920x1080", fps = 60, maxBitrateMbps = 30.0)
         val parser = buildJsonObject {
             put("schemaVersion", 2)
             put("retention", buildJsonObject {

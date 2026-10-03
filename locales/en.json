@@ -675,6 +675,7 @@
     "queueAdUrlLoad": "Error loading url"
   },
   "androidStreamInput": {
+    "stream_bitrate_live_summary": "%1$s Mbps active in this session",
     "settings_high_settings_warning_title": "High settings may prevent a session from launching",
     "settings_high_settings_warning_body": "You can try these settings, but some devices or servers may not support them. If the session fails to launch, lower the resolution, frame rate, or bitrate and try again.",
     "stream_input_choose_at_launch_body": "A keyboard or mouse is connected. Use native touch for this game, or switch to keyboard and mouse?",

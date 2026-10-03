@@ -640,7 +640,7 @@ private enum class StreamControlsPage {
 
 @Composable
 private fun ControlBitrateLiveHint(
-    liveBitrateMbps: Int,
+    liveBitrateMbps: Double,
     liveOverridden: Boolean,
 ) {
     Column(
@@ -667,7 +667,7 @@ private fun ControlBitrateLiveHint(
                 )
             }
             Text(
-                stringResource(R.string.stream_panel_bitrate_live_summary, liveBitrateMbps),
+                stringResource(R.string.stream_bitrate_live_summary, StreamBitrate.formatMbps(liveBitrateMbps)),
                 color = TextMuted,
                 style = MaterialTheme.typography.labelSmall,
             )
@@ -736,7 +736,7 @@ internal fun StreamControlsPanel(
     onJoystickDeadZoneChange: (Float) -> Unit,
     onSharpeningToggle: () -> Unit,
     onSharpeningAmountChange: (Float) -> Unit,
-    onMaxBitrateChange: (Int) -> Unit,
+    onMaxBitrateChange: (Double) -> Unit,
     onStretchToFitToggle: () -> Unit,
     onTouchScaleChange: (Float) -> Unit,
     onButtonScaleChange: (Float) -> Unit,
@@ -1262,15 +1262,19 @@ internal fun StreamControlsPanel(
                     ControlSliderRow(
                         label = stringResource(R.string.settings_bitrate),
                         value = settings.stream.maxBitrateMbps.toFloat(),
+                        valueFormatter = StreamBitrate::formatSliderMbps,
                         min = 1f,
                         max = 150f,
                         step = 1f,
                         unit = "Mbps",
                         descriptionProvider = { mbps -> streamBitrateUsageEstimate(mbps) },
-                        onChange = { value -> onMaxBitrateChange(value.roundToInt()) },
+                        onChange = { value ->
+                            StreamBitrate.sliderChangeMbps(settings.stream.maxBitrateMbps, value)
+                                ?.let(onMaxBitrateChange)
+                        },
                     )
                     ControlBitrateLiveHint(
-                        liveBitrateMbps = liveBitrateLimitKbps?.div(1000) ?: settings.stream.maxBitrateMbps,
+                        liveBitrateMbps = liveBitrateLimitKbps?.div(1000.0) ?: settings.stream.maxBitrateMbps,
                         liveOverridden = liveBitrateLimitKbps != null,
                     )
                 }

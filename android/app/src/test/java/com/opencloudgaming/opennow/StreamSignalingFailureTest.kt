@@ -91,10 +91,14 @@ class StreamSignalingFailureTest {
 
     @Test
     fun bitrateChangesAreNormalizedBeforeBeingQueuedForTheNextOffer() {
-        assertEquals(1_000, normalizedLiveBitrateKbps(0))
-        assertEquals(1_000, normalizedLiveBitrateKbps(1_499))
-        assertEquals(2_000, normalizedLiveBitrateKbps(1_500))
+        assertEquals(220, normalizedLiveBitrateKbps(0))
+        assertEquals(220, normalizedLiveBitrateKbps(220))
+        assertEquals(800, normalizedLiveBitrateKbps(800))
+        assertEquals(1_499, normalizedLiveBitrateKbps(1_499))
+        assertEquals(1_500, normalizedLiveBitrateKbps(1_500))
         assertEquals(75_000, normalizedLiveBitrateKbps(75_000))
+        assertEquals(220, normalizedLiveBitrateKbps(Int.MIN_VALUE))
+        assertEquals(200_000, normalizedLiveBitrateKbps(Int.MAX_VALUE))
     }
 
     @Test

@@ -498,7 +498,7 @@ private fun requestedStreamingFeatures(settings: StreamSettings, profile: Stream
                 VideoCodec.H265 -> 2
                 VideoCodec.AV1 -> 3
             })
-            put("maxBitrateKbps", settings.maxBitrateMbps * 1000)
+            put("maxBitrateKbps", StreamBitrate.maximumKbps(settings.maxBitrateMbps))
             put("vsync", false)
             put("audioChannelCount", 2)
             put("qosPolicy", 0)

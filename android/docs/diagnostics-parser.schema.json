@@ -1237,7 +1237,7 @@
                     "type": "integer"
                 },
                 "maxBitrateMbps": {
-                    "type": "integer"
+                    "type": "number"
                 },
                 "codec": {
                     "type": "string",

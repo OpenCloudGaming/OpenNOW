@@ -1641,7 +1641,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             appendLine("Hardware: $model · Android ${Build.VERSION.RELEASE}")
             appendLine("Screen: ${recommendation?.displayWidth ?: "?"}x${recommendation?.displayHeight ?: "?"} · processors ${recommendation?.processorCount ?: "?"} · memory ${recommendation?.totalMemoryMiB?.let { "$it MiB" } ?: "unknown"}")
             appendLine("Membership: $provider · $accountType")
-            appendLine("Profile: ${snapshot.settings.streamPreset} · ${snapshot.settings.stream.resolution}@${snapshot.settings.stream.fps} · ${snapshot.settings.stream.codec} · ${snapshot.settings.stream.maxBitrateMbps} Mbps")
+            appendLine("Profile: ${snapshot.settings.streamPreset} · ${snapshot.settings.stream.resolution}@${snapshot.settings.stream.fps} · ${snapshot.settings.stream.codec} · ${StreamBitrate.formatMbps(snapshot.settings.stream.maxBitrateMbps)} Mbps")
             append("Status: ${snapshot.streamStatus} · ${snapshot.error?.take(160)?.let(::sanitizeDiagnosticExport) ?: "no current error"}")
         }
     }
