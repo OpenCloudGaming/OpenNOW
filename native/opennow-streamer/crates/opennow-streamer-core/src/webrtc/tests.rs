@@ -300,6 +300,7 @@ impl PeerFixture {
             stream
                 .set_write_timeout(Some(Duration::from_secs(2)))
                 .unwrap();
+            #[allow(clippy::result_large_err)]
             let mut websocket = tungstenite::accept_hdr(
                 stream,
                 |request: &tungstenite::handshake::server::Request,

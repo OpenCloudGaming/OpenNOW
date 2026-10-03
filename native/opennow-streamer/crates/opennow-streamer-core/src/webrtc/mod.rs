@@ -430,11 +430,10 @@ impl Worker {
                         .and_then(MediaRuntime::published_video_frames),
                     Instant::now(),
                 );
-                match progress.poll(Instant::now())? {
-                    true => control
+                if progress.poll(Instant::now())? {
+                    control
                         .request_keyframe(video_mid.clone())
-                        .map_err(Failure::transport)?,
-                    false => {}
+                        .map_err(Failure::transport)?;
                 }
                 {
                     let lifecycle = lock_lifecycle(&self.lifecycle);
