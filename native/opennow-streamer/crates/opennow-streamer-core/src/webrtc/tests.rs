@@ -390,9 +390,17 @@ impl PeerFixture {
                     match rtc.poll_output().unwrap() {
                         Output::Timeout(_) => break,
                         Output::Transmit(packet) => {
-                            socket
-                                .send_to(&packet.contents, packet.destination)
-                                .unwrap();
+                            match socket.send_to(&packet.contents, packet.destination) {
+                                Ok(_) => {}
+                                Err(error)
+                                    if matches!(
+                                        error.kind(),
+                                        ErrorKind::ConnectionReset
+                                            | ErrorKind::ConnectionRefused
+                                            | ErrorKind::Interrupted
+                                    ) => {}
+                                Err(error) => panic!("fixture RTP send: {error}"),
+                            }
                         }
                         Output::Event(Event::Connected) => connected = true,
                         Output::Event(Event::ChannelOpen(id, label))
@@ -426,6 +434,16 @@ impl PeerFixture {
                             ))
                             .unwrap(),
                         Err(error) if error.kind() == ErrorKind::WouldBlock => break,
+                        Err(error)
+                            if matches!(
+                                error.kind(),
+                                ErrorKind::ConnectionReset
+                                    | ErrorKind::ConnectionRefused
+                                    | ErrorKind::Interrupted
+                            ) =>
+                        {
+                            continue;
+                        }
                         Err(error) => panic!("fixture RTP receive: {error}"),
                     }
                 }

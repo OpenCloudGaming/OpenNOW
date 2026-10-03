@@ -128,9 +128,11 @@ impl Peer {
                             continue;
                         }
                     }
-                    self.socket
-                        .send_to(&packet.contents, packet.destination)
-                        .unwrap();
+                    match self.socket.send_to(&packet.contents, packet.destination) {
+                        Ok(_) => {}
+                        Err(error) if transient_udp_error(&error) => {}
+                        Err(error) => panic!("peer send: {error}"),
+                    }
                 }
                 Output::Event(Event::ChannelOpen(id, label)) if label == "input_channel_v1" => {
                     self.input_channel = Some(id);
@@ -165,6 +167,7 @@ impl Peer {
                         .unwrap();
                 }
                 Err(error) if error.kind() == ErrorKind::WouldBlock => break,
+                Err(error) if transient_udp_error(&error) => continue,
                 Err(error) => panic!("peer receive: {error}"),
             }
         }
