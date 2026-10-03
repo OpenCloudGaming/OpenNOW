@@ -7,7 +7,6 @@ use thiserror::Error;
 
 mod frame_stage_timing;
 pub mod nvst;
-pub mod webrtc;
 mod nvst_bandwidth;
 mod nvst_budget;
 mod nvst_control;
@@ -16,6 +15,7 @@ mod nvst_haptics;
 mod nvst_input;
 mod nvst_microphone;
 mod nvst_network;
+pub mod webrtc;
 
 pub use frame_stage_timing::{FrameStageTimings, StageSummary};
 pub use nvst_haptics::{NvstControllerRumble, NvstHaptics};

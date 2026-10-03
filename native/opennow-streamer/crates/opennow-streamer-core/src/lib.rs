@@ -34,9 +34,9 @@ mod decode_progress;
 mod microphone;
 mod nvst_rtsp;
 mod queue_drops;
-mod webrtc;
 #[cfg(test)]
 mod recording_tests;
+mod webrtc;
 
 use microphone::MicrophoneController;
 
@@ -680,7 +680,12 @@ impl Engine {
         if let Some(session) = self.webrtc_session.take() {
             session.stop();
         }
-        if context.settings.get("transportMode").and_then(Value::as_str) == Some("webrtc") {
+        if context
+            .settings
+            .get("transportMode")
+            .and_then(Value::as_str)
+            == Some("webrtc")
+        {
             return self.start_webrtc(command.id, context, audio_device);
         }
         let wants_owned_nvst = context
@@ -1165,11 +1170,15 @@ impl Engine {
     fn set_paused(&self, command: Command) -> Result<Vec<Value>, Value> {
         if let Some(session) = self.webrtc_session.as_ref() {
             let paused = command.paused.ok_or_else(|| {
-                error(Some(&command.id), "missing-paused", "Pause command does not include paused state")
+                error(
+                    Some(&command.id),
+                    "missing-paused",
+                    "Pause command does not include paused state",
+                )
             })?;
-            session.set_paused(paused).map_err(|message| {
-                error(Some(&command.id), "webrtc-input-unavailable", message)
-            })?;
+            session
+                .set_paused(paused)
+                .map_err(|message| error(Some(&command.id), "webrtc-input-unavailable", message))?;
             return Ok(vec![response(command.id, "ok")]);
         }
         let Some(runtime) = self.media_runtime.as_ref() else {
@@ -1523,9 +1532,9 @@ impl Engine {
             ));
         }
         if let Some(session) = self.webrtc_session.as_ref() {
-            session.anti_afk().map_err(|message| {
-                error(Some(&command.id), "webrtc-input-unavailable", message)
-            })?;
+            session
+                .anti_afk()
+                .map_err(|message| error(Some(&command.id), "webrtc-input-unavailable", message))?;
             return Ok(vec![response(command.id, "ok")]);
         }
         let send = |input| {
