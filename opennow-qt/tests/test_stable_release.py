@@ -13,8 +13,8 @@ from nightly_release import assemble, expected_packages, nightly_version
 class StableReleaseTest(unittest.TestCase):
     def test_stable_version_uses_project_version_without_nightly_suffix(self):
         cmake = ROOT / "opennow-qt/CMakeLists.txt"
-        self.assertEqual(nightly_version(cmake, 1, 1, "stable"), "1.0.2")
-        self.assertEqual(nightly_version(cmake, 620, 1), "1.0.2-nightly.620.1")
+        self.assertEqual(nightly_version(cmake, 1, 1, "stable"), "1.0.3")
+        self.assertEqual(nightly_version(cmake, 620, 1), "1.0.3-nightly.620.1")
 
     def test_channels_cannot_relabel_each_others_versions(self):
         for version, channel in (("1.0.0-nightly.1.1", "stable"), ("1.0.0", "nightly"),
