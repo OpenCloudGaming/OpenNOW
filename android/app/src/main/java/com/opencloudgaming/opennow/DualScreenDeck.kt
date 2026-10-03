@@ -52,6 +52,7 @@ import androidx.compose.material.icons.rounded.StarBorder
 import androidx.compose.material.icons.rounded.TouchApp
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.MaterialTheme
@@ -735,6 +736,277 @@ internal fun DualScreenGameDetailsPanel(
                 TextButton(onClick = { confirmRemove = false }) { Text(stringResource(R.string.action_cancel)) }
             },
         )
+    }
+}
+
+// Store and server pickers (boards 09 and 05): the whole choice lives under the thumbs. ---------
+
+/** Hosted on the bottom screen by the top screen, which owns the selection and the launch. */
+@Composable
+internal fun DualScreenStorePicker(
+    variants: List<GameVariant>,
+    selectedVariantId: String?,
+    defaultVariantId: String?,
+    rememberDefault: Boolean,
+    onSelect: (String) -> Unit,
+    onRememberDefaultChange: (Boolean) -> Unit,
+    onCancel: () -> Unit,
+    onPlay: () -> Unit,
+) {
+    val selected = variants.firstOrNull { it.id == selectedVariantId }
+    DeckPickerScaffold(
+        confirmLabel = selected?.let { stringResource(R.string.dual_play_on_store, gameStoreDisplayName(it.store)) }
+            ?: stringResource(R.string.dual_play),
+        confirmEnabled = selected != null,
+        footnote = stringResource(R.string.store_selector_long_press_tip),
+        onCancel = onCancel,
+        onConfirm = onPlay,
+        footer = {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(DeckTile)
+                    .clickable { onRememberDefaultChange(!rememberDefault) }
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                DeckToggle(rememberDefault)
+                DeckText(stringResource(R.string.store_selector_default_checkbox), 12.sp, FontWeight.Black, maxLines = 1, modifier = Modifier.weight(1f))
+            }
+        },
+    ) {
+        SectionLabel(stringResource(R.string.store_selector_launchers))
+        variants.forEach { variant ->
+            val owned = isOwnedLibraryStatus(variant.libraryStatus)
+            DeckPickerRow(selected = variant.id == selectedVariantId, height = 54.dp, onClick = { onSelect(variant.id) }) {
+                ConnectorStoreIcon(launcherBadgeForStoreKey(splitGameStoreKeys(variant.store).firstOrNull()))
+                Column(Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        DeckText(gameStoreDisplayName(variant.store), 16.sp, FontWeight.Black, maxLines = 1)
+                        if (variant.id == defaultVariantId) {
+                            DeckText(
+                                stringResource(R.string.store_selector_default).uppercase(Locale.getDefault()),
+                                9.sp,
+                                FontWeight.Black,
+                                DeckBackground,
+                                modifier = Modifier.clip(CircleShape).background(DeckMint).padding(horizontal = 7.dp, vertical = 2.dp),
+                            )
+                        }
+                    }
+                    DeckText(
+                        stringResource(if (owned) R.string.dual_store_owned else R.string.store_selector_available_launcher),
+                        11.sp,
+                        FontWeight.Bold,
+                        if (owned) DeckMint else DeckMuted,
+                    )
+                }
+                DeckRadio(variant.id == selectedVariantId)
+            }
+        }
+    }
+}
+
+@Composable
+internal fun DualScreenServerPicker(
+    picker: PrintedWastePickerModel,
+    loading: Boolean,
+    error: String?,
+    onRetry: () -> Unit,
+    onAuto: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    val selected = picker.locations.firstOrNull { it.primary.zoneId == picker.selectedZoneId }
+    DeckPickerScaffold(
+        confirmLabel = selected?.let { stringResource(R.string.dual_launch_in, it.title) } ?: stringResource(R.string.action_launch),
+        confirmEnabled = !loading && picker.selectedZone != null,
+        footnote = null,
+        onCancel = onCancel,
+        onConfirm = picker.launch,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            SectionLabel(stringResource(R.string.dual_choose_server), Modifier.weight(1f))
+            DeckText(
+                stringResource(R.string.dual_preset_auto),
+                12.sp,
+                FontWeight.Black,
+                DeckAccent,
+                modifier = Modifier.clip(CircleShape).clickable(onClick = onAuto).padding(horizontal = 10.dp, vertical = 4.dp),
+            )
+        }
+        when {
+            loading -> Column(
+                Modifier.fillMaxWidth().padding(vertical = 40.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                CircularProgressIndicator(color = DeckAccent, strokeWidth = 3.dp, modifier = Modifier.size(28.dp))
+                DeckText(stringResource(R.string.catalog_checking_queues), 12.sp, FontWeight.Bold, DeckMuted)
+            }
+            error != null -> Column(
+                Modifier.fillMaxWidth().padding(vertical = 30.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                DeckText(error, 13.sp, FontWeight.Bold, DeckCoral, textAlign = TextAlign.Center)
+                SmallPill(stringResource(R.string.action_retry), onClick = onRetry)
+            }
+            else -> picker.regionGroups.forEach { (region, locations) ->
+                SectionLabel(region, Modifier.padding(top = 4.dp))
+                locations.forEach { location ->
+                    val ping = location.primary.pingMs?.toInt()
+                    val queue = location.primary.zone.QueuePosition
+                    DeckPickerRow(
+                        selected = location.primary.zoneId == picker.selectedZoneId,
+                        height = 52.dp,
+                        onClick = { picker.select(location.primary.zoneId) },
+                    ) {
+                        SignalBars(ping)
+                        DeckText(location.title, 15.sp, FontWeight.Black, maxLines = 1, modifier = Modifier.weight(1f))
+                        if (location == picker.autoLocation) {
+                            DeckText(
+                                stringResource(R.string.dual_best_route).uppercase(Locale.getDefault()),
+                                9.sp,
+                                FontWeight.Black,
+                                DeckBackground,
+                                modifier = Modifier.clip(CircleShape).background(DeckMint).padding(horizontal = 7.dp, vertical = 2.dp),
+                            )
+                        }
+                        DeckText(
+                            ping?.let { stringResource(R.string.dual_ping_ms, it) } ?: stringResource(R.string.queue_checking),
+                            12.sp,
+                            FontWeight.Bold,
+                            DeckMuted,
+                        )
+                        DeckText(
+                            if (queue <= 0) stringResource(R.string.dual_no_queue) else "#$queue",
+                            12.sp,
+                            FontWeight.Black,
+                            if (queue <= 0) DeckMint else queueColor(queue),
+                            textAlign = TextAlign.End,
+                            modifier = Modifier.width(64.dp),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DeckPickerScaffold(
+    confirmLabel: String,
+    confirmEnabled: Boolean,
+    footnote: String?,
+    onCancel: () -> Unit,
+    onConfirm: () -> Unit,
+    footer: (@Composable () -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(
+            Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+            content = content,
+        )
+        footer?.invoke()
+        Row(Modifier.height(50.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            PillButton(stringResource(R.string.action_cancel), modifier = Modifier.weight(0.42f), height = 50.dp, onClick = onCancel)
+            Row(
+                Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .clip(CircleShape)
+                    .background(if (confirmEnabled) Color.White else Color.White.copy(alpha = 0.3f))
+                    .clickable(enabled = confirmEnabled, onClick = onConfirm)
+                    .padding(horizontal = 14.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ButtonGlyph("A", dark = true)
+                Spacer(Modifier.width(8.dp))
+                DeckText(confirmLabel, 16.sp, FontWeight.Black, DeckBackground, maxLines = 1)
+            }
+        }
+        footnote?.let {
+            DeckText(it, 10.sp, FontWeight.Bold, DeckMuted, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
+        }
+    }
+}
+
+@Composable
+private fun DeckPickerRow(
+    selected: Boolean,
+    onClick: () -> Unit,
+    height: Dp = 64.dp,
+    content: @Composable RowScope.() -> Unit,
+) {
+    val shape = RoundedCornerShape(20.dp)
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(height)
+            .clip(shape)
+            .background(if (selected) DeckTileStrong else DeckTile)
+            .border(if (selected) 2.dp else 1.dp, if (selected) DeckAccent else DeckSeam, shape)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        content = content,
+    )
+}
+
+@Composable
+private fun DeckRadio(selected: Boolean) {
+    Box(
+        Modifier
+            .size(22.dp)
+            .clip(CircleShape)
+            .border(2.dp, if (selected) DeckAccent else DeckMuted, CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (selected) Box(Modifier.size(12.dp).clip(CircleShape).background(DeckAccent))
+    }
+}
+
+@Composable
+private fun DeckToggle(on: Boolean) {
+    Box(
+        Modifier
+            .width(44.dp)
+            .height(26.dp)
+            .clip(CircleShape)
+            .background(if (on) DeckMint else Color.White.copy(alpha = 0.18f))
+            .padding(3.dp),
+        contentAlignment = if (on) Alignment.CenterEnd else Alignment.CenterStart,
+    ) {
+        Box(Modifier.size(20.dp).clip(CircleShape).background(if (on) DeckBackground else Color.White))
+    }
+}
+
+/** Four bars, lit by ping, like board 05's region list. */
+@Composable
+private fun SignalBars(ping: Int?) {
+    val lit = when {
+        ping == null -> 0
+        ping <= 30 -> 4
+        ping <= 60 -> 3
+        ping <= 100 -> 2
+        else -> 1
+    }
+    val color = pingColor(ping)
+    Row(Modifier.height(16.dp), horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.Bottom) {
+        repeat(4) { index ->
+            Box(
+                Modifier
+                    .width(4.dp)
+                    .fillMaxHeight((index + 1) / 4f)
+                    .clip(RoundedCornerShape(1.dp))
+                    .background(if (index < lit) color else Color.White.copy(alpha = 0.2f)),
+            )
+        }
     }
 }
 

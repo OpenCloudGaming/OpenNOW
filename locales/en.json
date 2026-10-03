@@ -966,6 +966,14 @@
     "dual_settings_eyebrow": "Focused setting",
     "dual_preset_auto": "Auto",
     "dual_filters_reset": "%1$d active · Reset",
-    "dual_play_on_store": "Play on %1$s"
+    "dual_play_on_store": "Play on %1$s",
+    "dual_picker_hint": "Pick on the bottom screen, or use the D-pad and A",
+    "dual_launcher_body": "This game is on more than one store. Pick the one where you own it, so your saves follow that store.",
+    "dual_choose_server": "Choose server",
+    "dual_server_body": "Free tier queue routing. Pick the server with the shortest queue and the lowest ping.",
+    "dual_store_owned": "Owned",
+    "dual_launch_in": "Launch in %1$s",
+    "dual_no_queue": "No queue",
+    "dual_best_route": "Best"
   }
 }

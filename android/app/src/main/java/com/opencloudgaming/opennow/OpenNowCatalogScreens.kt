@@ -4696,6 +4696,106 @@ internal fun DualScreenGamePoster(
     }
 }
 
+/**
+ * AYN Tour board 09, top screen: the game you are about to play while the store or server choice
+ * sits on the bottom screen. Not a dialog, so nothing pops up over the top screen; the D-pad still
+ * moves the choice and A confirms it for controller-only play.
+ */
+@Composable
+internal fun DualScreenLaunchPoster(
+    game: GameInfo,
+    eyebrow: String,
+    body: String,
+    selection: String?,
+    onMove: (Int) -> Unit,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val context = LocalContext.current
+    val focusRequester = remember { FocusRequester() }
+    BackHandler(onBack = onDismiss)
+    LaunchedEffect(game.id) { runCatching { focusRequester.requestFocus() } }
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Background)
+            .focusRequester(focusRequester)
+            .onPreviewKeyEvent { event ->
+                when {
+                    event.type == KeyEventType.KeyDown && event.key == Key.DirectionUp -> onMove(-1)
+                    event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown -> onMove(1)
+                    isTvActivateKey(event) -> onConfirm()
+                    else -> return@onPreviewKeyEvent false
+                }
+                true
+            }
+            .focusable(),
+        contentAlignment = Alignment.Center,
+    ) {
+        UrlImage(gameHeroImageUrl(context, game), Modifier.fillMaxSize())
+        Box(Modifier.matchParentSize().background(Background.copy(alpha = 0.72f)))
+        Row(
+            Modifier.fillMaxWidth(0.84f),
+            horizontalArrangement = Arrangement.spacedBy(24.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            val tileShape = RoundedCornerShape(24.dp)
+            UrlImage(
+                catalogCardImageUrl(game, tvProfile = false) ?: game.imageUrl,
+                Modifier
+                    .size(150.dp)
+                    .clip(tileShape)
+                    .border(3.dp, Color.White.copy(alpha = 0.9f), tileShape),
+            )
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    eyebrow.uppercase(Locale.getDefault()),
+                    color = MaterialTheme.colorScheme.primary,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 1.2.sp,
+                )
+                Text(
+                    game.title,
+                    color = Color.White,
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Black,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(body, color = Color.White.copy(alpha = 0.75f), style = MaterialTheme.typography.bodyMedium, maxLines = 3)
+                if (selection != null) {
+                    Row(
+                        Modifier
+                            .clip(CircleShape)
+                            .background(OpenNowPalette.GlassStrong)
+                            .border(1.dp, OpenNowPalette.Seam, CircleShape)
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Box(Modifier.size(7.dp).clip(CircleShape).background(OpenNowPalette.PastelMint))
+                        Text(
+                            "${stringResource(R.string.store_selector_selected)}: $selection",
+                            color = Color.White,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Black,
+                            maxLines = 1,
+                        )
+                    }
+                }
+                Text(
+                    stringResource(R.string.dual_picker_hint),
+                    color = Color.White.copy(alpha = 0.6f),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                )
+            }
+        }
+    }
+}
+
 private const val POSTER_SHOT_COUNT = 4
 private const val POSTER_THUMB_REQUEST_WIDTH = 320
 
@@ -5515,13 +5615,7 @@ internal fun StoreLaunchSelector(
                             onRememberDefaultStoreChange = { rememberDefaultStore = it },
                             onDismiss = onDismiss,
                             onContinue = { variant ->
-                                if (rememberDefaultStore || defaultVariantId != null) {
-                                    onSetDefaultStore(game.id, if (rememberDefaultStore) variant.id else null)
-                                }
-                                if (rememberDefaultStore) {
-                                    Toast.makeText(context, context.getString(R.string.store_selector_long_press_tip), Toast.LENGTH_LONG).show()
-                                }
-                                onLaunch(game, variant)
+                                continueStoreLaunch(context, game, variant, defaultVariantId, rememberDefaultStore, onSetDefaultStore, onLaunch)
                             },
                             modifier = Modifier
                                 .weight(1f)
@@ -5555,13 +5649,7 @@ internal fun StoreLaunchSelector(
                             onRememberDefaultStoreChange = { rememberDefaultStore = it },
                             onDismiss = onDismiss,
                             onContinue = { variant ->
-                                if (rememberDefaultStore || defaultVariantId != null) {
-                                    onSetDefaultStore(game.id, if (rememberDefaultStore) variant.id else null)
-                                }
-                                if (rememberDefaultStore) {
-                                    Toast.makeText(context, context.getString(R.string.store_selector_long_press_tip), Toast.LENGTH_LONG).show()
-                                }
-                                onLaunch(game, variant)
+                                continueStoreLaunch(context, game, variant, defaultVariantId, rememberDefaultStore, onSetDefaultStore, onLaunch)
                             },
                             modifier = Modifier.weight(1f),
                         )
@@ -5570,6 +5658,25 @@ internal fun StoreLaunchSelector(
             }
         }
     }
+}
+
+/** Saves or clears the default store as the checkbox says, then launches [variant]. */
+internal fun continueStoreLaunch(
+    context: Context,
+    game: GameInfo,
+    variant: GameVariant,
+    defaultVariantId: String?,
+    rememberDefaultStore: Boolean,
+    onSetDefaultStore: (String, String?) -> Unit,
+    onLaunch: (GameInfo, GameVariant) -> Unit,
+) {
+    if (rememberDefaultStore || defaultVariantId != null) {
+        onSetDefaultStore(game.id, if (rememberDefaultStore) variant.id else null)
+    }
+    if (rememberDefaultStore) {
+        Toast.makeText(context, context.getString(R.string.store_selector_long_press_tip), Toast.LENGTH_LONG).show()
+    }
+    onLaunch(game, variant)
 }
 
 @Composable

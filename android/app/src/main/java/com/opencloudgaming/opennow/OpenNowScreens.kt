@@ -1414,14 +1414,46 @@ private fun MainShell(
                     }
                 }
                 state.pendingPrintedWasteGame?.let { game ->
-                    ControllerModalDialog(onDismissRequest = viewModel::dismissPrintedWasteSelector) {
-                        AnimatedLaunchOverlay(Modifier.fillMaxSize()) {
-                            PrintedWasteSelector(state, game, viewModel)
-                        }
-                    }
-                    // Touch copy under the player's thumbs; the top stays controller-driven.
                     if (bottomScreenHosting) {
-                        HostOnBottomScreen(BOTTOM_SCREEN_PICKER_SCALE) { PrintedWasteSelector(state, game, viewModel) }
+                        // Board 05/09: the poster on top, the server list under the thumbs.
+                        val picker = rememberPrintedWastePicker(state, game, viewModel)
+                        val selected = picker.locations.firstOrNull { it.primary.zoneId == picker.selectedZoneId }
+                        ControllerModalOverlay(onDismissRequest = viewModel::dismissPrintedWasteSelector) {
+                            DualScreenLaunchPoster(
+                                game = game,
+                                eyebrow = stringResource(R.string.dual_choose_server),
+                                body = stringResource(R.string.dual_server_body),
+                                selection = selected?.let { location ->
+                                    listOfNotNull(location.title, location.primary.pingMs?.let { "$it ms" }).joinToString(" · ")
+                                },
+                                onMove = { delta ->
+                                    val index = picker.locations.indexOf(selected)
+                                    picker.locations.getOrNull((index + delta).coerceIn(0, picker.locations.lastIndex))
+                                        ?.let { picker.select(it.primary.zoneId) }
+                                },
+                                onConfirm = picker.launch,
+                                onDismiss = viewModel::dismissPrintedWasteSelector,
+                            )
+                        }
+                        HostOnBottomScreen(scale = 1f) {
+                            DualScreenServerPicker(
+                                picker = picker,
+                                loading = state.printedWasteLoading,
+                                error = state.printedWasteError,
+                                onRetry = viewModel::refreshPrintedWasteQueues,
+                                onAuto = { viewModel.launchWithPrintedWaste(null) },
+                                onCancel = viewModel::dismissPrintedWasteSelector,
+                            )
+                            picker.pendingHigherPingLaunch?.let { zone ->
+                                PrintedWasteHigherPingDialog(zone, state, viewModel, onDismiss = picker.dismissHigherPingWarning)
+                            }
+                        }
+                    } else {
+                        ControllerModalDialog(onDismissRequest = viewModel::dismissPrintedWasteSelector) {
+                            AnimatedLaunchOverlay(Modifier.fillMaxSize()) {
+                                PrintedWasteSelector(state, game, viewModel)
+                            }
+                        }
                     }
                 }
                 state.pendingMembershipNotice?.let { notice ->
@@ -1456,20 +1488,64 @@ private fun MainShell(
                     }
                 }
                 state.pendingStoreChoiceGame?.let { game ->
-                    val launchSelector: @Composable () -> Unit = {
-                        StoreLaunchSelector(
-                            game = game,
-                            defaultVariantId = state.settings.defaultGameVariantIds[game.id],
-                            onLaunch = viewModel::playVariant,
-                            onSetDefaultStore = viewModel::setDefaultGameVariant,
-                            onDismiss = viewModel::dismissStoreChoice,
-                        )
-                    }
-                    ControllerModalDialog(onDismissRequest = viewModel::dismissStoreChoice) {
-                        AnimatedLaunchOverlay(Modifier.fillMaxSize()) { launchSelector() }
-                    }
+                    val defaultVariantId = state.settings.defaultGameVariantIds[game.id]
                     if (bottomScreenHosting) {
-                        HostOnBottomScreen(BOTTOM_SCREEN_PICKER_SCALE, launchSelector)
+                        // Board 09: the game on top, the launcher choice under the thumbs.
+                        val variants = remember(game) { launchableGameVariants(game.variants) }
+                        var selectedId by remember(game.id, defaultVariantId) {
+                            mutableStateOf(
+                                defaultVariantId?.takeIf { id -> variants.any { it.id == id } } ?: variants.firstOrNull()?.id,
+                            )
+                        }
+                        var rememberDefault by remember(game.id, defaultVariantId) { mutableStateOf(defaultVariantId != null) }
+                        val selected = variants.firstOrNull { it.id == selectedId }
+                        val play = {
+                            selected?.let {
+                                continueStoreLaunch(
+                                    context, game, it, defaultVariantId, rememberDefault,
+                                    viewModel::setDefaultGameVariant, viewModel::playVariant,
+                                )
+                            }
+                            Unit
+                        }
+                        ControllerModalOverlay(onDismissRequest = viewModel::dismissStoreChoice) {
+                            DualScreenLaunchPoster(
+                                game = game,
+                                eyebrow = stringResource(R.string.store_selector_choose_launcher),
+                                body = stringResource(R.string.dual_launcher_body),
+                                selection = selected?.let { gameStoreDisplayName(it.store) },
+                                onMove = { delta ->
+                                    val index = variants.indexOf(selected)
+                                    variants.getOrNull((index + delta).coerceIn(0, variants.lastIndex))?.let { selectedId = it.id }
+                                },
+                                onConfirm = play,
+                                onDismiss = viewModel::dismissStoreChoice,
+                            )
+                        }
+                        HostOnBottomScreen(scale = 1f) {
+                            DualScreenStorePicker(
+                                variants = variants,
+                                selectedVariantId = selectedId,
+                                defaultVariantId = defaultVariantId,
+                                rememberDefault = rememberDefault,
+                                onSelect = { selectedId = it },
+                                onRememberDefaultChange = { rememberDefault = it },
+                                onCancel = viewModel::dismissStoreChoice,
+                                onPlay = play,
+                            )
+                        }
+                    } else {
+                        ControllerModalDialog(onDismissRequest = viewModel::dismissStoreChoice) {
+                            AnimatedLaunchOverlay(Modifier.fillMaxSize()) {
+                                StoreLaunchSelector(
+                                    game = game,
+                                    defaultVariantId = defaultVariantId,
+                                    onLaunch = viewModel::playVariant,
+                                    onSetDefaultStore = viewModel::setDefaultGameVariant,
+                                    onDismiss = viewModel::dismissStoreChoice,
+                                )
+                            }
+                        }
                     }
                 }
             }

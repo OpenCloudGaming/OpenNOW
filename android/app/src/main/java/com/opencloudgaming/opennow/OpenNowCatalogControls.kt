@@ -497,14 +497,28 @@ private fun CatalogMenuChoiceRow(
     }
 }
 
+/**
+ * Everything the server picker decides, shared by the single-screen sheet and the dual-screen
+ * pair (top poster plus bottom list) so both screens read one selection.
+ */
+internal class PrintedWastePickerModel(
+    val regionGroups: List<Pair<String, List<PrintedWasteLocation>>>,
+    val locations: List<PrintedWasteLocation>,
+    val autoLocation: PrintedWasteLocation?,
+    val selectedZoneId: String?,
+    val selectedZone: PrintedWasteZoneOption?,
+    val pendingHigherPingLaunch: PrintedWasteZoneOption?,
+    val select: (String) -> Unit,
+    val launch: () -> Unit,
+    val dismissHigherPingWarning: () -> Unit,
+)
+
 @Composable
-internal fun PrintedWasteSelector(
+internal fun rememberPrintedWastePicker(
     state: OpenNowUiState,
     game: GameInfo,
     viewModel: OpenNowViewModel,
-    modifier: Modifier = Modifier,
-) {
-    BackHandler(onBack = viewModel::dismissPrintedWasteSelector)
+): PrintedWastePickerModel {
     val zones = remember(state.printedWasteQueue, state.printedWasteMapping, state.printedWastePings) {
         state.printedWasteQueue
             .filter { (zoneId, _) -> isStandardPrintedWasteZone(zoneId) && state.printedWasteMapping[zoneId]?.nuked != true }
@@ -547,20 +561,45 @@ internal fun PrintedWasteSelector(
     var pendingHigherPingLaunch by remember(game.id) {
         mutableStateOf<PrintedWasteZoneOption?>(null)
     }
-    var dismissHigherPingWarning by remember(game.id) { mutableStateOf(false) }
-    val launchSelectedZone: () -> Unit = {
-        selectedZone?.let { zone ->
-            if (
-                !state.settings.higherPingWarningDismissed &&
-                hasHigherPingThanClosestPrintedWasteZone(zone, selectableZones)
-            ) {
-                dismissHigherPingWarning = false
-                pendingHigherPingLaunch = zone
-            } else {
-                viewModel.launchWithPrintedWaste(zone.routingUrl)
+    return PrintedWastePickerModel(
+        regionGroups = regionGroups,
+        locations = locations,
+        autoLocation = autoLocation,
+        selectedZoneId = selectedZoneId,
+        selectedZone = selectedZone,
+        pendingHigherPingLaunch = pendingHigherPingLaunch,
+        select = { selectedZoneId = it },
+        launch = {
+            selectedZone?.let { zone ->
+                if (
+                    !state.settings.higherPingWarningDismissed &&
+                    hasHigherPingThanClosestPrintedWasteZone(zone, selectableZones)
+                ) {
+                    pendingHigherPingLaunch = zone
+                } else {
+                    viewModel.launchWithPrintedWaste(zone.routingUrl)
+                }
             }
-        }
-    }
+        },
+        dismissHigherPingWarning = { pendingHigherPingLaunch = null },
+    )
+}
+
+@Composable
+internal fun PrintedWasteSelector(
+    state: OpenNowUiState,
+    game: GameInfo,
+    viewModel: OpenNowViewModel,
+    modifier: Modifier = Modifier,
+) {
+    BackHandler(onBack = viewModel::dismissPrintedWasteSelector)
+    val picker = rememberPrintedWastePicker(state, game, viewModel)
+    val regionGroups = picker.regionGroups
+    val locations = picker.locations
+    val autoLocation = picker.autoLocation
+    val selectedZoneId = picker.selectedZoneId
+    val selectedZone = picker.selectedZone
+    val launchSelectedZone = picker.launch
     val context = LocalContext.current
 
     BoxWithConstraints(
@@ -612,7 +651,7 @@ internal fun PrintedWasteSelector(
                             selectedZone = selectedZone,
                             autoLocation = autoLocation,
                             showRecommendedCard = true,
-                            onSelectZone = { selectedZoneId = it },
+                            onSelectZone = picker.select,
                             onRetry = viewModel::refreshPrintedWasteQueues,
                             onDismiss = viewModel::dismissPrintedWasteSelector,
                             onDefault = { viewModel.launchWithPrintedWaste(null) },
@@ -646,7 +685,7 @@ internal fun PrintedWasteSelector(
                             selectedZone = selectedZone,
                             autoLocation = autoLocation,
                             showRecommendedCard = true,
-                            onSelectZone = { selectedZoneId = it },
+                            onSelectZone = picker.select,
                             onRetry = viewModel::refreshPrintedWasteQueues,
                             onDismiss = viewModel::dismissPrintedWasteSelector,
                             onDefault = { viewModel.launchWithPrintedWaste(null) },
@@ -659,67 +698,79 @@ internal fun PrintedWasteSelector(
         }
     }
 
-    pendingHigherPingLaunch?.let { zone ->
-        AlertDialog(
-            onDismissRequest = {
-                dismissHigherPingWarning = false
-                pendingHigherPingLaunch = null
-            },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(
-                        stringResource(R.string.queue_higher_ping_warning),
-                        color = Color(0xffff8d8d),
-                        fontWeight = FontWeight.Bold,
+    picker.pendingHigherPingLaunch?.let { zone ->
+        PrintedWasteHigherPingDialog(zone, state, viewModel, onDismiss = picker.dismissHigherPingWarning)
+    }
+}
+
+/** Confirms a launch on a server with more latency than the closest one. */
+@Composable
+internal fun PrintedWasteHigherPingDialog(
+    zone: PrintedWasteZoneOption,
+    state: OpenNowUiState,
+    viewModel: OpenNowViewModel,
+    onDismiss: () -> Unit,
+) {
+    var dismissHigherPingWarning by remember(zone.zoneId) { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = {
+            dismissHigherPingWarning = false
+            onDismiss()
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    stringResource(R.string.queue_higher_ping_warning),
+                    color = Color(0xffff8d8d),
+                    fontWeight = FontWeight.Bold,
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { dismissHigherPingWarning = !dismissHigherPingWarning }
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Checkbox(
+                        checked = dismissHigherPingWarning,
+                        onCheckedChange = { dismissHigherPingWarning = it },
                     )
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .clickable { dismissHigherPingWarning = !dismissHigherPingWarning }
-                            .padding(horizontal = 8.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        Checkbox(
-                            checked = dismissHigherPingWarning,
-                            onCheckedChange = { dismissHigherPingWarning = it },
-                        )
-                        Text(
-                            stringResource(R.string.queue_higher_ping_dont_show_again),
-                            color = MaterialTheme.colorScheme.onSurface,
+                    Text(
+                        stringResource(R.string.queue_higher_ping_dont_show_again),
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (dismissHigherPingWarning) {
+                        viewModel.updateSettings(
+                            state.settings.copy(higherPingWarningDismissed = true),
                         )
                     }
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (dismissHigherPingWarning) {
-                            viewModel.updateSettings(
-                                state.settings.copy(higherPingWarningDismissed = true),
-                            )
-                        }
-                        dismissHigherPingWarning = false
-                        pendingHigherPingLaunch = null
-                        viewModel.launchWithPrintedWaste(zone.routingUrl)
-                    },
-                ) {
-                    Text(stringResource(R.string.action_ok))
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = {
-                        dismissHigherPingWarning = false
-                        pendingHigherPingLaunch = null
-                    },
-                ) {
-                    Text(stringResource(R.string.action_cancel))
-                }
-            },
-        )
-    }
+                    dismissHigherPingWarning = false
+                    onDismiss()
+                    viewModel.launchWithPrintedWaste(zone.routingUrl)
+                },
+            ) {
+                Text(stringResource(R.string.action_ok))
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = {
+                    dismissHigherPingWarning = false
+                    onDismiss()
+                },
+            ) {
+                Text(stringResource(R.string.action_cancel))
+            }
+        },
+    )
 }
 
 @Composable
@@ -1105,7 +1156,7 @@ private fun QueueMetricPill(
     }
 }
 
-private fun queueColor(queue: Int): Color = when {
+internal fun queueColor(queue: Int): Color = when {
     queue <= 5 -> Green
     queue <= 20 -> Color(0xffc7ef6b)
     queue <= 45 -> Color(0xffffc95a)

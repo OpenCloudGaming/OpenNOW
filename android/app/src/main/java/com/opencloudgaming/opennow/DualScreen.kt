@@ -458,7 +458,6 @@ internal fun rememberBottomScreenHosting(settings: AppSettings): Boolean {
 
 /** Panels laid out for the 6" screen get a denser scale so they fit the 3.92" one unchanged. */
 internal const val BOTTOM_SCREEN_PANEL_SCALE = 0.85f
-internal const val BOTTOM_SCREEN_PICKER_SCALE = 0.72f
 
 /**
  * Renders [content] on the bottom screen while this call stays in the composition. The content
