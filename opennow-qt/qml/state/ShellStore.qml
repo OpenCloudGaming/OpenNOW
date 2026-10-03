@@ -791,6 +791,7 @@ QtObject {
     readonly property bool streamBusy: streamCreateRequestId !== "" || streamStopRequestId !== ""
         || remoteSessionsRequestId !== "" || sessionClaimRequestId !== "" || launchInspectRequestId !== ""
         || queueSelector.opened || queueLaunchWaitingForSubscription
+        || settingsOwner.settingWrites.allianceWebrtcCompatibility !== undefined
 
     signal fullscreenToggleRequested()
     signal pointerLockToggleRequested()
@@ -3040,12 +3041,19 @@ QtObject {
         } else if (pending.operation === "start") {
             streamerStartRequestId = ""
             if (sessionRecoveryPending) return
+            if (response.transport === "webrtc" && streamer
+                    && (streamer.status === "error" || streamer.status === "stopped")) return
             streamReplayEnabled = response.replayEnabled === true
             if (!replayBufferRequested)
                 disableStreamReplay()
+            const connectingWebrtc = response.transport === "webrtc"
+                && (!streamer || streamer.status !== "streaming")
             updateStreamerFields({
-                status: "streaming",
-                message: qsTr("Native-owned NVST media transport is active"),
+                status: connectingWebrtc ? "connecting" : "streaming",
+                message: connectingWebrtc
+                    ? qsTr("Connecting the native WebRTC media transport…")
+                    : response.transport === "webrtc" ? streamer.message
+                    : qsTr("Native-owned NVST media transport is active"),
                 transport: String(response.transport || "nvst"),
                 capabilities: Object.assign({}, nativeRuntimeCapabilities,
                                             response.capabilities || ({}),

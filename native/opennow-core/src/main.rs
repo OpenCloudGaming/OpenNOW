@@ -773,6 +773,7 @@ fn dispatch(method: &str, params: &Value, core: &AppCore) -> DispatchResult {
             .map_err(gfn_error),
         "session.create" => {
             let settings = core.settings.lock().expect("settings poisoned").all();
+            let settings = core.gfn.session_launch_settings(&settings);
             let settings = if !params["runtimeCapabilities"].is_null() {
                 StreamerService::embedded_session_settings(
                     &settings,

@@ -1,4 +1,4 @@
-use crate::gfn::{AuthSession, ServiceError};
+use crate::gfn::{AuthSession, LoginProvider, ServiceError};
 use crate::proxy::client_for_settings;
 use rand::RngCore as _;
 use reqwest::blocking::{Client, Response};
@@ -24,6 +24,50 @@ const MAXIMUM_NETWORK_TEST_RESPONSE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_DISCOVERY_REGIONS: usize = 32;
 const DISCOVERY_CONCURRENCY: usize = 4;
 const MAX_CLEANUP_RECORD_BYTES: usize = 16 * 1024;
+
+pub(crate) fn allocation_settings(settings: &Value, provider: &LoginProvider) -> Value {
+    let mut settings = settings.clone();
+    let enabled = provider.is_alliance() && settings["allianceWebrtcCompatibility"] == true;
+    settings["allianceWebrtcCompatibility"] = json!(enabled);
+    if enabled {
+        settings["codec"] = json!("h264");
+        settings["colorQuality"] = json!("8bit_420");
+        settings["enableHdr"] = json!(false);
+        settings["nativeHdrSupported"] = json!(false);
+        settings["microphoneMode"] = json!("disabled");
+        settings["enableCloudGsync"] = json!(false);
+        settings["nativeCloudGsyncMode"] = json!("disabled");
+        let (width, height) =
+            parse_resolution(&setting_string(&settings, "resolution", "1920x1080"));
+        if width > 1920 || height > 1080 || width == 0 || height == 0 {
+            settings["resolution"] = json!("1920x1080");
+        }
+        settings["fps"] = json!(
+            settings["fps"]
+                .as_u64()
+                .filter(|fps| *fps > 0)
+                .unwrap_or(60)
+                .clamp(30, 60)
+        );
+    }
+    settings
+}
+
+fn reported_webrtc_session(session: &Value) -> bool {
+    session["sessionRequestData"]["secureRTSPSupported"] != true
+        && session["sessionRequestData"]["metaData"]
+            .as_array()
+            .is_some_and(|metadata| {
+                metadata
+                    .iter()
+                    .any(|entry| entry["key"] == "GSStreamerType" && entry["value"] == "WebRTC")
+            })
+}
+
+fn reported_native_session(session: &Value) -> bool {
+    session["sessionRequestData"]["secureRTSPSupported"] == true
+        || value_i64(&session["sessionRequestData"]["streamerVersion"]) == Some(14)
+}
 
 #[derive(Clone)]
 struct ActiveSession {
@@ -64,6 +108,7 @@ pub struct CloudMatchService {
     fresh: Mutex<Option<FreshAllocation>>,
     cleanup_path: Option<PathBuf>,
     retained_cleanup: Mutex<Option<Value>>,
+    webrtc_allocation: Mutex<Option<Value>>,
     #[cfg(test)]
     test_control_base: Option<Url>,
 }
@@ -125,6 +170,7 @@ impl CloudMatchService {
             fresh: Mutex::new(None),
             cleanup_path: None,
             retained_cleanup: Mutex::new(None),
+            webrtc_allocation: Mutex::new(None),
             #[cfg(test)]
             test_control_base: None,
         }
@@ -132,6 +178,26 @@ impl CloudMatchService {
 
     pub fn with_cleanup_path(client: Client, path: PathBuf) -> Self {
         let mut service = Self::new(client);
+        if let Ok(file) = std::fs::File::open(path.with_file_name("webrtc-session.json"))
+            && let Some(record) = read_cleanup_record(file)
+            && record["sessionId"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty() && id.len() <= 256)
+            && record["transportMode"] == "webrtc"
+            && record["owner"].as_array().is_some_and(|owner| {
+                owner.len() == 2
+                    && owner.iter().all(|value| {
+                        value
+                            .as_str()
+                            .is_some_and(|value| !value.is_empty() && value.len() <= 256)
+                    })
+            })
+        {
+            *service
+                .webrtc_allocation
+                .lock()
+                .expect("WebRTC allocation state poisoned") = Some(record);
+        }
         if let Ok(file) = std::fs::File::open(&path)
             && let Some(record) = read_cleanup_record(file)
             && record["sessionId"]
@@ -221,6 +287,8 @@ impl CloudMatchService {
         device_id: &str,
         connection: impl FnOnce() -> Result<(Client, Url), ServiceError>,
     ) -> Result<Value, ServiceError> {
+        let settings = allocation_settings(settings, &auth.provider);
+        let settings = &settings;
         let (client, base) = connection()?;
         crate::requests::check()?;
         let app_id = launch_app_id(params)?;
@@ -279,6 +347,12 @@ impl CloudMatchService {
             .or_else(|| base.host_str().map(ToOwned::to_owned))
             .unwrap_or_default();
         let mut info = session_info(&payload, &base, &zone, &app_id, device_id)?;
+        info["transportMode"] = json!(if settings["allianceWebrtcCompatibility"] == true {
+            "webrtc"
+        } else {
+            "nvst"
+        });
+        select_webrtc_endpoint(&mut info);
         info["keyboardLayout"] = json!(crate::language::session_keyboard_layout(settings));
         if let Some(session_id) = network_test["sessionId"].as_str() {
             info["networkTestSessionId"] = json!(session_id);
@@ -314,8 +388,15 @@ impl CloudMatchService {
         } else {
             request_profile["codecSource"] = json!("request");
         }
+        if info["transportMode"] == "webrtc" {
+            request_profile["codec"] = json!("H264");
+            request_profile["codecSource"] = json!("request");
+            request_profile["enableHdr"] = json!(false);
+            request_profile["enableHdrSource"] = json!("request");
+        }
         let request_codec = json!({
             "sessionId":info["sessionId"],
+            "transportMode":info["transportMode"],
             "negotiatedStreamProfile":request_profile
         });
         preserve_session_profile(&mut info, &request_codec);
@@ -325,9 +406,66 @@ impl CloudMatchService {
             return Err(cancelled_allocation());
         }
         self.store_active(&mut info, &base, &zone, &app_id, client)?;
+        self.remember_webrtc_allocation(&info, auth)?;
         info["phase"] =
             Value::String(session_phase(info["status"].as_i64().unwrap_or_default()).to_owned());
         Ok(json!({"session":info}))
+    }
+
+    fn remember_webrtc_allocation(
+        &self,
+        info: &Value,
+        auth: &AuthSession,
+    ) -> Result<(), ServiceError> {
+        if info["transportMode"] != "webrtc" || info["status"] == 7 {
+            return Ok(());
+        }
+        let record = json!({"sessionId":info["sessionId"],"transportMode":"webrtc",
+            "owner":[auth.provider.idp_id, auth.user.user_id],
+            "negotiatedStreamProfile":info["negotiatedStreamProfile"]});
+        if self
+            .webrtc_allocation
+            .lock()
+            .expect("WebRTC allocation state poisoned")
+            .as_ref()
+            == Some(&record)
+        {
+            return Ok(());
+        }
+        if let Some(path) = &self.cleanup_path {
+            let path = path.with_file_name("webrtc-session.json");
+            let save = || -> std::io::Result<()> {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                let temporary = path.with_extension("tmp");
+                std::fs::write(&temporary, serde_json::to_vec(&record)?)?;
+                std::fs::rename(temporary, path)
+            };
+            save().map_err(|_| ServiceError {
+                code: "session_provenance_unavailable",
+                message:
+                    "The WebRTC session is retained, but its resume profile could not be saved."
+                        .into(),
+            })?;
+        }
+        *self
+            .webrtc_allocation
+            .lock()
+            .expect("WebRTC allocation state poisoned") = Some(record);
+        Ok(())
+    }
+
+    fn retained_webrtc_allocation(&self, session_id: &str, auth: &AuthSession) -> Option<Value> {
+        self.webrtc_allocation
+            .lock()
+            .expect("WebRTC allocation state poisoned")
+            .as_ref()
+            .filter(|record| {
+                record["sessionId"] == session_id
+                    && record["owner"] == json!([auth.provider.idp_id, auth.user.user_id])
+            })
+            .cloned()
     }
 
     pub fn finish_create(
@@ -497,7 +635,9 @@ impl CloudMatchService {
             .map(|state| state.app_id.clone())
             .unwrap_or_default();
         let mut info = session_info(&payload, &base, &zone, &app_id, device_id)?;
-
+        if let Some(current) = &current {
+            preserve_session_profile(&mut info, &current.info);
+        }
         info["phase"] =
             Value::String(session_phase(info["status"].as_i64().unwrap_or_default()).to_owned());
         if current
@@ -507,6 +647,7 @@ impl CloudMatchService {
             mark_resume_progress(&mut info);
         }
         self.store_active(&mut info, &base, &zone, &app_id, client)?;
+        self.remember_webrtc_allocation(&info, auth)?;
         Ok(json!({"session":info}))
     }
 
@@ -949,6 +1090,23 @@ impl CloudMatchService {
         if session["sessionId"] != session_id {
             return Err(upstream("CloudMatch returned a different session ID"));
         }
+        let retained_webrtc = self.retained_webrtc_allocation(session_id, auth);
+        if retained_webrtc.is_some() && reported_native_session(session) {
+            return Err(ServiceError {
+                code: "session_transport_mismatch",
+                message: "The saved WebRTC session now reports a native allocation. The session has been retained without changing its transport.".into(),
+            });
+        }
+        let webrtc = reported_webrtc_session(session) || retained_webrtc.is_some();
+        if webrtc
+            && (!auth.provider.is_alliance()
+                || (retained_webrtc.is_none() && settings["allianceWebrtcCompatibility"] != true))
+        {
+            return Err(ServiceError {
+                code: "session_transport_not_enabled",
+                message: "This is a WebRTC session. Enable alliance compatibility before attaching; the cloud session has been retained.".into(),
+            });
+        }
         let initial_status = value_i64(&session["status"]).unwrap_or_default();
         let learned_server = first_string(&session["sessionControlInfo"]["ip"]);
         let control_base = learned_server
@@ -969,8 +1127,12 @@ impl CloudMatchService {
             session_requires_resume(initial_status)?;
             let zone = zone_base.host_str().unwrap_or_default();
             let mut info = session_info(&initial_payload, &control_base, zone, &app_id, device_id)?;
+            if let Some(retained) = &retained_webrtc {
+                preserve_session_profile(&mut info, retained);
+            }
             check()?;
             self.store_active(&mut info, &control_base, zone, &app_id, client)?;
+            self.remember_webrtc_allocation(&info, auth)?;
             return Ok(json!({"session":info}));
         }
         let resumed = session_requires_resume(initial_status)?;
@@ -979,7 +1141,20 @@ impl CloudMatchService {
                 .join(&format!("v2/session/{session_id}"))
                 .map_err(|_| invalid("Invalid CloudMatch claim URL"))?;
             crate::language::append_session_preferences(&mut url, settings);
-            let body = build_resume_body(&app_id, session, settings, device_id);
+            let mut resume_session = session.clone();
+            if webrtc {
+                resume_session["transportMode"] = json!("webrtc");
+            }
+            if let Some(active) = self
+                .active
+                .lock()
+                .expect("CloudMatch state poisoned")
+                .as_ref()
+                && active.session_id == session_id
+            {
+                resume_session["transportMode"] = active.info["transportMode"].clone();
+            }
+            let body = build_resume_body(&app_id, &resume_session, settings, device_id);
             #[cfg(test)]
             let url = self.fixture_url(url);
             let response = client
@@ -999,12 +1174,16 @@ impl CloudMatchService {
         // Qt schedules cancellable session.poll requests until the fresh GET
         // reports status 2/3 with native endpoints. No long blocking RPC loop.
         let mut info = session_info(&initial_payload, &control_base, zone, &app_id, device_id)?;
+        if let Some(retained) = &retained_webrtc {
+            preserve_session_profile(&mut info, retained);
+        }
         if resumed {
             info["keyboardLayout"] = json!(crate::language::session_keyboard_layout(settings));
         }
         info["resumePending"] = json!(true);
         info["phase"] = json!("resuming");
         self.store_active(&mut info, &control_base, zone, &app_id, client)?;
+        self.remember_webrtc_allocation(&info, auth)?;
         Ok(json!({"session":info}))
     }
 
@@ -1307,9 +1486,13 @@ fn mark_resume_progress(info: &mut Value) {
         return;
     }
     let ready = matches!(info["status"].as_i64(), Some(2 | 3))
-        && info["rtspsEndpoints"]
-            .as_array()
-            .is_some_and(|endpoints| !endpoints.is_empty());
+        && if info["transportMode"] == "webrtc" {
+            has_webrtc_endpoint(info)
+        } else {
+            info["rtspsEndpoints"]
+                .as_array()
+                .is_some_and(|endpoints| !endpoints.is_empty())
+        };
     info["resumePending"] = json!(!ready);
     if !ready {
         info["phase"] = json!("resuming");
@@ -1317,7 +1500,10 @@ fn mark_resume_progress(info: &mut Value) {
 }
 
 fn build_resume_body(app_id: &str, session: &Value, settings: &Value, device_id: &str) -> Value {
-    let created = build_create_body(app_id, &json!({}), settings, device_id);
+    let mut settings = settings.clone();
+    let webrtc = reported_webrtc_session(session) || session["transportMode"] == "webrtc";
+    settings["allianceWebrtcCompatibility"] = json!(webrtc);
+    let created = build_create_body(app_id, &json!({}), &settings, device_id);
     let source = &created["sessionRequestData"];
     let mut request = serde_json::Map::new();
     // Resume must not renegotiate codec, monitor geometry, FPS or bitrate.
@@ -1346,6 +1532,10 @@ fn build_resume_body(app_id: &str, session: &Value, settings: &Value, device_id:
         "sdrHdrMode".to_owned(),
         json!(accepted_hdr_mode(session).unwrap_or(0)),
     );
+    if webrtc {
+        request.insert("sdkVersion".to_owned(), json!("1.0"));
+        request.insert("enhancedStreamMode".to_owned(), json!(1));
+    }
     request.insert(
         "metaData".to_owned(),
         json!(
@@ -1472,7 +1662,7 @@ fn build_create_body(app_id: &str, params: &Value, settings: &Value, device_id: 
     features["mouseMovementFlags"] = json!(0);
     features["trueHdr"] = json!(false);
     features["hidDevices"] = Value::Null;
-    json!({"sessionRequestData":{
+    let mut body = json!({"sessionRequestData":{
         "appId":app_id.parse::<i64>().unwrap_or_default(),
         "internalTitle":params["title"].as_str(),
         "availableSupportedControllers":[2],
@@ -1511,7 +1701,168 @@ fn build_create_body(app_id: &str, params: &Value, settings: &Value, device_id: 
         "userAge":25,
         "requestedStreamingFeatures":features,
         "transport":null
-    }})
+    }});
+    if settings["allianceWebrtcCompatibility"] == true {
+        let request = &mut body["sessionRequestData"];
+        request["sdkVersion"] = json!("1.0");
+        request["streamerVersion"] = json!(1);
+        request["enhancedStreamMode"] = json!(1);
+        request["secureRTSPSupported"] = json!(false);
+        request["remoteControllersBitmap"] = json!(1);
+        request["metaData"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"key":"GSStreamerType","value":"WebRTC"}));
+        request
+            .as_object_mut()
+            .unwrap()
+            .remove("requestedAudioFormat");
+        request.as_object_mut().unwrap().remove("transport");
+    }
+    body
+}
+
+fn valid_webrtc_endpoint(value: &Value) -> bool {
+    value
+        .as_str()
+        .and_then(|raw| Url::parse(raw).ok())
+        .is_some_and(|url| {
+            url.scheme() == "wss"
+                && url.host_str().is_some()
+                && url.username().is_empty()
+                && url.password().is_none()
+                && url.fragment().is_none()
+        })
+}
+
+pub(crate) fn has_webrtc_endpoint(session: &Value) -> bool {
+    session["connectionInfo"]
+        .as_array()
+        .is_some_and(|connections| {
+            connections
+                .iter()
+                .filter_map(webrtc_signaling_endpoint)
+                .any(|url| session["signalingUrl"] == url.as_str())
+        })
+}
+
+fn select_webrtc_endpoint(session: &mut Value) {
+    if session["transportMode"] != "webrtc" {
+        return;
+    }
+    let endpoint = session["connectionInfo"]
+        .as_array()
+        .and_then(|connections| {
+            connections.iter().find_map(|connection| {
+                webrtc_signaling_endpoint(connection)
+                    .map(|url| (url, first_string(&connection["ip"])))
+            })
+        });
+    let media = session["connectionInfo"]
+        .as_array()
+        .and_then(|connections| {
+            [2, 17]
+                .into_iter()
+                .find_map(|usage| {
+                    connections
+                        .iter()
+                        .filter(|connection| value_i64(&connection["usage"]) == Some(usage))
+                        .find_map(media_connection_info)
+                })
+                .or_else(|| {
+                    connections
+                        .iter()
+                        .filter(|connection| {
+                            value_i64(&connection["usage"]) == Some(14)
+                                && !matches!(
+                                    value_i64(&connection["appLevelProtocol"]),
+                                    Some(1 | 6)
+                                )
+                                && !connection["resourcePath"].as_str().is_some_and(|resource| {
+                                    resource.starts_with("rtsp://")
+                                        || resource.starts_with("rtsps://")
+                                })
+                        })
+                        .filter_map(media_connection_info)
+                        .max_by_key(|media| media["port"].as_i64())
+                })
+        });
+    session["mediaConnectionInfo"] = json!(media);
+    session["signalingUrl"] = json!(endpoint.as_ref().map(|(url, _)| url.as_str()));
+    if let Some((endpoint, server_ip)) = endpoint {
+        session["serverIp"] = json!(server_ip.or_else(|| {
+            endpoint
+                .host_str()
+                .map(|host| host.trim_matches(['[', ']']).to_owned())
+        }));
+        session["signalingServer"] = json!(format!(
+            "{}:{}",
+            endpoint.host_str().unwrap_or_default(),
+            endpoint.port_or_known_default().unwrap_or(443)
+        ));
+    }
+}
+
+fn media_connection_info(connection: &Value) -> Option<Value> {
+    let ip = first_string(&connection["ip"]).or_else(|| {
+        connection["resourcePath"]
+            .as_str()
+            .and_then(host_from_resource)
+    })?;
+    let port = value_i64(&connection["port"]).or_else(|| {
+        Url::parse(connection["resourcePath"].as_str()?)
+            .ok()?
+            .port()
+            .map(i64::from)
+    })?;
+    (1..=65535)
+        .contains(&port)
+        .then(|| json!({"ip":ip,"port":port,"usage":connection["usage"]}))
+}
+
+fn webrtc_signaling_endpoint(connection: &Value) -> Option<Url> {
+    if value_i64(&connection["usage"]) != Some(14)
+        || matches!(value_i64(&connection["appLevelProtocol"]), Some(1 | 6))
+    {
+        return None;
+    }
+    let resource = connection["resourcePath"].as_str().unwrap_or("/nvst/");
+    let absolute = resource.starts_with("wss://") || resource.starts_with("https://");
+    let mut url = if absolute {
+        let mut url = Url::parse(resource).ok()?;
+        url.set_scheme("wss").ok()?;
+        url
+    } else {
+        if resource.contains("://") || !resource.starts_with('/') {
+            return None;
+        }
+        let host = connection["ip"].as_str()?;
+        let mut url = Url::parse("wss://endpoint.invalid/").ok()?;
+        if let Ok(ip) = host.parse::<IpAddr>() {
+            url.set_ip_host(ip).ok()?;
+        } else {
+            url.set_host(Some(host)).ok()?;
+        }
+        url.set_path(resource);
+        url
+    };
+    if !absolute && let Some(host) = connection["ip"].as_str().filter(|host| !host.is_empty()) {
+        if let Ok(ip) = host.parse::<IpAddr>() {
+            if ip.is_unspecified() {
+                return None;
+            }
+            url.set_ip_host(ip).ok()?;
+        } else {
+            url.set_host(Some(host)).ok()?;
+        }
+    }
+    if !absolute && let Some(port) = value_i64(&connection["port"]) {
+        if !(1..=65535).contains(&port) {
+            return None;
+        }
+        url.set_port(Some(port as u16)).ok()?;
+    }
+    valid_webrtc_endpoint(&json!(url.as_str())).then_some(url)
 }
 
 fn session_info(
@@ -1600,15 +1951,7 @@ fn session_info(
     let media = connections
         .iter()
         .find(|connection| matches!(value_i64(&connection["usage"]), Some(2 | 17)))
-        .and_then(|connection| {
-            let ip = first_string(&connection["ip"]).or_else(|| {
-                connection["resourcePath"]
-                    .as_str()
-                    .and_then(host_from_resource)
-            })?;
-            let port = value_i64(&connection["port"])?;
-            (port > 0).then(|| json!({"ip":ip,"port":port,"usage":connection["usage"]}))
-        });
+        .and_then(media_connection_info);
     let monitor = &session["sessionRequestData"]["clientRequestMonitorSettings"][0];
     let mut features = session["sessionRequestData"]["requestedStreamingFeatures"]
         .as_object()
@@ -1648,8 +1991,10 @@ fn session_info(
         "unreported"
     });
     let ad_state = normalize_ad_state(session);
-    Ok(json!({
+    let mut info = json!({
         "sessionId":session_id,
+        "transportMode":if reported_webrtc_session(session) { "webrtc" } else { "nvst" },
+        "reportedNativeTransport":reported_native_session(session),
         "subSessionId":session["subSessionId"],
         "appId":app_id,
         "status":status,
@@ -1676,7 +2021,9 @@ fn session_info(
         "finalizedStreamingFeatures":session["finalizedStreamingFeatures"],
         "clientId":LCARS_CLIENT_ID,
         "deviceId":device_id
-    }))
+    });
+    select_webrtc_endpoint(&mut info);
+    Ok(info)
 }
 
 fn normalize_ad_state(session: &Value) -> Value {
@@ -1728,6 +2075,15 @@ fn preserve_session_profile(info: &mut Value, previous: &Value) {
     let profile = &previous["negotiatedStreamProfile"];
     if previous["sessionId"].as_str() != Some(session_id) {
         return;
+    }
+    if previous["transportMode"] == "webrtc" {
+        info["transportMode"] = json!("webrtc");
+        select_webrtc_endpoint(info);
+        for key in ["resolution", "width", "height", "fps"] {
+            if info["negotiatedStreamProfile"][key].is_null() && !profile[key].is_null() {
+                info["negotiatedStreamProfile"][key] = profile[key].clone();
+            }
+        }
     }
     if (info["negotiatedStreamProfile"]["codecSource"] == "unreported"
         || (info["negotiatedStreamProfile"]["codecSource"] == "request"
@@ -3572,6 +3928,366 @@ mod tests {
             "tokens":{"accessToken":"test-token", "expiresAt":0, "authClientId":"test"},
             "user":{"userId":"test-user", "displayName":"Test", "membershipTier":""}
         })).unwrap()
+    }
+
+    #[test]
+    fn alliance_webrtc_profile_requires_both_provider_identity_checks_and_opt_in() {
+        let mut provider = conflict_auth().provider;
+        let requested = json!({"allianceWebrtcCompatibility":true,"transportMode":"webrtc",
+            "codec":"av1","colorQuality":"10bit_444","enableHdr":true,"nativeHdrSupported":true,
+            "resolution":"3840x2160","fps":240,"microphoneMode":"open"});
+        assert_eq!(allocation_settings(&requested, &provider)["codec"], "av1");
+        provider.code = "ALLIANCE".into();
+        let compatible = allocation_settings(&requested, &provider);
+        assert_eq!(compatible["codec"], "h264");
+        assert_eq!(compatible["colorQuality"], "8bit_420");
+        assert_eq!(compatible["enableHdr"], false);
+        assert_eq!(compatible["microphoneMode"], "disabled");
+        assert_eq!(compatible["resolution"], "1920x1080");
+        assert_eq!(compatible["fps"], 60);
+        assert_eq!(requested["codec"], "av1");
+        for (requested_fps, expected) in [(0, 60), (30, 30), (60, 60), (120, 60)] {
+            let mut settings = requested.clone();
+            settings["fps"] = json!(requested_fps);
+            assert_eq!(allocation_settings(&settings, &provider)["fps"], expected);
+        }
+        for identity in ["", "PDiAhv2kJTFeQ7WOPqiQ2tRZ7lGhR2X11dXvM4TZSxg"] {
+            provider.idp_id = identity.into();
+            assert_eq!(
+                allocation_settings(&requested, &provider)["allianceWebrtcCompatibility"],
+                false
+            );
+        }
+        provider.idp_id = "partner".into();
+        for enabled in [json!(false), json!("true"), Value::Null] {
+            let mut settings = requested.clone();
+            settings["allianceWebrtcCompatibility"] = enabled;
+            assert_eq!(allocation_settings(&settings, &provider)["codec"], "av1");
+        }
+    }
+
+    #[test]
+    fn alliance_webrtc_request_changes_allocation_without_changing_native_headers() {
+        let mut provider = conflict_auth().provider;
+        provider.code = "ALLIANCE".into();
+        let settings = allocation_settings(
+            &json!({"allianceWebrtcCompatibility":true,
+            "codec":"h265","enableHdr":true,"nativeHdrSupported":true}),
+            &provider,
+        );
+        let body = build_create_body("123", &json!({}), &settings, "device");
+        let request = &body["sessionRequestData"];
+        assert_eq!(request["streamerVersion"], 1);
+        assert_eq!(request["sdkVersion"], "1.0");
+        assert_eq!(request["enhancedStreamMode"], 1);
+        assert_eq!(request["secureRTSPSupported"], false);
+        assert_eq!(request["sdrHdrMode"], 0);
+        assert_eq!(request["requestedStreamingFeatures"]["trueHdr"], false);
+        assert_eq!(request["requestedStreamingFeatures"]["bitDepth"], 0);
+        assert_eq!(request["requestedStreamingFeatures"]["chromaFormat"], 0);
+        assert_eq!(request["remoteControllersBitmap"], 1);
+        assert!(reported_webrtc_session(&body));
+        let headers = cloudmatch_headers("test", "device").unwrap();
+        assert_eq!(headers["nv-client-streamer"], "NVIDIA-CLASSIC");
+        assert_eq!(headers["nv-client-type"], "NATIVE");
+        assert!(request.get("requestedAudioFormat").is_none());
+        assert!(request.get("transport").is_none());
+    }
+
+    #[test]
+    fn alliance_webrtc_endpoints_preserve_authoritative_address_port_and_path() {
+        for (connection, expected) in [
+            (
+                json!({"usage":14,"appLevelProtocol":4,"ip":"203.0.113.8","port":8443,"resourcePath":"wss://signaling.example:9443/nvst/custom/"}),
+                "wss://signaling.example:9443/nvst/custom/",
+            ),
+            (
+                json!({"usage":14,"appLevelProtocol":4,"ip":"seat.partner.example","resourcePath":"/nvst/"}),
+                "wss://seat.partner.example/nvst/",
+            ),
+            (
+                json!({"usage":14,"resourcePath":"wss://seat.partner.example:9443/custom/"}),
+                "wss://seat.partner.example:9443/custom/",
+            ),
+            (
+                json!({"usage":14,"appLevelProtocol":4,"ip":"2001:db8::1","port":8443}),
+                "wss://[2001:db8::1]:8443/nvst/",
+            ),
+        ] {
+            assert_eq!(
+                webrtc_signaling_endpoint(&connection).unwrap().as_str(),
+                expected
+            );
+        }
+        for connection in [
+            json!({"usage":16,"ip":"seat.example","port":322}),
+            json!({"usage":14,"appLevelProtocol":6,"ip":"seat.example","port":322}),
+            json!({"usage":14,"resourcePath":"rtsps://seat.example:322"}),
+            json!({"usage":14,"resourcePath":"wss://user:password@seat.example/nvst/"}),
+            json!({"usage":14,"ip":"seat.example","port":65536}),
+            json!({"usage":14,"ip":"0.0.0.0","port":443}),
+        ] {
+            assert!(
+                webrtc_signaling_endpoint(&connection).is_none(),
+                "{connection}"
+            );
+        }
+        let base = trusted_cloudmatch_base(DEFAULT_STREAMING_BASE).unwrap();
+        let mut native = session_info(&json!({"session":{"sessionId":"A","status":3,"connectionInfo":[
+            {"usage":14,"appLevelProtocol":4,"ip":"webrtc.example","port":8443,"resourcePath":"/nvst/"},
+            {"usage":16,"ip":"native.example","port":322},
+            {"usage":15,"ip":"203.0.113.15","port":49015},
+            {"usage":17,"ip":"203.0.113.17","port":49017}]}}), &base, "", "123", "device").unwrap();
+        assert_eq!(native["serverIp"], "native.example");
+        assert_eq!(native["signalingUrl"], "wss://native.example:322");
+        assert_eq!(native["mediaConnectionInfo"]["port"], 49017);
+        native["transportMode"] = json!("webrtc");
+        select_webrtc_endpoint(&mut native);
+        assert_eq!(native["serverIp"], "webrtc.example");
+        assert_eq!(native["signalingUrl"], "wss://webrtc.example:8443/nvst/");
+        assert_eq!(native["mediaConnectionInfo"]["port"], 49017);
+        native["connectionInfo"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|connection| connection["usage"] != 17);
+        select_webrtc_endpoint(&mut native);
+        assert_eq!(native["mediaConnectionInfo"]["port"], 8443);
+        native["connectionInfo"][0]["appLevelProtocol"] = json!(6);
+        select_webrtc_endpoint(&mut native);
+        assert!(native["mediaConnectionInfo"].is_null());
+    }
+
+    #[test]
+    fn alliance_webrtc_allocation_and_poll_keep_owned_transport_and_requested_profile() {
+        let ready = json!({"sessionId":"A","status":3,"connectionInfo":[
+            {"usage":14,"appLevelProtocol":4,"ip":"seat.partner.example","port":8443,"resourcePath":"/nvst/"},
+            {"usage":2,"ip":"203.0.113.9","port":49000}]});
+        let (base, server) = session_server(
+            vec![
+                (
+                    200,
+                    json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"A","status":1,
+                "sessionControlInfo":{"ip":"seat.nvidiagrid.net","port":443}}}),
+                ),
+                (
+                    200,
+                    json!({"requestStatus":{"statusCode":1},"session":ready}),
+                ),
+            ],
+            |_| {},
+        );
+        let client = Client::new();
+        let mut service = CloudMatchService::new(client.clone());
+        service.set_test_control_base(base.clone());
+        let mut auth = conflict_auth();
+        auth.provider.code = "ALLIANCE".into();
+        let created = service.create_at(&json!({"appId":"123"}),
+            &json!({"allianceWebrtcCompatibility":true,"codec":"av1","resolution":"2560x1440","fps":120}),
+            &auth, "device", || Ok((client, base))).unwrap();
+        assert_eq!(created["session"]["transportMode"], "webrtc");
+        assert_eq!(
+            created["session"]["negotiatedStreamProfile"]["codec"],
+            "H264"
+        );
+        assert_eq!(
+            created["session"]["negotiatedStreamProfile"]["codecSource"],
+            "request"
+        );
+        service.finish_create("A", true).unwrap();
+        let polled = service
+            .poll(
+                &json!({"sessionId":"A","transportMode":"nvst"}),
+                &auth,
+                "device",
+            )
+            .unwrap();
+        assert_eq!(polled["session"]["transportMode"], "webrtc");
+        assert_eq!(
+            polled["session"]["signalingUrl"],
+            "wss://seat.partner.example:8443/nvst/"
+        );
+        assert_eq!(polled["session"]["mediaConnectionInfo"]["port"], 49000);
+        assert_eq!(
+            polled["session"]["negotiatedStreamProfile"]["resolution"],
+            "1920x1080"
+        );
+        assert_eq!(polled["session"]["negotiatedStreamProfile"]["fps"], 60);
+        assert_eq!(
+            polled["session"]["negotiatedStreamProfile"]["codec"],
+            "H264"
+        );
+        assert!(has_webrtc_endpoint(&polled["session"]));
+        assert_eq!(server.join().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn alliance_webrtc_resume_uses_existing_allocation_not_current_preference() {
+        let native = json!({"sessionRequestData":{"secureRTSPSupported":true}});
+        let native_resume = build_resume_body(
+            "123",
+            &native,
+            &json!({"allianceWebrtcCompatibility":true,"transportMode":"webrtc"}),
+            "device",
+        );
+        assert_eq!(
+            native_resume["sessionRequestData"]["secureRTSPSupported"],
+            true
+        );
+        assert!(!reported_webrtc_session(&native_resume));
+        let webrtc = json!({"sessionRequestData":{"secureRTSPSupported":false,
+            "metaData":[{"key":"GSStreamerType","value":"WebRTC"}]}});
+        let resumed = build_resume_body(
+            "123",
+            &webrtc,
+            &json!({"allianceWebrtcCompatibility":false,"codec":"av1","enableHdr":true}),
+            "device",
+        );
+        assert!(reported_webrtc_session(&resumed));
+        assert_eq!(resumed["sessionRequestData"]["sdkVersion"], "1.0");
+        assert_eq!(resumed["sessionRequestData"]["enhancedStreamMode"], 1);
+        for key in ["clientRequestMonitorSettings", "requestedStreamingFeatures"] {
+            assert!(resumed["sessionRequestData"].get(key).is_none());
+        }
+    }
+
+    #[test]
+    fn alliance_webrtc_profile_preservation_never_overwrites_server_acceptance() {
+        let previous = json!({"sessionId":"A","transportMode":"webrtc","negotiatedStreamProfile":{
+            "codec":"H264","codecSource":"request","resolution":"1920x1080","fps":60,
+            "enableHdr":false,"enableHdrSource":"request"}});
+        let mut next = json!({"sessionId":"A","transportMode":"nvst","negotiatedStreamProfile":{
+            "codec":"AV1","codecSource":"server","resolution":"1280x720","fps":30,
+            "enableHdr":true,"enableHdrSource":"server"}});
+        preserve_session_profile(&mut next, &previous);
+        assert_eq!(next["transportMode"], "webrtc");
+        assert_eq!(next["negotiatedStreamProfile"]["codec"], "AV1");
+        assert_eq!(next["negotiatedStreamProfile"]["resolution"], "1280x720");
+        assert_eq!(next["negotiatedStreamProfile"]["fps"], 30);
+        assert_eq!(next["negotiatedStreamProfile"]["enableHdr"], true);
+        next["sessionId"] = json!("B");
+        next["transportMode"] = json!("nvst");
+        preserve_session_profile(&mut next, &previous);
+        assert_eq!(next["transportMode"], "nvst");
+    }
+
+    #[test]
+    fn alliance_webrtc_restart_retains_owned_transport_when_toggle_and_metadata_are_absent() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("pending-session-cleanup.json");
+        let mut auth = conflict_auth();
+        auth.provider.code = "ALLIANCE".into();
+        let original = CloudMatchService::with_cleanup_path(Client::new(), path.clone());
+        original.remember_webrtc_allocation(&json!({"sessionId":"A","status":3,"transportMode":"webrtc",
+            "negotiatedStreamProfile":{"codec":"H264","codecSource":"request","colorQuality":"8bit_420",
+                "bitDepth":8,"bitDepthSource":"request","chromaFormat":0,"chromaFormatSource":"request",
+                "enableHdr":false,"enableHdrSource":"request","resolution":"1280x720","fps":30}}), &auth).unwrap();
+        drop(original);
+        let ready = json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"A","status":3,
+            "connectionInfo":[{"usage":14,"appLevelProtocol":4,"ip":"seat.partner.example","port":443,"resourcePath":"/nvst/"}]}});
+        let (base, server) = session_server(
+            vec![
+                (200, ready.clone()),
+                (200, json!({"requestStatus":{"statusCode":1}})),
+                (200, ready),
+            ],
+            |_| {},
+        );
+        let mut restored = CloudMatchService::with_cleanup_path(Client::new(), path);
+        restored.set_test_control_base(base);
+        let claimed = restored
+            .claim(
+                &json!({"sessionId":"A"}),
+                &json!({"allianceWebrtcCompatibility":false,"codec":"av1"}),
+                &auth,
+                "device",
+            )
+            .unwrap();
+        assert_eq!(claimed["session"]["transportMode"], "webrtc");
+        assert_eq!(
+            claimed["session"]["negotiatedStreamProfile"]["codec"],
+            "H264"
+        );
+        let polled = restored
+            .poll(&json!({"sessionId":"A"}), &auth, "device")
+            .unwrap();
+        assert_eq!(polled["session"]["resumePending"], false);
+        assert_eq!(polled["session"]["transportMode"], "webrtc");
+        assert_eq!(
+            polled["session"]["negotiatedStreamProfile"]["resolution"],
+            "1280x720"
+        );
+        let mut other = auth.clone();
+        other.user.user_id = "someone-else".into();
+        assert!(restored.retained_webrtc_allocation("A", &other).is_none());
+        other = auth.clone();
+        other.provider.idp_id = "other-partner".into();
+        assert!(restored.retained_webrtc_allocation("A", &other).is_none());
+        assert!(restored.retained_webrtc_allocation("B", &auth).is_none());
+        assert_eq!(server.join().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn alliance_webrtc_foreign_session_without_opt_in_is_retained_without_resume() {
+        let (base, server) = session_server(
+            vec![(
+                200,
+                json!({"requestStatus":{"statusCode":1},"session":{
+            "sessionId":"foreign","status":3,"sessionRequestData":{"secureRTSPSupported":false,
+                "metaData":[{"key":"GSStreamerType","value":"WebRTC"}]}}}),
+            )],
+            |_| {},
+        );
+        let mut service = CloudMatchService::new(Client::new());
+        service.set_test_control_base(base);
+        let mut auth = conflict_auth();
+        auth.provider.code = "ALLIANCE".into();
+        let failure = service
+            .claim(
+                &json!({"sessionId":"foreign","transportMode":"webrtc"}),
+                &json!({"allianceWebrtcCompatibility":false}),
+                &auth,
+                "device",
+            )
+            .unwrap_err();
+        assert_eq!(failure.code, "session_transport_not_enabled");
+        assert!(service.active()["session"].is_null());
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].starts_with("GET "));
+    }
+
+    #[test]
+    fn alliance_webrtc_saved_seat_never_converts_a_reported_native_allocation() {
+        let (base, server) = session_server(
+            vec![(
+                200,
+                json!({"requestStatus":{"statusCode":1},"session":{
+            "sessionId":"A","status":3,"sessionRequestData":{"secureRTSPSupported":true,"streamerVersion":"14"}}}),
+            )],
+            |_| {},
+        );
+        let mut service = CloudMatchService::new(Client::new());
+        service.set_test_control_base(base);
+        let mut auth = conflict_auth();
+        auth.provider.code = "ALLIANCE".into();
+        service
+            .remember_webrtc_allocation(
+                &json!({"sessionId":"A","status":3,"transportMode":"webrtc"}),
+                &auth,
+            )
+            .unwrap();
+        let failure = service
+            .claim(
+                &json!({"sessionId":"A"}),
+                &json!({"allianceWebrtcCompatibility":true}),
+                &auth,
+                "device",
+            )
+            .unwrap_err();
+        assert_eq!(failure.code, "session_transport_mismatch");
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].starts_with("GET "));
     }
 
     fn conflict_payload() -> Value {

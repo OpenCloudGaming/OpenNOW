@@ -1140,11 +1140,22 @@ CloudMatch session methods preserve one client/device identity through create,
 poll and stop, retain pending queue responses before signaling is available,
 and return the complete ordered connection, ICE and negotiated-feature payload
 needed by the native streamer. `streamer.prepare` returns the normalized session
-context used by the NVST runtime linked into the Qt shell. The in-process runtime
+context used by the native runtime linked into the Qt shell. The in-process runtime
 owns secure NVIDIA signaling, ICE/DTLS/SCTP, RTSPS, Mjolnir, RTCP and native
 gameplay input, while Qt owns the graphics device, scene graph, video item and
 all top-level windows. Legacy streamer lifecycle methods remain protocol
 compatibility routes and are not used by the Qt shell.
+
+`allianceWebrtcCompatibility` is a default-off boolean setting for new alliance
+allocations. The authenticated provider determines eligibility. Legacy persisted
+`transportMode` values still normalize to `nvst`; only the core-owned session's
+transport selects the embedded WebRTC path. Its initial profile is at most
+1920×1080 at 60 FPS, H.264, 8-bit 4:2:0 SDR, stereo, and no microphone.
+WebRTC signaling endpoints remain separate
+from RTSPS endpoints, including their server-provided paths and ports. The native
+runtime owns the WebSocket offer, answer, NVIDIA quality SDP, and ICE exchange.
+It delivers compressed media to the existing decoder and GPU presentation path.
+The setting does not authorize a live NVST seat to be converted, deleted, or replaced.
 
 `acceptance.export` is available only through the Qt shell's Diagnostics screen. It rejects
 headless window systems and writes an atomic, redacted `opennow.live-acceptance` JSON file. The

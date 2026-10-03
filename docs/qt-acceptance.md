@@ -144,6 +144,48 @@ with the affected provider before claiming its compatibility issue is fixed. Rep
 with an NVIDIA account to check the unchanged first SETUP request. Passing synthetic
 fallback and parser tests is not a substitute for this live check.
 
+## Test alliance WebRTC compatibility
+
+The experimental **Alliance WebRTC compatibility** switch is under desktop
+**Settings → Network → Advanced → Transport**. It selects WebRTC before a new
+alliance session is allocated. It does not convert or end a running NVST game.
+NVIDIA accounts and the default setting continue to use NVST.
+
+The initial compatibility profile uses up to 1920×1080 at 60 FPS, H.264,
+8-bit 4:2:0 SDR, and stereo audio.
+It requires a direct UDP path. TURN gathering, microphone upload, clipboard text,
+and native HID passthrough are not supported by this mode. The native decoder and
+Qt video item remain the same as the NVST path.
+
+After building, run the automated checks:
+
+```sh
+cargo test --manifest-path native/opennow-core/Cargo.toml
+cargo test --manifest-path native/opennow-streamer/Cargo.toml --workspace
+ctest --test-dir build/opennow-qt --output-on-failure -R 'embedded-orchestration|network-test|stream-recovery|streamvideo'
+```
+
+Use an alliance account for the live check:
+
+1. End any existing game through the confirmation flow before changing protocols.
+2. Enable **Alliance WebRTC compatibility** and launch a new game.
+3. Confirm moving gameplay, audible sound, and working keyboard, mouse, and controller input.
+4. Open F3 statistics and confirm that the transport is WebRTC. A connected socket or
+   audible audio does not establish video health.
+5. Open and close Ctrl+G, statistics, and the exit confirmation in windowed and fullscreen
+   modes. Confirm that the same video surface continues and remote controls do not remain pressed.
+6. Disconnect and reconnect the network. Confirm bounded recovery of the same seat, or an
+   actionable terminal error that leaves the remote game available to resume.
+7. Restart OpenNOW and resume the same seat. Confirm that its transport remains WebRTC.
+8. End the game, disable compatibility, and launch another game. Confirm that NVST is restored.
+
+Record the build commit, provider, region, negotiated profile, first-frame result,
+input result, and recovery result. Do not publish authentication tokens, ICE passwords,
+session IDs, or complete signaling messages. Local peer tests do not establish provider
+interoperability, congestion feedback, or hardware presentation on a real alliance seat.
+The existing production live-acceptance verifier still requires NVST and must not be
+used to claim that this experimental path passed release acceptance.
+
 ## Required live matrix
 
 | Platform | Architecture | Window system | Required package |

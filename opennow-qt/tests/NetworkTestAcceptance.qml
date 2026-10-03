@@ -35,6 +35,34 @@ QtObject {
         const desktop = find(parent, "desktopSettingsScreen")
         check(desktop !== null, "the desktop settings screen must be present")
         desktop.advancedOpen = true
+        const compatibility = find(desktop, "allianceWebrtcCompatibilityToggle")
+        check(compatibility !== null, "the network page must expose alliance compatibility")
+        check(!compatibility.checked && compatibility.enabled, "compatibility ships off and is selectable before launch")
+        compatibility.clicked()
+        let compatibilityWrite = lastWrite()
+        check(compatibilityWrite.method === "settings.set"
+            && compatibilityWrite.params.key === "allianceWebrtcCompatibility"
+            && compatibilityWrite.params.value === true, "compatibility persists through the settings owner")
+        check(!compatibility.checked && !compatibility.enabled && ShellStore.streamBusy,
+            "launch remains blocked until the compatibility write is acknowledged")
+        client.eventReceived("settings.changed", {key:"allianceWebrtcCompatibility", value:true})
+        client.responseReceived(compatibilityWrite.id, {key:"allianceWebrtcCompatibility", value:true})
+        check(compatibility.checked && compatibility.enabled && !ShellStore.streamBusy,
+            "the acknowledged setting releases the launch guard")
+        ShellStore.pendingLaunchParams = {appId:"fixture"}
+        check(!compatibility.enabled, "compatibility cannot change while a launch is pending")
+        ShellStore.pendingLaunchParams = null
+        ShellStore.activeSession = {sessionId:"compatibility-fixture", status:2}
+        check(!compatibility.enabled, "compatibility cannot change an allocated seat")
+        ShellStore.activeSession = null
+        check(compatibility.enabled, "compatibility becomes selectable after the seat ends")
+        compatibility.clicked()
+        compatibilityWrite = lastWrite()
+        check(compatibilityWrite.params.key === "allianceWebrtcCompatibility"
+            && compatibilityWrite.params.value === false, "compatibility can be disabled for the next launch")
+        client.eventReceived("settings.changed", {key:"allianceWebrtcCompatibility", value:false})
+        client.responseReceived(compatibilityWrite.id, {key:"allianceWebrtcCompatibility", value:false})
+        check(!compatibility.checked, "compatibility returns to the NVST default")
         const toggle = find(desktop, "renewNetworkTestToggle")
         check(toggle !== null, "the network page must expose the network test opt-in")
         check(!toggle.checked, "the network test must ship off")

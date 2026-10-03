@@ -1661,6 +1661,7 @@ version = "0.2.0"
 dependencies = [
  "base64",
  "getrandom 0.3.4",
+ "openh264",
  "opennow-streamer-hid",
  "opennow-streamer-platform",
  "opennow-streamer-protocol",
@@ -1668,6 +1669,7 @@ dependencies = [
  "rcgen",
  "rustls",
  "serde_json",
+ "str0m",
  "tungstenite",
 ]
 
@@ -1783,6 +1785,7 @@ dependencies = [
  "mtu",
  "opennow-streamer-hid",
  "opennow-streamer-protocol",
+ "serde",
  "serde_json",
  "sha1",
  "socket2",

@@ -67,6 +67,18 @@ Column {
             width: page.availableWidth; paperStyle: true
             DesktopSettingsSection { text: qsTr("TRANSPORT") }
             DesktopSettingsRow {
+                objectName: "allianceWebrtcCompatibilityRow"
+                width: parent.width; paperStyle: true; glyph: "globe"
+                title: qsTr("Alliance WebRTC compatibility")
+                description: qsTr("Experimental alternative to NVST for alliance partners. New sessions use up to 1080p60, H.264, SDR, and stereo. No microphone or clipboard text. NVIDIA accounts keep NVST. Requires direct UDP connectivity.")
+                DesktopSettingsToggle {
+                    objectName: "allianceWebrtcCompatibilityToggle"
+                    enabled: !ShellStore.activeSession && !ShellStore.streamBusy && !ShellStore.pendingLaunchParams
+                    checked: page.settingsScreen.boolSetting("allianceWebrtcCompatibility", false)
+                    onValueChangedByUser: value => page.settingsScreen.setSetting("allianceWebrtcCompatibility", value)
+                }
+            }
+            DesktopSettingsRow {
                 width: parent.width; paperStyle: true; glyph: "bolt"; title: qsTr("L4S")
                 description: qsTr("Request scalable low-latency transport for the next session")
                 DesktopSettingsToggle { checked: page.settingsScreen.boolSetting("enableL4S",false); onValueChangedByUser: value => page.settingsScreen.setSetting("enableL4S",value) }

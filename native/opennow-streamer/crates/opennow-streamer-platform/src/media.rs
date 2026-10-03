@@ -2308,14 +2308,14 @@ impl EmbeddedD3d11FrameNotifier {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = mid.to_owned();
         self.presentation_time_ns
             .store(presentation_time_ns, Ordering::Release);
-        self.publish();
+        self.publish(false);
     }
 
     fn publish_decoded(&self) {
-        self.publish();
+        self.publish(true);
     }
 
-    fn publish(&self) {
+    fn publish(&self, decoded: bool) {
         let Some(state) = self.state.upgrade() else {
             return;
         };
@@ -2344,7 +2344,11 @@ impl EmbeddedD3d11FrameNotifier {
                 presentation_time_ns: self.presentation_time_ns.load(Ordering::Acquire),
             },
         };
-        let result = self.frames.publish(lease, Arc::new(pending));
+        let result = if decoded {
+            self.frames.publish(lease, Arc::new(pending))
+        } else {
+            self.frames.publish_pending(lease, Arc::new(pending))
+        };
         if sequence == 1 || result.is_err() {
             opennow_streamer_protocol::log::log_throttled(
                 "d3d11-publish-result",

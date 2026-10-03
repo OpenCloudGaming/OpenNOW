@@ -121,6 +121,13 @@ pub struct LoginProvider {
 }
 
 impl LoginProvider {
+    pub(crate) fn is_alliance(&self) -> bool {
+        !self.idp_id.trim().is_empty()
+            && self.idp_id.trim() != DEFAULT_IDP_ID
+            && !self.code.trim().is_empty()
+            && !self.code.trim().eq_ignore_ascii_case("NVIDIA")
+    }
+
     fn default_nvidia() -> Self {
         Self {
             idp_id: DEFAULT_IDP_ID.to_owned(),
@@ -1640,6 +1647,14 @@ impl GfnService {
         })
     }
 
+    pub fn session_launch_settings(&self, settings: &Value) -> Value {
+        let state = self.state.lock().expect("GFN state poisoned");
+        match &state.session {
+            Some(session) => crate::cloudmatch::allocation_settings(settings, &session.provider),
+            None => settings.clone(),
+        }
+    }
+
     pub fn create_session(&self, params: &Value, settings: &Value) -> Result<Value, ServiceError> {
         let admission = self.cloudmatch.admit_create()?;
         let app_id = params["catalogAppId"].as_str().unwrap_or_default();
@@ -2165,16 +2180,32 @@ impl GfnService {
                 message: "The owned session is not ready for media attachment".into(),
             });
         }
-        if !owned["rtspsEndpoints"].as_array().is_some_and(|endpoints| {
-            endpoints.iter().any(|endpoint| {
-                endpoint
-                    .as_str()
-                    .is_some_and(|endpoint| endpoint.starts_with("rtsps://"))
+        let webrtc = owned["transportMode"] == "webrtc";
+        if webrtc && !session.provider.is_alliance() {
+            return Err(ServiceError::invalid(
+                "WebRTC compatibility is available only for alliance sessions",
+            ));
+        }
+        let endpoint_ready = if webrtc {
+            crate::cloudmatch::has_webrtc_endpoint(&owned)
+        } else {
+            owned["rtspsEndpoints"].as_array().is_some_and(|endpoints| {
+                endpoints.iter().any(|endpoint| {
+                    endpoint
+                        .as_str()
+                        .is_some_and(|endpoint| endpoint.starts_with("rtsps://"))
+                })
             })
-        }) {
+        };
+        if !endpoint_ready {
             return Err(ServiceError {
                 code: "session_endpoint_missing",
-                message: "The owned session has no RTSPS media endpoint".into(),
+                message: if webrtc {
+                    "The owned session has no WebRTC signaling endpoint"
+                } else {
+                    "The owned session has no RTSPS media endpoint"
+                }
+                .into(),
             });
         }
         let mut params = params.clone();

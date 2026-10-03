@@ -236,7 +236,7 @@ QtObject {
 
     function ownsConfirmedSetting(key) {
         return ["appLanguage", "gameLanguage", "keyboardLayout", "colorQuality", "codec",
-            "nativeVideoBackend", "decoderPreference", "enableHdr"].includes(key)
+            "nativeVideoBackend", "decoderPreference", "enableHdr", "allianceWebrtcCompatibility"].includes(key)
     }
 
     function beginSettingWrite(key, value, previousWrite) {

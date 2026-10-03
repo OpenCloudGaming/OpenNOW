@@ -1334,6 +1334,48 @@ fn preparation_uses_owned_context_and_rejects_old_generations_or_other_seats() {
 }
 
 #[test]
+fn alliance_webrtc_preparation_uses_only_the_owned_transport_and_endpoint() {
+    let (service, path) = service("http://127.0.0.1:1");
+    let mut owner = auth_fixture("account-a");
+    owner.provider.idp_id = "alliance-provider".into();
+    owner.provider.code = "ALLIANCE".into();
+    service.state.lock().unwrap().session = Some(owner.clone());
+    let owned = json!({"sessionId":"seat-a","status":3,"transportMode":"webrtc",
+        "signalingUrl":"wss://owned.nvidiagrid.net/nvst/",
+        "connectionInfo":[{"usage":14,"appLevelProtocol":4,"ip":"owned.nvidiagrid.net","port":443,"resourcePath":"/nvst/"}]});
+    service.cloudmatch.seed_owned_session(owned.clone());
+    service.session_routing.lock().unwrap().active_owner =
+        Some(ActiveSeatOwner::capture(owner.clone(), 7, &owned, None).unwrap());
+    let forged = json!({"session":{"sessionId":"seat-a","transportMode":"nvst","signalingUrl":"wss://evil.invalid/"}});
+    let prepared = service
+        .prepare_owned_stream(&forged, |params| Ok(params.clone()))
+        .unwrap();
+    assert_eq!(prepared["session"]["transportMode"], "webrtc");
+    assert_eq!(prepared["session"]["signalingUrl"], owned["signalingUrl"]);
+    let mut missing = owned.clone();
+    missing["connectionInfo"] = json!([{ "usage":16,"ip":"owned.nvidiagrid.net","port":322 }]);
+    service.cloudmatch.seed_owned_session(missing);
+    assert_eq!(
+        service
+            .prepare_owned_stream(&forged, |_| panic!("invalid endpoint prepared"))
+            .unwrap_err()
+            .code,
+        "session_endpoint_missing"
+    );
+    service.cloudmatch.seed_owned_session(owned.clone());
+    owner.provider.code = "NVIDIA".into();
+    service.state.lock().unwrap().session = Some(owner.clone());
+    service.session_routing.lock().unwrap().active_owner =
+        Some(ActiveSeatOwner::capture(owner, 7, &owned, None).unwrap());
+    assert!(
+        service
+            .prepare_owned_stream(&forged, |_| panic!("NVIDIA compatibility prepared"))
+            .is_err()
+    );
+    let _ = std::fs::remove_dir_all(path);
+}
+
+#[test]
 fn original_identity_regains_each_exact_seat_operation_after_generation_changes() {
     for transition in ["switch-back", "clear-cache", "relogin"] {
         for operation in ["get", "poll", "prepare", "claim", "ad", "stop"] {
