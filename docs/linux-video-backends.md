@@ -55,11 +55,28 @@ It does not install a driver or change your shell configuration. If the log reac
 `iHD_drv_video.so` but reports a missing library or symbol, retain that error in the
 bug report; fixing the search path alone does not fix an incompatible driver binary.
 
-The packaging fix installs an AppRun hook that searches `/usr/lib/dri`, `/usr/lib64/dri`,
-and the matching x64 or ARM64 Debian multiarch directory. It preserves an explicitly
-set `LIBVA_DRIVERS_PATH`, including an empty value, and never forces a driver name.
-The bundled DEB inherits this hook. Flatpak and source builds do not use this hook;
-Flatpak drivers must come from its matching runtime, not host library paths.
+## Host libva in AppImage launches
+
+A VA-API driver exports an entry point for the libva release it was built against, and an
+older libva cannot load a driver built for a newer one. Up to 1.0.2 the AppImage put
+Ubuntu 24.04's libva 2.20 in `usr/lib`, where it shadowed the host copy. On Fedora-based
+systems such as Bazzite, Mesa's `radeonsi_drv_video.so` is built against a newer libva, so
+VAAPI failed to initialize inside OpenNOW even though host `vainfo` worked.
+
+The AppImage now keeps its libva and libva-drm in `usr/lib/libva-fallback`, outside the
+library search path. Its AppRun hook checks the host loader cache (`ldconfig -p`) for
+`libva.so.2` and `libva-drm.so.2` of the AppImage's architecture:
+
+- When both are present, OpenNOW loads the host libva, which uses its own driver
+  directories. The hook leaves `LIBVA_DRIVERS_PATH` untouched.
+- Otherwise, the hook prepends the fallback directory to `LD_LIBRARY_PATH`. When
+  `LIBVA_DRIVERS_PATH` is unset, it also searches `/usr/lib/dri`, `/usr/lib64/dri`, and
+  the matching x64 or ARM64 Debian multiarch directory. It preserves an explicitly set
+  `LIBVA_DRIVERS_PATH`, including an empty value, and never forces a driver name.
+
+The bundled DEB inherits this hook and depends on the distribution's libva packages, so
+it always uses the host libva. Flatpak and source builds do not use this hook; Flatpak
+drivers must come from its matching runtime, not host library paths.
 
 ## Validate the packaged fix on Intel hardware
 

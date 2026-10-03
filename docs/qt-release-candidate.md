@@ -71,8 +71,10 @@ the update-signing seed, and does not require a manually registered runner.
   embedded streamer enable `linux-vaapi` and `linux-ffmpeg-bundled`. Native VAAPI supports H.264
   only; HEVC/AV1 remain available through other backends, including bundled FFmpeg software decode.
   Builds require libva/libva-drm development headers and libclang for generated bindings. Release
-  DEBs reuse the deployed AppImage runtime, including Qt, SDL3, libva, and libva-drm, under
-  `/opt/opennow`; usable GPU hardware and a host VAAPI driver are still required for hardware decode.
+  DEBs reuse the deployed AppImage runtime, including Qt and SDL3, under `/opt/opennow` and depend
+  on the host libva and libva-drm. AppImages load the host libva when the loader cache has it and
+  fall back to their bundled copy otherwise; usable GPU hardware and a host VAAPI driver are still
+  required for hardware decode.
   Clean Ubuntu 24.04 container checks install the DEB without distribution Qt/SDL3, verify
   offscreen/X11 startup and capabilities, and exercise reinstall/removal without a GPU.
 - Every installable artifact receives a sibling Ed25519 update manifest, including unsigned Windows

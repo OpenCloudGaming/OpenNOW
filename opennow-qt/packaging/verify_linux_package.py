@@ -31,6 +31,11 @@ def verify_apprun(appdir):
         raise ValueError("The deployed VAAPI driver-search hook is missing or stale")
     if f'source "$this_dir"/apprun-hooks/"{hook}"' not in (appdir / "AppRun").read_text():
         raise ValueError("AppRun does not source the VAAPI driver-search hook")
+    for library in ("libva.so.2", "libva-drm.so.2"):
+        if (appdir / "usr/lib" / library).exists():
+            raise ValueError(f"{library} must not shadow the host libva in usr/lib")
+        if not (appdir / "usr/lib/libva-fallback" / library).is_file():
+            raise ValueError(f"The AppDir is missing its fallback {library}")
 
 
 def verify_package(bin_dir):
