@@ -581,7 +581,7 @@ class GfnApiTest {
     }
 
     @Test
-    fun regionalCloudMatchClaimCarriesOfficialLatencyRoutingMetadata() {
+    fun regionalCloudMatchClaimCarriesLatencyRoutingMetadataOfThree() {
         val body = buildMinimalClaimRequestBody(
             appId = "123",
             deviceId = "device",
@@ -595,7 +595,7 @@ class GfnApiTest {
                 entry.getValue("key").jsonPrimitive.content to entry.getValue("value").jsonPrimitive.content
             }
 
-        assertEquals("-1", metadata["latency@np-waw-01.cloudmatchbeta.nvidiagrid.net"])
+        assertEquals("3", metadata["latency@np-waw-01.cloudmatchbeta.nvidiagrid.net"])
     }
 
     @Test

@@ -2,6 +2,15 @@ package com.opencloudgaming.opennow
 
 import androidx.annotation.StringRes
 
+internal const val DEFAULT_STREAM_STATS_BACKGROUND_OPACITY = 0.52f
+
+internal fun AppSettings.streamStatsBackgroundAlpha(): Float = if (!streamStatsBackgroundEnabled) {
+    0f
+} else {
+    streamStatsBackgroundOpacity.takeIf { it.isFinite() }?.coerceIn(0f, 1f)
+        ?: DEFAULT_STREAM_STATS_BACKGROUND_OPACITY
+}
+
 /**
  * The items that can appear in the in-stream status line.
  *

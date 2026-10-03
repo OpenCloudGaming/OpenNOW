@@ -259,6 +259,7 @@ class NativeStreamClient(
     }
     private val inputScope = CoroutineScope(SupervisorJob() + inputExecutor.asCoroutineDispatcher())
     private val inputEncoder = InputEncoder()
+    private var physicalInputSettings = PhysicalInputSettings()
     private val audioDeviceModule: AudioDeviceModule =
         JavaAudioDeviceModule.builder(appContext)
             .setUseLowLatency(shouldUseLowLatencyStreamAudio(Build.VERSION.SDK_INT, lowLatencyGameAudio))
@@ -370,6 +371,7 @@ class NativeStreamClient(
     private var heartbeatJob: Job? = null
     private var gamepadKeepaliveJob: Job? = null
     private var statsJob: Job? = null
+    private val statsPollQueued = AtomicBoolean(false)
     private var iceRecoveryJob: Job? = null
     private var offerTimeoutJob: Job? = null
     private var bitrateUpdateJob: Job? = null
@@ -535,7 +537,7 @@ class NativeStreamClient(
         NativeInputDiagnostics.add("stream $message")
     }
 
-    private fun enqueueNativeLifecycleOperation(label: String, command: () -> Unit) {
+    private fun enqueueNativeLifecycleOperation(label: String, command: () -> Unit): Boolean =
         runCatching {
             nativeLifecycleExecutor.execute {
                 runCatching(command).onFailure { error ->
@@ -544,8 +546,7 @@ class NativeStreamClient(
             }
         }.onFailure { error ->
             recordStreamDiagnostic("native lifecycle rejected step=$label error=${error.message.orEmpty()}")
-        }
-    }
+        }.isSuccess
 
     /** Must be called from [nativeLifecycleExecutor] before entering a PeerConnection JNI method. */
     private fun activePeerConnection(generation: Int, expected: PeerConnection? = null): PeerConnection? {
@@ -917,8 +918,9 @@ class NativeStreamClient(
         physicalRightStickY = 0f
     }
 
-    fun start(session: SessionInfo, settings: StreamSettings) {
+    fun start(session: SessionInfo, settings: StreamSettings, physicalInput: PhysicalInputSettings = PhysicalInputSettings()) {
         if (released) return
+        physicalInputSettings = physicalInput.normalized()
         this.session = session
         this.settings = settings
         transportGeneration += 1
@@ -1119,8 +1121,25 @@ class NativeStreamClient(
             }
             if (handled) return true
         }
-        val key = InputEncoder.mapKeyEvent(event)
         val hardwareKeyboard = event.isHardwareKeyboardSource()
+        val remappedKeyCode = if (hardwareKeyboard) physicalInputSettings.keyboardKeyCode(event.keyCode) else event.keyCode
+        val key = if (remappedKeyCode == event.keyCode ||
+            (event.action != KeyEvent.ACTION_DOWN && event.action != KeyEvent.ACTION_UP)
+        ) {
+            InputEncoder.mapKeyEvent(event)
+        } else {
+            InputEncoder.mapKeyboardPayload(
+                keyCode = remappedKeyCode,
+                unicode = 0,
+                scanCode = 0,
+                shift = event.isShiftPressed,
+                ctrl = event.isCtrlPressed,
+                alt = event.isAltPressed,
+                meta = event.isMetaPressed,
+                capsLock = event.isCapsLockOn,
+                numLock = event.isNumLockOn,
+            )
+        }
         if (hardwareKeyboard && !hardwareKeyboardEventLogged) {
             hardwareKeyboardEventLogged = true
             NativeInputDiagnostics.add(
@@ -1173,6 +1192,14 @@ class NativeStreamClient(
                     key = "keyboard.space.${event.action}",
                 ) {
                     "physical Space key action=${event.action} rawScan=${event.scanCode} " +
+                        "hostVk=${key.keycode} hostScan=${key.scancode} sent=$sent ${inputChannelStateSummary()}"
+                }
+            }
+            if (event.keyCode == KeyEvent.KEYCODE_ESCAPE) {
+                NativeInputDiagnostics.retainCounted(
+                    key = "keyboard.escape.${event.action}",
+                ) {
+                    "physical Escape key action=${event.action} rawScan=${event.scanCode} " +
                         "hostVk=${key.keycode} hostScan=${key.scancode} sent=$sent ${inputChannelStateSummary()}"
                 }
             }
@@ -1673,7 +1700,10 @@ class NativeStreamClient(
         }
         // Relative motion is unbounded by design. Camera-look must not inherit the clamped
         // absolute cursor used by the uncaptured desktop-pointer path below.
-        return (sendDx != 0 || sendDy != 0) && sendRawMouseMove(sendDx, sendDy)
+        return (sendDx != 0 || sendDy != 0) && sendRawMouseMove(
+            physicalInputSettings.mouseX(sendDx),
+            physicalInputSettings.mouseY(sendDy),
+        )
     }
 
     private fun sendExternalMouseMotion(event: MotionEvent, dx: Float, dy: Float): Boolean {
@@ -1685,7 +1715,10 @@ class NativeStreamClient(
             sensitivity = settings.mouseSensitivity,
             acceleration = settings.mouseAcceleration,
         ) ?: return false
-        return sendExternalMouseAbsoluteMove(delta.dx, delta.dy)
+        return sendExternalMouseAbsoluteMove(
+            physicalInputSettings.mouseX(delta.dx),
+            physicalInputSettings.mouseY(delta.dy),
+        )
     }
 
     private fun sendExternalMouseAbsoluteMove(dx: Int, dy: Int): Boolean {
@@ -1842,7 +1875,7 @@ class NativeStreamClient(
     }
 
     private suspend fun sendTextLocked(text: String, generation: Int) {
-        for (chunk in streamKeyboardInputChunks(text)) {
+        for (chunk in streamKeyboardInputChunks(text, physicalSymbols = settings.keyboardLayout == "en-US")) {
             when (chunk) {
                 is StreamKeyboardInputChunk.Text -> inputEncoder.encodeTextInput(chunk.value).forEach { packet ->
                     if (!sendTextPacketWithRetry(packet, generation)) return
@@ -1850,7 +1883,17 @@ class NativeStreamClient(
                 StreamKeyboardInputChunk.SpaceKey -> {
                     if (!sendTextKeyStroke(KeyEvent.KEYCODE_SPACE, generation)) return
                 }
+                is StreamKeyboardInputChunk.SymbolKey -> {
+                    if (!sendTextSymbolKeyStroke(chunk.char, generation)) return
+                }
             }
+        }
+    }
+
+    private suspend fun sendTextSymbolKeyStroke(char: Char, generation: Int): Boolean {
+        val spec = InputEncoder.mapTextCharToKeySpec(char) ?: return false
+        return sendStreamKeyboardSymbolKeyStroke(spec) { payload, pressed ->
+            sendKeyboardPayloadWithRetry(payload, pressed, generation)
         }
     }
 
@@ -3410,25 +3453,31 @@ class NativeStreamClient(
     }
 
     private fun pollRuntimeStats() {
+        if (!statsPollQueued.compareAndSet(false, true)) return
         val generation = transportGeneration
-        enqueueNativeLifecycleOperation("runtime-stats") {
-            val pc = activePeerConnection(generation) ?: return@enqueueNativeLifecycleOperation
-            pc.getStats(RTCStatsCollectorCallback { report ->
-                if (generation != transportGeneration) return@RTCStatsCollectorCallback
-                val cpuSample = processCpuSampler.sample()
-                cpuSample?.let(ProcessCpuDiagnostics::record)
-                val snapshot = buildRuntimeStatsSnapshot(
-                    timestampMs = report.timestampUs / 1000.0,
-                    stats = report.statsMap.values,
-                    cpuSample = cpuSample,
-                ) ?: return@RTCStatsCollectorCallback
-                scope.launch {
-                    if (generation != transportGeneration) return@launch
-                    handleMediaLiveness(snapshot)
-                    onStats(snapshot.stats)
-                }
-            })
+        val queued = enqueueNativeLifecycleOperation("runtime-stats") {
+            try {
+                val pc = activePeerConnection(generation) ?: return@enqueueNativeLifecycleOperation
+                pc.getStats(RTCStatsCollectorCallback { report ->
+                    if (generation != transportGeneration) return@RTCStatsCollectorCallback
+                    val cpuSample = processCpuSampler.sample()
+                    cpuSample?.let(ProcessCpuDiagnostics::record)
+                    val snapshot = buildRuntimeStatsSnapshot(
+                        timestampMs = report.timestampUs / 1000.0,
+                        stats = report.statsMap.values,
+                        cpuSample = cpuSample,
+                    ) ?: return@RTCStatsCollectorCallback
+                    scope.launch {
+                        if (generation != transportGeneration) return@launch
+                        handleMediaLiveness(snapshot)
+                        onStats(snapshot.stats)
+                    }
+                })
+            } finally {
+                statsPollQueued.set(false)
+            }
         }
+        if (!queued) statsPollQueued.set(false)
     }
 
     @Synchronized
@@ -3788,7 +3837,7 @@ class NativeStreamClient(
         }
         val hasAnalogL = event.device?.getMotionRange(MotionEvent.AXIS_LTRIGGER) != null ||
                          event.device?.getMotionRange(MotionEvent.AXIS_BRAKE) != null
-        val lt = if (hasAnalogL) {
+        val ltRaw = if (hasAnalogL) {
             max(event.getAxisValue(MotionEvent.AXIS_LTRIGGER), normalizeTriggerAxis(event.getAxisValue(MotionEvent.AXIS_BRAKE)))
         } else {
             if (physicalLeftTriggerButtonPressed) 1f else 0f
@@ -3796,17 +3845,23 @@ class NativeStreamClient(
 
         val hasAnalogR = event.device?.getMotionRange(MotionEvent.AXIS_RTRIGGER) != null ||
                          event.device?.getMotionRange(MotionEvent.AXIS_GAS) != null
-        val rt = if (hasAnalogR) {
+        val rtRaw = if (hasAnalogR) {
             max(event.getAxisValue(MotionEvent.AXIS_RTRIGGER), normalizeTriggerAxis(event.getAxisValue(MotionEvent.AXIS_GAS)))
         } else {
             if (physicalRightTriggerButtonPressed) 1f else 0f
         }
-        val leftScale = radialDeadzoneScale(axes.leftX, axes.leftY)
-        val rightScale = radialDeadzoneScale(axes.rightX, axes.rightY)
-        val leftX = axes.leftX * leftScale
-        val leftY = axes.leftY * leftScale
-        val rightX = axes.rightX * rightScale
-        val rightY = axes.rightY * rightScale
+        val lt = physicalInputSettings.triggerValue(ltRaw)
+        val rt = physicalInputSettings.triggerValue(rtRaw)
+        val rawLeftX = axes.leftX.takeIf(Float::isFinite) ?: 0f
+        val rawLeftY = axes.leftY.takeIf(Float::isFinite) ?: 0f
+        val rawRightX = axes.rightX.takeIf(Float::isFinite) ?: 0f
+        val rawRightY = axes.rightY.takeIf(Float::isFinite) ?: 0f
+        val leftScale = physicalInputSettings.stickScale(rawLeftX, rawLeftY)
+        val rightScale = physicalInputSettings.stickScale(rawRightX, rawRightY)
+        val leftX = physicalInputSettings.stickAxis(rawLeftX, leftScale, physicalInputSettings.invertStickX)
+        val leftY = physicalInputSettings.stickAxis(rawLeftY, leftScale, physicalInputSettings.invertStickY)
+        val rightX = physicalInputSettings.stickAxis(rawRightX, rightScale, physicalInputSettings.invertStickX)
+        val rightY = physicalInputSettings.stickAxis(rawRightY, rightScale, physicalInputSettings.invertStickY)
         physicalHatButtons = if (axes.hatUsedAsLeftStick) 0 else event.hatDpadButtons()
         lastLeftTrigger = normalizeToUint8(lt)
         lastRightTrigger = normalizeToUint8(rt)
@@ -3856,7 +3911,7 @@ class NativeStreamClient(
         val mask = GamepadButtonMapping.maskForKeyCode(
             event.keyCode,
             controllerActivation = controllerInputDevice,
-        )
+        )?.let(physicalInputSettings::buttonMask)
         if (mask != null) {
             activeControllerId = controllerIdFor(event)
             if (!physicalControllerActive) {
@@ -4960,13 +5015,6 @@ class NativeStreamClient(
         // can grow into lag; one-shot critical events keep the generous reliable threshold.
         private const val INPUT_PARTIAL_BACKPRESSURE_DROP_THRESHOLD = 16_384L
         private const val INPUT_RELIABLE_BACKPRESSURE_DROP_THRESHOLD = 65_536L
-    }
-
-    private fun radialDeadzoneScale(x: Float, y: Float, deadzone: Float = 0.15f): Float {
-        val magnitude = kotlin.math.sqrt((x * x + y * y).toDouble()).toFloat()
-        if (magnitude < deadzone) return 0f
-        val scaled = ((magnitude - deadzone) / (1f - deadzone)).coerceIn(0f, 1f)
-        return scaled / magnitude
     }
 
     private fun normalizeToInt16(value: Float): Int = (value.coerceIn(-1f, 1f) * 32767).roundToInt().coerceIn(-32768, 32767)

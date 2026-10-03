@@ -878,7 +878,14 @@ fun OpenNowApp(
                             onDismissRequest = {},
                             title = { Text(message.title) },
                             text = {
-                                Text(message.body, Modifier.verticalScroll(rememberScrollState()))
+                                Text(
+                                    formattedAppMessageBody(
+                                        message.body,
+                                        linkColor = MaterialTheme.colorScheme.primary,
+                                        redColor = MaterialTheme.colorScheme.error,
+                                    ),
+                                    Modifier.verticalScroll(rememberScrollState()),
+                                )
                             },
                             confirmButton = {
                                 TextButton(onClick = { viewModel.acknowledgeAppMessage(message) }) {
@@ -1496,6 +1503,7 @@ private fun AppNavigationRail(
                 darkenForCatalogBackground = darkenForCatalogBackground,
                 staticOutlines = staticOutlines,
                 tvProfile = state.androidTvProfile,
+                customOpacity = state.settings.navigationRailBackgroundOpacity,
             ),
             border = if (staticOutlines) {
                 BorderStroke(1.dp, Color.White.copy(alpha = 0.62f))
@@ -1575,6 +1583,7 @@ internal fun navigationRailScrim(
     darkenForCatalogBackground: Boolean,
     staticOutlines: Boolean = false,
     tvProfile: Boolean = false,
+    customOpacity: Float? = null,
 ): Color {
     val baseAlpha = when {
         darkenForCatalogBackground && staticOutlines -> 0.68f
@@ -1582,7 +1591,8 @@ internal fun navigationRailScrim(
         staticOutlines -> 0.18f
         else -> 0.10f
     }
-    return Color.Black.copy(alpha = baseAlpha + if (tvProfile) 0.05f else 0f)
+    val automaticAlpha = baseAlpha + if (tvProfile) 0.05f else 0f
+    return Color.Black.copy(alpha = customOpacity?.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: automaticAlpha)
 }
 
 internal fun shouldShowLocalTvConnectionDot(tvProfile: Boolean, pairedDeviceName: String?): Boolean =

@@ -28,6 +28,7 @@ class AppSettingsDefaultsTest {
         assertFalse(settings.stretchStreamToFit)
         assertTrue(settings.ambientBackgroundEnabled)
         assertFalse(settings.systemWallpaperBackground)
+        assertNull(settings.navigationRailBackgroundOpacity)
         assertTrue(settings.localAppPackageNames.isEmpty())
         // The shelf opens on first sight; folding it is a choice the reader makes and keeps.
         assertFalse(settings.localAppsCollapsed)
@@ -52,6 +53,8 @@ class AppSettingsDefaultsTest {
         // Developer options are a hidden gesture, never a shipped or migrated-in default.
         assertFalse(settings.developerOptionsUnlocked)
         assertEquals(StreamKeyboardButtonPosition(), settings.streamKeyboardButtonPosition)
+        assertTrue(settings.streamStatsBackgroundEnabled)
+        assertEquals(0.52f, settings.streamStatsBackgroundAlpha(), 0.0001f)
         assertTrue(metrics.fps)
         assertTrue(metrics.ping)
         assertFalse(metrics.bitrate)
@@ -70,6 +73,8 @@ class AppSettingsDefaultsTest {
         val settings = OpenNowJson.decodeFromString<AppSettings>("{}")
 
         assertEquals(StreamStatsMetrics(), settings.streamStatsMetrics)
+        assertTrue(settings.streamStatsBackgroundEnabled)
+        assertEquals(0.52f, settings.streamStatsBackgroundAlpha(), 0.0001f)
         assertTrue(settings.showStatsOnLaunch)
         assertFalse(settings.hideStreamButtons)
         assertFalse(settings.streamKeyboardClearConfirmationDisabled)
@@ -78,6 +83,7 @@ class AppSettingsDefaultsTest {
         assertEquals(StreamKeyboardButtonPosition(), settings.streamKeyboardButtonPosition)
         assertEquals(CatalogBackgroundPreset.ColorfulAbstract, settings.catalogBackgroundPreset)
         assertFalse(settings.systemWallpaperBackground)
+        assertNull(settings.navigationRailBackgroundOpacity)
         assertFalse(settings.compactGameCards)
         assertFalse(settings.showCardTitles)
         assertFalse(settings.showFavoriteIconOnGameCards)
@@ -99,6 +105,28 @@ class AppSettingsDefaultsTest {
         assertEquals(0f, settings.androidTouch.joystickDeadZone, 0.0001f)
         assertEquals(TouchControlGroup.entries.toSet(), settings.androidTouch.visibleControlGroups)
         assertEquals(TouchExtraButtonAction.Guide, settings.androidTouch.extraButtonAction(0))
+    }
+
+    @Test
+    fun statusBarBackgroundCanBeHiddenWithoutChangingItsSavedOpacity() {
+        val settings = AppSettings(streamStatsBackgroundOpacity = 0.8f)
+
+        assertEquals(0.8f, settings.streamStatsBackgroundAlpha(), 0.0001f)
+        assertEquals(0f, settings.copy(streamStatsBackgroundEnabled = false).streamStatsBackgroundAlpha(), 0.0001f)
+        assertEquals(0f, settings.copy(streamStatsBackgroundOpacity = 0f).streamStatsBackgroundAlpha(), 0.0001f)
+        assertEquals(0.8f, settings.copy(streamStatsBackgroundEnabled = false)
+            .copy(streamStatsBackgroundEnabled = true).streamStatsBackgroundAlpha(), 0.0001f)
+        assertEquals(1f, settings.copy(streamStatsBackgroundOpacity = 2f)
+            .normalizedForAndroid().streamStatsBackgroundAlpha(), 0.0001f)
+    }
+
+    @Test
+    fun customNavigationBackgroundOpacitySurvivesSettingsNormalization() {
+        assertEquals(0.85f, AppSettings(navigationRailBackgroundOpacity = 0.85f)
+            .normalizedForAndroid().navigationRailBackgroundOpacity ?: -1f, 0.0001f)
+        assertEquals(1f, AppSettings(navigationRailBackgroundOpacity = 2f)
+            .normalizedForAndroid().navigationRailBackgroundOpacity ?: -1f, 0.0001f)
+        assertNull(AppSettings().normalizedForAndroid().navigationRailBackgroundOpacity)
     }
 
     @Test

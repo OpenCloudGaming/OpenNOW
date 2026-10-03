@@ -7,6 +7,7 @@ import android.util.Log
 import coil3.ImageLoader
 import coil3.PlatformContext
 import coil3.SingletonImageLoader
+import coil3.memoryCacheMaxSizePercentWhileInBackground
 import coil3.disk.DiskCache
 import coil3.disk.directory
 import coil3.memory.MemoryCache
@@ -24,6 +25,7 @@ import kotlinx.coroutines.withContext
 class OpenNowApplication : Application(), SingletonImageLoader.Factory {
     private val startupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val startupDataReady = CompletableDeferred<Unit>()
+    @Volatile private var artworkImageLoader: ImageLoader? = null
     internal val httpClient by lazy(::defaultHttpClient)
     internal val authStore by lazy { AuthStore(this) }
     internal val authRepository by lazy { GfnAuthRepository(this, authStore, httpClient) }
@@ -72,6 +74,9 @@ class OpenNowApplication : Application(), SingletonImageLoader.Factory {
                     .maxSizePercent(context, IMAGE_MEMORY_CACHE_FRACTION)
                     .build()
             }
+            // TV processes can stay cached after the UI closes. Release decoded artwork as soon
+            // as the UI is hidden so the system has more room to keep the process alive.
+            .memoryCacheMaxSizePercentWhileInBackground(if (isTelevisionDevice()) 0.0 else 1.0)
             .diskCache {
                 DiskCache.Builder()
                     .directory(cacheDir.resolve(IMAGE_DISK_CACHE_DIR).toOkioPath())
@@ -88,6 +93,11 @@ class OpenNowApplication : Application(), SingletonImageLoader.Factory {
             // a fast grid look slower than it is.
             .crossfade(false)
             .build()
+            .also { artworkImageLoader = it }
+
+    internal fun releaseCachedArtworkForStream() {
+        artworkImageLoader?.memoryCache?.clear()
+    }
 
     internal suspend fun awaitStartupData() {
         startupDataReady.await()

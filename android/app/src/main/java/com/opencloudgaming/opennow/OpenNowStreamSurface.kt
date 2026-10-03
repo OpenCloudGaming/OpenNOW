@@ -612,6 +612,7 @@ internal fun StreamScreen(
             client.setMicrophoneEnabled(captureMicrophone)
             client.setVirtualControllerVisible(touchControlsVisible)
             client.setTouchMouseEnabled(touchMouseActive)
+            viewModel.prepareStreamMediaMemory()
             client.start(
                 session,
                 launchStreamSettings.copy(
@@ -621,6 +622,7 @@ internal fun StreamScreen(
                         MicrophoneMode.Disabled
                     },
                 ),
+                state.settings.physicalInput,
             )
         }
     }
@@ -713,6 +715,7 @@ internal fun StreamScreen(
                     streamSettings = requestedStreamSettings,
                     style = state.settings.streamStatsStyle,
                     metrics = state.settings.streamStatsMetrics,
+                    backgroundAlpha = state.settings.streamStatsBackgroundAlpha(),
                     serverLocation = session.reportedServerZone(),
                     keyboardButtonEnabled = !state.settings.hideStreamButtons,
                     onKeyboardOpen = openStreamKeyboard,
@@ -971,6 +974,12 @@ internal fun StreamScreen(
                     },
                     onStatsMetricsChange = { metrics ->
                         viewModel.updateSettings(state.settings.copy(streamStatsMetrics = metrics))
+                    },
+                    onStatsBackgroundEnabledChange = { enabled ->
+                        viewModel.updateSettings(state.settings.copy(streamStatsBackgroundEnabled = enabled))
+                    },
+                    onStatsBackgroundOpacityChange = { opacity ->
+                        viewModel.updateSettings(state.settings.copy(streamStatsBackgroundOpacity = opacity))
                     },
                     onKeyboardButtonToggle = {
                         viewModel.updateSettings(

@@ -30,13 +30,13 @@ android {
 
     defaultConfig {
         applicationId = "com.opencloudgaming.opennow"
-        minSdk = 23
+        minSdk = 24
         // Android 17
         // target changes are audited; LAN access is permission-gated at its feature boundary.
         //noinspection EditedTargetSdkVersion
         targetSdk = 37
-        versionCode = 147
-        versionName = "1.9.1"
+        versionCode = 151
+        versionName = "1.9.5"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         buildConfigField("boolean", "APK_UPDATES_SUPPORTED", "true")

@@ -62,6 +62,20 @@ class InputEncoderKeyboardTest {
     }
 
     @Test
+    fun mapsPhysicalEscapeToCanonicalHostKeyDespiteOemScanCode() {
+        val escape = InputEncoder.mapKeyboardPayload(
+            keyCode = KeyEvent.KEYCODE_ESCAPE,
+            unicode = 0,
+            scanCode = 0x123,
+            timestampUs = 0L,
+        )
+
+        assertNotNull(escape)
+        assertEquals(0x1b, escape?.keycode)
+        assertEquals(0x0001, escape?.scancode)
+    }
+
+    @Test
     fun mapsOverlayBackspaceUsedByClearWhenAndroidReportsNoScanCode() {
         val backspace = InputEncoder.mapKeyboardPayload(
             keyCode = KeyEvent.KEYCODE_DEL,

@@ -713,6 +713,8 @@ internal fun StreamControlsPanel(
     onStatsStyleCycle: () -> Unit,
     onStatsPositionCycle: () -> Unit,
     onStatsMetricsChange: (StreamStatsMetrics) -> Unit,
+    onStatsBackgroundEnabledChange: (Boolean) -> Unit,
+    onStatsBackgroundOpacityChange: (Float) -> Unit,
     onKeyboardButtonToggle: () -> Unit,
     onVibrationToggle: () -> Unit,
     onTouchLayoutEditingToggle: () -> Unit,
@@ -823,6 +825,8 @@ internal fun StreamControlsPanel(
                     onStatsStyleCycle = onStatsStyleCycle,
                     onStatsPositionCycle = onStatsPositionCycle,
                     onStatsMetricsChange = onStatsMetricsChange,
+                    onStatsBackgroundEnabledChange = onStatsBackgroundEnabledChange,
+                    onStatsBackgroundOpacityChange = onStatsBackgroundOpacityChange,
                     onKeyboardButtonToggle = onKeyboardButtonToggle,
                     onButtonTone = onButtonTone,
                 )
@@ -2818,6 +2822,8 @@ private fun LazyListScope.statusBarPageItems(
     onStatsStyleCycle: () -> Unit,
     onStatsPositionCycle: () -> Unit,
     onStatsMetricsChange: (StreamStatsMetrics) -> Unit,
+    onStatsBackgroundEnabledChange: (Boolean) -> Unit,
+    onStatsBackgroundOpacityChange: (Float) -> Unit,
     onKeyboardButtonToggle: () -> Unit,
     onButtonTone: () -> Unit,
 ) {
@@ -2851,6 +2857,29 @@ private fun LazyListScope.statusBarPageItems(
                     onStatsPositionCycle()
                 },
                 modifier = Modifier.weight(1f),
+            )
+        }
+    }
+    item {
+        ControlSwitchRow(
+            label = stringResource(R.string.stream_statusbar_background),
+            checked = settings.streamStatsBackgroundEnabled,
+            onCheckedChange = { enabled ->
+                onButtonTone()
+                onStatsBackgroundEnabledChange(enabled)
+            },
+            value = onOffLabel(settings.streamStatsBackgroundEnabled),
+        )
+    }
+    if (settings.streamStatsBackgroundEnabled) {
+        item {
+            ControlSliderRow(
+                label = stringResource(R.string.stream_statusbar_background_opacity),
+                value = settings.streamStatsBackgroundOpacity,
+                min = 0f,
+                max = 1f,
+                step = 0.01f,
+                onChange = onStatsBackgroundOpacityChange,
             )
         }
     }

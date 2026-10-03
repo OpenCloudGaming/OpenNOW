@@ -252,6 +252,7 @@ internal fun StreamStatsPill(
     streamSettings: StreamSettings,
     style: StreamStatsStyle,
     metrics: StreamStatsMetrics,
+    backgroundAlpha: Float,
     serverLocation: String?,
     keyboardButtonEnabled: Boolean,
     onKeyboardOpen: () -> Unit,
@@ -267,7 +268,7 @@ internal fun StreamStatsPill(
         shape = RoundedCornerShape(if (compact) OpenNowRadius.full else OpenNowRadius.lg),
         // This sits over gameplay, so keep the capsule clean and borderless. Top-level Cinema
         // chrome must not leak into the in-stream status overlay.
-        color = Panel.copy(alpha = 0.52f),
+        color = Panel.copy(alpha = backgroundAlpha),
         tonalElevation = 0.dp,
     ) {
         if (compact) {

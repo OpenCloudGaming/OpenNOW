@@ -392,6 +392,8 @@
     <string name="stream_statusbar_title">Status bar</string>
     <string name="stream_statusbar_subtitle">Choose its layout and information</string>
     <string name="stream_statusbar_appearance">Appearance</string>
+    <string name="stream_statusbar_background">Status bar background</string>
+    <string name="stream_statusbar_background_opacity">Background opacity</string>
     <string name="stream_statusbar_position">Position</string>
     <string name="stream_statusbar_items">Items</string>
     <string name="stream_statusbar_metric_fps">FPS</string>
@@ -465,6 +467,9 @@
     <string name="stream_quality_poor">poor</string>
 
     <string name="action_dismiss">Dismiss</string>
+    <string name="catalog_upgrade_to_play">Upgrade to play</string>
+    <string name="catalog_membership_upgrade_required">This game requires you to have a priority or ultimate account on GeForce NOW. You can upgrade using the button below.</string>
+    <string name="catalog_upgrade_page_unavailable">Could not open the GeForce NOW upgrade page</string>
     <string name="action_play_on_tv">Play on %1$s</string>
     <string name="action_clear_filters">Clear filters</string>
     <string name="catalog_sort_filter">Sort and filter</string>
@@ -503,7 +508,23 @@
     <string name="settings_mouse_lock">Mouse lock</string>
     <string name="settings_mouse_lock_desc">Keep an external mouse captured inside the game while streaming. Opening Stream Controls releases it.</string>
     <string name="settings_section_controller_touch">Controller and touch</string>
+    <string name="settings_section_physical_input">Physical controller and keyboard</string>
+    <string name="settings_physical_input_description">Applies to Bluetooth and USB input in the next cloud stream. Touch controls keep their own settings.</string>
+    <string name="settings_physical_stick_dead_zone">Controller stick dead zone</string>
+    <string name="settings_physical_trigger_dead_zone">Controller trigger dead zone</string>
+    <string name="settings_physical_stick_sensitivity">Controller stick sensitivity</string>
+    <string name="settings_physical_invert_stick_x">Invert controller stick X axis</string>
+    <string name="settings_physical_invert_stick_y">Invert controller stick Y axis</string>
+    <string name="settings_physical_invert_mouse_x">Invert physical mouse X axis</string>
+    <string name="settings_physical_invert_mouse_y">Invert physical mouse Y axis</string>
+    <string name="settings_physical_swap_ab">Swap controller A and B</string>
+    <string name="settings_physical_swap_xy">Swap controller X and Y</string>
+    <string name="settings_physical_swap_movement_keys">Swap keyboard WASD and arrow keys</string>
+    <string name="settings_physical_reset">Reset physical input settings</string>
     <string name="settings_section_appearance">Appearance</string>
+    <string name="settings_custom_navigation_background">Custom navigation background</string>
+    <string name="settings_custom_navigation_background_desc">Set the darkness behind the side navigation buttons. Off adapts to the background automatically.</string>
+    <string name="settings_navigation_background_opacity">Navigation background opacity</string>
     <string name="settings_section_library_navigation">Library and navigation</string>
     <string name="settings_section_status_bar">Status bar</string>
     <string name="settings_section_sounds_sessions">Sounds and sessions</string>
@@ -818,6 +839,16 @@
     <string name="setup_summary_off">Off</string>
 
     <string name="settings_section_setup">Setup</string>
+    <string name="settings_backup_description">Save app settings and touch controller layouts to a file before switching builds. Sign-in and app files are not included. Keep the file private if you use a session proxy.</string>
+    <string name="settings_backup_create">Create settings backup</string>
+    <string name="settings_backup_restore">Restore settings backup</string>
+    <string name="settings_backup_restore_title">Restore app settings?</string>
+    <string name="settings_backup_restore_confirm">This replaces your current settings, including touch controller layouts and presets. Your sign-in stays as it is.</string>
+    <string name="settings_backup_saved">Settings backup saved</string>
+    <string name="settings_backup_save_failed">Could not save settings backup</string>
+    <string name="settings_backup_invalid">This backup is invalid or incompatible with this app version</string>
+    <string name="settings_backup_restored">Settings restored</string>
+    <string name="settings_backup_restore_failed">Could not restore settings</string>
     <string name="settings_run_setup_again">Run setup again</string>
     <string name="settings_run_setup_again_desc">Revisit appearance, stream quality, play controls, status, and bug reporting</string>
 

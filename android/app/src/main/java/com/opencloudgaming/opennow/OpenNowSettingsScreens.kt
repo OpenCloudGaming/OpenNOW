@@ -1137,6 +1137,78 @@ private fun SettingsContent(
                 }
                 SettingSwitch(stringResource(R.string.settings_clipboard_paste), settings.clipboardPaste) { enabled -> viewModel.updateSettings(settings.copy(clipboardPaste = enabled)) }
             }
+    CategorySettingsSection(selectedCategory, SettingsCategory.Input, searchQuery, stringResource(R.string.settings_section_physical_input), "input", "physical", "bluetooth", "controller", "gamepad", "keyboard", "dead zone", "swap", "wasd", "arrows") {
+                Text(
+                    stringResource(R.string.settings_physical_input_description),
+                    color = SettingsTextMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                NumberSlider(
+                    label = stringResource(R.string.settings_physical_stick_dead_zone),
+                    value = settings.physicalInput.stickDeadZone,
+                    min = 0f,
+                    max = 0.4f,
+                    step = 0.01f,
+                    valueFormatter = { "${(it * 100).roundToInt()}%" },
+                ) { value ->
+                    viewModel.updateSettings(settings.copy(physicalInput = settings.physicalInput.copy(stickDeadZone = value)))
+                }
+                NumberSlider(
+                    label = stringResource(R.string.settings_physical_trigger_dead_zone),
+                    value = settings.physicalInput.triggerDeadZone,
+                    min = 0f,
+                    max = 0.4f,
+                    step = 0.01f,
+                    valueFormatter = { "${(it * 100).roundToInt()}%" },
+                ) { value ->
+                    viewModel.updateSettings(settings.copy(physicalInput = settings.physicalInput.copy(triggerDeadZone = value)))
+                }
+                NumberSlider(
+                    label = stringResource(R.string.settings_physical_stick_sensitivity),
+                    value = settings.physicalInput.stickSensitivity,
+                    min = 0.5f,
+                    max = 2f,
+                    step = 0.05f,
+                    valueFormatter = { "%.2fx".format(it) },
+                ) { value ->
+                    viewModel.updateSettings(settings.copy(physicalInput = settings.physicalInput.copy(stickSensitivity = value)))
+                }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_physical_invert_stick_x),
+                    checked = settings.physicalInput.invertStickX,
+                ) { enabled ->
+                    viewModel.updateSettings(settings.copy(physicalInput = settings.physicalInput.copy(invertStickX = enabled)))
+                }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_physical_invert_stick_y),
+                    checked = settings.physicalInput.invertStickY,
+                ) { enabled ->
+                    viewModel.updateSettings(settings.copy(physicalInput = settings.physicalInput.copy(invertStickY = enabled)))
+                }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_physical_swap_ab),
+                    checked = settings.physicalInput.swapAB,
+                ) { enabled ->
+                    viewModel.updateSettings(settings.copy(physicalInput = settings.physicalInput.copy(swapAB = enabled)))
+                }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_physical_swap_xy),
+                    checked = settings.physicalInput.swapXY,
+                ) { enabled ->
+                    viewModel.updateSettings(settings.copy(physicalInput = settings.physicalInput.copy(swapXY = enabled)))
+                }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_physical_swap_movement_keys),
+                    checked = settings.physicalInput.swapWASDAndArrows,
+                ) { enabled ->
+                    viewModel.updateSettings(settings.copy(physicalInput = settings.physicalInput.copy(swapWASDAndArrows = enabled)))
+                }
+                ControlActionRow(
+                    label = stringResource(R.string.settings_physical_reset),
+                    actionLabel = stringResource(R.string.action_reset),
+                    onClick = { viewModel.updateSettings(settings.copy(physicalInput = PhysicalInputSettings())) },
+                )
+            }
     CategorySettingsSection(selectedCategory, SettingsCategory.Input, searchQuery, stringResource(R.string.settings_section_pointer_input), "input", "pointer", "mouse", "lock", "grab", "capture", "fullscreen", "sensitivity", "acceleration", "scroll", "controller mouse", "mode", "native touch", "tap", "stability", "finger", "direct click") {
                 SettingSwitch(
                     label = stringResource(R.string.settings_mouse_lock),
@@ -1147,6 +1219,18 @@ private fun SettingsContent(
                 }
                 NumberSlider("Mouse sensitivity", settings.stream.mouseSensitivity, 0.25f, 3f, 0.05f, valueFormatter = { "%.2fx".format(it) }) {
                     viewModel.updateStreamSettings { s -> s.copy(mouseSensitivity = it) }
+                }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_physical_invert_mouse_x),
+                    checked = settings.physicalInput.invertMouseX,
+                ) { enabled ->
+                    viewModel.updateSettings(settings.copy(physicalInput = settings.physicalInput.copy(invertMouseX = enabled)))
+                }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_physical_invert_mouse_y),
+                    checked = settings.physicalInput.invertMouseY,
+                ) { enabled ->
+                    viewModel.updateSettings(settings.copy(physicalInput = settings.physicalInput.copy(invertMouseY = enabled)))
                 }
                 NumberSlider("Mouse acceleration", settings.stream.mouseAcceleration.toFloat(), 1f, 150f, 1f) {
                     viewModel.updateStreamSettings { s -> s.copy(mouseAcceleration = it.roundToInt()) }
@@ -1477,9 +1561,25 @@ private fun SettingsContent(
                 NumberSlider("Right controls vertical offset", settings.androidTouch.rightOffsetYDp, -160f, 160f, 2f, unit = "dp") { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(rightOffsetYDp = value))) }
                 }
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_appearance), "interface", "ui", "appearance", "dynamic color", "system colors", "accent", "expressive", "border", "effects", "bonanza", "cinema", "catalog", "background", "wallpaper", "image", "custom", "tv", "safe area", "screen padding", "overscan", "useless mascot", "screensaver", "inactivity") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_appearance), "interface", "ui", "appearance", "dynamic color", "system colors", "accent", "expressive", "border", "effects", "bonanza", "cinema", "catalog", "background", "navigation", "sidebar", "opacity", "transparency", "wallpaper", "image", "custom", "tv", "safe area", "screen padding", "overscan", "useless mascot", "screensaver", "inactivity") {
                 val accentOptions = selectableUiAccents().map { it to uiAccentLabel(it) }
                 SettingSwitch(stringResource(R.string.settings_dynamic_color), settings.dynamicColor) { viewModel.updateSettings(settings.copy(dynamicColor = it)) }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_custom_navigation_background),
+                    checked = settings.navigationRailBackgroundOpacity != null,
+                    description = stringResource(R.string.settings_custom_navigation_background_desc),
+                ) { enabled ->
+                    viewModel.updateSettings(settings.copy(navigationRailBackgroundOpacity = if (enabled) 0.75f else null))
+                }
+                settings.navigationRailBackgroundOpacity?.let { opacity ->
+                    NumberSlider(
+                        label = stringResource(R.string.settings_navigation_background_opacity),
+                        value = opacity,
+                        min = 0f,
+                        max = 1f,
+                        step = 0.01f,
+                    ) { value -> viewModel.updateSettings(settings.copy(navigationRailBackgroundOpacity = value)) }
+                }
                 ChoiceRow(
                     label = stringResource(R.string.settings_accent),
                     options = accentOptions.map { it.second },
@@ -1608,7 +1708,7 @@ private fun SettingsContent(
                 }
                 SettingSwitch(stringResource(R.string.settings_hide_server_selector), settings.hideServerSelector) { viewModel.updateSettings(settings.copy(hideServerSelector = it)) }
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_status_bar), "interface", "stats", "status bar", "position", "fps", "ping", "bitrate", "keyboard", "button") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_status_bar), "interface", "stats", "status bar", "position", "fps", "ping", "bitrate", "keyboard", "button", "background", "opacity", "transparent") {
                 SettingSwitch(stringResource(R.string.settings_show_stats), settings.showStatsOnLaunch) { viewModel.updateSettings(settings.copy(showStatsOnLaunch = it)) }
                 SettingSwitch(
                     label = stringResource(R.string.settings_stream_keyboard_button),
@@ -1620,6 +1720,16 @@ private fun SettingsContent(
                     StreamStatsStyle.entries.firstOrNull { it.label == label }?.let { style ->
                         viewModel.updateSettings(settings.copy(streamStatsStyle = style))
                     }
+                }
+                SettingSwitch(stringResource(R.string.stream_statusbar_background), settings.streamStatsBackgroundEnabled) { enabled ->
+                    viewModel.updateSettings(settings.copy(streamStatsBackgroundEnabled = enabled))
+                }
+                if (settings.streamStatsBackgroundEnabled) {
+                    NumberSlider(
+                        stringResource(R.string.stream_statusbar_background_opacity),
+                        settings.streamStatsBackgroundOpacity,
+                        0f, 1f, 0.01f,
+                    ) { opacity -> viewModel.updateSettings(settings.copy(streamStatsBackgroundOpacity = opacity)) }
                 }
                 ChoiceRow(stringResource(R.string.settings_stats_position), StreamStatsPosition.entries.map { it.label }, settings.streamStatsPosition.label) { label ->
                     StreamStatsPosition.entries.firstOrNull { it.label == label }?.let { position ->
@@ -1672,7 +1782,7 @@ private fun SettingsContent(
                     onClick = { viewModel.updateSettings(settings.restartingSetupFlow()) },
                 )
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.General, searchQuery, "App Data", "app data", "data", "cache", "clear", "reset", "settings", "tutorial", "guide", "wipe", "relaunch", "fresh install") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.General, searchQuery, "App Data", "app data", "data", "cache", "clear", "reset", "settings", "backup", "restore", "controller layout", "tutorial", "guide", "wipe", "relaunch", "fresh install") {
                 AppDataSettingsPanel(viewModel = viewModel)
             }
     CategorySettingsSection(selectedCategory, SettingsCategory.Account, searchQuery, stringResource(R.string.settings_category_account), "account", "login", "logout", "sign in", "saved", "provider", "membership", "subscription", "tv", "pair", "phone", "qr") {

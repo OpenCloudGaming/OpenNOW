@@ -95,6 +95,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Cast
 import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -2232,7 +2233,7 @@ private fun StoreComingNextCarousel(
                                 controllerActionMode && handleCatalogControllerAction(
                                     event = event,
                                     onFavorite = { onFavorite(featured.id) },
-                                    onPlay = { onPlay(featured) },
+                                    onPlay = { playOrUpgrade(featured, context, onPlay) },
                                 ) -> true
                                 isTvActivateKey(event) -> {
                                     selectFromHero()
@@ -2244,8 +2245,14 @@ private fun StoreComingNextCarousel(
                         .focusable()
                         .combinedClickable(
                             onClick = selectFromHero,
-                            onLongClick = { onChooseStore(featured) },
-                            onLongClickLabel = stringResource(R.string.store_selector_play_long_press),
+                            onLongClick = {
+                                if (featured.requiresMembershipUpgrade()) openMembershipUpgrade(context)
+                                else onChooseStore(featured)
+                            },
+                            onLongClickLabel = stringResource(
+                                if (featured.requiresMembershipUpgrade()) R.string.catalog_upgrade_to_play
+                                else R.string.store_selector_play_long_press,
+                            ),
                         ),
                     shape = shape,
                     color = Panel,
@@ -2498,6 +2505,7 @@ private fun StoreRailGameCard(
     onChooseStore: (GameInfo) -> Unit,
 ) {
     var focused by remember { mutableStateOf(false) }
+    val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val shape = RoundedCornerShape(if (expressiveUi) OpenNowRadius.md else OpenNowRadius.sm)
     val actionButtonSize = 34.dp
@@ -2586,7 +2594,7 @@ private fun StoreRailGameCard(
                             controllerActionMode && handleCatalogControllerAction(
                                 event = event,
                                 onFavorite = { onFavorite(game.id) },
-                                onPlay = { onPlay(game) },
+                                onPlay = { playOrUpgrade(game, context, onPlay) },
                             ) -> true
                             isTvActivateKey(event) -> {
                                 selectFromCard()
@@ -2600,8 +2608,14 @@ private fun StoreRailGameCard(
                         interactionSource = interaction,
                         indication = null,
                         onClick = selectFromCard,
-                        onLongClick = { onChooseStore(game) },
-                        onLongClickLabel = stringResource(R.string.store_selector_play_long_press),
+                        onLongClick = {
+                            if (game.requiresMembershipUpgrade()) openMembershipUpgrade(context)
+                            else onChooseStore(game)
+                        },
+                        onLongClickLabel = stringResource(
+                            if (game.requiresMembershipUpgrade()) R.string.catalog_upgrade_to_play
+                            else R.string.store_selector_play_long_press,
+                        ),
                     ),
                 shape = shape,
                 color = OpenNowPalette.ImagePlaceholder,
@@ -3057,6 +3071,7 @@ private fun GameCard(
     onChooseStore: (GameInfo) -> Unit,
 ) {
     var focused by remember { mutableStateOf(false) }
+    val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val cardShape = RoundedCornerShape(if (expressiveUi) OpenNowRadius.md else OpenNowRadius.sm)
     val handheldPosterCard = !tvProfile
@@ -3154,7 +3169,7 @@ private fun GameCard(
                             controllerActionMode && handleCatalogControllerAction(
                                 event = event,
                                 onFavorite = { onFavorite(game.id) },
-                                onPlay = { onPlay(game) },
+                                onPlay = { playOrUpgrade(game, context, onPlay) },
                             ) -> true
                             isTvActivateKey(event) -> {
                                 selectFromCard()
@@ -3177,8 +3192,14 @@ private fun GameCard(
                             interactionSource = interaction,
                             indication = null,
                             onClick = selectFromCard,
-                            onLongClick = { onChooseStore(game) },
-                            onLongClickLabel = stringResource(R.string.store_selector_play_long_press),
+                            onLongClick = {
+                                if (game.requiresMembershipUpgrade()) openMembershipUpgrade(context)
+                                else onChooseStore(game)
+                            },
+                            onLongClickLabel = stringResource(
+                                if (game.requiresMembershipUpgrade()) R.string.catalog_upgrade_to_play
+                                else R.string.store_selector_play_long_press,
+                            ),
                         ),
                 ) {
                     UrlImage(
@@ -3688,6 +3709,11 @@ private fun GameDetailsLandscapeContent(
 ) {
     val description = gameDescriptionForDetails(game)
     val context = LocalContext.current
+    val upgradeRequired = game.requiresMembershipUpgrade()
+    val primaryAction = {
+        onDismiss()
+        playOrUpgrade(game, context, onPlay)
+    }
     val sideScrollState = rememberScrollState()
     val detailsSpacing = if (shortHeight) 8.dp else 10.dp
     var gameFocused by remember(game.id) { mutableStateOf(false) }
@@ -3709,10 +3735,7 @@ private fun GameDetailsLandscapeContent(
                 .focusProperties { right = playFocusRequester }
                 .onFocusChanged { gameFocused = it.isFocused }
                 .hoverable(gameImageInteraction)
-                .clickable {
-                    onDismiss()
-                    onPlay(game)
-                },
+                .clickable(onClick = primaryAction),
         ) {
             Box(
                 Modifier
@@ -3760,7 +3783,7 @@ private fun GameDetailsLandscapeContent(
                                 size = 48.dp,
                             )
                         }
-                        connectedTvName?.let {
+                        connectedTvName?.takeUnless { upgradeRequired }?.let {
                             OutlinedButton(
                                 onClick = {
                                     onDismiss()
@@ -3772,14 +3795,12 @@ private fun GameDetailsLandscapeContent(
                             }
                         }
                         LongPressPlayButton(
-                            onClick = {
-                                onDismiss()
-                                onPlay(game)
-                            },
-                            onLongClick = {
+                            onClick = primaryAction,
+                            onLongClick = if (upgradeRequired) null else ({
                                 onDismiss()
                                 onChooseStore(game)
-                            },
+                            }),
+                            upgradeRequired = upgradeRequired,
                             modifier = Modifier
                                 .fillMaxWidth(),
                             focusRequester = playFocusRequester,
@@ -3858,18 +3879,16 @@ private fun GameDetailsLandscapeContent(
                         )
                     }
                     LongPressPlayButton(
-                        onClick = {
-                            onDismiss()
-                            onPlay(game)
-                        },
-                        onLongClick = {
+                        onClick = primaryAction,
+                        onLongClick = if (upgradeRequired) null else ({
                             onDismiss()
                             onChooseStore(game)
-                        },
+                        }),
+                        upgradeRequired = upgradeRequired,
                         modifier = Modifier.weight(1f),
                         focusRequester = playFocusRequester,
                     )
-                    connectedTvName?.let {
+                    connectedTvName?.takeUnless { upgradeRequired }?.let {
                         OutlinedButton(
                             onClick = {
                                 onDismiss()
@@ -3893,6 +3912,7 @@ private fun GameDetailsCompactInfoContent(
     description: String?,
 ) {
     OwnershipStatusRow(game = game, compact = true)
+    MembershipUpgradeNotice(game)
     GameGenreChips(game = game, compact = true)
     GameScreenshotGallery(game = game, compact = true)
     GameDescriptionDisclosure(
@@ -3927,6 +3947,11 @@ private fun GameDetailsScrollableContent(
     playFocusRequester: FocusRequester,
 ) {
     val context = LocalContext.current
+    val upgradeRequired = game.requiresMembershipUpgrade()
+    val primaryAction = {
+        onDismiss()
+        playOrUpgrade(game, context, onPlay)
+    }
     var gameFocused by remember(game.id) { mutableStateOf(false) }
     val gameImageInteraction = remember(game.id) { MutableInteractionSource() }
     val gameImageHovered by gameImageInteraction.collectIsHoveredAsState()
@@ -3949,10 +3974,7 @@ private fun GameDetailsScrollableContent(
                         .focusProperties { down = playFocusRequester }
                         .onFocusChanged { gameFocused = it.isFocused }
                         .hoverable(gameImageInteraction)
-                        .clickable {
-                            onDismiss()
-                            onPlay(game)
-                        },
+                        .clickable(onClick = primaryAction),
                 ) {
                     Box(
                         Modifier
@@ -4000,6 +4022,7 @@ private fun GameDetailsScrollableContent(
                 Column(Modifier.padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     val description = gameDescriptionForDetails(game)
                     OwnershipStatusRow(game = game, compact = false)
+                    MembershipUpgradeNotice(game)
                     GameGenreChips(game = game, compact = false)
                     GameScreenshotGallery(game = game, compact = false)
                     GameDescriptionDisclosure(
@@ -4057,18 +4080,16 @@ private fun GameDetailsScrollableContent(
                     )
                 }
                 LongPressPlayButton(
-                    onClick = {
-                        onDismiss()
-                        onPlay(game)
-                    },
-                    onLongClick = {
+                    onClick = primaryAction,
+                    onLongClick = if (upgradeRequired) null else ({
                         onDismiss()
                         onChooseStore(game)
-                    },
+                    }),
+                    upgradeRequired = upgradeRequired,
                     modifier = Modifier.weight(1f),
                     focusRequester = playFocusRequester,
                 )
-                connectedTvName?.let { tvName ->
+                connectedTvName?.takeUnless { upgradeRequired }?.let { tvName ->
                     IconButton(
                         onClick = {
                             onDismiss()
@@ -4144,7 +4165,8 @@ private fun LaunchOptionsList(
 @Composable
 private fun LongPressPlayButton(
     onClick: () -> Unit,
-    onLongClick: () -> Unit,
+    onLongClick: (() -> Unit)?,
+    upgradeRequired: Boolean = false,
     modifier: Modifier = Modifier,
     focusRequester: FocusRequester? = null,
 ) {
@@ -4199,7 +4221,7 @@ private fun LongPressPlayButton(
                     indication = null,
                     onClick = onClick,
                     onLongClick = onLongClick,
-                    onLongClickLabel = stringResource(R.string.store_selector_play_long_press),
+                    onLongClickLabel = if (onLongClick != null) stringResource(R.string.store_selector_play_long_press) else null,
                 )
                 .then(
                     if (controllerFocused) {
@@ -4222,13 +4244,22 @@ private fun LongPressPlayButton(
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                ZortosPlayMark(
-                    modifier = Modifier.size(20.dp),
-                    ringColor = Color.Black,
-                )
+                if (upgradeRequired) {
+                    Icon(
+                        imageVector = Icons.Outlined.Lock,
+                        contentDescription = null,
+                        tint = Color.Black,
+                        modifier = Modifier.size(20.dp),
+                    )
+                } else {
+                    ZortosPlayMark(
+                        modifier = Modifier.size(20.dp),
+                        ringColor = Color.Black,
+                    )
+                }
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    stringResource(R.string.action_play),
+                    stringResource(if (upgradeRequired) R.string.catalog_upgrade_to_play else R.string.action_play),
                     color = Color.Black,
                     fontWeight = if (controllerFocused) FontWeight.ExtraBold else FontWeight.SemiBold,
                     maxLines = 1,
@@ -4616,6 +4647,34 @@ private fun OwnershipStatusRow(game: GameInfo, compact: Boolean) {
     }
 }
 
+private const val GFN_MEMBERSHIP_MANAGE_URL = "https://www.nvidia.com/en-us/account/gfn/manage/"
+
+internal fun GameInfo.requiresMembershipUpgrade(): Boolean =
+    playabilityState == "UNPLAYABLE_DUE_TO_UPGRADE"
+
+private fun playOrUpgrade(game: GameInfo, context: Context, onPlay: (GameInfo) -> Unit) {
+    if (game.requiresMembershipUpgrade()) openMembershipUpgrade(context) else onPlay(game)
+}
+
+private fun openMembershipUpgrade(context: Context) {
+    runCatching {
+        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(GFN_MEMBERSHIP_MANAGE_URL)))
+    }.onFailure {
+        Toast.makeText(context, R.string.catalog_upgrade_page_unavailable, Toast.LENGTH_SHORT).show()
+    }
+}
+
+@Composable
+private fun MembershipUpgradeNotice(game: GameInfo) {
+    if (!game.requiresMembershipUpgrade()) return
+    Text(
+        text = stringResource(R.string.catalog_membership_upgrade_required),
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.error,
+        style = MaterialTheme.typography.bodyMedium,
+    )
+}
+
 private fun ownedStoreLabels(game: GameInfo): List<String> =
     libraryStoreDisplayNames(game).ifEmpty {
         if (isGameInLibrary(game)) listOf("GeForce NOW") else emptyList()
@@ -5001,7 +5060,6 @@ private fun gameDetailRows(game: GameInfo): List<GameDetailRow> = buildList {
         listOfNotNull(
             game.playabilityState?.takeIf { it.isNotBlank() }?.let { GameDetailRow("Status", formatGameMetadataLabel(it)) },
             game.publisherName?.takeIf { it.isNotBlank() }?.let { GameDetailRow("Publisher", it) },
-            game.playType?.takeIf { it.isNotBlank() }?.let { GameDetailRow("Play type", formatGameMetadataLabel(it)) },
             supportedControlLabels(game).takeIf { it.isNotEmpty() }?.joinToString(", ")?.let { GameDetailRow("Controls", it) },
             game.featureLabels
                 .map(::formatGameMetadataLabel)
@@ -5116,16 +5174,17 @@ internal fun searchTermsFor(query: String): List<String> {
 
 internal fun gameMatchesSearch(game: GameInfo, terms: List<String>): Boolean {
     if (terms.isEmpty()) return true
-    val haystack = buildString {
-        append(game.title).append(' ')
-        append(game.description.orEmpty()).append(' ')
-        append(game.longDescription.orEmpty()).append(' ')
-        append(game.publisherName.orEmpty()).append(' ')
-        append(game.genres.joinToString(" ")).append(' ')
-        append(game.featureLabels.joinToString(" ")).append(' ')
-        append(displayStoresForGame(game))
-    }.lowercase()
-    return terms.all { it in haystack }
+    var storeNames: String? = null
+    return terms.all { term ->
+        game.title.contains(term, ignoreCase = true) ||
+            game.description?.contains(term, ignoreCase = true) == true ||
+            game.longDescription?.contains(term, ignoreCase = true) == true ||
+            game.publisherName?.contains(term, ignoreCase = true) == true ||
+            game.genres.any { it.contains(term, ignoreCase = true) } ||
+            game.featureLabels.any { it.contains(term, ignoreCase = true) } ||
+            (storeNames ?: displayStoresForGame(game).also { storeNames = it })
+                .contains(term, ignoreCase = true)
+    }
 }
 
 internal fun gameMatchesSearch(game: GameInfo, query: String): Boolean =

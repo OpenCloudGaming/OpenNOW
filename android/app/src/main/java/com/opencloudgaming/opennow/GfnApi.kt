@@ -540,7 +540,7 @@ private fun baseWebRtcSessionMetadata(streamingBaseUrl: String? = null): JsonArr
     add(metadataEntry("GSStreamerType", "WebRTC"))
     add(metadataEntry("networkType", "Unknown"))
     cloudMatchLatencyMetadataHost(streamingBaseUrl)?.let { host ->
-        add(metadataEntry("latency@$host", "-1"))
+        add(metadataEntry("latency@$host", "3"))
     }
     add(metadataEntry("ClientImeSupport", "0"))
     add(metadataEntry("surroundAudioInfo", "2"))
@@ -3552,6 +3552,10 @@ class GfnSessionRepository(
             zone = payload.obj("requestStatus")?.string("serverId")?.takeIf { it.isNotBlank() } ?: zone,
             assignedZone = assignedSessionZoneFromControlHost(session.obj("sessionControlInfo")?.string("ip")),
             streamingBaseUrl = base,
+            sessionControlBaseUrl = standardCloudMatchSessionControlBaseUrl(
+                session.obj("sessionControlInfo")?.string("ip"),
+                session.obj("sessionControlInfo")?.int("port"),
+            ),
             serverIp = signaling?.serverIp.orEmpty(),
             signalingServer = signaling?.signalingServer.orEmpty(),
             signalingUrl = signaling?.signalingUrl.orEmpty(),

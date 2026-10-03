@@ -553,6 +553,8 @@ data class AppSettings(
     val ambientBackgroundEnabled: Boolean = true,
     /** Reveals the device's static or live wallpaper behind OpenNOW's non-stream UI. */
     val systemWallpaperBackground: Boolean = false,
+    /** Null keeps the existing wallpaper-aware navigation rail tint. */
+    val navigationRailBackgroundOpacity: Float? = null,
     val catalogBackgroundPreset: CatalogBackgroundPreset = CatalogBackgroundPreset.ColorfulAbstract,
     val nerdCatalogBackgroundUri: String? = null,
     val tvSafeAreaPaddingDp: Float = 16f,
@@ -609,6 +611,8 @@ data class AppSettings(
     val streamStatsStyle: StreamStatsStyle = StreamStatsStyle.Compact,
     val streamStatsPosition: StreamStatsPosition = StreamStatsPosition.Right,
     val streamStatsMetrics: StreamStatsMetrics = StreamStatsMetrics(),
+    val streamStatsBackgroundEnabled: Boolean = true,
+    val streamStatsBackgroundOpacity: Float = DEFAULT_STREAM_STATS_BACKGROUND_OPACITY,
     /** Controller rumble when available, with device haptics as the fallback output. */
     @SerialName("phoneRumbleFallback")
     val vibrationEnabled: Boolean = true,
@@ -656,6 +660,7 @@ data class AppSettings(
     val sessionClockShowEveryMinutes: Int = 60,
     val sessionClockShowDurationSeconds: Int = 30,
     val clipboardPaste: Boolean = true,
+    val physicalInput: PhysicalInputSettings = PhysicalInputSettings(),
     val androidTouch: AndroidTouchSettings = AndroidTouchSettings(),
     val touchControlPresets: List<TouchControlPreset> = emptyList(),
     val androidStreamGuideDismissed: Boolean = false,
@@ -1925,6 +1930,7 @@ data class SessionInfo(
     val zone: String = "",
     val assignedZone: String? = null,
     val streamingBaseUrl: String? = null,
+    val sessionControlBaseUrl: String? = null,
     val serverIp: String,
     val signalingServer: String,
     val signalingUrl: String,
