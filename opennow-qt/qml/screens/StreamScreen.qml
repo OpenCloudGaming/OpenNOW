@@ -21,6 +21,7 @@ FocusScope {
         return String(streamer.status || ShellStore.streamState || "starting")
     }
     readonly property bool streaming: status === "streaming"
+    readonly property bool videoSurfaceActive: root.streaming || (root.streamer.status === "connecting" && root.status !== "error")
     property var frameGenerationStats: streamVideo.frameGenerationStats || ({})
     readonly property bool failed: status === "error"
     property double nowMs: Date.now()
@@ -85,9 +86,9 @@ FocusScope {
         id: streamVideo
         objectName: "streamSurfaceHost"
         anchors.fill: parent
-        visible: root.visible && root.streaming
-        focus: visible
-        inputEnabled: visible
+        visible: root.visible && root.videoSurfaceActive
+        focus: root.streaming && visible
+        inputEnabled: root.streaming && visible
             && !ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)
         shortcutBindings: ShellStore.streamShortcutBindings()
         clipboardPaste: ShellStore.settings.clipboardPaste === true

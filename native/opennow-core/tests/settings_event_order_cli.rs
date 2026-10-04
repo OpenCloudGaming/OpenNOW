@@ -46,6 +46,31 @@ fn settings_events_precede_acknowledgements_and_other_events_keep_their_order() 
                 .expect("core response timed out")
         };
         for (key, value, changes) in [
+            (
+                "webrtcCompatibilityMode",
+                json!("on"),
+                Some(json!({"allianceWebrtcCompatibility":true})),
+            ),
+            (
+                "webrtcCompatibilityMode",
+                json!("off"),
+                Some(json!({"allianceWebrtcCompatibility":false})),
+            ),
+            (
+                "webrtcCompatibilityMode",
+                json!("auto"),
+                Some(json!({"allianceWebrtcCompatibility":false})),
+            ),
+            (
+                "allianceWebrtcCompatibility",
+                json!(true),
+                Some(json!({"webrtcCompatibilityMode":"on"})),
+            ),
+            (
+                "allianceWebrtcCompatibility",
+                json!(false),
+                Some(json!({"webrtcCompatibilityMode":"off"})),
+            ),
             ("gameLanguage", json!("es_419"), None),
             ("gameLanguage", json!("zh_Hant_TW"), None),
             ("launchInConsoleMode", json!(true), None),

@@ -355,7 +355,8 @@ int AcceptanceSession::startSmokeWorkload()
         QTimer::singleShot(150, this, [this, fixture] {
             auto *window = qobject_cast<QQuickWindow *>(m_engine.rootObjects().first());
             if (window && (m_arguments.contains(u"--smoke-color-format-fullscreen"_s)
-                    || m_arguments.contains(u"--smoke-store-launch-fullscreen"_s)))
+                    || m_arguments.contains(u"--smoke-store-launch-fullscreen"_s)
+                    || m_arguments.contains(u"--smoke-stream-recovery-fullscreen"_s)))
                 window->showFullScreen();
             QVariant passed;
             const bool ok = window && QMetaObject::invokeMethod(fixture, "run", Q_RETURN_ARG(QVariant, passed),

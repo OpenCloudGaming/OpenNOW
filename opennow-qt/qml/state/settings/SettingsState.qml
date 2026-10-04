@@ -67,7 +67,8 @@ QtObject {
         providerIdpId, settings.sessionProxyEnabled, settings.sessionProxyUrl])
     readonly property string colorContext: JSON.stringify([ready, nativeRuntimeReady,
         nativeRuntimeCapabilities, nativeHdrOutputSupported, settings.codec, settings.colorQuality, settings.nativeVideoBackend,
-        settings.decoderPreference, settings.enableHdr, settings.resolution])
+        settings.decoderPreference, settings.enableHdr, settings.resolution,
+        settings.webrtcCompatibilityMode, providerIdpId, providerCode])
     readonly property string gameLanguageDescription: qsTr("Requested when the game supports it; some games require an in-game change. Applies to the next session.")
     readonly property string keyboardLayoutDescription: qsTr("Physical key mapping requested from GeForce NOW. Applies to the next session.")
     readonly property string interfaceLanguageDescription: qsTr("OpenNOW interface only. Community translated through Crowdin.")
@@ -235,7 +236,7 @@ QtObject {
 
     function ownsConfirmedSetting(key) {
         return ["appLanguage", "gameLanguage", "keyboardLayout", "colorQuality", "codec",
-            "nativeVideoBackend", "decoderPreference", "enableHdr", "allianceWebrtcCompatibility"].includes(key)
+            "nativeVideoBackend", "decoderPreference", "enableHdr", "webrtcCompatibilityMode"].includes(key)
     }
 
     function beginSettingWrite(key, value, previousWrite, source) {

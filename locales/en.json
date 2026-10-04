@@ -2,7 +2,9 @@
   "settingsOrganization": {
     "allianceWebrtcCompatibility": "WebRTC compatibility mode",
     "allianceWebrtcConnecting": "Connecting the native WebRTC media transport…",
-    "allianceWebrtcCompatibilityDescription": "For compatibility only. Expect lower performance than NVST. Available for NVIDIA and alliance accounts. New sessions use up to 1080p60, H.264, SDR, and stereo. No microphone or clipboard text. Requires direct UDP connectivity.",
+    "webrtcCompatibilityModeDescription": "Automatic uses WebRTC for signed-in alliance accounts and NVST for NVIDIA accounts. Choose WebRTC or NVST to override either account type. Applies to new sessions only; existing sessions keep their transport.",
+    "webrtcCompatibilityWarning": "WebRTC is for compatibility only. Expect lower performance than NVST. Up to 1080p60, H.264, SDR, and stereo. No microphone or clipboard text. Requires direct UDP connectivity.",
+    "nvstTransport": "NVST",
     "confirmReset": "This resets all OpenNOW preferences. Continue?",
     "automaticSwitching": "AUTOMATIC SWITCHING",
     "aboutSupport": "About & support",

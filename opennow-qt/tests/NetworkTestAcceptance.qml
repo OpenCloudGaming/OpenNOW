@@ -35,38 +35,67 @@ QtObject {
         const desktop = find(parent, "desktopSettingsScreen")
         check(desktop !== null, "the desktop settings screen must be present")
         desktop.advancedOpen = true
-        const compatibility = find(desktop, "allianceWebrtcCompatibilityToggle")
-        check(compatibility !== null, "the network page must expose alliance compatibility")
-        const compatibilityRow = find(desktop, "allianceWebrtcCompatibilityRow")
-        check(compatibilityRow.title === qsTr("WebRTC compatibility mode"), "compatibility is not labeled as alliance-only")
-        check(compatibilityRow.description.indexOf(qsTr("For compatibility only. Expect lower performance than NVST. Available for NVIDIA and alliance accounts. New sessions use up to 1080p60, H.264, SDR, and stereo. No microphone or clipboard text. Requires direct UDP connectivity.")) >= 0,
-            "the performance warning must be visible before enabling compatibility")
-        check(!compatibility.checked && compatibility.enabled, "compatibility ships off and is selectable before launch")
-        compatibility.clicked()
-        let compatibilityWrite = lastWrite()
-        check(compatibilityWrite.method === "settings.set"
-            && compatibilityWrite.params.key === "allianceWebrtcCompatibility"
-            && compatibilityWrite.params.value === true, "compatibility persists through the settings owner")
-        check(!compatibility.checked && !compatibility.enabled && ShellStore.streamBusy,
-            "launch remains blocked until the compatibility write is acknowledged")
-        client.eventReceived("settings.changed", {key:"allianceWebrtcCompatibility", value:true})
-        client.responseReceived(compatibilityWrite.id, {key:"allianceWebrtcCompatibility", value:true})
-        check(compatibility.checked && compatibility.enabled && !ShellStore.streamBusy,
-            "the acknowledged setting releases the launch guard")
-        ShellStore.pendingLaunchParams = {appId:"fixture"}
-        check(!compatibility.enabled, "compatibility cannot change while a launch is pending")
-        ShellStore.pendingLaunchParams = null
-        ShellStore.activeSession = {sessionId:"compatibility-fixture", status:2}
-        check(!compatibility.enabled, "compatibility cannot change an allocated seat")
-        ShellStore.activeSession = null
-        check(compatibility.enabled, "compatibility becomes selectable after the seat ends")
-        compatibility.clicked()
-        compatibilityWrite = lastWrite()
-        check(compatibilityWrite.params.key === "allianceWebrtcCompatibility"
-            && compatibilityWrite.params.value === false, "compatibility can be disabled for the next launch")
-        client.eventReceived("settings.changed", {key:"allianceWebrtcCompatibility", value:false})
-        client.responseReceived(compatibilityWrite.id, {key:"allianceWebrtcCompatibility", value:false})
-        check(!compatibility.checked, "compatibility returns to the NVST default")
+        const compatibility = find(desktop, "webrtcCompatibilityModeChoice")
+        check(compatibility !== null, "the network page must expose the transport choice")
+        check(compatibility.title === qsTr("WebRTC compatibility mode"), "compatibility is not labeled as alliance-only")
+        check(compatibility.description.indexOf(qsTr("Automatic uses WebRTC for signed-in alliance accounts and NVST for NVIDIA accounts. Choose WebRTC or NVST to override either account type. Applies to new sessions only; existing sessions keep their transport.")) >= 0,
+            "automatic routing and the new-session restriction must be explained")
+        check(compatibility.description.indexOf(qsTr("WebRTC is for compatibility only. Expect lower performance than NVST. Up to 1080p60, H.264, SDR, and stereo. No microphone or clipboard text. Requires direct UDP connectivity.")) >= 0,
+            "the performance warning and restrictions must be visible before choosing compatibility")
+        check(compatibility.value === "auto" && compatibility.enabled,
+            "compatibility defaults to automatic and is selectable before launch")
+        check(compatibility.items.length === 3
+            && compatibility.items[0].value === "auto" && compatibility.items[0].label === qsTr("Automatic")
+            && compatibility.items[1].value === "on" && compatibility.items[1].label === qsTr("WebRTC")
+            && compatibility.items[2].value === "off" && compatibility.items[2].label === qsTr("NVST"),
+            "the choice exposes automatic routing and both explicit overrides")
+        const owner = ShellStore.settingsOwnerState
+        for (const mode of ["on", "off", "auto"]) {
+            const previous = compatibility.value
+            compatibility.expanded = true
+            const option = find(compatibility, "settingsChoice-" + mode)
+            check(option !== null && option.enabled, "the transport option must be selectable: " + mode)
+            option.clicked()
+            const compatibilityWrite = lastWrite()
+            check(compatibilityWrite.method === "settings.set"
+                && compatibilityWrite.params.key === "webrtcCompatibilityMode"
+                && compatibilityWrite.params.value === mode, "transport persists through the settings owner: " + mode)
+            check(compatibility.value === previous && !compatibility.enabled && ShellStore.streamBusy,
+                "launch remains blocked until the transport write is acknowledged: " + mode)
+            owner.colorRequestId = "transport-capabilities-" + mode
+            owner.colorDescriptors = [{value:"10bit_420", disabled:false}]
+            client.eventReceived("settings.changed", {key:"webrtcCompatibilityMode", value:mode})
+            check(ShellStore.streamBusy && !compatibility.enabled,
+                "a settings event alone must not release the pending-write guard: " + mode)
+            client.responseReceived(compatibilityWrite.id, {key:"webrtcCompatibilityMode", value:mode})
+            check(compatibility.value === mode && compatibility.enabled && !ShellStore.streamBusy,
+                "the acknowledged setting releases the launch guard: " + mode)
+            check(owner.colorRequestId === "" && owner.colorDescriptors.length === 0
+                && !owner.acceptResponse("transport-capabilities-" + mode, {colorQualities:[{value:"10bit_420", disabled:false}]}),
+                "a transport change invalidates stale capability choices: " + mode)
+            compatibility.expanded = true
+            ShellStore.pendingLaunchParams = {appId:"fixture"}
+            check(!compatibility.enabled && !option.enabled,
+                "transport cannot change while a launch is pending: " + mode)
+            ShellStore.pendingLaunchParams = null
+            ShellStore.streamCreateRequestId = "transport-launch-fixture"
+            check(!compatibility.enabled && !option.enabled,
+                "transport cannot change during session creation: " + mode)
+            ShellStore.streamCreateRequestId = ""
+            ShellStore.activeSession = {sessionId:"compatibility-fixture", status:2}
+            check(!compatibility.enabled && !option.enabled && compatibility.value === mode,
+                "transport cannot change an allocated seat: " + mode)
+            ShellStore.activeSession = null
+            check(compatibility.enabled && option.enabled,
+                "transport becomes selectable after the seat ends: " + mode)
+            compatibility.expanded = false
+        }
+        compatibility.expanded = true
+        find(compatibility, "settingsChoice-on").clicked()
+        const rejectedWrite = lastWrite()
+        client.requestFailed(rejectedWrite.id, "settings_write_failed", "Fixture denied transport persistence")
+        check(compatibility.value === "auto" && compatibility.enabled && !ShellStore.streamBusy,
+            "a rejected override retains automatic routing and releases the launch guard")
         const toggle = find(desktop, "renewNetworkTestToggle")
         check(toggle !== null, "the network page must expose the network test opt-in")
         check(!toggle.checked, "the network test must ship off")

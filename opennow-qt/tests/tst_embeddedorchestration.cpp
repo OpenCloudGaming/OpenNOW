@@ -1825,7 +1825,8 @@ private slots:
             const auto qml = source(path);
             QVERIFY2(!qml.isEmpty(), qPrintable(path));
             QVERIFY2(liveItem.match(qml).hasMatch(), qPrintable(path));
-            QVERIFY(qml.contains(QStringLiteral("visible: root.visible && root.streaming")));
+            QVERIFY(qml.contains(QStringLiteral("visible: root.visible && root.videoSurfaceActive")));
+            QVERIFY(qml.contains(QStringLiteral("inputEnabled: root.streaming && visible")));
             QVERIFY(qml.contains(QStringLiteral(
                 "!ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)")));
             QVERIFY(qml.contains(QStringLiteral(
@@ -1833,7 +1834,7 @@ private slots:
             QVERIFY(qml.contains(QStringLiteral(
                 "onLocalShortcutRequested: action => ShellStore.applyStreamShortcutAction(action)")));
             QVERIFY(!qml.contains(QStringLiteral(
-                "visible: root.visible && root.streaming && AppController.overlay === \"\"")));
+                "visible: root.visible && root.videoSurfaceActive && AppController.overlay === \"\"")));
         }
     }
 

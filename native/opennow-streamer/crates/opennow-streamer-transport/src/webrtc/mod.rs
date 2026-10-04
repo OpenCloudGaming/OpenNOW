@@ -17,6 +17,7 @@ use thiserror::Error;
 
 use crate::{EncodedMediaFrame, MediaConsumer, install_crypto};
 
+mod diagnostics;
 mod input;
 #[cfg(test)]
 mod tests;
@@ -279,6 +280,18 @@ pub fn negotiate(
         None => resolve_host(&session.server_ip)?,
     };
     let socket = bind_routed_socket(peer)?;
+    opennow_streamer_protocol::log::log_line("INFO", "webrtc-local", &serde_json::json!({
+        "peerClass":diagnostics::address_class(peer),
+        "localClass":diagnostics::address_class(socket.local_addr()?.ip()),
+        "localPort":socket.local_addr()?.port(),
+        "mediaEndpointPresent":media_endpoint.is_some(),
+        "configuredIceServerCount":session.extra.get("iceServers").and_then(serde_json::Value::as_array).map_or(0, Vec::len)
+    }).to_string());
+    opennow_streamer_protocol::log::log_line(
+        "INFO",
+        "webrtc-remote-sdp",
+        &diagnostics::sdp_summary(offer_sdp).to_string(),
+    );
     socket.set_write_timeout(Some(POLL_INTERVAL))?;
     let local = Candidate::host(socket.local_addr()?, "udp")
         .map_err(|error| TransportError::Endpoint(error.to_string()))?;
@@ -367,6 +380,17 @@ pub fn negotiate(
             "multiple data transports are unsupported".to_owned(),
         ));
     }
+    if normalized
+        .lines()
+        .find_map(|line| line.strip_prefix("a=setup:"))
+        .is_some_and(|setup| setup.trim() == "actpass")
+    {
+        rtc.direct_api()
+            .set_ice_controlling(offer.session.ice_lite());
+        rtc.direct_api()
+            .start_dtls(true)
+            .map_err(|error| TransportError::Offer(error.to_string()))?;
+    }
     let answer = rtc
         .sdp_api()
         .accept_offer(offer.into())
@@ -437,6 +461,11 @@ pub fn negotiate(
     let video_mid = video_mid
         .ok_or_else(|| TransportError::Offer("peer did not negotiate H264 video".to_owned()))?;
     let answer_sdp = answer.to_string();
+    opennow_streamer_protocol::log::log_line(
+        "INFO",
+        "webrtc-local-sdp",
+        &diagnostics::sdp_summary(&answer_sdp).to_string(),
+    );
     let (candidate_mid, candidate_index) = candidate_target(&answer_sdp)?;
     let active_track = |kind: &str| {
         answer_sdp.lines().any(|line| {
@@ -482,8 +511,12 @@ pub fn negotiate(
                 video_drops: 0,
                 audio_drops: 0,
                 last_drop_report: Instant::now(),
+                traffic: diagnostics::Traffic::default(),
+                peer,
+                last_connection_trace: Instant::now(),
             };
             let result = runtime.run();
+            runtime.trace_connection("finished");
             runtime.input_ready.store(false, Ordering::Release);
             runtime.rtc.disconnect();
             drop(runtime.commands);
@@ -616,6 +649,11 @@ fn parse_candidate(
         ));
     }
     if !tokens[2].eq_ignore_ascii_case("udp") {
+        opennow_streamer_protocol::log::log_line(
+            "INFO",
+            "webrtc-candidate",
+            &diagnostics::candidate_summary(text, None).to_string(),
+        );
         return Ok(None);
     }
     if let Some(endpoint) = endpoint {
@@ -636,9 +674,14 @@ fn parse_candidate(
             tokens[5] = endpoint.port().to_string();
         }
     }
-    Candidate::from_sdp_string(&tokens.join(" "))
-        .map(Some)
-        .map_err(|error| TransportError::RemoteCandidate(error.to_string()))
+    let candidate = Candidate::from_sdp_string(&tokens.join(" "))
+        .map_err(|error| TransportError::RemoteCandidate(error.to_string()))?;
+    opennow_streamer_protocol::log::log_line(
+        "INFO",
+        "webrtc-candidate",
+        &diagnostics::candidate_summary(text, Some(&candidate)).to_string(),
+    );
+    Ok(Some(candidate))
 }
 
 fn candidate_target(sdp: &str) -> Result<(String, u16), TransportError> {
@@ -717,9 +760,20 @@ struct TransportWorker {
     video_drops: u64,
     audio_drops: u64,
     last_drop_report: Instant,
+    traffic: diagnostics::Traffic,
+    peer: IpAddr,
+    last_connection_trace: Instant,
 }
 
 impl TransportWorker {
+    fn trace_connection(&self, phase: &str) {
+        opennow_streamer_protocol::log::log_line("INFO", "webrtc-connection", &serde_json::json!({
+            "phase":phase,"elapsedMs":self.origin.elapsed().as_millis(),
+            "iceAndDtlsConnected":self.connected_at.is_some(), "remoteCandidates":self.remote_candidates,
+            "traffic":self.traffic
+        }).to_string());
+    }
+
     fn emit(&self, event: TransportEvent) -> Result<(), String> {
         self.events
             .try_send(event)
@@ -817,12 +871,25 @@ impl TransportWorker {
         match event {
             Event::Connected => {
                 self.connected_at = Some(Instant::now());
+                self.trace_connection("connected");
                 self.emit(TransportEvent::Connected)?;
             }
             Event::IceConnectionStateChange(IceConnectionState::Disconnected) => {
+                opennow_streamer_protocol::log::log_line(
+                    "INFO",
+                    "webrtc-ice",
+                    "state=Disconnected",
+                );
                 return Err(
                     "ICE disconnected (direct UDP only; TURN relay gathering is unavailable)"
                         .to_owned(),
+                );
+            }
+            Event::IceConnectionStateChange(state) => {
+                opennow_streamer_protocol::log::log_line(
+                    "INFO",
+                    "webrtc-ice",
+                    &format!("state={state:?}"),
                 );
             }
             Event::ChannelOpen(id, _) => {
@@ -861,6 +928,13 @@ impl TransportWorker {
                 return Ok(());
             }
             let now = Instant::now();
+            if now.duration_since(self.last_connection_trace) >= Duration::from_secs(5)
+                && (self.connected_at.is_none()
+                    || now.duration_since(self.origin) < Duration::from_secs(20))
+            {
+                self.trace_connection("progress");
+                self.last_connection_trace = now;
+            }
             match self.connected_at {
                 None if now.duration_since(self.origin) >= CONNECT_TIMEOUT => return Err("WebRTC connection timed out (direct UDP only; TURN relay gathering is unavailable)".to_owned()),
                 Some(connected) if !self.input.is_ready() && now.duration_since(connected) >= INPUT_TIMEOUT => return Err("WebRTC input handshake timed out".to_owned()),
@@ -939,9 +1013,15 @@ impl TransportWorker {
                 match self.rtc.poll_output().map_err(|error| error.to_string())? {
                     Output::Timeout(timeout) => break timeout,
                     Output::Transmit(packet) => {
+                        self.traffic.transmitted.record(&packet.contents);
+                        self.traffic.last_tx_port = Some(packet.destination.port());
+                        if packet.destination.ip() == self.peer {
+                            self.traffic.tx_to_known_peer += 1;
+                        }
                         if let Err(error) =
                             self.socket.send_to(&packet.contents, packet.destination)
                         {
+                            self.traffic.send_errors += 1;
                             if !transient_udp_error(&error) {
                                 return Err(error.to_string());
                             }
@@ -968,6 +1048,11 @@ impl TransportWorker {
                 .map_err(|error| error.to_string())?;
             match self.socket.recv_from(&mut bytes) {
                 Ok((length, source)) => {
+                    self.traffic.received.record(&bytes[..length]);
+                    self.traffic.last_rx_port = Some(source.port());
+                    if source.ip() == self.peer {
+                        self.traffic.rx_from_known_peer += 1;
+                    }
                     let Ok(contents) = (&bytes[..length]).try_into() else {
                         continue;
                     };
@@ -981,6 +1066,7 @@ impl TransportWorker {
                         },
                     );
                     if self.rtc.accepts(&input) {
+                        self.traffic.routed.record(&bytes[..length]);
                         self.rtc
                             .handle_input(input)
                             .map_err(|error| error.to_string())?;

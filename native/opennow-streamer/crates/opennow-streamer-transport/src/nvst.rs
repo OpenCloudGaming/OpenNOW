@@ -4747,7 +4747,7 @@ fn xor_mapped_address(source: SocketAddr, transaction_id: &[u8; 12]) -> Vec<u8> 
     value
 }
 
-fn find_stun_attribute(packet: &[u8], wanted_type: u16) -> Option<(usize, &[u8])> {
+pub(crate) fn find_stun_attribute(packet: &[u8], wanted_type: u16) -> Option<(usize, &[u8])> {
     let mut offset = STUN_HEADER_LEN;
     while offset + 4 <= packet.len() {
         let attribute_type = u16::from_be_bytes([packet[offset], packet[offset + 1]]);
