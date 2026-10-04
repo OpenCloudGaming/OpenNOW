@@ -87,6 +87,7 @@ FocusScope {
         objectName: "streamSurfaceHost"
         anchors.fill: parent
         visible: root.visible && root.videoSurfaceActive
+        enabled: root.streaming
         focus: root.streaming && visible
         inputEnabled: root.streaming && visible
             && !ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)
