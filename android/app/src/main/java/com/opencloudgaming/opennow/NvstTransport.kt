@@ -95,8 +95,8 @@ internal fun nvstSessionContext(session: SessionInfo, settings: StreamSettings):
         put("colorQuality", OpenNowJson.encodeToJsonElement(settings.colorQuality))
         put("maxBitrateMbps", settings.maxBitrateMbps)
         put("networkAdaptation", buildJsonObject {
-            val bitrate = StreamNetworkAdaptation.bitrateRange(settings.maxBitrateMbps)
-            put("dynamicStreamingMode", StreamNetworkAdaptation.DYNAMIC_STREAMING_MODE)
+            val bitrate = StreamNetworkAdaptation.bitrateRange(settings)
+            put("dynamicStreamingMode", StreamNetworkAdaptation.dynamicStreamingMode(settings))
             put("minimumBitrateKbps", bitrate.minimumKbps)
             put("initialBitrateKbps", bitrate.initialKbps)
         })
@@ -156,6 +156,7 @@ internal class NvstTransport(
     private val event: (String, String) -> Unit,
     private val stats: (StreamRuntimeStats) -> Unit,
     private val rumble: (GamepadRumbleCommand) -> Unit,
+    private val recordingAudio: (ByteBuffer) -> Unit = {},
 ) {
     private val handle = NvstBridge.create()
     private val wifiPerformance = StreamWifiPerformanceLock(context)
@@ -290,7 +291,7 @@ internal class NvstTransport(
     @Keep fun onNativeMedia(codec: String, bytes: ByteBuffer, timestampNs: Long, keyframe: Boolean, contiguous: Boolean): Boolean {
         if (stopped) return false
         if (codec.equals("opus", true)) {
-            val output = audio ?: NvstAudioOutput(lowLatencyGameAudio).also { audio = it }
+            val output = audio ?: NvstAudioOutput(lowLatencyGameAudio, recordingAudio).also { audio = it }
             output.feed(bytes, timestampNs / 1000, muted)
             return true
         }
@@ -334,7 +335,10 @@ internal class NvstTransport(
 }
 
 /** Android's Opus decoder; partial writes retain PCM within a bounded 100 ms queue. */
-private class NvstAudioOutput(private val lowLatencyGameAudio: Boolean) {
+private class NvstAudioOutput(
+    private val lowLatencyGameAudio: Boolean,
+    private val recordingAudio: (ByteBuffer) -> Unit,
+) {
     private val codec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_AUDIO_OPUS)
     private val track: AudioTrack
     private val info = MediaCodec.BufferInfo()
@@ -389,6 +393,14 @@ private class NvstAudioOutput(private val lowLatencyGameAudio: Boolean) {
                 codec.getOutputBuffer(output)?.let { pcm ->
                     pcm.position(info.offset)
                     pcm.limit(info.offset + info.size)
+                    if (pcm.hasRemaining()) {
+                        runCatching {
+                            recordingAudio(pcm.duplicate().apply {
+                                position(info.offset)
+                                limit(info.offset + info.size)
+                            })
+                        }
+                    }
                     if (pending.isEmpty()) track.write(pcm, pcm.remaining(), AudioTrack.WRITE_NON_BLOCKING)
                     if (pcm.hasRemaining()) {
                         // A stalled output cannot retain unbounded audio or block the video worker.

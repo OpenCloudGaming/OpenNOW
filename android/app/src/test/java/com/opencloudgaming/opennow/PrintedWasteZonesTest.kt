@@ -11,7 +11,7 @@ class PrintedWasteZonesTest {
     private fun zone(id: String, queue: Int, ping: Long?, region: String = "US") = PrintedWasteZoneOption(
         zoneId = id,
         zone = PrintedWasteZone(QueuePosition = queue, Region = region),
-        routingUrl = printedWasteZoneUrl(id),
+        routingUrl = "https://us-california-south.cloudmatchbeta.nvidiagrid.net/",
         pingMs = ping,
     )
 
@@ -32,8 +32,30 @@ class PrintedWasteZonesTest {
     }
 
     @Test
-    fun zoneUrlUsesTheLowercasedIdOnCloudMatch() {
-        assertEquals("https://np-lax-03.cloudmatchbeta.nvidiagrid.net/", printedWasteZoneUrl("NP-LAX-03"))
+    fun selectedZonesRouteThroughAdvertisedRegions() {
+        val mapping = mapOf(
+            "NP-SJC6-06" to entry("Northern California", "US West"),
+            "NP-LON-08" to entry("United Kingdom", "EU West"),
+            "NP-BOM-01" to entry("Mumbai", "Asia South"),
+        )
+        val regions = listOf(
+            StreamRegion("Northern California (USA)", "https://us-california-north.cloudmatchbeta.nvidiagrid.net"),
+            StreamRegion("United Kingdom 1", "https://eu-united-kingdom-1.cloudmatchbeta.nvidiagrid.net"),
+            StreamRegion("United Kingdom 2", "https://eu-united-kingdom-2.cloudmatchbeta.nvidiagrid.net"),
+            StreamRegion("India", "https://ap-india.cloudmatchbeta.nvidiagrid.net"),
+        )
+
+        assertEquals(
+            "https://us-california-north.cloudmatchbeta.nvidiagrid.net/",
+            printedWasteRegionalUrl("NP-SJC6-06", mapping, regions),
+        )
+        assertEquals(
+            "https://eu-united-kingdom-1.cloudmatchbeta.nvidiagrid.net/",
+            printedWasteRegionalUrl("NP-LON-08", mapping, regions),
+        )
+        assertEquals("https://ap-india.cloudmatchbeta.nvidiagrid.net/", printedWasteRegionalUrl("NP-BOM-01", mapping, regions))
+        assertNull(printedWasteRegionalUrl("NP-UNKNOWN-01", mapping, regions))
+        assertNull(printedWasteRegionalUrl("NP-SJC6-06", mapping, listOf(StreamRegion("Northern California (USA)", "https://example.com"))))
     }
 
     @Test

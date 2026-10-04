@@ -12,6 +12,19 @@ import org.junit.Test
 
 class InputEncoderGamepadTest {
     @Test
+    fun twoDualSenseControllersRemainConnectedInEveryGamepadSnapshot() {
+        val bitmap = androidGamepadConnectionBitmapForSlots(
+            connectedSlots = setOf(0, 1),
+            controllerFamilies = mapOf(
+                0 to AndroidControllerFamily.PlayStation,
+                1 to AndroidControllerFamily.PlayStation,
+            ),
+        )
+        assertEquals(0b11, bitmap)
+        assertEquals(0b11, bitmap and 0b1111)
+    }
+
+    @Test
     fun gamepadTransportPreservesTheReliableAndroid175Framing() {
         assertFalse(
             shouldUsePartiallyReliableGamepadTransport(
@@ -170,6 +183,9 @@ class InputEncoderGamepadTest {
         assertFalse(AndroidControllerInput.isControllerDevice(misleadingSources, "uinput-goodix"))
         assertFalse(AndroidControllerInput.isControllerDevice(misleadingSources, "uinput-fpc"))
         assertFalse(AndroidControllerInput.isControllerDevice(misleadingSources, "Fingerprint Sensor"))
+        assertFalse(AndroidControllerInput.isControllerDevice(misleadingSources, "virtual-search"))
+        assertFalse(AndroidControllerInput.isControllerDevice(misleadingSources, "virtual-remote"))
+        assertFalse(AndroidControllerInput.isControllerEvent(InputDevice.SOURCE_GAMEPAD, misleadingSources, "virtual-remote"))
         assertTrue(AndroidControllerInput.isControllerDevice(misleadingSources, "Xbox Wireless Controller"))
     }
 
@@ -671,14 +687,12 @@ class InputEncoderGamepadTest {
             NativeStreamInputRouter.shouldHandleStreamExitKey(
                 KeyEvent.KEYCODE_BACK,
                 controllerInputDevice = false,
-                hardwareKeyboardSource = false,
             ),
         )
         assertFalse(
             NativeStreamInputRouter.shouldHandleStreamExitKey(
                 KeyEvent.KEYCODE_BACK,
                 controllerInputDevice = false,
-                hardwareKeyboardSource = false,
                 externalMouseInputDevice = true,
             ),
         )
@@ -686,14 +700,12 @@ class InputEncoderGamepadTest {
             NativeStreamInputRouter.shouldHandleStreamExitKey(
                 KeyEvent.KEYCODE_BACK,
                 controllerInputDevice = true,
-                hardwareKeyboardSource = false,
             ),
         )
         assertTrue(
             NativeStreamInputRouter.shouldHandleStreamExitKey(
                 KeyEvent.KEYCODE_BUTTON_B,
                 controllerInputDevice = false,
-                hardwareKeyboardSource = false,
                 androidTvProfile = true,
                 dpadSource = true,
             ),
@@ -702,7 +714,6 @@ class InputEncoderGamepadTest {
             NativeStreamInputRouter.shouldHandleStreamExitKey(
                 KeyEvent.KEYCODE_BUTTON_B,
                 controllerInputDevice = true,
-                hardwareKeyboardSource = false,
                 androidTvProfile = true,
                 dpadSource = true,
             ),
@@ -711,7 +722,6 @@ class InputEncoderGamepadTest {
             NativeStreamInputRouter.shouldHandleStreamExitKey(
                 KeyEvent.KEYCODE_BUTTON_B,
                 controllerInputDevice = false,
-                hardwareKeyboardSource = false,
                 androidTvProfile = false,
                 dpadSource = true,
             ),
@@ -720,14 +730,30 @@ class InputEncoderGamepadTest {
             NativeStreamInputRouter.shouldHandleStreamExitKey(
                 KeyEvent.KEYCODE_BUTTON_SELECT,
                 controllerInputDevice = false,
-                hardwareKeyboardSource = false,
             ),
         )
         assertFalse(
             NativeStreamInputRouter.shouldHandleStreamExitKey(
                 KeyEvent.KEYCODE_BUTTON_B,
                 controllerInputDevice = false,
-                hardwareKeyboardSource = false,
+            ),
+        )
+    }
+
+    @Test
+    fun escapeNeverOpensLocalStreamControls() {
+        assertFalse(
+            NativeStreamInputRouter.shouldHandleStreamExitKey(
+                KeyEvent.KEYCODE_ESCAPE,
+                controllerInputDevice = false,
+            ),
+        )
+        assertFalse(
+            NativeStreamInputRouter.shouldHandleStreamExitKey(
+                KeyEvent.KEYCODE_ESCAPE,
+                controllerInputDevice = false,
+                androidTvProfile = true,
+                dpadSource = true,
             ),
         )
     }
@@ -755,7 +781,6 @@ class InputEncoderGamepadTest {
             NativeStreamInputRouter.shouldHandleStreamExitKey(
                 KeyEvent.KEYCODE_BACK,
                 controllerInputDevice = true,
-                hardwareKeyboardSource = false,
                 androidTvProfile = true,
             ),
         )
@@ -763,7 +788,6 @@ class InputEncoderGamepadTest {
             NativeStreamInputRouter.shouldHandleStreamExitKey(
                 KeyEvent.KEYCODE_BACK,
                 controllerInputDevice = false,
-                hardwareKeyboardSource = false,
                 androidTvProfile = true,
             ),
         )
@@ -771,7 +795,6 @@ class InputEncoderGamepadTest {
             NativeStreamInputRouter.shouldHandleStreamExitKey(
                 KeyEvent.KEYCODE_BACK,
                 controllerInputDevice = true,
-                hardwareKeyboardSource = false,
             ),
         )
     }

@@ -44,4 +44,16 @@ class StreamSystemUiTest {
             ),
         )
     }
+
+    @Test
+    fun expandedControlsKeepAndroidBarsVisibleEvenWithMouseLock() {
+        assertFalse(
+            shouldPeriodicallyEnforceStreamSystemUi(
+                streamActive = true,
+                panelExpanded = true,
+                navigationBarsVisible = true,
+                pointerLockEnabled = true,
+            ),
+        )
+    }
 }

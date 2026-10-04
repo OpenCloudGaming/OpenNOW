@@ -29,6 +29,51 @@ class StreamKeyboardBehaviorTest {
     }
 
     @Test
+    fun usKeyboardSymbolsBecomeKeyStrokesInPasswordText() {
+        assertEquals(
+            listOf(
+                StreamKeyboardInputChunk.Text("pass"),
+                StreamKeyboardInputChunk.SymbolKey('*'),
+                StreamKeyboardInputChunk.Text("word"),
+                StreamKeyboardInputChunk.SymbolKey('!'),
+            ),
+            streamKeyboardInputChunks("pass*word!", physicalSymbols = true),
+        )
+        val star = InputEncoder.mapTextCharToKeySpec('*')
+        assertEquals(0x38, star?.keycode)
+        assertEquals(0x0009, star?.scancode)
+        assertTrue(star?.shift == true)
+    }
+
+    @Test
+    fun usPasswordDotUsesAnUnshiftedPhysicalPeriodKey() {
+        assertEquals(
+            listOf(
+                StreamKeyboardInputChunk.Text("pass"),
+                StreamKeyboardInputChunk.SymbolKey('.'),
+                StreamKeyboardInputChunk.Text("word"),
+            ),
+            streamKeyboardInputChunks("pass.word", physicalSymbols = true),
+        )
+        val period = InputEncoder.mapTextCharToKeySpec('.')
+        assertEquals(0xbe, period?.keycode)
+        assertEquals(0x0034, period?.scancode)
+        assertFalse(period?.shift ?: true)
+    }
+
+    @Test
+    fun otherLayoutsAndInternationalCharactersStayOnUnicodePath() {
+        assertEquals(
+            listOf(StreamKeyboardInputChunk.Text("é*")),
+            streamKeyboardInputChunks("é*"),
+        )
+        assertEquals(
+            listOf(StreamKeyboardInputChunk.Text("é"), StreamKeyboardInputChunk.SymbolKey('*')),
+            streamKeyboardInputChunks("é*", physicalSymbols = true),
+        )
+    }
+
+    @Test
     fun emptySoftKeyboardEditProducesNoInputChunks() {
         assertEquals(emptyList<StreamKeyboardInputChunk>(), streamKeyboardInputChunks(""))
     }

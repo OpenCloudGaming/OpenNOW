@@ -1,5 +1,8 @@
 package com.opencloudgaming.opennow
 
+import java.util.Locale
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+
 /**
  * PrintedWaste zone identity, naming, and grouping.
  *
@@ -19,8 +22,30 @@ package com.opencloudgaming.opennow
 internal fun isStandardPrintedWasteZone(zoneId: String): Boolean =
     zoneId.startsWith("NP-") && !zoneId.startsWith("NPA-")
 
-internal fun printedWasteZoneUrl(zoneId: String): String =
-    "https://${zoneId.lowercase()}.cloudmatchbeta.nvidiagrid.net/"
+private val PROVIDER_REGION_SUFFIX = Regex("\\s*(?:\\((?:usa|canada)\\)|[12])$", RegexOption.IGNORE_CASE)
+
+private fun printedWasteLocationKey(value: String): String =
+    value.trim().lowercase(Locale.US).replace(PROVIDER_REGION_SUFFIX, "")
+
+/** Route a chosen location through CloudMatch's advertised regional front door. */
+internal fun printedWasteRegionalUrl(
+    zoneId: String,
+    mapping: Map<String, PrintedWasteServerMappingEntry>,
+    regions: List<StreamRegion>,
+): String? {
+    if (!isStandardPrintedWasteZone(zoneId)) return null
+    val title = mapping[zoneId]?.title?.trim()?.takeIf(String::isNotEmpty) ?: return null
+    val location = printedWasteLocationKey(if (title.equals("Mumbai", ignoreCase = true)) "India" else title)
+    return regions.firstNotNullOfOrNull { region ->
+        if (printedWasteLocationKey(region.name) != location) return@firstNotNullOfOrNull null
+        val url = region.url.toHttpUrlOrNull() ?: return@firstNotNullOfOrNull null
+        val host = url.host.lowercase(Locale.US)
+        if (url.scheme != "https" || url.port != 443 || url.encodedPath != "/" ||
+            url.query != null || url.fragment != null || host.startsWith("np-") ||
+            !host.endsWith(".cloudmatchbeta.nvidiagrid.net")) return@firstNotNullOfOrNull null
+        "https://$host/"
+    }
+}
 
 /** The GPU a zone advertises, when the mapping says. */
 internal enum class PrintedWasteGpuTier(val label: String) {

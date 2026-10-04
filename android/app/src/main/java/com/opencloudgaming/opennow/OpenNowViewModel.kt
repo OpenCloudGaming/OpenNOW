@@ -125,6 +125,7 @@ internal fun knownSessionRecoveryCandidate(
 private const val ANDROID_UPDATE_LAUNCH_CHECK_DELAY_MS = 5_000L
 internal const val ANDROID_UPDATE_PERIODIC_CHECK_INTERVAL_MS = 6L * 60L * 60L * 1000L
 private const val ANDROID_UPDATE_STREAMING_RETRY_DELAY_MS = 30_000L
+private const val CATALOG_SEARCH_DEBOUNCE_MS = 250L
 private const val DEBUG_EVENT_LIMIT = 140
 private const val DEBUG_EVENT_MESSAGE_LIMIT = 640
 private const val LOGIN_PHASE_GETTING_TOKENS = "Getting sign-in tokens"
@@ -509,6 +510,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     val streamRuntimeStats: StateFlow<StreamRuntimeStats?> = _streamRuntimeStats.asStateFlow()
     private var streamReportLaunchProfile: StreamReportLaunchProfile? = null
     private val diagnosticStreamHistory = DiagnosticStreamHistory()
+    @Volatile private var lastCompletedStreamDiagnostics: JsonObject? = null
     @Volatile private var lastDiagnosticSession: SessionInfo? = null
     @Volatile private var lastDiagnosticSessionReport: SessionReport? = null
     @Volatile private var streamSessionReportAccumulator: StreamSessionReportAccumulator? = null
@@ -2021,7 +2023,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     fun setCatalogSearch(query: String) {
         _state.update { it.copy(catalogSearch = query, catalogQueryLoading = true) }
-        refreshCatalogDebounced()
+        refreshCatalogDebounced(debounceSearch = true)
     }
 
     fun setLibrarySearch(query: String) {
@@ -2174,6 +2176,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     fun updateSettings(next: AppSettings) {
         settingsStore.replace(next)
     }
+
+    suspend fun restoreSettingsBackup(next: AppSettings): Boolean = settingsStore.restore(next)
 
     fun addLocalApp(packageName: String) {
         if (packageName.isBlank() || packageName == getApplication<Application>().packageName) return
@@ -2491,6 +2495,13 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    /** Recording preferences do not change the selected streaming preset or live transport. */
+    fun updateRecordingSettings(transform: (StreamSettings) -> StreamSettings) {
+        settingsStore.update { current ->
+            current.copy(stream = transform(current.stream))
+        }
+    }
+
     fun updateStreamSettings(transform: (StreamSettings) -> StreamSettings) {
         val snapshot = state.value
         settingsStore.update {
@@ -2501,6 +2512,18 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     .withAndroidHdrCompatibility(androidTvProfile),
                 streamPreset = StreamPreset.Custom,
             )
+        }
+    }
+
+    fun updateDynamicNetworkAdjustment(enabled: Boolean) {
+        settingsStore.update { current ->
+            current.copy(stream = current.stream.copy(experimentalDynamicNetworkAdjustment = enabled))
+        }
+    }
+
+    fun updateDynamicMinimumBitrate(mbps: Int) {
+        settingsStore.update { current ->
+            current.copy(stream = current.stream.copy(experimentalDynamicMinimumBitrateMbps = mbps))
         }
     }
 
@@ -3009,6 +3032,9 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         eligibleSettings: StreamSettings,
         initialSettings: StreamSettings,
     ) {
+        if (!sessionReportFinalizedForStop && diagnosticStreamHistory.capture().samples.isNotEmpty()) {
+            retainMeasuredStream(streamSessionReportAccumulator?.finish(System.currentTimeMillis()))
+        }
         lastDiagnosticSessionReport = null
         lastDiagnosticSession = null
         latestStreamRuntimeStats = null
@@ -3046,6 +3072,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         lastDiagnosticSession = state.value.streamSession ?: lastDiagnosticSession
         val report = streamSessionReportAccumulator?.finish(nowMs)
         lastDiagnosticSessionReport = report
+        retainMeasuredStream(report, nowMs)
         if (report != null) {
             recordDebugEvent(
                 "stream",
@@ -3058,6 +3085,33 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         streamReportLaunchProfile = null
         streamRuntimeDiagnosticsSampler.reset()
         return report
+    }
+
+    private fun retainMeasuredStream(report: SessionReport?, capturedAtMs: Long = System.currentTimeMillis()) {
+        val history = diagnosticStreamHistory.capture()
+        if (history.samples.isEmpty()) return
+        val snapshot = state.value
+        val anchor = DiagnosticTimeAnchor(capturedAtMs, SystemClock.elapsedRealtime())
+        val retained = buildJsonObject {
+            put("capturedAt", diagnosticTimestamp(capturedAtMs))
+            put("capturedAtEpochMs", capturedAtMs)
+            put("lastSampleCapturedAtEpochMs", history.samples.last().capturedAtEpochMs)
+            put("game", snapshot.streamGame?.title ?: report?.gameTitle ?: streamReportLaunchProfile?.gameTitle)
+            (snapshot.streamSession ?: lastDiagnosticSession)?.let { put("session", OpenNowJson.encodeToJsonElement(it)) }
+            (snapshot.activeStreamSettings ?: streamReportLaunchProfile?.initialSettings)?.let {
+                put("settings", OpenNowJson.encodeToJsonElement(it))
+            }
+            put("samples", OpenNowJson.encodeToJsonElement(history.samples))
+            put("totalSamples", history.totalSamples)
+            put("evictedSamples", history.evictedSamples)
+            report?.let { put("sessionReport", OpenNowJson.encodeToJsonElement(it)) }
+            put("input", NativeInputDiagnostics.capture().toJson(anchor))
+        }
+        lastCompletedStreamDiagnostics = retained
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { diagnosticHistoryStore.saveLastStream(capturedAtMs, retained) }
+                .onFailure { error -> Log.w(OPENNOW_DEBUG_LOG_TAG, "Could not retain last stream diagnostics", error) }
+        }
     }
 
     fun stopStream() {
@@ -3588,7 +3642,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     )
                     current.copy(
                         streamSession = merged,
-                        queuePosition = queueDisplayPosition(merged),
+                        queuePosition = stableQueueDisplayPosition(current, merged),
                         queueAdActiveId = chooseQueueAdActiveId(current.queueAdActiveId, merged),
                     )
                 }
@@ -3615,11 +3669,16 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun prepareStreamMediaMemory() {
+        openNowApplication.releaseCachedArtworkForStream()
+    }
+
     fun markStreamConnected() {
         ensureSessionReportAccumulator()
         if (state.value.streamStatus == "streaming") return
         recordDebugEvent("stream", "Native stream connected session=${state.value.streamSession?.shortDebugId().orEmpty()} game=${state.value.streamGame?.title.orEmpty()}")
         _state.update { it.copy(streamStatus = "streaming", launchPhase = "") }
+        openNowApplication.releaseCachedArtworkForStream()
     }
 
     fun setAndroidPictureInPictureActive(active: Boolean) {
@@ -3665,6 +3724,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun markStreamError(message: String) {
+        retainMeasuredStream(streamSessionReportAccumulator?.finish(System.currentTimeMillis()))
         recordDebugEvent("stream", "Native stream error message=${message.take(DEBUG_EVENT_MESSAGE_LIMIT)} session=${state.value.streamSession?.shortDebugId().orEmpty()}")
         _state.update { it.copy(error = message, streamStatus = "idle", activeStreamSettings = null, launchPhase = "") }
     }
@@ -4042,6 +4102,12 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         val apiSnapshot = OpenNowHttpDiagnostics.snapshot()
         val api = apiSnapshot.entries
         val streamHistory = diagnosticStreamHistory.capture()
+        val lastStream = (lastCompletedStreamDiagnostics ?: diagnosticHistoryStore.lastStreamSnapshot())
+            ?.takeUnless { retained ->
+                streamHistory.samples.lastOrNull()?.capturedAtEpochMs?.let { currentLastSample ->
+                    retained["lastSampleCapturedAtEpochMs"]?.jsonPrimitive?.contentOrNull == currentLastSample.toString()
+                } == true
+            }
         val input = NativeInputDiagnostics.capture()
         val cpu = ProcessCpuDiagnostics.capture()
         val latest = latestStreamRuntimeStats
@@ -4099,6 +4165,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     put("latestStats", OpenNowJson.encodeToJsonElement(it.stats.finiteDiagnosticValues()))
                 }
             })
+            lastStream?.let { put("lastCompletedStream", it) }
             put("inputSettings", buildJsonObject {
                 put("mouseLock", snapshot.settings.externalMousePointerLock)
                 put("touch", OpenNowJson.encodeToJsonElement(touch))
@@ -4157,6 +4224,16 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 scoreReport.recommendations.forEach { appendLine("${it.reasonCode}: ${it.title} — ${it.detail}") }
             }
             appendLine()
+            lastStream?.let { retained ->
+                appendLine("[Last completed stream]")
+                appendLine(
+                    "Game: ${retained["game"]?.jsonPrimitive?.contentOrNull ?: "unknown"} | " +
+                        "captured: ${retained["capturedAt"]?.jsonPrimitive?.contentOrNull ?: "unknown"} | " +
+                        "samples=${retained["samples"]?.jsonArray?.size ?: 0} | " +
+                        "input evidence in parser.lastCompletedStream.input",
+                )
+                appendLine()
+            }
             appendLine("[Failure clues — not a confirmed crash diagnosis]")
             assessment["findings"]?.jsonArray?.filter { it.jsonObject["category"]?.jsonPrimitive?.content != "session_quality" }?.forEach { finding ->
                 val fields = finding.jsonObject
@@ -4534,7 +4611,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         regionsJob.join()
     }
 
-    private fun refreshCatalogDebounced() {
+    private fun refreshCatalogDebounced(debounceSearch: Boolean = false) {
         gamesJob?.cancel()
         gamesJob = viewModelScope.launch {
             val auth = state.value.authSession ?: return@launch
@@ -4576,6 +4653,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     current
                 }
             }
+            // Cache hits remain immediate. Wait for typing to pause before starting provider work.
+            if (debounceSearch && searchQuery.isNotBlank()) delay(CATALOG_SEARCH_DEBOUNCE_MS)
             runCatching {
                 withContext(Dispatchers.IO) {
                     coroutineScope {
@@ -4713,26 +4792,41 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         }
         runCatching {
             coroutineScope {
+                val auth = state.value.authSession ?: error("No GeForce NOW account is active")
+                val token = auth.tokens.idToken ?: auth.tokens.accessToken
                 val queue = async { printedWasteRepository.fetchQueue() }
                 val mapping = async { printedWasteRepository.fetchServerMapping() }
+                val providerRegions = async {
+                    fetchDynamicRegions(http, token, auth.provider.streamingServiceUrl).first
+                        .ifEmpty { state.value.regions }
+                }
                 val queueData = queue.await()
                 val mappingData = mapping.await()
-                val regions = queueData
+                val advertisedRegions = providerRegions.await()
+                check(advertisedRegions.isNotEmpty()) { "GeForce NOW regional routes are unavailable" }
+                val regionsToPing = queueData
                     .filter { (zoneId, _) -> isStandardPrintedWasteZone(zoneId) && mappingData[zoneId]?.nuked != true }
-                    .map { (zoneId, _) ->
-                        StreamRegion(name = zoneId, url = printedWasteZoneUrl(zoneId), pingMs = null)
+                    .mapNotNull { (zoneId, _) ->
+                        printedWasteRegionalUrl(zoneId, mappingData, advertisedRegions)
                     }
-                val pings = printedWasteRepository.pingRegions(regions).associate { it.url to it.pingMs }
-                Triple(queueData, mappingData, pings)
+                    .distinct()
+                    .map { StreamRegion(name = it, url = it) }
+                check(regionsToPing.isNotEmpty()) { "No selectable GeForce NOW region has an advertised route" }
+                val pings = printedWasteRepository.pingRegions(regionsToPing).associate { it.url to it.pingMs }
+                Triple(queueData, mappingData, advertisedRegions to pings)
             }
-        }.onSuccess { (queue, mapping, pings) ->
+        }.onSuccess { (queue, mapping, regionAndPings) ->
+            val (advertisedRegions, pings) = regionAndPings
             val usableZones = queue
-                .filter { (zoneId, _) -> isStandardPrintedWasteZone(zoneId) && mapping[zoneId]?.nuked != true }
+                .filter { (zoneId, _) ->
+                    isStandardPrintedWasteZone(zoneId) && mapping[zoneId]?.nuked != true &&
+                        printedWasteRegionalUrl(zoneId, mapping, advertisedRegions) != null
+                }
                 .keys
             val bestZone = usableZones
                 .mapNotNull { zoneId ->
                     val zone = queue[zoneId] ?: return@mapNotNull null
-                    val url = printedWasteZoneUrl(zoneId)
+                    val url = printedWasteRegionalUrl(zoneId, mapping, advertisedRegions) ?: return@mapNotNull null
                     Triple(zoneId, zone.QueuePosition, pings[url])
                 }
                 .minWithOrNull(
@@ -4750,6 +4844,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     printedWasteQueue = queue,
                     printedWasteMapping = mapping,
                     printedWastePings = pings,
+                    regions = advertisedRegions,
                     printedWasteLoading = false,
                     printedWasteError = null,
                 )
@@ -4815,7 +4910,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             it.copy(
                 streamSession = latest,
                 launchPhase = loadingPhaseFor(latest),
-                queuePosition = queueDisplayPosition(latest),
+                queuePosition = stableQueueDisplayPosition(it, latest),
                 queueAdActiveId = chooseQueueAdActiveId(it.queueAdActiveId, latest),
             )
         }
@@ -4930,7 +5025,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     streamSession = latest,
                     activeStreamSettings = settings,
                     launchPhase = loadingPhaseFor(latest),
-                    queuePosition = queueDisplayPosition(latest),
+                    queuePosition = stableQueueDisplayPosition(it, latest),
                     queueAdActiveId = chooseQueueAdActiveId(it.queueAdActiveId, latest),
                 )
             }
@@ -4941,15 +5036,18 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private suspend fun pollUntilReady(token: String, created: SessionInfo, settings: StreamSettings): SessionInfo {
         var latest = created
         var pollCount = 0
+        val launchBase = created.streamingBaseUrl ?: effectiveStreamingBaseUrl()
+        var assignedPollBase = created.sessionControlPollBaseUrl()
         if (isTerminalSessionStatus(latest.status)) {
             throw TerminalSessionStatusException(latest.status, latest)
         }
         recordDebugEvent("queue", "Begin polling ${latest.debugSummary()}")
+        recordDebugEvent("queue", "Queue poll target=${hostForDebug(assignedPollBase ?: launchBase)}")
         _state.update {
             it.copy(
                 streamSession = latest,
                 launchPhase = loadingPhaseFor(latest),
-                queuePosition = queueDisplayPosition(latest),
+                queuePosition = stableQueueDisplayPosition(it, latest),
                 queueAdActiveId = chooseQueueAdActiveId(it.queueAdActiveId, latest),
             )
         }
@@ -4980,11 +5078,12 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 break
             }
             pollCount += 1
+            val pollTarget = assignedPollBase ?: launchBase
             val polled = try {
                 sessionRepository.pollSession(
                     token = token,
-                    streamingBaseUrl = latest.streamingBaseUrl ?: effectiveStreamingBaseUrl(),
-                    serverIp = latest.serverIp,
+                    streamingBaseUrl = pollTarget,
+                    serverIp = null,
                     zone = latest.zone,
                     sessionId = latest.sessionId,
                     clientId = latest.clientId,
@@ -4993,12 +5092,22 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 )
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
-                recordDebugEvent("queue", "Poll #$pollCount failed due to network error: ${e.message}. Retrying in 2 seconds...")
+                if (isAbandonedQueueError(e)) {
+                    recordDebugEvent("queue", "Poll #$pollCount ended because the provider abandoned the queue request")
+                    throw e
+                }
+                recordDebugEvent("queue", "Poll #$pollCount failed on ${hostForDebug(pollTarget)}: ${e.message}. Retrying the same host in 2 seconds...")
                 kotlinx.coroutines.delay(2_000L)
                 continue
             }
+            polled.sessionControlPollBaseUrl()?.let { nextPollBase ->
+                if (nextPollBase != assignedPollBase) {
+                    recordDebugEvent("queue", "Next queue poll target=${hostForDebug(nextPollBase)} from sessionControlInfo.ip")
+                }
+                assignedPollBase = nextPollBase
+            }
             latest = mergeQueueSessionState(latest, polled)
-            recordDebugEvent("queue", "Poll #$pollCount result ${latest.debugSummary()}")
+            recordDebugEvent("queue", "Poll #$pollCount target=${hostForDebug(pollTarget)} result ${latest.debugSummary()}")
             if (isTerminalSessionStatus(latest.status)) {
                 recordDebugEvent("queue", "Polling stopped at terminal session status=${latest.status} ${latest.shortDebugId()}")
                 throw TerminalSessionStatusException(latest.status, latest)
@@ -5007,7 +5116,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 it.copy(
                     streamSession = latest,
                     launchPhase = loadingPhaseFor(latest),
-                    queuePosition = queueDisplayPosition(latest),
+                    queuePosition = stableQueueDisplayPosition(it, latest),
                     queueAdActiveId = chooseQueueAdActiveId(it.queueAdActiveId, latest),
                 )
             }
@@ -5042,6 +5151,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private fun loadingPhaseFor(session: SessionInfo): String =
         when {
             queueDisplayPosition(session) != null || session.seatSetupStep == 1 -> "Queue"
+            session.seatSetupStep in 3..4 -> "Setting up rig"
+            session.seatSetupStep == 5 -> "Connecting stream"
             session.status == 0 || session.status == 1 -> "Checking queue"
             else -> "Setting up rig"
         }

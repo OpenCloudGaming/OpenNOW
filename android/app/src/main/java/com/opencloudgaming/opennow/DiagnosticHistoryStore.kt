@@ -28,6 +28,7 @@ internal class DiagnosticHistoryStore(
     private val historyDirectory = File(directory, DIRECTORY_NAME)
     private val currentFile = File(historyDirectory, CURRENT_FILE_NAME)
     private val previousFile = File(historyDirectory, PREVIOUS_FILE_NAME)
+    private val lastStreamFile = File(historyDirectory, LAST_STREAM_FILE_NAME)
 
     /**
      * Promotes the last process snapshot exactly once during Application startup. If the previous
@@ -76,6 +77,32 @@ internal class DiagnosticHistoryStore(
         return readSnapshot(previousFile)
     }
 
+    /** Keep the last measured stream independently of the rolling current-app snapshot. */
+    @Synchronized
+    fun saveLastStream(capturedAtEpochMs: Long, stream: JsonObject) {
+        historyDirectory.mkdirs()
+        recoverInterruptedReplacement(lastStreamFile)
+        if ((readSnapshot(lastStreamFile)?.capturedAtEpochMs ?: Long.MIN_VALUE) > capturedAtEpochMs) return
+        val staged = File(historyDirectory, "$LAST_STREAM_FILE_NAME.stage")
+        staged.delete()
+        FastGzipOutputStream(staged.outputStream().buffered()).use { compressed ->
+            OutputStreamWriter(compressed, Charsets.UTF_8).use { writer ->
+                writer.append(capturedAtEpochMs.toString())
+                writer.append('\n')
+                writer.append(stream.toString())
+            }
+        }
+        replaceFile(staged, lastStreamFile)
+    }
+
+    @Synchronized
+    fun lastStreamSnapshot(): JsonObject? {
+        recoverInterruptedReplacement(lastStreamFile)
+        return readSnapshot(lastStreamFile)?.text?.let { text ->
+            runCatching { OpenNowJson.parseToJsonElement(text).jsonObject }.getOrNull()
+        }
+    }
+
     private fun readSnapshot(file: File): PreviousDiagnosticSnapshot? {
         if (!file.isFile || file.length() <= 0L) return null
         return runCatching {
@@ -119,6 +146,7 @@ internal class DiagnosticHistoryStore(
         const val DIRECTORY_NAME = "diagnostic-history"
         const val CURRENT_FILE_NAME = "current.txt.gz"
         const val PREVIOUS_FILE_NAME = "previous.txt.gz"
+        const val LAST_STREAM_FILE_NAME = "last-stream.json.gz"
     }
 }
 

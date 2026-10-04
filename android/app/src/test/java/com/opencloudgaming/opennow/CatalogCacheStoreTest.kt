@@ -74,5 +74,28 @@ class CatalogCacheStoreTest {
         }
     }
 
+    @Test
+    fun manyDistinctSearchesCannotGrowTheCatalogCacheWithoutLimit() {
+        val directory = Files.createTempDirectory("opennow-catalog-cache-limit").toFile()
+        try {
+            val store = CatalogCacheStore(directory)
+            repeat(40) { index ->
+                store.saveCatalog(
+                    "user", "base", "query-$index", DEFAULT_CATALOG_SORT_ID,
+                    emptyList(), CatalogBrowseResult(listOf(game("game-$index"))),
+                )
+            }
+
+            assertTrue(directory.listFiles().orEmpty().count { it.extension == "gz" } <= 32)
+            assertEquals(
+                "game-39",
+                store.loadCatalog("user", "base", "query-39", DEFAULT_CATALOG_SORT_ID, emptyList())
+                    ?.games?.single()?.id,
+            )
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
     private fun game(id: String) = GameInfo(id = id, title = id)
 }

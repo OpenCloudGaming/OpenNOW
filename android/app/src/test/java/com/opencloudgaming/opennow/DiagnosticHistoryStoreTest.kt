@@ -2,6 +2,9 @@ package com.opencloudgaming.opennow
 
 import java.io.File
 import java.nio.file.Files
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -9,6 +12,26 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DiagnosticHistoryStoreTest {
+    @Test
+    fun lastMeasuredStreamSurvivesNewSnapshotsAndAppRuns() {
+        val directory = Files.createTempDirectory("diagnostic-last-stream").toFile()
+        val store = DiagnosticHistoryStore(directory) { 2000L }
+        val stream = buildJsonObject {
+            put("game", "Previous game")
+            put("totalSamples", 3)
+        }
+
+        store.beginAppRun()
+        store.saveLastStream(1000L, stream)
+        store.saveCurrent("new launch stayed in queue")
+        store.beginAppRun()
+
+        assertEquals("Previous game", store.lastStreamSnapshot()?.get("game")?.jsonPrimitive?.content)
+        assertEquals(stream, DiagnosticHistoryStore(directory).lastStreamSnapshot())
+        store.saveLastStream(900L, buildJsonObject { put("game", "stale write") })
+        assertEquals(stream, store.lastStreamSnapshot())
+    }
+
     @Test
     fun currentProcessSnapshotBecomesPreviousOnNextAppRun() {
         val directory = Files.createTempDirectory("diagnostic-history").toFile()

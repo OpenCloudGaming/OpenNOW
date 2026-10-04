@@ -223,6 +223,29 @@ class LaunchOwnershipTest {
     }
 
     @Test
+    fun unknownLibraryStoreDoesNotBecomeOwnedOnUnknownOrEveryAvailableStore() {
+        val game = game(
+            variants = listOf(variant(id = "launcher", store = "Unknown", libraryStatus = "PLATFORM_SYNC")),
+            isInLibrary = true,
+        ).copy(availableStores = listOf("STEAM", "EPIC"))
+
+        assertEquals(emptyList<String>(), libraryStoreDisplayNames(game))
+    }
+
+    @Test
+    fun explicitlyUnownedVariantIsNotColoredAsAnOwnedStore() {
+        val game = game(
+            variants = listOf(
+                variant(id = "steam", store = "Steam", libraryStatus = "NOT_OWNED", librarySelected = true),
+                variant(id = "hoyo", store = "HOYOVERSE", libraryStatus = "PLATFORM_SYNC"),
+            ),
+            isInLibrary = true,
+        )
+
+        assertEquals(listOf("HoYoverse"), libraryStoreDisplayNames(game))
+    }
+
+    @Test
     fun detailMetadataHydrationOnlyRunsWhenCatalogGenresAreMissing() {
         val catalogGame = game(
             variants = listOf(variant(libraryStatus = "NOT_OWNED")),

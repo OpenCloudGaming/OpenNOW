@@ -263,6 +263,7 @@ internal object GfnAppLaunchMode {
 }
 
 private const val DEFAULT_REMOTE_CONTROLLERS_BITMAP = 1
+private const val MULTI_CONTROLLER_BITMAP = 0b1111
 private const val DEFAULT_SUPPORTED_CONTROLLER_TYPE = 2
 
 private data class GfnControllerCapabilities(
@@ -275,12 +276,12 @@ private data class GfnControllerCapabilities(
  * exclusive to non-touch launches so virtual/physical gamepad packets have a host device without
  * changing touch-friendly sessions back into controller mode.
  */
-private fun gfnControllerCapabilities(appLaunchMode: Int): GfnControllerCapabilities =
+private fun gfnControllerCapabilities(appLaunchMode: Int, multiControllerEnabled: Boolean): GfnControllerCapabilities =
     if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) {
         GfnControllerCapabilities(remoteControllersBitmap = 0, supportedControllerTypes = emptyList())
     } else {
         GfnControllerCapabilities(
-            remoteControllersBitmap = DEFAULT_REMOTE_CONTROLLERS_BITMAP,
+            remoteControllersBitmap = if (multiControllerEnabled) MULTI_CONTROLLER_BITMAP else DEFAULT_REMOTE_CONTROLLERS_BITMAP,
             supportedControllerTypes = listOf(DEFAULT_SUPPORTED_CONTROLLER_TYPE),
         )
     }
@@ -503,7 +504,7 @@ private fun requestedStreamingFeatures(settings: StreamSettings, profile: Stream
             put("audioChannelCount", 2)
             put("qosPolicy", 0)
             put("touchSupport", true)
-            put("dynamicStreamingMode", StreamNetworkAdaptation.DYNAMIC_STREAMING_MODE)
+            put("dynamicStreamingMode", StreamNetworkAdaptation.dynamicStreamingMode(settings))
         }
     }
 
@@ -540,7 +541,7 @@ private fun baseWebRtcSessionMetadata(streamingBaseUrl: String? = null): JsonArr
     add(metadataEntry("GSStreamerType", "WebRTC"))
     add(metadataEntry("networkType", "Unknown"))
     cloudMatchLatencyMetadataHost(streamingBaseUrl)?.let { host ->
-        add(metadataEntry("latency@$host", "-1"))
+        add(metadataEntry("latency@$host", "3"))
     }
     add(metadataEntry("ClientImeSupport", "0"))
     add(metadataEntry("surroundAudioInfo", "2"))
@@ -653,7 +654,7 @@ internal fun buildMinimalClaimRequestBody(
         useDesktopNativeTvIdentity = useDesktopNativeTvIdentity,
     )
     val profile = settings?.requestProfile()
-    val controllerCapabilities = gfnControllerCapabilities(appLaunchMode)
+    val controllerCapabilities = gfnControllerCapabilities(appLaunchMode, settings?.multiControllerEnabled == true)
     return buildJsonObject {
         put("action", 2)
         put("data", "RESUME")
@@ -1835,13 +1836,15 @@ internal fun catalogScreenshotUrls(images: JsonObject?): List<String> =
 internal fun catalogGameDescription(app: JsonObject): String? =
     app.string("description") ?: app.string("shortDescription")
 
-internal fun gameStoreFromVariant(variant: JsonObject): String {
-    variant.string("appStore")?.trim()?.takeIf(String::isNotBlank)?.let { return it }
+internal fun gameStoreFromVariant(variant: JsonObject, publisherNameFallback: String? = null): String {
+    variant.string("appStore")?.trim()
+        ?.takeUnless { it.isBlank() || it.equals("Unknown", ignoreCase = true) || it.equals("None", ignoreCase = true) }
+        ?.let { return it }
 
     val storeUrl = variant.string("storeUrl")?.trim().orEmpty()
     val host = storeUrl.toHttpUrlOrNull()?.host?.lowercase(Locale.US).orEmpty()
     val shortName = variant.string("shortName")?.lowercase(Locale.US).orEmpty().removeSuffix("_gfn_pc")
-    val publisher = variant.string("publisherName")?.lowercase(Locale.US).orEmpty()
+    val publisher = (variant.string("publisherName") ?: publisherNameFallback)?.lowercase(Locale.US).orEmpty()
     return when {
         host == "store.steampowered.com" -> "STEAM"
         host == "epicgames.com" || host.endsWith(".epicgames.com") -> "EPIC"
@@ -1853,6 +1856,10 @@ internal fun gameStoreFromVariant(variant: JsonObject): String {
         host == "ea.com" || host.endsWith(".ea.com") -> "EA"
         host == "rockstargames.com" || host.endsWith(".rockstargames.com") -> "ROCKSTAR"
         host == "play.google.com" -> "GOOGLE_PLAY"
+        host == "hoyoverse.com" || host.endsWith(".hoyoverse.com") ||
+            host == "hoyolab.com" || host.endsWith(".hoyolab.com") ||
+            host == "hsr.hoyoverse.com" ||
+            shortName.endsWith("_hoyoverse") || shortName.endsWith("_hoyoplay") -> "HOYOVERSE"
         host == "guildwars2.com" || host.endsWith(".guildwars2.com") ||
             host == "ncsoft.com" || host.endsWith(".ncsoft.com") ||
             host == "plaync.com" || host.endsWith(".plaync.com") ||
@@ -1866,6 +1873,8 @@ internal fun gameStoreFromVariant(variant: JsonObject): String {
         shortName.endsWith("_origin") || shortName.endsWith("_ea_app") -> "EA"
         shortName.endsWith("_battlenet") || shortName.endsWith("_battle_net") -> "BATTLENET"
         shortName.endsWith("_ncsoft") || shortName.endsWith("_purple") -> "NCSOFT"
+        host.isBlank() && (publisher.contains("hoyoverse") || publisher.contains("cognosphere") ||
+            publisher.contains("mihoyo")) -> "HOYOVERSE"
         else -> "Unknown"
     }
 }
@@ -2483,7 +2492,7 @@ class GfnCatalogRepository(
             val variantPaymentModels = obj.arr("paymentModels")
             GameVariant(
                 id = obj.string("id") ?: return@mapNotNull null,
-                store = gameStoreFromVariant(obj),
+                store = gameStoreFromVariant(obj, app.string("publisherName")),
                 storeUrl = obj.string("storeUrl"),
                 supportedControls = obj.arr("supportedControls")?.mapNotNull { it.asString() }.orEmpty(),
                 librarySelected = library?.boolean("selected"),
@@ -3470,7 +3479,7 @@ class GfnSessionRepository(
             useDesktopNativeTvIdentity = useDesktopNativeTvIdentity,
         )
         val profile = settings.requestProfile()
-        val controllerCapabilities = gfnControllerCapabilities(appLaunchMode)
+        val controllerCapabilities = gfnControllerCapabilities(appLaunchMode, settings.multiControllerEnabled)
         return buildJsonObject {
             putJsonObject("sessionRequestData") {
                 put("appId", appId)
@@ -3552,6 +3561,10 @@ class GfnSessionRepository(
             zone = payload.obj("requestStatus")?.string("serverId")?.takeIf { it.isNotBlank() } ?: zone,
             assignedZone = assignedSessionZoneFromControlHost(session.obj("sessionControlInfo")?.string("ip")),
             streamingBaseUrl = base,
+            sessionControlBaseUrl = standardCloudMatchSessionControlBaseUrl(
+                session.obj("sessionControlInfo")?.string("ip"),
+                session.obj("sessionControlInfo")?.int("port"),
+            ),
             serverIp = signaling?.serverIp.orEmpty(),
             signalingServer = signaling?.signalingServer.orEmpty(),
             signalingUrl = signaling?.signalingUrl.orEmpty(),

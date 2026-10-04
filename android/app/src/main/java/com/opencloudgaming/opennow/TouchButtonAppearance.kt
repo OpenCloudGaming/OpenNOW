@@ -16,6 +16,9 @@ data class TouchButtonAppearance(
 
 internal val touchButtonKeys = listOf("A", "B", "X", "Y", "LT", "RT", "LB", "RB", "LS", "RS", "◀", "▶") +
     (1..TOUCH_EXTRA_BUTTON_COUNT).map { "extra$it" }
+internal fun AndroidTouchSettings.touchButtonAppearanceKeys(): List<String> =
+    (touchButtonKeys.filterNot { it.startsWith("keyboard_") } + keyboardButtons.map(KeyboardOverlayButton::appearanceKey)).distinct()
+
 internal const val TOUCH_BUTTON_LABEL_LIMIT = 12
 
 internal const val TOUCH_BUTTON_MIN_SIZE_SCALE = 0.5f
@@ -31,7 +34,7 @@ internal fun TouchButtonAppearance.normalized(): TouchButtonAppearance = copy(
 )
 
 internal fun AndroidTouchSettings.withButtonAppearance(key: String, appearance: TouchButtonAppearance): AndroidTouchSettings {
-    if (key !in touchButtonKeys) return this
+    if (key !in touchButtonAppearanceKeys()) return this
     val value = appearance.normalized()
     return copy(buttonAppearances = if (value == TouchButtonAppearance()) buttonAppearances - key
         else buttonAppearances + (key to value))

@@ -67,4 +67,48 @@ class StreamKeyboardKeyStrokeTest {
         assertEquals(listOf(true, false, true, false), events.map { it.first })
         assertTrue(events[2].second - events[1].second >= STREAM_KEY_PRESS_DURATION_MS * 1_000_000L)
     }
+
+    @Test
+    fun starHoldsShiftThroughTheDigitKeyAndReleasesBoth() = runBlocking {
+        val events = mutableListOf<Triple<Int, Int, Boolean>>()
+        val spec = InputEncoder.mapTextCharToKeySpec('*')!!
+        assertTrue(sendStreamKeyboardSymbolKeyStroke(spec) { payload, pressed ->
+            events += Triple(payload.keycode, payload.modifiers, pressed)
+            true
+        })
+        assertEquals(
+            listOf(
+                Triple(0xa0, 0x01, true),
+                Triple(0x38, 0x01, true),
+                Triple(0x38, 0x01, false),
+                Triple(0xa0, 0, false),
+            ),
+            events,
+        )
+    }
+
+    @Test
+    fun periodSendsOneUnshiftedPressAndRelease() = runBlocking {
+        val events = mutableListOf<Triple<Int, Int, Boolean>>()
+        val spec = InputEncoder.mapTextCharToKeySpec('.')!!
+        assertTrue(sendStreamKeyboardSymbolKeyStroke(spec) { payload, pressed ->
+            events += Triple(payload.keycode, payload.modifiers, pressed)
+            true
+        })
+        assertEquals(
+            listOf(Triple(0xbe, 0, true), Triple(0xbe, 0, false)),
+            events,
+        )
+    }
+
+    @Test
+    fun rejectedSymbolPressStillReleasesShift() = runBlocking {
+        val events = mutableListOf<Pair<Int, Boolean>>()
+        val spec = InputEncoder.mapTextCharToKeySpec('*')!!
+        assertFalse(sendStreamKeyboardSymbolKeyStroke(spec) { payload, pressed ->
+            events += payload.keycode to pressed
+            payload.keycode != 0x38
+        })
+        assertEquals(listOf(0xa0 to true, 0x38 to true, 0xa0 to false), events)
+    }
 }

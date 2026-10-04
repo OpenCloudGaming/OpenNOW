@@ -168,6 +168,132 @@
                     ],
                     "additionalProperties": true
                 },
+                "lastCompletedStream": {
+                    "type": "object",
+                    "properties": {
+                        "capturedAt": {
+                            "type": "string"
+                        },
+                        "capturedAtEpochMs": {
+                            "type": "integer"
+                        },
+                        "lastSampleCapturedAtEpochMs": {
+                            "type": "integer"
+                        },
+                        "game": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ]
+                        },
+                        "session": {
+                            "$ref": "#/$defs/SessionInfo"
+                        },
+                        "settings": {
+                            "$ref": "#/$defs/StreamSettings"
+                        },
+                        "samples": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/$defs/DiagnosticStreamSample"
+                            }
+                        },
+                        "totalSamples": {
+                            "type": "integer"
+                        },
+                        "evictedSamples": {
+                            "type": "integer"
+                        },
+                        "sessionReport": {
+                            "$ref": "#/$defs/SessionReport"
+                        },
+                        "input": {
+                            "type": "object",
+                            "properties": {
+                                "state": {
+                                    "type": "object",
+                                    "additionalProperties": {
+                                        "type": "object",
+                                        "properties": {
+                                            "timestamp": {
+                                                "type": "string"
+                                            },
+                                            "uptimeMs": {
+                                                "type": "integer"
+                                            },
+                                            "lastSeenUptimeMs": {
+                                                "type": "integer"
+                                            },
+                                            "message": {
+                                                "type": "string"
+                                            },
+                                            "count": {
+                                                "type": "integer"
+                                            }
+                                        },
+                                        "required": [
+                                            "timestamp",
+                                            "uptimeMs",
+                                            "lastSeenUptimeMs",
+                                            "message"
+                                        ],
+                                        "additionalProperties": true
+                                    }
+                                },
+                                "events": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "timestamp": {
+                                                "type": "string"
+                                            },
+                                            "uptimeMs": {
+                                                "type": "integer"
+                                            },
+                                            "lastSeenUptimeMs": {
+                                                "type": "integer"
+                                            },
+                                            "message": {
+                                                "type": "string"
+                                            },
+                                            "count": {
+                                                "type": "integer"
+                                            }
+                                        },
+                                        "required": [
+                                            "timestamp",
+                                            "uptimeMs",
+                                            "lastSeenUptimeMs",
+                                            "message"
+                                        ],
+                                        "additionalProperties": true
+                                    }
+                                }
+                            },
+                            "required": [
+                                "state",
+                                "events"
+                            ],
+                            "additionalProperties": true
+                        }
+                    },
+                    "required": [
+                        "capturedAt",
+                        "capturedAtEpochMs",
+                        "lastSampleCapturedAtEpochMs",
+                        "game",
+                        "samples",
+                        "totalSamples",
+                        "evictedSamples",
+                        "input"
+                    ],
+                    "additionalProperties": true
+                },
                 "inputSettings": {
                     "type": "object",
                     "properties": {
@@ -1268,6 +1394,9 @@
                 "gameLanguage": {
                     "type": "string"
                 },
+                "multiControllerEnabled": {
+                    "type": "boolean"
+                },
                 "sessionProxyEnabled": {
                     "type": "boolean"
                 },
@@ -1279,6 +1408,12 @@
                 },
                 "experimentalNvst": {
                     "type": "boolean"
+                },
+                "experimentalDynamicNetworkAdjustment": {
+                    "type": "boolean"
+                },
+                "experimentalDynamicMinimumBitrateMbps": {
+                    "type": "integer"
                 },
                 "mouseSensitivity": {
                     "type": "number"
@@ -1305,6 +1440,18 @@
                 },
                 "mouseScrollSensitivity": {
                     "type": "integer"
+                },
+                "recordingBitrateMbps": {
+                    "type": "integer"
+                },
+                "recordingFps": {
+                    "type": "integer"
+                },
+                "recordingSharpeningEnabled": {
+                    "type": "boolean"
+                },
+                "recordingSharpeningAmount": {
+                    "type": "number"
                 }
             },
             "required": [],
@@ -1630,6 +1777,16 @@
                     ]
                 },
                 "streamingBaseUrl": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "sessionControlBaseUrl": {
                     "anyOf": [
                         {
                             "type": "string"
@@ -2295,6 +2452,15 @@
                 "mousePad": {
                     "type": "boolean"
                 },
+                "keyboardModeEnabled": {
+                    "type": "boolean"
+                },
+                "keyboardButtons": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/$defs/KeyboardOverlayButton"
+                    }
+                },
                 "opacity": {
                     "type": "number"
                 },
@@ -2498,6 +2664,25 @@
                 }
             },
             "required": [],
+            "additionalProperties": true
+        },
+        "KeyboardOverlayButton": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string"
+                },
+                "actionId": {
+                    "type": "string"
+                },
+                "layoutIndex": {
+                    "type": "integer"
+                }
+            },
+            "required": [
+                "id",
+                "actionId"
+            ],
             "additionalProperties": true
         },
         "TouchExtraButtonCombo": {

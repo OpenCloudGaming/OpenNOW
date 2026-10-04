@@ -2,8 +2,19 @@ package com.opencloudgaming.opennow
 
 import org.junit.Assert.*
 import org.junit.Test
+import androidx.compose.ui.graphics.Color
 
 class AppMessagesTest {
+    @Test fun formatsAnnouncementMarkersWithoutChangingPlainText() {
+        val rendered = formattedAppMessageBody(
+            "Line one\n**Important** <red>Warning</red> [details](https://example.com)",
+            Color.Blue,
+            Color.Red,
+        )
+        assertEquals("Line one\nImportant Warning details", rendered.text)
+        assertEquals(3, rendered.spanStyles.size)
+        assertEquals("Literal http://example.com", formattedAppMessageBody("Literal http://example.com", Color.Blue, Color.Red).text)
+    }
     @Test fun acknowledgementSuppressesSameAndOlderIdsButAllowsNewIds() {
         val message = AppMessage(5, "News", "Body")
         assertTrue(message.isUnacknowledged(4))

@@ -319,7 +319,7 @@ object SdpTools {
         val hidDeviceMask = parseHidDeviceMask(offerSdp)
         val partiallyReliableHidMask = parsePartiallyReliableHidMask(offerSdp)
         val bitDepth = if (settings.usesTenBitStreamProfile()) 10 else 8
-        val bitrate = StreamNetworkAdaptation.bitrateRange(settings.maxBitrateMbps)
+        val bitrate = StreamNetworkAdaptation.bitrateRange(settings)
         val maxBitrate = bitrate.maximumKbps
         val minBitrate = bitrate.minimumKbps
         val initialBitrate = bitrate.initialKbps
@@ -346,8 +346,8 @@ object SdpTools {
             add("a=vqos.fec.repairPercent:5")
             add("a=vqos.fec.repairMaxPercent:35")
             add("a=vqos.bllFec.enable:0")
-            add("a=vqos.dynamicStreamingMode:${StreamNetworkAdaptation.DYNAMIC_STREAMING_MODE}")
-            add("a=vqos.drc.enable:${StreamNetworkAdaptation.DYNAMIC_RESOLUTION_CONTROL}")
+            add("a=vqos.dynamicStreamingMode:${StreamNetworkAdaptation.dynamicStreamingMode(settings)}")
+            add("a=vqos.drc.enable:${StreamNetworkAdaptation.dynamicResolutionControl(settings)}")
             add("a=vqos.dfc.enable:0")
             add("a=vqos.dfc.adjustResAndFps:0")
             add("a=vqos.calculateAvgVideoStreamingBitrate:1")
@@ -419,8 +419,10 @@ object SdpTools {
             add("a=vqos.resControl.perfHistory.rtcIgnoreOutOfFocusWindowState:1")
             add("a=vqos.resControl.cpmRtc.featureMask:0")
             add("a=vqos.resControl.cpmRtc.enable:0")
-            add("a=vqos.resControl.cpmRtc.minResolutionPercent:100")
-            add("a=vqos.resControl.cpmRtc.resolutionChangeHoldonMs:999999")
+            if (!settings.experimentalDynamicNetworkAdjustment) {
+                add("a=vqos.resControl.cpmRtc.minResolutionPercent:100")
+                add("a=vqos.resControl.cpmRtc.resolutionChangeHoldonMs:999999")
+            }
             add("a=packetPacing.numGroups:${if (is120Fps) 3 else 5}")
             add("a=packetPacing.maxDelayUs:1000")
             add("a=packetPacing.minNumPacketsFrame:10")

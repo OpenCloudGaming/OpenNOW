@@ -49,6 +49,21 @@ class AppLaunchModeTest {
         assertEquals(emptyList<Int>(), supportedControllerTypesOf(body))
     }
 
+    @Test
+    fun multipleControllersAreAdvertisedOnlyWhenEnabledForGamepadSessions() {
+        val settings = StreamSettings(multiControllerEnabled = true)
+        val gamepad = buildMinimalClaimRequestBody(appId = "123", deviceId = "device", settings = settings)
+        val touch = buildMinimalClaimRequestBody(
+            appId = "123",
+            deviceId = "device",
+            settings = settings,
+            appLaunchMode = GfnAppLaunchMode.TOUCH_FRIENDLY,
+        )
+        assertEquals(15, controllerBitmapOf(gamepad))
+        assertEquals(listOf(2), supportedControllerTypesOf(gamepad))
+        assertEquals(0, controllerBitmapOf(touch))
+    }
+
     /**
      * These are protocol constants, not ours to renumber — the host and the official client both
      * read them by value.

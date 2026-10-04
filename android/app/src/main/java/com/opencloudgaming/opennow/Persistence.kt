@@ -15,6 +15,7 @@ import java.io.FileInputStream
 import java.util.zip.GZIPInputStream
 import java.util.zip.GZIPOutputStream
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.drop
@@ -38,6 +39,7 @@ private const val CATALOG_CACHE_TTL_MS = 12L * 60L * 60L * 1000L
  * This is both a storage bound and a decompression-memory guard. See `CatalogCacheStore.save`.
  */
 private const val MAX_COMPRESSED_CATALOG_CACHE_BYTES = 768 * 1024
+private const val MAX_CATALOG_CACHE_FILES = 32
 private const val CATALOG_CACHE_DIRECTORY_NAME = "catalog-cache-v2"
 
 /**
@@ -282,6 +284,13 @@ class ExternalPrefs private constructor(context: Context, val name: String) {
             val success = writeToFile(primaryFile, snapshot)
             if (!success) writeToFile(fallbackFile, snapshot) else true
         }
+
+        /** Waits behind pending apply() writes so a restored backup is durable before success is shown. */
+        suspend fun commitOrdered(): Boolean {
+            val result = CompletableDeferred<Boolean>()
+            writeScope.launch { result.complete(commit()) }
+            return result.await()
+        }
     }
 }
 
@@ -295,6 +304,7 @@ internal fun AppSettings.normalizedForAndroid(): AppSettings {
         codec = compatibleStream.codec,
         sessionProxyUrl = stream.sessionProxyUrl.trim(),
         maxBitrateMbps = compatibleStream.maxBitrateMbps.coerceIn(1, 150),
+        experimentalDynamicMinimumBitrateMbps = compatibleStream.experimentalDynamicMinimumBitrateMbps.coerceIn(1, 150),
         fps = compatibleStream.fps.coerceIn(30, 360),
         mouseSensitivity = compatibleStream.mouseSensitivity.finiteIn(0.25f, 3f, streamDefaults.mouseSensitivity),
         mouseAcceleration = compatibleStream.mouseAcceleration.coerceIn(1, 150),
@@ -303,6 +313,16 @@ internal fun AppSettings.normalizedForAndroid(): AppSettings {
             0f,
             1f,
             streamDefaults.streamSharpeningAmount,
+        ),
+        recordingBitrateMbps = when {
+            compatibleStream.recordingBitrateMbps <= 0 -> 0
+            else -> compatibleStream.recordingBitrateMbps.coerceIn(2, 50)
+        },
+        recordingFps = compatibleStream.recordingFps.takeIf { it in setOf(0, 24, 30, 60) } ?: 0,
+        recordingSharpeningAmount = compatibleStream.recordingSharpeningAmount.finiteIn(
+            0f,
+            1f,
+            streamDefaults.recordingSharpeningAmount,
         ),
     )
     val normalizedCatalogSortId = catalogSortId.trim().ifBlank { DEFAULT_CATALOG_SORT_ID }
@@ -315,10 +335,12 @@ internal fun AppSettings.normalizedForAndroid(): AppSettings {
         normalizedCatalogSortId
     }
     return copy(
+        recordingDirectoryUri = recordingDirectoryUri?.takeIf { it.isNotBlank() },
         uiAccent = if (uiAccent == UiAccent.LegacyOrange) UiAccent.Violet else uiAccent,
         selectionEffectColors = selectionEffectColors?.normalized(),
         stream = lowPowerSafe,
         posterSizeScale = posterSizeScale.finiteIn(MIN_GAME_CARD_SCALE, MAX_GAME_CARD_SCALE, 1f),
+        navigationRailBackgroundOpacity = navigationRailBackgroundOpacity?.finiteIn(0f, 1f, 0.75f),
         uselessMascotDelaySeconds = normalizeMascotDelaySeconds(uselessMascotDelaySeconds),
         liveSelectedOutlines =
             if (gameBordersDefaultVersion < GAME_BORDERS_DEFAULT_VERSION) false
@@ -326,6 +348,12 @@ internal fun AppSettings.normalizedForAndroid(): AppSettings {
         gameBordersDefaultVersion = GAME_BORDERS_DEFAULT_VERSION,
         streamMenuShortcut = androidKeyboardShortcutDisplay(streamMenuShortcut),
         streamKeyboardButtonPosition = streamKeyboardButtonPosition.normalized(),
+        streamStatsBackgroundOpacity = streamStatsBackgroundOpacity.finiteIn(
+            0f, 1f, DEFAULT_STREAM_STATS_BACKGROUND_OPACITY,
+        ),
+        streamStatsCustomX = streamStatsCustomX?.takeIf { it.isFinite() }?.coerceIn(0f, 1f),
+        streamStatsCustomY = streamStatsCustomY?.takeIf { it.isFinite() }?.coerceIn(0f, 1f),
+        physicalInput = physicalInput.normalized(),
         touchControlPresets = touchControlPresets.take(MAX_TOUCH_PRESETS)
             .distinctBy { it.id }
             .map {
@@ -417,6 +445,14 @@ class SettingsStore(context: Context) {
         _settings.value = next
             .withCurrentStreamPresentationDefaults()
             .normalizedForAndroid()
+    }
+
+    suspend fun restore(next: AppSettings): Boolean {
+        val normalized = next.withCurrentStreamPresentationDefaults().normalizedForAndroid()
+        val encoded = OpenNowJson.encodeToString(normalized)
+        if (!prefs.edit().putString(KEY_SETTINGS, encoded).commitOrdered()) return false
+        _settings.value = normalized
+        return true
     }
 
     fun reset() {
@@ -708,6 +744,20 @@ class CatalogCacheStore private constructor(
             return
         }
         replaceCacheFile(staged, target)
+        if (target.isFile) pruneCacheFiles(target)
+    }
+
+    private fun pruneCacheFiles(keep: File) {
+        val cacheFiles = cacheDirectory.listFiles()
+            ?.filter { it.isFile && it.name.startsWith(KEY_CATALOG_CACHE_PREFIX) && it.name.endsWith(".json.gz") }
+            .orEmpty()
+        val oldestUsefulWrite = System.currentTimeMillis() - CATALOG_CACHE_TTL_MS
+        cacheFiles.filter { it != keep && it.lastModified() < oldestUsefulWrite }.forEach(File::delete)
+        cacheFiles.asSequence()
+            .filter { it.isFile && it != keep }
+            .sortedByDescending(File::lastModified)
+            .drop(MAX_CATALOG_CACHE_FILES - 1)
+            .forEach(File::delete)
     }
 
     private fun key(vararg parts: String): String =
@@ -872,10 +922,17 @@ class AndroidUpdateNoticeStore(context: Context) {
 
 internal fun AndroidTouchSettings.normalizedTouchControls(): AndroidTouchSettings {
     val touchDefaults = AndroidTouchSettings()
+    val normalizedKeyboardButtons = normalizeKeyboardOverlayButtons(keyboardButtons)
+    val keyboardAppearanceKeys = normalizedKeyboardButtons.map(KeyboardOverlayButton::appearanceKey).toSet()
+    val fixedAppearanceKeys = touchButtonKeys.filterNot { it.startsWith("keyboard_") }.toSet()
+    val keyboardPositionKeys = normalizedKeyboardButtons.flatMap { button ->
+        listOf("${button.positionKey()}_landscape", "${button.positionKey()}_portrait")
+    }.toSet()
     return copy(
         touchSkinTint = touchSkinTint.withoutRemovedWarmTint(),
+        keyboardButtons = normalizedKeyboardButtons,
         buttonAppearances = buttonAppearances
-            .filterKeys { it in touchButtonKeys }
+            .filterKeys { it in fixedAppearanceKeys || it in keyboardAppearanceKeys }
             .mapValues { (_, appearance) -> appearance.normalized() }
             .filterValues { it != TouchButtonAppearance() },
         opacity = opacity.finiteIn(0f, 1f, touchDefaults.opacity),
@@ -912,7 +969,9 @@ internal fun AndroidTouchSettings.normalizedTouchControls(): AndroidTouchSetting
         leftOffsetYDp = leftOffsetYDp.finiteIn(-160f, 160f, touchDefaults.leftOffsetYDp),
         rightOffsetXDp = rightOffsetXDp.finiteIn(-220f, 220f, touchDefaults.rightOffsetXDp),
         rightOffsetYDp = rightOffsetYDp.finiteIn(-160f, 160f, touchDefaults.rightOffsetYDp),
-        offsets = touchDefaults.offsets + offsets.mapValues { (_, offset) ->
+        offsets = touchDefaults.offsets + offsets
+            .filterKeys { !it.startsWith("keyboard_button_") || it in keyboardPositionKeys }
+            .mapValues { (_, offset) ->
             TouchOffset(
                 x = offset.x.takeIf { it.isFinite() } ?: 0f,
                 y = offset.y.takeIf { it.isFinite() } ?: 0f,

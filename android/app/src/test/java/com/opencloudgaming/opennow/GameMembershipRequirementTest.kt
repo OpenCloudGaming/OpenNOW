@@ -1,8 +1,10 @@
 package com.opencloudgaming.opennow
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class GameMembershipRequirementTest {
@@ -15,6 +17,18 @@ class GameMembershipRequirementTest {
     fun aGameWithNoStatedTierNeverWarns() {
         assertNull(gameMembershipRequirement(game(null), subscription("FREE"), null))
         assertNull(gameMembershipRequirement(game("  "), subscription("FREE"), null))
+    }
+
+    @Test
+    fun premiumMarkerTracksTheCatalogTierRegardlessOfAccountPlan() {
+        assertFalse(game(null).hasPremiumMembershipMarker())
+        assertFalse(game("Free").hasPremiumMembershipMarker())
+        assertFalse(game("Day Pass").hasPremiumMembershipMarker())
+        assertTrue(game("Performance").hasPremiumMembershipMarker())
+        assertTrue(game("Premium").hasPremiumMembershipMarker())
+        assertTrue(game("GeForce NOW Ultimate").hasPremiumMembershipMarker())
+        assertNull(gameMembershipRequirement(game("Ultimate"), subscription("ULTIMATE"), null))
+        assertTrue(game("Ultimate").hasPremiumMembershipMarker())
     }
 
     @Test

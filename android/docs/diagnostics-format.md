@@ -91,6 +91,12 @@ is aggregated; original samples remain in the parser. Periodic compressed histor
 every five minutes while idle, with an immediate snapshot on active/idle transitions. A hard
 process death can therefore lose the most recent periodic interval.
 
+The last measured stream is also saved separately when it ends. A later queue or launch can clear
+the current session's sample ring without erasing that stream's bounded samples, score, settings,
+session metadata, and input events. The export shows a short `[Last completed stream]` summary and
+keeps the full evidence in `lastCompletedStream` in the parser block. This separate snapshot survives
+app restarts and is replaced only after another stream has produced media samples.
+
 ## JSON Schema and preview
 
 - [`diagnostics-parser.schema.json`](diagnostics-parser.schema.json) is the complete JSON Schema

@@ -7,7 +7,7 @@ import org.junit.Test
 
 class LaunchErrorsTest {
     @Test
-    fun entitlementFailureExplainsThatNoCurrentPlanWasFound() {
+    fun entitlementFailureExplainsProviderRejectionWithoutAssumingPlanIsInactive() {
         val error = CloudMatchRequestStatusException(
             statusCode = 18,
             statusDescription = "ENTITLEMENT_FAILURE_STATUS 8A910006",
@@ -15,14 +15,14 @@ class LaunchErrorsTest {
         )
 
         assertEquals(
-            "No current GeForce NOW plan was found. Activate the Free plan or choose a paid membership, then try again.",
+            "GeForce NOW rejected this launch because it could not verify a playable membership for the signed-in account. If Free is active, confirm you signed in with the same NVIDIA account, then sign out and back in.",
             normalizeLaunchErrorMessage(error, "Subnautica 2"),
         )
         assertTrue(isMissingGfnPlanError(error))
     }
 
     @Test
-    fun wrappedEntitlementFailureStillPromptsForAPlan() {
+    fun wrappedEntitlementFailureStillExplainsProviderRejection() {
         val providerError = CloudMatchRequestStatusException(
             statusCode = 18,
             statusDescription = "ENTITLEMENT_FAILURE_STATUS",
@@ -31,14 +31,14 @@ class LaunchErrorsTest {
         val error = IllegalStateException("Upgrade membership", providerError)
 
         assertEquals(
-            "No current GeForce NOW plan was found. Activate the Free plan or choose a paid membership, then try again.",
+            "GeForce NOW rejected this launch because it could not verify a playable membership for the signed-in account. If Free is active, confirm you signed in with the same NVIDIA account, then sign out and back in.",
             normalizeLaunchErrorMessage(error, "Subnautica 2"),
         )
         assertTrue(isMissingGfnPlanError(error))
     }
 
     @Test
-    fun status18AloneIsParsedAsNoCurrentPlan() {
+    fun status18AloneIsParsedAsEntitlementRejection() {
         val error = CloudMatchRequestStatusException(
             statusCode = 18,
             statusDescription = null,
@@ -46,7 +46,7 @@ class LaunchErrorsTest {
         )
 
         assertEquals(
-            "No current GeForce NOW plan was found. Activate the Free plan or choose a paid membership, then try again.",
+            "GeForce NOW rejected this launch because it could not verify a playable membership for the signed-in account. If Free is active, confirm you signed in with the same NVIDIA account, then sign out and back in.",
             normalizeLaunchErrorMessage(error),
         )
         assertTrue(isMissingGfnPlanError(error))
@@ -93,6 +93,23 @@ class LaunchErrorsTest {
             normalizeLaunchErrorMessage(error, "Subnautica 2"),
         )
         assertFalse(isMissingGfnPlanError(error))
+    }
+
+    @Test
+    fun abandonedQueueIsTerminalEvenWhenProviderUsesHttp503() {
+        val error = CloudMatchRequestStatusException(
+            statusCode = 69,
+            statusDescription = "SESSION_REQUEST_IN_QUEUE_ABANDONED 4A8C300F",
+            unifiedErrorCode = "1250701327",
+        )
+
+        assertTrue(isAbandonedQueueError(error))
+        assertEquals(
+            "The cloud provider ended this queue request. Start the game again to join a new queue.",
+            normalizeLaunchErrorMessage(error),
+        )
+        assertFalse(isAbandonedQueueError(CloudMatchRequestStatusException(8, "INTERNAL_ERROR_STATUS", null)))
+        assertFalse(isAbandonedQueueError(IllegalStateException("Network unavailable")))
     }
 
     @Test

@@ -519,11 +519,12 @@ internal fun rememberPrintedWastePicker(
     game: GameInfo,
     viewModel: OpenNowViewModel,
 ): PrintedWastePickerModel {
-    val zones = remember(state.printedWasteQueue, state.printedWasteMapping, state.printedWastePings) {
+    val zones = remember(state.printedWasteQueue, state.printedWasteMapping, state.printedWastePings, state.regions) {
         state.printedWasteQueue
             .filter { (zoneId, _) -> isStandardPrintedWasteZone(zoneId) && state.printedWasteMapping[zoneId]?.nuked != true }
-            .map { (zoneId, zone) ->
-                val routingUrl = printedWasteZoneUrl(zoneId)
+            .mapNotNull { (zoneId, zone) ->
+                val routingUrl = printedWasteRegionalUrl(zoneId, state.printedWasteMapping, state.regions)
+                    ?: return@mapNotNull null
                 PrintedWasteZoneOption(
                     zoneId = zoneId,
                     zone = zone,

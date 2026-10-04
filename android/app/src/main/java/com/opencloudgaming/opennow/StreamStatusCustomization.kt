@@ -2,6 +2,15 @@ package com.opencloudgaming.opennow
 
 import androidx.annotation.StringRes
 
+internal const val DEFAULT_STREAM_STATS_BACKGROUND_OPACITY = 0.52f
+
+internal fun AppSettings.streamStatsBackgroundAlpha(): Float = if (!streamStatsBackgroundEnabled) {
+    0f
+} else {
+    streamStatsBackgroundOpacity.takeIf { it.isFinite() }?.coerceIn(0f, 1f)
+        ?: DEFAULT_STREAM_STATS_BACKGROUND_OPACITY
+}
+
 /**
  * The items that can appear in the in-stream status line.
  *
@@ -17,6 +26,7 @@ internal enum class StreamStatusItem(
     Ping(R.string.stream_statusbar_metric_ping, R.string.setup_play_metric_ping_preview),
     Bitrate(R.string.stream_statusbar_metric_bitrate, R.string.setup_play_metric_bitrate_preview),
     Battery(R.string.stream_statusbar_metric_battery, R.string.setup_play_metric_battery_preview),
+    SessionBattery(R.string.stream_statusbar_metric_session_battery, R.string.setup_play_metric_session_battery_preview),
     Connection(R.string.stream_statusbar_metric_connection, R.string.setup_play_metric_connection_preview),
     Resolution(R.string.stream_statusbar_metric_resolution, R.string.setup_play_metric_resolution_preview),
     Codec(R.string.stream_statusbar_metric_codec, R.string.setup_play_metric_codec_preview),
@@ -31,6 +41,7 @@ internal enum class StreamStatusItem(
         Ping -> settings.streamStatsMetrics.ping
         Bitrate -> settings.streamStatsMetrics.bitrate
         Battery -> settings.streamStatsMetrics.battery
+        SessionBattery -> settings.streamStatsMetrics.sessionBattery
         Connection -> settings.streamStatsMetrics.connection
         Resolution -> settings.streamStatsMetrics.resolution
         Codec -> settings.streamStatsMetrics.codec
@@ -50,6 +61,7 @@ internal enum class StreamStatusItem(
             Ping -> metrics.copy(ping = enabled)
             Bitrate -> metrics.copy(bitrate = enabled)
             Battery -> metrics.copy(battery = enabled)
+            SessionBattery -> metrics.copy(sessionBattery = enabled)
             Connection -> metrics.copy(connection = enabled)
             Resolution -> metrics.copy(resolution = enabled)
             Codec -> metrics.copy(codec = enabled)
