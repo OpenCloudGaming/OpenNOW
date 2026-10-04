@@ -79,6 +79,9 @@ class DiagnosticSchemaTest {
             "possibleReason" to str, "evidencePaths" to array(str), "timestamp" to str,
             "httpStatus" to nullable(int), "providerStatus" to type("object"), "error" to str),
             listOf("reasonCode", "category", "confidence", "possibleReason", "evidencePaths"))
+        val inputDiagnostics = obj(mapOf("state" to buildJsonObject {
+            put("type", "object"); put("additionalProperties", inputEntry)
+        }, "events" to array(inputEntry)))
         val properties = linkedMapOf(
             "schemaVersion" to buildJsonObject { put("const", 2) },
             "capturedAt" to str, "capturedAtEpochMs" to int, "uptimeMs" to int, "timezone" to constant("UTC"),
@@ -95,6 +98,16 @@ class DiagnosticSchemaTest {
                 "session" to descriptor(SessionInfo.serializer().descriptor),
                 "samples" to array(descriptor(DiagnosticStreamSample.serializer().descriptor))),
                 listOf("state", "game", "launchPhase", "queuePosition", "error", "providerDefaultUrl", "sessionBaseUrl", "settings")),
+            "lastCompletedStream" to obj(mapOf("capturedAt" to str, "capturedAtEpochMs" to int,
+                "lastSampleCapturedAtEpochMs" to int, "game" to nullable(str),
+                "session" to descriptor(SessionInfo.serializer().descriptor),
+                "settings" to descriptor(StreamSettings.serializer().descriptor),
+                "samples" to array(descriptor(DiagnosticStreamSample.serializer().descriptor)),
+                "totalSamples" to int, "evictedSamples" to int,
+                "sessionReport" to descriptor(SessionReport.serializer().descriptor),
+                "input" to inputDiagnostics),
+                listOf("capturedAt", "capturedAtEpochMs", "lastSampleCapturedAtEpochMs", "game",
+                    "samples", "totalSamples", "evictedSamples", "input")),
             "inputSettings" to obj(mapOf("mouseLock" to bool, "touch" to descriptor(AndroidTouchSettings.serializer().descriptor))),
             "codecs" to descriptor(RuntimeCodecReport.serializer().descriptor),
             "cpuBuckets" to array(descriptor(CpuDiagnosticBucket.serializer().descriptor)),
@@ -103,9 +116,7 @@ class DiagnosticSchemaTest {
                 "totalRecorded" to int, "retainedRecords" to int, "evictedRecords" to int, "recordLimit" to int,
                 "capturedChars" to int, "characterLimit" to int, "bodyCharacterLimit" to int, "truncatedBodies" to int)),
                 "stream" to obj(mapOf("sampleLimit" to int, "totalSamples" to int, "retainedSamples" to int, "evictedSamples" to int)))),
-            "input" to obj(mapOf("state" to buildJsonObject {
-                put("type", "object"); put("additionalProperties", inputEntry)
-            }, "events" to array(inputEntry))),
+            "input" to inputDiagnostics,
             "events" to array(obj(mapOf("timestamp" to str, "category" to str, "message" to str))),
             "api" to array(api), "sessionScore" to score,
             "processExitHistory" to descriptor(DiagnosticProcessExitHistory.serializer().descriptor),
@@ -116,7 +127,7 @@ class DiagnosticSchemaTest {
             put("\$schema", "https://json-schema.org/draft/2020-12/schema")
             put("title", "OpenNOW Android diagnostic parser format 2")
             put("anyOf", JsonArray(listOf(
-                obj(properties, properties.keys.filter { it != "codecs" }),
+                obj(properties, properties.keys.filter { it != "codecs" && it != "lastCompletedStream" }),
                 obj(mapOf("schemaVersion" to buildJsonObject { put("const", 2) },
                     "incomplete" to buildJsonObject { put("const", true) },
                     "persistence" to obj(mapOf("truncated" to buildJsonObject { put("const", true) },

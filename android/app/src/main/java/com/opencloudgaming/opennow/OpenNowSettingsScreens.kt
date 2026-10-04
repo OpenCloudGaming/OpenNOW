@@ -50,6 +50,7 @@ import androidx.compose.material.icons.outlined.Science
 import androidx.compose.material.icons.outlined.SportsEsports
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.Tv
+import androidx.compose.material.icons.outlined.Movie
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -209,6 +210,7 @@ private enum class SettingsCategory(
 ) {
     General(R.string.settings_category_general, R.string.settings_category_general_summary, Icons.Outlined.Tune),
     Stream(R.string.settings_category_stream, R.string.settings_category_stream_summary, Icons.Outlined.Monitor),
+    Recording(R.string.settings_category_recording, R.string.settings_category_recording_summary, Icons.Outlined.Movie),
     Input(R.string.settings_category_input, R.string.settings_category_input_summary, Icons.Outlined.SportsEsports),
     Interface(R.string.settings_category_interface, R.string.settings_category_interface_summary, Icons.Outlined.Palette),
     Account(R.string.settings_category_account, R.string.settings_category_account_summary, Icons.Outlined.Person),
@@ -1077,7 +1079,62 @@ private fun SettingsContent(
                     )
                 }
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Input, searchQuery, stringResource(R.string.settings_section_audio_keyboard), "input", "microphone", "mic", "voice", "audio", "keyboard", "shortcut", "layout", "language", "clipboard", "paste") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.Recording, searchQuery, stringResource(R.string.settings_section_recording_output), "recording", "recordings", "video", "mp4", "bitrate", "fps", "sharpness", "nitidez", "gravação", "upscale") {
+                Text(
+                    stringResource(R.string.settings_recording_next_session_hint),
+                    color = SettingsTextMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                SettingSwitch(
+                    label = stringResource(R.string.settings_recording_auto_bitrate),
+                    checked = settings.stream.recordingBitrateMbps == 0,
+                    description = stringResource(R.string.settings_recording_auto_bitrate_desc),
+                ) { automatic ->
+                    viewModel.updateRecordingSettings { stream ->
+                        stream.copy(recordingBitrateMbps = if (automatic) 0 else stream.recordingBitrateMbps.takeIf { it in 2..50 } ?: 12)
+                    }
+                }
+                if (settings.stream.recordingBitrateMbps > 0) {
+                    NumberSlider(
+                        label = stringResource(R.string.settings_recording_bitrate),
+                        value = settings.stream.recordingBitrateMbps.coerceIn(2, 50).toFloat(),
+                        min = 2f,
+                        max = 50f,
+                        step = 1f,
+                        unit = stringResource(R.string.settings_recording_bitrate_unit),
+                        description = stringResource(R.string.settings_recording_bitrate_desc),
+                    ) { bitrate -> viewModel.updateRecordingSettings { it.copy(recordingBitrateMbps = bitrate.roundToInt()) } }
+                }
+                val recordingFpsOptions = listOf(
+                    ChoiceMenuOption("0", stringResource(R.string.settings_recording_fps_auto)),
+                    ChoiceMenuOption("24", stringResource(R.string.settings_recording_fps_24)),
+                    ChoiceMenuOption("30", stringResource(R.string.settings_recording_fps_30)),
+                    ChoiceMenuOption("60", stringResource(R.string.settings_recording_fps_60)),
+                )
+                ChoiceMenuRow(
+                    label = stringResource(R.string.settings_recording_fps),
+                    options = recordingFpsOptions,
+                    selectedLabel = if (settings.stream.recordingFps == 0) stringResource(R.string.option_auto)
+                        else "${settings.stream.recordingFps} FPS",
+                    description = stringResource(R.string.settings_recording_fps_desc),
+                ) { value -> viewModel.updateRecordingSettings { it.copy(recordingFps = value.toIntOrNull() ?: 0) } }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_recording_sharpness),
+                    checked = settings.stream.recordingSharpeningEnabled,
+                    description = stringResource(R.string.settings_recording_sharpness_desc),
+                ) { enabled -> viewModel.updateRecordingSettings { it.copy(recordingSharpeningEnabled = enabled) } }
+                if (settings.stream.recordingSharpeningEnabled) {
+                    NumberSlider(
+                        label = stringResource(R.string.settings_recording_sharpness_amount),
+                        value = settings.stream.recordingSharpeningAmount,
+                        min = 0f,
+                        max = 1f,
+                        step = 0.05f,
+                        description = stringResource(R.string.settings_recording_sharpness_amount_desc),
+                    ) { amount -> viewModel.updateRecordingSettings { it.copy(recordingSharpeningAmount = amount) } }
+                }
+            }
+        CategorySettingsSection(selectedCategory, SettingsCategory.Input, searchQuery, stringResource(R.string.settings_section_audio_keyboard), "input", "microphone", "mic", "voice", "audio", "keyboard", "shortcut", "layout", "language", "clipboard", "paste") {
                 SettingSwitch(
                     label = stringResource(R.string.settings_low_latency_game_audio),
                     checked = settings.lowLatencyGameAudio,
@@ -1664,7 +1721,7 @@ private fun SettingsContent(
                 }
                 CatalogBackgroundSettings(settings = settings, viewModel = viewModel)
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_library_navigation), "interface", "launch page", "default page", "store", "library", "compact", "cards", "titles", "favorites", "favourites", "save", "icon", "game card size", "server selector", "hero", "banner", "featured", "landscape", "new games") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_library_navigation), "interface", "launch page", "default page", "store", "library", "compact", "cards", "titles", "favorites", "favourites", "save", "icon", "premium", "marker", "game card size", "server selector", "hero", "banner", "featured", "landscape", "new games") {
                 SettingSwitch(
                     label = stringResource(R.string.settings_landscape_new_games),
                     checked = settings.landscapeNewGamesHero,
@@ -1695,6 +1752,13 @@ private fun SettingsContent(
                     checked = settings.showFavoriteIconOnGameCards,
                 ) { enabled ->
                     viewModel.updateSettings(settings.copy(showFavoriteIconOnGameCards = enabled))
+                }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_show_premium_marker),
+                    checked = settings.showPremiumMarker,
+                    description = stringResource(R.string.settings_show_premium_marker_desc),
+                ) { enabled ->
+                    viewModel.updateSettings(settings.copy(showPremiumMarker = enabled))
                 }
                 NumberSlider(
                     label = stringResource(R.string.settings_card_size),
@@ -1731,9 +1795,10 @@ private fun SettingsContent(
                         0f, 1f, 0.01f,
                     ) { opacity -> viewModel.updateSettings(settings.copy(streamStatsBackgroundOpacity = opacity)) }
                 }
-                ChoiceRow(stringResource(R.string.settings_stats_position), StreamStatsPosition.entries.map { it.label }, settings.streamStatsPosition.label) { label ->
+                ChoiceRow(stringResource(R.string.settings_stats_position), StreamStatsPosition.entries.map { it.label },
+                    if (settings.streamStatsCustomX != null) stringResource(R.string.stream_statusbar_custom_position) else settings.streamStatsPosition.label) { label ->
                     StreamStatsPosition.entries.firstOrNull { it.label == label }?.let { position ->
-                        viewModel.updateSettings(settings.copy(streamStatsPosition = position))
+                        viewModel.updateSettings(settings.copy(streamStatsPosition = position, streamStatsCustomX = null, streamStatsCustomY = null))
                     }
                 }
             }
@@ -1813,7 +1878,7 @@ private fun SettingsContent(
                     showTitle = false,
                 )
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Advanced, searchQuery, stringResource(R.string.settings_experimental_streaming), "experimental", "stream", "nvst", "l4s", "session", "launch", "failure", "battery", "optimization", "background", "allow", "run") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.Advanced, searchQuery, stringResource(R.string.settings_experimental_streaming), "experimental", "stream", "network", "dynamic", "adjustment", "nvst", "l4s", "session", "launch", "failure", "battery", "optimization", "background", "allow", "run") {
                 Text(
                     stringResource(R.string.settings_experimental_streaming_warning),
                     color = SettingsTextMuted,
@@ -1825,6 +1890,33 @@ private fun SettingsContent(
                     description = "Try native NVST streaming for new sessions. Off by default while compatibility and stability issues are investigated.",
                 ) {
                     viewModel.updateStreamSettings { s -> s.copy(experimentalNvst = it) }
+                }
+                ChoiceMenuRow(
+                    label = stringResource(R.string.settings_dynamic_network_adjustment),
+                    options = listOf(
+                        ChoiceMenuOption("fixed", stringResource(R.string.settings_network_adjustment_fixed)),
+                        ChoiceMenuOption("custom", stringResource(R.string.settings_network_adjustment_custom)),
+                    ),
+                    selectedLabel = stringResource(
+                        if (settings.stream.experimentalDynamicNetworkAdjustment) R.string.settings_network_adjustment_custom
+                        else R.string.settings_network_adjustment_fixed,
+                    ),
+                    description = stringResource(R.string.settings_dynamic_network_adjustment_desc),
+                ) { choice ->
+                    viewModel.updateDynamicNetworkAdjustment(choice == "custom")
+                }
+                if (settings.stream.experimentalDynamicNetworkAdjustment && settings.stream.maxBitrateMbps > 1) {
+                    NumberSlider(
+                        label = stringResource(R.string.settings_dynamic_minimum_bitrate),
+                        value = settings.stream.experimentalDynamicMinimumBitrateMbps.coerceIn(1, settings.stream.maxBitrateMbps).toFloat(),
+                        min = 1f,
+                        max = settings.stream.maxBitrateMbps.toFloat(),
+                        step = 1f,
+                        unit = "Mbps",
+                        description = stringResource(R.string.settings_dynamic_minimum_bitrate_desc),
+                    ) { mbps ->
+                        viewModel.updateDynamicMinimumBitrate(mbps.roundToInt())
+                    }
                 }
                 SettingSwitch(
                     label = stringResource(R.string.settings_l4s),

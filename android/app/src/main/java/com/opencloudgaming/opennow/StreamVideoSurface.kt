@@ -40,6 +40,16 @@ class StreamVideoSurface(context: Context, private val hdr: Boolean) : FrameLayo
     @Volatile private var frameHeight = 0
     private var firstFrame = true
     @Volatile private var released = false
+    @Volatile private var recordingSink: VideoSink? = null
+
+    internal val supportsDirectRecording: Boolean get() = sdr != null
+
+    internal fun currentDecodedSize(): Pair<Int, Int>? =
+        if (frameWidth > 0 && frameHeight > 0) frameWidth to frameHeight else null
+
+    internal fun setRecordingSink(sink: VideoSink?) {
+        recordingSink = sink
+    }
 
     init {
         // Stretch-to-fit deliberately lets the native video surface extend past this wrapper's
@@ -83,6 +93,16 @@ class StreamVideoSurface(context: Context, private val hdr: Boolean) : FrameLayo
     override fun onFrame(frame: VideoFrame) {
         if (released) return
         if (sdr != null) {
+            val width = frame.rotatedWidth
+            val height = frame.rotatedHeight
+            if (width > 0 && height > 0 && (frameWidth != width || frameHeight != height)) {
+                // Publish the decoded size from the frame itself before asynchronous renderer events
+                // arrive, so recording can start immediately after a live resolution change.
+                frameWidth = width
+                frameHeight = height
+                post { requestLayout() }
+            }
+            recordingSink?.onFrame(frame)
             sdr.onFrame(frame)
             return
         }
@@ -139,5 +159,11 @@ class StreamVideoSurface(context: Context, private val hdr: Boolean) : FrameLayo
         surfaceView.scaleY = scaleY
     }
 
-    fun release() { released = true; hdrTarget = null; sdr?.release() }
+    fun release() {
+        if (released) return
+        released = true
+        recordingSink = null
+        hdrTarget = null
+        sdr?.release()
+    }
 }

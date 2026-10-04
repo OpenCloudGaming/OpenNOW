@@ -22,6 +22,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -85,8 +86,11 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.IntOffset
+import kotlin.math.roundToInt
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.Locale
@@ -109,6 +113,7 @@ internal fun StreamScreen(
     val gyroscopeAvailable = remember(context) { hasMobileGyroscope(context) }
     val session = state.streamSession
     val game = state.streamGame
+    val sessionStartBatteryPercent = rememberSessionStartBatteryPercent(session?.sessionId)
     var streamState by remember { mutableStateOf("Preparing") }
     var initialVideoFrameRendered by remember(session?.sessionId) { mutableStateOf(false) }
     val markInitialVideoFrameRendered by rememberUpdatedState<() -> Unit> {
@@ -149,10 +154,12 @@ internal fun StreamScreen(
     var physicalControllerPromptHandled by remember(session?.sessionId) { mutableStateOf(false) }
     var physicalControllerPromptDoNotShowAgain by remember(session?.sessionId) { mutableStateOf(false) }
     val touchInputEnabled = !state.androidPictureInPictureActive
+    val keyboardModeEnabled = state.settings.androidTouch.keyboardModeEnabled
     val touchControlsSuppressedByPhysicalController =
         physicalControllerConnected &&
             state.settings.androidTouch.enabled &&
-            !showTouchControlsWithPhysicalController
+            !showTouchControlsWithPhysicalController &&
+            !keyboardModeEnabled
     val builtInGameTouchSupported = !tvProfile && game?.let(::catalogClaimsTouchSupport) == true
     val nativeTouchAvailable = !tvProfile && shouldUseNativeTouch(
         state.settings.androidTouch.effectiveNativeTouchMode(),
@@ -183,7 +190,7 @@ internal fun StreamScreen(
         game,
         state.activeStreamSettings ?: state.settings.stream,
         preferVirtualController = preferVirtualController,
-        preferKeyboardMouse = streamInputMode == StreamInputMode.KeyboardMouse,
+        preferKeyboardMouse = streamInputMode == StreamInputMode.KeyboardMouse || keyboardModeEnabled,
     )
     val touchControlsVisible = shouldShowAndroidTouchControls(
         tvProfile = tvProfile,
@@ -191,8 +198,9 @@ internal fun StreamScreen(
         touchControlsEnabled = state.settings.androidTouch.enabled,
         suppressedByPhysicalController = touchControlsSuppressedByPhysicalController,
         physicalMouseConnected = physicalMouseConnected,
-        allowWithPhysicalMouse = showTouchControlsWithPhysicalMouse,
+        allowWithPhysicalMouse = showTouchControlsWithPhysicalMouse || keyboardModeEnabled,
     ) && !nativeTouchActive
+    val virtualGamepadVisible = touchControlsVisible && !keyboardModeEnabled
     val touchMouseActive =
         streamReady && touchInputEnabled && state.settings.androidTouch.mousePad && !nativeTouchActive
     val fallbackSessionStartedAtMs = remember(session?.sessionId) { System.currentTimeMillis() }
@@ -249,11 +257,18 @@ internal fun StreamScreen(
         mouseScrollSensitivity = state.settings.stream.mouseScrollSensitivity,
     )
     val streamTransportIdentity = session?.nativeStreamTransportIdentity()
-    val statsAlignment = when (state.settings.streamStatsPosition) {
-        StreamStatsPosition.Left -> Alignment.TopStart
-        StreamStatsPosition.Center -> Alignment.TopCenter
-        StreamStatsPosition.Right -> Alignment.TopEnd
+    var streamViewportSize by remember { mutableStateOf(IntSize.Zero) }
+    var statusPillSize by remember { mutableStateOf(IntSize.Zero) }
+    var statusDrag by remember { mutableStateOf(Offset.Zero) }
+    val statusMaxX = (streamViewportSize.width - statusPillSize.width).coerceAtLeast(0).toFloat()
+    val statusMaxY = (streamViewportSize.height - statusPillSize.height).coerceAtLeast(0).toFloat()
+    val presetStatusX = when (state.settings.streamStatsPosition) {
+        StreamStatsPosition.Left -> 0f
+        StreamStatsPosition.Center -> statusMaxX / 2f
+        StreamStatsPosition.Right -> statusMaxX
     }
+    val statusX = ((state.settings.streamStatsCustomX?.times(statusMaxX) ?: presetStatusX) + statusDrag.x).coerceIn(0f, statusMaxX)
+    val statusY = ((state.settings.streamStatsCustomY?.times(statusMaxY) ?: 0f) + statusDrag.y).coerceIn(0f, statusMaxY)
     val openStreamKeyboard = {
         NativeStreamInputRouter.setStreamUiActive(true)
         controlsOpen = false
@@ -355,6 +370,30 @@ internal fun StreamScreen(
         )
     }
 
+    val recordingPhase by client.recordingPhase.collectAsStateWithLifecycle()
+    var pendingRecordingSessionId by remember(session?.sessionId) { mutableStateOf<String?>(null) }
+    LaunchedEffect(client) {
+        client.recordingError.collect { error ->
+            if (!error.isNullOrBlank()) {
+                Toast.makeText(context, context.getString(R.string.stream_record_failed), Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+    val recordingDocumentLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("video/mp4"),
+    ) { uri ->
+        val requestedSessionId = pendingRecordingSessionId
+        pendingRecordingSessionId = null
+        if (uri != null) {
+            val sameActiveSession = requestedSessionId != null &&
+                requestedSessionId == session?.sessionId && streamReady
+            val started = sameActiveSession && client.startStreamRecording(uri)
+            if (!started && client.recordingError.value.isNullOrBlank()) {
+                Toast.makeText(context, context.getString(R.string.stream_record_unavailable), Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
     DisposableEffect(Unit) {
         val decor = activity?.window?.decorView
         NativeStreamInputRouter.attach(client)
@@ -405,8 +444,8 @@ internal fun StreamScreen(
     // StreamScreen owns the effective controller/mouse modes even when TouchOverlay is absent.
     // Re-sync on every session so closeTransport(clearInputState=false) cannot carry stale virtual
     // controller presence into a Finger Mouse-only session.
-    LaunchedEffect(client, session?.sessionId, touchControlsVisible) {
-        client.setVirtualControllerVisible(touchControlsVisible)
+    LaunchedEffect(client, session?.sessionId, touchControlsVisible, virtualGamepadVisible) {
+        client.setVirtualControllerVisible(virtualGamepadVisible)
         NativeStreamInputRouter.setTouchControllerVisible(touchControlsVisible)
     }
 
@@ -462,8 +501,15 @@ internal fun StreamScreen(
         }
     }
 
-    LaunchedEffect(streamReady, physicalKeyboardMouseConnected, session?.sessionId) {
+    LaunchedEffect(streamReady, physicalKeyboardMouseConnected, session?.sessionId, keyboardModeEnabled) {
         if (!streamReady) return@LaunchedEffect
+        if (keyboardModeEnabled) {
+            keyboardMouseBaselineCaptured = true
+            previousKeyboardMouseConnected = physicalKeyboardMouseConnected
+            inputModePromptOpen = null
+            pendingInputModePrompt = null
+            return@LaunchedEffect
+        }
         if (!keyboardMouseBaselineCaptured) {
             keyboardMouseBaselineCaptured = true
             previousKeyboardMouseConnected = physicalKeyboardMouseConnected
@@ -610,7 +656,7 @@ internal fun StreamScreen(
             onMicrophoneCaptureActiveChange(captureMicrophone)
             microphoneEnabled = captureMicrophone
             client.setMicrophoneEnabled(captureMicrophone)
-            client.setVirtualControllerVisible(touchControlsVisible)
+            client.setVirtualControllerVisible(virtualGamepadVisible)
             client.setTouchMouseEnabled(touchMouseActive)
             viewModel.prepareStreamMediaMemory()
             client.start(
@@ -666,7 +712,7 @@ internal fun StreamScreen(
         if (networkNoticeSequence == displayedSequence) networkNotice = null
     }
 
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
+    Box(Modifier.fillMaxSize().background(Color.Black).onSizeChanged { streamViewportSize = it }) {
         if (state.activeSessionDecision != null) {
             ActiveSessionDecisionScreen(
                 state = state,
@@ -715,23 +761,44 @@ internal fun StreamScreen(
                     streamSettings = requestedStreamSettings,
                     style = state.settings.streamStatsStyle,
                     metrics = state.settings.streamStatsMetrics,
+                    sessionStartBatteryPercent = sessionStartBatteryPercent,
                     backgroundAlpha = state.settings.streamStatsBackgroundAlpha(),
                     serverLocation = session.reportedServerZone(),
                     keyboardButtonEnabled = !state.settings.hideStreamButtons,
                     onKeyboardOpen = openStreamKeyboard,
-                    modifier = Modifier.align(statsAlignment),
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .offset { IntOffset(statusX.roundToInt(), statusY.roundToInt()) }
+                        .onSizeChanged { statusPillSize = it }
+                        .pointerInput(state.settings.streamStatsCustomX, state.settings.streamStatsCustomY, statusMaxX, statusMaxY, presetStatusX) {
+                            detectDragGestures(
+                                onDragEnd = {
+                                    val movedX = ((state.settings.streamStatsCustomX?.times(statusMaxX) ?: presetStatusX) + statusDrag.x).coerceIn(0f, statusMaxX)
+                                    val movedY = ((state.settings.streamStatsCustomY?.times(statusMaxY) ?: 0f) + statusDrag.y).coerceIn(0f, statusMaxY)
+                                    viewModel.updateSettings(state.settings.copy(
+                                        streamStatsCustomX = if (statusMaxX > 0f) movedX / statusMaxX else 0f,
+                                        streamStatsCustomY = if (statusMaxY > 0f) movedY / statusMaxY else 0f,
+                                    ))
+                                    statusDrag = Offset.Zero
+                                },
+                                onDragCancel = { statusDrag = Offset.Zero },
+                            ) { change, dragAmount ->
+                                change.consume()
+                                statusDrag += dragAmount
+                            }
+                        },
                 )
             }
             MobileGyroscopeAim(
                 client = client,
                 settings = state.settings.androidTouch,
-                active = streamReady && touchControlsVisible && !streamOverlayOpen,
+                active = streamReady && touchControlsVisible && !streamOverlayOpen && !keyboardModeEnabled,
             )
             if (networkNotice != null || activeStreamMode != null) {
                 Column(
                     modifier = Modifier
                         .align(Alignment.TopCenter)
-                        .padding(top = if (statsVisible && statsAlignment == Alignment.TopCenter) 48.dp else 8.dp),
+                        .padding(top = if (statsVisible && statusMaxX > 0f && statusX in (statusMaxX * 0.25f)..(statusMaxX * 0.75f) && statusY < 48f) 48.dp else 8.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
@@ -766,6 +833,18 @@ internal fun StreamScreen(
                             androidTouch = state.settings.androidTouch.withButtonAppearance(button, appearance),
                         ))
                     },
+                    onKeyboardButtonAdd = { actionId ->
+                        newKeyboardOverlayButton(actionId)?.let { button ->
+                            viewModel.updateSettings(state.settings.copy(
+                                androidTouch = state.settings.androidTouch.withKeyboardButtonAdded(button),
+                            ))
+                        }
+                    },
+                    onKeyboardButtonRemove = { buttonId ->
+                        viewModel.updateSettings(state.settings.copy(
+                            androidTouch = state.settings.androidTouch.withKeyboardButtonRemoved(buttonId),
+                        ))
+                    },
                     onSaveAllOffsets = { allOffsets ->
                         var touch = state.settings.androidTouch
                         allOffsets.forEach { (key, offset) ->
@@ -794,9 +873,15 @@ internal fun StreamScreen(
                         .align(Alignment.Center),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color.Black.copy(alpha = 0.8f),
+                        contentColor = Color.White,
+                    ) {
                         Text(stringResource(R.string.touch_layout_edit_hint),
-                            modifier = Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall)
+                            modifier = Modifier.padding(12.dp),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.White)
                     }
                     Button(
                         onClick = {
@@ -925,6 +1010,7 @@ internal fun StreamScreen(
                     microphoneEnabled = microphoneEnabled,
                     statsVisible = statsVisible,
                     liveBitrateLimitKbps = liveBitrateLimitKbps,
+                    recordingPhase = recordingPhase,
                     touchLayoutEditing = touchLayoutEditing,
                     bugReportSubmission = state.bugReportSubmission,
                     bugReportVersionCheck = state.bugReportVersionCheck,
@@ -970,7 +1056,12 @@ internal fun StreamScreen(
                         viewModel.updateSettings(state.settings.copy(streamStatsStyle = state.settings.streamStatsStyle.next()))
                     },
                     onStatsPositionCycle = {
-                        viewModel.updateSettings(state.settings.copy(streamStatsPosition = state.settings.streamStatsPosition.next()))
+                        statusDrag = Offset.Zero
+                        viewModel.updateSettings(state.settings.copy(
+                            streamStatsPosition = state.settings.streamStatsPosition.next(),
+                            streamStatsCustomX = null,
+                            streamStatsCustomY = null,
+                        ))
                     },
                     onStatsMetricsChange = { metrics ->
                         viewModel.updateSettings(state.settings.copy(streamStatsMetrics = metrics))
@@ -993,6 +1084,29 @@ internal fun StreamScreen(
                         touchLayoutEditing = !touchLayoutEditing
                     },
                     onKeyboardOpen = openStreamKeyboard,
+                    onRecordingToggle = {
+                        when (client.recordingPhase.value) {
+                            StreamRecorderPhase.Recording -> client.stopStreamRecording()
+                            StreamRecorderPhase.Starting, StreamRecorderPhase.Finalizing -> Unit
+                            else -> {
+                                if (client.canStartStreamRecording()) {
+                                    val safeTitle = game?.title
+                                        ?.replace(Regex("[^\\p{L}\\p{N}._-]+"), "_")
+                                        ?.take(48)
+                                        .orEmpty()
+                                        .ifBlank { "Game" }
+                                    session?.sessionId?.let { activeSessionId ->
+                                        pendingRecordingSessionId = activeSessionId
+                                        recordingDocumentLauncher.launch(
+                                            "OpenNOW_${safeTitle}_${System.currentTimeMillis()}.mp4",
+                                        )
+                                    }
+                                } else {
+                                    Toast.makeText(context, context.getString(R.string.stream_record_unavailable), Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        }
+                    },
                     onEsc = { client.sendKeyCode(KeyEvent.KEYCODE_ESCAPE) },
                     onEnter = { client.sendKeyCode(KeyEvent.KEYCODE_ENTER) },
                     onBackspace = { client.sendKeyCode(KeyEvent.KEYCODE_DEL) },
@@ -1001,16 +1115,33 @@ internal fun StreamScreen(
                         client.openSteamMenu()
                     },
                     onControllerMouseAssistToggle = {
-                        client.setControllerMouseAssistEnabled(!controllerMouseAssistEnabled)
+                        val enabled = !controllerMouseAssistEnabled
+                        if (enabled && controllerMouseEmulationEnabled) {
+                            controllerMouseEmulationEnabled = false
+                        }
+                        client.setControllerMouseAssistEnabled(enabled)
                     },
                     onControllerMouseEmulationToggle = {
                         val newState = !controllerMouseEmulationEnabled
                         controllerMouseEmulationEnabled = newState
+                        if (newState && controllerMouseAssistEnabled) {
+                            client.setControllerMouseAssistEnabled(false)
+                        }
                         client.setControllerMouseEmulationActive(newState)
                     },
                     onExit = {
                         controlsOpen = false
                         exitConfirmOpen = true
+                    },
+                    onKeyboardModeToggle = { enabled ->
+                        viewModel.updateSettings(
+                            state.settings.copy(
+                                androidTouch = state.settings.androidTouch.copy(
+                                    enabled = if (enabled) true else state.settings.androidTouch.enabled,
+                                    keyboardModeEnabled = enabled,
+                                ),
+                            ),
+                        )
                     },
                     onTouchControlsToggle = {
                         when {

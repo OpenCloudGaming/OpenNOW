@@ -21,6 +21,7 @@ class AppSettingsDefaultsTest {
         assertFalse(settings.compactGameCards)
         assertFalse(settings.showCardTitles)
         assertFalse(settings.showFavoriteIconOnGameCards)
+        assertTrue(settings.showPremiumMarker)
         assertFalse(settings.liveSelectedOutlines)
         assertFalse(settings.absoluteCinemaEffects)
         assertFalse(settings.absoluteCinemaEverywhere)
@@ -59,6 +60,7 @@ class AppSettingsDefaultsTest {
         assertTrue(metrics.ping)
         assertFalse(metrics.bitrate)
         assertTrue(metrics.battery)
+        assertFalse(metrics.sessionBattery)
         assertTrue(metrics.connection)
         assertFalse(metrics.resolution)
         assertFalse(metrics.codec)
@@ -87,6 +89,7 @@ class AppSettingsDefaultsTest {
         assertFalse(settings.compactGameCards)
         assertFalse(settings.showCardTitles)
         assertFalse(settings.showFavoriteIconOnGameCards)
+        assertTrue(settings.showPremiumMarker)
         assertFalse(settings.liveSelectedOutlines)
         assertFalse(settings.absoluteCinemaEffects)
         assertFalse(settings.absoluteCinemaEverywhere)
@@ -118,6 +121,14 @@ class AppSettingsDefaultsTest {
             .copy(streamStatsBackgroundEnabled = true).streamStatsBackgroundAlpha(), 0.0001f)
         assertEquals(1f, settings.copy(streamStatsBackgroundOpacity = 2f)
             .normalizedForAndroid().streamStatsBackgroundAlpha(), 0.0001f)
+    }
+
+    @Test
+    fun draggedStatusPositionIsClampedAndInvalidValuesAreDiscarded() {
+        val normalized = AppSettings(streamStatsCustomX = 1.5f, streamStatsCustomY = Float.NaN)
+            .normalizedForAndroid()
+        assertEquals(1f, normalized.streamStatsCustomX ?: -1f, 0.0001f)
+        assertEquals(null, normalized.streamStatsCustomY)
     }
 
     @Test
@@ -169,6 +180,17 @@ class AppSettingsDefaultsTest {
 
         assertFalse(defaulted.showFavoriteIconOnGameCards)
         assertTrue(optedIn.showFavoriteIconOnGameCards)
+    }
+
+    @Test
+    fun premiumMarkerDefaultsOnAndPreservesExplicitOptOut() {
+        val defaulted = OpenNowJson.decodeFromString<AppSettings>("{}")
+        val optedOut = OpenNowJson.decodeFromString<AppSettings>(
+            """{"showPremiumMarker":false}""",
+        )
+
+        assertTrue(defaulted.showPremiumMarker)
+        assertFalse(optedOut.showPremiumMarker)
     }
 
     @Test

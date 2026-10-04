@@ -304,6 +304,7 @@ internal fun AppSettings.normalizedForAndroid(): AppSettings {
         codec = compatibleStream.codec,
         sessionProxyUrl = stream.sessionProxyUrl.trim(),
         maxBitrateMbps = compatibleStream.maxBitrateMbps.coerceIn(1, 150),
+        experimentalDynamicMinimumBitrateMbps = compatibleStream.experimentalDynamicMinimumBitrateMbps.coerceIn(1, 150),
         fps = compatibleStream.fps.coerceIn(30, 360),
         mouseSensitivity = compatibleStream.mouseSensitivity.finiteIn(0.25f, 3f, streamDefaults.mouseSensitivity),
         mouseAcceleration = compatibleStream.mouseAcceleration.coerceIn(1, 150),
@@ -312,6 +313,16 @@ internal fun AppSettings.normalizedForAndroid(): AppSettings {
             0f,
             1f,
             streamDefaults.streamSharpeningAmount,
+        ),
+        recordingBitrateMbps = when {
+            compatibleStream.recordingBitrateMbps <= 0 -> 0
+            else -> compatibleStream.recordingBitrateMbps.coerceIn(2, 50)
+        },
+        recordingFps = compatibleStream.recordingFps.takeIf { it in setOf(0, 24, 30, 60) } ?: 0,
+        recordingSharpeningAmount = compatibleStream.recordingSharpeningAmount.finiteIn(
+            0f,
+            1f,
+            streamDefaults.recordingSharpeningAmount,
         ),
     )
     val normalizedCatalogSortId = catalogSortId.trim().ifBlank { DEFAULT_CATALOG_SORT_ID }
@@ -339,6 +350,8 @@ internal fun AppSettings.normalizedForAndroid(): AppSettings {
         streamStatsBackgroundOpacity = streamStatsBackgroundOpacity.finiteIn(
             0f, 1f, DEFAULT_STREAM_STATS_BACKGROUND_OPACITY,
         ),
+        streamStatsCustomX = streamStatsCustomX?.takeIf { it.isFinite() }?.coerceIn(0f, 1f),
+        streamStatsCustomY = streamStatsCustomY?.takeIf { it.isFinite() }?.coerceIn(0f, 1f),
         physicalInput = physicalInput.normalized(),
         touchControlPresets = touchControlPresets.take(MAX_TOUCH_PRESETS)
             .distinctBy { it.id }
@@ -908,10 +921,17 @@ class AndroidUpdateNoticeStore(context: Context) {
 
 internal fun AndroidTouchSettings.normalizedTouchControls(): AndroidTouchSettings {
     val touchDefaults = AndroidTouchSettings()
+    val normalizedKeyboardButtons = normalizeKeyboardOverlayButtons(keyboardButtons)
+    val keyboardAppearanceKeys = normalizedKeyboardButtons.map(KeyboardOverlayButton::appearanceKey).toSet()
+    val fixedAppearanceKeys = touchButtonKeys.filterNot { it.startsWith("keyboard_") }.toSet()
+    val keyboardPositionKeys = normalizedKeyboardButtons.flatMap { button ->
+        listOf("${button.positionKey()}_landscape", "${button.positionKey()}_portrait")
+    }.toSet()
     return copy(
         touchSkinTint = touchSkinTint.withoutRemovedWarmTint(),
+        keyboardButtons = normalizedKeyboardButtons,
         buttonAppearances = buttonAppearances
-            .filterKeys { it in touchButtonKeys }
+            .filterKeys { it in fixedAppearanceKeys || it in keyboardAppearanceKeys }
             .mapValues { (_, appearance) -> appearance.normalized() }
             .filterValues { it != TouchButtonAppearance() },
         opacity = opacity.finiteIn(0f, 1f, touchDefaults.opacity),
@@ -948,7 +968,9 @@ internal fun AndroidTouchSettings.normalizedTouchControls(): AndroidTouchSetting
         leftOffsetYDp = leftOffsetYDp.finiteIn(-160f, 160f, touchDefaults.leftOffsetYDp),
         rightOffsetXDp = rightOffsetXDp.finiteIn(-220f, 220f, touchDefaults.rightOffsetXDp),
         rightOffsetYDp = rightOffsetYDp.finiteIn(-160f, 160f, touchDefaults.rightOffsetYDp),
-        offsets = touchDefaults.offsets + offsets.mapValues { (_, offset) ->
+        offsets = touchDefaults.offsets + offsets
+            .filterKeys { !it.startsWith("keyboard_button_") || it in keyboardPositionKeys }
+            .mapValues { (_, offset) ->
             TouchOffset(
                 x = offset.x.takeIf { it.isFinite() } ?: 0f,
                 y = offset.y.takeIf { it.isFinite() } ?: 0f,

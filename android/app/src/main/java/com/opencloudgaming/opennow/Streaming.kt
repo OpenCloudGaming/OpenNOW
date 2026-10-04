@@ -9,6 +9,7 @@ import android.media.AudioAttributes
 import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.media.MediaRecorder
+import android.net.Uri
 import android.opengl.GLES11Ext
 import android.opengl.GLES20
 import android.os.Build
@@ -32,6 +33,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
@@ -53,6 +55,7 @@ import okhttp3.WebSocketListener
 import okio.ByteString
 import org.webrtc.AudioSource
 import org.webrtc.AudioTrack
+import org.webrtc.AudioTrackSink
 import org.webrtc.DataChannel
 import org.webrtc.DefaultVideoDecoderFactory
 import org.webrtc.DefaultVideoEncoderFactory
@@ -361,6 +364,29 @@ class NativeStreamClient(
     private var lastHapticsAdvertisementAtMs = 0L
     private var videoTrack: VideoTrack? = null
     private var audioTrack: AudioTrack? = null
+    @Volatile private var recordingAudioTrack: AudioTrack? = null
+    @Volatile private var streamRecorder: AndroidStreamRecorder? = null
+    @Volatile private var streamRecorderForShutdown: AndroidStreamRecorder? = null
+    internal val recordingPhase = MutableStateFlow<StreamRecorderPhase?>(null)
+    internal val recordingError = MutableStateFlow<String?>(null)
+    private val recordingAudioSink = object : AudioTrackSink {
+        override fun onData(
+            audioData: ByteBuffer,
+            bitsPerSample: Int,
+            sampleRate: Int,
+            numberOfChannels: Int,
+            numberOfFrames: Int,
+            absoluteCaptureTimestampMs: Long,
+        ) {
+            streamRecorder?.queueAudio(
+                audioData,
+                bitsPerSample,
+                sampleRate,
+                numberOfChannels,
+                SystemClock.elapsedRealtimeNanos(),
+            )
+        }
+    }
     private var microphoneSource: AudioSource? = null
     private var microphoneTrack: AudioTrack? = null
     private var microphoneSender: RtpSender? = null
@@ -404,6 +430,7 @@ class NativeStreamClient(
     private val virtualLeftTriggerPressSources = mutableSetOf<String>()
     private val virtualRightTriggerPressSources = mutableSetOf<String>()
     private val virtualKeyboardPressSources = mutableMapOf<Int, MutableSet<String>>()
+    private val mouseButtonPressSources = MouseButtonPressSources()
     private val virtualLeftStickSources = VirtualStickSourceState()
     private var virtualLeftStickActive = false
     private var virtualLeftStickX = 0
@@ -856,6 +883,9 @@ class NativeStreamClient(
     }
 
     fun setControllerMouseAssistEnabled(enabled: Boolean) {
+        if (enabled && controllerMouseEmulationActive) {
+            setControllerMouseEmulationActive(false)
+        }
         setControllerMouseAssistActive(enabled)
     }
 
@@ -864,17 +894,25 @@ class NativeStreamClient(
         if (!enabled) {
             // Release any held mouse buttons so state stays clean.
             releaseControllerMouseButtons()
-            // Zero both physical and virtual left-stick memory so neither controller path
-            // delivers stale deflection to the game after mode is disabled.
-            lastLeftStickX = 0
-            lastLeftStickY = 0
-            virtualLeftStickActive = false
-            virtualLeftStickX = 0
-            virtualLeftStickY = 0
-            physicalLeftStickX = 0f
-            physicalLeftStickY = 0f
-            physicalRightStickX = 0f
-            physicalRightStickY = 0f
+        }
+        // Neutralize both stick caches on either transition. Otherwise a mode switch can
+        // briefly forward a held cursor/scroll direction as gameplay input (or vice versa).
+        lastLeftStickX = 0
+        lastLeftStickY = 0
+        lastRightStickX = 0
+        lastRightStickY = 0
+        virtualLeftStickActive = false
+        virtualLeftStickX = 0
+        virtualLeftStickY = 0
+        virtualRightStickActive = false
+        virtualRightStickX = 0
+        virtualRightStickY = 0
+        physicalLeftStickX = 0f
+        physicalLeftStickY = 0f
+        physicalRightStickX = 0f
+        physicalRightStickY = 0f
+        if (enabled && controllerMouseAssistActive) {
+            setControllerMouseAssistActive(false)
         }
         controllerMouseEmulationActive = enabled
         updateControllerMouseLoop()
@@ -951,10 +989,11 @@ class NativeStreamClient(
         recordStreamDiagnostic(
             "start session=${streamDiagnosticId(session.sessionId)} status=${session.status} server=${session.serverIp.take(96)} signaling=${signalingUrlForDiagnostics(session.signalingUrl, session.sessionId)} settings=${settings.resolution}/${settings.fps}/${settings.codec} bitrate=${settings.maxBitrateMbps} microphone=${settings.microphoneMode.name}",
         )
-        val bitrate = StreamNetworkAdaptation.bitrateRange(settings.maxBitrateMbps)
+        val bitrate = StreamNetworkAdaptation.bitrateRange(settings)
         recordStreamDiagnostic(
-            "network adaptation=fixed_profile dynamicMode=${StreamNetworkAdaptation.DYNAMIC_STREAMING_MODE} " +
-                "drc=${StreamNetworkAdaptation.DYNAMIC_RESOLUTION_CONTROL} minimumKbps=${bitrate.minimumKbps} " +
+            "network adaptation=${if (settings.experimentalDynamicNetworkAdjustment) "dynamic" else "fixed_profile"} " +
+                "dynamicMode=${StreamNetworkAdaptation.dynamicStreamingMode(settings)} " +
+                "drc=${StreamNetworkAdaptation.dynamicResolutionControl(settings)} minimumKbps=${bitrate.minimumKbps} " +
                 "initialKbps=${bitrate.initialKbps} maximumKbps=${bitrate.maximumKbps}",
         )
         startTransport(session, settings, transportGeneration)
@@ -962,6 +1001,7 @@ class NativeStreamClient(
     }
 
     fun stop() {
+        stopStreamRecording()
         stopControllerMouseLoop()
         transportGeneration += 1
         reconnectAttempts = 0
@@ -1008,7 +1048,10 @@ class NativeStreamClient(
         inputExecutor.shutdown()
         val activeFactory = factory
         factory = null
+        val recorderToAwait = streamRecorderForShutdown ?: streamRecorder
+        recorderToAwait?.stop()
         enqueueNativeLifecycleOperation("runtime-release") {
+            recorderToAwait?.awaitWorkerFinished()
             preparedRenderer?.let { renderer ->
                 runCatching { renderer.release() }
                     .onFailure { error -> recordStreamDiagnostic("renderer release failed error=${error.message.orEmpty()}") }
@@ -1032,6 +1075,7 @@ class NativeStreamClient(
         virtualLeftTriggerPressSources.clear()
         virtualRightTriggerPressSources.clear()
         virtualKeyboardPressSources.clear()
+        mouseButtonPressSources.clear()
         virtualLeftStickSources.clear()
         virtualLeftStickActive = false
         virtualLeftStickX = 0
@@ -1578,15 +1622,18 @@ class NativeStreamClient(
         // secondary click. The cloud protocol is edge-based, so forward that physical transition
         // once regardless of how many Android callbacks describe it.
         if (forwardedPhysicalInput.isMouseButtonPressed(button) == pressed) return true
-        val sent = sendReliableInput(
-            inputEncoder.encodeMouseButton(
-                if (pressed) InputEncoder.INPUT_MOUSE_BUTTON_DOWN else InputEncoder.INPUT_MOUSE_BUTTON_UP,
-                button,
-            ),
-        )
+        val sent = setPhysicalMouseButtonSource(button, pressed)
         forwardedPhysicalInput.recordMouseButton(button = button, pressed = pressed, sent = sent)
         return sent
     }
+
+    private fun setPhysicalMouseButtonSource(button: Int, pressed: Boolean): Boolean =
+        mouseButtonPressSources.update(button, "physical-mouse-$button", pressed) { edgePressed ->
+            sendReliableInput(inputEncoder.encodeMouseButton(
+                if (edgePressed) InputEncoder.INPUT_MOUSE_BUTTON_DOWN else InputEncoder.INPUT_MOUSE_BUTTON_UP,
+                button,
+            ))
+        }
 
     /** Releases input whose platform UP event can be lost when a desktop window loses focus. */
     fun releasePhysicalInputForLifecycle(reason: String) {
@@ -1605,7 +1652,7 @@ class NativeStreamClient(
             }
         }
         pressed.mouseButtons.forEach { button ->
-            if (sendReliableInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_UP, button))) {
+            if (setPhysicalMouseButtonSource(button, false)) {
                 queued += 1
             }
         }
@@ -1801,21 +1848,25 @@ class NativeStreamClient(
     }
 
     fun sendTouchMouseClick(delayBeforeDownMs: Long = 0L) {
+        val sourceId = "touch-mouse-click-${System.nanoTime()}"
         scope.launch {
-            if (delayBeforeDownMs > 0) {
-                delay(delayBeforeDownMs)
+            if (delayBeforeDownMs > 0) delay(delayBeforeDownMs)
+            try {
+                if (setVirtualMouseButtonFromSource(1, sourceId, true)) delay(160L)
+            } finally {
+                setVirtualMouseButtonFromSource(1, sourceId, false)
             }
-            if (!setTouchMouseButton(true)) return@launch
-            delay(160L)
-            setTouchMouseButton(false)
         }
     }
 
     fun sendTouchMouseRightClick() {
+        val sourceId = "touch-mouse-right-click-${System.nanoTime()}"
         scope.launch {
-            if (!sendMouseButton(button = 3, pressed = true, source = "touch mouse right click")) return@launch
-            delay(160L)
-            sendMouseButton(button = 3, pressed = false, source = "touch mouse right click")
+            try {
+                if (setVirtualMouseButtonFromSource(3, sourceId, true)) delay(160L)
+            } finally {
+                setVirtualMouseButtonFromSource(3, sourceId, false)
+            }
         }
     }
 
@@ -1979,7 +2030,7 @@ class NativeStreamClient(
         val generation = transportGeneration
         enqueueNativeLifecycleOperation("audio-track-mute") {
             if (activePeerConnection(generation) == null) return@enqueueNativeLifecycleOperation
-            audioTrack?.setEnabled(!muted)
+            audioTrack?.setEnabled(!muted || streamRecorder != null)
         }
     }
 
@@ -2012,7 +2063,15 @@ class NativeStreamClient(
     }
 
     fun setTouchMouseButton(pressed: Boolean): Boolean {
-        return sendMouseButton(button = 1, pressed = pressed, source = "touch mouse")
+        return setVirtualMouseButtonFromSource(button = 1, sourceId = "touch-mouse-pad", pressed = pressed)
+    }
+
+    /** Shares button edges between physical mice, the keyboard overlay, touchpad, and synthesized clicks. */
+    fun setVirtualMouseButtonFromSource(button: Int, sourceId: String, pressed: Boolean): Boolean {
+        if (button !in 1..3) return false
+        return mouseButtonPressSources.update(button, sourceId, pressed) { edgePressed ->
+            sendMouseButton(button, edgePressed, source = "virtual mouse")
+        }
     }
 
     private fun sendMouseButton(button: Int, pressed: Boolean, source: String): Boolean {
@@ -2080,9 +2139,6 @@ class NativeStreamClient(
             else -> return false
         }
         val sent = sendMouseButton(button = button, pressed = pressed, source = "controller mouse")
-        if (!pressed && controllerMouseAssistAutoArmed && button == 1) {
-            setControllerMouseAssistActive(false)
-        }
         return sent
     }
 
@@ -2223,7 +2279,8 @@ class NativeStreamClient(
         if (!changed) return
         val effectivelyPressed = sources.isNotEmpty()
         if (wasEffectivelyPressed == effectivelyPressed) return
-        val sent = sendKeyboardPayload(payload, effectivelyPressed)
+        val currentModifiers = keyboardModifierMaskForKeys(virtualKeyboardPressSources.keys)
+        val sent = sendKeyboardPayload(payload.copy(modifiers = currentModifiers), effectivelyPressed)
         val action = if (effectivelyPressed) "down" else "up"
         NativeInputDiagnostics.retainResult("keyboard.extra.$keyCode.$action", sent) {
             "extra keyboard key=$keyCode action=$action ${inputChannelStateSummary()}"
@@ -2263,6 +2320,113 @@ class NativeStreamClient(
 
     fun endGyroscopeMouseAim(eventTimeMs: Long) {
         flushAccumulatedMouseMove(gyroscopeMouseMotionAccumulator, eventTimeMs)
+    }
+
+    internal fun canStartStreamRecording(): Boolean {
+        val activeRenderer = renderer
+        val unavailableReason = when {
+            activeRenderer == null -> "no active video renderer"
+            !activeRenderer.supportsDirectRecording -> "active video renderer uses the HDR path"
+            activeRenderer.currentDecodedSize() == null -> "no decoded SDR frame size yet"
+            else -> null
+        }
+        if (unavailableReason != null) NativeInputDiagnostics.add("stream recording unavailable: $unavailableReason")
+        return unavailableReason == null
+    }
+
+    @Synchronized
+    internal fun startStreamRecording(outputUri: Uri): Boolean {
+        if (streamRecorder != null) return false
+        if (recordingPhase.value in setOf(StreamRecorderPhase.Starting, StreamRecorderPhase.Recording, StreamRecorderPhase.Finalizing)) return false
+        val activeRenderer = renderer ?: return false
+        if (!canStartStreamRecording()) return false
+        val (width, height) = activeRenderer.currentDecodedSize() ?: return false
+        recordingError.value = null
+        streamRecorderForShutdown = null
+        val sourceFps = settings.fps.coerceAtLeast(1)
+        val recordingFps = (settings.recordingFps.takeIf { it > 0 } ?: sourceFps.coerceAtMost(60))
+            .coerceAtMost(sourceFps).coerceIn(1, 60)
+        val recorder = try {
+            AndroidStreamRecorder(
+                context = appContext,
+                sharedContext = eglBase.eglBaseContext,
+                outputUri = outputUri,
+                width = width,
+                height = height,
+                fps = recordingFps,
+                bitrateMbps = settings.recordingBitrateMbps,
+                sharpnessAmount = streamSharpnessShaderStrength(
+                    settings.recordingSharpeningEnabled,
+                    settings.recordingSharpeningAmount,
+                ),
+            ) { phase, error ->
+                if (phase == StreamRecorderPhase.Recording && error != null) {
+                    recordStreamDiagnostic("stream recorder notice: $error")
+                } else synchronized(this) {
+                    recordingPhase.value = phase
+                    recordingError.value = error.takeIf { phase == StreamRecorderPhase.Failed }
+                    if (phase == StreamRecorderPhase.Finished || phase == StreamRecorderPhase.Failed) {
+                        streamRecorder = null
+                        if (renderer === activeRenderer) activeRenderer.setRecordingSink(null)
+                        detachRecordingAudioSink()
+                    }
+                }
+            }
+        } catch (error: Exception) {
+            recordingPhase.value = StreamRecorderPhase.Failed
+            recordingError.value = error.message ?: error.javaClass.simpleName
+            return false
+        }
+        streamRecorder = recorder
+        if (!recorder.start()) {
+            if (streamRecorder === recorder) streamRecorder = null
+            return false
+        }
+        if (recordingPhase.value == StreamRecorderPhase.Failed) return false
+        activeRenderer.setRecordingSink(recorder)
+        attachRecordingAudioSink()
+        return true
+    }
+
+    @Synchronized
+    internal fun stopStreamRecording() {
+        val recorder = streamRecorder ?: return
+        streamRecorderForShutdown = recorder
+        streamRecorder = null
+        renderer?.setRecordingSink(null)
+        detachRecordingAudioSink()
+        recordingPhase.value = StreamRecorderPhase.Finalizing
+        recorder.stop()
+    }
+
+    @Synchronized
+    private fun attachRecordingAudioSink() {
+        val track = audioTrack ?: return
+        if (recordingAudioTrack === track) return
+        detachRecordingAudioSink()
+        track.addSink(recordingAudioSink)
+        recordingAudioTrack = track
+        track.setEnabled(!audioMuted || streamRecorder != null)
+    }
+
+    @Synchronized
+    private fun detachRecordingAudioSink() {
+        val track = recordingAudioTrack ?: return
+        recordingAudioTrack = null
+        runCatching { track.removeSink(recordingAudioSink) }
+            .onFailure { error -> recordStreamDiagnostic("recording audio sink detach failed error=${error.message.orEmpty()}") }
+        track.setEnabled(!audioMuted || streamRecorder != null)
+    }
+
+    @Synchronized
+    private fun attachAudio(track: AudioTrack) {
+        val previousTrack = audioTrack
+        if (previousTrack !== track) {
+            detachRecordingAudioSink()
+            audioTrack = track
+        }
+        track.setEnabled(!audioMuted || streamRecorder != null)
+        if (streamRecorder != null) attachRecordingAudioSink()
     }
 
     private fun sendAccumulatedMouseMove(
@@ -2335,6 +2499,15 @@ class NativeStreamClient(
                         requestedFps = { settings.fps }, hdrEnabled = { settings.hdrEnabled },
                         hdrSurface = { renderer?.hdrTarget }, directJavaDecode = true),
                     sink = { renderer },
+                    recordingAudio = { pcm ->
+                        streamRecorder?.queueAudio(
+                            pcm,
+                            bitsPerSample = 16,
+                            sampleRate = 48_000,
+                            numberOfChannels = 2,
+                            ptsNs = SystemClock.elapsedRealtimeNanos(),
+                        )
+                    },
                     event = { kind, detail -> scope.launch {
                         if (generation == transportGeneration) when (kind) {
                             "connected" -> emitState("Waiting for NVST video")
@@ -2454,9 +2627,11 @@ class NativeStreamClient(
             val closingMicrophone = takeMicrophoneResources()
             val closingPeerConnection = peerConnection
             val closingVideoTrack = videoTrack
+            val closingRecordingAudioTrack = recordingAudioTrack
             peerConnection = null
             videoTrack = null
             audioTrack = null
+            recordingAudioTrack = null
             // Repeat the fast caller-thread detach after all earlier native operations. A callback
             // already running on this executor may have attached a channel just before close was
             // queued; clearing again prevents that stale wrapper from escaping this generation.
@@ -2476,6 +2651,8 @@ class NativeStreamClient(
                 runCatching { closingVideoTrack?.removeSink(closingRenderer) }
                     .onFailure { error -> recordStreamDiagnostic("video sink detach failed error=${error.message.orEmpty()}") }
             }
+            runCatching { closingRecordingAudioTrack?.removeSink(recordingAudioSink) }
+                .onFailure { error -> recordStreamDiagnostic("recording audio sink detach failed error=${error.message.orEmpty()}") }
             runCatching { disposeMicrophoneResources(closingMicrophone) }
                 .onFailure { error -> recordStreamDiagnostic("microphone release failed error=${error.message.orEmpty()}") }
             runCatching { closingPeerConnection?.close() }
@@ -2982,8 +3159,7 @@ class NativeStreamClient(
                     recordStreamDiagnostic("media stream added video=${stream?.videoTracks?.size ?: 0} audio=${stream?.audioTracks?.size ?: 0}")
                     stream?.videoTracks?.firstOrNull()?.let(::attachVideo)
                     stream?.audioTracks?.firstOrNull()?.let {
-                        audioTrack = it
-                        it.setEnabled(!audioMuted)
+                        attachAudio(it)
                     }
                 }
             }
@@ -3006,8 +3182,7 @@ class NativeStreamClient(
                     recordStreamDiagnostic("track added kind=${track?.kind().orEmpty()} streams=${streams?.size ?: 0}")
                     if (track is VideoTrack) attachVideo(track)
                     if (track is AudioTrack) {
-                        audioTrack = track
-                        track.setEnabled(!audioMuted)
+                        attachAudio(track)
                     }
                 }
             }
@@ -3018,8 +3193,7 @@ class NativeStreamClient(
                     recordStreamDiagnostic("transceiver track kind=${track?.kind().orEmpty()} media=${transceiver?.mediaType?.name ?: "unknown"}")
                     if (track is VideoTrack) attachVideo(track)
                     if (track is AudioTrack) {
-                        audioTrack = track
-                        track.setEnabled(!audioMuted)
+                        attachAudio(track)
                     }
                 }
             }
@@ -3882,6 +4056,12 @@ class NativeStreamClient(
         physicalLeftStickY = leftY
         physicalRightStickX = rightX
         physicalRightStickY = rightY
+        // A launcher click can miss its target. Keep the cursor through clicks, then
+        // return to gamepad input when the player moves the gameplay stick.
+        if (controllerMouseAssistActive && !controllerMouseEmulationActive &&
+            (abs(leftX) > ANALOG_ACTIVITY_THRESHOLD || abs(leftY) > ANALOG_ACTIVITY_THRESHOLD)) {
+            setControllerMouseAssistActive(false)
+        }
         val sent = sendBurstLimitedGamepadState(controllerId = controllerId)
         if (
             abs(leftX) > ANALOG_ACTIVITY_THRESHOLD ||

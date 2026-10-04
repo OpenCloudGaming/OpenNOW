@@ -503,7 +503,7 @@ private fun requestedStreamingFeatures(settings: StreamSettings, profile: Stream
             put("audioChannelCount", 2)
             put("qosPolicy", 0)
             put("touchSupport", true)
-            put("dynamicStreamingMode", StreamNetworkAdaptation.DYNAMIC_STREAMING_MODE)
+            put("dynamicStreamingMode", StreamNetworkAdaptation.dynamicStreamingMode(settings))
         }
     }
 
@@ -1835,13 +1835,15 @@ internal fun catalogScreenshotUrls(images: JsonObject?): List<String> =
 internal fun catalogGameDescription(app: JsonObject): String? =
     app.string("description") ?: app.string("shortDescription")
 
-internal fun gameStoreFromVariant(variant: JsonObject): String {
-    variant.string("appStore")?.trim()?.takeIf(String::isNotBlank)?.let { return it }
+internal fun gameStoreFromVariant(variant: JsonObject, publisherNameFallback: String? = null): String {
+    variant.string("appStore")?.trim()
+        ?.takeUnless { it.isBlank() || it.equals("Unknown", ignoreCase = true) || it.equals("None", ignoreCase = true) }
+        ?.let { return it }
 
     val storeUrl = variant.string("storeUrl")?.trim().orEmpty()
     val host = storeUrl.toHttpUrlOrNull()?.host?.lowercase(Locale.US).orEmpty()
     val shortName = variant.string("shortName")?.lowercase(Locale.US).orEmpty().removeSuffix("_gfn_pc")
-    val publisher = variant.string("publisherName")?.lowercase(Locale.US).orEmpty()
+    val publisher = (variant.string("publisherName") ?: publisherNameFallback)?.lowercase(Locale.US).orEmpty()
     return when {
         host == "store.steampowered.com" -> "STEAM"
         host == "epicgames.com" || host.endsWith(".epicgames.com") -> "EPIC"
@@ -1853,6 +1855,10 @@ internal fun gameStoreFromVariant(variant: JsonObject): String {
         host == "ea.com" || host.endsWith(".ea.com") -> "EA"
         host == "rockstargames.com" || host.endsWith(".rockstargames.com") -> "ROCKSTAR"
         host == "play.google.com" -> "GOOGLE_PLAY"
+        host == "hoyoverse.com" || host.endsWith(".hoyoverse.com") ||
+            host == "hoyolab.com" || host.endsWith(".hoyolab.com") ||
+            host == "hsr.hoyoverse.com" ||
+            shortName.endsWith("_hoyoverse") || shortName.endsWith("_hoyoplay") -> "HOYOVERSE"
         host == "guildwars2.com" || host.endsWith(".guildwars2.com") ||
             host == "ncsoft.com" || host.endsWith(".ncsoft.com") ||
             host == "plaync.com" || host.endsWith(".plaync.com") ||
@@ -1866,6 +1872,8 @@ internal fun gameStoreFromVariant(variant: JsonObject): String {
         shortName.endsWith("_origin") || shortName.endsWith("_ea_app") -> "EA"
         shortName.endsWith("_battlenet") || shortName.endsWith("_battle_net") -> "BATTLENET"
         shortName.endsWith("_ncsoft") || shortName.endsWith("_purple") -> "NCSOFT"
+        host.isBlank() && (publisher.contains("hoyoverse") || publisher.contains("cognosphere") ||
+            publisher.contains("mihoyo")) -> "HOYOVERSE"
         else -> "Unknown"
     }
 }
@@ -2483,7 +2491,7 @@ class GfnCatalogRepository(
             val variantPaymentModels = obj.arr("paymentModels")
             GameVariant(
                 id = obj.string("id") ?: return@mapNotNull null,
-                store = gameStoreFromVariant(obj),
+                store = gameStoreFromVariant(obj, app.string("publisherName")),
                 storeUrl = obj.string("storeUrl"),
                 supportedControls = obj.arr("supportedControls")?.mapNotNull { it.asString() }.orEmpty(),
                 librarySelected = library?.boolean("selected"),

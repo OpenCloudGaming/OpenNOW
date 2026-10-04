@@ -313,10 +313,24 @@ class GfnApiTest {
             put("storeUrl", JsonPrimitive("https://www.guildwars2.com/?utm_source=nvidia"))
             put("publisherName", JsonPrimitive("NCsoft Corp."))
         }
+        val hoyoverse = buildJsonObject {
+            put("appStore", JsonPrimitive("Unknown"))
+            put("storeUrl", JsonPrimitive("https://hsr.hoyoverse.com/en-us/"))
+            put("publisherName", JsonPrimitive("COGNOSPHERE PTE. LTD."))
+        }
 
         assertEquals("STEAM", gameStoreFromVariant(explicit))
         assertEquals("EPIC", gameStoreFromVariant(epic))
         assertEquals("NCSOFT", gameStoreFromVariant(ncsoft))
+        assertEquals("HOYOVERSE", gameStoreFromVariant(hoyoverse))
+        assertEquals("HoYoverse", gameStoreDisplayName(gameStoreFromVariant(hoyoverse)))
+        assertEquals(
+            "EPIC",
+            gameStoreFromVariant(
+                buildJsonObject { put("shortName", JsonPrimitive("honkai_star_rail_epic")) },
+                publisherNameFallback = "COGNOSPHERE PTE. LTD.",
+            ),
+        )
     }
 
     @Test

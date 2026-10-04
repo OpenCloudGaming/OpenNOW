@@ -39,6 +39,18 @@ class GameStoreLinkTest {
     }
 
     @Test
+    fun unknownStoreIsOmittedWhenARealLauncherIsKnown() {
+        val game = GameInfo(
+            id = "hsr",
+            title = "Honkai: Star Rail",
+            availableStores = listOf("HOYOVERSE"),
+            variants = listOf(GameVariant("unknown", "Unknown"), GameVariant("hoyo", "HOYOVERSE")),
+        )
+
+        assertEquals(listOf(GameStoreDetail("HoYoverse", null)), gameStoreDetails(game))
+    }
+
+    @Test
     fun externalStoreLinksOnlyAllowHostBackedHttpsUrls() {
         assertEquals("https://store.example/game", validExternalStoreUrl(" https://store.example/game "))
         assertNull(validExternalStoreUrl("http://store.example/game"))

@@ -1,5 +1,6 @@
 package com.opencloudgaming.opennow
 
+import android.content.res.Configuration
 import android.view.KeyEvent
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
@@ -22,15 +23,28 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.AlertDialog
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -57,10 +71,12 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.window.DialogProperties
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
@@ -83,6 +99,8 @@ internal fun TouchOverlay(
     layoutEditing: Boolean,
     onSaveAllOffsets: (Map<String, TouchOffset>) -> Unit,
     onButtonAppearanceChange: (String, TouchButtonAppearance) -> Unit,
+    onKeyboardButtonAdd: (String) -> Unit = {},
+    onKeyboardButtonRemove: (String) -> Unit = {},
     inputResetKey: Any = Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -171,7 +189,26 @@ internal fun TouchOverlay(
                         onLocalOffsetChange(key + suffix, x, y)
                     }
 
-                    if (landscape) {
+                    if (touch.keyboardModeEnabled) {
+                        KeyboardTouchControls(
+                            client = client,
+                            layoutScale = layoutScale,
+                            buttonScale = buttonScale,
+                            stickScale = stickScale,
+                            leftStickScale = touch.leftStickScale,
+                            joystickMode = touch.joystickMode,
+                            joystickDeadZone = touch.joystickDeadZone,
+                            landscape = landscape,
+                            layoutEditing = layoutEditing,
+                            buttons = touch.keyboardButtons,
+                            getLocalOffset = getOrientationLocalOffset,
+                            getStoredOffset = { key -> localOffsets[key + suffix] },
+                            onLocalOffsetChange = onOrientationLocalOffsetChange,
+                            onButtonTone = onButtonTone,
+                            onKeyboardButtonAdd = onKeyboardButtonAdd,
+                            onKeyboardButtonRemove = onKeyboardButtonRemove,
+                        )
+                    } else if (landscape) {
                         LandscapeTouchControls(
                             client = client,
                             opacity = opacity,
@@ -236,6 +273,299 @@ internal fun TouchOverlay(
             },
             onDismiss = { editingButton = null },
         )
+    }
+}
+
+internal fun keyboardStickKeyCodes(x: Float, y: Float): Set<Int> {
+    if (!x.isFinite() || !y.isFinite()) return emptySet()
+    val horizontal = x.coerceIn(-1f, 1f)
+    val vertical = y.coerceIn(-1f, 1f)
+    val threshold = 0.35f
+    return buildSet {
+        if (horizontal < -threshold) add(KeyEvent.KEYCODE_A)
+        if (horizontal > threshold) add(KeyEvent.KEYCODE_D)
+        if (vertical < -threshold) add(KeyEvent.KEYCODE_W)
+        if (vertical > threshold) add(KeyEvent.KEYCODE_S)
+    }
+}
+
+@Composable
+private fun BoxScope.KeyboardTouchControls(
+    client: NativeStreamClient,
+    layoutScale: Float,
+    buttonScale: Float,
+    stickScale: Float,
+    leftStickScale: Float,
+    joystickMode: TouchJoystickMode,
+    joystickDeadZone: Float,
+    landscape: Boolean,
+    layoutEditing: Boolean,
+    buttons: List<KeyboardOverlayButton>,
+    getLocalOffset: (String) -> TouchOffset,
+    getStoredOffset: (String) -> TouchOffset?,
+    onLocalOffsetChange: (String, Float, Float) -> Unit,
+    onButtonTone: () -> Unit,
+    onKeyboardButtonAdd: (String) -> Unit,
+    onKeyboardButtonRemove: (String) -> Unit,
+) {
+    val orientation = if (landscape) "landscape" else "portrait"
+    val stickDiameter = (if (landscape) 148.dp else 128.dp) * layoutScale * stickScale * leftStickScale
+    val buttonSize = 48.dp * layoutScale * buttonScale
+    val gap = 7.dp * layoutScale
+    var showButtonPicker by rememberSaveable { mutableStateOf(false) }
+    TouchControlGroup(
+        id = "keyboard-$orientation-stick",
+        layoutEditing = layoutEditing,
+        offsetX = getLocalOffset("keyboard_stick").x.dp,
+        offsetY = getLocalOffset("keyboard_stick").y.dp,
+        onOffsetChange = { x, y -> onLocalOffsetChange("keyboard_stick", x, y) },
+        modifier = Modifier.align(Alignment.BottomStart),
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                text = "WASD",
+                color = Color.White.copy(alpha = 0.72f),
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(bottom = 4.dp),
+            )
+            KeyboardWASDStick(client, stickDiameter, joystickMode, joystickDeadZone)
+        }
+    }
+    buttons.forEachIndexed { index, button ->
+        val option = keyboardButtonOption(button.actionId)
+        if (option != null) key(button.id) {
+            val positionKey = button.positionKey()
+            val layoutIndex = button.layoutIndex.takeIf { it >= 0 } ?: index
+            val offset = getStoredOffset(positionKey) ?: keyboardButtonDefaultOffset(
+                index = layoutIndex,
+                spacingDp = buttonSize.value + gap.value,
+                migratedGroupOffset = if (layoutIndex < 7) getLocalOffset("keyboard_buttons") else TouchOffset(),
+            )
+            TouchControlGroup(
+                id = "keyboard-button-${button.id}-$orientation",
+                layoutEditing = layoutEditing,
+                offsetX = offset.x.dp,
+                offsetY = offset.y.dp,
+                onOffsetChange = { x, y -> onLocalOffsetChange(positionKey, x, y) },
+                onRemove = { onKeyboardButtonRemove(button.id) },
+                modifier = Modifier.align(Alignment.BottomEnd),
+            ) {
+                KeyboardCatalogButton(button, option, client, buttonSize, onButtonTone)
+            }
+        }
+    }
+    if (layoutEditing && buttons.size < MAX_KEYBOARD_OVERLAY_BUTTONS) {
+        Surface(
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp)
+                .clickable { showButtonPicker = true },
+            color = MaterialTheme.colorScheme.primaryContainer,
+            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+            shape = RoundedCornerShape(999.dp),
+            shadowElevation = 6.dp,
+        ) {
+            Text(
+                text = stringResource(R.string.keyboard_overlay_add_button),
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 11.dp),
+            )
+        }
+    }
+    if (showButtonPicker) {
+        KeyboardButtonPickerDialog(
+            onDismiss = { showButtonPicker = false },
+            onSelect = { actionId ->
+                showButtonPicker = false
+                onKeyboardButtonAdd(actionId)
+            },
+        )
+    }
+}
+
+@Composable
+private fun KeyboardCatalogButton(
+    button: KeyboardOverlayButton,
+    option: KeyboardButtonOption,
+    client: NativeStreamClient,
+    size: Dp,
+    onPressTone: () -> Unit,
+) {
+    val appearanceKey = button.appearanceKey()
+    val sourceId = "keyboard-custom-${button.id}"
+    val currentOnPressTone by rememberUpdatedState(onPressTone)
+    var pressed by remember(sourceId, button.actionId) { mutableStateOf(false) }
+    fun dispatch(down: Boolean) {
+        option.keyCode?.let { client.setVirtualKeyboardKeyFromSource(it, sourceId, down) }
+        option.mouseButton?.let { client.setVirtualMouseButtonFromSource(it, sourceId, down) }
+    }
+    val currentOnPressedChange = rememberUpdatedState<(Boolean) -> Unit> { down ->
+        if (down != pressed) {
+            dispatch(down)
+            pressed = down
+            if (down) currentOnPressTone()
+        }
+    }
+    Box(
+        Modifier
+            .editTouchButtonOnTap(appearanceKey)
+            .virtualPressInput(
+                client,
+                "$sourceId-${button.actionId}",
+                currentOnPressedChange,
+                LocalTouchButtonAppearances.current[appearanceKey]?.toggle == true,
+                LocalTouchInputEnabled.current,
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        TouchCapFace(option.capLabel, pressed, size, appearanceKey = appearanceKey)
+    }
+    DisposableEffect(client, sourceId, button.actionId) {
+        onDispose { dispatch(false) }
+    }
+}
+
+@Composable
+private fun KeyboardButtonPickerDialog(
+    onDismiss: () -> Unit,
+    onSelect: (String) -> Unit,
+) {
+    val configuration = LocalConfiguration.current
+    val landscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    var query by rememberSaveable { mutableStateOf("") }
+    var selectedCategory by rememberSaveable { mutableStateOf<KeyboardButtonCategory?>(null) }
+    val filteredOptions = remember(query, selectedCategory) {
+        val normalizedQuery = query.trim().lowercase()
+        keyboardButtonCatalog.filter { option ->
+            (selectedCategory == null || option.category == selectedCategory) &&
+                (normalizedQuery.isBlank() || option.label.lowercase().contains(normalizedQuery) ||
+                    option.capLabel.lowercase().contains(normalizedQuery) || option.id.contains(normalizedQuery))
+        }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        modifier = if (landscape) Modifier.fillMaxWidth(0.94f).widthIn(max = 960.dp) else Modifier,
+        properties = DialogProperties(usePlatformDefaultWidth = !landscape),
+        title = { Text(stringResource(R.string.keyboard_overlay_picker_title)) },
+        text = {
+            val categoryChoices: List<KeyboardButtonCategory?> = listOf(null) + KeyboardButtonCategory.entries
+            val categoryLabel: @Composable (KeyboardButtonCategory?) -> String = { category ->
+                stringResource(category?.let(::keyboardButtonCategoryLabelRes) ?: R.string.keyboard_overlay_category_all)
+            }
+            val pickerHeight = (configuration.screenHeightDp * if (landscape) 0.58f else 0.62f).dp
+            val filterWidth = (configuration.screenWidthDp * 0.28f).coerceIn(160f, 220f).dp
+            if (landscape) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().height(pickerHeight),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    Column(Modifier.width(filterWidth).fillMaxHeight()) {
+                        OutlinedTextField(
+                            value = query,
+                            onValueChange = { query = it },
+                            label = { Text(stringResource(R.string.keyboard_overlay_search)) },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+                            categoryChoices.forEach { category ->
+                                FilterChip(
+                                    selected = selectedCategory == category,
+                                    onClick = { selectedCategory = category },
+                                    label = { Text(categoryLabel(category)) },
+                                )
+                            }
+                        }
+                    }
+                    KeyboardPickerOptions(filteredOptions, onSelect, Modifier.weight(1f).fillMaxHeight())
+                }
+            } else {
+                Column(
+                    modifier = Modifier.fillMaxWidth().height(pickerHeight),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedTextField(
+                        value = query,
+                        onValueChange = { query = it },
+                        label = { Text(stringResource(R.string.keyboard_overlay_search)) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        categoryChoices.forEach { category ->
+                            FilterChip(
+                                selected = selectedCategory == category,
+                                onClick = { selectedCategory = category },
+                                label = { Text(categoryLabel(category)) },
+                            )
+                        }
+                    }
+                    KeyboardPickerOptions(filteredOptions, onSelect, Modifier.weight(1f).fillMaxWidth())
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.touch_editor_close)) } },
+    )
+}
+
+@Composable
+private fun KeyboardPickerOptions(
+    options: List<KeyboardButtonOption>,
+    onSelect: (String) -> Unit,
+    modifier: Modifier,
+) {
+    if (options.isEmpty()) {
+        Box(modifier, contentAlignment = Alignment.Center) {
+            Text(stringResource(R.string.keyboard_overlay_no_results), style = MaterialTheme.typography.bodyMedium)
+        }
+    } else {
+        LazyColumn(modifier) {
+            items(options, key = KeyboardButtonOption::id) { option ->
+                TextButton(onClick = { onSelect(option.id) }, modifier = Modifier.fillMaxWidth()) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+                            Text(option.capLabel, style = MaterialTheme.typography.labelMedium,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp))
+                        }
+                        Text(option.label, modifier = Modifier.weight(1f).padding(start = 12.dp))
+                        Text(stringResource(keyboardButtonCategoryLabelRes(option.category)),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun KeyboardWASDStick(
+    client: NativeStreamClient,
+    diameter: Dp,
+    mode: TouchJoystickMode,
+    deadZone: Float,
+) {
+    val sourceId = "touch-keyboard-wasd"
+    var pressedKeyCodes by remember(client, sourceId) { mutableStateOf(emptySet<Int>()) }
+    val updateKeys: (Float, Float) -> Unit = { x, y ->
+        val nextKeys = keyboardStickKeyCodes(x, y)
+        val previousKeys = pressedKeyCodes
+        (previousKeys - nextKeys).forEach { client.setVirtualKeyboardKeyFromSource(it, sourceId, false) }
+        (nextKeys - previousKeys).forEach { client.setVirtualKeyboardKeyFromSource(it, sourceId, true) }
+        if (nextKeys != previousKeys) pressedKeyCodes = nextKeys
+    }
+    VirtualStick(
+        label = "WASD",
+        client = client,
+        diameter = diameter,
+        mode = mode,
+        deadZone = deadZone,
+        onChange = updateKeys,
+    )
+    DisposableEffect(client, sourceId) {
+        onDispose { pressedKeyCodes.forEach { client.setVirtualKeyboardKeyFromSource(it, sourceId, false) } }
     }
 }
 
@@ -955,6 +1285,7 @@ internal fun TouchControlGroup(
     offsetX: Dp,
     offsetY: Dp,
     onOffsetChange: (Float, Float) -> Unit,
+    onRemove: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
     content: @Composable BoxScope.() -> Unit,
 ) {
@@ -1009,6 +1340,21 @@ internal fun TouchControlGroup(
     ) {
         content()
         if (layoutEditing) {
+            if (onRemove != null) {
+                Surface(
+                    modifier = Modifier.align(Alignment.TopEnd).padding(4.dp).clickable(
+                        onClickLabel = stringResource(R.string.keyboard_overlay_remove_button),
+                        onClick = onRemove,
+                    ),
+                    shape = RoundedCornerShape(999.dp),
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                    shadowElevation = 2.dp,
+                ) {
+                    Text("−", style = MaterialTheme.typography.labelLarge,
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 1.dp))
+                }
+            }
             Box(
                 Modifier
                     .matchParentSize()

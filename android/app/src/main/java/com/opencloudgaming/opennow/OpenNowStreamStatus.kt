@@ -73,6 +73,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -252,6 +253,7 @@ internal fun StreamStatsPill(
     streamSettings: StreamSettings,
     style: StreamStatsStyle,
     metrics: StreamStatsMetrics,
+    sessionStartBatteryPercent: Int?,
     backgroundAlpha: Float,
     serverLocation: String?,
     keyboardButtonEnabled: Boolean,
@@ -277,7 +279,7 @@ internal fun StreamStatsPill(
                 horizontalArrangement = Arrangement.spacedBy(OpenNowSpacing.md),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                StreamStatsMetricItems(streamStats, streamSettings, metrics, deviceStatus, serverLocation)
+                StreamStatsMetricItems(streamStats, streamSettings, metrics, deviceStatus, sessionStartBatteryPercent, serverLocation)
                 if (keyboardButtonEnabled) {
                     StreamStatusKeyboardButton(onClick = onKeyboardOpen)
                 }
@@ -296,6 +298,7 @@ internal fun StreamStatsPill(
                     streamSettings,
                     metrics,
                     deviceStatus,
+                    sessionStartBatteryPercent,
                     serverLocation,
                     // Two aligned columns instead of a ragged pair of runs.
                     itemModifier = Modifier.weight(1f),
@@ -853,6 +856,7 @@ private fun StreamStatsMetricItems(
     streamSettings: StreamSettings,
     metrics: StreamStatsMetrics,
     deviceStatus: CompactStreamDeviceStatus,
+    sessionStartBatteryPercent: Int?,
     serverLocation: String?,
     /** Applied to every item; the expanded layout passes a weight so its two columns line up. */
     itemModifier: Modifier = Modifier,
@@ -919,6 +923,9 @@ private fun StreamStatsMetricItems(
     if (metrics.battery) {
         StreamBatteryIndicator(deviceStatus, itemModifier)
     }
+    if (metrics.sessionBattery) {
+        SessionBatteryIndicator(sessionStartBatteryPercent, deviceStatus.batteryPercent, itemModifier)
+    }
     if (metrics.connection) {
         StreamNetworkIndicator(deviceStatus, itemModifier)
     }
@@ -984,6 +991,19 @@ private data class CompactStreamDeviceStatus(
     val networkBars: Int? = null,
     val cellularGeneration: String? = null,
 )
+
+@Composable
+internal fun rememberSessionStartBatteryPercent(sessionId: String?): Int? {
+    val context = LocalContext.current
+    val appContext = remember(context) { context.applicationContext }
+    var startPercent by rememberSaveable(sessionId) { mutableStateOf<Int?>(null) }
+    LaunchedEffect(appContext, sessionId) {
+        if (sessionId != null && startPercent == null) {
+            startPercent = withContext(Dispatchers.IO) { AndroidRuntimeDiagnostics.batteryPercent(appContext) }
+        }
+    }
+    return startPercent
+}
 
 @Composable
 private fun rememberCompactStreamDeviceStatus(): CompactStreamDeviceStatus {
@@ -1060,6 +1080,22 @@ private fun StreamBatteryIndicator(status: CompactStreamDeviceStatus, modifier: 
             maxLines = 1,
         )
     }
+}
+
+@Composable
+private fun SessionBatteryIndicator(startPercent: Int?, currentPercent: Int?, modifier: Modifier = Modifier) {
+    val change = if (startPercent != null && currentPercent != null) startPercent - currentPercent else null
+    val text = when {
+        change == null -> stringResource(R.string.stream_stats_session_battery_unknown)
+        change >= 0 -> stringResource(R.string.stream_stats_session_battery_used, change)
+        else -> stringResource(R.string.stream_stats_session_battery_charged, -change)
+    }
+    val description = when {
+        change == null -> stringResource(R.string.stream_stats_session_battery_cd_unknown)
+        change >= 0 -> stringResource(R.string.stream_stats_session_battery_cd_used, change)
+        else -> stringResource(R.string.stream_stats_session_battery_cd_charged, -change)
+    }
+    StreamStatsText(text, modifier = modifier, contentDescription = description)
 }
 
 @Composable

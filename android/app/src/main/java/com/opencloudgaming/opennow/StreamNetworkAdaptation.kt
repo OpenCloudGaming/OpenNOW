@@ -2,10 +2,22 @@ package com.opencloudgaming.opennow
 
 /** Shared server policy for WebRTC and native NVST on every Android device. */
 internal object StreamNetworkAdaptation {
-    // Keep the encoded profile fixed. Enabling NVIDIA's dynamic mode caused post-1.4.9
-    // resolution changes and unstable frame delivery even when the client requested 60 FPS.
-    const val DYNAMIC_STREAMING_MODE = 0
-    const val DYNAMIC_RESOLUTION_CONTROL = 0
+    // Dynamic resolution previously caused unstable frame delivery. Keep it opt-in.
+    fun dynamicStreamingMode(settings: StreamSettings): Int =
+        if (settings.experimentalDynamicNetworkAdjustment) 1 else 0
+
+    fun dynamicResolutionControl(settings: StreamSettings): Int = dynamicStreamingMode(settings)
+
+    fun bitrateRange(settings: StreamSettings): StreamBitrateRange {
+        val standard = bitrateRange(settings.maxBitrateMbps)
+        if (!settings.experimentalDynamicNetworkAdjustment) return standard
+        val minimum = settings.experimentalDynamicMinimumBitrateMbps
+            .coerceIn(1, standard.maximumKbps / 1000) * 1000
+        return standard.copy(
+            minimumKbps = minimum,
+            initialKbps = maxOf(minimum, standard.initialKbps),
+        )
+    }
 
     fun bitrateRange(maxBitrateMbps: Int): StreamBitrateRange {
         val maximum = maxBitrateMbps.coerceIn(1, 200) * 1000

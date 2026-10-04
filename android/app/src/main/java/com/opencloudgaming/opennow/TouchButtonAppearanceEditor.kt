@@ -62,7 +62,18 @@ internal enum class TouchButtonIcon(val vector: ImageVector, @StringRes val labe
 internal val LocalTouchButtonAppearances = staticCompositionLocalOf<Map<String, TouchButtonAppearance>> { emptyMap() }
 
 @Composable
-private fun touchButtonName(key: String): String = when {
+private fun touchButtonName(key: String, touch: AndroidTouchSettings): String = when {
+    key.startsWith("keyboard_custom_") -> {
+        touch.keyboardButtons.firstOrNull { it.appearanceKey() == key }
+            ?.let { button -> keyboardButtonOption(button.actionId)?.label } ?: key
+    }
+    key == "keyboard_lmb" -> "Mouse left button"
+    key == "keyboard_mmb" -> "Mouse middle button"
+    key == "keyboard_rmb" -> "Mouse right button"
+    key == "keyboard_shift" -> "Shift key"
+    key == "keyboard_ctrl" -> "Ctrl key"
+    key == "keyboard_f" -> "F key"
+    key == "keyboard_q" -> "Q key"
     key.startsWith("extra") -> stringResource(R.string.settings_touch_extra_button, key.removePrefix("extra").toInt())
     key == "◀" -> "Select"
     key == "▶" -> "Start"
@@ -86,10 +97,10 @@ internal fun TouchButtonAppearanceEditor(touch: AndroidTouchSettings, onChange: 
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState())) {
                     Text(stringResource(R.string.touch_customize_description))
-                    touchButtonKeys.forEach { key ->
+                    touch.touchButtonAppearanceKeys().forEach { key ->
                         TextButton(onClick = { selected = key }, modifier = Modifier.fillMaxWidth()) {
                             val label = touch.buttonAppearances[key]?.label.orEmpty()
-                            Text(touchButtonName(key) + if (label.isNotBlank()) " · $label" else "")
+                            Text(touchButtonName(key, touch) + if (label.isNotBlank()) " · $label" else "")
                         }
                     }
                 }
@@ -117,7 +128,7 @@ internal fun TouchButtonAppearanceDialog(
     var toggle by rememberSaveable(button) { mutableStateOf(saved.toggle) }
     AlertDialog(
         onDismissRequest = { onDismiss() },
-        title = { Text(touchButtonName(button)) },
+        title = { Text(touchButtonName(button, touch)) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 CompositionLocalProvider(
@@ -127,14 +138,14 @@ internal fun TouchButtonAppearanceDialog(
                     LocalTouchButtonAppearances provides mapOf(button to TouchButtonAppearance(label, icon, shape, toggle, sizeScale)),
                 ) {
                     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        TouchCapFace(touchButtonName(button), false, 72.dp, appearanceKey = button)
+                        TouchCapFace(touchButtonName(button, touch), false, 72.dp, appearanceKey = button)
                     }
                 }
                 OutlinedTextField(
                     value = label,
                     onValueChange = { label = it.take(TOUCH_BUTTON_LABEL_LIMIT) },
                     label = { Text(stringResource(R.string.touch_custom_label)) },
-                    placeholder = { Text(touchButtonName(button)) },
+                    placeholder = { Text(touchButtonName(button, touch)) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )

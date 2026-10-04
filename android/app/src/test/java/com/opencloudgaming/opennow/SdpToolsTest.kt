@@ -265,6 +265,30 @@ class SdpToolsTest {
     }
 
     @Test
+    fun experimentalDynamicAdjustmentChangesOnlyTheOptInAdaptationPolicy() {
+        val settings = StreamSettings(
+            resolution = "1680x720",
+            aspectRatio = "21:9",
+            fps = 60,
+            maxBitrateMbps = 35,
+            experimentalDynamicNetworkAdjustment = true,
+            experimentalDynamicMinimumBitrateMbps = 2,
+        )
+        val sdp = SdpTools.buildNvstSdp("", settings, "")
+
+        assertTrue(sdp.contains("a=vqos.dynamicStreamingMode:1"))
+        assertTrue(sdp.contains("a=vqos.drc.enable:1"))
+        assertTrue(sdp.contains("a=vqos.dfc.enable:0"))
+        assertFalse(sdp.contains("a=vqos.resControl.cpmRtc.minResolutionPercent:100"))
+        assertFalse(sdp.contains("a=vqos.resControl.cpmRtc.resolutionChangeHoldonMs:999999"))
+        assertTrue(sdp.contains("a=video.clientViewportWd:1680"))
+        assertTrue(sdp.contains("a=video.clientViewportHt:720"))
+        assertTrue(sdp.contains("a=video.maxFPS:60"))
+        assertTrue(sdp.contains("a=vqos.bw.maximumBitrateKbps:35000"))
+        assertTrue(sdp.contains("a=vqos.bw.minimumBitrateKbps:2000"))
+    }
+
+    @Test
     fun nvstSdpHonorsConfiguredBitrateBelowTheRecommendedFiveMbpsFloor() {
         val nvst = buildNvstSdp(StreamSettings(maxBitrateMbps = 1))
 
@@ -286,6 +310,20 @@ class SdpToolsTest {
         }
         assertEquals(1000, StreamNetworkAdaptation.bitrateRange(Int.MIN_VALUE).maximumKbps)
         assertEquals(200000, StreamNetworkAdaptation.bitrateRange(Int.MAX_VALUE).maximumKbps)
+    }
+
+    @Test
+    fun customDynamicBitrateFloorCannotExceedTheSelectedCeiling() {
+        val settings = StreamSettings(
+            maxBitrateMbps = 3,
+            experimentalDynamicNetworkAdjustment = true,
+            experimentalDynamicMinimumBitrateMbps = 20,
+        )
+        val range = StreamNetworkAdaptation.bitrateRange(settings)
+        assertEquals(3000, range.minimumKbps)
+        assertEquals(3000, range.initialKbps)
+        assertEquals(3000, range.maximumKbps)
+        assertEquals(StreamNetworkAdaptation.bitrateRange(3), StreamNetworkAdaptation.bitrateRange(settings.copy(experimentalDynamicNetworkAdjustment = false)))
     }
 
     @Test

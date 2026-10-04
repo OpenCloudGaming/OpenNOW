@@ -472,6 +472,20 @@ class InputEncoder {
                 KeyEvent.KEYCODE_CAPS_LOCK -> 0x14
                 KeyEvent.KEYCODE_NUM_LOCK -> 0x90
                 KeyEvent.KEYCODE_SCROLL_LOCK -> 0x91
+                KeyEvent.KEYCODE_META_LEFT -> 0x5b
+                KeyEvent.KEYCODE_META_RIGHT -> 0x5c
+                KeyEvent.KEYCODE_MENU -> 0x5d
+                KeyEvent.KEYCODE_SYSRQ -> 0x2c
+                KeyEvent.KEYCODE_BREAK -> 0x13
+                KeyEvent.KEYCODE_CLEAR -> 0x0c
+                KeyEvent.KEYCODE_NUMPAD_ENTER -> 0x0d
+                KeyEvent.KEYCODE_NUMPAD_ADD -> 0x6b
+                KeyEvent.KEYCODE_NUMPAD_SUBTRACT -> 0x6d
+                KeyEvent.KEYCODE_NUMPAD_MULTIPLY -> 0x6a
+                KeyEvent.KEYCODE_NUMPAD_DIVIDE -> 0x6f
+                KeyEvent.KEYCODE_NUMPAD_DOT -> 0x6e
+                KeyEvent.KEYCODE_NUMPAD_COMMA -> 0x6c
+                KeyEvent.KEYCODE_NUMPAD_EQUALS -> 0xbb
                 KeyEvent.KEYCODE_MINUS -> 0xbd
                 KeyEvent.KEYCODE_EQUALS -> 0xbb
                 KeyEvent.KEYCODE_LEFT_BRACKET -> 0xdb
@@ -563,6 +577,22 @@ class InputEncoder {
                 KeyEvent.KEYCODE_CAPS_LOCK -> 0x003a
                 KeyEvent.KEYCODE_NUM_LOCK -> 0x0145
                 KeyEvent.KEYCODE_SCROLL_LOCK -> 0x0046
+                KeyEvent.KEYCODE_META_LEFT -> 0x015b
+                KeyEvent.KEYCODE_META_RIGHT -> 0x015c
+                KeyEvent.KEYCODE_MENU -> 0x015d
+                KeyEvent.KEYCODE_SYSRQ -> 0x0137
+                KeyEvent.KEYCODE_BREAK -> 0x0146
+                KeyEvent.KEYCODE_CLEAR -> 0x004c
+                KeyEvent.KEYCODE_NUMPAD_DIVIDE -> 0x0135
+                KeyEvent.KEYCODE_NUMPAD_MULTIPLY -> 0x0037
+                KeyEvent.KEYCODE_NUMPAD_SUBTRACT -> 0x004a
+                KeyEvent.KEYCODE_NUMPAD_ADD -> 0x004e
+                KeyEvent.KEYCODE_NUMPAD_DOT -> 0x0053
+                KeyEvent.KEYCODE_NUMPAD_COMMA -> 0x007e
+                KeyEvent.KEYCODE_NUMPAD_EQUALS -> 0x0059
+                in KeyEvent.KEYCODE_F1..KeyEvent.KEYCODE_F10 -> 0x003b + (keyCode - KeyEvent.KEYCODE_F1)
+                KeyEvent.KEYCODE_F11 -> 0x0057
+                KeyEvent.KEYCODE_F12 -> 0x0058
                 KeyEvent.KEYCODE_MINUS -> 0x000c
                 KeyEvent.KEYCODE_EQUALS -> 0x000d
                 KeyEvent.KEYCODE_LEFT_BRACKET -> 0x001a

@@ -195,6 +195,8 @@ enum class AndroidThermalStatus(val logValue: String) {
 }
 
 internal object AndroidRuntimeDiagnostics {
+    fun batteryPercent(context: Context): Int? = readBattery(context.applicationContext).percent
+
     fun snapshot(context: Context): AndroidRuntimeDiagnosticsSnapshot {
         val appContext = context.applicationContext
         val battery = readBattery(appContext)

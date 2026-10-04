@@ -65,6 +65,7 @@ class MainActivity : ComponentActivity() {
     private var externalMousePointerCaptureRequestPending = false
     private var defaultRequestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
     private var phoneStreamOrientationLocked = false
+    private var streamPanelExpanded = false
     private var streamPictureInPictureReady = false
     private var streamPictureInPictureAspectRatio = Rational(16, 9)
     private var systemWallpaperWindowVisible: Boolean? = null
@@ -582,9 +583,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun applyPhoneStreamOrientationLock(active: Boolean, force: Boolean = false) {
-        if (!force && phoneStreamOrientationLocked == active) return
+        if (!force && phoneStreamOrientationLocked == active && !streamPanelExpanded) return
         phoneStreamOrientationLocked = active
-        val nextOrientation = if (active) {
+        val nextOrientation = if (streamPanelExpanded) {
+            ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
+        } else if (active) {
             ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         } else {
             defaultRequestedOrientation
@@ -592,6 +595,12 @@ class MainActivity : ComponentActivity() {
         if (requestedOrientation != nextOrientation) {
             requestedOrientation = nextOrientation
         }
+    }
+
+    internal fun setStreamPanelExpanded(expanded: Boolean) {
+        if (streamPanelExpanded == expanded) return
+        streamPanelExpanded = expanded
+        applyPhoneStreamOrientationLock(phoneStreamOrientationLocked, force = true)
     }
 
     private fun updateStreamSystemUiEnforcer(active: Boolean) {
