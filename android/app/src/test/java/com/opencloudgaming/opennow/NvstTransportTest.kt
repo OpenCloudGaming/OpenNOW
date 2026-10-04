@@ -1,5 +1,6 @@
 package com.opencloudgaming.opennow
 
+import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
 import org.junit.Assert.*
@@ -114,6 +115,35 @@ class NvstTransportTest {
                 assertEquals(0, features["dynamicStreamingMode"]!!.jsonPrimitive.int)
             }
         }
+    }
+
+    @Test fun experimentalDynamicAdjustmentIsPersistedAndConsistentAcrossNativeRequests() {
+        val settings = StreamSettings(
+            experimentalNvst = true,
+            experimentalDynamicNetworkAdjustment = true,
+            experimentalDynamicMinimumBitrateMbps = 2,
+        )
+        val restored = OpenNowJson.decodeFromString<StreamSettings>(OpenNowJson.encodeToString(settings))
+        assertTrue(restored.experimentalDynamicNetworkAdjustment)
+        assertEquals(2, restored.experimentalDynamicMinimumBitrateMbps)
+        assertFalse(OpenNowJson.decodeFromString<StreamSettings>("{}").experimentalDynamicNetworkAdjustment)
+
+        val request = buildMinimalClaimRequestBody("123", "device", restored)["sessionRequestData"]!!.jsonObject
+        val features = request["requestedStreamingFeatures"]!!.jsonObject
+        assertEquals(1, features["dynamicStreamingMode"]!!.jsonPrimitive.int)
+
+        val session = SessionInfo("id", 3, serverIp = "", signalingServer = "", signalingUrl = "")
+        val context = OpenNowJson.parseToJsonElement(nvstSessionContext(session, restored)).jsonObject
+        val adaptation = context["settings"]!!.jsonObject["networkAdaptation"]!!.jsonObject
+        assertEquals(1, adaptation["dynamicStreamingMode"]!!.jsonPrimitive.int)
+        assertEquals(2_000, adaptation["minimumBitrateKbps"]!!.jsonPrimitive.int)
+        val preserved = StreamSettings().withUserStreamOptionsFrom(restored)
+        assertTrue(preserved.experimentalDynamicNetworkAdjustment)
+        assertEquals(2, preserved.experimentalDynamicMinimumBitrateMbps)
+        assertFalse(restored.loweredSessionLaunchProfile().experimentalDynamicNetworkAdjustment)
+        assertTrue(streamSettingsSessionSignature(restored).contains("dynamic=1"))
+        assertTrue(streamSettingsSessionSignature(restored).contains("minBitrate=2"))
+        assertFalse(streamSettingsSessionSignature(StreamSettings()).contains("dynamic="))
     }
 
     @Test fun deviceRecommendationsPreserveTransportChoice() {

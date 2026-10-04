@@ -95,6 +95,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Cast
 import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.outlined.Keyboard
+import androidx.compose.material.icons.outlined.Mouse
+import androidx.compose.material.icons.outlined.SportsEsports
+import androidx.compose.material.icons.outlined.TouchApp
+import androidx.compose.material.icons.outlined.Fullscreen
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.ChevronLeft
+import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -113,6 +122,7 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -185,6 +195,9 @@ import coil3.request.ImageRequest
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.Locale
+import java.util.Date
+import java.util.TimeZone
+import java.text.DateFormat
 import com.opencloudgaming.opennow.ui.theme.LocalReduceMotion
 import com.opencloudgaming.opennow.ui.theme.OpenNowMotion
 import com.opencloudgaming.opennow.ui.theme.OpenNowPalette
@@ -1629,6 +1642,7 @@ private fun GameGrid(
                             squareCard = gridSpec.squareCards,
                             imageRequestWidth = cardRequestWidth,
                             thumbnailFavoriteOverlay = shouldShowCatalogFavoriteIcon(settings),
+                            showPremiumMarker = settings.showPremiumMarker,
                             controllerActionMode = controllerActionMode,
                             upFocusRequester = topFocusRequester.takeIf { game.id in firstRowGameIds },
                             onSelect = onSelect,
@@ -1791,6 +1805,7 @@ private fun StoreGameGrid(
                             squareCard = gridSpec.squareCards,
                             imageRequestWidth = cardRequestWidth,
                             thumbnailFavoriteOverlay = shouldShowCatalogFavoriteIcon(settings),
+                            showPremiumMarker = settings.showPremiumMarker,
                             controllerActionMode = controllerActionMode,
                             upFocusRequester = topFocusRequester.takeIf {
                                 !showDiscoverySections && game.id in firstRowGameIds
@@ -2265,7 +2280,7 @@ private fun StoreComingNextCarousel(
                                 controllerActionMode && handleCatalogControllerAction(
                                     event = event,
                                     onFavorite = { onFavorite(featured.id) },
-                                    onPlay = { onPlay(featured) },
+                                    onPlay = { playOrUpgrade(featured, context, onPlay) },
                                 ) -> true
                                 isTvActivateKey(event) -> {
                                     selectFromHero()
@@ -2277,8 +2292,14 @@ private fun StoreComingNextCarousel(
                         .focusable()
                         .combinedClickable(
                             onClick = selectFromHero,
-                            onLongClick = { onChooseStore(featured) },
-                            onLongClickLabel = stringResource(R.string.store_selector_play_long_press),
+                            onLongClick = {
+                                if (featured.requiresMembershipUpgrade()) openMembershipUpgrade(context)
+                                else onChooseStore(featured)
+                            },
+                            onLongClickLabel = stringResource(
+                                if (featured.requiresMembershipUpgrade()) R.string.catalog_upgrade_to_play
+                                else R.string.store_selector_play_long_press,
+                            ),
                         ),
                     shape = shape,
                     color = Panel,
@@ -2560,6 +2581,7 @@ private fun StoreRailSection(
                                 expressiveUi = settings.expressiveUi,
                                 liveSelectedOutlines = LocalActiveSelectionEnabled.current,
                                 showFavoriteIcon = shouldShowCatalogFavoriteIcon(settings),
+                                showPremiumMarker = settings.showPremiumMarker,
                                 width = cardWidth,
                                 imageRequestWidth = imageRequestWidth,
                                 controllerActionMode = controllerActionMode,
@@ -2586,6 +2608,7 @@ private fun StoreRailGameCard(
     expressiveUi: Boolean,
     liveSelectedOutlines: Boolean,
     showFavoriteIcon: Boolean,
+    showPremiumMarker: Boolean,
     width: Dp,
     imageRequestWidth: Int,
     controllerActionMode: Boolean,
@@ -2596,6 +2619,7 @@ private fun StoreRailGameCard(
     onChooseStore: (GameInfo) -> Unit,
 ) {
     var focused by remember { mutableStateOf(false) }
+    val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     // Same V3 tile as GameCard: generous rounding and a resting white edge.
     val cardRadius = if (LocalDualScreenTopLayout.current) OpenNowRadius.md else if (expressiveUi) OpenNowRadius.xl else OpenNowRadius.lg
@@ -2608,6 +2632,8 @@ private fun StoreRailGameCard(
     )
     val selected = LocalSelectedCatalogGameId.current == game.id
     val selectedOutline = shouldShowActiveSelectionOutline(selected, liveSelectedOutlines)
+    val premiumMarker = showPremiumMarker && game.hasPremiumMembershipMarker()
+    val premiumDescription = stringResource(R.string.catalog_premium_membership_required)
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val observeHover = tvProfile || controllerActionMode || LocalAbsoluteCinemaEffects.current
@@ -2654,7 +2680,7 @@ private fun StoreRailGameCard(
                 // rectangle only when the card is actually selected.
                 .onGloballyPositioned { transitionCoordinates[0] = it }
                 .semantics(mergeDescendants = true) {
-                    contentDescription = game.title
+                    contentDescription = if (premiumMarker) "${game.title}, $premiumDescription" else game.title
                     role = Role.Button
                 },
         ) {
@@ -2687,7 +2713,7 @@ private fun StoreRailGameCard(
                             controllerActionMode && handleCatalogControllerAction(
                                 event = event,
                                 onFavorite = { onFavorite(game.id) },
-                                onPlay = { onPlay(game) },
+                                onPlay = { playOrUpgrade(game, context, onPlay) },
                             ) -> true
                             isTvActivateKey(event) -> {
                                 selectFromCard()
@@ -2701,8 +2727,14 @@ private fun StoreRailGameCard(
                         interactionSource = interaction,
                         indication = null,
                         onClick = selectFromCard,
-                        onLongClick = { onChooseStore(game) },
-                        onLongClickLabel = stringResource(R.string.store_selector_play_long_press),
+                        onLongClick = {
+                            if (game.requiresMembershipUpgrade()) openMembershipUpgrade(context)
+                            else onChooseStore(game)
+                        },
+                        onLongClickLabel = stringResource(
+                            if (game.requiresMembershipUpgrade()) R.string.catalog_upgrade_to_play
+                            else R.string.store_selector_play_long_press,
+                        ),
                     ),
                 shape = shape,
                 color = OpenNowPalette.ImagePlaceholder,
@@ -2728,6 +2760,9 @@ private fun StoreRailGameCard(
                                 .padding(6.dp),
                             size = actionButtonSize,
                         )
+                    }
+                    if (premiumMarker) {
+                        PremiumMembershipMarker(Modifier.align(Alignment.TopEnd).padding(6.dp))
                     }
                 }
             }
@@ -3162,6 +3197,7 @@ private fun GameCard(
     squareCard: Boolean,
     imageRequestWidth: Int = MOBILE_CARD_IMAGE_REQUEST_WIDTH,
     thumbnailFavoriteOverlay: Boolean,
+    showPremiumMarker: Boolean,
     controllerActionMode: Boolean,
     upFocusRequester: FocusRequester? = null,
     onSelect: (GameInfo) -> Unit,
@@ -3170,6 +3206,7 @@ private fun GameCard(
     onChooseStore: (GameInfo) -> Unit,
 ) {
     var focused by remember { mutableStateOf(false) }
+    val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     // V3 tiles: generous rounding and a resting white edge, so art reads as a physical card.
     val cardRadius = if (LocalDualScreenTopLayout.current) OpenNowRadius.md else if (expressiveUi) OpenNowRadius.xl else OpenNowRadius.lg
@@ -3187,6 +3224,8 @@ private fun GameCard(
     val selectedOutline = shouldShowActiveSelectionOutline(selected, liveSelectedOutlines)
     // Touch-handheld captions live outside the poster, so the artwork stays visually clean.
     val showCaption = handheldPosterCard && showCardTitles
+    val premiumMarker = showPremiumMarker && game.hasPremiumMembershipMarker()
+    val premiumDescription = stringResource(R.string.catalog_premium_membership_required)
 
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
@@ -3233,7 +3272,7 @@ private fun GameCard(
             // One merged node per card. Without this TalkBack reads nothing at all here: UrlImage
             // passes a null contentDescription and phone cards carry no title text of their own.
             .semantics(mergeDescendants = true) {
-                contentDescription = game.title
+                contentDescription = if (premiumMarker) "${game.title}, $premiumDescription" else game.title
                 role = Role.Button
             },
     ) {
@@ -3270,7 +3309,7 @@ private fun GameCard(
                             controllerActionMode && handleCatalogControllerAction(
                                 event = event,
                                 onFavorite = { onFavorite(game.id) },
-                                onPlay = { onPlay(game) },
+                                onPlay = { playOrUpgrade(game, context, onPlay) },
                             ) -> true
                             isTvActivateKey(event) -> {
                                 selectFromCard()
@@ -3293,8 +3332,14 @@ private fun GameCard(
                             interactionSource = interaction,
                             indication = null,
                             onClick = selectFromCard,
-                            onLongClick = { onChooseStore(game) },
-                            onLongClickLabel = stringResource(R.string.store_selector_play_long_press),
+                            onLongClick = {
+                                if (game.requiresMembershipUpgrade()) openMembershipUpgrade(context)
+                                else onChooseStore(game)
+                            },
+                            onLongClickLabel = stringResource(
+                                if (game.requiresMembershipUpgrade()) R.string.catalog_upgrade_to_play
+                                else R.string.store_selector_play_long_press,
+                            ),
                         ),
                 ) {
                     UrlImage(
@@ -3317,6 +3362,9 @@ private fun GameCard(
                                 .padding(overlayActionPadding),
                             size = overlayActionSize,
                         )
+                    }
+                    if (premiumMarker) {
+                        PremiumMembershipMarker(Modifier.align(Alignment.TopEnd).padding(6.dp))
                     }
                 }
             }
@@ -3374,6 +3422,24 @@ internal fun catalogControllerActionMode(
 
 internal fun shouldShowCatalogFavoriteIcon(settings: AppSettings): Boolean =
     settings.showFavoriteIconOnGameCards
+
+@Composable
+private fun PremiumMembershipMarker(modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(100.dp),
+        color = Color.Black.copy(alpha = 0.78f),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.7f)),
+    ) {
+        Text(
+            text = stringResource(R.string.catalog_premium_marker),
+            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+            color = Color.White,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+        )
+    }
+}
 
 /** Titles may be captioned on touch handhelds; controller-first layouts suppress them upstream. */
 internal fun shouldShowCatalogCardTitles(tvProfile: Boolean, enabled: Boolean): Boolean =
@@ -3808,6 +3874,11 @@ private fun GameDetailsLandscapeContent(
 ) {
     val description = gameDescriptionForDetails(game)
     val context = LocalContext.current
+    val upgradeRequired = game.requiresMembershipUpgrade()
+    val primaryAction = {
+        onDismiss()
+        playOrUpgrade(game, context, onPlay)
+    }
     val sideScrollState = rememberScrollState()
     val detailsSpacing = if (shortHeight) 8.dp else 10.dp
     var gameFocused by remember(game.id) { mutableStateOf(false) }
@@ -3829,10 +3900,7 @@ private fun GameDetailsLandscapeContent(
                 .focusProperties { right = playFocusRequester }
                 .onFocusChanged { gameFocused = it.isFocused }
                 .hoverable(gameImageInteraction)
-                .clickable {
-                    onDismiss()
-                    onPlay(game)
-                },
+                .clickable(onClick = primaryAction),
         ) {
             Box(
                 Modifier
@@ -3862,6 +3930,17 @@ private fun GameDetailsLandscapeContent(
                             .align(Alignment.TopStart)
                             .padding(10.dp),
                     )
+                    if (removeLabel != null && onRemove != null) {
+                        GameRemoveButton(
+                            label = removeLabel,
+                            confirmationText = removeConfirmationText,
+                            enabled = removeEnabled,
+                            onClick = onRemove,
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(10.dp),
+                        )
+                    }
                 }
                 if (imageActionsOverlay) {
                     Column(
@@ -3871,16 +3950,7 @@ private fun GameDetailsLandscapeContent(
                             .width(150.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        if (removeLabel != null && onRemove != null) {
-                            GameRemoveButton(
-                                label = removeLabel,
-                                confirmationText = removeConfirmationText,
-                                enabled = removeEnabled,
-                                onClick = onRemove,
-                                size = 48.dp,
-                            )
-                        }
-                        connectedTvName?.let {
+                        connectedTvName?.takeUnless { upgradeRequired }?.let {
                             OutlinedButton(
                                 onClick = {
                                     onDismiss()
@@ -3892,14 +3962,12 @@ private fun GameDetailsLandscapeContent(
                             }
                         }
                         LongPressPlayButton(
-                            onClick = {
-                                onDismiss()
-                                onPlay(game)
-                            },
-                            onLongClick = {
+                            onClick = primaryAction,
+                            onLongClick = if (upgradeRequired) null else ({
                                 onDismiss()
                                 onChooseStore(game)
-                            },
+                            }),
+                            upgradeRequired = upgradeRequired,
                             modifier = Modifier
                                 .fillMaxWidth(),
                             focusRequester = playFocusRequester,
@@ -3978,18 +4046,16 @@ private fun GameDetailsLandscapeContent(
                         )
                     }
                     LongPressPlayButton(
-                        onClick = {
-                            onDismiss()
-                            onPlay(game)
-                        },
-                        onLongClick = {
+                        onClick = primaryAction,
+                        onLongClick = if (upgradeRequired) null else ({
                             onDismiss()
                             onChooseStore(game)
-                        },
+                        }),
+                        upgradeRequired = upgradeRequired,
                         modifier = Modifier.weight(1f),
                         focusRequester = playFocusRequester,
                     )
-                    connectedTvName?.let {
+                    connectedTvName?.takeUnless { upgradeRequired }?.let {
                         OutlinedButton(
                             onClick = {
                                 onDismiss()
@@ -4013,7 +4079,9 @@ private fun GameDetailsCompactInfoContent(
     description: String?,
 ) {
     OwnershipStatusRow(game = game, compact = true)
+    MembershipUpgradeNotice(game)
     GameGenreChips(game = game, compact = true)
+    GameLastPlayed(game)
     GameScreenshotGallery(game = game, compact = true)
     GameDescriptionDisclosure(
         description = description,
@@ -4047,6 +4115,11 @@ private fun GameDetailsScrollableContent(
     playFocusRequester: FocusRequester,
 ) {
     val context = LocalContext.current
+    val upgradeRequired = game.requiresMembershipUpgrade()
+    val primaryAction = {
+        onDismiss()
+        playOrUpgrade(game, context, onPlay)
+    }
     var gameFocused by remember(game.id) { mutableStateOf(false) }
     val gameImageInteraction = remember(game.id) { MutableInteractionSource() }
     val gameImageHovered by gameImageInteraction.collectIsHoveredAsState()
@@ -4069,10 +4142,7 @@ private fun GameDetailsScrollableContent(
                         .focusProperties { down = playFocusRequester }
                         .onFocusChanged { gameFocused = it.isFocused }
                         .hoverable(gameImageInteraction)
-                        .clickable {
-                            onDismiss()
-                            onPlay(game)
-                        },
+                        .clickable(onClick = primaryAction),
                 ) {
                     Box(
                         Modifier
@@ -4120,7 +4190,9 @@ private fun GameDetailsScrollableContent(
                 Column(Modifier.padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     val description = gameDescriptionForDetails(game)
                     OwnershipStatusRow(game = game, compact = false)
+                    MembershipUpgradeNotice(game)
                     GameGenreChips(game = game, compact = false)
+                    GameLastPlayed(game)
                     GameScreenshotGallery(game = game, compact = false)
                     GameDescriptionDisclosure(
                         description = description,
@@ -4177,18 +4249,16 @@ private fun GameDetailsScrollableContent(
                     )
                 }
                 LongPressPlayButton(
-                    onClick = {
-                        onDismiss()
-                        onPlay(game)
-                    },
-                    onLongClick = {
+                    onClick = primaryAction,
+                    onLongClick = if (upgradeRequired) null else ({
                         onDismiss()
                         onChooseStore(game)
-                    },
+                    }),
+                    upgradeRequired = upgradeRequired,
                     modifier = Modifier.weight(1f),
                     focusRequester = playFocusRequester,
                 )
-                connectedTvName?.let { tvName ->
+                connectedTvName?.takeUnless { upgradeRequired }?.let { tvName ->
                     IconButton(
                         onClick = {
                             onDismiss()
@@ -4264,7 +4334,8 @@ private fun LaunchOptionsList(
 @Composable
 private fun LongPressPlayButton(
     onClick: () -> Unit,
-    onLongClick: () -> Unit,
+    onLongClick: (() -> Unit)?,
+    upgradeRequired: Boolean = false,
     modifier: Modifier = Modifier,
     focusRequester: FocusRequester? = null,
 ) {
@@ -4319,7 +4390,7 @@ private fun LongPressPlayButton(
                     indication = null,
                     onClick = onClick,
                     onLongClick = onLongClick,
-                    onLongClickLabel = stringResource(R.string.store_selector_play_long_press),
+                    onLongClickLabel = if (onLongClick != null) stringResource(R.string.store_selector_play_long_press) else null,
                 )
                 .then(
                     if (controllerFocused) {
@@ -4342,13 +4413,22 @@ private fun LongPressPlayButton(
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                ZortosPlayMark(
-                    modifier = Modifier.size(20.dp),
-                    ringColor = Color.Black,
-                )
+                if (upgradeRequired) {
+                    Icon(
+                        imageVector = Icons.Outlined.Lock,
+                        contentDescription = null,
+                        tint = Color.Black,
+                        modifier = Modifier.size(20.dp),
+                    )
+                } else {
+                    ZortosPlayMark(
+                        modifier = Modifier.size(20.dp),
+                        ringColor = Color.Black,
+                    )
+                }
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    stringResource(R.string.action_play),
+                    stringResource(if (upgradeRequired) R.string.catalog_upgrade_to_play else R.string.action_play),
                     color = Color.Black,
                     fontWeight = if (controllerFocused) FontWeight.ExtraBold else FontWeight.SemiBold,
                     maxLines = 1,
@@ -4375,7 +4455,6 @@ private fun variantDetailsText(variant: GameVariant): String =
     listOfNotNull(
         variant.libraryStatus?.takeIf { it.isNotBlank() }?.let(::formatGameMetadataLabel),
         variant.supportedControls.takeIf { it.isNotEmpty() }?.joinToString(", ") { formatGameMetadataLabel(it) },
-        variant.lastPlayedDate?.takeIf { it.isNotBlank() }?.let { "Last played $it" },
     ).joinToString(" - ")
 
 @Composable
@@ -4957,13 +5036,40 @@ private fun GameTitleBlock(game: GameInfo, compact: Boolean) {
 @Composable
 private fun OwnershipStatusRow(game: GameInfo, compact: Boolean) {
     val ownedStores = ownedStoreLabels(game)
+    val availableStores = (availableStoreLabels(game) + ownedStores).distinctBy(::normalizeGameStore)
     val shape = RoundedCornerShape(if (compact) 12.dp else 14.dp)
+    if (ownedStores.isNotEmpty() && availableStores.size > 1) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            availableStores.forEach { store ->
+                val owned = ownedStores.any { normalizeGameStore(it) == normalizeGameStore(store) }
+                Surface(
+                    shape = shape,
+                    color = if (owned) Color(0xff174c31) else Color(0xff4a1216),
+                    tonalElevation = 0.dp,
+                ) {
+                    Row(
+                        Modifier.padding(horizontal = 10.dp, vertical = if (compact) 6.dp else 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        ConnectorStoreIcon(launcherBadgeForStoreKey(normalizeGameStore(store)))
+                        Text(
+                            if (owned) "Owned on $store" else "Not owned on $store",
+                            color = Color.White,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                }
+            }
+        }
+        return
+    }
     if (ownedStores.isEmpty()) {
-        val availableStores = availableStoreLabels(game)
         Surface(
             modifier = Modifier.fillMaxWidth(),
             shape = shape,
-            color = Color(0xff4a1216),
+            color = if (isGameInLibrary(game)) PanelAlt else Color(0xff4a1216),
             tonalElevation = 0.dp,
         ) {
             Row(
@@ -4972,8 +5078,8 @@ private fun OwnershipStatusRow(game: GameInfo, compact: Boolean) {
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Text(
-                    stringResource(R.string.catalog_not_owned),
-                    color = OpenNowPalette.OnErrorContainer,
+                    if (isGameInLibrary(game)) stringResource(R.string.catalog_owned) else stringResource(R.string.catalog_not_owned),
+                    color = if (isGameInLibrary(game)) TextPrimary else OpenNowPalette.OnErrorContainer,
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.weight(1f),
@@ -5015,17 +5121,43 @@ private fun OwnershipStatusRow(game: GameInfo, compact: Boolean) {
     }
 }
 
-private fun ownedStoreLabels(game: GameInfo): List<String> =
-    libraryStoreDisplayNames(game).ifEmpty {
-        if (isGameInLibrary(game)) listOf("GeForce NOW") else emptyList()
+private const val GFN_MEMBERSHIP_MANAGE_URL = "https://www.nvidia.com/en-us/account/gfn/manage/"
+
+internal fun GameInfo.requiresMembershipUpgrade(): Boolean =
+    playabilityState == "UNPLAYABLE_DUE_TO_UPGRADE"
+
+private fun playOrUpgrade(game: GameInfo, context: Context, onPlay: (GameInfo) -> Unit) {
+    if (game.requiresMembershipUpgrade()) openMembershipUpgrade(context) else onPlay(game)
+}
+
+private fun openMembershipUpgrade(context: Context) {
+    runCatching {
+        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(GFN_MEMBERSHIP_MANAGE_URL)))
+    }.onFailure {
+        Toast.makeText(context, R.string.catalog_upgrade_page_unavailable, Toast.LENGTH_SHORT).show()
     }
+}
+
+@Composable
+private fun MembershipUpgradeNotice(game: GameInfo) {
+    if (!game.requiresMembershipUpgrade()) return
+    Text(
+        text = stringResource(R.string.catalog_membership_upgrade_required),
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.error,
+        style = MaterialTheme.typography.bodyMedium,
+    )
+}
+
+private fun ownedStoreLabels(game: GameInfo): List<String> =
+    libraryStoreDisplayNames(game)
 
 private fun availableStoreLabels(game: GameInfo): List<String> =
-    displayStoresForVariants(game.variants).ifEmpty {
-        game.availableStores.map(::gameStoreDisplayName)
-    }
+    displayStoresForVariants(game.variants)
+        .filterNot { it.equals("Unknown", ignoreCase = true) || it.equals("None", ignoreCase = true) }
+        .ifEmpty { game.availableStores.flatMap { gameStoreDisplayName(it).split(" / ") } }
         .map(String::trim)
-        .filter { it.isNotBlank() && !it.equals("none", ignoreCase = true) }
+        .filter { it.isNotBlank() && !it.equals("none", ignoreCase = true) && !it.equals("Unknown", ignoreCase = true) }
         .distinctBy(::normalizeGameStore)
 
 @Composable
@@ -5047,6 +5179,47 @@ private fun GameGenreChips(game: GameInfo, compact: Boolean) {
             AssistChip(onClick = {}, label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) })
         }
     }
+}
+
+@Composable
+private fun GameLastPlayed(game: GameInfo) {
+    val played = remember(game.lastPlayed, game.variants) { latestGameLastPlayed(game) } ?: return
+    var nowMs by remember(played) { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(played) {
+        if (played.dateOnly) return@LaunchedEffect
+        while (true) {
+            delay(60_000)
+            nowMs = System.currentTimeMillis()
+        }
+    }
+    val formatter = if (played.dateOnly) {
+        DateFormat.getDateInstance(DateFormat.MEDIUM).apply { timeZone = TimeZone.getTimeZone("UTC") }
+    } else {
+        DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
+    }
+    val absolute = formatter.format(Date(played.epochMs))
+    val resources = LocalContext.current.resources
+    val relative = if (played.dateOnly) null else gamePlayAge(played.epochMs, nowMs)?.let { age ->
+        when (age.unit) {
+            GamePlayAgeUnit.JustNow -> resources.getString(R.string.catalog_last_played_just_now)
+            GamePlayAgeUnit.Minute -> resources.getQuantityString(R.plurals.catalog_last_played_minutes_ago, age.count, age.count)
+            GamePlayAgeUnit.Hour -> resources.getQuantityString(R.plurals.catalog_last_played_hours_ago, age.count, age.count)
+            GamePlayAgeUnit.Day -> resources.getQuantityString(R.plurals.catalog_last_played_days_ago, age.count, age.count)
+            GamePlayAgeUnit.Week -> resources.getQuantityString(R.plurals.catalog_last_played_weeks_ago, age.count, age.count)
+            GamePlayAgeUnit.Month -> resources.getQuantityString(R.plurals.catalog_last_played_months_ago, age.count, age.count)
+            GamePlayAgeUnit.Year -> resources.getQuantityString(R.plurals.catalog_last_played_years_ago, age.count, age.count)
+        }
+    }
+    Text(
+        text = if (relative == null) stringResource(R.string.catalog_last_played_at, absolute)
+            else stringResource(R.string.catalog_last_played_at_relative, absolute, relative),
+        modifier = Modifier.fillMaxWidth(),
+        color = TextMuted,
+        style = MaterialTheme.typography.labelMedium,
+        textAlign = TextAlign.End,
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis,
+    )
 }
 
 @Composable
@@ -5105,6 +5278,18 @@ private fun GameScreenshotGallery(game: GameInfo, compact: Boolean) {
                         visible = hovered,
                         cornerRadius = if (compact) 12.dp else 14.dp,
                     )
+                    Surface(
+                        modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        color = Color.Black.copy(alpha = 0.72f),
+                    ) {
+                        Icon(
+                            Icons.Outlined.Fullscreen,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.padding(6.dp).size(20.dp),
+                        )
+                    }
                 }
             }
         }
@@ -5210,12 +5395,46 @@ private fun FullscreenScreenshotViewer(
                     )
                 }
             }
-            ImageCloseButton(
+            if (screenshots.size > 1) {
+                ScreenshotViewerButton(
+                    icon = Icons.Outlined.ChevronLeft,
+                    description = "Previous screenshot",
+                    enabled = index > 0,
+                    modifier = Modifier.align(Alignment.CenterStart).padding(16.dp),
+                ) { index = (index - 1).coerceAtLeast(0) }
+                ScreenshotViewerButton(
+                    icon = Icons.Outlined.ChevronRight,
+                    description = "Next screenshot",
+                    enabled = index < screenshots.lastIndex,
+                    modifier = Modifier.align(Alignment.CenterEnd).padding(16.dp),
+                ) { index = (index + 1).coerceAtMost(screenshots.lastIndex) }
+            }
+            ScreenshotViewerButton(
+                icon = Icons.Outlined.Close,
+                description = stringResource(R.string.action_dismiss),
+                modifier = Modifier.align(Alignment.TopEnd).padding(18.dp),
                 onClick = onDismiss,
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(18.dp),
             )
+        }
+    }
+}
+
+@Composable
+private fun ScreenshotViewerButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    description: String,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    Surface(
+        modifier = modifier.size(48.dp).clip(RoundedCornerShape(14.dp)).clickable(enabled = enabled, onClick = onClick),
+        shape = RoundedCornerShape(14.dp),
+        color = Color.Black.copy(alpha = if (enabled) 0.72f else 0.3f),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = if (enabled) 0.3f else 0.1f)),
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(icon, contentDescription = description, tint = Color.White.copy(alpha = if (enabled) 1f else 0.4f), modifier = Modifier.size(26.dp))
         }
     }
 }
@@ -5375,11 +5594,12 @@ internal fun gameStoreDetails(game: GameInfo): List<GameStoreDetail> {
                 url = validExternalStoreUrl(variant.storeUrl),
             )
         }
-        .filter { it.label.isNotBlank() }
+        .filter { it.label.isNotBlank() && !it.label.equals("Unknown", ignoreCase = true) && !it.label.equals("None", ignoreCase = true) }
         .distinctBy { normalizeGameStore(it.label) }
     if (variantDetails.none { it.url != null }) {
         return game.availableStores
             .map(::gameStoreDisplayName)
+            .filterNot { it.equals("Unknown", ignoreCase = true) || it.equals("None", ignoreCase = true) }
             .distinctBy(::normalizeGameStore)
             .takeIf { it.isNotEmpty() }
             ?.let { stores -> listOf(GameStoreDetail(stores.joinToString(", "), null)) }
@@ -5389,6 +5609,7 @@ internal fun gameStoreDetails(game: GameInfo): List<GameStoreDetail> {
     val variantStoreKeys = variantDetails.mapTo(mutableSetOf()) { normalizeGameStore(it.label) }
     val fallbackDetails = game.availableStores
         .map(::gameStoreDisplayName)
+        .filterNot { it.equals("Unknown", ignoreCase = true) || it.equals("None", ignoreCase = true) }
         .filter { normalizeGameStore(it) !in variantStoreKeys }
         .distinctBy(::normalizeGameStore)
         .map { GameStoreDetail(it, null) }
@@ -5400,7 +5621,6 @@ private fun gameDetailRows(game: GameInfo): List<GameDetailRow> = buildList {
         listOfNotNull(
             game.playabilityState?.takeIf { it.isNotBlank() }?.let { GameDetailRow("Status", formatGameMetadataLabel(it)) },
             game.publisherName?.takeIf { it.isNotBlank() }?.let { GameDetailRow("Publisher", it) },
-            game.playType?.takeIf { it.isNotBlank() }?.let { GameDetailRow("Play type", formatGameMetadataLabel(it)) },
             supportedControlLabels(game).takeIf { it.isNotEmpty() }?.joinToString(", ")?.let { GameDetailRow("Controls", it) },
             game.featureLabels
                 .map(::formatGameMetadataLabel)
@@ -5413,7 +5633,6 @@ private fun gameDetailRows(game: GameInfo): List<GameDetailRow> = buildList {
                 ?.let { GameDetailRow("Features", it) },
             game.membershipTierLabel?.takeIf { it.isNotBlank() }?.let { GameDetailRow("Membership", formatGameMetadataLabel(it)) },
             game.contentRatings.takeIf { it.isNotEmpty() }?.joinToString(", ")?.let { GameDetailRow("Rating", it) },
-            game.lastPlayed?.takeIf { it.isNotBlank() }?.let { GameDetailRow("Last played", it) },
         ),
     )
     val stores = gameStoreDetails(game)
@@ -5478,7 +5697,30 @@ private fun DetailRow(row: GameDetailRow, compact: Boolean) {
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
-        Text(
+        if (row.label == "Controls") {
+            FlowRow(
+                modifier = Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(5.dp),
+            ) {
+                row.value.split(", ").forEach { control ->
+                    val icons = buildList {
+                        if (control.contains("keyboard", ignoreCase = true)) add(Icons.Outlined.Keyboard)
+                        if (control.contains("mouse", ignoreCase = true)) add(Icons.Outlined.Mouse)
+                        if (control.contains("touch", ignoreCase = true)) add(Icons.Outlined.TouchApp)
+                        if (control.contains("controller", ignoreCase = true) || control.contains("gamepad", ignoreCase = true)) {
+                            add(Icons.Outlined.SportsEsports)
+                        }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        icons.forEach { icon ->
+                            Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
+                        }
+                        Text(control, color = TextPrimary, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        } else Text(
             row.value,
             color = TextPrimary,
             style = MaterialTheme.typography.bodySmall,
@@ -5515,16 +5757,17 @@ internal fun searchTermsFor(query: String): List<String> {
 
 internal fun gameMatchesSearch(game: GameInfo, terms: List<String>): Boolean {
     if (terms.isEmpty()) return true
-    val haystack = buildString {
-        append(game.title).append(' ')
-        append(game.description.orEmpty()).append(' ')
-        append(game.longDescription.orEmpty()).append(' ')
-        append(game.publisherName.orEmpty()).append(' ')
-        append(game.genres.joinToString(" ")).append(' ')
-        append(game.featureLabels.joinToString(" ")).append(' ')
-        append(displayStoresForGame(game))
-    }.lowercase()
-    return terms.all { it in haystack }
+    var storeNames: String? = null
+    return terms.all { term ->
+        game.title.contains(term, ignoreCase = true) ||
+            game.description?.contains(term, ignoreCase = true) == true ||
+            game.longDescription?.contains(term, ignoreCase = true) == true ||
+            game.publisherName?.contains(term, ignoreCase = true) == true ||
+            game.genres.any { it.contains(term, ignoreCase = true) } ||
+            game.featureLabels.any { it.contains(term, ignoreCase = true) } ||
+            (storeNames ?: displayStoresForGame(game).also { storeNames = it })
+                .contains(term, ignoreCase = true)
+    }
 }
 
 internal fun gameMatchesSearch(game: GameInfo, query: String): Boolean =

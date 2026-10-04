@@ -111,4 +111,19 @@ class CatalogPresentationTest {
         assertFalse(gameMatchesSearch(game, "alpha racing"))
     }
 
+    @Test
+    fun librarySearchStillFindsMetadataWithoutBuildingDescriptionsIntoOneString() {
+        val game = GameInfo(
+            id = "metadata",
+            title = "Orbit",
+            longDescription = "A cooperative adventure",
+            genres = listOf("Strategy"),
+            featureLabels = listOf("Cross play"),
+        )
+
+        assertTrue(gameMatchesSearch(game, "cooperative strategy"))
+        assertTrue(gameMatchesSearch(game, "cross orbit"))
+        assertFalse(gameMatchesSearch(game, "cooperative racing"))
+    }
+
 }

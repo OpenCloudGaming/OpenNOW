@@ -126,6 +126,7 @@ data class StreamStatsMetrics(
     val ping: Boolean = true,
     val bitrate: Boolean = false,
     val battery: Boolean = true,
+    val sessionBattery: Boolean = false,
     val connection: Boolean = true,
     val resolution: Boolean = false,
     val codec: Boolean = false,
@@ -133,7 +134,7 @@ data class StreamStatsMetrics(
     val latency: Boolean = false,
     val packetLoss: Boolean = false,
 ) {
-    fun enabledCount(): Int = listOf(fps, ping, bitrate, battery, connection, resolution, codec, location, latency, packetLoss).count { it }
+    fun enabledCount(): Int = listOf(fps, ping, bitrate, battery, sessionBattery, connection, resolution, codec, location, latency, packetLoss).count { it }
 }
 
 @Serializable
@@ -215,10 +216,14 @@ data class StreamSettings(
     val region: String = "",
     val keyboardLayout: String = "en-US",
     val gameLanguage: String = "en_US",
+    /** Advertise all four host gamepad slots when local multiplayer is enabled. */
+    val multiControllerEnabled: Boolean = false,
     val sessionProxyEnabled: Boolean = false,
     val sessionProxyUrl: String = "",
     val enableL4S: Boolean = false,
     val experimentalNvst: Boolean = false,
+    val experimentalDynamicNetworkAdjustment: Boolean = false,
+    val experimentalDynamicMinimumBitrateMbps: Int = 5,
     val mouseSensitivity: Float = 1f,
     val mouseAcceleration: Int = 1,
     val streamSharpeningEnabled: Boolean = false,
@@ -226,6 +231,12 @@ data class StreamSettings(
     val microphoneMode: MicrophoneMode = MicrophoneMode.Disabled,
     val microphoneDeviceId: String = "",
     val mouseScrollSensitivity: Int = 30,
+    /** 0 selects the recorder's resolution/FPS-based automatic bitrate. */
+    val recordingBitrateMbps: Int = 0,
+    /** 0 follows the source up to 60 FPS; explicit values are bounded by source FPS. */
+    val recordingFps: Int = 0,
+    val recordingSharpeningEnabled: Boolean = false,
+    val recordingSharpeningAmount: Float = 0.25f,
 )
 
 internal fun StreamSettings.withUserStreamOptionsFrom(source: StreamSettings): StreamSettings =
@@ -233,6 +244,12 @@ internal fun StreamSettings.withUserStreamOptionsFrom(source: StreamSettings): S
         microphoneMode = source.microphoneMode,
         microphoneDeviceId = source.microphoneDeviceId,
         experimentalNvst = source.experimentalNvst,
+        experimentalDynamicNetworkAdjustment = source.experimentalDynamicNetworkAdjustment,
+        experimentalDynamicMinimumBitrateMbps = source.experimentalDynamicMinimumBitrateMbps,
+        recordingBitrateMbps = source.recordingBitrateMbps,
+        recordingFps = source.recordingFps,
+        recordingSharpeningEnabled = source.recordingSharpeningEnabled,
+        recordingSharpeningAmount = source.recordingSharpeningAmount,
     )
 
 /**
@@ -369,6 +386,15 @@ enum class TouchPresetGenre {
 @Serializable
 data class TouchOffset(val x: Float = 0f, val y: Float = 0f)
 
+/** A user-added, independently positioned keyboard or mouse input in the PC-style touch overlay. */
+@Serializable
+data class KeyboardOverlayButton(
+    val id: String,
+    val actionId: String,
+    /** Stable initial grid slot; moving the button stores an orientation-specific offset instead. */
+    val layoutIndex: Int = -1,
+)
+
 /**
  * Whether fingers are forwarded to the host as real touch rather than turned into a cursor.
  *
@@ -386,6 +412,10 @@ enum class NativeTouchMode {
 data class AndroidTouchSettings(
     val enabled: Boolean = true,
     val mousePad: Boolean = true,
+    /** Replaces the virtual gamepad with a WASD stick and independently configurable keyboard/mouse buttons. */
+    val keyboardModeEnabled: Boolean = false,
+    /** Individually movable keyboard/mouse buttons; not limited by the gamepad's extra-button count. */
+    val keyboardButtons: List<KeyboardOverlayButton> = defaultKeyboardOverlayButtons(),
     val opacity: Float = 0.82f,
     val scale: Float = 1f,
     val buttonScale: Float = 1.102468f,
@@ -469,6 +499,10 @@ data class AndroidTouchSettings(
         "extra6_portrait" to TouchOffset(-28f, 56f),
         "extra7_portrait" to TouchOffset(28f, 56f),
         "extra8_portrait" to TouchOffset(84f, 56f),
+        "keyboard_stick_landscape" to TouchOffset(),
+        "keyboard_buttons_landscape" to TouchOffset(),
+        "keyboard_stick_portrait" to TouchOffset(),
+        "keyboard_buttons_portrait" to TouchOffset(),
     ),
     val touchControllerStyle: TouchControllerStyle = TouchControllerStyle.V1,
     /** Overrides the skin's own accent. Null keeps whatever the chosen skin ships with. */
@@ -555,6 +589,8 @@ internal const val GAME_BORDERS_DEFAULT_VERSION = 1
 @Serializable
 data class AppSettings(
     val stream: StreamSettings = StreamSettings(),
+    /** Persisted SAF tree URI used for subsequent stream recordings. */
+    val recordingDirectoryUri: String? = null,
     val streamPreset: StreamPreset = StreamPreset.Recommended,
     val posterSizeScale: Float = 1f,
     val compactGameCards: Boolean = false,
@@ -565,6 +601,8 @@ data class AppSettings(
     val ambientBackgroundEnabled: Boolean = true,
     /** Reveals the device's static or live wallpaper behind OpenNOW's non-stream UI. */
     val systemWallpaperBackground: Boolean = false,
+    /** Null keeps the existing wallpaper-aware navigation rail tint. */
+    val navigationRailBackgroundOpacity: Float? = null,
     val catalogBackgroundPreset: CatalogBackgroundPreset = CatalogBackgroundPreset.ColorfulAbstract,
     val nerdCatalogBackgroundUri: String? = null,
     val tvSafeAreaPaddingDp: Float = 16f,
@@ -574,6 +612,8 @@ data class AppSettings(
     val showCardTitles: Boolean = false,
     /** Optional favorite affordance over catalogue artwork on mobile, handheld, and TV layouts. */
     val showFavoriteIconOnGameCards: Boolean = false,
+    /** Shows a catalog marker when NVIDIA names a paid minimum streaming membership. */
+    val showPremiumMarker: Boolean = true,
     val expressiveUi: Boolean = true,
     val uselessMascotEnabled: Boolean = false,
     val uselessMascotDelaySeconds: Int = 5,
@@ -624,7 +664,12 @@ data class AppSettings(
     val showStatsOnLaunch: Boolean = true,
     val streamStatsStyle: StreamStatsStyle = StreamStatsStyle.Compact,
     val streamStatsPosition: StreamStatsPosition = StreamStatsPosition.Right,
+    /** Normalized top-left status position; null keeps the selected left/center/right preset. */
+    val streamStatsCustomX: Float? = null,
+    val streamStatsCustomY: Float? = null,
     val streamStatsMetrics: StreamStatsMetrics = StreamStatsMetrics(),
+    val streamStatsBackgroundEnabled: Boolean = true,
+    val streamStatsBackgroundOpacity: Float = DEFAULT_STREAM_STATS_BACKGROUND_OPACITY,
     /** Controller rumble when available, with device haptics as the fallback output. */
     @SerialName("phoneRumbleFallback")
     val vibrationEnabled: Boolean = true,
@@ -637,6 +682,8 @@ data class AppSettings(
     val controllerMode: Boolean = false,
     val controllerUiSounds: Boolean = true,
     val controllerMouseEmulation: Boolean = false,
+    /** Automatically enable the right-stick launcher cursor at the start of TV streams. */
+    val controllerMouseAutoArmOnTv: Boolean = true,
     /** Capture an external mouse during gameplay so Android system edges cannot steal it. */
     val externalMousePointerLock: Boolean = true,
     /** Physical-keyboard shortcut used to open Stream Controls during a session. */
@@ -672,6 +719,7 @@ data class AppSettings(
     val sessionClockShowEveryMinutes: Int = 60,
     val sessionClockShowDurationSeconds: Int = 30,
     val clipboardPaste: Boolean = true,
+    val physicalInput: PhysicalInputSettings = PhysicalInputSettings(),
     val androidTouch: AndroidTouchSettings = AndroidTouchSettings(),
     val touchControlPresets: List<TouchControlPreset> = emptyList(),
     val androidStreamGuideDismissed: Boolean = false,
@@ -939,7 +987,16 @@ internal fun streamSettingsSessionSignature(settings: StreamSettings): String {
         "l4s=${if (compatible.enableL4S) 1 else 0}",
         "keyboard=${compatible.keyboardLayout.trim()}",
         "language=${compatible.gameLanguage.trim()}",
-    ).joinToString(";").let { if (settings.experimentalNvst) "$it;transport=nvst" else it }
+    ).joinToString(";").let { signature ->
+        val withControllers = if (settings.multiControllerEnabled) "$signature;controllers=4" else signature
+        val withTransport = if (settings.experimentalNvst) "$withControllers;transport=nvst" else withControllers
+        if (settings.experimentalDynamicNetworkAdjustment) {
+            val minimumMbps = StreamNetworkAdaptation.bitrateRange(compatible).minimumKbps / 1000
+            "$withTransport;dynamic=1;minBitrate=$minimumMbps"
+        } else {
+            withTransport
+        }
+    }
 }
 
 internal data class StreamResolutionOption(
@@ -1356,8 +1413,19 @@ internal fun gameMembershipRequirement(
     )
 }
 
+/** A catalog property, independent of whether this account already has the required plan. */
+internal fun GameInfo.hasPremiumMembershipMarker(): Boolean =
+    membershipTierLabel?.let { label ->
+        val normalized = normalizeMembershipTier(label)
+        normalized.contains("PREMIUM") ||
+            streamResolutionPlanRank(planForMembershipTier(label)) > streamResolutionPlanRank(StreamResolutionPlan.Free)
+    } == true
+
+private fun normalizeMembershipTier(membershipTier: String?): String =
+    membershipTier.orEmpty().uppercase(Locale.US).replace(NON_ALNUM_UPPER_RUN, "")
+
 private fun planForMembershipTier(membershipTier: String?): StreamResolutionPlan {
-    val normalized = membershipTier.orEmpty().uppercase(Locale.US).replace(NON_ALNUM_UPPER_RUN, "")
+    val normalized = normalizeMembershipTier(membershipTier)
     return when {
         normalized.contains("ULTIMATE") || normalized.contains("RTX3080") -> StreamResolutionPlan.Ultimate
         normalized.contains("PRIORITY") || normalized.contains("PERFORMANCE") || normalized.contains("FOUNDERS") -> StreamResolutionPlan.Priority
@@ -1660,6 +1728,7 @@ internal fun gameStoreDisplayName(store: String): String {
             "STEAM" -> "Steam"
             "XBOX", "XBOX_GAME_PASS" -> "Xbox"
             "MICROSOFT", "MICROSOFT_STORE" -> "Microsoft Store"
+            "HOYOVERSE", "HOYOPLAY", "MIHOYO" -> "HoYoverse"
             else -> part.replace('_', ' ').lowercase(Locale.US)
                 .split(WHITESPACE_RUN)
                 .filter { it.isNotBlank() }
@@ -1699,25 +1768,29 @@ internal fun displayStoresForVariants(variants: List<GameVariant>): List<String>
         .distinctBy { normalizeGameStore(it) }
 
 internal fun libraryStoreDisplayNames(game: GameInfo): List<String> {
+    val eligibleVariants = game.variants.filterNot { it.libraryStatus == "NOT_OWNED" }
     val variants = when {
         game.variants.any(::isOwnedGameVariant) -> game.variants.filter(::isOwnedGameVariant)
-        game.isInLibrary -> listOfNotNull(game.variants.firstOrNull { it.librarySelected == true })
-            .ifEmpty { listOfNotNull(game.variants.getOrNull(game.selectedVariantIndex)) }
-            .ifEmpty { game.variants.take(1) }
+        game.isInLibrary -> listOfNotNull(eligibleVariants.firstOrNull { it.librarySelected == true })
+            .ifEmpty { listOfNotNull(game.variants.getOrNull(game.selectedVariantIndex)?.takeIf { it in eligibleVariants }) }
+            .ifEmpty { eligibleVariants.take(1) }
         else -> emptyList()
     }
     val variantStores = variants
         .flatMap { variant -> gameStoreDisplayName(variant.store).split(" / ") }
         .map { it.trim() }
-        .filter { it.isNotBlank() }
+        .filter { it.isNotBlank() && !it.equals("Unknown", ignoreCase = true) && !it.equals("None", ignoreCase = true) }
         .distinctBy { normalizeGameStore(it) }
     if (variantStores.isNotEmpty()) return variantStores
     if (!game.isInLibrary) return emptyList()
+    if (eligibleVariants.isEmpty() && game.variants.isNotEmpty()) return emptyList()
     return game.availableStores
-        .map(::gameStoreDisplayName)
+        .flatMap { gameStoreDisplayName(it).split(" / ") }
         .map { it.trim() }
-        .filter { it.isNotBlank() }
+        .filter { it.isNotBlank() && !it.equals("Unknown", ignoreCase = true) && !it.equals("None", ignoreCase = true) }
         .distinctBy { normalizeGameStore(it) }
+        .takeIf { it.size == 1 }
+        .orEmpty()
 }
 
 internal fun mergeGameInfo(left: GameInfo, right: GameInfo): GameInfo {
@@ -1941,6 +2014,7 @@ data class SessionInfo(
     val zone: String = "",
     val assignedZone: String? = null,
     val streamingBaseUrl: String? = null,
+    val sessionControlBaseUrl: String? = null,
     val serverIp: String,
     val signalingServer: String,
     val signalingUrl: String,
@@ -2283,6 +2357,7 @@ internal fun StreamSettings.loweredSessionLaunchProfile(): StreamSettings =
         hdrEnabled = false,
         enableL4S = false,
         experimentalNvst = false,
+        experimentalDynamicNetworkAdjustment = false,
         streamSharpeningEnabled = false,
     ).withCodecColorCompatibility()
 

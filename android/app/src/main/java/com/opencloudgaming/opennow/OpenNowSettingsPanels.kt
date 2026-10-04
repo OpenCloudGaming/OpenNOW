@@ -128,6 +128,7 @@ internal fun AppDataSettingsPanel(viewModel: OpenNowViewModel) {
         )
     }
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        SettingsBackupPanel(viewModel)
         Text(
             stringResource(R.string.settings_reset_explainer),
             color = SettingsTextMuted,

@@ -797,6 +797,17 @@ object NativeStreamInputRouter {
             return true
         }
         val streamExitShortcut = event.isStreamExitShortcutKey(externalMouseInputDevice)
+        if (event.repeatCount == 0 &&
+            (event.keyCode == KeyEvent.KEYCODE_ESCAPE ||
+                (event.keyCode == KeyEvent.KEYCODE_BACK && event.isHardwareKeyboardSource())) &&
+            (event.action == KeyEvent.ACTION_DOWN || event.action == KeyEvent.ACTION_UP)
+        ) {
+            NativeInputDiagnostics.retainCounted(key = "keyboard.escape.route.${event.action}") {
+                "keyboard Escape/Back route key=${event.keyCode} action=${event.action} rawScan=${event.scanCode} " +
+                    "source=${event.source} device=${event.deviceId} keyboard=${event.isHardwareKeyboardSource()} " +
+                    "controller=$controllerInputDevice streamUi=$streamUiActive back=$streamExitShortcut"
+            }
+        }
         if (
             androidTvProfile &&
             event.action == KeyEvent.ACTION_DOWN &&
@@ -818,6 +829,15 @@ object NativeStreamInputRouter {
         }
         if (streamUiActive) return false
         val current = client ?: return false
+        if (event.keyCode == KeyEvent.KEYCODE_ESCAPE &&
+            (event.action == KeyEvent.ACTION_DOWN || event.action == KeyEvent.ACTION_UP)
+        ) {
+            // Keep Escape owned by the game while a stream is attached. If input is briefly
+            // unavailable during reconnect, letting the event fall through invokes Android's
+            // Back/Home handling on some devices.
+            current.dispatchKey(event)
+            return true
+        }
         if (event.shouldConsumeAsStreamKeyboard()) {
             return current.dispatchKey(event)
         }
@@ -899,7 +919,6 @@ object NativeStreamInputRouter {
         shouldHandleStreamExitKey(
             keyCode = keyCode,
             controllerInputDevice = isControllerInputDevice(),
-            hardwareKeyboardSource = isHardwareKeyboardSource(),
             androidTvProfile = androidTvProfile,
             dpadSource = isDpadSource(),
             externalMouseInputDevice = externalMouseInputDevice,
@@ -930,7 +949,6 @@ object NativeStreamInputRouter {
     fun shouldHandleStreamExitKey(
         keyCode: Int,
         controllerInputDevice: Boolean,
-        hardwareKeyboardSource: Boolean,
         androidTvProfile: Boolean = false,
         dpadSource: Boolean = false,
         externalMouseInputDevice: Boolean = false,
@@ -940,8 +958,7 @@ object NativeStreamInputRouter {
                 dpadSource &&
                 keyCode == KeyEvent.KEYCODE_BUTTON_B &&
                 !controllerInputDevice &&
-                !externalMouseInputDevice) ||
-            (keyCode == KeyEvent.KEYCODE_ESCAPE && !hardwareKeyboardSource)
+                !externalMouseInputDevice)
 
     private fun KeyEvent.isControllerInputDevice(): Boolean =
         AndroidControllerInput.isControllerEvent(source, deviceId)
@@ -1213,6 +1230,19 @@ internal fun androidGamepadConnectionBitmap(
     return connectedBit or xinputStyleBit
 }
 
+internal fun androidGamepadConnectionBitmapForSlots(
+    connectedSlots: Set<Int>,
+    controllerFamilies: Map<Int, AndroidControllerFamily>,
+    playStationRumbleCompatibility: Boolean = false,
+): Int = connectedSlots.fold(0) { bitmap, slot ->
+    bitmap or androidGamepadConnectionBitmap(
+        controllerId = slot,
+        connected = true,
+        physicalControllerFamily = controllerFamilies[slot],
+        playStationRumbleCompatibility = playStationRumbleCompatibility,
+    )
+}
+
 /**
  * Gamepad state is a complete snapshot, so preserve the ordered reliable framing used by Android
  * 1.7.5. NVST performs its own native low-latency routing after it decodes that wrapper; selecting
@@ -1297,7 +1327,9 @@ internal object AndroidControllerInput {
             normalized == "logitech usb receiver" ||
             normalized.contains("uinput-goodix") ||
             normalized.contains("fingerprint") ||
-            normalized.contains("uinput-fpc")
+            normalized.contains("uinput-fpc") ||
+            normalized == "virtual-search" ||
+            normalized == "virtual-remote"
     }
 
     fun controllerFamily(device: InputDevice?): AndroidControllerFamily? =

@@ -16,18 +16,30 @@ internal data class QueueLaunchStatus(
     val queuePosition: Int? = null,
 )
 
+private fun SessionInfo.isInQueueMode(): Boolean =
+    seatSetupStep == 1 || (queuePosition ?: 0) > 1
+
+private fun SessionInfo?.isPastQueue(): Boolean =
+    this != null && (status in setOf(2, 3) || (seatSetupStep in 3..5 && !isInQueueMode()))
+
 internal fun queueLaunchStatus(
     state: OpenNowUiState,
     queuePosition: Int? = queueDisplayPosition(state),
 ): QueueLaunchStatus {
     val session = state.streamSession
     return when {
+        state.launchPhase.equals("Resuming session", ignoreCase = true) -> QueueLaunchStatus(QueueLaunchStatusKind.ResumingSession)
+        state.launchPhase.equals("Connecting stream", ignoreCase = true) -> QueueLaunchStatus(QueueLaunchStatusKind.ConnectingStream)
+        session.isPastQueue() ->
+            QueueLaunchStatus(
+                if (session?.seatSetupStep in 3..4 && session?.status !in setOf(2, 3)) {
+                    QueueLaunchStatusKind.SettingUpRig
+                } else {
+                    QueueLaunchStatusKind.ConnectingStream
+                },
+            )
         queuePosition != null -> QueueLaunchStatus(QueueLaunchStatusKind.QueuePosition, queuePosition)
         session?.seatSetupStep == 1 -> QueueLaunchStatus(QueueLaunchStatusKind.WaitingForRig)
-        session?.seatSetupStep == 5 && state.launchPhase.equals("Queue", ignoreCase = true) ->
-            QueueLaunchStatus(QueueLaunchStatusKind.ConnectingStream)
-        state.launchPhase.equals("Connecting stream", ignoreCase = true) -> QueueLaunchStatus(QueueLaunchStatusKind.ConnectingStream)
-        state.launchPhase.equals("Resuming session", ignoreCase = true) -> QueueLaunchStatus(QueueLaunchStatusKind.ResumingSession)
         state.launchPhase.equals("Setting up rig", ignoreCase = true) -> QueueLaunchStatus(QueueLaunchStatusKind.SettingUpRig)
         else -> QueueLaunchStatus(QueueLaunchStatusKind.StartingSession)
     }
@@ -60,13 +72,25 @@ internal fun localizedQueueLaunchStatusText(context: Context, state: OpenNowUiSt
 
 internal fun queueDisplayPosition(state: OpenNowUiState): Int? {
     val session = state.streamSession
-    if (session?.seatSetupStep == 5) return null
+    if (session.isPastQueue() || state.streamStatus == "connecting") return null
     return state.queuePosition?.takeIf { it > 0 } ?: queueDisplayPosition(session)
 }
 
 internal fun queueDisplayPosition(session: SessionInfo?): Int? {
-    if (session?.seatSetupStep == 5) return null
+    if (session.isPastQueue()) return null
     return session?.queuePosition?.takeIf { it > 0 }
+}
+
+/** Keep the lowest observed queue position for one session, ignoring later higher snapshots. */
+internal fun lowerOnlyQueuePosition(previous: Int?, incoming: Int?): Int? =
+    if (incoming == null) null else previous?.coerceAtMost(incoming) ?: incoming
+
+internal fun stableQueueDisplayPosition(state: OpenNowUiState, session: SessionInfo): Int? {
+    val incoming = queueDisplayPosition(session)
+    val previous = state.streamSession
+        ?.takeIf { it.sessionId == session.sessionId }
+        ?.let { queueDisplayPosition(state) }
+    return lowerOnlyQueuePosition(previous, incoming)
 }
 
 internal fun shouldShowQueueLaunchStatus(state: OpenNowUiState): Boolean {

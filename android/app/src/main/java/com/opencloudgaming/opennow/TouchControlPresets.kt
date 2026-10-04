@@ -89,6 +89,7 @@ internal fun AndroidTouchSettings.applyingTouchPreset(preset: TouchControlPreset
     preset.controls.normalizedPresetControls().copy(
         enabled = enabled, mousePad = mousePad, mouseDirectClick = mouseDirectClick,
         nativeTouchMode = nativeTouchMode, nativeTouchOptedIn = nativeTouchOptedIn,
+        keyboardModeEnabled = keyboardModeEnabled, keyboardButtons = keyboardButtons,
     )
 
 internal fun exportTouchPreset(preset: TouchControlPreset): String {
@@ -122,7 +123,9 @@ internal fun importTouchPreset(code: String): TouchControlPreset? {
             touchPresetJson.decodeFromJsonElement<SharedTouchPreset>(value.toJsonElement())
         }
         require(shared.format == "opennow-touch" && shared.version == 1)
-        require(shared.controls.offsets.size <= 100 && shared.controls.buttonAppearances.size <= touchButtonKeys.size)
+        val customKeyboardButtons = normalizeKeyboardOverlayButtons(shared.controls.keyboardButtons)
+        require(shared.controls.offsets.size <= 100 + customKeyboardButtons.size * 2)
+        require(shared.controls.buttonAppearances.size <= touchButtonKeys.size + customKeyboardButtons.size)
         newTouchPreset(shared.name, shared.controls, shared.genre, shared.description)
             .also { require(it.name.isNotBlank()) }
     }.getOrNull()

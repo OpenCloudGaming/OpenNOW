@@ -29,6 +29,34 @@ class SessionAssignmentTest {
     }
 
     @Test
+    fun `queue uses the control host from each session snapshot`() {
+        val controlBase = standardCloudMatchSessionControlBaseUrl(
+            "NP-LON-08.cloudmatchbeta.nvidiagrid.net",
+            443,
+        )
+        val created = session(status = 1, assignedZone = "NP-LON-08").copy(
+            streamingBaseUrl = "https://prod.cloudmatchbeta.nvidiagrid.net",
+            sessionControlBaseUrl = controlBase,
+        )
+
+        assertEquals("https://np-lon-08.cloudmatchbeta.nvidiagrid.net", created.sessionControlPollBaseUrl())
+        assertEquals(
+            "https://np-lon-06.cloudmatchbeta.nvidiagrid.net",
+            created.copy(sessionControlBaseUrl = "https://np-lon-06.cloudmatchbeta.nvidiagrid.net").sessionControlPollBaseUrl(),
+        )
+        assertNull(created.copy(streamingBaseUrl = "https://alliance.example.com").sessionControlPollBaseUrl())
+        assertNull(created.copy(sessionControlBaseUrl = "https://np-lon-08.example.com").sessionControlPollBaseUrl())
+    }
+
+    @Test
+    fun `queue rejects unsafe or unsupported control endpoints`() {
+        assertNull(standardCloudMatchSessionControlBaseUrl("np-lon-08.example.com", 443))
+        assertNull(standardCloudMatchSessionControlBaseUrl("np-lon-08.cloudmatchbeta.nvidiagrid.net", 8443))
+        assertNull(standardCloudMatchSessionControlBaseUrl("np-lon-08.cloudmatchbeta.nvidiagrid.net@evil.example", 443))
+        assertNull(standardCloudMatchSessionControlBaseUrl("np-lon-08.foo.cloudmatchbeta.nvidiagrid.net", 443))
+    }
+
+    @Test
     fun `reported server prefers assignment over request zone`() {
         val session = SessionInfo(
             sessionId = "session-1",

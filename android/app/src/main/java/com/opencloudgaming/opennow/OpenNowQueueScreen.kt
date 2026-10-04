@@ -108,24 +108,25 @@ internal fun QueueLoadingScreen(state: OpenNowUiState, viewModel: OpenNowViewMod
         ?: ad?.adUrl
         ?: ad?.mediaUrl
     val queuePosition = activeQueuePosition(state)
-    val visibleQueuePosition = rememberStableQueuePosition(queuePosition)
+    val visibleQueuePosition = rememberStableQueuePosition(session?.sessionId, queuePosition)
     val launchStatus = queueLaunchStatus(state, visibleQueuePosition)
     val queueCopy = queueLaunchStatusText(state, visibleQueuePosition)
-    val isConnecting = launchStatus.kind == QueueLaunchStatusKind.ConnectingStream
-    val connectingProgress = remember(session?.sessionId) { Animatable(0f) }
-    val connectingProgressProvider = remember(connectingProgress) { { connectingProgress.value } }
-    LaunchedEffect(isConnecting, session?.sessionId) {
-        if (isConnecting) {
-            connectingProgress.snapTo(0f)
-            connectingProgress.animateTo(
-                targetValue = QUEUE_CONNECTING_PROGRESS_LIMIT,
+    val isSettingUp = launchStatus.kind == QueueLaunchStatusKind.ConnectingStream ||
+        launchStatus.kind == QueueLaunchStatusKind.SettingUpRig
+    val setupProgress = remember(session?.sessionId) { Animatable(0f) }
+    val setupProgressProvider = remember(setupProgress) { { setupProgress.value } }
+    LaunchedEffect(isSettingUp, session?.sessionId) {
+        if (isSettingUp) {
+            setupProgress.snapTo(0f)
+            setupProgress.animateTo(
+                targetValue = QUEUE_SETUP_PROGRESS_LIMIT,
                 animationSpec = tween(
-                    durationMillis = QUEUE_CONNECTING_PROGRESS_DURATION_MS,
+                    durationMillis = QUEUE_SETUP_PROGRESS_DURATION_MS,
                     easing = LinearEasing,
                 ),
             )
         } else {
-            connectingProgress.snapTo(0f)
+            setupProgress.snapTo(0f)
         }
     }
     val hasPlayableAd = ad != null && mediaUrl != null
@@ -178,7 +179,7 @@ internal fun QueueLoadingScreen(state: OpenNowUiState, viewModel: OpenNowViewMod
                         game = game,
                         queueCopy = queueCopy,
                         queuePosition = visibleQueuePosition,
-                        connectingProgress = connectingProgressProvider.takeIf { isConnecting },
+                        connectingProgress = setupProgressProvider.takeIf { isSettingUp },
                         error = state.error,
                         playbackKey = session?.sessionId.orEmpty(),
                         compact = useLandscapeAdLayout,
@@ -193,7 +194,7 @@ internal fun QueueLoadingScreen(state: OpenNowUiState, viewModel: OpenNowViewMod
                         game = game,
                         queueCopy = queueCopy,
                         queuePosition = visibleQueuePosition,
-                        connectingProgress = connectingProgressProvider.takeIf { isConnecting },
+                        connectingProgress = setupProgressProvider.takeIf { isSettingUp },
                         error = state.error,
                         compact = false,
                         onMinimize = viewModel::minimizeStreamLaunch,
@@ -693,16 +694,17 @@ private fun activeQueuePosition(state: OpenNowUiState): Int? =
     queueDisplayPosition(state)
 
 @Composable
-private fun rememberStableQueuePosition(queuePosition: Int?): Int? {
-    var stableQueuePosition by remember { mutableStateOf(queuePosition) }
-    LaunchedEffect(queuePosition) {
-        if (queuePosition == stableQueuePosition) return@LaunchedEffect
-        if (queuePosition == null || stableQueuePosition == null) {
-            stableQueuePosition = queuePosition
+private fun rememberStableQueuePosition(sessionId: String?, queuePosition: Int?): Int? {
+    var stableQueuePosition by remember(sessionId) { mutableStateOf(queuePosition) }
+    LaunchedEffect(sessionId, queuePosition) {
+        val nextPosition = lowerOnlyQueuePosition(stableQueuePosition, queuePosition)
+        if (nextPosition == stableQueuePosition) return@LaunchedEffect
+        if (nextPosition == null || stableQueuePosition == null) {
+            stableQueuePosition = nextPosition
             return@LaunchedEffect
         }
         delay(QUEUE_POSITION_VISUAL_SETTLE_MS)
-        stableQueuePosition = queuePosition
+        stableQueuePosition = lowerOnlyQueuePosition(stableQueuePosition, nextPosition)
     }
     return stableQueuePosition
 }
@@ -731,6 +733,7 @@ private fun QueueProgressIndicator(
         LinearProgressIndicator(
             progress = connectingProgress,
             modifier = modifier,
+            drawStopIndicator = {},
         )
     }
 }
@@ -1073,7 +1076,7 @@ internal fun MinimizedQueueDock(
     modifier: Modifier = Modifier,
 ) {
     val queuePosition = activeQueuePosition(state)
-    val visibleQueuePosition = rememberStableQueuePosition(queuePosition)
+    val visibleQueuePosition = rememberStableQueuePosition(state.streamSession?.sessionId, queuePosition)
     val queueCopy = queueLaunchStatusText(state, visibleQueuePosition)
     Surface(
         modifier = modifier
@@ -1132,8 +1135,8 @@ private fun MinimizedQueueStatusText(
 }
 
 private const val QUEUE_AD_FORCE_PLAY_TIMEOUT_MS = 10_000L
-private const val QUEUE_CONNECTING_PROGRESS_DURATION_MS = 15_000
-private const val QUEUE_CONNECTING_PROGRESS_LIMIT = 0.9f
+private const val QUEUE_SETUP_PROGRESS_DURATION_MS = 12_000
+private const val QUEUE_SETUP_PROGRESS_LIMIT = 0.9f
 private const val QUEUE_AD_START_TIMEOUT_MS = 30_000L
 private const val QUEUE_AD_STUCK_TIMEOUT_MS = 30_000L
 private const val QUEUE_AD_PROGRESS_CHECK_INTERVAL_MS = 1_000L

@@ -31,8 +31,10 @@ internal fun normalizeLaunchErrorMessage(error: Throwable, gameTitle: String? = 
             "The cloud provider ended this session (status ${terminalSession.status}). " +
                 "OpenNOW did not stop it or start a replacement queue."
         cloudMatchFailure?.isEntitlementError() == true ->
-            "No current GeForce NOW plan was found. Activate the Free plan or choose a paid membership, then try again."
+            "GeForce NOW rejected this launch because it could not verify a playable membership for the signed-in account. If Free is active, confirm you signed in with the same NVIDIA account, then sign out and back in."
         cloudMatchFailure?.isLimitedModeStreamingError() == true -> limitedModeStreamingMessage(gameTitle)
+        cloudMatchFailure?.isQueueAbandoned() == true ->
+            "The cloud provider ended this queue request. Start the game again to join a new queue."
         text.contains("patch", ignoreCase = true) || text.contains("maintenance", ignoreCase = true) ->
             "Game is patching or under maintenance. Try again when NVIDIA finishes updating it."
         else -> text
@@ -41,6 +43,9 @@ internal fun normalizeLaunchErrorMessage(error: Throwable, gameTitle: String? = 
 
 internal fun isMissingGfnPlanError(error: Throwable): Boolean =
     error.cloudMatchRequestStatusException()?.isEntitlementError() == true
+
+internal fun isAbandonedQueueError(error: Throwable): Boolean =
+    error.cloudMatchRequestStatusException()?.isQueueAbandoned() == true
 
 internal fun shouldOfferLowerSettingsRetry(
     error: Throwable,
@@ -90,6 +95,11 @@ private fun CloudMatchRequestStatusException.isEntitlementError(): Boolean =
 private fun CloudMatchRequestStatusException.isLimitedModeStreamingError(): Boolean =
     statusDescriptionToken().equals("STREAMING_NOT_ALLOWED_IN_LIMITED_MODE", ignoreCase = true) ||
         normalizedUnifiedErrorCode() == "8A91000D"
+
+private fun CloudMatchRequestStatusException.isQueueAbandoned(): Boolean =
+    statusCode == 69 ||
+        statusDescriptionToken().equals("SESSION_REQUEST_IN_QUEUE_ABANDONED", ignoreCase = true) ||
+        normalizedUnifiedErrorCode() == "4A8C300F"
 
 private fun CloudMatchRequestStatusException.isInternalServerError(): Boolean =
     statusDescriptionToken().equals("INTERNAL_ERROR_STATUS", ignoreCase = true) ||

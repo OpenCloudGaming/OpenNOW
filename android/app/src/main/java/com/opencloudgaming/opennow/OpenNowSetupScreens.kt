@@ -1185,6 +1185,23 @@ private fun SetupPlayStep(
                             onSettingsChange(settings.copy(streamStatsStyle = style))
                         }
                     }
+                    SettingSwitch(
+                        label = stringResource(R.string.stream_statusbar_background),
+                        checked = settings.streamStatsBackgroundEnabled,
+                    ) { enabled ->
+                        onSettingsChange(settings.copy(streamStatsBackgroundEnabled = enabled))
+                    }
+                    if (settings.streamStatsBackgroundEnabled) {
+                        NumberSlider(
+                            label = stringResource(R.string.stream_statusbar_background_opacity),
+                            value = settings.streamStatsBackgroundOpacity,
+                            min = 0f,
+                            max = 1f,
+                            step = 0.01f,
+                        ) { opacity ->
+                            onSettingsChange(settings.copy(streamStatsBackgroundOpacity = opacity))
+                        }
+                    }
                     ChoiceMenuRow(
                         label = stringResource(R.string.setup_play_status_position),
                         options = StreamStatsPosition.entries.map { position ->
@@ -1528,8 +1545,7 @@ private fun SetupFakeStatusLine(settings: AppSettings, expanded: Boolean) {
             .padding(if (expanded) 14.dp else 8.dp)
             .widthIn(max = if (detailed) 300.dp else if (expanded) 720.dp else 360.dp),
         shape = RoundedCornerShape(if (detailed) OpenNowRadius.lg else OpenNowRadius.full),
-        color = Color.Black.copy(alpha = 0.58f),
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.18f)),
+        color = Color.Black.copy(alpha = settings.streamStatsBackgroundAlpha()),
     ) {
         Row(
             Modifier.padding(horizontal = 12.dp, vertical = if (detailed) 8.dp else 6.dp),

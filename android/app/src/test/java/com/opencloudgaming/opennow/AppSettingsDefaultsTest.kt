@@ -21,6 +21,7 @@ class AppSettingsDefaultsTest {
         assertFalse(settings.compactGameCards)
         assertFalse(settings.showCardTitles)
         assertFalse(settings.showFavoriteIconOnGameCards)
+        assertTrue(settings.showPremiumMarker)
         assertFalse(settings.liveSelectedOutlines)
         assertFalse(settings.absoluteCinemaEffects)
         assertFalse(settings.absoluteCinemaEverywhere)
@@ -28,6 +29,7 @@ class AppSettingsDefaultsTest {
         assertFalse(settings.stretchStreamToFit)
         assertTrue(settings.ambientBackgroundEnabled)
         assertFalse(settings.systemWallpaperBackground)
+        assertNull(settings.navigationRailBackgroundOpacity)
         assertTrue(settings.localAppPackageNames.isEmpty())
         // The shelf opens on first sight; folding it is a choice the reader makes and keeps.
         assertFalse(settings.localAppsCollapsed)
@@ -52,10 +54,13 @@ class AppSettingsDefaultsTest {
         // Developer options are a hidden gesture, never a shipped or migrated-in default.
         assertFalse(settings.developerOptionsUnlocked)
         assertEquals(StreamKeyboardButtonPosition(), settings.streamKeyboardButtonPosition)
+        assertTrue(settings.streamStatsBackgroundEnabled)
+        assertEquals(0.52f, settings.streamStatsBackgroundAlpha(), 0.0001f)
         assertTrue(metrics.fps)
         assertTrue(metrics.ping)
         assertFalse(metrics.bitrate)
         assertTrue(metrics.battery)
+        assertFalse(metrics.sessionBattery)
         assertTrue(metrics.connection)
         assertFalse(metrics.resolution)
         assertFalse(metrics.codec)
@@ -70,6 +75,8 @@ class AppSettingsDefaultsTest {
         val settings = OpenNowJson.decodeFromString<AppSettings>("{}")
 
         assertEquals(StreamStatsMetrics(), settings.streamStatsMetrics)
+        assertTrue(settings.streamStatsBackgroundEnabled)
+        assertEquals(0.52f, settings.streamStatsBackgroundAlpha(), 0.0001f)
         assertTrue(settings.showStatsOnLaunch)
         assertFalse(settings.hideStreamButtons)
         assertFalse(settings.streamKeyboardClearConfirmationDisabled)
@@ -78,9 +85,11 @@ class AppSettingsDefaultsTest {
         assertEquals(StreamKeyboardButtonPosition(), settings.streamKeyboardButtonPosition)
         assertEquals(CatalogBackgroundPreset.ColorfulAbstract, settings.catalogBackgroundPreset)
         assertFalse(settings.systemWallpaperBackground)
+        assertNull(settings.navigationRailBackgroundOpacity)
         assertFalse(settings.compactGameCards)
         assertFalse(settings.showCardTitles)
         assertFalse(settings.showFavoriteIconOnGameCards)
+        assertTrue(settings.showPremiumMarker)
         assertFalse(settings.liveSelectedOutlines)
         assertFalse(settings.absoluteCinemaEffects)
         assertFalse(settings.absoluteCinemaEverywhere)
@@ -99,6 +108,36 @@ class AppSettingsDefaultsTest {
         assertEquals(0f, settings.androidTouch.joystickDeadZone, 0.0001f)
         assertEquals(TouchControlGroup.entries.toSet(), settings.androidTouch.visibleControlGroups)
         assertEquals(TouchExtraButtonAction.Guide, settings.androidTouch.extraButtonAction(0))
+    }
+
+    @Test
+    fun statusBarBackgroundCanBeHiddenWithoutChangingItsSavedOpacity() {
+        val settings = AppSettings(streamStatsBackgroundOpacity = 0.8f)
+
+        assertEquals(0.8f, settings.streamStatsBackgroundAlpha(), 0.0001f)
+        assertEquals(0f, settings.copy(streamStatsBackgroundEnabled = false).streamStatsBackgroundAlpha(), 0.0001f)
+        assertEquals(0f, settings.copy(streamStatsBackgroundOpacity = 0f).streamStatsBackgroundAlpha(), 0.0001f)
+        assertEquals(0.8f, settings.copy(streamStatsBackgroundEnabled = false)
+            .copy(streamStatsBackgroundEnabled = true).streamStatsBackgroundAlpha(), 0.0001f)
+        assertEquals(1f, settings.copy(streamStatsBackgroundOpacity = 2f)
+            .normalizedForAndroid().streamStatsBackgroundAlpha(), 0.0001f)
+    }
+
+    @Test
+    fun draggedStatusPositionIsClampedAndInvalidValuesAreDiscarded() {
+        val normalized = AppSettings(streamStatsCustomX = 1.5f, streamStatsCustomY = Float.NaN)
+            .normalizedForAndroid()
+        assertEquals(1f, normalized.streamStatsCustomX ?: -1f, 0.0001f)
+        assertEquals(null, normalized.streamStatsCustomY)
+    }
+
+    @Test
+    fun customNavigationBackgroundOpacitySurvivesSettingsNormalization() {
+        assertEquals(0.85f, AppSettings(navigationRailBackgroundOpacity = 0.85f)
+            .normalizedForAndroid().navigationRailBackgroundOpacity ?: -1f, 0.0001f)
+        assertEquals(1f, AppSettings(navigationRailBackgroundOpacity = 2f)
+            .normalizedForAndroid().navigationRailBackgroundOpacity ?: -1f, 0.0001f)
+        assertNull(AppSettings().normalizedForAndroid().navigationRailBackgroundOpacity)
     }
 
     @Test
@@ -141,6 +180,17 @@ class AppSettingsDefaultsTest {
 
         assertFalse(defaulted.showFavoriteIconOnGameCards)
         assertTrue(optedIn.showFavoriteIconOnGameCards)
+    }
+
+    @Test
+    fun premiumMarkerDefaultsOnAndPreservesExplicitOptOut() {
+        val defaulted = OpenNowJson.decodeFromString<AppSettings>("{}")
+        val optedOut = OpenNowJson.decodeFromString<AppSettings>(
+            """{"showPremiumMarker":false}""",
+        )
+
+        assertTrue(defaulted.showPremiumMarker)
+        assertFalse(optedOut.showPremiumMarker)
     }
 
     @Test

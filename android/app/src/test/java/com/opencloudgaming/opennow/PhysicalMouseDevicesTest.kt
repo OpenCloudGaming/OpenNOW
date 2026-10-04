@@ -7,6 +7,13 @@ import org.junit.Test
 
 class PhysicalMouseDevicesTest {
     @Test
+    fun builtInAndVirtualInputDevicesDoNotCountAsConnectedPeripherals() {
+        assertFalse(isConnectedPhysicalInputDevice(isVirtual = false, isExternal = false))
+        assertFalse(isConnectedPhysicalInputDevice(isVirtual = true, isExternal = true))
+        assertTrue(isConnectedPhysicalInputDevice(isVirtual = false, isExternal = true))
+    }
+
+    @Test
     fun recognizesAbsoluteAndCapturedRelativeMouseSources() {
         assertTrue(isMouseInputSource(InputDevice.SOURCE_MOUSE))
         assertTrue(isMouseInputSource(InputDevice.SOURCE_MOUSE_RELATIVE))

@@ -289,6 +289,18 @@ class AndroidTvUiBehaviorTest {
                 tvProfile = true,
             ),
         )
+        assertEquals(
+            Color.Black.copy(alpha = 0.85f),
+            navigationRailScrim(
+                darkenForCatalogBackground = true,
+                tvProfile = true,
+                customOpacity = 0.85f,
+            ),
+        )
+        assertEquals(
+            Color.Black.copy(alpha = 0f),
+            navigationRailScrim(darkenForCatalogBackground = true, customOpacity = 0f),
+        )
     }
 
     @Test
