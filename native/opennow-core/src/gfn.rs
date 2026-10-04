@@ -2511,6 +2511,13 @@ impl GfnService {
         self.state.lock().expect("GFN state poisoned").generation
     }
 
+    pub(crate) fn bug_report_identity(&self) -> Value {
+        let state = self.state.lock().expect("GFN state poisoned");
+        state.session.as_ref().map_or(Value::Null, |session| {
+            bug_report_identity(&session.user, &session.provider)
+        })
+    }
+
     pub(crate) fn push_scope(&self) -> Option<opennow_core::push::PushScope> {
         let state = self.state.lock().expect("GFN state poisoned");
         let session = state.session.as_ref()?;
@@ -3499,6 +3506,32 @@ fn lcars_headers(
     headers.insert("x-nv-client-identity", HeaderValue::from_static("GFN-PC"));
     headers.insert(USER_AGENT, HeaderValue::from_static(GFN_USER_AGENT));
     Ok(headers)
+}
+
+fn bug_report_identity(user: &AuthUser, provider: &LoginProvider) -> Value {
+    let email = user
+        .email
+        .as_deref()
+        .map(str::trim)
+        .filter(|email| !email.is_empty());
+    let derived = email.and_then(|email| email.split('@').next());
+    let username = Some(user.display_name.trim())
+        .filter(|name| !name.is_empty() && *name != "User" && Some(*name) != derived);
+    let (reporter, basis) = match (username, email) {
+        (Some(username), _) => (Some(username), "username"),
+        (None, Some(email)) => (Some(email), "email"),
+        (None, None) => (None, "none"),
+    };
+    json!({
+        "userId": user.user_id,
+        "providerIdpId": provider.idp_id,
+        "providerCode": provider.code,
+        "providerName": provider.display_name,
+        "reporter": reporter,
+        "reporterBasis": basis,
+        "alliancePartner": provider.code != "NVIDIA",
+        "membershipTier": user.membership_tier
+    })
 }
 
 fn user_from_jwt(token: &str) -> Option<AuthUser> {
@@ -4853,6 +4886,41 @@ pub(crate) mod tests {
         assert_eq!(user.display_name, "Player");
         assert_eq!(user.membership_tier, "ULTIMATE");
         assert!(user.avatar_url.unwrap().contains("gravatar.com/avatar/"));
+    }
+
+    #[test]
+    fn bug_reports_use_the_username_then_the_email_and_name_alliance_partners() {
+        let jwt_user = |claims: &str| {
+            let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(claims);
+            user_from_jwt(&format!("header.{payload}.signature")).unwrap()
+        };
+        let nvidia = LoginProvider::default_nvidia();
+        let named =
+            jwt_user(r#"{"sub":"1","email":"player@example.com","preferred_username":"Zortos"}"#);
+        let identity = bug_report_identity(&named, &nvidia);
+        assert_eq!(identity["reporter"], "Zortos");
+        assert_eq!(identity["reporterBasis"], "username");
+        assert_eq!(identity["alliancePartner"], false);
+
+        let unnamed = jwt_user(r#"{"sub":"2","email":"player@example.com"}"#);
+        let partner = LoginProvider {
+            code: "BPC".to_owned(),
+            display_name: "Boosteroid".to_owned(),
+            ..LoginProvider::default_nvidia()
+        };
+        let identity = bug_report_identity(&unnamed, &partner);
+        assert_eq!(identity["reporter"], "player@example.com");
+        assert_eq!(identity["reporterBasis"], "email");
+        assert_eq!(identity["providerName"], "Boosteroid");
+        assert_eq!(identity["providerIdpId"], partner.idp_id);
+        assert_eq!(identity["userId"], "2");
+        assert_eq!(identity["alliancePartner"], true);
+
+        let anonymous = jwt_user(r#"{"sub":"3"}"#);
+        assert_eq!(
+            bug_report_identity(&anonymous, &nvidia)["reporter"],
+            Value::Null
+        );
     }
 
     #[test]

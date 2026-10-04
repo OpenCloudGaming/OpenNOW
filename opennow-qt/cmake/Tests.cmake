@@ -609,6 +609,12 @@ if(BUILD_TESTING)
         COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
             --route settings-streaming --smoke-stream-recovery --smoke-stream-recovery-fullscreen --reduced-motion)
     set_tests_properties(qml-stream-recovery-fullscreen PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+    qt_add_resources(opennow-qt "bug-report-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/BugReportAcceptance.qml)
+    add_test(NAME qml-bug-reports
+        COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+            --route home --smoke-bug-reports --reduced-motion)
+    set_tests_properties(qml-bug-reports PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
     qt_add_resources(opennow-qt "queue-drop-acceptance"
         PREFIX "/acceptance" BASE tests FILES tests/QueueDropsAcceptance.qml)
     qt_add_resources(opennow-qt "color-format-acceptance"

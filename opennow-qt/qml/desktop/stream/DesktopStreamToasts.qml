@@ -20,6 +20,9 @@ Column {
     property var colorFormat: ShellStore.streamColorNotice
     property bool colorNotice: false
     property real colorLifetime: 0
+    readonly property var bugReport: ShellStore.bugReports.latest
+    property bool bugReportNotice: false
+    property real bugReportLifetime: 0
     width: Math.min(384, parent ? Math.max(0, parent.width - 48) : 384)
     spacing: 12
 
@@ -28,6 +31,8 @@ Column {
         lossAnimation.stop()
         colorAnimation.stop()
         colorNotice = false
+        bugReportAnimation.stop()
+        bugReportNotice = false
         controllerNotice = null
         lossNotice = false
         knownControllerIds = controllers.map(controller => controller.instanceId)
@@ -92,6 +97,14 @@ Column {
     }
 
     onColorFormatChanged: observeColorFormat()
+    Connections {
+        target: ShellStore.bugReports
+        function onGenerationChanged() {
+            if (!root.active || !root.bugReport || root.bugReport.state !== "sent") return
+            root.bugReportNotice = true
+            bugReportAnimation.restart()
+        }
+    }
     onActiveChanged: {
         reset()
         if (active) {
@@ -121,6 +134,12 @@ Column {
         onFinished: root.lossNotice = false
     }
     NumberAnimation {
+        id: bugReportAnimation
+        target: root; property: "bugReportLifetime"
+        from: 1; to: 0; duration: 5000
+        onFinished: root.bugReportNotice = false
+    }
+    NumberAnimation {
         id: colorAnimation
         target: root; property: "colorLifetime"
         from: 1; to: 0; duration: 4000
@@ -139,6 +158,18 @@ Column {
                 .arg(root.colorLabel(root.colorFormat.actualColorQuality))
                 .arg(root.colorLabel(root.colorFormat.requestedColorQuality))
         lifetimeFraction: root.colorLifetime
+    }
+
+    DesktopStreamToast {
+        objectName: "streamBugReportToast"
+        width: root.width
+        visible: root.active && root.bugReportNotice && root.bugReport !== null
+        formatNotice: true
+        title: !root.bugReport ? "" : root.bugReport.kind === "frame_drops"
+            ? qsTr("Frame drops reported to the developer")
+            : qsTr("Problem reported to the developer")
+        subtitle: qsTr("A report with logs was sent so it can be fixed.")
+        lifetimeFraction: root.bugReportLifetime
     }
 
     DesktopStreamToast {

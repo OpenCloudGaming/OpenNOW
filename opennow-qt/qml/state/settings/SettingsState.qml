@@ -13,7 +13,6 @@ QtObject {
     required property var refreshAccountServices
     required property var refreshStreamerDetection
     required property var syncDiscordPresence
-    required property var syncTelemetry
     required property string lastError
     signal consoleSurfaceRequested(bool enabled)
     signal accessibilityAnnounced(string message)
@@ -239,16 +238,17 @@ QtObject {
             "nativeVideoBackend", "decoderPreference", "enableHdr", "allianceWebrtcCompatibility"].includes(key)
     }
 
-    function beginSettingWrite(key, value, previousWrite) {
+    function beginSettingWrite(key, value, previousWrite, source) {
         const writes = Object.assign({}, settingWrites)
         if (writes[key]) {
-            writes[key] = Object.assign({}, writes[key], {next:value, queued:true,
+            writes[key] = Object.assign({}, writes[key], {next:value, nextSource:source, queued:true,
                 nextProviderIdpId:providerIdpId, nextScopeGeneration:scopeGeneration,
                 sequence:++settingWriteSequence})
             settingWrites = writes
             return writes[key].id
         }
-        const id = coreClient.request("settings.set", {key:key, value:value, providerIdpId:providerIdpId}, 15000)
+        const id = coreClient.request("settings.set", Object.assign({key:key, value:value, providerIdpId:providerIdpId},
+            source ? {source:source} : {}), 15000)
         if (id === "") { errorReported(qsTr("The setting could not be saved.")); return "" }
         const coupledKeys = previousWrite ? previousWrite.coupledKeys
             : Object.keys(settingValues(key, value)).filter(changedKey => changedKey !== key)
@@ -288,7 +288,7 @@ QtObject {
             applyCoupledSettings(result.changes)
             applySetting(key, result.value)
         } else if (!result && confirmed && !dispatchNext) errorReported(message)
-        const nextId = dispatchNext ? beginSettingWrite(key, write.next, write) : ""
+        const nextId = dispatchNext ? beginSettingWrite(key, write.next, write, write.nextSource) : ""
         if (!nextId) {
             if (!confirmed && key !== "gameCollections")
                 reconcileSetting(key, write.coupledKeys)
@@ -689,7 +689,7 @@ QtObject {
         accessibilityAnnounced(lastError)
     }
 
-    function setSetting(key, value) {
+    function setSetting(key, value, source) {
         if (key === "launchInConsoleMode")
             return requestConsoleSurface(Boolean(value))
         if (!ready) {
@@ -698,7 +698,7 @@ QtObject {
             errorReported(qsTr("The OpenNOW core is not ready"))
             return ""
         }
-        const id = beginSettingWrite(key, value)
+        const id = beginSettingWrite(key, value, null, source)
         if (id !== "" && !ownsConfirmedSetting(key) && key !== "gameCollections")
             applySetting(key, value)
         else if (id === "" && !ownsConfirmedSetting(key)
@@ -756,8 +756,6 @@ QtObject {
             i18n.setLocale(String(value || "system"))
         if (key === "discordRichPresence")
             syncDiscordPresence()
-        if (key === "errorReportingConsent")
-            syncTelemetry()
     }
 
     function acceptSettings(result) {

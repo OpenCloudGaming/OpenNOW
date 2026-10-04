@@ -432,7 +432,129 @@ and artwork only near the viewport, using the section's local category ID
 - `updater.highlights.get`, `updater.highlights.ack`
 - `social.capabilities.get`
 - `discord.activity.sync`, `discord.activity.clear`
-- `telemetry.sync`, `feedback.submit`, `bug_report.submit`
+- `feedback.submit`, `bug_report.submit`, `bug_report.incident`, `analytics.track`
+
+### Usage & bug reports (`automaticBugReports.v2`)
+
+`automaticBugReports.v2` replaces `automaticBugReports.v1` and removes
+`telemetry.sync` and the `optInTelemetry` capability. The core owns every
+network call: reports go to `POST {base}/v1/reports` and usage events to
+`POST {base}/v1/events`, where `base` is `https://opennow-reports-production.up.railway.app` unless the
+`OPENNOW_REPORTS_API` environment variable names another `http(s)` origin when
+the core starts.
+
+One setting, `automaticBugReports` (`unset`, `enabled`, `disabled`), labelled
+"Usage & bug reports", gates automatic reports and usage events. `unset` means
+the notice has not been answered and is treated as enabled while OpenNOW is
+experimental. Loading settings migrates the legacy `errorReportingConsent`:
+`denied` together with `unset` becomes `disabled`; the legacy key is otherwise
+inert. `settings.set` for `automaticBugReports` accepts an optional `source`
+(`signin_notice`, `first_run_sheet`, or `settings`, default `settings`). Every
+`enabled` or `disabled` write queues one anonymous `consent_changed` event
+(`account` is `null`) even when the new value is `disabled`. A `disabled` write
+first deletes the queued events, the event spool, and pending reports; the core
+does the same at startup when the setting is already `disabled`.
+
+#### Reports
+
+Every report is multipart form data with a `report` part (JSON, at most 64 KB)
+and an optional `log` file part (`application/gzip`, at most 5 MB compressed)
+holding the redacted diagnostics export:
+
+```json
+{"schemaVersion":1, "automatic":true, "installId":"32 hex",
+ "account":{"userId":"…", "providerIdpId":"…", "providerCode":"NVIDIA",
+   "providerName":"NVIDIA", "alliancePartner":false, "reporter":"Zortos",
+   "reporterBasis":"username", "membershipTier":"ULTIMATE"},
+ "trigger":{"kind":"frame_drops", "code":"sustained_frame_drops", "message":"…",
+   "metrics":{"droppedFrames":412, "windowSeconds":60}},
+ "activity":{"currentGame":{"title":"Cyberpunk 2077", "appId":"100"},
+   "recentGames":[{"title":"…", "appId":"…"}]},
+ "app":{"version":"1.0.3", "os":"windows", "arch":"x86_64", "gpu":"NVIDIA RTX 4070",
+   "decoderBackend":"d3d11", "channel":"stable"}}
+```
+
+Automatic reports carry `trigger`; manual reports set `automatic:false` and carry
+`manual:{title, description}` instead. `account` is `null` when no account is
+signed in. `reporterBasis` is `username`, `email`, or `none`. `gpu` and
+`decoderBackend` come from the latest runtime capabilities the shell sent and may
+be `null`.
+
+The core triggers an automatic report when `session.create`, `session.poll`,
+`session.claim`, `streamer.prepare`, `streamer.start`, or `catalog.library.list`
+fails with a code that is not a user action or account state (for example
+`cancelled`, `stale_account`, or `session_conflict` are ignored).
+`session.create` also records the launched title in the diagnostics log and the
+recent-games list attached to every report.
+
+The Qt shell reports in-process media problems with `bug_report.incident`:
+`kind` is `stream_error` or `frame_drops`, `code` is a lowercase identifier,
+`message` is redacted and bounded, and `metrics` copies only the numeric fields
+`droppedFrames`, `windowSeconds`, `framesPerSecond`, `packetLossPercent`,
+`pingMs`, and `decodeTimeMs`. The result is `{accepted:true}` or
+`{accepted:false, reason}` (`disabled`, `signed_out`, `already_reported`).
+Each kind and code pair is reported once per core run, at most five reports per
+run, at least 30 seconds apart. Only a signed-in account triggers automatic
+reports.
+
+Accepted automatic reports upload in the background and publish
+`bug_report.changed` events with `state` `sending`, then `sent` (with
+`reportId` and `issueStatus`, for example `investigating`) or `failed` (with
+`message` and `queued`), plus `kind`, `code`, and the current `game` title.
+
+`bug_report.submit` takes `{title (8–120 characters), description (40–12,000),
+includeDiagnostics}` and returns `{submitted:true, reportId, issueStatus}`.
+`feedback.submit` takes `{category: bug|idea|other, message (8–4,000),
+includeSystemInfo}` and sends a manual report titled `Feedback: <category>`
+without an account; without `includeSystemInfo` it omits the game activity, GPU,
+and decoder backend. Both return `{submitted:false, queued:true}` when the upload
+was queued for retry.
+
+A network failure, or an error response whose `error.retryable` is true (or a
+408, 429, or 5xx without that field), writes the report and its compressed log
+to `<data_dir>/reports/pending/`. The core keeps at most five pending reports, no
+older than seven days, and retries them oldest first after the first sign-in of
+the next run, stopping at the first retryable failure. A non-retryable error
+drops the report.
+
+#### Usage events
+
+`analytics.track` takes `{event, props, uiSurface?}`. `uiSurface` is `desktop`
+or `console`; the core remembers it for events it emits itself. The shell may
+send these events, and the core keeps only the listed properties that pass
+validation (unknown events are `invalid_params`; invalid properties are dropped):
+
+| Event | Properties |
+| --- | --- |
+| `session_started` | `game_id`, `game_title`, `codec` (`h264`/`h265`/`av1`), `resolution` (`<w>x<h>`), `fps_target`, `hdr`, `decoder_backend`, `first_frame_ms`, `queue_wait_s` |
+| `session_ended` | `game_id`, `game_title`, `duration_s`, `outcome`, `error_code`, `recoveries`, `video_drop_count`, `avg_fps`, `avg_ping_ms`, `avg_packet_loss_pct`, `decoder_errors` |
+| `session_error` | `stage` (`create`, `poll`, `claim`, `prepare`, `start`, `stream`, `presentation`), `code`, `game_id` |
+| `frame_drops_detected` | `dropped`, `window_s`, `game_id`, `decoder_backend` |
+
+`outcome` is `clean` when the user ends a session that presented video, `user_stopped`
+when the user ends it before the first frame, `remote_ended` when the cloud
+session ends, and `error` when the stream had failed. Codes are
+`[a-z0-9_]{1,64}`; identifiers are `[A-Za-z0-9_.:-]{1,64}`; numbers are finite
+and non-negative.
+
+`{event:"app_opened", runtimeCapabilities}` is the one exception: the shell sends
+it once the native runtime handshake finishes, and the core sends `app_opened`
+once per run with `gpu_vendor` and `package_kind` derived from those
+capabilities and the installation. The core also emits `signed_in`
+(`auth.device.complete` with `restored:false`; a restored or switched account
+with `restored:true`), `game_launch_requested` (`session.create`, from its
+`appId`, `title`, `store`, and `zone`), `session_error` and `library_load_failed`
+for the failures that trigger automatic reports, `bug_report_sent` after a
+report is accepted, and `consent_changed`. Each event gets `app_version`, `os`,
+`arch`, `ui_surface`, and `channel`.
+
+The result is `{accepted:true}` or `{accepted:false, reason}`. Events are
+queued in memory (at most 1,000; overflow drops the oldest and is logged in
+diagnostics) and sent as `{installId, account:{userId, providerIdpId}|null,
+events:[{event, ts, props}]}` batches of at most 100 events every 30 seconds,
+at 50 queued events, and at shutdown within one second. Failed batches are
+appended to `<data_dir>/analytics/spool.jsonl` (at most 1 MB, oldest batches
+dropped first) and resent after the next successful send or at the next start.
 
 `diagnostics.export` optionally accepts `embeddedStream.drops` and
 `lastSessionReport.drops` from the Qt session owner. Each contains the cumulative

@@ -481,6 +481,66 @@ FocusScope {
                             enabled: ShellStore.ready && ShellStore.selectedProvider !== null
                             onClicked: { root.qrRequested = true; ShellStore.startDeviceLogin(root.selectedProvider.idpId || "", root.staySignedIn) }
                         }
+                        Rectangle {
+                            objectName: "signInBugReportNotice"
+                            width: parent.width
+                            height: bugReportNotice.implicitHeight + DesktopTokens.px(24)
+                            radius: DesktopTokens.px(12)
+                            color: ShellStore.bugReports.enabled ? "#14FFD166" : DesktopTokens.raised
+                            border.width: 1
+                            border.color: ShellStore.bugReports.enabled ? "#33FFD166" : DesktopTokens.seamSoft
+                            Column {
+                                id: bugReportNotice
+                                x: DesktopTokens.px(14)
+                                y: DesktopTokens.px(12)
+                                width: parent.width - DesktopTokens.px(28)
+                                spacing: DesktopTokens.px(6)
+                                Row {
+                                    spacing: DesktopTokens.px(8)
+                                    Rectangle {
+                                        width: experimentalLabel.implicitWidth + DesktopTokens.px(12)
+                                        height: DesktopTokens.px(18)
+                                        radius: height / 2
+                                        color: "#29FFD166"
+                                        MonoText { id: experimentalLabel; anchors.centerIn: parent; text: qsTr("EXPERIMENTAL"); color: Theme.accentColor("amber") }
+                                    }
+                                    BodyText {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: ShellStore.bugReports.enabled ? qsTr("Usage & bug reports are on") : qsTr("Usage & bug reports are off")
+                                        color: DesktopTokens.text
+                                        font.weight: Font.ExtraBold
+                                    }
+                                }
+                                BodyText {
+                                    width: parent.width
+                                    text: qsTr("While OpenNOW is in early testing, usage statistics and problem reports are sent to the developer automatically with your GeForce NOW username and redacted logs. You can turn this off anytime in Settings → Account → Privacy.")
+                                    color: root.mutedInk
+                                    font.pixelSize: DesktopTokens.px(12)
+                                    lineHeight: DesktopTokens.px(16)
+                                }
+                                AbstractButton {
+                                    id: bugReportToggle
+                                    objectName: "signInBugReportToggle"
+                                    implicitWidth: bugReportToggleText.implicitWidth
+                                    implicitHeight: DesktopTokens.px(24)
+                                    focusPolicy: Qt.StrongFocus
+                                    hoverEnabled: true
+                                    text: ShellStore.bugReports.enabled ? qsTr("Turn off now") : qsTr("Turn back on")
+                                    contentItem: BodyText {
+                                        id: bugReportToggleText
+                                        text: bugReportToggle.text; color: DesktopTokens.focus
+                                        font.weight: Font.Bold; lineHeight: DesktopTokens.px(16)
+                                        verticalAlignment: Text.AlignVCenter
+                                    }
+                                    background: Rectangle {
+                                        radius: DesktopTokens.px(4)
+                                        color: bugReportToggle.hovered ? DesktopTokens.raised : "transparent"
+                                        border.width: bugReportToggle.activeFocus ? 2 : 0; border.color: Theme.focus
+                                    }
+                                    onClicked: ShellStore.bugReports.setEnabled(!ShellStore.bugReports.enabled, "signin_notice")
+                                }
+                            }
+                        }
                     }
 
                     Row {

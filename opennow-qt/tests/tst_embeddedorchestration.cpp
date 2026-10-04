@@ -21,6 +21,10 @@ bool prepareLaunchGuards(QJSEngine &engine)
         var remoteSessionsRequestId='', streamerPrepareRequestId='';
         var coreSessionRestoreId='', sessionStopIntentId='';
         var queueSelector={opened:false,begin:function(title){return false}};
+        var bugReports={observeTelemetry:function(){},observeFrameDrops:function(){},reportStreamError:function(){}};
+        var launchRequestedAtMs=0;
+        function reportSessionStart() {}
+        function reportSessionEnd() {}
     )JS")).isError()) return false;
     const auto shell = source(QStringLiteral("qml/state/ShellStore.qml"));
     for (const auto &name : {"launchIntentCurrent", "inspectLaunch", "invalidateLaunchInspection",
@@ -71,6 +75,10 @@ bool prepareAuthentication(QJSEngine &engine)
         var AppController = {route:'accounts',navigate:function(route) {this.route=route;}};
         var settingsOwner = {settingWrites:{},acceptResponse:function() {return false;},acceptFailure:function() {return false;}};
         var onboardingOwner = {acceptResponse:function() {return false;},acceptFailure:function() {return false;}};
+        var bugReports = {observeTelemetry:function() {},observeFrameDrops:function() {},reportStreamError:function() {}};
+        var launchRequestedAtMs = 0;
+        function reportSessionStart() {}
+        function reportSessionEnd() {}
         function ownedSessionTermination() {return null;}
         function finishArtworkRequest() {return false;}
         function acceptAuthEnvelope() {return true;}
