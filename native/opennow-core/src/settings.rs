@@ -491,6 +491,12 @@ impl SettingsStore {
             &["unset", "enabled", "disabled"],
             "unset",
         );
+        if self.values["errorReportingConsent"] == "denied"
+            && self.values["automaticBugReports"] == "unset"
+        {
+            self.values
+                .insert("automaticBugReports".to_owned(), json!("disabled"));
+        }
         normalize_choice(
             &mut self.values,
             "microphoneMode",
@@ -1750,6 +1756,32 @@ mod tests {
             json!("unset")
         );
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn denied_crash_reports_migrate_to_disabled_usage_and_bug_reports() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        for (legacy, choice, expected) in [
+            ("denied", "unset", "disabled"),
+            ("denied", "enabled", "enabled"),
+            ("granted", "unset", "unset"),
+        ] {
+            let directory = env::temp_dir().join(format!(
+                "opennow-consent-migration-{unique}-{legacy}-{choice}"
+            ));
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(
+                directory.join("settings.json"),
+                json!({"errorReportingConsent":legacy, "automaticBugReports":choice}).to_string(),
+            )
+            .unwrap();
+            let store = SettingsStore::load(Some(directory.clone())).unwrap();
+            assert_eq!(store.all()["automaticBugReports"], json!(expected));
+            fs::remove_dir_all(directory).unwrap();
+        }
     }
 
     #[test]

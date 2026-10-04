@@ -39,6 +39,9 @@ QtObject {
     function incidents() {
         return client.requests.filter(item => item.method === "bug_report.incident")
     }
+    function tracked(event) {
+        return client.requests.filter(item => item.method === "analytics.track" && item.params.event === event)
+    }
     function setChoice(value) {
         ShellStore.settings = Object.assign({}, ShellStore.settings, {automaticBugReports: value})
     }
@@ -62,10 +65,12 @@ QtObject {
         const write = client.requests.filter(item => item.method === "settings.set").pop()
         check(write && write.params.key === "automaticBugReports" && write.params.value === "disabled",
             "Turn off did not persist the opt-out")
+        check(write.params.source === "first_run_sheet", "the opt-out did not name the first-run sheet")
         setChoice("disabled")
         check(!notice.opened && !reports.noticePending, "the notice stayed open after a choice")
         reports.reportStreamError("native_stream_error", "decoder lost")
         check(incidents().length === 0, "an opted-out user produced a report")
+        check(tracked("session_error").length === 0, "an opted-out user produced usage statistics")
 
         setChoice("enabled")
         reports.streaming = true
@@ -79,15 +84,40 @@ QtObject {
             && drops[0].params.metrics.droppedFrames === 350, "sustained frame drops were not reported once")
         reports.observeFrameDrops(500, "bug-session")
         check(incidents().length === 1, "frame drops were reported twice in one session")
+        const dropEvents = tracked("frame_drops_detected")
+        check(dropEvents.length === 1 && dropEvents[0].params.props.dropped === 350
+            && dropEvents[0].params.props.window_s === 60, "frame drops were not counted once")
+
+        reports.observeFirstFrame({game_id: "100", game_title: "Portal 2", codec: "h265",
+            resolution: "1920x1080", fps_target: 60, decoder_backend: "vaapi", first_frame_ms: 840})
+        reports.observeFirstFrame({game_id: "100"})
+        const started = tracked("session_started")
+        check(started.length === 1 && started[0].params.props.codec === "h265"
+            && started[0].params.uiSurface === "desktop", "the first frame did not start the session once")
+        reports.observeTelemetry({sessionId: "bug-session", framesPerSecond: 60, pingMs: 20, packetLossPercent: 0})
+        reports.observeTelemetry({sessionId: "other-session", framesPerSecond: 1, pingMs: 900})
+        reports.observeTelemetry({sessionId: "bug-session", framesPerSecond: 58, pingMs: 24, packetLossPercent: null})
+        reports.observeSessionEnd("bug-session", {game_id: "100", game_title: "Portal 2",
+            duration_s: 120, outcome: "clean", recoveries: 0, video_drop_count: 350, decoder_errors: 0})
+        reports.observeSessionEnd("bug-session", {outcome: "remote_ended"})
+        const ended = tracked("session_ended")
+        check(ended.length === 1, "the session ended more than once")
+        const summary = ended[0].params.props
+        check(summary.outcome === "clean" && summary.avg_fps === 59 && summary.avg_ping_ms === 22
+            && summary.avg_packet_loss_pct === 0 && summary.video_drop_count === 350,
+            "the session summary did not average the stream statistics")
 
         reports.reportStreamError("Native Stream Error!", "Bearer secret")
         const stream = incidents().pop()
         check(stream.params.kind === "stream_error" && stream.params.code === "native_stream_error_",
             "stream error codes must be normalized for the core contract")
+        const streamError = tracked("session_error").pop()
+        check(streamError && streamError.params.props.stage === "stream"
+            && streamError.params.props.code === "native_stream_error_", "stream errors were not counted")
 
         client.eventReceived("bug_report.changed", {state: "sent", kind: "library_error",
-            code: "network_error", reference: "br-7F3A21", game: "Portal 2"})
-        check(reports.latest && reports.latest.reference === "br-7F3A21", "the sent event was not kept")
+            code: "network_error", reportId: "br-7F3A21", issueStatus: "investigating", game: "Portal 2"})
+        check(reports.latest && reports.latest.reportId === "br-7F3A21", "the sent event was not kept")
         return true
     }
 
@@ -96,6 +126,8 @@ QtObject {
         check(toast !== null && toast.visible, "the report toast is not visible")
         check(findText(toast, "Bug reported to the developer") !== null, "the toast title is missing")
         check(findText(toast, "REF br-7F3A21 · Portal 2") !== null, "the toast reference is missing")
+        check(findText(toast, "Your library couldn't load. The developer's assistant is looking into it.") !== null,
+            "the investigating copy is missing")
         return true
     }
 }

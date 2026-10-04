@@ -18,11 +18,12 @@ FocusScope {
         qsTr("Your GeForce NOW username, or your account e-mail if you have no username, and your provider"),
         qsTr("The game you're playing and your recent games"),
         qsTr("Session errors, repeated frame drops, and failures such as the library not loading"),
-        qsTr("Diagnostic logs with tokens, URLs, and local paths removed")
+        qsTr("Diagnostic logs with tokens, URLs, and local paths removed"),
+        qsTr("Usage statistics such as app starts, game sessions, and stream quality")
     ]
 
     function choose(enabled) {
-        ShellStore.bugReports.setEnabled(enabled)
+        ShellStore.bugReports.setEnabled(enabled, "first_run_sheet")
     }
 
     Keys.onEscapePressed: event => { root.choose(true); event.accepted = true }
@@ -80,7 +81,7 @@ FocusScope {
             }
             Text {
                 width: parent.width
-                text: qsTr("OpenNOW is still experimental, so automatic bug reports are on by default. When something breaks, a report goes straight to the developer.")
+                text: qsTr("OpenNOW is still experimental, so usage & bug reports are on by default. Usage statistics show what works, and when something breaks, a report goes straight to the developer.")
                 color: DesktopTokens.textBody
                 font.family: DesktopTokens.bodyFont
                 font.pixelSize: DesktopTokens.bodySize
@@ -101,7 +102,7 @@ FocusScope {
                     width: parent.width - DesktopTokens.px(32)
                     spacing: DesktopTokens.px(10)
                     Text {
-                        text: qsTr("WHAT A REPORT INCLUDES")
+                        text: qsTr("WHAT IS SENT")
                         color: DesktopTokens.textFaint
                         font.family: DesktopTokens.monoFont
                         font.pixelSize: DesktopTokens.microSize

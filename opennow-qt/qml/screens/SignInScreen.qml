@@ -57,7 +57,7 @@ FocusScope {
                     width: parent.width
                     visible: ShellStore.bugReports.enabled
                     wrapMode: Text.WordWrap
-                    text: qsTr("Experimental: automatic bug reports are on. Problems are reported to the developer with your GeForce NOW username and redacted logs. Turn this off in Settings → Account.")
+                    text: qsTr("Experimental: usage & bug reports are on. Usage statistics and problem reports go to the developer with your GeForce NOW username and redacted logs. Turn this off in Settings → Account.")
                     color: Theme.accentColor("amber")
                     font.family: Theme.bodyFont
                     font.pixelSize: 15

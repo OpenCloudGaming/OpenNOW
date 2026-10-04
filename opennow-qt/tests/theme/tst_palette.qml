@@ -18,7 +18,6 @@ TestCase {
         refreshAccountServices: function() {}
         refreshStreamerDetection: function() {}
         syncDiscordPresence: function() {}
-        syncTelemetry: function() {}
         lastError: ""
     }
 

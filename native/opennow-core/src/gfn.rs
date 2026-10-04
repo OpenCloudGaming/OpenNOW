@@ -3512,10 +3512,12 @@ fn bug_report_identity(user: &AuthUser, provider: &LoginProvider) -> Value {
         (None, None) => (None, "none"),
     };
     json!({
+        "userId": user.user_id,
+        "providerIdpId": provider.idp_id,
+        "providerCode": provider.code,
+        "providerName": provider.display_name,
         "reporter": reporter,
         "reporterBasis": basis,
-        "provider": provider.display_name,
-        "providerCode": provider.code,
         "alliancePartner": provider.code != "NVIDIA",
         "membershipTier": user.membership_tier
     })
@@ -4898,7 +4900,9 @@ pub(crate) mod tests {
         let identity = bug_report_identity(&unnamed, &partner);
         assert_eq!(identity["reporter"], "player@example.com");
         assert_eq!(identity["reporterBasis"], "email");
-        assert_eq!(identity["provider"], "Boosteroid");
+        assert_eq!(identity["providerName"], "Boosteroid");
+        assert_eq!(identity["providerIdpId"], partner.idp_id);
+        assert_eq!(identity["userId"], "2");
         assert_eq!(identity["alliancePartner"], true);
 
         let anonymous = jwt_user(r#"{"sub":"3"}"#);

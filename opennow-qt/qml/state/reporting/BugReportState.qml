@@ -9,6 +9,9 @@ QtObject {
     property var settings: ({})
     property string sessionId: ""
     property bool streaming: false
+    property string uiSurface: "desktop"
+    property string gameId: ""
+    property string decoderBackend: ""
     property var clock: () => Date.now()
 
     readonly property string choice: String(settings.automaticBugReports || "unset")
@@ -21,14 +24,71 @@ QtObject {
     property int generation: 0
     property var frameDropSamples: []
     property bool frameDropsReported: false
+    property var streamStats: ({})
+    property string startedSessionId: ""
+    property string endedSessionId: ""
+    property bool appOpened: false
 
     onSessionIdChanged: {
         frameDropSamples = []
         frameDropsReported = false
+        streamStats = ({})
     }
 
-    function setEnabled(value) {
-        setSetting("automaticBugReports", value ? "enabled" : "disabled")
+    function setEnabled(value, source) {
+        setSetting("automaticBugReports", value ? "enabled" : "disabled", source || "settings")
+    }
+
+    function track(event, props) {
+        if (!ready || !enabled)
+            return ""
+        return coreClient.request("analytics.track", {event: event, uiSurface: uiSurface,
+            props: props || ({})}, 15000)
+    }
+
+    function openApp(runtimeCapabilities) {
+        if (appOpened || !ready || !enabled)
+            return
+        appOpened = true
+        coreClient.request("analytics.track", {event: "app_opened", uiSurface: uiSurface,
+            runtimeCapabilities: runtimeCapabilities || ({})}, 15000)
+    }
+
+    function observeTelemetry(event) {
+        if (!streaming || sessionId === "" || (event.sessionId && String(event.sessionId) !== sessionId))
+            return
+        const next = Object.assign({}, streamStats)
+        for (const key of ["framesPerSecond", "pingMs", "packetLossPercent"]) {
+            const value = event[key]
+            if (value === undefined || value === null || !Number.isFinite(Number(value)) || Number(value) < 0)
+                continue
+            const total = next[key] || {sum: 0, count: 0}
+            next[key] = {sum: total.sum + Number(value), count: total.count + 1}
+        }
+        streamStats = next
+    }
+
+    function average(key) {
+        const total = streamStats[key]
+        return total && total.count > 0 ? total.sum / total.count : undefined
+    }
+
+    function observeFirstFrame(props) {
+        if (sessionId === "" || startedSessionId === sessionId)
+            return
+        startedSessionId = sessionId
+        track("session_started", props)
+    }
+
+    function observeSessionEnd(endedId, props) {
+        if (endedId === "" || endedSessionId === endedId)
+            return
+        endedSessionId = endedId
+        track("session_ended", Object.assign({
+            avg_fps: average("framesPerSecond"),
+            avg_ping_ms: average("pingMs"),
+            avg_packet_loss_pct: average("packetLossPercent")
+        }, props))
     }
 
     function observeFrameDrops(count, eventSessionId) {
@@ -44,14 +104,21 @@ QtObject {
         if (dropped < frameDropThreshold)
             return
         frameDropsReported = true
+        track("frame_drops_detected", {dropped: dropped, window_s: frameDropWindowMs / 1000,
+            game_id: gameId, decoder_backend: decoderBackend})
         report("frame_drops", "sustained_frame_drops",
             dropped + " video frames dropped within a minute",
             {droppedFrames: dropped, windowSeconds: frameDropWindowMs / 1000})
     }
 
-    function reportStreamError(code, message) {
-        const normalized = String(code || "native_stream_error").toLowerCase().replace(/[^a-z0-9_]/g, "_").slice(0, 64)
-        report("stream_error", normalized || "native_stream_error", String(message || ""), {})
+    function normalizedCode(code, fallback) {
+        return String(code || fallback).toLowerCase().replace(/[^a-z0-9_]/g, "_").slice(0, 64) || fallback
+    }
+
+    function reportStreamError(code, message, stage) {
+        const normalized = normalizedCode(code, "native_stream_error")
+        track("session_error", {stage: stage || "stream", code: normalized, game_id: gameId})
+        report("stream_error", normalized, String(message || ""), {})
     }
 
     function report(kind, code, message, metrics) {
