@@ -9,6 +9,51 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const ENTRY_LIMIT: usize = 1_200;
 const LOG_LIMIT_BYTES: u64 = 5 * 1024 * 1024;
 
+pub fn stream_endpoint_evidence(session: &Value) -> Value {
+    let number = |value: &Value| {
+        value
+            .as_u64()
+            .or_else(|| value.as_str().and_then(|text| text.parse::<u64>().ok()))
+            .filter(|number| *number <= u64::from(u16::MAX))
+    };
+    let connections = session["connectionInfo"].as_array();
+    let descriptors = connections
+        .into_iter()
+        .flatten()
+        .take(16)
+        .map(|connection| {
+            let resource = connection["resourcePath"].as_str().unwrap_or_default();
+            let kind = if resource.is_empty() {
+                "missing"
+            } else if resource.starts_with('/') {
+                "relative"
+            } else {
+                match url::Url::parse(resource)
+                    .ok()
+                    .as_ref()
+                    .map(|url| url.scheme())
+                {
+                    Some("wss") => "wss",
+                    Some("https") => "https",
+                    Some("rtsps") => "rtsps",
+                    Some("rtsp") => "rtsp",
+                    _ => "other",
+                }
+            };
+            json!({"usage":number(&connection["usage"]),
+            "appLevelProtocol":number(&connection["appLevelProtocol"]),
+            "protocol":number(&connection["protocol"]),
+            "port":number(&connection["port"]), "resourceKind":kind,
+            "hasAddress":connection["ip"].as_str().is_some_and(|value| !value.is_empty())})
+        })
+        .collect::<Vec<_>>();
+    json!({"transportMode":session["transportMode"].as_str().filter(|mode| matches!(*mode, "nvst" | "webrtc")),
+        "connectionCount":connections.map_or(0, Vec::len), "connections":descriptors,
+        "hasSignalingUrl":session["signalingUrl"].as_str().is_some_and(|value| !value.is_empty()),
+        "signalingPort":session["signalingUrl"].as_str().and_then(|raw| url::Url::parse(raw).ok()).and_then(|url| url.port_or_known_default()),
+        "reportedNativeTransport":session["reportedNativeTransport"].as_bool()})
+}
+
 pub fn stream_profile_evidence(session: &Value) -> Value {
     let profile = &session["negotiatedStreamProfile"];
     let mut evidence = json!({
@@ -803,6 +848,27 @@ mod tests {
         assert!(!rendered.contains("private-luid"));
         assert!(!rendered.contains("alice"));
         assert!(!rendered.contains("private-codec"));
+    }
+
+    #[test]
+    fn stream_endpoint_evidence_excludes_endpoint_and_credential_values() {
+        let descriptor = json!({"usage":"14","appLevelProtocol":6,"protocol":1,"port":48322,
+            "ip":"private-host", "resourcePath":"rtsps://user:private-password@private-host:48322/private-path?token=private-token"});
+        let evidence = stream_endpoint_evidence(
+            &json!({"sessionId":"private-session", "transportMode":"webrtc",
+            "signalingUrl":"wss://private-host/nvst/?token=private-token", "connectionInfo":vec![descriptor; 20]}),
+        );
+        assert_eq!(evidence["connectionCount"], 20);
+        assert_eq!(evidence["connections"].as_array().unwrap().len(), 16);
+        assert_eq!(evidence["connections"][0]["resourceKind"], "rtsps");
+        assert_eq!(evidence["connections"][0]["appLevelProtocol"], 6);
+        assert_eq!(evidence["connections"][0]["usage"], 14);
+        assert_eq!(evidence["signalingPort"], 443);
+        assert!(!evidence.to_string().contains("private"));
+        let invalid = stream_endpoint_evidence(&json!({"transportMode":"private-token",
+            "connectionInfo":[{"usage":"private-token","port":99999999,"resourcePath":"private-token"}]}));
+        assert_eq!(invalid["connections"][0]["port"], Value::Null);
+        assert!(!invalid.to_string().contains("private"));
     }
 
     #[test]

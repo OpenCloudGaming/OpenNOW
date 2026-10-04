@@ -1158,6 +1158,12 @@ from RTSPS endpoints, including their server-provided paths and ports. The nativ
 runtime owns the WebSocket offer, answer, NVIDIA quality SDP, and ICE exchange.
 It delivers compressed media to the existing decoder and GPU presentation path.
 The setting does not authorize a live NVST seat to be converted, deleted, or replaced.
+For an owned WebRTC allocation that supplies only legacy RTSP descriptors,
+the core derives `wss://<descriptor-host>/nvst/` on port 443, matching Android's
+WebRTC signaling contract. It does not reuse the RTSP port as a WebSocket or UDP
+media port. Explicit WebSocket descriptors take priority and keep their paths
+and ports. `prepare_endpoints` diagnostics record bounded descriptor types and
+numeric protocol/port fields, never hosts, URLs, session IDs, or credentials.
 
 `acceptance.export` is available only through the Qt shell's Diagnostics screen. It rejects
 headless window systems and writes an atomic, redacted `opennow.live-acceptance` JSON file. The

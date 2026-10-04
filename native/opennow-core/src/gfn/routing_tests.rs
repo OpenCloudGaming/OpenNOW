@@ -1353,7 +1353,7 @@ fn alliance_webrtc_preparation_uses_only_the_owned_transport_and_endpoint() {
     assert_eq!(prepared["session"]["transportMode"], "webrtc");
     assert_eq!(prepared["session"]["signalingUrl"], owned["signalingUrl"]);
     let mut missing = owned.clone();
-    missing["connectionInfo"] = json!([{ "usage":16,"ip":"owned.nvidiagrid.net","port":322 }]);
+    missing["connectionInfo"] = json!([{ "usage":2,"ip":"owned.nvidiagrid.net","port":322 }]);
     service.cloudmatch.seed_owned_session(missing);
     assert_eq!(
         service

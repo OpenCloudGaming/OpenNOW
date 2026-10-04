@@ -2231,6 +2231,12 @@ mod tests {
                 .prepare_embedded(&json!({"session":native_endpoint}), &settings)
                 .is_err()
         );
+        native_endpoint["signalingUrl"] = json!("wss://seat.partner.example/nvst/");
+        assert!(
+            service
+                .prepare_embedded(&json!({"session":native_endpoint}), &settings)
+                .is_ok()
+        );
     }
 
     #[test]

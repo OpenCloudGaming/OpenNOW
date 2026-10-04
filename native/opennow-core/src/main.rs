@@ -850,6 +850,13 @@ fn dispatch(method: &str, params: &Value, core: &AppCore) -> DispatchResult {
         }
         "streamer.prepare" => {
             let settings = core.settings.lock().expect("settings poisoned").all();
+            if params["session"]["transportMode"] == "webrtc" {
+                core.diagnostics.record(
+                    "streamer",
+                    "prepare_endpoints",
+                    diagnostics::stream_endpoint_evidence(&params["session"]).to_string(),
+                );
+            }
             core.gfn
                 .prepare_owned_stream(params, |owned| {
                     core.streamer

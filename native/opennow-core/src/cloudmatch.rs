@@ -1750,10 +1750,31 @@ fn select_webrtc_endpoint(session: &mut Value) {
     let endpoint = session["connectionInfo"]
         .as_array()
         .and_then(|connections| {
-            connections.iter().find_map(|connection| {
-                webrtc_signaling_endpoint(connection)
-                    .map(|url| (url, first_string(&connection["ip"])))
-            })
+            connections
+                .iter()
+                .filter(|connection| {
+                    let resource = connection["resourcePath"].as_str().unwrap_or_default();
+                    resource.starts_with("wss://")
+                        || resource.starts_with("https://")
+                        || (value_i64(&connection["usage"]) == Some(14)
+                            && !matches!(value_i64(&connection["appLevelProtocol"]), Some(1 | 6))
+                            && !resource.starts_with("rtsp://")
+                            && !resource.starts_with("rtsps://"))
+                })
+                .chain(
+                    connections
+                        .iter()
+                        .filter(|connection| value_i64(&connection["usage"]) == Some(14)),
+                )
+                .chain(
+                    connections
+                        .iter()
+                        .filter(|connection| value_i64(&connection["usage"]) == Some(16)),
+                )
+                .find_map(|connection| {
+                    webrtc_signaling_endpoint(connection)
+                        .map(|url| (url, first_string(&connection["ip"])))
+                })
         });
     let media = session["connectionInfo"]
         .as_array()
@@ -1818,16 +1839,29 @@ fn media_connection_info(connection: &Value) -> Option<Value> {
 }
 
 fn webrtc_signaling_endpoint(connection: &Value) -> Option<Url> {
-    if value_i64(&connection["usage"]) != Some(14)
-        || matches!(value_i64(&connection["appLevelProtocol"]), Some(1 | 6))
-    {
+    if !matches!(value_i64(&connection["usage"]), Some(14 | 16)) {
         return None;
     }
-    let resource = connection["resourcePath"].as_str().unwrap_or("/nvst/");
-    let absolute = resource.starts_with("wss://") || resource.starts_with("https://");
+    let resource = connection["resourcePath"]
+        .as_str()
+        .filter(|path| !path.is_empty())
+        .unwrap_or("/nvst/");
+    let rtsp = resource.starts_with("rtsp://") || resource.starts_with("rtsps://");
+    let native_descriptor = value_i64(&connection["usage"]) == Some(16)
+        || matches!(value_i64(&connection["appLevelProtocol"]), Some(1 | 6));
+    let absolute = resource.starts_with("wss://") || resource.starts_with("https://") || rtsp;
     let mut url = if absolute {
-        let mut url = Url::parse(resource).ok()?;
+        let mut url = if rtsp {
+            Url::parse(&format!("wss://{}", resource.split_once("://")?.1)).ok()?
+        } else {
+            Url::parse(resource).ok()?
+        };
         url.set_scheme("wss").ok()?;
+        if rtsp {
+            url.set_port(None).ok()?;
+            url.set_path("/nvst/");
+            url.set_query(None);
+        }
         url
     } else {
         if resource.contains("://") || !resource.starts_with('/') {
@@ -1853,7 +1887,10 @@ fn webrtc_signaling_endpoint(connection: &Value) -> Option<Url> {
             url.set_host(Some(host)).ok()?;
         }
     }
-    if !absolute && let Some(port) = value_i64(&connection["port"]) {
+    if !absolute
+        && !native_descriptor
+        && let Some(port) = value_i64(&connection["port"])
+    {
         if !(1..=65535).contains(&port) {
             return None;
         }
@@ -4005,9 +4042,9 @@ mod tests {
             );
         }
         for connection in [
-            json!({"usage":16,"ip":"seat.example","port":322}),
-            json!({"usage":14,"appLevelProtocol":6,"ip":"seat.example","port":322}),
-            json!({"usage":14,"resourcePath":"rtsps://seat.example:322"}),
+            json!({"usage":2,"ip":"seat.example","port":322}),
+            json!({"usage":15,"ip":"seat.example","port":322}),
+            json!({"usage":14,"resourcePath":"rtsps://user:password@seat.example:322"}),
             json!({"usage":14,"resourcePath":"wss://user:password@seat.example/nvst/"}),
             json!({"usage":14,"ip":"seat.example","port":65536}),
             json!({"usage":14,"ip":"0.0.0.0","port":443}),
@@ -4040,6 +4077,56 @@ mod tests {
         native["connectionInfo"][0]["appLevelProtocol"] = json!(6);
         select_webrtc_endpoint(&mut native);
         assert!(native["mediaConnectionInfo"].is_null());
+    }
+
+    #[test]
+    fn owned_webrtc_sessions_accept_legacy_rtsp_connection_descriptors() {
+        let base = trusted_cloudmatch_base(DEFAULT_STREAMING_BASE).unwrap();
+        for connection in [
+            json!({"usage":14,"appLevelProtocol":6,"resourcePath":"rtsps://seat.nvidiagrid.net:48322"}),
+            json!({"usage":14,"appLevelProtocol":1,"ip":"seat.nvidiagrid.net","port":48010}),
+            json!({"usage":16,"ip":"seat.nvidiagrid.net","port":322}),
+        ] {
+            let mut session = session_info(
+                &json!({"session":{"sessionId":"owned","status":3,
+                "connectionInfo":[connection]}}),
+                &base,
+                "",
+                "123",
+                "device",
+            )
+            .unwrap();
+            session["transportMode"] = json!("webrtc");
+            select_webrtc_endpoint(&mut session);
+            assert_eq!(session["signalingUrl"], "wss://seat.nvidiagrid.net/nvst/");
+            assert!(has_webrtc_endpoint(&session));
+            assert!(session["mediaConnectionInfo"].is_null());
+            session["signalingUrl"] = json!("wss://forged.invalid/nvst/");
+            assert!(!has_webrtc_endpoint(&session));
+        }
+    }
+
+    #[test]
+    fn explicit_webrtc_endpoint_wins_over_legacy_descriptors() {
+        let mut session = json!({"transportMode":"webrtc", "connectionInfo":[
+            {"usage":16,"ip":"legacy.nvidiagrid.net","port":48322},
+            {"usage":14,"appLevelProtocol":6,"resourcePath":"rtsps://legacy.nvidiagrid.net:322"},
+            {"usage":14,"appLevelProtocol":6,"resourcePath":"wss://browser.nvidiagrid.net:9443/custom/"}
+        ]});
+        select_webrtc_endpoint(&mut session);
+        assert_eq!(
+            session["signalingUrl"],
+            "wss://browser.nvidiagrid.net:9443/custom/"
+        );
+        assert!(has_webrtc_endpoint(&session));
+        session["connectionInfo"].as_array_mut().unwrap().pop();
+        session["connectionInfo"][1]["resourcePath"] =
+            json!("rtsps://browser-alias.nvidiagrid.net:322");
+        select_webrtc_endpoint(&mut session);
+        assert_eq!(
+            session["signalingUrl"],
+            "wss://browser-alias.nvidiagrid.net/nvst/"
+        );
     }
 
     #[test]
