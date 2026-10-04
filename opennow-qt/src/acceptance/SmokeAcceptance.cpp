@@ -370,6 +370,7 @@ int AcceptanceSession::startSmokeWorkload()
             }
             if (ok && (m_arguments.contains(u"--smoke-command-search"_s)
                        || m_arguments.contains(u"--smoke-shortcuts"_s)
+                       || m_arguments.contains(u"--bug-report-notice-check"_s)
                        || m_arguments.contains(u"--smoke-game-details-layout"_s))) {
                 if (m_arguments.contains(u"--smoke-game-details-layout"_s)
                     && m_arguments.contains(u"--details-interactive"_s))

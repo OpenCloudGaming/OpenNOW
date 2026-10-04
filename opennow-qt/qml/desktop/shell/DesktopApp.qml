@@ -99,6 +99,10 @@ FocusScope {
             desktopStream.resynchronizeStreamInput()
     }
     function restoreShellFocus() {
+        if (bugReportNotice.opened) {
+            bugReportNotice.restoreFocus()
+            return
+        }
         if (root.shellVisible && root.route !== "game-detail" && !root.commandOpen
                 && AppController.overlay === "" && pageLoader.item)
             pageLoader.item.forceActiveFocus()
@@ -220,9 +224,16 @@ FocusScope {
     }
 
     DesktopBugReportNotice {
+        id: bugReportNotice
         anchors.fill: parent
         opened: root.shellVisible && root.bugReportNoticeAllowed && ShellStore.bugReports.noticePending
+            && AppController.overlay === "" && root.route !== "game-detail"
+            && !ShellStore.queueSelector.opened
         z: 130
+        onOpenedChanged: {
+            if (opened) root.commandOpen = false
+            else Qt.callLater(root.restoreShellFocus)
+        }
     }
     DesktopBugReportToast {
         anchors.right: parent.right
@@ -343,6 +354,10 @@ FocusScope {
         })
     }
     Keys.onPressed: event => {
+        if (bugReportNotice.opened) {
+            event.accepted = true
+            return
+        }
         if ((event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_K) {
             root.commandOpen = !root.commandOpen
             event.accepted = true
