@@ -19,6 +19,8 @@ QtObject {
     property Component statsComponent: Component {
         DesktopStreamStats { width: 1280; height: 720 }
     }
+    property Component connectingDesktop: Component { DesktopStreamScreen { width: 640; height: 360 } }
+    property Component connectingConsole: Component { StreamScreen { width: 640; height: 360 } }
     property QtObject client: QtObject {
         property string state: "stopped"
         property string lastError: ""
@@ -583,10 +585,53 @@ QtObject {
         ShellStore.authSession = null
         ShellStore.authGeneration = 0
     }
+    function checkConnectingPresentation(parent) {
+        const saved = {session:ShellStore.activeSession, streamer:ShellStore.streamer,
+            state:ShellStore.streamState, restarts:ShellStore.streamerRestartAttempts,
+            overlay:AppController.overlay, capture:ShellStore.streamCaptureRect}
+        ShellStore.activeSession = {sessionId:"connecting-fixture", status:3}
+        for (const component of [connectingDesktop, connectingConsole]) {
+            ShellStore.streamerRestartAttempts = 0
+            ShellStore.streamState = "connecting"
+            ShellStore.streamer = {sessionId:"connecting-fixture", status:"connecting", transport:"webrtc"}
+            const view = component.createObject(parent)
+            const surface = find(view, "streamSurfaceHost")
+            check(surface !== null, "connecting view retains its native video item")
+            check(surface.visible, "connecting must expose the video item before its first frame")
+            check(!surface.inputEnabled && !surface.focus, "connecting does not capture gameplay input")
+            ShellStore.streamState = "reconnecting"
+            ShellStore.streamerRestartAttempts = 1
+            check(surface.visible && !surface.inputEnabled, "a reconnect also initializes presentation before its first frame")
+            AppController.showOverlay("desktop-stream-menu")
+            check(surface.visible && !surface.inputEnabled, "a connecting overlay must not hide the video surface")
+            AppController.showOverlay("")
+            ShellStore.streamerRestartAttempts = 0
+            ShellStore.streamState = "streaming"
+            ShellStore.streamer = {sessionId:"connecting-fixture", status:"streaming", firstFrameLatencyMs:1}
+            check(find(view, "streamSurfaceHost") === surface && surface.visible && surface.inputEnabled,
+                "first presentation enables input without recreating the video item")
+            AppController.showOverlay("desktop-stream-menu")
+            check(surface.visible && !surface.inputEnabled, "streaming overlays retain presentation but release input")
+            AppController.showOverlay("")
+            ShellStore.streamState = "error"
+            ShellStore.streamer = {sessionId:"connecting-fixture", status:"connecting"}
+            check(!surface.visible, "a terminal shell error cannot expose a stale connecting surface")
+            view.visible = false
+            view.destroy()
+        }
+        ShellStore.activeSession = saved.session
+        ShellStore.streamer = saved.streamer
+        ShellStore.streamState = saved.state
+        ShellStore.streamerRestartAttempts = saved.restarts
+        ShellStore.streamCaptureRect = saved.capture
+        AppController.showOverlay(saved.overlay)
+    }
+
     function run(parent) {
         client.state = "stopped"
         ShellStore.streamerStartRequestId = "fixture-blocked"
         ShellStore.streamInputPauseRequestId = "fixture-blocked"
+        checkConnectingPresentation(parent)
         // This is another reply for the same seat, not the first session.
         ShellStore.activeSession = {sessionId:"fixture", phase:"ready", status:2}
         ShellStore.streamerRestartAttempts = 2

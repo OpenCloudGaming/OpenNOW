@@ -1177,6 +1177,10 @@ Explicit active or passive remote roles retain their complementary local role.
 Connection diagnostics distinguish ICE completion from DTLS establishment and
 record redacted candidate classes, ports, and packet-family counters without
 addresses, credentials, or payloads.
+The Qt video item remains visible while the native backend is connecting,
+including reconnect attempts, so it can create the graphics context before the
+first frame. Gameplay focus/input still waits for streaming; startup overlays
+may cover the same video item without preventing presentation initialization.
 
 `acceptance.export` is available only through the Qt shell's Diagnostics screen. It rejects
 headless window systems and writes an atomic, redacted `opennow.live-acceptance` JSON file. The
