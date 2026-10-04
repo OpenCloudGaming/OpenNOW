@@ -71,6 +71,11 @@ impl SettingsStore {
             });
             match persisted {
                 Some(persisted) => {
+                    if !persisted.contains_key("webrtcCompatibilityMode")
+                        && persisted.get("allianceWebrtcCompatibility") == Some(&json!(true))
+                    {
+                        values.insert("webrtcCompatibilityMode".to_owned(), json!("on"));
+                    }
                     migrate_onboarding = policy == LoadPolicy::ReadWrite
                         && !persisted.contains_key("onboardingCompleted");
                     if migrate_onboarding {
@@ -220,6 +225,12 @@ impl SettingsStore {
             normalize_proxy_url(raw)?;
         }
         let previous_values = self.values.clone();
+        if key == "allianceWebrtcCompatibility" {
+            self.values.insert(
+                "webrtcCompatibilityMode".to_owned(),
+                json!(if value == true { "on" } else { "off" }),
+            );
+        }
         self.values.insert(key.to_owned(), value);
         self.normalize();
         if key == "microphoneMode" && self.values.get(key) == Some(&json!("voice-activity")) {
@@ -433,6 +444,16 @@ impl SettingsStore {
         self.values.insert(
             "transportMode".to_owned(),
             Value::String(NATIVE_TRANSPORT.to_owned()),
+        );
+        normalize_choice(
+            &mut self.values,
+            "webrtcCompatibilityMode",
+            &["auto", "on", "off"],
+            "auto",
+        );
+        self.values.insert(
+            "allianceWebrtcCompatibility".to_owned(),
+            json!(self.values["webrtcCompatibilityMode"] == "on"),
         );
         normalize_choice(
             &mut self.values,
@@ -1068,7 +1089,7 @@ fn defaults() -> Map<String, Value> {
         "nativeVideoBackend":"auto", "nativeStreamerExecutablePath":"", "audioOutputDevice":"",
         "windowsGpuDeviceId":"",
         "nativeCloudGsyncMode":"auto", "nativeD3dFullscreenMode":"auto",
-        "nativeExternalRenderer":false, "transportMode":"nvst", "allianceWebrtcCompatibility":false, "showNativeStreamerStats":false,
+        "nativeExternalRenderer":false, "transportMode":"nvst", "allianceWebrtcCompatibility":false, "webrtcCompatibilityMode":"auto", "showNativeStreamerStats":false,
         "codec":"auto", "fallbackCodec":"auto", "decoderPreference":"auto",
         "encoderPreference":"auto", "colorQuality":"8bit_420", "enableHdr":false, "region":"", "regionProviderIdpId":"", "providerRegions":{},
         "suppressTenBitWarning":false,
@@ -1299,6 +1320,46 @@ mod tests {
         let restored = SettingsStore::load(Some(directory.path().to_path_buf())).unwrap();
         assert_eq!(restored.all()["allianceWebrtcCompatibility"], true);
         assert_eq!(restored.all()["transportMode"], "nvst");
+    }
+
+    #[test]
+    fn automatic_webrtc_mode_preserves_manual_overrides_and_migrates_old_opt_in() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = SettingsStore::load(Some(directory.path().to_path_buf())).unwrap();
+        assert_eq!(store.all()["webrtcCompatibilityMode"], "auto");
+        for mode in ["off", "on", "auto"] {
+            assert_eq!(
+                store.set("webrtcCompatibilityMode", json!(mode)).unwrap(),
+                mode
+            );
+            let restored = SettingsStore::load(Some(directory.path().to_path_buf())).unwrap();
+            assert_eq!(restored.all()["webrtcCompatibilityMode"], mode);
+            assert_eq!(restored.all()["allianceWebrtcCompatibility"], mode == "on");
+        }
+        for invalid in [json!(true), json!("unexpected"), Value::Null] {
+            assert_eq!(
+                store.set("webrtcCompatibilityMode", invalid).unwrap(),
+                "auto"
+            );
+        }
+        for (legacy, expected) in [(true, "on"), (false, "auto")] {
+            std::fs::write(
+                directory.path().join("settings.json"),
+                json!({
+                    "allianceWebrtcCompatibility":legacy,"onboardingCompleted":true,
+                    "qtConsoleModePolicyVersion":1
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let mut restored = SettingsStore::load(Some(directory.path().to_path_buf())).unwrap();
+            assert_eq!(restored.all()["webrtcCompatibilityMode"], expected);
+            restored
+                .set("webrtcCompatibilityMode", json!("off"))
+                .unwrap();
+            let again = SettingsStore::load(Some(directory.path().to_path_buf())).unwrap();
+            assert_eq!(again.all()["webrtcCompatibilityMode"], "off");
+        }
     }
 
     #[test]

@@ -82,7 +82,7 @@ int main(int argc, char **argv)
             std::cout << "{\"type\":\"response\",\"id\":\"" << id
                       << "\",\"ok\":true,\"result\":{\"settings\":{\"launchInConsoleMode\":"
                       << (launchInConsoleMode ? "true" : "false")
-                      << ",\"switchToConsoleOnPad\":false,\"reducedMotion\":true,\"appLanguage\":\"system\",\"autoCheckForUpdates\":false}}}\n" << std::flush;
+                      << ",\"switchToConsoleOnPad\":false,\"reducedMotion\":true,\"appLanguage\":\"system\",\"autoCheckForUpdates\":false,\"webrtcCompatibilityMode\":\"auto\"}}}\n" << std::flush;
         } else if (method == "settings.set") {
             const auto consoleModeWrite = line.find("\"key\":\"launchInConsoleMode\"")
                 != std::string::npos;

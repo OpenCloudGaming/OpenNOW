@@ -806,7 +806,7 @@ QtObject {
     readonly property bool streamBusy: streamCreateRequestId !== "" || streamStopRequestId !== ""
         || remoteSessionsRequestId !== "" || sessionClaimRequestId !== "" || launchInspectRequestId !== ""
         || queueSelector.opened || queueLaunchWaitingForSubscription
-        || settingsOwner.settingWrites.allianceWebrtcCompatibility !== undefined
+        || settingsOwner.settingWrites.webrtcCompatibilityMode !== undefined
 
     signal fullscreenToggleRequested()
     signal pointerLockToggleRequested()

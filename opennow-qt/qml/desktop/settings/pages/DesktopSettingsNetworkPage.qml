@@ -66,17 +66,18 @@ Column {
         sourceComponent: DesktopSettingsPanel {
             width: page.availableWidth; paperStyle: true
             DesktopSettingsSection { text: qsTr("TRANSPORT") }
-            DesktopSettingsRow {
-                objectName: "allianceWebrtcCompatibilityRow"
-                width: parent.width; paperStyle: true; glyph: "globe"
+            DesktopSettingsChoice {
+                objectName: "webrtcCompatibilityModeChoice"
+                width: parent.width; glyph: "globe"
                 title: qsTr("WebRTC compatibility mode")
-                description: qsTr("For compatibility only. Expect lower performance than NVST. Available for NVIDIA and alliance accounts. New sessions use up to 1080p60, H.264, SDR, and stereo. No microphone or clipboard text. Requires direct UDP connectivity.")
-                DesktopSettingsToggle {
-                    objectName: "allianceWebrtcCompatibilityToggle"
-                    enabled: !ShellStore.activeSession && !ShellStore.streamBusy && !ShellStore.pendingLaunchParams
-                    checked: page.settingsScreen.boolSetting("allianceWebrtcCompatibility", false)
-                    onValueChangedByUser: value => page.settingsScreen.setSetting("allianceWebrtcCompatibility", value)
-                }
+                description: qsTr("Automatic uses WebRTC for signed-in alliance accounts and NVST for NVIDIA accounts. Choose WebRTC or NVST to override either account type. Applies to new sessions only; existing sessions keep their transport.")
+                    + "\n" + qsTr("WebRTC is for compatibility only. Expect lower performance than NVST. Up to 1080p60, H.264, SDR, and stereo. No microphone or clipboard text. Requires direct UDP connectivity.")
+                enabled: !ShellStore.activeSession && !ShellStore.streamBusy && !ShellStore.pendingLaunchParams
+                maximumColumns: 3
+                items: [{value:"auto", label:qsTr("Automatic")},
+                    {value:"on", label:qsTr("WebRTC")}, {value:"off", label:qsTr("NVST")}]
+                value: page.settingsScreen.valueSetting("webrtcCompatibilityMode", "auto")
+                onSelected: value => page.settingsScreen.setSetting("webrtcCompatibilityMode", value)
             }
             DesktopSettingsRow {
                 width: parent.width; paperStyle: true; glyph: "bolt"; title: qsTr("L4S")

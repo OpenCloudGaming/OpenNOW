@@ -510,6 +510,11 @@ fn dispatch(
                 });
             } else if key == "appAccentColor" {
                 event["changes"] = json!({"themeAccentOverride": true});
+            } else if key == "webrtcCompatibilityMode" {
+                event["changes"] = json!({"allianceWebrtcCompatibility": settings.all()["allianceWebrtcCompatibility"]});
+            } else if key == "allianceWebrtcCompatibility" {
+                event["changes"] =
+                    json!({"webrtcCompatibilityMode": settings.all()["webrtcCompatibilityMode"]});
             }
             if key == "microphoneMode" && applied == json!("voice-activity") {
                 event["changes"] = json!({"microphoneDeviceId": ""});
@@ -798,7 +803,11 @@ fn dispatch(
             .map_err(gfn_error),
         "session.create" => {
             let settings = core.settings.lock().expect("settings poisoned").all();
-            let settings = cloudmatch::allocation_settings(&settings);
+            let (auth, _) = core
+                .gfn
+                .authenticated_snapshot(gfn::TokenPurpose::ServiceId, false)
+                .map_err(gfn_error)?;
+            let settings = cloudmatch::allocation_settings(&settings, &auth);
             let settings = if !params["runtimeCapabilities"].is_null() {
                 StreamerService::embedded_session_settings(
                     &settings,

@@ -25,9 +25,22 @@ const MAX_DISCOVERY_REGIONS: usize = 32;
 const DISCOVERY_CONCURRENCY: usize = 4;
 const MAX_CLEANUP_RECORD_BYTES: usize = 16 * 1024;
 
-pub(crate) fn allocation_settings(settings: &Value) -> Value {
+fn webrtc_compatibility_enabled(settings: &Value, auth: &AuthSession) -> bool {
+    let provider = auth.provider.code.trim();
+    let automatic = !auth.provider.idp_id.is_empty()
+        && !provider.is_empty()
+        && !provider.eq_ignore_ascii_case("NVIDIA");
+    match settings["webrtcCompatibilityMode"].as_str() {
+        Some("on") => true,
+        Some("off") => false,
+        Some("auto") => automatic,
+        _ => settings["allianceWebrtcCompatibility"] == true,
+    }
+}
+
+pub(crate) fn allocation_settings(settings: &Value, auth: &AuthSession) -> Value {
     let mut settings = settings.clone();
-    let enabled = settings["allianceWebrtcCompatibility"] == true;
+    let enabled = webrtc_compatibility_enabled(&settings, auth);
     settings["allianceWebrtcCompatibility"] = json!(enabled);
     if enabled {
         settings["codec"] = json!("h264");
@@ -287,7 +300,7 @@ impl CloudMatchService {
         device_id: &str,
         connection: impl FnOnce() -> Result<(Client, Url), ServiceError>,
     ) -> Result<Value, ServiceError> {
-        let settings = allocation_settings(settings);
+        let settings = allocation_settings(settings, auth);
         let settings = &settings;
         let (client, base) = connection()?;
         crate::requests::check()?;
@@ -1098,7 +1111,7 @@ impl CloudMatchService {
             });
         }
         let webrtc = reported_webrtc_session(session) || retained_webrtc.is_some();
-        if webrtc && retained_webrtc.is_none() && settings["allianceWebrtcCompatibility"] != true {
+        if webrtc && retained_webrtc.is_none() && !webrtc_compatibility_enabled(settings, auth) {
             return Err(ServiceError {
                 code: "session_transport_not_enabled",
                 message: "This is a WebRTC session. Enable WebRTC compatibility before attaching; the cloud session has been retained.".into(),
@@ -3969,7 +3982,7 @@ mod tests {
         let requested = json!({"allianceWebrtcCompatibility":true,"transportMode":"webrtc",
             "codec":"av1","colorQuality":"10bit_444","enableHdr":true,"nativeHdrSupported":true,
             "resolution":"3840x2160","fps":240,"microphoneMode":"open"});
-        let compatible = allocation_settings(&requested);
+        let compatible = allocation_settings(&requested, &conflict_auth());
         assert_eq!(compatible["codec"], "h264");
         assert_eq!(compatible["colorQuality"], "8bit_420");
         assert_eq!(compatible["enableHdr"], false);
@@ -3980,14 +3993,20 @@ mod tests {
         for (requested_fps, expected) in [(0, 60), (30, 30), (60, 60), (120, 60)] {
             let mut settings = requested.clone();
             settings["fps"] = json!(requested_fps);
-            assert_eq!(allocation_settings(&settings)["fps"], expected);
+            assert_eq!(
+                allocation_settings(&settings, &conflict_auth())["fps"],
+                expected
+            );
         }
         for enabled in [json!(false), json!("true"), Value::Null] {
             let mut settings = requested.clone();
             settings["allianceWebrtcCompatibility"] = enabled;
-            assert_eq!(allocation_settings(&settings)["codec"], "av1");
             assert_eq!(
-                allocation_settings(&settings)["allianceWebrtcCompatibility"],
+                allocation_settings(&settings, &conflict_auth())["codec"],
+                "av1"
+            );
+            assert_eq!(
+                allocation_settings(&settings, &conflict_auth())["allianceWebrtcCompatibility"],
                 false
             );
         }
@@ -3995,8 +4014,11 @@ mod tests {
 
     #[test]
     fn alliance_webrtc_request_changes_allocation_without_changing_native_headers() {
-        let settings = allocation_settings(&json!({"allianceWebrtcCompatibility":true,
-            "codec":"h265","enableHdr":true,"nativeHdrSupported":true}));
+        let settings = allocation_settings(
+            &json!({"allianceWebrtcCompatibility":true,
+            "codec":"h265","enableHdr":true,"nativeHdrSupported":true}),
+            &conflict_auth(),
+        );
         let body = build_create_body("123", &json!({}), &settings, "device");
         let request = &body["sessionRequestData"];
         assert_eq!(request["streamerVersion"], 1);
@@ -4130,6 +4152,63 @@ mod tests {
     }
 
     #[test]
+    fn automatic_alliance_transport_and_manual_overrides_select_the_allocation() {
+        for (provider, mode, webrtc) in [
+            ("ALLIANCE", "auto", true),
+            ("NVIDIA", "auto", false),
+            ("nvidia", "auto", false),
+            ("", "auto", false),
+            ("ALLIANCE", "off", false),
+            ("NVIDIA", "on", true),
+            ("ALLIANCE", "on", true),
+            ("NVIDIA", "off", false),
+        ] {
+            let (base, server) = session_server(
+                vec![(
+                    200,
+                    json!({"requestStatus":{"statusCode":1},"session":{
+                        "sessionId":"A","status":1,
+                        "sessionControlInfo":{"ip":"seat.nvidiagrid.net","port":443}
+                    }}),
+                )],
+                |_| {},
+            );
+            let client = Client::new();
+            let mut service = CloudMatchService::new(client.clone());
+            service.set_test_control_base(base.clone());
+            let mut auth = conflict_auth();
+            auth.provider.code = provider.into();
+            let settings = json!({"webrtcCompatibilityMode":mode,
+                "codec":"av1","resolution":"2560x1440","fps":120});
+            let created = service
+                .create_at(&json!({"appId":"123"}), &settings, &auth, "device", || {
+                    Ok((client, base))
+                })
+                .unwrap();
+            let requests = server.join().unwrap();
+            assert_eq!(requests.len(), 1);
+            assert!(requests[0].starts_with("POST "));
+            assert_eq!(
+                created["session"]["transportMode"],
+                if webrtc { "webrtc" } else { "nvst" },
+                "{provider} {mode}"
+            );
+            if webrtc {
+                assert_eq!(
+                    created["session"]["negotiatedStreamProfile"]["codec"],
+                    "H264"
+                );
+                assert_eq!(
+                    created["session"]["negotiatedStreamProfile"]["resolution"],
+                    "1920x1080"
+                );
+                assert_eq!(created["session"]["negotiatedStreamProfile"]["fps"], 60);
+            }
+            assert_eq!(settings["codec"], "av1");
+        }
+    }
+
+    #[test]
     fn alliance_webrtc_allocation_and_poll_keep_owned_transport_and_requested_profile() {
         for provider in ["NVIDIA", "ALLIANCE"] {
             let ready = json!({"sessionId":"A","status":3,"connectionInfo":[
@@ -4191,6 +4270,26 @@ mod tests {
             );
             assert!(has_webrtc_endpoint(&polled["session"]));
             assert_eq!(server.join().unwrap().len(), 2);
+        }
+    }
+
+    #[test]
+    fn automatic_and_explicit_modes_never_convert_an_existing_session() {
+        for mode in ["auto", "on", "off"] {
+            for webrtc in [true, false] {
+                let session = json!({"sessionRequestData":{
+                    "secureRTSPSupported":!webrtc,
+                    "metaData":[{"key":"GSStreamerType","value":if webrtc {"WebRTC"} else {"native"}}]
+                }});
+                let settings =
+                    json!({"webrtcCompatibilityMode":mode,"codec":"av1","enableHdr":true});
+                let resumed = build_resume_body("123", &session, &settings, "device");
+                assert_eq!(reported_webrtc_session(&resumed), webrtc, "{mode}");
+                assert_eq!(
+                    resumed["sessionRequestData"]["secureRTSPSupported"],
+                    !webrtc
+                );
+            }
         }
     }
 
@@ -4299,6 +4398,54 @@ mod tests {
             assert!(restored.retained_webrtc_allocation("A", &other).is_none());
             assert!(restored.retained_webrtc_allocation("B", &auth).is_none());
             assert_eq!(server.join().unwrap().len(), 3);
+        }
+    }
+
+    #[test]
+    fn claiming_webrtc_uses_the_authenticated_provider_and_explicit_override() {
+        for (provider, mode, allowed) in [
+            ("ALLIANCE", "auto", true),
+            ("NVIDIA", "auto", false),
+            ("ALLIANCE", "off", false),
+            ("NVIDIA", "on", true),
+        ] {
+            let mut replies = vec![(
+                200,
+                json!({"requestStatus":{"statusCode":1},"session":{
+                    "sessionId":"existing","status":3,
+                    "sessionRequestData":{"appId":"123","secureRTSPSupported":false,
+                        "metaData":[{"key":"GSStreamerType","value":"WebRTC"}]},
+                    "connectionInfo":[{"usage":14,"appLevelProtocol":4,"ip":"seat.partner.example",
+                        "port":443,"resourcePath":"/nvst/"}]
+                }}),
+            )];
+            if allowed {
+                replies.push((200, json!({"requestStatus":{"statusCode":1}})));
+            }
+            let (base, server) = session_server(replies, |_| {});
+            let mut service = CloudMatchService::new(Client::new());
+            service.set_test_control_base(base);
+            let mut auth = conflict_auth();
+            auth.provider.code = provider.into();
+            let result = service.claim(
+                &json!({"sessionId":"existing"}),
+                &json!({"webrtcCompatibilityMode":mode}),
+                &auth,
+                "device",
+            );
+            if allowed {
+                let claimed = result.unwrap();
+                assert_eq!(claimed["session"]["transportMode"], "webrtc");
+                assert_eq!(claimed["session"]["resumePending"], true);
+                let requests = server.join().unwrap();
+                assert_eq!(requests.len(), 2);
+                assert!(requests[1].starts_with("PUT "));
+            } else {
+                assert_eq!(result.unwrap_err().code, "session_transport_not_enabled");
+                assert!(service.active()["session"].is_null());
+                let requests = server.join().unwrap();
+                assert_eq!(requests.len(), 1);
+            }
         }
     }
 
