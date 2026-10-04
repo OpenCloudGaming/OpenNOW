@@ -17,6 +17,7 @@ internal class GamepadStateBurstLimiter(
     private var lastSentAtMs: Long? = null
     private var pendingControllerId: Int? = null
     private val motionControlsByController = mutableMapOf<Int, Long>()
+    private val neutralSticksByController = mutableMapOf<Int, Int>()
 
     fun offer(
         controllerId: Int,
@@ -24,12 +25,16 @@ internal class GamepadStateBurstLimiter(
         hatButtons: Int = 0,
         leftTrigger: Int = 0,
         rightTrigger: Int = 0,
+        neutralSticks: Int? = null,
     ): Int? {
         val controls = (hatButtons.toLong() shl 16) or
             ((leftTrigger.toLong() and 0xff) shl 8) or (rightTrigger.toLong() and 0xff)
         val controlsChanged = controls != (motionControlsByController.put(controllerId, controls) ?: 0L)
+        val previousNeutralSticks = neutralSticks?.let { neutralSticksByController.put(controllerId, it) }
+        val stickReleased = neutralSticks != null && previousNeutralSticks != null &&
+            (neutralSticks and previousNeutralSticks.inv()) != 0
         val lastSent = lastSentAtMs
-        if (controlsChanged || lastSent == null || nowMs - lastSent >= minimumIntervalMs) {
+        if (controlsChanged || stickReleased || lastSent == null || nowMs - lastSent >= minimumIntervalMs) {
             pendingControllerId = null
             lastSentAtMs = nowMs
             return controllerId
@@ -55,5 +60,6 @@ internal class GamepadStateBurstLimiter(
         lastSentAtMs = null
         pendingControllerId = null
         motionControlsByController.clear()
+        neutralSticksByController.clear()
     }
 }

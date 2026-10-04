@@ -204,6 +204,8 @@ data class StreamSettings(
     val region: String = "",
     val keyboardLayout: String = "en-US",
     val gameLanguage: String = "en_US",
+    /** Advertise all four host gamepad slots when local multiplayer is enabled. */
+    val multiControllerEnabled: Boolean = false,
     val sessionProxyEnabled: Boolean = false,
     val sessionProxyUrl: String = "",
     val enableL4S: Boolean = false,
@@ -575,6 +577,8 @@ internal const val GAME_BORDERS_DEFAULT_VERSION = 1
 @Serializable
 data class AppSettings(
     val stream: StreamSettings = StreamSettings(),
+    /** Persisted SAF tree URI used for subsequent stream recordings. */
+    val recordingDirectoryUri: String? = null,
     val streamPreset: StreamPreset = StreamPreset.Recommended,
     val posterSizeScale: Float = 1f,
     val compactGameCards: Boolean = false,
@@ -662,6 +666,8 @@ data class AppSettings(
     val controllerMode: Boolean = false,
     val controllerUiSounds: Boolean = true,
     val controllerMouseEmulation: Boolean = false,
+    /** Automatically enable the right-stick launcher cursor at the start of TV streams. */
+    val controllerMouseAutoArmOnTv: Boolean = true,
     /** Capture an external mouse during gameplay so Android system edges cannot steal it. */
     val externalMousePointerLock: Boolean = true,
     /** Physical-keyboard shortcut used to open Stream Controls during a session. */
@@ -966,7 +972,8 @@ internal fun streamSettingsSessionSignature(settings: StreamSettings): String {
         "keyboard=${compatible.keyboardLayout.trim()}",
         "language=${compatible.gameLanguage.trim()}",
     ).joinToString(";").let { signature ->
-        val withTransport = if (settings.experimentalNvst) "$signature;transport=nvst" else signature
+        val withControllers = if (settings.multiControllerEnabled) "$signature;controllers=4" else signature
+        val withTransport = if (settings.experimentalNvst) "$withControllers;transport=nvst" else withControllers
         if (settings.experimentalDynamicNetworkAdjustment) {
             val minimumMbps = StreamNetworkAdaptation.bitrateRange(compatible).minimumKbps / 1000
             "$withTransport;dynamic=1;minBitrate=$minimumMbps"

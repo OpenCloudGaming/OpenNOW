@@ -272,6 +272,7 @@ internal fun TouchOverlay(
                 onButtonAppearanceChange(button, updated.buttonAppearances[button] ?: TouchButtonAppearance())
             },
             onDismiss = { editingButton = null },
+            wideLayout = true,
         )
     }
 }

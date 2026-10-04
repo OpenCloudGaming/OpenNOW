@@ -335,6 +335,7 @@ internal fun AppSettings.normalizedForAndroid(): AppSettings {
         normalizedCatalogSortId
     }
     return copy(
+        recordingDirectoryUri = recordingDirectoryUri?.takeIf { it.isNotBlank() },
         uiAccent = if (uiAccent == UiAccent.LegacyOrange) UiAccent.Violet else uiAccent,
         selectionEffectColors = selectionEffectColors?.normalized(),
         stream = lowPowerSafe,

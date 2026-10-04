@@ -500,10 +500,11 @@ class MainActivity : ComponentActivity() {
 
     /** Reapplies only immersive bars; pointer-icon traversal and window flags are state changes. */
     private fun applyStreamSystemBars(active: Boolean) {
+        val immersive = active && !streamPanelExpanded
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             WindowCompat.setDecorFitsSystemWindows(window, false)
             window.insetsController?.let { controller ->
-                if (active) {
+                if (immersive) {
                     controller.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
                     controller.hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
                 } else {
@@ -512,7 +513,7 @@ class MainActivity : ComponentActivity() {
             }
         } else {
             @Suppress("DEPRECATION")
-            window.decorView.systemUiVisibility = if (active) {
+            window.decorView.systemUiVisibility = if (immersive) {
                 View.SYSTEM_UI_FLAG_FULLSCREEN or
                     View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
                     View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
@@ -601,6 +602,7 @@ class MainActivity : ComponentActivity() {
         if (streamPanelExpanded == expanded) return
         streamPanelExpanded = expanded
         applyPhoneStreamOrientationLock(phoneStreamOrientationLocked, force = true)
+        applyStreamSystemBars(streamSystemUiActive)
     }
 
     private fun updateStreamSystemUiEnforcer(active: Boolean) {
@@ -621,6 +623,7 @@ class MainActivity : ComponentActivity() {
                 if (
                     shouldPeriodicallyEnforceStreamSystemUi(
                         streamActive = streamSystemUiActive,
+                        panelExpanded = streamPanelExpanded,
                         navigationBarsVisible = navigationBarsVisible,
                         pointerLockEnabled = NativeStreamInputRouter.isExternalMousePointerCaptureEnabled(),
                     )
@@ -844,9 +847,10 @@ class MainActivity : ComponentActivity() {
 
 internal fun shouldPeriodicallyEnforceStreamSystemUi(
     streamActive: Boolean,
+    panelExpanded: Boolean = false,
     navigationBarsVisible: Boolean,
     pointerLockEnabled: Boolean,
-): Boolean = streamActive && (pointerLockEnabled || !navigationBarsVisible)
+): Boolean = streamActive && !panelExpanded && (pointerLockEnabled || !navigationBarsVisible)
 
 internal fun shouldRouteCapturedAndroidMousePointer(
     streamActive: Boolean,

@@ -1,5 +1,6 @@
 package com.opencloudgaming.opennow
 
+import android.content.res.Configuration
 import androidx.annotation.StringRes
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -14,10 +15,12 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.window.DialogProperties
 import kotlin.math.roundToInt
 
 internal enum class TouchButtonIcon(val vector: ImageVector, @StringRes val labelRes: Int) {
@@ -119,6 +122,7 @@ internal fun TouchButtonAppearanceDialog(
     touch: AndroidTouchSettings,
     onChange: (AndroidTouchSettings) -> Unit,
     onDismiss: () -> Unit,
+    wideLayout: Boolean = false,
 ) {
     val saved = (touch.buttonAppearances[button] ?: TouchButtonAppearance()).normalized()
     var label by rememberSaveable(button) { mutableStateOf(saved.label) }
@@ -126,80 +130,117 @@ internal fun TouchButtonAppearanceDialog(
     var shape by rememberSaveable(button) { mutableStateOf(saved.shape) }
     var sizeScale by rememberSaveable(button) { mutableStateOf(saved.sizeScale) }
     var toggle by rememberSaveable(button) { mutableStateOf(saved.toggle) }
+    val configuration = LocalConfiguration.current
+    val wideColumns = wideLayout && configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val iconColumns = if (wideColumns && configuration.screenWidthDp >= 760) 4 else 3
+    val appearanceOptions: @Composable () -> Unit = {
+        CompositionLocalProvider(
+            LocalTouchSkin provides touchSkinColors(touch.touchControllerStyle, 1f, touchSkinAccent(touch)),
+            LocalTouchSkinForm provides touchSkinForm(touch.touchControllerStyle),
+            LocalTouchButtonLabels provides true,
+            LocalTouchButtonAppearances provides mapOf(button to TouchButtonAppearance(label, icon, shape, toggle, sizeScale)),
+        ) {
+            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                TouchCapFace(touchButtonName(button, touch), false, 72.dp, appearanceKey = button)
+            }
+        }
+        OutlinedTextField(
+            value = label,
+            onValueChange = { label = it.take(TOUCH_BUTTON_LABEL_LIMIT) },
+            label = { Text(stringResource(R.string.touch_custom_label)) },
+            placeholder = { Text(touchButtonName(button, touch)) },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        val sizeLabel = stringResource(R.string.touch_button_size)
+        Text(stringResource(R.string.touch_button_size_value, (sizeScale * 100).roundToInt()),
+            style = MaterialTheme.typography.titleSmall)
+        Slider(
+            value = sizeScale,
+            onValueChange = { sizeScale = (it * 20).roundToInt() / 20f },
+            valueRange = TOUCH_BUTTON_MIN_SIZE_SCALE..TOUCH_BUTTON_MAX_SIZE_SCALE,
+            steps = 29,
+            modifier = Modifier.semantics { contentDescription = sizeLabel },
+        )
+        Text(stringResource(R.string.touch_button_size_hint), style = MaterialTheme.typography.bodySmall)
+        Text(stringResource(R.string.touch_button_shape), style = MaterialTheme.typography.titleSmall)
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            maxItemsInEachRow = 3,
+        ) {
+            TouchButtonShape.entries.forEach { choice ->
+                FilterChip(selected = shape == choice, onClick = { shape = choice },
+                    label = { Text(touchButtonShapeLabel(choice)) })
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(stringResource(R.string.touch_button_toggle), modifier = Modifier.weight(1f))
+            Switch(checked = toggle, onCheckedChange = { toggle = it })
+        }
+        Text(stringResource(R.string.touch_button_toggle_hint), style = MaterialTheme.typography.bodySmall)
+    }
+    val iconOptions: @Composable () -> Unit = {
+        Text(stringResource(R.string.touch_custom_icon), style = MaterialTheme.typography.titleSmall)
+        FilterChip(selected = icon == null, onClick = { icon = null },
+            label = { Text(stringResource(R.string.touch_icon_text)) })
+        TouchButtonIcon.entries.chunked(iconColumns).forEach { row ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                row.forEach { choice ->
+                    val name = stringResource(choice.labelRes)
+                    OutlinedButton(
+                        onClick = { icon = choice.name },
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(4.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = if (icon == choice.name) MaterialTheme.colorScheme.secondaryContainer
+                                else androidx.compose.ui.graphics.Color.Transparent,
+                        ),
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(choice.vector, contentDescription = name, modifier = Modifier.size(24.dp))
+                            Text(name, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                        }
+                    }
+                }
+            }
+        }
+        if (!touch.touchButtonLabels) Text(stringResource(R.string.touch_labels_enable_hint))
+        TextButton(onClick = { label = ""; icon = null; shape = TouchButtonShape.Theme; toggle = false; sizeScale = 1f }) {
+            Text(stringResource(R.string.touch_editor_reset))
+        }
+    }
     AlertDialog(
         onDismissRequest = { onDismiss() },
+        modifier = if (wideLayout) Modifier.fillMaxWidth(0.94f).widthIn(max = 960.dp) else Modifier,
+        properties = DialogProperties(usePlatformDefaultWidth = !wideLayout),
         title = { Text(touchButtonName(button, touch)) },
         text = {
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                CompositionLocalProvider(
-                    LocalTouchSkin provides touchSkinColors(touch.touchControllerStyle, 1f, touchSkinAccent(touch)),
-                    LocalTouchSkinForm provides touchSkinForm(touch.touchControllerStyle),
-                    LocalTouchButtonLabels provides true,
-                    LocalTouchButtonAppearances provides mapOf(button to TouchButtonAppearance(label, icon, shape, toggle, sizeScale)),
+            if (wideColumns) {
+                Row(
+                    Modifier.fillMaxWidth().height((configuration.screenHeightDp * 0.55f).dp),
+                    horizontalArrangement = Arrangement.spacedBy(20.dp),
                 ) {
-                    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        TouchCapFace(touchButtonName(button, touch), false, 72.dp, appearanceKey = button)
-                    }
+                    Column(
+                        Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) { appearanceOptions() }
+                    Column(
+                        Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) { iconOptions() }
                 }
-                OutlinedTextField(
-                    value = label,
-                    onValueChange = { label = it.take(TOUCH_BUTTON_LABEL_LIMIT) },
-                    label = { Text(stringResource(R.string.touch_custom_label)) },
-                    placeholder = { Text(touchButtonName(button, touch)) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                val sizeLabel = stringResource(R.string.touch_button_size)
-                Text(stringResource(R.string.touch_button_size_value, (sizeScale * 100).roundToInt()),
-                    style = MaterialTheme.typography.titleSmall)
-                Slider(
-                    value = sizeScale,
-                    onValueChange = { sizeScale = (it * 20).roundToInt() / 20f },
-                    valueRange = TOUCH_BUTTON_MIN_SIZE_SCALE..TOUCH_BUTTON_MAX_SIZE_SCALE,
-                    steps = 29,
-                    modifier = Modifier.semantics { contentDescription = sizeLabel },
-                )
-                Text(stringResource(R.string.touch_button_size_hint), style = MaterialTheme.typography.bodySmall)
-                Text(stringResource(R.string.touch_button_shape), style = MaterialTheme.typography.titleSmall)
-                TouchButtonShape.entries.chunked(3).forEach { choices ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        choices.forEach { choice ->
-                            FilterChip(selected = shape == choice, onClick = { shape = choice },
-                                label = { Text(touchButtonShapeLabel(choice)) })
-                        }
-                    }
+            } else {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .then(if (wideLayout) Modifier.heightIn(max = (configuration.screenHeightDp * 0.55f).dp) else Modifier)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    appearanceOptions()
+                    iconOptions()
                 }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(stringResource(R.string.touch_button_toggle), modifier = Modifier.weight(1f))
-                    Switch(checked = toggle, onCheckedChange = { toggle = it })
-                }
-                Text(stringResource(R.string.touch_button_toggle_hint), style = MaterialTheme.typography.bodySmall)
-                Text(stringResource(R.string.touch_custom_icon), style = MaterialTheme.typography.titleSmall)
-                FilterChip(selected = icon == null, onClick = { icon = null },
-                    label = { Text(stringResource(R.string.touch_icon_text)) })
-                TouchButtonIcon.entries.chunked(3).forEach { row ->
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        row.forEach { choice ->
-                            val name = stringResource(choice.labelRes)
-                            OutlinedButton(
-                                onClick = { icon = choice.name },
-                                modifier = Modifier.weight(1f),
-                                contentPadding = PaddingValues(4.dp),
-                                colors = ButtonDefaults.outlinedButtonColors(
-                                    containerColor = if (icon == choice.name) MaterialTheme.colorScheme.secondaryContainer
-                                        else androidx.compose.ui.graphics.Color.Transparent,
-                                ),
-                            ) {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Icon(choice.vector, contentDescription = name, modifier = Modifier.size(24.dp))
-                                    Text(name, style = MaterialTheme.typography.labelSmall, maxLines = 1)
-                                }
-                            }
-                        }
-                    }
-                }
-                if (!touch.touchButtonLabels) Text(stringResource(R.string.touch_labels_enable_hint))
-                TextButton(onClick = { label = ""; icon = null; shape = TouchButtonShape.Theme; toggle = false; sizeScale = 1f }) { Text(stringResource(R.string.touch_editor_reset)) }
             }
         },
         confirmButton = {

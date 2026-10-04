@@ -671,6 +671,22 @@ private fun SettingsContent(
     var showStreamMenuShortcutDialog by remember { mutableStateOf(false) }
     var showBugReportDialog by rememberSaveable { mutableStateOf(false) }
     var showAdvancedControllerSettings by rememberSaveable { mutableStateOf(false) }
+    val recordingFolderName by produceState<String?>(null, context, settings.recordingDirectoryUri) {
+        value = settings.recordingDirectoryUri?.let { folder ->
+            withContext(Dispatchers.IO) { RecordingDestination.folderName(context, folder) }
+        }
+    }
+    val recordingFolderLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree(),
+    ) { uri ->
+        if (uri != null) {
+            if (RecordingDestination.rememberFolder(context, uri)) {
+                viewModel.updateSettings(state.settings.copy(recordingDirectoryUri = uri.toString()))
+            } else {
+                Toast.makeText(context, R.string.stream_record_folder_permission_failed, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
     val microphonePermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
@@ -1080,6 +1096,17 @@ private fun SettingsContent(
                 }
             }
     CategorySettingsSection(selectedCategory, SettingsCategory.Recording, searchQuery, stringResource(R.string.settings_section_recording_output), "recording", "recordings", "video", "mp4", "bitrate", "fps", "sharpness", "nitidez", "gravação", "upscale") {
+                ControlActionRow(
+                    label = stringResource(R.string.settings_recording_folder),
+                    actionLabel = stringResource(R.string.settings_recording_folder_choose),
+                    value = recordingFolderName
+                        ?: stringResource(if (settings.recordingDirectoryUri == null) {
+                            R.string.settings_recording_folder_not_set
+                        } else {
+                            R.string.settings_recording_folder_selected
+                        }),
+                    onClick = { recordingFolderLauncher.launch(null) },
+                )
                 Text(
                     stringResource(R.string.settings_recording_next_session_hint),
                     color = SettingsTextMuted,
@@ -1200,6 +1227,22 @@ private fun SettingsContent(
                     color = SettingsTextMuted,
                     style = MaterialTheme.typography.bodySmall,
                 )
+                if (state.androidTvProfile) {
+                    SettingSwitch(
+                        label = stringResource(R.string.settings_tv_controller_mouse_auto_arm),
+                        checked = settings.controllerMouseAutoArmOnTv,
+                        description = stringResource(R.string.settings_tv_controller_mouse_auto_arm_description),
+                    ) { enabled ->
+                        viewModel.updateSettings(settings.copy(controllerMouseAutoArmOnTv = enabled))
+                    }
+                }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_multi_controller),
+                    checked = settings.stream.multiControllerEnabled,
+                    description = stringResource(R.string.settings_multi_controller_description),
+                ) { enabled ->
+                    viewModel.updateStreamSettings { stream -> stream.copy(multiControllerEnabled = enabled) }
+                }
                 NumberSlider(
                     label = stringResource(R.string.settings_physical_stick_dead_zone),
                     value = settings.physicalInput.stickDeadZone,

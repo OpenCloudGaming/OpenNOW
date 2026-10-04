@@ -38,6 +38,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Keyboard
@@ -1393,7 +1394,14 @@ internal fun StreamExitConfirmation(
                             .weight(1f)
                             .focusRequester(keepPlayingFocusRequester),
                     ) { Text(stringResource(R.string.stream_exit_keep_playing), maxLines = 1) }
-                    Button(onClick = onExit, modifier = Modifier.weight(1f)) {
+                    Button(
+                        onClick = onExit,
+                        modifier = Modifier.weight(1f).streamExitGlow(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = OpenNowPalette.AccentSwitchRed,
+                            contentColor = OpenNowPalette.OnAccent,
+                        ),
+                    ) {
                         Text(stringResource(R.string.stream_exit_confirm), maxLines = 1)
                     }
                 }

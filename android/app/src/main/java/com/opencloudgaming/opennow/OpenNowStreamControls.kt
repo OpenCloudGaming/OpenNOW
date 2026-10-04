@@ -33,6 +33,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -40,9 +41,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.rememberScrollState
@@ -52,6 +55,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
@@ -79,12 +83,16 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.layout.layout
@@ -703,6 +711,7 @@ internal fun StreamControlsPanel(
     microphonePermissionGranted: Boolean,
     microphoneEnabled: Boolean,
     statsVisible: Boolean,
+    statusBarDragging: Boolean,
     liveBitrateLimitKbps: Int?,
     recordingPhase: StreamRecorderPhase?,
     touchLayoutEditing: Boolean,
@@ -713,6 +722,7 @@ internal fun StreamControlsPanel(
     onAudioToggle: () -> Unit,
     onMicrophoneToggle: () -> Unit,
     onStatsToggle: () -> Unit,
+    onStatusBarDraggingToggle: () -> Unit,
     onStatsStyleCycle: () -> Unit,
     onStatsPositionCycle: () -> Unit,
     onStatsMetricsChange: (StreamStatsMetrics) -> Unit,
@@ -749,6 +759,7 @@ internal fun StreamControlsPanel(
     onOpacityChange: (Float) -> Unit,
     onMouseSensitivityChange: (Float) -> Unit,
     onMouseScrollSensitivityChange: (Int) -> Unit,
+    onPhysicalStickDeadZoneChange: (Float) -> Unit,
     onTouchEdgePaddingChange: (Float) -> Unit,
     onTouchBottomPaddingChange: (Float) -> Unit,
     onTouchLeftOffsetChange: (Float) -> Unit,
@@ -784,23 +795,28 @@ internal fun StreamControlsPanel(
     }
     Surface(
         modifier = Modifier
-            .then(if (expandedPanel) Modifier.fillMaxSize() else Modifier.padding(14.dp).fillMaxWidth(0.94f).fillMaxHeight(0.72f))
+            .then(if (expandedPanel) Modifier.fillMaxSize() else Modifier.padding(14.dp).fillMaxWidth(0.94f).fillMaxHeight(0.78f))
             .streamTouchPassthrough(PASSTHROUGH_ID_PANEL),
         shape = RoundedCornerShape(if (expandedPanel) 0.dp else OpenNowRadius.lg + 2.dp),
-        // Firmer than the old 0.93: at that alpha TextMuted did not reliably clear 4.5:1 over
-        // bright gameplay. The hairline keeps the panel's edge visible against a light frame.
-        color = OpenNowPalette.PanelOverVideo,
-        contentColor = TextPrimary,
-        border = BorderStroke(1.dp, OpenNowPalette.PanelHairline),
-        tonalElevation = 6.dp,
+        color = if (expandedPanel) MaterialTheme.colorScheme.background else OpenNowPalette.PanelOverVideo,
+        contentColor = if (expandedPanel) MaterialTheme.colorScheme.onBackground else TextPrimary,
+        border = if (expandedPanel) null else BorderStroke(1.dp, OpenNowPalette.PanelHairline),
+        tonalElevation = if (expandedPanel) 0.dp else 6.dp,
     ) {
-        // Every control row inside the panel picks up the denser, over-video styling — and, more
-        // importantly, becomes properly focusable. The panel's own row widgets never were.
+        // The expanded panel is a full app screen. Keep controller focus available in both styles.
         CompositionLocalProvider(
-            LocalControlRowStyle provides ControlRowStyle.stream(),
-            LocalControlSectionStyle provides ControlSectionStyle.stream(),
+            LocalControlRowStyle provides if (expandedPanel) {
+                ControlRowStyle.settings().copy(focusable = true, showFocusRing = true)
+            } else {
+                ControlRowStyle.stream()
+            },
+            LocalControlSectionStyle provides if (expandedPanel) ControlSectionStyle.settings() else ControlSectionStyle.stream(),
         ) {
-        Column(Modifier.fillMaxSize()) {
+        Column(
+            Modifier.fillMaxSize().then(
+                if (expandedPanel) Modifier.windowInsetsPadding(WindowInsets.safeDrawing) else Modifier,
+            ),
+        ) {
         // The header stays outside the scrolling area so every focused sub-page keeps navigation
         // and session actions visible while its settings scroll independently.
         StreamPanelHeader(
@@ -831,7 +847,9 @@ internal fun StreamControlsPanel(
                 StreamControlsPage.StatusBar -> statusBarPageItems(
                     settings = settings,
                     statsVisible = statsVisible,
+                    statusBarDragging = statusBarDragging,
                     onStatsToggle = onStatsToggle,
+                    onStatusBarDraggingToggle = onStatusBarDraggingToggle,
                     onStatsStyleCycle = onStatsStyleCycle,
                     onStatsPositionCycle = onStatsPositionCycle,
                     onStatsMetricsChange = onStatsMetricsChange,
@@ -860,6 +878,15 @@ internal fun StreamControlsPanel(
                                     nativeTouchActive -> stringResource(R.string.stream_touch_builtin_active)
                                     else -> stringResource(R.string.common_hidden)
                                 },
+                            )
+                            ControlSwitchRow(
+                                label = stringResource(R.string.stream_panel_drag_edit),
+                                checked = touchLayoutEditing,
+                                onCheckedChange = {
+                                    onButtonTone()
+                                    onTouchLayoutEditingToggle()
+                                },
+                                value = onOffLabel(touchLayoutEditing),
                             )
                             if (touchControlsVisible && !settings.androidTouch.keyboardModeEnabled) {
                                 // Cycles rather than opens a menu: this row is used mid-session,
@@ -1065,15 +1092,6 @@ internal fun StreamControlsPanel(
                     }
                     item {
                         ControlSection(stringResource(R.string.stream_panel_section_touch_layout)) {
-                            ControlSwitchRow(
-                                label = stringResource(R.string.stream_panel_drag_edit),
-                                checked = touchLayoutEditing,
-                                onCheckedChange = {
-                                    onButtonTone()
-                                    onTouchLayoutEditingToggle()
-                                },
-                                value = onOffLabel(touchLayoutEditing),
-                            )
                             ControlActionRow(
                                 label = stringResource(R.string.stream_panel_reset_layout),
                                 actionLabel = stringResource(R.string.action_reset),
@@ -1238,7 +1256,9 @@ internal fun StreamControlsPanel(
                     ) { Text(stringResource(R.string.stream_panel_keyboard), maxLines = 1) }
                     OutlinedButton(
                         onClick = { onButtonTone(); onExit() },
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.weight(1f).streamExitGlow(),
+                        border = BorderStroke(1.dp, OpenNowPalette.AccentSwitchRed),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = OpenNowPalette.AccentSwitchRed),
                     ) { Text(stringResource(R.string.stream_panel_exit), maxLines = 1) }
                 }
             }
@@ -1337,6 +1357,15 @@ internal fun StreamControlsPanel(
             }
             item {
                 ControlSection(stringResource(R.string.stream_panel_section_input)) {
+                    ControlSliderRow(
+                        label = stringResource(R.string.settings_physical_stick_dead_zone),
+                        value = settings.physicalInput.stickDeadZone * 100f,
+                        min = 0f,
+                        max = 40f,
+                        step = 1f,
+                        unit = "%",
+                        onChange = { percent -> onPhysicalStickDeadZoneChange(percent / 100f) },
+                    )
                     if (microphoneRequested) {
                         ControlSwitchRow(
                             label = stringResource(R.string.stream_panel_microphone),
@@ -1495,6 +1524,20 @@ internal fun StreamControlsPanel(
         onDispose {
             NativeStreamInputRouter.clearStreamPanelTouchPassthroughBounds()
         }
+    }
+}
+
+/** A static halo keeps the exit action visible over video without running a draw animation. */
+internal fun Modifier.streamExitGlow(): Modifier = drawBehind {
+    val red = OpenNowPalette.AccentSwitchRed
+    for (layer in 3 downTo 1) {
+        val spread = layer * 2.dp.toPx()
+        drawRoundRect(
+            color = red.copy(alpha = 0.05f + (4 - layer) * 0.045f),
+            topLeft = Offset(-spread, -spread),
+            size = Size(size.width + spread * 2f, size.height + spread * 2f),
+            cornerRadius = CornerRadius(size.height / 2f + spread),
+        )
     }
 }
 
@@ -2868,7 +2911,9 @@ private fun LazyListScope.mouseModePageItems(
 private fun LazyListScope.statusBarPageItems(
     settings: AppSettings,
     statsVisible: Boolean,
+    statusBarDragging: Boolean,
     onStatsToggle: () -> Unit,
+    onStatusBarDraggingToggle: () -> Unit,
     onStatsStyleCycle: () -> Unit,
     onStatsPositionCycle: () -> Unit,
     onStatsMetricsChange: (StreamStatsMetrics) -> Unit,
@@ -2917,6 +2962,18 @@ private fun LazyListScope.statusBarPageItems(
             color = TextMuted,
             style = MaterialTheme.typography.bodySmall,
             modifier = Modifier.padding(horizontal = 8.dp),
+        )
+    }
+    item {
+        ControlSwitchRow(
+            label = stringResource(R.string.stream_statusbar_drag_mode),
+            checked = statusBarDragging,
+            onCheckedChange = {
+                onButtonTone()
+                onStatusBarDraggingToggle()
+            },
+            value = onOffLabel(statusBarDragging),
+            enabled = statsVisible && (settings.streamStatsMetrics.enabledCount() > 0 || !settings.hideStreamButtons),
         )
     }
     item {

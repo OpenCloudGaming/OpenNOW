@@ -309,7 +309,8 @@
     <string name="stream_panel_more_controls">More controls</string>
     <string name="stream_panel_less_controls">Fewer controls</string>
     <string name="stream_statusbar_custom_position">Custom</string>
-    <string name="stream_statusbar_drag_hint">Drag the status line during a stream to place it anywhere. Choose a position here to return to a preset.</string>
+    <string name="stream_statusbar_drag_hint">Turn on drag mode, then drag the status bar to place it. Tap Done when finished. Choose a position here to return to a preset.</string>
+    <string name="stream_statusbar_drag_mode">Status bar drag mode</string>
     <string name="stream_panel_cd_keyboard">Open keyboard sender</string>
     <string name="stream_panel_section_display">Display</string>
     <string name="stream_panel_section_input">Input</string>
@@ -340,6 +341,10 @@
     <string name="stream_panel_controller_mouse">Launcher cursor (right stick)</string>
     <string name="stream_panel_controller_mouse_summary">A clicks · B right-clicks · left stick resumes gamepad</string>
     <string name="stream_panel_controller_mouse_description">Use for launcher dialogs. Clicks keep the cursor active, including clicks on empty space.</string>
+    <string name="settings_tv_controller_mouse_auto_arm">Launcher cursor on TV at stream start</string>
+    <string name="settings_tv_controller_mouse_auto_arm_description">Use the right stick as a mouse when a TV stream starts. Turning this off keeps both sticks available for games.</string>
+    <string name="settings_multi_controller">Multiple controllers</string>
+    <string name="settings_multi_controller_description">Request four separate controller slots from GeForce NOW. Start a new session after changing this setting.</string>
     <string name="stream_panel_finger_mouse">Finger mouse</string>
     <string name="stream_panel_direct_click">Direct click</string>
     <string name="stream_panel_touch_controller">Touch controller</string>
@@ -1069,6 +1074,13 @@
     <string name="stream_record_saving">Saving…</string>
     <string name="stream_record_unavailable">Recording is available after the first SDR frame; HDR streams are not supported yet.</string>
     <string name="stream_record_failed">Could not start or save the stream recording.</string>
+    <string name="stream_record_folder_failed">Could not save to the recording folder. Choose a writable folder in Recording settings.</string>
+    <string name="stream_record_folder_permission_failed">Could not keep access to that folder. Choose another folder.</string>
+    <string name="stream_record_active">REC</string>
+    <string name="settings_recording_folder">Save recordings to</string>
+    <string name="settings_recording_folder_choose">Choose folder</string>
+    <string name="settings_recording_folder_not_set">Choose once to save future recordings automatically</string>
+    <string name="settings_recording_folder_selected">Selected folder</string>
     <string name="settings_section_recording_output">Recorded video</string>
     <string name="settings_recording_next_session_hint">These options apply to the next recording. The recording keeps the stream resolution.</string>
     <string name="settings_recording_auto_bitrate">Automatic bitrate</string>

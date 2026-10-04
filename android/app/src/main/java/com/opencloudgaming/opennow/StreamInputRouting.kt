@@ -1204,6 +1204,19 @@ internal fun androidGamepadConnectionBitmap(
     return connectedBit or xinputStyleBit
 }
 
+internal fun androidGamepadConnectionBitmapForSlots(
+    connectedSlots: Set<Int>,
+    controllerFamilies: Map<Int, AndroidControllerFamily>,
+    playStationRumbleCompatibility: Boolean = false,
+): Int = connectedSlots.fold(0) { bitmap, slot ->
+    bitmap or androidGamepadConnectionBitmap(
+        controllerId = slot,
+        connected = true,
+        physicalControllerFamily = controllerFamilies[slot],
+        playStationRumbleCompatibility = playStationRumbleCompatibility,
+    )
+}
+
 /**
  * Gamepad state is a complete snapshot, so preserve the ordered reliable framing used by Android
  * 1.7.5. NVST performs its own native low-latency routing after it decodes that wrapper; selecting
@@ -1288,7 +1301,9 @@ internal object AndroidControllerInput {
             normalized == "logitech usb receiver" ||
             normalized.contains("uinput-goodix") ||
             normalized.contains("fingerprint") ||
-            normalized.contains("uinput-fpc")
+            normalized.contains("uinput-fpc") ||
+            normalized == "virtual-search" ||
+            normalized == "virtual-remote"
     }
 
     fun controllerFamily(device: InputDevice?): AndroidControllerFamily? =

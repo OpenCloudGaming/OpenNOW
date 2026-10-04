@@ -447,19 +447,41 @@ class NativeStreamClient(
     private val controllerSlots = linkedMapOf<Int, Int>()
     private val controllerFamiliesBySlot = mutableMapOf<Int, AndroidControllerFamily>()
     private val controllerAxisAvailability = mutableMapOf<Int, AndroidGamepadAxisAvailability>()
-    private var physicalButtons = 0
-    private var physicalHatButtons = 0
+    private val physicalGamepadStates = Array(GAMEPAD_MAX_CONTROLLERS) { PhysicalGamepadState() }
+    private val activePhysicalGamepadState get() = physicalGamepadStates[activeControllerId]
+    private var physicalButtons: Int
+        get() = activePhysicalGamepadState.buttons
+        set(value) { activePhysicalGamepadState.buttons = value }
+    private var physicalHatButtons: Int
+        get() = activePhysicalGamepadState.hatButtons
+        set(value) { activePhysicalGamepadState.hatButtons = value }
     private var steamMenuChordButtons = 0
-    private val physicalSteamOverlayChord = SteamOverlayChordState()
+    private val physicalSteamOverlayChord get() = activePhysicalGamepadState.steamOverlayChord
     private val virtualSteamOverlayChord = SteamOverlayChordState()
-    private var physicalLeftTriggerButtonPressed = false
-    private var physicalRightTriggerButtonPressed = false
-    private var lastLeftTrigger = 0
-    private var lastRightTrigger = 0
-    private var lastLeftStickX = 0
-    private var lastLeftStickY = 0
-    private var lastRightStickX = 0
-    private var lastRightStickY = 0
+    private var physicalLeftTriggerButtonPressed: Boolean
+        get() = activePhysicalGamepadState.leftTriggerButtonPressed
+        set(value) { activePhysicalGamepadState.leftTriggerButtonPressed = value }
+    private var physicalRightTriggerButtonPressed: Boolean
+        get() = activePhysicalGamepadState.rightTriggerButtonPressed
+        set(value) { activePhysicalGamepadState.rightTriggerButtonPressed = value }
+    private var lastLeftTrigger: Int
+        get() = activePhysicalGamepadState.leftTrigger
+        set(value) { activePhysicalGamepadState.leftTrigger = value }
+    private var lastRightTrigger: Int
+        get() = activePhysicalGamepadState.rightTrigger
+        set(value) { activePhysicalGamepadState.rightTrigger = value }
+    private var lastLeftStickX: Int
+        get() = activePhysicalGamepadState.leftStickX
+        set(value) { activePhysicalGamepadState.leftStickX = value }
+    private var lastLeftStickY: Int
+        get() = activePhysicalGamepadState.leftStickY
+        set(value) { activePhysicalGamepadState.leftStickY = value }
+    private var lastRightStickX: Int
+        get() = activePhysicalGamepadState.rightStickX
+        set(value) { activePhysicalGamepadState.rightStickX = value }
+    private var lastRightStickY: Int
+        get() = activePhysicalGamepadState.rightStickY
+        set(value) { activePhysicalGamepadState.rightStickY = value }
     private var controllerMouseAutoArmOnStart = false
     private var controllerMouseAssistActive = false
     private var controllerMouseAssistAutoArmed = false
@@ -483,8 +505,10 @@ class NativeStreamClient(
     private val nativeTouchMoveLimiter = NativeTouchMoveLimiter()
     private var nativeTouchMoveFlushJob: Job? = null
     private val gamepadStateBurstLock = Any()
-    private val gamepadStateBurstLimiter = GamepadStateBurstLimiter(GAMEPAD_STATE_MIN_SEND_INTERVAL_MS)
-    private var gamepadStateBurstFlushJob: Job? = null
+    private val gamepadStateBurstLimiters = Array(GAMEPAD_MAX_CONTROLLERS) {
+        GamepadStateBurstLimiter(GAMEPAD_STATE_MIN_SEND_INTERVAL_MS)
+    }
+    private val gamepadStateBurstFlushJobs = arrayOfNulls<Job>(GAMEPAD_MAX_CONTROLLERS)
     private val externalMouseMotionAccumulator = MouseMotionAccumulator(minimumSendIntervalMs = 0L)
     private val externalMouseAbsolutePosition = ExternalMouseAbsolutePosition()
     private val gyroscopeMouseMotionAccumulator = MouseMotionAccumulator()
@@ -510,9 +534,7 @@ class NativeStreamClient(
         timeoutMs = firstVideoFrameRecoveryTimeoutMs(androidTvProfile),
     )
     private val textSendMutex = Mutex()
-    private var guideAutoReleaseJob: Job? = null
     private var steamMenuChordJob: Job? = null
-    private var physicalSteamOverlayChordReleaseJob: Job? = null
     private var virtualSteamOverlayChordReleaseJob: Job? = null
     private val lastRumbleEffectAtMs = LongArray(GAMEPAD_MAX_CONTROLLERS)
     private val hapticsSupportLogged = BooleanArray(GAMEPAD_MAX_CONTROLLERS)
@@ -956,6 +978,10 @@ class NativeStreamClient(
         physicalRightStickY = 0f
     }
 
+    fun updatePhysicalInputSettings(settings: PhysicalInputSettings) {
+        physicalInputSettings = settings.normalized()
+    }
+
     fun start(session: SessionInfo, settings: StreamSettings, physicalInput: PhysicalInputSettings = PhysicalInputSettings()) {
         if (released) return
         physicalInputSettings = physicalInput.normalized()
@@ -1086,28 +1112,14 @@ class NativeStreamClient(
         virtualControllerVisible = false
         physicalControllerConnected = false
         physicalControllerActive = false
-        physicalButtons = 0
-        physicalHatButtons = 0
+        physicalGamepadStates.forEach(PhysicalGamepadState::reset)
         steamMenuChordButtons = 0
-        physicalSteamOverlayChord.reset()
         virtualSteamOverlayChord.reset()
-        physicalLeftTriggerButtonPressed = false
-        physicalRightTriggerButtonPressed = false
-        guideAutoReleaseJob?.cancel()
-        guideAutoReleaseJob = null
         steamMenuChordJob?.cancel()
         steamMenuChordJob = null
-        physicalSteamOverlayChordReleaseJob?.cancel()
-        physicalSteamOverlayChordReleaseJob = null
         virtualSteamOverlayChordReleaseJob?.cancel()
         virtualSteamOverlayChordReleaseJob = null
         stopAllGamepadRumble()
-        lastLeftTrigger = 0
-        lastRightTrigger = 0
-        lastLeftStickX = 0
-        lastLeftStickY = 0
-        lastRightStickX = 0
-        lastRightStickY = 0
         physicalLeftStickX = 0f
         physicalLeftStickY = 0f
         physicalRightStickX = 0f
@@ -1480,9 +1492,11 @@ class NativeStreamClient(
 
     private fun resetGamepadStateBurstLimiter() {
         synchronized(gamepadStateBurstLock) {
-            gamepadStateBurstFlushJob?.cancel()
-            gamepadStateBurstFlushJob = null
-            gamepadStateBurstLimiter.reset()
+            gamepadStateBurstFlushJobs.indices.forEach { slot ->
+                gamepadStateBurstFlushJobs[slot]?.cancel()
+                gamepadStateBurstFlushJobs[slot] = null
+                gamepadStateBurstLimiters[slot].reset()
+            }
         }
     }
 
@@ -4062,7 +4076,7 @@ class NativeStreamClient(
             (abs(leftX) > ANALOG_ACTIVITY_THRESHOLD || abs(leftY) > ANALOG_ACTIVITY_THRESHOLD)) {
             setControllerMouseAssistActive(false)
         }
-        val sent = sendBurstLimitedGamepadState(controllerId = controllerId)
+        val sent = sendBurstLimitedGamepadState(controllerId = controllerId, trackPhysicalStickRelease = true)
         if (
             abs(leftX) > ANALOG_ACTIVITY_THRESHOLD ||
             abs(leftY) > ANALOG_ACTIVITY_THRESHOLD ||
@@ -4210,23 +4224,31 @@ class NativeStreamClient(
         return setControllerMouseButton(mouseButton, pressed)
     }
 
-    private fun sendBurstLimitedGamepadState(controllerId: Int = activeControllerId): Boolean {
+    private fun sendBurstLimitedGamepadState(
+        controllerId: Int = if (settings.multiControllerEnabled) 0 else activeControllerId,
+        trackPhysicalStickRelease: Boolean = false,
+    ): Boolean {
         if (!canSendInput(partiallyReliable = false, fallbackToReliable = true)) return false
+        val state = physicalGamepadStates[controllerId]
         val immediateControllerId = synchronized(gamepadStateBurstLock) {
-            val immediate = gamepadStateBurstLimiter.offer(
+            val immediate = gamepadStateBurstLimiters[controllerId].offer(
                 controllerId = controllerId,
                 nowMs = SystemClock.elapsedRealtime(),
-                hatButtons = physicalHatButtons,
-                leftTrigger = lastLeftTrigger,
-                rightTrigger = lastRightTrigger,
+                hatButtons = state.hatButtons,
+                leftTrigger = state.leftTrigger,
+                rightTrigger = state.rightTrigger,
+                neutralSticks = if (trackPhysicalStickRelease) {
+                    (if (state.leftStickX == 0 && state.leftStickY == 0) 1 else 0) or
+                        (if (state.rightStickX == 0 && state.rightStickY == 0) 2 else 0)
+                } else null,
             )
             if (immediate != null) {
                 // The immediate snapshot includes the pending stick state. A later motion sample
                 // must schedule its flush from this new send time, not from the superseded job.
-                gamepadStateBurstFlushJob?.cancel()
-                gamepadStateBurstFlushJob = null
-            } else if (gamepadStateBurstFlushJob?.isActive != true) {
-                scheduleGamepadStateBurstFlushLocked()
+                gamepadStateBurstFlushJobs[controllerId]?.cancel()
+                gamepadStateBurstFlushJobs[controllerId] = null
+            } else if (gamepadStateBurstFlushJobs[controllerId]?.isActive != true) {
+                scheduleGamepadStateBurstFlushLocked(controllerId)
             }
             immediate
         }
@@ -4234,20 +4256,20 @@ class NativeStreamClient(
     }
 
     /** Must be called with [gamepadStateBurstLock] held. */
-    private fun scheduleGamepadStateBurstFlushLocked() {
-        gamepadStateBurstFlushJob = scope.launch {
+    private fun scheduleGamepadStateBurstFlushLocked(slot: Int) {
+        gamepadStateBurstFlushJobs[slot] = scope.launch {
             while (true) {
                 val waitMs = synchronized(gamepadStateBurstLock) {
-                    gamepadStateBurstLimiter.delayUntilFlushMs(SystemClock.elapsedRealtime())
+                    gamepadStateBurstLimiters[slot].delayUntilFlushMs(SystemClock.elapsedRealtime())
                 }
                 if (waitMs == null) {
-                    synchronized(gamepadStateBurstLock) { gamepadStateBurstFlushJob = null }
+                    synchronized(gamepadStateBurstLock) { gamepadStateBurstFlushJobs[slot] = null }
                     return@launch
                 }
                 if (waitMs > 0L) delay(waitMs)
                 val controllerId = synchronized(gamepadStateBurstLock) {
-                    gamepadStateBurstLimiter.flush(SystemClock.elapsedRealtime()).also {
-                        gamepadStateBurstFlushJob = null
+                    gamepadStateBurstLimiters[slot].flush(SystemClock.elapsedRealtime()).also {
+                        gamepadStateBurstFlushJobs[slot] = null
                     }
                 }
                 controllerId?.let(::sendCurrentGamepadState)
@@ -4256,19 +4278,28 @@ class NativeStreamClient(
         }
     }
 
-    private fun sendCurrentGamepadState(controllerId: Int = activeControllerId): Boolean {
+    private fun sendCurrentGamepadState(controllerId: Int = if (settings.multiControllerEnabled) 0 else activeControllerId): Boolean {
         val partiallyReliable = canSendGamepadPartiallyReliable(controllerId)
+        val physical = physicalGamepadStates[controllerId]
+        val includeVirtual = !settings.multiControllerEnabled || controllerId == 0
         val buttons =
-            physicalSteamOverlayChord.effectiveButtons(physicalButtons) or
-                physicalHatButtons or
-                virtualSteamOverlayChord.effectiveButtons(virtualButtons) or
-                steamMenuChordButtons
-        val leftTrigger = max(lastLeftTrigger, virtualLeftTrigger)
-        val rightTrigger = max(lastRightTrigger, virtualRightTrigger)
-        val leftStickX = effectiveLeftStickX()
-        val leftStickY = effectiveLeftStickY()
-        val rightStickX = effectiveRightStickX()
-        val rightStickY = effectiveRightStickY()
+            physical.steamOverlayChord.effectiveButtons(physical.buttons) or
+                physical.hatButtons or
+                (if (includeVirtual) virtualSteamOverlayChord.effectiveButtons(virtualButtons) or steamMenuChordButtons else 0)
+        val leftTrigger = max(physical.leftTrigger, if (includeVirtual) virtualLeftTrigger else 0)
+        val rightTrigger = max(physical.rightTrigger, if (includeVirtual) virtualRightTrigger else 0)
+        val leftStickX = if (includeVirtual && virtualLeftStickActive) virtualLeftStickX else physical.leftStickX
+        val leftStickY = if (includeVirtual && virtualLeftStickActive) virtualLeftStickY else physical.leftStickY
+        val rightStickX = when {
+            includeVirtual && virtualRightStickActive -> virtualRightStickX
+            controllerMouseAssistActive && controllerId == activeControllerId -> 0
+            else -> physical.rightStickX
+        }
+        val rightStickY = when {
+            includeVirtual && virtualRightStickActive -> virtualRightStickY
+            controllerMouseAssistActive && controllerId == activeControllerId -> 0
+            else -> physical.rightStickY
+        }
         val bitmap = currentGamepadBitmap(controllerId)
         val packet = inputEncoder.encodeGamepadState(
             controllerId = controllerId,
@@ -4297,7 +4328,7 @@ class NativeStreamClient(
             "gamepad packet slot=$controllerId sent=$sent partialRequested=$partiallyReliable " +
                 "bitmap=$bitmap buttons=$buttons triggers=$leftTrigger,$rightTrigger " +
                 "left=$leftStickX,$leftStickY right=$rightStickX,$rightStickY " +
-                "physicalActive=$physicalControllerActive virtualVisible=$virtualControllerVisible " +
+            "physicalActive=$physicalControllerActive virtualVisible=${includeVirtual && virtualControllerVisible} " +
                 inputChannelStateSummary()
         }
         if (leftStickX != 0 || leftStickY != 0 || rightStickX != 0 || rightStickY != 0) {
@@ -4306,9 +4337,9 @@ class NativeStreamClient(
                 minimumIntervalMs = ANALOG_DIAGNOSTIC_INTERVAL_MS,
             ) {
                 "gamepad stick packet slot=$controllerId sent=$sent left=$leftStickX,$leftStickY right=$rightStickX,$rightStickY " +
-                    "leftSource=${if (virtualLeftStickActive) "virtual" else "physical"} " +
+                "leftSource=${if (includeVirtual && virtualLeftStickActive) "virtual" else "physical"} " +
                     "rightSource=${when {
-                        virtualRightStickActive -> "virtual"
+                        includeVirtual && virtualRightStickActive -> "virtual"
                         else -> "physical"
                     }} " +
                     inputChannelStateSummary()
@@ -4319,25 +4350,27 @@ class NativeStreamClient(
 
     private fun updateGuideAutoRelease(mask: Int, pressed: Boolean, controllerId: Int) {
         if (mask != GamepadButtonMapping.GUIDE) return
-        guideAutoReleaseJob?.cancel()
+        val physical = physicalGamepadStates[controllerId]
+        physical.guideAutoReleaseJob?.cancel()
         if (!pressed) {
-            guideAutoReleaseJob = null
+            physical.guideAutoReleaseJob = null
             return
         }
-        guideAutoReleaseJob = scope.launch {
+        physical.guideAutoReleaseJob = scope.launch {
             delay(GAMEPAD_GUIDE_AUTO_RELEASE_MS)
-            if ((physicalButtons and GamepadButtonMapping.GUIDE) == 0) return@launch
-            physicalButtons = physicalButtons and GamepadButtonMapping.GUIDE.inv()
+            if ((physical.buttons and GamepadButtonMapping.GUIDE) == 0) return@launch
+            physical.buttons = physical.buttons and GamepadButtonMapping.GUIDE.inv()
             sendCurrentGamepadState(controllerId = controllerId)
             NativeInputDiagnostics.add("physical gamepad guide auto-release slot=$controllerId")
         }
     }
 
     private fun schedulePhysicalSteamOverlayChordRelease(controllerId: Int) {
-        physicalSteamOverlayChordReleaseJob?.cancel()
-        physicalSteamOverlayChordReleaseJob = scope.launch {
+        val physical = physicalGamepadStates[controllerId]
+        physical.steamOverlayChordReleaseJob?.cancel()
+        physical.steamOverlayChordReleaseJob = scope.launch {
             delay(GAMEPAD_GUIDE_AUTO_RELEASE_MS)
-            if (!physicalSteamOverlayChord.releaseChord()) return@launch
+            if (!physical.steamOverlayChord.releaseChord()) return@launch
             sendCurrentGamepadState(controllerId = controllerId)
             NativeInputDiagnostics.add("physical View+Start sent Steam Menu Home+A chord slot=$controllerId")
         }
@@ -4663,19 +4696,7 @@ class NativeStreamClient(
 
     private fun clearPhysicalControllerInputState() {
         physicalControllerActive = false
-        physicalButtons = 0
-        physicalHatButtons = 0
-        physicalSteamOverlayChord.reset()
-        physicalSteamOverlayChordReleaseJob?.cancel()
-        physicalSteamOverlayChordReleaseJob = null
-        physicalLeftTriggerButtonPressed = false
-        physicalRightTriggerButtonPressed = false
-        lastLeftTrigger = 0
-        lastRightTrigger = 0
-        lastLeftStickX = 0
-        lastLeftStickY = 0
-        lastRightStickX = 0
-        lastRightStickY = 0
+        activePhysicalGamepadState.reset()
         physicalLeftStickX = 0f
         physicalLeftStickY = 0f
         physicalRightStickX = 0f
@@ -4691,10 +4712,27 @@ class NativeStreamClient(
             connectedDeviceIds = connectedDeviceIds,
         )
         if (removedControllerSlots.isNotEmpty()) {
-            removedControllerSlots.values.forEach(controllerFamiliesBySlot::remove)
+            removedControllerSlots.values.forEach { slot ->
+                controllerFamiliesBySlot.remove(slot)
+                physicalGamepadStates[slot].reset()
+            }
             NativeInputDiagnostics.add(
                 "physical gamepad slots released=${removedControllerSlots.entries.joinToString { "${it.key}:${it.value}" }}",
             )
+        }
+        val newlyAssignedSlots = mutableListOf<Int>()
+        if (settings.multiControllerEnabled) {
+            connectedDevices.forEach { device ->
+                if (device.id !in controllerSlots) {
+                    val assignment = AndroidControllerSlotRegistry.assign(
+                        controllerSlots = controllerSlots,
+                        deviceId = device.id,
+                        connectedDeviceIds = connectedDeviceIds,
+                        maxControllers = GAMEPAD_MAX_CONTROLLERS,
+                    )
+                    newlyAssignedSlots += assignment.slot
+                }
+            }
         }
         connectedDevices.forEach { device ->
             controllerSlots[device.id]?.let { slot ->
@@ -4726,6 +4764,11 @@ class NativeStreamClient(
                 activeControllerId = controllerIdFor(connectedDevices.first().id)
             }
             sendCurrentGamepadState()
+        }
+        if (settings.multiControllerEnabled) {
+            // The host learns controller presence from the full bitmap in each snapshot.
+            // Publish additions and removals even before either player moves a stick.
+            (newlyAssignedSlots + removedControllerSlots.values).distinct().forEach(::sendCurrentGamepadState)
         }
         updateHapticsAdvertisement(force = connectionChanged)
     }
@@ -5027,7 +5070,10 @@ class NativeStreamClient(
             clearPhysicalControllerInputState()
         }
         if (assignment.removedDevices.isNotEmpty()) {
-            assignment.removedDevices.values.forEach(controllerFamiliesBySlot::remove)
+            assignment.removedDevices.values.forEach { slot ->
+                controllerFamiliesBySlot.remove(slot)
+                physicalGamepadStates[slot].reset()
+            }
             NativeInputDiagnostics.add(
                 "physical gamepad slots reconciled removed=${assignment.removedDevices.entries.joinToString { "${it.key}:${it.value}" }} " +
                     "device=$deviceId slot=${assignment.slot}",
@@ -5051,17 +5097,27 @@ class NativeStreamClient(
             }
 
     private fun currentGamepadBitmap(controllerId: Int): Int {
-        val connected = physicalControllerConnected ||
-            physicalControllerActive ||
-            virtualControllerVisible ||
+        val virtualConnected = virtualControllerVisible ||
             virtualButtons != 0 ||
             virtualLeftTrigger != 0 ||
             virtualRightTrigger != 0 ||
             virtualLeftStickActive ||
             virtualRightStickActive
-        if (!connected) return 0
+        val playStationRumbleCompatibility = usesPlayStationRumbleCompatibility(
+            vibrationEnabled = vibrationEnabled,
+            preference = hapticsOutputPreference,
+        )
+        if (settings.multiControllerEnabled) {
+            val occupiedSlots = controllerSlots.values.toSet() + if (virtualConnected) setOf(0) else emptySet()
+            return androidGamepadConnectionBitmapForSlots(
+                connectedSlots = occupiedSlots,
+                controllerFamilies = controllerFamiliesBySlot,
+                playStationRumbleCompatibility = playStationRumbleCompatibility,
+            )
+        }
+        if (!physicalControllerConnected && !physicalControllerActive && !virtualConnected) return 0
         val id = controllerId.coerceIn(0, 3)
-        val physicalFamily = if (physicalControllerConnected || physicalControllerActive) {
+        val physicalFamily = if (controllerId in controllerSlots.values) {
             controllerFamiliesBySlot[id]
         } else {
             null
@@ -5070,10 +5126,7 @@ class NativeStreamClient(
             controllerId = id,
             connected = true,
             physicalControllerFamily = physicalFamily,
-            playStationRumbleCompatibility = usesPlayStationRumbleCompatibility(
-                vibrationEnabled = vibrationEnabled,
-                preference = hapticsOutputPreference,
-            ),
+            playStationRumbleCompatibility = playStationRumbleCompatibility,
         )
     }
 

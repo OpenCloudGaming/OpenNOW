@@ -80,4 +80,23 @@ class GamepadStateBurstLimiterTest {
         assertNull(limiter.flush(nowMs = 105))
         assertEquals(1, limiter.offer(controllerId = 1, nowMs = 105))
     }
+
+    @Test
+    fun physicalStickReturnToCenterBypassesPendingMotion() {
+        val limiter = GamepadStateBurstLimiter(minimumIntervalMs = 16)
+
+        assertEquals(0, limiter.offer(0, 100, neutralSticks = 3))
+        assertNull(limiter.offer(0, 102, neutralSticks = 2)) // Left stick moves.
+        assertEquals(0, limiter.offer(0, 104, neutralSticks = 3)) // Left stick released.
+        assertNull(limiter.flush(116)) // The superseded movement must not reappear.
+    }
+
+    @Test
+    fun oneStickReleaseIsImmediateWhileOtherStickRemainsActive() {
+        val limiter = GamepadStateBurstLimiter(minimumIntervalMs = 16)
+
+        assertEquals(0, limiter.offer(0, 100, neutralSticks = 0))
+        assertEquals(0, limiter.offer(0, 104, neutralSticks = 1))
+        assertNull(limiter.offer(0, 106, neutralSticks = 1))
+    }
 }

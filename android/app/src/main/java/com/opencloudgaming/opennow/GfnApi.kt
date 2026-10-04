@@ -263,6 +263,7 @@ internal object GfnAppLaunchMode {
 }
 
 private const val DEFAULT_REMOTE_CONTROLLERS_BITMAP = 1
+private const val MULTI_CONTROLLER_BITMAP = 0b1111
 private const val DEFAULT_SUPPORTED_CONTROLLER_TYPE = 2
 
 private data class GfnControllerCapabilities(
@@ -275,12 +276,12 @@ private data class GfnControllerCapabilities(
  * exclusive to non-touch launches so virtual/physical gamepad packets have a host device without
  * changing touch-friendly sessions back into controller mode.
  */
-private fun gfnControllerCapabilities(appLaunchMode: Int): GfnControllerCapabilities =
+private fun gfnControllerCapabilities(appLaunchMode: Int, multiControllerEnabled: Boolean): GfnControllerCapabilities =
     if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) {
         GfnControllerCapabilities(remoteControllersBitmap = 0, supportedControllerTypes = emptyList())
     } else {
         GfnControllerCapabilities(
-            remoteControllersBitmap = DEFAULT_REMOTE_CONTROLLERS_BITMAP,
+            remoteControllersBitmap = if (multiControllerEnabled) MULTI_CONTROLLER_BITMAP else DEFAULT_REMOTE_CONTROLLERS_BITMAP,
             supportedControllerTypes = listOf(DEFAULT_SUPPORTED_CONTROLLER_TYPE),
         )
     }
@@ -653,7 +654,7 @@ internal fun buildMinimalClaimRequestBody(
         useDesktopNativeTvIdentity = useDesktopNativeTvIdentity,
     )
     val profile = settings?.requestProfile()
-    val controllerCapabilities = gfnControllerCapabilities(appLaunchMode)
+    val controllerCapabilities = gfnControllerCapabilities(appLaunchMode, settings?.multiControllerEnabled == true)
     return buildJsonObject {
         put("action", 2)
         put("data", "RESUME")
@@ -3478,7 +3479,7 @@ class GfnSessionRepository(
             useDesktopNativeTvIdentity = useDesktopNativeTvIdentity,
         )
         val profile = settings.requestProfile()
-        val controllerCapabilities = gfnControllerCapabilities(appLaunchMode)
+        val controllerCapabilities = gfnControllerCapabilities(appLaunchMode, settings.multiControllerEnabled)
         return buildJsonObject {
             putJsonObject("sessionRequestData") {
                 put("appId", appId)
