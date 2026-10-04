@@ -144,12 +144,13 @@ with the affected provider before claiming its compatibility issue is fixed. Rep
 with an NVIDIA account to check the unchanged first SETUP request. Passing synthetic
 fallback and parser tests is not a substitute for this live check.
 
-## Test alliance WebRTC compatibility
+## Test WebRTC compatibility
 
-The experimental **Alliance WebRTC compatibility** switch is under desktop
+The experimental **WebRTC compatibility mode** switch is under desktop
 **Settings → Network → Advanced → Transport**. It selects WebRTC before a new
-alliance session is allocated. It does not convert or end a running NVST game.
-NVIDIA accounts and the default setting continue to use NVST.
+session is allocated for either NVIDIA or alliance accounts. It does not convert
+or end a running NVST game. NVST remains the default and the recommended option
+for performance. The switch warns users to expect lower performance with WebRTC.
 
 The initial compatibility profile uses up to 1920×1080 at 60 FPS, H.264,
 8-bit 4:2:0 SDR, and stereo audio.
@@ -165,10 +166,10 @@ cargo test --manifest-path native/opennow-streamer/Cargo.toml --workspace
 ctest --test-dir build/opennow-qt --output-on-failure -R 'embedded-orchestration|network-test|stream-recovery|streamvideo'
 ```
 
-Use an alliance account for the live check:
+Repeat the live check with NVIDIA and alliance accounts:
 
 1. End any existing game through the confirmation flow before changing protocols.
-2. Enable **Alliance WebRTC compatibility** and launch a new game.
+2. Read the performance warning, enable **WebRTC compatibility mode**, and launch a new game.
 3. Confirm moving gameplay, audible sound, and working keyboard, mouse, and controller input.
 4. Open F3 statistics and confirm that the transport is WebRTC. A connected socket or
    audible audio does not establish video health.
@@ -182,7 +183,7 @@ Use an alliance account for the live check:
 Record the build commit, provider, region, negotiated profile, first-frame result,
 input result, and recovery result. Do not publish authentication tokens, ICE passwords,
 session IDs, or complete signaling messages. Local peer tests do not establish provider
-interoperability, congestion feedback, or hardware presentation on a real alliance seat.
+interoperability, congestion feedback, or hardware presentation on a real provider seat.
 The existing production live-acceptance verifier still requires NVST and must not be
 used to claim that this experimental path passed release acceptance.
 

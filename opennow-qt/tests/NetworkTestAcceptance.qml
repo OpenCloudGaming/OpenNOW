@@ -37,6 +37,10 @@ QtObject {
         desktop.advancedOpen = true
         const compatibility = find(desktop, "allianceWebrtcCompatibilityToggle")
         check(compatibility !== null, "the network page must expose alliance compatibility")
+        const compatibilityRow = find(desktop, "allianceWebrtcCompatibilityRow")
+        check(compatibilityRow.title === qsTr("WebRTC compatibility mode"), "compatibility is not labeled as alliance-only")
+        check(compatibilityRow.description.indexOf(qsTr("For compatibility only. Expect lower performance than NVST. Available for NVIDIA and alliance accounts. New sessions use up to 1080p60, H.264, SDR, and stereo. No microphone or clipboard text. Requires direct UDP connectivity.")) >= 0,
+            "the performance warning must be visible before enabling compatibility")
         check(!compatibility.checked && compatibility.enabled, "compatibility ships off and is selectable before launch")
         compatibility.clicked()
         let compatibilityWrite = lastWrite()

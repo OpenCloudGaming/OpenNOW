@@ -121,13 +121,6 @@ pub struct LoginProvider {
 }
 
 impl LoginProvider {
-    pub(crate) fn is_alliance(&self) -> bool {
-        !self.idp_id.trim().is_empty()
-            && self.idp_id.trim() != DEFAULT_IDP_ID
-            && !self.code.trim().is_empty()
-            && !self.code.trim().eq_ignore_ascii_case("NVIDIA")
-    }
-
     fn default_nvidia() -> Self {
         Self {
             idp_id: DEFAULT_IDP_ID.to_owned(),
@@ -1647,14 +1640,6 @@ impl GfnService {
         })
     }
 
-    pub fn session_launch_settings(&self, settings: &Value) -> Value {
-        let state = self.state.lock().expect("GFN state poisoned");
-        match &state.session {
-            Some(session) => crate::cloudmatch::allocation_settings(settings, &session.provider),
-            None => settings.clone(),
-        }
-    }
-
     pub fn create_session(&self, params: &Value, settings: &Value) -> Result<Value, ServiceError> {
         let admission = self.cloudmatch.admit_create()?;
         let app_id = params["catalogAppId"].as_str().unwrap_or_default();
@@ -2181,11 +2166,6 @@ impl GfnService {
             });
         }
         let webrtc = owned["transportMode"] == "webrtc";
-        if webrtc && !session.provider.is_alliance() {
-            return Err(ServiceError::invalid(
-                "WebRTC compatibility is available only for alliance sessions",
-            ));
-        }
         let endpoint_ready = if webrtc {
             crate::cloudmatch::has_webrtc_endpoint(&owned)
         } else {

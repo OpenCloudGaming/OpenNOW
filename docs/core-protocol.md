@@ -1146,8 +1146,10 @@ gameplay input, while Qt owns the graphics device, scene graph, video item and
 all top-level windows. Legacy streamer lifecycle methods remain protocol
 compatibility routes and are not used by the Qt shell.
 
-`allianceWebrtcCompatibility` is a default-off boolean setting for new alliance
-allocations. The authenticated provider determines eligibility. Legacy persisted
+`allianceWebrtcCompatibility` is a default-off boolean setting for new NVIDIA and
+alliance allocations. Its historical key is retained for settings compatibility;
+the UI calls it **WebRTC compatibility mode** and warns about lower performance
+than NVST. Session ownership and authentication remain required. Legacy persisted
 `transportMode` values still normalize to `nvst`; only the core-owned session's
 transport selects the embedded WebRTC path. Its initial profile is at most
 1920×1080 at 60 FPS, H.264, 8-bit 4:2:0 SDR, stereo, and no microphone.

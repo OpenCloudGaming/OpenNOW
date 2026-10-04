@@ -69,8 +69,8 @@ Column {
             DesktopSettingsRow {
                 objectName: "allianceWebrtcCompatibilityRow"
                 width: parent.width; paperStyle: true; glyph: "globe"
-                title: qsTr("Alliance WebRTC compatibility")
-                description: qsTr("Experimental alternative to NVST for alliance partners. New sessions use up to 1080p60, H.264, SDR, and stereo. No microphone or clipboard text. NVIDIA accounts keep NVST. Requires direct UDP connectivity.")
+                title: qsTr("WebRTC compatibility mode")
+                description: qsTr("For compatibility only. Expect lower performance than NVST. Available for NVIDIA and alliance accounts. New sessions use up to 1080p60, H.264, SDR, and stereo. No microphone or clipboard text. Requires direct UDP connectivity.")
                 DesktopSettingsToggle {
                     objectName: "allianceWebrtcCompatibilityToggle"
                     enabled: !ShellStore.activeSession && !ShellStore.streamBusy && !ShellStore.pendingLaunchParams

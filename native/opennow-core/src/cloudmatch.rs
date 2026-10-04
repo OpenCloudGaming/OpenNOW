@@ -1,4 +1,4 @@
-use crate::gfn::{AuthSession, LoginProvider, ServiceError};
+use crate::gfn::{AuthSession, ServiceError};
 use crate::proxy::client_for_settings;
 use rand::RngCore as _;
 use reqwest::blocking::{Client, Response};
@@ -25,9 +25,9 @@ const MAX_DISCOVERY_REGIONS: usize = 32;
 const DISCOVERY_CONCURRENCY: usize = 4;
 const MAX_CLEANUP_RECORD_BYTES: usize = 16 * 1024;
 
-pub(crate) fn allocation_settings(settings: &Value, provider: &LoginProvider) -> Value {
+pub(crate) fn allocation_settings(settings: &Value) -> Value {
     let mut settings = settings.clone();
-    let enabled = provider.is_alliance() && settings["allianceWebrtcCompatibility"] == true;
+    let enabled = settings["allianceWebrtcCompatibility"] == true;
     settings["allianceWebrtcCompatibility"] = json!(enabled);
     if enabled {
         settings["codec"] = json!("h264");
@@ -287,7 +287,7 @@ impl CloudMatchService {
         device_id: &str,
         connection: impl FnOnce() -> Result<(Client, Url), ServiceError>,
     ) -> Result<Value, ServiceError> {
-        let settings = allocation_settings(settings, &auth.provider);
+        let settings = allocation_settings(settings);
         let settings = &settings;
         let (client, base) = connection()?;
         crate::requests::check()?;
@@ -1098,13 +1098,10 @@ impl CloudMatchService {
             });
         }
         let webrtc = reported_webrtc_session(session) || retained_webrtc.is_some();
-        if webrtc
-            && (!auth.provider.is_alliance()
-                || (retained_webrtc.is_none() && settings["allianceWebrtcCompatibility"] != true))
-        {
+        if webrtc && retained_webrtc.is_none() && settings["allianceWebrtcCompatibility"] != true {
             return Err(ServiceError {
                 code: "session_transport_not_enabled",
-                message: "This is a WebRTC session. Enable alliance compatibility before attaching; the cloud session has been retained.".into(),
+                message: "This is a WebRTC session. Enable WebRTC compatibility before attaching; the cloud session has been retained.".into(),
             });
         }
         let initial_status = value_i64(&session["status"]).unwrap_or_default();
@@ -3931,14 +3928,11 @@ mod tests {
     }
 
     #[test]
-    fn alliance_webrtc_profile_requires_both_provider_identity_checks_and_opt_in() {
-        let mut provider = conflict_auth().provider;
+    fn webrtc_profile_requires_explicit_opt_in() {
         let requested = json!({"allianceWebrtcCompatibility":true,"transportMode":"webrtc",
             "codec":"av1","colorQuality":"10bit_444","enableHdr":true,"nativeHdrSupported":true,
             "resolution":"3840x2160","fps":240,"microphoneMode":"open"});
-        assert_eq!(allocation_settings(&requested, &provider)["codec"], "av1");
-        provider.code = "ALLIANCE".into();
-        let compatible = allocation_settings(&requested, &provider);
+        let compatible = allocation_settings(&requested);
         assert_eq!(compatible["codec"], "h264");
         assert_eq!(compatible["colorQuality"], "8bit_420");
         assert_eq!(compatible["enableHdr"], false);
@@ -3949,32 +3943,23 @@ mod tests {
         for (requested_fps, expected) in [(0, 60), (30, 30), (60, 60), (120, 60)] {
             let mut settings = requested.clone();
             settings["fps"] = json!(requested_fps);
-            assert_eq!(allocation_settings(&settings, &provider)["fps"], expected);
+            assert_eq!(allocation_settings(&settings)["fps"], expected);
         }
-        for identity in ["", "PDiAhv2kJTFeQ7WOPqiQ2tRZ7lGhR2X11dXvM4TZSxg"] {
-            provider.idp_id = identity.into();
-            assert_eq!(
-                allocation_settings(&requested, &provider)["allianceWebrtcCompatibility"],
-                false
-            );
-        }
-        provider.idp_id = "partner".into();
         for enabled in [json!(false), json!("true"), Value::Null] {
             let mut settings = requested.clone();
             settings["allianceWebrtcCompatibility"] = enabled;
-            assert_eq!(allocation_settings(&settings, &provider)["codec"], "av1");
+            assert_eq!(allocation_settings(&settings)["codec"], "av1");
+            assert_eq!(
+                allocation_settings(&settings)["allianceWebrtcCompatibility"],
+                false
+            );
         }
     }
 
     #[test]
     fn alliance_webrtc_request_changes_allocation_without_changing_native_headers() {
-        let mut provider = conflict_auth().provider;
-        provider.code = "ALLIANCE".into();
-        let settings = allocation_settings(
-            &json!({"allianceWebrtcCompatibility":true,
-            "codec":"h265","enableHdr":true,"nativeHdrSupported":true}),
-            &provider,
-        );
+        let settings = allocation_settings(&json!({"allianceWebrtcCompatibility":true,
+            "codec":"h265","enableHdr":true,"nativeHdrSupported":true}));
         let body = build_create_body("123", &json!({}), &settings, "device");
         let request = &body["sessionRequestData"];
         assert_eq!(request["streamerVersion"], 1);
@@ -4059,65 +4044,67 @@ mod tests {
 
     #[test]
     fn alliance_webrtc_allocation_and_poll_keep_owned_transport_and_requested_profile() {
-        let ready = json!({"sessionId":"A","status":3,"connectionInfo":[
+        for provider in ["NVIDIA", "ALLIANCE"] {
+            let ready = json!({"sessionId":"A","status":3,"connectionInfo":[
             {"usage":14,"appLevelProtocol":4,"ip":"seat.partner.example","port":8443,"resourcePath":"/nvst/"},
             {"usage":2,"ip":"203.0.113.9","port":49000}]});
-        let (base, server) = session_server(
-            vec![
-                (
-                    200,
-                    json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"A","status":1,
+            let (base, server) = session_server(
+                vec![
+                    (
+                        200,
+                        json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"A","status":1,
                 "sessionControlInfo":{"ip":"seat.nvidiagrid.net","port":443}}}),
-                ),
-                (
-                    200,
-                    json!({"requestStatus":{"statusCode":1},"session":ready}),
-                ),
-            ],
-            |_| {},
-        );
-        let client = Client::new();
-        let mut service = CloudMatchService::new(client.clone());
-        service.set_test_control_base(base.clone());
-        let mut auth = conflict_auth();
-        auth.provider.code = "ALLIANCE".into();
-        let created = service.create_at(&json!({"appId":"123"}),
+                    ),
+                    (
+                        200,
+                        json!({"requestStatus":{"statusCode":1},"session":ready}),
+                    ),
+                ],
+                |_| {},
+            );
+            let client = Client::new();
+            let mut service = CloudMatchService::new(client.clone());
+            service.set_test_control_base(base.clone());
+            let mut auth = conflict_auth();
+            auth.provider.code = provider.into();
+            let created = service.create_at(&json!({"appId":"123"}),
             &json!({"allianceWebrtcCompatibility":true,"codec":"av1","resolution":"2560x1440","fps":120}),
             &auth, "device", || Ok((client, base))).unwrap();
-        assert_eq!(created["session"]["transportMode"], "webrtc");
-        assert_eq!(
-            created["session"]["negotiatedStreamProfile"]["codec"],
-            "H264"
-        );
-        assert_eq!(
-            created["session"]["negotiatedStreamProfile"]["codecSource"],
-            "request"
-        );
-        service.finish_create("A", true).unwrap();
-        let polled = service
-            .poll(
-                &json!({"sessionId":"A","transportMode":"nvst"}),
-                &auth,
-                "device",
-            )
-            .unwrap();
-        assert_eq!(polled["session"]["transportMode"], "webrtc");
-        assert_eq!(
-            polled["session"]["signalingUrl"],
-            "wss://seat.partner.example:8443/nvst/"
-        );
-        assert_eq!(polled["session"]["mediaConnectionInfo"]["port"], 49000);
-        assert_eq!(
-            polled["session"]["negotiatedStreamProfile"]["resolution"],
-            "1920x1080"
-        );
-        assert_eq!(polled["session"]["negotiatedStreamProfile"]["fps"], 60);
-        assert_eq!(
-            polled["session"]["negotiatedStreamProfile"]["codec"],
-            "H264"
-        );
-        assert!(has_webrtc_endpoint(&polled["session"]));
-        assert_eq!(server.join().unwrap().len(), 2);
+            assert_eq!(created["session"]["transportMode"], "webrtc");
+            assert_eq!(
+                created["session"]["negotiatedStreamProfile"]["codec"],
+                "H264"
+            );
+            assert_eq!(
+                created["session"]["negotiatedStreamProfile"]["codecSource"],
+                "request"
+            );
+            service.finish_create("A", true).unwrap();
+            let polled = service
+                .poll(
+                    &json!({"sessionId":"A","transportMode":"nvst"}),
+                    &auth,
+                    "device",
+                )
+                .unwrap();
+            assert_eq!(polled["session"]["transportMode"], "webrtc");
+            assert_eq!(
+                polled["session"]["signalingUrl"],
+                "wss://seat.partner.example:8443/nvst/"
+            );
+            assert_eq!(polled["session"]["mediaConnectionInfo"]["port"], 49000);
+            assert_eq!(
+                polled["session"]["negotiatedStreamProfile"]["resolution"],
+                "1920x1080"
+            );
+            assert_eq!(polled["session"]["negotiatedStreamProfile"]["fps"], 60);
+            assert_eq!(
+                polled["session"]["negotiatedStreamProfile"]["codec"],
+                "H264"
+            );
+            assert!(has_webrtc_endpoint(&polled["session"]));
+            assert_eq!(server.join().unwrap().len(), 2);
+        }
     }
 
     #[test]
@@ -4172,88 +4159,92 @@ mod tests {
 
     #[test]
     fn alliance_webrtc_restart_retains_owned_transport_when_toggle_and_metadata_are_absent() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("pending-session-cleanup.json");
-        let mut auth = conflict_auth();
-        auth.provider.code = "ALLIANCE".into();
-        let original = CloudMatchService::with_cleanup_path(Client::new(), path.clone());
-        original.remember_webrtc_allocation(&json!({"sessionId":"A","status":3,"transportMode":"webrtc",
+        for provider in ["NVIDIA", "ALLIANCE"] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("pending-session-cleanup.json");
+            let mut auth = conflict_auth();
+            auth.provider.code = provider.into();
+            let original = CloudMatchService::with_cleanup_path(Client::new(), path.clone());
+            original.remember_webrtc_allocation(&json!({"sessionId":"A","status":3,"transportMode":"webrtc",
             "negotiatedStreamProfile":{"codec":"H264","codecSource":"request","colorQuality":"8bit_420",
                 "bitDepth":8,"bitDepthSource":"request","chromaFormat":0,"chromaFormatSource":"request",
                 "enableHdr":false,"enableHdrSource":"request","resolution":"1280x720","fps":30}}), &auth).unwrap();
-        drop(original);
-        let ready = json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"A","status":3,
+            drop(original);
+            let ready = json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"A","status":3,
             "connectionInfo":[{"usage":14,"appLevelProtocol":4,"ip":"seat.partner.example","port":443,"resourcePath":"/nvst/"}]}});
-        let (base, server) = session_server(
-            vec![
-                (200, ready.clone()),
-                (200, json!({"requestStatus":{"statusCode":1}})),
-                (200, ready),
-            ],
-            |_| {},
-        );
-        let mut restored = CloudMatchService::with_cleanup_path(Client::new(), path);
-        restored.set_test_control_base(base);
-        let claimed = restored
-            .claim(
-                &json!({"sessionId":"A"}),
-                &json!({"allianceWebrtcCompatibility":false,"codec":"av1"}),
-                &auth,
-                "device",
-            )
-            .unwrap();
-        assert_eq!(claimed["session"]["transportMode"], "webrtc");
-        assert_eq!(
-            claimed["session"]["negotiatedStreamProfile"]["codec"],
-            "H264"
-        );
-        let polled = restored
-            .poll(&json!({"sessionId":"A"}), &auth, "device")
-            .unwrap();
-        assert_eq!(polled["session"]["resumePending"], false);
-        assert_eq!(polled["session"]["transportMode"], "webrtc");
-        assert_eq!(
-            polled["session"]["negotiatedStreamProfile"]["resolution"],
-            "1280x720"
-        );
-        let mut other = auth.clone();
-        other.user.user_id = "someone-else".into();
-        assert!(restored.retained_webrtc_allocation("A", &other).is_none());
-        other = auth.clone();
-        other.provider.idp_id = "other-partner".into();
-        assert!(restored.retained_webrtc_allocation("A", &other).is_none());
-        assert!(restored.retained_webrtc_allocation("B", &auth).is_none());
-        assert_eq!(server.join().unwrap().len(), 3);
+            let (base, server) = session_server(
+                vec![
+                    (200, ready.clone()),
+                    (200, json!({"requestStatus":{"statusCode":1}})),
+                    (200, ready),
+                ],
+                |_| {},
+            );
+            let mut restored = CloudMatchService::with_cleanup_path(Client::new(), path);
+            restored.set_test_control_base(base);
+            let claimed = restored
+                .claim(
+                    &json!({"sessionId":"A"}),
+                    &json!({"allianceWebrtcCompatibility":false,"codec":"av1"}),
+                    &auth,
+                    "device",
+                )
+                .unwrap();
+            assert_eq!(claimed["session"]["transportMode"], "webrtc");
+            assert_eq!(
+                claimed["session"]["negotiatedStreamProfile"]["codec"],
+                "H264"
+            );
+            let polled = restored
+                .poll(&json!({"sessionId":"A"}), &auth, "device")
+                .unwrap();
+            assert_eq!(polled["session"]["resumePending"], false);
+            assert_eq!(polled["session"]["transportMode"], "webrtc");
+            assert_eq!(
+                polled["session"]["negotiatedStreamProfile"]["resolution"],
+                "1280x720"
+            );
+            let mut other = auth.clone();
+            other.user.user_id = "someone-else".into();
+            assert!(restored.retained_webrtc_allocation("A", &other).is_none());
+            other = auth.clone();
+            other.provider.idp_id = "other-partner".into();
+            assert!(restored.retained_webrtc_allocation("A", &other).is_none());
+            assert!(restored.retained_webrtc_allocation("B", &auth).is_none());
+            assert_eq!(server.join().unwrap().len(), 3);
+        }
     }
 
     #[test]
     fn alliance_webrtc_foreign_session_without_opt_in_is_retained_without_resume() {
-        let (base, server) = session_server(
-            vec![(
-                200,
-                json!({"requestStatus":{"statusCode":1},"session":{
+        for provider in ["NVIDIA", "ALLIANCE"] {
+            let (base, server) = session_server(
+                vec![(
+                    200,
+                    json!({"requestStatus":{"statusCode":1},"session":{
             "sessionId":"foreign","status":3,"sessionRequestData":{"secureRTSPSupported":false,
                 "metaData":[{"key":"GSStreamerType","value":"WebRTC"}]}}}),
-            )],
-            |_| {},
-        );
-        let mut service = CloudMatchService::new(Client::new());
-        service.set_test_control_base(base);
-        let mut auth = conflict_auth();
-        auth.provider.code = "ALLIANCE".into();
-        let failure = service
-            .claim(
-                &json!({"sessionId":"foreign","transportMode":"webrtc"}),
-                &json!({"allianceWebrtcCompatibility":false}),
-                &auth,
-                "device",
-            )
-            .unwrap_err();
-        assert_eq!(failure.code, "session_transport_not_enabled");
-        assert!(service.active()["session"].is_null());
-        let requests = server.join().unwrap();
-        assert_eq!(requests.len(), 1);
-        assert!(requests[0].starts_with("GET "));
+                )],
+                |_| {},
+            );
+            let mut service = CloudMatchService::new(Client::new());
+            service.set_test_control_base(base);
+            let mut auth = conflict_auth();
+            auth.provider.code = provider.into();
+            let failure = service
+                .claim(
+                    &json!({"sessionId":"foreign","transportMode":"webrtc"}),
+                    &json!({"allianceWebrtcCompatibility":false}),
+                    &auth,
+                    "device",
+                )
+                .unwrap_err();
+            assert_eq!(failure.code, "session_transport_not_enabled");
+            assert!(service.active()["session"].is_null());
+            let requests = server.join().unwrap();
+            assert_eq!(requests.len(), 1);
+            assert!(requests[0].starts_with("GET "));
+        }
     }
 
     #[test]

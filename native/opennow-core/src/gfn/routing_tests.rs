@@ -1363,15 +1363,15 @@ fn alliance_webrtc_preparation_uses_only_the_owned_transport_and_endpoint() {
         "session_endpoint_missing"
     );
     service.cloudmatch.seed_owned_session(owned.clone());
-    owner.provider.code = "NVIDIA".into();
+    owner.provider = LoginProvider::default_nvidia();
     service.state.lock().unwrap().session = Some(owner.clone());
     service.session_routing.lock().unwrap().active_owner =
         Some(ActiveSeatOwner::capture(owner, 7, &owned, None).unwrap());
-    assert!(
-        service
-            .prepare_owned_stream(&forged, |_| panic!("NVIDIA compatibility prepared"))
-            .is_err()
-    );
+    let prepared = service
+        .prepare_owned_stream(&forged, |params| Ok(params.clone()))
+        .unwrap();
+    assert_eq!(prepared["session"]["transportMode"], "webrtc");
+    assert_eq!(prepared["session"]["signalingUrl"], owned["signalingUrl"]);
     let _ = std::fs::remove_dir_all(path);
 }
 
