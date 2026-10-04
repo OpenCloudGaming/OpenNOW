@@ -380,6 +380,15 @@ pub fn negotiate(
             "multiple data transports are unsupported".to_owned(),
         ));
     }
+    if normalized
+        .lines()
+        .find_map(|line| line.strip_prefix("a=setup:"))
+        .is_some_and(|setup| setup.trim() == "actpass")
+    {
+        rtc.direct_api()
+            .start_dtls(true)
+            .map_err(|error| TransportError::Offer(error.to_string()))?;
+    }
     let answer = rtc
         .sdp_api()
         .accept_offer(offer.into())

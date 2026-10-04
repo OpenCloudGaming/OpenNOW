@@ -1171,6 +1171,12 @@ microphone codecs are rejected in place with valid SDP format identifiers rather
 than rejecting the whole session. Offers remain bounded to eight media sections.
 The `webrtc-offer` diagnostic records section kinds and directions without SDP
 credentials. Keyframe feedback uses the transport's negotiated video MID.
+For an `actpass` offer, the native client takes the active DTLS role and sends
+ClientHello, matching browser behavior against NVIDIA's ICE-lite endpoint.
+Explicit active or passive remote roles retain their complementary local role.
+Connection diagnostics distinguish ICE completion from DTLS establishment and
+record redacted candidate classes, ports, and packet-family counters without
+addresses, credentials, or payloads.
 
 `acceptance.export` is available only through the Qt shell's Diagnostics screen. It rejects
 headless window systems and writes an atomic, redacted `opennow.live-acceptance` JSON file. The

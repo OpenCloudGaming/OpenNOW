@@ -39,6 +39,15 @@ impl Peer {
         profile: Option<u32>,
         extra: Option<(MediaKind, Direction)>,
     ) -> Self {
+        Self::connect_with_ice_lite_peer(capacity, profile, extra, false)
+    }
+
+    fn connect_with_ice_lite_peer(
+        capacity: usize,
+        profile: Option<u32>,
+        extra: Option<(MediaKind, Direction)>,
+        passive_ice_lite: bool,
+    ) -> Self {
         install_crypto();
         let socket = bind_routed_socket("127.0.0.1".parse().unwrap()).unwrap();
         socket.set_nonblocking(true).unwrap();
@@ -55,7 +64,10 @@ impl Peer {
         } else {
             config = config.enable_h264(true);
         }
-        let mut rtc = config.build(Instant::now());
+        let mut rtc = config.set_ice_lite(passive_ice_lite).build(Instant::now());
+        if passive_ice_lite {
+            rtc.direct_api().start_dtls(false).unwrap();
+        }
         rtc.add_local_candidate(Candidate::host(address, "udp").unwrap());
         let mut changes = rtc.sdp_api();
         let extra_mid =
@@ -100,6 +112,9 @@ impl Peer {
         assert_eq!(negotiated.video_mid, video);
         assert!(negotiated.answer_sdp.contains("opus/48000/2"));
         assert!(!negotiated.answer_sdp.contains("VP8/90000"));
+        if passive_ice_lite {
+            assert!(negotiated.answer_sdp.contains("a=setup:active"));
+        }
         rtc.sdp_api()
             .accept_answer(
                 pending,
@@ -720,6 +735,24 @@ fn windows_closed_udp_port_does_not_poison_later_receives() {
 }
 
 #[test]
+fn ice_lite_server_waiting_for_client_hello_connects_and_delivers_media() {
+    let mut peer = Peer::connect_with_ice_lite_peer(4, None, None, true);
+    let video = [0, 0, 0, 1, 0x65, 0x88, 0x84, 0x21];
+    peer.write(true, 90_000, &video);
+    assert_eq!(peer.frame().payload.as_ref(), video);
+    peer.write(false, 48_000, &[0xf8, 0xff, 0xfe]);
+    assert_eq!(peer.frame().codec, "Opus");
+    let mut key = vec![0; 18];
+    key[..4].copy_from_slice(&3_u32.to_le_bytes());
+    peer.control().send_input(key.clone(), false).unwrap();
+    peer.until(|peer| {
+        peer.received
+            .iter()
+            .any(|packet| packet.get(10..) == Some(key.as_slice()))
+    });
+}
+
+#[test]
 fn extra_microphone_section_does_not_block_media_or_input() {
     let mut peer =
         Peer::connect_with_extra_media(4, None, Some((MediaKind::Audio, Direction::RecvOnly)));
@@ -793,47 +826,65 @@ fn extra_incoming_tracks_are_rejected_by_role_not_section_count() {
 #[test]
 fn bidirectional_playback_offer_is_answered_receive_only() {
     install_crypto();
-    let mut remote = RtcConfig::new()
-        .clear_codecs()
-        .enable_h264(true)
-        .enable_opus(true)
-        .build(Instant::now());
-    remote.add_local_candidate(Candidate::host("127.0.0.1:49153".parse().unwrap(), "udp").unwrap());
-    let mut changes = remote.sdp_api();
-    let video = changes.add_media(MediaKind::Video, Direction::SendRecv, None, None, None);
-    let audio = changes.add_media(MediaKind::Audio, Direction::SendRecv, None, None, None);
-    changes.add_channel("data".to_owned());
-    let (offer, pending) = changes.apply().unwrap();
-    let session: Session =
-        serde_json::from_value(serde_json::json!({"sessionId":"fixture","serverIp":"127.0.0.1"}))
-            .unwrap();
-    let (events, _events) = mpsc::sync_channel(8);
-    let (media, _media) = mpsc::sync_channel(8);
-    let negotiated = negotiate(
-        &offer.to_sdp_string(),
-        &session,
-        NegotiatedVideoCodec::H264,
-        300,
-        events,
-        media,
-    )
-    .unwrap();
-    remote
-        .sdp_api()
-        .accept_answer(
-            pending,
-            SdpAnswer::from_sdp_string(&negotiated.answer_sdp).unwrap(),
+    for (offered_role, answer_role) in [
+        ("actpass", "active"),
+        ("active", "passive"),
+        ("passive", "active"),
+    ] {
+        let mut remote = RtcConfig::new()
+            .clear_codecs()
+            .enable_h264(true)
+            .enable_opus(true)
+            .build(Instant::now());
+        remote.add_local_candidate(
+            Candidate::host("127.0.0.1:49153".parse().unwrap(), "udp").unwrap(),
+        );
+        let mut changes = remote.sdp_api();
+        let video = changes.add_media(MediaKind::Video, Direction::SendRecv, None, None, None);
+        let audio = changes.add_media(MediaKind::Audio, Direction::SendRecv, None, None, None);
+        changes.add_channel("data".to_owned());
+        let (offer, pending) = changes.apply().unwrap();
+        let session: Session = serde_json::from_value(
+            serde_json::json!({"sessionId":"fixture","serverIp":"127.0.0.1"}),
         )
         .unwrap();
-    assert_eq!(
-        remote.media(video).unwrap().direction(),
-        Direction::SendOnly
-    );
-    assert_eq!(
-        remote.media(audio).unwrap().direction(),
-        Direction::SendOnly
-    );
-    negotiated.session.stop();
+        let (events, _events) = mpsc::sync_channel(8);
+        let (media, _media) = mpsc::sync_channel(8);
+        let negotiated = negotiate(
+            &offer
+                .to_sdp_string()
+                .replace("a=setup:actpass", &format!("a=setup:{offered_role}")),
+            &session,
+            NegotiatedVideoCodec::H264,
+            300,
+            events,
+            media,
+        )
+        .unwrap();
+        let roles: Vec<_> = negotiated
+            .answer_sdp
+            .lines()
+            .filter_map(|line| line.strip_prefix("a=setup:"))
+            .collect();
+        assert!(!roles.is_empty());
+        assert!(roles.iter().all(|role| *role == answer_role));
+        remote
+            .sdp_api()
+            .accept_answer(
+                pending,
+                SdpAnswer::from_sdp_string(&negotiated.answer_sdp).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            remote.media(video).unwrap().direction(),
+            Direction::SendOnly
+        );
+        assert_eq!(
+            remote.media(audio).unwrap().direction(),
+            Direction::SendOnly
+        );
+        negotiated.session.stop();
+    }
 }
 
 #[test]
