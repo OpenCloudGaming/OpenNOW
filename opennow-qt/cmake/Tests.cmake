@@ -611,6 +611,16 @@ if(BUILD_TESTING)
         COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
             --route home --smoke-bug-reports --reduced-motion)
     set_tests_properties(qml-bug-reports PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
+    foreach(width 960 1600)
+        foreach(scale 1 1.25)
+            add_test(NAME "qml-bug-report-notice-${width}-${scale}"
+                COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+                    --route home --smoke-bug-reports --bug-report-notice-check
+                    --bug-report-scale ${scale} --smoke-width ${width} --smoke-height 540 --reduced-motion)
+            set_tests_properties("qml-bug-report-notice-${width}-${scale}" PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
+        endforeach()
+    endforeach()
     qt_add_resources(opennow-qt "queue-drop-acceptance"
         PREFIX "/acceptance" BASE tests FILES tests/QueueDropsAcceptance.qml)
     qt_add_resources(opennow-qt "color-format-acceptance"
