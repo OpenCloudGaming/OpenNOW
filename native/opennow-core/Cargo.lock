@@ -1393,6 +1393,7 @@ dependencies = [
  "base64",
  "chrono",
  "ed25519-dalek",
+ "flate2",
  "fs2",
  "hkdf",
  "hmac",

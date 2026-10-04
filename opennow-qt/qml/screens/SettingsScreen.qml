@@ -282,7 +282,7 @@ FocusScope {
                 {t:"Profile PIN", d:"Ask for a 4-digit PIN when switching to this profile", v:"Set up", route:"profile-pin"},
                 toggle(qsTr("Persistent in-game settings"), qsTr("Keep your in-game graphics settings between sessions for supported games and memberships. Applies to new sessions."), "enablePersistingInGameSettings"),
                 toggle("Discord Rich Presence", "Show what you're playing on Discord", "discordRichPresence"),
-                choice("Error reporting", "Send anonymous crash reports to help fix OpenNOW", "errorReportingConsent", ["denied","granted"], ["Off","Anonymous"], "segments"),
+                {t:qsTr("Usage & bug reports · Experimental"), d:qsTr("Send usage statistics and error reports with logs to the developer, identified by your GeForce NOW username or e-mail"), v:ShellStore.bugReports.enabled ? qsTr("On") : qsTr("Off"), action:"automatic-bug-reports"},
                 {t:"Sign out", d:"Removes the NVIDIA token from this PC; My games stay", v:"Sign out of NVIDIA", action:"sign-out", danger:true},
                 {t:"Game accounts", d:"Steam, Epic, Ubisoft and Xbox", v:qsTr("%1 detected").arg(ShellStore.gameAccounts.length), route:"game-accounts"},
                 {t:"Persistent storage", d:ShellStore.subscription && ShellStore.subscription.storageAddon ? (ShellStore.subscription.storageAddon.regionName || "Cloud storage active") : "Manage cloud storage locations", v:"Open", route:"persistent-storage"}
@@ -558,8 +558,8 @@ FocusScope {
             shortcutEditorOpen = true
         } else if (row.action === "select-streamer") {
             streamerExecutableDialog.open()
-        } else if (row.action === "telemetry") {
-            ShellStore.setSetting("errorReportingConsent", ShellStore.settings.errorReportingConsent === "granted" ? "denied" : "granted")
+        } else if (row.action === "automatic-bug-reports") {
+            ShellStore.bugReports.setEnabled(!ShellStore.bugReports.enabled, "settings")
         } else if (row.action === "sign-out") {
             ShellStore.logout()
         } else if (row.action === "anti-afk") {

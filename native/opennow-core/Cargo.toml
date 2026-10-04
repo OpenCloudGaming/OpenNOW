@@ -10,6 +10,7 @@ aes-gcm = "0.10"
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 ed25519-dalek = "2.2"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 hkdf = "0.12"
 httpdate = "1"
 md5 = "0.7"

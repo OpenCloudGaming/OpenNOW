@@ -30,8 +30,8 @@ Column {
         DesktopSettingsRow { objectName: "accountActivitySharing"; width: parent.width; paperStyle: true; glyph: "person"; title: qsTr("Show what I am playing"); description: qsTr("Discord activity sharing")
             DesktopSettingsToggle { checked: page.settingsScreen.boolSetting("discordRichPresence",false); onValueChangedByUser: value => page.settingsScreen.setSetting("discordRichPresence",value) }
         }
-        DesktopSettingsRow { objectName: "accountCrashReports"; width: parent.width; paperStyle: true; glyph: "info"; title: qsTr("Crash reports"); description: qsTr("Optional error reporting"); showDivider: false
-            DesktopSettingsToggle { checked: ShellStore.settings.errorReportingConsent === "granted"; onValueChangedByUser: value => page.settingsScreen.setSetting("errorReportingConsent",value ? "granted" : "denied") }
+        DesktopSettingsRow { objectName: "accountAutomaticBugReports"; width: parent.width; paperStyle: true; glyph: "info"; title: qsTr("Usage & bug reports · Experimental"); description: qsTr("Send usage statistics and error reports with logs to the developer, identified by your GeForce NOW username or e-mail"); showDivider: false
+            DesktopSettingsToggle { checked: ShellStore.bugReports.enabled; onValueChangedByUser: value => ShellStore.bugReports.setEnabled(value, "settings") }
         }
     }
     DesktopSettingsPanel {

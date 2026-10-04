@@ -259,6 +259,7 @@ int AcceptanceSession::startSmokeWorkload()
                      || m_arguments.contains(u"--smoke-ownership"_s)
                      || m_arguments.contains(u"--smoke-catalog-sync"_s)
                      || m_arguments.contains(u"--smoke-push-invalidation"_s)
+                     || m_arguments.contains(u"--smoke-bug-reports"_s)
                      || m_arguments.contains(u"--smoke-microphone"_s)
                      || m_arguments.contains(u"--smoke-audio-output"_s)
                      || m_arguments.contains(u"--smoke-background-stream"_s)
@@ -288,6 +289,8 @@ int AcceptanceSession::startSmokeWorkload()
             ? u"qrc:/acceptance/CatalogSyncAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-push-invalidation"_s)
             ? u"qrc:/acceptance/PushInvalidationAcceptance.qml"_s
+            : m_arguments.contains(u"--smoke-bug-reports"_s)
+            ? u"qrc:/acceptance/BugReportAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-queue-drops"_s)
             ? u"qrc:/acceptance/QueueDropsAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-microphone"_s)
@@ -335,6 +338,7 @@ int AcceptanceSession::startSmokeWorkload()
             || m_arguments.contains(u"--smoke-ownership"_s)
             || m_arguments.contains(u"--smoke-catalog-sync"_s)
             || m_arguments.contains(u"--smoke-push-invalidation"_s)
+            || m_arguments.contains(u"--smoke-bug-reports"_s)
             || m_arguments.contains(u"--smoke-recording"_s)
             || m_arguments.contains(u"--smoke-shortcuts"_s)
             || m_arguments.contains(u"--smoke-queue-drops"_s)
@@ -401,6 +405,7 @@ int AcceptanceSession::startSmokeWorkload()
                        || m_arguments.contains(u"--smoke-queue-selector"_s)
                        || m_arguments.contains(u"--smoke-ownership"_s)
                        || m_arguments.contains(u"--smoke-push-invalidation"_s)
+                       || m_arguments.contains(u"--smoke-bug-reports"_s)
                        || m_arguments.contains(u"--smoke-catalog-sync"_s)
                        || m_arguments.contains(u"--smoke-color-format"_s)
                        || m_arguments.contains(u"--smoke-backend-availability"_s)
@@ -411,7 +416,8 @@ int AcceptanceSession::startSmokeWorkload()
                         || m_arguments.contains(u"--smoke-queue-selector"_s)
                         || m_arguments.contains(u"--smoke-color-format"_s)
                         || m_arguments.contains(u"--smoke-store-launch"_s)
-                        || m_arguments.contains(u"--smoke-push-invalidation"_s)) {
+                        || m_arguments.contains(u"--smoke-push-invalidation"_s)
+                        || m_arguments.contains(u"--smoke-bug-reports"_s)) {
                         QVariant verified;
                         if (!QMetaObject::invokeMethod(fixture, "verifyRendered", Q_RETURN_ARG(QVariant, verified),
                                 Q_ARG(QVariant, QVariant::fromValue(window->contentItem()))) || !verified.toBool()) {

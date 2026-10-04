@@ -1208,7 +1208,7 @@ fn hybrid_gpu_hint(capabilities: &Value) -> Option<String> {
     ))
 }
 
-fn active_gpu_label(capabilities: &Value) -> Option<String> {
+pub(crate) fn active_gpu_label(capabilities: &Value) -> Option<String> {
     let adapters = capabilities.get("graphicsAdapters")?.as_array()?;
     let adapter = adapters
         .iter()

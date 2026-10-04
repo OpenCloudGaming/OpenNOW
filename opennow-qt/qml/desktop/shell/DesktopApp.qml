@@ -12,6 +12,7 @@ FocusScope {
     property bool modeErrorVisible: false
     property string searchText: ""
     property string settingsSubtitle: qsTr("Profile")
+    property bool bugReportNoticeAllowed: !SmokeTestMode
     readonly property string route: AppController.route
     // Game details are modal on desktop. Keep the route beneath the modal so
     // opening a Home or Store tile does not silently swap in the Library page.
@@ -216,6 +217,20 @@ FocusScope {
     DesktopQueueSelector {
         selector: ShellStore.queueSelector
         settingsStore: ShellStore
+    }
+
+    DesktopBugReportNotice {
+        anchors.fill: parent
+        opened: root.shellVisible && root.bugReportNoticeAllowed && ShellStore.bugReports.noticePending
+        z: 130
+    }
+    DesktopBugReportToast {
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.margins: DesktopTokens.px(24)
+        active: root.shellVisible
+        z: 125
+        onSettingsRequested: AppController.navigate("settings-account")
     }
 
     Rectangle {

@@ -3,6 +3,7 @@ import QtQuick
 import "catalog"
 import "settings"
 import "account"
+import "reporting"
 
 QtObject {
     id: root
@@ -65,7 +66,6 @@ QtObject {
         refreshAccountServices: root.refreshAccountServices
         refreshStreamerDetection: root.refreshStreamerDetection
         syncDiscordPresence: root.syncDiscordPresence
-        syncTelemetry: root.syncTelemetry
         lastError: root.lastError
         onConsoleSurfaceRequested: enabled => root.consoleSurfaceRequested(enabled)
         onAccessibilityAnnounced: message => root.accessibilityMessage = message
@@ -82,6 +82,20 @@ QtObject {
         refreshAccountServices: root.refreshAccountServices
         acceptsScope: root.matchesAuthScope
         onAccessibilityAnnounced: message => root.accessibilityMessage = message
+    }
+
+    property BugReportState bugReports: BugReportState {
+        coreClient: CoreClient
+        setSetting: root.setSetting
+        ready: root.ready
+        signedIn: root.signedIn
+        settings: root.settings
+        sessionId: String(root.activeSession && root.activeSession.sessionId || "")
+        streaming: root.activeSession !== null && root.streamerStatus === "streaming"
+            && !root.streamerStopExpected
+        uiSurface: root.desktopUiActive ? "desktop" : "console"
+        gameId: String(root.activeSession && root.activeSession.appId || "")
+        decoderBackend: String(root.streamer && root.streamer.mediaBackend || "")
     }
 
     property alias settings: settingsOwner.settings
@@ -582,6 +596,7 @@ QtObject {
                 }, 35000)
             } else if (stage === "create") {
                 root.streamState = "requesting"
+                root.launchRequestedAtMs = Date.now()
                 root.pendingRequestedColorQuality = String(root.settings.colorQuality || "8bit_420")
                 root.streamCreateRequestId = CoreClient.request("session.create",
                     Object.assign({}, root.pendingLaunchParams, {
@@ -729,7 +744,7 @@ QtObject {
     property string socialCapabilitiesRequestId: ""
     property string discordRequestId: ""
     property double streamStartedAtMs: 0
-    property string telemetryRequestId: ""
+    property double launchRequestedAtMs: 0
     property string feedbackRequestId: ""
     property string bugReportRequestId: ""
     property string streamInputPauseRequestId: ""
@@ -1459,12 +1474,6 @@ QtObject {
             CoreClient.request("updater.highlights.ack", {version: releaseHighlights.version})
     }
 
-    function syncTelemetry() {
-        if (!ready || telemetryRequestId !== "")
-            return
-        telemetryRequestId = CoreClient.request("telemetry.sync", {}, 30000)
-    }
-
     function submitFeedback(category, message) {
         if (!ready || feedbackRequestId !== "")
             return
@@ -1747,6 +1756,7 @@ QtObject {
             actionGeneration: catalogOwner.actionGeneration,
             requestContextKey: catalogOwner.requestContextKey,
             title: selectedGame.title || "GeForce NOW game",
+            store: String(selectedVariant && selectedVariant.store || ""),
             supportsInGameSettingsPersistence: Boolean(selectedVariant && selectedVariant.supportsInGameSettingsPersistence),
             accountLinked: Boolean(selectedVariant && selectedVariant.inLibrary),
             appLaunchMode: settings.steamBigPictureMode === true
@@ -1956,6 +1966,8 @@ QtObject {
             streamerRecoveryExhausted = false
         }
         if (!activeSession) {
+            reportSessionEnd(previousSession, "remote_ended")
+            launchRequestedAtMs = 0
             cancelSessionRecovery()
             runtimeStreamProfile = ({})
             if (previousSession && streamer && streamer.status !== "stopped")
@@ -2296,6 +2308,7 @@ QtObject {
         if (termination.sessionId && activeSession
                 && String(termination.sessionId) !== String(activeSession.sessionId))
             return
+        reportSessionEnd(activeSession, "remote_ended")
         const pendingRequests = [streamerPrepareRequestId, streamPollRequestId]
         streamerPrepareRequestId = ""
         streamPollRequestId = ""
@@ -2698,6 +2711,7 @@ QtObject {
         if (prepareRequestId !== "")
             CoreClient.cancel(prepareRequestId)
         cancelSessionRecovery()
+        reportSessionEnd(activeSession, "")
         if (activeSession && streamStartedAtMs > 0) {
             const snapshot = streamer || ({})
             sessionReportDropId = dropSessionId
@@ -2749,6 +2763,43 @@ QtObject {
             sessionId: activeSession.sessionId,
             streamingBaseUrl: activeSession.streamingBaseUrl
         }, 35000)
+    }
+
+    function reportSessionStart(fields) {
+        const profile = negotiatedStreamProfile
+        const firstFrameMs = fields.firstFrameLatencyMs !== undefined
+            ? fields.firstFrameLatencyMs : Number(streamer.firstFrameLatencyMs)
+        bugReports.observeFirstFrame({
+            game_id: String(activeSession.appId || ""),
+            game_title: selectedGame && selectedGame.title ? String(selectedGame.title) : "",
+            codec: String(profile.codec || streamer.codec || "").toLowerCase(),
+            resolution: profile.width && profile.height ? profile.width + "x" + profile.height : "",
+            fps_target: Number(profile.fps || 0) || undefined,
+            hdr: typeof profile.enableHdr === "boolean" ? profile.enableHdr : undefined,
+            decoder_backend: String(fields.mediaBackend || "").toLowerCase(),
+            first_frame_ms: Number.isFinite(firstFrameMs) ? firstFrameMs : undefined,
+            queue_wait_s: launchRequestedAtMs > 0 && streamStartedAtMs >= launchRequestedAtMs
+                ? (streamStartedAtMs - launchRequestedAtMs) / 1000 : undefined
+        })
+    }
+
+    function reportSessionEnd(session, cause) {
+        if (!session || streamStartedAtMs <= 0)
+            return
+        const snapshot = streamer || ({})
+        const sessionId = String(session.sessionId || "")
+        const failed = snapshot.status === "error" || streamerRecoveryExhausted
+        bugReports.observeSessionEnd(sessionId, {
+            game_id: String(session.appId || ""),
+            game_title: selectedGame && selectedGame.title ? String(selectedGame.title) : "",
+            duration_s: Math.max(0, Date.now() - streamStartedAtMs) / 1000,
+            outcome: failed ? "error" : cause !== "" ? cause
+                : bugReports.startedSessionId === sessionId ? "clean" : "user_stopped",
+            error_code: failed ? bugReports.normalizedCode(snapshot.errorCode, "native_stream_error") : undefined,
+            recoveries: Number(streamerRecoveryCount || 0) + Number(sessionRecoveryCount || 0),
+            video_drop_count: Number(streamDropCounts.videoDropCount || 0),
+            decoder_errors: Number(snapshot.decoderErrorCount || 0)
+        })
     }
 
     function beginAddAccount() {
@@ -2922,8 +2973,8 @@ QtObject {
         return settingsOwner.beginConsoleSurfacePersistence()
     }
 
-    function setSetting(key, value) {
-        return settingsOwner.setSetting(key, value)
+    function setSetting(key, value, source) {
+        return settingsOwner.setSetting(key, value, source)
     }
 
     function resetSettings() {
@@ -3033,9 +3084,11 @@ QtObject {
                 lastError = qsTr("The embedded media runtime returned an invalid handshake")
                 streamerDetection = {available: false, availableCodecs: [], capabilities: ({})}
                 streamerDetectionMessage = lastError
+                bugReports.openApp({})
                 return
             }
             acceptNativeCapabilities(response.capabilities || ({}))
+            bugReports.openApp(nativeRuntimeCapabilities)
             if (activeSession && (!streamer || streamer.status === "starting"))
                 Qt.callLater(() => root.startNativeStreamer())
         } else if (pending.operation === "start") {
@@ -3222,8 +3275,10 @@ QtObject {
                     Date.now() - Number(streamer.sessionStartedAtMs || Date.now()))
             }
             fields.mediaBackend = String(event.backend || "")
-            if (!event.sessionId || event.sessionId === String(activeSession.sessionId))
+            if (!event.sessionId || event.sessionId === String(activeSession.sessionId)) {
                 observeNegotiatedColorFormat()
+                reportSessionStart(fields)
+            }
         } else if (event.event === "backend-fallback") {
             fields.backendFallbackCount = Number(streamer && streamer.backendFallbackCount || 0) + 1
         } else if (event.event === "decoder-error") {
@@ -3237,6 +3292,8 @@ QtObject {
             if (!Number.isSafeInteger(Number(event.count)) || Number(event.count) <= 0)
                 return
             recordQueueDrop(event)
+            if (event.unit === "frames")
+                bugReports.observeFrameDrops(Number(event.count), event.sessionId)
             fields.queueDropCount = Number(streamer && streamer.queueDropCount || 0)
                 + Number(event.count || 0)
         }
@@ -3250,6 +3307,8 @@ QtObject {
             fields.message = String(event.message || qsTr("Native media runtime failed"))
             fields.errorCode = String(event.code || "native_stream_error")
             fields.termination = event.termination || null
+            if (activeSession && !streamerStopExpected)
+                bugReports.reportStreamError(fields.errorCode, fields.message, "stream")
         } else if (type === "input-ready") {
             fields.inputReady = true
             fields.inputUnavailableReason = null
@@ -3313,6 +3372,8 @@ QtObject {
                 fields.fullscreenToggleCount = Number(streamer && streamer.fullscreenToggleCount || 0) + 1
         }
         updateStreamerFields(fields)
+        if (type === "telemetry")
+            bugReports.observeTelemetry(event)
         if (type === "telemetry" && Object.prototype.hasOwnProperty.call(event, "packetLossPercent")
                 && (!event.sessionId || String(event.sessionId) === connectionHealth.sessionId))
             connectionHealth.acceptSample(event.packetLossPercent)
@@ -3322,9 +3383,11 @@ QtObject {
         target: NativeStreamRuntime
         function onPresentationError(message) {
             root.lastError = message
-            if (root.activeSession)
+            if (root.activeSession) {
                 root.updateStreamerFields({status: "error", message: message,
                     errorCode: "streamer_presentation_failed"})
+                root.bugReports.reportStreamError("streamer_presentation_failed", message, "presentation")
+            }
         }
         function onResponseReceived(response) { root.acceptNativeResponse(response) }
         function onEventReceived(event) { root.acceptNativeEvent(event) }
@@ -3415,7 +3478,6 @@ QtObject {
             } else if (requestId === root.settingsRequestId && result.settings) {
                 settingsOwner.acceptSettings(result)
                 root.resolveDirectLaunch()
-                root.syncTelemetry()
                 root.syncDiscordPresence()
                 root.refreshStreamerDetection()
             } else if (requestId === root.consoleSurfaceRequestId) {
@@ -3669,8 +3731,6 @@ QtObject {
                 root.socialCapabilities = result
             } else if (requestId === root.discordRequestId) {
                 root.discordRequestId = ""
-            } else if (requestId === root.telemetryRequestId) {
-                root.telemetryRequestId = ""
             } else if (requestId === root.feedbackRequestId) {
                 root.feedbackRequestId = ""
                 root.reportingState = "sent"
@@ -3678,9 +3738,11 @@ QtObject {
             } else if (requestId === root.bugReportRequestId) {
                 root.bugReportRequestId = ""
                 root.reportingState = "sent"
-                root.reportingMessage = result.reference
-                    ? qsTr("Bug report sent · reference %1").arg(result.reference)
-                    : qsTr("Bug report sent successfully.")
+                root.reportingMessage = result.queued
+                    ? qsTr("The report service is unreachable. Your report will be sent the next time OpenNOW starts.")
+                    : result.reportId
+                    ? qsTr("Thanks — this bug has been sent to the developer. Reference %1").arg(result.reportId)
+                    : qsTr("Thanks — this bug has been sent to the developer.")
             } else if (requestId === root.sessionAdRequestId) {
                 root.sessionAdRequestId = ""
                 root.acceptStreamingSession(result.session || root.activeSession)
@@ -3945,8 +4007,6 @@ QtObject {
                 })
             } else if (requestId === root.discordRequestId) {
                 root.discordRequestId = ""
-            } else if (requestId === root.telemetryRequestId) {
-                root.telemetryRequestId = ""
             } else if (requestId === root.feedbackRequestId) {
                 root.feedbackRequestId = ""
                 root.reportingState = "error"
@@ -4039,6 +4099,8 @@ QtObject {
                 root.acceptArtworkResult(payload)
             else if (name === "updater.changed")
                 root.acceptUpdaterState(payload)
+            else if (name === "bug_report.changed")
+                root.bugReports.acceptEvent(payload)
             else if (name === "updater.highlights.show") {
                 root.releaseHighlights = payload
                 root.releaseHighlightsPending = !root.updaterSessionSafe
