@@ -23,6 +23,8 @@ struct Peer {
     rtp_transmits: usize,
     drop_rtp_number: Option<usize>,
     dropped_rtp: usize,
+    controlling_checks: bool,
+    controlled_checks: bool,
 }
 
 impl Peer {
@@ -158,6 +160,8 @@ impl Peer {
             rtp_transmits: 0,
             drop_rtp_number: None,
             dropped_rtp: 0,
+            controlling_checks: false,
+            controlled_checks: false,
         };
         peer.until(|peer| peer.connected && peer.input_ready);
         peer
@@ -211,6 +215,14 @@ impl Peer {
         loop {
             match self.socket.recv_from(&mut buffer) {
                 Ok((length, source)) => {
+                    if buffer.get(..2) == Some(&[0, 1])
+                        && buffer.get(4..8) == Some(&[0x21, 0x12, 0xa4, 0x42])
+                    {
+                        self.controlling_checks |=
+                            crate::nvst::find_stun_attribute(&buffer[..length], 0x802a).is_some();
+                        self.controlled_checks |=
+                            crate::nvst::find_stun_attribute(&buffer[..length], 0x8029).is_some();
+                    }
                     let contents = (&buffer[..length]).try_into().unwrap();
                     self.rtc
                         .handle_input(Input::Receive(
@@ -737,6 +749,8 @@ fn windows_closed_udp_port_does_not_poison_later_receives() {
 #[test]
 fn ice_lite_server_waiting_for_client_hello_connects_and_delivers_media() {
     let mut peer = Peer::connect_with_ice_lite_peer(4, None, None, true);
+    assert!(peer.controlling_checks);
+    assert!(!peer.controlled_checks);
     let video = [0, 0, 0, 1, 0x65, 0x88, 0x84, 0x21];
     peer.write(true, 90_000, &video);
     assert_eq!(peer.frame().payload.as_ref(), video);

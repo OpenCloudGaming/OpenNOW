@@ -386,6 +386,8 @@ pub fn negotiate(
         .is_some_and(|setup| setup.trim() == "actpass")
     {
         rtc.direct_api()
+            .set_ice_controlling(offer.session.ice_lite());
+        rtc.direct_api()
             .start_dtls(true)
             .map_err(|error| TransportError::Offer(error.to_string()))?;
     }
