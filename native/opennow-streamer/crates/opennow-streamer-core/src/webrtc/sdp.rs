@@ -2,21 +2,6 @@ use opennow_streamer_platform::MediaStreamConfig;
 
 use super::Failure;
 
-pub(super) fn video_mid(answer: &str) -> Result<String, Failure> {
-    let mut video = false;
-    for line in answer.lines() {
-        if line.starts_with("m=") {
-            video = line.starts_with("m=video ") && line.split_whitespace().nth(1) != Some("0");
-        }
-        if video && let Some(mid) = line.strip_prefix("a=mid:") {
-            return Ok(mid.trim().to_owned());
-        }
-    }
-    Err(Failure::signaling(
-        "Local answer did not accept a video media section",
-    ))
-}
-
 pub(super) fn partial_reliability(offer: &str) -> Result<u16, Failure> {
     let value = attribute(offer, "ri.partialReliableThresholdMs").unwrap_or("30");
     value

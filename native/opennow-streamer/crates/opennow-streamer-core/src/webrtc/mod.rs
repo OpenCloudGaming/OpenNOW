@@ -387,7 +387,7 @@ impl Worker {
             return Ok(());
         }
         let nvst = sdp::nvst_answer(&offer, &negotiated.answer_sdp, self.stream)?;
-        let video_mid = sdp::video_mid(&negotiated.answer_sdp)?;
+        let video_mid = negotiated.video_mid.to_string();
         signaling.send_peer(json!({"type":"answer","sdp":negotiated.answer_sdp,"nvstSdp":nvst}))?;
         signaling.send_peer(
             serde_json::to_value(&negotiated.local_candidate)

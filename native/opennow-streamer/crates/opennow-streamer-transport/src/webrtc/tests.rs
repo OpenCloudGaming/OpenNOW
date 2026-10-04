@@ -31,11 +31,23 @@ impl Peer {
     }
 
     fn connect_with_profile(capacity: usize, profile: Option<u32>) -> Self {
+        Self::connect_with_extra_media(capacity, profile, None)
+    }
+
+    fn connect_with_extra_media(
+        capacity: usize,
+        profile: Option<u32>,
+        extra: Option<(MediaKind, Direction)>,
+    ) -> Self {
         install_crypto();
         let socket = bind_routed_socket("127.0.0.1".parse().unwrap()).unwrap();
         socket.set_nonblocking(true).unwrap();
         let address = socket.local_addr().unwrap();
         let mut config = RtcConfig::new().clear_codecs().enable_opus(true);
+        let pcmu_microphone = extra == Some((MediaKind::Audio, Direction::RecvOnly));
+        if pcmu_microphone {
+            config.codec_config().enable_pcmu(true);
+        }
         if let Some(profile) = profile {
             config
                 .codec_config()
@@ -46,10 +58,26 @@ impl Peer {
         let mut rtc = config.build(Instant::now());
         rtc.add_local_candidate(Candidate::host(address, "udp").unwrap());
         let mut changes = rtc.sdp_api();
+        let extra_mid =
+            extra.map(|(kind, direction)| changes.add_media(kind, direction, None, None, None));
         let video = changes.add_media(MediaKind::Video, Direction::SendOnly, None, None, None);
         let audio = changes.add_media(MediaKind::Audio, Direction::SendOnly, None, None, None);
         changes.add_channel("server-bootstrap".to_owned());
         let (offer, pending) = changes.apply().unwrap();
+        let offer_sdp = if pcmu_microphone {
+            let mut offer = (*offer).clone();
+            let microphone = &mut offer.media_lines[0];
+            microphone.pts = vec![0.into()];
+            microphone.attrs.retain(|attribute| {
+                let line = attribute.to_string();
+                !line.starts_with("a=rtpmap:")
+                    && !line.starts_with("a=fmtp:")
+                    && !line.starts_with("a=rtcp-fb:")
+            });
+            offer.to_string()
+        } else {
+            offer.to_sdp_string()
+        };
         let session: Session = serde_json::from_value(serde_json::json!({
             "sessionId": "local-peer",
             "serverIp": "127.0.0.1",
@@ -60,7 +88,7 @@ impl Peer {
         let (events, event_rx) = mpsc::sync_channel(8);
         let (media, media_rx) = mpsc::sync_channel(capacity);
         let negotiated = negotiate(
-            &offer.to_sdp_string(),
+            &offer_sdp,
             &session,
             NegotiatedVideoCodec::H264,
             300,
@@ -69,6 +97,7 @@ impl Peer {
         )
         .unwrap();
         assert!(negotiated.answer_sdp.contains("H264/90000"));
+        assert_eq!(negotiated.video_mid, video);
         assert!(negotiated.answer_sdp.contains("opus/48000/2"));
         assert!(!negotiated.answer_sdp.contains("VP8/90000"));
         rtc.sdp_api()
@@ -77,6 +106,20 @@ impl Peer {
                 SdpAnswer::from_sdp_string(&negotiated.answer_sdp).unwrap(),
             )
             .unwrap();
+        if let Some(mid) = extra_mid {
+            assert_eq!(rtc.media(mid).unwrap().direction(), Direction::Inactive);
+            if pcmu_microphone {
+                assert!(rtc.media(mid).unwrap().disabled());
+            }
+            assert_eq!(
+                negotiated
+                    .answer_sdp
+                    .lines()
+                    .filter(|line| line.starts_with("m="))
+                    .count(),
+                4
+            );
+        }
         let mut peer = Self {
             rtc,
             socket,
@@ -674,6 +717,135 @@ fn windows_closed_udp_port_does_not_poison_later_receives() {
     let mut bytes = [0; 32];
     let (length, _) = socket.recv_from(&mut bytes).unwrap();
     assert_eq!(&bytes[..length], b"valid");
+}
+
+#[test]
+fn extra_microphone_section_does_not_block_media_or_input() {
+    let mut peer =
+        Peer::connect_with_extra_media(4, None, Some((MediaKind::Audio, Direction::RecvOnly)));
+    let video = [0, 0, 0, 1, 0x65, 0x88, 0x84, 0x21];
+    peer.write(true, 90_000, &video);
+    assert_eq!(peer.frame().payload.as_ref(), video);
+    peer.write(false, 48_000, &[0xf8, 0xff, 0xfe]);
+    assert_eq!(peer.frame().codec, "Opus");
+    let mut key = vec![0; 18];
+    key[..4].copy_from_slice(&3_u32.to_le_bytes());
+    peer.control().send_input(key.clone(), false).unwrap();
+    peer.until(|peer| {
+        peer.received
+            .iter()
+            .any(|packet| packet.get(10..) == Some(key.as_slice()))
+    });
+}
+
+#[test]
+fn inactive_video_section_does_not_replace_the_receiving_video_mid() {
+    let mut peer =
+        Peer::connect_with_extra_media(4, None, Some((MediaKind::Video, Direction::Inactive)));
+    let video = [0, 0, 0, 1, 0x65, 0x88, 0x84, 0x21];
+    peer.write(true, 90_000, &video);
+    assert_eq!(peer.frame().payload.as_ref(), video);
+}
+
+#[test]
+fn extra_incoming_tracks_are_rejected_by_role_not_section_count() {
+    install_crypto();
+    for kind in [MediaKind::Video, MediaKind::Audio] {
+        let mut remote = RtcConfig::new()
+            .clear_codecs()
+            .enable_h264(true)
+            .enable_opus(true)
+            .build(Instant::now());
+        remote.add_local_candidate(
+            Candidate::host("127.0.0.1:49153".parse().unwrap(), "udp").unwrap(),
+        );
+        let mut changes = remote.sdp_api();
+        changes.add_media(MediaKind::Video, Direction::SendOnly, None, None, None);
+        changes.add_media(MediaKind::Audio, Direction::SendOnly, None, None, None);
+        changes.add_media(kind, Direction::SendOnly, None, None, None);
+        changes.add_channel("data".to_owned());
+        let (offer, _) = changes.apply().unwrap();
+        let session: Session = serde_json::from_value(
+            serde_json::json!({"sessionId":"fixture","serverIp":"127.0.0.1"}),
+        )
+        .unwrap();
+        let (events, _) = mpsc::sync_channel(8);
+        let (media, _) = mpsc::sync_channel(8);
+        let error = negotiate(
+            &offer.to_sdp_string(),
+            &session,
+            NegotiatedVideoCodec::H264,
+            300,
+            events,
+            media,
+        )
+        .err()
+        .unwrap();
+        let expected = if kind == MediaKind::Video {
+            "multiple incoming video"
+        } else {
+            "multiple incoming audio"
+        };
+        assert!(error.to_string().contains(expected), "{error}");
+    }
+}
+
+#[test]
+fn bidirectional_playback_offer_is_answered_receive_only() {
+    install_crypto();
+    let mut remote = RtcConfig::new()
+        .clear_codecs()
+        .enable_h264(true)
+        .enable_opus(true)
+        .build(Instant::now());
+    remote.add_local_candidate(Candidate::host("127.0.0.1:49153".parse().unwrap(), "udp").unwrap());
+    let mut changes = remote.sdp_api();
+    let video = changes.add_media(MediaKind::Video, Direction::SendRecv, None, None, None);
+    let audio = changes.add_media(MediaKind::Audio, Direction::SendRecv, None, None, None);
+    changes.add_channel("data".to_owned());
+    let (offer, pending) = changes.apply().unwrap();
+    let session: Session =
+        serde_json::from_value(serde_json::json!({"sessionId":"fixture","serverIp":"127.0.0.1"}))
+            .unwrap();
+    let (events, _events) = mpsc::sync_channel(8);
+    let (media, _media) = mpsc::sync_channel(8);
+    let negotiated = negotiate(
+        &offer.to_sdp_string(),
+        &session,
+        NegotiatedVideoCodec::H264,
+        300,
+        events,
+        media,
+    )
+    .unwrap();
+    remote
+        .sdp_api()
+        .accept_answer(
+            pending,
+            SdpAnswer::from_sdp_string(&negotiated.answer_sdp).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(
+        remote.media(video).unwrap().direction(),
+        Direction::SendOnly
+    );
+    assert_eq!(
+        remote.media(audio).unwrap().direction(),
+        Direction::SendOnly
+    );
+    negotiated.session.stop();
+}
+
+#[test]
+fn media_section_limit_remains_bounded() {
+    let section = "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=inactive\r\n";
+    assert!(normalize_offer(&section.repeat(MAX_MEDIA_SECTIONS), None).is_ok());
+    assert!(
+        normalize_offer(&section.repeat(MAX_MEDIA_SECTIONS + 1), None)
+            .unwrap_err()
+            .to_string()
+            .contains("too many SDP media sections")
+    );
 }
 
 #[test]

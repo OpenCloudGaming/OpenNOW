@@ -277,6 +277,8 @@ impl PeerFixture {
                 .build(Instant::now());
             rtc.add_local_candidate(Candidate::host(address, "udp").unwrap());
             let mut changes = rtc.sdp_api();
+            let microphone_mid =
+                changes.add_media(MediaKind::Audio, Direction::RecvOnly, None, None, None);
             let video_mid =
                 changes.add_media(MediaKind::Video, Direction::SendOnly, None, None, None);
             let audio_mid =
@@ -390,6 +392,17 @@ impl PeerFixture {
                                             SdpAnswer::from_sdp_string(answer).unwrap(),
                                         )
                                         .unwrap();
+                                    assert_eq!(
+                                        rtc.media(microphone_mid).unwrap().direction(),
+                                        Direction::Inactive
+                                    );
+                                    assert_eq!(
+                                        answer
+                                            .lines()
+                                            .filter(|line| line.starts_with("m="))
+                                            .count(),
+                                        4
+                                    );
                                     if partial_signaling {
                                         fixture_write(&mut websocket, Message::Frame(tungstenite::protocol::frame::Frame::message(
                                             vec![b'{'],

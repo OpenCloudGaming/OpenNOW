@@ -10,7 +10,7 @@ use opennow_streamer_protocol::Session;
 use serde::{Deserialize, Serialize};
 use str0m::change::SdpOffer;
 use str0m::format::Codec;
-use str0m::media::{KeyframeRequestKind, MediaData, Mid};
+use str0m::media::{Direction, KeyframeRequestKind, MediaData, MediaKind, Mid};
 use str0m::net::{Protocol, Receive};
 use str0m::{Candidate, Event, IceConnectionState, Input, Output, Rtc, RtcConfig};
 use thiserror::Error;
@@ -28,6 +28,7 @@ const MAX_INPUT_BYTES: usize = 4096;
 const MAX_SDP_BYTES: usize = 256 * 1024;
 const MAX_CANDIDATE_BYTES: usize = 4096;
 const MAX_CANDIDATES: usize = 64;
+const MAX_MEDIA_SECTIONS: usize = 8;
 const MAX_VIDEO_BYTES: usize = 16 * 1024 * 1024;
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -246,6 +247,7 @@ impl Drop for TransportSession {
 
 pub struct NegotiatedTransport {
     pub answer_sdp: String,
+    pub video_mid: Mid,
     pub local_candidate: IceCandidate,
     pub session: TransportSession,
 }
@@ -306,13 +308,135 @@ pub fn negotiate(
     }
     let mut rtc = builder.build(Instant::now());
     rtc.add_local_candidate(local.clone());
-    let offer = SdpOffer::from_sdp_string(&normalized)
+    let parsed_offer = SdpOffer::from_sdp_string(&normalized)
         .map_err(|error| TransportError::Offer(error.to_string()))?;
+    let mut offer = (*parsed_offer).clone();
+    let session_direction = normalized
+        .lines()
+        .take_while(|line| !line.starts_with("m="))
+        .find_map(|line| match line {
+            "a=sendonly" => Some(Direction::SendOnly),
+            "a=recvonly" => Some(Direction::RecvOnly),
+            "a=inactive" => Some(Direction::Inactive),
+            "a=sendrecv" => Some(Direction::SendRecv),
+            _ => None,
+        })
+        .unwrap_or(Direction::SendRecv);
+    let mut data_sections = 0;
+    let mut unsupported_media = false;
+    let mut sections = Vec::new();
+    for media in &mut offer.media_lines {
+        let kind = match media.typ.to_string().as_str() {
+            "video" => "video",
+            "audio" => "audio",
+            "application" => "application",
+            _ => "other",
+        };
+        let offered_direction = if media.attrs.iter().any(|attribute| attribute.is_direction()) {
+            media.direction()
+        } else {
+            session_direction
+        };
+        sections.push(serde_json::json!({"kind":kind,"direction":offered_direction.to_string(),"portZero":media.disabled}));
+        if media.typ.is_channel() {
+            data_sections += 1;
+        } else if media.typ.is_media() {
+            let direction = if offered_direction.is_sending() {
+                Direction::SendOnly
+            } else {
+                Direction::Inactive
+            };
+            media.attrs.retain(|attribute| !attribute.is_direction());
+            media.attrs.push(direction.into());
+        } else {
+            unsupported_media = true;
+        }
+    }
+    opennow_streamer_protocol::log::log_line(
+        "INFO",
+        "webrtc-offer",
+        &serde_json::json!({"sections":sections}).to_string(),
+    );
+    if unsupported_media {
+        return Err(TransportError::Offer(
+            "unsupported media section kind".to_owned(),
+        ));
+    }
+    if data_sections > 1 {
+        return Err(TransportError::Offer(
+            "multiple data transports are unsupported".to_owned(),
+        ));
+    }
     let answer = rtc
         .sdp_api()
-        .accept_offer(offer)
+        .accept_offer(offer.into())
         .map_err(|error| TransportError::Offer(error.to_string()))?;
-    let answer_sdp = answer.to_sdp_string();
+    let mut answer = (*answer).clone();
+    for section in &mut answer.media_lines {
+        if section.typ.is_media() && section.disabled && section.pts.is_empty() {
+            let offered = parsed_offer
+                .media_lines
+                .iter()
+                .find(|offered| offered.mid() == section.mid())
+                .ok_or_else(|| {
+                    TransportError::Offer("rejected media section has no matching offer".to_owned())
+                })?;
+            section.pts.clone_from(&offered.pts);
+        }
+    }
+    let mut video_mid = None;
+    let mut audio_mid = None;
+    for section in &answer.media_lines {
+        if !section.typ.is_media() {
+            continue;
+        }
+        let mid = section.mid();
+        let Some(media) = rtc
+            .media(mid)
+            .filter(|media| !media.disabled() && media.direction().is_receiving())
+        else {
+            continue;
+        };
+        match media.kind() {
+            MediaKind::Video => {
+                if video_mid.is_some() {
+                    return Err(TransportError::Offer(
+                        "multiple incoming video tracks are unsupported".to_owned(),
+                    ));
+                }
+                if !section
+                    .rtp_params()
+                    .iter()
+                    .any(|params| params.spec().codec == Codec::H264)
+                {
+                    return Err(TransportError::Offer(
+                        "peer did not negotiate H264 video".to_owned(),
+                    ));
+                }
+                video_mid = Some(mid);
+            }
+            MediaKind::Audio => {
+                if audio_mid.is_some() {
+                    return Err(TransportError::Offer(
+                        "multiple incoming audio tracks are unsupported".to_owned(),
+                    ));
+                }
+                if !section
+                    .rtp_params()
+                    .iter()
+                    .any(|params| params.spec().codec == Codec::Opus)
+                {
+                    return Err(TransportError::Offer(
+                        "peer did not negotiate Opus audio".to_owned(),
+                    ));
+                }
+                audio_mid = Some(mid);
+            }
+        }
+    }
+    let video_mid = video_mid
+        .ok_or_else(|| TransportError::Offer("peer did not negotiate H264 video".to_owned()))?;
+    let answer_sdp = answer.to_string();
     let (candidate_mid, candidate_index) = candidate_target(&answer_sdp)?;
     let active_track = |kind: &str| {
         answer_sdp.lines().any(|line| {
@@ -320,15 +444,6 @@ pub fn negotiate(
             tokens.next() == Some(kind) && tokens.next().is_some_and(|port| port != "0")
         })
     };
-    if !active_track("m=video")
-        || !answer_sdp
-            .lines()
-            .any(|line| line.starts_with("a=rtpmap:") && line.contains("H264/90000"))
-    {
-        return Err(TransportError::Offer(
-            "peer did not negotiate H264 video".to_owned(),
-        ));
-    }
     if !active_track("m=application") {
         return Err(TransportError::Offer(
             "peer did not negotiate input data channels".to_owned(),
@@ -389,6 +504,7 @@ pub fn negotiate(
         })?;
     Ok(NegotiatedTransport {
         answer_sdp,
+        video_mid,
         local_candidate: IceCandidate {
             candidate: local.to_sdp_string(),
             sdp_mid: Some(candidate_mid),
@@ -466,9 +582,9 @@ fn normalize_offer(sdp: &str, endpoint: Option<SocketAddr>) -> Result<String, Tr
         } else {
             if line.starts_with("m=") {
                 media_lines += 1;
-                if media_lines > 3 {
+                if media_lines > MAX_MEDIA_SECTIONS {
                     return Err(TransportError::Offer(
-                        "only one video, audio and data track are supported".to_owned(),
+                        "too many SDP media sections".to_owned(),
                     ));
                 }
             }

@@ -1164,6 +1164,13 @@ WebRTC signaling contract. It does not reuse the RTSP port as a WebSocket or UDP
 media port. Explicit WebSocket descriptors take priority and keep their paths
 and ports. `prepare_endpoints` diagnostics record bounded descriptor types and
 numeric protocol/port fields, never hosts, URLs, session IDs, or credentials.
+WebRTC offers may contain additional microphone or inactive media sections.
+Negotiation keeps their order and MIDs, disables RTP upload, and accepts one
+incoming H.264 video track and at most one incoming Opus audio track. Unsupported
+microphone codecs are rejected in place with valid SDP format identifiers rather
+than rejecting the whole session. Offers remain bounded to eight media sections.
+The `webrtc-offer` diagnostic records section kinds and directions without SDP
+credentials. Keyframe feedback uses the transport's negotiated video MID.
 
 `acceptance.export` is available only through the Qt shell's Diagnostics screen. It rejects
 headless window systems and writes an atomic, redacted `opennow.live-acceptance` JSON file. The
