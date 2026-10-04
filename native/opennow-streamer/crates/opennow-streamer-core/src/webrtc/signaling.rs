@@ -1,4 +1,4 @@
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,6 +19,7 @@ use super::{Failure, MAX_SDP_BYTES};
 
 pub(super) const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const WRITE_TIMEOUT: Duration = Duration::from_millis(250);
 const MAX_SIGNALING_BYTES: usize = 512 * 1024;
 
 struct ResolveRequest {
@@ -238,10 +239,11 @@ pub(super) fn sign_in_url(session: &Session, peer: &str) -> Result<String, Failu
     ))
 }
 
-pub(super) struct Signaling {
-    socket: WebSocket<MaybeTlsStream<TcpStream>>,
+pub(super) struct Signaling<Stream = MaybeTlsStream<TcpStream>> {
+    socket: WebSocket<Stream>,
     pub(super) protocol: Protocol,
     heartbeat_at: Instant,
+    write_pending_since: Option<Instant>,
 }
 
 impl Signaling {
@@ -332,25 +334,58 @@ impl Signaling {
             _ => return Err(Failure::signaling("Unsupported signaling TLS backend")),
         };
         stream
-            .set_nonblocking(false)
+            .set_nonblocking(true)
             .map_err(|_| Failure::signaling("Could not configure signaling socket"))?;
-        stream
-            .set_read_timeout(Some(Duration::from_millis(2)))
-            .map_err(|_| Failure::signaling("Could not configure signaling poll"))?;
-        stream
-            .set_write_timeout(Some(Duration::from_millis(250)))
-            .map_err(|_| Failure::signaling("Could not configure signaling write"))?;
         Ok(Self {
             socket,
             protocol: Protocol::new(peer),
             heartbeat_at: Instant::now(),
+            write_pending_since: None,
         })
+    }
+}
+
+impl<Stream: Read + Write> Signaling<Stream> {
+    fn write_result(&mut self, result: Result<(), tungstenite::Error>) -> Result<(), Failure> {
+        match result {
+            Ok(()) => {
+                self.write_pending_since = None;
+                Ok(())
+            }
+            Err(tungstenite::Error::Io(error)) if error.kind() == ErrorKind::WouldBlock => {
+                let since = self.write_pending_since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= WRITE_TIMEOUT {
+                    return Err(Failure::signaling("Signaling pending write timed out"));
+                }
+                Ok(())
+            }
+            Err(tungstenite::Error::WriteBufferFull(_)) => Err(Failure::signaling(
+                "Signaling write buffer exceeds size limit",
+            )),
+            Err(_) => Err(Failure::signaling("Signaling write failed")),
+        }
+    }
+
+    fn flush(&mut self) -> Result<(), Failure> {
+        if self
+            .write_pending_since
+            .is_some_and(|since| since.elapsed() >= WRITE_TIMEOUT)
+        {
+            return Err(Failure::signaling("Signaling pending write timed out"));
+        }
+        let result = self.socket.flush();
+        self.write_result(result)
     }
 
     pub(super) fn send(&mut self, payload: Value) -> Result<(), Failure> {
-        self.socket
-            .send(Message::Text(payload.to_string().into()))
-            .map_err(|_| Failure::signaling("Signaling write failed"))
+        let text = payload.to_string();
+        if text.len() > MAX_SIGNALING_BYTES {
+            return Err(Failure::signaling(
+                "Outgoing signaling message exceeds size limit",
+            ));
+        }
+        let result = self.socket.send(Message::Text(text.into()));
+        self.write_result(result)
     }
 
     pub(super) fn send_peer(&mut self, payload: Value) -> Result<(), Failure> {
@@ -359,6 +394,7 @@ impl Signaling {
     }
 
     pub(super) fn poll(&mut self) -> Result<Option<Incoming>, Failure> {
+        self.flush()?;
         if self.heartbeat_at.elapsed() >= HEARTBEAT_INTERVAL {
             self.send(json!({"hb":1}))?;
             self.heartbeat_at = Instant::now();

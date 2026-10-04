@@ -239,10 +239,15 @@ struct PeerFixture {
     stopped: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
     input: Receiver<Vec<u8>>,
+    partial_signaling_sent: Arc<AtomicBool>,
 }
 
 impl PeerFixture {
     fn start(video: Vec<u8>) -> Self {
+        Self::start_with_partial_signaling(video, false)
+    }
+
+    fn start_with_partial_signaling(video: Vec<u8>, partial_signaling: bool) -> Self {
         use std::io::ErrorKind;
         use str0m::change::SdpAnswer;
         use str0m::format::Codec;
@@ -261,6 +266,8 @@ impl PeerFixture {
         let media_port = address.port();
         let stopped = Arc::new(AtomicBool::new(false));
         let cancellation = stopped.clone();
+        let partial_signaling_sent = Arc::new(AtomicBool::new(false));
+        let partial_sent = partial_signaling_sent.clone();
         let (input_sender, input) = mpsc::channel();
         let worker = thread::spawn(move || {
             let mut rtc = RtcConfig::new()
@@ -330,24 +337,34 @@ impl PeerFixture {
             let peer_info = websocket.read().unwrap().into_text().unwrap();
             let peer_info: Value = serde_json::from_str(&peer_info).unwrap();
             assert_eq!(peer_info["peer_info"]["resolution"], "64x64");
-            websocket
-                .send(Message::Text(
+            websocket.get_mut().set_nonblocking(true).unwrap();
+            websocket.set_config(|config| config.max_write_buffer_size = 1024 * 1024);
+            fixture_write(
+                &mut websocket,
+                Message::Text(
                     json!({"peer_info":{"name":peer_info["peer_info"]["name"],"id":7},"ackid":1})
                         .to_string()
                         .into(),
-                ))
-                .unwrap();
-            websocket.send(Message::Text(json!({"peer_msg":{"from":9,"to":7,"msg":json!({"type":"offer","sdp":offer.to_sdp_string()}).to_string()},"ackid":2}).to_string().into())).unwrap();
-            websocket
-                .get_mut()
-                .set_read_timeout(Some(Duration::from_millis(1)))
-                .unwrap();
+                ),
+            );
+            fixture_write(&mut websocket, Message::Text(json!({"peer_msg":{"from":9,"to":7,"msg":json!({"type":"offer","sdp":offer.to_sdp_string()}).to_string()},"ackid":2}).to_string().into()));
             let mut connected = false;
             let mut signaling_open = true;
+            let mut partial_queued = false;
             let mut next_media = Instant::now();
             let mut timestamp = 900_123_u64;
             while !cancellation.load(Ordering::Acquire) {
                 if signaling_open {
+                    match websocket.flush() {
+                        Ok(()) => {
+                            if partial_queued {
+                                partial_sent.store(true, Ordering::Release);
+                            }
+                        }
+                        Err(tungstenite::Error::Io(error))
+                            if error.kind() == ErrorKind::WouldBlock => {}
+                        Err(error) => panic!("fixture signaling flush: {error}"),
+                    }
                     match websocket.read() {
                         Ok(Message::Text(packet)) => {
                             let packet: Value = serde_json::from_str(&packet).unwrap();
@@ -373,6 +390,14 @@ impl PeerFixture {
                                             SdpAnswer::from_sdp_string(answer).unwrap(),
                                         )
                                         .unwrap();
+                                    if partial_signaling {
+                                        fixture_write(&mut websocket, Message::Frame(tungstenite::protocol::frame::Frame::message(
+                                            vec![b'{'],
+                                            tungstenite::protocol::frame::coding::OpCode::Data(tungstenite::protocol::frame::coding::Data::Text),
+                                            false,
+                                        )));
+                                        partial_queued = true;
+                                    }
                                 }
                             }
                         }
@@ -486,7 +511,19 @@ impl PeerFixture {
             stopped,
             worker: Some(worker),
             input,
+            partial_signaling_sent,
         }
+    }
+}
+
+fn fixture_write(
+    socket: &mut tungstenite::WebSocket<std::net::TcpStream>,
+    message: tungstenite::Message,
+) {
+    match socket.send(message) {
+        Ok(()) => {}
+        Err(tungstenite::Error::Io(error)) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+        Err(error) => panic!("fixture signaling write: {error}"),
     }
 }
 
@@ -586,7 +623,13 @@ fn engine_signaling_to_real_h264_opus_decode_input_stop_and_restart() {
             .input_ready
             .load(Ordering::Acquire)
         {
-            assert!(Instant::now() < deadline);
+            assert!(
+                Instant::now() < deadline,
+                "input handshake timed out for {id}; lifecycle={:?}, peer_finished={}, events={:?}",
+                lock_lifecycle(&engine.lifecycle).state,
+                peer.worker.as_ref().is_some_and(JoinHandle::is_finished),
+                events.try_iter().collect::<Vec<_>>()
+            );
             thread::sleep(Duration::from_millis(5));
         }
         engine.webrtc_session.as_ref().unwrap().anti_afk().unwrap();
@@ -609,6 +652,66 @@ fn engine_signaling_to_real_h264_opus_decode_input_stop_and_restart() {
         while received.try_recv().is_ok() {}
         while events.try_recv().is_ok() {}
     }
+}
+
+#[test]
+fn incomplete_signaling_message_does_not_stall_input_media_or_stop() {
+    use openh264::formats::{RgbSliceU8, YUVBuffer};
+    let rgb = vec![96_u8; 64 * 64 * 3];
+    let yuv = YUVBuffer::from_rgb_source(RgbSliceU8::new(&rgb, (64, 64)));
+    let video = openh264::encoder::Encoder::new()
+        .unwrap()
+        .encode(&yuv)
+        .unwrap()
+        .to_vec();
+    let peer = PeerFixture::start_with_partial_signaling(video, true);
+    let (output, events) = mpsc::channel();
+    let (consumer, received) = mpsc::sync_channel(8);
+    let mut engine = Engine::with_media_consumer(output, consumer);
+    let (responses, _) = engine.handle(start_command(&peer, "partial-signaling"));
+    assert_eq!(responses[0]["transport"], "webrtc", "{responses:?}");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !peer.partial_signaling_sent.load(Ordering::Acquire)
+        || !engine
+            .webrtc_session
+            .as_ref()
+            .unwrap()
+            .input_ready
+            .load(Ordering::Acquire)
+    {
+        assert!(
+            Instant::now() < deadline,
+            "input stalled with partial signaling: {:?}",
+            events.try_iter().collect::<Vec<_>>()
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
+    engine.webrtc_session.as_ref().unwrap().anti_afk().unwrap();
+    let packets = input_bodies(&peer, &[3, 4]);
+    assert_eq!(&packets[0][4..6], &0x7c_u16.to_be_bytes());
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut video_timestamps = std::collections::BTreeSet::new();
+    let mut audio_received = false;
+    while video_timestamps.len() < 3 || !audio_received {
+        assert!(
+            Instant::now() < deadline,
+            "media stalled with partial signaling: {:?}",
+            events.try_iter().collect::<Vec<_>>()
+        );
+        if let Ok(frame) = received.recv_timeout(Duration::from_millis(10)) {
+            match frame.codec.as_str() {
+                "H264" => {
+                    video_timestamps.insert(frame.rtp_timestamp);
+                }
+                "Opus" => audio_received = true,
+                other => panic!("unexpected codec {other}"),
+            }
+        }
+    }
+    let before = Instant::now();
+    engine.stop("partial signaling stop");
+    assert!(before.elapsed() < Duration::from_secs(1));
+    assert!(!events.try_iter().any(|event| event["type"] == "error"));
 }
 
 #[test]

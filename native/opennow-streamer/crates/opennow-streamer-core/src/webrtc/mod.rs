@@ -14,6 +14,7 @@ const MAX_PENDING_CANDIDATES: usize = 64;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 const VIDEO_TIMEOUT: Duration = Duration::from_secs(8);
 const RECOVERY_GRACE: Duration = Duration::from_secs(4);
+const SIGNALING_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
 #[derive(Debug)]
 struct Failure {
@@ -350,7 +351,7 @@ impl Worker {
                 Some(signaling::Incoming::Closed) => {
                     return Err(Failure::signaling("Signaling peer closed before the offer"));
                 }
-                None => {}
+                None => thread::sleep(SIGNALING_POLL_INTERVAL),
             }
         };
         let threshold = sdp::partial_reliability(&offer)?;
@@ -405,6 +406,7 @@ impl Worker {
         let mut drops = QueueDropReports::new();
         let result = (|| -> Result<(), Failure> {
             while self.active() {
+                let iteration_started = Instant::now();
                 for incoming in receiver.try_iter().take(64) {
                     match incoming {
                     TransportEvent::Connected => self.emit("log", json!({"level":"info","message":"WebRTC transport connected; waiting for decoded media"})),
@@ -542,6 +544,7 @@ impl Worker {
                     }
                     None => {}
                 }
+                thread::sleep(SIGNALING_POLL_INTERVAL.saturating_sub(iteration_started.elapsed()));
             }
             Ok(())
         })();
