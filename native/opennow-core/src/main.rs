@@ -773,6 +773,7 @@ fn dispatch(method: &str, params: &Value, core: &AppCore) -> DispatchResult {
             .map_err(gfn_error),
         "session.create" => {
             let settings = core.settings.lock().expect("settings poisoned").all();
+            let settings = cloudmatch::allocation_settings(&settings);
             let settings = if !params["runtimeCapabilities"].is_null() {
                 StreamerService::embedded_session_settings(
                     &settings,
@@ -849,6 +850,13 @@ fn dispatch(method: &str, params: &Value, core: &AppCore) -> DispatchResult {
         }
         "streamer.prepare" => {
             let settings = core.settings.lock().expect("settings poisoned").all();
+            if params["session"]["transportMode"] == "webrtc" {
+                core.diagnostics.record(
+                    "streamer",
+                    "prepare_endpoints",
+                    diagnostics::stream_endpoint_evidence(&params["session"]).to_string(),
+                );
+            }
             core.gfn
                 .prepare_owned_stream(params, |owned| {
                     core.streamer

@@ -2165,16 +2165,27 @@ impl GfnService {
                 message: "The owned session is not ready for media attachment".into(),
             });
         }
-        if !owned["rtspsEndpoints"].as_array().is_some_and(|endpoints| {
-            endpoints.iter().any(|endpoint| {
-                endpoint
-                    .as_str()
-                    .is_some_and(|endpoint| endpoint.starts_with("rtsps://"))
+        let webrtc = owned["transportMode"] == "webrtc";
+        let endpoint_ready = if webrtc {
+            crate::cloudmatch::has_webrtc_endpoint(&owned)
+        } else {
+            owned["rtspsEndpoints"].as_array().is_some_and(|endpoints| {
+                endpoints.iter().any(|endpoint| {
+                    endpoint
+                        .as_str()
+                        .is_some_and(|endpoint| endpoint.starts_with("rtsps://"))
+                })
             })
-        }) {
+        };
+        if !endpoint_ready {
             return Err(ServiceError {
                 code: "session_endpoint_missing",
-                message: "The owned session has no RTSPS media endpoint".into(),
+                message: if webrtc {
+                    "The owned session has no WebRTC signaling endpoint"
+                } else {
+                    "The owned session has no RTSPS media endpoint"
+                }
+                .into(),
             });
         }
         let mut params = params.clone();

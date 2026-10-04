@@ -1140,11 +1140,37 @@ CloudMatch session methods preserve one client/device identity through create,
 poll and stop, retain pending queue responses before signaling is available,
 and return the complete ordered connection, ICE and negotiated-feature payload
 needed by the native streamer. `streamer.prepare` returns the normalized session
-context used by the NVST runtime linked into the Qt shell. The in-process runtime
+context used by the native runtime linked into the Qt shell. The in-process runtime
 owns secure NVIDIA signaling, ICE/DTLS/SCTP, RTSPS, Mjolnir, RTCP and native
 gameplay input, while Qt owns the graphics device, scene graph, video item and
 all top-level windows. Legacy streamer lifecycle methods remain protocol
 compatibility routes and are not used by the Qt shell.
+
+`allianceWebrtcCompatibility` is a default-off boolean setting for new NVIDIA and
+alliance allocations. Its historical key is retained for settings compatibility;
+the UI calls it **WebRTC compatibility mode** and warns about lower performance
+than NVST. Session ownership and authentication remain required. Legacy persisted
+`transportMode` values still normalize to `nvst`; only the core-owned session's
+transport selects the embedded WebRTC path. Its initial profile is at most
+1920×1080 at 60 FPS, H.264, 8-bit 4:2:0 SDR, stereo, and no microphone.
+WebRTC signaling endpoints remain separate
+from RTSPS endpoints, including their server-provided paths and ports. The native
+runtime owns the WebSocket offer, answer, NVIDIA quality SDP, and ICE exchange.
+It delivers compressed media to the existing decoder and GPU presentation path.
+The setting does not authorize a live NVST seat to be converted, deleted, or replaced.
+For an owned WebRTC allocation that supplies only legacy RTSP descriptors,
+the core derives `wss://<descriptor-host>/nvst/` on port 443, matching Android's
+WebRTC signaling contract. It does not reuse the RTSP port as a WebSocket or UDP
+media port. Explicit WebSocket descriptors take priority and keep their paths
+and ports. `prepare_endpoints` diagnostics record bounded descriptor types and
+numeric protocol/port fields, never hosts, URLs, session IDs, or credentials.
+WebRTC offers may contain additional microphone or inactive media sections.
+Negotiation keeps their order and MIDs, disables RTP upload, and accepts one
+incoming H.264 video track and at most one incoming Opus audio track. Unsupported
+microphone codecs are rejected in place with valid SDP format identifiers rather
+than rejecting the whole session. Offers remain bounded to eight media sections.
+The `webrtc-offer` diagnostic records section kinds and directions without SDP
+credentials. Keyframe feedback uses the transport's negotiated video MID.
 
 `acceptance.export` is available only through the Qt shell's Diagnostics screen. It rejects
 headless window systems and writes an atomic, redacted `opennow.live-acceptance` JSON file. The

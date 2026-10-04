@@ -5410,7 +5410,7 @@ fn set_exclusive_udp_address(socket: &Socket) -> std::io::Result<()> {
 }
 
 #[cfg(windows)]
-fn disable_udp_connreset(socket: &Socket) -> std::io::Result<()> {
+pub(crate) fn disable_udp_connreset(socket: &Socket) -> std::io::Result<()> {
     use std::os::windows::io::AsRawSocket;
     use windows_sys::Win32::Networking::WinSock::{
         SIO_UDP_CONNRESET, SOCKET_ERROR, WSAGetLastError, WSAIoctl,

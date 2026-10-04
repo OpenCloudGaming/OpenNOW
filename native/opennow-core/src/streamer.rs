@@ -589,6 +589,31 @@ impl StreamerService {
             ));
         }
         let profile = &session["negotiatedStreamProfile"];
+        if session["transportMode"] == "webrtc" {
+            if session["reportedNativeTransport"] == true {
+                return Err(invalid(
+                    "CloudMatch returned a native allocation for this WebRTC session",
+                ));
+            }
+            if !crate::cloudmatch::has_webrtc_endpoint(&session) {
+                return Err(invalid(
+                    "The WebRTC session has no valid signaling endpoint",
+                ));
+            }
+            if profile["codec"]
+                .as_str()
+                .is_some_and(|codec| codec != "H264")
+                || (profile["codecSource"] == "server" && profile["codec"].as_str().is_none())
+                || profile["enableHdr"] == true
+                || profile["colorQuality"]
+                    .as_str()
+                    .is_some_and(|color| color != "8bit_420")
+            {
+                return Err(invalid(
+                    "WebRTC compatibility requires an allocated H.264 SDR 8-bit 4:2:0 session",
+                ));
+            }
+        }
         if profile["enableHdrSource"] == "server" && profile["enableHdr"].as_bool().is_none() {
             return Err(invalid("CloudMatch returned an unsupported HDR mode"));
         }
@@ -652,6 +677,11 @@ impl StreamerService {
     }
 
     pub fn start(&self, params: &Value, settings: &Value) -> Result<Value, StreamerError> {
+        if params["session"]["transportMode"] == "webrtc" {
+            return Err(invalid(
+                "WebRTC compatibility requires owned embedded stream preparation",
+            ));
+        }
         self.reap_finished();
         let mut worker = self.worker.lock().expect("streamer worker poisoned");
         if worker.is_some() {
@@ -1712,7 +1742,11 @@ pub(crate) fn validated_native_hdr_display(display: &Value) -> Option<NativeHdrD
 fn streamer_context(mut session: Value, settings: &Value) -> Value {
     let mut normalized = settings.clone();
     let negotiated_codec = session["negotiatedStreamProfile"]["codec"].as_str();
-    let requested_codec = normalized["codec"].as_str().unwrap_or("auto").to_owned();
+    let requested_codec = if session["transportMode"] == "webrtc" {
+        "H264".to_owned()
+    } else {
+        normalized["codec"].as_str().unwrap_or("auto").to_owned()
+    };
     let codec = negotiated_codec.map(ToOwned::to_owned).unwrap_or_else(|| {
         if requested_codec.eq_ignore_ascii_case("auto") {
             "H264".to_owned()
@@ -1730,10 +1764,26 @@ fn streamer_context(mut session: Value, settings: &Value) -> Value {
     if let Some(color) = session["negotiatedStreamProfile"]["colorQuality"].as_str() {
         normalized["colorQuality"] = json!(color);
     }
-    // The Qt/native client owns negotiation and media over NVST. Ignore old
-    // persisted WebRTC values so manual HEVC/AV1 selections cannot be routed
-    // through the retired browser transport.
-    normalized["transportMode"] = Value::String("nvst".to_owned());
+    normalized["transportMode"] = json!(if session["transportMode"] == "webrtc" {
+        "webrtc"
+    } else {
+        "nvst"
+    });
+    if session["transportMode"] == "webrtc" {
+        normalized["codec"] = json!("H264");
+        normalized["colorQuality"] = json!("8bit_420");
+        normalized["enableHdr"] = json!(false);
+        normalized["microphoneMode"] = json!("disabled");
+        normalized["enableCloudGsync"] = json!(false);
+        normalized["nativeCloudGsyncMode"] = json!("disabled");
+        normalized["resolution"] = json!("1920x1080");
+        normalized["fps"] = json!(60);
+        for key in ["resolution", "fps"] {
+            if !session["negotiatedStreamProfile"][key].is_null() {
+                normalized[key] = session["negotiatedStreamProfile"][key].clone();
+            }
+        }
+    }
     if session["negotiatedStreamProfile"].is_null() {
         session["negotiatedStreamProfile"] = json!({"codec":codec.to_ascii_uppercase()});
     }
@@ -2124,6 +2174,69 @@ mod tests {
         let failure = ensure_child_running(&mut child).expect_err("exited child must fail");
         assert_eq!(failure.code, "streamer_exited");
         assert!(failure.message.contains("23"));
+    }
+
+    #[test]
+    fn alliance_webrtc_preparation_uses_owned_profile_not_current_preferences() {
+        let service = StreamerService::new();
+        let session = json!({"sessionId":"seat","status":3,"transportMode":"webrtc",
+            "signalingUrl":"wss://seat.partner.example:8443/nvst/",
+            "connectionInfo":[{"usage":14,"appLevelProtocol":4,"ip":"seat.partner.example","port":8443,"resourcePath":"/nvst/"}],
+            "negotiatedStreamProfile":{"codec":"H264","codecSource":"request","colorQuality":"8bit_420",
+                "enableHdr":false,"resolution":"1280x720","fps":30}});
+        let settings = json!({"transportMode":"nvst","allianceWebrtcCompatibility":false,
+            "codec":"av1","colorQuality":"10bit_444","enableHdr":true,
+            "microphoneMode":"open","resolution":"3840x2160","fps":240});
+        assert!(
+            service
+                .start(&json!({"session":session}), &settings)
+                .is_err()
+        );
+        let prepared = service
+            .prepare_embedded(&json!({"session":session}), &settings)
+            .unwrap();
+        let output = &prepared["context"]["settings"];
+        assert_eq!(output["transportMode"], "webrtc");
+        assert_eq!(output["codec"], "H264");
+        assert_eq!(output["colorQuality"], "8bit_420");
+        assert_eq!(output["enableHdr"], false);
+        assert_eq!(output["microphoneMode"], "disabled");
+        assert_eq!(output["resolution"], "1280x720");
+        assert_eq!(output["fps"], 30);
+        assert_eq!(prepared["context"]["session"], session);
+        for (key, value) in [
+            ("codec", json!("AV1")),
+            ("enableHdr", json!(true)),
+            ("colorQuality", json!("10bit_420")),
+        ] {
+            let mut incompatible = session.clone();
+            incompatible["negotiatedStreamProfile"][key] = value;
+            assert!(
+                service
+                    .prepare_embedded(&json!({"session":incompatible}), &settings)
+                    .is_err()
+            );
+        }
+        let mut native_endpoint = session.clone();
+        native_endpoint["reportedNativeTransport"] = json!(true);
+        assert!(
+            service
+                .prepare_embedded(&json!({"session":native_endpoint}), &settings)
+                .is_err()
+        );
+        native_endpoint["reportedNativeTransport"] = json!(false);
+        native_endpoint["connectionInfo"][0]["appLevelProtocol"] = json!(6);
+        assert!(
+            service
+                .prepare_embedded(&json!({"session":native_endpoint}), &settings)
+                .is_err()
+        );
+        native_endpoint["signalingUrl"] = json!("wss://seat.partner.example/nvst/");
+        assert!(
+            service
+                .prepare_embedded(&json!({"session":native_endpoint}), &settings)
+                .is_ok()
+        );
     }
 
     #[test]

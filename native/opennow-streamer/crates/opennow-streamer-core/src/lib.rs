@@ -36,6 +36,7 @@ mod nvst_rtsp;
 mod queue_drops;
 #[cfg(test)]
 mod recording_tests;
+mod webrtc;
 
 use microphone::MicrophoneController;
 
@@ -206,6 +207,7 @@ impl NvstSessionResources for ActiveNvstResources {
 
 pub struct Engine {
     lifecycle: Arc<Mutex<Lifecycle>>,
+    webrtc_session: Option<webrtc::OwnedSession>,
     nvst_transport: Option<NvstUdpReceiverSession>,
     nvst_mjolnir_transport: Option<NvstUdpReceiverSession>,
     reserved_nvst_bundle: Option<ReservedNvstBundle>,
@@ -251,6 +253,7 @@ impl Engine {
                 generation: 0,
             })),
             nvst_transport: None,
+            webrtc_session: None,
             nvst_mjolnir_transport: None,
             reserved_nvst_bundle: None,
             nvst_hole_punch_socket: None,
@@ -290,6 +293,7 @@ impl Engine {
                 generation: 0,
             })),
             nvst_transport: None,
+            webrtc_session: None,
             nvst_mjolnir_transport: None,
             reserved_nvst_bundle: None,
             nvst_hole_punch_socket: None,
@@ -325,6 +329,7 @@ impl Engine {
                 generation: 0,
             })),
             nvst_transport: None,
+            webrtc_session: None,
             nvst_mjolnir_transport: None,
             reserved_nvst_bundle: None,
             nvst_hole_punch_socket: None,
@@ -671,6 +676,17 @@ impl Engine {
             if lifecycle.state != State::Idle {
                 return Err(invalid_state(&command.id, "start", lifecycle.state, "Idle"));
             }
+        }
+        if let Some(session) = self.webrtc_session.take() {
+            session.stop();
+        }
+        if context
+            .settings
+            .get("transportMode")
+            .and_then(Value::as_str)
+            == Some("webrtc")
+        {
+            return self.start_webrtc(command.id, context, audio_device);
         }
         let wants_owned_nvst = context
             .settings
@@ -1152,6 +1168,19 @@ impl Engine {
     }
 
     fn set_paused(&self, command: Command) -> Result<Vec<Value>, Value> {
+        if let Some(session) = self.webrtc_session.as_ref() {
+            let paused = command.paused.ok_or_else(|| {
+                error(
+                    Some(&command.id),
+                    "missing-paused",
+                    "Pause command does not include paused state",
+                )
+            })?;
+            session
+                .set_paused(paused)
+                .map_err(|message| error(Some(&command.id), "webrtc-input-unavailable", message))?;
+            return Ok(vec![response(command.id, "ok")]);
+        }
         let Some(runtime) = self.media_runtime.as_ref() else {
             return Err(error(
                 Some(&command.id),
@@ -1237,6 +1266,9 @@ impl Engine {
             lifecycle.state = State::Idle;
             was_active
         };
+        if let Some(session) = self.webrtc_session.take() {
+            session.stop();
+        }
         if let Some(transport) = self.nvst_transport.take() {
             transport.stop();
         }
@@ -1498,6 +1530,12 @@ impl Engine {
                 state,
                 "Connected with an initialized input channel",
             ));
+        }
+        if let Some(session) = self.webrtc_session.as_ref() {
+            session
+                .anti_afk()
+                .map_err(|message| error(Some(&command.id), "webrtc-input-unavailable", message))?;
+            return Ok(vec![response(command.id, "ok")]);
         }
         let send = |input| {
             let bytes = captured_input_packet(input, 0);

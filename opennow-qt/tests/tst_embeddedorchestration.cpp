@@ -69,7 +69,7 @@ bool prepareAuthentication(QJSEngine &engine)
             requests.push({method:method,params:params});return 'request-' + requests.length;
         },cancel:function(id) {cancelled.push(id);}};
         var AppController = {route:'accounts',navigate:function(route) {this.route=route;}};
-        var settingsOwner = {acceptResponse:function() {return false;},acceptFailure:function() {return false;}};
+        var settingsOwner = {settingWrites:{},acceptResponse:function() {return false;},acceptFailure:function() {return false;}};
         var onboardingOwner = {acceptResponse:function() {return false;},acceptFailure:function() {return false;}};
         function ownedSessionTermination() {return null;}
         function finishArtworkRequest() {return false;}
@@ -898,7 +898,7 @@ private slots:
             var CoreClient = {request:function(method,params){requests.push(method);return 'request-'+requests.length;}};
             var AppController = {navigate:function(){}};
             var onboardingOwner = {acceptFailure:function(){return false;}};
-            var settingsOwner = {acceptFailure:function(){return false;}};
+            var settingsOwner = {settingWrites:{},acceptFailure:function(){return false;}};
             function finishArtworkRequest(){return false;}
             function selectedLaunchAppId(){return '123';}
             function selectedGameMembershipError(){return '';}
@@ -1358,6 +1358,44 @@ private slots:
         QCOMPARE(engine.evaluate(QStringLiteral("commands.length")).toInt(), 1);
         engine.evaluate(QStringLiteral("streamClipRequestId = 'stale'; resetStreamReplay()"));
         QCOMPARE(engine.evaluate(QStringLiteral("streamClipRequestId")).toString(), QString());
+    }
+
+    void webRtcStartAcknowledgementPreservesMediaProgress_data()
+    {
+        QTest::addColumn<QString>("transport");
+        QTest::addColumn<QString>("initialStatus");
+        QTest::addColumn<QString>("expectedStatus");
+        QTest::newRow("webrtc-awaits-media") << QStringLiteral("webrtc") << QStringLiteral("starting") << QStringLiteral("connecting");
+        QTest::newRow("webrtc-media-arrived-first") << QStringLiteral("webrtc") << QStringLiteral("streaming") << QStringLiteral("streaming");
+        QTest::newRow("webrtc-error-arrived-first") << QStringLiteral("webrtc") << QStringLiteral("error") << QStringLiteral("error");
+        QTest::newRow("webrtc-stopped-first") << QStringLiteral("webrtc") << QStringLiteral("stopped") << QStringLiteral("stopped");
+        QTest::newRow("nvst-unchanged") << QStringLiteral("nvst") << QStringLiteral("starting") << QStringLiteral("streaming");
+    }
+
+    void webRtcStartAcknowledgementPreservesMediaProgress()
+    {
+        QFETCH(QString, transport);
+        QFETCH(QString, initialStatus);
+        QFETCH(QString, expectedStatus);
+        QJSEngine engine;
+        engine.installExtensions(QJSEngine::TranslationExtension);
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            var streamerStartRequestId = 'start', sessionRecoveryPending = false;
+            var streamReplayEnabled = false, replayBufferRequested = true;
+            var nativeRuntimeCapabilities = {}, streamer = {message:'Earlier media event'};
+            function takeNativeRequest(id) { return {operation:'start'}; }
+            function updateStreamerFields(fields) { streamer = Object.assign({}, streamer, fields); }
+        )JS")).isError());
+        engine.globalObject().setProperty(QStringLiteral("transport"), transport);
+        engine.globalObject().setProperty(QStringLiteral("initialStatus"), initialStatus);
+        QVERIFY(!engine.evaluate(QStringLiteral("streamer.status = initialStatus")).isError());
+        QVERIFY(loadShellFunction(engine, QStringLiteral("acceptNativeResponse")));
+        const auto result = engine.evaluate(QStringLiteral("acceptNativeResponse({id:'start',type:'ok',transport:transport})"));
+        QVERIFY2(!result.isError(), qPrintable(result.toString()));
+        QCOMPARE(engine.evaluate(QStringLiteral("streamer.status")).toString(), expectedStatus);
+        QCOMPARE(engine.evaluate(QStringLiteral("streamerStartRequestId")).toString(), QString());
+        if (transport == QStringLiteral("webrtc") && initialStatus != QStringLiteral("starting"))
+            QCOMPARE(engine.evaluate(QStringLiteral("streamer.message")).toString(), QStringLiteral("Earlier media event"));
     }
 
     void lastPlayedUsesElapsedUnits_data()

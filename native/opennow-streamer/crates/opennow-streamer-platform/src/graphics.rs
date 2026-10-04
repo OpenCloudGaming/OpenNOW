@@ -1,5 +1,5 @@
 use std::fmt;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, ThreadId};
 
@@ -376,6 +376,10 @@ pub struct GraphicsFramePublisher {
 }
 
 impl GraphicsFramePublisher {
+    pub fn published_frames(&self) -> u64 {
+        self.inner.published_frames.load(Ordering::Relaxed)
+    }
+
     pub fn clear(&self) {
         lock_scene(&self.inner.scene).latest = None;
     }
@@ -393,6 +397,24 @@ impl GraphicsFramePublisher {
         lease: GraphicsContextLease,
         frame: Arc<dyn GraphicsFrame>,
     ) -> Result<GraphicsPublishOutcome, GraphicsRuntimeError> {
+        self.publish_frame(lease, frame, true)
+    }
+
+    #[cfg(any(windows, test))]
+    pub(crate) fn publish_pending(
+        &self,
+        lease: GraphicsContextLease,
+        frame: Arc<dyn GraphicsFrame>,
+    ) -> Result<GraphicsPublishOutcome, GraphicsRuntimeError> {
+        self.publish_frame(lease, frame, false)
+    }
+
+    fn publish_frame(
+        &self,
+        lease: GraphicsContextLease,
+        frame: Arc<dyn GraphicsFrame>,
+        decoded: bool,
+    ) -> Result<GraphicsPublishOutcome, GraphicsRuntimeError> {
         let outcome = {
             let mut scene = lock_scene(&self.inner.scene);
             if scene.context.is_none() {
@@ -405,6 +427,9 @@ impl GraphicsFramePublisher {
                 epoch: lease.epoch,
                 frame,
             });
+            if decoded {
+                self.inner.published_frames.fetch_add(1, Ordering::Relaxed);
+            }
             if replaced.is_some() {
                 GraphicsPublishOutcome::Replaced
             } else {
@@ -440,6 +465,7 @@ impl RenderThreadGraphics {
         let inner = Arc::new(GraphicsRuntimeInner {
             scene: Mutex::new(SceneGraphState::default()),
             frame_available: Box::new(frame_available),
+            published_frames: AtomicU64::new(0),
         });
         (
             Self {
@@ -554,6 +580,7 @@ impl RenderThreadGraphics {
 struct GraphicsRuntimeInner {
     scene: Mutex<SceneGraphState>,
     frame_available: Box<dyn Fn() + Send + Sync>,
+    published_frames: AtomicU64,
 }
 
 #[derive(Default)]
@@ -899,6 +926,47 @@ mod tests {
             drops: Arc::clone(drops),
             records: Arc::clone(records),
         })
+    }
+
+    #[test]
+    fn publication_progress_survives_consumption_and_rejects_stale_frames() {
+        let (graphics, publisher) = RenderThreadGraphics::new(|| {});
+        graphics.initialize(context()).unwrap();
+        let lease = publisher.context().unwrap();
+        let drops = Arc::new(AtomicUsize::new(0));
+        let records = Arc::new(Mutex::new(Vec::new()));
+        assert_eq!(publisher.published_frames(), 0);
+        publisher
+            .publish_pending(lease, frame(0, &drops, &records))
+            .unwrap();
+        assert_eq!(publisher.published_frames(), 0);
+        publisher
+            .publish(lease, frame(1, &drops, &records))
+            .unwrap();
+        publisher
+            .publish(lease, frame(2, &drops, &records))
+            .unwrap();
+        assert_eq!(publisher.published_frames(), 2);
+        drop(graphics.acquire_latest().unwrap());
+        publisher.clear();
+        assert_eq!(publisher.published_frames(), 2);
+        graphics.shutdown().unwrap();
+        assert!(
+            publisher
+                .publish(lease, frame(3, &drops, &records))
+                .is_err()
+        );
+        graphics.initialize(context()).unwrap();
+        assert!(
+            publisher
+                .publish(lease, frame(4, &drops, &records))
+                .is_err()
+        );
+        assert_eq!(publisher.published_frames(), 2);
+        publisher
+            .publish(publisher.context().unwrap(), frame(5, &drops, &records))
+            .unwrap();
+        assert_eq!(publisher.published_frames(), 3);
     }
 
     #[test]

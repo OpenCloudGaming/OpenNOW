@@ -129,6 +129,13 @@ pub struct EmbeddedRuntimeConfig {
 }
 
 impl MediaRuntime {
+    pub fn published_video_frames(&self) -> Option<u64> {
+        match &self.mode {
+            MediaRuntimeMode::Embedded { frames, .. } => Some(frames.published_frames()),
+            _ => None,
+        }
+    }
+
     pub fn set_audio_muted(&self, muted: bool) {
         self.output.audio_muted.store(muted, Ordering::Release);
     }

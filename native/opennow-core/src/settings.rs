@@ -1056,7 +1056,7 @@ fn defaults() -> Map<String, Value> {
         "nativeVideoBackend":"auto", "nativeStreamerExecutablePath":"", "audioOutputDevice":"",
         "windowsGpuDeviceId":"",
         "nativeCloudGsyncMode":"auto", "nativeD3dFullscreenMode":"auto",
-        "nativeExternalRenderer":false, "transportMode":"nvst", "showNativeStreamerStats":false,
+        "nativeExternalRenderer":false, "transportMode":"nvst", "allianceWebrtcCompatibility":false, "showNativeStreamerStats":false,
         "codec":"auto", "fallbackCodec":"auto", "decoderPreference":"auto",
         "encoderPreference":"auto", "colorQuality":"8bit_420", "enableHdr":false, "region":"", "regionProviderIdpId":"", "providerRegions":{},
         "suppressTenBitWarning":false,
@@ -1265,6 +1265,28 @@ mod tests {
         let mut url = url::Url::parse("https://fixture.invalid/").unwrap();
         crate::language::append_session_preferences(&mut url, &settings);
         assert_eq!(url.query(), Some("keyboardLayout=en-US&languageCode=en_US"));
+    }
+
+    #[test]
+    fn alliance_webrtc_setting_is_default_off_boolean_and_independent_of_legacy_mode() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = SettingsStore::load(Some(directory.path().to_path_buf())).unwrap();
+        assert_eq!(store.all()["allianceWebrtcCompatibility"], false);
+        store.set("transportMode", json!("webrtc")).unwrap();
+        assert_eq!(store.all()["transportMode"], "nvst");
+        assert_eq!(store.all()["allianceWebrtcCompatibility"], false);
+        assert_eq!(
+            store
+                .set("allianceWebrtcCompatibility", json!("true"))
+                .unwrap(),
+            false
+        );
+        store
+            .set("allianceWebrtcCompatibility", json!(true))
+            .unwrap();
+        let restored = SettingsStore::load(Some(directory.path().to_path_buf())).unwrap();
+        assert_eq!(restored.all()["allianceWebrtcCompatibility"], true);
+        assert_eq!(restored.all()["transportMode"], "nvst");
     }
 
     #[test]
