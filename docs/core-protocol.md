@@ -432,7 +432,37 @@ and artwork only near the viewport, using the section's local category ID
 - `updater.highlights.get`, `updater.highlights.ack`
 - `social.capabilities.get`
 - `discord.activity.sync`, `discord.activity.clear`
-- `telemetry.sync`, `feedback.submit`, `bug_report.submit`
+- `telemetry.sync`, `feedback.submit`, `bug_report.submit`, `bug_report.incident`
+
+### Automatic bug reports (`automaticBugReports.v1`)
+
+Automatic reports are opt-out while OpenNOW is experimental. The
+`automaticBugReports` setting is `unset`, `enabled`, or `disabled`; `unset`
+means the sign-in notice has not been answered and is treated as enabled. Only
+a signed-in account can report, and the report names that account: the GeForce
+NOW username, the account e-mail when no username exists, and the login
+provider so alliance-partner accounts are distinguishable.
+
+The core triggers a report itself when `session.create`, `session.poll`,
+`session.claim`, `streamer.prepare`, `streamer.start`, or `catalog.library.list`
+fails with a code that is not a user action or account state (for example
+`cancelled`, `stale_account`, or `session_conflict` are ignored).
+`session.create` also records the launched title in the diagnostics log and the
+recent-games list attached to every report.
+
+The Qt shell reports in-process media problems with `bug_report.incident`:
+`kind` is `stream_error` or `frame_drops`, `code` is a lowercase identifier,
+`message` is redacted and bounded, and `metrics` copies only the numeric fields
+`droppedFrames`, `windowSeconds`, `framesPerSecond`, `packetLossPercent`,
+`pingMs`, and `decodeTimeMs`. The result is `{accepted:true}` or
+`{accepted:false, reason}` (`disabled`, `signed_out`, `already_reported`).
+Each kind and code pair is reported once per core run, at most five reports per
+run, at least 30 seconds apart.
+
+Accepted reports upload the redacted diagnostics export to the bug-report
+service in the background and publish `bug_report.changed` events with
+`state` `sending`, then `sent` (with `reference`) or `failed` (with `message`),
+plus `kind`, `code`, and the current `game` title.
 
 `diagnostics.export` optionally accepts `embeddedStream.drops` and
 `lastSessionReport.drops` from the Qt session owner. Each contains the cumulative

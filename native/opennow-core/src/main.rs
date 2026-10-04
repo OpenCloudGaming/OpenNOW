@@ -2,6 +2,7 @@
 
 mod account_connections;
 mod artwork_cache;
+mod bug_reports;
 mod catalog_types;
 mod cloudmatch;
 mod community;
@@ -65,6 +66,7 @@ struct AppCore {
     thanks: thanks::ThanksService,
     discord: discord::DiscordService,
     telemetry: telemetry::TelemetryService,
+    bug_reports: bug_reports::BugReporter,
 }
 
 fn main() {
@@ -144,6 +146,7 @@ fn run() -> Result<(), String> {
         discord: discord::DiscordService::new(),
         telemetry: telemetry::TelemetryService::new()
             .map_err(|error| format!("Could not initialize reporting services: {error}"))?,
+        bug_reports: bug_reports::BugReporter::default(),
     });
     reconcile_push(&core);
     let requests = Arc::new(requests::Requests::default());
@@ -193,7 +196,7 @@ fn run() -> Result<(), String> {
             let started = Instant::now();
             let result = requests::scope(permit.token.clone(), || {
                 requests::check().map_err(|error| (error.code.to_owned(), error.message))?;
-                dispatch(&method, &params, &worker_core)
+                dispatch(&method, &params, &worker_core, &worker_output)
             });
             let outcome = match &result {
                 Ok(_) => "ok",
@@ -204,6 +207,7 @@ fn run() -> Result<(), String> {
                 &method,
                 format!("outcome={outcome} durationMs={}", started.elapsed().as_millis()),
             );
+            observe_bug_report_triggers(&worker_core, &worker_output, &method, &params, &result);
             let was_cancelled = permit.token.cancelled();
             if method == "session.create"
                 && let Err((code, message)) = &result
@@ -367,7 +371,12 @@ fn acceptance_shell_evidence(params: &Value) -> Result<Value, (String, String)> 
     }))
 }
 
-fn dispatch(method: &str, params: &Value, core: &AppCore) -> DispatchResult {
+fn dispatch(
+    method: &str,
+    params: &Value,
+    core: &Arc<AppCore>,
+    output: &mpsc::Sender<Value>,
+) -> DispatchResult {
     let session_transition = matches!(
         method,
         "session.create" | "session.claim" | "session.poll" | "streamer.start" | "streamer.prepare"
@@ -397,7 +406,7 @@ fn dispatch(method: &str, params: &Value, core: &AppCore) -> DispatchResult {
                 ));
             }
             Ok((
-                json!({"protocolVersion":PROTOCOL_VERSION, "coreVersion":version::APPLICATION_VERSION, "capabilities":["settings", "gfn.deviceAuth", "gfn.providers", "gfn.publicCatalog", "catalog.storePages.v1", "catalog.libraryPages.v1", "catalog.metadata.v1", "account.syncObservation.v1", "account.pushInvalidation.v1", "catalog.languages.v1", "queue.servers.v1", "catalog.storeLocal.v1", "gfn.accountLibrary", "gfn.regions", "gfn.subscription", "gfn.cloudmatch", "sessionProxy", "catalogArtworkCache.v1", "nativeStreamer.v7", "nativeStreamer.ownedNvstNegotiation", "nativeStreamer.dynamicSurface", "nativeStreamer.acceptanceEvidence", "liveAcceptance.v1", "osCredentialStore", "electronAccountMigration", "redactedDiagnostics", "mediaLibrary", "githubUpdateDiscovery", "discordRpc", "optInTelemetry", "feedback", "bugReports", "social.capabilitySurface"]}),
+                json!({"protocolVersion":PROTOCOL_VERSION, "coreVersion":version::APPLICATION_VERSION, "capabilities":["settings", "gfn.deviceAuth", "gfn.providers", "gfn.publicCatalog", "catalog.storePages.v1", "catalog.libraryPages.v1", "catalog.metadata.v1", "account.syncObservation.v1", "account.pushInvalidation.v1", "catalog.languages.v1", "queue.servers.v1", "catalog.storeLocal.v1", "gfn.accountLibrary", "gfn.regions", "gfn.subscription", "gfn.cloudmatch", "sessionProxy", "catalogArtworkCache.v1", "nativeStreamer.v7", "nativeStreamer.ownedNvstNegotiation", "nativeStreamer.dynamicSurface", "nativeStreamer.acceptanceEvidence", "liveAcceptance.v1", "osCredentialStore", "electronAccountMigration", "redactedDiagnostics", "mediaLibrary", "githubUpdateDiscovery", "discordRpc", "optInTelemetry", "feedback", "bugReports", "automaticBugReports.v1", "social.capabilitySurface"]}),
                 None,
             ))
         }
@@ -1146,15 +1155,138 @@ fn dispatch(method: &str, params: &Value, core: &AppCore) -> DispatchResult {
                 .and_then(|value| value["path"].as_str())
                 .map(PathBuf::from);
             core.telemetry
-                .bug_report(&install_id, params, diagnostic_path.as_deref())
+                .bug_report(
+                    &install_id,
+                    params,
+                    &core.gfn.bug_report_identity(),
+                    json!({"activity":{"currentGame":core.bug_reports.current_game_title()}}),
+                    diagnostic_path.as_deref(),
+                )
                 .map(|value| (value, None))
                 .map_err(|message| ("bug_report_failed".to_owned(), message))
+        }
+        "bug_report.incident" => {
+            let incident = bug_reports::BugReporter::shell_incident(params)
+                .map_err(|message| ("invalid_params".to_owned(), message))?;
+            Ok((submit_automatic_report(core, output, incident), None))
         }
         _ => Err((
             "method_not_found".to_owned(),
             format!("Unknown core method: {method}"),
         )),
     }
+}
+
+fn observe_bug_report_triggers(
+    core: &Arc<AppCore>,
+    output: &mpsc::Sender<Value>,
+    method: &str,
+    params: &Value,
+    result: &DispatchResult,
+) {
+    match (method, result) {
+        ("session.create", _) => {
+            let detail = core.bug_reports.observe_launch(params, unix_time_millis());
+            core.diagnostics.record("activity", "game_launch", detail);
+        }
+        ("session.stop", Ok(_)) => core.bug_reports.observe_stop(),
+        _ => {}
+    }
+    if let Err((code, message)) = result
+        && let Some(incident) = bug_reports::BugReporter::rpc_incident(method, code, message)
+    {
+        submit_automatic_report(core, output, incident);
+    }
+}
+
+fn submit_automatic_report(
+    core: &Arc<AppCore>,
+    output: &mpsc::Sender<Value>,
+    incident: bug_reports::Incident,
+) -> Value {
+    if !bug_reports::enabled(&core.settings.lock().expect("settings poisoned").all()) {
+        return json!({"accepted":false,"reason":"disabled"});
+    }
+    let account = core.gfn.bug_report_identity();
+    if account.is_null() {
+        return json!({"accepted":false,"reason":"signed_out"});
+    }
+    let Some(activity) = core.bug_reports.admit(&incident, Instant::now()) else {
+        return json!({"accepted":false,"reason":"already_reported"});
+    };
+    let install_id = match ensure_install_id(core) {
+        Ok(install_id) => install_id,
+        Err((_, message)) => return json!({"accepted":false,"reason":message}),
+    };
+    core.diagnostics.record(
+        "bug-report",
+        "automatic",
+        format!("kind={} code={}", incident.kind.as_str(), incident.code),
+    );
+    let report = bug_reports::compose(&incident, &activity, &account);
+    let mut payload = json!({"state":"sending", "kind":incident.kind.as_str(),
+        "code":incident.code, "game":activity["currentGame"]["title"]});
+    let _ =
+        output.send(json!({"type":"event","name":"bug_report.changed","payload":payload.clone()}));
+    let worker_core = Arc::clone(core);
+    let worker_output = output.clone();
+    let spawned = thread::Builder::new()
+        .name("opennow-bug-report".to_owned())
+        .spawn(move || {
+            let core = worker_core;
+            let trigger = json!({"kind":incident.kind.as_str(), "code":incident.code,
+                "message":incident.message, "details":incident.details});
+            let runtime = json!({
+                "schemaVersion": 1,
+                "kind": "opennow.automatic-bug-report",
+                "generatedAtMs": unix_time_millis().to_string(),
+                "applicationVersion": version::APPLICATION_VERSION,
+                "os": std::env::consts::OS,
+                "cpuArchitecture": std::env::consts::ARCH,
+                "trigger": trigger,
+                "activity": activity,
+                "streamer": core.streamer.acceptance_snapshot()
+            });
+            let outcome = core
+                .diagnostics
+                .export_with_runtime(Some(&runtime))
+                .map_err(|error| format!("Could not export diagnostics: {error}"))
+                .and_then(|export| {
+                    let path = export["path"].as_str().map(PathBuf::from);
+                    let result = core.telemetry.bug_report(
+                        &install_id,
+                        &report,
+                        &account,
+                        json!({"source":"automatic", "trigger":trigger, "activity":activity}),
+                        path.as_deref(),
+                    );
+                    if let Some(path) = path {
+                        let _ = std::fs::remove_file(path);
+                    }
+                    result
+                });
+            match outcome {
+                Ok(value) => {
+                    payload["state"] = json!("sent");
+                    payload["reference"] = value["reference"].clone();
+                }
+                Err(message) => {
+                    payload["state"] = json!("failed");
+                    payload["message"] = json!(message);
+                }
+            }
+            core.diagnostics.record(
+                "bug-report",
+                "automatic-result",
+                format!("state={}", payload["state"].as_str().unwrap_or_default()),
+            );
+            let _ = worker_output
+                .send(json!({"type":"event","name":"bug_report.changed","payload":payload}));
+        });
+    if spawned.is_err() {
+        return json!({"accepted":false,"reason":"Could not start the report upload"});
+    }
+    json!({"accepted":true})
 }
 
 fn ensure_install_id(core: &AppCore) -> Result<String, (String, String)> {

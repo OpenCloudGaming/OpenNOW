@@ -76,6 +76,8 @@ impl TelemetryService {
         &self,
         install_id: &str,
         params: &Value,
+        account: &Value,
+        context: Value,
         diagnostic_path: Option<&Path>,
     ) -> Result<Value, String> {
         if !valid_install_id(install_id) {
@@ -84,12 +86,16 @@ impl TelemetryService {
         let title = bounded_required(&params["title"], 8, 120, "title")?;
         let description = bounded_required(&params["description"], 40, 12_000, "description")?;
         let reporter_id = reporter_id(install_id);
-        let metadata = json!({
+        let mut metadata = json!({
             "platform": std::env::consts::OS,
             "arch": std::env::consts::ARCH,
             "coreVersion": crate::version::APPLICATION_VERSION,
-            "source": "qt-shell"
+            "source": "qt-shell",
+            "account": account
         });
+        if let (Some(metadata), Value::Object(context)) = (metadata.as_object_mut(), context) {
+            metadata.extend(context);
+        }
         let mut form = multipart::Form::new()
             .text("title", title)
             .text("description", description)
@@ -103,6 +109,7 @@ impl TelemetryService {
             )
             .text("platform", "desktop")
             .text("reporterId", reporter_id)
+            .text("termsAccepted", "true")
             .text("metadata", metadata.to_string());
         if params["includeDiagnostics"].as_bool() == Some(true)
             && let Some(path) = diagnostic_path

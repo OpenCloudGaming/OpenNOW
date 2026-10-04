@@ -3,6 +3,7 @@ import QtQuick
 import "catalog"
 import "settings"
 import "account"
+import "reporting"
 
 QtObject {
     id: root
@@ -82,6 +83,17 @@ QtObject {
         refreshAccountServices: root.refreshAccountServices
         acceptsScope: root.matchesAuthScope
         onAccessibilityAnnounced: message => root.accessibilityMessage = message
+    }
+
+    property BugReportState bugReports: BugReportState {
+        coreClient: CoreClient
+        setSetting: root.setSetting
+        ready: root.ready
+        signedIn: root.signedIn
+        settings: root.settings
+        sessionId: String(root.activeSession && root.activeSession.sessionId || "")
+        streaming: root.activeSession !== null && root.streamerStatus === "streaming"
+            && !root.streamerStopExpected
     }
 
     property alias settings: settingsOwner.settings
@@ -3229,6 +3241,8 @@ QtObject {
             if (!Number.isSafeInteger(Number(event.count)) || Number(event.count) <= 0)
                 return
             recordQueueDrop(event)
+            if (event.unit === "frames")
+                bugReports.observeFrameDrops(Number(event.count), event.sessionId)
             fields.queueDropCount = Number(streamer && streamer.queueDropCount || 0)
                 + Number(event.count || 0)
         }
@@ -3242,6 +3256,8 @@ QtObject {
             fields.message = String(event.message || qsTr("Native media runtime failed"))
             fields.errorCode = String(event.code || "native_stream_error")
             fields.termination = event.termination || null
+            if (activeSession && !streamerStopExpected)
+                bugReports.reportStreamError(fields.errorCode, fields.message)
         } else if (type === "input-ready") {
             fields.inputReady = true
             fields.inputUnavailableReason = null
@@ -3314,9 +3330,11 @@ QtObject {
         target: NativeStreamRuntime
         function onPresentationError(message) {
             root.lastError = message
-            if (root.activeSession)
+            if (root.activeSession) {
                 root.updateStreamerFields({status: "error", message: message,
                     errorCode: "streamer_presentation_failed"})
+                root.bugReports.reportStreamError("streamer_presentation_failed", message)
+            }
         }
         function onResponseReceived(response) { root.acceptNativeResponse(response) }
         function onEventReceived(event) { root.acceptNativeEvent(event) }
@@ -3671,8 +3689,8 @@ QtObject {
                 root.bugReportRequestId = ""
                 root.reportingState = "sent"
                 root.reportingMessage = result.reference
-                    ? qsTr("Bug report sent · reference %1").arg(result.reference)
-                    : qsTr("Bug report sent successfully.")
+                    ? qsTr("Thanks — this bug has been sent to the developer. Reference %1").arg(result.reference)
+                    : qsTr("Thanks — this bug has been sent to the developer.")
             } else if (requestId === root.sessionAdRequestId) {
                 root.sessionAdRequestId = ""
                 root.acceptStreamingSession(result.session || root.activeSession)
@@ -4031,6 +4049,8 @@ QtObject {
                 root.acceptArtworkResult(payload)
             else if (name === "updater.changed")
                 root.acceptUpdaterState(payload)
+            else if (name === "bug_report.changed")
+                root.bugReports.acceptEvent(payload)
             else if (name === "updater.highlights.show") {
                 root.releaseHighlights = payload
                 root.releaseHighlightsPending = !root.updaterSessionSafe

@@ -52,6 +52,17 @@ FocusScope {
                     font.pixelSize: 18
                     lineHeight: 1.4
                 }
+                Text {
+                    objectName: "consoleBugReportNotice"
+                    width: parent.width
+                    visible: ShellStore.bugReports.enabled
+                    wrapMode: Text.WordWrap
+                    text: qsTr("Experimental: automatic bug reports are on. Problems are reported to the developer with your GeForce NOW username and redacted logs. Turn this off in Settings → Account.")
+                    color: Theme.accentColor("amber")
+                    font.family: Theme.bodyFont
+                    font.pixelSize: 15
+                    lineHeight: 1.3
+                }
                 GlassButton {
                     id: signIn
                     width: parent.width

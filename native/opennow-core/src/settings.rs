@@ -487,6 +487,12 @@ impl SettingsStore {
         }
         normalize_choice(
             &mut self.values,
+            "automaticBugReports",
+            &["unset", "enabled", "disabled"],
+            "unset",
+        );
+        normalize_choice(
+            &mut self.values,
             "microphoneMode",
             &["disabled", "voice-activity"],
             "disabled",
@@ -1101,7 +1107,7 @@ fn defaults() -> Map<String, Value> {
         "allowEscapeToExitFullscreen":false, "lastSeenReleaseHighlightsVersion":"",
         "videoShader":{"enabled":false,"sharpen":40,"saturation":100,"contrast":100,"brightness":100,"vibrance":0,"filmGrain":0},
         "frameInterpolation":{"enabled":false,"factor":2,"quality":480},
-        "errorReportingConsent":"unset", "telemetryInstallId":""
+        "errorReportingConsent":"unset", "automaticBugReports":"unset", "telemetryInstallId":""
     })
     .as_object()
     .cloned()
@@ -1718,6 +1724,30 @@ mod tests {
         assert_eq!(
             reloaded.set("microphoneMode", json!("invalid")).unwrap(),
             json!("disabled")
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn automatic_bug_report_choice_starts_unset_and_rejects_unknown_values() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-bug-report-choice-{unique}"));
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["automaticBugReports"], json!("unset"));
+        assert_eq!(
+            store.set("automaticBugReports", json!("disabled")).unwrap(),
+            json!("disabled")
+        );
+        assert_eq!(
+            SettingsStore::load(Some(directory.clone())).unwrap().all()["automaticBugReports"],
+            json!("disabled")
+        );
+        assert_eq!(
+            store.set("automaticBugReports", json!("always")).unwrap(),
+            json!("unset")
         );
         fs::remove_dir_all(directory).unwrap();
     }
