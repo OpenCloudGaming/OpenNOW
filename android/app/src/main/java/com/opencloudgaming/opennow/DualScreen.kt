@@ -294,16 +294,58 @@ object DualScreenBridge {
     }
 }
 
+/** The parts of a [Display] that decide whether it is a built-in second screen. */
+internal data class BottomScreenCandidate(val displayId: Int, val state: Int, val flags: Int)
+
 /**
- * Picks the built-in second screen. The AYN Thor reports its 3.92" bottom panel as a public,
- * non-default display; virtual, private, and switched-off displays are never used.
+ * Picks the built-in second screen, or null on single-screen devices so the app stays exactly the
+ * normal one-screen app.
+ *
+ * Android marks HDMI, USB-C, Miracast and cast displays as presentation displays, while a second
+ * built-in panel (the AYN Thor's 3.92" bottom screen) is a plain public display. So a phone or a
+ * docked handheld plugged into a TV never turns into a dual-screen deck. Firmware on the known
+ * dual-screen handhelds may still flag its bottom panel as a presentation display; those devices
+ * accept it, preferring the lowest id because built-in panels register at boot, before a dock.
  */
-internal fun selectBottomScreenDisplay(displays: Array<Display>): Display? =
-    displays.firstOrNull { display ->
-        display.displayId != Display.DEFAULT_DISPLAY &&
-            display.state != Display.STATE_OFF &&
-            display.flags and Display.FLAG_PRIVATE == 0
+internal fun selectBottomScreenDisplayId(candidates: List<BottomScreenCandidate>, knownDualScreenDevice: Boolean): Int? {
+    val usable = candidates.filter {
+        it.displayId != Display.DEFAULT_DISPLAY &&
+            it.state != Display.STATE_OFF &&
+            it.flags and Display.FLAG_PRIVATE == 0
     }
+    return usable.filter { it.flags and Display.FLAG_PRESENTATION == 0 }.minByOrNull { it.displayId }?.displayId
+        ?: usable.takeIf { knownDualScreenDevice }?.minByOrNull { it.displayId }?.displayId
+}
+
+/** Android handhelds that ship with a second built-in screen. Kept narrow on purpose. */
+internal fun isKnownDualScreenDevice(
+    manufacturer: String?,
+    brand: String?,
+    model: String?,
+    device: String?,
+    product: String?,
+): Boolean {
+    val identity = listOf(manufacturer, brand, model, device, product)
+        .joinToString(" ") { it.orEmpty() }
+        .lowercase(Locale.US)
+        .replace(Regex("[^a-z0-9]+"), " ")
+    val tokens = identity.split(' ').filterTo(mutableSetOf()) { it.isNotBlank() }
+    return (tokens.contains("ayn") && tokens.contains("thor")) ||
+        (tokens.contains("ayaneo") && (tokens.contains("ds") || identity.contains("pocketds"))) ||
+        (tokens.contains("anbernic") && (identity.contains("rg ds") || identity.contains("rgds")))
+}
+
+private val knownDualScreenDevice: Boolean by lazy {
+    isKnownDualScreenDevice(Build.MANUFACTURER, Build.BRAND, Build.MODEL, Build.DEVICE, Build.PRODUCT)
+}
+
+internal fun selectBottomScreenDisplay(displays: Array<Display>): Display? {
+    val id = selectBottomScreenDisplayId(
+        displays.map { BottomScreenCandidate(it.displayId, it.state, it.flags) },
+        knownDualScreenDevice,
+    )
+    return displays.firstOrNull { it.displayId == id }
+}
 
 internal fun Context.hasBottomScreenDisplay(): Boolean {
     val displayManager = getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager ?: return false

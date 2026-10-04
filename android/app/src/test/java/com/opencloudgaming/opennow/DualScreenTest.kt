@@ -1,6 +1,8 @@
 package com.opencloudgaming.opennow
 
+import android.view.Display
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -71,6 +73,39 @@ class DualScreenTest {
         assertEquals(listOf(store), snapshot.catalogFilterGroups)
         assertEquals(listOf("steam"), snapshot.catalogFilterIds)
         assertEquals(LIBRARY_SORT_TITLE, snapshot.librarySortId)
+    }
+
+    @Test
+    fun singleScreenAndExternalDisplaysNeverStartTheDeck() {
+        val main = BottomScreenCandidate(Display.DEFAULT_DISPLAY, Display.STATE_ON, 0)
+        val tv = BottomScreenCandidate(2, Display.STATE_ON, Display.FLAG_PRESENTATION)
+        val private = BottomScreenCandidate(3, Display.STATE_ON, Display.FLAG_PRIVATE)
+
+        assertNull(selectBottomScreenDisplayId(listOf(main), knownDualScreenDevice = false))
+        assertNull(selectBottomScreenDisplayId(listOf(main, tv, private), knownDualScreenDevice = false))
+    }
+
+    @Test
+    fun builtInSecondPanelWinsOverADockedTv() {
+        val main = BottomScreenCandidate(Display.DEFAULT_DISPLAY, Display.STATE_ON, 0)
+        val bottom = BottomScreenCandidate(4, Display.STATE_ON, 0)
+        val tv = BottomScreenCandidate(2, Display.STATE_ON, Display.FLAG_PRESENTATION)
+
+        assertEquals(4, selectBottomScreenDisplayId(listOf(main, tv, bottom), knownDualScreenDevice = false))
+        assertNull(selectBottomScreenDisplayId(listOf(main, bottom.copy(state = Display.STATE_OFF)), knownDualScreenDevice = false))
+    }
+
+    @Test
+    fun knownDualScreenHandheldsAcceptAPresentationFlaggedBottomPanel() {
+        val main = BottomScreenCandidate(Display.DEFAULT_DISPLAY, Display.STATE_ON, 0)
+        val bottom = BottomScreenCandidate(1, Display.STATE_ON, Display.FLAG_PRESENTATION)
+        val dock = BottomScreenCandidate(5, Display.STATE_ON, Display.FLAG_PRESENTATION)
+
+        assertEquals(1, selectBottomScreenDisplayId(listOf(main, dock, bottom), knownDualScreenDevice = true))
+        assertTrue(isKnownDualScreenDevice("AYN", "AYN", "Thor", "thor", "thor"))
+        assertTrue(isKnownDualScreenDevice("AYANEO", "AYANEO", "AYANEO Pocket DS", "pocketds", "pocketds"))
+        assertFalse(isKnownDualScreenDevice("AYN", "AYN", "Odin2", "odin2", "odin2"))
+        assertFalse(isKnownDualScreenDevice("Google", "google", "Pixel 9", "tokay", "tokay"))
     }
 
     @Test
