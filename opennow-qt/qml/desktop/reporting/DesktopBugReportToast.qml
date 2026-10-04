@@ -28,14 +28,17 @@ Rectangle {
         : failed ? qsTr("Couldn't send the bug report")
         : qsTr("Bug reported to the developer")
     readonly property string body: !report ? ""
+        : failed && report.queued ? qsTr("It will be retried the next time OpenNOW starts.")
         : failed ? String(report.message || qsTr("Check your connection."))
         : summary(String(report.kind)) + " " + (sending
             ? qsTr("Collecting logs for the developer.")
+            : report.issueStatus === "investigating"
+            ? qsTr("The developer's assistant is looking into it.")
             : qsTr("We sent a report with logs so it can be fixed."))
     readonly property string meta: {
         if (!report) return ""
         const parts = []
-        if (report.reference) parts.push(qsTr("REF %1").arg(report.reference))
+        if (report.reportId) parts.push(qsTr("REF %1").arg(report.reportId))
         if (report.game) parts.push(String(report.game))
         return parts.join(" · ")
     }

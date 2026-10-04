@@ -506,14 +506,14 @@ FocusScope {
                                     }
                                     BodyText {
                                         anchors.verticalCenter: parent.verticalCenter
-                                        text: ShellStore.bugReports.enabled ? qsTr("Automatic bug reports are on") : qsTr("Automatic bug reports are off")
+                                        text: ShellStore.bugReports.enabled ? qsTr("Usage & bug reports are on") : qsTr("Usage & bug reports are off")
                                         color: DesktopTokens.text
                                         font.weight: Font.ExtraBold
                                     }
                                 }
                                 BodyText {
                                     width: parent.width
-                                    text: qsTr("While OpenNOW is in early testing, problems are reported to the developer automatically with your GeForce NOW username and redacted logs. You can turn this off anytime in Settings → Account → Privacy.")
+                                    text: qsTr("While OpenNOW is in early testing, usage statistics and problem reports are sent to the developer automatically with your GeForce NOW username and redacted logs. You can turn this off anytime in Settings → Account → Privacy.")
                                     color: root.mutedInk
                                     font.pixelSize: DesktopTokens.px(12)
                                     lineHeight: DesktopTokens.px(16)
@@ -537,7 +537,7 @@ FocusScope {
                                         color: bugReportToggle.hovered ? DesktopTokens.raised : "transparent"
                                         border.width: bugReportToggle.activeFocus ? 2 : 0; border.color: Theme.focus
                                     }
-                                    onClicked: ShellStore.bugReports.setEnabled(!ShellStore.bugReports.enabled)
+                                    onClicked: ShellStore.bugReports.setEnabled(!ShellStore.bugReports.enabled, "signin_notice")
                                 }
                             }
                         }

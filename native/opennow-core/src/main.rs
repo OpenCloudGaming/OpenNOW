@@ -1,6 +1,7 @@
 #![recursion_limit = "512"]
 
 mod account_connections;
+mod analytics;
 mod artwork_cache;
 mod bug_reports;
 mod catalog_types;
@@ -21,6 +22,7 @@ mod persistent_storage;
 mod proxy;
 mod push_registry;
 mod queue_servers;
+mod reports;
 mod requests;
 mod server_vpc_cache;
 mod settings;
@@ -29,7 +31,6 @@ mod store_catalog_page;
 mod store_index;
 mod store_requests;
 mod streamer;
-mod telemetry;
 mod thanks;
 mod updater;
 mod version;
@@ -42,7 +43,8 @@ use serde_json::{Map, Value, json};
 use settings::{SettingsStore, resolve_data_dir};
 use std::env;
 use std::io::{self, BufRead, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::thread;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -65,7 +67,9 @@ struct AppCore {
     community: community::CommunityService,
     thanks: thanks::ThanksService,
     discord: discord::DiscordService,
-    telemetry: telemetry::TelemetryService,
+    reports: reports::ReportsClient,
+    analytics: Arc<analytics::AnalyticsService>,
+    pending_reports_retried: AtomicBool,
     bug_reports: bug_reports::BugReporter,
 }
 
@@ -118,6 +122,7 @@ fn run() -> Result<(), String> {
             }
         })
         .map_err(|error| error.to_string())?;
+    let reports_api = reports::api_base_from_env();
     let gfn = Arc::new(GfnService::new(data_dir.clone())?);
     let push = Mutex::new(push_registry::PushRegistry::new(
         Arc::clone(&gfn),
@@ -144,10 +149,20 @@ fn run() -> Result<(), String> {
         thanks: thanks::ThanksService::new()
             .map_err(|error| format!("Could not initialize acknowledgements: {error}"))?,
         discord: discord::DiscordService::new(),
-        telemetry: telemetry::TelemetryService::new()
+        reports: reports::ReportsClient::new(&reports_api, &data_dir)
             .map_err(|error| format!("Could not initialize reporting services: {error}"))?,
+        analytics: Arc::new(
+            analytics::AnalyticsService::new(&reports_api, &data_dir)
+                .map_err(|error| format!("Could not initialize analytics: {error}"))?,
+        ),
+        pending_reports_retried: AtomicBool::new(false),
         bug_reports: bug_reports::BugReporter::default(),
     });
+    if !reporting_enabled(&core) {
+        core.analytics.wipe();
+        core.reports.clear_pending();
+    }
+    let analytics_finished = core.analytics.start()?;
     reconcile_push(&core);
     let requests = Arc::new(requests::Requests::default());
     let stdin = io::stdin();
@@ -207,7 +222,7 @@ fn run() -> Result<(), String> {
                 &method,
                 format!("outcome={outcome} durationMs={}", started.elapsed().as_millis()),
             );
-            observe_bug_report_triggers(&worker_core, &worker_output, &method, &params, &result);
+            observe_reporting(&worker_core, &worker_output, &method, &params, &result);
             let was_cancelled = permit.token.cancelled();
             if method == "session.create"
                 && let Err((code, message)) = &result
@@ -269,6 +284,7 @@ fn run() -> Result<(), String> {
             drop(permit);
         }).map_err(|error| error.to_string())?;
     }
+    core.analytics.shutdown(&analytics_finished);
     Ok(())
 }
 
@@ -406,7 +422,7 @@ fn dispatch(
                 ));
             }
             Ok((
-                json!({"protocolVersion":PROTOCOL_VERSION, "coreVersion":version::APPLICATION_VERSION, "capabilities":["settings", "gfn.deviceAuth", "gfn.providers", "gfn.publicCatalog", "catalog.storePages.v1", "catalog.libraryPages.v1", "catalog.metadata.v1", "account.syncObservation.v1", "account.pushInvalidation.v1", "catalog.languages.v1", "queue.servers.v1", "catalog.storeLocal.v1", "gfn.accountLibrary", "gfn.regions", "gfn.subscription", "gfn.cloudmatch", "sessionProxy", "catalogArtworkCache.v1", "nativeStreamer.v7", "nativeStreamer.ownedNvstNegotiation", "nativeStreamer.dynamicSurface", "nativeStreamer.acceptanceEvidence", "liveAcceptance.v1", "osCredentialStore", "electronAccountMigration", "redactedDiagnostics", "mediaLibrary", "githubUpdateDiscovery", "discordRpc", "optInTelemetry", "feedback", "bugReports", "automaticBugReports.v1", "social.capabilitySurface"]}),
+                json!({"protocolVersion":PROTOCOL_VERSION, "coreVersion":version::APPLICATION_VERSION, "capabilities":["settings", "gfn.deviceAuth", "gfn.providers", "gfn.publicCatalog", "catalog.storePages.v1", "catalog.libraryPages.v1", "catalog.metadata.v1", "account.syncObservation.v1", "account.pushInvalidation.v1", "catalog.languages.v1", "queue.servers.v1", "catalog.storeLocal.v1", "gfn.accountLibrary", "gfn.regions", "gfn.subscription", "gfn.cloudmatch", "sessionProxy", "catalogArtworkCache.v1", "nativeStreamer.v7", "nativeStreamer.ownedNvstNegotiation", "nativeStreamer.dynamicSurface", "nativeStreamer.acceptanceEvidence", "liveAcceptance.v1", "osCredentialStore", "electronAccountMigration", "redactedDiagnostics", "mediaLibrary", "githubUpdateDiscovery", "discordRpc", "feedback", "bugReports", "automaticBugReports.v2", "social.capabilitySurface"]}),
                 None,
             ))
         }
@@ -1119,51 +1135,102 @@ fn dispatch(
             .clear()
             .map(|value| (value, None))
             .map_err(|message| ("discord_rpc_failed".to_owned(), message)),
-        "telemetry.sync" => {
-            let settings = core.settings.lock().expect("settings poisoned").all();
-            let consent = settings["errorReportingConsent"]
-                .as_str()
-                .unwrap_or("unset");
-            if consent != "granted" {
-                return Ok((json!({"enabled":false,"sent":false}), None));
-            }
-            let install_id = ensure_install_id(core)?;
-            core.telemetry
-                .sync(consent, &install_id)
-                .map(|value| (value, None))
-                .map_err(|message| ("telemetry_failed".to_owned(), message))
-        }
         "feedback.submit" => {
             let install_id = ensure_install_id(core)?;
-            core.telemetry
-                .feedback(&install_id, params)
-                .map(|value| (value, None))
-                .map_err(|message| ("feedback_failed".to_owned(), message))
+            let category = params["category"].as_str().unwrap_or("other");
+            if !matches!(category, "bug" | "idea" | "other") {
+                return Err((
+                    "feedback_failed".to_owned(),
+                    "Unsupported feedback category".to_owned(),
+                ));
+            }
+            let message = reports::required_text(&params["message"], 8, 4_000, "Feedback")
+                .map_err(|message| ("feedback_failed".to_owned(), message))?;
+            let include = params["includeSystemInfo"].as_bool() == Some(true);
+            let report = reports::Document {
+                install_id: &install_id,
+                account: &Value::Null,
+                activity: if include {
+                    core.bug_reports.activity()
+                } else {
+                    json!({"currentGame":null, "recentGames":[]})
+                },
+                app: report_app(core, include),
+            }
+            .manual(&format!("Feedback: {category}"), &message);
+            match upload_report(core, &report, None) {
+                Ok(accepted) => Ok((
+                    json!({"submitted":true, "reportId":accepted.report_id,
+                        "message":"Thanks — your feedback was sent."}),
+                    None,
+                )),
+                Err(failure) if failure.retryable => Ok((
+                    json!({"submitted":false, "queued":true,
+                        "message":"Your feedback will be sent the next time OpenNOW starts."}),
+                    None,
+                )),
+                Err(failure) => Err(("feedback_failed".to_owned(), failure.message)),
+            }
         }
         "bug_report.submit" => {
             let install_id = ensure_install_id(core)?;
-            let diagnostic =
-                if params["includeDiagnostics"].as_bool() == Some(true) {
-                    Some(core.diagnostics.export().map_err(|error| {
-                        ("diagnostics_export_failed".to_owned(), error.to_string())
-                    })?)
-                } else {
-                    None
-                };
-            let diagnostic_path = diagnostic
-                .as_ref()
-                .and_then(|value| value["path"].as_str())
-                .map(PathBuf::from);
-            core.telemetry
-                .bug_report(
-                    &install_id,
-                    params,
-                    &core.gfn.bug_report_identity(),
-                    json!({"activity":{"currentGame":core.bug_reports.current_game_title()}}),
-                    diagnostic_path.as_deref(),
-                )
-                .map(|value| (value, None))
-                .map_err(|message| ("bug_report_failed".to_owned(), message))
+            let title = reports::required_text(&params["title"], 8, 120, "Bug report title")
+                .map_err(|message| ("bug_report_failed".to_owned(), message))?;
+            let description = reports::required_text(
+                &params["description"],
+                40,
+                12_000,
+                "Bug report description",
+            )
+            .map_err(|message| ("bug_report_failed".to_owned(), message))?;
+            let log = if params["includeDiagnostics"].as_bool() == Some(true) {
+                let export = core
+                    .diagnostics
+                    .export()
+                    .map_err(|error| ("diagnostics_export_failed".to_owned(), error.to_string()))?;
+                export["path"]
+                    .as_str()
+                    .and_then(|path| reports::gzip_log(Path::new(path)))
+            } else {
+                None
+            };
+            let report = reports::Document {
+                install_id: &install_id,
+                account: &core.gfn.bug_report_identity(),
+                activity: core.bug_reports.activity(),
+                app: report_app(core, true),
+            }
+            .manual(&title, &description);
+            match upload_report(core, &report, log) {
+                Ok(accepted) => Ok((
+                    json!({"submitted":true, "reportId":accepted.report_id,
+                        "issueStatus":accepted.issue_status}),
+                    None,
+                )),
+                Err(failure) if failure.retryable => {
+                    Ok((json!({"submitted":false, "queued":true}), None))
+                }
+                Err(failure) => Err(("bug_report_failed".to_owned(), failure.message)),
+            }
+        }
+        "analytics.track" => {
+            if let Some(surface) = analytics::ui_surface(params)
+                .map_err(|message| ("invalid_params".to_owned(), message))?
+            {
+                core.analytics.set_ui_surface(surface);
+            }
+            if params["event"] == "app_opened" {
+                return Ok((
+                    match core.analytics.open_app(&params["runtimeCapabilities"]) {
+                        Some(props) => track(core, "app_opened", Value::Object(props)),
+                        None => json!({"accepted":false,"reason":"already_sent"}),
+                    },
+                    None,
+                ));
+            }
+            let event = analytics::shell_event(params)
+                .map_err(|message| ("invalid_params".to_owned(), message))?;
+            Ok((track(core, event.name, Value::Object(event.props)), None))
         }
         "bug_report.incident" => {
             let incident = bug_reports::BugReporter::shell_incident(params)
@@ -1177,7 +1244,7 @@ fn dispatch(
     }
 }
 
-fn observe_bug_report_triggers(
+fn observe_reporting(
     core: &Arc<AppCore>,
     output: &mpsc::Sender<Value>,
     method: &str,
@@ -1186,17 +1253,189 @@ fn observe_bug_report_triggers(
 ) {
     match (method, result) {
         ("session.create", _) => {
-            let detail = core.bug_reports.observe_launch(params, unix_time_millis());
+            let detail = core.bug_reports.observe_launch(params);
             core.diagnostics.record("activity", "game_launch", detail);
+            track(
+                core,
+                "game_launch_requested",
+                json!({"game_id":params["appId"], "game_title":params["title"],
+                    "store":params["store"], "zone":params["zone"]}),
+            );
         }
         ("session.stop", Ok(_)) => core.bug_reports.observe_stop(),
+        ("streamer.prepare", _) => core
+            .analytics
+            .observe_runtime(&params["runtimeCapabilities"]),
+        ("auth.device.complete", Ok(_)) => observe_sign_in(core, false),
+        ("auth.session.get" | "auth.accounts.switch", Ok(_)) => observe_sign_in(core, true),
+        ("auth.logout" | "auth.accounts.logoutAll", Ok(_)) => core.analytics.observe_sign_out(),
+        ("settings.set", Ok((value, _))) if params["key"] == "automaticBugReports" => {
+            observe_consent(core, &value["value"], &params["source"])
+        }
         _ => {}
     }
     if let Err((code, message)) = result
         && let Some(incident) = bug_reports::BugReporter::rpc_incident(method, code, message)
     {
+        if incident.kind == bug_reports::Kind::LibraryError {
+            track(core, "library_load_failed", json!({"code":incident.code}));
+        } else {
+            let game_id = core.bug_reports.activity()["currentGame"]["appId"].clone();
+            track(
+                core,
+                "session_error",
+                json!({"stage":method.split('.').nth(1), "code":incident.code, "game_id":game_id}),
+            );
+        }
         submit_automatic_report(core, output, incident);
     }
+}
+
+fn reporting_enabled(core: &AppCore) -> bool {
+    bug_reports::enabled(&core.settings.lock().expect("settings poisoned").all())
+}
+
+fn track(core: &AppCore, event: &str, props: Value) -> Value {
+    if !reporting_enabled(core) {
+        return json!({"accepted":false,"reason":"disabled"});
+    }
+    let install_id = match ensure_install_id(core) {
+        Ok(install_id) => install_id,
+        Err((_, message)) => return json!({"accepted":false,"reason":message}),
+    };
+    let identity = core.gfn.bug_report_identity();
+    let account = if identity.is_null() {
+        Value::Null
+    } else {
+        json!({"userId":identity["userId"], "providerIdpId":identity["providerIdpId"]})
+    };
+    let dropped = core.analytics.enqueue(
+        &install_id,
+        account,
+        event,
+        analytics::sanitize(event, &props),
+    );
+    if dropped % 100 == 1 {
+        core.diagnostics
+            .record("analytics", "queue-overflow", format!("dropped={dropped}"));
+    }
+    json!({"accepted":true})
+}
+
+fn observe_consent(core: &AppCore, value: &Value, source: &Value) {
+    let Some(value) = value.as_str().filter(|value| *value != "unset") else {
+        return;
+    };
+    if value == "disabled" {
+        core.analytics.wipe();
+        core.reports.clear_pending();
+    }
+    let Ok(install_id) = ensure_install_id(core) else {
+        return;
+    };
+    core.analytics.enqueue(
+        &install_id,
+        Value::Null,
+        "consent_changed",
+        analytics::sanitize(
+            "consent_changed",
+            &json!({"value":value, "source":source.as_str().unwrap_or("settings")}),
+        ),
+    );
+}
+
+fn observe_sign_in(core: &Arc<AppCore>, restored: bool) {
+    let identity = core.gfn.bug_report_identity();
+    let Some(user_id) = identity["userId"].as_str() else {
+        return;
+    };
+    if !core.analytics.observe_sign_in(user_id) {
+        return;
+    }
+    track(
+        core,
+        "signed_in",
+        json!({"provider_code":identity["providerCode"], "alliance_partner":identity["alliancePartner"],
+            "membership_tier":identity["membershipTier"], "restored":restored}),
+    );
+    if !reporting_enabled(core) || core.pending_reports_retried.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let worker_core = Arc::clone(core);
+    let _ = thread::Builder::new()
+        .name("opennow-report-retry".to_owned())
+        .spawn(move || {
+            for (report, accepted) in worker_core.reports.retry_pending(unix_time_millis()) {
+                record_sent(&worker_core, &report, &accepted);
+            }
+        });
+}
+
+fn report_app(core: &AppCore, include_device: bool) -> Value {
+    let device = if include_device {
+        core.analytics.device()
+    } else {
+        json!({"gpu":null, "decoderBackend":null})
+    };
+    let backend = core.streamer.acceptance_snapshot()["mediaBackend"]
+        .as_str()
+        .filter(|backend| include_device && analytics::valid_code(backend))
+        .map_or_else(|| device["decoderBackend"].clone(), Value::from);
+    json!({
+        "version": version::APPLICATION_VERSION,
+        "os": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
+        "gpu": device["gpu"],
+        "decoderBackend": backend,
+        "channel": version::update_channel(version::APPLICATION_VERSION)
+    })
+}
+
+fn upload_report(
+    core: &AppCore,
+    report: &Value,
+    log: Option<Vec<u8>>,
+) -> Result<reports::Accepted, reports::Failure> {
+    let result = core.reports.submit(report, log.as_deref());
+    match &result {
+        Ok(accepted) => record_sent(core, report, accepted),
+        Err(failure) => {
+            let spooled = failure.retryable
+                && core
+                    .reports
+                    .spool(report, log.as_deref(), unix_time_millis())
+                    .is_ok();
+            core.diagnostics.record(
+                "bug-report",
+                "upload-failed",
+                format!("retryable={} spooled={spooled}", failure.retryable),
+            );
+        }
+    }
+    result
+}
+
+fn record_sent(core: &AppCore, report: &Value, accepted: &reports::Accepted) {
+    core.diagnostics.record(
+        "bug-report",
+        "sent",
+        format!("reportId={}", accepted.report_id),
+    );
+    let automatic = report["automatic"] == true;
+    let (kind, code) = if automatic {
+        (
+            report["trigger"]["kind"].clone(),
+            report["trigger"]["code"].clone(),
+        )
+    } else {
+        (json!("manual"), json!("manual"))
+    };
+    track(
+        core,
+        "bug_report_sent",
+        json!({"report_id":accepted.report_id, "issue_id":accepted.issue_id,
+            "kind":kind, "code":code, "automatic":automatic}),
+    );
 }
 
 fn submit_automatic_report(
@@ -1204,7 +1443,7 @@ fn submit_automatic_report(
     output: &mpsc::Sender<Value>,
     incident: bug_reports::Incident,
 ) -> Value {
-    if !bug_reports::enabled(&core.settings.lock().expect("settings poisoned").all()) {
+    if !reporting_enabled(core) {
         return json!({"accepted":false,"reason":"disabled"});
     }
     let account = core.gfn.bug_report_identity();
@@ -1223,7 +1462,13 @@ fn submit_automatic_report(
         "automatic",
         format!("kind={} code={}", incident.kind.as_str(), incident.code),
     );
-    let report = bug_reports::compose(&incident, &activity, &account);
+    let report = reports::Document {
+        install_id: &install_id,
+        account: &account,
+        activity: activity.clone(),
+        app: report_app(core, true),
+    }
+    .automatic(incident.trigger());
     let mut payload = json!({"state":"sending", "kind":incident.kind.as_str(),
         "code":incident.code, "game":activity["currentGame"]["title"]});
     let _ =
@@ -1234,8 +1479,6 @@ fn submit_automatic_report(
         .name("opennow-bug-report".to_owned())
         .spawn(move || {
             let core = worker_core;
-            let trigger = json!({"kind":incident.kind.as_str(), "code":incident.code,
-                "message":incident.message, "details":incident.details});
             let runtime = json!({
                 "schemaVersion": 1,
                 "kind": "opennow.automatic-bug-report",
@@ -1243,36 +1486,30 @@ fn submit_automatic_report(
                 "applicationVersion": version::APPLICATION_VERSION,
                 "os": std::env::consts::OS,
                 "cpuArchitecture": std::env::consts::ARCH,
-                "trigger": trigger,
+                "trigger": incident.trigger(),
                 "activity": activity,
                 "streamer": core.streamer.acceptance_snapshot()
             });
-            let outcome = core
+            let log = core
                 .diagnostics
                 .export_with_runtime(Some(&runtime))
-                .map_err(|error| format!("Could not export diagnostics: {error}"))
+                .ok()
                 .and_then(|export| {
-                    let path = export["path"].as_str().map(PathBuf::from);
-                    let result = core.telemetry.bug_report(
-                        &install_id,
-                        &report,
-                        &account,
-                        json!({"source":"automatic", "trigger":trigger, "activity":activity}),
-                        path.as_deref(),
-                    );
-                    if let Some(path) = path {
-                        let _ = std::fs::remove_file(path);
-                    }
-                    result
+                    let path = PathBuf::from(export["path"].as_str()?);
+                    let log = reports::gzip_log(&path);
+                    let _ = std::fs::remove_file(path);
+                    log
                 });
-            match outcome {
-                Ok(value) => {
+            match upload_report(&core, &report, log) {
+                Ok(accepted) => {
                     payload["state"] = json!("sent");
-                    payload["reference"] = value["reference"].clone();
+                    payload["reportId"] = json!(accepted.report_id);
+                    payload["issueStatus"] = json!(accepted.issue_status);
                 }
-                Err(message) => {
+                Err(failure) => {
                     payload["state"] = json!("failed");
-                    payload["message"] = json!(message);
+                    payload["message"] = json!(failure.message);
+                    payload["queued"] = json!(failure.retryable);
                 }
             }
             core.diagnostics.record(
@@ -1295,7 +1532,7 @@ fn ensure_install_id(core: &AppCore) -> Result<String, (String, String)> {
         .as_str()
         .unwrap_or_default()
         .replace('-', "");
-    let install_id = if telemetry::valid_install_id(&current) {
+    let install_id = if reports::valid_install_id(&current) {
         current
     } else {
         let mut bytes = [0_u8; 16];

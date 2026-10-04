@@ -79,7 +79,7 @@ void startSettingsMotionAcceptance(QQuickWindow *window, AppController *controll
         if (tick == 20) {
             state->settings = find("desktopSettingsScreen");
             auto *sharing = find("accountActivitySharing");
-            auto *reports = find("accountCrashReports");
+            auto *reports = find("accountAutomaticBugReports");
             if (!require(state->settings && !state->settings->property("advancedOpen").toBool()
                          && sharing && sharing->isVisible() && reports && reports->isVisible(),
                          "privacy controls hidden behind Advanced")) return;
