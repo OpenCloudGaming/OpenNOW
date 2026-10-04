@@ -6,7 +6,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-pub const DEFAULT_REPORTS_API: &str = "https://reports.opennow.app";
+pub const DEFAULT_REPORTS_API: &str = "https://opennow-reports-production.up.railway.app";
 const MAX_REPORT_JSON_BYTES: usize = 64 * 1024;
 const MAX_LOG_TEXT_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_LOG_GZIP_BYTES: usize = 5 * 1024 * 1024;

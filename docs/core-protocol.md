@@ -439,7 +439,7 @@ and artwork only near the viewport, using the section's local category ID
 `automaticBugReports.v2` replaces `automaticBugReports.v1` and removes
 `telemetry.sync` and the `optInTelemetry` capability. The core owns every
 network call: reports go to `POST {base}/v1/reports` and usage events to
-`POST {base}/v1/events`, where `base` is `https://reports.opennow.app` unless the
+`POST {base}/v1/events`, where `base` is `https://opennow-reports-production.up.railway.app` unless the
 `OPENNOW_REPORTS_API` environment variable names another `http(s)` origin when
 the core starts.
 
