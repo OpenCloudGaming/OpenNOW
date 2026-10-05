@@ -74,10 +74,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("bin_dir", type=Path)
     parser.add_argument("--libdir", type=Path, default=Path("lib"),
-                        help="Installed library directory relative to the prefix, or an absolute path")
+                        help="Library directory relative to bin_dir's parent and the DEB's /usr prefix")
     parser.add_argument("--deb", type=Path)
     parser.add_argument("--appdir", type=Path)
     args = parser.parse_args()
+    if args.libdir.is_absolute():
+        parser.error("--libdir must be relative to the install prefix")
     if args.appdir:
         verify_apprun(args.appdir.resolve())
     verify_package(args.bin_dir.resolve(), args.bin_dir.resolve().parent / args.libdir)
@@ -89,7 +91,5 @@ if __name__ == "__main__":
         with tempfile.TemporaryDirectory(prefix="opennow-deb-check-") as directory:
             subprocess.run(["dpkg-deb", "-x", args.deb, directory], check=True)
             root = Path(directory)
-            lib_dir = root / (str(args.libdir).lstrip("/") if args.libdir.is_absolute()
-                              else f"usr/{args.libdir}")
-            verify_package(root / "usr/bin", lib_dir)
+            verify_package(root / "usr/bin", root / "usr" / args.libdir)
     print("Linux package VAAPI H.264 and FFmpeg capability checks passed")

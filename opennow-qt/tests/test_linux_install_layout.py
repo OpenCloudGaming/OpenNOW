@@ -18,14 +18,18 @@ class LinuxInstallLayoutTest(unittest.TestCase):
         return result.stdout
 
     def test_staged_library_layout_and_relocated_loading(self):
-        for prefix, bindir, libdir in (
-            ("/usr", "bin", "lib"),
-            ("/usr", "bin", "lib64"),
-            ("/usr", "bin", "lib/x86_64-linux-gnu"),
-            ("/opt/opennow", "sbin", "lib/opennow"),
-            ("/usr", "bin", "/usr/lib64"),
+        for prefix, bindir, libdir, install_prefix in (
+            ("/usr", "bin", "lib", None),
+            ("/usr", "bin", "lib64", None),
+            ("/usr", "bin", "lib/x86_64-linux-gnu", None),
+            ("/opt/opennow", "sbin", "lib/opennow", None),
+            ("/usr", "bin", "/usr/lib64", None),
+            ("/usr", "bin", "lib64", "/opt/opennow"),
+            ("/usr", "bin", "/usr/lib64", "/opt/opennow"),
+            ("/usr", "/usr/bin", "lib64", "/opt/opennow"),
+            ("/usr", "/usr/bin", "/usr/lib64", "/opt/opennow"),
         ):
-            with self.subTest(prefix=prefix, bindir=bindir, libdir=libdir):
+            with self.subTest(prefix=prefix, bindir=bindir, libdir=libdir, install_prefix=install_prefix):
                 with tempfile.TemporaryDirectory() as directory:
                     source = Path(directory)
                     build = source / "build"
@@ -70,11 +74,20 @@ include("{QT_SOURCE.as_posix()}/cmake/Packaging.cmake")
                                  "opennow-update-helper", "opennow-streamer"):
                         shutil.copy2(build / "opennow-qt", build / name)
                     (build / "THIRD_PARTY_NOTICES").write_text("install contract\n")
-                    self.run_command(
-                        "cmake", "--install", str(build),
-                        env={**os.environ, "DESTDIR": str(stage)},
-                    )
-                    installed_bin = stage / prefix.lstrip("/") / bindir
+                    command = ["cmake", "--install", str(build)]
+                    if install_prefix:
+                        command.extend(("--prefix", install_prefix))
+                    if install_prefix and Path(bindir).is_absolute() != Path(libdir).is_absolute():
+                        result = subprocess.run(command, capture_output=True, text=True,
+                                                env={**os.environ, "DESTDIR": str(stage)})
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn("mixed absolute and relative", result.stderr)
+                        self.assertFalse(stage.exists())
+                        continue
+                    self.run_command(*command, env={**os.environ, "DESTDIR": str(stage)})
+                    prefix = install_prefix or prefix
+                    installed_bin = stage / (bindir if bindir.startswith("/") else
+                                             f"{prefix}/{bindir}").lstrip("/")
                     installed_lib = stage / (libdir if libdir.startswith("/") else
                                              f"{prefix}/{libdir}").lstrip("/")
                     ffi = installed_lib / "libopennow_streamer_ffi.so"
@@ -103,6 +116,15 @@ include("{QT_SOURCE.as_posix()}/cmake/Packaging.cmake")
                                         if line.strip().startswith("libopennow_streamer_ffi.so =>"))
                     self.assertEqual(Path(resolved_ffi).resolve(), relocated / ffi.relative_to(stage))
                     self.run_command(str(executable), env=environment)
+
+    def test_verifier_rejects_ambiguous_absolute_libdir(self):
+        result = subprocess.run(
+            [sys.executable, str(QT_SOURCE / "packaging/verify_linux_package.py"),
+             "/unused/usr/bin", "--libdir", "/usr/lib64"],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--libdir must be relative", result.stderr)
 
 
 if __name__ == "__main__":
