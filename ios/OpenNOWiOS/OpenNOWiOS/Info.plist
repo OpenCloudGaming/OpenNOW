@@ -2,6 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>CADisableMinimumFrameDurationOnPhone</key>
+	<true/>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleExecutable</key>
@@ -18,38 +20,30 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleURLTypes</key>
 	<array>
-			<dict>
-				<key>CFBundleURLName</key>
-				<string>com.opencloudgaming.opennow.auth</string>
-				<key>CFBundleURLSchemes</key>
-				<array>
-					<string>opennowios</string>
-					<string>opennow</string>
-				</array>
-			</dict>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.opencloudgaming.opennow.auth</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>opennowios</string>
+				<string>opennow</string>
+			</array>
+		</dict>
 	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
-	<!--
-	Without this, iOS caps every layer this app presents at 60 Hz on a ProMotion
-	iPhone, so a 120 fps stream is decoded at 120 and displayed at 60. The cap
-	exists to protect battery in apps that would otherwise redraw needlessly;
-	a cloud-gaming client is exactly the case it is not meant to catch.
-	-->
-	<key>CADisableMinimumFrameDurationOnPhone</key>
-	<true/>
 	<key>GCSupportsGameMode</key>
 	<true/>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.games</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
-	<key>NSSupportsLiveActivities</key>
-	<true/>
 	<key>NSCameraUsageDescription</key>
 	<string>OpenNOW uses the camera only when you choose to provide camera input in a compatible streamed game.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>OpenNOW may access the microphone when you enable voice input in a compatible streamed game.</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

@@ -557,6 +557,7 @@ struct StreamerView: View {
     #if os(iOS) && canImport(WebRTC)
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var coordinator: NativeStreamCoordinator
+    @State private var controlsPanelExpanded = false
 
     init(
         session: ActiveSession,
@@ -713,12 +714,11 @@ struct StreamerView: View {
                         .onTapGesture { coordinator.dismissControlsPanelFromBackdrop() }
 
                     VStack {
-                        Spacer()
-                        NativeStreamControlsPanel(coordinator: coordinator)
-                            .frame(maxWidth: min(proxy.size.width - 28, 390))
-                            .frame(maxHeight: min(proxy.size.height * 0.72, 560))
-                            .padding(.horizontal, 14)
-                            .padding(.bottom, max(14, proxy.safeAreaInsets.bottom + 10))
+                        if !controlsPanelExpanded { Spacer() }
+                        NativeStreamControlsPanel(coordinator: coordinator, expanded: $controlsPanelExpanded)
+                            .frame(width: controlsPanelExpanded ? proxy.size.width : min(proxy.size.width * 0.94, 760),
+                                   height: controlsPanelExpanded ? proxy.size.height : min(proxy.size.height * 0.78, 700))
+                            .padding(.bottom, controlsPanelExpanded ? 0 : max(14, proxy.safeAreaInsets.bottom + 10))
                     }
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
@@ -744,16 +744,21 @@ struct StreamerView: View {
                 coordinator.handleScenePhase(scenePhase)
                 coordinator.start(viewportSize: proxy.size)
             }
+            .onAppear { StreamOrientation.setStreaming(true) }
             .onChangeCompat(of: scenePhase) { newPhase in
                 coordinator.handleScenePhase(newPhase)
             }
             .onChangeCompat(of: proxy.size) { newSize in
                 coordinator.updateViewportSize(newSize)
             }
+            .onChangeCompat(of: coordinator.controlsPanelVisible) { visible in
+                if !visible { controlsPanelExpanded = false }
+            }
             .onDisappear {
                 coordinator.handleViewDisappear(scenePhase: scenePhase)
+                StreamOrientation.setStreaming(false)
             }
-            .statusBarHidden(true)
+            .statusBarHidden(false)
         }
         .background(NativeStreamPointerLockPreference(requested:
             NativeStreamPointerCapturePolicy.shouldCapture(videoActive: coordinator.videoActive && !coordinator.showStatusOverlay,
@@ -1524,6 +1529,7 @@ private struct NativeStreamTutorialDoneCallout: View {
 /// mid-session — audio, stats, the session clock, the way out.
 private struct NativeStreamControlsPanel: View {
     @ObservedObject var coordinator: NativeStreamCoordinator
+    @Binding var expanded: Bool
     @State private var page: Page = .main
     @State private var keyboardText = ""
     @State private var keyboardPresented = false
@@ -1590,6 +1596,7 @@ private struct NativeStreamControlsPanel: View {
                 .id(page)
             }
             .scrollIndicators(.visible)
+            .clipped()
         }
         // Fixed dark: this sits on live video, where the system's light grouped colour would put
         // a near-white slab over the game for anyone not in dark mode.
@@ -1597,12 +1604,13 @@ private struct NativeStreamControlsPanel: View {
         .environment(\.colorScheme, .dark)
         .background(
             OpenNOWPalette.panelOverVideo,
-            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+            in: RoundedRectangle(cornerRadius: expanded ? 0 : 16, style: .continuous)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: expanded ? 0 : 16, style: .continuous)
                 .strokeBorder(OpenNOWPalette.hairlineOverVideo, lineWidth: 1)
         )
+        .clipShape(RoundedRectangle(cornerRadius: expanded ? 0 : 16, style: .continuous))
         .shadow(color: .black.opacity(0.24), radius: 16, y: 8)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: page)
         .sheet(isPresented: $keyboardPresented) {
@@ -1656,6 +1664,11 @@ private struct NativeStreamControlsPanel: View {
                         Text("Exit")
                     }
                 }
+
+                NativeStreamPanelPillButton(action: { withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) { expanded.toggle() } }) {
+                    Image(systemName: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                }
+                .accessibilityLabel(expanded ? "Collapse controls" : "Expand controls")
 
                 NativeStreamPanelPillButton(prominent: true, action: { coordinator.finishControlsPanel() }) {
                     Text("Done")

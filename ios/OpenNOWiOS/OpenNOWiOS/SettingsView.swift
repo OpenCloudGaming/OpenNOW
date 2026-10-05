@@ -97,6 +97,7 @@ private enum SettingsCategory: String, CaseIterable, Hashable, Identifiable {
 
 struct SettingsView: View {
     @EnvironmentObject private var store: OpenNOWStore
+    @AppStorage("OpenNOW.iOS.setupCompletedVersion") private var setupCompletedVersion = 0
     @Environment(\.openURL) private var openURL
     // Use the same type-erased path storage as the surrounding tab/split-view
     // navigation. A typed array can trap when SwiftUI compares column paths.
@@ -106,6 +107,7 @@ struct SettingsView: View {
     @State private var showingResetConfirmation = false
     @State private var showingResetAppConfirmation = false
     @State private var showingSignOutAllConfirmation = false
+    @State private var showingAddAccountProvider = false
     @State private var connectorPendingDisconnect: AccountConnector?
     #if os(iOS)
     @State private var selectedCatalogWallpaperItem: PhotosPickerItem?
@@ -193,6 +195,7 @@ struct SettingsView: View {
             .confirmationDialog("Reset app?", isPresented: $showingResetAppConfirmation, titleVisibility: .visible) {
                 Button("Reset App", role: .destructive) {
                     store.resetApp()
+                    setupCompletedVersion = 0
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
@@ -205,6 +208,16 @@ struct SettingsView: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("This removes every saved GeForce NOW account from this device.")
+            }
+            .sheet(isPresented: $showingAddAccountProvider) {
+                ProviderChooserSheet(
+                    selectedProviderId: store.settings.selectedProviderIdpId,
+                    onContinue: { provider in
+                        store.selectProvider(provider)
+                        Task { await store.signIn(forceAccountSelection: true) }
+                    }
+                )
+                .environmentObject(store)
             }
             .alert(
                 "Disconnect account?",
@@ -347,7 +360,7 @@ struct SettingsView: View {
         Section("Account Actions") {
             HStack {
                 Button {
-                    Task { await store.signIn(forceAccountSelection: true) }
+                    showingAddAccountProvider = true
                 } label: {
                     Label("Add Account", systemImage: "person.badge.plus")
                 }
@@ -371,7 +384,7 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            if let error = store.lastError, !error.isEmpty {
+            if let error = store.authError ?? store.accountError, !error.isEmpty {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .font(.footnote)
                     .foregroundStyle(.red)
@@ -385,7 +398,7 @@ struct SettingsView: View {
                 }
             }
 
-            if store.savedAccounts.count > 1 {
+            if !store.savedAccounts.isEmpty {
                 Button(role: .destructive) {
                     showingSignOutAllConfirmation = true
                 } label: {
@@ -1275,6 +1288,12 @@ struct SettingsView: View {
 
     private var dataSection: some View {
         Section("Data") {
+            Button {
+                setupCompletedVersion = 0
+            } label: {
+                Label("Replay Welcome Tour", systemImage: "sparkles")
+            }
+
             Button {
                 Task { await store.refreshCatalog() }
             } label: {

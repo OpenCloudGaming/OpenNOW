@@ -12,13 +12,55 @@ struct GameLaunchRequest: Identifiable, Equatable {
 
 struct PrintedWasteZone: Identifiable, Equatable {
     let id: String
+    let title: String
     let region: String
+    let regionLabel: String
     let queuePosition: Int
     let etaMs: Double?
     let zoneUrl: String
     var pingMs: Int?
     var isMeasuring: Bool
     let regionSuffix: String
+    let gpuTier: String?
+
+    init(
+        id: String,
+        title: String? = nil,
+        region: String,
+        regionLabel: String? = nil,
+        queuePosition: Int,
+        etaMs: Double?,
+        zoneUrl: String,
+        pingMs: Int?,
+        isMeasuring: Bool,
+        regionSuffix: String,
+        gpuTier: String? = nil
+    ) {
+        self.id = id
+        self.title = title ?? id
+        self.region = region
+        self.regionLabel = regionLabel ?? region
+        self.queuePosition = queuePosition
+        self.etaMs = etaMs
+        self.zoneUrl = zoneUrl
+        self.pingMs = pingMs
+        self.isMeasuring = isMeasuring
+        self.regionSuffix = regionSuffix
+        self.gpuTier = gpuTier
+    }
+}
+
+private struct PrintedWasteLocation: Identifiable {
+    let title: String
+    let primary: PrintedWasteZone
+    let zoneIDs: Set<String>
+    let alternateCount: Int
+    let gpuTier: String?
+    var id: String { title }
+}
+
+private extension String {
+    var nonEmpty: String? { isEmpty ? nil : self }
 }
 
 enum StreamZonePolicy {
@@ -58,21 +100,60 @@ func recommendedPrintedWasteZone(in zones: [PrintedWasteZone]) -> PrintedWasteZo
     let candidates = pingedZones.isEmpty ? allowedZones : pingedZones
     let maxPing = max(candidates.compactMap(\.pingMs).max() ?? 1, 1)
     let maxQueue = max(candidates.map(\.queuePosition).max() ?? 1, 1)
-    return candidates.min { lhs, rhs in
-        let lhsScore = (Double(lhs.pingMs ?? maxPing) / Double(maxPing)) * 0.75
-            + (Double(lhs.queuePosition) / Double(maxQueue)) * 0.25
-        let rhsScore = (Double(rhs.pingMs ?? maxPing) / Double(maxPing)) * 0.75
-            + (Double(rhs.queuePosition) / Double(maxQueue)) * 0.25
+    let queueAware = candidates.min { lhs, rhs in
+        let lhsScore = printedWasteScore(lhs, maxPing: maxPing, maxQueue: maxQueue)
+        let rhsScore = printedWasteScore(rhs, maxPing: maxPing, maxQueue: maxQueue)
         if lhsScore != rhsScore { return lhsScore < rhsScore }
         let lhsPing = lhs.pingMs ?? .max
         let rhsPing = rhs.pingMs ?? .max
         if lhsPing != rhsPing { return lhsPing < rhsPing }
         return lhs.queuePosition < rhs.queuePosition
     }
+    if (queueAware?.pingMs ?? 0) <= 100 { return queueAware }
+    return candidates.min {
+        if $0.pingMs != $1.pingMs { return ($0.pingMs ?? .max) < ($1.pingMs ?? .max) }
+        if $0.queuePosition != $1.queuePosition { return $0.queuePosition < $1.queuePosition }
+        return $0.id < $1.id
+    }
+}
+
+private func printedWasteScore(_ zone: PrintedWasteZone, maxPing: Int, maxQueue: Int) -> Double {
+    (Double(zone.pingMs ?? maxPing) / Double(maxPing)) * 0.75
+        + (Double(zone.queuePosition) / Double(maxQueue)) * 0.25
+}
+
+func printedWasteRegionalURL(zoneId: String, title: String?, regions: [StreamRegion]) -> String? {
+    guard zoneId.hasPrefix("NP-"), !zoneId.hasPrefix("NPA-"),
+          let title = title?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !title.isEmpty else { return nil }
+    func locationKey(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(
+                of: #"\s*(?:\((?:usa|canada)\)|[12])$"#,
+                with: "",
+                options: [.regularExpression, .caseInsensitive]
+            )
+            .lowercased()
+    }
+    let wanted = locationKey(title.caseInsensitiveCompare("Mumbai") == .orderedSame ? "India" : title)
+    for region in regions where locationKey(region.name) == wanted {
+        guard let url = URLComponents(string: region.url),
+              url.scheme?.lowercased() == "https",
+              let host = url.host?.lowercased(),
+              !host.hasPrefix("np-"),
+              host.hasSuffix(".cloudmatchbeta.nvidiagrid.net"),
+              url.port == nil || url.port == 443,
+              url.path.isEmpty || url.path == "/",
+              url.query == nil,
+              url.fragment == nil else { continue }
+        return "https://\(host)/"
+    }
+    return nil
 }
 
 struct PrintedWasteQueueView: View {
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var store: OpenNOWStore
 
     let game: CloudGame
     let onConfirm: (String?) -> Void
@@ -131,19 +212,37 @@ struct PrintedWasteQueueView: View {
         return computedClosestZone
     }
 
-    private var groupedZones: [(region: String, label: String, flag: String, zones: [PrintedWasteZone])] {
-        let grouped = Dictionary(grouping: zones) { $0.region }
-        let order = ["US", "CA", "EU", "JP", "KR", "THAI", "MY"]
-        let sortedRegions = order.filter { grouped[$0] != nil } + grouped.keys.filter { !order.contains($0) }.sorted()
-        return sortedRegions.map { region in
-            let meta = Self.regionMeta[region] ?? (label: region, flag: "🌐")
-            return (
-                region,
-                meta.label,
-                meta.flag,
-                grouped[region, default: []].sorted { $0.queuePosition < $1.queuePosition }
+    private var groupedZones: [(region: String, locations: [PrintedWasteLocation])] {
+        let maxPing = max(zones.compactMap(\.pingMs).max() ?? 1, 1)
+        let maxQueue = max(zones.map(\.queuePosition).max() ?? 1, 1)
+        let locations = Dictionary(grouping: zones, by: \.title).map { title, variants in
+            let ordered = variants.sorted {
+                let lhs = printedWasteScore($0, maxPing: maxPing, maxQueue: maxQueue)
+                let rhs = printedWasteScore($1, maxPing: maxPing, maxQueue: maxQueue)
+                return lhs == rhs ? $0.id < $1.id : lhs < rhs
+            }
+            let primary = ordered[0]
+            return PrintedWasteLocation(
+                title: title,
+                primary: primary,
+                zoneIDs: Set(variants.map(\.id)),
+                alternateCount: variants.count - 1,
+                gpuTier: ordered.compactMap(\.gpuTier).first
             )
         }
+        return Dictionary(grouping: locations, by: { $0.primary.regionLabel })
+            .map { region, locations in
+                (region: region, locations: locations.sorted {
+                    let lhs = printedWasteScore($0.primary, maxPing: maxPing, maxQueue: maxQueue)
+                    let rhs = printedWasteScore($1.primary, maxPing: maxPing, maxQueue: maxQueue)
+                    return lhs == rhs ? $0.title < $1.title : lhs < rhs
+                })
+            }
+            .sorted {
+                let lhs = printedWasteScore($0.locations[0].primary, maxPing: maxPing, maxQueue: maxQueue)
+                let rhs = printedWasteScore($1.locations[0].primary, maxPing: maxPing, maxQueue: maxQueue)
+                return lhs == rhs ? $0.region < $1.region : lhs < rhs
+            }
     }
 
     private var selectedZoneUrl: String? {
@@ -283,6 +382,15 @@ struct PrintedWasteQueueView: View {
                         zone: selectedRoutingZone,
                         isTesting: isTestingPings
                     )
+                    if routingPreference == .manual,
+                       let selectedPing = selectedRoutingZone.pingMs,
+                       let closestPing = zones.compactMap(\.pingMs).min(),
+                       selectedPing > closestPing {
+                        Label("This server has more measured latency than the closest option.",
+                              systemImage: "exclamationmark.triangle")
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                    }
                 }
             } header: {
                 Text("Routing")
@@ -291,18 +399,21 @@ struct PrintedWasteQueueView: View {
             }
 
             ForEach(groupedZones, id: \.region) { group in
-                Section(group.label) {
-                    ForEach(group.zones) { zone in
+                Section(group.region) {
+                    ForEach(group.locations) { location in
                         Button {
                             routingPreference = .manual
-                            selectedZoneId = zone.id
+                            selectedZoneId = location.primary.id
                         } label: {
                             ZoneRow(
-                                zone: zone,
-                                isSelected: selectedRoutingZone?.id == zone.id,
-                                isManualSelection: routingPreference == .manual && selectedZoneId == zone.id,
-                                isAuto: autoZone?.id == zone.id,
-                                isClosest: closestZone?.id == zone.id
+                                zone: zones.first(where: { $0.id == selectedRoutingZone?.id && location.zoneIDs.contains($0.id) }) ?? location.primary,
+                                title: location.title,
+                                alternateCount: location.alternateCount,
+                                gpuTier: location.gpuTier,
+                                isSelected: selectedRoutingZone.map { location.zoneIDs.contains($0.id) } ?? false,
+                                isManualSelection: routingPreference == .manual && selectedZoneId.map { location.zoneIDs.contains($0) } == true,
+                                isAuto: autoZone.map { location.zoneIDs.contains($0.id) } ?? false,
+                                isClosest: closestZone.map { location.zoneIDs.contains($0.id) } ?? false
                             )
                         }
                         .buttonStyle(.plain)
@@ -395,7 +506,7 @@ struct PrintedWasteQueueView: View {
         let ping = zone.pingMs.map { "\($0) milliseconds" } ?? (zone.isMeasuring ? "measuring latency" : "latency unknown")
         let quality = zone.pingMs.map(StreamQuality.serverPing).flatMap { $0 == .good ? nil : $0.label }
         let people = zone.queuePosition == 1 ? "1 person in queue" : "\(zone.queuePosition) people in queue"
-        return [zone.id, "in \(zone.region)", ping, quality, people]
+        return [zone.title, "in \(zone.regionLabel)", ping, quality, people]
             .compactMap { $0 }
             .joined(separator: ", ")
     }
@@ -406,7 +517,12 @@ struct PrintedWasteQueueView: View {
         do {
             async let queueResponse = fetchQueueResponse()
             async let mappingResponse = fetchMappingResponse()
-            let (queue, mapping) = try await (queueResponse, mappingResponse)
+            async let regionResponse = store.queueRegions()
+            let (queue, mapping, regions) = try await (queueResponse, mappingResponse, regionResponse)
+            guard !regions.isEmpty else {
+                throw NSError(domain: "PrintedWaste", code: 3,
+                    userInfo: [NSLocalizedDescriptionKey: "GeForce NOW regional routes are unavailable. Try again shortly."])
+            }
             let previousZonesById = Dictionary(uniqueKeysWithValues: zones.map { ($0.id, $0) })
             let nukedZones = Set(mapping.data.compactMap { entry in
                 entry.value.nuked == true ? entry.key : nil
@@ -418,7 +534,12 @@ struct PrintedWasteQueueView: View {
                         && !nukedZones.contains(zoneId)
                         && !StreamZonePolicy.isBlocked(zoneId)
                 }
-                .map { zoneId, zone in
+                .compactMap { zoneId, zone -> PrintedWasteZone? in
+                    guard let routingURL = printedWasteRegionalURL(
+                        zoneId: zoneId,
+                        title: mapping.data[zoneId]?.title,
+                        regions: regions
+                    ) else { return nil }
                     let components = zone.Region
                         .split(separator: "-", maxSplits: 1)
                         .map { String($0) }
@@ -426,13 +547,18 @@ struct PrintedWasteQueueView: View {
                     let suffix = components.count > 1 ? components[1] : zone.Region
                     return PrintedWasteZone(
                         id: zoneId,
+                        title: mapping.data[zoneId]?.title?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty ?? zoneId,
                         region: region,
+                        regionLabel: mapping.data[zoneId]?.region?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty
+                            ?? (Self.regionMeta[region]?.label ?? region),
                         queuePosition: zone.QueuePosition,
                         etaMs: zone.eta,
-                        zoneUrl: Self.constructZoneUrl(zoneId),
+                        zoneUrl: routingURL,
                         pingMs: previousZonesById[zoneId]?.pingMs,
                         isMeasuring: true,
-                        regionSuffix: suffix
+                        regionSuffix: suffix,
+                        gpuTier: mapping.data[zoneId]?.is5080Server == true ? "RTX 5080" :
+                            (mapping.data[zoneId]?.is4080Server == true ? "RTX 4080" : nil)
                     )
                 }
                 .sorted { lhs, rhs in
@@ -442,6 +568,10 @@ struct PrintedWasteQueueView: View {
                     return lhs.region < rhs.region
                 }
 
+            guard !zones.isEmpty else {
+                throw NSError(domain: "PrintedWaste", code: 4,
+                    userInfo: [NSLocalizedDescriptionKey: "No selectable server has an advertised GeForce NOW route."])
+            }
             if selectedZoneId == nil {
                 selectedZoneId = autoZone?.id
             }
@@ -562,10 +692,6 @@ struct PrintedWasteQueueView: View {
         zoneId.hasPrefix("NP-") && !zoneId.hasPrefix("NPA-")
     }
 
-    private static func constructZoneUrl(_ zoneId: String) -> String {
-        "https://\(zoneId.lowercased()).cloudmatchbeta.nvidiagrid.net/"
-    }
-
     private static let regionMeta: [String: (label: String, flag: String)] = [
         "US": ("North America", "🇺🇸"),
         "EU": ("Europe", "🇪🇺"),
@@ -579,6 +705,9 @@ struct PrintedWasteQueueView: View {
 
 private struct ZoneRow: View {
     let zone: PrintedWasteZone
+    let title: String
+    let alternateCount: Int
+    let gpuTier: String?
     let isSelected: Bool
     let isManualSelection: Bool
     let isAuto: Bool
@@ -588,12 +717,12 @@ private struct ZoneRow: View {
         HStack(spacing: 14) {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
-                    Text(zone.id)
+                    Text(title)
                         .font(.subheadline.weight(.semibold))
                         .lineLimit(1)
                         .minimumScaleFactor(0.85)
                         .layoutPriority(1)
-                    Text(zone.regionSuffix)
+                    Text(alternateCount > 0 ? "+\(alternateCount) servers" : zone.id)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -601,6 +730,7 @@ private struct ZoneRow: View {
                 }
                 HStack(spacing: 6) {
                     statusText("Queue \(zone.queuePosition)", color: queueColor(zone.queuePosition))
+                    if let gpuTier { statusText(gpuTier, color: .secondary) }
                     if isAuto {
                         statusText("Auto", color: .green)
                     }

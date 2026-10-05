@@ -731,7 +731,7 @@ struct HomeView: View {
                 prompt: "Search games"
             )
             .refreshable { await store.refreshCatalog() }
-            .navigationTitle("OpenNOW")
+            .navigationTitle("Store")
             .background {
                 CatalogWallpaperBackdrop(
                     isEnabled: store.settings.catalogWallpaperEnabled,
@@ -750,38 +750,53 @@ struct HomeView: View {
     }
 
     private var homeHeader: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if let error = store.lastError {
+        VStack(alignment: .leading, spacing: 22) {
+            if let error = store.catalogError {
                 ErrorBannerView(
                     message: error,
-                    failure: store.lastFailure,
+                    failure: store.lastFailure?.message == error ? store.lastFailure : nil,
                     onRecover: { store.performRecovery($0) },
-                    onDismiss: { store.clearFailure() }
+                    onDismiss: { store.clearCatalogError() }
                 )
             }
 
-            if !isHomeSearchActive && jumpBackInHasContent {
-                continueSection
+            if !isHomeSearchActive {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("DISCOVER")
+                        .font(.caption.weight(.bold))
+                        .tracking(2)
+                        .foregroundStyle(brandAccent)
+                    Text("Find your next game.")
+                        .font(.system(.largeTitle, design: .rounded, weight: .bold))
+                    Text("Explore the latest additions and jump back into your games.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 8)
             }
 
             if !isHomeSearchActive && !newGamesHeroGames.isEmpty {
                 newGamesHeroSection
             }
 
-            if !isHomeSearchActive {
-                ForEach(storeSectionRails) { section in
-                    CatalogPosterRail(
-                        title: section.title,
-                        games: section.games,
-                        onOpenDetails: { selectedGameForDetails = $0 },
-                        onPlay: launchFromCard
-                    )
-                }
+            if !isHomeSearchActive && jumpBackInHasContent {
+                continueSection
+            }
+
+            if !isHomeSearchActive && !queueGames.isEmpty {
+                CatalogPosterRail(title: "In queue", symbol: "hourglass", games: queueGames,
+                    onOpenDetails: resumeQueueGame, onPlay: resumeQueueGame)
+            }
+
+            if !isHomeSearchActive && !favoriteGames.isEmpty {
+                CatalogPosterRail(title: "Favorites", symbol: "heart.fill", games: favoriteGames,
+                    onOpenDetails: { selectedGameForDetails = $0 }, onPlay: launchFromCard)
             }
 
             CatalogControlsHeader(
-                title: homeHeaderTitle,
-                subtitle: isHomeSearchActive ? "Search results" : "Store catalog",
+                title: isHomeSearchActive ? "Search results" : "Recommendations",
+                subtitle: homeHeaderTitle,
                 chips: homeActiveFilterChips,
                 onClear: isHomeSearchActive ? {
                     store.searchText = ""
@@ -795,9 +810,8 @@ struct HomeView: View {
 
     private var continueSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Continue")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
+            Text("Continue playing")
+                .font(.title2.weight(.bold))
 
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(alignment: .top, spacing: 12) {
@@ -839,33 +853,6 @@ struct HomeView: View {
         )
     }
 
-    /// The catalog groups games into named sections; Android surfaces those as rails while iOS
-    /// was flattening all of them into one grid. A section is only worth a rail when it is long
-    /// enough to scroll — anything shorter reads as a rendering bug, so it stays in the grid.
-    private var storeSectionRails: [CatalogSectionGroup] {
-        let excluded = newGamesExcludedGameKeys.union(newGamesHeroGames.map(catalogStableGameKey))
-        var order: [String] = []
-        var grouped: [String: [CloudGame]] = [:]
-        var seen = Set<String>()
-
-        for game in store.allGames {
-            let key = catalogStableGameKey(game)
-            guard !excluded.contains(key), seen.insert(key).inserted else { continue }
-            guard let title = game.catalogSectionTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !title.isEmpty,
-                  !title.localizedCaseInsensitiveContains("jump back in") else { continue }
-            if grouped[title] == nil { order.append(title) }
-            grouped[title, default: []].append(game)
-        }
-
-        return order.compactMap { title -> CatalogSectionGroup? in
-            guard let games = grouped[title], games.count >= 4 else { return nil }
-            return CatalogSectionGroup(title: title, games: Array(games.prefix(20)))
-        }
-        .prefix(6)
-        .map { $0 }
-    }
-
     private var newGamesHeroGames: [CloudGame] {
         newlyAddedStoreHeroGames(
             games: store.allGames,
@@ -884,6 +871,39 @@ struct HomeView: View {
             }
         }
         return keys
+    }
+
+    private var queueGames: [CloudGame] {
+        var seen = Set<String>()
+        var games: [CloudGame] = []
+        if let active = store.activeSession, active.status == 1,
+           seen.insert(catalogStableGameKey(active.game)).inserted {
+            games.append(active.game)
+        }
+        for candidate in store.resumableSessions where candidate.status == 1 {
+            guard let game = store.gameForRemoteSession(candidate),
+                  seen.insert(catalogStableGameKey(game)).inserted else { continue }
+            games.append(game)
+        }
+        return Array(games.prefix(8))
+    }
+
+    private func resumeQueueGame(_ game: CloudGame) {
+        if let active = store.activeSession, catalogStableGameKey(active.game) == catalogStableGameKey(game) {
+            store.jumpBackToSession()
+            return
+        }
+        if let candidate = store.resumableSessions.first(where: {
+            $0.status == 1 && store.gameForRemoteSession($0).map(catalogStableGameKey) == catalogStableGameKey(game)
+        }) {
+            store.scheduleResume(candidate: candidate)
+        }
+    }
+
+    private var favoriteGames: [CloudGame] {
+        let byId = Dictionary((store.allGames + store.libraryGames).map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first })
+        return Array(store.settings.favoriteGameIds.compactMap { byId[$0] }.prefix(12))
     }
 
     private var homeGridGames: [CloudGame] {
@@ -959,7 +979,7 @@ struct HomeView: View {
     private var continueGameItems: [GameBannerActionItem] {
         var items: [GameBannerActionItem] = []
         var seenGameKeys = Set<String>()
-        if let active = store.activeSession {
+        if let active = store.activeSession, active.status != 1 {
             seenGameKeys.insert(catalogStableGameKey(active.game))
             items.append(
                 GameBannerActionItem(
@@ -973,7 +993,7 @@ struct HomeView: View {
             )
         }
 
-        for candidate in resumableSessionsExcludingActive.prefix(6) {
+        for candidate in resumableSessionsExcludingActive.filter({ $0.status != 1 }).prefix(6) {
             guard let game = store.gameForRemoteSession(candidate) else { continue }
             guard seenGameKeys.insert(catalogStableGameKey(game)).inserted else { continue }
             items.append(
@@ -988,38 +1008,13 @@ struct HomeView: View {
             )
         }
 
-        let favoriteIDs = Set(store.settings.favoriteGameIds)
-        let catalogGamesByID = Dictionary(
-            (store.allGames + store.libraryGames).map { ($0.id, $0) },
-            uniquingKeysWith: { current, _ in current }
-        )
-        let favoriteGames = favoriteIDs.compactMap { catalogGamesByID[$0] }
-            .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
-        let ownedGames = store.libraryGames.sorted {
-            $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
-        }
-
-        for game in favoriteGames + ownedGames where items.count < 6 {
-            guard seenGameKeys.insert(catalogStableGameKey(game)).inserted else { continue }
-            let isFavorite = favoriteIDs.contains(game.id)
-            items.append(
-                GameBannerActionItem(
-                    id: "catalog-\(game.id)",
-                    game: game,
-                    subtitle: isFavorite ? "Favorite" : "In your library",
-                    badgeSystemImage: isFavorite ? "heart.fill" : "books.vertical.fill"
-                ) {
-                    launchFromCard(game)
-                }
-            )
-        }
         return items
     }
 
     private var unknownResumableSessions: [RemoteSessionCandidate] {
         resumableSessionsExcludingActive
             .prefix(6)
-            .filter { store.gameForRemoteSession($0) == nil }
+            .filter { $0.status != 1 && store.gameForRemoteSession($0) == nil }
     }
 
     private func jumpBackInSubtitleActive(_ session: ActiveSession) -> String {
@@ -1039,13 +1034,6 @@ struct HomeView: View {
 }
 
 private let gameVerticalBannerAspectRatio: CGFloat = 2.0 / 3.0
-
-/// One curated catalog section, rendered as a rail on Home.
-struct CatalogSectionGroup: Identifiable {
-    let title: String
-    let games: [CloudGame]
-    var id: String { title }
-}
 
 struct GameBannerRowGroup: Identifiable {
     let id: String
@@ -2043,7 +2031,7 @@ private struct CatalogPosterRail: View {
                         Text(title)
                     }
                 }
-                .font(.subheadline.weight(.semibold))
+                .font(.title2.weight(.bold))
 
                 Spacer(minLength: 8)
 
@@ -2129,7 +2117,7 @@ private struct ComingNextCarousel: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
                 Label("New games added", systemImage: "sparkles")
-                    .font(.subheadline.weight(.semibold))
+                    .font(.title2.weight(.bold))
                 Spacer(minLength: 8)
                 Text("GFN Thursday")
                     .font(.caption)

@@ -24,6 +24,30 @@ final class OpenNOWAppDelegate: NSObject, UIApplicationDelegate {
 
 }
 
+#if os(iOS)
+@MainActor
+enum StreamOrientation {
+    private static var previousOrientation: UIInterfaceOrientationMask?
+
+    static func setStreaming(_ streaming: Bool) {
+        guard let scene = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .first(where: { $0.activationState == .foregroundActive }) else { return }
+        if streaming && previousOrientation == nil {
+            switch scene.interfaceOrientation {
+            case .landscapeLeft: previousOrientation = .landscapeLeft
+            case .landscapeRight: previousOrientation = .landscapeRight
+            case .portraitUpsideDown: previousOrientation = .portraitUpsideDown
+            default: previousOrientation = .portrait
+            }
+        }
+        let orientations: UIInterfaceOrientationMask = streaming ? .landscape : (previousOrientation ?? .portrait)
+        scene.requestGeometryUpdate(.iOS(interfaceOrientations: orientations)) { _ in }
+        if !streaming { previousOrientation = nil }
+    }
+}
+#endif
+
 @main
 struct OpenNOWiOSApp: App {
     @UIApplicationDelegateAdaptor(OpenNOWAppDelegate.self) private var appDelegate

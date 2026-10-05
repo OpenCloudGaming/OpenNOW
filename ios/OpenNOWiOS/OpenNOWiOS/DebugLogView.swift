@@ -11,8 +11,10 @@ import UIKit
 /// on the device beats round-tripping a paste link. Everything here is already sanitised by
 /// `DiagnosticsSanitizer` before it is stored, so nothing sensitive can reach the screen either.
 struct DebugLogView: View {
+    @EnvironmentObject private var store: OpenNOWStore
     @Environment(\.openNowAccent) private var accent
     @State private var entries: [DiagnosticsTraceEntry] = []
+    @State private var lifecycleEvents: [DebugLifecycleEvent] = []
     @State private var query = ""
     @State private var failuresOnly = false
     @State private var loaded = false
@@ -23,8 +25,35 @@ struct DebugLogView: View {
             .filter { $0.matches(query) }
     }
 
+    private var visibleLifecycleEvents: [DebugLifecycleEvent] {
+        lifecycleEvents.reversed().filter {
+            query.isEmpty || $0.category.localizedCaseInsensitiveContains(query)
+                || $0.message.localizedCaseInsensitiveContains(query)
+        }
+    }
+
     var body: some View {
         List {
+            if !failuresOnly && !visibleLifecycleEvents.isEmpty {
+                Section("Session Timeline") {
+                    ForEach(visibleLifecycleEvents) { event in
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack {
+                                Text(event.category.uppercased())
+                                    .font(.caption2.weight(.bold))
+                                    .foregroundStyle(accent.color)
+                                Spacer()
+                                Text(event.timestamp, style: .time)
+                                    .font(.caption2.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                            Text(event.message)
+                                .font(.subheadline)
+                                .textSelection(.enabled)
+                        }
+                    }
+                }
+            }
             if !entries.isEmpty {
                 Section {
                     Toggle("Failures only", isOn: $failuresOnly)
@@ -35,6 +64,7 @@ struct DebugLogView: View {
             }
 
             if visibleEntries.isEmpty {
+                if visibleLifecycleEvents.isEmpty || failuresOnly {
                 Section {
                     if !loaded {
                         HStack(spacing: 10) {
@@ -52,12 +82,15 @@ struct DebugLogView: View {
                         }
                     }
                 }
+                }
             } else {
-                ForEach(visibleEntries) { entry in
-                    NavigationLink {
-                        DebugLogDetailView(entry: entry)
-                    } label: {
-                        row(entry)
+                Section("API Calls") {
+                    ForEach(visibleEntries) { entry in
+                        NavigationLink {
+                            DebugLogDetailView(entry: entry)
+                        } label: {
+                            row(entry)
+                        }
                     }
                 }
             }
@@ -102,6 +135,7 @@ struct DebugLogView: View {
 
     private func reload() async {
         entries = await DiagnosticsHTTPTraceStore.shared.recentEntries()
+        lifecycleEvents = store.debugEventSnapshot()
         loaded = true
     }
 }

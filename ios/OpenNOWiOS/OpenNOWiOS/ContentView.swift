@@ -6,6 +6,7 @@ import UIKit
 
 struct ContentView: View {
     @EnvironmentObject private var store: OpenNOWStore
+    @AppStorage("OpenNOW.iOS.setupCompletedVersion") private var setupCompletedVersion = 0
 
     var body: some View {
         Group {
@@ -15,6 +16,8 @@ struct ContentView: View {
                     .task {
                         store.installDebugQueuePreview(position: queuePosition)
                     }
+            } else if ProcessInfo.processInfo.arguments.contains("--opennow-intro-preview") {
+                IntroSetupView(onFinish: {})
             } else {
                 standardContent
             }
@@ -26,7 +29,8 @@ struct ContentView: View {
         .animation(.easeInOut(duration: 0.35), value: store.user == nil)
         .task {
             #if DEBUG
-            guard debugQueuePreviewPosition == nil else { return }
+            guard debugQueuePreviewPosition == nil,
+                  !ProcessInfo.processInfo.arguments.contains("--opennow-intro-preview") else { return }
             #endif
             await store.bootstrap()
         }
@@ -39,6 +43,10 @@ struct ContentView: View {
                 SplashView()
             } else if store.user == nil {
                 LoginView()
+            } else if setupCompletedVersion < 1 {
+                IntroSetupView {
+                    setupCompletedVersion = 1
+                }
             } else {
                 MainTabView(initialPage: store.settings.launchPage)
             }
@@ -53,6 +61,260 @@ struct ContentView: View {
             .map { max(1, $0) }
     }
     #endif
+}
+
+/// First-run choices follow Android's welcome, appearance, streaming, play, recap and service
+/// notice order. Settings are written as they are picked so the appearance preview is real.
+private struct IntroSetupView: View {
+    @EnvironmentObject private var store: OpenNOWStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.openNowAccent) private var accent
+    @State private var step = Step.welcome
+    let onFinish: () -> Void
+
+    private enum Step: Int, CaseIterable {
+        case welcome, appearance, streaming, play, ready, geforceNow
+
+        var title: String {
+            switch self {
+            case .welcome: return "Welcome to OpenNOW"
+            case .appearance: return "Make it yours"
+            case .streaming: return "Choose your stream"
+            case .play: return "Play your way"
+            case .ready: return "Ready when you are"
+            case .geforceNow: return "Your GeForce NOW account"
+            }
+        }
+
+        var subtitle: String {
+            switch self {
+            case .welcome: return "Your games, ready wherever you are."
+            case .appearance: return "A few details make the library feel like yours."
+            case .streaming: return "Start with a profile that fits your connection."
+            case .play: return "Choose how touch input and the stream status appear."
+            case .ready: return "You can change every choice later in Settings."
+            case .geforceNow: return "OpenNOW uses your own GeForce NOW membership."
+            }
+        }
+
+        var symbol: String {
+            switch self {
+            case .welcome: return "sparkles.tv"
+            case .appearance: return "paintpalette"
+            case .streaming: return "video.badge.waveform"
+            case .play: return "hand.tap"
+            case .ready: return "checkmark.seal"
+            case .geforceNow: return "person.crop.circle.badge.checkmark"
+            }
+        }
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                CatalogWallpaperBackdrop(
+                    isEnabled: store.settings.catalogWallpaperEnabled,
+                    managedFilename: store.settings.catalogWallpaperFilename,
+                    preset: store.settings.catalogWallpaperPreset
+                )
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 26) {
+                        header
+                        stepContent
+                            .id(step)
+                            .transition(reduceMotion ? .opacity : .asymmetric(
+                                insertion: .opacity.combined(with: .move(edge: .trailing)),
+                                removal: .opacity.combined(with: .move(edge: .leading))
+                            ))
+                        Spacer(minLength: 8)
+                        footer
+                    }
+                    .frame(maxWidth: 680, minHeight: max(0, proxy.size.height - 56), alignment: .topLeading)
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 28)
+                    .frame(maxWidth: .infinity)
+                }
+            }
+        }
+        .onChangeCompat(of: store.settings) { _ in store.persistSettings() }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 10) {
+                BrandLogoView(size: 34)
+                Text("OpenNOW").font(.headline.weight(.bold))
+                Spacer()
+                Text("\(step.rawValue + 1) of \(Step.allCases.count)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 5) {
+                ForEach(Step.allCases, id: \.rawValue) { candidate in
+                    Capsule()
+                        .fill(candidate.rawValue <= step.rawValue ? accent.color : Color.secondary.opacity(0.2))
+                        .frame(height: 4)
+                }
+            }
+            HStack(alignment: .top, spacing: 16) {
+                Image(systemName: step.symbol)
+                    .font(.system(size: 25, weight: .semibold))
+                    .foregroundStyle(.tint)
+                    .frame(width: 56, height: 56)
+                    .background(accent.color.opacity(0.13), in: RoundedRectangle(cornerRadius: 17))
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(step.title).font(.system(.largeTitle, design: .rounded, weight: .bold))
+                    Text(step.subtitle).font(.subheadline).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var stepContent: some View {
+        switch step {
+        case .welcome:
+            introCard {
+                Text("One library. Your favourite games.")
+                    .font(.title2.weight(.semibold))
+                Text("Browse your GeForce NOW library, choose a server when it matters, and keep an eye on the queue while your rig gets ready.")
+                    .foregroundStyle(.secondary)
+                Label("A quick setup, then you’re in.", systemImage: "checkmark.circle.fill")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.tint)
+            }
+        case .appearance:
+            introCard {
+                Text("Accent").font(.headline)
+                Picker("Accent", selection: $store.settings.uiAccent) {
+                    ForEach(UIAccent.allCases) { accent in
+                        Text(accent.label).tag(accent)
+                    }
+                }
+                .pickerStyle(.menu)
+                Toggle("Catalog wallpaper", isOn: $store.settings.catalogWallpaperEnabled)
+                if store.settings.catalogWallpaperEnabled {
+                    Picker("Wallpaper", selection: $store.settings.catalogWallpaperPreset) {
+                        ForEach(CatalogWallpaperPreset.allCases) { preset in
+                            Text(preset.label).tag(preset)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
+            }
+        case .streaming:
+            introCard {
+                Text("Stream profile").font(.headline)
+                ForEach([StreamPreset.recommended, .high, .lowDataSaver, .custom]) { preset in
+                    Button {
+                        store.settings = StreamSettingsResolver.settings(
+                            store.settings, applying: preset,
+                            membershipTier: store.subscription?.membershipTier
+                        )
+                        store.persistSettings()
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(preset.label).font(.subheadline.weight(.semibold))
+                                Text(preset.detail).font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if store.settings.streamPreset == preset {
+                                Image(systemName: "checkmark.circle.fill").foregroundStyle(.tint)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                        .background(accent.color.opacity(store.settings.streamPreset == preset ? 0.12 : 0.04),
+                                    in: RoundedRectangle(cornerRadius: 12))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        case .play:
+            introCard {
+                Toggle("Finger mouse", isOn: $store.settings.fingerMouseEnabled)
+                if store.settings.fingerMouseEnabled {
+                    Toggle("Tap clicks where you touch", isOn: $store.settings.touch.mouseDirectClick)
+                }
+                Toggle("Show stream status", isOn: $store.settings.showStatsOverlay)
+                Text("The iPhone time and system indicators stay visible during play.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+        case .ready:
+            introCard {
+                summaryRow("Appearance", value: store.settings.uiAccent.label)
+                summaryRow("Streaming", value: store.settings.streamPreset.label)
+                summaryRow("Touch", value: store.settings.fingerMouseEnabled ? "Finger mouse" : "Off")
+                summaryRow("Stream status", value: store.settings.showStatsOverlay ? "Visible" : "Hidden")
+                Text("You can revisit these choices any time in Settings.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+        case .geforceNow:
+            introCard {
+                Text("GeForce NOW provides the games and cloud rigs. OpenNOW is a client for the account you bring.")
+                    .foregroundStyle(.secondary)
+                if let subscription = store.subscription {
+                    Label(subscription.isGamePlayAllowed ? "Membership ready for gameplay" : "Choose a GeForce NOW membership to start games",
+                          systemImage: subscription.isGamePlayAllowed ? "checkmark.circle.fill" : "info.circle.fill")
+                        .foregroundStyle(subscription.isGamePlayAllowed ? .green : .orange)
+                } else {
+                    Label("Membership could not be verified yet. You can browse, then check again before playing.",
+                          systemImage: "info.circle")
+                        .foregroundStyle(.secondary)
+                }
+                Button("Check membership again") {
+                    Task { await store.refreshCatalog() }
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+    }
+
+    private func introCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 16, content: content)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+
+    private func summaryRow(_ title: String, value: String) -> some View {
+        HStack {
+            Text(title).foregroundStyle(.secondary)
+            Spacer()
+            Text(value).fontWeight(.semibold)
+        }
+    }
+
+    private var footer: some View {
+        HStack(spacing: 12) {
+            if step != .welcome {
+                Button("Back") { changeStep(to: Step(rawValue: step.rawValue - 1) ?? .welcome) }
+                    .buttonStyle(.bordered)
+            }
+            Spacer()
+            if step.rawValue < Step.geforceNow.rawValue {
+                Button("Skip setup") { changeStep(to: .geforceNow) }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+            }
+            Button(step == .geforceNow ? "Open Store" : step == .welcome ? "Get Started" : "Continue") {
+                if step == .geforceNow {
+                    store.persistSettings()
+                    onFinish()
+                } else if let next = Step(rawValue: step.rawValue + 1) {
+                    store.persistSettings()
+                    changeStep(to: next)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+        }
+    }
+
+    private func changeStep(to next: Step) {
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.26)) {
+            step = next
+        }
+    }
 }
 
 private struct SplashView: View {

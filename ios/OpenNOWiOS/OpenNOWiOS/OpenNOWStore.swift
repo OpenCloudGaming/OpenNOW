@@ -31,6 +31,20 @@ struct AuthTokens: Codable, Equatable {
     let expiresAt: TimeInterval
     let clientToken: String?
     let clientTokenExpiresAt: TimeInterval?
+    var authClientId: String? = nil
+}
+
+struct DeviceLoginPrompt: Equatable, Sendable {
+    let userCode: String
+    let verificationURL: URL
+    let expiresAt: Date
+}
+
+struct DebugLifecycleEvent: Identifiable {
+    let id = UUID()
+    let timestamp: Date
+    let category: String
+    let message: String
 }
 
 struct AuthSession: Codable, Equatable {
@@ -491,6 +505,7 @@ struct ActiveSession: Identifiable, Codable, Equatable {
     var iceServers: [IceServerConfig]
     let zone: String
     let streamingBaseUrl: String
+    var sessionControlBaseUrl: String? = nil
     let clientId: String
     let deviceId: String
     var adState: SessionAdState?
@@ -2303,12 +2318,14 @@ private enum GFNConstants {
     static let tokenEndpoint = URL(string: "https://login.nvidia.com/token")!
     static let userInfoEndpoint = URL(string: "https://login.nvidia.com/userinfo")!
     static let authEndpoint = URL(string: "https://login.nvidia.com/authorize")!
+    static let deviceAuthorizationEndpoint = URL(string: "https://login.nvidia.com/device/authorize")!
     static let clientTokenEndpoint = URL(string: "https://login.nvidia.com/client_token")!
     static let mesEndpoint = URL(string: "https://mes.geforcenow.com/v4/subscriptions")!
     static let graphQL = "https://games.geforce.com/graphql"
     static let accountLinkingBase = URL(string: "https://als.geforcenow.com/v1")!
 
     static let clientId = "ZU7sPN-miLujMD95LfOQ453IB0AtjM8sMyvgJ9wCXEQ"
+    static let deviceCodeClientId = "q61ddeJrVt7O90Nl-P-N7I36yctih4Ml6FyXLrb6j-U"
     static let accountLinkingClientId = "gfn-pc"
     static let accountLinkingRedirectUri = "http://localhost:2259/"
     static let scopes = "openid consent email tk_client age"
@@ -2320,10 +2337,11 @@ private enum GFNConstants {
         priority: 0
     )
     static let lcarsClientId = "ec7e38d4-03af-4b58-b131-cfb0495903ab"
-    static let gfnClientVersion = "2.0.80.173"
-    static let panelsQueryHash = "f8e26265a5db5c20e1334a6872cf04b6e3970507697f6ae55a6ddefa5420daf0"
+    static let gfnClientVersion = "2.0.88.129"
+    static let panelsQueryHash = "46ec15f267a056e7d5e46e629efa929529e5e7542a4850faece90b9f8fa5f810"
+    static let libraryWithTimeQueryHash = "7f54d6bbbf3b1c09d0e5264dfa36f0f4aaf5e2678f2089f0cbf0d4dda18c3af9"
     static let appMetadataQueryHash = "39187e85b6dcf60b7279a5f233288b0a8b69a8b1dbcfb5b25555afdcb988f0d7"
-    static let userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NVIDIACEFClient/HEAD/debb5919f6 GFN-PC/2.0.80.173"
+    static let userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NVIDIACEFClient/HEAD/debb5919f6 GFN-PC/2.0.88.129"
     /// The user agent the official GeForce NOW Android client sends for a touch session. It travels
     /// with the touch CloudMatch identity in `StreamDeviceProfile`; the two are one signal and must
     /// not be set independently.
@@ -2464,6 +2482,44 @@ private func validEndpointHost(_ host: String?) -> String? {
         return nil
     }
     return normalized
+}
+
+/// CloudMatch's control address is a queue endpoint, never a media/signaling address.
+enum SessionControlRouting {
+    static func baseURL(host rawHost: String?, port: Int?) -> String? {
+        guard port == nil || port == 443 else { return nil }
+        var host = rawHost?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        while host.hasSuffix(".") { host.removeLast() }
+        let pattern = #"^np-[a-z0-9]+(?:-[a-z0-9]+)+\.(?:cloudmatchbeta|cloudmatch)\.nvidiagrid\.net$"#
+        guard host.range(of: pattern, options: .regularExpression) != nil else { return nil }
+        return "https://\(host)"
+    }
+
+    static func pollBase(for session: ActiveSession) -> String {
+        guard let launchHost = URL(string: session.streamingBaseUrl)?.host?.lowercased(),
+              launchHost.hasSuffix(".cloudmatchbeta.nvidiagrid.net")
+                || launchHost.hasSuffix(".cloudmatch.nvidiagrid.net"),
+              let controlBase = session.sessionControlBaseUrl,
+              let controlURL = URL(string: controlBase),
+              controlURL.scheme == "https",
+              controlURL.port == nil || controlURL.port == 443,
+              controlURL.path.isEmpty || controlURL.path == "/",
+              controlURL.query == nil,
+              controlURL.fragment == nil,
+              let validated = baseURL(host: controlURL.host, port: controlURL.port) else {
+            return session.streamingBaseUrl
+        }
+        return validated
+    }
+}
+
+enum CloudMatchQueueStatus {
+    static func isAbandoned(_ requestStatus: [String: Any]?) -> Bool {
+        let code = requestStatus?["statusCode"] as? Int
+        let description = (requestStatus?["statusDescription"] as? String)?.uppercased() ?? ""
+        let unified = (requestStatus?["unifiedErrorCode"] as? String)?.uppercased() ?? ""
+        return code == 69 || description.contains("SESSION_REQUEST_IN_QUEUE_ABANDONED") || unified == "4A8C300F"
+    }
 }
 
 func normalizeGameStore(_ store: String) -> String {
@@ -3234,24 +3290,31 @@ private actor GFNAPIClient {
         do {
             let (data, response) = try await request(
                 url: GFNConstants.serviceUrlsEndpoint,
-                headers: ["Accept": "application/json", "User-Agent": GFNConstants.userAgent]
+                headers: headersForOAuth()
             )
-            guard response.statusCode == 200 else { return [GFNConstants.defaultProvider] }
+            guard (200..<300).contains(response.statusCode) else { return [GFNConstants.defaultProvider] }
             let json = try parseJSON(data)
             let gfnInfo = json["gfnServiceInfo"] as? [String: Any]
             let endpoints = gfnInfo?["gfnServiceEndpoints"] as? [[String: Any]] ?? []
             let providers = endpoints.compactMap { item -> LoginProvider? in
-                guard let idp = item["idpId"] as? String,
-                      let code = item["loginProviderCode"] as? String,
-                      let name = item["loginProviderDisplayName"] as? String,
-                      let url = item["streamingServiceUrl"] as? String else {
+                guard let idp = item["idpId"] as? String, !idp.isEmpty,
+                      let rawURL = item["streamingServiceUrl"] as? String,
+                      let parsedURL = URLComponents(string: rawURL.trimmingCharacters(in: .whitespacesAndNewlines)),
+                      parsedURL.scheme?.lowercased() == "https",
+                      let host = parsedURL.host, !host.isEmpty,
+                      !host.hasPrefix("."), !host.contains("..") else {
                     return nil
                 }
+                let rawCode = (item["loginProviderCode"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let code = rawCode.isEmpty ? "NVIDIA" : rawCode
+                let rawName = (item["loginProviderDisplayName"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let name = rawName.isEmpty ? code : rawName
                 let prio = item["loginProviderPriority"] as? Int ?? 0
                 let display = (code == "BPC") ? "bro.game" : name
-                let normalizedURL = url.hasSuffix("/") ? url : "\(url)/"
+                let port = parsedURL.port.map { $0 == 443 ? "" : ":\($0)" } ?? ""
+                let normalizedURL = "https://\(host)\(port)/"
                 return LoginProvider(idpId: idp, code: code, displayName: display, streamingServiceUrl: normalizedURL, priority: prio)
-            }.sorted { $0.priority < $1.priority }
+            }.sorted { $0.priority == $1.priority ? $0.displayName < $1.displayName : $0.priority < $1.priority }
             return providers.isEmpty ? [GFNConstants.defaultProvider] : providers
         } catch {
             return [GFNConstants.defaultProvider]
@@ -3305,6 +3368,109 @@ private actor GFNAPIClient {
             throw error
         }
         return try await completeOAuthLogin(pending, callbackURL: callbackURL)
+    }
+
+    func loginWithDeviceCode(
+        with provider: LoginProvider,
+        deviceId: String,
+        onPrompt: @escaping @MainActor @Sendable (DeviceLoginPrompt) -> Void,
+        onAuthorized: @escaping @MainActor @Sendable () -> Void
+    ) async throws -> AuthSession {
+        guard provider.code.uppercased() == "NVIDIA" else {
+            throw NSError(domain: "OpenNOW.Auth", code: 20, userInfo: [
+                NSLocalizedDescriptionKey: "Code sign-in is only available for NVIDIA accounts."
+            ])
+        }
+        let challengeBody = URLQueryItemEncoder.encode([
+            "client_id": GFNConstants.deviceCodeClientId,
+            "scope": GFNConstants.scopes,
+            "device_id": deviceId,
+            "display_name": "OpenNOW iOS",
+            "idp_id": provider.idpId
+        ])
+        let formHeaders = [
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "User-Agent": GFNConstants.userAgent
+        ]
+        let (challengeData, challengeResponse) = try await request(
+            url: GFNConstants.deviceAuthorizationEndpoint,
+            method: "POST",
+            headers: formHeaders,
+            body: challengeBody.data(using: .utf8)
+        )
+        guard (200..<300).contains(challengeResponse.statusCode) else {
+            throw responseError(domain: "OpenNOW.Auth", response: challengeResponse, data: challengeData,
+                fallback: "NVIDIA could not start code sign-in.")
+        }
+        let challenge = try parseJSON(challengeData)
+        guard let deviceCode = challenge["device_code"] as? String, !deviceCode.isEmpty,
+              let userCode = challenge["user_code"] as? String, !userCode.isEmpty,
+              let verificationString = (challenge["verification_uri_complete"] as? String)
+                ?? (challenge["verification_uri"] as? String)
+                ?? (challenge["verification_url"] as? String),
+              let verificationURL = URL(string: verificationString),
+              verificationURL.scheme == "https" else {
+            throw NSError(domain: "OpenNOW.Auth", code: 21, userInfo: [
+                NSLocalizedDescriptionKey: "NVIDIA returned an incomplete sign-in code."
+            ])
+        }
+        let expiresIn = max(1, (challenge["expires_in"] as? NSNumber)?.doubleValue ?? 600)
+        let expiresAt = Date().addingTimeInterval(expiresIn)
+        let prompt = DeviceLoginPrompt(userCode: userCode, verificationURL: verificationURL, expiresAt: expiresAt)
+        await onPrompt(prompt)
+        var interval = max(5, (challenge["interval"] as? NSNumber)?.intValue ?? 5)
+        logger.info("Device code issued; waiting for user authorization.")
+
+        while Date() < expiresAt {
+            try Task.checkCancellation()
+            try await Task.sleep(for: .seconds(interval))
+            try Task.checkCancellation()
+            let tokenBody = URLQueryItemEncoder.encode([
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                "device_code": deviceCode,
+                "client_id": GFNConstants.deviceCodeClientId
+            ])
+            let (data, response) = try await request(
+                url: GFNConstants.tokenEndpoint,
+                method: "POST",
+                headers: formHeaders,
+                body: tokenBody.data(using: .utf8)
+            )
+            let result = (try? parseJSON(data)) ?? [:]
+            if (200..<300).contains(response.statusCode) {
+                guard let accessToken = result["access_token"] as? String, !accessToken.isEmpty else {
+                    throw NSError(domain: "OpenNOW.Auth", code: 22, userInfo: [
+                        NSLocalizedDescriptionKey: "NVIDIA did not return an access token."
+                    ])
+                }
+                var tokens = AuthTokens(
+                    accessToken: accessToken,
+                    refreshToken: result["refresh_token"] as? String,
+                    idToken: result["id_token"] as? String,
+                    expiresAt: Date().addingTimeInterval((result["expires_in"] as? NSNumber)?.doubleValue ?? 86400).timeIntervalSince1970,
+                    clientToken: result["client_token"] as? String,
+                    clientTokenExpiresAt: nil
+                )
+                tokens.authClientId = GFNConstants.deviceCodeClientId
+                logger.info("Device code authorized; exchanging sign-in tokens.")
+                await onAuthorized()
+                return try await buildAuthSession(provider: provider, tokens: tokens)
+            }
+            switch result["error"] as? String {
+            case "authorization_pending": continue
+            case "slow_down": interval += 5
+            case "access_denied":
+                throw NSError(domain: "OpenNOW.Auth", code: 23, userInfo: [NSLocalizedDescriptionKey: "Device sign-in was cancelled."])
+            case "expired_token":
+                break
+            default:
+                throw responseError(domain: "OpenNOW.Auth", response: response, data: data,
+                    fallback: "NVIDIA could not finish code sign-in.")
+            }
+            if result["error"] as? String == "expired_token" { break }
+        }
+        throw NSError(domain: "OpenNOW.Auth", code: 24, userInfo: [NSLocalizedDescriptionKey: "Device sign-in code expired."])
     }
 
     #if os(tvOS)
@@ -3438,11 +3604,19 @@ private actor GFNAPIClient {
             clientToken: nil,
             clientTokenExpiresAt: nil
         )
+        tokens.authClientId = GFNConstants.clientId
 
+        return try await buildAuthSession(provider: pending.provider, tokens: tokens)
+    }
+
+    private func buildAuthSession(provider: LoginProvider, tokens initialTokens: AuthTokens) async throws -> AuthSession {
+        var tokens = initialTokens
         TVAuthDiagnostics.record("Loading NVIDIA user profile.")
         var user = try await fetchUser(tokens: tokens)
         TVAuthDiagnostics.record("User profile loaded.")
-        if let freshClientToken = try? await requestClientToken(accessToken: accessToken) {
+        if let freshClientToken = try? await requestClientToken(accessToken: tokens.accessToken),
+           !freshClientToken.token.isEmpty {
+            let authClientId = tokens.authClientId
             tokens = AuthTokens(
                 accessToken: tokens.accessToken,
                 refreshToken: tokens.refreshToken,
@@ -3451,19 +3625,20 @@ private actor GFNAPIClient {
                 clientToken: freshClientToken.token,
                 clientTokenExpiresAt: freshClientToken.expiresAt
             )
+            tokens.authClientId = authClientId
             TVAuthDiagnostics.record("Client token refreshed.")
         }
         if let tier = try? await fetchMembershipTier(
-            token: idToken ?? accessToken,
+            token: tokens.idToken ?? tokens.accessToken,
             userId: user.userId,
-            streamingBaseUrl: pending.provider.streamingServiceUrl
+            streamingBaseUrl: provider.streamingServiceUrl
         ) {
             user.membershipTier = tier
             TVAuthDiagnostics.record("Membership tier loaded.")
         }
 
         TVAuthDiagnostics.record("Sign-in finished successfully.")
-        return AuthSession(provider: pending.provider, tokens: tokens, user: user)
+        return AuthSession(provider: provider, tokens: tokens, user: user)
     }
 
     @MainActor
@@ -3552,9 +3727,8 @@ private actor GFNAPIClient {
             return session
         }
 
-        if let clientToken = session.tokens.clientToken,
-           let expiry = session.tokens.clientTokenExpiresAt,
-           nowEpoch < expiry - (5 * 60) {
+        if let clientToken = session.tokens.clientToken, !clientToken.isEmpty,
+           session.tokens.clientTokenExpiresAt.map({ nowEpoch < $0 - (5 * 60) }) ?? true {
             if let refreshed = try? await refreshWithClientToken(clientToken, userId: session.user.userId, existing: session) {
                 return refreshed
             }
@@ -3571,7 +3745,7 @@ private actor GFNAPIClient {
         let body = URLQueryItemEncoder.encode([
             "grant_type": "urn:ietf:params:oauth:grant-type:client_token",
             "client_token": clientToken,
-            "client_id": GFNConstants.clientId,
+            "client_id": existing.tokens.authClientId ?? GFNConstants.clientId,
             "sub": userId
         ])
         var headers = headersForOAuth()
@@ -3611,15 +3785,17 @@ private actor GFNAPIClient {
             clientToken: newClientToken,
             clientTokenExpiresAt: newClientTokenExpiry
         )
-        let user = (try? await fetchUser(tokens: newTokens)) ?? existing.user
-        return AuthSession(provider: existing.provider, tokens: newTokens, user: user)
+        var retainedTokens = newTokens
+        retainedTokens.authClientId = existing.tokens.authClientId
+        let user = (try? await fetchUser(tokens: retainedTokens)) ?? existing.user
+        return AuthSession(provider: existing.provider, tokens: retainedTokens, user: user)
     }
 
     private func refreshWithOAuthToken(_ refreshToken: String, existing: AuthSession) async throws -> AuthSession {
         let body = URLQueryItemEncoder.encode([
             "grant_type": "refresh_token",
             "refresh_token": refreshToken,
-            "client_id": GFNConstants.clientId
+            "client_id": existing.tokens.authClientId ?? GFNConstants.clientId
         ])
         var headers = headersForOAuth()
         headers["Content-Type"] = "application/x-www-form-urlencoded; charset=UTF-8"
@@ -3658,8 +3834,10 @@ private actor GFNAPIClient {
             clientToken: newClientToken,
             clientTokenExpiresAt: newClientTokenExpiry
         )
-        let user = (try? await fetchUser(tokens: newTokens)) ?? existing.user
-        return AuthSession(provider: existing.provider, tokens: newTokens, user: user)
+        var retainedTokens = newTokens
+        retainedTokens.authClientId = existing.tokens.authClientId
+        let user = (try? await fetchUser(tokens: retainedTokens)) ?? existing.user
+        return AuthSession(provider: existing.provider, tokens: retainedTokens, user: user)
     }
 
     func fetchMainGames(session: AuthSession) async throws -> ([CloudGame], String, [StreamRegion]) {
@@ -3670,6 +3848,11 @@ private actor GFNAPIClient {
         let games = Self.flattenPanels(payload: payload)
         let enrichedGames = (try? await enrichGamesWithMetadata(token: token, vpcId: vpcId, games: games)) ?? games
         return (enrichedGames, vpcId, serverInfo.regions)
+    }
+
+    func fetchRegions(session: AuthSession) async throws -> [StreamRegion] {
+        let token = session.tokens.idToken ?? session.tokens.accessToken
+        return try await fetchServerInfo(token: token, streamingBaseUrl: session.provider.streamingServiceUrl).regions
     }
 
     /// MAIN contains editorial collections, not the complete catalog. Follow every browse cursor.
@@ -4110,12 +4293,13 @@ private actor GFNAPIClient {
         let queue = Self.extractQueuePosition(sessionObj: sessionObj)
         let seatSetupStep = Self.extractSeatSetupStep(sessionObj: sessionObj)
         let control = sessionObj["sessionControlInfo"] as? [String: Any]
+        let controlBase = SessionControlRouting.baseURL(host: control?["ip"] as? String, port: control?["port"] as? Int)
         let serverIp = Self.extractServerIp(sessionObj: sessionObj) ?? normalizedEndpointHost(from: control?["ip"])
         let mediaConnectionInfo = Self.extractMediaConnectionInfo(sessionObj: sessionObj)
         let signaling = Self.resolveSignaling(sessionObj: sessionObj, fallbackServerIp: serverIp)
         let iceServers = Self.extractIceServers(sessionObj: sessionObj)
         let adState = Self.extractAdState(sessionObj: sessionObj)
-        return ActiveSession(
+        var active = ActiveSession(
             id: sessionId,
             game: game,
             startedAt: .now,
@@ -4142,6 +4326,8 @@ private actor GFNAPIClient {
             touchProvisioned: deviceProfile.appLaunchMode == .touchFriendly,
             nativeRtspsEndpoints: NativeStreamNVSTConfiguration.endpoints(sessionObj: sessionObj, fallbackHost: serverIp)
         )
+        active.sessionControlBaseUrl = controlBase
+        return active
     }
 
     func pollSession(
@@ -4149,13 +4335,15 @@ private actor GFNAPIClient {
         activeSession: ActiveSession,
         settings: AppSettings? = nil
     ) async throws -> ActiveSession {
-        let primaryBase = Self.resolvePollBase(streamingBaseUrl: activeSession.streamingBaseUrl, serverIp: activeSession.serverIp)
+        let primaryBase = SessionControlRouting.pollBase(for: activeSession)
         do {
             return try await pollSession(session: session, activeSession: activeSession, base: primaryBase, settings: settings)
         } catch {
-            // Some zones intermittently fail when polling through the resolved host (e.g. direct IP).
-            // Retry once through the canonical zone base before surfacing the failure.
-            guard primaryBase != activeSession.streamingBaseUrl else {
+            // A control host can become unavailable. The canonical zone remains a safe fallback.
+            // Terminal provider queue errors must not be retried through another host.
+            guard primaryBase != activeSession.streamingBaseUrl,
+                  (error as NSError).domain != "OpenNOW.Queue",
+                  !(error is CancellationError) else {
                 throw error
             }
             return try await pollSession(session: session, activeSession: activeSession, base: activeSession.streamingBaseUrl, settings: settings)
@@ -4181,13 +4369,19 @@ private actor GFNAPIClient {
             ),
             sessionSettings: settings
         )
+        let parsedResponse = try? parseJSON(data)
+        let requestStatus = parsedResponse?["requestStatus"] as? [String: Any]
+        if CloudMatchQueueStatus.isAbandoned(requestStatus) {
+            throw NSError(domain: "OpenNOW.Queue", code: 69, userInfo: [
+                NSLocalizedDescriptionKey: "The cloud provider ended this queue request. Start the game again to join a new queue."
+            ])
+        }
         guard response.statusCode == 200 else {
             let text = String(data: data, encoding: .utf8) ?? "unknown"
             throw NSError(domain: "OpenNOW.Session", code: response.statusCode, userInfo: [NSLocalizedDescriptionKey: text])
         }
 
-        let json = try parseJSON(data)
-        let requestStatus = json["requestStatus"] as? [String: Any]
+        let json = try parsedResponse ?? parseJSON(data)
         let statusCode = requestStatus?["statusCode"] as? Int ?? 0
         guard statusCode == 1 else {
             let description = requestStatus?["statusDescription"] as? String ?? "Session poll failed"
@@ -4199,19 +4393,6 @@ private actor GFNAPIClient {
         let queue = Self.extractQueuePosition(sessionObj: sessionObj)
         let seatSetupStep = Self.extractSeatSetupStep(sessionObj: sessionObj)
         let serverIp = Self.extractServerIp(sessionObj: sessionObj) ?? activeSession.serverIp
-        if (status == 2 || status == 3),
-           let serverIp,
-           !Self.isZoneHostname(serverIp),
-           let baseHost = URL(string: base)?.host,
-           Self.isZoneHostname(baseHost) {
-            do {
-                return try await pollSession(session: session, activeSession: activeSession, base: "https://\(serverIp)", settings: settings)
-            } catch {
-                // Zone polling still contains usable queue/session state. If direct
-                // server hydration fails, keep the current response instead of
-                // dropping the user's active session.
-            }
-        }
         let mediaConnectionInfo = Self.extractMediaConnectionInfo(sessionObj: sessionObj)
         let signaling = Self.resolveSignaling(sessionObj: sessionObj, fallbackServerIp: serverIp ?? activeSession.signalingServer)
         let iceServers = Self.extractIceServers(sessionObj: sessionObj)
@@ -4222,6 +4403,11 @@ private actor GFNAPIClient {
         updated.queuePosition = queue
         updated.seatSetupStep = seatSetupStep
         updated.serverIp = serverIp
+        let control = sessionObj["sessionControlInfo"] as? [String: Any]
+        updated.sessionControlBaseUrl = SessionControlRouting.baseURL(
+            host: control?["ip"] as? String,
+            port: control?["port"] as? Int
+        )
         updated.mediaIp = mediaConnectionInfo.ip ?? updated.mediaIp
         updated.mediaPort = mediaConnectionInfo.port > 0 ? mediaConnectionInfo.port : updated.mediaPort
         let nativeEndpoints = NativeStreamNVSTConfiguration.endpoints(sessionObj: sessionObj, fallbackHost: serverIp)
@@ -4253,7 +4439,7 @@ private actor GFNAPIClient {
         settings: AppSettings? = nil
     ) async throws -> ActiveSession {
         let token = session.tokens.idToken ?? session.tokens.accessToken
-        let base = Self.resolvePollBase(streamingBaseUrl: activeSession.streamingBaseUrl, serverIp: activeSession.serverIp)
+        let base = SessionControlRouting.pollBase(for: activeSession)
         let url = URL(string: "\(base)/v2/session/\(activeSession.id)")!
         let actionCodes: [SessionAdAction: Int] = [
             .start: 1,
@@ -4312,6 +4498,10 @@ private actor GFNAPIClient {
         updated.status = sessionObj["status"] as? Int ?? updated.status
         updated.queuePosition = Self.extractQueuePosition(sessionObj: sessionObj) ?? updated.queuePosition
         updated.seatSetupStep = Self.extractSeatSetupStep(sessionObj: sessionObj) ?? updated.seatSetupStep
+        let adControl = sessionObj["sessionControlInfo"] as? [String: Any]
+        updated.sessionControlBaseUrl = SessionControlRouting.baseURL(
+            host: adControl?["ip"] as? String, port: adControl?["port"] as? Int
+        ) ?? updated.sessionControlBaseUrl
         updated.adState = Self.extractAdState(sessionObj: sessionObj)
         updated.gpuType = sessionObj["gpuType"] as? String ?? updated.gpuType
         updated.negotiatedStreamProfile = Self.extractNegotiatedStreamProfile(sessionObj: sessionObj) ?? updated.negotiatedStreamProfile
@@ -4324,7 +4514,7 @@ private actor GFNAPIClient {
 
     func stopSession(session: AuthSession, activeSession: ActiveSession) async throws {
         let token = session.tokens.idToken ?? session.tokens.accessToken
-        let base = Self.resolvePollBase(streamingBaseUrl: activeSession.streamingBaseUrl, serverIp: activeSession.serverIp)
+        let base = SessionControlRouting.pollBase(for: activeSession)
         let url = URL(string: "\(base)/v2/session/\(activeSession.id)")!
         let (_, response) = try await request(
             url: url,
@@ -4575,6 +4765,11 @@ private actor GFNAPIClient {
             touchProvisioned: deviceProfile.appLaunchMode == .touchFriendly,
             nativeRtspsEndpoints: NativeStreamNVSTConfiguration.endpoints(sessionObj: resolvedSessionObj, fallbackHost: claimServerIp)
         )
+        let claimedControl = (resolvedSessionObj["sessionControlInfo"] as? [String: Any])
+            ?? (validationSessionObj["sessionControlInfo"] as? [String: Any])
+        active.sessionControlBaseUrl = SessionControlRouting.baseURL(
+            host: claimedControl?["ip"] as? String, port: claimedControl?["port"] as? Int
+        )
 
         for _ in 0..<45 {
             let polled = try await pollSession(session: session, activeSession: active, settings: settings)
@@ -4585,14 +4780,6 @@ private actor GFNAPIClient {
             try? await Task.sleep(for: .seconds(1))
         }
         return active
-    }
-
-    private static func resolvePollBase(streamingBaseUrl: String, serverIp: String?) -> String {
-        guard let serverIp, !serverIp.isEmpty else { return streamingBaseUrl }
-        if streamingBaseUrl.contains("cloudmatchbeta.nvidiagrid.net") && !serverIp.contains("cloudmatchbeta.nvidiagrid.net") {
-            return "https://\(serverIp)"
-        }
-        return streamingBaseUrl
     }
 
     private static func normalizedStreamingBase(_ streamingBaseUrl: String, vpcId: String) -> String {
@@ -5015,7 +5202,9 @@ private actor GFNAPIClient {
             "panelNames": panelNames
         ]
         let variables = String(data: try JSONSerialization.data(withJSONObject: variablesData), encoding: .utf8) ?? "{}"
-        let extensionsData: [String: Any] = ["persistedQuery": ["sha256Hash": GFNConstants.panelsQueryHash]]
+        let panelHash = panelNames.contains("LIBRARY")
+            ? GFNConstants.libraryWithTimeQueryHash : GFNConstants.panelsQueryHash
+        let extensionsData: [String: Any] = ["persistedQuery": ["sha256Hash": panelHash]]
         let extensions = String(data: try JSONSerialization.data(withJSONObject: extensionsData), encoding: .utf8) ?? "{}"
         var components = URLComponents(string: GFNConstants.graphQL)!
         components.queryItems = [
@@ -6108,6 +6297,8 @@ final class OpenNOWStore: ObservableObject {
     @Published private(set) var isSearchingCatalog = false
     @Published var controllerConnected = true
     @Published var isAuthenticating = false
+    @Published private(set) var deviceLoginPrompt: DeviceLoginPrompt?
+    @Published private(set) var authenticationPhase: String?
     @Published private(set) var isLoadingFullCatalog = false
     @Published var isLoadingGames = false
     @Published var isLaunchingSession = false
@@ -6115,6 +6306,10 @@ final class OpenNOWStore: ObservableObject {
     @Published var queueOverlayVisible: Bool = false
     @Published var streamSession: ActiveSession?
     @Published var lastError: String?
+    @Published private(set) var authError: String?
+    @Published private(set) var accountError: String?
+    @Published private(set) var catalogError: String?
+    @Published private(set) var sessionError: String?
     @Published var isBootstrapping: Bool = true
     @Published private(set) var activeStreamSettings: AppSettings?
 
@@ -6125,6 +6320,7 @@ final class OpenNOWStore: ObservableObject {
     /// Observed queue movement for the current launch. Drives the trend line and the estimated
     /// wait; both disappear when it has nothing honest to report.
     @Published private(set) var queueTrend = QueueTrendEstimator()
+    @Published private(set) var displayQueuePosition: Int?
 
     /// A launch that is waiting on the user to confirm ending the session it would replace.
     @Published private(set) var pendingLaunchConflict: LaunchConflict?
@@ -6143,8 +6339,10 @@ final class OpenNOWStore: ObservableObject {
 
     private let api = GFNAPIClient()
     private let logger = Logger(subsystem: "OpenNOWiOS", category: "Session")
+    private var debugEvents: [DebugLifecycleEvent] = []
     private let defaults = UserDefaults.standard
     private var authSession: AuthSession?
+    private var authGeneration = UUID()
     private var sessionPollTask: Task<Void, Never>?
     private var launchTask: Task<Void, Never>?
     private var sessionReportAccumulator: StreamSessionReportAccumulator?
@@ -6333,6 +6531,16 @@ final class OpenNOWStore: ObservableObject {
         return DiagnosticsSanitizer.sanitize(lines.joined(separator: "\n"))
     }
 
+    func debugEventSnapshot() -> [DebugLifecycleEvent] { debugEvents }
+
+    private func recordDebugEvent(_ category: String, _ message: String) {
+        let oneLine = message.replacingOccurrences(of: "\n", with: " ")
+        let redacted = String(DiagnosticsSanitizer.sanitize(oneLine).prefix(640))
+        debugEvents.append(DebugLifecycleEvent(timestamp: .now, category: category, message: redacted))
+        if debugEvents.count > 140 { debugEvents.removeFirst(debugEvents.count - 140) }
+        logger.debug("[\(category, privacy: .public)] \(redacted, privacy: .public)")
+    }
+
     var diagnosticsExportFileName: String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -6342,6 +6550,10 @@ final class OpenNOWStore: ObservableObject {
 
     func makeDiagnosticsExport() async -> String {
         let stateSnapshot = diagnosticsReport
+        let eventFormatter = ISO8601DateFormatter()
+        let eventTimeline = debugEvents.map {
+            "\(eventFormatter.string(from: $0.timestamp)) [\($0.category)] \($0.message)"
+        }.joined(separator: "\n")
         let unifiedLogs = await Task.detached(priority: .utility) {
             Self.currentProcessUnifiedLogs()
         }.value
@@ -6358,6 +6570,9 @@ final class OpenNOWStore: ObservableObject {
 
             apiTrace
             \(apiTrace)
+
+            lifecycleEvents
+            \(eventTimeline.isEmpty ? "entries=0" : eventTimeline)
 
             unifiedLogs
             \(unifiedLogs)
@@ -6431,12 +6646,7 @@ final class OpenNOWStore: ObservableObject {
         isBootstrapping = false
 
         Task {
-            let fetchedProviders = await api.fetchProviders()
-            providers = fetchedProviders.isEmpty ? [GFNConstants.defaultProvider] : fetchedProviders
-            if settings.selectedProviderIdpId.isEmpty {
-                settings.selectedProviderIdpId = providers.first?.idpId ?? GFNConstants.defaultProvider.idpId
-                persistSettings()
-            }
+            await refreshProviders()
         }
         if authSession != nil {
             if let userId = authSession?.user.userId {
@@ -6452,9 +6662,50 @@ final class OpenNOWStore: ObservableObject {
         }
     }
 
+    func refreshProviders() async {
+        let fetchedProviders = await api.fetchProviders()
+        providers = fetchedProviders.isEmpty ? [GFNConstants.defaultProvider] : fetchedProviders
+        if settings.selectedProviderIdpId.isEmpty {
+            settings.selectedProviderIdpId = providers.first?.idpId ?? GFNConstants.defaultProvider.idpId
+            persistSettings()
+        }
+    }
+
+    func queueRegions() async throws -> [StreamRegion] {
+        if !availableRegions.isEmpty { return availableRegions }
+        guard let session = authSession else { return [] }
+        let generation = authGeneration
+        let refreshed = try await api.refreshSession(session)
+        try Task.checkCancellation()
+        guard generation == authGeneration, authSession?.user.userId == session.user.userId else {
+            throw CancellationError()
+        }
+        let regions = try await api.fetchRegions(session: refreshed).filter {
+            !StreamZonePolicy.isBlocked($0.url) && !StreamZonePolicy.isBlocked($0.name)
+        }
+        try Task.checkCancellation()
+        guard generation == authGeneration, authSession?.user.userId == session.user.userId else {
+            throw CancellationError()
+        }
+        authSession = refreshed
+        user = refreshed.user
+        persistAuthSession(refreshed)
+        availableRegions = regions
+        return regions
+    }
+
+    func selectProvider(_ provider: LoginProvider) {
+        settings.selectedProviderIdpId = provider.idpId
+        persistSettings()
+    }
+
     #if DEBUG
     func installDebugQueuePreview(position: Int) {
-        guard activeSession?.id != "debug-queue-preview" else { return }
+        if activeSession?.id == "debug-queue-preview" {
+            activeSession?.queuePosition = max(1, position)
+            syncTrackedSessionSurface()
+            return
+        }
         let heroUrl = "https://cdn.cloudflare.steamstatic.com/steam/apps/714010/library_hero.jpg"
         let boxArtUrl = "https://cdn.cloudflare.steamstatic.com/steam/apps/714010/library_600x900.jpg"
         let game = CloudGame(
@@ -6528,15 +6779,26 @@ final class OpenNOWStore: ObservableObject {
     #endif
 
     func signIn(forceAccountSelection: Bool = false) async {
+        guard !isAuthenticating else { return }
         lastError = nil
+        authError = nil
+        let generation = authGeneration
         isAuthenticating = true
-        defer { isAuthenticating = false }
+        authenticationPhase = "Opening secure sign-in"
+        recordDebugEvent("auth", "Opening browser sign-in")
+        defer {
+            if generation == authGeneration {
+                isAuthenticating = false
+                authenticationPhase = nil
+            }
+        }
         #if os(tvOS)
         clearTVAuthLogs()
         #endif
 
         guard supportsNativeOAuth else {
             lastError = OpenNOWPlatform.authUnavailableReason
+            authError = lastError
             return
         }
 
@@ -6547,20 +6809,76 @@ final class OpenNOWStore: ObservableObject {
                 deviceId: persistentDeviceId(),
                 forceAccountSelection: forceAccountSelection
             )
+            guard generation == authGeneration else { return }
             persistAuthSession(session)
             activateAccount(session, hydrateCache: true)
             scheduleAccountRefresh(for: session.user.userId)
+            recordDebugEvent("auth", "Browser sign-in completed")
         } catch {
+            guard generation == authGeneration else { return }
             TVAuthDiagnostics.record("Store sign-in failed: \(error.localizedDescription)")
             lastError = "Sign in failed: \(OpenNOWErrorPresenter.message(for: error, fallback: "NVIDIA could not complete sign-in."))"
+            authError = lastError
+            recordDebugEvent("auth", "Browser sign-in failed: \(error.localizedDescription)")
+        }
+    }
+
+    func signInWithCode() async {
+        guard !isAuthenticating else { return }
+        lastError = nil
+        authError = nil
+        let generation = authGeneration
+        deviceLoginPrompt = nil
+        isAuthenticating = true
+        authenticationPhase = "Requesting sign-in code"
+        recordDebugEvent("auth", "Requesting device sign-in code")
+        defer {
+            if generation == authGeneration {
+                isAuthenticating = false
+                deviceLoginPrompt = nil
+                authenticationPhase = nil
+            }
+        }
+        let provider = providers.first(where: { $0.idpId == settings.selectedProviderIdpId }) ?? GFNConstants.defaultProvider
+        do {
+            let session = try await api.loginWithDeviceCode(
+                with: provider,
+                deviceId: persistentDeviceId(),
+                onPrompt: { [weak self] prompt in
+                    guard self?.authGeneration == generation else { return }
+                    self?.deviceLoginPrompt = prompt
+                    self?.authenticationPhase = "Waiting for approval"
+                    self?.recordDebugEvent("auth", "Device code shown; waiting for approval")
+                },
+                onAuthorized: { [weak self] in
+                    guard self?.authGeneration == generation else { return }
+                    self?.authenticationPhase = "Getting sign-in tokens"
+                    self?.recordDebugEvent("auth", "Device code approved; getting sign-in tokens")
+                }
+            )
+            guard generation == authGeneration else { return }
+            persistAuthSession(session)
+            activateAccount(session, hydrateCache: true)
+            scheduleAccountRefresh(for: session.user.userId)
+            recordDebugEvent("auth", "Device sign-in completed")
+        } catch where OpenNOWErrorPresenter.isCancellation(error) {
+            return
+        } catch {
+            guard generation == authGeneration else { return }
+            logger.error("Device sign-in failed: \(error.localizedDescription, privacy: .private)")
+            lastError = "Sign in failed: \(OpenNOWErrorPresenter.message(for: error, fallback: "NVIDIA could not complete code sign-in."))"
+            authError = lastError
+            recordDebugEvent("auth", "Device sign-in failed: \(error.localizedDescription)")
         }
     }
 
     #if os(tvOS)
     func signInOnTVOS(authenticate: @escaping TVOSOAuthPresenter) async {
         lastError = nil
+        authError = nil
+        let generation = authGeneration
         isAuthenticating = true
-        defer { isAuthenticating = false }
+        defer { if generation == authGeneration { isAuthenticating = false } }
         clearTVAuthLogs()
 
         let provider = providers.first(where: { $0.idpId == settings.selectedProviderIdpId }) ?? GFNConstants.defaultProvider
@@ -6570,12 +6888,15 @@ final class OpenNOWStore: ObservableObject {
                 deviceId: persistentDeviceId(),
                 authenticate: authenticate
             )
+            guard generation == authGeneration else { return }
             persistAuthSession(session)
             activateAccount(session, hydrateCache: true)
             scheduleAccountRefresh(for: session.user.userId)
         } catch {
+            guard generation == authGeneration else { return }
             TVAuthDiagnostics.record("Store sign-in failed: \(error.localizedDescription)")
             lastError = "Sign in failed: \(OpenNOWErrorPresenter.message(for: error, fallback: "NVIDIA could not complete sign-in."))"
+            authError = lastError
         }
     }
     #endif
@@ -6608,16 +6929,32 @@ final class OpenNOWStore: ObservableObject {
     }
 
     func signOutAll() {
+        authGeneration = UUID()
+        isAuthenticating = false
+        deviceLoginPrompt = nil
+        authenticationPhase = nil
+        launchTask?.cancel()
+        launchTask = nil
+        catalogSearchTask?.cancel()
+        catalogSearchTask = nil
+        cancelAccountRefresh()
+        sessionPollTask?.cancel()
+        sessionPollTask = nil
         Task { await NotificationManager.shared.cancelSessionNotifications() }
         persistAuthState(PersistedAuthState())
         defaults.removeObject(forKey: authStateKey)
         defaults.removeObject(forKey: authSessionKey)
         removeAllCachedCatalog()
         removeAllCachedAccounts()
-        cancelAccountRefresh()
         clearAccountScopedState()
         user = nil
         authSession = nil
+        lastError = nil
+        authError = nil
+        accountError = nil
+        catalogError = nil
+        sessionError = nil
+        lastFailure = nil
     }
 
     func switchAccount(to userId: String) async {
@@ -6698,15 +7035,23 @@ final class OpenNOWStore: ObservableObject {
         cachedVpcId = "GFN-PC"
         loadingAccountConnectors = false
         connectorActionStore = nil
+        lastError = nil
+        authError = nil
+        accountError = nil
+        catalogError = nil
+        sessionError = nil
+        lastFailure = nil
         syncTrackedSessionSurface()
     }
 
     func refreshCatalog() async {
         guard !isLoadingGames, !isLoadingFullCatalog, let session = authSession else { return }
+        catalogError = nil
         let requestedUserId = session.user.userId
+        let requestedGeneration = authGeneration
         isLoadingGames = true
         defer {
-            if accountIsCurrent(requestedUserId) {
+            if accountIsCurrent(requestedUserId, generation: requestedGeneration) {
                 isLoadingGames = false
                 isLoadingFullCatalog = false
             }
@@ -6714,7 +7059,7 @@ final class OpenNOWStore: ObservableObject {
 
         do {
             let refreshed = try await api.refreshSession(session)
-            guard accountIsCurrent(requestedUserId) else { return }
+            guard accountIsCurrent(requestedUserId, generation: requestedGeneration) else { return }
             if allGames.isEmpty || libraryGames.isEmpty {
                 hydrateCachedCatalog(for: refreshed, onlyMissing: true)
             }
@@ -6727,7 +7072,7 @@ final class OpenNOWStore: ObservableObject {
                 !StreamZonePolicy.isBlocked($0.url) && !StreamZonePolicy.isBlocked($0.name)
             }
 
-            guard accountIsCurrent(requestedUserId) else { return }
+            guard accountIsCurrent(requestedUserId, generation: requestedGeneration) else { return }
             let catalogSession = AuthSession(
                 provider: refreshed.provider,
                 tokens: refreshed.tokens,
@@ -6756,7 +7101,7 @@ final class OpenNOWStore: ObservableObject {
             isLoadingFullCatalog = true
             do {
                 let catalog = try await api.fetchCompleteCatalog(session: refreshed, vpcId: vpcId)
-                guard accountIsCurrent(requestedUserId) else { return }
+                guard accountIsCurrent(requestedUserId, generation: requestedGeneration) else { return }
                 let merged = preservingCatalogMetadata(in: catalog, from: mainGames + allGames + library)
                 var seen = Set(merged.map { catalogStableGameKey($0) })
                 allGames = merged + (mainGames + library).filter { seen.insert(catalogStableGameKey($0)).inserted }
@@ -6802,7 +7147,7 @@ final class OpenNOWStore: ObservableObject {
                 logger.warning("Could not refresh remote sessions during catalog refresh error=\(error.localizedDescription, privacy: .public)")
             }
 
-            guard accountIsCurrent(requestedUserId) else { return }
+            guard accountIsCurrent(requestedUserId, generation: requestedGeneration) else { return }
             var updatedUser = refreshed.user
             if let refreshedSubscription {
                 updatedUser.membershipTier = refreshedSubscription.membershipTier
@@ -6829,11 +7174,12 @@ final class OpenNOWStore: ObservableObject {
                 )
             }
             lastError = catalogWarning
+            catalogError = catalogWarning
         } catch where OpenNOWErrorPresenter.isCancellation(error) {
             // Pull-to-refresh can cancel an in-flight request; treat as non-failure.
             return
         } catch {
-            guard accountIsCurrent(requestedUserId) else { return }
+            guard accountIsCurrent(requestedUserId, generation: requestedGeneration) else { return }
             if allGames.isEmpty || libraryGames.isEmpty {
                 hydrateCachedCatalog(for: session, onlyMissing: true)
             }
@@ -6844,15 +7190,17 @@ final class OpenNOWStore: ObservableObject {
             )
             if allGames.isEmpty && libraryGames.isEmpty {
                 lastError = "Account refresh failed: \(message)"
+                catalogError = lastError
             } else {
                 logger.warning("Using cached catalog after refresh failure: \(message, privacy: .public)")
                 lastError = nil
+                catalogError = nil
             }
         }
     }
 
-    private func accountIsCurrent(_ userId: String) -> Bool {
-        authSession?.user.userId == userId
+    private func accountIsCurrent(_ userId: String, generation: UUID? = nil) -> Bool {
+        authSession?.user.userId == userId && (generation == nil || generation == authGeneration)
     }
 
     private func preservingCatalogMetadata(in games: [CloudGame], from fallbackGames: [CloudGame]) -> [CloudGame] {
@@ -6869,6 +7217,7 @@ final class OpenNOWStore: ObservableObject {
 
     func refreshAccountConnectors() async {
         guard let session = authSession else { return }
+        accountError = nil
         let requestedUserId = session.user.userId
         loadingAccountConnectors = true
         defer {
@@ -6892,11 +7241,13 @@ final class OpenNOWStore: ObservableObject {
             guard accountIsCurrent(requestedUserId) else { return }
             hydrateCachedAccount(for: session, onlyMissing: true)
             lastError = "Failed to load account connections: \(OpenNOWErrorPresenter.message(for: error, fallback: "Store connections could not be refreshed."))"
+            accountError = lastError
         }
     }
 
     func connectAccountConnector(_ connector: AccountConnector, openURL: @escaping (URL) -> Void) async {
         guard let session = authSession else { return }
+        accountError = nil
         let requestedUserId = session.user.userId
         connectorActionStore = connector.store
         defer { connectorActionStore = nil }
@@ -6916,11 +7267,13 @@ final class OpenNOWStore: ObservableObject {
         } catch {
             guard accountIsCurrent(requestedUserId) else { return }
             lastError = "Failed to connect \(connector.label): \(OpenNOWErrorPresenter.message(for: error, fallback: "The store connection could not be started."))"
+            accountError = lastError
         }
     }
 
     func disconnectAccountConnector(_ connector: AccountConnector) async {
         guard let session = authSession else { return }
+        accountError = nil
         let requestedUserId = session.user.userId
         connectorActionStore = connector.store
         defer { connectorActionStore = nil }
@@ -6941,6 +7294,7 @@ final class OpenNOWStore: ObservableObject {
         } catch {
             guard accountIsCurrent(requestedUserId) else { return }
             lastError = "Failed to disconnect \(connector.label): \(OpenNOWErrorPresenter.message(for: error, fallback: "The store connection could not be removed."))"
+            accountError = lastError
         }
     }
 
@@ -6961,8 +7315,10 @@ final class OpenNOWStore: ObservableObject {
         launchOption: GameLaunchOption? = nil,
         settingsOverride: AppSettings? = nil
     ) async {
+        sessionError = nil
         guard supportsEmbeddedStreamer else {
             lastError = OpenNOWPlatform.streamingUnavailableReason
+            sessionError = lastError
             return
         }
         var launchSettings = settingsOverride ?? settings
@@ -6970,8 +7326,10 @@ final class OpenNOWStore: ObservableObject {
         launchSettings = nativeLaunchSettings(for: launchSettings, context: "launch")
         guard let session = authSession else {
             lastError = "Sign in first."
+            sessionError = lastError
             return
         }
+        let generation = authGeneration
         if let launchRestriction = launchRestrictionMessage(for: game) {
             lastError = launchRestriction
             return
@@ -6987,6 +7345,8 @@ final class OpenNOWStore: ObservableObject {
         do {
             logger.info("Launch requested game=\(game.title, privacy: .public) zoneUrl=\(zoneUrl ?? "default", privacy: .public)")
             let refreshed = try await api.refreshSession(session)
+            try Task.checkCancellation()
+            guard generation == authGeneration else { throw CancellationError() }
             authSession = refreshed
             user = refreshed.user
             persistAuthSession(refreshed)
@@ -7029,6 +7389,8 @@ final class OpenNOWStore: ObservableObject {
                 remoteSessionsSnapshotLoaded = false
                 logger.warning("Could not refresh active sessions before launch error=\(error.localizedDescription, privacy: .public)")
             }
+            try Task.checkCancellation()
+            guard generation == authGeneration else { throw CancellationError() }
 
             let compatibleCandidates = compatibleRemoteSessions(activeCandidates, settings: launchSettings, session: refreshed)
             resumableSessions = activeCandidates.filter {
@@ -7120,6 +7482,8 @@ final class OpenNOWStore: ObservableObject {
                 }
                 started = try await startNewSession(using: launchSettings)
             }
+            try Task.checkCancellation()
+            guard generation == authGeneration else { throw CancellationError() }
             activeSession = started
             activeStreamSettings = launchSettings
             adReportStateById = [:]
@@ -7180,6 +7544,17 @@ final class OpenNOWStore: ObservableObject {
         let failure = OpenNOWFailure.classify(error, context: context)
         lastFailure = failure
         lastError = failure.message
+        switch context {
+        case .launch:
+            catalogError = failure.message
+            sessionError = failure.message
+        case .session:
+            sessionError = failure.message
+        case .catalog:
+            catalogError = failure.message
+        case .account:
+            accountError = failure.message
+        }
         logger.error(
             "failure kind=\(failure.kind.rawValue, privacy: .public) context=\(String(describing: context), privacy: .public)"
         )
@@ -7231,6 +7606,13 @@ final class OpenNOWStore: ObservableObject {
     func clearFailure() {
         lastFailure = nil
         lastError = nil
+        sessionError = nil
+        catalogError = nil
+    }
+
+    func clearCatalogError() {
+        catalogError = nil
+        if lastFailure == nil { lastError = nil }
     }
 
     /// Runs the recovery the banner offered. The store owns what each one means, so the view
@@ -8280,7 +8662,12 @@ final class OpenNOWStore: ObservableObject {
     }
 
     var shouldUsePrintedWasteQueue: Bool {
-        authProviderCode == "NVIDIA" && isFreeTierUser
+        guard authProviderCode?.caseInsensitiveCompare("NVIDIA") == .orderedSame,
+              isFreeTierUser,
+              let host = effectiveProvider.flatMap({ URL(string: $0.streamingServiceUrl)?.host })?.lowercased() else {
+            return false
+        }
+        return host.hasSuffix(".nvidiagrid.net")
     }
 
     var shouldPresentPrintedWasteQueue: Bool {
@@ -8504,6 +8891,7 @@ final class OpenNOWStore: ObservableObject {
     }
 
     private func startSessionTasks() {
+        recordDebugEvent("queue", "Starting session poll status=\(activeSession?.status ?? -1) queue=\(activeSession?.queuePosition ?? -1)")
         setStreamSession(nil, reason: "startSessionTasks.reset")
         if activeSession != nil, activeStreamSettings == nil {
             activeStreamSettings = settings
@@ -8522,6 +8910,7 @@ final class OpenNOWStore: ObservableObject {
 
         sessionPollTask = Task { [weak self] in
             guard let self else { return }
+            let generation = self.authGeneration
             var previousStatus = self.activeSession?.status
             var consecutivePollFailures = 0
             var setupTimeoutStartedAt: Date?
@@ -8538,6 +8927,8 @@ final class OpenNOWStore: ObservableObject {
                 self.refreshSessionPollBackgroundTask()
                 do {
                     let refreshed = try await self.api.refreshSession(session)
+                    try Task.checkCancellation()
+                    guard generation == self.authGeneration else { break }
                     self.authSession = refreshed
                     self.persistAuthSession(refreshed)
                     let polled = try await self.api.pollSession(
@@ -8545,8 +8936,17 @@ final class OpenNOWStore: ObservableObject {
                         activeSession: active,
                         settings: self.currentStreamerSettings
                     )
+                    try Task.checkCancellation()
+                    guard generation == self.authGeneration else { break }
                     consecutivePollFailures = 0
+                    if self.sessionError?.hasPrefix("Session poll failed:") == true {
+                        self.sessionError = nil
+                    }
                     self.activeSession = polled
+                    if polled.status != active.status || polled.queuePosition != active.queuePosition
+                        || polled.sessionControlBaseUrl != active.sessionControlBaseUrl {
+                        self.recordDebugEvent("queue", "Session updated status=\(polled.status) queue=\(polled.queuePosition ?? -1) control=\(URL(string: polled.sessionControlBaseUrl ?? "")?.host ?? "zone")")
+                    }
                     self.syncTrackedSessionSurface()
                     // Keep the presented streamer session stable while polling continues.
                     // Replacing the fullScreenCover item every poll can trigger reconnect churn.
@@ -8578,6 +8978,7 @@ final class OpenNOWStore: ObservableObject {
                                 "Session ready but embedded streamer unavailable on \(OpenNOWPlatform.displayName, privacy: .public)."
                             )
                             self.lastError = OpenNOWPlatform.streamingUnavailableReason
+                            self.sessionError = self.lastError
                             self.showStreamLoading = false
                             self.queueOverlayVisible = false
                             self.syncTrackedSessionSurface()
@@ -8592,6 +8993,7 @@ final class OpenNOWStore: ObservableObject {
                             self.activeSession = handoffSession
                         }
                         self.setStreamSession(handoffSession, reason: "sessionPollTask.handoffReady")
+                        self.recordDebugEvent("stream", "Session ready for streamer handoff status=\(handoffSession.status)")
                         loggedReadyForStreamer = true
                         self.sessionPollTask?.cancel()
                     } else if !readyForStreamer {
@@ -8613,6 +9015,7 @@ final class OpenNOWStore: ObservableObject {
                                   !setupTimeoutNotified {
                             self.logger.error("Setup phase timeout exceeded for session id=\(polled.id, privacy: .public)")
                             self.lastError = "Session setup is taking longer than expected. Please retry."
+                            self.sessionError = self.lastError
                             setupTimeoutNotified = true
                         }
                     } else {
@@ -8635,13 +9038,26 @@ final class OpenNOWStore: ObservableObject {
                     // The loop is being torn down, or a poll was superseded. Neither is a failure,
                     // and both used to end the session on a banner reading "cancelled".
                     break
+                } catch where (error as NSError).domain == "OpenNOW.Queue" {
+                    self.logger.notice("CloudMatch ended the queue request. Clearing the local session.")
+                    self.clearLocalSessionState(reason: "queue.abandoned")
+                    self.showStreamLoading = false
+                    self.queueOverlayVisible = false
+                    self.resumableSessions.removeAll { $0.id == active.id }
+                    self.lastError = error.localizedDescription
+                    self.catalogError = self.lastError
+                    self.recordDebugEvent("queue", "Provider ended queue request")
+                    await NotificationManager.shared.cancelSessionNotifications()
+                    break
                 } catch {
                     consecutivePollFailures += 1
                     self.logger.error("Session poll failed attempt=\(consecutivePollFailures) error=\(error.localizedDescription, privacy: .public)")
+                    self.recordDebugEvent("queue", "Poll failed attempt=\(consecutivePollFailures) error=\(error.localizedDescription)")
                     // One dropped poll is normal on a phone changing networks. Only say so once the
                     // failures are consistent enough to mean something.
                     if consecutivePollFailures >= 3 {
                         self.lastError = "Session poll failed: \(OpenNOWErrorPresenter.message(for: error, fallback: "The session status could not be refreshed."))"
+                        self.sessionError = self.lastError
                     }
                 }
                 try? await Task.sleep(for: .seconds(2))
@@ -8829,6 +9245,7 @@ final class OpenNOWStore: ObservableObject {
                 guard isReadyForStreamer(latest), let serverIp = latest.serverIp, !serverIp.isEmpty else {
                     activeSession = latest
                     lastError = "Session is still preparing its stream endpoint. Try reopening again in a moment."
+                    sessionError = lastError
                     return
                 }
                 candidate = RemoteSessionCandidate(
@@ -8845,6 +9262,7 @@ final class OpenNOWStore: ObservableObject {
                 activeStreamSettings = nil
                 syncTrackedSessionSurface()
                 lastError = "No active session for this game is available to reconnect."
+                sessionError = lastError
                 return
             }
 
@@ -8868,6 +9286,7 @@ final class OpenNOWStore: ObservableObject {
             activeStreamSettings = streamSettings
             setStreamSession(claimed, reason: "reopenStreamer.claimed")
             lastError = nil
+            sessionError = nil
         } catch where OpenNOWErrorPresenter.isCancellation(error) {
             return
         } catch {
@@ -8875,6 +9294,7 @@ final class OpenNOWStore: ObservableObject {
                 "Reopen refresh failed id=\(session.id, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
             )
             lastError = "Failed to reconnect session: \(error.localizedDescription)"
+            sessionError = lastError
         }
     }
 
@@ -9029,6 +9449,8 @@ final class OpenNOWStore: ObservableObject {
     /// A stale trend from the previous launch is worse than no trend at all.
     private func updateQueueTrend(for session: ActiveSession?) {
         guard let session, session.status < 2, let position = session.queuePosition else {
+            displayQueuePosition = nil
+            queueTrendSessionId = nil
             if !queueTrend.samples.isEmpty {
                 queueTrend.reset()
             }
@@ -9036,9 +9458,14 @@ final class OpenNOWStore: ObservableObject {
         }
         if queueTrendSessionId != session.id {
             queueTrendSessionId = session.id
+            displayQueuePosition = nil
             queueTrend.reset()
         }
-        queueTrend.record(position: position)
+        // Android keeps the lowest displayed position for a session so delayed polls cannot
+        // make the queue numeral jump backwards. The trend must use the same visible series.
+        let stablePosition = min(displayQueuePosition ?? position, position)
+        displayQueuePosition = stablePosition
+        queueTrend.record(position: stablePosition)
     }
 
     private func queueActivityStoreName(for session: ActiveSession) -> String {

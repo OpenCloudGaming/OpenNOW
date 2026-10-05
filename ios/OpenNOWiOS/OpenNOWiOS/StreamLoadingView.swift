@@ -6,7 +6,7 @@ struct StreamLoadingView: View {
   var coversBottomBar = false
 
   private var queueStatusText: String {
-    if let position = store.activeSession?.queuePosition {
+    if let position = store.displayQueuePosition {
       return "Queue position \(position)"
     }
     if let adState = store.effectiveAdState, store.activeQueueAd != nil {
@@ -56,7 +56,7 @@ struct StreamLoadingView: View {
           // moment something re-interpolates it.
           .animation(
             .spring(response: 0.34, dampingFraction: 0.84),
-            value: store.activeSession?.queuePosition
+            value: store.displayQueuePosition
           )
           .animation(.easeInOut(duration: 0.22), value: queueStatusText)
         }
@@ -89,7 +89,7 @@ struct StreamLoadingView: View {
 
       AndroidQueueStatusText(
         text: queueStatusText,
-        position: store.activeSession?.queuePosition,
+        position: store.displayQueuePosition,
         compact: false
       )
 
@@ -120,7 +120,7 @@ struct StreamLoadingView: View {
             .minimumScaleFactor(0.75)
         }
         Spacer(minLength: 8)
-        if let position = store.activeSession?.queuePosition {
+        if let position = store.displayQueuePosition {
           Text(String(position))
             .font(.title2.weight(.black))
             .monospacedDigit()
@@ -191,7 +191,7 @@ struct StreamLoadingView: View {
   }
 
   @ViewBuilder private var queueError: some View {
-    if let error = store.lastError, !error.isEmpty {
+    if let error = store.sessionError, !error.isEmpty {
       Text(error)
         .font(.footnote)
         .foregroundStyle(Color(red: 1, green: 0.62, blue: 0.62))
