@@ -81,7 +81,44 @@ pub(super) fn resolve(
 pub(super) enum Incoming {
     Offer(String),
     Candidate(IceCandidate),
-    Closed,
+    Closed(String),
+}
+
+/// Names the transport-level reason without addresses, URLs or server text.
+fn error_detail(error: &tungstenite::Error) -> String {
+    match error {
+        tungstenite::Error::ConnectionClosed => "connection-closed".to_owned(),
+        tungstenite::Error::AlreadyClosed => "already-closed".to_owned(),
+        tungstenite::Error::Io(error) => match error.raw_os_error() {
+            Some(code) => format!("io kind={:?} os_code={code}", error.kind()),
+            None => format!("io kind={:?} os_code=none", error.kind()),
+        },
+        tungstenite::Error::Tls(_) => "tls".to_owned(),
+        tungstenite::Error::Capacity(_) => "capacity".to_owned(),
+        tungstenite::Error::Protocol(error) => {
+            let variant = format!("{error:?}");
+            format!(
+                "protocol={}",
+                variant.split(['(', ' ', '{']).next().unwrap_or_default()
+            )
+        }
+        tungstenite::Error::WriteBufferFull(_) => "write-buffer-full".to_owned(),
+        tungstenite::Error::Utf8(_) => "utf8".to_owned(),
+        tungstenite::Error::AttackAttempt => "attack-attempt".to_owned(),
+        tungstenite::Error::Url(_) => "url".to_owned(),
+        tungstenite::Error::Http(response) => format!("http status={}", response.status().as_u16()),
+        tungstenite::Error::HttpFormat(_) => "http-format".to_owned(),
+    }
+}
+
+fn failure(context: &str, error: &tungstenite::Error) -> Failure {
+    let detail = error_detail(error);
+    opennow_streamer_protocol::log::log_line(
+        "WARN",
+        "webrtc-signaling",
+        &format!("{context} {detail}"),
+    );
+    Failure::signaling(format!("{context} ({detail})"))
 }
 
 pub(super) struct Protocol {
@@ -142,7 +179,7 @@ impl Protocol {
             return Ok((replies, None));
         }
         if packet["error"].as_str() == Some("peerRemoved") {
-            return Ok((replies, Some(Incoming::Closed)));
+            return Ok((replies, Some(Incoming::Closed("peer-removed".to_owned()))));
         }
         if packet.get("error").is_some_and(|value| !value.is_null()) {
             return Err(Failure::signaling("Server rejected signaling request"));
@@ -154,7 +191,7 @@ impl Protocol {
             self.remote_id = id;
         }
         if message.trim() == "BYE" {
-            return Ok((replies, Some(Incoming::Closed)));
+            return Ok((replies, Some(Incoming::Closed("bye".to_owned()))));
         }
         let payload: Value = serde_json::from_str(message)
             .map_err(|_| Failure::signaling("Invalid nested peer message"))?;
@@ -321,10 +358,8 @@ impl Signaling {
                     thread::sleep(Duration::from_millis(5));
                     handshake = pending.handshake();
                 }
-                Err(tungstenite::HandshakeError::Failure(_)) => {
-                    return Err(Failure::signaling(
-                        "Signaling TLS/WebSocket handshake failed",
-                    ));
+                Err(tungstenite::HandshakeError::Failure(error)) => {
+                    return Err(failure("Signaling TLS/WebSocket handshake failed", &error));
                 }
             }
         };
@@ -362,7 +397,7 @@ impl<Stream: Read + Write> Signaling<Stream> {
             Err(tungstenite::Error::WriteBufferFull(_)) => Err(Failure::signaling(
                 "Signaling write buffer exceeds size limit",
             )),
-            Err(_) => Err(Failure::signaling("Signaling write failed")),
+            Err(error) => Err(failure("Signaling write failed", &error)),
         }
     }
 
@@ -403,14 +438,25 @@ impl<Stream: Read + Write> Signaling<Stream> {
             Ok(Message::Text(text)) => text.to_string(),
             Ok(Message::Binary(bytes)) => String::from_utf8(bytes.to_vec())
                 .map_err(|_| Failure::signaling("Invalid signaling UTF-8"))?,
-            Ok(Message::Close(_)) => return Ok(Some(Incoming::Closed)),
+            Ok(Message::Close(frame)) => {
+                let detail = frame.map_or_else(
+                    || "close_code=none".to_owned(),
+                    |frame| format!("close_code={}", u16::from(frame.code)),
+                );
+                opennow_streamer_protocol::log::log_line(
+                    "WARN",
+                    "webrtc-signaling",
+                    &format!("peer-close {detail}"),
+                );
+                return Ok(Some(Incoming::Closed(detail)));
+            }
             Ok(_) => return Ok(None),
             Err(tungstenite::Error::Io(error))
                 if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
             {
                 return Ok(None);
             }
-            Err(_) => return Err(Failure::signaling("Signaling connection closed")),
+            Err(error) => return Err(failure("Signaling connection closed", &error)),
         };
         let (replies, incoming) = self.protocol.receive(&packet)?;
         for reply in replies {

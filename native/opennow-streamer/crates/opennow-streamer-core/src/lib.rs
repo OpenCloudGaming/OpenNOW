@@ -30,6 +30,9 @@ use opennow_streamer_transport::{
 };
 use serde_json::{Value, json};
 
+#[cfg(test)]
+static LOG_SINK_TEST_LOCK: Mutex<()> = Mutex::new(());
+
 mod decode_progress;
 mod microphone;
 mod nvst_rtsp;
@@ -1931,6 +1934,7 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
                     &resources,
                     &mut feedback_state.recovery_attempts,
                     &mut pending_cursor_capture,
+                    feedback_state.last_video_decoder_error.as_deref(),
                     nvst_event,
                 );
                 if terminal {
@@ -2099,6 +2103,7 @@ fn flush_cursor_capture(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn forward_nvst_event<R: NvstSessionResources>(
     output: &EventSender,
     lifecycle: &Mutex<Lifecycle>,
@@ -2106,6 +2111,7 @@ fn forward_nvst_event<R: NvstSessionResources>(
     resources: &R,
     recovery_attempts: &mut usize,
     pending_cursor_capture: &mut NvstCursorCaptureOutput,
+    last_video_decoder_error: Option<&str>,
     nvst_event: NvstReceiveEvent,
 ) -> bool {
     if lock_lifecycle(lifecycle).generation != generation {
@@ -2173,13 +2179,13 @@ fn forward_nvst_event<R: NvstSessionResources>(
             recovery_attempts,
             "authenticated media timeout".to_owned(),
         ),
-        NvstReceiveEvent::Lifecycle(NvstReceiverState::Stopped) => emit_nvst_terminal(
+        NvstReceiveEvent::Lifecycle(NvstReceiverState::Stopped(cause)) => emit_nvst_terminal(
             output,
             lifecycle,
             generation,
             resources,
             "nvst-transport-stopped",
-            "NVST receiver stopped unexpectedly".to_owned(),
+            format!("NVST receiver stopped unexpectedly ({cause})"),
         ),
         NvstReceiveEvent::Dropped(NvstDropReason::MediaConsumerBackpressured) => {
             // A bounded decode queue protects latency. A momentary full queue
@@ -2201,7 +2207,12 @@ fn forward_nvst_event<R: NvstSessionResources>(
             generation,
             resources,
             "media-consumer-closed",
-            "NVST receiver stopped because the decoded media path closed".to_owned(),
+            match last_video_decoder_error {
+                Some(error) => format!(
+                    "NVST receiver stopped because the decoded media path closed after {error}"
+                ),
+                None => "NVST receiver stopped because the decoded media path closed".to_owned(),
+            },
         ),
         NvstReceiveEvent::Lifecycle(NvstReceiverState::Running) => {
             lock_lifecycle(lifecycle).state = State::Connected;
@@ -2230,6 +2241,11 @@ fn forward_nvst_event<R: NvstSessionResources>(
             false
         }
         NvstReceiveEvent::InputUnavailable(reason) => {
+            opennow_streamer_protocol::log::log_line(
+                "WARN",
+                "nvst-input",
+                &format!("input-unavailable reason={reason}"),
+            );
             let _ = output.send(event("input-unavailable", json!({ "reason": reason })));
             false
         }
@@ -2412,6 +2428,7 @@ struct NvstMediaFeedbackState {
     decode_progress: DecodeProgressWatchdog,
     decode_recovery_deadline: Option<Instant>,
     transport_frame_progress_stalled: bool,
+    last_video_decoder_error: Option<String>,
     start_id: String,
 }
 
@@ -2432,6 +2449,7 @@ impl NvstMediaFeedbackState {
             decode_progress: DecodeProgressWatchdog::default(),
             decode_recovery_deadline: None,
             transport_frame_progress_stalled: false,
+            last_video_decoder_error: None,
             start_id: String::new(),
         }
     }
@@ -2584,13 +2602,15 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
             ));
         }
         MediaFeedback::DecoderError { codec, message } => {
+            let message = format!("{codec} decoder error: {message}");
+            state.last_video_decoder_error = Some(message.chars().take(240).collect());
             let _ = output.send(event(
                 "error",
                 json!({
                     "event": "decoder-error",
                     "codec": codec,
                     "code": "media-decode-error",
-                    "message": format!("{codec} decoder error: {message}")
+                    "message": message
                 }),
             ));
         }
@@ -4932,7 +4952,7 @@ mod tests {
             "downstream stall must stay silent while the transport owns it: {messages:?}"
         );
         lock_lifecycle(&lifecycle).generation += 1;
-        let _ = transport_sender.send(NvstReceiveEvent::InputUnavailable(String::new()));
+        let _ = transport_sender.send(NvstReceiveEvent::InputUnavailable(""));
         worker.join().unwrap();
         let _ = feeder.join();
     }
@@ -5439,6 +5459,7 @@ mod tests {
             &resources,
             &mut recovery_attempts,
             &mut NvstCursorCaptureOutput::default(),
+            None,
             NvstReceiveEvent::RecoveryNeeded(opennow_streamer_transport::NvstRecovery::Timeout {
                 idle_for: Duration::from_secs(2),
             }),
@@ -5504,6 +5525,7 @@ mod tests {
                 &resources,
                 &mut recovery_attempts,
                 &mut state,
+                None,
                 NvstReceiveEvent::CursorCapture(composited),
             ));
             assert_eq!(state.pending, Some(composited));
@@ -5540,6 +5562,7 @@ mod tests {
                 &resources,
                 &mut recovery_attempts,
                 &mut NvstCursorCaptureOutput::default(),
+                None,
                 NvstReceiveEvent::CursorCapture(composited),
             ));
             let message = receiver.try_recv().expect("cursor composition event");
@@ -5569,6 +5592,7 @@ mod tests {
                 &resources,
                 &mut recovery_attempts,
                 &mut NvstCursorCaptureOutput::default(),
+                None,
                 NvstReceiveEvent::RecoveryNeeded(NvstRecovery::PacketGap {
                     first_missing_index,
                     last_missing_index: first_missing_index + 31,
@@ -5603,6 +5627,7 @@ mod tests {
             &resources,
             &mut recovery_attempts,
             &mut NvstCursorCaptureOutput::default(),
+            None,
             NvstReceiveEvent::Dropped(NvstDropReason::MediaConsumerBackpressured),
         ));
 
@@ -5637,6 +5662,7 @@ mod tests {
             &resources,
             &mut recovery_attempts,
             &mut NvstCursorCaptureOutput::default(),
+            None,
             recovery(),
         ));
         assert!(forward_nvst_event(
@@ -5646,6 +5672,7 @@ mod tests {
             &resources,
             &mut recovery_attempts,
             &mut NvstCursorCaptureOutput::default(),
+            None,
             recovery(),
         ));
 
@@ -5671,6 +5698,122 @@ mod tests {
             events
                 .iter()
                 .any(|message| { message["type"] == "status" && message["status"] == "stopped" })
+        );
+    }
+
+    #[test]
+    fn unexpected_receiver_stop_reports_its_cause_under_the_stable_code() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = EventSender::unbounded(sender);
+        let lifecycle = connected_lifecycle();
+        let resources = TestNvstResources::default();
+
+        assert!(forward_nvst_event(
+            &sender,
+            &lifecycle,
+            7,
+            &resources,
+            &mut 0,
+            &mut NvstCursorCaptureOutput::default(),
+            None,
+            NvstReceiveEvent::Lifecycle(NvstReceiverState::Stopped(
+                opennow_streamer_transport::NvstStopCause::InputDeliveryFailed
+            )),
+        ));
+
+        assert_eq!(resources.stops.load(Ordering::Relaxed), 1);
+        let error = receiver
+            .try_iter()
+            .find(|message| message["type"] == "error")
+            .expect("terminal error");
+        assert_eq!(error["code"], "nvst-transport-stopped");
+        assert_eq!(error["termination"]["code"], "nvst-transport-stopped");
+        assert_eq!(
+            error["message"],
+            "NVST receiver stopped unexpectedly (cause=input-delivery-failed)"
+        );
+    }
+
+    #[test]
+    fn input_unavailable_reason_reaches_the_native_log() {
+        let _sink = LOG_SINK_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let path = std::env::temp_dir().join(format!(
+            "opennow-input-unavailable-{}.log",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        opennow_streamer_protocol::log::set_log_file(path.to_str().unwrap()).unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = EventSender::unbounded(sender);
+        let lifecycle = connected_lifecycle();
+
+        assert!(!forward_nvst_event(
+            &sender,
+            &lifecycle,
+            7,
+            &TestNvstResources::default(),
+            &mut 0,
+            &mut NvstCursorCaptureOutput::default(),
+            None,
+            NvstReceiveEvent::InputUnavailable("reliable input data channel closed"),
+        ));
+
+        assert_eq!(receiver.recv().unwrap()["type"], "input-unavailable");
+        let log = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            log.lines().any(|line| line.ends_with(
+                "WARN nvst-input input-unavailable reason=reliable input data channel closed"
+            )),
+            "{log}"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn media_consumer_closure_reports_the_preceding_decoder_error() {
+        let terminal_message = |decoder_error: Option<MediaFeedback>| {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let sender = EventSender::unbounded(sender);
+            let lifecycle = connected_lifecycle();
+            let resources = TestNvstResources::default();
+            let mut state = NvstMediaFeedbackState::new(true);
+            if let Some(feedback) = decoder_error {
+                forward_nvst_media_feedback(
+                    &sender, &lifecycle, 7, &resources, feedback, &mut state,
+                );
+            }
+            assert!(forward_nvst_event(
+                &sender,
+                &lifecycle,
+                7,
+                &resources,
+                &mut state.recovery_attempts,
+                &mut NvstCursorCaptureOutput::default(),
+                state.last_video_decoder_error.as_deref(),
+                NvstReceiveEvent::Dropped(NvstDropReason::MediaConsumerClosed),
+            ));
+            receiver
+                .try_iter()
+                .find(|message| message["code"] == "media-consumer-closed")
+                .expect("terminal error")["message"]
+                .clone()
+        };
+
+        assert_eq!(
+            terminal_message(None),
+            "NVST receiver stopped because the decoded media path closed"
+        );
+        assert_eq!(
+            terminal_message(Some(MediaFeedback::DecoderError {
+                codec: "H264",
+                message: format!("V4L2 dequeue failed (os error 32){}", "x".repeat(400)),
+            })),
+            format!(
+                "NVST receiver stopped because the decoded media path closed after H264 decoder error: V4L2 dequeue failed (os error 32){}",
+                "x".repeat(240 - "H264 decoder error: V4L2 dequeue failed (os error 32)".len())
+            )
         );
     }
 
@@ -5765,6 +5908,7 @@ mod tests {
             &resources,
             &mut recovery_attempts,
             &mut NvstCursorCaptureOutput::default(),
+            None,
             NvstReceiveEvent::Frame(opennow_streamer_transport::EncodedVideoAccessUnit {
                 codec: opennow_streamer_transport::NvstVideoCodec::H264,
                 timestamp: 1,

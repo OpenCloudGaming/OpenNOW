@@ -47,9 +47,36 @@ Do not commit raw official traces; they contain ICE credentials and session data
    logged before authentication, explicitly labelled as such.
 6. `nvst-video` / `nvst-bundle`: bounded two-second counters for received traffic,
    authentication, frames, hole punches, ICE/DTLS/SCTP and feedback.
-7. `media-timeout`: final stage counters, with firewall status explicitly unknown.
-8. `present`: retains a bounded platform error description before conversion to
-   the generic FFI status, separating decoder readiness from actual render faults.
+7. `media-timeout`: final stage counters, `rx_idle_ms` (age of the last datagram
+   from any source on the video socket) and `port_unreachable` (ICMP-unreachable
+   receive errors), with firewall status explicitly unknown. A flat `inbound` with
+   a large `rx_idle_ms` means ingress stopped at the socket, not in assembly.
+8. `nvst-bundle recovery-snapshot` / `stop-snapshot`: bundle state when recovery
+   or teardown is commanded, at most once per command. `rx_idle_ms` and
+   `peer_rx_idle_ms` age the last datagram from any source and from the
+   negotiated peer, `tx_idle_ms` the last WebRTC transmit, `sctp_rx_idle_ms` the
+   last data-channel message, plus the last ICE state, ICMP-unreachable count and
+   closed-channel count. `stop-snapshot` names who stopped the worker.
+9. `nvst-sctp channel-close`: the protocol channel label with the same idle ages
+   at the moment SCTP closed it, bounded by the negotiated channel count.
+10. `nvst-input input-unavailable`: the fixed reason string (channel closed,
+    handshake timeout, input or HID delivery failure). Reasons are compile-time
+    constants, never server text.
+11. `transport nvst-transport-stopped`: the error message carries the worker's
+    typed stop cause (`cause=socket operation=<leg-operation> kind=<ErrorKind>
+    os_code=<n>`, `cause=webrtc operation=<poll-output|timer|receive>
+    error=<category>`, `cause=input-delivery-failed`, `cause=hid-output-blocked`,
+    `cause=media-consumer-closed`, `cause=upstream-gate-closed`,
+    `cause=controller-closed` or `cause=requested`). The error code is unchanged.
+12. `transport media-consumer-closed`: when a video decoder error preceded the
+    closure, the message ends with that `<codec> decoder error: <message>`,
+    bounded to 240 characters.
+13. `webrtc-signaling`: the WebSocket failure category (`io kind=<ErrorKind>
+    os_code=<n>`, `protocol=<variant>`, `http status=<n>`, `tls`) or the peer's
+    close code. The same detail is appended to the `webrtc-signaling-failed`
+    message. Addresses, URLs and server-provided close reasons are never logged.
+14. `present`: retains a bounded platform error description before conversion to
+    the generic FFI status, separating decoder readiness from actual render faults.
 
 For a remote report, export diagnostics immediately after one failed attempt and
 preserve all three logs (`current.log`, `native-streamer.log`, `qt-native.log`).

@@ -182,6 +182,9 @@ mod tests {
 
     #[test]
     fn final_flush_does_not_wait_for_dispatcher_capacity() {
+        let _sink = crate::LOG_SINK_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let path = std::env::temp_dir().join(format!(
             "opennow-final-queue-drops-{}.log",
             std::process::id()
