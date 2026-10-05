@@ -56,12 +56,11 @@ struct BrowseView: View {
     private var browseHeader: some View {
         CatalogControlsHeader(
             title: browseCountTitle,
-            subtitle: store.isLoadingFullCatalog ? "Loading full NVIDIA catalog…" : store.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Store catalog" : "Search results",
+            subtitle: store.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Store catalog" : "Search results",
             chips: activeFilterChips,
             onClear: hasActiveFilters ? clearFilters : nil
         ) {
             HStack(spacing: 8) {
-                if store.isLoadingFullCatalog { ProgressView().accessibilityLabel("Loading full catalog") }
                 filterMenu
                 sortMenu
             }
@@ -119,10 +118,10 @@ struct BrowseView: View {
     }
 
     private var browseCountTitle: String {
-        if filteredGames.count == store.catalogGames.count {
-            return store.catalogGames.count == 1 ? "1 Game" : "\(store.catalogGames.count) Games"
+        if filteredGames.count == store.allGames.count {
+            return store.allGames.count == 1 ? "1 Game" : "\(store.allGames.count) Games"
         }
-        return "\(filteredGames.count) / \(store.catalogGames.count) Games"
+        return "\(filteredGames.count) / \(store.allGames.count) Games"
     }
 
     private var activeFilterChips: [CatalogFilterChip] {
@@ -162,15 +161,15 @@ struct BrowseView: View {
     }
 
     private var genres: [String] {
-        Array(Set(store.catalogGames.map(\.genre).filter { !$0.isEmpty })).sorted()
+        Array(Set(store.allGames.map(\.genre).filter { !$0.isEmpty })).sorted()
     }
 
     private var platforms: [String] {
-        Array(Set(store.catalogGames.map(\.platform).filter { !$0.isEmpty })).sorted()
+        Array(Set(store.allGames.map(\.platform).filter { !$0.isEmpty })).sorted()
     }
 
     private var stores: [String] {
-        Array(Set(store.catalogGames.flatMap { gameResolvedStores(game: $0) })).sorted()
+        Array(Set(store.allGames.flatMap { gameResolvedStores(game: $0) })).sorted()
     }
 
     private var filteredGames: [CloudGame] {

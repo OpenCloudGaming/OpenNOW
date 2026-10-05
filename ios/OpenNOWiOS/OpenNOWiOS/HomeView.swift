@@ -1683,8 +1683,6 @@ struct GameVerticalBannerCard: View {
                     .minimumScaleFactor(0.78)
                     .fixedSize(horizontal: false, vertical: true)
 
-                GameCapabilityBadges(labels: game.capabilityBadges)
-
                 if let subtitle, !subtitle.isEmpty {
                     Text(subtitle)
                         .font(.caption2.weight(.medium))
@@ -1746,8 +1744,6 @@ private struct GameLaunchDetailsArtworkCard: View {
                     .foregroundStyle(.white)
                     .lineLimit(2)
                     .minimumScaleFactor(0.82)
-
-                GameCapabilityBadges(labels: game.capabilityBadges)
 
                 if let subtitle, !subtitle.isEmpty {
                     Text(subtitle)
@@ -2518,36 +2514,6 @@ struct ErrorBannerView: View {
     }
 }
 
-private struct GameCapabilityBadges: View {
-    let labels: [String]
-    var body: some View {
-        if !labels.isEmpty {
-            ViewThatFits(in: .horizontal) {
-                badgeRow(labels)
-                VStack(alignment: .leading, spacing: 4) {
-                    badgeRow(Array(labels.prefix(2)))
-                    badgeRow(Array(labels.dropFirst(2)))
-                }
-            }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(labels.joined(separator: ", "))
-        }
-    }
-
-    private func badgeRow(_ values: [String]) -> some View {
-        HStack(spacing: 4) {
-            ForEach(values, id: \.self) { label in
-                Text(label == "RTX 5080 Ready" ? "5080 Ready" : label)
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(.white)
-                    .fixedSize()
-                    .padding(.horizontal, 5).padding(.vertical, 3)
-                    .background(.black.opacity(0.72), in: Capsule())
-            }
-        }
-    }
-}
-
 struct GameCardView: View {
     @EnvironmentObject private var store: OpenNOWStore
     @FocusState private var isFocused: Bool
@@ -2593,7 +2559,6 @@ struct GameLaunchDetailsSheet: View {
     @EnvironmentObject private var store: OpenNOWStore
     @Environment(\.dismiss) private var dismiss
     @State private var selectedOption: GameLaunchOption?
-    @Environment(\.openURL) private var openURL
     @State private var launchAlertMessage: String?
 
     private var launcherOptions: [GameLaunchOption] {
@@ -2622,22 +2587,6 @@ struct GameLaunchDetailsSheet: View {
                     .frame(maxWidth: .infinity, alignment: .center)
                     .listRowInsets(EdgeInsets())
 
-                }
-
-                if let url = GFNGameImportReference.shareURL(game: game, option: selectedOption ?? store.defaultLaunchOption(for: game) ?? launcherOptions.first) {
-                    Section {
-                        ShareLink(item: url) { Label("Share Game to OpenNOW", systemImage: "square.and.arrow.up") }
-                        #if os(iOS)
-                        Button {
-                            openHomeScreenSetup()
-                        } label: {
-                            Label("Add to Home Screen", systemImage: "plus.app")
-                        }
-                        Text("Opens the game’s setup page in your browser. In Safari, tap Share, then Add to Home Screen.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                        #endif
-                    }
                 }
 
                 if let screenshots = game.screenshotUrls, !screenshots.isEmpty {
@@ -2707,13 +2656,6 @@ struct GameLaunchDetailsSheet: View {
                         "Age Rating",
                         value: GFNContentRatingParser.ageBadge(from: game.contentRatings) ?? "Not rated"
                     )
-                }
-
-                Section("Streaming Support") {
-                    let selectedFeatures = selectedOption?.featureLabels ?? game.capabilityBadges
-                    GameCapabilityBadges(labels: selectedFeatures)
-                    LabeledContent("RTX 5080", value: game.capabilityBadges.contains("RTX 5080 Ready")
-                        ? "NVIDIA 5080 Ready" : "Not confirmed in catalog")
                 }
 
                 if !detailLabels.isEmpty {
@@ -2795,14 +2737,6 @@ struct GameLaunchDetailsSheet: View {
             selectedOption = store.defaultLaunchOption(for: game) ?? launcherOptions.first
         }
     }
-
-    #if os(iOS)
-    private func openHomeScreenSetup() {
-        guard let url = GFNGameImportReference.homeScreenSetupURL(game: game,
-            option: selectedOption ?? store.defaultLaunchOption(for: game) ?? launcherOptions.first) else { return }
-        openURL(url)
-    }
-    #endif
 
     private var selectedOptionBinding: Binding<String> {
         Binding(
