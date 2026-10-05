@@ -10,6 +10,7 @@ struct LibraryView: View {
     @State private var selectedStore: String?
     @State private var favoritesOnly = false
     @State private var sortMode: CatalogSortMode = .title
+    @State private var showingAddGame = false
     @State private var selectedGameForLauncher: CloudGame?
 
     var body: some View {
@@ -21,7 +22,7 @@ struct LibraryView: View {
                 } else {
                     GameCatalogGridView(
                         games: filteredGames,
-                        isLoading: store.libraryGames.isEmpty && store.isLoadingGames,
+                        isLoading: store.visibleLibraryGames.isEmpty && store.isLoadingGames,
                         emptyTitle: emptyState.title,
                         emptySystemImage: emptyState.symbol,
                         emptyDescription: emptyState.detail,
@@ -37,6 +38,14 @@ struct LibraryView: View {
                 }
             }
             .navigationTitle("Library")
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button { showingAddGame = true } label: { Image(systemName: "plus") }
+                        .accessibilityLabel("Add Game")
+                        .disabled(store.user == nil)
+                }
+            }
+            .sheet(isPresented: $showingAddGame) { AddLibraryGameSheet().environmentObject(store) }
             .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search library")
             .refreshable { await store.refreshCatalog() }
             .background {
@@ -210,7 +219,7 @@ struct LibraryView: View {
 
     private var filteredGames: [CloudGame] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let filtered = store.libraryGames.filter { game in
+        let filtered = store.visibleLibraryGames.filter { game in
             let matchesQuery = gameMatchesCatalogSearch(game, query: query)
             let matchesGenre = selectedGenre == nil || game.genre == selectedGenre
             let matchesPlatform = selectedPlatform == nil || game.platform == selectedPlatform
@@ -238,22 +247,22 @@ struct LibraryView: View {
     }
 
     private var genres: [String] {
-        Array(Set(store.libraryGames.map(\.genre).filter { !$0.isEmpty })).sorted()
+        Array(Set(store.visibleLibraryGames.map(\.genre).filter { !$0.isEmpty })).sorted()
     }
 
     private var platforms: [String] {
-        Array(Set(store.libraryGames.map(\.platform).filter { !$0.isEmpty })).sorted()
+        Array(Set(store.visibleLibraryGames.map(\.platform).filter { !$0.isEmpty })).sorted()
     }
 
     private var stores: [String] {
-        Array(Set(store.libraryGames.flatMap { gameResolvedStores(game: $0) })).sorted()
+        Array(Set(store.visibleLibraryGames.flatMap { gameResolvedStores(game: $0) })).sorted()
     }
 
     private var libraryCountTitle: String {
-        if filteredGames.count == store.libraryGames.count {
-            return store.libraryGames.count == 1 ? "1 Game" : "\(store.libraryGames.count) Games"
+        if filteredGames.count == store.visibleLibraryGames.count {
+            return store.visibleLibraryGames.count == 1 ? "1 Game" : "\(store.visibleLibraryGames.count) Games"
         }
-        return "\(filteredGames.count) / \(store.libraryGames.count) Games"
+        return "\(filteredGames.count) / \(store.visibleLibraryGames.count) Games"
     }
 
     private var activeFilterChips: [CatalogFilterChip] {
@@ -326,4 +335,104 @@ struct LibraryView: View {
         pendingLaunchRequest = GameLaunchRequest(game: game, launchOption: store.defaultLaunchOption(for: game) ?? options.first)
     }
 
+}
+
+private struct AddLibraryGameSheet: View {
+    @EnvironmentObject private var store: OpenNOWStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var input = ""
+    @State private var title = ""
+    @State private var storefront = "STEAM"
+    @State private var results: [CloudGame] = []
+    @State private var isLookingUp = false
+    @State private var error: String?
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("Game name, GeForce NOW link, or app ID", text: $input)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    TextField("Name for a manually added app ID (optional)", text: $title)
+                    Picker("Store for a manually added app ID", selection: $storefront) {
+                        Text("Steam").tag("STEAM")
+                        Text("Epic").tag("EPIC")
+                        Text("GOG").tag("GOG")
+                        Text("Xbox").tag("XBOX")
+                        Text("Ubisoft").tag("UPLAY")
+                    }
+                    Button {
+                        Task { await findGames() }
+                    } label: {
+                        HStack {
+                            Text("Find Game")
+                            if isLookingUp { Spacer(); ProgressView() }
+                        }
+                    }
+                    .disabled(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isLookingUp)
+                } header: {
+                    Text("Find a Game")
+                } footer: {
+                    Text("Added games stay in this account’s Library. A GeForce NOW app ID is different from a Steam store ID. NVIDIA still controls game availability.")
+                }
+                if let error {
+                    Section { Text(error).foregroundStyle(.red) }
+                }
+                if !results.isEmpty {
+                    Section("Results") {
+                        ForEach(results) { game in
+                            Button {
+                                store.addImportedGame(game)
+                                dismiss()
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading) {
+                                        Text(game.title).foregroundStyle(.primary)
+                                        Text(game.platform).font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Image(systemName: "plus.circle")
+                                }
+                            }
+                        }
+                    }
+                }
+                if !store.importedGames.isEmpty {
+                    Section("Added Games") {
+                        ForEach(store.importedGames) { game in
+                            HStack {
+                                Text(game.title)
+                                Spacer()
+                                Button(role: .destructive) { store.removeImportedGame(game) } label: {
+                                    Image(systemName: "minus.circle")
+                                }
+                                .buttonStyle(.borderless)
+                                .accessibilityLabel("Remove \(game.title) from added games")
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Add Game")
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+            .onChange(of: input) { _ in results = []; error = nil }
+        }
+    }
+
+    @MainActor private func findGames() async {
+        isLookingUp = true
+        error = nil
+        let submittedInput = input
+        defer { isLookingUp = false }
+        do {
+            let matches = try await store.lookupGamesToAdd(submittedInput, title: title, storefront: storefront)
+            guard input == submittedInput else { return }
+            results = matches
+            if matches.isEmpty { error = "No matching games were returned. Try the GeForce NOW link or app ID." }
+        } catch {
+            guard input == submittedInput else { return }
+            self.error = error.localizedDescription
+        }
+    }
 }

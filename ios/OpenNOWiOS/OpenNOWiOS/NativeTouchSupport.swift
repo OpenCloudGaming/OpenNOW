@@ -37,6 +37,23 @@ enum NativeTouchSupport {
         }
     }
 
+    /// An explicit Always choice must provision touch even with a keyboard/mouse attached.
+    /// Automatic mode may prefer physical input; claims keep the allocation's original choice.
+    static func shouldProvisionNativeTouch(mode: NativeTouchMode, game: CloudGame?,
+                                          keyboardMouseConnected: Bool) -> Bool {
+        shouldUseNativeTouch(mode: mode, game: game)
+            && (mode == .always || !keyboardMouseConnected)
+    }
+
+    /// The initial live route follows the same preference used when requesting input devices.
+    static func shouldStartWithNativeTouch(mode: NativeTouchMode, game: CloudGame?,
+                                          keyboardMouseConnected: Bool, provisioned: Bool?,
+                                          preferVirtualController: Bool) -> Bool {
+        provisioned != false && !preferVirtualController
+            && shouldProvisionNativeTouch(mode: mode, game: game,
+                                          keyboardMouseConnected: keyboardMouseConnected)
+    }
+
     /// Resolves native touch for a live stream after the player has made a session-level choice.
     /// A catalog capability is useful guidance, but it must not lock the player out of the
     /// on-screen controller when they have deliberately asked for it.

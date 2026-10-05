@@ -2,6 +2,11 @@ import SwiftUI
 import UIKit
 
 final class OpenNOWAppDelegate: NSObject, UIApplicationDelegate {
+    override init() {
+        NativeStreamWebRTCPolicy.initialize()
+        super.init()
+    }
+
     func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
@@ -24,6 +29,8 @@ struct OpenNOWiOSApp: App {
     @UIApplicationDelegateAdaptor(OpenNOWAppDelegate.self) private var appDelegate
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var store = OpenNOWStore()
+
+    init() { NativeStreamWebRTCPolicy.initialize() }
 
     var body: some Scene {
         WindowGroup {

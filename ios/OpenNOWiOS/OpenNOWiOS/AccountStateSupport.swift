@@ -103,6 +103,9 @@ enum OpenNOWErrorPresenter {
 
     private static func normalized(_ raw: String) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("INTERNAL_ERROR_STATUS") {
+            return "GeForce NOW could not create this stream (\(trimmed)). Video decoding has not started. Try another server region or stream profile."
+        }
         guard trimmed.range(of: #"^[A-Z0-9_]+$"#, options: .regularExpression) != nil else {
             return trimmed
         }

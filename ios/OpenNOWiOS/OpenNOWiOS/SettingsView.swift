@@ -60,7 +60,7 @@ private enum SettingsCategory: String, CaseIterable, Hashable, Identifiable {
         case .general:
             return ["general", "privacy", "analytics", "telemetry", "usage", "cache", "reset", "data", "tutorial", "updates"]
         case .stream:
-            return ["stream", "preset", "recommended", "resolution", "aspect ratio", "fps", "frame rate", "bitrate", "data", "codec", "color", "hdr", "sharpening", "sharpness", "region", "server", "session proxy", "proxy", "native decoder", "hud", "gpu", "performance overlay", "metal", "stretch"]
+            return ["stream", "preset", "recommended", "resolution", "aspect ratio", "fps", "frame rate", "bitrate", "data", "codec", "color", "hdr", "sharpening", "sharpness", "region", "server", "session proxy", "proxy", "native decoder", "hud", "gpu", "performance overlay", "metal", "metalfx", "upscaling", "stretch"]
         case .input:
             return ["input", "mouse", "sensitivity", "acceleration", "scroll", "pointer", "keyboard", "layout", "language", "clipboard", "paste", "touch", "native touch", "joystick", "stick", "dead zone", "aim", "controller", "rumble", "haptics", "tutorial", "guide", "replay"]
         case .interface:
@@ -98,7 +98,9 @@ private enum SettingsCategory: String, CaseIterable, Hashable, Identifiable {
 struct SettingsView: View {
     @EnvironmentObject private var store: OpenNOWStore
     @Environment(\.openURL) private var openURL
-    @State private var path: [SettingsCategory] = []
+    // Use the same type-erased path storage as the surrounding tab/split-view
+    // navigation. A typed array can trap when SwiftUI compares column paths.
+    @State private var path = NavigationPath()
     @State private var bugReportDeck: BugReportPreflightDeck?
     @State private var searchText = ""
     @State private var showingResetConfirmation = false
@@ -143,7 +145,7 @@ struct SettingsView: View {
                 // Search filters the category list, so an inbound route has to clear it or the
                 // destination the caller asked for may not be reachable.
                 searchText = ""
-                path = [SettingsCategory(route)]
+                path = NavigationPath([SettingsCategory(route)])
                 store.pendingSettingsRoute = nil
             }
             .navigationDestination(for: SettingsCategory.self) { category in
@@ -164,21 +166,23 @@ struct SettingsView: View {
                 enforceAvailableFPS()
                 enforceAvailableHDR()
                 enforceAvailableCodec()
+                applyMetalFXQualityPreset()
             }
             .onChangeCompat(of: store.settings.preferredAspectRatio) { _ in
                 enforceAvailableResolution()
+                applyMetalFXQualityPreset()
+            }
+            .onChangeCompat(of: store.settings.metalFXUpscalingEnabled) { enabled in
+                if enabled { applyMetalFXQualityPreset() }
+            }
+            .onChangeCompat(of: store.settings.streamerPreferences.stretchStreamToFill) { _ in
+                applyMetalFXQualityPreset()
             }
             .onChangeCompat(of: currentMembershipTier ?? "") { _ in
                 enforceAvailableResolution()
                 enforceAvailableFPS()
                 enforceAvailableHDR()
-            }
-            .onChangeCompat(of: store.settings.hdrEnabled) { enabled in
-                guard enabled else { return }
-                store.settings.preferredColorQuality = StreamColorQuality.tenBit420.rawValue
-                if NativeStreamCodecProbe.report().capability(for: .h265)?.launchSafe == true {
-                    store.settings.preferredCodec = "H265"
-                }
+                applyMetalFXQualityPreset()
             }
             .confirmationDialog("Reset settings?", isPresented: $showingResetConfirmation, titleVisibility: .visible) {
                 Button("Reset Settings", role: .destructive) {
@@ -537,7 +541,7 @@ struct SettingsView: View {
                 }
             }
 
-            Picker("Resolution", selection: customStreamBinding(\.preferredResolution)) {
+            Picker("Resolution", selection: streamResolutionBinding) {
                 Text("Auto").tag("Auto")
                 ForEach(StreamSettingsResolver.choices(forAspectRatio: store.settings.preferredAspectRatio)) { choice in
                     let available = resolutionAvailable(choice)
@@ -580,15 +584,44 @@ struct SettingsView: View {
                 ForEach(codecValues, id: \.self) { Text($0).tag($0) }
             }
 
-            Picker("Color", selection: customStreamBinding(\.preferredColorQuality)) {
-                ForEach([StreamColorQuality.eightBit420, .tenBit420]) { color in
-                    Text(color.label).tag(color.rawValue)
+            Picker("Color", selection: streamColorBinding) {
+                ForEach([StreamColorQuality.eightBit420, .tenBit420, .tenBit444]) { color in
+                    Text(color.label + (color == .tenBit444 ? " (Experimental)" : "")).tag(color.rawValue)
+                        .disabled(color == .tenBit444 && !store.settings.experimentalNativeNVSTEnabled)
                 }
             }
 
-            Toggle("HDR", isOn: $store.settings.hdrEnabled)
+            Toggle("HDR", isOn: streamHDRBinding)
                 .disabled(!hdrAvailable)
 
+            Text("Selecting 8-bit turns HDR off. Color and HDR changes apply to a new session; resuming keeps the host's existing format.")
+                .font(.footnote).foregroundStyle(.secondary)
+
+            if store.settings.experimentalNativeNVSTEnabled || store.settings.preferredColorQuality == StreamColorQuality.tenBit444.rawValue {
+                Text("4:4:4 uses H.265 and the native receiver. Enable HDR separately. The host and device must support 10-bit 4:4:4; unsupported or downgraded streams report an error. The Color status shows the received output.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            if NativeStreamVideoCodec.normalized(store.settings.preferredCodec) == .h264 {
+                Text("H.264 streams use 8-bit SDR. Select H.265 or AV1 for 10-bit HDR.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            Toggle("MetalFX Upscaling", isOn: $store.settings.metalFXUpscalingEnabled)
+            if store.settings.metalFXUpscalingEnabled {
+                Picker("MetalFX Quality", selection: metalFXQualityBinding) {
+                    ForEach(MetalFXQualityPreset.allCases) { preset in
+                        Text(metalFXPresetLabel(preset)).tag(preset)
+                            .disabled(preset != .manual && metalFXChoice(preset) == nil)
+                    }
+                }
+                Text(metalFXResolutionSummary)
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            Text("Quality preserves more detail; Balanced and Performance request smaller streams to reduce decode work. Presets select the nearest eligible resolution available on your plan. Resolution changes apply to a fresh session. Manual keeps your selected resolution. HDR, codec and FPS stay unchanged.")
+                .font(.footnote).foregroundStyle(.secondary)
             Toggle("Stream Sharpening", isOn: $store.settings.streamSharpeningEnabled)
 
             if store.settings.streamSharpeningEnabled {
@@ -604,8 +637,11 @@ struct SettingsView: View {
                 }
             }
 
-            Toggle("Native Low-Latency Decoder", isOn: $store.settings.nativeStreamerEnabled)
-            Toggle("Apple Performance HUD", isOn: $store.settings.showMetalPerformanceHUD)
+            HStack {
+                Text("Video Decoder")
+                Spacer()
+                Text("Native").foregroundStyle(.secondary)
+            }
         } header: {
             Text("Video")
         } footer: {
@@ -613,7 +649,7 @@ struct SettingsView: View {
                 if !hdrAvailable {
                     Text(hdrUnavailableReason)
                 }
-                Text("The native decoder cuts a frame or two of latency. Turn it off if the picture tears or stutters.")
+                Text("Streaming uses the native decoder. Check Codec Diagnostics under Advanced for hardware codec support.")
                 Text("The Apple performance HUD is the system's own GPU readout drawn over the video. It is off unless you turn it on here — OpenNOW's stats overlay covers what most people need, and the system one sits on top of the game.")
             }
         }
@@ -629,6 +665,14 @@ struct SettingsView: View {
                 }
                 ForEach(store.availableRegions) { region in
                     Text(region.name).tag(region.url)
+                }
+            }
+
+            if #available(iOS 17.0, *) {
+                Toggle("Native NVST Receiver (Experimental)", isOn: $store.settings.experimentalNativeNVSTEnabled)
+                if store.settings.experimentalNativeNVSTEnabled {
+                    Text("Uses a dedicated video receiver and native timing feedback. Start or resume a session after changing this option.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
 
@@ -748,6 +792,14 @@ struct SettingsView: View {
                 }
             }
 
+            if StreamSettingsResolver.requiresDesktopColorProvisioning(for: store.settings) {
+                Toggle("Native Touch with 4:4:4 (Experimental)",
+                       isOn: $store.settings.experimentalDesktop444TouchEnabled)
+                Text("Requests native touch with 4:4:4. Choose Always, then start a new session. Host support is unverified. If the host sends 4:2:0, turn this off and start a new session to restore 4:4:4.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             if store.settings.touch.nativeTouchMode != .never {
                 settingsSlider(
                     "Touch Scroll Speed",
@@ -865,7 +917,9 @@ struct SettingsView: View {
     /// The end state the routing settings actually add up to. Showing this is the difference
     /// between three comprehensible pickers and three confusing ones.
     private var resolvedTouchMode: ResolvedTouchMode {
-        switch store.settings.touch.nativeTouchMode {
+        let desktopWithoutTouch = StreamSettingsResolver.requiresDesktopColorProvisioning(for: store.settings)
+            && !store.settings.experimentalDesktop444TouchEnabled
+        switch desktopWithoutTouch ? .never : store.settings.touch.nativeTouchMode {
         case .always:
             return .nativeTouch
         case .automatic, .never:
@@ -1534,10 +1588,78 @@ struct SettingsView: View {
                     applying: preset,
                     membershipTier: currentMembershipTier
                 )
+                store.settings.metalFXQualityPreset = .manual
                 enforceAvailableResolution()
                 enforceAvailableFPS()
             }
         )
+    }
+
+    private var streamColorBinding: Binding<String> {
+        Binding(get: { StreamSettingsResolver.colorQuality(for:store.settings).rawValue },set: { value in
+            guard let color = StreamColorQuality(rawValue:value) else { return }
+            store.setStreamColor(color)
+        })
+    }
+
+    private var streamHDRBinding: Binding<Bool> {
+        Binding(get: { store.settings.hdrEnabled },set: { store.setStreamHDR($0) })
+    }
+
+    private var streamResolutionBinding: Binding<String> {
+        Binding(get: { store.settings.preferredResolution }, set: { value in
+            store.settings.preferredResolution = value
+            store.settings.streamPreset = .custom
+            store.settings.metalFXQualityPreset = .manual
+        })
+    }
+
+    private var metalFXQualityBinding: Binding<MetalFXQualityPreset> {
+        Binding(get: { store.settings.metalFXQualityPreset }, set: { preset in
+            store.settings.metalFXQualityPreset = preset
+            applyMetalFXQualityPreset()
+        })
+    }
+
+    private var metalFXDisplaySize: CGSize {
+        #if canImport(UIKit)
+        let size = UIScreen.main.nativeBounds.size
+        return CGSize(width: max(size.width, size.height), height: min(size.width, size.height))
+        #else
+        return .zero
+        #endif
+    }
+
+    private func metalFXChoice(_ preset: MetalFXQualityPreset) -> StreamSettingsResolver.StreamResolutionChoice? {
+        StreamSettingsResolver.metalFXResolution(preset: preset, aspectRatio: store.settings.preferredAspectRatio,
+            displaySize: metalFXDisplaySize, stretch: store.settings.streamerPreferences.stretchStreamToFill,
+            membershipTier: currentMembershipTier)
+    }
+
+    private func metalFXPresetLabel(_ preset: MetalFXQualityPreset) -> String {
+        guard preset != .manual, let choice = metalFXChoice(preset) else { return preset.label }
+        return "\(preset.label) · \(choice.label)"
+    }
+
+    private func applyMetalFXQualityPreset() {
+        guard store.settings.metalFXUpscalingEnabled,
+              store.settings.metalFXQualityPreset != .manual else { return }
+        guard let choice = metalFXChoice(store.settings.metalFXQualityPreset) else {
+            store.settings.metalFXQualityPreset = .manual
+            return
+        }
+        store.settings.preferredResolution = choice.value
+        store.settings.streamPreset = .custom
+    }
+
+    private var metalFXResolutionSummary: String {
+        let profile = StreamSettingsResolver.profile(for: store.settings, membershipTier: currentMembershipTier)
+        let source = CGSize(width: profile.width, height: profile.height)
+        let target = NativeStreamVideoEffectsPolicy.presentationSize(source: source,
+            display: metalFXDisplaySize, stretch: store.settings.streamerPreferences.stretchStreamToFill)
+        let eligible = NativeStreamVideoEffectsPolicy.upscaleSize(source: source, destination: target) != nil
+        let status = eligible ? "Eligible for MetalFX" : "No upscale at this resolution"
+        return "\(status): \(profile.width) × \(profile.height) → \(Int(target.width.rounded())) × \(Int(target.height.rounded())). Landscape estimate; the stream status shows the actual output area. MetalFX requires a supported physical device."
     }
 
     private func customStreamBinding<Value>(
@@ -1619,7 +1741,7 @@ struct SettingsView: View {
     }
 
     private var selectedColorQualityLabel: String {
-        StreamColorQuality(rawValue: store.settings.preferredColorQuality)?.label ?? store.settings.preferredColorQuality
+        StreamSettingsResolver.colorQuality(for:store.settings).label
     }
 
     private var appVersion: String {
@@ -1642,10 +1764,16 @@ struct SettingsView: View {
         for choice: StreamSettingsResolver.StreamResolutionChoice,
         available: Bool
     ) -> String {
-        guard !available, let plan = choice.requiredPlan.label else {
-            return choice.label
+        var label = choice.label
+        if !available, let plan = choice.requiredPlan.label { label += " · \(plan)" }
+        if store.settings.metalFXUpscalingEnabled {
+            let source = StreamSettingsResolver.pixelSize(choice.value)
+            let target = NativeStreamVideoEffectsPolicy.presentationSize(source: source,
+                display: metalFXDisplaySize, stretch: store.settings.streamerPreferences.stretchStreamToFill)
+            label += NativeStreamVideoEffectsPolicy.upscaleSize(source: source, destination: target) != nil
+                ? " · MetalFX eligible" : " · No upscale"
         }
-        return "\(choice.label) - \(plan)"
+        return label
     }
 
     private func enforceAvailableResolution() {

@@ -346,11 +346,11 @@ struct MainTabView: View {
     }
 
     private func streamerSurface(session: ActiveSession) -> some View {
+        NativeStreamPresentation {
         StreamerView(
             session: session,
             settings: store.currentStreamerSettings,
             membershipTier: store.subscription?.membershipTier ?? store.user?.membershipTier,
-            nativeStreamerEnabled: true,
             onTouchLayoutChange: { profile, layout in
                 store.updateTouchControlLayout(layout, profile: profile)
             },
@@ -406,6 +406,10 @@ struct MainTabView: View {
                 store.scheduleStreamerReopen()
             } : nil
         )
+        .ignoresSafeArea()
+        .environmentObject(store)
+        .openNowTheme(store.settings)
+        }
         .ignoresSafeArea()
         .id(session.id)
         .zIndex(3000)

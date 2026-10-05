@@ -1,0 +1,354 @@
+{
+  "repository": "https://github.com/OpenCloudGaming/OpenNOW-Mac",
+  "revision": "619abf5d831ed382efc070bc519f8c12dda714d4",
+  "files": [
+    {
+      "path": "BifrostFree/NvstAnnexB.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstAnnexB.swift"
+    },
+    {
+      "path": "BifrostFree/NvstAudioSurroundInfo.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstAudioSurroundInfo.swift"
+    },
+    {
+      "path": "BifrostFree/NvstAv1Obu.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstAv1Obu.swift"
+    },
+    {
+      "path": "BifrostFree/NvstBundleIceProbe.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstBundleIceProbe.swift"
+    },
+    {
+      "path": "BifrostFree/NvstByteCodec.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstByteCodec.swift"
+    },
+    {
+      "path": "BifrostFree/NvstClientStatsReports.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstClientStatsReports.swift"
+    },
+    {
+      "path": "BifrostFree/NvstControlCommand.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstControlCommand.swift"
+    },
+    {
+      "path": "BifrostFree/NvstDatagram.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstDatagram.swift"
+    },
+    {
+      "path": "BifrostFree/NvstElementaryStream.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstElementaryStream.swift"
+    },
+    {
+      "path": "BifrostFree/NvstFecRecovery.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstFecRecovery.swift"
+    },
+    {
+      "path": "BifrostFree/NvstFeedbackSender.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstFeedbackSender.swift"
+    },
+    {
+      "path": "BifrostFree/NvstFrameAck.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstFrameAck.swift"
+    },
+    {
+      "path": "BifrostFree/NvstFramePacingReport.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstFramePacingReport.swift"
+    },
+    {
+      "path": "BifrostFree/NvstFrameReassembler.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstFrameReassembler.swift"
+    },
+    {
+      "path": "BifrostFree/NvstGamepadPacket.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstGamepadPacket.swift"
+    },
+    {
+      "path": "BifrostFree/NvstHapticEvent.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstHapticEvent.swift"
+    },
+    {
+      "path": "BifrostFree/NvstHdrModeNotification.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstHdrModeNotification.swift"
+    },
+    {
+      "path": "BifrostFree/NvstHidPassthrough.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstHidPassthrough.swift"
+    },
+    {
+      "path": "BifrostFree/NvstInboundCounters.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstInboundCounters.swift"
+    },
+    {
+      "path": "BifrostFree/NvstInputActivation.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstInputActivation.swift"
+    },
+    {
+      "path": "BifrostFree/NvstMjolnirReceiver.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstMjolnirReceiver.swift"
+    },
+    {
+      "path": "BifrostFree/NvstOpusDecoder.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstOpusDecoder.swift"
+    },
+    {
+      "path": "BifrostFree/NvstQosReport.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstQosReport.swift"
+    },
+    {
+      "path": "BifrostFree/NvstReedSolomon.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstReedSolomon.swift"
+    },
+    {
+      "path": "BifrostFree/NvstRemoteCursor.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstRemoteCursor.swift"
+    },
+    {
+      "path": "BifrostFree/NvstRemoteInput.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstRemoteInput.swift"
+    },
+    {
+      "path": "BifrostFree/NvstRemoteInputWindowEvents.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstRemoteInputWindowEvents.swift"
+    },
+    {
+      "path": "BifrostFree/NvstResultCodes.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstResultCodes.swift"
+    },
+    {
+      "path": "BifrostFree/NvstRtcp.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstRtcp.swift"
+    },
+    {
+      "path": "BifrostFree/NvstSeatStats.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstSeatStats.swift"
+    },
+    {
+      "path": "BifrostFree/NvstSeatTermination.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstSeatTermination.swift"
+    },
+    {
+      "path": "BifrostFree/NvstSrtcp.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstSrtcp.swift"
+    },
+    {
+      "path": "BifrostFree/NvstStunHolePunch.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstStunHolePunch.swift"
+    },
+    {
+      "path": "BifrostFree/NvstVideoPacket.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstVideoPacket.swift"
+    },
+    {
+      "path": "BifrostFree/NvstVideoReceiver.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstVideoReceiver.swift"
+    },
+    {
+      "path": "BifrostFree/NvstVsyncMode.swift",
+      "upstream": "GFN/NVST/BifrostFree/NvstVsyncMode.swift"
+    },
+    {
+      "path": "BifrostFree/SrtpCryptography.swift",
+      "upstream": "GFN/NVST/BifrostFree/SrtpCryptography.swift"
+    },
+    {
+      "path": "Handoff/NVSTVideoHandoff.swift",
+      "upstream": "GFN/NVST/Handoff/NVSTVideoHandoff.swift"
+    },
+    {
+      "path": "Native/NvstAudioJitterBuffer.swift",
+      "upstream": "GFN/NVST/Native/NvstAudioJitterBuffer.swift"
+    },
+    {
+      "path": "Native/NvstAudioReceivePipeline.swift",
+      "upstream": "GFN/NVST/Native/NvstAudioReceivePipeline.swift"
+    },
+    {
+      "path": "Native/NvstAudioRtp.swift",
+      "upstream": "GFN/NVST/Native/NvstAudioRtp.swift"
+    },
+    {
+      "path": "Native/NvstAudioSendPipeline.swift",
+      "upstream": "GFN/NVST/Native/NvstAudioSendPipeline.swift"
+    },
+    {
+      "path": "Native/NvstAudioSrtp.swift",
+      "upstream": "GFN/NVST/Native/NvstAudioSrtp.swift"
+    },
+    {
+      "path": "Native/NvstBundleDatagramDemux.swift",
+      "upstream": "GFN/NVST/Native/NvstBundleDatagramDemux.swift"
+    },
+    {
+      "path": "Native/NvstBundleNattPunch.swift",
+      "upstream": "GFN/NVST/Native/NvstBundleNattPunch.swift"
+    },
+    {
+      "path": "Native/NvstBundleSrtpKeys.swift",
+      "upstream": "GFN/NVST/Native/NvstBundleSrtpKeys.swift"
+    },
+    {
+      "path": "Native/NvstCoreAudioFormat.swift",
+      "upstream": "GFN/NVST/Native/NvstCoreAudioFormat.swift"
+    },
+    {
+      "path": "Native/NvstDataChannel.swift",
+      "upstream": "GFN/NVST/Native/NvstDataChannel.swift"
+    },
+    {
+      "path": "Native/NvstDtlsHandshake.swift",
+      "upstream": "GFN/NVST/Native/NvstDtlsHandshake.swift"
+    },
+    {
+      "path": "Native/NvstDtlsIdentity.swift",
+      "upstream": "GFN/NVST/Native/NvstDtlsIdentity.swift"
+    },
+    {
+      "path": "Native/NvstDtlsTransport.swift",
+      "upstream": "GFN/NVST/Native/NvstDtlsTransport.swift"
+    },
+    {
+      "path": "Native/NvstNativeBundle+SessionLimit.swift",
+      "upstream": "GFN/NVST/Native/NvstNativeBundle+SessionLimit.swift"
+    },
+    {
+      "path": "Native/NvstNativeBundle.swift",
+      "upstream": "GFN/NVST/Native/NvstNativeBundle.swift"
+    },
+    {
+      "path": "Native/NvstOpusEncoder.swift",
+      "upstream": "GFN/NVST/Native/NvstOpusEncoder.swift"
+    },
+    {
+      "path": "Native/NvstRedAudio.swift",
+      "upstream": "GFN/NVST/Native/NvstRedAudio.swift"
+    },
+    {
+      "path": "Native/NvstSctpAssociation.swift",
+      "upstream": "GFN/NVST/Native/NvstSctpAssociation.swift"
+    },
+    {
+      "path": "Rtsp/NvstBundleReservation.swift",
+      "upstream": "GFN/NVST/Rtsp/NvstBundleReservation.swift"
+    },
+    {
+      "path": "Rtsp/NvstCapturedAnnounce.swift",
+      "upstream": "GFN/NVST/Rtsp/NvstCapturedAnnounce.swift"
+    },
+    {
+      "path": "Rtsp/NvstRtspConnection.swift",
+      "upstream": "GFN/NVST/Rtsp/NvstRtspConnection.swift"
+    },
+    {
+      "path": "Rtsp/NvstRtspEndpoints.swift",
+      "upstream": "GFN/NVST/Rtsp/NvstRtspEndpoints.swift"
+    },
+    {
+      "path": "Rtsp/NvstRtspNegotiationTypes.swift",
+      "upstream": "GFN/NVST/Rtsp/NvstRtspNegotiationTypes.swift"
+    },
+    {
+      "path": "Rtsp/NvstRtspNegotiator.swift",
+      "upstream": "GFN/NVST/Rtsp/NvstRtspNegotiator.swift"
+    },
+    {
+      "path": "Rtsp/NvstRtspSdp+Announce.swift",
+      "upstream": "GFN/NVST/Rtsp/NvstRtspSdp+Announce.swift"
+    },
+    {
+      "path": "Rtsp/NvstRtspSdp.swift",
+      "upstream": "GFN/NVST/Rtsp/NvstRtspSdp.swift"
+    },
+    {
+      "path": "Rtsp/NvstRtspWireFormat.swift",
+      "upstream": "GFN/NVST/Rtsp/NvstRtspWireFormat.swift"
+    },
+    {
+      "path": "Video/NvstVideoToolboxDecoder.swift",
+      "upstream": "OPN/Stream/NvstVideoToolboxDecoder.swift"
+    },
+    {
+      "path": "Video/NvstVideoToolboxDecoder+Format.swift",
+      "upstream": "OPN/Stream/NvstVideoToolboxDecoder+Format.swift"
+    },
+    {
+      "path": "Video/NvstVideoPipeline.swift",
+      "upstream": "OPN/Stream/NvstVideoPipeline.swift"
+    },
+    {
+      "path": "BifrostFree/GeronimoInputProtocol.swift",
+      "upstream": "GFN/NVST/Geronimo/GeronimoInputProtocol.swift"
+    }
+  ],
+  "iosChanges": [
+    "iOS RemoteIO replaces the macOS CoreAudio device; stereo 48 kHz output and optional mic capture.",
+    "iOS 17 availability guards around VideoToolbox hardware APIs.",
+    "Hardware decode is required; 10-bit streams never fall back to an 8-bit output.",
+    "AV1 sequence color primaries, transfer, matrix and range are retained and passed to CoreMedia.",
+    "DTLS and audio/control errors are surfaced to the iOS coordinator.",
+    "Receiver RTP jitter uses the protocol clock constant without depending on decoder availability.",
+    "Local-peer tests supply their audio clock and disable physical RemoteIO startup; device production starts RemoteIO and reports startup failure.",
+    "Native decode bookkeeping registers before VideoToolbox submission and matches completion by frame index; synchronous rejection and empty samples clear their own entry.",
+    "Native playback audio uses moviePlayback mode when microphone capture is disabled.",
+    "Experimental HEVC 10-bit 4:4:4 validates bitstream depth/chroma, requests only matching full/video-range surfaces, requires hardware decode and validates actual output plane geometry; no 4:2:0/8-bit fallback.",
+    "Strict 4:4:4 offers both compatible 10-bit surface ranges to VideoToolbox, with source-range-matched single-format fallback. A bounded 32-frame/250ms decode inbox discards stale reference chains and waits for a fresh keyframe; logs distinguish decode completion, submission, output format, queue recovery and thermal state.",
+    "Native iOS keyframe recovery sends the host explicit IDR command 0x0302 on reliable SCTP control, falls back to the encrypted Mjolnir UDP PLI path when control cannot send, and only sends feedback-channel PLI when open. Local counters distinguish requests, accepted control sends, UDP fallback attempts and received keyframes."
+  ],
+  "tests": [
+    {
+      "path": "../OpenNOWiOSTests/NVST/NvstSctpAssociationTests.swift",
+      "upstream": "Tests/GFN/NVST/NvstSctpAssociationTests.swift"
+    },
+    {
+      "path": "../OpenNOWiOSTests/NVST/NvstStunHolePunchTests.swift",
+      "upstream": "Tests/GFN/NVST/NvstStunHolePunchTests.swift"
+    },
+    {
+      "path": "../OpenNOWiOSTests/NVST/NvstRtspNegotiatorTests.swift",
+      "upstream": "Tests/GFN/NVST/NvstRtspNegotiatorTests.swift"
+    },
+    {
+      "path": "../OpenNOWiOSTests/NVST/SrtpCryptographyTests.swift",
+      "upstream": "Tests/GFN/NVST/SrtpCryptographyTests.swift"
+    },
+    {
+      "path": "../OpenNOWiOSTests/NVST/NvstRtspNegotiationTests.swift",
+      "upstream": "Tests/GFN/NVST/NvstRtspNegotiationTests.swift"
+    },
+    {
+      "path": "../OpenNOWiOSTests/NVST/NvstBundleStackTests.swift",
+      "upstream": "Tests/GFN/NVST/NvstBundleStackTests.swift"
+    },
+    {
+      "path": "../OpenNOWiOSTests/NVST/NvstAv1ObuTests.swift",
+      "upstream": "Tests/GFN/NVST/NvstAv1ObuTests.swift"
+    },
+    {
+      "path": "../OpenNOWiOSTests/NVST/NvstMjolnirFeedbackTests.swift",
+      "upstream": "Tests/GFN/NVST/NvstMjolnirFeedbackTests.swift"
+    },
+    {
+      "path": "../OpenNOWiOSTests/NVST/NvstReceiverFixtures.swift",
+      "upstream": "Tests/GFN/NVST/NvstReceiverFixtures.swift"
+    },
+    {
+      "path": "../OpenNOWiOSTests/NVST/NvstDtlsHandshakeTests.swift",
+      "upstream": "Tests/GFN/NVST/NvstDtlsHandshakeTests.swift"
+    },
+    {
+      "path": "../OpenNOWiOSTests/NVST/NvstVideoPacketTests.swift",
+      "upstream": "Tests/GFN/NVST/NvstVideoPacketTests.swift"
+    }
+  ],
+  "dependencies": {
+    "OpenSSL": {
+      "version": "3.5.8",
+      "sha256": "a8f84a39918ec6415ce765d9b429d313ba97b8143169c172e734b9514464f5b2",
+      "source": "https://github.com/openssl/openssl"
+    },
+    "usrsctp": {
+      "version": "0.9.5.0",
+      "revision": "07f871bda23943c43c9e74cc54f25130459de830",
+      "source": "https://github.com/sctplab/usrsctp"
+    }
+  }
+}
