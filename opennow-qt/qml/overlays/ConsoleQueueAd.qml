@@ -48,28 +48,36 @@ FocusScope {
         activeStep: root.step
         activeStepDetail: root.queued ? qsTr("Position comes from GeForce NOW") : ""
         footerText: root.queued ? qsTr("Leave queue…") : qsTr("Cancel session…")
+        copyWidth: 820
+        detailWidth: 780
         onFooterRequested: ShellStore.requestStreamExitConfirmation()
 
         aside: [
             Item {
+                objectName: "queueAdModule"
                 anchors.fill: parent
 
                 Text {
+                    height: 18
+                    verticalAlignment: Text.AlignVCenter
                     text: qsTr("Required by GeForce NOW while you wait").toUpperCase()
                     color: Theme.textMuted
-                    font.family: Theme.monoFont; font.pixelSize: 15; font.weight: Font.Bold; font.letterSpacing: 3
+                    font.family: Theme.monoFont; font.pixelSize: 14; font.weight: Font.Bold; font.letterSpacing: 1.96
                 }
                 Text {
                     anchors.right: parent.right
+                    height: 18
+                    verticalAlignment: Text.AlignVCenter
                     visible: root.queued && root.progress.queuePosition > 0
                     text: qsTr("Queue position %1").arg(root.progress.queuePosition).toUpperCase()
                     color: Theme.yellow
-                    font.family: Theme.monoFont; font.pixelSize: 15; font.weight: Font.Bold; font.letterSpacing: 3
+                    font.family: Theme.monoFont; font.pixelSize: 14; font.weight: Font.Bold; font.letterSpacing: 1.4
                 }
 
                 Rectangle {
                     id: adCard
-                    y: 38
+                    objectName: "queueAdCard"
+                    y: 36
                     width: parent.width
                     height: Math.round(width * 9 / 16)
                     radius: 32
@@ -92,15 +100,15 @@ FocusScope {
                         }
                     }
                     Rectangle {
-                        x: 28; y: 24
-                        width: adBadge.implicitWidth + 24; height: 32; radius: 10
+                        x: 29; y: 25
+                        width: adBadge.implicitWidth + 20; height: 28; radius: 10
                         color: Qt.rgba(0, 0, 0, 0.55)
                         Text {
                             id: adBadge
                             anchors.centerIn: parent
                             text: (player.playing ? qsTr("Ad · playing") : qsTr("Ad · paused")).toUpperCase()
                             color: "#FFFFFF"
-                            font.family: Theme.monoFont; font.pixelSize: 13; font.weight: Font.Bold; font.letterSpacing: 2
+                            font.family: Theme.monoFont; font.pixelSize: 13; font.weight: Font.Bold; font.letterSpacing: 1.56
                         }
                     }
                     Rectangle {
@@ -112,19 +120,21 @@ FocusScope {
                         border.color: Qt.rgba(1, 1, 1, 0.6)
                         Text { anchors.centerIn: parent; anchors.horizontalCenterOffset: 3; text: "▶"; color: "#FFFFFF"; font.pixelSize: 34 }
                     }
-                    Column {
-                        x: 28
-                        anchors.bottom: parent.bottom
-                        anchors.bottomMargin: 26
-                        width: parent.width - 56
-                        spacing: 14
-                        Text {
-                            width: parent.width
-                            text: player.ad ? (player.ad.title || player.adState.message || qsTr("A short message while you wait")) : qsTr("Preparing your session")
-                            elide: Text.ElideRight
-                            color: "#FFFFFF"
-                            font.family: Theme.displayFont; font.pixelSize: 28; font.weight: Font.Black
-                        }
+                    Text {
+                        x: 29
+                        anchors.baseline: parent.bottom
+                        anchors.baselineOffset: -50.4
+                        width: parent.width - 58
+                        text: player.ad ? (player.ad.title || player.adState.message || qsTr("A short message while you wait")) : qsTr("Preparing your session")
+                        elide: Text.ElideRight
+                        color: "#FFFFFF"
+                        font.family: Theme.displayFont; font.pixelSize: 26; font.weight: Font.Black
+                    }
+                    Item {
+                        x: 29
+                        y: parent.height - 31
+                        width: parent.width - 58
+                        height: 6
                         Rectangle {
                             visible: player.duration > 0
                             width: parent.width; height: 6; radius: 3
@@ -140,12 +150,19 @@ FocusScope {
 
                 Row {
                     anchors.top: adCard.bottom
-                    anchors.topMargin: 24
+                    anchors.topMargin: 18
                     spacing: 22
                     ConsoleActionButton {
                         id: playbackButton
                         objectName: "queueAdPlaybackButton"
-                        width: 260
+                        width: implicitWidth
+                        height: 60
+                        cornerRadius: 30
+                        labelSize: 18
+                        glyphSize: 30
+                        contentSpacing: 12
+                        leftPadding: glyph !== "" ? 14 : 26
+                        rightPadding: 26
                         enabled: player.ad !== null && player.mediaUrl !== ""
                         text: player.playing ? qsTr("Pause ad") : qsTr("Resume ad")
                         glyph: glyphs.keyboard ? "" : glyphs.button("A")
@@ -157,7 +174,7 @@ FocusScope {
                         wrapMode: Text.WordWrap
                         text: qsTr("GeForce NOW requires this ad. You can pause it, not skip it.")
                         color: Theme.textMuted
-                        font.family: Theme.bodyFont; font.pixelSize: 17
+                        font.family: Theme.bodyFont; font.pixelSize: 16; font.weight: Font.DemiBold
                     }
                 }
             }

@@ -15,6 +15,17 @@ class AppControllerTest final : public QObject
     Q_OBJECT
 
 private slots:
+    void sessionReportOverlayPreservesTheRoute()
+    {
+        AppController controller;
+        QVERIFY(controller.showOverlay(QStringLiteral("session-report")));
+        QCOMPARE(controller.overlay(), QStringLiteral("session-report"));
+        QCOMPARE(controller.route(), QStringLiteral("home"));
+        QVERIFY(controller.goBack());
+        QVERIFY(controller.overlay().isEmpty());
+        QCOMPARE(controller.route(), QStringLiteral("home"));
+    }
+
     void authorizedRestartAnnouncesExitBeforeDelegation()
     {
         AppController controller;

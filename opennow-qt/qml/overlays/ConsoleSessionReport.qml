@@ -68,6 +68,8 @@ FocusScope {
         detail: !root.errorCountsKnown ? qsTr("Error telemetry was unavailable for this session.")
             : root.clean ? qsTr("The native media path completed without decoder or presentation errors.")
             : qsTr("Open Diagnostics for the redacted recovery timeline.")
+        copyWidth: 820
+        detailWidth: 760
         detailColor: root.clean ? Theme.mint : root.errorCountsKnown ? Theme.yellow : Theme.textMuted
 
         actions: [
@@ -95,8 +97,14 @@ FocusScope {
 
         aside: [
             LaunchStage.InfoCard {
-                x: Math.round((parent.width - width) / 2)
+                objectName: "sessionReportCard"
+                x: parent.width - width - 40
                 width: 520
+                padding: 32
+                gap: 16
+                divider: false
+                footnoteSize: 15
+                footnoteLineHeight: 22
                 title: qsTr("Session report")
                 footnote: qsTr("Cells show \"—\" when the session did not report a value. Nothing is estimated.")
                 Grid {
@@ -120,31 +128,31 @@ FocusScope {
                         Rectangle {
                             id: cell
                             required property var modelData
-                            width: (cells.width - 24) / 3
+                            width: Math.min(142, (cells.width - 24) / 3)
                             height: 80
-                            radius: 18
+                            radius: 20
                             color: Qt.rgba(Theme.face.r, Theme.face.g, Theme.face.b, 0.06)
                             Accessible.role: Accessible.StaticText
                             Accessible.name: modelData.label + ", " + modelData.value
-                            Column {
+                            Text {
                                 x: 16
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: parent.width - 24
-                                spacing: 4
-                                Text {
-                                    width: parent.width
-                                    text: cell.modelData.label
-                                    elide: Text.ElideRight
-                                    color: Theme.textMuted
-                                    font.family: Theme.bodyFont; font.pixelSize: 15; font.weight: Font.DemiBold
-                                }
-                                Text {
-                                    width: parent.width
-                                    text: cell.modelData.value
-                                    elide: Text.ElideRight
-                                    color: cell.modelData.warn ? Theme.yellow : Theme.label
-                                    font.family: Theme.monoFont; font.pixelSize: 19; font.weight: Font.Bold
-                                }
+                                anchors.baseline: parent.top
+                                anchors.baselineOffset: 29.6
+                                width: parent.width - 32
+                                text: cell.modelData.label
+                                elide: Text.ElideRight
+                                color: Theme.textMuted
+                                font.family: Theme.bodyFont; font.pixelSize: 14; font.weight: Font.Bold
+                            }
+                            Text {
+                                x: 16
+                                anchors.baseline: parent.top
+                                anchors.baselineOffset: 59.5
+                                width: parent.width - 32
+                                text: cell.modelData.value
+                                elide: Text.ElideRight
+                                color: cell.modelData.warn ? Theme.yellow : Theme.label
+                                font.family: Theme.monoFont; font.pixelSize: 20; font.weight: Font.Bold
                             }
                         }
                     }

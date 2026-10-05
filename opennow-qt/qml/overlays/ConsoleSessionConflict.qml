@@ -36,6 +36,8 @@ FocusScope {
         eyebrow: qsTr("Your game is still running")
         headline: root.runningTitle ? qsTr("Return to %1?").arg(root.runningTitle) : qsTr("Return to your game?")
         detail: qsTr("OpenNOW found another session on your NVIDIA account. Ending it closes the game, and unsaved progress may be lost.")
+        copyWidth: 860
+        detailWidth: 780
 
         actions: [
             LaunchStage.LaunchAction {
@@ -74,7 +76,9 @@ FocusScope {
 
         aside: [
             Rectangle {
-                x: Math.round((parent.width - width) / 2)
+                id: runningCard
+                objectName: "conflictRunningCard"
+                x: parent.width - width - 40
                 width: 520
                 height: 410
                 radius: 40
@@ -90,53 +94,61 @@ FocusScope {
                     sourceUrl: DesktopTokens.artworkUrl(root.runningGame, true)
                     active: root.visible && sourceUrl !== ""
                 }
-                Image {
-                    anchors.fill: parent
-                    source: runningArt.resolvedUrl
-                    fillMode: Image.PreserveAspectCrop
-                    sourceSize: Qt.size(1040, 820)
-                    asynchronous: true
-                }
-                Rectangle {
-                    anchors.fill: parent
-                    gradient: Gradient {
-                        GradientStop { position: 0.35; color: "transparent" }
-                        GradientStop { position: 1; color: Qt.rgba(Theme.shell.r, Theme.shell.g, Theme.shell.b, 0.96) }
+                Item {
+                    x: runningCard.border.width; y: runningCard.border.width
+                    width: parent.width - 2 * x
+                    height: 300
+                    Image {
+                        anchors.fill: parent
+                        source: runningArt.resolvedUrl
+                        fillMode: Image.PreserveAspectCrop
+                        sourceSize: Qt.size(1040, 600)
+                        asynchronous: true
                     }
-                }
-                Rectangle {
-                    x: 26; y: 26
-                    width: runningRow.implicitWidth + 28; height: 36; radius: 18
-                    color: Qt.rgba(Theme.shell.r, Theme.shell.g, Theme.shell.b, 0.8)
-                    Row {
-                        id: runningRow
-                        anchors.centerIn: parent
-                        spacing: 8
-                        Rectangle { anchors.verticalCenter: parent.verticalCenter; width: 8; height: 8; radius: 4; color: Theme.mint }
-                        Text {
-                            text: qsTr("Still running").toUpperCase()
-                            color: Theme.mint
-                            font.family: Theme.monoFont; font.pixelSize: 14; font.weight: Font.Bold; font.letterSpacing: 2
+                    Rectangle {
+                        anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+                        height: 150
+                        gradient: Gradient {
+                            GradientStop { position: 0; color: "transparent" }
+                            GradientStop { position: 1; color: Qt.rgba(Theme.shell.r, Theme.shell.g, Theme.shell.b, 0.95) }
+                        }
+                    }
+                    Rectangle {
+                        x: 24; y: 24
+                        width: runningRow.implicitWidth + 28; height: 34; radius: 17
+                        color: Qt.rgba(0, 0, 0, 0.55)
+                        Row {
+                            id: runningRow
+                            anchors.centerIn: parent
+                            spacing: 8
+                            Rectangle { anchors.verticalCenter: parent.verticalCenter; width: 9; height: 9; radius: 4.5; color: Theme.mint }
+                            Text {
+                                text: qsTr("Still running").toUpperCase()
+                                color: Theme.mint
+                                font.family: Theme.monoFont; font.pixelSize: 13; font.weight: Font.Bold; font.letterSpacing: 1.3
+                            }
                         }
                     }
                 }
-                Column {
+                Text {
                     x: 32
-                    anchors.bottom: parent.bottom
-                    anchors.bottomMargin: 30
+                    anchors.baseline: parent.top
+                    anchors.baselineOffset: 339.5
                     width: parent.width - 64
-                    Text {
-                        width: parent.width
-                        text: root.runningTitle || qsTr("Your running game")
-                        elide: Text.ElideRight
-                        color: Theme.label
-                        font.family: Theme.displayFont; font.pixelSize: 34; font.weight: Font.Black
-                    }
-                    Text {
-                        text: qsTr("On your GeForce NOW account")
-                        color: Theme.textMuted
-                        font.family: Theme.bodyFont; font.pixelSize: 18; font.weight: Font.DemiBold
-                    }
+                    text: root.runningTitle || qsTr("Your running game")
+                    elide: Text.ElideRight
+                    color: Theme.label
+                    font.family: Theme.displayFont; font.pixelSize: 32; font.weight: Font.Black
+                }
+                Text {
+                    x: 32
+                    anchors.baseline: parent.top
+                    anchors.baselineOffset: 371.6
+                    width: parent.width - 64
+                    elide: Text.ElideRight
+                    text: qsTr("On your GeForce NOW account")
+                    color: Theme.textMuted
+                    font.family: Theme.bodyFont; font.pixelSize: 17; font.weight: Font.Bold
                 }
             }
         ]

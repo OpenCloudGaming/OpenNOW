@@ -15,7 +15,7 @@ ItemDelegate {
     highlighted: activeFocus || currentItem
 
     width: 156
-    height: 232
+    height: 234
     padding: 0
     focusPolicy: Qt.StrongFocus
     Accessible.name: title
@@ -28,7 +28,7 @@ ItemDelegate {
     background: RoundedArtwork {
         artwork: root.artwork
         fallbackColor: ConsoleStores.color(root.stores.length ? root.stores[0] : "")
-        cornerRadius: 18
+        cornerRadius: 22
         scrimStart: root.labelVisible || root.stores.length ? 0.6 : 1
     }
 
@@ -46,17 +46,25 @@ ItemDelegate {
             font.pixelSize: 15
             font.weight: Font.Black
         }
-        Row {
+        Rectangle {
             id: marks
-            x: 10; y: parent.height - height - 10
+            x: 8; y: parent.height - height - 8
             visible: root.stores.length > 0
-            spacing: 4
-            Repeater {
-                model: root.stores.slice(0, 4)
-                ConsoleStoreMark {
-                    required property string modelData
-                    store: modelData
-                    markSize: 26
+            width: marksRow.implicitWidth + 8
+            height: marksRow.implicitHeight + 8
+            radius: 16
+            color: Qt.rgba(0, 0, 0, 0.55)
+            Row {
+                id: marksRow
+                x: 4; y: 4
+                spacing: 4
+                Repeater {
+                    model: root.stores.slice(0, 4)
+                    ConsoleStoreMark {
+                        required property string modelData
+                        store: modelData
+                        markSize: 24
+                    }
                 }
             }
         }
@@ -75,7 +83,7 @@ ItemDelegate {
         }
     }
 
-    FocusFrame { focused: root.highlighted; parked: root.parked; frameRadius: 18 }
+    FocusFrame { focused: root.highlighted; parked: root.parked; frameRadius: 22 }
     Behavior on scale {
         NumberAnimation { duration: AppController.reducedMotion ? 0 : 90; easing.type: Easing.OutCubic }
     }

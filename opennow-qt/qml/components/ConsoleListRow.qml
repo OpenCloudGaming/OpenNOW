@@ -26,8 +26,8 @@ ItemDelegate {
     background: Item {
         Rectangle {
             anchors.fill: parent
-            anchors.margins: -8
-            radius: 32
+            anchors.margins: -5
+            radius: 29
             color: "transparent"
             border.width: 5
             border.color: Qt.rgba(Theme.focus.r, Theme.focus.g, Theme.focus.b, 0.4)

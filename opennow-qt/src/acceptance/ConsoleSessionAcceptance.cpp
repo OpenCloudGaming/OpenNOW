@@ -69,6 +69,15 @@ int AcceptanceSession::startConsoleSessionWorkload()
             return window->activeFocusItem()
                 && window->activeFocusItem()->objectName() == u"streamExitKeepPlaying"_s;
         };
+        const auto matchesGuideBounds = [window](QQuickItem *panel) {
+            if (!panel) return false;
+            const auto unit = qMin(window->width() / 1920.0, window->height() / 1080.0);
+            const auto bounds = panel->mapRectToItem(window->contentItem(), panel->boundingRect());
+            return qAbs(bounds.x() - 48 * unit) <= 1
+                && qAbs(bounds.y() - 48 * unit) <= 1
+                && qAbs(bounds.width() - 620 * unit) <= 1
+                && qAbs(bounds.height() - (window->height() - 96 * unit)) <= 1;
+        };
         auto *loader = window->findChild<QObject *>(u"mainRouteLoader"_s);
         auto *page = loader ? loader->property("item").value<QObject *>() : nullptr;
         auto *surface = window->findChild<QQuickItem *>(u"streamSurfaceHost"_s);
@@ -124,6 +133,8 @@ int AcceptanceSession::startConsoleSessionWorkload()
             if (!require(!surface->property("inputEnabled").toBool()
                     && window->findChild<QQuickItem *>(u"consoleSessionGuide"_s),
                          "guide failed to keep media and capture local input")) return;
+            if (!require(matchesGuideBounds(window->findChild<QQuickItem *>(u"consoleGuidePanel"_s)),
+                         "guide panel does not match the Paper margins")) return;
             m_controller.showOverlay(u"guide-controls"_s);
             break;
         case 6:
@@ -141,6 +152,12 @@ int AcceptanceSession::startConsoleSessionWorkload()
             break;
         case 9:
             if (!require(safeFocused(), "session confirmation did not focus Keep playing")) return;
+            {
+                auto *warning = window->findChild<QQuickItem *>(u"consoleSystemWarning"_s);
+                if (!require(matchesGuideBounds(warning
+                        ? warning->findChild<QQuickItem *>(u"consoleSheetPanel"_s) : nullptr),
+                             "session confirmation does not stay within the guide panel")) return;
+            }
             key(Qt::Key_Return);
             if (!require(m_controller.overlay().isEmpty() && store->property("streamState") == u"streaming"_s,
                          "Enter on Keep playing ended the session")) return;

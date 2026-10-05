@@ -6,7 +6,7 @@ GlassPanel {
     id: root
     property string currentRoute: "home"
     signal routeRequested(string route)
-    implicitWidth: navRow.implicitWidth + 24
+    implicitWidth: navRow.implicitWidth + 30
     implicitHeight: 72
     width: implicitWidth
     height: implicitHeight
@@ -40,6 +40,8 @@ GlassPanel {
             glyphSize: 30
         }
 
+        Item { width: 8; height: 1 }
+
         Repeater {
             model: root.destinations
             ItemDelegate {
@@ -48,7 +50,7 @@ GlassPanel {
                 readonly property bool current: root.selected(modelData.route)
                 readonly property color ink: current ? Theme.faceText : Theme.label
                 anchors.verticalCenter: parent.verticalCenter
-                width: current ? destinationRow.implicitWidth + 44 : 68
+                width: current ? destinationRow.implicitWidth + 34 : 64
                 height: 52
                 padding: 0
                 focusPolicy: Qt.StrongFocus
@@ -66,14 +68,17 @@ GlassPanel {
                 contentItem: Item {
                     Row {
                         id: destinationRow
-                        anchors.centerIn: parent
+                        x: destination.current ? 14 : Math.round((parent.width - width) / 2)
+                        anchors.verticalCenter: parent.verticalCenter
                         spacing: 10
                         Item {
                             anchors.verticalCenter: parent.verticalCenter
-                            width: 26
-                            height: 26
+                            width: 30
+                            height: 30
                             Image {
-                                anchors.fill: parent
+                                anchors.centerIn: parent
+                                width: 26
+                                height: 26
                                 visible: destination.modelData.icon !== ""
                                 source: destination.modelData.icon === "" ? ""
                                     : "qrc:/qt/qml/OpenNOW/res/icons/" + destination.modelData.icon
@@ -82,7 +87,9 @@ GlassPanel {
                                 fillMode: Image.PreserveAspectFit
                             }
                             Item {
-                                anchors.fill: parent
+                                anchors.centerIn: parent
+                                width: 26
+                                height: 26
                                 visible: destination.modelData.icon === ""
                                 Rectangle {
                                     x: 2; y: 3; width: 22; height: 15; radius: 3
@@ -100,13 +107,15 @@ GlassPanel {
                             text: destination.modelData.label
                             color: destination.ink
                             font.family: Theme.displayFont
-                            font.pixelSize: 19
+                            font.pixelSize: 17
                             font.weight: Font.Black
                         }
                     }
                 }
             }
         }
+
+        Item { width: 8; height: 1 }
 
         ControllerGlyph {
             anchors.verticalCenter: parent.verticalCenter

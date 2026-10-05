@@ -273,9 +273,9 @@ FocusScope {
     Item {
         id: header
         x: 168
-        y: 124
+        y: 132
         width: 1584
-        height: 92
+        height: 76
         visible: !root.moveMode
         Accessible.ignored: true
         Text {
@@ -286,52 +286,53 @@ FocusScope {
             color: Theme.textMuted
             elide: Text.ElideRight
             font.family: Theme.monoFont
-            font.pixelSize: 15
-            font.weight: Font.Bold
-            font.letterSpacing: 2
+            font.pixelSize: 14
+            font.weight: Font.DemiBold
+            font.letterSpacing: 1.68
         }
         Text {
-            y: headerEyebrow.height + 4
+            y: 19
             width: parent.width - ownership.width - 40
             text: root.selectedGame ? String(root.selectedGame.title || "")
                 : root.games.length === 0 ? qsTr("Your Home is ready") : qsTr("Pin a game from Library")
             color: Theme.label
             elide: Text.ElideRight
             font.family: Theme.displayFont
-            font.pixelSize: 50
+            font.pixelSize: 46
             font.weight: Font.Black
-            font.letterSpacing: -1
+            font.letterSpacing: -0.92
         }
         Row {
             id: ownership
             readonly property string store: ConsoleStores.ownedStore(root.selectedGame)
             anchors.right: parent.right
             anchors.bottom: parent.bottom
-            anchors.bottomMargin: 12
+            anchors.bottomMargin: 9
             visible: store !== ""
-            spacing: 10
+            spacing: 8
             Rectangle { anchors.verticalCenter: parent.verticalCenter; width: 9; height: 9; radius: 5; color: Theme.mint }
             Text {
                 text: qsTr("Owned on %1").arg(ConsoleStores.label(ownership.store))
                 color: Theme.lightMode ? Qt.darker(Theme.mint, 2.2) : Theme.mint
                 font.family: Theme.bodyFont
-                font.pixelSize: 18
-                font.weight: Font.Bold
+                font.pixelSize: 17
+                font.weight: Font.ExtraBold
             }
         }
     }
 
     GlassPanel {
+        objectName: "consoleHomeTilePanel"
         x: Math.round((root.width - width) / 2)
-        y: 225
-        width: 1584
+        y: 224
+        width: 1586
         height: 626
         panelRadius: 42
         color: Qt.rgba(Theme.shell.r, Theme.shell.g, Theme.shell.b, 0.52)
 
         Item {
-            x: 33
-            y: 33
+            x: 34
+            y: 34
             width: 1520
             height: 560
 

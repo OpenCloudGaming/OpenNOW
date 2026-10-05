@@ -11,30 +11,20 @@ Item {
 
     Rectangle {
         anchors.fill: parent
-        anchors.margins: -12
+        anchors.margins: -5
         visible: root.focused && !root.parked
-        radius: root.frameRadius + 12
+        radius: root.frameRadius + 5
         color: "transparent"
         border.width: 5
-        border.color: Qt.rgba(Theme.focus.r, Theme.focus.g, Theme.focus.b, 0.5)
+        border.color: Qt.rgba(Theme.focus.r, Theme.focus.g, Theme.focus.b, 0.45)
     }
 
     Rectangle {
         anchors.fill: parent
-        anchors.margins: -7
-        visible: root.focused && !root.parked
-        radius: root.frameRadius + 7
-        color: "transparent"
-        border.width: 4
-        border.color: Theme.shell
-    }
-
-    Rectangle {
-        anchors.fill: parent
-        anchors.margins: root.focused ? -3 : 0
-        radius: root.frameRadius + (root.focused ? 3 : 0)
+        radius: root.frameRadius
         color: "transparent"
         border.width: root.focused ? (root.parked ? 2 : 3) : 1
-        border.color: root.focused ? Theme.face : Theme.seam
+        border.color: !root.focused ? Theme.seam
+            : root.parked ? Qt.rgba(Theme.face.r, Theme.face.g, Theme.face.b, 0.7) : Theme.face
     }
 }

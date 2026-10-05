@@ -201,7 +201,7 @@ FocusScope {
             const membership = ShellStore.subscription && ShellStore.subscription.membershipTier
                 ? String(ShellStore.subscription.membershipTier) : String(user.membershipTier || "—")
             return [
-                {t:"Profile", control:"profile", height:121, initial:accountName.slice(0,1).toUpperCase(), name:accountName, tier:membership.toUpperCase(), subtitle:ShellStore.signedIn ? qsTr("NVIDIA account · signed in on this PC") : qsTr("Connect securely with NVIDIA"), meta:ShellStore.sessionPersistence === "os-credential-store" ? qsTr("Protected by the operating system credential store") : qsTr("Session-only profile"), v:ShellStore.signedIn ? qsTr("Manage on nvidia.com") : qsTr("Sign in"), route:ShellStore.signedIn ? "accounts" : "sign-in"},
+                {t:"Profile", control:"profile", height:120, initial:accountName.slice(0,1).toUpperCase(), name:accountName, tier:membership.toUpperCase(), subtitle:ShellStore.signedIn ? qsTr("NVIDIA account · signed in on this PC") : qsTr("Connect securely with NVIDIA"), meta:ShellStore.sessionPersistence === "os-credential-store" ? qsTr("Protected by the operating system credential store") : qsTr("Session-only profile"), v:ShellStore.signedIn ? qsTr("Manage on nvidia.com") : qsTr("Sign in"), route:ShellStore.signedIn ? "accounts" : "sign-in"},
                 {t:"Profiles", d:"Each profile has its own My games shelf and settings", v:qsTr("%1 saved").arg(ShellStore.savedAccounts.length), route:"accounts"},
                 {t:"Profile PIN", d:"Ask for a 4-digit PIN when switching to this profile", v:"Set up", route:"profile-pin"},
                 toggle(qsTr("Persistent in-game settings"), qsTr("Keep your in-game graphics settings between sessions for supported games and memberships. Applies to new sessions."), "enablePersistingInGameSettings"),
@@ -286,13 +286,13 @@ FocusScope {
         if (root.selectedSection === 3) {
             const rows = []
             const controllerCards = []
-            for (let index = 0; index < Math.min(2, ControllerInput.controllers.length); ++index) {
+            for (let index = 0; index < Math.min(4, ControllerInput.controllers.length); ++index) {
                 const controller = ControllerInput.controllers[index]
                 controllerCards.push({slot:controller.slot, name:controller.name, connected:true, battery:controller.batteryPercent >= 0 ? controller.batteryPercent + "%" : qsTr("Ready")})
             }
-            while (controllerCards.length < 2)
+            while (controllerCards.length < 4)
                 controllerCards.push({slot:controllerCards.length + 1, name:qsTr("Controller %1").arg(controllerCards.length + 1), connected:false, battery:""})
-            rows.push({t:"Controllers", control:"controllers", height:105, controllers:controllerCards, route:"joining"})
+            rows.push({t:"Controllers", control:"controllers", height:131, controllers:controllerCards, route:"joining"})
             rows.push({t:"Button glyphs", d:"Detected automatically from the active controller", v:"Auto", info:true})
             rows.push(choice(qsTr("Controller input source"),
                 qsTr("Choose one device as Player 1 if a controller appears twice. Selection lasts until app restart; select again after reconnecting."),
@@ -712,11 +712,12 @@ FocusScope {
     ScreenBackground { tint: "#17233B" }
 
     GlassPanel {
-        x: 96; y: 124; width: 360; height: 792; panelRadius: 40
+        objectName: "consoleSettingsSectionsPanel"
+        x: 96; y: 124; width: 360; height: root.height - 288; panelRadius: 40
         ListView {
             id: sectionList
             objectName: "consoleSettingsSections"
-            anchors.fill: parent; anchors.margins: 22; spacing: 6; clip: false; focus: false
+            anchors.fill: parent; anchors.margins: 23; spacing: 6; clip: false; focus: false
             interactive: false
             keyNavigationEnabled: true
             keyNavigationWraps: false
@@ -740,7 +741,7 @@ FocusScope {
                 highlighted: ListView.isCurrentItem
                 background: Item {
                     Rectangle {
-                        anchors.fill: parent; anchors.margins: -8; radius: 37
+                        anchors.fill: parent; anchors.margins: -5; radius: 34
                         color: "transparent"; border.width: 5
                         border.color: Qt.rgba(Theme.focus.r, Theme.focus.g, Theme.focus.b, 0.5)
                         visible: sectionItem.activeFocus
@@ -781,22 +782,26 @@ FocusScope {
     }
 
     GlassPanel {
-        x: 480; y: 124; width: 1344; height: 792; panelRadius: 40
+        objectName: "consoleSettingsRowsPanel"
+        x: 480; y: 124; width: 1344; height: root.height - 288; panelRadius: 40
         Item {
             id: rowsHeader
-            x: 56; y: 34
-            width: parent.width - 112
-            height: 48
+            x: 57; y: 31
+            width: parent.width - 114
+            height: 40
             Text {
+                id: rowsHeading
+                objectName: "consoleSettingsHeading"
                 anchors.left: parent.left
-                anchors.verticalCenter: parent.verticalCenter
+                height: parent.height
+                verticalAlignment: Text.AlignVCenter
                 text: I18n.source(root.sections[root.selectedSection].name, I18n.revision)
                 color: Theme.label
                 font.family: Theme.displayFont; font.pixelSize: 32; font.weight: Font.Black; font.letterSpacing: -0.3
             }
             Text {
                 anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
+                anchors.baseline: rowsHeading.baseline
                 text: root.sectionMeta()
                 color: Theme.textMuted
                 font.family: Theme.monoFont; font.pixelSize: 13; font.weight: Font.Bold; font.letterSpacing: 1.3
@@ -806,10 +811,10 @@ FocusScope {
             id: settingsList
             objectName: "consoleSettingsList"
             anchors.fill: parent
-            anchors.leftMargin: 24; anchors.rightMargin: 24
-            anchors.topMargin: 96; anchors.bottomMargin: 18
+            anchors.leftMargin: 25; anchors.rightMargin: 25
+            anchors.topMargin: 79; anchors.bottomMargin: 18
             leftMargin: 10; rightMargin: 10; topMargin: 10; bottomMargin: 10
-            spacing: 2; clip: true; keyNavigationWraps: false
+            spacing: 4; clip: true; keyNavigationWraps: false
             highlightMoveDuration: AppController.reducedMotion ? 0 : 260
             highlightRangeMode: ListView.ApplyRange
             preferredHighlightBegin: 80

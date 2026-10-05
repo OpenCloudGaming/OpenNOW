@@ -104,6 +104,8 @@ FocusScope {
         footerVisible: !root.failed && !root.stopping
         footerText: root.leavesWithoutConfirmation ? qsTr("Cancel")
             : root.queued ? qsTr("Leave queue…") : qsTr("Cancel session…")
+        copyWidth: root.failed ? 860 : 1060
+        detailWidth: root.failed ? 780 : 880
         onFooterRequested: ShellStore.requestStreamExitConfirmation()
 
         actions: [
@@ -137,46 +139,50 @@ FocusScope {
                 anchors.fill: parent
                 visible: !root.failed && root.queued && root.progress.queuePosition > 0
                 Rectangle {
-                    x: Math.round((parent.width - width) / 2)
-                    y: 38
+                    objectName: "launchQueueRing"
+                    x: parent.width - width - 40
+                    y: 36
                     width: 520; height: 520; radius: 260
                     color: Qt.rgba(Theme.shell.r, Theme.shell.g, Theme.shell.b, 0.42)
-                    border.width: 1.5
+                    border.width: 2
                     border.color: Theme.seam
                     Accessible.role: Accessible.StaticText
                     Accessible.name: qsTr("Queue position %1").arg(root.progress.queuePosition)
-                    Column {
-                        anchors.centerIn: parent
-                        spacing: 6
-                        Text {
-                            anchors.horizontalCenter: parent.horizontalCenter
-                            text: qsTr("Queue position").toUpperCase()
-                            color: Theme.label
-                            font.family: Theme.monoFont; font.pixelSize: 17; font.weight: Font.Bold; font.letterSpacing: 3.5
-                        }
-                        Text {
-                            anchors.horizontalCenter: parent.horizontalCenter
-                            text: String(root.progress.queuePosition)
-                            color: Theme.yellow
-                            font.family: Theme.displayFont; font.pixelSize: root.progress.queuePosition > 9999 ? 120 : 190; font.weight: Font.Black
-                        }
-                        Text {
-                            anchors.horizontalCenter: parent.horizontalCenter
-                            text: qsTr("Updates when GeForce NOW reports it")
-                            color: Theme.textMuted
-                            font.family: Theme.bodyFont; font.pixelSize: 19; font.weight: Font.DemiBold
-                        }
+                    Text {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        anchors.baseline: parent.top
+                        anchors.baselineOffset: 145
+                        text: qsTr("Queue position").toUpperCase()
+                        color: Theme.label
+                        font.family: Theme.monoFont; font.pixelSize: 16; font.weight: Font.Bold; font.letterSpacing: 2.56
+                    }
+                    Text {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        anchors.baseline: parent.top
+                        anchors.baselineOffset: 323.8
+                        text: String(root.progress.queuePosition)
+                        color: Theme.yellow
+                        font.family: Theme.displayFont; font.pixelSize: root.progress.queuePosition > 9999 ? 120 : 200
+                        font.weight: Font.Black; font.letterSpacing: root.progress.queuePosition > 9999 ? -4.8 : -8
+                    }
+                    Text {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        anchors.baseline: parent.top
+                        anchors.baselineOffset: 385.3
+                        text: qsTr("Updates when GeForce NOW reports it")
+                        color: Theme.textMuted
+                        font.family: Theme.bodyFont; font.pixelSize: 19; font.weight: Font.Bold
                     }
                 }
             },
             LaunchStage.RigCard {
-                x: Math.round((parent.width - width) / 2)
-                y: 90
+                x: parent.width - width - 40
+                y: 86
                 visible: !root.failed && root.step === 3 && rows.length > 0
                 rows: root.rigRows
             },
             LaunchStage.StopCard {
-                x: Math.round((parent.width - width) / 2)
+                x: parent.width - width - 40
                 visible: root.failed
                 reachedStep: root.reachedStep
             }

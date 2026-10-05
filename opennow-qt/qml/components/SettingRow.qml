@@ -17,10 +17,12 @@ ItemDelegate {
                                           : rowData.values ? rowData.values.indexOf(ShellStore.settings[rowData.key]) : -1
     readonly property bool cardRow: controlType === "profile" || controlType === "controllers" || controlType === "region"
     readonly property bool showRing: ringVisible && !parked
+    readonly property int cardGap: controlType === "profile" ? 8 : 0
+    readonly property int cardRadius: controlType === "profile" ? 28 : 24
     highlighted: showRing
 
     implicitHeight: cardRow ? Number(rowData.height || 120)
-        : Math.max(Number(rowData.height || 88), textColumn.implicitHeight + 28)
+        : Math.max(Number(rowData.height || 84), textColumn.implicitHeight + 24)
     focusPolicy: root.controlType === "info" ? Qt.NoFocus : Qt.StrongFocus
     Accessible.name: I18n.source(title, I18n.revision)
     Accessible.description: I18n.source(description, I18n.revision)
@@ -36,8 +38,9 @@ ItemDelegate {
     background: Item {
         Rectangle {
             anchors.fill: parent
-            anchors.margins: -8
-            radius: 32
+            anchors.margins: -5
+            anchors.bottomMargin: root.cardGap - 5
+            radius: root.cardRadius + 5
             color: "transparent"
             border.width: 5
             border.color: Qt.rgba(Theme.focus.r, Theme.focus.g, Theme.focus.b, 0.4)
@@ -46,7 +49,8 @@ ItemDelegate {
         }
         Rectangle {
             anchors.fill: parent
-            radius: 24
+            anchors.bottomMargin: root.cardGap
+            radius: root.cardRadius
             color: root.showRing ? Qt.rgba(Theme.face.r, Theme.face.g, Theme.face.b, 0.10)
                 : root.parked ? Qt.rgba(Theme.face.r, Theme.face.g, Theme.face.b, 0.08)
                 : root.controlType === "profile" ? Qt.rgba(Theme.face.r, Theme.face.g, Theme.face.b, 0.06)
@@ -64,17 +68,22 @@ ItemDelegate {
     }
 
     contentItem: Item {
-        Column {
+        Item {
             id: textColumn
             visible: !root.cardRow
             anchors.left: parent.left
-            anchors.leftMargin: 22
+            anchors.leftMargin: 25
             anchors.right: trailing.left
-            anchors.rightMargin: 28
+            anchors.rightMargin: 24
             anchors.verticalCenter: parent.verticalCenter
-            spacing: 4
+            anchors.verticalCenterOffset: 1
+            implicitHeight: descriptionText.visible ? 30 + Math.max(1, descriptionText.lineCount) * 20 : 26
+            height: implicitHeight
             Text {
+                objectName: "consoleSettingTitle"
                 width: parent.width
+                height: 26
+                verticalAlignment: Text.AlignVCenter
                 text: I18n.source(root.title, I18n.revision)
                 color: root.controlType === "info" ? Theme.textMuted : Theme.label
                 font.family: Theme.displayFont
@@ -83,6 +92,9 @@ ItemDelegate {
                 elide: Text.ElideRight
             }
             Text {
+                id: descriptionText
+                objectName: "consoleSettingDescription"
+                y: 29
                 width: parent.width
                 visible: root.description.length > 0
                 text: I18n.source(root.description, I18n.revision)
@@ -90,6 +102,8 @@ ItemDelegate {
                 font.family: Theme.bodyFont
                 font.pixelSize: 16
                 font.weight: Font.DemiBold
+                lineHeightMode: Text.FixedHeight
+                lineHeight: 20
                 wrapMode: Text.WordWrap
                 maximumLineCount: 2
                 elide: Text.ElideRight
@@ -100,8 +114,9 @@ ItemDelegate {
             id: trailing
             visible: !root.cardRow
             anchors.right: parent.right
-            anchors.rightMargin: 22
+            anchors.rightMargin: 25
             anchors.verticalCenter: parent.verticalCenter
+            anchors.verticalCenterOffset: 1
             width: segments.visible ? segments.implicitWidth
                  : colors.visible ? colors.implicitWidth
                  : sliderVisual.visible ? sliderVisual.implicitWidth
@@ -186,10 +201,9 @@ ItemDelegate {
                             anchors.fill: parent
                             anchors.margins: -6
                             radius: width / 2
-                            color: "transparent"
-                            border.width: 2
-                            border.color: Theme.face
+                            color: Theme.face
                             visible: swatch.index === root.selectedChoice
+                            Rectangle { anchors.fill: parent; anchors.margins: 3; radius: width / 2; color: Theme.shell }
                         }
                         Rectangle { anchors.fill: parent; radius: 18; color: swatch.modelData }
                     }
@@ -228,7 +242,7 @@ ItemDelegate {
                 }
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
-                    width: 104
+                    width: 96
                     text: I18n.source(root.value, I18n.revision)
                     color: Theme.label
                     font.family: Theme.displayFont
@@ -280,10 +294,12 @@ ItemDelegate {
                 }
                 Column {
                     anchors.verticalCenter: parent.verticalCenter
-                    width: 190
-                    spacing: 5
+                    width: 170
+                    spacing: 4
                     Text {
                         width: parent.width
+                        height: 24
+                        verticalAlignment: Text.AlignVCenter
                         horizontalAlignment: Text.AlignHCenter
                         text: root.value !== "" ? I18n.source(root.value, I18n.revision) : "—"
                         color: Theme.label
@@ -330,7 +346,7 @@ ItemDelegate {
                     && (root.value !== "" || Boolean(root.rowData.shortcut))
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                width: Math.min(460, (root.rowData.shortcut ? shortcutValue.implicitWidth : valueLabel.implicitWidth) + 64)
+                width: Math.min(460, (root.rowData.shortcut ? shortcutValue.implicitWidth : valueLabel.implicitWidth) + 66)
                 height: 48
                 radius: 24
                 color: root.rowData.danger ? Qt.rgba(Theme.coral.r, Theme.coral.g, Theme.coral.b, 0.10)
@@ -344,7 +360,7 @@ ItemDelegate {
                     anchors.left: parent.left
                     anchors.leftMargin: 20
                     anchors.right: chevron.left
-                    anchors.rightMargin: 10
+                    anchors.rightMargin: 12
                     anchors.verticalCenter: parent.verticalCenter
                     text: root.value !== "" ? I18n.source(root.value, I18n.revision) : "—"
                     color: root.rowData.danger ? Theme.coral : Theme.label
@@ -364,8 +380,10 @@ ItemDelegate {
                 }
                 Text {
                     id: chevron
+                    width: 18
+                    horizontalAlignment: Text.AlignHCenter
                     anchors.right: parent.right
-                    anchors.rightMargin: 18
+                    anchors.rightMargin: 16
                     anchors.verticalCenter: parent.verticalCenter
                     text: "›"
                     color: root.rowData.danger ? Theme.coral : Theme.label
@@ -381,6 +399,7 @@ ItemDelegate {
             anchors.fill: parent
             anchors.leftMargin: 22
             anchors.rightMargin: 22
+            anchors.bottomMargin: root.cardGap
             Rectangle {
                 id: avatar
                 anchors.verticalCenter: parent.verticalCenter
@@ -395,34 +414,35 @@ ItemDelegate {
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 4
                 Row {
+                    height: 34
                     spacing: 12
-                    Text { text: root.rowData.name || qsTr("OpenNOW profile"); color: Theme.label; font.family: Theme.displayFont; font.pixelSize: 28; font.weight: Font.Black }
+                    Text { height: 34; verticalAlignment: Text.AlignVCenter; text: root.rowData.name || qsTr("OpenNOW profile"); color: Theme.label; font.family: Theme.displayFont; font.pixelSize: 28; font.weight: Font.Black }
                     Rectangle {
                         anchors.verticalCenter: parent.verticalCenter
-                        width: tierText.implicitWidth + 20; height: 26; radius: 10
+                        width: tierText.implicitWidth + 20; height: 24; radius: 10
                         color: Qt.rgba(Theme.violet.r, Theme.violet.g, Theme.violet.b, 0.16)
                         Text { id: tierText; anchors.centerIn: parent; text: root.rowData.tier || "—"; color: Theme.violet; font.family: Theme.monoFont; font.pixelSize: 13; font.weight: Font.Bold; font.letterSpacing: 1 }
                     }
                 }
-                Text { width: parent.width; text: root.rowData.subtitle || qsTr("NVIDIA account"); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 17; font.weight: Font.Bold; elide: Text.ElideRight }
-                Text { width: parent.width; text: root.rowData.meta || qsTr("This PC"); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 14; font.weight: Font.DemiBold; elide: Text.ElideRight }
+                Text { width: parent.width; height: 22; verticalAlignment: Text.AlignVCenter; text: root.rowData.subtitle || qsTr("NVIDIA account"); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 17; font.weight: Font.Bold; elide: Text.ElideRight }
+                Text { width: parent.width; height: 18; verticalAlignment: Text.AlignVCenter; text: root.rowData.meta || qsTr("This PC"); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 14; font.weight: Font.DemiBold; elide: Text.ElideRight }
             }
             Rectangle {
                 id: profileAction
                 anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-                width: profileActionText.implicitWidth + 64; height: 48; radius: 24
+                width: profileActionText.implicitWidth + 66; height: 48; radius: 24
                 color: Qt.rgba(Theme.face.r, Theme.face.g, Theme.face.b, 0.10)
                 border.color: Qt.rgba(Theme.face.r, Theme.face.g, Theme.face.b, 0.18); border.width: 1
                 Text { id: profileActionText; x: 20; anchors.verticalCenter: parent.verticalCenter; text: root.rowData.v || qsTr("Manage account"); color: Theme.label; font.family: Theme.displayFont; font.pixelSize: 18; font.weight: Font.Black }
-                Text { anchors.right: parent.right; anchors.rightMargin: 18; anchors.verticalCenter: parent.verticalCenter; text: "›"; color: Theme.label; font.family: Theme.displayFont; font.pixelSize: 26; font.weight: Font.Black }
+                Text { width: 18; horizontalAlignment: Text.AlignHCenter; anchors.right: parent.right; anchors.rightMargin: 16; anchors.verticalCenter: parent.verticalCenter; text: "›"; color: Theme.label; font.family: Theme.displayFont; font.pixelSize: 26; font.weight: Font.Black }
             }
         }
 
         Row {
             visible: root.controlType === "controllers"
             anchors.fill: parent
-            anchors.leftMargin: 4
-            anchors.rightMargin: 4
+            anchors.topMargin: 6
+            anchors.bottomMargin: 14
             spacing: 12
             Repeater {
                 model: root.rowData.controllers || []
@@ -430,32 +450,38 @@ ItemDelegate {
                     id: controllerCard
                     required property var modelData
                     readonly property int cardCount: Math.max(1, (root.rowData.controllers || []).length)
+                    readonly property int inset: modelData.connected ? 18 : 19
                     width: (parent.width - 12 * (cardCount - 1)) / cardCount
-                    height: parent.height - 12
-                    anchors.verticalCenter: parent.verticalCenter
+                    height: parent.height
                     radius: 24
                     color: modelData.connected ? Qt.rgba(Theme.face.r, Theme.face.g, Theme.face.b, 0.07) : "transparent"
-                    border.color: Qt.rgba(Theme.face.r, Theme.face.g, Theme.face.b, modelData.connected ? 0.12 : 0.22)
-                    border.width: 1
+                    border.color: Qt.rgba(Theme.face.r, Theme.face.g, Theme.face.b, 0.22)
+                    border.width: modelData.connected ? 0 : 1
                     Rectangle {
-                        x: 18; anchors.verticalCenter: parent.verticalCenter
-                        width: 44; height: 44; radius: 22
+                        id: controllerSlot
+                        x: controllerCard.inset; y: controllerCard.inset
+                        width: 40; height: 40; radius: 20
                         color: controllerCard.modelData.connected ? Theme.mint : "transparent"
                         border.width: controllerCard.modelData.connected ? 0 : 2
                         border.color: Qt.rgba(Theme.face.r, Theme.face.g, Theme.face.b, 0.3)
-                        Text { anchors.centerIn: parent; text: qsTr("P%1").arg(controllerCard.modelData.slot || 1); color: controllerCard.modelData.connected ? Theme.faceText : Theme.textMuted; font.family: Theme.displayFont; font.pixelSize: 16; font.weight: Font.Black }
-                    }
-                    Column {
-                        x: 78; anchors.verticalCenter: parent.verticalCenter; width: parent.width - 170
-                        spacing: 2
-                        Text { width: parent.width; text: controllerCard.modelData.name; color: controllerCard.modelData.connected ? Theme.label : Theme.textMuted; font.family: Theme.displayFont; font.pixelSize: 18; font.weight: Font.ExtraBold; elide: Text.ElideRight }
-                        Text { width: parent.width; text: controllerCard.modelData.connected ? qsTr("Connected") : qsTr("Press a button to join"); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 14; font.weight: Font.DemiBold; elide: Text.ElideRight }
+                        Text { anchors.centerIn: parent; text: qsTr("P%1").arg(controllerCard.modelData.slot || 1); color: controllerCard.modelData.connected ? Theme.faceText : Theme.textMuted; font.family: Theme.displayFont; font.pixelSize: 15; font.weight: Font.Black }
                     }
                     Text {
-                        anchors.right: parent.right; anchors.rightMargin: 20; anchors.verticalCenter: parent.verticalCenter
+                        anchors.right: parent.right; anchors.rightMargin: controllerCard.inset
+                        anchors.verticalCenter: controllerSlot.verticalCenter
                         text: controllerCard.modelData.battery || ""
                         color: Theme.label
-                        font.family: Theme.monoFont; font.pixelSize: 15; font.weight: Font.Bold
+                        font.family: Theme.monoFont; font.pixelSize: 14; font.weight: Font.Bold
+                    }
+                    Text {
+                        x: controllerCard.inset; y: controllerCard.inset + 52
+                        width: parent.width - 2 * controllerCard.inset
+                        height: 21
+                        verticalAlignment: Text.AlignVCenter
+                        text: controllerCard.modelData.connected ? controllerCard.modelData.name : qsTr("Press a button to join")
+                        color: controllerCard.modelData.connected ? Theme.label : Theme.textMuted
+                        font.family: Theme.displayFont; font.pixelSize: 16; font.weight: Font.ExtraBold
+                        elide: Text.ElideRight
                     }
                 }
             }

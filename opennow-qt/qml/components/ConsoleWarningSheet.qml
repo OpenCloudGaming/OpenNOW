@@ -15,6 +15,7 @@ FocusScope {
     property string checkboxText: ""
     property bool checked: false
     property string panelSide: "right"
+    property real panelInset: 0
     property string safeButtonObjectName: ""
     property string actionButtonObjectName: ""
     property string checkboxObjectName: ""
@@ -70,7 +71,9 @@ FocusScope {
         id: frame
         opened: root.opened
         panelSide: root.panelSide
-        panelWidth: root.panelSide === "left" ? 668 : 760
+        panelInset: root.panelInset
+        panelWidth: root.panelInset > 0 ? 620 : root.panelSide === "left" ? 668 : 760
+        contentInset: root.panelInset > 0 ? 32 : 64
         toneColor: root.toneColor
         onScrimClicked: root.safeRequested()
 
@@ -112,6 +115,8 @@ FocusScope {
                     Text {
                         visible: text !== ""
                         width: parent.width
+                        height: 18
+                        verticalAlignment: Text.AlignVCenter
                         text: root.eyebrow.toUpperCase()
                         color: root.toneInk
                         elide: Text.ElideRight
@@ -120,43 +125,57 @@ FocusScope {
                         font.weight: Font.Bold
                         font.letterSpacing: 2
                     }
-                    Text {
+                    Item {
                         width: parent.width
-                        text: root.title
-                        color: Theme.label
-                        wrapMode: Text.WordWrap
-                        maximumLineCount: 3
-                        elide: Text.ElideRight
-                        font.family: Theme.displayFont
-                        font.pixelSize: 44
-                        font.weight: Font.Black
-                        font.letterSpacing: -0.9
-                        lineHeight: 1.05
+                        height: Math.max(1, titleText.lineCount) * 48
+                        Text {
+                            id: titleText
+                            y: -6
+                            width: parent.width
+                            text: root.title
+                            color: Theme.label
+                            wrapMode: Text.WordWrap
+                            maximumLineCount: 3
+                            elide: Text.ElideRight
+                            font.family: Theme.displayFont
+                            font.pixelSize: 44
+                            font.weight: Font.Black
+                            font.letterSpacing: -0.9
+                            lineHeightMode: Text.FixedHeight
+                            lineHeight: 48
+                        }
                     }
                 }
-                Text {
-                    visible: text !== ""
+                Item {
+                    visible: root.message !== ""
                     width: parent.width
-                    text: root.message
-                    color: Qt.rgba(Theme.label.r, Theme.label.g, Theme.label.b, 0.76)
-                    wrapMode: Text.WordWrap
-                    font.family: Theme.bodyFont
-                    font.pixelSize: 20
-                    font.weight: Font.DemiBold
-                    lineHeight: 1.25
+                    height: Math.max(1, messageText.lineCount) * 30
+                    Text {
+                        id: messageText
+                        y: 1
+                        width: parent.width
+                        text: root.message
+                        color: Qt.rgba(Theme.label.r, Theme.label.g, Theme.label.b, 0.76)
+                        wrapMode: Text.WordWrap
+                        font.family: Theme.bodyFont
+                        font.pixelSize: 20
+                        font.weight: Font.DemiBold
+                        lineHeightMode: Text.FixedHeight
+                        lineHeight: 30
+                    }
                 }
                 Rectangle {
                     visible: root.detail !== ""
                     width: parent.width
-                    height: factColumn.implicitHeight + 40
+                    height: factColumn.implicitHeight + 42
                     radius: 22
                     color: Qt.rgba(root.toneColor.r, root.toneColor.g, root.toneColor.b, 0.07)
                     border.width: 1
                     border.color: Qt.rgba(root.toneColor.r, root.toneColor.g, root.toneColor.b, 0.22)
                     Column {
                         id: factColumn
-                        x: 22; y: 20
-                        width: parent.width - 44
+                        x: 23; y: 21
+                        width: parent.width - 46
                         spacing: 10
                         Repeater {
                             model: root.detail === "" ? [] : root.detail.split("\n")
@@ -164,10 +183,15 @@ FocusScope {
                                 id: factRow
                                 required property string modelData
                                 width: factColumn.width
+                                height: Math.max(1, factText.lineCount) * 26
                                 spacing: 12
                                 Rectangle { y: 10; width: 6; height: 6; radius: 3; color: root.toneColor }
                                 Text {
+                                    id: factText
+                                    y: 1
                                     width: parent.width - 18
+                                    lineHeightMode: Text.FixedHeight
+                                    lineHeight: 26
                                     text: factRow.modelData
                                     color: Qt.rgba(Theme.label.r, Theme.label.g, Theme.label.b, 0.82)
                                     wrapMode: Text.WordWrap
@@ -185,7 +209,7 @@ FocusScope {
         Column {
             id: actions
             anchors.bottom: hints.top
-            anchors.bottomMargin: 20
+            anchors.bottomMargin: root.panelInset > 0 ? 22 : 32
             width: parent.width
             spacing: 12
 
@@ -231,6 +255,15 @@ FocusScope {
                     color: Qt.rgba(Theme.face.r, Theme.face.g, Theme.face.b, checkboxRow.activeFocus ? 0.12 : 0.06)
                     border.width: checkboxRow.activeFocus ? 3 : 0
                     border.color: Theme.face
+                    Rectangle {
+                        visible: checkboxRow.activeFocus
+                        anchors.fill: parent
+                        anchors.margins: -4
+                        radius: parent.radius + 4
+                        color: "transparent"
+                        border.width: 4
+                        border.color: Theme.shell
+                    }
                     Rectangle {
                         visible: checkboxRow.activeFocus
                         anchors.fill: parent

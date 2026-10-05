@@ -171,6 +171,28 @@ if(BUILD_TESTING)
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
     qt_add_resources(opennow-qt "console-launch-acceptance"
         PREFIX "/acceptance" BASE tests FILES tests/ConsoleLaunchAcceptance.qml)
+    qt_add_resources(opennow-qt "console-spacing-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/ConsoleSpacingAcceptance.qml)
+    foreach(spacing_route home library settings-account settings-streaming settings-video
+            settings-input settings-network settings-themes settings-advanced settings-recording)
+        set(spacing_start_route "${spacing_route}")
+        set(spacing_args)
+        if(spacing_route STREQUAL "settings-recording")
+            set(spacing_start_route settings)
+            list(APPEND spacing_args --smoke-spacing-recording)
+        endif()
+        foreach(size "1920x1080" "2560x1440" "1280x800" "960x540")
+            string(REPLACE "x" ";" dimensions "${size}")
+            list(GET dimensions 0 spacing_width)
+            list(GET dimensions 1 spacing_height)
+            add_test(NAME qml-console-spacing-${spacing_route}-${size} COMMAND opennow-qt
+                --smoke-test --allow-multiple-instances --console --smoke-console-design
+                --route ${spacing_start_route} --smoke-console-spacing --reduced-motion ${spacing_args}
+                --smoke-width ${spacing_width} --smoke-height ${spacing_height})
+            set_tests_properties(qml-console-spacing-${spacing_route}-${size} PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
+        endforeach()
+    endforeach()
     foreach(motion normal reduced)
         set(console_launch_args)
         if(motion STREQUAL "reduced")

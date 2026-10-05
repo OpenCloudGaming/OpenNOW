@@ -8,6 +8,11 @@ Button {
     property bool danger: false
     property string glyph: ""
     property bool currentItem: false
+    property real cornerRadius: Math.min(26, height / 2)
+    property real labelSize: 22
+    property int labelWeight: Font.Black
+    property real glyphSize: 32
+    property real contentSpacing: 14
     readonly property bool ringVisible: activeFocus || currentItem
     readonly property color fillColor: primary ? Theme.face
         : danger ? Qt.rgba(Theme.coral.r, Theme.coral.g, Theme.coral.b, 0.12)
@@ -16,7 +21,7 @@ Button {
     readonly property color inkColor: primary ? Theme.faceText : danger ? dangerInk : Theme.label
 
     implicitHeight: 72
-    implicitWidth: Math.max(160, labelMetrics.advanceWidth + (glyph !== "" ? 46 : 0) + leftPadding + rightPadding + 2)
+    implicitWidth: Math.max(160, labelMetrics.advanceWidth + (glyph !== "" ? glyphSize + contentSpacing : 0) + leftPadding + rightPadding + 2)
     leftPadding: glyph !== "" ? 18 : 24
     rightPadding: 24
     topPadding: 0
@@ -42,7 +47,7 @@ Button {
             id: halo
             anchors.fill: parent
             anchors.margins: -9
-            radius: height / 2 > 26 + 9 ? 26 + 9 : height / 2
+            radius: root.cornerRadius + 9
             color: "transparent"
             border.width: 5
             border.color: Qt.rgba(Theme.focus.r, Theme.focus.g, Theme.focus.b, 0.55)
@@ -51,23 +56,23 @@ Button {
         }
         Rectangle {
             anchors.fill: parent
-            radius: Math.min(26, height / 2)
+            anchors.margins: -4
+            radius: root.cornerRadius + 4
+            color: "transparent"
+            border.width: 4
+            border.color: Theme.shell
+            opacity: root.ringVisible ? 1 : 0
+        }
+        Rectangle {
+            anchors.fill: parent
+            radius: root.cornerRadius
             color: root.fillColor
             opacity: root.enabled ? 1 : 0.42
             border.width: root.ringVisible ? 3 : root.danger ? 1.5 : 1
-            border.color: root.ringVisible ? (root.primary ? Theme.shell : Theme.face)
+            border.color: root.ringVisible ? Theme.face
                 : root.danger ? Qt.rgba(root.dangerInk.r, root.dangerInk.g, root.dangerInk.b, 0.6)
                 : root.primary ? "transparent" : Theme.seam
             Behavior on color { ColorAnimation { duration: Theme.focusDuration } }
-        }
-        Rectangle {
-            visible: root.ringVisible && root.primary
-            anchors.fill: parent
-            anchors.margins: -4
-            radius: Math.min(26, height / 2) + 4
-            color: "transparent"
-            border.width: 2
-            border.color: Theme.face
         }
     }
 
@@ -75,8 +80,8 @@ Button {
         id: labelMetrics
         text: root.text
         font.family: Theme.displayFont
-        font.pixelSize: 22
-        font.weight: Font.Black
+        font.pixelSize: root.labelSize
+        font.weight: root.labelWeight
     }
 
     contentItem: Item {
@@ -85,25 +90,25 @@ Button {
         Row {
             id: contentRow
             anchors.verticalCenter: parent.verticalCenter
-            spacing: 14
+            spacing: root.contentSpacing
             opacity: root.enabled ? 1 : 0.5
             ControllerGlyph {
                 anchors.verticalCenter: parent.verticalCenter
                 visible: root.glyph !== ""
                 glyph: root.glyph
                 label: ""
-                glyphSize: 32
+                glyphSize: root.glyphSize
                 glyphColor: root.primary ? Theme.faceText : Theme.face
             }
             Text {
                 anchors.verticalCenter: parent.verticalCenter
-                width: Math.max(0, Math.min(labelMetrics.advanceWidth + 2, root.availableWidth - (root.glyph !== "" ? 46 : 0)))
+                width: Math.max(0, Math.min(labelMetrics.advanceWidth + 2, root.availableWidth - (root.glyph !== "" ? root.glyphSize + root.contentSpacing : 0)))
                 text: root.text
                 color: root.inkColor
                 elide: Text.ElideRight
                 font.family: Theme.displayFont
-                font.pixelSize: 22
-                font.weight: Font.Black
+                font.pixelSize: root.labelSize
+                font.weight: root.labelWeight
             }
         }
     }
