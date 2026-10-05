@@ -172,6 +172,10 @@ impl D3d11FrameSubmitter {
         }
         Ok(outcome)
     }
+
+    pub fn holds_keyframe(&self) -> bool {
+        self.encoded.any(|queued| queued.key_frame)
+    }
 }
 
 struct EmbeddedMediaRuntime {

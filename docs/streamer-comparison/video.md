@@ -107,6 +107,7 @@ Intra-refresh is advertised supported and then `enableIntraRefresh: 0`. Recovery
 | RTP gap inside the NACK window | RTCP generic NACK on SCTP `rtcp1`, every 10 ms poll. Max 64 packets, 3 attempts, 20 ms retry, 150 ms track. |
 | Unrecoverable gap or bad GS header | Assembler reset. `contiguous=false`. RTCP PLI and NVST control `0x302` IDR. 250 ms cooldown. Inter-frames dropped until a keyframe. That keyframe rebuilds the MFT. |
 | Encoded overflow | Clear the reference chain. Request keyframe. |
+| Embedded D3D11 queue full while it still holds a keyframe | Drop the delta and every later delta. Defer the keyframe request until the decoder dequeues that keyframe, so a replacement IDR cannot evict it before it is decoded. |
 | Decoder submit or poll error | Rebuild MFT on the same device. If that fails, recreate Graphics plus Decoder for up to 5 s. |
 | Device recreate timeout | Fatal. Hardware then falls back, class-preserving for HEVC and AV1. |
 | Packet-gap keyframe | Does not spend `NVST_RECOVERY_ATTEMPT_LIMIT`. |
