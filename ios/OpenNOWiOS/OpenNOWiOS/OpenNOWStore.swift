@@ -139,11 +139,6 @@ struct CloudGame: Identifiable, Codable, Equatable {
     let contentRatings: [String]?
     var screenshotUrls: [String]? = nil
 
-    var capabilityBadges: [String] {
-        let labels = Set(featureLabels ?? [])
-        return ["RTX 5080 Ready", "RTX", "HDR", "Reflex"].filter { labels.contains($0) }
-    }
-
     func fillingMissingMetadata(from fallback: CloudGame?) -> CloudGame {
         guard let fallback else { return self }
         let mergedScreenshots = Self.mergingArtworkURLs(screenshotUrls, fallback.screenshotUrls)
@@ -165,14 +160,13 @@ struct CloudGame: Identifiable, Codable, Equatable {
             publisher: publisher ?? fallback.publisher,
             developer: developer ?? fallback.developer,
             releaseDate: releaseDate ?? fallback.releaseDate,
-            featureLabels: Array(Set((featureLabels ?? fallback.featureLabels ?? [])
-                + (fallback.featureLabels ?? []).filter { $0 == "RTX 5080 Ready" })).sorted(),
+            featureLabels: featureLabels ?? fallback.featureLabels,
             tags: tags ?? fallback.tags,
             stores: stores,
             playType: playType,
             membershipTierLabel: membershipTierLabel,
-            catalogSectionId: catalogSectionId ?? fallback.catalogSectionId,
-            catalogSectionTitle: catalogSectionTitle ?? fallback.catalogSectionTitle,
+            catalogSectionId: catalogSectionId,
+            catalogSectionTitle: catalogSectionTitle,
             contentRatings: GFNContentRatingParser.merging(contentRatings, fallback.contentRatings),
             screenshotUrls: mergedScreenshots
         )
@@ -232,120 +226,6 @@ func gameMatchesCatalogSearch(_ game: CloudGame, query: String) -> Bool {
         + game.launchOptions.map(\.storefront))
         .joined(separator: " ")
     return terms.allSatisfy { searchableText.localizedCaseInsensitiveContains($0) }
-}
-
-struct GFNGameImportReference: Equatable {
-    var catalogID: String?
-    var launchID: String?
-    var title: String?
-    var store: String?
-    var search: String?
-
-    static func parse(_ raw: String) throws -> Self {
-        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else { throw invalid("Enter a game name, GeForce NOW link, or GeForce NOW app ID.") }
-        if UUID(uuidString: value) != nil { return Self(catalogID: value) }
-        if value.allSatisfy(\.isNumber), let number = Int(value), number > 0 {
-            return Self(launchID: value)
-        }
-        guard value.contains("://") else { return Self(search: value) }
-        guard let url = URL(string: value), let scheme = url.scheme?.lowercased(),
-              scheme == "opennowios" || scheme == "opennow"
-                || (scheme == "https" && url.host?.lowercased() == "play.geforcenow.com") else {
-            throw invalid("Use a GeForce NOW game link or app ID. Steam store IDs are different.")
-        }
-        var query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
-        let fragment = url.fragment ?? ""
-        if let fragmentURL = URLComponents(string: "https://play.geforcenow.com/" + fragment.trimmingCharacters(in: CharacterSet(charactersIn: "/"))) {
-            query += fragmentURL.queryItems ?? []
-        }
-        func item(_ keys: [String]) -> String? {
-            query.first { keys.contains($0.name.lowercased()) }?.value
-        }
-        let ids = query.filter { ["gameid", "game-id", "appid", "app-id", "id"].contains($0.name.lowercased()) }.map(\.value)
-            + url.pathComponents.map(Optional.some) + fragment.components(separatedBy: CharacterSet(charactersIn: "/?&=")).map(Optional.some)
-        let catalogID = ids.compactMap { $0 }.first { UUID(uuidString: $0) != nil }
-        let launchID = item(["appid", "app-id", "launchoptionid", "gameid", "game-id", "id"])
-            ?? (scheme.hasPrefix("opennow") ? url.pathComponents.last : nil)
-        let numeric = launchID.flatMap { Int($0).map { $0 > 0 } == true ? $0 : nil }
-        guard catalogID != nil || numeric != nil else {
-            throw invalid("This link does not contain a GeForce NOW game ID.")
-        }
-        return Self(catalogID: catalogID, launchID: numeric,
-                    title: item(["title", "name"]), store: item(["store", "launcher"]))
-    }
-
-    static func shareURL(game: CloudGame, option: GameLaunchOption?) -> URL? {
-        guard let appID = option?.appId ?? game.launchAppId else { return nil }
-        var url = URLComponents()
-        url.scheme = "opennowios"
-        url.host = "add"
-        url.queryItems = [URLQueryItem(name: "appid", value: appID),
-                          URLQueryItem(name: "title", value: game.title),
-                          URLQueryItem(name: "store", value: option?.storefront ?? game.platform)]
-        if let uuid = game.uuid { url.queryItems?.append(URLQueryItem(name: "gameid", value: uuid)) }
-        return url.url
-    }
-
-    static func homeScreenURL(game: CloudGame, option: GameLaunchOption?) -> URL? {
-        guard let shared = shareURL(game: game, option: option),
-              let items = URLComponents(url: shared, resolvingAgainstBaseURL: false)?.queryItems else { return nil }
-        var page = URLComponents(string: "https://joemossjr16.github.io/ios-apps/launch/")!
-        page.queryItems = items
-        if let art = game.catalogArtworkUrl, let url = URL(string: art),
-           url.scheme == "https", url.host?.lowercased() == "img.nvidiagrid.net" {
-            page.queryItems?.append(URLQueryItem(name: "art", value: art))
-        }
-        return page.url
-    }
-
-    static func homeScreenSetupURL(game: CloudGame, option: GameLaunchOption?) -> URL? {
-        guard let url = homeScreenURL(game: game, option: option),
-              var setup = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
-        setup.queryItems?.append(URLQueryItem(name: "setup", value: "1"))
-        return setup.url
-    }
-
-    private static func invalid(_ message: String) -> NSError {
-        NSError(domain: "OpenNOW.GameImport", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
-    }
-}
-
-enum GFNCatalogFeatureParser {
-    static func readyAppIDs(panels: [[String: Any]]) -> Set<String> {
-        Set(panels.flatMap { $0["sections"] as? [[String: Any]] ?? [] }
-            .filter { section in
-                let title = (section["title"] as? String) ?? (section["name"] as? String) ?? ""
-                return title.contains("5080") && title.localizedCaseInsensitiveContains("Ready")
-            }.flatMap { $0["items"] as? [[String: Any]] ?? [] }
-            .compactMap { ($0["app"] as? [String: Any])?["id"] as? String })
-    }
-
-    static func labels(variant: [String: Any]) -> [String] {
-        let flags = (variant["gfn"] as? [String: Any])?["features"] as? [[String: Any]] ?? []
-        var labels = Set<String>()
-        for flag in flags {
-            let key = (flag["key"] as? String ?? "").uppercased()
-            let enabled = (flag["value"] as? Bool) == true
-                || (flag["value"] as? String)?.lowercased() == "true"
-            switch key {
-            case "RTX_ENABLED": if enabled { labels.insert("RTX") }
-            case "HDR_ENABLED": if enabled { labels.insert("HDR") }
-            case "SUPPORTED_HDR_VERSION":
-                if let values = flag["values"] as? [String], values.contains(where: { !$0.isEmpty }) {
-                    labels.insert("HDR")
-                }
-            case "REFLEX_ENABLED": if enabled { labels.insert("Reflex") }
-            default: break
-            }
-        }
-        return ["RTX", "HDR", "Reflex"].filter { labels.contains($0) }
-    }
-
-    static func labels(app: [String: Any]) -> [String] {
-        let variants = app["variants"] as? [[String: Any]] ?? []
-        return Array(Set(variants.flatMap { labels(variant: $0) })).sorted()
-    }
 }
 
 enum GFNCatalogLabelParser {
@@ -474,7 +354,6 @@ struct GameLaunchOption: Identifiable, Codable, Equatable {
     let storefront: String
     let appId: String
     let supportedControls: [String]?
-    var featureLabels: [String]? = nil
 }
 
 struct SessionTelemetry: Codable, Equatable {
@@ -3855,57 +3734,6 @@ private actor GFNAPIClient {
         return try await fetchServerInfo(token: token, streamingBaseUrl: session.provider.streamingServiceUrl).regions
     }
 
-    /// MAIN contains editorial collections, not the complete catalog. Follow every browse cursor.
-    func fetchCompleteCatalog(session: AuthSession, vpcId: String) async throws -> [CloudGame] {
-        let token = session.tokens.idToken ?? session.tokens.accessToken
-        let document = """
-        query CompleteCatalog($vpcId: String!, $cursor: String!, $filters: AppFilterFields!) {
-          apps(vpcId: $vpcId, language: "en_US", orderBy: "sortName:ASC", first: 250, after: $cursor, filters: $filters) {
-            pageInfo { hasNextPage endCursor totalCount }
-            items {
-              id title shortDescription publisherName genres
-              images { GAME_BOX_ART TV_BANNER HERO_IMAGE }
-              variants { id appStore supportedControls gfn { status library { status selected } features { __typename ... on GfnSubscriptionFeatureInterface { key } ... on GfnSubscriptionFeatureValue { value } ... on GfnSubscriptionFeatureValueList { values } } } }
-              gfn { playType playabilityState minimumMembershipTierLabel }
-            }
-          }
-        }
-        """
-        var cursor = ""
-        var cursors = Set<String>()
-        var seen = Set<String>()
-        var games: [CloudGame] = []
-        let deadline = Date().addingTimeInterval(90)
-        for _ in 0..<100 {
-            try Task.checkCancellation()
-            guard Date() < deadline else { break }
-            let body = try JSONSerialization.data(withJSONObject: ["query": document, "variables": [
-                "vpcId": vpcId, "cursor": cursor, "filters": [String: Any]()
-            ]])
-            let (data, response) = try await request(url: URL(string: GFNConstants.graphQL)!, method: "POST",
-                headers: Self.desktopGraphQLHeaders(token: token, contentType: "application/json"),
-                body: body, timeoutInterval: 20)
-            let payload = try parseJSON(data)
-            guard response.statusCode == 200, payload["errors"] == nil,
-                  let apps = (payload["data"] as? [String: Any])?["apps"] as? [String: Any],
-                  let items = apps["items"] as? [[String: Any]],
-                  let page = apps["pageInfo"] as? [String: Any],
-                  let hasNext = page["hasNextPage"] as? Bool else {
-                throw NSError(domain: "OpenNOW.Catalog", code: 1,
-                    userInfo: [NSLocalizedDescriptionKey: "The complete NVIDIA catalog could not be loaded. Pull to refresh and try again."])
-            }
-            games += Self.flattenPanels(payload: Self.searchResultsAsPanelPayload(items, sectionTitle: nil)).filter {
-                seen.insert(catalogStableGameKey($0)).inserted
-            }
-            if !hasNext { return games }
-            guard !items.isEmpty, let next = page["endCursor"] as? String,
-                  !next.isEmpty, next != cursor, cursors.insert(next).inserted else { break }
-            cursor = next
-        }
-        throw NSError(domain: "OpenNOW.Catalog", code: 2,
-            userInfo: [NSLocalizedDescriptionKey: "NVIDIA returned an incomplete catalog. Pull to refresh and try again."])
-    }
-
     func fetchLibraryGames(session: AuthSession, vpcId: String) async throws -> [CloudGame] {
         let token = session.tokens.idToken ?? session.tokens.accessToken
         let payload = try await fetchPanels(token: token, panelNames: ["LIBRARY"], vpcId: vpcId)
@@ -5248,21 +5076,45 @@ private actor GFNAPIClient {
         guard !uniqueAppIds.isEmpty else {
             return ["data": ["apps": ["items": []]]]
         }
-        // Explicit selection includes NVIDIA's per-store capability flags and avoids a stale
-        // persisted-query registry entry. Keep metadata in one bounded request per chunk.
-        let document = """
-        query AppMetadata($vpcId:String!,$appIds:[String!]!){apps(vpcId:$vpcId,appIds:$appIds,language:"en_US"){items{id title shortDescription longDescription publisherName developerName genres images{GAME_BOX_ART HERO_IMAGE TV_BANNER KEY_ART SCREENSHOTS} variants{id appStore supportedControls streetDate gfn{status library{status selected} features{__typename ... on GfnSubscriptionFeatureInterface{key} ... on GfnSubscriptionFeatureValue{value} ... on GfnSubscriptionFeatureValueList{values}}}} gfn{playType playabilityState minimumMembershipTierLabel} contentRatings{type categoryKey contentDescriptorKeys interactiveElementKeys}}}}
-        """
-        let body = try JSONSerialization.data(withJSONObject: ["query": document,
-            "variables": ["vpcId": vpcId, "appIds": uniqueAppIds]])
+        let variablesData: [String: Any] = [
+            "vpcId": vpcId,
+            "locale": "en_US",
+            "appIds": uniqueAppIds
+        ]
+        let variables = String(data: try JSONSerialization.data(withJSONObject: variablesData), encoding: .utf8) ?? "{}"
+        let extensionsData: [String: Any] = ["persistedQuery": ["sha256Hash": GFNConstants.appMetadataQueryHash]]
+        let extensions = String(data: try JSONSerialization.data(withJSONObject: extensionsData), encoding: .utf8) ?? "{}"
+        var components = URLComponents(string: GFNConstants.graphQL)!
+        components.queryItems = [
+            .init(name: "requestType", value: "appMetaData"),
+            .init(name: "extensions", value: extensions),
+            .init(name: "huId", value: UUID().uuidString.replacingOccurrences(of: "-", with: "")),
+            .init(name: "variables", value: variables)
+        ]
         let (data, response) = try await request(
-            url: URL(string: GFNConstants.graphQL)!, method: "POST",
-            headers: Self.desktopGraphQLHeaders(token: token, contentType: "application/json"),
-            body: body, timeoutInterval: timeoutInterval)
+            url: components.url!,
+            headers: [
+                "Accept": "application/json, text/plain, */*",
+                "Content-Type": "application/graphql",
+                "Origin": "https://play.geforcenow.com",
+                "Referer": "https://play.geforcenow.com/",
+                "Authorization": "GFNJWT \(token)",
+                "nv-client-id": GFNConstants.lcarsClientId,
+                "nv-client-type": "NATIVE",
+                "nv-client-version": GFNConstants.gfnClientVersion,
+                "nv-client-streamer": "NVIDIA-CLASSIC",
+                "nv-device-os": "WINDOWS",
+                "nv-device-type": "DESKTOP",
+                "nv-device-make": "UNKNOWN",
+                "nv-device-model": "UNKNOWN",
+                "nv-browser-type": "CHROME",
+                "User-Agent": GFNConstants.userAgent
+            ],
+            timeoutInterval: timeoutInterval
+        )
         guard response.statusCode == 200 else {
             let text = String(data: data, encoding: .utf8) ?? "unknown"
-            throw NSError(domain: "OpenNOW.GameMetadata", code: response.statusCode,
-                          userInfo: [NSLocalizedDescriptionKey: text])
+            throw NSError(domain: "OpenNOW.GameMetadata", code: response.statusCode, userInfo: [NSLocalizedDescriptionKey: text])
         }
         return try parseJSON(data)
     }
@@ -5501,19 +5353,6 @@ private actor GFNAPIClient {
     ///
     /// The result is fed through `flattenPanels` by wrapping it in a one-section panel, so search
     /// results are parsed by exactly the same code as the catalog and cannot drift from it.
-    func lookupImport(reference: GFNGameImportReference, session: AuthSession, vpcId: String) async throws -> [CloudGame] {
-        let token = session.tokens.idToken ?? session.tokens.accessToken
-        if let query = reference.search {
-            return try await searchCatalog(token: token, vpcId: vpcId, query: query)
-        }
-        guard let catalogID = reference.catalogID else { return [] }
-        let payload = try await fetchAppMetadata(token: token, appIds: [catalogID], vpcId: vpcId)
-        let apps = ((payload["data"] as? [String: Any])?["apps"] as? [String: Any])?["items"] as? [[String: Any]] ?? []
-        let wrapped: [String: Any] = ["data": ["panels": [["sections": [["title": "Added Games",
-            "items": apps.map { ["__typename": "GameItem", "app": $0] }]]]]]]
-        return Self.flattenPanels(payload: wrapped)
-    }
-
     func searchCatalog(token: String, vpcId: String, query: String, limit: Int = 60) async throws -> [CloudGame] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
@@ -5530,10 +5369,10 @@ private actor GFNAPIClient {
               longDescription
               publisherName
               images { KEY_ART GAME_BOX_ART TV_BANNER HERO_IMAGE SCREENSHOTS }
-              variants { id appStore supportedControls gfn { status library { status selected lastPlayedDate } features { __typename ... on GfnSubscriptionFeatureInterface { key } ... on GfnSubscriptionFeatureValue { value } ... on GfnSubscriptionFeatureValueList { values } } } }
+              variants { id appStore supportedControls gfn { status library { status selected lastPlayedDate } } }
               gfn { playType playabilityState minimumMembershipTierLabel }
-              genres
-              contentRatings { type categoryKey contentDescriptorKeys interactiveElementKeys }
+              genres { name }
+              contentRatings { name }
             }
           }
         }
@@ -5595,13 +5434,22 @@ private actor GFNAPIClient {
 
     /// Reshapes a flat `apps.items` array into the panel envelope `flattenPanels` expects, so one
     /// parser serves both paths.
-    private static func searchResultsAsPanelPayload(_ items: [[String: Any]], sectionTitle: String? = "Search results") -> [String: Any] {
-        var section: [String: Any] = ["items": items.map { ["__typename": "GameItem", "app": $0] }]
-        if let sectionTitle {
-            section["id"] = "SEARCH"
-            section["title"] = sectionTitle
-        }
-        return ["data": ["panels": [["sections": [section]]]]]
+    private static func searchResultsAsPanelPayload(_ items: [[String: Any]]) -> [String: Any] {
+        [
+            "data": [
+                "panels": [
+                    [
+                        "sections": [
+                            [
+                                "id": "SEARCH",
+                                "title": "Search results",
+                                "items": items.map { ["__typename": "GameItem", "app": $0] }
+                            ]
+                        ]
+                    ]
+                ]
+            ]
+        ]
     }
 
     private static func flattenPanels(payload: [String: Any]) -> [CloudGame] {
@@ -5609,8 +5457,6 @@ private actor GFNAPIClient {
               let panels = data["panels"] as? [[String: Any]] else {
             return []
         }
-        // A positive 5080 badge requires membership in NVIDIA's own Ready collection.
-        let readyIDs = GFNCatalogFeatureParser.readyAppIDs(panels: panels)
         var seen = Set<String>()
         var out: [CloudGame] = []
         for panel in panels {
@@ -5642,8 +5488,7 @@ private actor GFNAPIClient {
                         let option = GameLaunchOption(
                             storefront: storefront.isEmpty ? "Auto" : storefront,
                             appId: variantId,
-                            supportedControls: toOptionalStringArray(variant["supportedControls"]),
-                featureLabels: GFNCatalogFeatureParser.labels(variant: variant)
+                            supportedControls: toOptionalStringArray(variant["supportedControls"])
                         )
                         if seenLaunchOptionIds.insert(option.id).inserted {
                             launchOptions.append(option)
@@ -5685,8 +5530,7 @@ private actor GFNAPIClient {
                     let screenshotUrls = imageURLs(from: images?["SCREENSHOTS"])
                     if seen.contains(id) { continue }
                     seen.insert(id)
-                    let genre = (app["genres"] as? [String])?.first
-                        ?? (((app["genres"] as? [[String: Any]])?.first)?["name"] as? String) ?? "Cloud Game"
+                    let genre = (((app["genres"] as? [[String: Any]])?.first)?["name"] as? String) ?? "Cloud Game"
                     let metadata = extractGameMetadata(
                         app: app,
                         selectedVariant: selectedVariant,
@@ -5720,7 +5564,7 @@ private actor GFNAPIClient {
                             publisher: metadata.publisher,
                             developer: metadata.developer,
                             releaseDate: metadata.releaseDate,
-                            featureLabels: (metadata.featureLabels ?? []) + (readyIDs.contains(appId) ? ["RTX 5080 Ready"] : []),
+                            featureLabels: metadata.featureLabels,
                             tags: metadata.tags,
                             stores: metadata.stores,
                             playType: metadata.playType,
@@ -5786,10 +5630,7 @@ private actor GFNAPIClient {
             publisher: publisher,
             developer: developer,
             releaseDate: releaseDate,
-            featureLabels: featureLabels.isEmpty
-                && !(app["variants"] as? [[String: Any]] ?? []).contains(where: {
-                    ($0["gfn"] as? [String: Any])?["features"] is [Any]
-                }) ? nil : featureLabels,
+            featureLabels: featureLabels.isEmpty ? nil : featureLabels,
             tags: mergedTags.isEmpty ? nil : mergedTags,
             stores: stores.isEmpty ? nil : stores.sorted(),
             playType: toOptionalString(gfn?["playType"]),
@@ -5845,8 +5686,7 @@ private actor GFNAPIClient {
             publisher: metadata.publisher ?? game.publisher,
             developer: metadata.developer ?? game.developer,
             releaseDate: metadata.releaseDate ?? game.releaseDate,
-            featureLabels: Array(Set((metadata.featureLabels ?? game.featureLabels ?? [])
-                + (game.featureLabels ?? []).filter { $0 == "RTX 5080 Ready" })).sorted(),
+            featureLabels: metadata.featureLabels ?? game.featureLabels,
             tags: metadata.tags ?? game.tags,
             stores: metadata.stores ?? game.stores,
             playType: metadata.playType ?? game.playType,
@@ -5888,8 +5728,7 @@ private actor GFNAPIClient {
             let option = GameLaunchOption(
                 storefront: storefront.isEmpty ? "Auto" : storefront,
                 appId: variantId,
-                supportedControls: toOptionalStringArray(variant["supportedControls"]),
-                featureLabels: GFNCatalogFeatureParser.labels(variant: variant)
+                supportedControls: toOptionalStringArray(variant["supportedControls"])
             )
             if seen.insert(option.id).inserted {
                 options.append(option)
@@ -5906,7 +5745,7 @@ private actor GFNAPIClient {
             app["tags"]
         ]
         let labels = buckets.flatMap { toOptionalStringArray($0) ?? [] }
-        return Array(Set(labels + GFNCatalogFeatureParser.labels(app: app))).sorted()
+        return Array(Set(labels)).sorted()
     }
 
     private static func toOptionalStringArray(_ value: Any?) -> [String]? {
@@ -6292,14 +6131,12 @@ final class OpenNOWStore: ObservableObject {
     }
 
     /// Games the server returned for the current query that are not in the local catalog.
-    @Published private(set) var importedGames: [CloudGame] = []
     @Published private(set) var remoteSearchResults: [CloudGame] = []
     @Published private(set) var isSearchingCatalog = false
     @Published var controllerConnected = true
     @Published var isAuthenticating = false
     @Published private(set) var deviceLoginPrompt: DeviceLoginPrompt?
     @Published private(set) var authenticationPhase: String?
-    @Published private(set) var isLoadingFullCatalog = false
     @Published var isLoadingGames = false
     @Published var isLaunchingSession = false
     @Published var showStreamLoading: Bool = false
@@ -6400,7 +6237,6 @@ final class OpenNOWStore: ObservableObject {
         let loadedAuthState = Self.loadAuthState(from: defaults)
         persistedAuthState = loadedAuthState
         authSession = loadedAuthState.activeSession
-        hydrateImportedGames()
         savedAccounts = loadedAuthState.savedAccounts
         if let selectedProvider = loadedAuthState.selectedProvider {
             settings.selectedProviderIdpId = selectedProvider.idpId
@@ -6982,7 +6818,6 @@ final class OpenNOWStore: ObservableObject {
         cancelAccountRefresh()
         clearAccountScopedState()
         authSession = session
-        hydrateImportedGames()
         user = session.user
         settings.selectedProviderIdpId = session.provider.idpId
         persistSettings()
@@ -7012,12 +6847,10 @@ final class OpenNOWStore: ObservableObject {
     }
 
     private func clearAccountScopedState() {
-        isLoadingFullCatalog = false
         isLoadingGames = false
         allGames = []
         featuredGames = []
         libraryGames = []
-        importedGames = []
         resumableSessions = []
         activeSession = nil
         activeStreamSettings = nil
@@ -7045,7 +6878,7 @@ final class OpenNOWStore: ObservableObject {
     }
 
     func refreshCatalog() async {
-        guard !isLoadingGames, !isLoadingFullCatalog, let session = authSession else { return }
+        guard let session = authSession else { return }
         catalogError = nil
         let requestedUserId = session.user.userId
         let requestedGeneration = authGeneration
@@ -7053,7 +6886,6 @@ final class OpenNOWStore: ObservableObject {
         defer {
             if accountIsCurrent(requestedUserId, generation: requestedGeneration) {
                 isLoadingGames = false
-                isLoadingFullCatalog = false
             }
         }
 
@@ -7083,11 +6915,11 @@ final class OpenNOWStore: ObservableObject {
             persistAuthSession(catalogSession)
             cachedVpcId = vpcId
             availableRegions = filteredRegions
-            if allGames.isEmpty { allGames = mainGames }
+            allGames = mainGames
             featuredGames = Array(mainGames.prefix(8))
             libraryGames = library
             persistCachedCatalog(
-                allGames: allGames,
+                allGames: mainGames,
                 featuredGames: featuredGames,
                 libraryGames: library,
                 vpcId: vpcId,
@@ -7097,25 +6929,6 @@ final class OpenNOWStore: ObservableObject {
             lastError = nil
 
             var accountWarnings: [String] = []
-            var catalogWarning: String?
-            isLoadingFullCatalog = true
-            do {
-                let catalog = try await api.fetchCompleteCatalog(session: refreshed, vpcId: vpcId)
-                guard accountIsCurrent(requestedUserId, generation: requestedGeneration) else { return }
-                let merged = preservingCatalogMetadata(in: catalog, from: mainGames + allGames + library)
-                var seen = Set(merged.map { catalogStableGameKey($0) })
-                allGames = merged + (mainGames + library).filter { seen.insert(catalogStableGameKey($0)).inserted }
-                persistCachedCatalog(allGames: allGames, featuredGames: featuredGames,
-                    libraryGames: library, vpcId: vpcId, for: catalogSession)
-            } catch {
-                guard accountIsCurrent(requestedUserId) else { return }
-                if OpenNOWErrorPresenter.isCancellation(error) { throw error }
-                let warning = OpenNOWErrorPresenter.message(for: error,
-                    fallback: "The complete catalog could not be refreshed.")
-                catalogWarning = warning
-                accountWarnings.append(warning)
-            }
-            isLoadingFullCatalog = false
             var refreshedSubscription = subscription
             do {
                 refreshedSubscription = try await api.fetchSubscription(session: refreshed, vpcId: vpcId)
@@ -7173,8 +6986,8 @@ final class OpenNOWStore: ObservableObject {
                     "Catalog loaded while account details were partially unavailable: \(accountWarnings.joined(separator: " "), privacy: .public)"
                 )
             }
-            lastError = catalogWarning
-            catalogError = catalogWarning
+            lastError = nil
+            catalogError = nil
         } catch where OpenNOWErrorPresenter.isCancellation(error) {
             // Pull-to-refresh can cancel an in-flight request; treat as non-failure.
             return
@@ -7661,18 +7474,8 @@ final class OpenNOWStore: ObservableObject {
             scheduleDeepLinkLaunch(
                 appId: appId,
                 storefront: query["store"] ?? query["launcher"],
-                settingsOverride: deepLinkSettingsOverride(from: query),
-                importURL: url
+                settingsOverride: deepLinkSettingsOverride(from: query)
             )
-        case "add", "import":
-            Task { [weak self] in
-                guard let self else { return }
-                do {
-                    let games = try await self.lookupGamesToAdd(url.absoluteString)
-                    if let game = games.first { self.addImportedGame(game) }
-                    self.lastError = nil
-                } catch { self.lastError = error.localizedDescription }
-            }
         case "resume", "continue", "jumpback":
             jumpBackToSession()
         case "refresh":
@@ -7692,7 +7495,7 @@ final class OpenNOWStore: ObservableObject {
         }
     }
 
-    private func scheduleDeepLinkLaunch(appId: String, storefront: String?, settingsOverride: AppSettings?, importURL: URL? = nil) {
+    private func scheduleDeepLinkLaunch(appId: String, storefront: String?, settingsOverride: AppSettings?) {
         launchTask?.cancel()
         launchTask = Task { [weak self] in
             guard let self else { return }
@@ -7702,16 +7505,6 @@ final class OpenNOWStore: ObservableObject {
             }
             if self.allGames.isEmpty {
                 await self.refreshCatalog()
-            }
-            // A Home Screen icon can outlive the local catalog cache. Resolve its saved identity.
-            if self.deepLinkLaunchTarget(appId: appId, storefront: storefront) == nil, let importURL {
-                do {
-                    let games = try await self.lookupGamesToAdd(importURL.absoluteString)
-                    if let game = games.first { self.addImportedGame(game) }
-                } catch {
-                    self.lastError = OpenNOWErrorPresenter.message(for: error, fallback: "This game could not be opened.")
-                    return
-                }
             }
             guard let target = self.deepLinkLaunchTarget(appId: appId, storefront: storefront) else {
                 self.lastError = "No catalog entry matches app ID \(appId)."
@@ -7763,7 +7556,7 @@ final class OpenNOWStore: ObservableObject {
         let normalizedAppId = appId.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedStore = storefront.map(normalizeGameStore)
         var seenGameIds = Set<String>()
-        for game in allGames + libraryGames + featuredGames + importedGames {
+        for game in allGames + libraryGames + featuredGames {
             guard seenGameIds.insert(game.id).inserted else { continue }
             let matchingOption = game.launchOptions.first {
                 $0.appId.caseInsensitiveCompare(normalizedAppId) == .orderedSame
@@ -8699,85 +8492,9 @@ final class OpenNOWStore: ObservableObject {
     /// Local results appear instantly as you type; the server's arrive a moment later and fill in
     /// the long tail. Ordering them this way means the list never reshuffles under a thumb that
     /// is already reaching for a result.
-    var visibleLibraryGames: [CloudGame] {
-        var seen = Set<String>()
-        return (libraryGames + importedGames).filter { seen.insert(catalogStableGameKey($0)).inserted }
-    }
-
-    func lookupGamesToAdd(_ raw: String, title: String = "", storefront: String = "STEAM") async throws -> [CloudGame] {
-        guard let session = authSession else {
-            throw NSError(domain: "OpenNOW.GameImport", code: 2,
-                          userInfo: [NSLocalizedDescriptionKey: "Sign in before adding a game."])
-        }
-        let reference = try GFNGameImportReference.parse(raw)
-        let local = (allGames + libraryGames + importedGames + remoteSearchResults).filter { game in
-            if let id = reference.launchID {
-                return game.launchAppId == id || game.launchOptions.contains { $0.appId == id }
-            }
-            if let id = reference.catalogID { return game.uuid?.lowercased() == id.lowercased() }
-            return false
-        }
-        if !local.isEmpty { return local }
-        let matches: [CloudGame]
-        do {
-            matches = try await api.lookupImport(reference: reference, session: session, vpcId: cachedVpcId)
-        } catch {
-            if reference.launchID == nil { throw error }
-            matches = []
-        }
-        guard authSession?.user.userId == session.user.userId else { throw CancellationError() }
-        if !matches.isEmpty { return matches }
-        guard let id = reference.launchID else {
-            throw NSError(domain: "OpenNOW.GameImport", code: 3, userInfo: [NSLocalizedDescriptionKey:
-                "NVIDIA did not return this game for your account and region. Try its GeForce NOW app ID or shared OpenNOW link."])
-        }
-        let store = normalizeGameStore(reference.store ?? storefront)
-        let suppliedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let name = !suppliedTitle.isEmpty ? suppliedTitle : reference.title ?? "Game \(id)"
-        return [CloudGame(id: "added:\(store):\(id)", title: name, genre: "", platform: store,
-            icon: "gamecontroller", imageUrl: nil, launchAppId: id,
-            launchOptions: [GameLaunchOption(storefront: store, appId: id, supportedControls: nil)],
-            uuid: reference.catalogID, summary: nil, longDescription: nil, publisher: nil,
-            developer: nil, releaseDate: nil, featureLabels: nil, tags: nil, stores: [store],
-            playType: nil, membershipTierLabel: nil, catalogSectionId: nil,
-            catalogSectionTitle: "Added Games", contentRatings: nil)]
-    }
-
-    func addImportedGame(_ game: CloudGame) {
-        guard let key = importedGamesKey else { return }
-        importedGames.removeAll { catalogStableGameKey($0) == catalogStableGameKey(game) }
-        importedGames.append(game)
-        if let encoded = try? JSONEncoder().encode(importedGames) { defaults.set(encoded, forKey: key) }
-    }
-
-    func removeImportedGame(_ game: CloudGame) {
-        importedGames.removeAll { $0.id == game.id }
-        if let key = importedGamesKey, let encoded = try? JSONEncoder().encode(importedGames) {
-            defaults.set(encoded, forKey: key)
-        }
-    }
-
-    private var importedGamesKey: String? {
-        authSession.map { "OpenNOW.iOS.addedGames.\(cacheDigest(for: $0.user.userId))" }
-    }
-
-    private func hydrateImportedGames() {
-        guard let key = importedGamesKey, let data = defaults.data(forKey: key),
-              let games = try? JSONDecoder().decode([CloudGame].self, from: data) else {
-            importedGames = []
-            return
-        }
-        importedGames = games
-    }
-
-    var catalogGames: [CloudGame] {
-        var seen = Set<String>()
-        return (allGames + importedGames).filter { seen.insert(catalogStableGameKey($0)).inserted }
-    }
-
     var filteredCatalogGames: [CloudGame] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let local = catalogGames.filter { gameMatchesCatalogSearch($0, query: query) }
+        let local = allGames.filter { gameMatchesCatalogSearch($0, query: query) }
         guard !query.isEmpty, !remoteSearchResults.isEmpty else { return local }
         var seen = Set(local.map { catalogStableGameKey($0) })
         let extra = remoteSearchResults.filter { seen.insert(catalogStableGameKey($0)).inserted }
@@ -8787,7 +8504,7 @@ final class OpenNOWStore: ObservableObject {
     var favoriteGames: [CloudGame] {
         guard !settings.favoriteGameIds.isEmpty else { return [] }
         var gamesById: [String: CloudGame] = [:]
-        for game in allGames + libraryGames + importedGames {
+        for game in allGames + libraryGames {
             gamesById[game.id] = game
         }
         return settings.favoriteGameIds.compactMap { gamesById[$0] }
