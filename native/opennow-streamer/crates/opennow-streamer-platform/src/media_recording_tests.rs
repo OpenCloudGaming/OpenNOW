@@ -372,7 +372,7 @@ fn wake_notifications_coalesce_and_overflow_does_not_drain_pending_frames() {
 
 fn directory(name: &str) -> std::path::PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    loop {
+    for _ in 0..128 {
         let directory = std::env::temp_dir().join(format!(
             "opennow-recording-{name}-{}-{}",
             std::process::id(),
@@ -384,6 +384,7 @@ fn directory(name: &str) -> std::path::PathBuf {
             Err(error) => panic!("failed to create recording fixture directory: {error}"),
         }
     }
+    panic!("exhausted recording fixture directory allocation attempts");
 }
 
 #[test]
