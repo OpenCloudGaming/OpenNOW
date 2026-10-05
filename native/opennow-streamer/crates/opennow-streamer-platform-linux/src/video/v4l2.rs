@@ -434,9 +434,17 @@ impl V4l2Decoder {
     }
 
     fn handle_events(&mut self) -> Result<()> {
+        let fd = self.file.as_raw_fd();
+        self.handle_events_with(|event| ioctl(fd, vidioc::VIDIOC_DQEVENT, event))
+    }
+
+    fn handle_events_with(
+        &mut self,
+        mut dequeue: impl FnMut(&mut v4l2_event) -> io::Result<()>,
+    ) -> Result<()> {
         loop {
             let mut event: v4l2_event = zeroed();
-            match ioctl(self.file.as_raw_fd(), vidioc::VIDIOC_DQEVENT, &mut event) {
+            match dequeue(&mut event) {
                 Ok(()) => {
                     if event.type_ != V4L2_EVENT_SOURCE_CHANGE {
                         continue;
@@ -452,7 +460,12 @@ impl V4l2Decoder {
                         }
                     }
                 }
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
+                Err(error)
+                    if error.kind() == io::ErrorKind::WouldBlock
+                        || error.raw_os_error() == Some(libc::ENOENT) =>
+                {
+                    return Ok(());
+                }
                 Err(error) => return Err(Error::io(Subsystem::V4l2, error)),
             }
         }
@@ -1382,6 +1395,71 @@ mod tests {
             }
             other => panic!("unexpected polling error: {other}"),
         }
+    }
+
+    #[test]
+    fn empty_event_queue_is_not_a_decoder_failure() {
+        for errno in [libc::ENOENT, libc::EAGAIN] {
+            let mut decoder = decoder_without_device(false);
+            let mut calls = 0;
+            decoder
+                .handle_events_with(|_| {
+                    calls += 1;
+                    Err(io::Error::from_raw_os_error(errno))
+                })
+                .unwrap();
+            assert_eq!(calls, 1);
+            assert!(!decoder.capture_progress.source_change_pending);
+            assert!(!decoder.capture_progress.last_seen);
+        }
+    }
+
+    #[test]
+    fn source_change_is_preserved_when_event_queue_becomes_empty() {
+        let mut decoder = decoder_without_device(false);
+        decoder.capture_streaming = true;
+        let mut calls = 0;
+        decoder
+            .handle_events_with(|event| {
+                calls += 1;
+                if calls == 1 {
+                    event.type_ = V4L2_EVENT_SOURCE_CHANGE;
+                    event.u.src_change.changes = V4L2_EVENT_SRC_CH_RESOLUTION;
+                    Ok(())
+                } else {
+                    Err(io::Error::from_raw_os_error(libc::ENOENT))
+                }
+            })
+            .unwrap();
+        assert_eq!(calls, 2);
+        assert!(decoder.capture_progress.source_change_pending);
+        assert!(!decoder.capture_progress.last_seen);
+        assert!(!decoder.capture_progress.needs_reconfigure(true));
+    }
+
+    #[test]
+    fn event_dequeue_preserves_device_and_io_errors() {
+        let mut decoder = decoder_without_device(false);
+        for errno in [libc::ENOTTY, libc::EBADF] {
+            let error = decoder
+                .handle_events_with(|_| Err(io::Error::from_raw_os_error(errno)))
+                .unwrap_err();
+            assert!(matches!(
+                error,
+                Error::Io { subsystem: Subsystem::V4l2, source }
+                    if source.raw_os_error() == Some(errno)
+            ));
+        }
+        let error = decoder
+            .handle_events_with(|_| Err(io::Error::from_raw_os_error(libc::ENODEV)))
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::DeviceLost {
+                subsystem: Subsystem::V4l2,
+                ..
+            }
+        ));
     }
 
     fn capture_buffer(flags: u32, bytes_used: usize, data_offset: usize) -> DequeuedBuffer {
