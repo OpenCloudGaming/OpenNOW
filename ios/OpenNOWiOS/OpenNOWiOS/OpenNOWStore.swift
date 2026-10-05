@@ -125,6 +125,11 @@ struct CloudGame: Identifiable, Codable, Equatable {
     let contentRatings: [String]?
     var screenshotUrls: [String]? = nil
 
+    var capabilityBadges: [String] {
+        let labels = Set(featureLabels ?? [])
+        return ["RTX 5080 Ready", "RTX", "HDR", "Reflex"].filter { labels.contains($0) }
+    }
+
     func fillingMissingMetadata(from fallback: CloudGame?) -> CloudGame {
         guard let fallback else { return self }
         let mergedScreenshots = Self.mergingArtworkURLs(screenshotUrls, fallback.screenshotUrls)
@@ -146,13 +151,14 @@ struct CloudGame: Identifiable, Codable, Equatable {
             publisher: publisher ?? fallback.publisher,
             developer: developer ?? fallback.developer,
             releaseDate: releaseDate ?? fallback.releaseDate,
-            featureLabels: featureLabels ?? fallback.featureLabels,
+            featureLabels: Array(Set((featureLabels ?? fallback.featureLabels ?? [])
+                + (fallback.featureLabels ?? []).filter { $0 == "RTX 5080 Ready" })).sorted(),
             tags: tags ?? fallback.tags,
             stores: stores,
             playType: playType,
             membershipTierLabel: membershipTierLabel,
-            catalogSectionId: catalogSectionId,
-            catalogSectionTitle: catalogSectionTitle,
+            catalogSectionId: catalogSectionId ?? fallback.catalogSectionId,
+            catalogSectionTitle: catalogSectionTitle ?? fallback.catalogSectionTitle,
             contentRatings: GFNContentRatingParser.merging(contentRatings, fallback.contentRatings),
             screenshotUrls: mergedScreenshots
         )
@@ -212,6 +218,120 @@ func gameMatchesCatalogSearch(_ game: CloudGame, query: String) -> Bool {
         + game.launchOptions.map(\.storefront))
         .joined(separator: " ")
     return terms.allSatisfy { searchableText.localizedCaseInsensitiveContains($0) }
+}
+
+struct GFNGameImportReference: Equatable {
+    var catalogID: String?
+    var launchID: String?
+    var title: String?
+    var store: String?
+    var search: String?
+
+    static func parse(_ raw: String) throws -> Self {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { throw invalid("Enter a game name, GeForce NOW link, or GeForce NOW app ID.") }
+        if UUID(uuidString: value) != nil { return Self(catalogID: value) }
+        if value.allSatisfy(\.isNumber), let number = Int(value), number > 0 {
+            return Self(launchID: value)
+        }
+        guard value.contains("://") else { return Self(search: value) }
+        guard let url = URL(string: value), let scheme = url.scheme?.lowercased(),
+              scheme == "opennowios" || scheme == "opennow"
+                || (scheme == "https" && url.host?.lowercased() == "play.geforcenow.com") else {
+            throw invalid("Use a GeForce NOW game link or app ID. Steam store IDs are different.")
+        }
+        var query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        let fragment = url.fragment ?? ""
+        if let fragmentURL = URLComponents(string: "https://play.geforcenow.com/" + fragment.trimmingCharacters(in: CharacterSet(charactersIn: "/"))) {
+            query += fragmentURL.queryItems ?? []
+        }
+        func item(_ keys: [String]) -> String? {
+            query.first { keys.contains($0.name.lowercased()) }?.value
+        }
+        let ids = query.filter { ["gameid", "game-id", "appid", "app-id", "id"].contains($0.name.lowercased()) }.map(\.value)
+            + url.pathComponents.map(Optional.some) + fragment.components(separatedBy: CharacterSet(charactersIn: "/?&=")).map(Optional.some)
+        let catalogID = ids.compactMap { $0 }.first { UUID(uuidString: $0) != nil }
+        let launchID = item(["appid", "app-id", "launchoptionid", "gameid", "game-id", "id"])
+            ?? (scheme.hasPrefix("opennow") ? url.pathComponents.last : nil)
+        let numeric = launchID.flatMap { Int($0).map { $0 > 0 } == true ? $0 : nil }
+        guard catalogID != nil || numeric != nil else {
+            throw invalid("This link does not contain a GeForce NOW game ID.")
+        }
+        return Self(catalogID: catalogID, launchID: numeric,
+                    title: item(["title", "name"]), store: item(["store", "launcher"]))
+    }
+
+    static func shareURL(game: CloudGame, option: GameLaunchOption?) -> URL? {
+        guard let appID = option?.appId ?? game.launchAppId else { return nil }
+        var url = URLComponents()
+        url.scheme = "opennowios"
+        url.host = "add"
+        url.queryItems = [URLQueryItem(name: "appid", value: appID),
+                          URLQueryItem(name: "title", value: game.title),
+                          URLQueryItem(name: "store", value: option?.storefront ?? game.platform)]
+        if let uuid = game.uuid { url.queryItems?.append(URLQueryItem(name: "gameid", value: uuid)) }
+        return url.url
+    }
+
+    static func homeScreenURL(game: CloudGame, option: GameLaunchOption?) -> URL? {
+        guard let shared = shareURL(game: game, option: option),
+              let items = URLComponents(url: shared, resolvingAgainstBaseURL: false)?.queryItems else { return nil }
+        var page = URLComponents(string: "https://joemossjr16.github.io/ios-apps/launch/")!
+        page.queryItems = items
+        if let art = game.catalogArtworkUrl, let url = URL(string: art),
+           url.scheme == "https", url.host?.lowercased() == "img.nvidiagrid.net" {
+            page.queryItems?.append(URLQueryItem(name: "art", value: art))
+        }
+        return page.url
+    }
+
+    static func homeScreenSetupURL(game: CloudGame, option: GameLaunchOption?) -> URL? {
+        guard let url = homeScreenURL(game: game, option: option),
+              var setup = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+        setup.queryItems?.append(URLQueryItem(name: "setup", value: "1"))
+        return setup.url
+    }
+
+    private static func invalid(_ message: String) -> NSError {
+        NSError(domain: "OpenNOW.GameImport", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+    }
+}
+
+enum GFNCatalogFeatureParser {
+    static func readyAppIDs(panels: [[String: Any]]) -> Set<String> {
+        Set(panels.flatMap { $0["sections"] as? [[String: Any]] ?? [] }
+            .filter { section in
+                let title = (section["title"] as? String) ?? (section["name"] as? String) ?? ""
+                return title.contains("5080") && title.localizedCaseInsensitiveContains("Ready")
+            }.flatMap { $0["items"] as? [[String: Any]] ?? [] }
+            .compactMap { ($0["app"] as? [String: Any])?["id"] as? String })
+    }
+
+    static func labels(variant: [String: Any]) -> [String] {
+        let flags = (variant["gfn"] as? [String: Any])?["features"] as? [[String: Any]] ?? []
+        var labels = Set<String>()
+        for flag in flags {
+            let key = (flag["key"] as? String ?? "").uppercased()
+            let enabled = (flag["value"] as? Bool) == true
+                || (flag["value"] as? String)?.lowercased() == "true"
+            switch key {
+            case "RTX_ENABLED": if enabled { labels.insert("RTX") }
+            case "HDR_ENABLED": if enabled { labels.insert("HDR") }
+            case "SUPPORTED_HDR_VERSION":
+                if let values = flag["values"] as? [String], values.contains(where: { !$0.isEmpty }) {
+                    labels.insert("HDR")
+                }
+            case "REFLEX_ENABLED": if enabled { labels.insert("Reflex") }
+            default: break
+            }
+        }
+        return ["RTX", "HDR", "Reflex"].filter { labels.contains($0) }
+    }
+
+    static func labels(app: [String: Any]) -> [String] {
+        let variants = app["variants"] as? [[String: Any]] ?? []
+        return Array(Set(variants.flatMap { labels(variant: $0) })).sorted()
+    }
 }
 
 enum GFNCatalogLabelParser {
@@ -340,6 +460,7 @@ struct GameLaunchOption: Identifiable, Codable, Equatable {
     let storefront: String
     let appId: String
     let supportedControls: [String]?
+    var featureLabels: [String]? = nil
 }
 
 struct SessionTelemetry: Codable, Equatable {
@@ -377,8 +498,8 @@ struct ActiveSession: Identifiable, Codable, Equatable {
     var negotiatedStreamProfile: NegotiatedStreamProfile? = nil
     var requestedStreamingFeatures: StreamingFeatures? = nil
     var finalizedStreamingFeatures: StreamingFeatures? = nil
-    /// Whether this session was requested with `appLaunchMode: touchFriendly`, and therefore
-    /// whether the host has a digitizer to receive contacts at all.
+    /// Whether this session was requested with `appLaunchMode: touchFriendly`.
+    /// This records the request, not host acknowledgment of a working digitizer.
     ///
     /// The host provisions its input devices when the session is created and never revisits them,
     /// so this cannot be recomputed later from the current settings — flipping the touch setting
@@ -388,6 +509,7 @@ struct ActiveSession: Identifiable, Codable, Equatable {
     /// `nil` means "created before this was recorded, or by something other than a launch or claim
     /// we performed"; those sessions keep the old behaviour of trusting the setting.
     var touchProvisioned: Bool? = nil
+    var nativeRtspsEndpoints: [String]? = nil
 }
 
 struct RemoteSessionCandidate: Identifiable, Codable, Equatable {
@@ -398,6 +520,8 @@ struct RemoteSessionCandidate: Identifiable, Codable, Equatable {
     let streamSettingsSignature: String?
     let resolution: String?
     let fps: Int?
+    var colorQuality: StreamColorQuality? = nil
+    var hdrEnabled: Bool? = nil
 }
 
 struct StorageAddon: Codable, Equatable {
@@ -753,6 +877,8 @@ struct AppSettings: Codable, Equatable {
     var preferredQuality: String
     var preferredCodec: String
     var nativeStreamerEnabled: Bool = false
+    var experimentalNativeNVSTEnabled: Bool = false
+    var experimentalDesktop444TouchEnabled: Bool = false
     var preferredColorQuality: String = StreamColorQuality.eightBit420.rawValue
     var hdrEnabled: Bool = false
     var maxBitrateMbps: Int
@@ -762,6 +888,9 @@ struct AppSettings: Codable, Equatable {
     var sessionProxyUrl: String = ""
     var enableL4S: Bool
     var enableCloudGsync: Bool
+    var metal4Enabled: Bool = false
+    var metalFXUpscalingEnabled: Bool = false
+    var metalFXQualityPreset: MetalFXQualityPreset = .manual
     var streamSharpeningEnabled: Bool = false
     var streamSharpeningAmount: Double = 0.25
     var mouseSensitivity: Double = 1
@@ -815,7 +944,6 @@ struct AppSettings: Codable, Equatable {
     /// reports the numbers a player cares about. Kept as a setting because it reports things
     /// ours cannot — GPU time and the actual present rate — which is worth having when
     /// diagnosing a stutter.
-    var showMetalPerformanceHUD: Bool = false
     var streamStatsMetrics: StreamStatsMetrics = .default
     var hideStreamButtons: Bool = false
     var streamKeyboardButtonPosition: NormalizedPoint = .trailingCenter
@@ -861,6 +989,8 @@ struct AppSettings: Codable, Equatable {
         case preferredQuality
         case preferredCodec
         case nativeStreamerEnabled
+        case experimentalNativeNVSTEnabled
+        case experimentalDesktop444TouchEnabled
         case preferredColorQuality
         case hdrEnabled
         case maxBitrateMbps
@@ -870,6 +1000,9 @@ struct AppSettings: Codable, Equatable {
         case sessionProxyUrl
         case enableL4S
         case enableCloudGsync
+        case metal4Enabled
+        case metalFXUpscalingEnabled
+        case metalFXQualityPreset
         case streamSharpeningEnabled
         case streamSharpeningAmount
         case mouseSensitivity
@@ -903,7 +1036,6 @@ struct AppSettings: Codable, Equatable {
         case showCardTitles
         case showFavoriteIconOnGameCards
         case catalogWallpaperPreset
-        case showMetalPerformanceHUD
         case streamStatsMetrics
         case hideStreamButtons
         case streamKeyboardButtonPosition
@@ -981,6 +1113,8 @@ struct AppSettings: Codable, Equatable {
         preferredQuality = try container.decodeIfPresent(String.self, forKey: .preferredQuality) ?? "Balanced"
         preferredCodec = try container.decodeIfPresent(String.self, forKey: .preferredCodec) ?? "Auto"
         nativeStreamerEnabled = try container.decodeIfPresent(Bool.self, forKey: .nativeStreamerEnabled) ?? false
+        experimentalNativeNVSTEnabled = try container.decodeIfPresent(Bool.self, forKey: .experimentalNativeNVSTEnabled) ?? false
+        experimentalDesktop444TouchEnabled = try container.decodeIfPresent(Bool.self, forKey: .experimentalDesktop444TouchEnabled) ?? false
         preferredColorQuality = try container.decodeIfPresent(String.self, forKey: .preferredColorQuality) ?? StreamColorQuality.eightBit420.rawValue
         hdrEnabled = try container.decodeIfPresent(Bool.self, forKey: .hdrEnabled) ?? false
         maxBitrateMbps = try container.decodeIfPresent(Int.self, forKey: .maxBitrateMbps) ?? 0
@@ -990,6 +1124,9 @@ struct AppSettings: Codable, Equatable {
         sessionProxyUrl = try container.decodeIfPresent(String.self, forKey: .sessionProxyUrl) ?? ""
         enableL4S = try container.decodeIfPresent(Bool.self, forKey: .enableL4S) ?? false
         enableCloudGsync = try container.decodeIfPresent(Bool.self, forKey: .enableCloudGsync) ?? false
+        metal4Enabled = try container.decodeIfPresent(Bool.self, forKey: .metal4Enabled) ?? false
+        metalFXUpscalingEnabled = try container.decodeIfPresent(Bool.self, forKey: .metalFXUpscalingEnabled) ?? false
+        metalFXQualityPreset = try container.decodeIfPresent(MetalFXQualityPreset.self, forKey: .metalFXQualityPreset) ?? .manual
         streamSharpeningEnabled = try container.decodeIfPresent(Bool.self, forKey: .streamSharpeningEnabled) ?? false
         streamSharpeningAmount = try container.decodeIfPresent(Double.self, forKey: .streamSharpeningAmount) ?? 0.25
         mouseSensitivity = try container.decodeIfPresent(Double.self, forKey: .mouseSensitivity) ?? 1
@@ -1027,7 +1164,6 @@ struct AppSettings: Codable, Equatable {
         showCardTitles = try container.decodeIfPresent(Bool.self, forKey: .showCardTitles) ?? true
         showFavoriteIconOnGameCards = try container.decodeIfPresent(Bool.self, forKey: .showFavoriteIconOnGameCards) ?? true
         catalogWallpaperPreset = try container.decodeIfPresent(CatalogWallpaperPreset.self, forKey: .catalogWallpaperPreset) ?? .colorfulAbstract
-        showMetalPerformanceHUD = try container.decodeIfPresent(Bool.self, forKey: .showMetalPerformanceHUD) ?? false
         streamStatsMetrics = try container.decodeIfPresent(StreamStatsMetrics.self, forKey: .streamStatsMetrics) ?? .default
         hideStreamButtons = try container.decodeIfPresent(Bool.self, forKey: .hideStreamButtons) ?? false
         streamKeyboardButtonPosition = try container.decodeIfPresent(NormalizedPoint.self, forKey: .streamKeyboardButtonPosition) ?? .trailingCenter
@@ -1655,6 +1791,30 @@ enum StreamSettingsResolver {
         return resolutionChoices.filter { $0.aspectRatio == normalizedAspect }
     }
 
+    static func metalFXResolution(preset: MetalFXQualityPreset, aspectRatio: String,
+                                  displaySize: CGSize, stretch: Bool, membershipTier: String?) -> StreamResolutionChoice? {
+        guard let scale = preset.inputScale else { return nil }
+        return choices(forAspectRatio: aspectRatio).filter { choice in
+            guard isResolutionAvailable(choice, membershipTier: membershipTier) else { return false }
+            let source = pixelSize(choice.value)
+            let target = NativeStreamVideoEffectsPolicy.presentationSize(source: source, display: displaySize, stretch: stretch)
+            return NativeStreamVideoEffectsPolicy.upscaleSize(source: source, destination: target) != nil
+        }.min { left, right in
+            func distance(_ choice: StreamResolutionChoice) -> CGFloat {
+                let source = pixelSize(choice.value)
+                let target = NativeStreamVideoEffectsPolicy.presentationSize(source: source, display: displaySize, stretch: stretch)
+                return abs(source.width / target.width - scale) + abs(source.height / target.height - scale)
+            }
+            return distance(left) < distance(right)
+        }
+    }
+
+    static func pixelSize(_ resolution: String) -> CGSize {
+        let values = resolution.split(separator: "x").compactMap { Double($0) }
+        guard values.count == 2 else { return .zero }
+        return CGSize(width: values[0], height: values[1])
+    }
+
     static func resolutionChoice(value: String, aspectRatio: String) -> StreamResolutionChoice? {
         let normalizedAspect = normalizedAspectRatio(aspectRatio)
         return resolutionChoices.first { $0.value == value && $0.aspectRatio == normalizedAspect }
@@ -1809,19 +1969,27 @@ enum StreamSettingsResolver {
 
     static func sessionSignature(for settings: AppSettings, profile: StreamVideoProfile) -> String {
         let color = colorQuality(for: settings).rawValue
-        return [
-            "opennow-ios-stream-v1",
+        var signature = [
+            "opennow-ios-stream-v2",
             "res=\(profile.width)x\(profile.height)",
             "fps=\(profile.fps)",
             "bitrate=\(profile.maxBitrateKbps / 1000)",
             "codec=\(settings.preferredCodec.uppercased())",
+            "transport=\(settings.experimentalNativeNVSTEnabled ? "nvst" : "webrtc")",
             "color=\(color)",
             "hdr=\(settings.hdrEnabled ? 1 : 0)",
             "l4s=\(settings.enableL4S ? 1 : 0)",
             "gsync=\(settings.enableCloudGsync ? 1 : 0)",
             "keyboard=\(settings.keyboardLayout.trimmingCharacters(in: .whitespacesAndNewlines))",
             "language=\(settings.gameLanguage.trimmingCharacters(in: .whitespacesAndNewlines))"
-        ].joined(separator: ";")
+        ]
+        // Changing the allocation identity needs a new host session, even if
+        // resolution, codec and the saved touch preference are unchanged.
+        if requiresDesktopColorProvisioning(for: settings) {
+            signature.append("provisioning=desktop-444-v3")
+            signature.append("desktopTouch=\(settings.experimentalDesktop444TouchEnabled ? settings.touch.nativeTouchMode.rawValue : "off")")
+        }
+        return signature.joined(separator: ";")
     }
 
     static func profile(
@@ -1953,7 +2121,42 @@ enum StreamSettingsResolver {
     }
 
     static func colorQuality(for settings: AppSettings) -> StreamColorQuality {
-        StreamColorQuality(rawValue: settings.preferredColorQuality) ?? .eightBit420
+        let color = StreamColorQuality(rawValue: settings.preferredColorQuality) ?? .eightBit420
+        guard settings.hdrEnabled, color.bitDepth < 10 else { return color }
+        return color == .eightBit444 ? .tenBit444 : .tenBit420
+    }
+
+    /// An explicit picker choice takes priority over the preceding HDR preference.
+    /// Keep legacy decoding/launch promotion separate from new user selections.
+    static func selectingColor(_ color: StreamColorQuality, in settings: AppSettings) -> AppSettings {
+        var updated = settings
+        updated.preferredColorQuality = color.rawValue
+        updated.streamPreset = .custom
+        if color.bitDepth < 10 { updated.hdrEnabled = false }
+        if color.chromaFormat == 2 && updated.experimentalNativeNVSTEnabled {
+            updated.preferredCodec = "H265"
+        }
+        return updated
+    }
+
+    static func selectingHDR(_ enabled: Bool, in settings: AppSettings,
+                             h265Available: Bool) -> AppSettings {
+        var updated = settings
+        updated.hdrEnabled = enabled
+        updated.streamPreset = .custom
+        if enabled {
+            updated.preferredColorQuality = colorQuality(for: updated).rawValue
+            if h265Available { updated.preferredCodec = "H265" }
+        }
+        return updated
+    }
+
+    static func remoteColorMatches(color: StreamColorQuality?, hdr: Bool?, settings: AppSettings) -> Bool {
+        (color == nil || color == colorQuality(for: settings)) && (hdr == nil || hdr == settings.hdrEnabled)
+    }
+
+    static func requiresDesktopColorProvisioning(for settings: AppSettings) -> Bool {
+        settings.experimentalNativeNVSTEnabled && colorQuality(for: settings).chromaFormat == 2
     }
 
     private static func profilePlanLimit(for membershipTier: String?) -> StreamResolutionPlan {
@@ -2726,45 +2929,71 @@ enum GFNAppLaunchMode: Int {
     case touchFriendly = 3
 }
 
-/// The CloudMatch client identity a session is requested under, and the launch mode that goes with
-/// it. One value owns both because they are not independent: asking for `touchFriendly` under the
-/// desktop identity is a session that claims a digitizer and allocates as though it had none.
+/// Owns the allocation identity and requested input-device envelope together.
 ///
-/// The touch identity is not a guess. It is the combination the Android build validated: the
+/// The touch identity is the combination the Android build validated: the
 /// desktop-native streamer and client type (`NVIDIA-CLASSIC` / `NATIVE`) with an Android OS and a
-/// `TABLET` device type. That pairing tells the server to enable the host-side digitizer *and*
-/// keep the full desktop resolution matrix, so touch is no longer paid for with a downgraded
-/// allocation. An earlier iOS-flavoured guess at this — `IOS` / `MOBILE` / `GFN-MOBILE` plus two
+/// `TABLET` device type. It requests the host-side digitizer and desktop resolutions, but live
+/// iOS tests found its finalized color profile downgraded to 4:2:0 with HDR off. Native 4:4:4
+/// therefore keeps the desktop identity. A Windows TABLET touch experiment also downgraded
+/// color in build 141. Desktop touch provisioning remains experimental, not a validated host
+/// capability. An earlier iOS guess — `IOS` / `MOBILE` / `GFN-MOBILE` plus two
 /// invented metadata keys — provisioned no digitizer at all.
-private enum StreamDeviceProfile: Equatable {
+enum StreamDeviceProfile: Equatable {
     case desktop
     case touch
+    /// Experimental Windows desktop identity with a native digitizer request.
+    /// Color delivery and actual host touch support require a live comparison.
+    case desktopTouch
+
+    /// A bounded diagnostic of the input envelope requested, not a host capability assertion.
+    func recordInputRequest(settings: AppSettings, keyboardMouseConnected: Bool, action: String) {
+        #if os(iOS) && canImport(WebRTC)
+        #endif
+    }
+
+    static func resolve(game: CloudGame, settings: AppSettings,
+                        keyboardMouseConnected: Bool, touchProvisionedOverride: Bool? = nil) -> Self {
+        // A live 5080h/B40 comparison delivered 4:2:0 and HDR off under the
+        // Android touch profile, then 4:4:4 HDR under the desktop profile.
+        // Native Windows touch is an explicit experiment; the default keeps the
+        // verified desktop 4:4:4 path and finger mouse/controller input.
+        if StreamSettingsResolver.requiresDesktopColorProvisioning(for: settings) {
+            let touchRequested = touchProvisionedOverride
+                ?? NativeTouchSupport.shouldProvisionNativeTouch(mode: settings.touch.nativeTouchMode,
+                    game: game, keyboardMouseConnected: keyboardMouseConnected)
+            return settings.experimentalDesktop444TouchEnabled && touchRequested ? .desktopTouch : .desktop
+        }
+        if let touchProvisionedOverride { return touchProvisionedOverride ? .touch : .desktop }
+        return NativeTouchSupport.shouldProvisionNativeTouch(mode: settings.touch.nativeTouchMode,
+            game: game, keyboardMouseConnected: keyboardMouseConnected) ? .touch : .desktop
+    }
 
     var appLaunchMode: GFNAppLaunchMode {
         switch self {
         case .desktop: return .gamepadFriendly
-        case .touch: return .touchFriendly
+        case .touch, .desktopTouch: return .touchFriendly
         }
     }
 
     var remoteControllersBitmap: Int {
-        self == .touch ? 0 : 1
+        self == .desktop ? 1 : 0
     }
 
     var availableSupportedControllers: [Int] {
-        self == .touch ? [] : [2]
+        self == .desktop ? [2] : []
     }
 
     var nvDeviceOS: String {
         switch self {
-        case .desktop: return "WINDOWS"
+        case .desktop, .desktopTouch: return "WINDOWS"
         case .touch: return "ANDROID"
         }
     }
 
     var nvDeviceType: String {
         switch self {
-        case .desktop: return "DESKTOP"
+        case .desktop, .desktopTouch: return "DESKTOP"
         case .touch: return "TABLET"
         }
     }
@@ -2773,28 +3002,28 @@ private enum StreamDeviceProfile: Equatable {
     /// model go back to that identity's own values rather than naming the iPhone.
     var nvDeviceMake: String {
         switch self {
-        case .desktop: return "APPLE"
+        case .desktop, .desktopTouch: return "APPLE"
         case .touch: return "UNKNOWN"
         }
     }
 
     var nvDeviceModel: String {
         switch self {
-        case .desktop: return OpenNOWPlatform.displayName
+        case .desktop, .desktopTouch: return OpenNOWPlatform.displayName
         case .touch: return "UNKNOWN"
         }
     }
 
     var userAgent: String {
         switch self {
-        case .desktop: return GFNConstants.userAgent
+        case .desktop, .desktopTouch: return GFNConstants.userAgent
         case .touch: return GFNConstants.touchUserAgent
         }
     }
 
     var clientPlatformName: String {
         switch self {
-        case .desktop: return "windows"
+        case .desktop, .desktopTouch: return "windows"
         case .touch: return "android"
         }
     }
@@ -2803,7 +3032,7 @@ private enum StreamDeviceProfile: Equatable {
     /// borrowed one and must not write a phone session's choices back over the desktop profile.
     var persistsInGameSettings: Bool {
         switch self {
-        case .desktop: return true
+        case .desktop, .desktopTouch: return true
         case .touch: return false
         }
     }
@@ -2811,6 +3040,42 @@ private enum StreamDeviceProfile: Equatable {
     /// Both identities present themselves as the PC client; only the device fields differ. Sending
     /// `GFN-MOBILE` here was part of the same guess that failed.
     var clientIdentification: String { "GFN-PC" }
+}
+
+// Keep the launch/resume feature envelope aligned with the desktop CloudMatch client.
+// Request HDR explicitly in addition to monitor/display data; the desktop has no HDR toggle.
+enum CloudMatchStreamingFeatureRequest {
+    static func normalizedColorQuality(bitDepth: Int?, chromaFormat: Int?) -> StreamColorQuality? {
+        guard let bitDepth, [0, 1, 8, 10].contains(bitDepth) else { return nil }
+        let tenBit = bitDepth == 1 || bitDepth == 10
+        let fullChroma = chromaFormat == 1 || chromaFormat == 2
+        switch (tenBit, fullChroma) {
+        case (true, true): return .tenBit444
+        case (true, false): return .tenBit420
+        case (false, true): return .eightBit444
+        case (false, false): return .eightBit420
+        }
+    }
+
+    static func build(settings: AppSettings, profile: StreamVideoProfile,
+                      bitDepth: Int, chromaFormat: Int) -> [String: Any] {
+        [
+            "reflex": settings.enableCloudGsync || profile.fps >= 120,
+            // CloudMatch uses enums, unlike the literal bit count in the NVST SDP.
+            "bitDepth": bitDepth == 10 ? 1 : 0,
+            "trueHdr": settings.hdrEnabled,
+            "cloudGsync": settings.enableCloudGsync,
+            "enabledL4S": settings.enableL4S,
+            "supportedHidDevices": 0,
+            "profile": 0,
+            "fallbackToLogicalResolution": false,
+            "chromaFormat": chromaFormat == 2 ? 1 : 0,
+            "prefilterMode": 0,
+            "prefilterSharpness": 0,
+            "prefilterNoiseReduction": 0,
+            "hudStreamingMode": 0
+        ]
+    }
 }
 
 private actor GFNAPIClient {
@@ -3407,6 +3672,57 @@ private actor GFNAPIClient {
         return (enrichedGames, vpcId, serverInfo.regions)
     }
 
+    /// MAIN contains editorial collections, not the complete catalog. Follow every browse cursor.
+    func fetchCompleteCatalog(session: AuthSession, vpcId: String) async throws -> [CloudGame] {
+        let token = session.tokens.idToken ?? session.tokens.accessToken
+        let document = """
+        query CompleteCatalog($vpcId: String!, $cursor: String!, $filters: AppFilterFields!) {
+          apps(vpcId: $vpcId, language: "en_US", orderBy: "sortName:ASC", first: 250, after: $cursor, filters: $filters) {
+            pageInfo { hasNextPage endCursor totalCount }
+            items {
+              id title shortDescription publisherName genres
+              images { GAME_BOX_ART TV_BANNER HERO_IMAGE }
+              variants { id appStore supportedControls gfn { status library { status selected } features { __typename ... on GfnSubscriptionFeatureInterface { key } ... on GfnSubscriptionFeatureValue { value } ... on GfnSubscriptionFeatureValueList { values } } } }
+              gfn { playType playabilityState minimumMembershipTierLabel }
+            }
+          }
+        }
+        """
+        var cursor = ""
+        var cursors = Set<String>()
+        var seen = Set<String>()
+        var games: [CloudGame] = []
+        let deadline = Date().addingTimeInterval(90)
+        for _ in 0..<100 {
+            try Task.checkCancellation()
+            guard Date() < deadline else { break }
+            let body = try JSONSerialization.data(withJSONObject: ["query": document, "variables": [
+                "vpcId": vpcId, "cursor": cursor, "filters": [String: Any]()
+            ]])
+            let (data, response) = try await request(url: URL(string: GFNConstants.graphQL)!, method: "POST",
+                headers: Self.desktopGraphQLHeaders(token: token, contentType: "application/json"),
+                body: body, timeoutInterval: 20)
+            let payload = try parseJSON(data)
+            guard response.statusCode == 200, payload["errors"] == nil,
+                  let apps = (payload["data"] as? [String: Any])?["apps"] as? [String: Any],
+                  let items = apps["items"] as? [[String: Any]],
+                  let page = apps["pageInfo"] as? [String: Any],
+                  let hasNext = page["hasNextPage"] as? Bool else {
+                throw NSError(domain: "OpenNOW.Catalog", code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "The complete NVIDIA catalog could not be loaded. Pull to refresh and try again."])
+            }
+            games += Self.flattenPanels(payload: Self.searchResultsAsPanelPayload(items, sectionTitle: nil)).filter {
+                seen.insert(catalogStableGameKey($0)).inserted
+            }
+            if !hasNext { return games }
+            guard !items.isEmpty, let next = page["endCursor"] as? String,
+                  !next.isEmpty, next != cursor, cursors.insert(next).inserted else { break }
+            cursor = next
+        }
+        throw NSError(domain: "OpenNOW.Catalog", code: 2,
+            userInfo: [NSLocalizedDescriptionKey: "NVIDIA returned an incomplete catalog. Pull to refresh and try again."])
+    }
+
     func fetchLibraryGames(session: AuthSession, vpcId: String) async throws -> [CloudGame] {
         let token = session.tokens.idToken ?? session.tokens.accessToken
         let payload = try await fetchPanels(token: token, panelNames: ["LIBRARY"], vpcId: vpcId)
@@ -3740,7 +4056,11 @@ private actor GFNAPIClient {
         let token = session.tokens.idToken ?? session.tokens.accessToken
         let baseSource = streamingBaseUrl ?? session.provider.streamingServiceUrl
         let base = baseSource.hasSuffix("/") ? String(baseSource.dropLast()) : baseSource
-        let deviceProfile = Self.streamDeviceProfile(for: game, settings: settings)
+        let physicalInputConnected = NativeStreamPhysicalInput.keyboardOrMouseConnected
+        let deviceProfile = StreamDeviceProfile.resolve(game: game, settings: settings,
+            keyboardMouseConnected: physicalInputConnected)
+        deviceProfile.recordInputRequest(settings: settings, keyboardMouseConnected: physicalInputConnected,
+            action: "create")
         let sessionQuery = URLQueryItemEncoder.encode([
             "keyboardLayout": StreamSettingsResolver.normalizedKeyboardLayout(settings.keyboardLayout),
             "languageCode": StreamSettingsResolver.normalizedGameLanguage(settings.gameLanguage)
@@ -3755,6 +4075,9 @@ private actor GFNAPIClient {
             deviceProfile: deviceProfile,
             deviceHashId: deviceId,
             accountLinked: accountLinked
+        )
+        Logger(subsystem: "OpenNOWiOS", category: "GFNAPI").info(
+            "Session create profile=\(streamProfile.width)x\(streamProfile.height) fps=\(streamProfile.fps) codec=\(settings.preferredCodec, privacy: .public) color=\(settings.preferredColorQuality, privacy: .public) hdr=\(settings.hdrEnabled) identity=\(deviceProfile.clientPlatformName, privacy: .public)"
         )
         let clientId = UUID().uuidString
         let (data, response) = try await request(
@@ -3816,7 +4139,8 @@ private actor GFNAPIClient {
                 (sessionObj["sessionRequestData"] as? [String: Any])?["requestedStreamingFeatures"] as? [String: Any]
             ),
             finalizedStreamingFeatures: Self.extractStreamingFeatures(sessionObj["finalizedStreamingFeatures"] as? [String: Any]),
-            touchProvisioned: deviceProfile.appLaunchMode == .touchFriendly
+            touchProvisioned: deviceProfile.appLaunchMode == .touchFriendly,
+            nativeRtspsEndpoints: NativeStreamNVSTConfiguration.endpoints(sessionObj: sessionObj, fallbackHost: serverIp)
         )
     }
 
@@ -3900,6 +4224,8 @@ private actor GFNAPIClient {
         updated.serverIp = serverIp
         updated.mediaIp = mediaConnectionInfo.ip ?? updated.mediaIp
         updated.mediaPort = mediaConnectionInfo.port > 0 ? mediaConnectionInfo.port : updated.mediaPort
+        let nativeEndpoints = NativeStreamNVSTConfiguration.endpoints(sessionObj: sessionObj, fallbackHost: serverIp)
+        if !nativeEndpoints.isEmpty { updated.nativeRtspsEndpoints = nativeEndpoints }
         updated.signalingServer = signaling.server ?? updated.signalingServer
         updated.signalingUrl = signaling.url ?? updated.signalingUrl
         if !iceServers.isEmpty {
@@ -4091,7 +4417,9 @@ private actor GFNAPIClient {
                 serverIp: serverIp,
                 streamSettingsSignature: streamSettingsSignature,
                 resolution: negotiatedProfile?.resolution,
-                fps: negotiatedProfile?.fps
+                fps: negotiatedProfile?.fps,
+                colorQuality: negotiatedProfile?.colorQuality,
+                hdrEnabled: Self.toBoolean((item["finalizedStreamingFeatures"] as? [String: Any])?["trueHdr"])
             )
         }
     }
@@ -4113,8 +4441,12 @@ private actor GFNAPIClient {
         // Claiming repeats the session request body. During recovery, retain the input device
         // profile chosen when this allocation was created instead of letting a transient hot-plug
         // silently change a touch session into a controller session (or vice versa).
-        let deviceProfile = touchProvisionedOverride.map { $0 ? StreamDeviceProfile.touch : .desktop }
-            ?? Self.streamDeviceProfile(for: game, settings: settings)
+        let physicalInputConnected = NativeStreamPhysicalInput.keyboardOrMouseConnected
+        let deviceProfile = StreamDeviceProfile.resolve(game: game, settings: settings,
+            keyboardMouseConnected: physicalInputConnected,
+            touchProvisionedOverride: touchProvisionedOverride)
+        deviceProfile.recordInputRequest(settings: settings, keyboardMouseConnected: physicalInputConnected,
+            action: "claim")
         let zoneBase = Self.normalizedStreamingBase(streamingBaseUrl, vpcId: vpcId)
         var effectiveServerIp = Self.remoteSessionTargetHost(
             serverIp: candidate.serverIp,
@@ -4240,7 +4572,8 @@ private actor GFNAPIClient {
                 (resolvedSessionObj["sessionRequestData"] as? [String: Any])?["requestedStreamingFeatures"] as? [String: Any]
             ),
             finalizedStreamingFeatures: Self.extractStreamingFeatures(resolvedSessionObj["finalizedStreamingFeatures"] as? [String: Any]),
-            touchProvisioned: deviceProfile.appLaunchMode == .touchFriendly
+            touchProvisioned: deviceProfile.appLaunchMode == .touchFriendly,
+            nativeRtspsEndpoints: NativeStreamNVSTConfiguration.endpoints(sessionObj: resolvedSessionObj, fallbackHost: claimServerIp)
         )
 
         for _ in 0..<45 {
@@ -4402,6 +4735,12 @@ private actor GFNAPIClient {
         return nil
     }
 
+    private static func toNonnegativeInt(_ value: Any?) -> Int? {
+        if let number = value as? Int, number >= 0 { return number }
+        if let text = value as? String, let number = Int(text), number >= 0 { return number }
+        return nil
+    }
+
     private static func toBoolean(_ value: Any?) -> Bool? {
         if let boolValue = value as? Bool {
             return boolValue
@@ -4515,9 +4854,9 @@ private actor GFNAPIClient {
         guard let features else { return nil }
         let normalized = StreamingFeatures(
             reflex: toBoolean(features["reflex"]),
-            bitDepth: toPositiveInt(features["bitDepth"]),
+            bitDepth: toNonnegativeInt(features["bitDepth"]),
             cloudGsync: toBoolean(features["cloudGsync"]),
-            chromaFormat: toPositiveInt(features["chromaFormat"]),
+            chromaFormat: toNonnegativeInt(features["chromaFormat"]),
             enabledL4S: toBoolean(features["enabledL4S"]),
             trueHdr: toBoolean(features["trueHdr"])
         )
@@ -4539,22 +4878,11 @@ private actor GFNAPIClient {
             ?? (sessionObj["monitorSettings"] as? [[String: Any]])?.first
         let width = toPositiveInt(monitor?["widthInPixels"])
         let height = toPositiveInt(monitor?["heightInPixels"])
-        let bitDepth = toPositiveInt(finalized?["bitDepth"]) ?? toPositiveInt(requested?["bitDepth"])
-        let chromaFormat = toPositiveInt(finalized?["chromaFormat"]) ?? toPositiveInt(requested?["chromaFormat"])
-        let colorQuality: StreamColorQuality? = {
-            switch (bitDepth, chromaFormat) {
-            case (10, 2):
-                return .tenBit444
-            case (10, _):
-                return .tenBit420
-            case (_, 2):
-                return .eightBit444
-            case (0, _):
-                return .eightBit420
-            default:
-                return nil
-            }
-        }()
+        let bitDepth = toNonnegativeInt(finalized?["bitDepth"]) ?? toNonnegativeInt(requested?["bitDepth"])
+        let chromaFormat = toNonnegativeInt(finalized?["chromaFormat"]) ?? toNonnegativeInt(requested?["chromaFormat"])
+        let colorQuality = CloudMatchStreamingFeatureRequest.normalizedColorQuality(
+            bitDepth: bitDepth, chromaFormat: chromaFormat
+        )
         let resolution = width.flatMap { width in
             height.map { "\(width)x\($0)" }
         }
@@ -4731,45 +5059,21 @@ private actor GFNAPIClient {
         guard !uniqueAppIds.isEmpty else {
             return ["data": ["apps": ["items": []]]]
         }
-        let variablesData: [String: Any] = [
-            "vpcId": vpcId,
-            "locale": "en_US",
-            "appIds": uniqueAppIds
-        ]
-        let variables = String(data: try JSONSerialization.data(withJSONObject: variablesData), encoding: .utf8) ?? "{}"
-        let extensionsData: [String: Any] = ["persistedQuery": ["sha256Hash": GFNConstants.appMetadataQueryHash]]
-        let extensions = String(data: try JSONSerialization.data(withJSONObject: extensionsData), encoding: .utf8) ?? "{}"
-        var components = URLComponents(string: GFNConstants.graphQL)!
-        components.queryItems = [
-            .init(name: "requestType", value: "appMetaData"),
-            .init(name: "extensions", value: extensions),
-            .init(name: "huId", value: UUID().uuidString.replacingOccurrences(of: "-", with: "")),
-            .init(name: "variables", value: variables)
-        ]
+        // Explicit selection includes NVIDIA's per-store capability flags and avoids a stale
+        // persisted-query registry entry. Keep metadata in one bounded request per chunk.
+        let document = """
+        query AppMetadata($vpcId:String!,$appIds:[String!]!){apps(vpcId:$vpcId,appIds:$appIds,language:"en_US"){items{id title shortDescription longDescription publisherName developerName genres images{GAME_BOX_ART HERO_IMAGE TV_BANNER KEY_ART SCREENSHOTS} variants{id appStore supportedControls streetDate gfn{status library{status selected} features{__typename ... on GfnSubscriptionFeatureInterface{key} ... on GfnSubscriptionFeatureValue{value} ... on GfnSubscriptionFeatureValueList{values}}}} gfn{playType playabilityState minimumMembershipTierLabel} contentRatings{type categoryKey contentDescriptorKeys interactiveElementKeys}}}}
+        """
+        let body = try JSONSerialization.data(withJSONObject: ["query": document,
+            "variables": ["vpcId": vpcId, "appIds": uniqueAppIds]])
         let (data, response) = try await request(
-            url: components.url!,
-            headers: [
-                "Accept": "application/json, text/plain, */*",
-                "Content-Type": "application/graphql",
-                "Origin": "https://play.geforcenow.com",
-                "Referer": "https://play.geforcenow.com/",
-                "Authorization": "GFNJWT \(token)",
-                "nv-client-id": GFNConstants.lcarsClientId,
-                "nv-client-type": "NATIVE",
-                "nv-client-version": GFNConstants.gfnClientVersion,
-                "nv-client-streamer": "NVIDIA-CLASSIC",
-                "nv-device-os": "WINDOWS",
-                "nv-device-type": "DESKTOP",
-                "nv-device-make": "UNKNOWN",
-                "nv-device-model": "UNKNOWN",
-                "nv-browser-type": "CHROME",
-                "User-Agent": GFNConstants.userAgent
-            ],
-            timeoutInterval: timeoutInterval
-        )
+            url: URL(string: GFNConstants.graphQL)!, method: "POST",
+            headers: Self.desktopGraphQLHeaders(token: token, contentType: "application/json"),
+            body: body, timeoutInterval: timeoutInterval)
         guard response.statusCode == 200 else {
             let text = String(data: data, encoding: .utf8) ?? "unknown"
-            throw NSError(domain: "OpenNOW.GameMetadata", code: response.statusCode, userInfo: [NSLocalizedDescriptionKey: text])
+            throw NSError(domain: "OpenNOW.GameMetadata", code: response.statusCode,
+                          userInfo: [NSLocalizedDescriptionKey: text])
         }
         return try parseJSON(data)
     }
@@ -5008,6 +5312,19 @@ private actor GFNAPIClient {
     ///
     /// The result is fed through `flattenPanels` by wrapping it in a one-section panel, so search
     /// results are parsed by exactly the same code as the catalog and cannot drift from it.
+    func lookupImport(reference: GFNGameImportReference, session: AuthSession, vpcId: String) async throws -> [CloudGame] {
+        let token = session.tokens.idToken ?? session.tokens.accessToken
+        if let query = reference.search {
+            return try await searchCatalog(token: token, vpcId: vpcId, query: query)
+        }
+        guard let catalogID = reference.catalogID else { return [] }
+        let payload = try await fetchAppMetadata(token: token, appIds: [catalogID], vpcId: vpcId)
+        let apps = ((payload["data"] as? [String: Any])?["apps"] as? [String: Any])?["items"] as? [[String: Any]] ?? []
+        let wrapped: [String: Any] = ["data": ["panels": [["sections": [["title": "Added Games",
+            "items": apps.map { ["__typename": "GameItem", "app": $0] }]]]]]]
+        return Self.flattenPanels(payload: wrapped)
+    }
+
     func searchCatalog(token: String, vpcId: String, query: String, limit: Int = 60) async throws -> [CloudGame] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
@@ -5024,10 +5341,10 @@ private actor GFNAPIClient {
               longDescription
               publisherName
               images { KEY_ART GAME_BOX_ART TV_BANNER HERO_IMAGE SCREENSHOTS }
-              variants { id appStore supportedControls gfn { status library { status selected lastPlayedDate } } }
+              variants { id appStore supportedControls gfn { status library { status selected lastPlayedDate } features { __typename ... on GfnSubscriptionFeatureInterface { key } ... on GfnSubscriptionFeatureValue { value } ... on GfnSubscriptionFeatureValueList { values } } } }
               gfn { playType playabilityState minimumMembershipTierLabel }
-              genres { name }
-              contentRatings { name }
+              genres
+              contentRatings { type categoryKey contentDescriptorKeys interactiveElementKeys }
             }
           }
         }
@@ -5089,22 +5406,13 @@ private actor GFNAPIClient {
 
     /// Reshapes a flat `apps.items` array into the panel envelope `flattenPanels` expects, so one
     /// parser serves both paths.
-    private static func searchResultsAsPanelPayload(_ items: [[String: Any]]) -> [String: Any] {
-        [
-            "data": [
-                "panels": [
-                    [
-                        "sections": [
-                            [
-                                "id": "SEARCH",
-                                "title": "Search results",
-                                "items": items.map { ["__typename": "GameItem", "app": $0] }
-                            ]
-                        ]
-                    ]
-                ]
-            ]
-        ]
+    private static func searchResultsAsPanelPayload(_ items: [[String: Any]], sectionTitle: String? = "Search results") -> [String: Any] {
+        var section: [String: Any] = ["items": items.map { ["__typename": "GameItem", "app": $0] }]
+        if let sectionTitle {
+            section["id"] = "SEARCH"
+            section["title"] = sectionTitle
+        }
+        return ["data": ["panels": [["sections": [section]]]]]
     }
 
     private static func flattenPanels(payload: [String: Any]) -> [CloudGame] {
@@ -5112,6 +5420,8 @@ private actor GFNAPIClient {
               let panels = data["panels"] as? [[String: Any]] else {
             return []
         }
+        // A positive 5080 badge requires membership in NVIDIA's own Ready collection.
+        let readyIDs = GFNCatalogFeatureParser.readyAppIDs(panels: panels)
         var seen = Set<String>()
         var out: [CloudGame] = []
         for panel in panels {
@@ -5143,7 +5453,8 @@ private actor GFNAPIClient {
                         let option = GameLaunchOption(
                             storefront: storefront.isEmpty ? "Auto" : storefront,
                             appId: variantId,
-                            supportedControls: toOptionalStringArray(variant["supportedControls"])
+                            supportedControls: toOptionalStringArray(variant["supportedControls"]),
+                featureLabels: GFNCatalogFeatureParser.labels(variant: variant)
                         )
                         if seenLaunchOptionIds.insert(option.id).inserted {
                             launchOptions.append(option)
@@ -5185,7 +5496,8 @@ private actor GFNAPIClient {
                     let screenshotUrls = imageURLs(from: images?["SCREENSHOTS"])
                     if seen.contains(id) { continue }
                     seen.insert(id)
-                    let genre = (((app["genres"] as? [[String: Any]])?.first)?["name"] as? String) ?? "Cloud Game"
+                    let genre = (app["genres"] as? [String])?.first
+                        ?? (((app["genres"] as? [[String: Any]])?.first)?["name"] as? String) ?? "Cloud Game"
                     let metadata = extractGameMetadata(
                         app: app,
                         selectedVariant: selectedVariant,
@@ -5219,7 +5531,7 @@ private actor GFNAPIClient {
                             publisher: metadata.publisher,
                             developer: metadata.developer,
                             releaseDate: metadata.releaseDate,
-                            featureLabels: metadata.featureLabels,
+                            featureLabels: (metadata.featureLabels ?? []) + (readyIDs.contains(appId) ? ["RTX 5080 Ready"] : []),
                             tags: metadata.tags,
                             stores: metadata.stores,
                             playType: metadata.playType,
@@ -5285,7 +5597,10 @@ private actor GFNAPIClient {
             publisher: publisher,
             developer: developer,
             releaseDate: releaseDate,
-            featureLabels: featureLabels.isEmpty ? nil : featureLabels,
+            featureLabels: featureLabels.isEmpty
+                && !(app["variants"] as? [[String: Any]] ?? []).contains(where: {
+                    ($0["gfn"] as? [String: Any])?["features"] is [Any]
+                }) ? nil : featureLabels,
             tags: mergedTags.isEmpty ? nil : mergedTags,
             stores: stores.isEmpty ? nil : stores.sorted(),
             playType: toOptionalString(gfn?["playType"]),
@@ -5341,7 +5656,8 @@ private actor GFNAPIClient {
             publisher: metadata.publisher ?? game.publisher,
             developer: metadata.developer ?? game.developer,
             releaseDate: metadata.releaseDate ?? game.releaseDate,
-            featureLabels: metadata.featureLabels ?? game.featureLabels,
+            featureLabels: Array(Set((metadata.featureLabels ?? game.featureLabels ?? [])
+                + (game.featureLabels ?? []).filter { $0 == "RTX 5080 Ready" })).sorted(),
             tags: metadata.tags ?? game.tags,
             stores: metadata.stores ?? game.stores,
             playType: metadata.playType ?? game.playType,
@@ -5383,7 +5699,8 @@ private actor GFNAPIClient {
             let option = GameLaunchOption(
                 storefront: storefront.isEmpty ? "Auto" : storefront,
                 appId: variantId,
-                supportedControls: toOptionalStringArray(variant["supportedControls"])
+                supportedControls: toOptionalStringArray(variant["supportedControls"]),
+                featureLabels: GFNCatalogFeatureParser.labels(variant: variant)
             )
             if seen.insert(option.id).inserted {
                 options.append(option)
@@ -5400,7 +5717,7 @@ private actor GFNAPIClient {
             app["tags"]
         ]
         let labels = buckets.flatMap { toOptionalStringArray($0) ?? [] }
-        return Array(Set(labels)).sorted()
+        return Array(Set(labels + GFNCatalogFeatureParser.labels(app: app))).sorted()
     }
 
     private static func toOptionalStringArray(_ value: Any?) -> [String]? {
@@ -5565,7 +5882,7 @@ private actor GFNAPIClient {
                 )
             ]
         ]
-        return (try? JSONSerialization.data(withJSONObject: body)) ?? Data()
+        return (try? JSONSerialization.data(withJSONObject: NativeStreamNVSTConfiguration.requestBody(body, enabled: settings.experimentalNativeNVSTEnabled))) ?? Data()
     }
 
     private static func buildClaimBody(
@@ -5644,7 +5961,7 @@ private actor GFNAPIClient {
             ],
             "metaData": []
         ]
-        return (try? JSONSerialization.data(withJSONObject: body)) ?? Data()
+        return (try? JSONSerialization.data(withJSONObject: NativeStreamNVSTConfiguration.requestBody(body, enabled: settings.experimentalNativeNVSTEnabled))) ?? Data()
     }
 
     private static func requestedStreamingFeatures(
@@ -5654,25 +5971,9 @@ private actor GFNAPIClient {
         chromaFormat: Int,
         hdrEnabled: Bool
     ) -> [String: Any] {
-        [
-            "reflex": settings.enableCloudGsync || profile.fps >= 60,
-            "bitDepth": bitDepth,
-            "cloudGsync": settings.enableCloudGsync,
-            "enabledL4S": settings.enableL4S,
-            "trueHdr": hdrEnabled,
-            "mouseMovementFlags": 0,
-            "supportedHidDevices": 0,
-            "profile": 0,
-            "fallbackToLogicalResolution": false,
-            "hidDevices": NSNull(),
-            "chromaFormat": chromaFormat,
-            "prefilterMode": 0,
-            "prefilterSharpness": 0,
-            "prefilterNoiseReduction": 0,
-            "hudStreamingMode": 0,
-            "sdrColorSpace": 2,
-            "hdrColorSpace": hdrEnabled ? 4 : 0
-        ]
+        CloudMatchStreamingFeatureRequest.build(
+            settings: settings, profile: profile, bitDepth: bitDepth, chromaFormat: chromaFormat
+        )
     }
 
     private static func hdrDisplayData() -> [String: Any] {
@@ -5689,25 +5990,6 @@ private actor GFNAPIClient {
             "hdrEdrSupportedFlagsInUint32": 1,
             "staticMetadataDescriptorId": 0
         ]
-    }
-
-    /// Which CloudMatch identity — and therefore which `appLaunchMode` — this session is created
-    /// under.
-    ///
-    /// This deliberately reads `shouldUseNativeTouch`, the same predicate the live stream reads to
-    /// decide whether to send digitizer contacts. The two used to be different functions: the
-    /// session asked whether the *mobile allocation envelope* could take the requested profile and
-    /// declined the touch identity above 1080p60, while the stream went on sending touch packets
-    /// regardless. That envelope no longer exists — the touch identity keeps the desktop
-    /// allocation matrix — and one predicate means the session and the stream cannot disagree.
-    private static func streamDeviceProfile(
-        for game: CloudGame,
-        settings: AppSettings
-    ) -> StreamDeviceProfile {
-        NativeTouchSupport.shouldUseNativeTouch(
-            mode: settings.touch.nativeTouchMode,
-            game: game
-        ) && !NativeStreamPhysicalInput.keyboardOrMouseConnected ? .touch : .desktop
     }
 
     private static func generatePKCE() -> (verifier: String, challenge: String) {
@@ -5821,10 +6103,12 @@ final class OpenNOWStore: ObservableObject {
     }
 
     /// Games the server returned for the current query that are not in the local catalog.
+    @Published private(set) var importedGames: [CloudGame] = []
     @Published private(set) var remoteSearchResults: [CloudGame] = []
     @Published private(set) var isSearchingCatalog = false
     @Published var controllerConnected = true
     @Published var isAuthenticating = false
+    @Published private(set) var isLoadingFullCatalog = false
     @Published var isLoadingGames = false
     @Published var isLaunchingSession = false
     @Published var showStreamLoading: Bool = false
@@ -5918,6 +6202,7 @@ final class OpenNOWStore: ObservableObject {
         let loadedAuthState = Self.loadAuthState(from: defaults)
         persistedAuthState = loadedAuthState
         authSession = loadedAuthState.activeSession
+        hydrateImportedGames()
         savedAccounts = loadedAuthState.savedAccounts
         if let selectedProvider = loadedAuthState.selectedProvider {
             settings.selectedProviderIdpId = selectedProvider.idpId
@@ -6360,6 +6645,7 @@ final class OpenNOWStore: ObservableObject {
         cancelAccountRefresh()
         clearAccountScopedState()
         authSession = session
+        hydrateImportedGames()
         user = session.user
         settings.selectedProviderIdpId = session.provider.idpId
         persistSettings()
@@ -6389,10 +6675,12 @@ final class OpenNOWStore: ObservableObject {
     }
 
     private func clearAccountScopedState() {
+        isLoadingFullCatalog = false
         isLoadingGames = false
         allGames = []
         featuredGames = []
         libraryGames = []
+        importedGames = []
         resumableSessions = []
         activeSession = nil
         activeStreamSettings = nil
@@ -6414,12 +6702,13 @@ final class OpenNOWStore: ObservableObject {
     }
 
     func refreshCatalog() async {
-        guard let session = authSession else { return }
+        guard !isLoadingGames, !isLoadingFullCatalog, let session = authSession else { return }
         let requestedUserId = session.user.userId
         isLoadingGames = true
         defer {
             if accountIsCurrent(requestedUserId) {
                 isLoadingGames = false
+                isLoadingFullCatalog = false
             }
         }
 
@@ -6449,11 +6738,11 @@ final class OpenNOWStore: ObservableObject {
             persistAuthSession(catalogSession)
             cachedVpcId = vpcId
             availableRegions = filteredRegions
-            allGames = mainGames
+            if allGames.isEmpty { allGames = mainGames }
             featuredGames = Array(mainGames.prefix(8))
             libraryGames = library
             persistCachedCatalog(
-                allGames: mainGames,
+                allGames: allGames,
                 featuredGames: featuredGames,
                 libraryGames: library,
                 vpcId: vpcId,
@@ -6463,6 +6752,25 @@ final class OpenNOWStore: ObservableObject {
             lastError = nil
 
             var accountWarnings: [String] = []
+            var catalogWarning: String?
+            isLoadingFullCatalog = true
+            do {
+                let catalog = try await api.fetchCompleteCatalog(session: refreshed, vpcId: vpcId)
+                guard accountIsCurrent(requestedUserId) else { return }
+                let merged = preservingCatalogMetadata(in: catalog, from: mainGames + allGames + library)
+                var seen = Set(merged.map { catalogStableGameKey($0) })
+                allGames = merged + (mainGames + library).filter { seen.insert(catalogStableGameKey($0)).inserted }
+                persistCachedCatalog(allGames: allGames, featuredGames: featuredGames,
+                    libraryGames: library, vpcId: vpcId, for: catalogSession)
+            } catch {
+                guard accountIsCurrent(requestedUserId) else { return }
+                if OpenNOWErrorPresenter.isCancellation(error) { throw error }
+                let warning = OpenNOWErrorPresenter.message(for: error,
+                    fallback: "The complete catalog could not be refreshed.")
+                catalogWarning = warning
+                accountWarnings.append(warning)
+            }
+            isLoadingFullCatalog = false
             var refreshedSubscription = subscription
             do {
                 refreshedSubscription = try await api.fetchSubscription(session: refreshed, vpcId: vpcId)
@@ -6520,7 +6828,7 @@ final class OpenNOWStore: ObservableObject {
                     "Catalog loaded while account details were partially unavailable: \(accountWarnings.joined(separator: " "), privacy: .public)"
                 )
             }
-            lastError = nil
+            lastError = catalogWarning
         } catch where OpenNOWErrorPresenter.isCancellation(error) {
             // Pull-to-refresh can cancel an in-flight request; treat as non-failure.
             return
@@ -6971,8 +7279,18 @@ final class OpenNOWStore: ObservableObject {
             scheduleDeepLinkLaunch(
                 appId: appId,
                 storefront: query["store"] ?? query["launcher"],
-                settingsOverride: deepLinkSettingsOverride(from: query)
+                settingsOverride: deepLinkSettingsOverride(from: query),
+                importURL: url
             )
+        case "add", "import":
+            Task { [weak self] in
+                guard let self else { return }
+                do {
+                    let games = try await self.lookupGamesToAdd(url.absoluteString)
+                    if let game = games.first { self.addImportedGame(game) }
+                    self.lastError = nil
+                } catch { self.lastError = error.localizedDescription }
+            }
         case "resume", "continue", "jumpback":
             jumpBackToSession()
         case "refresh":
@@ -6992,7 +7310,7 @@ final class OpenNOWStore: ObservableObject {
         }
     }
 
-    private func scheduleDeepLinkLaunch(appId: String, storefront: String?, settingsOverride: AppSettings?) {
+    private func scheduleDeepLinkLaunch(appId: String, storefront: String?, settingsOverride: AppSettings?, importURL: URL? = nil) {
         launchTask?.cancel()
         launchTask = Task { [weak self] in
             guard let self else { return }
@@ -7002,6 +7320,16 @@ final class OpenNOWStore: ObservableObject {
             }
             if self.allGames.isEmpty {
                 await self.refreshCatalog()
+            }
+            // A Home Screen icon can outlive the local catalog cache. Resolve its saved identity.
+            if self.deepLinkLaunchTarget(appId: appId, storefront: storefront) == nil, let importURL {
+                do {
+                    let games = try await self.lookupGamesToAdd(importURL.absoluteString)
+                    if let game = games.first { self.addImportedGame(game) }
+                } catch {
+                    self.lastError = OpenNOWErrorPresenter.message(for: error, fallback: "This game could not be opened.")
+                    return
+                }
             }
             guard let target = self.deepLinkLaunchTarget(appId: appId, storefront: storefront) else {
                 self.lastError = "No catalog entry matches app ID \(appId)."
@@ -7053,7 +7381,7 @@ final class OpenNOWStore: ObservableObject {
         let normalizedAppId = appId.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedStore = storefront.map(normalizeGameStore)
         var seenGameIds = Set<String>()
-        for game in allGames + libraryGames + featuredGames {
+        for game in allGames + libraryGames + featuredGames + importedGames {
             guard seenGameIds.insert(game.id).inserted else { continue }
             let matchingOption = game.launchOptions.first {
                 $0.appId.caseInsensitiveCompare(normalizedAppId) == .orderedSame
@@ -7501,7 +7829,8 @@ final class OpenNOWStore: ObservableObject {
     func applyStreamerSettings(_ updated: AppSettings) {
         var next = settings
         next.streamStatsMetrics = updated.streamStatsMetrics
-        next.showMetalPerformanceHUD = updated.showMetalPerformanceHUD
+        next.metal4Enabled = updated.metal4Enabled
+        next.metalFXUpscalingEnabled = updated.metalFXUpscalingEnabled
         next.touch = updated.touch
         next.mouseSensitivity = updated.mouseSensitivity
         next.mouseScrollSensitivity = updated.mouseScrollSensitivity
@@ -7723,6 +8052,23 @@ final class OpenNOWStore: ObservableObject {
         if let encoded = try? JSONEncoder().encode(normalized) {
             defaults.set(encoded, forKey: settingsKey)
         }
+    }
+
+    func setStreamColor(_ color: StreamColorQuality) {
+        saveVideoSelection(StreamSettingsResolver.selectingColor(color,in:settings))
+    }
+
+    func setStreamHDR(_ enabled: Bool) {
+        let h265Available = enabled && NativeStreamCodecProbe.report().capability(for:.h265)?.launchSafe == true
+        saveVideoSelection(StreamSettingsResolver.selectingHDR(enabled,in:settings,h265Available:h265Available))
+    }
+
+    private func saveVideoSelection(_ updated: AppSettings) {
+        guard updated != settings else { return }
+        // Publish the complete choice once and persist before leaving the control.
+        // The active session keeps its allocation snapshot until a fresh launch.
+        settings = updated
+        persistSettings()
     }
 
     func refreshTrackedSessionSurface() {
@@ -7966,9 +8312,85 @@ final class OpenNOWStore: ObservableObject {
     /// Local results appear instantly as you type; the server's arrive a moment later and fill in
     /// the long tail. Ordering them this way means the list never reshuffles under a thumb that
     /// is already reaching for a result.
+    var visibleLibraryGames: [CloudGame] {
+        var seen = Set<String>()
+        return (libraryGames + importedGames).filter { seen.insert(catalogStableGameKey($0)).inserted }
+    }
+
+    func lookupGamesToAdd(_ raw: String, title: String = "", storefront: String = "STEAM") async throws -> [CloudGame] {
+        guard let session = authSession else {
+            throw NSError(domain: "OpenNOW.GameImport", code: 2,
+                          userInfo: [NSLocalizedDescriptionKey: "Sign in before adding a game."])
+        }
+        let reference = try GFNGameImportReference.parse(raw)
+        let local = (allGames + libraryGames + importedGames + remoteSearchResults).filter { game in
+            if let id = reference.launchID {
+                return game.launchAppId == id || game.launchOptions.contains { $0.appId == id }
+            }
+            if let id = reference.catalogID { return game.uuid?.lowercased() == id.lowercased() }
+            return false
+        }
+        if !local.isEmpty { return local }
+        let matches: [CloudGame]
+        do {
+            matches = try await api.lookupImport(reference: reference, session: session, vpcId: cachedVpcId)
+        } catch {
+            if reference.launchID == nil { throw error }
+            matches = []
+        }
+        guard authSession?.user.userId == session.user.userId else { throw CancellationError() }
+        if !matches.isEmpty { return matches }
+        guard let id = reference.launchID else {
+            throw NSError(domain: "OpenNOW.GameImport", code: 3, userInfo: [NSLocalizedDescriptionKey:
+                "NVIDIA did not return this game for your account and region. Try its GeForce NOW app ID or shared OpenNOW link."])
+        }
+        let store = normalizeGameStore(reference.store ?? storefront)
+        let suppliedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = !suppliedTitle.isEmpty ? suppliedTitle : reference.title ?? "Game \(id)"
+        return [CloudGame(id: "added:\(store):\(id)", title: name, genre: "", platform: store,
+            icon: "gamecontroller", imageUrl: nil, launchAppId: id,
+            launchOptions: [GameLaunchOption(storefront: store, appId: id, supportedControls: nil)],
+            uuid: reference.catalogID, summary: nil, longDescription: nil, publisher: nil,
+            developer: nil, releaseDate: nil, featureLabels: nil, tags: nil, stores: [store],
+            playType: nil, membershipTierLabel: nil, catalogSectionId: nil,
+            catalogSectionTitle: "Added Games", contentRatings: nil)]
+    }
+
+    func addImportedGame(_ game: CloudGame) {
+        guard let key = importedGamesKey else { return }
+        importedGames.removeAll { catalogStableGameKey($0) == catalogStableGameKey(game) }
+        importedGames.append(game)
+        if let encoded = try? JSONEncoder().encode(importedGames) { defaults.set(encoded, forKey: key) }
+    }
+
+    func removeImportedGame(_ game: CloudGame) {
+        importedGames.removeAll { $0.id == game.id }
+        if let key = importedGamesKey, let encoded = try? JSONEncoder().encode(importedGames) {
+            defaults.set(encoded, forKey: key)
+        }
+    }
+
+    private var importedGamesKey: String? {
+        authSession.map { "OpenNOW.iOS.addedGames.\(cacheDigest(for: $0.user.userId))" }
+    }
+
+    private func hydrateImportedGames() {
+        guard let key = importedGamesKey, let data = defaults.data(forKey: key),
+              let games = try? JSONDecoder().decode([CloudGame].self, from: data) else {
+            importedGames = []
+            return
+        }
+        importedGames = games
+    }
+
+    var catalogGames: [CloudGame] {
+        var seen = Set<String>()
+        return (allGames + importedGames).filter { seen.insert(catalogStableGameKey($0)).inserted }
+    }
+
     var filteredCatalogGames: [CloudGame] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let local = allGames.filter { gameMatchesCatalogSearch($0, query: query) }
+        let local = catalogGames.filter { gameMatchesCatalogSearch($0, query: query) }
         guard !query.isEmpty, !remoteSearchResults.isEmpty else { return local }
         var seen = Set(local.map { catalogStableGameKey($0) })
         let extra = remoteSearchResults.filter { seen.insert(catalogStableGameKey($0)).inserted }
@@ -7978,7 +8400,7 @@ final class OpenNOWStore: ObservableObject {
     var favoriteGames: [CloudGame] {
         guard !settings.favoriteGameIds.isEmpty else { return [] }
         var gamesById: [String: CloudGame] = [:]
-        for game in allGames + libraryGames {
+        for game in allGames + libraryGames + importedGames {
             gamesById[game.id] = game
         }
         return settings.favoriteGameIds.compactMap { gamesById[$0] }
@@ -8035,6 +8457,10 @@ final class OpenNOWStore: ObservableObject {
         guard candidate.resolution?.trimmingCharacters(in: .whitespacesAndNewlines) == expectedResolution else {
             return false
         }
+        // A signature describes the request; the finalized host format may have
+        // downgraded it. Reusing that seat perpetuates 8-bit SDR after requesting HDR.
+        guard StreamSettingsResolver.remoteColorMatches(color: candidate.colorQuality,
+            hdr: candidate.hdrEnabled, settings: settings) else { return false }
         return candidate.fps == profile.fps
     }
 
@@ -8253,6 +8679,9 @@ final class OpenNOWStore: ObservableObject {
         }
         if let queuePosition = session.queuePosition, queuePosition > 1 {
             return false
+        }
+        if (activeStreamSettings ?? settings).experimentalNativeNVSTEnabled {
+            return !(session.nativeRtspsEndpoints ?? []).isEmpty
         }
         return hasUsableSignalingEndpoint(session) && hasUsableMediaEndpoint(session)
     }

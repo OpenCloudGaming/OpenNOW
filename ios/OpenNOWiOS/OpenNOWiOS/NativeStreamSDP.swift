@@ -462,7 +462,10 @@ enum NativeStreamSDP {
         let threshold = parsePartialReliableThresholdMs(from: offerSDP)
         let colorQuality = StreamColorQuality(rawValue: settings.preferredColorQuality) ?? .eightBit420
         let supportsHighBitDepth = codec == .h265 || codec == .av1
-        let bitDepth = supportsHighBitDepth && (colorQuality == .tenBit420 || colorQuality == .tenBit444) ? 10 : 8
+        let bitDepth = supportsHighBitDepth && (settings.hdrEnabled || colorQuality.bitDepth == 10) ? 10 : 8
+        let hdrEnabled = supportsHighBitDepth && settings.hdrEnabled
+        // NVIDIA CSC encoding: (color space << 1) | range; preserve full range.
+        let encoderCscMode = hdrEnabled ? 5 : 3 // BT.2020 / BT.709
         let maxBitrate = max(absoluteMinBitrateKbps, profile.maxBitrateKbps)
         let minimumBitrate = max(absoluteMinBitrateKbps, Int((Double(maxBitrate) * 0.35).rounded()))
         let startupBitrate = max(minimumBitrate, Int((Double(maxBitrate) * 0.70).rounded()))
@@ -501,11 +504,8 @@ enum NativeStreamSDP {
 
         if isHighFPS {
             lines += [
-                "a=vqos.dfc.enable:1",
-                "a=vqos.dfc.decodeFpsAdjPercent:85",
-                "a=vqos.dfc.targetDownCooldownMs:250",
-                "a=vqos.dfc.dfcAlgoVersion:\((is120FPS || is240FPS) ? 2 : 1)",
-                "a=vqos.dfc.minTargetFps:\((is120FPS || is240FPS) ? 100 : 60)",
+                // A fixed user-selected FPS must not enable host dynamic frame control.
+                "a=vqos.dfc.enable:0",
                 "a=vqos.resControl.dfc.useClientFpsPerf:0",
                 "a=vqos.dfc.adjustResAndFps:0",
                 "a=bwe.iirFilterFactor:8",
@@ -535,6 +535,11 @@ enum NativeStreamSDP {
         }
 
         lines += [
+            // OpenNOW-Mac's NVST settings also disable the resControl-scoped DFC.
+            // Disabling only the top-level DFC leaves this controller unspecified.
+            "a=vqos.resControl.enable:0",
+            "a=vqos.resControl.dfc.adjustResAndFps:0",
+            "a=vqos.resControl.dfc.maxResLevels:0",
             "a=vqos.adjustStreamingFpsDuringOutOfFocus:0",
             "a=vqos.resControl.cpmRtc.ignoreOutOfFocusWindowState:1",
             "a=vqos.resControl.perfHistory.rtcIgnoreOutOfFocusWindowState:1",
@@ -594,8 +599,8 @@ enum NativeStreamSDP {
             "a=vqos.grc.enable:0",
             "a=video.maxNumReferenceFrames:4",
             "a=video.mapRtpTimestampsToFrames:1",
-            "a=video.encoderCscMode:3",
-            "a=video.dynamicRangeMode:0",
+            "a=video.encoderCscMode:\(encoderCscMode)",
+            "a=video.dynamicRangeMode:\(hdrEnabled ? 1 : 0)",
             "a=video.bitDepth:\(bitDepth)",
             "a=video.scalingFeature1:\(isAV1 ? 1 : 0)",
             "a=video.prefilterParams.prefilterModel:0",

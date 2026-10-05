@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		BB0000000000000000000061 /* NativeStreamMetal4Effects.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000071; };
+		BB0000000000000000000041 /* NativeStreamVideoEffects.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000051; };
+		BB0000000000000000000021 /* NativeStreamHDRMetal.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000031 /* NativeStreamHDRMetal.swift */; };
 		0A1B2C3D4E5F6A7B8C9D1001 /* OpenNOWiOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F6A7B8C9D2001 /* OpenNOWiOSApp.swift */; };
 		0A1B2C3D4E5F6A7B8C9D1002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F6A7B8C9D2002 /* ContentView.swift */; };
 		0A1B2C3D4E5F6A7B8C9D1004 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F6A7B8C9D2004 /* Assets.xcassets */; };
@@ -31,6 +34,7 @@
 		BB000000000000000000000C /* NativeStreamSDP.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000000000000000000001C /* NativeStreamSDP.swift */; };
 		BB000000000000000000000D /* NativeStreamInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000000000000000000001D /* NativeStreamInput.swift */; };
 		BB000000000000000000000E /* NativeStreamCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000000000000000000001E /* NativeStreamCodec.swift */; };
+				BB0000000000000000000020 /* NativeStreamAV1.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000030 /* NativeStreamAV1.swift */; };
 		BB000000000000000000000F /* NativeStreamAudioDevice.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000000000000000000001F /* NativeStreamAudioDevice.swift */; };
 		CC0000000000000000000001 /* QueueActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000011 /* QueueActivityAttributes.swift */; };
 		CC0000000000000000000002 /* QueueLiveActivityManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000012 /* QueueLiveActivityManager.swift */; };
@@ -57,6 +61,96 @@
 		DE000000000000000000000E /* OpenNOWFailure.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE000000000000000000001E /* OpenNOWFailure.swift */; };
 		EE0000000000000000000001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = EE0000000000000000000011 /* PrivacyInfo.xcprivacy */; };
 		F10000000000000000000001 /* OpenNOWiOSParityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000011 /* OpenNOWiOSParityTests.swift */; };
+		04937EADD6D6B625A79E37F9 /* GeronimoInputProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8EB51AE2654616A0453827E; };
+		CC8788EDE2AFD6C637BDA897 /* NvstAnnexB.swift in Sources */ = {isa = PBXBuildFile; fileRef = D25073CC313C89A817BDDB42; };
+		E2D6635C23ABFEB1341C19DD /* NvstAudioSurroundInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E6FADCAF110F3487476F693; };
+		DAB597A25E727C0DD85F20C3 /* NvstAv1Obu.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90E8D5566B33255FCB6CBBEF; };
+		F964DD4FE2590801E3472915 /* NvstBundleIceProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CBCA5BA8106302557EEF25E; };
+		6F2A46D5E1A4D06634B58057 /* NvstByteCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10B5618FA829A28A31EAA7E; };
+		4E2CDB665D8E32CE35E620A4 /* NvstClientStatsReports.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4012C0BC830A6B966E9F5F7C; };
+		9EB18CFD52ED20D286611817 /* NvstControlCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2F2262DC8631F35B89E8291; };
+		4610EB8AD4768A05BC533477 /* NvstDatagram.swift in Sources */ = {isa = PBXBuildFile; fileRef = B13268A3E71A245315D4991B; };
+		1A9619910BC03FFD8FD7575F /* NvstElementaryStream.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89D89109EFA379533B1298F9; };
+		AFFF496F2ECD27F7FD11CFF6 /* NvstFecRecovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF0B7C1584EC19A88CAA50C0; };
+		48A5A815C6D2CC012CE6B580 /* NvstFeedbackSender.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A138D5D882DD5F068263409; };
+		506AEDD7FBA7295D1628CBEC /* NvstFrameAck.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7091EFD56187E0E570EF1C7D; };
+		6FE13160DDC37B439291F8E2 /* NvstFramePacingReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 176AEDBDF45A657204A9808C; };
+		76C1D191CF4AA16F8556D648 /* NvstFrameReassembler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8090D16085E58499D3433A43; };
+		F9A9C3EE21AAF5CCA115D442 /* NvstGamepadPacket.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FE573C98A2F7AD2DB1B7DB8; };
+		BFAEDCE9746D16066E398588 /* NvstHapticEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9DF59D04F759E5CE6740E7E; };
+		B805EE9E620245D5E643F222 /* NvstHdrModeNotification.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06B75AEE7FCDFBB5FF88965E; };
+		9F2829C99927C63A6290B595 /* NvstHidPassthrough.swift in Sources */ = {isa = PBXBuildFile; fileRef = 034B974A326598B9BDBEA109; };
+		DC2A64AEC16EE86F29B0B789 /* NvstInboundCounters.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1B8223C29C059220609FCB2; };
+		02A1CFDA397938348803A72E /* NvstInputActivation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0EDD7007984C5B5DE29F21CE; };
+		443D5365E08C148422D6A035 /* NvstMjolnirReceiver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8AC99A4C4A487637987248B1; };
+		C4EF2C67BFEC857517446487 /* NvstOpusDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE8589962BBE90FE0B4503ED; };
+		DDDFB7BB87611AC280DFFFA5 /* NvstQosReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EC3BA55B1DD22815AFE6595; };
+		55F8953F77BF9A81CEEEE0FE /* NvstReedSolomon.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D2742DE445AFA08166E3EEE; };
+		F851FEED9B3FC56CCD23DF41 /* NvstRemoteCursor.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADD77A18156110AE7EA4AE20; };
+		2E19076AFBD5DEDFCA3CC62C /* NvstRemoteInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = D76AAC95BF71763E4ECE8BBD; };
+		3F4A9BE1AA0F565C0B263671 /* NvstRemoteInputWindowEvents.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA149CA6EE6E9E4425D9A1; };
+		0F6E42487CAD9DBDA3B96F75 /* NvstResultCodes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D58F562DA17F3A14C378D08; };
+		A2443FF9F3775B80EB97B4AB /* NvstRtcp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6ED81602A8350EFED6324A22; };
+		BDBFDA6E996F45C960681C17 /* NvstSeatStats.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20163814F0070240259F3B13; };
+		BC11329E1C79BB534F0A6D7E /* NvstSeatTermination.swift in Sources */ = {isa = PBXBuildFile; fileRef = 294E81DA98483233D9A59AE5; };
+		C62A7723CB77D683053CE56F /* NvstSrtcp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9463843B81ECE4FEE66E4F6B; };
+		243D7E177A1B8F5F40B2E767 /* NvstStunHolePunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF4011B25395BA72DA59CC0F; };
+		6ED02DEEA6A2F499B7A20E4E /* NvstVideoPacket.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6E856D81E2C1FC312BC3DB7; };
+		9C94FFDB2092FCB835796A28 /* NvstVideoReceiver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1668C2BC15E84B2CA9351D1A; };
+		B813C9EDF435928D2B0D558E /* NvstVsyncMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FFF17B34CA403A98F15A53A; };
+		05208217F7BD1A10797A06BE /* SrtpCryptography.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A291A1FE9918D8324AD221E; };
+		87837026AB2C3C8651C899B6 /* NVSTVideoHandoff.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7608039FC35D8B039F1AE55; };
+		D1C36E31C25060FC9A9E34F8 /* NvstAudioJitterBuffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8DDDAAAA76FF39164F42DD9; };
+		1C4B780762999E5576F5F9A1 /* NvstAudioReceivePipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFE20EED4BFC45C3EDA8E6BF; };
+		394C2E67B4CD695476AE137D /* NvstAudioRtp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B87DC408E29D6510AE2DB15; };
+		CEEF4B6B963B36937F1A7E17 /* NvstAudioSendPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4E213C546018D253281F041; };
+		1C033AB2F10A5D11955D41E7 /* NvstAudioSrtp.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD77B1C1BF6DD89CFD2AEED1; };
+		CB8AEBAFDAB270F0815FCCF6 /* NvstBundleDatagramDemux.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4915EE7F1B790BC6DC568358; };
+		22DA3BB53694DE13BAB2BEC3 /* NvstBundleNattPunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D34CE8C82E8129C36415E4E; };
+		49C79A8D27EAF689B7922377 /* NvstBundleSrtpKeys.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90AEE5357E8F37C3FEA689F8; };
+		3D89C64D1BC80ABEA8E42678 /* NvstCoreAudioDevice.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EA450EB7F51F2A851106C9E; };
+		F082435FB36BD4BD3ADC6036 /* NvstCoreAudioFormat.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8340A5DC05D8F122770B49F3; };
+		8502B4279F48533B8965CFB0 /* NvstDataChannel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 860CEB055C0123B5EE6F4561; };
+		8AF1A15F926FA68CC59D2B4F /* NvstDtlsHandshake.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18323691636658865C919C22; };
+		2BA0F166A813C8D339459194 /* NvstDtlsIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 776E83432BA6E0B4180CFEE0; };
+		1A97123863197E3389607A50 /* NvstDtlsTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AB522EDF936087417B4B8C6; };
+		70722D841B0999E317F41BC2 /* NvstNativeBundle+SessionLimit.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62CB3903CA4D111628B94B05; };
+		4B0769FA75B1B33CC7173794 /* NvstNativeBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10AAB8B009668DBC46D14D9E; };
+		34CC49ECE009384DF05678A6 /* NvstOpusEncoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CB5A80164442E5D7230403E; };
+		BC417D4876CC8CEBED01DD06 /* NvstRedAudio.swift in Sources */ = {isa = PBXBuildFile; fileRef = E92BD358119E622A66F0BFE9; };
+		A40EE3F8EE64181F3C16E6A3 /* NvstSctpAssociation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0343683395FDFCF237023580; };
+		93564B3AFEA95A3F74C9C213 /* StreamSessionLimitUpdate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93E92B03C346CCDF137FE89C; };
+		27354AED9FD5FBF6E5B60823 /* NvstBundleReservation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0555D545EE58990F18D35C3D; };
+		F8B5E56A5B93D3AE73D6EFB6 /* NvstCapturedAnnounce.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A0B13D14AF4D1040EF93B3C; };
+		607A8085FE32964D3590592A /* NvstRtspConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07BC336FAA5AF65DACAF8AE3; };
+		88897007045D0B1A1E0C8DE7 /* NvstRtspEndpoints.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF602EA1198F77A11775DDDC; };
+		4F32DF6C62069EF1F3E7EF2E /* NvstRtspNegotiationTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD39E11D6EE7ED02797932FB; };
+		7AB171DB543E1642BCFF05B8 /* NvstRtspNegotiator.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF9C03956DA77543DE6BA71F; };
+		9BE18E907DE14C57D89FB2C3 /* NvstRtspSdp+Announce.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6979577569198DB3132A438B; };
+		D38BA2B53328BC60F6A40A53 /* NvstRtspSdp.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEC3B9B3CE53146BD3701B45; };
+		B355E5F5078087994BD5421D /* NvstRtspWireFormat.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A01981C89B6C2CDE9229B6; };
+		E82AD1682E1AFFD0AA0F7483 /* NvstVideoPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B62FEDA51469723C4811310; };
+		AB533C6016ED0CD4950FCE46 /* NvstVideoToolboxDecoder+Format.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20868A10E9ADC61B9BFEF85; };
+		BA49BF34AB585A34B4954AC5 /* NvstVideoToolboxDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6EF45BBDD148693DB92D1807; };
+		1290E0FB4D1FAB8F9CA53A6F /* NativeStreamNVST.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D1173146DFEC0DCCAF36982; };
+		4A5F97824B2E12F3BD7390F7 /* NativeStreamNVSTInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9730BA964731A6D8DC01CE40; };
+		F5CB0BC94379AECFADEC60C2 /* OpenSSL.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 716F34D6B07D299097D1F0D8; };
+		1FE5F919752F0F94C2E5DA80 /* usrsctp.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = B4A2274E6D3DDECCDCF5C1CA; };
+		69D8855CDF5917C51CB99E24 /* NvstDtlsHandshakeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 569C0ADC474B85350859646A; };
+		8E24301EC5DF7F7D1416CDCF /* NvstSctpAssociationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 591060B0D79911A8C82016B5; };
+		9CF3C879E9E08C1CB50CB7F1 /* NvstBundleStackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F38C89DD3A24B3557FCB93F; };
+		22D0B32C8458038A33A4ACE0 /* SrtpCryptographyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A86B38681CD9438F1BC8C253; };
+		00011D19F6D5A547098B779C /* NvstReceiverFixtures.swift in Sources */ = {isa = PBXBuildFile; fileRef = A069F9F629064E25EDB36A88; };
+		9B3D67D24C9F4FB6AF2B4E6A /* NvstMjolnirFeedbackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC4088A9FEBFF97FD9CC5F34; };
+		C2B0D88E0E373B7C19B6A48A /* NvstStunHolePunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D5F9061351158BB86A314C0; };
+		6DF9FD408D2EBE853D9CE4C9 /* NvstAv1ObuTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4433A2CA54411B0DC2E59D4; };
+		A1DE323895E8B8A345FFE075 /* NvstRtspNegotiationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31B1664E609E0406913114BE; };
+		D305859AD8A18424F47FD0A9 /* NvstRtspNegotiatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1613FFECCDBE846C085AC5D2; };
+		39C10CC1F62415F05F8FE3BC /* NativeStreamNVSTConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = B077A38C81C6BC6E59A0A997; };
+		187B20A5ED969D396F5DE288 /* NVST Licenses in Resources */ = {isa = PBXBuildFile; fileRef = D7EAAADE36D7168904D2F92F; };
+		DCB6E15A6553D49039CDF051 /* NvstVideoPacketTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87BA6AF68B333ABDC69BBF02; };
+		E162081677B89815538C5BE6 /* NativeStreamPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5AED86C88ABC9CF127D2EC2; };
+		861B9542E73D0DA498B9AD7E /* NativeStreamPiP.swift in Sources */ = {isa = PBXBuildFile; fileRef = CAFB07FF7772F95D7EC52A5D; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -102,6 +196,9 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		BB0000000000000000000071 /* NativeStreamMetal4Effects.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeStreamMetal4Effects.swift; sourceTree = "<group>"; };
+		BB0000000000000000000051 /* NativeStreamVideoEffects.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeStreamVideoEffects.swift; sourceTree = "<group>"; };
+		BB0000000000000000000031 /* NativeStreamHDRMetal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeStreamHDRMetal.swift; sourceTree = "<group>"; };
 		0A1B2C3D4E5F6A7B8C9D2001 /* OpenNOWiOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenNOWiOSApp.swift; sourceTree = "<group>"; };
 		0A1B2C3D4E5F6A7B8C9D2002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		0A1B2C3D4E5F6A7B8C9D2004 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -127,6 +224,7 @@
 		BB000000000000000000001C /* NativeStreamSDP.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeStreamSDP.swift; sourceTree = "<group>"; };
 		BB000000000000000000001D /* NativeStreamInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeStreamInput.swift; sourceTree = "<group>"; };
 		BB000000000000000000001E /* NativeStreamCodec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeStreamCodec.swift; sourceTree = "<group>"; };
+				BB0000000000000000000030 /* NativeStreamAV1.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeStreamAV1.swift; sourceTree = "<group>"; };
 		BB000000000000000000001F /* NativeStreamAudioDevice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeStreamAudioDevice.swift; sourceTree = "<group>"; };
 		CC0000000000000000000011 /* QueueActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueActivityAttributes.swift; sourceTree = "<group>"; };
 		CC0000000000000000000012 /* QueueLiveActivityManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueLiveActivityManager.swift; sourceTree = "<group>"; };
@@ -153,6 +251,96 @@
 		EE0000000000000000000011 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		F10000000000000000000011 /* OpenNOWiOSParityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenNOWiOSParityTests.swift; sourceTree = "<group>"; };
 		F10000000000000000000012 /* OpenNOWiOSTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OpenNOWiOSTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		E8EB51AE2654616A0453827E /* GeronimoInputProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/GeronimoInputProtocol.swift"; sourceTree = "<group>"; };
+		D25073CC313C89A817BDDB42 /* NvstAnnexB.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstAnnexB.swift"; sourceTree = "<group>"; };
+		9E6FADCAF110F3487476F693 /* NvstAudioSurroundInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstAudioSurroundInfo.swift"; sourceTree = "<group>"; };
+		90E8D5566B33255FCB6CBBEF /* NvstAv1Obu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstAv1Obu.swift"; sourceTree = "<group>"; };
+		5CBCA5BA8106302557EEF25E /* NvstBundleIceProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstBundleIceProbe.swift"; sourceTree = "<group>"; };
+		C10B5618FA829A28A31EAA7E /* NvstByteCodec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstByteCodec.swift"; sourceTree = "<group>"; };
+		4012C0BC830A6B966E9F5F7C /* NvstClientStatsReports.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstClientStatsReports.swift"; sourceTree = "<group>"; };
+		D2F2262DC8631F35B89E8291 /* NvstControlCommand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstControlCommand.swift"; sourceTree = "<group>"; };
+		B13268A3E71A245315D4991B /* NvstDatagram.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstDatagram.swift"; sourceTree = "<group>"; };
+		89D89109EFA379533B1298F9 /* NvstElementaryStream.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstElementaryStream.swift"; sourceTree = "<group>"; };
+		BF0B7C1584EC19A88CAA50C0 /* NvstFecRecovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstFecRecovery.swift"; sourceTree = "<group>"; };
+		1A138D5D882DD5F068263409 /* NvstFeedbackSender.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstFeedbackSender.swift"; sourceTree = "<group>"; };
+		7091EFD56187E0E570EF1C7D /* NvstFrameAck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstFrameAck.swift"; sourceTree = "<group>"; };
+		176AEDBDF45A657204A9808C /* NvstFramePacingReport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstFramePacingReport.swift"; sourceTree = "<group>"; };
+		8090D16085E58499D3433A43 /* NvstFrameReassembler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstFrameReassembler.swift"; sourceTree = "<group>"; };
+		0FE573C98A2F7AD2DB1B7DB8 /* NvstGamepadPacket.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstGamepadPacket.swift"; sourceTree = "<group>"; };
+		A9DF59D04F759E5CE6740E7E /* NvstHapticEvent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstHapticEvent.swift"; sourceTree = "<group>"; };
+		06B75AEE7FCDFBB5FF88965E /* NvstHdrModeNotification.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstHdrModeNotification.swift"; sourceTree = "<group>"; };
+		034B974A326598B9BDBEA109 /* NvstHidPassthrough.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstHidPassthrough.swift"; sourceTree = "<group>"; };
+		F1B8223C29C059220609FCB2 /* NvstInboundCounters.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstInboundCounters.swift"; sourceTree = "<group>"; };
+		0EDD7007984C5B5DE29F21CE /* NvstInputActivation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstInputActivation.swift"; sourceTree = "<group>"; };
+		8AC99A4C4A487637987248B1 /* NvstMjolnirReceiver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstMjolnirReceiver.swift"; sourceTree = "<group>"; };
+		DE8589962BBE90FE0B4503ED /* NvstOpusDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstOpusDecoder.swift"; sourceTree = "<group>"; };
+		3EC3BA55B1DD22815AFE6595 /* NvstQosReport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstQosReport.swift"; sourceTree = "<group>"; };
+		0D2742DE445AFA08166E3EEE /* NvstReedSolomon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstReedSolomon.swift"; sourceTree = "<group>"; };
+		ADD77A18156110AE7EA4AE20 /* NvstRemoteCursor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstRemoteCursor.swift"; sourceTree = "<group>"; };
+		D76AAC95BF71763E4ECE8BBD /* NvstRemoteInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstRemoteInput.swift"; sourceTree = "<group>"; };
+		AAAA149CA6EE6E9E4425D9A1 /* NvstRemoteInputWindowEvents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstRemoteInputWindowEvents.swift"; sourceTree = "<group>"; };
+		7D58F562DA17F3A14C378D08 /* NvstResultCodes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstResultCodes.swift"; sourceTree = "<group>"; };
+		6ED81602A8350EFED6324A22 /* NvstRtcp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstRtcp.swift"; sourceTree = "<group>"; };
+		20163814F0070240259F3B13 /* NvstSeatStats.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstSeatStats.swift"; sourceTree = "<group>"; };
+		294E81DA98483233D9A59AE5 /* NvstSeatTermination.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstSeatTermination.swift"; sourceTree = "<group>"; };
+		9463843B81ECE4FEE66E4F6B /* NvstSrtcp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstSrtcp.swift"; sourceTree = "<group>"; };
+		CF4011B25395BA72DA59CC0F /* NvstStunHolePunch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstStunHolePunch.swift"; sourceTree = "<group>"; };
+		D6E856D81E2C1FC312BC3DB7 /* NvstVideoPacket.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstVideoPacket.swift"; sourceTree = "<group>"; };
+		1668C2BC15E84B2CA9351D1A /* NvstVideoReceiver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstVideoReceiver.swift"; sourceTree = "<group>"; };
+		7FFF17B34CA403A98F15A53A /* NvstVsyncMode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/NvstVsyncMode.swift"; sourceTree = "<group>"; };
+		0A291A1FE9918D8324AD221E /* SrtpCryptography.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/BifrostFree/SrtpCryptography.swift"; sourceTree = "<group>"; };
+		E7608039FC35D8B039F1AE55 /* NVSTVideoHandoff.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/Handoff/NVSTVideoHandoff.swift"; sourceTree = "<group>"; };
+		F8DDDAAAA76FF39164F42DD9 /* NvstAudioJitterBuffer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/Native/NvstAudioJitterBuffer.swift"; sourceTree = "<group>"; };
+		AFE20EED4BFC45C3EDA8E6BF /* NvstAudioReceivePipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/Native/NvstAudioReceivePipeline.swift"; sourceTree = "<group>"; };
+		8B87DC408E29D6510AE2DB15 /* NvstAudioRtp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/Native/NvstAudioRtp.swift"; sourceTree = "<group>"; };
+		F4E213C546018D253281F041 /* NvstAudioSendPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/Native/NvstAudioSendPipeline.swift"; sourceTree = "<group>"; };
+		BD77B1C1BF6DD89CFD2AEED1 /* NvstAudioSrtp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/Native/NvstAudioSrtp.swift"; sourceTree = "<group>"; };
+		4915EE7F1B790BC6DC568358 /* NvstBundleDatagramDemux.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/Native/NvstBundleDatagramDemux.swift"; sourceTree = "<group>"; };
+		7D34CE8C82E8129C36415E4E /* NvstBundleNattPunch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/Native/NvstBundleNattPunch.swift"; sourceTree = "<group>"; };
+		90AEE5357E8F37C3FEA689F8 /* NvstBundleSrtpKeys.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/Native/NvstBundleSrtpKeys.swift"; sourceTree = "<group>"; };
+		2EA450EB7F51F2A851106C9E /* NvstCoreAudioDevice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/Native/NvstCoreAudioDevice.swift"; sourceTree = "<group>"; };
+		8340A5DC05D8F122770B49F3 /* NvstCoreAudioFormat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/Native/NvstCoreAudioFormat.swift"; sourceTree = "<group>"; };
+		860CEB055C0123B5EE6F4561 /* NvstDataChannel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/Native/NvstDataChannel.swift"; sourceTree = "<group>"; };
+		18323691636658865C919C22 /* NvstDtlsHandshake.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/Native/NvstDtlsHandshake.swift"; sourceTree = "<group>"; };
+		776E83432BA6E0B4180CFEE0 /* NvstDtlsIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/Native/NvstDtlsIdentity.swift"; sourceTree = "<group>"; };
+		9AB522EDF936087417B4B8C6 /* NvstDtlsTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/Native/NvstDtlsTransport.swift"; sourceTree = "<group>"; };
+		62CB3903CA4D111628B94B05 /* NvstNativeBundle+SessionLimit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/Native/NvstNativeBundle+SessionLimit.swift"; sourceTree = "<group>"; };
+		10AAB8B009668DBC46D14D9E /* NvstNativeBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/Native/NvstNativeBundle.swift"; sourceTree = "<group>"; };
+		2CB5A80164442E5D7230403E /* NvstOpusEncoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/Native/NvstOpusEncoder.swift"; sourceTree = "<group>"; };
+		E92BD358119E622A66F0BFE9 /* NvstRedAudio.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/Native/NvstRedAudio.swift"; sourceTree = "<group>"; };
+		0343683395FDFCF237023580 /* NvstSctpAssociation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/Native/NvstSctpAssociation.swift"; sourceTree = "<group>"; };
+		93E92B03C346CCDF137FE89C /* StreamSessionLimitUpdate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/Native/StreamSessionLimitUpdate.swift"; sourceTree = "<group>"; };
+		0555D545EE58990F18D35C3D /* NvstBundleReservation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/Rtsp/NvstBundleReservation.swift"; sourceTree = "<group>"; };
+		7A0B13D14AF4D1040EF93B3C /* NvstCapturedAnnounce.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/Rtsp/NvstCapturedAnnounce.swift"; sourceTree = "<group>"; };
+		07BC336FAA5AF65DACAF8AE3 /* NvstRtspConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/Rtsp/NvstRtspConnection.swift"; sourceTree = "<group>"; };
+		BF602EA1198F77A11775DDDC /* NvstRtspEndpoints.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/Rtsp/NvstRtspEndpoints.swift"; sourceTree = "<group>"; };
+		CD39E11D6EE7ED02797932FB /* NvstRtspNegotiationTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/Rtsp/NvstRtspNegotiationTypes.swift"; sourceTree = "<group>"; };
+		DF9C03956DA77543DE6BA71F /* NvstRtspNegotiator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/Rtsp/NvstRtspNegotiator.swift"; sourceTree = "<group>"; };
+		6979577569198DB3132A438B /* NvstRtspSdp+Announce.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/Rtsp/NvstRtspSdp+Announce.swift"; sourceTree = "<group>"; };
+		DEC3B9B3CE53146BD3701B45 /* NvstRtspSdp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/Rtsp/NvstRtspSdp.swift"; sourceTree = "<group>"; };
+		C5A01981C89B6C2CDE9229B6 /* NvstRtspWireFormat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/Rtsp/NvstRtspWireFormat.swift"; sourceTree = "<group>"; };
+		7B62FEDA51469723C4811310 /* NvstVideoPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/Video/NvstVideoPipeline.swift"; sourceTree = "<group>"; };
+		E20868A10E9ADC61B9BFEF85 /* NvstVideoToolboxDecoder+Format.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/Video/NvstVideoToolboxDecoder+Format.swift"; sourceTree = "<group>"; };
+		6EF45BBDD148693DB92D1807 /* NvstVideoToolboxDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/Video/NvstVideoToolboxDecoder.swift"; sourceTree = "<group>"; };
+		5D1173146DFEC0DCCAF36982 /* NativeStreamNVST.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NativeStreamNVST.swift"; sourceTree = "<group>"; };
+		9730BA964731A6D8DC01CE40 /* NativeStreamNVSTInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NativeStreamNVSTInput.swift"; sourceTree = "<group>"; };
+		716F34D6B07D299097D1F0D8 /* OpenSSL.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = OpenSSL.xcframework; sourceTree = "<group>"; };
+		B4A2274E6D3DDECCDCF5C1CA /* usrsctp.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = usrsctp.xcframework; sourceTree = "<group>"; };
+		569C0ADC474B85350859646A /* NvstDtlsHandshakeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/NvstDtlsHandshakeTests.swift"; sourceTree = "<group>"; };
+		591060B0D79911A8C82016B5 /* NvstSctpAssociationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/NvstSctpAssociationTests.swift"; sourceTree = "<group>"; };
+		4F38C89DD3A24B3557FCB93F /* NvstBundleStackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/NvstBundleStackTests.swift"; sourceTree = "<group>"; };
+		A86B38681CD9438F1BC8C253 /* SrtpCryptographyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/SrtpCryptographyTests.swift"; sourceTree = "<group>"; };
+		A069F9F629064E25EDB36A88 /* NvstReceiverFixtures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/NvstReceiverFixtures.swift"; sourceTree = "<group>"; };
+		AC4088A9FEBFF97FD9CC5F34 /* NvstMjolnirFeedbackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/NvstMjolnirFeedbackTests.swift"; sourceTree = "<group>"; };
+		6D5F9061351158BB86A314C0 /* NvstStunHolePunchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/NvstStunHolePunchTests.swift"; sourceTree = "<group>"; };
+		B4433A2CA54411B0DC2E59D4 /* NvstAv1ObuTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/NvstAv1ObuTests.swift"; sourceTree = "<group>"; };
+		31B1664E609E0406913114BE /* NvstRtspNegotiationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/NvstRtspNegotiationTests.swift"; sourceTree = "<group>"; };
+		1613FFECCDBE846C085AC5D2 /* NvstRtspNegotiatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/NvstRtspNegotiatorTests.swift"; sourceTree = "<group>"; };
+		B077A38C81C6BC6E59A0A997 /* NativeStreamNVSTConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeStreamNVSTConfiguration.swift; sourceTree = "<group>"; };
+		D7EAAADE36D7168904D2F92F /* NVST Licenses */ = {isa = PBXFileReference; lastKnownFileType = folder; path = "NVST/Licenses"; sourceTree = "<group>"; };
+		87BA6AF68B333ABDC69BBF02 /* NvstVideoPacketTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NVST/NvstVideoPacketTests.swift"; sourceTree = "<group>"; };
+		C5AED86C88ABC9CF127D2EC2 /* NativeStreamPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeStreamPresentation.swift; sourceTree = "<group>"; };
+		CAFB07FF7772F95D7EC52A5D /* NativeStreamPiP.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeStreamPiP.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -160,6 +348,12 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				1FE5F919752F0F94C2E5DA80 /* usrsctp.xcframework in Frameworks */,
+
+				F5CB0BC94379AECFADEC60C2 /* OpenSSL.xcframework in Frameworks */,
+
+
+
 				A26000000000000000000003 /* AppIntents.framework in Frameworks */,
 				DD0000000000000000000002 /* WebRTC.xcframework in Frameworks */,
 			);
@@ -196,6 +390,87 @@
 		0A1B2C3D4E5F6A7B8C9D4002 /* OpenNOWiOS */ = {
 			isa = PBXGroup;
 			children = (
+				CAFB07FF7772F95D7EC52A5D /* NativeStreamPiP.swift */,
+				C5AED86C88ABC9CF127D2EC2 /* NativeStreamPresentation.swift */,
+				D7EAAADE36D7168904D2F92F /* NVST Licenses */,
+				B077A38C81C6BC6E59A0A997 /* NativeStreamNVSTConfiguration.swift */,
+				E8EB51AE2654616A0453827E /* GeronimoInputProtocol.swift */,
+				D25073CC313C89A817BDDB42 /* NvstAnnexB.swift */,
+				9E6FADCAF110F3487476F693 /* NvstAudioSurroundInfo.swift */,
+				90E8D5566B33255FCB6CBBEF /* NvstAv1Obu.swift */,
+				5CBCA5BA8106302557EEF25E /* NvstBundleIceProbe.swift */,
+				C10B5618FA829A28A31EAA7E /* NvstByteCodec.swift */,
+				4012C0BC830A6B966E9F5F7C /* NvstClientStatsReports.swift */,
+				D2F2262DC8631F35B89E8291 /* NvstControlCommand.swift */,
+				B13268A3E71A245315D4991B /* NvstDatagram.swift */,
+				89D89109EFA379533B1298F9 /* NvstElementaryStream.swift */,
+				BF0B7C1584EC19A88CAA50C0 /* NvstFecRecovery.swift */,
+				1A138D5D882DD5F068263409 /* NvstFeedbackSender.swift */,
+				7091EFD56187E0E570EF1C7D /* NvstFrameAck.swift */,
+				176AEDBDF45A657204A9808C /* NvstFramePacingReport.swift */,
+				8090D16085E58499D3433A43 /* NvstFrameReassembler.swift */,
+				0FE573C98A2F7AD2DB1B7DB8 /* NvstGamepadPacket.swift */,
+				A9DF59D04F759E5CE6740E7E /* NvstHapticEvent.swift */,
+				06B75AEE7FCDFBB5FF88965E /* NvstHdrModeNotification.swift */,
+				034B974A326598B9BDBEA109 /* NvstHidPassthrough.swift */,
+				F1B8223C29C059220609FCB2 /* NvstInboundCounters.swift */,
+				0EDD7007984C5B5DE29F21CE /* NvstInputActivation.swift */,
+				8AC99A4C4A487637987248B1 /* NvstMjolnirReceiver.swift */,
+				DE8589962BBE90FE0B4503ED /* NvstOpusDecoder.swift */,
+				3EC3BA55B1DD22815AFE6595 /* NvstQosReport.swift */,
+				0D2742DE445AFA08166E3EEE /* NvstReedSolomon.swift */,
+				ADD77A18156110AE7EA4AE20 /* NvstRemoteCursor.swift */,
+				D76AAC95BF71763E4ECE8BBD /* NvstRemoteInput.swift */,
+				AAAA149CA6EE6E9E4425D9A1 /* NvstRemoteInputWindowEvents.swift */,
+				7D58F562DA17F3A14C378D08 /* NvstResultCodes.swift */,
+				6ED81602A8350EFED6324A22 /* NvstRtcp.swift */,
+				20163814F0070240259F3B13 /* NvstSeatStats.swift */,
+				294E81DA98483233D9A59AE5 /* NvstSeatTermination.swift */,
+				9463843B81ECE4FEE66E4F6B /* NvstSrtcp.swift */,
+				CF4011B25395BA72DA59CC0F /* NvstStunHolePunch.swift */,
+				D6E856D81E2C1FC312BC3DB7 /* NvstVideoPacket.swift */,
+				1668C2BC15E84B2CA9351D1A /* NvstVideoReceiver.swift */,
+				7FFF17B34CA403A98F15A53A /* NvstVsyncMode.swift */,
+				0A291A1FE9918D8324AD221E /* SrtpCryptography.swift */,
+				E7608039FC35D8B039F1AE55 /* NVSTVideoHandoff.swift */,
+				F8DDDAAAA76FF39164F42DD9 /* NvstAudioJitterBuffer.swift */,
+				AFE20EED4BFC45C3EDA8E6BF /* NvstAudioReceivePipeline.swift */,
+				8B87DC408E29D6510AE2DB15 /* NvstAudioRtp.swift */,
+				F4E213C546018D253281F041 /* NvstAudioSendPipeline.swift */,
+				BD77B1C1BF6DD89CFD2AEED1 /* NvstAudioSrtp.swift */,
+				4915EE7F1B790BC6DC568358 /* NvstBundleDatagramDemux.swift */,
+				7D34CE8C82E8129C36415E4E /* NvstBundleNattPunch.swift */,
+				90AEE5357E8F37C3FEA689F8 /* NvstBundleSrtpKeys.swift */,
+				2EA450EB7F51F2A851106C9E /* NvstCoreAudioDevice.swift */,
+				8340A5DC05D8F122770B49F3 /* NvstCoreAudioFormat.swift */,
+				860CEB055C0123B5EE6F4561 /* NvstDataChannel.swift */,
+				18323691636658865C919C22 /* NvstDtlsHandshake.swift */,
+				776E83432BA6E0B4180CFEE0 /* NvstDtlsIdentity.swift */,
+				9AB522EDF936087417B4B8C6 /* NvstDtlsTransport.swift */,
+				62CB3903CA4D111628B94B05 /* NvstNativeBundle+SessionLimit.swift */,
+				10AAB8B009668DBC46D14D9E /* NvstNativeBundle.swift */,
+				2CB5A80164442E5D7230403E /* NvstOpusEncoder.swift */,
+				E92BD358119E622A66F0BFE9 /* NvstRedAudio.swift */,
+				0343683395FDFCF237023580 /* NvstSctpAssociation.swift */,
+				93E92B03C346CCDF137FE89C /* StreamSessionLimitUpdate.swift */,
+				0555D545EE58990F18D35C3D /* NvstBundleReservation.swift */,
+				7A0B13D14AF4D1040EF93B3C /* NvstCapturedAnnounce.swift */,
+				07BC336FAA5AF65DACAF8AE3 /* NvstRtspConnection.swift */,
+				BF602EA1198F77A11775DDDC /* NvstRtspEndpoints.swift */,
+				CD39E11D6EE7ED02797932FB /* NvstRtspNegotiationTypes.swift */,
+				DF9C03956DA77543DE6BA71F /* NvstRtspNegotiator.swift */,
+				6979577569198DB3132A438B /* NvstRtspSdp+Announce.swift */,
+				DEC3B9B3CE53146BD3701B45 /* NvstRtspSdp.swift */,
+				C5A01981C89B6C2CDE9229B6 /* NvstRtspWireFormat.swift */,
+				7B62FEDA51469723C4811310 /* NvstVideoPipeline.swift */,
+				E20868A10E9ADC61B9BFEF85 /* NvstVideoToolboxDecoder+Format.swift */,
+				6EF45BBDD148693DB92D1807 /* NvstVideoToolboxDecoder.swift */,
+				5D1173146DFEC0DCCAF36982 /* NativeStreamNVST.swift */,
+				9730BA964731A6D8DC01CE40 /* NativeStreamNVSTInput.swift */,
+
+
+
+
 				74417F292F8C848000233AC1 /* BrandLogoView.swift */,
 				BB000000000000000000001B /* Haptics.swift */,
 				0A1B2C3D4E5F6A7B8C9D2001 /* OpenNOWiOSApp.swift */,
@@ -229,6 +504,10 @@
 				BB000000000000000000001C /* NativeStreamSDP.swift */,
 				BB000000000000000000001D /* NativeStreamInput.swift */,
 				BB000000000000000000001E /* NativeStreamCodec.swift */,
+				BB0000000000000000000030 /* NativeStreamAV1.swift */,
+				BB0000000000000000000051 /* NativeStreamVideoEffects.swift */,
+				BB0000000000000000000071 /* NativeStreamMetal4Effects.swift */,
+				BB0000000000000000000031 /* NativeStreamHDRMetal.swift */,
 				BB000000000000000000001F /* NativeStreamAudioDevice.swift */,
 				A26000000000000000000011 /* OpenNOWVisualComponents.swift */,
 				A26000000000000000000012 /* QueueVisualComponents.swift */,
@@ -265,6 +544,10 @@
 		DD0000000000000000004004 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
+				B4A2274E6D3DDECCDCF5C1CA /* usrsctp.xcframework */,
+
+				716F34D6B07D299097D1F0D8 /* OpenSSL.xcframework */,
+
 				A26000000000000000000013 /* AppIntents.framework */,
 				DD0000000000000000000012 /* WebRTC.xcframework */,
 			);
@@ -274,6 +557,27 @@
 		F10000000000000000000301 /* OpenNOWiOSTests */ = {
 			isa = PBXGroup;
 			children = (
+				87BA6AF68B333ABDC69BBF02 /* NvstVideoPacketTests.swift */,
+				1613FFECCDBE846C085AC5D2 /* NvstRtspNegotiatorTests.swift */,
+
+				31B1664E609E0406913114BE /* NvstRtspNegotiationTests.swift */,
+
+				B4433A2CA54411B0DC2E59D4 /* NvstAv1ObuTests.swift */,
+
+				6D5F9061351158BB86A314C0 /* NvstStunHolePunchTests.swift */,
+
+				AC4088A9FEBFF97FD9CC5F34 /* NvstMjolnirFeedbackTests.swift */,
+
+				A069F9F629064E25EDB36A88 /* NvstReceiverFixtures.swift */,
+
+				A86B38681CD9438F1BC8C253 /* SrtpCryptographyTests.swift */,
+
+				4F38C89DD3A24B3557FCB93F /* NvstBundleStackTests.swift */,
+
+				591060B0D79911A8C82016B5 /* NvstSctpAssociationTests.swift */,
+
+				569C0ADC474B85350859646A /* NvstDtlsHandshakeTests.swift */,
+
 				F10000000000000000000011 /* OpenNOWiOSParityTests.swift */,
 			);
 			path = OpenNOWiOSTests;
@@ -383,6 +687,8 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				187B20A5ED969D396F5DE288 /* NVST Licenses */,
+
 				0A1B2C3D4E5F6A7B8C9D1004 /* Assets.xcassets in Resources */,
 				EE0000000000000000000001 /* PrivacyInfo.xcprivacy in Resources */,
 				DE000000000000000000000A /* Localizable.xcstrings in Resources */,
@@ -401,6 +707,16 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+
+
+
+
+
+
+
+
+
+
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -411,6 +727,83 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				861B9542E73D0DA498B9AD7E /* NativeStreamPiP.swift in Sources */,
+				E162081677B89815538C5BE6 /* NativeStreamPresentation.swift in Sources */,
+				39C10CC1F62415F05F8FE3BC /* NativeStreamNVSTConfiguration.swift */,
+				04937EADD6D6B625A79E37F9 /* GeronimoInputProtocol.swift in Sources */,
+				CC8788EDE2AFD6C637BDA897 /* NvstAnnexB.swift in Sources */,
+				E2D6635C23ABFEB1341C19DD /* NvstAudioSurroundInfo.swift in Sources */,
+				DAB597A25E727C0DD85F20C3 /* NvstAv1Obu.swift in Sources */,
+				F964DD4FE2590801E3472915 /* NvstBundleIceProbe.swift in Sources */,
+				6F2A46D5E1A4D06634B58057 /* NvstByteCodec.swift in Sources */,
+				4E2CDB665D8E32CE35E620A4 /* NvstClientStatsReports.swift in Sources */,
+				9EB18CFD52ED20D286611817 /* NvstControlCommand.swift in Sources */,
+				4610EB8AD4768A05BC533477 /* NvstDatagram.swift in Sources */,
+				1A9619910BC03FFD8FD7575F /* NvstElementaryStream.swift in Sources */,
+				AFFF496F2ECD27F7FD11CFF6 /* NvstFecRecovery.swift in Sources */,
+				48A5A815C6D2CC012CE6B580 /* NvstFeedbackSender.swift in Sources */,
+				506AEDD7FBA7295D1628CBEC /* NvstFrameAck.swift in Sources */,
+				6FE13160DDC37B439291F8E2 /* NvstFramePacingReport.swift in Sources */,
+				76C1D191CF4AA16F8556D648 /* NvstFrameReassembler.swift in Sources */,
+				F9A9C3EE21AAF5CCA115D442 /* NvstGamepadPacket.swift in Sources */,
+				BFAEDCE9746D16066E398588 /* NvstHapticEvent.swift in Sources */,
+				B805EE9E620245D5E643F222 /* NvstHdrModeNotification.swift in Sources */,
+				9F2829C99927C63A6290B595 /* NvstHidPassthrough.swift in Sources */,
+				DC2A64AEC16EE86F29B0B789 /* NvstInboundCounters.swift in Sources */,
+				02A1CFDA397938348803A72E /* NvstInputActivation.swift in Sources */,
+				443D5365E08C148422D6A035 /* NvstMjolnirReceiver.swift in Sources */,
+				C4EF2C67BFEC857517446487 /* NvstOpusDecoder.swift in Sources */,
+				DDDFB7BB87611AC280DFFFA5 /* NvstQosReport.swift in Sources */,
+				55F8953F77BF9A81CEEEE0FE /* NvstReedSolomon.swift in Sources */,
+				F851FEED9B3FC56CCD23DF41 /* NvstRemoteCursor.swift in Sources */,
+				2E19076AFBD5DEDFCA3CC62C /* NvstRemoteInput.swift in Sources */,
+				3F4A9BE1AA0F565C0B263671 /* NvstRemoteInputWindowEvents.swift in Sources */,
+				0F6E42487CAD9DBDA3B96F75 /* NvstResultCodes.swift in Sources */,
+				A2443FF9F3775B80EB97B4AB /* NvstRtcp.swift in Sources */,
+				BDBFDA6E996F45C960681C17 /* NvstSeatStats.swift in Sources */,
+				BC11329E1C79BB534F0A6D7E /* NvstSeatTermination.swift in Sources */,
+				C62A7723CB77D683053CE56F /* NvstSrtcp.swift in Sources */,
+				243D7E177A1B8F5F40B2E767 /* NvstStunHolePunch.swift in Sources */,
+				6ED02DEEA6A2F499B7A20E4E /* NvstVideoPacket.swift in Sources */,
+				9C94FFDB2092FCB835796A28 /* NvstVideoReceiver.swift in Sources */,
+				B813C9EDF435928D2B0D558E /* NvstVsyncMode.swift in Sources */,
+				05208217F7BD1A10797A06BE /* SrtpCryptography.swift in Sources */,
+				87837026AB2C3C8651C899B6 /* NVSTVideoHandoff.swift in Sources */,
+				D1C36E31C25060FC9A9E34F8 /* NvstAudioJitterBuffer.swift in Sources */,
+				1C4B780762999E5576F5F9A1 /* NvstAudioReceivePipeline.swift in Sources */,
+				394C2E67B4CD695476AE137D /* NvstAudioRtp.swift in Sources */,
+				CEEF4B6B963B36937F1A7E17 /* NvstAudioSendPipeline.swift in Sources */,
+				1C033AB2F10A5D11955D41E7 /* NvstAudioSrtp.swift in Sources */,
+				CB8AEBAFDAB270F0815FCCF6 /* NvstBundleDatagramDemux.swift in Sources */,
+				22DA3BB53694DE13BAB2BEC3 /* NvstBundleNattPunch.swift in Sources */,
+				49C79A8D27EAF689B7922377 /* NvstBundleSrtpKeys.swift in Sources */,
+				3D89C64D1BC80ABEA8E42678 /* NvstCoreAudioDevice.swift in Sources */,
+				F082435FB36BD4BD3ADC6036 /* NvstCoreAudioFormat.swift in Sources */,
+				8502B4279F48533B8965CFB0 /* NvstDataChannel.swift in Sources */,
+				8AF1A15F926FA68CC59D2B4F /* NvstDtlsHandshake.swift in Sources */,
+				2BA0F166A813C8D339459194 /* NvstDtlsIdentity.swift in Sources */,
+				1A97123863197E3389607A50 /* NvstDtlsTransport.swift in Sources */,
+				70722D841B0999E317F41BC2 /* NvstNativeBundle+SessionLimit.swift in Sources */,
+				4B0769FA75B1B33CC7173794 /* NvstNativeBundle.swift in Sources */,
+				34CC49ECE009384DF05678A6 /* NvstOpusEncoder.swift in Sources */,
+				BC417D4876CC8CEBED01DD06 /* NvstRedAudio.swift in Sources */,
+				A40EE3F8EE64181F3C16E6A3 /* NvstSctpAssociation.swift in Sources */,
+				93564B3AFEA95A3F74C9C213 /* StreamSessionLimitUpdate.swift in Sources */,
+				27354AED9FD5FBF6E5B60823 /* NvstBundleReservation.swift in Sources */,
+				F8B5E56A5B93D3AE73D6EFB6 /* NvstCapturedAnnounce.swift in Sources */,
+				607A8085FE32964D3590592A /* NvstRtspConnection.swift in Sources */,
+				88897007045D0B1A1E0C8DE7 /* NvstRtspEndpoints.swift in Sources */,
+				4F32DF6C62069EF1F3E7EF2E /* NvstRtspNegotiationTypes.swift in Sources */,
+				7AB171DB543E1642BCFF05B8 /* NvstRtspNegotiator.swift in Sources */,
+				9BE18E907DE14C57D89FB2C3 /* NvstRtspSdp+Announce.swift in Sources */,
+				D38BA2B53328BC60F6A40A53 /* NvstRtspSdp.swift in Sources */,
+				B355E5F5078087994BD5421D /* NvstRtspWireFormat.swift in Sources */,
+				E82AD1682E1AFFD0AA0F7483 /* NvstVideoPipeline.swift in Sources */,
+				AB533C6016ED0CD4950FCE46 /* NvstVideoToolboxDecoder+Format.swift in Sources */,
+				BA49BF34AB585A34B4954AC5 /* NvstVideoToolboxDecoder.swift in Sources */,
+				1290E0FB4D1FAB8F9CA53A6F /* NativeStreamNVST.swift in Sources */,
+				4A5F97824B2E12F3BD7390F7 /* NativeStreamNVSTInput.swift in Sources */,
+
 				0A1B2C3D4E5F6A7B8C9D1002 /* ContentView.swift in Sources */,
 				0A1B2C3D4E5F6A7B8C9D1001 /* OpenNOWiOSApp.swift in Sources */,
 				AB0000000000000000000001 /* DiagnosticsSupport.swift in Sources */,
@@ -444,6 +837,10 @@
 				BB000000000000000000000C /* NativeStreamSDP.swift in Sources */,
 				BB000000000000000000000D /* NativeStreamInput.swift in Sources */,
 				BB000000000000000000000E /* NativeStreamCodec.swift in Sources */,
+				BB0000000000000000000020 /* NativeStreamAV1.swift in Sources */,
+				BB0000000000000000000041 /* NativeStreamVideoEffects.swift in Sources */,
+				BB0000000000000000000061 /* NativeStreamMetal4Effects.swift in Sources */,
+				BB0000000000000000000021 /* NativeStreamHDRMetal.swift in Sources */,
 				BB000000000000000000000F /* NativeStreamAudioDevice.swift in Sources */,
 				A26000000000000000000001 /* OpenNOWVisualComponents.swift in Sources */,
 				A26000000000000000000002 /* QueueVisualComponents.swift in Sources */,
@@ -466,6 +863,17 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DCB6E15A6553D49039CDF051 /* NvstVideoPacketTests.swift */,
+				D305859AD8A18424F47FD0A9 /* NvstRtspNegotiatorTests.swift in Sources */,
+				A1DE323895E8B8A345FFE075 /* NvstRtspNegotiationTests.swift in Sources */,
+				6DF9FD408D2EBE853D9CE4C9 /* NvstAv1ObuTests.swift in Sources */,
+				C2B0D88E0E373B7C19B6A48A /* NvstStunHolePunchTests.swift in Sources */,
+				9B3D67D24C9F4FB6AF2B4E6A /* NvstMjolnirFeedbackTests.swift in Sources */,
+				00011D19F6D5A547098B779C /* NvstReceiverFixtures.swift in Sources */,
+				9CF3C879E9E08C1CB50CB7F1 /* NvstBundleStackTests.swift in Sources */,
+				8E24301EC5DF7F7D1416CDCF /* NvstSctpAssociationTests.swift in Sources */,
+				69D8855CDF5917C51CB99E24 /* NvstDtlsHandshakeTests.swift in Sources */,
+				22D0B32C8458038A33A4ACE0 /* SrtpCryptographyTests.swift in Sources */,
 				F10000000000000000000001 /* OpenNOWiOSParityTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -537,9 +945,11 @@
 		0A1B2C3D4E5F6A7B8C9D8003 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+                HEADER_SEARCH_PATHS = ("$(inherited)", "$(BUILT_PRODUCTS_DIR)/OpenSSL.framework/Headers", "$(BUILT_PRODUCTS_DIR)/XCFrameworkIntermediates/OpenSSL/OpenSSL.framework/Headers");
+                OTHER_CFLAGS = ("$(inherited)", "-Wno-incomplete-umbrella");
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 108;
+				CURRENT_PROJECT_VERSION = 151;
 				DEVELOPMENT_TEAM = VR766AGP7G;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -549,13 +959,13 @@
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = OpenNOWiOS/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = OpenNOW;
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.games";
 				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.1;
+				MARKETING_VERSION = 1.1.151;
 				PRODUCT_BUNDLE_IDENTIFIER = com.opencloudgaming.opennow;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -563,7 +973,7 @@
 				SUPPORTS_MACCATALYST = NO;
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -572,9 +982,11 @@
 		0A1B2C3D4E5F6A7B8C9D8004 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+                HEADER_SEARCH_PATHS = ("$(inherited)", "$(BUILT_PRODUCTS_DIR)/OpenSSL.framework/Headers", "$(BUILT_PRODUCTS_DIR)/XCFrameworkIntermediates/OpenSSL/OpenSSL.framework/Headers");
+                OTHER_CFLAGS = ("$(inherited)", "-Wno-incomplete-umbrella");
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 108;
+				CURRENT_PROJECT_VERSION = 151;
 				DEVELOPMENT_TEAM = VR766AGP7G;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -583,13 +995,13 @@
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = OpenNOWiOS/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = OpenNOW;
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.games";
 				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.1;
+				MARKETING_VERSION = 1.1.151;
 				PRODUCT_BUNDLE_IDENTIFIER = com.opencloudgaming.opennow;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -608,7 +1020,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 105;
+				CURRENT_PROJECT_VERSION = 151;
 				DEVELOPMENT_TEAM = VR766AGP7G;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = OpenNOWWidget/Info.plist;
@@ -619,7 +1031,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.1;
+				MARKETING_VERSION = 1.1.151;
 				PRODUCT_BUNDLE_IDENTIFIER = com.opencloudgaming.opennow.widget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -637,7 +1049,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 105;
+				CURRENT_PROJECT_VERSION = 151;
 				DEVELOPMENT_TEAM = VR766AGP7G;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = OpenNOWWidget/Info.plist;
@@ -648,7 +1060,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.1;
+				MARKETING_VERSION = 1.1.151;
 				PRODUCT_BUNDLE_IDENTIFIER = com.opencloudgaming.opennow.widget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -664,6 +1076,8 @@
 		F10000000000000000000601 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+                HEADER_SEARCH_PATHS = ("$(inherited)", "$(BUILT_PRODUCTS_DIR)/OpenSSL.framework/Headers", "$(BUILT_PRODUCTS_DIR)/XCFrameworkIntermediates/OpenSSL/OpenSSL.framework/Headers");
+                OTHER_CFLAGS = ("$(inherited)", "-Wno-incomplete-umbrella");
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = VR766AGP7G;
@@ -690,6 +1104,8 @@
 		F10000000000000000000602 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+                HEADER_SEARCH_PATHS = ("$(inherited)", "$(BUILT_PRODUCTS_DIR)/OpenSSL.framework/Headers", "$(BUILT_PRODUCTS_DIR)/XCFrameworkIntermediates/OpenSSL/OpenSSL.framework/Headers");
+                OTHER_CFLAGS = ("$(inherited)", "-Wno-incomplete-umbrella");
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = VR766AGP7G;

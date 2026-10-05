@@ -1,6 +1,21 @@
 import CoreGraphics
 import Foundation
 
+// These presets select the streamed input size; MetalFX spatial has no quality knob.
+enum MetalFXQualityPreset: String, Codable, CaseIterable, Identifiable {
+    case manual, quality, balanced, performance
+    var id: String { rawValue }
+    var label: String { rawValue.capitalized }
+    var inputScale: CGFloat? {
+        switch self {
+        case .manual: return nil
+        case .quality: return 0.85
+        case .balanced: return 2.0 / 3.0
+        case .performance: return 0.5
+        }
+    }
+}
+
 // MARK: - Microphone
 
 /// Mirrors Android's `MicrophoneMode`. The previous iOS build had a single `keepMicEnabled`

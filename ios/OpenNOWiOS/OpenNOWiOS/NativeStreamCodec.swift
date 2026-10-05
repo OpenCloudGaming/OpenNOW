@@ -136,10 +136,31 @@ enum NativeStreamCodecProbe {
 }
 
 #if canImport(WebRTC) && os(iOS)
+/// The bundled SDK exposes only the process-wide field-trial initializer. Its
+/// configuration must be established once, before SSL, codec factories or views.
+enum NativeStreamWebRTCPolicy {
+    private static let initialized: Void = {
+        // The default zero-playout decode spacing is 8 ms. At 120 Hz that
+        // schedules frames almost a whole refresh apart before timer variance.
+        // Keep compressed-frame correctness/backpressure in the hardware decoder;
+        // allow the receiver to hand an available frame over promptly.
+        RTCInitFieldTrialDictionary(["WebRTC-ZeroPlayoutDelay": "min_pacing:1ms"])
+    }()
+
+    static func initialize() { _ = initialized }
+}
+
 final class NativeStreamVideoDecoderFactory: NSObject, RTCVideoDecoderFactory {
-    private let defaultFactory = RTCDefaultVideoDecoderFactory()
+    private let defaultFactory: RTCDefaultVideoDecoderFactory = {
+        NativeStreamWebRTCPolicy.initialize()
+        return RTCDefaultVideoDecoderFactory()
+    }()
 
     func createDecoder(_ info: RTCVideoCodecInfo) -> RTCVideoDecoder? {
+        if NativeStreamVideoCodec.normalized(info.name) == .av1,
+           NativeStreamAV1HardwareDecoder.isSupported {
+            return NativeStreamAV1VideoDecoder()
+        }
         guard NativeStreamVideoCodec.normalized(info.name) == .h265 else {
             return defaultFactory.createDecoder(info)
         }
@@ -199,7 +220,7 @@ private final class NativeStreamHEVCVideoDecoder: NSObject, RTCVideoDecoder {
     private var callback: RTCVideoDecoderCallback?
     private var formatDescription: CMVideoFormatDescription?
     private var decompressionSession: VTDecompressionSession?
-    private var parameterSetKey: String?
+    private var parameterSetKey: [Data]?
     private var loggedFirstFrame = false
 
     func setCallback(_ callback: @escaping RTCVideoDecoderCallback) {
@@ -276,7 +297,7 @@ private final class NativeStreamHEVCVideoDecoder: NSObject, RTCVideoDecoder {
             return lock.withLock { decompressionSession == nil ? -1 : 0 }
         }
 
-        let nextKey = "\(vps.count):\(sps.count):\(pps.count):\(vps.prefix(8)):\(sps.prefix(8)):\(pps.prefix(8))"
+        let nextKey = [vps, sps, pps]
         if lock.withLock({ parameterSetKey == nextKey && decompressionSession != nil }) {
             return 0
         }
@@ -298,6 +319,12 @@ private final class NativeStreamHEVCVideoDecoder: NSObject, RTCVideoDecoder {
             return Int(formatStatus)
         }
 
+        guard let sourceDepth = NativeStreamHEVCOutput.bitDepth(sps: sps),
+              sourceDepth == 8 || sourceDepth == 10 else {
+            NSLog("[OpenNOW] HEVC SPS has unsupported or invalid source bit depth")
+            return -1
+        }
+
         let decoderSpecification: [CFString: Any]?
         if #available(iOS 17.0, *) {
             decoderSpecification = [
@@ -307,7 +334,7 @@ private final class NativeStreamHEVCVideoDecoder: NSObject, RTCVideoDecoder {
             decoderSpecification = nil
         }
         let imageBufferAttributes: [CFString: Any] = [
-            kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+            kCVPixelBufferPixelFormatTypeKey: NativeStreamHEVCOutput.pixelFormat(sps: sps),
             kCVPixelBufferMetalCompatibilityKey: true,
             kCVPixelBufferIOSurfacePropertiesKey: [:]
         ]
@@ -338,7 +365,7 @@ private final class NativeStreamHEVCVideoDecoder: NSObject, RTCVideoDecoder {
             parameterSetKey = nextKey
             loggedFirstFrame = false
         }
-        NSLog("[OpenNOW] HEVC decompression session ready")
+        NSLog("[OpenNOW] HEVC decompression session ready output=%u", NativeStreamHEVCOutput.pixelFormat(sps: sps))
         return 0
     }
 
@@ -424,7 +451,7 @@ private final class NativeStreamHEVCVideoDecoder: NSObject, RTCVideoDecoder {
             return true
         }
         if shouldLogFirstFrame {
-            NSLog("[OpenNOW] HEVC decoded first frame")
+            NSLog("[OpenNOW] HEVC decoded first frame format=%u color=%@", CVPixelBufferGetPixelFormatType(imageBuffer), NativeStreamHDRTransfer.colorMode(in: imageBuffer))
         }
     }
 
@@ -715,6 +742,75 @@ enum NativeStreamSelfTest {
             print("[STREAMER-SELFTEST] ok \(message)")
         } else {
             failures.append(message)
+        }
+    }
+}
+
+// Read source precision from the SPS rather than the requested HDR setting.
+// SDR Main10 also needs P010; an HDR request must not relabel an 8-bit source.
+enum NativeStreamHEVCOutput {
+    static func pixelFormat(sps: Data) -> OSType {
+        bitDepth(sps: sps) == 10
+            ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+            : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+    }
+
+    static func bitDepth(sps: Data) -> Int? {
+        guard sps.count > 2 else { return nil }
+        var bytes: [UInt8] = []
+        var zeros = 0
+        for byte in sps.dropFirst(2) {
+            if zeros >= 2 && byte == 3 { zeros = 0; continue }
+            bytes.append(byte)
+            zeros = byte == 0 ? zeros + 1 : 0
+        }
+        var reader = Bits(bytes: bytes)
+        guard reader.read(4) != nil, let layers = reader.read(3),
+              reader.read(1) != nil, reader.read(96) != nil else { return nil }
+        var profiles: [Bool] = [], levels: [Bool] = []
+        for _ in 0..<layers {
+            guard let profile = reader.read(1), let level = reader.read(1) else { return nil }
+            profiles.append(profile == 1); levels.append(level == 1)
+        }
+        if layers > 0 && reader.read((8 - layers) * 2) == nil { return nil }
+        for i in 0..<layers {
+            if profiles[i] && reader.read(88) == nil { return nil }
+            if levels[i] && reader.read(8) == nil { return nil }
+        }
+        guard reader.ue() != nil, let chroma = reader.ue(), chroma <= 3 else { return nil }
+        if chroma == 3 && reader.read(1) == nil { return nil }
+        guard reader.ue() != nil, reader.ue() != nil, let window = reader.read(1) else { return nil }
+        if window == 1 {
+            for _ in 0..<4 { guard reader.ue() != nil else { return nil } }
+        }
+        guard let luma = reader.ue(), let chromaDepth = reader.ue(),
+              luma == chromaDepth, luma <= 8 else { return nil }
+        return 8 + luma
+    }
+
+    private struct Bits {
+        let bytes: [UInt8]
+        var offset = 0
+        mutating func read(_ count: Int) -> Int? {
+            guard count >= 0, offset + count <= bytes.count * 8 else { return nil }
+            var value = 0
+            for _ in 0..<count {
+                // Long profile fields are skipped; only small fields need their value.
+                if count <= 32 { value = (value << 1) | Int((bytes[offset / 8] >> (7 - offset % 8)) & 1) }
+                offset += 1
+            }
+            return value
+        }
+        mutating func ue() -> Int? {
+            var zeros = 0
+            while true {
+                guard let bit = read(1) else { return nil }
+                if bit == 1 { break }
+                zeros += 1
+                if zeros > 30 { return nil }
+            }
+            guard let suffix = read(zeros) else { return nil }
+            return (1 << zeros) - 1 + suffix
         }
     }
 }

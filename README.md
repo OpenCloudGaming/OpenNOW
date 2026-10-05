@@ -1,5 +1,7 @@
 <h1 align="center">OpenNOW</h1>
 
+**iOS native NVST, HDR and MetalFX:** [source and build instructions](ios/OpenNOWiOS/README.md) · [Metal 4 renderer and validation](ios/OpenNOWiOS/METAL4.md)
+
 <p align="center">
   <img src="logo.png" alt="OpenNOW logo" width="180" />
 </p>
