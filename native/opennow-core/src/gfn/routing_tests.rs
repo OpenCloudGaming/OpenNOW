@@ -1709,3 +1709,80 @@ fn digevo_unreachable_discovery_endpoint_falls_back_to_latam_west() {
         "https://latam-west.dig.geforcenow.nvidiagrid.net/"
     );
 }
+
+#[test]
+fn only_alliance_server_info_dns_failures_explain_the_home_network_requirement() {
+    struct Unresolved;
+    impl reqwest::dns::Resolve for Unresolved {
+        fn resolve(&self, _: reqwest::dns::Name) -> reqwest::dns::Resolving {
+            Box::pin(std::future::ready(Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no such host",
+            )
+            .into())))
+        }
+    }
+    let unresolved = Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(10))
+        .dns_resolver(std::sync::Arc::new(Unresolved))
+        .build()
+        .unwrap();
+    let direct = Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let refused = format!("http://{}/v2/serverInfo", closed.local_addr().unwrap());
+    drop(closed);
+    let partner = "https://prod.partner.geforcenow.nvidiagrid.net/v2/serverInfo".to_owned();
+    let home_network = "Zain can only be reached from inside its home country and network. Turn off any VPN, proxy or custom DNS (such as 1.1.1.1 or 8.8.8.8) and try again. Details: ";
+    type Read = fn(&GfnService) -> Result<Value, ServiceError>;
+    let reads: [(Read, &str); 4] = [
+        (
+            |service| service.library_catalog(&json!({}), &json!({})),
+            "Server info failed",
+        ),
+        (
+            |service| service.subscription(&json!({})),
+            "Server info failed",
+        ),
+        (
+            |service| service.catalog_favorites(&json!({})),
+            "Store server info failed",
+        ),
+        (
+            |service| service.regions(&json!({})),
+            "Region discovery failed",
+        ),
+    ];
+    for (idp_id, client, server_info, stage, prefix) in [
+        ("zain-idp", &unresolved, &partner, "dns", home_network),
+        (DEFAULT_IDP_ID, &unresolved, &partner, "dns", ""),
+        ("zain-idp", &direct, &refused, "connect", ""),
+    ] {
+        for (read, context) in reads {
+            let (mut service, path) = test_service("http://unused.invalid");
+            service.client = client.clone();
+            service.endpoints.server_info = Some(server_info.clone());
+            let mut session = auth_fixture("account-a");
+            session.provider.idp_id = idp_id.into();
+            session.provider.code = "ZAI".into();
+            session.provider.display_name = "Zain".into();
+            let mut state = service.state.lock().unwrap();
+            state.providers = vec![session.provider.clone()];
+            state.session = Some(session);
+            state.generation = 7;
+            state.restore_attempted = true;
+            drop(state);
+            let error = read(&service).unwrap_err();
+            assert_eq!(error.code, "network_error");
+            assert_eq!(
+                error.message,
+                format!("{prefix}{context}: error sending request ({stage})")
+            );
+            std::fs::remove_dir_all(path).ok();
+        }
+    }
+}

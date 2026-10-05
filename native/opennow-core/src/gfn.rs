@@ -310,9 +310,32 @@ pub struct ServiceError {
 
 impl ServiceError {
     pub(crate) fn network(context: &str, error: reqwest::Error) -> Self {
+        let error = error.without_url();
         Self {
             code: "network_error",
-            message: format!("{context}: {}", error.without_url()),
+            message: match transport_failure(&error) {
+                Some(stage) => format!("{context}: {error} ({stage})"),
+                None => format!("{context}: {error}"),
+            },
+        }
+    }
+
+    fn server_info(provider: &LoginProvider, context: &str, error: reqwest::Error) -> Self {
+        let home_network_only =
+            provider.idp_id != DEFAULT_IDP_ID && transport_failure(&error) == Some("dns");
+        let error = Self::network(context, error);
+        if !home_network_only {
+            return error;
+        }
+        let name = Some(provider.display_name.trim())
+            .filter(|name| !name.is_empty())
+            .unwrap_or(provider.code.trim());
+        Self {
+            code: error.code,
+            message: format!(
+                "{name} can only be reached from inside its home country and network. Turn off any VPN, proxy or custom DNS (such as 1.1.1.1 or 8.8.8.8) and try again. Details: {}",
+                error.message
+            ),
         }
     }
 
@@ -349,6 +372,26 @@ impl ServiceError {
             message: message.into(),
         }
     }
+}
+
+fn transport_failure(error: &reqwest::Error) -> Option<&'static str> {
+    if error.is_timeout() {
+        return Some("timeout");
+    }
+    let mut source = std::error::Error::source(error);
+    while let Some(cause) = source {
+        if cause.to_string() == "dns error" {
+            return Some("dns");
+        }
+        if cause.is::<rustls::Error>() {
+            return Some("tls");
+        }
+        source = match cause.downcast_ref::<std::io::Error>() {
+            Some(io) => io.get_ref().map(|inner| inner as _),
+            None => cause.source(),
+        };
+    }
+    error.is_connect().then_some("connect")
 }
 
 #[derive(Default)]
@@ -1542,7 +1585,9 @@ impl GfnService {
             .get(url)
             .headers(lcars_headers(token, "BROWSER", "WEBRTC", false)?)
             .send()
-            .map_err(|error| ServiceError::network("Region discovery failed", error))?;
+            .map_err(|error| {
+                ServiceError::server_info(&session.provider, "Region discovery failed", error)
+            })?;
         if !response.status().is_success() {
             return Err(ServiceError::response("Region discovery failed", response));
         }
@@ -2572,10 +2617,16 @@ impl GfnService {
                 self.check_scope(session, generation)?;
                 let request = client.get(url).headers(headers);
                 let response = match requests {
-                    Some(requests) => requests.send(request, "Store server info failed"),
-                    None => request
-                        .send()
-                        .map_err(|error| ServiceError::network("Server info failed", error)),
+                    Some(requests) => requests.send_mapped(request, |error| {
+                        ServiceError::server_info(
+                            &session.provider,
+                            "Store server info failed",
+                            error,
+                        )
+                    }),
+                    None => request.send().map_err(|error| {
+                        ServiceError::server_info(&session.provider, "Server info failed", error)
+                    }),
                 };
                 let response = response?;
                 if !response.status().is_success() {
@@ -4570,6 +4621,83 @@ pub(crate) mod tests {
         assert_eq!(error.code, "network_error");
         assert!(!error.message.contains("test-secret-token"));
         assert!(!error.message.contains(&address.to_string()));
+    }
+
+    #[test]
+    fn network_errors_name_the_failed_transport_stage_without_the_host() {
+        struct UnresolvedHost;
+        impl reqwest::dns::Resolve for UnresolvedHost {
+            fn resolve(&self, _: reqwest::dns::Name) -> reqwest::dns::Resolving {
+                Box::pin(std::future::ready(Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "no such host",
+                )
+                .into())))
+            }
+        }
+        let client = |builder: reqwest::blocking::ClientBuilder, timeout: Duration| {
+            builder.no_proxy().timeout(timeout).build().unwrap()
+        };
+        let failure = |client: Client, url: String| {
+            ServiceError::network("Server info failed", client.get(url).send().unwrap_err())
+        };
+
+        let unresolved = failure(
+            client(
+                Client::builder().dns_resolver(std::sync::Arc::new(UnresolvedHost)),
+                Duration::from_secs(10),
+            ),
+            "https://prod.partner.geforcenow.nvidiagrid.net/v2/serverInfo".into(),
+        );
+        assert_eq!(unresolved.code, "network_error");
+        assert_eq!(
+            unresolved.message,
+            "Server info failed: error sending request (dns)"
+        );
+
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = closed.local_addr().unwrap();
+        drop(closed);
+        let refused = failure(
+            client(Client::builder(), Duration::from_secs(10)),
+            format!("http://{address}/v2/serverInfo"),
+        );
+        assert_eq!(
+            refused.message,
+            "Server info failed: error sending request (connect)"
+        );
+
+        let plaintext = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = plaintext.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = plaintext.accept().unwrap();
+            let _ = std::io::Write::write_all(
+                &mut stream,
+                b"HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\n\r\n",
+            );
+            let _ = stream.read(&mut [0; 1024]);
+        });
+        let handshake = failure(
+            client(Client::builder(), Duration::from_secs(10)),
+            format!("https://{address}/v2/serverInfo"),
+        );
+        server.join().unwrap();
+        assert_eq!(
+            handshake.message,
+            "Server info failed: error sending request (tls)"
+        );
+
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = silent.local_addr().unwrap();
+        let stalled = failure(
+            client(Client::builder(), Duration::from_millis(500)),
+            format!("http://{address}/v2/serverInfo"),
+        );
+        drop(silent);
+        assert_eq!(
+            stalled.message,
+            "Server info failed: error sending request (timeout)"
+        );
     }
 
     #[test]
