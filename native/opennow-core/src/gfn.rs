@@ -4608,19 +4608,18 @@ pub(crate) mod tests {
                 .into())))
             }
         }
-        let client = |builder: reqwest::blocking::ClientBuilder| {
-            builder
-                .no_proxy()
-                .timeout(Duration::from_millis(500))
-                .build()
-                .unwrap()
+        let client = |builder: reqwest::blocking::ClientBuilder, timeout: Duration| {
+            builder.no_proxy().timeout(timeout).build().unwrap()
         };
         let failure = |client: Client, url: String| {
             ServiceError::network("Server info failed", client.get(url).send().unwrap_err())
         };
 
         let unresolved = failure(
-            client(Client::builder().dns_resolver(std::sync::Arc::new(UnresolvedHost))),
+            client(
+                Client::builder().dns_resolver(std::sync::Arc::new(UnresolvedHost)),
+                Duration::from_secs(10),
+            ),
             "https://prod.partner.geforcenow.nvidiagrid.net/v2/serverInfo".into(),
         );
         assert_eq!(unresolved.code, "network_error");
@@ -4633,7 +4632,7 @@ pub(crate) mod tests {
         let address = closed.local_addr().unwrap();
         drop(closed);
         let refused = failure(
-            client(Client::builder()),
+            client(Client::builder(), Duration::from_secs(10)),
             format!("http://{address}/v2/serverInfo"),
         );
         assert_eq!(
@@ -4652,7 +4651,7 @@ pub(crate) mod tests {
             let _ = stream.read(&mut [0; 1024]);
         });
         let handshake = failure(
-            client(Client::builder()),
+            client(Client::builder(), Duration::from_secs(10)),
             format!("https://{address}/v2/serverInfo"),
         );
         server.join().unwrap();
@@ -4664,7 +4663,7 @@ pub(crate) mod tests {
         let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = silent.local_addr().unwrap();
         let stalled = failure(
-            client(Client::builder()),
+            client(Client::builder(), Duration::from_millis(500)),
             format!("http://{address}/v2/serverInfo"),
         );
         drop(silent);
