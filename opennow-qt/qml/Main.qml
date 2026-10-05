@@ -474,6 +474,7 @@ ApplicationWindow {
         modeCurtain.opacity = 0
         window.launchFramePresented = false
         consoleLaunch.start(variant)
+        window.desktopSurfaceActive = window.targetDesktopSurface
         window.update()
     }
 
@@ -1045,7 +1046,6 @@ ApplicationWindow {
         soundEnabled: window.settingsLoaded && ShellStore.settings.uiSoundsEnabled !== false
         presentationReady: window.launchFramePresented
         destinationReady: !window.desktopSurfaceActive && routeLoader.status === Loader.Ready && routeLoader.item !== null
-        onCoverReached: window.desktopSurfaceActive = window.targetDesktopSurface
         onFinished: {
             window.synchronizeRenderedSurface()
             Qt.callLater(window.restoreShellFocus)

@@ -19,6 +19,7 @@ QtObject {
         AppController.navigate("settings")
         window.applyConsoleSurface(true)
         check(window.consoleLaunchActiveForSmokeTest, "deliberate entry starts intro")
+        check(!window.desktopSurfaceActive, "console selection changes the rendered surface synchronously")
         check(window.consoleLaunchVariantForSmokeTest === "quick", "reentry uses quick variant")
         check(AppController.route === "settings", "destination is preserved")
         check(!window.consoleLaunchInputReady, "intro owns input")
@@ -63,6 +64,7 @@ QtObject {
         check(AppController.route === "sign-in", "auth destination is not replaced by Home")
         window.applyConsoleSurface(false)
         check(!window.consoleLaunchActiveForSmokeTest, "mode exit cancels intro")
+        check(window.desktopSurfaceActive, "mode exit restores the desktop synchronously")
         check(window.consoleLaunchInputReady, "cancel restores neutral input")
         return true
     }

@@ -91,10 +91,33 @@ TestCase {
     function test_quickReducedMotionCompletes() {
         const launch = makeLaunch({destinationReady: true})
         launch.start("quick")
+        compare(coverSpy.count, 1)
         tryCompare(launch, "active", false, 1500)
         compare(coverSpy.count, 1)
         compare(finishedSpy.count, 1)
         verifyIdle(launch)
+    }
+
+    function test_quickCoversBeforeFirstPresentation() {
+        const launch = makeLaunch({destinationReady: true, presentationReady: false, reducedMotion: false})
+        launch.start("quick")
+        compare(coverSpy.count, 1)
+        compare(launch.active, true)
+        launch.cancel()
+        verifyIdle(launch)
+    }
+
+    function test_reducedQuickFadeHasNoDarkerLogoRectangle() {
+        const launch = makeLaunch({destinationReady: true})
+        launch.start("quick")
+        wait(80)
+        launch.presentationReady = false
+        compare(launch.active, true)
+        waitForRendering(launch)
+        const image = grabImage(launch)
+        compare(image.pixel(Math.round(launch.width * 0.4), Math.round(launch.height * 0.37)),
+                image.pixel(10, 10))
+        launch.cancel()
     }
 
     function test_repeatedStartDoesNotRestartRunningIntro() {
