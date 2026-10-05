@@ -144,6 +144,9 @@ internal fun StreamScreen(
     val networkWarningGate = remember(session?.sessionId) { StreamNetworkWarningGate() }
     var videoTransportFallbackReason by remember { mutableStateOf<String?>(null) }
     var controllerMouseAssistEnabled by remember(session?.sessionId) { mutableStateOf(false) }
+    val updateControllerMouseAssistEnabled by rememberUpdatedState<(Boolean) -> Unit> {
+        controllerMouseAssistEnabled = it
+    }
     var controllerMouseEmulationEnabled by remember(session?.sessionId) { mutableStateOf(state.settings.controllerMouseEmulation) }
     val streamReady = state.isNativeStreamReady()
     val tvProfile = state.androidTvProfile
@@ -386,7 +389,7 @@ internal fun StreamScreen(
                 viewModel.updateStreamRuntimeStats(it)
             },
             onControllerMouseAssistChanged = {
-                controllerMouseAssistEnabled = it
+                updateControllerMouseAssistEnabled(it)
             },
         )
     }
