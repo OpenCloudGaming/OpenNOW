@@ -42,6 +42,37 @@ Required status names are `linux-x64`, `windows-x64`, and `macos-arm64`. Keep al
 three required in the repository's branch rules. Each also fails if shared checks
 fail or are cancelled, and manual packaging waits for every platform to pass.
 
+### Linux installation layout
+
+Linux installs use GNUInstallDirs. Executables go in `CMAKE_INSTALL_BINDIR`, and
+`libopennow_streamer_ffi.so` goes in `CMAKE_INSTALL_LIBDIR`. The installed Qt
+executable finds the library through an origin-relative RPATH, including `lib64`
+and multiarch layouts. Relative install directories support `cmake --install
+--prefix` overrides. Absolute directories also work at the configured prefix.
+If one directory is absolute and the other is relative, changing the prefix at
+install time is rejected before files are installed. Reconfigure with the intended
+prefix or make both directories relative.
+
+For example, stage a multiarch installation without writing into the host `/usr`:
+
+```sh
+cmake -S opennow-qt -B build/opennow-qt -DCMAKE_INSTALL_PREFIX=/usr \
+  -DCMAKE_INSTALL_LIBDIR=lib/x86_64-linux-gnu
+cmake --build build/opennow-qt
+DESTDIR="$PWD/build/stage" cmake --install build/opennow-qt
+python3 opennow-qt/packaging/verify_linux_package.py build/stage/usr/bin \
+  --libdir lib/x86_64-linux-gnu
+```
+
+The verifier's `--libdir` is relative to the executable directory's parent, not
+an absolute filesystem path. With `--deb`, the same value is relative to `/usr`
+inside the extracted distribution DEB. AppImage and bundled-DEB assembly explicitly
+use `lib`; ordinary CMake installs retain the configured libdir. Distribution
+installs use the system Qt and SDL3 runtime, while AppImage and bundled DEB builds
+deploy their private runtime and plugins.
+
+### Local Qt tests
+
 To run the test-only Qt suite locally after configuring a Debug build:
 
 ```sh

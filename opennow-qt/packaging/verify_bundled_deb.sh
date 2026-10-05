@@ -45,7 +45,7 @@ install -d -m 700 -o opennow-test -g opennow-test /tmp/opennow-runtime
 runuser -u opennow-test -- env QT_QPA_PLATFORM=offscreen XDG_RUNTIME_DIR=/tmp/opennow-runtime \
   timeout 60 /usr/bin/opennow-qt --smoke-test --allow-multiple-instances --route home --reduced-motion
 apt-get install -y --no-install-recommends python3 binutils xvfb xauth mesa-vulkan-drivers
-runuser -u opennow-test -- python3 /verification/verify_linux_package.py /opt/opennow/usr/bin
+runuser -u opennow-test -- python3 /verification/verify_linux_package.py /opt/opennow/usr/bin --libdir lib
 runuser -u opennow-test -- env QT_QPA_PLATFORM=xcb XDG_RUNTIME_DIR=/tmp/opennow-runtime \
   timeout 60 xvfb-run -a /usr/bin/opennow-qt --smoke-test --allow-multiple-instances --route home --reduced-motion
 apt-get install -y --reinstall --no-install-recommends "$OPENNOW_DEB"

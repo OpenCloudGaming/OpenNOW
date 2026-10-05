@@ -24,6 +24,9 @@ class LinuxInstallLayoutTest(unittest.TestCase):
             ("/usr", "bin", "lib/x86_64-linux-gnu", None),
             ("/opt/opennow", "sbin", "lib/opennow", None),
             ("/usr", "bin", "/usr/lib64", None),
+            ("/usr", "/usr/bin", "lib64", None),
+            ("/usr", "bin", "/usr/lib64", "/usr"),
+            ("/usr", "/usr/bin", "/usr/lib64", None),
             ("/usr", "bin", "lib64", "/opt/opennow"),
             ("/usr", "bin", "/usr/lib64", "/opt/opennow"),
             ("/usr", "/usr/bin", "lib64", "/opt/opennow"),
@@ -77,7 +80,8 @@ include("{QT_SOURCE.as_posix()}/cmake/Packaging.cmake")
                     command = ["cmake", "--install", str(build)]
                     if install_prefix:
                         command.extend(("--prefix", install_prefix))
-                    if install_prefix and Path(bindir).is_absolute() != Path(libdir).is_absolute():
+                    if (install_prefix and install_prefix != prefix
+                            and Path(bindir).is_absolute() != Path(libdir).is_absolute()):
                         result = subprocess.run(command, capture_output=True, text=True,
                                                 env={**os.environ, "DESTDIR": str(stage)})
                         self.assertNotEqual(result.returncode, 0)
