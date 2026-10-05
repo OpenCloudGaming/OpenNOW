@@ -1735,6 +1735,10 @@ private struct NativeStreamControlsPanel: View {
             }
 
             NativeStreamPanelSection(title: "Picture") {
+                NativeStreamToggleRow(title: "Metal 4 rendering",
+                    value: coordinator.liveSettings.metal4Enabled ? "On" : "Off",
+                    isOn: Binding(get: { coordinator.liveSettings.metal4Enabled },
+                        set: { value in coordinator.updateLiveSettings { $0.metal4Enabled = value } }))
                 NativeStreamToggleRow(title: "MetalFX upscaling",
                     value: coordinator.liveSettings.metalFXUpscalingEnabled ? "On" : "Off",
                     isOn: Binding(get: { coordinator.liveSettings.metalFXUpscalingEnabled },
@@ -3127,7 +3131,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         guard next != liveSettings else { return }
         liveSettings = next
         statsMetrics = next.streamStatsMetrics
-        renderer?.setVideoEffects(upscaling: next.metalFXUpscalingEnabled)
+        renderer?.setVideoEffects(upscaling: next.metalFXUpscalingEnabled, metal4: next.metal4Enabled)
         inputBridge.configureUserPreferences(
             mouseSensitivity: next.mouseSensitivity,
             mouseAcceleration: next.mouseAcceleration,
@@ -3512,7 +3516,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         renderer.setStretchStreamToFill(streamerPreferences.stretchStreamToFill)
         renderer.setStreamSharpening(enabled: streamSharpeningEnabled, amount: streamSharpeningAmount)
         renderer.setViewportTransform(scale: streamZoomScale, offset: streamZoomOffset)
-        renderer.setVideoEffects(upscaling: liveSettings.metalFXUpscalingEnabled)
+        renderer.setVideoEffects(upscaling: liveSettings.metalFXUpscalingEnabled, metal4: liveSettings.metal4Enabled)
         attachCurrentVideoSinkIfNeeded()
     }
 
@@ -5778,16 +5782,18 @@ private final class NativeStreamRenderView: UIView {
     private var stretchStreamToFill = false
     private var streamSharpeningEnabled = false
     private var streamSharpeningAmount = 0.25
+    private var metal4Enabled = false
     private var upscalingEnabled = false
     var videoEffectsStatus: String { filteredMetalView?.videoEffectsStatus ?? "" }
     var presentationRates: NativeStreamPresentationRates? {
         filteredRendererActive ? filteredMetalView?.presentationRates : nil
     }
 
-    func setVideoEffects(upscaling: Bool) {
+    func setVideoEffects(upscaling: Bool, metal4: Bool) {
+        metal4Enabled = metal4
         upscalingEnabled = upscaling
         if upscaling { ensureFilteredMetalView() }
-        filteredMetalView?.setVideoEffects(upscaling: upscaling)
+        filteredMetalView?.setVideoEffects(upscaling: upscaling, metal4: metal4)
         updateRendererVisibility()
     }
     private var viewportTransformScale: CGFloat = 1
@@ -5938,7 +5944,7 @@ private final class NativeStreamRenderView: UIView {
         filtered.frame = videoContainerView.bounds
         filtered.stretchToFill = stretchStreamToFill
         filtered.sharpeningAmount = streamSharpeningEnabled ? streamSharpeningAmount : 0
-        filtered.setVideoEffects(upscaling: upscalingEnabled)
+        filtered.setVideoEffects(upscaling: upscalingEnabled, metal4: metal4Enabled)
         filtered.isHidden = true
         videoContainerView.addSubview(filtered)
         rendererStateLock.lock()
@@ -6092,13 +6098,12 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
     private let directHDR: NativeStreamHDRMetalRenderer?
     private var metal4HDRStorage: AnyObject?
     private var metal4EffectsStorage: AnyObject?
-    // Diagnostic launch override: keep the same HDR/4:4:4 decoder surfaces and
-    // display format while comparing the compatible Metal command queue.
     private var metal4Disabled = false
     private let submissionTimeline: NativeStreamMetalFrameTimeline?
     private var rendererBackend = "Metal / Core Image"
     private var metal4UpscalingStatus: String?
     private let spatialUpscaler: NativeStreamSpatialUpscaler
+    private var metal4Enabled = false
     private var upscalingEnabled = false
     private var suspendUpscalingUntil: CFTimeInterval = 0
     private var effectsGeneration: UInt64 = 0
@@ -6115,7 +6120,9 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
         return parts.joined(separator: " · ")
     }
 
-    func setVideoEffects(upscaling: Bool) {
+    func setVideoEffects(upscaling: Bool, metal4: Bool) {
+        metal4Enabled = metal4
+        if metal4 { prepareMetal4IfNeeded() }
         guard upscalingEnabled != upscaling else { return }
         if !upscaling { spatialUpscaler.reset() }
         upscalingEnabled = upscaling
@@ -6125,7 +6132,6 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
     private var colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
     private var hdrTransfer = NativeStreamHDRTransfer.sdr
     private let mtkView: MTKView
-    /// Exposed so the render view can reach the HUD switch on whichever layer is actually live.
     private let frameBridge = NativeStreamFramePixelBufferBridge()
     private let frames = NativeStreamLatestFrameMailbox<RTCVideoFrame>()
     private let gpuAdmission = DispatchSemaphore(value: 2)
@@ -6168,6 +6174,12 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
         mtkView.backgroundColor = .black
         mtkView.delegate = self
         addSubview(mtkView)
+    }
+
+    private var metal4PreparationStarted = false
+    private func prepareMetal4IfNeeded() {
+        guard !metal4PreparationStarted, let device = mtkView.device else { return }
+        metal4PreparationStarted = true
         if #available(iOS 26.0, *), submissionTimeline != nil {
             DispatchQueue.global(qos:.userInitiated).async { [weak self] in
                 let renderer = NativeStreamMetal4HDRRenderer(device:device)
@@ -6241,10 +6253,10 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
 
         let bounds = CGRect(origin: .zero, size: view.drawableSize)
         let destination = stretchToFill ? bounds : Self.aspectFitRect(source: frameSize, target: bounds.size)
-        let ticket = submissionTimeline?.next()
+        let ticket = metal4Enabled ? submissionTimeline?.next() : nil
         let presentationTracker = presentations
         let mailbox = frames
-        if #available(iOS 26.0, *), !metal4Disabled, hdrTransfer != .hlg,
+        if #available(iOS 26.0, *), metal4Enabled && !metal4Disabled, hdrTransfer != .hlg,
            !upscalingEnabled, sharpeningAmount <= 0.001,
            let metal4 = metal4HDRStorage as? NativeStreamMetal4HDRRenderer {
             let admission = gpuAdmission
@@ -6272,7 +6284,7 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
         let shouldUpscale = upscalingEnabled && drawStarted >= suspendUpscalingUntil
         let preferMetal4Effects: Bool
         if #available(iOS 26.0, *) {
-            preferMetal4Effects = !metal4Disabled && metal4EffectsStorage != nil
+            preferMetal4Effects = metal4Enabled && !metal4Disabled && metal4EffectsStorage != nil
         } else { preferMetal4Effects = false }
         let direct = !preferMetal4Effects && hdrTransfer != .hlg && !shouldUpscale && sharpeningAmount <= 0.001 && view.currentRenderPassDescriptor.map {
             directHDR?.encode(buffer: pixelBuffer, commandBuffer: commandBuffer,
@@ -6296,7 +6308,7 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
                     if self.upscalingEnabled { self.finishEffects(failed: error != nil) }
                 }
             }
-            if #available(iOS 26.0, *), !metal4Disabled,
+            if #available(iOS 26.0, *), metal4Enabled && !metal4Disabled,
                let effects = metal4EffectsStorage as? NativeStreamMetal4EffectsRenderer,
                effects.submit(buffer: pixelBuffer, destination: destination, upscale: shouldUpscale,
                     target: drawable.texture, sharpening:Float(sharpeningAmount),
@@ -6336,7 +6348,7 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
                     target: targetBounds.size
                 )
             #if !targetEnvironment(simulator)
-            if #available(iOS 26.0, *), !metal4Disabled,
+            if #available(iOS 26.0, *), metal4Enabled && !metal4Disabled,
                let effects = metal4EffectsStorage as? NativeStreamMetal4EffectsRenderer {
                 if effects.submit(image: filteredImage, destination: destination,
                     transfer: hdrTransfer == .pq ? 1 : hdrTransfer == .hlg ? 2 : 0,

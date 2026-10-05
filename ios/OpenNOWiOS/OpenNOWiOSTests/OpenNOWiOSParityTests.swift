@@ -111,6 +111,8 @@ final class OpenNOWiOSParityTests: XCTestCase {
         }
         let store = OpenNOWStore()
         var live = AppSettings.default
+        live.metal4Enabled = false
+        store.settings.metal4Enabled = true
         live.metalFXUpscalingEnabled = false
         store.settings.metalFXUpscalingEnabled = true
         store.settings.preferredFPS = 120
@@ -126,10 +128,13 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertEqual(store.settings.hdrEnabled, before.hdrEnabled)
         XCTAssertEqual(store.settings.enableCloudGsync, before.enableCloudGsync)
         let saved = try JSONDecoder().decode(AppSettings.self, from: XCTUnwrap(defaults.data(forKey: key)))
+        XCTAssertFalse(saved.metal4Enabled)
         XCTAssertFalse(saved.metalFXUpscalingEnabled)
+        live.metal4Enabled = true
         live.metalFXUpscalingEnabled = true
         store.applyStreamerSettings(live)
         let savedOn = try JSONDecoder().decode(AppSettings.self, from: XCTUnwrap(defaults.data(forKey: key)))
+        XCTAssertTrue(savedOn.metal4Enabled)
         XCTAssertTrue(savedOn.metalFXUpscalingEnabled)
     }
 
@@ -213,6 +218,22 @@ final class OpenNOWiOSParityTests: XCTestCase {
             NSLog("[SettingsNavigationTest] home selected")
             XCTAssertTrue(titles().contains("OpenNOW") && !titles().contains(where: settingsTitles.contains),
                           "Home navigation must replace the settings stack: \(titles())")
+        }
+    }
+
+    func testMetal4RenderingIsOptInAndPersistsIndependentlyOfHDRAndMetalFX() throws {
+        let legacy = try JSONDecoder().decode(AppSettings.self, from: Data("{}".utf8))
+        XCTAssertFalse(legacy.metal4Enabled)
+        var settings = AppSettings.default
+        XCTAssertFalse(settings.metal4Enabled)
+        settings.hdrEnabled = true
+        settings.metalFXUpscalingEnabled = true
+        for enabled in [true, false] {
+            settings.metal4Enabled = enabled
+            let restored = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
+            XCTAssertEqual(restored.metal4Enabled, enabled)
+            XCTAssertTrue(restored.hdrEnabled)
+            XCTAssertTrue(restored.metalFXUpscalingEnabled)
         }
     }
 

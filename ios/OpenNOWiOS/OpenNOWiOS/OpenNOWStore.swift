@@ -888,6 +888,7 @@ struct AppSettings: Codable, Equatable {
     var sessionProxyUrl: String = ""
     var enableL4S: Bool
     var enableCloudGsync: Bool
+    var metal4Enabled: Bool = false
     var metalFXUpscalingEnabled: Bool = false
     var metalFXQualityPreset: MetalFXQualityPreset = .manual
     var streamSharpeningEnabled: Bool = false
@@ -999,6 +1000,7 @@ struct AppSettings: Codable, Equatable {
         case sessionProxyUrl
         case enableL4S
         case enableCloudGsync
+        case metal4Enabled
         case metalFXUpscalingEnabled
         case metalFXQualityPreset
         case streamSharpeningEnabled
@@ -1122,6 +1124,7 @@ struct AppSettings: Codable, Equatable {
         sessionProxyUrl = try container.decodeIfPresent(String.self, forKey: .sessionProxyUrl) ?? ""
         enableL4S = try container.decodeIfPresent(Bool.self, forKey: .enableL4S) ?? false
         enableCloudGsync = try container.decodeIfPresent(Bool.self, forKey: .enableCloudGsync) ?? false
+        metal4Enabled = try container.decodeIfPresent(Bool.self, forKey: .metal4Enabled) ?? false
         metalFXUpscalingEnabled = try container.decodeIfPresent(Bool.self, forKey: .metalFXUpscalingEnabled) ?? false
         metalFXQualityPreset = try container.decodeIfPresent(MetalFXQualityPreset.self, forKey: .metalFXQualityPreset) ?? .manual
         streamSharpeningEnabled = try container.decodeIfPresent(Bool.self, forKey: .streamSharpeningEnabled) ?? false
@@ -7826,6 +7829,7 @@ final class OpenNOWStore: ObservableObject {
     func applyStreamerSettings(_ updated: AppSettings) {
         var next = settings
         next.streamStatsMetrics = updated.streamStatsMetrics
+        next.metal4Enabled = updated.metal4Enabled
         next.metalFXUpscalingEnabled = updated.metalFXUpscalingEnabled
         next.touch = updated.touch
         next.mouseSensitivity = updated.mouseSensitivity

@@ -4,7 +4,7 @@ Native iPhone/iPad GeForce NOW client with hardware decoding, HDR and 4:4:4 stre
 
 ## Metal rendering
 
-Metal 4 handles supported direct HDR rendering, native color conversion, sharpening and MetalFX. The display layer's residency set is registered with each Metal 4 queue, and frames present directly to its drawables. The block repair was verified on an iPhone in build 149 with HEVC 10-bit 4:4:4 HDR and active MetalFX. See [renderer architecture and validation](METAL4.md).
+Metal 4 is opt-in through **Settings → Stream → Metal 4 Rendering** or the live stream **Picture** panel. It defaults off, including for existing settings without the new key. When enabled on supported iOS 26+ devices, Metal 4 handles direct HDR rendering, native color conversion, sharpening and MetalFX. Turning it off uses compatible rendering while preserving HDR, color and MetalFX choices. The display layer's residency set is registered with each Metal 4 queue, and frames present directly to its drawables. The block repair was verified on an iPhone in build 149 with HEVC 10-bit 4:4:4 HDR and active MetalFX. See [renderer architecture and validation](METAL4.md).
 
 Build 150 removes the diagnostic presentation-copy experiment, launch overrides, developer HUD and disk/per-frame trace machinery. Normal stream stats and error reporting remain. Existing settings load without the removed developer-HUD key; video and input choices are preserved. Historical experiment notes and pre-cleanup sources are archived locally under `Build/cleanup-before-150`.
 

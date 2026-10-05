@@ -31,3 +31,7 @@ The GPU harnesses check actual pixels for chroma/range/transfer, HDR highlights,
 - [Apple's Metal 4 presentation and residency sample](https://developer.apple.com/documentation/metal/drawing-a-triangle-with-metal-4)
 - [Metal 4 synchronization](https://developer.apple.com/documentation/metal/resource-synchronization)
 - [MetalFX spatial scaler](https://developer.apple.com/documentation/metalfx/mtl4fxspatialscaler)
+
+## Renderer selection
+
+Metal 4 Rendering is a saved opt-in toggle, defaulting off for new and existing installations. It appears in Settings → Stream and the live Picture panel. Pipeline preparation starts only after opt-in; all Metal 4 submission paths are gated by the current choice. In-flight frames complete normally when switched off. HDR and MetalFX settings remain independent, and unsupported devices use compatible rendering.

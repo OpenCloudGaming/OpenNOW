@@ -609,6 +609,10 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Toggle("Metal 4 Rendering", isOn: $store.settings.metal4Enabled)
+            Text("Opt in to Metal 4 on supported devices running iOS 26 or later. Off uses compatible Metal rendering; HDR and MetalFX remain available.")
+                .font(.footnote).foregroundStyle(.secondary)
+
             Toggle("MetalFX Upscaling", isOn: $store.settings.metalFXUpscalingEnabled)
             if store.settings.metalFXUpscalingEnabled {
                 Picker("MetalFX Quality", selection: metalFXQualityBinding) {
