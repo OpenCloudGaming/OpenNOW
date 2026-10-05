@@ -271,10 +271,11 @@ FocusScope {
 
         Column {
             anchors.centerIn: parent
+            width: parent.width - 56
             spacing: 12
             visible: root.games.length === 0
-            Text { anchors.horizontalCenter: parent.horizontalCenter; text: ShellStore.catalogState === "error" ? qsTr("Couldn’t reach the catalog") : qsTr("Loading GeForce NOW games…"); color: Theme.label; font.family: Theme.displayFont; font.pixelSize: 24; font.weight: Font.Black }
-            Text { anchors.horizontalCenter: parent.horizontalCenter; text: ShellStore.catalogGames.length > 0 ? qsTr("No games match these filters.") : (ShellStore.catalogState === "error" ? ShellStore.lastError : qsTr("The shell stays responsive while the Rust core fetches NVIDIA’s public list.")); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 14 }
+            Text { width: parent.width; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap; text: ShellStore.catalogState === "error" ? qsTr("Couldn’t reach the catalog") : qsTr("Loading GeForce NOW games…"); color: Theme.label; font.family: Theme.displayFont; font.pixelSize: 24; font.weight: Font.Black }
+            Text { width: parent.width; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap; text: ShellStore.catalogGames.length > 0 ? qsTr("No games match these filters.") : (ShellStore.catalogState === "error" ? ShellStore.lastError : qsTr("The shell stays responsive while the Rust core fetches NVIDIA’s public list.")); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 14 }
             GlassButton { anchors.horizontalCenter: parent.horizontalCenter; visible: ShellStore.catalogState === "error"; text: qsTr("Try again"); glyph: "A"; primary: true; onClicked: ShellStore.refreshCatalog("") }
         }
     }
