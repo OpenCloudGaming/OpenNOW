@@ -50,7 +50,7 @@ jobs:
       - name: Install and verify the exported bundle
         run: |
           flatpak install --user --noninteractive -y build/flatpak/OpenNOW-${{ inputs.arch }}.flatpak
-          test "$(flatpak info --user --show-arch io.github.opencloudgaming.OpenNOW)" = "${{ inputs.arch }}"
+          test "$(flatpak info --user --show-ref io.github.opencloudgaming.OpenNOW)" = "app/io.github.opencloudgaming.OpenNOW/${{ inputs.arch }}/master"
           python3 opennow-qt/packaging/verify_flatpak.py
       - uses: actions/upload-artifact@v4
         with:
