@@ -286,12 +286,10 @@ ten minutes. Exercise the following without restarting the app:
 5. Test window resize, fullscreen, display migration, the display's highest supported refresh
    rate, and VRR/HDR only where the machine advertises them.
 6. Load a profile that previously selected WebRTC or another legacy transport and confirm settings,
-   session creation, streamer status and exported evidence all resolve it to NVST. If a persisted
-   microphone mode is armed, confirm settings migration disables it without changing transport;
-   microphone capture is not part of the native runtime.
+   session creation, streamer status and exported evidence all resolve it to NVST.
 7. Capture a screenshot, start and stop a source-stream Matroska recording, play the resulting
    media, verify the generated thumbnail, and reveal both files through the Media screen.
-8. Rebind and exercise all seven active stream shortcuts. Confirm stats and fullscreen reach Qt
+8. Rebind and exercise the configured stream shortcuts. Confirm stats and fullscreen reach Qt
    exactly once, pointer lock remains native, screenshot, recording and stop reach the shell exactly
    once, and anti-AFK produces an F13 pulse after four minutes without leaking the key into the game.
 9. Enable the anti-AFK indicator/reminder and session clock, then confirm the post-session report
@@ -324,6 +322,15 @@ ten minutes. Exercise the following without restarting the app:
    `observedPass: true`; it includes hashed screenshot/recording/thumbnail metadata and bounded
    NVST transport, first-frame, input ownership, guide, recovery and error checks without
    exposing a local path, account, token, session identifier or endpoint.
+
+For microphone acceptance, select **Open microphone** in **Audio settings** before starting a session.
+Capture defaults to disabled and uses the system default input. Uplink requires both runtime build
+support and the server's negotiated native-bundle microphone support. Confirm that the remote game
+receives voice while game audio and video continue. Exercise live mute and unmute, input-device loss,
+session end and restart, and denied OS permission on each supported target. A local `ready` state does
+not prove that the remote game receives audio. Follow the
+[native microphone checks](../native/opennow-streamer/README.md#microphone-upstream) for the capture
+and negotiation limits. Local microphone audio is not added to source recordings.
 
 Retain the two performance JSON files, redacted diagnostic export, screenshot, recording, package
 hash, and a short capture showing guide/controller ownership. Hash artifacts before upload and
