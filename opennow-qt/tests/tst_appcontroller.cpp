@@ -72,6 +72,7 @@ private slots:
 
     void rejectsUnknownRoutes();
     void acceptsQtOwnedStreamOverlays();
+    void acceptsSessionReportAndRejectsUnknownOverlays();
     void overlayGuardCommitsOnlyAfterNativeHandoff();
     void closesOverlayBeforeNavigatingBack();
     void gameDetailsReturnToTheirPrimaryOrigin();
@@ -103,6 +104,24 @@ void AppControllerTest::acceptsQtOwnedStreamOverlays()
     QCOMPARE(controller.overlay(), QStringLiteral("stream-stats-expanded"));
     QVERIFY(controller.showOverlay(QStringLiteral("desktop-stream-exit-confirm")));
     QCOMPARE(controller.overlay(), QStringLiteral("desktop-stream-exit-confirm"));
+}
+
+void AppControllerTest::acceptsSessionReportAndRejectsUnknownOverlays()
+{
+    AppController controller;
+    QSignalSpy changed(&controller, &AppController::overlayChanged);
+    QVERIFY(controller.showOverlay(QStringLiteral("session-report")));
+    QCOMPARE(controller.overlay(), QStringLiteral("session-report"));
+    QCOMPARE(changed.count(), 1);
+    QVERIFY(!controller.showOverlay(QStringLiteral("unknown-report")));
+    QVERIFY(!controller.showOverlay(QStringLiteral("session-report-extra")));
+    QCOMPARE(controller.overlay(), QStringLiteral("session-report"));
+    QCOMPARE(changed.count(), 1);
+    QVERIFY(controller.goBack());
+    QVERIFY(controller.overlay().isEmpty());
+    QCOMPARE(changed.count(), 2);
+    QVERIFY(!controller.showOverlay(QStringLiteral("unknown-report")));
+    QVERIFY(controller.overlay().isEmpty());
 }
 
 void AppControllerTest::overlayGuardCommitsOnlyAfterNativeHandoff()

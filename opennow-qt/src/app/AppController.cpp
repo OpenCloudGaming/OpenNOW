@@ -571,6 +571,7 @@ const QStringList &AppController::overlays()
         u"friend-actions"_s,
         u"quick-settings"_s,
         u"session-conflict"_s,
+        u"session-report"_s,
         u"queue-ad"_s,
         u"desktop-stream-menu"_s,
         u"desktop-stream-exit-confirm"_s,

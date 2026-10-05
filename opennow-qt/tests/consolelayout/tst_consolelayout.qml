@@ -24,6 +24,22 @@ TestCase {
         }
     }
 
+    Component { id: underlyingActionComponent; GlassButton { text: "Underlying action" } }
+    Component { id: reportComponent; SessionReportOverlay {} }
+
+    function test_reportOwnsFocusAfterUnderlyingRouteSettles() {
+        const host = createTemporaryObject(hostComponent, testCase, {width: 960, height: 540})
+        const underlying = createTemporaryObject(underlyingActionComponent, host.viewport)
+        Qt.callLater(underlying.forceActiveFocus)
+        const report = createTemporaryObject(reportComponent, host.viewport)
+        verify(report !== null)
+        waitForRendering(report)
+        tryVerify(function() {
+            const focus = host.activeFocusItem
+            return focus !== null && focus.text === "Done" && focus !== underlying
+        })
+    }
+
     function verifyLayout(host) {
         const viewport = host.viewport
         const origin = viewport.mapToItem(host.contentItem, 0, 0)

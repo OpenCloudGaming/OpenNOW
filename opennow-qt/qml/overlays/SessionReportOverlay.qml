@@ -13,6 +13,11 @@ FocusScope {
     Accessible.name: qsTr("Session report")
     Accessible.role: Accessible.Dialog
 
+    function restoreFocus() {
+        if (root.visible && root.enabled && AppController.overlay === "session-report")
+            doneButton.forceActiveFocus()
+    }
+
     function duration(value) {
         const seconds = Math.max(0, Math.floor(Number(value || 0) / 1000))
         const hours = Math.floor(seconds / 3600)
@@ -99,5 +104,7 @@ FocusScope {
         }
         // OverlayHost owns the single reveal transform.
     }
-    Component.onCompleted: doneButton.forceActiveFocus()
+    onVisibleChanged: if (visible) Qt.callLater(root.restoreFocus)
+    onEnabledChanged: if (enabled) Qt.callLater(root.restoreFocus)
+    Component.onCompleted: Qt.callLater(root.restoreFocus)
 }
