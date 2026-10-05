@@ -43,6 +43,12 @@ struct NativeStreamPresentationRateMeter {
 
 /// Spatial effects operate after decode and preserve the received video format.
 enum NativeStreamVideoEffectsPolicy {
+    static func canUseDirectHDRPath(upscalingEnabled: Bool, upscaleEligible: Bool,
+                                    sharpeningAmount: Double) -> Bool {
+        (!upscalingEnabled || !upscaleEligible)
+            && sharpeningAmount.isFinite && sharpeningAmount <= 0.001
+    }
+
     static func presentationSize(source: CGSize, display: CGSize, stretch: Bool) -> CGSize {
         guard !stretch, source.width > 0, source.height > 0 else { return display }
         let scale = min(display.width / source.width, display.height / source.height)
@@ -51,8 +57,11 @@ enum NativeStreamVideoEffectsPolicy {
 
     static func upscaleSize(source: CGSize, destination: CGSize) -> CGSize? {
         guard source.width > 0, source.height > 0,
-              destination.width > source.width * 1.02,
-              destination.height > source.height * 1.02,
+              // Avoid an extra conversion/scaling pass when the drawable is only
+              // marginally larger than the source. This preserves the native
+              // Metal 4 HDR path while saving frame time on near-native streams.
+              destination.width >= source.width * 1.18,
+              destination.height >= source.height * 1.18,
               destination.width <= source.width * 4,
               destination.height <= source.height * 4 else { return nil }
         return CGSize(width: destination.width.rounded(), height: destination.height.rounded())
