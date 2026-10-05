@@ -38,6 +38,14 @@ fn rate_limited(remaining: Duration) -> ServiceError {
 
 impl StoreRequests {
     pub fn send(&self, request: RequestBuilder, context: &str) -> Result<Response, ServiceError> {
+        self.send_mapped(request, |error| ServiceError::network(context, error))
+    }
+
+    pub fn send_mapped(
+        &self,
+        request: RequestBuilder,
+        network: impl FnOnce(reqwest::Error) -> ServiceError,
+    ) -> Result<Response, ServiceError> {
         let mut schedule = lock(&self.0)?;
         if let Some(remaining) = schedule
             .cooldown
@@ -66,7 +74,7 @@ impl StoreRequests {
         let response = request.send();
         let mut schedule = lock(&self.0)?;
         schedule.next_request = Some(Instant::now() + REQUEST_INTERVAL);
-        let response = response.map_err(|error| ServiceError::network(context, error))?;
+        let response = response.map_err(network)?;
         if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
             let delay = response
                 .headers()

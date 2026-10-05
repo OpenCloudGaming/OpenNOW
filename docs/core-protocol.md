@@ -647,7 +647,13 @@ select `GFNPartnerJWT` or invent a GraphQL hostname.
 GFN service transport failures, including server-info lookup, keep the
 `network_error` code. When the HTTP client identifies the failed stage, the
 message ends with `(dns)`, `(connect)`, `(tls)`, or `(timeout)`; the message
-never includes the request URL or host.
+never includes the request URL or host. When an Alliance (non-NVIDIA) provider's
+server-info lookup for VPC or region discovery fails at the `dns` stage, the
+`network_error` message instead says that the provider display name can only be
+reached from inside its home country and network, asks the user to turn off any
+VPN, proxy or custom DNS, and keeps the original failure after `Details:`. Library,
+favorites, store, launch inspection, subscription and region reads share this
+message; the shell displays it as received.
 
 `settings.set` for `region` also requires the current `providerIdpId`. The core
 atomically updates `region`, `regionProviderIdpId`, and the `providerRegions` map.

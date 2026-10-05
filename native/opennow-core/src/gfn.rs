@@ -320,6 +320,25 @@ impl ServiceError {
         }
     }
 
+    fn server_info(provider: &LoginProvider, context: &str, error: reqwest::Error) -> Self {
+        let home_network_only =
+            provider.idp_id != DEFAULT_IDP_ID && transport_failure(&error) == Some("dns");
+        let error = Self::network(context, error);
+        if !home_network_only {
+            return error;
+        }
+        let name = Some(provider.display_name.trim())
+            .filter(|name| !name.is_empty())
+            .unwrap_or(provider.code.trim());
+        Self {
+            code: error.code,
+            message: format!(
+                "{name} can only be reached from inside its home country and network. Turn off any VPN, proxy or custom DNS (such as 1.1.1.1 or 8.8.8.8) and try again. Details: {}",
+                error.message
+            ),
+        }
+    }
+
     fn response(context: &str, response: Response) -> Self {
         let status = response.status();
         let mut body = Vec::new();
@@ -1566,7 +1585,9 @@ impl GfnService {
             .get(url)
             .headers(lcars_headers(token, "BROWSER", "WEBRTC", false)?)
             .send()
-            .map_err(|error| ServiceError::network("Region discovery failed", error))?;
+            .map_err(|error| {
+                ServiceError::server_info(&session.provider, "Region discovery failed", error)
+            })?;
         if !response.status().is_success() {
             return Err(ServiceError::response("Region discovery failed", response));
         }
@@ -2596,10 +2617,16 @@ impl GfnService {
                 self.check_scope(session, generation)?;
                 let request = client.get(url).headers(headers);
                 let response = match requests {
-                    Some(requests) => requests.send(request, "Store server info failed"),
-                    None => request
-                        .send()
-                        .map_err(|error| ServiceError::network("Server info failed", error)),
+                    Some(requests) => requests.send_mapped(request, |error| {
+                        ServiceError::server_info(
+                            &session.provider,
+                            "Store server info failed",
+                            error,
+                        )
+                    }),
+                    None => request.send().map_err(|error| {
+                        ServiceError::server_info(&session.provider, "Server info failed", error)
+                    }),
                 };
                 let response = response?;
                 if !response.status().is_success() {
