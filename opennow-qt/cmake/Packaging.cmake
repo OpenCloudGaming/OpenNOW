@@ -1,3 +1,20 @@
+if(UNIX AND NOT APPLE)
+    file(RELATIVE_PATH OPENNOW_INSTALL_LIBRARY_RELATIVE_PATH
+        "${CMAKE_INSTALL_FULL_BINDIR}" "${CMAKE_INSTALL_FULL_LIBDIR}")
+    set_property(TARGET opennow-qt APPEND PROPERTY INSTALL_RPATH
+        "$ORIGIN/${OPENNOW_INSTALL_LIBRARY_RELATIVE_PATH}")
+    if((IS_ABSOLUTE "${CMAKE_INSTALL_BINDIR}" AND NOT IS_ABSOLUTE "${CMAKE_INSTALL_LIBDIR}")
+        OR (IS_ABSOLUTE "${CMAKE_INSTALL_LIBDIR}" AND NOT IS_ABSOLUTE "${CMAKE_INSTALL_BINDIR}"))
+        get_filename_component(OPENNOW_CONFIGURED_INSTALL_PREFIX "${CMAKE_INSTALL_PREFIX}" ABSOLUTE)
+        install(CODE "
+            get_filename_component(OPENNOW_ACTUAL_INSTALL_PREFIX \"\${CMAKE_INSTALL_PREFIX}\" ABSOLUTE)
+            if(NOT OPENNOW_ACTUAL_INSTALL_PREFIX STREQUAL \"${OPENNOW_CONFIGURED_INSTALL_PREFIX}\")
+                message(FATAL_ERROR \"Changing the install prefix with mixed absolute and relative CMAKE_INSTALL_BINDIR/CMAKE_INSTALL_LIBDIR would break the streamer RPATH. Configure with the intended prefix or use relative install directories.\")
+            endif()
+        ")
+    endif()
+endif()
+
 install(TARGETS opennow-qt
     BUNDLE DESTINATION .
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
@@ -23,8 +40,8 @@ elseif(NOT APPLE)
         "$<TARGET_FILE_DIR:opennow-qt>/opennow-update-helper${OPENNOW_CORE_SUFFIX}"
         DESTINATION "${CMAKE_INSTALL_BINDIR}"
     )
-    install(PROGRAMS "${OPENNOW_STREAMER_FFI_RUNTIME}"
-        DESTINATION "${CMAKE_INSTALL_BINDIR}")
+    install(FILES "${OPENNOW_STREAMER_FFI_RUNTIME}"
+        DESTINATION "${CMAKE_INSTALL_LIBDIR}")
     install(PROGRAMS "${OPENNOW_STREAMER_BIN_ARTIFACT}"
         DESTINATION "${CMAKE_INSTALL_BINDIR}")
 else()

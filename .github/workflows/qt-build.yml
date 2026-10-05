@@ -346,6 +346,9 @@ jobs:
           if [[ -n "${OPENNOW_QT_HOST_PATH:-}" ]]; then
             OPENNOW_CMAKE_ARGS+=("-DQT_HOST_PATH=${OPENNOW_QT_HOST_PATH}")
           fi
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            OPENNOW_CMAKE_ARGS+=(-DCMAKE_INSTALL_LIBDIR=lib)
+          fi
           cmake -S opennow-qt -B build/opennow-qt-release \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
@@ -447,7 +450,7 @@ jobs:
           mkdir -p build/qt-packages
           cmake --install build/opennow-qt-release --config Release \
             --prefix "$PWD/build/AppDir/usr"
-          python3 opennow-qt/packaging/verify_linux_package.py build/AppDir/usr/bin
+          python3 opennow-qt/packaging/verify_linux_package.py build/AppDir/usr/bin --libdir lib
           curl --fail --location --retry 3 \
             "https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-${LINUXDEPLOY_ARCH}.AppImage" \
             --output "build/linuxdeploy-${LINUXDEPLOY_ARCH}.AppImage"
@@ -494,7 +497,7 @@ jobs:
           test -f build/AppDir/usr/plugins/platforms/libqwayland-generic.so
           test -f build/AppDir/usr/plugins/wayland-shell-integration/libxdg-shell.so
           LD_LIBRARY_PATH="$PWD/build/AppDir/usr/lib:$LD_LIBRARY_PATH" \
-            python3 opennow-qt/packaging/verify_linux_package.py build/AppDir/usr/bin --appdir build/AppDir
+            python3 opennow-qt/packaging/verify_linux_package.py build/AppDir/usr/bin --libdir lib --appdir build/AppDir
           python3 opennow-qt/packaging/appimage_updates.py verify \
             --channel "$BUILD_CHANNEL" --arch "$PACKAGE_ARCH" \
             --appimage "OpenNOW-Qt-${OPENNOW_BUILD_VERSION}-Linux-${PACKAGE_ARCH}.AppImage"
