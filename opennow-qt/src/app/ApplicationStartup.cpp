@@ -1,5 +1,6 @@
 #include "app/AppController.h"
 #include "app/platform/GraphicsDeviceSelection.h"
+#include "app/platform/WindowTheme.h"
 #include "acceptance/AcceptanceSession.h"
 #include "app/ApplicationStartup.h"
 #include "app/platform/MacAwdlController.h"
@@ -231,6 +232,7 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
         coreClient.setNativeHdrDisplay(snapshot);
     });
     qmlRegisterType<HdrChromeEffect>("OpenNOW", 1, 0, "HdrChromeEffect");
+    qmlRegisterType<WindowTheme>("OpenNOW", 1, 0, "WindowTheme");
     qmlRegisterType<QTimer>("OpenNOW", 1, 0, "NativeTimer");
     qmlRegisterUncreatableType<MacAwdlController>("OpenNOW", 1, 0, "MacAwdlController",
                                                 u"Use the application-owned MacAwdl instance"_s);
