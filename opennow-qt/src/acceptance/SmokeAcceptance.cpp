@@ -53,6 +53,56 @@ void presentUpdateSurface(QQmlApplicationEngine &engine, QQuickWindow *window, c
 
 int AcceptanceSession::startSmokeWorkload()
 {
+    if (m_smokeTest && m_arguments.contains(u"--smoke-console-design"_s)
+            && m_arguments.contains(u"--smoke-interactive"_s))
+        return EXIT_SUCCESS;
+    if (m_smokeTest && m_arguments.contains(u"--smoke-initial-console-warning"_s)) {
+        auto *window = m_engine.rootObjects().isEmpty() ? nullptr
+            : qobject_cast<QQuickWindow *>(m_engine.rootObjects().first());
+        if (!window) return EXIT_FAILURE;
+        window->requestActivate();
+        QTimer::singleShot(350, this, [this, window] {
+            if (m_qmlWarningOccurred || m_controller.overlay() != u"application-quit-confirm"_s
+                    || !window->activeFocusItem()
+                    || window->activeFocusItem()->objectName() != u"quitConfirmKeepOpen"_s) {
+                qCritical("Initial console warning did not retain safe keyboard focus");
+                m_application.exit(EXIT_FAILURE);
+                return;
+            }
+            const auto route = m_controller.route();
+            auto *loader = window->findChild<QObject *>(u"mainRouteLoader"_s);
+            auto *page = loader ? qobject_cast<QQuickItem *>(loader->property("item").value<QObject *>()) : nullptr;
+            if (!page) { m_application.exit(EXIT_FAILURE); return; }
+            page->forceActiveFocus();
+            for (const auto key : {Qt::Key_X, Qt::Key_PageDown}) {
+                QKeyEvent press(QEvent::KeyPress, key, Qt::NoModifier);
+                QGuiApplication::sendEvent(window, &press);
+                QKeyEvent release(QEvent::KeyRelease, key, Qt::NoModifier);
+                QGuiApplication::sendEvent(window, &release);
+            }
+            if (m_controller.route() != route || m_controller.overlay() != u"application-quit-confirm"_s) {
+                qCritical("A background focus request bypassed the console warning");
+                m_application.exit(EXIT_FAILURE);
+                return;
+            }
+            QTimer::singleShot(50, this, [this, window, route] {
+                if (!window->activeFocusItem()
+                        || window->activeFocusItem()->objectName() != u"quitConfirmKeepOpen"_s) {
+                    qCritical("Console warning did not reclaim safe focus");
+                    m_application.exit(EXIT_FAILURE);
+                    return;
+                }
+                QKeyEvent press(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+                QGuiApplication::sendEvent(window, &press);
+                QKeyEvent release(QEvent::KeyRelease, Qt::Key_Return, Qt::NoModifier);
+                QGuiApplication::sendEvent(window, &release);
+                const bool safe = m_controller.overlay().isEmpty() && m_controller.route() == route
+                    && !window->property("applicationCloseConfirmed").toBool();
+                m_application.exit(safe ? EXIT_SUCCESS : EXIT_FAILURE);
+            });
+        });
+        return EXIT_SUCCESS;
+    }
     const auto screenshotIndex = m_arguments.indexOf(u"--screenshot"_s);
     const auto resumeIndex = m_arguments.indexOf(u"--smoke-session-resume"_s);
     if (m_smokeTest && resumeIndex >= 0 && resumeIndex + 1 < m_arguments.size()) {
@@ -101,6 +151,8 @@ int AcceptanceSession::startSmokeWorkload()
         return startThemeSettingsWorkload();
     if (m_smokeTest && m_arguments.contains(u"--smoke-session-launch"_s))
         return startSessionLaunchWorkload();
+    if (m_smokeTest && m_arguments.contains(u"--smoke-console-session"_s))
+        return startConsoleSessionWorkload();
     if (m_smokeTest && m_arguments.contains(u"--smoke-session-fullscreen"_s))
         return startSessionFullscreenWorkload();
     if (m_smokeTest && m_arguments.contains(u"--smoke-stream-exit"_s))
@@ -228,7 +280,7 @@ int AcceptanceSession::startSmokeWorkload()
     } else if (m_smokeTest && m_arguments.contains(u"--smoke-input-capture-error"_s)) {
         auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
         if (!store) return EXIT_FAILURE;
-        store->setProperty("streamer", QVariantMap{{u"status"_s, u"streaming"_s}});
+        store->setProperty("streamer", QVariantMap{{u"status"_s, u"streaming"_s}, {u"firstFrameLatencyMs"_s, 37}});
         store->setProperty("streamState", u"streaming"_s);
         QTimer::singleShot(150, this, [this] {
             auto *window = m_engine.rootObjects().isEmpty() ? nullptr

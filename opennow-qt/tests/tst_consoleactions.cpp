@@ -23,14 +23,17 @@ public slots:
         const auto source = QStringLiteral(OPENNOW_QML_SOURCE_DIR);
         for (const auto &entry : {std::pair{"Theme", "theme/Theme.qml"},
                  {"InputPromptIcons", "components/InputPromptIcons.qml"},
+                 {"ConsoleStores", "components/ConsoleStores.qml"},
                  {"DesktopTokens", "desktop/components/DesktopTokens.qml"}}) {
             qmlRegisterSingletonType(QUrl::fromLocalFile(source + "/" + entry.second),
                                      "OpenNOW", 1, 0, entry.first);
         }
         for (const auto *name : {"AppChrome", "GlassPanel", "GlassButton", "ControllerGlyph",
                  "KeyboardGlyph", "HintBar", "NavPill", "ScreenBackground", "ArtworkSource",
-                 "RoundedArtwork", "PlatformPicker", "StoreBadge", "FilterDropdown",
-                 "PosterTile", "VirtualKeyboard", "CloudLibraryActions"}) {
+                 "RoundedArtwork",
+                 "PosterTile", "VirtualKeyboard", "CloudLibraryActions", "ConsoleActionButton",
+                 "ConsoleSheetFrame", "ConsoleChoiceSheet", "ConsoleWarningSheet", "ConsoleStoreMark",
+                 "ConsoleStoreChip", "ConsoleFilterSheet", "FocusFrame", "MotionProgress"}) {
             qmlRegisterType(QUrl::fromLocalFile(source + "/components/" + name + ".qml"),
                             "OpenNOW", 1, 0, name);
         }

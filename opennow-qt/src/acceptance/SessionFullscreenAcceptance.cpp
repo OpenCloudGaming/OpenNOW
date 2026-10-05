@@ -22,7 +22,7 @@ int AcceptanceSession::startSessionFullscreenWorkload()
     if (!window || !store) return EXIT_FAILURE;
     m_controller.navigate(u"home"_s);
     store->setProperty("settings", QVariantMap{{u"autoFullScreen"_s, false}});
-    store->setProperty("streamer", QVariantMap{{u"status"_s, u"streaming"_s}});
+    store->setProperty("streamer", QVariantMap{{u"status"_s, u"streaming"_s}, {u"firstFrameLatencyMs"_s, 37}});
     store->setProperty("streamState", u"streaming"_s);
     const auto restoredVisibility = m_arguments.contains(u"--smoke-fullscreen-restore-maximized"_s)
         ? QWindow::Maximized
@@ -94,6 +94,12 @@ int AcceptanceSession::startSessionFullscreenWorkload()
                          "exit confirmation unavailable")) return;
             break;
         case 5:
+            if (!window->property("desktopSurfaceActive").toBool()) {
+                keyClick(Qt::Key_Down);
+                if (!require(window->activeFocusItem()
+                        && window->activeFocusItem()->objectName() == u"streamExitEndSession"_s,
+                        "console End session action did not receive explicit focus")) return;
+            }
             keyClick(Qt::Key_Return);
             break;
         case 6:

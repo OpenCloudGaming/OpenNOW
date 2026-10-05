@@ -21,6 +21,45 @@ FocusScope {
         return String(streamer.status || ShellStore.streamState || "starting")
     }
     readonly property bool streaming: status === "streaming"
+    readonly property bool videoReady: streaming
+        && root.streamer.firstFrameLatencyMs !== undefined
+        && root.streamer.firstFrameLatencyMs !== null
+    readonly property string sessionId: String(session.sessionId || "")
+    property string presentedSessionId: ""
+    readonly property bool presentedOnce: sessionId !== "" && presentedSessionId === sessionId
+    readonly property bool launchCoverVisible: failed || (!videoReady && !presentedOnce)
+    readonly property bool reconnectBannerVisible: !failed && !videoReady && presentedOnce
+    property double reconnectStartedMs: 0
+    readonly property int reconnectSeconds: reconnectStartedMs > 0
+        ? Math.max(0, Math.floor((nowMs - reconnectStartedMs) / 1000)) : 0
+    readonly property var rigRows: {
+        const rows = []
+        if (root.session.gpuType) rows.push({label: qsTr("GPU"), value: String(root.session.gpuType)})
+        if (root.session.serverLocation || root.session.zone)
+            rows.push({label: qsTr("Zone"), value: String(root.session.serverLocation || root.session.zone)})
+        const settings = ShellStore.settings || ({})
+        const requested = [settings.resolution ? String(settings.resolution) : "",
+            settings.fps ? qsTr("%1 FPS").arg(settings.fps) : ""].filter(part => part !== "").join(" · ")
+        if (requested !== "") rows.push({label: qsTr("Requested"), value: requested})
+        const negotiated = [root.profile.resolution ? String(root.profile.resolution) : "",
+            root.profile.fps ? qsTr("%1 FPS").arg(root.profile.fps) : "",
+            root.profile.codec ? String(root.profile.codec).toUpperCase() : ""].filter(part => part !== "").join(" · ")
+        if (negotiated !== "") rows.push({label: qsTr("Negotiated"), value: negotiated})
+        return rows
+    }
+    onVideoReadyChanged: {
+        if (!videoReady) {
+            if (!failed && visible && AppController.overlay === "")
+                Qt.callLater(root.forceActiveFocus)
+            return
+        }
+        presentedSessionId = sessionId
+        Qt.callLater(root.resynchronizeStreamInput)
+    }
+    onReconnectBannerVisibleChanged: {
+        reconnectStartedMs = reconnectBannerVisible ? Date.now() : 0
+        nowMs = Date.now()
+    }
     readonly property bool videoSurfaceActive: root.streaming || (root.streamer.status === "connecting" && root.status !== "error")
     property var frameGenerationStats: streamVideo.frameGenerationStats || ({})
     readonly property bool failed: status === "error"
@@ -29,12 +68,12 @@ FocusScope {
         ? Math.max(0, Math.floor((nowMs - ShellStore.streamStartedAtMs) / 1000)) : 0
     readonly property int clockDuration: Math.max(1, Number(ShellStore.settings.sessionClockShowDurationSeconds || 30))
     readonly property int clockInterval: Math.max(0, Number(ShellStore.settings.sessionClockShowEveryMinutes || 0) * 60)
-    readonly property bool sessionClockVisible: Boolean(ShellStore.settings.sessionCounterEnabled) && streaming
+    readonly property bool sessionClockVisible: Boolean(ShellStore.settings.sessionCounterEnabled) && videoReady
         && (elapsedSeconds < clockDuration
             || (clockInterval > 0 && elapsedSeconds % clockInterval < clockDuration))
     readonly property int antiAfkReminderDuration: Math.max(1, Number(ShellStore.settings.antiAfkReminderDurationSeconds || 5))
     readonly property int antiAfkReminderInterval: Math.max(0, Number(ShellStore.settings.antiAfkReminderEveryMinutes || 0) * 60)
-    readonly property bool antiAfkReminderVisible: ShellStore.antiAfkEnabled && streaming
+    readonly property bool antiAfkReminderVisible: ShellStore.antiAfkEnabled && videoReady
         && !Boolean(ShellStore.settings.showAntiAfkIndicator) && antiAfkReminderInterval > 0
         && elapsedSeconds % antiAfkReminderInterval < antiAfkReminderDuration
 
@@ -57,7 +96,7 @@ FocusScope {
     }
     function resynchronizeStreamInput() {
         root.publishCaptureRect()
-        if (!root.visible || !root.streaming
+        if (!root.visible || !root.videoReady
                 || ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay))
             return
         streamVideo.forceActiveFocus()
@@ -81,16 +120,18 @@ FocusScope {
         function onActiveChanged() { Qt.callLater(root.resynchronizeStreamInput) }
     }
 
-    Timer { interval: 1000; repeat: true; running: root.streaming; onTriggered: root.nowMs = Date.now() }
+    Timer { interval: 1000; repeat: true; running: root.streaming || root.reconnectBannerVisible; onTriggered: root.nowMs = Date.now() }
+
+    SessionGlyphs { id: glyphs }
 
     StreamVideoItem {
         id: streamVideo
         objectName: "streamSurfaceHost"
         anchors.fill: parent
         visible: root.visible && root.videoSurfaceActive
-        enabled: root.streaming
-        focus: root.streaming && visible
-        inputEnabled: root.streaming && visible
+        enabled: root.videoReady
+        focus: root.videoReady && visible
+        inputEnabled: root.videoReady && visible
             && !ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)
         shortcutBindings: ShellStore.streamShortcutBindings()
         clipboardPaste: ShellStore.settings.clipboardPaste === true
@@ -111,7 +152,7 @@ FocusScope {
     StreamInputNotice {
         layer.enabled: HdrOutput.chromeRequired
         layer.effect: HdrChromeEffect {}
-        message: !root.streaming ? "" : clipboardPasteNotice.running
+        message: !root.videoReady ? "" : clipboardPasteNotice.running
             ? qsTr("Clipboard paste failed. Use plain text up to 64 KiB and try again.")
             : streamVideo.relativeMouse ? streamVideo.inputCaptureError : ""
         z: 3
@@ -133,111 +174,176 @@ FocusScope {
     ScreenBackground {
         layer.enabled: HdrOutput.chromeRequired
         layer.effect: HdrChromeEffect {}
-        visible: !root.streaming
-        artwork: root.game.heroImageUrl || root.game.imageUrl || ""
+        visible: root.reconnectBannerVisible && !streamVideo.visible
+        artwork: DesktopTokens.artworkUrl(root.game, true)
         tint: "#101B2A"
         z: 1
     }
 
     Rectangle {
-        visible: !root.streaming
+        visible: root.reconnectBannerVisible
         layer.enabled: HdrOutput.chromeRequired
         layer.effect: HdrChromeEffect {}
         anchors.fill: parent
-        color: Qt.rgba(0.02, 0.04, 0.08, 0.38)
+        color: Qt.rgba(0.02, 0.03, 0.06, 0.32)
         z: 2
     }
 
-    GlassPanel {
-        visible: !root.streaming
+    LaunchStage {
+        id: launchCover
+        objectName: "consoleStreamLaunchCover"
+        visible: root.launchCoverVisible
         layer.enabled: HdrOutput.chromeRequired
         layer.effect: HdrChromeEffect {}
-        anchors.centerIn: parent
-        width: Math.min(980, parent.width - 160)
-        height: 500
-        panelRadius: 44
-        strong: true
+        anchors.fill: parent
         z: 3
+        game: root.game
+        tone: root.failed ? Theme.coral : Theme.focus
+        statusText: root.failed ? qsTr("Stopped") : qsTr("Connecting")
+        eyebrow: root.failed ? qsTr("Stream could not start") : qsTr("Almost there")
+        headline: root.failed ? qsTr("That didn't work") : qsTr("Connecting to your game")
+        detail: root.failed
+            ? I18n.source(root.streamer.message || ShellStore.streamMessage || qsTr("Native media startup failed"), I18n.revision)
+            : qsTr("Your rig is ready. OpenNOW is opening the media connection, and your game appears here as soon as the first video frame is ready.")
+        railVisible: !root.failed
+        activeStep: 4
+        activeStepDetail: qsTr("Leaves this screen on the first decoded frame")
+        footerVisible: !root.failed
+        footerText: qsTr("Cancel session…")
+        onFooterRequested: ShellStore.requestStreamExitConfirmation()
+
+        actions: [
+            LaunchStage.LaunchAction {
+                id: retryMediaButton
+                objectName: "streamRetryMediaButton"
+                visible: root.failed
+                enabled: !ShellStore.streamBusy
+                primary: true
+                text: qsTr("Retry media")
+                detail: qsTr("Reconnects to the same session")
+                glyph: glyphs.button("A")
+                keyboardGlyph: glyphs.keyboard
+                KeyNavigation.down: stopSessionButton
+                onClicked: ShellStore.retryNativeStreamer()
+            },
+            LaunchStage.LaunchAction {
+                id: stopSessionButton
+                objectName: "streamStopSessionButton"
+                visible: root.failed
+                text: qsTr("End session…")
+                glyph: glyphs.button("B")
+                keyboardGlyph: glyphs.keyboard
+                KeyNavigation.up: retryMediaButton
+                onClicked: ShellStore.requestStreamExitConfirmation()
+            }
+        ]
+
+        aside: [
+            LaunchStage.RigCard {
+                x: Math.round((parent.width - width) / 2)
+                y: 90
+                visible: !root.failed && rows.length > 0
+                rows: root.rigRows
+            },
+            LaunchStage.StopCard {
+                x: Math.round((parent.width - width) / 2)
+                visible: root.failed
+                reachedStep: 4
+                code: String(root.streamer.errorCode || "")
+            }
+        ]
+    }
+
+    Rectangle {
+        objectName: "streamReconnectBanner"
+        visible: root.reconnectBannerVisible
+        layer.enabled: HdrOutput.chromeRequired
+        layer.effect: HdrChromeEffect {}
+        z: 12
+        anchors.horizontalCenter: parent.horizontalCenter
+        y: 56
+        width: Math.min(parent.width - 96, reconnectCopy.implicitWidth + 160)
+        height: 122
+        radius: 32
+        color: Qt.rgba(Theme.shell.r, Theme.shell.g, Theme.shell.b, 0.94)
+        border.width: 1
+        border.color: Theme.seam
+        Accessible.role: Accessible.AlertMessage
+        Accessible.name: qsTr("Reconnecting. Your stream will return when the connection is restored.")
+
+        Canvas {
+            id: reconnectArc
+            x: 30
+            anchors.verticalCenter: parent.verticalCenter
+            width: 44; height: 44
+            onPaint: {
+                const context = getContext("2d")
+                context.reset()
+                context.lineWidth = 4
+                context.lineCap = "round"
+                context.strokeStyle = Qt.rgba(1, 1, 1, 0.16)
+                context.beginPath()
+                context.arc(22, 22, 19, 0, Math.PI * 2)
+                context.stroke()
+                context.strokeStyle = Theme.yellow
+                context.beginPath()
+                context.arc(22, 22, 19, -Math.PI / 2, Math.PI * 0.1)
+                context.stroke()
+            }
+            RotationAnimator on rotation {
+                from: 0; to: 360; duration: 1200
+                loops: Animation.Infinite
+                running: root.reconnectBannerVisible && !AppController.reducedMotion
+            }
+        }
 
         Column {
-            anchors.fill: parent
-            anchors.margins: 44
-            spacing: 22
-
-            Row {
-                width: parent.width
-                spacing: 18
-                Rectangle {
-                    width: 62; height: 62; radius: 31
-                    color: root.failed ? Theme.coral : (root.streaming ? Theme.mint : Theme.focus)
-                    Rectangle { anchors.centerIn: parent; width: 22; height: 22; radius: 11; color: Theme.shell }
-                    SequentialAnimation on scale {
-                        running: !AppController.reducedMotion
-                        loops: Animation.Infinite
-                        NumberAnimation { to: 1.08; duration: 700; easing.type: Easing.InOutSine }
-                        NumberAnimation { to: 1.0; duration: 700; easing.type: Easing.InOutSine }
-                    }
-                }
-                Column {
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: 3
-                    Text { text: root.failed ? qsTr("MEDIA STARTUP FAILED") : (root.status === "reconnecting" ? qsTr("RECONNECTING") : qsTr("CLOUD SEAT READY")); color: root.failed ? Theme.coral : Theme.focus; font.family: Theme.bodyFont; font.pixelSize: 14; font.weight: Font.Black; font.letterSpacing: 1.4 }
-                    Text { text: root.game.title || qsTr("GeForce NOW"); color: Theme.label; font.family: Theme.displayFont; font.pixelSize: 34; font.weight: Font.Black }
-                }
-            }
-
+            id: reconnectCopy
+            x: 96
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 4
             Text {
-                width: parent.width
-                text: root.streamer.message || ShellStore.streamMessage || qsTr("GeForce NOW prepared the remote machine. OpenNOW is validating the negotiated media transport.")
-                wrapMode: Text.WordWrap
+                text: qsTr("Reconnecting · %1").arg(root.elapsed(root.reconnectSeconds)).toUpperCase()
+                color: Theme.yellow
+                font.family: Theme.monoFont; font.pixelSize: 14; font.weight: Font.Bold; font.letterSpacing: 2.4
+            }
+            Text {
+                text: qsTr("Your stream will return when the connection is restored")
+                color: Theme.label
+                font.family: Theme.displayFont; font.pixelSize: 26; font.weight: Font.Black
+            }
+            Text {
+                text: qsTr("Your session is still active. Open the session menu for options.")
                 color: Theme.textMuted
-                font.family: Theme.bodyFont
-                font.pixelSize: 18
-                lineHeight: 1.25
+                font.family: Theme.bodyFont; font.pixelSize: 17
             }
+        }
+    }
 
-            Row {
-                spacing: 12
-                Repeater {
-                    model: [
-                        root.profile.resolution || ShellStore.settings.resolution || "—",
-                        root.profile.fps || ShellStore.settings.fps
-                            ? String(root.profile.fps || ShellStore.settings.fps) + " FPS" : "—",
-                        root.profile.codec || ShellStore.settings.codec
-                            ? String(root.profile.codec || ShellStore.settings.codec).toUpperCase() : "—",
-                        root.session.gpuType || "—"
-                    ]
-                    GlassPanel {
-                        required property string modelData
-                        width: 190; height: 58; panelRadius: 20; strong: true
-                        Text { anchors.centerIn: parent; text: modelData; color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: 15; font.weight: Font.Bold }
-                    }
-                }
-            }
-
-            GlassPanel {
-                width: parent.width; height: 82; panelRadius: 22
-                Row {
-                    anchors.fill: parent; anchors.margins: 18; spacing: 22
-                    Column {
-                        width: parent.width * 0.42
-                        Text { text: qsTr("SESSION"); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 11; font.weight: Font.Black; font.letterSpacing: 1.2 }
-                        Text { width: parent.width; elide: Text.ElideMiddle; text: root.session.sessionId || "—"; color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: 14 }
-                    }
-                    Column {
-                        width: parent.width * 0.42
-                        Text { text: qsTr("SERVER"); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 11; font.weight: Font.Black; font.letterSpacing: 1.2 }
-                        Text { width: parent.width; elide: Text.ElideMiddle; text: root.session.serverLocation || root.session.zone || "—"; color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: 14 }
-                    }
-                }
-            }
-
-            Row {
-                anchors.horizontalCenter: parent.horizontalCenter
-                spacing: 12
-                GlassButton { width: 260; text: qsTr("Stop session"); glyph: "B"; onClicked: ShellStore.requestStreamExitConfirmation(); Component.onCompleted: forceActiveFocus() }
-                GlassButton { width: 260; text: root.failed ? qsTr("Retry media") : qsTr("Session guide"); glyph: root.failed ? "↻" : "≡"; primary: true; onClicked: root.failed ? ShellStore.retryNativeStreamer() : AppController.showOverlay("guide-session") }
-            }
+    Rectangle {
+        visible: root.reconnectBannerVisible && AppController.overlay === ""
+        layer.enabled: HdrOutput.chromeRequired
+        layer.effect: HdrChromeEffect {}
+        z: 12
+        anchors.right: parent.right; anchors.rightMargin: 156
+        anchors.bottom: parent.bottom; anchors.bottomMargin: 50
+        width: reconnectHint.implicitWidth + 36
+        height: 56
+        radius: 28
+        color: Qt.rgba(Theme.shell.r, Theme.shell.g, Theme.shell.b, 0.9)
+        border.width: 1
+        border.color: Theme.seam
+        ControllerGlyph {
+            id: reconnectHint
+            anchors.centerIn: parent
+            glyph: glyphs.button("GUIDE")
+            keyboard: glyphs.keyboard
+            label: qsTr("Session menu")
+        }
+        MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            onClicked: AppController.showOverlay("guide-session")
         }
     }
 
@@ -257,7 +363,7 @@ FocusScope {
     }
 
     GlassPanel {
-        visible: root.streaming && AppController.overlay === ""
+        visible: root.videoReady && AppController.overlay === ""
         layer.enabled: HdrOutput.chromeRequired
         layer.effect: HdrChromeEffect {}
         z: 12
@@ -273,16 +379,16 @@ FocusScope {
             id: streamHints
             anchors.centerIn: parent
             spacing: 22
-            ControllerGlyph { glyph: "GUIDE"; label: qsTr("Session") }
+            ControllerGlyph { glyph: glyphs.button("GUIDE"); keyboard: glyphs.keyboard; label: qsTr("Session") }
             ControllerGlyph { visible: ShellStore.settings.shortcutToggleStats !== ""; glyph: String(ShellStore.settings.shortcutToggleStats ?? "Ctrl+N"); keyboard: true; label: qsTr("Stats") }
-            ControllerGlyph { glyph: "F11"; keyboard: true; label: qsTr("Fullscreen") }
+            ControllerGlyph { visible: String(ShellStore.settings.shortcutToggleFullscreen ?? "F11") !== ""; glyph: String(ShellStore.settings.shortcutToggleFullscreen ?? "F11"); keyboard: true; label: qsTr("Fullscreen") }
         }
     }
 
     GlassPanel {
         MotionProgress {
             id: afkMotion
-            shown: root.streaming && ShellStore.antiAfkEnabled
+            shown: root.videoReady && ShellStore.antiAfkEnabled
                 && (Boolean(ShellStore.settings.showAntiAfkIndicator) || root.antiAfkReminderVisible)
         }
         visible: afkMotion.present
@@ -301,14 +407,13 @@ FocusScope {
     Keys.onPressed: event => {
         if (event.isAutoRepeat)
             return
-        if (!root.streaming
+        if (!root.videoReady
                 && (event.key === Qt.Key_Escape || event.key === Qt.Key_Back)) {
             event.accepted = true
             ShellStore.requestStreamExitConfirmation()
         }
     }
 
-    onStreamingChanged: if (streaming) Qt.callLater(root.forceActiveFocus)
+    onFailedChanged: if (failed) Qt.callLater(() => retryMediaButton.forceActiveFocus())
 
-    AppChrome { visible: !root.streaming; anchors.fill: parent; title: qsTr("Live session"); currentRoute: "home"; bottomVisible: false; z: 4; layer.enabled: HdrOutput.chromeRequired; layer.effect: HdrChromeEffect {} }
 }

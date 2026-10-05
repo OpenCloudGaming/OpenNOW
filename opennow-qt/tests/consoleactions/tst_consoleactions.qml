@@ -17,6 +17,7 @@ TestCase {
         ShellStore.settings = {appTheme: "dark", favoriteGameIds: [], resolution: "1920x1080", fps: 60}
         ShellStore.launchCount = 0
         ShellStore.detailsCount = 0
+        ShellStore.selectedGame = ShellStore.catalogGames[0]
         AppController.showOverlay("")
     }
 
@@ -56,5 +57,45 @@ TestCase {
         tryCompare(keyboard, "presented", true)
         keyClick(Qt.Key_Escape)
         tryCompare(keyboard, "presented", false)
+    }
+
+    function test_storeChipKeepsFocusAcrossSelectionAndRefresh() {
+        ShellStore.selectedGame = {id:"fixture-game", launchAppId:"12345", title:"Two stores",
+            selectedVariantIndex:0, variants:[
+                {store:"Steam", libraryStatus:"MANUAL"},
+                {store:"Epic", libraryStatus:"NOT_OWNED"}
+            ]}
+        const screen = createTemporaryObject(detailsComponent, testCase)
+        const epic = findChild(screen, "consolePlatformChip1")
+        verify(epic !== null)
+        epic.forceActiveFocus()
+        keyClick(Qt.Key_Return)
+        compare(ShellStore.selectedGame.selectedVariantIndex, 1)
+        compare(findChild(screen, "consolePlatformChip1"), epic)
+        verify(epic.activeFocus)
+        compare(ShellStore.launchCount, 0)
+        ShellStore.selectedGame = Object.assign({}, ShellStore.selectedGame, {title:"Refreshed metadata"})
+        compare(findChild(screen, "consolePlatformChip1"), epic)
+        verify(epic.activeFocus)
+        keyClick(Qt.Key_Left)
+        const steam = findChild(screen, "consolePlatformChip0")
+        verify(steam.activeFocus)
+        keyClick(Qt.Key_Return)
+        compare(ShellStore.selectedGame.selectedVariantIndex, 0)
+        compare(ShellStore.launchCount, 0)
+    }
+
+    function test_missingStoreSelectionDoesNotSelectAnotherVersion() {
+        ShellStore.selectedGame = {id:"fixture-game", launchAppId:"", title:"Store removed",
+            selectedVariantIndex:-1, variants:[{store:"Steam", libraryStatus:"MANUAL"}]}
+        const screen = createTemporaryObject(detailsComponent, testCase)
+        compare(screen.selectedVariantIndex, -1)
+        compare(screen.selectedVariant, null)
+        verify(!findChild(screen, "consolePlatformChip0").selectedVariant)
+        verify(!findChild(screen, "consolePlayButton").enabled)
+        compare(screen.libraryOptions.filter(option => option.value === "remove" || option.value === "select").length, 0)
+        screen.forceActiveFocus()
+        keyClick(Qt.Key_Return)
+        compare(ShellStore.launchCount, 0)
     }
 }

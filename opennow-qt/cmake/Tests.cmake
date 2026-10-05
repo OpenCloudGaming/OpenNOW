@@ -134,6 +134,16 @@ if(BUILD_TESTING)
         -input "${CMAKE_CURRENT_SOURCE_DIR}/tests/consolelayout")
     set_tests_properties(opennow-consolelayout-tests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+    qt_add_executable(opennow-consolecontrols-tests tests/tst_consolecontrols.cpp)
+    target_link_libraries(opennow-consolecontrols-tests PRIVATE Qt6::QuickTest Qt6::Quick)
+    target_compile_definitions(opennow-consolecontrols-tests PRIVATE
+        OPENNOW_QML_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml")
+    qt_add_resources(opennow-consolecontrols-tests "console-controls-test-assets"
+        PREFIX "/qt/qml/OpenNOW" FILES ${OPENNOW_CONTROLLER_ICON_FILES})
+    add_test(NAME opennow-consolecontrols-tests COMMAND opennow-consolecontrols-tests
+        -input "${CMAKE_CURRENT_SOURCE_DIR}/tests/consolecontrols")
+    set_tests_properties(opennow-consolecontrols-tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 45)
     qt_add_executable(opennow-onboarding-tests tests/tst_onboarding.cpp)
     target_link_libraries(opennow-onboarding-tests PRIVATE Qt6::QuickTest Qt6::Quick)
     target_compile_definitions(opennow-onboarding-tests PRIVATE
@@ -1390,6 +1400,24 @@ if(BUILD_TESTING)
             endforeach()
         endforeach()
     endforeach()
+    foreach(mode windowed fullscreen)
+        foreach(motion full reduced)
+            set(console_motion_args)
+            if(motion STREQUAL "reduced")
+                list(APPEND console_motion_args --reduced-motion)
+            endif()
+            add_test(NAME "qml-console-session-${mode}-${motion}"
+                COMMAND opennow-qt --smoke-test --allow-multiple-instances --console
+                    --route home --smoke-console-session --smoke-exit-${mode} ${console_motion_args})
+            set_tests_properties("qml-console-session-${mode}-${motion}" PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 15)
+        endforeach()
+    endforeach()
+    add_test(NAME qml-console-initial-warning
+        COMMAND opennow-qt --smoke-test --allow-multiple-instances --console --route home
+            --overlay application-quit-confirm --smoke-initial-console-warning --reduced-motion)
+    set_tests_properties(qml-console-initial-warning PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
     foreach(surface desktop console)
         foreach(mode windowed maximized fullscreen)
             add_test(NAME "qml-session-fullscreen-${surface}-${mode}"

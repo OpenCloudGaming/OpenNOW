@@ -2,6 +2,7 @@ set_source_files_properties(qml/theme/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE
 set_source_files_properties(qml/state/ShellStore.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 set_source_files_properties(qml/desktop/components/DesktopTokens.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 set_source_files_properties(qml/components/InputPromptIcons.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
+set_source_files_properties(qml/components/ConsoleStores.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 
 set(OPENNOW_CONTROLLER_ICON_FILES
     res/input-prompts/controller_playstation5-dark.svg
@@ -223,24 +224,38 @@ qt_add_qml_module(opennow-qt
         qml/components/ControllerGlyph.qml
         qml/components/InputPromptIcons.qml
         qml/components/KeyboardGlyph.qml
-        qml/components/FilterDropdown.qml
         qml/components/FocusFrame.qml
         qml/components/GameTile.qml
         qml/components/GlassButton.qml
+        qml/components/ConsoleActionButton.qml
+        qml/components/ConsoleActionColumn.qml
+        qml/components/ConsoleListRow.qml
+        qml/components/ConsoleSheetFrame.qml
+        qml/components/ConsoleChoiceSheet.qml
+        qml/components/ConsoleFilterSheet.qml
+        qml/components/ConsoleWarningSheet.qml
+        qml/components/ConsoleStores.qml
+        qml/components/ConsoleStoreMark.qml
+        qml/components/ConsoleStoreChip.qml
+        qml/components/LaunchStage.qml
+        qml/components/SessionGlyphs.qml
+        qml/components/QueueAdPlayback.qml
+        qml/overlays/ConsoleFriendsOverlay.qml
+        qml/overlays/ConsoleSessionConflict.qml
+        qml/overlays/ConsoleSessionReport.qml
+        qml/overlays/ConsoleQueueAd.qml
         qml/components/GlassPanel.qml
         qml/components/HintBar.qml
         qml/components/HomeTileMenu.qml
         qml/components/MotionProgress.qml
         qml/components/NavPill.qml
         qml/components/PageEntrance.qml
-        qml/components/PlatformPicker.qml
         qml/components/CloudLibraryActions.qml
         qml/components/PosterTile.qml
         qml/components/ReleaseNotes.qml
         qml/components/RoundedArtwork.qml
         qml/components/ScreenBackground.qml
         qml/components/SettingRow.qml
-        qml/components/StoreBadge.qml
         qml/components/StreamCaptureStatus.qml
         qml/components/StreamInputNotice.qml
         qml/components/TogglePill.qml

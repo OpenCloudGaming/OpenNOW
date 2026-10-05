@@ -9,8 +9,8 @@ FocusScope {
     property int genreIndex: 0
     property int sortIndex: 0
     property bool cloudFavoritesOnly: false
-    readonly property real posterFactor: Math.max(0.75, Math.min(1.5,
-        Number(ShellStore.settings.posterSizeScale || 1.05))) / 1.05
+    property bool filterSheetOpen: false
+    readonly property int columnCount: 7
     readonly property var platformOptions: {
         const values = ["All"]
         for (let gameIndex = 0; gameIndex < ShellStore.catalogGames.length; ++gameIndex) {
@@ -27,7 +27,7 @@ FocusScope {
         }
         return values
     }
-    readonly property var sortOptions: ["Popular", "Title", "Recently played", "Store", "Favorites first"]
+    readonly property var sortLabels: [qsTr("Popular"), qsTr("Title"), qsTr("Recently played"), qsTr("Store"), qsTr("Home pins first")]
     readonly property var genreOptions: {
         const values = ["All"]
         for (let gameIndex = 0; gameIndex < ShellStore.catalogGames.length; ++gameIndex) {
@@ -59,6 +59,8 @@ FocusScope {
                 continue
             filtered.push(game)
         }
+        if (root.sortIndex === 0)
+            return filtered
         filtered.sort((left, right) => {
             if (root.sortIndex === 2)
                 return String(right.lastPlayed || "").localeCompare(String(left.lastPlayed || "")) || String(left.title).localeCompare(String(right.title))
@@ -69,13 +71,47 @@ FocusScope {
                 if (favoriteOrder !== 0)
                     return favoriteOrder
             }
-            if (root.sortIndex === 0)
-                return 0
             return String(left.title).localeCompare(String(right.title))
         })
         return filtered
     }
-    readonly property var selectedGame: games.length > 0 ? games[Math.max(0, catalog.currentIndex)] : null
+    readonly property var selectedGame: games.length > 0 ? games[Math.max(0, Math.min(games.length - 1, catalog.currentIndex))] : null
+    readonly property bool filtersActive: searchQuery.trim() !== "" || platformIndex > 0 || genreIndex > 0 || cloudFavoritesOnly
+    readonly property string storeFilterLabel: platformIndex > 0 ? ConsoleStores.label(platformOptions[platformIndex]) : qsTr("All stores")
+    readonly property string genreFilterLabel: genreIndex > 0 && genreIndex < genreOptions.length
+        ? DesktopTokens.genreLabel(genreOptions[genreIndex]) : qsTr("All genres")
+    readonly property string showFilterLabel: cloudFavoritesOnly ? qsTr("GeForce NOW favorites") : qsTr("All library games")
+    readonly property var filterSections: [
+        {
+            title: qsTr("Sort"), value: root.sortLabels[root.sortIndex], currentIndex: root.sortIndex,
+            options: root.sortLabels.map(label => ({label: label}))
+        },
+        {
+            title: qsTr("Store"), value: root.storeFilterLabel, currentIndex: root.platformIndex,
+            options: root.platformOptions.map((store, index) => index === 0
+                ? {label: qsTr("All stores"), icon: "all"}
+                : {label: ConsoleStores.label(store), store: store})
+        },
+        {
+            title: qsTr("Genre"), value: root.genreFilterLabel, currentIndex: Math.min(root.genreIndex, root.genreOptions.length - 1),
+            options: root.genreOptions.map((genre, index) => ({label: index === 0 ? qsTr("All genres") : DesktopTokens.genreLabel(genre)}))
+        },
+        {
+            title: qsTr("Show"), value: root.showFilterLabel, currentIndex: root.cloudFavoritesOnly ? 1 : 0,
+            description: root.cloudFavoritesOnly
+                ? (ShellStore.remoteFavoritesError || qsTr("Favorites coverage is partial or unknown. Home pins are separate."))
+                : qsTr("GeForce NOW favorites sync with your account. Home pins stay on this device."),
+            options: [{label: qsTr("All library games")}, {label: qsTr("GeForce NOW favorites")}]
+        }
+    ]
+    readonly property string countLabel: {
+        const total = Number(root.cloudFavoritesOnly ? ShellStore.remoteFavorites.length : ShellStore.catalogTotalCount)
+            .toLocaleString(Qt.locale(), "f", 0)
+        const base = root.cloudFavoritesOnly ? qsTr("%1 GeForce NOW favorites").arg(total)
+            : ShellStore.catalogSource === "account-library" ? qsTr("%1 games in your library").arg(total)
+            : qsTr("%1 supported games").arg(total)
+        return (root.filtersActive ? qsTr("%1 shown · %2").arg(root.games.length.toLocaleString(Qt.locale(), "f", 0)).arg(base) : base).toUpperCase()
+    }
 
     onPlatformOptionsChanged: platformIndex = Math.max(0, Math.min(platformOptions.length - 1, platformIndex))
 
@@ -83,34 +119,46 @@ FocusScope {
         return game && game.availableStores && game.availableStores.length ? game.availableStores[0] : "GFN"
     }
 
-    function storeGlyph(game) {
-        const store = storeName(game).toUpperCase()
-        if (store.indexOf("EPIC") >= 0) return "E"
-        if (store.indexOf("UBISOFT") >= 0) return "U"
-        if (store.indexOf("BATTLE") >= 0) return "B"
-        if (store.indexOf("XBOX") >= 0) return "X"
-        if (store.indexOf("GOG") >= 0) return "G"
-        return "S"
-    }
-
-    function storeColor(glyph) {
-        if (glyph === "E") return Theme.cartEpic
-        if (glyph === "U") return Theme.cartUbisoft
-        if (glyph === "B") return Theme.cartBattlenet
-        if (glyph === "X") return Theme.cartXbox
-        if (glyph === "G") return Theme.cartGog
-        return Theme.cartSteam
-    }
-
     function showSearchKeyboard() {
-        platformFilter.expanded = false
-        genreFilter.expanded = false
-        sortFilter.expanded = false
+        filterSheetOpen = false
         virtualKeyboard.openKeyboard(root.searchQuery)
     }
 
+    function openSelected() {
+        if (root.selectedGame !== null)
+            ShellStore.openGame(root.selectedGame)
+    }
+
+    function applyFilter(section, option) {
+        if (section === 0)
+            root.sortIndex = option
+        else if (section === 1)
+            root.platformIndex = option
+        else if (section === 2)
+            root.genreIndex = option
+        else if (section === 3) {
+            root.cloudFavoritesOnly = option === 1
+            if (root.cloudFavoritesOnly)
+                ShellStore.refreshCloudFavorites()
+        }
+        catalog.currentIndex = 0
+    }
+
+    function resetFilters() {
+        root.sortIndex = 0
+        root.platformIndex = 0
+        root.genreIndex = 0
+        root.cloudFavoritesOnly = false
+        catalog.currentIndex = 0
+    }
+
+    function closeFilterSheet() {
+        root.filterSheetOpen = false
+        filterButton.forceActiveFocus()
+    }
+
     Keys.onPressed: event => {
-        if (virtualKeyboard.presented)
+        if (virtualKeyboard.presented || root.filterSheetOpen)
             return
         if (event.key === Qt.Key_Back) {
             root.showSearchKeyboard()
@@ -119,151 +167,193 @@ FocusScope {
                 ShellStore.toggleFavorite(root.selectedGame)
         } else if (event.key === Qt.Key_X) {
             if (!event.isAutoRepeat)
-                detailsButton.click()
+                root.openSelected()
         } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-            if (!event.isAutoRepeat)
-                detailsButton.click()
+            if (event.isAutoRepeat)
+                return
+            if (root.selectedGame !== null)
+                root.openSelected()
+            else if (!root.cloudFavoritesOnly && ShellStore.catalogState === "error")
+                ShellStore.refreshCatalog("")
         } else return
         event.accepted = true
     }
 
-    ScreenBackground { tint: "#354016" }
-    Row {
-        x: 150; y: 58; spacing: 12
-        GlassButton {
-            width: 330; height: 42
-            text: root.cloudFavoritesOnly ? qsTr("Show all library games") : qsTr("GeForce NOW favorites")
-            onClicked: { root.cloudFavoritesOnly = !root.cloudFavoritesOnly; if (root.cloudFavoritesOnly) ShellStore.refreshCloudFavorites() }
+    ScreenBackground {
+        artwork: root.selectedGame ? (root.selectedGame.heroImageUrl || root.selectedGame.imageUrl || "") : ""
+        tint: "#354016"
+    }
+
+    TextField {
+        id: searchField
+        x: 96; y: 126
+        width: 440; height: 60
+        placeholderText: qsTr("Search GeForce NOW games")
+        text: root.searchQuery
+        color: Theme.label
+        placeholderTextColor: Theme.textMuted
+        font.family: Theme.bodyFont; font.pixelSize: 19
+        font.weight: Font.DemiBold
+        leftPadding: 112
+        rightPadding: 24
+        Accessible.name: qsTr("Search games")
+        KeyNavigation.right: filterButton
+        KeyNavigation.down: catalog
+        onTextEdited: root.searchQuery = text
+        onAccepted: catalog.forceActiveFocus()
+        Keys.onEscapePressed: catalog.forceActiveFocus()
+        background: Rectangle {
+            radius: 30
+            color: Qt.rgba(Theme.shell.r, Theme.shell.g, Theme.shell.b, 0.62)
+            FocusFrame { focused: searchField.activeFocus; frameRadius: 30 }
         }
-        Text {
-            width: 780; anchors.verticalCenter: parent.verticalCenter
-            visible: root.cloudFavoritesOnly
-            text: ShellStore.remoteFavoritesError || qsTr("Favorites coverage is partial or unknown. Home pins are separate.")
-            color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 16
-            wrapMode: Text.WordWrap
+        ControllerGlyph {
+            x: 16; anchors.verticalCenter: parent.verticalCenter
+            glyph: "VIEW"; label: ""; glyphSize: 32
+            TapHandler { onTapped: root.showSearchKeyboard() }
+        }
+        Image {
+            x: 72; anchors.verticalCenter: parent.verticalCenter
+            width: 22; height: 22
+            source: "qrc:/qt/qml/OpenNOW/res/icons/desktop-search" + (Theme.lightMode ? "-on-light" : "") + ".svg"
+            sourceSize: Qt.size(44, 44)
         }
     }
 
-    GlassPanel {
-        x: 120; y: 108
-        width: 1134
-        height: root.height - 232
-        panelRadius: 38
-
-        Row {
-            id: filters
-            x: 28; y: 24; spacing: 12
-            z: 200
-            TextField {
-                id: searchField
-                width: 400; height: 52
-                placeholderText: qsTr("Search GeForce NOW games")
-                text: root.searchQuery
-                color: Theme.label
-                placeholderTextColor: Theme.textMuted
-                font.family: Theme.bodyFont; font.pixelSize: 16
-                font.weight: Font.Bold
-                leftPadding: 84
-                rightPadding: 20
-                Accessible.name: qsTr("Search games")
-                KeyNavigation.right: platformFilter
-                KeyNavigation.down: catalog
-                onTextEdited: root.searchQuery = text
-                onAccepted: catalog.forceActiveFocus()
-                background: Rectangle { radius: 26; color: searchField.activeFocus ? Theme.glassStrong : Qt.rgba(1, 1, 1, 0.10); border.color: searchField.activeFocus ? Theme.focus : Theme.seam; border.width: searchField.activeFocus ? 3 : 1 }
-                ControllerGlyph {
-                    x: 14; anchors.verticalCenter: parent.verticalCenter
-                    glyph: "VIEW"; label: ""; glyphSize: 26
-                    TapHandler { onTapped: root.showSearchKeyboard() }
-                }
-                Item {
-                    x: 52; anchors.verticalCenter: parent.verticalCenter
-                    width: 20; height: 20
-                    Rectangle { x: 2; y: 2; width: 13; height: 13; radius: 7; color: "transparent"; border.color: Qt.rgba(1,1,1,0.70); border.width: 2 }
-                    Rectangle { x: 14; y: 14; width: 7; height: 2; radius: 1; rotation: 45; color: Qt.rgba(1,1,1,0.70) }
-                }
-            }
-            FilterDropdown {
-                id: platformFilter
-                prefix: qsTr("Platform")
-                options: root.platformOptions
-                currentIndex: root.platformIndex
-                width: 157; height: 52
-                KeyNavigation.left: searchField
-                KeyNavigation.right: genreFilter
-                KeyNavigation.down: catalog
-                onExpandedChanged: if (expanded) { genreFilter.expanded = false; sortFilter.expanded = false }
-                onOptionSelected: index => root.platformIndex = index
-            }
-            FilterDropdown {
-                id: genreFilter
-                prefix: qsTr("Genre")
-                options: root.genreOptions
-                currentIndex: Math.min(root.genreIndex, root.genreOptions.length - 1)
-                width: 137; height: 52
-                KeyNavigation.left: platformFilter
-                KeyNavigation.right: sortFilter
-                KeyNavigation.down: catalog
-                onExpandedChanged: if (expanded) { platformFilter.expanded = false; sortFilter.expanded = false }
-                onOptionSelected: index => root.genreIndex = index
-            }
-            FilterDropdown {
-                id: sortFilter
-                prefix: qsTr("Sort")
-                options: root.sortOptions
-                currentIndex: root.sortIndex
-                width: 160; height: 52
-                KeyNavigation.left: genreFilter
-                KeyNavigation.down: catalog
-                onExpandedChanged: if (expanded) { platformFilter.expanded = false; genreFilter.expanded = false }
-                onOptionSelected: index => root.sortIndex = index
+    Button {
+        id: filterButton
+        objectName: "consoleLibraryFilterButton"
+        x: searchField.x + searchField.width + 16; y: 126
+        width: Math.min(620, filterRow.implicitWidth + 48); height: 60
+        padding: 0
+        focusPolicy: Qt.StrongFocus
+        Accessible.name: qsTr("Filter and sort: %1").arg(filterSummary.text)
+        KeyNavigation.left: searchField
+        KeyNavigation.right: catalogRetry.visible ? catalogRetry : null
+        KeyNavigation.down: catalog
+        onClicked: root.filterSheetOpen = true
+        Keys.onReturnPressed: event => { if (!event.isAutoRepeat) clicked() }
+        Keys.onEnterPressed: event => { if (!event.isAutoRepeat) clicked() }
+        background: Rectangle {
+            radius: 30
+            color: Qt.rgba(Theme.shell.r, Theme.shell.g, Theme.shell.b, 0.62)
+            FocusFrame {
+                focused: filterButton.activeFocus || root.filterSheetOpen
+                parked: root.filterSheetOpen
+                frameRadius: 30
             }
         }
+        contentItem: Item {
+            Row {
+                id: filterRow
+                x: 24
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 14
+                Image {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 22; height: 22
+                    source: "qrc:/qt/qml/OpenNOW/res/icons/desktop-sliders" + (Theme.lightMode ? "-on-light" : "") + ".svg"
+                    sourceSize: Qt.size(44, 44)
+                }
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: qsTr("Filter & sort")
+                    color: Theme.label
+                    font.family: Theme.displayFont
+                    font.pixelSize: 20
+                    font.weight: Font.Black
+                }
+                Rectangle { anchors.verticalCenter: parent.verticalCenter; width: 1; height: 24; color: Theme.seam }
+                Text {
+                    id: filterSummary
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Math.min(implicitWidth, 360)
+                    elide: Text.ElideRight
+                    text: (root.cloudFavoritesOnly ? [root.showFilterLabel] : []).concat(
+                        [root.storeFilterLabel, root.genreFilterLabel, root.sortLabels[root.sortIndex]]).join(" · ")
+                    color: Theme.textMuted
+                    font.family: Theme.bodyFont
+                    font.pixelSize: 18
+                    font.weight: Font.DemiBold
+                }
+            }
+        }
+    }
 
-        Item {
-            // The focus ring and selected scale both extend outside the tile.
-            // Reserve a real gutter inside the clipped viewport for that motion.
-            x: 12; y: 76
-            width: parent.width - 24
-            height: parent.height - 92
-            clip: true
-            GridView {
-                id: catalog
-                x: 16; y: 28
-                width: 1092
-                height: parent.height - 44
-                cellWidth: 156
-                cellHeight: 226
-                clip: false
-                model: root.games
-                Component.onCompleted: currentIndex = ShellStore.focusIndex("library")
-                onCurrentIndexChanged: ShellStore.rememberFocus("library", currentIndex)
-                focus: true
-                KeyNavigation.up: platformFilter
-                keyNavigationWraps: false
-                delegate: Item {
-                    id: gameDelegate
-                    required property var modelData
-                    required property int index
-                    width: catalog.cellWidth; height: catalog.cellHeight
-                    PosterTile {
-                        x: 0; y: 0
-                        width: 140
-                        height: 210
-                        title: modelData.title
-                        artwork: modelData.imageUrl || ""
-                        storeGlyph: root.storeGlyph(modelData)
-                        storeColor: root.storeColor(storeGlyph)
-                        showStoreBadge: false
-                        showLabel: false
-                        currentItem: gameDelegate.GridView.isCurrentItem
-                        onClicked: ShellStore.openGame(modelData)
-                    }
-                    Rectangle {
-                        visible: ShellStore.isFavorite(modelData)
-                        x: 102; y: 10
-                        width: 28; height: 28; radius: 14; color: Theme.yellow
-                        Text { anchors.centerIn: parent; text: "★"; color: Theme.contrastText(Theme.yellow); font.pixelSize: 15; font.weight: Font.Black }
+    Row {
+        anchors.right: parent.right
+        anchors.rightMargin: 96
+        y: 126
+        height: 60
+        spacing: 18
+        Text {
+            anchors.verticalCenter: parent.verticalCenter
+            text: root.countLabel
+            color: Theme.textMuted
+            font.family: Theme.monoFont
+            font.pixelSize: 15
+            font.weight: Font.Bold
+            font.letterSpacing: 1.4
+        }
+        ConsoleActionButton {
+            id: catalogRetry
+            anchors.verticalCenter: parent.verticalCenter
+            visible: !root.cloudFavoritesOnly && Boolean(ShellStore.catalogError)
+            height: 52
+            text: ShellStore.catalogNextCursor ? qsTr("Continue") : qsTr("Retry")
+            KeyNavigation.left: filterButton
+            KeyNavigation.down: catalog
+            onClicked: ShellStore.continueCatalog()
+        }
+    }
+
+    Item {
+        x: 80; y: 214
+        width: root.columnCount * 172 + 32
+        height: root.height - y - 152
+        clip: true
+        GridView {
+            id: catalog
+            x: 16; y: 16
+            width: root.columnCount * 172
+            height: parent.height - 16
+            cellWidth: 172
+            cellHeight: 268
+            clip: false
+            model: root.games
+            focus: true
+            keyNavigationWraps: false
+            highlightFollowsCurrentItem: false
+            Component.onCompleted: currentIndex = ShellStore.focusIndex("library")
+            onCurrentIndexChanged: {
+                ShellStore.rememberFocus("library", currentIndex)
+                positionViewAtIndex(currentIndex, GridView.Contain)
+            }
+            Keys.onUpPressed: event => {
+                if (catalog.currentIndex < root.columnCount)
+                    filterButton.forceActiveFocus()
+                else
+                    catalog.moveCurrentIndexUp()
+            }
+            delegate: Item {
+                id: gameDelegate
+                required property var modelData
+                required property int index
+                width: catalog.cellWidth; height: catalog.cellHeight
+                PosterTile {
+                    width: 156
+                    height: 232
+                    title: gameDelegate.modelData.title
+                    artwork: gameDelegate.modelData.imageUrl || ""
+                    showLabel: false
+                    focusPolicy: Qt.NoFocus
+                    pinned: ShellStore.isFavorite(gameDelegate.modelData)
+                    currentItem: catalog.activeFocus && gameDelegate.GridView.isCurrentItem
+                    parked: !catalog.activeFocus && gameDelegate.GridView.isCurrentItem
+                    onClicked: {
+                        catalog.currentIndex = gameDelegate.index
+                        catalog.forceActiveFocus()
+                        ShellStore.openGame(gameDelegate.modelData)
                     }
                 }
             }
@@ -271,87 +361,195 @@ FocusScope {
 
         Column {
             anchors.centerIn: parent
-            width: parent.width - 56
-            spacing: 12
+            width: parent.width - 120
+            spacing: 14
             visible: root.games.length === 0
-            Text { width: parent.width; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap; text: ShellStore.catalogState === "error" ? qsTr("Couldn’t reach the catalog") : qsTr("Loading GeForce NOW games…"); color: Theme.label; font.family: Theme.displayFont; font.pixelSize: 24; font.weight: Font.Black }
-            Text { width: parent.width; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap; text: ShellStore.catalogGames.length > 0 ? qsTr("No games match these filters.") : (ShellStore.catalogState === "error" ? ShellStore.lastError : qsTr("The shell stays responsive while the Rust core fetches NVIDIA’s public list.")); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 14 }
-            GlassButton { anchors.horizontalCenter: parent.horizontalCenter; visible: ShellStore.catalogState === "error"; text: qsTr("Try again"); glyph: "A"; primary: true; onClicked: ShellStore.refreshCatalog("") }
+            Text {
+                width: parent.width; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap
+                text: root.cloudFavoritesOnly
+                    ? (ShellStore.remoteFavoritesState === "loading" ? qsTr("Loading GeForce NOW favorites…")
+                        : ShellStore.remoteFavoritesState === "error" ? qsTr("Couldn’t load GeForce NOW favorites")
+                        : qsTr("No GeForce NOW favorites match"))
+                    : ShellStore.catalogGames.length > 0 ? qsTr("No games match these filters")
+                    : ShellStore.catalogState === "error" ? qsTr("Couldn’t reach the catalog") : qsTr("Loading GeForce NOW games…")
+                color: Theme.label; font.family: Theme.displayFont; font.pixelSize: 30; font.weight: Font.Black
+            }
+            Text {
+                width: parent.width; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap
+                text: root.cloudFavoritesOnly ? (ShellStore.remoteFavoritesError || "")
+                    : ShellStore.catalogGames.length > 0 ? qsTr("Change the search or open Filter & sort to reset.")
+                    : ShellStore.catalogState === "error" ? ShellStore.lastError
+                    : qsTr("The shell stays responsive while the Rust core fetches NVIDIA’s public list.")
+                visible: text !== ""
+                color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 18
+            }
+            ConsoleActionButton {
+                anchors.horizontalCenter: parent.horizontalCenter
+                visible: !root.cloudFavoritesOnly && ShellStore.catalogState === "error" && ShellStore.catalogGames.length === 0
+                text: qsTr("Try again")
+                glyph: "A"
+                primary: true
+                focusPolicy: Qt.NoFocus
+                onClicked: ShellStore.refreshCatalog("")
+            }
         }
     }
 
     GlassPanel {
-        x: 1278
-        y: 108
-        width: root.width - x - 120
-        height: root.height - 232
-        panelRadius: 38
+        id: detailPanel
+        x: 1338
+        y: 230
+        width: root.width - x - 96
+        height: root.height - y - 172
+        panelRadius: 40
+        readonly property var game: root.selectedGame
+        readonly property string ownedStore: ConsoleStores.ownedStore(game)
+        readonly property var stores: ConsoleStores.stores(game)
 
         Column {
-            anchors.fill: parent
-            anchors.margins: 28
-            spacing: 18
-            RoundedArtwork {
-                width: parent.width; height: 250
-                cornerRadius: 28
-                scrimStart: 1
-                fallbackColor: root.selectedGame ? root.storeColor(root.storeGlyph(root.selectedGame)) : Theme.cartSteam
-                artwork: root.selectedGame ? (root.selectedGame.heroImageUrl || root.selectedGame.imageUrl || "") : ""
-            }
-            Text { width: parent.width; text: root.selectedGame ? root.selectedGame.title : qsTr("GeForce NOW catalog"); color: Theme.label; font.family: Theme.displayFont; font.pixelSize: 28; font.weight: Font.Black; elide: Text.ElideRight }
-            Text { width: parent.width; text: root.selectedGame ? qsTr("%1 · Available on GeForce NOW").arg(root.storeName(root.selectedGame)) : (ShellStore.catalogSource === "account-library" ? qsTr("%1 games in your library").arg(ShellStore.catalogTotalCount) : qsTr("%1 supported games").arg(ShellStore.catalogTotalCount)); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 15; elide: Text.ElideRight }
-            Row {
-                spacing: 8
-                Repeater {
-                    model: root.selectedGame ? [ShellStore.isFavorite(root.selectedGame)
-                        ? qsTr("● In your %1 library").arg(root.storeName(root.selectedGame))
-                        : qsTr("Available on %1").arg(root.storeName(root.selectedGame))] : []
-                    GlassPanel {
-                        required property string modelData
-                        width: chipText.implicitWidth + 26; height: 36; panelRadius: 18; strong: true
-                        Text { id: chipText; anchors.centerIn: parent; text: modelData; color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: 13; font.weight: Font.Bold }
-                    }
-                }
-            }
-            GlassButton {
-                id: favoriteButton
-                width: parent.width
-                text: root.selectedGame && ShellStore.isFavorite(root.selectedGame)
-                    ? qsTr("Remove from My games") : qsTr("Add to My games")
-                glyph: "Y"
-                primary: root.selectedGame && !ShellStore.isFavorite(root.selectedGame)
-                enabled: root.selectedGame !== null
-                onClicked: ShellStore.toggleFavorite(root.selectedGame)
-            }
-            GlassButton { id: detailsButton; width: parent.width; text: qsTr("Details"); glyph: "X"; enabled: root.selectedGame !== null; onClicked: ShellStore.openGame(root.selectedGame) }
+            x: 36; y: 40
+            width: parent.width - 72
+            spacing: 14
             Text {
                 width: parent.width
-                visible: ShellStore.catalogSource === "account-library" && ShellStore.catalogState !== "ready"
-                text: ShellStore.catalogError || qsTr("The library refresh is incomplete. Your available games are still shown.")
+                text: detailPanel.game
+                    ? [detailPanel.game.publisherName || detailPanel.game.developerName || "",
+                       (detailPanel.game.genres || []).slice(0, 1).map(genre => DesktopTokens.genreLabel(genre)).join("")]
+                        .filter(Boolean).join(" · ").toUpperCase()
+                    : qsTr("GEFORCE NOW LIBRARY")
+                visible: text !== ""
+                elide: Text.ElideRight
+                color: Theme.textMuted
+                font.family: Theme.monoFont
+                font.pixelSize: 14
+                font.weight: Font.Bold
+                font.letterSpacing: 1.8
+            }
+            Text {
+                width: parent.width
+                text: detailPanel.game ? String(detailPanel.game.title || "") : qsTr("Pick a game")
+                wrapMode: Text.WordWrap
+                maximumLineCount: 2
+                elide: Text.ElideRight
+                color: Theme.label
+                font.family: Theme.displayFont
+                font.pixelSize: 40
+                font.weight: Font.Black
+            }
+            Row {
+                visible: detailPanel.ownedStore !== ""
+                spacing: 10
+                Rectangle { anchors.verticalCenter: parent.verticalCenter; width: 9; height: 9; radius: 5; color: Theme.mint }
+                Text {
+                    text: qsTr("In your %1 library").arg(ConsoleStores.label(detailPanel.ownedStore))
+                    color: Theme.lightMode ? Qt.darker(Theme.mint, 2.2) : Theme.mint
+                    font.family: Theme.bodyFont
+                    font.pixelSize: 18
+                    font.weight: Font.Bold
+                }
+            }
+            Item { width: 1; height: 4; visible: detailPanel.stores.length > 0 }
+            Text {
+                visible: detailPanel.stores.length > 0
+                text: qsTr("AVAILABLE ON")
+                color: Theme.textMuted
+                font.family: Theme.monoFont
+                font.pixelSize: 14
+                font.weight: Font.Bold
+                font.letterSpacing: 1.8
+            }
+            Flow {
+                width: parent.width
+                spacing: 10
+                visible: detailPanel.stores.length > 0
+                Repeater {
+                    model: detailPanel.stores
+                    ConsoleStoreChip { required property string modelData; store: modelData }
+                }
+            }
+            Text {
+                width: parent.width
+                text: detailPanel.game ? String(detailPanel.game.description || detailPanel.game.shortDescription || "") : ""
+                visible: text !== ""
+                wrapMode: Text.WordWrap
+                maximumLineCount: 4
+                elide: Text.ElideRight
+                textFormat: Text.PlainText
+                color: Theme.textMuted
+                font.family: Theme.bodyFont
+                font.pixelSize: 18
+                lineHeight: 1.2
+            }
+        }
+
+        Column {
+            x: 36
+            width: parent.width - 72
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: 36
+            spacing: 14
+            Text {
+                width: parent.width
+                visible: text !== ""
+                text: root.cloudFavoritesOnly
+                    ? (ShellStore.remoteFavoritesError || qsTr("Favorites coverage is partial or unknown. Home pins are separate."))
+                    : ShellStore.catalogSource === "account-library" && Boolean(ShellStore.catalogState)
+                        && ShellStore.catalogState !== "ready"
+                        ? (ShellStore.catalogError || qsTr("The library refresh is incomplete. Your available games are still shown."))
+                        : ""
                 wrapMode: Text.WordWrap
                 color: Theme.textMuted
                 font.family: Theme.bodyFont
-                font.pixelSize: 14
+                font.pixelSize: 15
             }
-            GlassButton {
-                width: parent.width
-                visible: ShellStore.catalogError !== ""
-                text: ShellStore.catalogNextCursor ? qsTr("Continue") : qsTr("Retry")
-                onClicked: ShellStore.continueCatalog()
+            Rectangle { width: parent.width; height: 1; color: Theme.seam }
+            Repeater {
+                model: detailPanel.game ? [
+                    {glyph: "A", label: qsTr("Open details & play"), pin: false},
+                    {glyph: "Y", label: ShellStore.isFavorite(detailPanel.game) ? qsTr("Remove from Home") : qsTr("Pin to Home"), pin: true}
+                ] : []
+                ItemDelegate {
+                    required property var modelData
+                    width: parent.width
+                    height: 40
+                    padding: 0
+                    focusPolicy: Qt.NoFocus
+                    Accessible.name: modelData.label
+                    Accessible.role: Accessible.Button
+                    background: Item {}
+                    contentItem: ControllerGlyph { glyph: modelData.glyph; label: modelData.label; glyphSize: 30 }
+                    onClicked: modelData.pin ? ShellStore.toggleFavorite(detailPanel.game) : root.openSelected()
+                }
             }
         }
     }
 
     AppChrome {
         anchors.fill: parent
-        title: qsTr("GeForce NOW library")
+        title: qsTr("Library")
         currentRoute: "library"
-        leftHints: [{glyph: "VIEW", label: qsTr("Search")},
-                    {glyph: "Y", label: favoriteButton.text}]
-        rightHints: [{glyph: "A", label: qsTr("Details")},
-                     {glyph: "B", label: qsTr("Back")}]
+        leftHints: [{glyph: "VIEW", label: qsTr("Search")}]
+        rightHints: root.selectedGame
+            ? [{glyph: "Y", label: ShellStore.isFavorite(root.selectedGame) ? qsTr("Remove from Home") : qsTr("Pin to Home")},
+               {glyph: "A", label: qsTr("Details")}]
+            : []
         onRouteRequested: route => AppController.navigate(route)
     }
+
+    ConsoleFilterSheet {
+        id: filterSheet
+        objectName: "consoleLibraryFilterSheet"
+        opened: root.filterSheetOpen
+        eyebrow: qsTr("LIBRARY")
+        title: qsTr("Filter & sort")
+        description: qsTr("The grid updates behind the sheet as you choose.")
+        sections: root.filterSections
+        sectionIndex: 1
+        onChosen: (section, option) => root.applyFilter(section, option)
+        onResetRequested: root.resetFilters()
+        onDismissed: root.closeFilterSheet()
+    }
+
     VirtualKeyboard {
         id: virtualKeyboard
         objectName: "consoleLibraryKeyboard"

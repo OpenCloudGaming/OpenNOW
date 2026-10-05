@@ -77,7 +77,7 @@ FocusScope {
         } else if (event.key === Qt.Key_Y) {
             filterIndex = (filterIndex + 1) % filters.length
             event.accepted = true
-        } else if (event.key === Qt.Key_Minus) {
+        } else if (event.key === Qt.Key_X || event.key === Qt.Key_Minus) {
             togglePreview()
             event.accepted = true
         } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_A) {
@@ -103,7 +103,7 @@ FocusScope {
             ListView {
                 id: filterList
                 width: parent.width - 190
-                height: 40
+                height: 44
                 orientation: ListView.Horizontal
                 spacing: 10
                 clip: true
@@ -113,17 +113,17 @@ FocusScope {
                     required property string modelData
                     required property int index
                     width: filterLabel.implicitWidth + 40
-                    height: 40
-                    radius: 20
-                    color: root.filterIndex === index ? Theme.face : Qt.rgba(1, 1, 1, 0.08)
-                    border.color: root.filterIndex === index ? "transparent" : Theme.seam
+                    height: 44
+                    radius: 22
+                    color: root.filterIndex === index ? Theme.face : "transparent"
+                    border.color: root.filterIndex === index ? "transparent" : Qt.rgba(Theme.face.r, Theme.face.g, Theme.face.b, 0.18)
                     Text {
                         id: filterLabel
                         anchors.centerIn: parent
                         text: root.filterLabels[index] + (index === 0 ? " " + root.themes.length : "")
                         color: root.filterIndex === index ? Theme.faceText : Theme.label
-                        font.family: Theme.bodyFont
-                        font.pixelSize: 15
+                        font.family: Theme.displayFont
+                        font.pixelSize: 17
                         font.weight: Font.Black
                     }
                     MouseArea { anchors.fill: parent; onClicked: root.filterIndex = index }
@@ -133,8 +133,8 @@ FocusScope {
             GlassPanel {
                 anchors.right: parent.right
                 width: 160
-                height: 40
-                panelRadius: 20
+                height: 44
+                panelRadius: 22
                 strong: true
                 Text {
                     anchors.centerIn: parent
@@ -167,6 +167,7 @@ FocusScope {
                     required property int index
                     width: grid.cellWidth
                     height: grid.cellHeight
+                    z: root.selectedIndex === index ? 2 : 1
                     Accessible.name: qsTr("%1 theme by %2").arg(modelData.name).arg(modelData.author)
                     Accessible.description: I18n.source(modelData.detail, I18n.revision)
                         + (ShellStore.settings.themePack === modelData.id ? qsTr(". Active") : qsTr(". Press to apply"))
@@ -178,13 +179,23 @@ FocusScope {
 
                     Rectangle {
                         anchors.fill: parent
-                        anchors.margins: 10
-                        radius: 20
-                        color: Qt.rgba(1, 1, 1, 0.055)
-                        border.color: root.selectedIndex === index ? Theme.focus : Theme.seam
-                        border.width: root.selectedIndex === index ? 4 : 1
-                        scale: AppController.reducedMotion || root.selectedIndex === index ? 1 : 0.97
-                        Behavior on scale { NumberAnimation { duration: Theme.focusDuration; easing.type: Easing.OutCubic } }
+                        anchors.margins: 16
+                        radius: 24
+                        color: root.selectedIndex === index ? Qt.rgba(Theme.face.r, Theme.face.g, Theme.face.b, 0.10) : Qt.rgba(1, 1, 1, 0.055)
+                        border.color: root.selectedIndex === index ? Theme.face : Theme.seam
+                        border.width: root.selectedIndex === index ? 3 : 1
+                        scale: !AppController.reducedMotion && root.selectedIndex === index ? 1.04 : 1
+                        Behavior on scale { NumberAnimation { duration: AppController.reducedMotion ? 0 : 90; easing.type: Easing.OutCubic } }
+
+                        Rectangle {
+                            anchors.fill: parent
+                            anchors.margins: -9
+                            radius: parent.radius + 9
+                            color: "transparent"
+                            border.width: 5
+                            border.color: Qt.rgba(Theme.focus.r, Theme.focus.g, Theme.focus.b, 0.5)
+                            visible: root.selectedIndex === index
+                        }
 
                         Rectangle {
                             id: preview
@@ -299,9 +310,9 @@ FocusScope {
     AppChrome {
         anchors.fill: parent
         title: qsTr("Theme store")
-        currentRoute: "store"
-        leftHints: [{glyph:"Y", label:qsTr("Filter")}, {glyph:"VIEW", label:qsTr("Preview")}]
-        rightHints: [{glyph:"A", label:qsTr("Apply")}, {glyph:"MENU", label:qsTr("Menu")}]
+        currentRoute: "settings"
+        leftHints: [{glyph:"B", label:qsTr("Back")}, {glyph:"Y", label:qsTr("Filter")}]
+        rightHints: [{glyph:"X", label:qsTr("Preview")}, {glyph:"A", label:qsTr("Apply")}]
         onRouteRequested: route => AppController.navigate(route)
     }
 }

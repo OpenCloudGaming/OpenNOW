@@ -1,42 +1,40 @@
 import QtQuick
-import QtQuick.Effects
 import OpenNOW
 
 Item {
     id: root
     property bool focused: false
-    property real frameRadius: 34
+    property bool parked: false
+    property real frameRadius: 22
 
     anchors.fill: parent
-    anchors.margins: focused ? -7 : 0
 
     Rectangle {
         anchors.fill: parent
-        visible: root.focused
-        radius: root.frameRadius + 7
+        anchors.margins: -12
+        visible: root.focused && !root.parked
+        radius: root.frameRadius + 12
         color: "transparent"
         border.width: 5
-        border.color: Theme.focus
-        layer.enabled: root.focused
-        layer.effect: MultiEffect {
-            shadowEnabled: true
-            shadowColor: Qt.rgba(0.5, 0.83, 1, 0.35)
-            shadowBlur: 0.7
-            shadowHorizontalOffset: 0
-            shadowVerticalOffset: 10
-        }
+        border.color: Qt.rgba(Theme.focus.r, Theme.focus.g, Theme.focus.b, 0.5)
     }
 
     Rectangle {
         anchors.fill: parent
-        anchors.margins: root.focused ? 7 : 0
-        radius: root.frameRadius
+        anchors.margins: -7
+        visible: root.focused && !root.parked
+        radius: root.frameRadius + 7
         color: "transparent"
-        border.width: 3
-        border.color: Qt.rgba(1, 1, 1, 0.92)
+        border.width: 4
+        border.color: Theme.shell
     }
 
-    Behavior on anchors.margins {
-        NumberAnimation { duration: Theme.focusDuration; easing.type: Easing.OutCubic }
+    Rectangle {
+        anchors.fill: parent
+        anchors.margins: root.focused ? -3 : 0
+        radius: root.frameRadius + (root.focused ? 3 : 0)
+        color: "transparent"
+        border.width: root.focused ? (root.parked ? 2 : 3) : 1
+        border.color: root.focused ? Theme.face : Theme.seam
     }
 }

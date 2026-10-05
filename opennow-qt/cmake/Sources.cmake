@@ -43,6 +43,7 @@ qt_add_executable(opennow-qt
     src/acceptance/StreamExitAcceptance.cpp
     src/acceptance/SessionFullscreenAcceptance.cpp
     src/acceptance/SessionLaunchAcceptance.cpp
+    src/acceptance/ConsoleSessionAcceptance.cpp
     src/app/AppController.cpp
     src/app/AppController.h
     src/app/platform/MacAwdlController.cpp
