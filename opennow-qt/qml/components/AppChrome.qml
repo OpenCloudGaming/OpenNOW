@@ -9,6 +9,7 @@ Item {
     property bool navVisible: true
     property var leftHints: []
     property var rightHints: []
+    property real entranceProgress: 1
     property date now: new Date()
     readonly property var profile: ShellStore.authSession && ShellStore.authSession.user
         ? ShellStore.authSession.user : null
@@ -61,6 +62,8 @@ Item {
 
     GlassPanel {
         id: profilePanel
+        opacity: root.entranceProgress
+        transform: Translate { y: -16 * (1 - root.entranceProgress) }
         x: 64; y: 36
         width: Math.min(460, profileRow.implicitWidth + 40); height: 60
         panelRadius: 30
@@ -118,6 +121,8 @@ Item {
 
     Text {
         id: titleText
+        opacity: root.entranceProgress
+        transform: Translate { y: -16 * (1 - root.entranceProgress) }
         x: Math.round((parent.width - width) / 2)
         y: 66 - Math.round(height / 2)
         width: Math.min(implicitWidth, statusPanel.x - profilePanel.x - profilePanel.width - 80)
@@ -136,6 +141,8 @@ Item {
     GlassPanel {
         id: statusPanel
         objectName: "consoleStatusPanel"
+        opacity: root.entranceProgress
+        transform: Translate { y: -16 * (1 - root.entranceProgress) }
         x: parent.width - width - 64; y: 36
         width: statusRow.implicitWidth + 48; height: 60
         panelRadius: 30
@@ -201,6 +208,8 @@ Item {
 
     Row {
         id: leftHintRow
+        opacity: root.entranceProgress
+        transform: Translate { y: 16 * (1 - root.entranceProgress) }
         visible: root.bottomVisible && root.leftHints.length > 0
         x: 64
         y: parent.height - 97 - Math.round(height / 2)
@@ -219,6 +228,8 @@ Item {
     }
 
     NavPill {
+        opacity: root.entranceProgress
+        transform: Translate { y: 16 * (1 - root.entranceProgress) }
         visible: root.bottomVisible && root.navVisible
         anchors.horizontalCenter: parent.horizontalCenter
         y: parent.height - height - 60
@@ -235,6 +246,8 @@ Item {
 
     Row {
         id: rightHintRow
+        opacity: root.entranceProgress
+        transform: Translate { y: 16 * (1 - root.entranceProgress) }
         visible: root.bottomVisible && root.rightHints.length > 0
         x: parent.width - width - 64
         y: parent.height - 97 - Math.round(height / 2)

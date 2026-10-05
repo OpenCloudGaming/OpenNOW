@@ -3973,5 +3973,11 @@
     "keyboardBindingsForStreamControlsForReferenceOnlyOnA": "Keyboard bindings for stream controls, for reference only. On a controller, use the actions in this guide. Change bindings in Settings, outside the session.",
     "savesToMedia": "Saves to Media",
     "showOnStream": "Show on stream"
+  },
+  "gameModeLaunch": {
+    "startingGameMode": "Starting Game Mode",
+    "takingLonger": "This is taking longer than usual.",
+    "uiSounds": "UI sounds",
+    "uiSoundsDescription": "Play the Game Mode startup sound"
   }
 }

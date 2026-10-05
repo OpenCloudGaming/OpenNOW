@@ -12,6 +12,8 @@ FocusScope {
     property string editingGameId: ""
     property string editingTileSize: "square"
     property string selectedGameId: ""
+    property real launchChromeProgress: 1
+    property bool launchFocusHeld: false
 
     readonly property var homeIds: moveMode
         ? movePreviewIds : (ShellStore.settings.favoriteGameIds || [])
@@ -353,7 +355,8 @@ FocusScope {
                     addTile: isAddTile
                     eyebrow: modelData.wide && store !== "" ? ConsoleStores.label(store).toUpperCase() : ""
                     currentItem: root.currentIndex === index
-                    parked: root.currentIndex === index
+                    highlighted: !root.launchFocusHeld && (activeFocus || currentItem)
+                    parked: !root.launchFocusHeld && root.currentIndex === index
                         && (root.editMenuOpen || AppController.overlay !== "" || (Window.active && !root.activeFocus))
                     opacity: root.moveMode && modelData.gameId !== root.editingGameId ? 0.58 : 1
                     onActiveFocusChanged: if (activeFocus) {
@@ -416,6 +419,7 @@ FocusScope {
 
     AppChrome {
         anchors.fill: parent
+        entranceProgress: root.launchChromeProgress
         title: qsTr("My games")
         currentRoute: "home"
         leftHints: root.moveMode || root.editMenuOpen ? [] : [{glyph: "Y", label: qsTr("Search")}]

@@ -470,6 +470,12 @@ int AcceptanceSession::prepareWindow()
             }
             });
         }
+        if (coreProgram(m_arguments).isEmpty() && window
+                && !window->property("settingsLoadedForSmokeTest").toBool()) {
+            auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
+            if (!store) return EXIT_FAILURE;
+            store->setProperty("settings", QVariantMap{{u"uiSoundsEnabled"_s, false}});
+        }
     }
     return EXIT_SUCCESS;
 }

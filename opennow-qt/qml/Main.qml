@@ -123,6 +123,25 @@ ApplicationWindow {
             || ShellStore.isStreamStatsOverlay(AppController.overlay))
     property bool desktopSurfaceActive: targetDesktopSurface
     property bool modeInitialized: false
+    property bool startupLaunchConsidered: false
+    property bool consoleEntryRequested: false
+    property bool launchFramePresented: false
+    readonly property bool consoleLaunchAllowed: !ShellStore.activeSession && !ShellStore.streamBusy
+        && !ShellStore.pendingLaunchParams && !ShellStore.pendingDirectLaunch
+        && !ShellStore.sessionRecoveryPending && !ShellStore.sessionRecoveryAwaitingAuth
+        && ShellStore.streamState !== "resuming"
+        && ["stream", "inserting", "joining"].indexOf(activeRoute) < 0
+        && AppController.overlay === "" && consoleModalFocusOwner === null
+        && !onboardingVisible
+    readonly property bool consoleLaunchInputReady: !consoleLaunch.active
+        && !AppController.consoleLaunchInputDraining && !ControllerInput.shellInputDraining
+    readonly property bool consoleLaunchActiveForSmokeTest: consoleLaunch.active
+    readonly property string consoleLaunchVariantForSmokeTest: consoleLaunch.variant
+    onConsoleLaunchAllowedChanged: if (!consoleLaunchAllowed) cancelConsoleLaunch()
+    onConsoleLaunchInputReadyChanged: {
+        if (consoleLaunchInputReady && routeLoader.item && window.active)
+            Qt.callLater(window.restoreShellFocus)
+    }
     readonly property bool settingsLoadedForSmokeTest: settingsLoaded
     readonly property bool consoleModePersistedForSmokeTest:
         ShellStore.settings.launchInConsoleMode === true
@@ -170,9 +189,10 @@ ApplicationWindow {
     onVisibilityChanged: if (activeRoute === "stream") fullscreenInputSync.restart()
     onActiveChanged: {
         syncInputOwnership()
-        if (!active)
+        if (!active) {
+            cancelConsoleLaunch()
             pendingConsoleScreenshotSession = ""
-        else if (consoleModalFocusOwner)
+        } else if (consoleModalFocusOwner)
             Qt.callLater(window.restoreConsoleModalFocus)
     }
     onDesktopSurfaceActiveChanged: ShellStore.desktopUiActive = desktopSurfaceActive
@@ -401,6 +421,7 @@ ApplicationWindow {
     }
 
     function applyConsoleSurface(enabled) {
+        window.consoleEntryRequested = enabled && window.desktopSurfaceActive
         window.startupModeApplied = true
         window.startupConsoleRequested = false
         window.launchModeOverridden = true
@@ -417,8 +438,6 @@ ApplicationWindow {
             window.lockedStreamDesktopSurface = !enabled
             window.streamSurfaceLocked = true
         }
-        if (ShellStore.signedIn && !ShellStore.addingAccount && AppController.route === "sign-in")
-            AppController.navigate("home")
         window.synchronizeRenderedSurface()
     }
 
@@ -427,14 +446,66 @@ ApplicationWindow {
     }
 
     function synchronizeRenderedSurface() {
-        if (window.desktopSurfaceActive === window.targetDesktopSurface)
+        if (window.targetDesktopSurface || !window.consoleLaunchAllowed)
+            window.cancelConsoleLaunch()
+        if (consoleLaunch.active) {
+            window.consoleEntryRequested = false
             return
+        }
+        if (window.desktopSurfaceActive === window.targetDesktopSurface) {
+            window.consoleEntryRequested = false
+            return
+        }
+        if (window.modeInitialized && window.startupLaunchConsidered
+                && window.consoleEntryRequested && !window.targetDesktopSurface) {
+            window.consoleEntryRequested = false
+            if (window.consoleLaunchAllowed) {
+                window.startConsoleLaunch("quick")
+                return
+            }
+        }
         window.desktopSurfaceActive = window.targetDesktopSurface
-        if (modeInitialized)
+        if (modeInitialized && window.desktopSurfaceActive)
             modeTransition.restart()
     }
 
+    function startConsoleLaunch(variant) {
+        modeTransition.stop()
+        modeCurtain.opacity = 0
+        window.launchFramePresented = false
+        consoleLaunch.start(variant)
+        window.update()
+    }
+
+    function cancelConsoleLaunch() {
+        if (consoleLaunch && consoleLaunch.active) {
+            consoleLaunch.cancel()
+            window.consoleEntryRequested = false
+            window.desktopSurfaceActive = window.targetDesktopSurface
+        }
+    }
+
+    function considerStartupLaunch() {
+        if (!window.modeInitialized || !window.settingsLoaded || window.startupLaunchConsidered)
+            return
+        window.startupLaunchConsidered = true
+        window.consoleEntryRequested = false
+        if (!window.targetDesktopSurface && window.consoleLaunchAllowed)
+            window.startConsoleLaunch("cold")
+    }
+
+    function restoreShellFocus() {
+        if (!window.active || !window.consoleLaunchInputReady)
+            return
+        if (window.consoleModalFocusOwner)
+            window.restoreConsoleModalFocus()
+        else if (routeLoader.item)
+            routeLoader.item.forceActiveFocus()
+    }
+
     function notePointerInput() {
+        if (!window.consoleLaunchInputReady)
+            return
         window.pointerRecentlyActive = true
         pointerGrace.restart()
         if (window.leaveConsoleOnPointer && effectiveLaunchMode !== "console" && !window.forceConsole) {
@@ -445,6 +516,8 @@ ApplicationWindow {
     }
 
     function noteControllerInput(device, control, value) {
+        if (!window.consoleLaunchInputReady)
+            return
         // Device enumeration is not user intent (virtual/idle pads are common),
         // and a live stream must never swap render trees because input mode
         // changed. Only real controller activity outside a stream selects it.
@@ -464,6 +537,7 @@ ApplicationWindow {
                 + " pointerGrace=" + window.pointerRecentlyActive)
         }
         if (allowed) {
+            window.consoleEntryRequested = window.desktopSurfaceActive
             window.desktopSelectedByPointer = false
             window.consoleHeldByPad = true
         }
@@ -477,6 +551,7 @@ ApplicationWindow {
             && !window.desktopSelectedByPointer && !window.desktopExplicitlySelected
         CoreClient.logShellDiagnostic("startup console=" + window.startupConsoleRequested
             + " autoSwitch=" + window.switchToConsoleOnPad)
+        window.considerStartupLaunch()
     }
 
     function updateStreamSurfaceLock() {
@@ -508,6 +583,7 @@ ApplicationWindow {
         updateSessionWindowMode()
         updateStreamSurfaceLock()
         modeInitialized = true
+        window.considerStartupLaunch()
         window.synchronizeRenderedSurface()
         ShellStore.desktopUiActive = window.desktopSurfaceActive
         syncInputOwnership()
@@ -523,6 +599,8 @@ ApplicationWindow {
     HoverHandler {
         acceptedDevices: PointerDevice.Mouse
         onPointChanged: {
+            if (!window.consoleLaunchInputReady)
+                return
             AppController.inputMode = "pointer"
             window.notePointerInput()
         }
@@ -621,10 +699,16 @@ ApplicationWindow {
             id: routeLoader
             objectName: "mainRouteLoader"
             anchors.fill: parent
-            enabled: window.consoleModalFocusOwner === null
+            enabled: window.consoleModalFocusOwner === null && window.consoleLaunchInputReady
             sourceComponent: window.onboardingVisible ? onboardingScreen
                 : window.desktopSurfaceActive ? desktopAppScreen : window.componentForRoute(window.activeRoute)
             opacity: 1
+            transform: Scale {
+                origin.x: routeLoader.width / 2
+                origin.y: routeLoader.height / 2
+                xScale: consoleLaunch.active && !window.desktopSurfaceActive ? consoleLaunch.destinationScale : 1
+                yScale: xScale
+            }
 
             onLoaded: {
                 if (item) {
@@ -674,6 +758,8 @@ ApplicationWindow {
                     Qt.callLater(() => routeLoader.item.forceActiveFocus())
             }
             function onDirectLaunchRequested(appId, title) {
+                window.startupLaunchConsidered = true
+                window.cancelConsoleLaunch()
                 ShellStore.acceptDirectLaunch(appId, title)
             }
         }
@@ -694,6 +780,7 @@ ApplicationWindow {
             }
             function onSettingsChanged() {
                 window.initializeStartupMode()
+                window.considerStartupLaunch()
                 window.syncInputOwnership()
                 if (window.geometryRestored || !ShellStore.settings.windowWidth)
                     return
@@ -927,13 +1014,54 @@ ApplicationWindow {
         id: modeTransition
         NumberAnimation { target: modeCurtain; property: "opacity"; to: 1; duration: AppController.reducedMotion ? 0 : 240; easing.type: Easing.OutCubic }
         PauseAnimation { duration: AppController.reducedMotion ? 0 : 160 }
-        ScriptAction {
-            script: {
-                if (ShellStore.signedIn && !ShellStore.addingAccount && AppController.route === "sign-in")
-                    AppController.navigate("home")
-            }
-        }
         NumberAnimation { target: modeCurtain; property: "opacity"; to: 0; duration: AppController.reducedMotion ? 0 : 380; easing.type: Easing.OutCubic }
+    }
+    Binding { target: AppController; property: "consoleLaunchInputBlocked"; value: !window.consoleLaunchInputReady }
+    Binding { target: ControllerInput; property: "shellInputBlocked"; value: !window.consoleLaunchInputReady }
+    Binding {
+        target: routeLoader.item
+        property: "launchChromeProgress"
+        when: !window.desktopSurfaceActive && !window.onboardingVisible && window.activeRoute === "home"
+            && routeLoader.item !== null && routeLoader.item.launchChromeProgress !== undefined
+        value: consoleLaunch.chromeProgress
+        restoreMode: Binding.RestoreBindingOrValue
+    }
+    Binding {
+        target: routeLoader.item
+        property: "launchFocusHeld"
+        when: !window.desktopSurfaceActive && !window.onboardingVisible && window.activeRoute === "home"
+            && routeLoader.item !== null && routeLoader.item.launchFocusHeld !== undefined
+        value: !window.consoleLaunchInputReady
+        restoreMode: Binding.RestoreBindingOrValue
+    }
+    ConsoleLaunchAnimation {
+        id: consoleLaunch
+        objectName: "consoleLaunchAnimation"
+        anchors.fill: parent
+        z: 2001
+        layer.enabled: HdrOutput.chromeRequired
+        layer.effect: HdrChromeEffect {}
+        reducedMotion: AppController.reducedMotion
+        soundEnabled: window.settingsLoaded && ShellStore.settings.uiSoundsEnabled !== false
+        presentationReady: window.launchFramePresented
+        destinationReady: !window.desktopSurfaceActive && routeLoader.status === Loader.Ready && routeLoader.item !== null
+        onCoverReached: window.desktopSurfaceActive = window.targetDesktopSurface
+        onFinished: {
+            window.synchronizeRenderedSurface()
+            Qt.callLater(window.restoreShellFocus)
+        }
+    }
+    Connections {
+        target: consoleLaunch.active && !window.launchFramePresented ? window : null
+        function onFrameSwapped() { window.launchFramePresented = true }
+    }
+    Connections {
+        target: AppController
+        function onConsoleLaunchSkipRequested() { if (consoleLaunch.active) consoleLaunch.skip() }
+    }
+    Connections {
+        target: ControllerInput
+        function onShellInputSkipRequested() { if (consoleLaunch.active) consoleLaunch.skip() }
     }
     onTargetDesktopSurfaceChanged: {
         window.synchronizeRenderedSurface()

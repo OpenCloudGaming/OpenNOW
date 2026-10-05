@@ -56,6 +56,37 @@ int AcceptanceSession::startSmokeWorkload()
     if (m_smokeTest && m_arguments.contains(u"--smoke-console-design"_s)
             && m_arguments.contains(u"--smoke-interactive"_s))
         return EXIT_SUCCESS;
+    auto *launchWindow = m_engine.rootObjects().isEmpty() ? nullptr : m_engine.rootObjects().first();
+    if (m_smokeTest && launchWindow
+            && (!launchWindow->property("startupLaunchConsidered").toBool()
+                || !launchWindow->property("consoleLaunchInputReady").toBool())) {
+        auto *timer = new QTimer(this);
+        timer->setInterval(25);
+        connect(timer, &QTimer::timeout, this,
+                [this, timer, launchWindow, deadline = QDeadlineTimer(8000)] {
+            if (launchWindow->property("startupLaunchConsidered").toBool()
+                    && launchWindow->property("consoleLaunchInputReady").toBool()) {
+                timer->stop();
+                timer->deleteLater();
+                if (startSmokeWorkload() != EXIT_SUCCESS) m_application.exit(EXIT_FAILURE);
+            } else if (deadline.hasExpired()) {
+                const auto *input = m_engine.rootContext()->contextProperty(u"ControllerInput"_s).value<QObject *>();
+                qCritical() << "Console launch did not release acceptance input within eight seconds"
+                    << "startupConsidered=" << launchWindow->property("startupLaunchConsidered")
+                    << "active=" << launchWindow->property("consoleLaunchActiveForSmokeTest")
+                    << "framePresented=" << launchWindow->property("launchFramePresented")
+                    << "inputReady=" << launchWindow->property("consoleLaunchInputReady")
+                    << "settingsLoaded=" << launchWindow->property("settingsLoadedForSmokeTest")
+                    << "blocked=" << m_controller.consoleLaunchInputBlocked()
+                    << "keyboardDrain=" << m_controller.consoleLaunchInputDraining()
+                    << "controllerBlocked=" << (input ? input->property("shellInputBlocked") : QVariant())
+                    << "controllerDrain=" << (input ? input->property("shellInputDraining") : QVariant());
+                m_application.exit(EXIT_FAILURE);
+            }
+        });
+        timer->start();
+        return EXIT_SUCCESS;
+    }
     if (m_smokeTest && m_arguments.contains(u"--smoke-initial-console-warning"_s)) {
         auto *window = m_engine.rootObjects().isEmpty() ? nullptr
             : qobject_cast<QQuickWindow *>(m_engine.rootObjects().first());
@@ -326,6 +357,7 @@ int AcceptanceSession::startSmokeWorkload()
                      || m_arguments.contains(u"--smoke-store-launch"_s)
                      || m_arguments.contains(u"--smoke-network-test"_s)
                      || m_arguments.contains(u"--smoke-idle-mode"_s)
+                     || m_arguments.contains(u"--smoke-console-launch"_s)
                      || m_arguments.contains(u"--smoke-queue-drops"_s)
                      || m_arguments.contains(u"--smoke-color-format"_s)
                      || m_arguments.contains(u"--smoke-stream-recovery"_s))) {
@@ -375,6 +407,8 @@ int AcceptanceSession::startSmokeWorkload()
             ? u"qrc:/acceptance/NetworkTestAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-idle-mode"_s)
             ? u"qrc:/acceptance/IdleModeAcceptance.qml"_s
+            : m_arguments.contains(u"--smoke-console-launch"_s)
+            ? u"qrc:/acceptance/ConsoleLaunchAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-stream-recovery"_s)
             ? u"qrc:/acceptance/StreamRecoveryAcceptance.qml"_s
             : u"qrc:/acceptance/BackendAvailabilityAcceptance.qml"_s));

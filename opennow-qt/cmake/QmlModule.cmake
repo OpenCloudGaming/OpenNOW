@@ -229,6 +229,7 @@ qt_add_qml_module(opennow-qt
         qml/components/GlassButton.qml
         qml/components/ConsoleActionButton.qml
         qml/components/ConsoleActionColumn.qml
+        qml/components/ConsoleLaunchAnimation.qml
         qml/components/ConsoleListRow.qml
         qml/components/ConsoleSheetFrame.qml
         qml/components/ConsoleChoiceSheet.qml
@@ -403,6 +404,8 @@ qt_add_qml_module(opennow-qt
         res/icons/store-ubisoft.svg
         res/icons/store-battlenet.svg
         res/brand/opennow-mark.png
+        res/sounds/launch-air.wav
+        res/sounds/launch-open.wav
         res/brand/signin-hero.jpg
         res/brand/desktop-renew.jpg
         res/onboarding/desktop-preview.png

@@ -359,6 +359,7 @@ FocusScope {
                 choice("Tile style", "Shape of game tiles on My games", "posterSizeScale", [0.9,1.05,1.25], ["Compact","Soft","Round"], "segments"),
                 toggle("Tile labels", "Show the game name under each tile", "showTileLabels"),
                 toggle("Reduced motion", "Remove decorative motion without delaying actions", "reducedMotion"),
+                {t:"UI sounds", d:"Play the Game Mode startup sound", v:ShellStore.settings.uiSoundsEnabled !== false ? qsTr("On") : qsTr("Off"), key:"uiSoundsEnabled", toggle:true, control:"toggle", toggleState:ShellStore.settings.uiSoundsEnabled !== false},
                 toggle("Console mode", "Bigger 10-foot layout, profile picker on start, controller-only navigation", "launchInConsoleMode"),
                 {t:"Theme store", d:"Browse controller-first palettes from the Paper V3 collection", v:root.titleCase(settings.themePack || "default"), route:"theme-store"},
                 descriptorChoice(qsTr("Interface language"), ShellStore.settingsOwnerState.interfaceLanguageDescription,
@@ -574,7 +575,7 @@ FocusScope {
         } else if (row.route) {
             AppController.navigate(row.route)
         } else if (row.toggle) {
-            ShellStore.setSetting(row.key, !Boolean(ShellStore.settings[row.key]))
+            ShellStore.setSetting(row.key, row.toggleState !== undefined ? !row.toggleState : !Boolean(ShellStore.settings[row.key]))
         } else if (row.values) {
             openChoices(row)
         } else if (row.action === "recording-settings") {

@@ -19,7 +19,13 @@ DesktopSettingsPanel {
         onSelected: value => page.settingsScreen.setChoice("appLanguage",value)
     }
     DesktopSettingsRow {
-        width: parent.width; paperStyle: true; glyph: "grid"; title: qsTr("Interface scale"); showDivider: false
+        width: parent.width; paperStyle: true; glyph: "grid"; title: qsTr("Interface scale")
         DesktopSettingsSlider { from: 0.85; to: 1.25; stepSize: 0.05; decimals: 2; suffix: "×"; value: Number(page.settingsScreen.valueSetting("desktopUiScale",1)); onCommitted: value => page.settingsScreen.setSetting("desktopUiScale",value) }
+    }
+    DesktopSettingsRow {
+        objectName: "renewUiSoundsRow"
+        width: parent.width; paperStyle: true; glyph: "wave"; title: qsTr("UI sounds")
+        description: qsTr("Play the Game Mode startup sound"); showDivider: false
+        DesktopSettingsToggle { checked: page.settingsScreen.boolSetting("uiSoundsEnabled",true); onValueChangedByUser: value => page.settingsScreen.setSetting("uiSoundsEnabled",value) }
     }
 }

@@ -18,11 +18,38 @@ settings persistence, catalog operations, and native streaming remain in their e
 | `LaunchStage` | Shared console layout for queue, connection, errors, conflicts, and session reports. Callers provide authoritative state. |
 | `QueueAdPlayback` | One implementation of required-ad playback and reporting for both shells. |
 | `GuideOverlay` | In-stream actions and nested controller/help panels, without navigating away from the native video item. |
+| `ConsoleLaunchAnimation` | The live cloud-shaped reveal, entry timing, reduced-motion fallback, and startup sound cues. Main owns when it runs and which screen it reveals. |
 
 `Main.qml` selects the appropriate confirmation UI and coordinates shell input ownership.
 `OverlayHost.qml` selects console-only friends, conflict, ad, and session-report views;
 the desktop fallback retains its previous views. `MotionProgress` owns reveal interruption
 and reduced-motion changes without stopping a child animation inside a behavior.
+
+## Game Mode entry
+
+The cold entry runs once after startup settings select Game Mode. Desktop-to-console
+entry uses a shorter version. Both reveal the actual destination without waiting for
+the catalog, artwork, or network. Returning from a game, navigating Back, closing the
+guide, and restarting the core do not replay the intro. Active sessions, queued launches,
+recovery, and direct game launches bypass it.
+
+The logo uses fixed brand colours and a vector cut-out over the live QML screen.
+Its geometry stays fixed while item transforms animate. There is no video playback or
+full-window screenshot texture. The normal cold sequence takes about 1.5 seconds and
+quick entry takes about 0.68 seconds. Reduced motion and renderers without GPU curve
+support use a crossfade instead. Losing focus, opening a modal, or leaving Game Mode
+cancels the animation.
+
+Any input can skip the intro. `InputModeTracker` consumes keyboard and pointer input
+before input-mode heuristics run. `ControllerInput` tracks physical controller release,
+including held sticks. The shell regains input only after the reveal and all held inputs
+are released, so the skip press cannot launch the selected game.
+
+**UI sounds** controls the original startup cues independently of reduced motion. It is
+enabled by default and is available in console Settings under Themes and in desktop
+Settings under Interface. Playback uses the system audio output and respects system mute.
+Skip fades the cues out. A disabled preference prevents audio loading and playback.
+The deterministic standard-library generator is `opennow-qt/tools/synth-launch-sounds.py`.
 
 ## Interaction contracts
 
@@ -59,6 +86,18 @@ session checks:
 ctest --test-dir build/opennow-qt --output-on-failure \
   -R 'opennow-(consolecontrols|consoleactions|consolelayout|embedded-orchestration)-tests|qml-console-session-|qml-stream-exit-console|qml-console-initial-warning'
 ```
+
+The entry-specific checks cover readiness, skipping, cancellation, resizing, held-input
+release, destination preservation, and session bypass:
+
+```sh
+ctest --test-dir build/opennow-qt --output-on-failure \
+  -R 'opennow-consolelaunch.*-tests|qml-console-launch-'
+```
+
+For an interactive entry capture with sample artwork, run the application without
+`--reduced-motion` and add `--smoke-interactive` to the console-design workload. This
+keeps the fixture open after startup instead of taking a screenshot and exiting.
 
 The console-session workload drives queue cancellation, first-frame handoff, guide
 subpages, safe confirmation, reconnect, and error recovery in windowed/fullscreen modes

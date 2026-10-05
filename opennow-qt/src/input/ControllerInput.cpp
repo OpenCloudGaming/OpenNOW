@@ -249,6 +249,36 @@ void ControllerInput::stopRumble()
     }
 }
 
+void ControllerInput::setShellInputBlocked(bool blocked)
+{
+    if (m_shellInputBlocked == blocked) return;
+    m_shellInputBlocked = blocked;
+    if (blocked) {
+        for (auto &slot : m_slots) slot.shellKeys.clear();
+        resetDirections();
+    }
+    updateShellInputDrain();
+    emit shellInputBlockedChanged();
+}
+
+void ControllerInput::updateShellInputDrain()
+{
+    bool draining = false;
+    if (m_shellInputBlocked || m_shellInputDraining) {
+        for (const auto &slot : m_slots) {
+            if (!slot.gamepad || !acceptsController(slot.instanceId)) continue;
+            for (int button = 0; button < SDL_GAMEPAD_BUTTON_COUNT; ++button)
+                draining |= SDL_GetGamepadButton(slot.gamepad, SDL_GamepadButton(button));
+            for (int axis = 0; axis < SDL_GAMEPAD_AXIS_COUNT; ++axis)
+                draining |= std::abs(int(SDL_GetGamepadAxis(slot.gamepad, SDL_GamepadAxis(axis))))
+                    > axisReleaseThreshold;
+        }
+    }
+    if (m_shellInputDraining == draining) return;
+    m_shellInputDraining = draining;
+    emit shellInputDrainingChanged();
+}
+
 void ControllerInput::setInputSuspended(bool suspended)
 {
     if (m_inputSuspended == suspended) return;
@@ -411,6 +441,11 @@ void ControllerInput::handleButton(const SDL_GamepadButtonEvent &event, bool pre
     }
 
     if (!m_shellCaptureEnabled || m_inputSuspended) return;
+    if (m_shellInputBlocked || m_shellInputDraining) {
+        updateShellInputDrain();
+        if (pressed && m_shellInputBlocked) emit shellInputSkipRequested();
+        return;
+    }
     const auto key = keyForButton(event.button);
     if (key != 0) {
         handleShellButton(slotIndex, key, pressed);
@@ -434,6 +469,13 @@ void ControllerInput::handleAxis(const SDL_GamepadAxisEvent &event)
     }
     if (!m_shellCaptureEnabled) publishSlotSnapshot(slotIndex);
     if (!m_shellCaptureEnabled || m_inputSuspended) return;
+
+    if (m_shellInputBlocked || m_shellInputDraining) {
+        updateShellInputDrain();
+        if (m_shellInputBlocked && std::abs(int(event.value)) > axisPressThreshold)
+            emit shellInputSkipRequested();
+        return;
+    }
 
     const auto value = event.value;
     bool activated = false;
@@ -722,6 +764,8 @@ bool ControllerInput::updateDirection(RepeatingDirection &direction, bool active
 
 void ControllerInput::dispatchRepeats(qint64 now)
 {
+    updateShellInputDrain();
+    if (m_shellInputBlocked || m_shellInputDraining) return;
     if (!m_shellCaptureEnabled || m_inputSuspended) return;
     QSet<int> digitalDirections;
     for (auto &slot : m_slots) {
