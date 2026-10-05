@@ -72,6 +72,7 @@
 		A26000000000000000000001 /* OpenNOWVisualComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = A26000000000000000000011 /* OpenNOWVisualComponents.swift */; };
 		A26000000000000000000002 /* QueueVisualComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = A26000000000000000000012 /* QueueVisualComponents.swift */; };
 		A26000000000000000000003 /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A26000000000000000000013 /* AppIntents.framework */; };
+		A27000000000000000000001 /* GameDetailsPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A27000000000000000000011 /* GameDetailsPresentation.swift */; };
 		A40EE3F8EE64181F3C16E6A3 /* NVST/Native/NvstSctpAssociation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0343683395FDFCF237023580 /* NVST/Native/NvstSctpAssociation.swift */; };
 		AB0000000000000000000001 /* DiagnosticsSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0000000000000000000011 /* DiagnosticsSupport.swift */; };
 		AB533C6016ED0CD4950FCE46 /* NVST/Video/NvstVideoToolboxDecoder+Format.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20868A10E9ADC61B9BFEF85 /* NVST/Video/NvstVideoToolboxDecoder+Format.swift */; };
@@ -261,6 +262,7 @@
 		A26000000000000000000011 /* OpenNOWVisualComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenNOWVisualComponents.swift; sourceTree = "<group>"; };
 		A26000000000000000000012 /* QueueVisualComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueVisualComponents.swift; sourceTree = "<group>"; };
 		A26000000000000000000013 /* AppIntents.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AppIntents.framework; path = System/Library/Frameworks/AppIntents.framework; sourceTree = SDKROOT; };
+		A27000000000000000000011 /* GameDetailsPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameDetailsPresentation.swift; sourceTree = "<group>"; };
 		A86B38681CD9438F1BC8C253 /* NVST/SrtpCryptographyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NVST/SrtpCryptographyTests.swift; sourceTree = "<group>"; };
 		A9DF59D04F759E5CE6740E7E /* NVST/BifrostFree/NvstHapticEvent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NVST/BifrostFree/NvstHapticEvent.swift; sourceTree = "<group>"; };
 		AAAA149CA6EE6E9E4425D9A1 /* NVST/BifrostFree/NvstRemoteInputWindowEvents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NVST/BifrostFree/NvstRemoteInputWindowEvents.swift; sourceTree = "<group>"; };
@@ -501,6 +503,7 @@
 				BB0000000000000000000071 /* NativeStreamMetal4Effects.swift */,
 				BB0000000000000000000031 /* NativeStreamHDRMetal.swift */,
 				BB000000000000000000001F /* NativeStreamAudioDevice.swift */,
+				A27000000000000000000011 /* GameDetailsPresentation.swift */,
 				A26000000000000000000011 /* OpenNOWVisualComponents.swift */,
 				A26000000000000000000012 /* QueueVisualComponents.swift */,
 				CC0000000000000000000011 /* QueueActivityAttributes.swift */,
@@ -810,6 +813,7 @@
 				BB0000000000000000000061 /* NativeStreamMetal4Effects.swift in Sources */,
 				BB0000000000000000000021 /* NativeStreamHDRMetal.swift in Sources */,
 				BB000000000000000000000F /* NativeStreamAudioDevice.swift in Sources */,
+				A27000000000000000000001 /* GameDetailsPresentation.swift in Sources */,
 				A26000000000000000000001 /* OpenNOWVisualComponents.swift in Sources */,
 				A26000000000000000000002 /* QueueVisualComponents.swift in Sources */,
 				CC0000000000000000000001 /* QueueActivityAttributes.swift in Sources */,
@@ -917,7 +921,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 110;
+				CURRENT_PROJECT_VERSION = 112;
 				DEVELOPMENT_TEAM = VR766AGP7G;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -961,7 +965,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 110;
+				CURRENT_PROJECT_VERSION = 112;
 				DEVELOPMENT_TEAM = VR766AGP7G;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -1004,7 +1008,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 110;
+				CURRENT_PROJECT_VERSION = 112;
 				DEVELOPMENT_TEAM = VR766AGP7G;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = OpenNOWWidget/Info.plist;
@@ -1033,7 +1037,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 110;
+				CURRENT_PROJECT_VERSION = 112;
 				DEVELOPMENT_TEAM = VR766AGP7G;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = OpenNOWWidget/Info.plist;

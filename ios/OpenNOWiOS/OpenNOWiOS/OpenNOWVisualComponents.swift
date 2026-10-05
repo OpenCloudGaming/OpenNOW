@@ -1,5 +1,23 @@
 import SwiftUI
 
+/// Animate the path's width, preserving a radius of half its height even during the countdown.
+/// Scaling a capsule horizontally also scales its end caps into nearly flat edges.
+struct HeroPageProgressFill: Shape {
+    var progress: CGFloat
+    var animatableData: CGFloat {
+        get { progress }
+        set { progress = newValue }
+    }
+
+    func path(in rect: CGRect) -> Path {
+        guard rect.width.isFinite, rect.height.isFinite, rect.width > 0, rect.height > 0 else { return Path() }
+        let fraction = progress.isFinite ? min(max(progress, 0), 1) : 0
+        let dotWidth = min(rect.height, rect.width)
+        let width = dotWidth + (rect.width - dotWidth) * fraction
+        return Capsule().path(in: CGRect(x: rect.minX, y: rect.minY, width: width, height: rect.height))
+    }
+}
+
 /// The single sweep that says "this whole screen is still loading".
 ///
 /// Applied once, to a container — never per cell. The phase comes from the clock rather than a

@@ -7,6 +7,9 @@ import UIKit
 struct ContentView: View {
     @EnvironmentObject private var store: OpenNOWStore
     @AppStorage("OpenNOW.iOS.setupCompletedVersion") private var setupCompletedVersion = 0
+    #if DEBUG
+    @StateObject private var previewControllerShortcuts = CatalogControllerShortcutCoordinator()
+    #endif
 
     var body: some View {
         Group {
@@ -18,6 +21,14 @@ struct ContentView: View {
                     }
             } else if ProcessInfo.processInfo.arguments.contains("--opennow-intro-preview") {
                 IntroSetupView(onFinish: {})
+            } else if ProcessInfo.processInfo.arguments.contains("--opennow-store-preview") {
+                HomeView()
+                    .environmentObject(previewControllerShortcuts)
+                    .task { store.installDebugStorePreview() }
+            } else if ProcessInfo.processInfo.arguments.contains("--opennow-server-picker-preview") {
+                PrintedWasteQueueView(game: OpenNOWStore.debugStorePreviewGames[0]) { _ in }
+            } else if ProcessInfo.processInfo.arguments.contains("--opennow-details-preview") {
+                GameLaunchDetailsSheet(game: OpenNOWStore.debugStorePreviewGames[0]) { _ in }
             } else {
                 standardContent
             }
@@ -30,7 +41,10 @@ struct ContentView: View {
         .task {
             #if DEBUG
             guard debugQueuePreviewPosition == nil,
-                  !ProcessInfo.processInfo.arguments.contains("--opennow-intro-preview") else { return }
+                  !ProcessInfo.processInfo.arguments.contains("--opennow-intro-preview"),
+                  !ProcessInfo.processInfo.arguments.contains("--opennow-store-preview"),
+                  !ProcessInfo.processInfo.arguments.contains("--opennow-details-preview"),
+                  !ProcessInfo.processInfo.arguments.contains("--opennow-server-picker-preview") else { return }
             #endif
             await store.bootstrap()
         }
@@ -365,6 +379,9 @@ struct MainTabView: View {
     @State private var streamerAutoRetryCount = 0
     @State private var presentedStreamerSession: ActiveSession?
     @State private var bugReportDeck: BugReportPreflightDeck?
+    @State private var pendingBugReportDeck: BugReportPreflightDeck?
+    @State private var sessionReportPresented = false
+    @State private var bugReportPresented = false
     @State private var sidebarVisibility: NavigationSplitViewVisibility = .all
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     private static let maxStreamerAutoRetries = 3
@@ -507,13 +524,19 @@ struct MainTabView: View {
         .sheet(item: Binding(
             get: { store.sessionReport },
             set: { if $0 == nil { store.dismissSessionReport() } }
-        )) { report in
+        ), onDismiss: {
+            sessionReportPresented = false
+            if let deck = pendingBugReportDeck {
+                pendingBugReportDeck = nil
+                bugReportDeck = deck
+            }
+        }) { report in
             SessionReportView(
                 report: report,
                 onReportProblem: {
                     // Capture the deck before the report sheet closes: it reads the session the
                     // user is about to complain about, which is gone a moment later.
-                    bugReportDeck = store.bugReportPreflightDeck()
+                    pendingBugReportDeck = store.bugReportPreflightDeck()
                     store.dismissSessionReport()
                 },
                 onDismiss: { disableFutureReports in
@@ -521,14 +544,16 @@ struct MainTabView: View {
                 }
             )
             .environmentObject(store)
+            .onAppear { sessionReportPresented = true }
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
         }
-        .sheet(item: $bugReportDeck) { deck in
+        .sheet(item: $bugReportDeck, onDismiss: { bugReportPresented = false }) { deck in
             BugReportView(deck: deck) { draft in
                 await store.submitBugReport(draft, deck: deck)
             }
             .environmentObject(store)
+            .onAppear { bugReportPresented = true }
         }
         // Two sheets cannot be presented from one view, so consent waits until nothing else is
         // on screen. It is a one-time prompt; deferring it a launch costs nothing.
@@ -547,6 +572,10 @@ struct MainTabView: View {
     private var showAnalyticsConsent: Bool {
         store.settings.analyticsConsent == .notAsked
             && store.sessionReport == nil
+            && !sessionReportPresented
+            && bugReportDeck == nil
+            && pendingBugReportDeck == nil
+            && !bugReportPresented
             && store.pendingLaunchConflict == nil
             && !store.queueOverlayVisible
             && presentedStreamerSession == nil
@@ -592,6 +621,9 @@ struct MainTabView: View {
             .navigationTitle("OpenNOW")
         } detail: {
             destination(for: selectedTab)
+                // Each tab owns a different navigation path. Replacing the detail without a
+                // new identity lets the split column compare Settings paths with another tab's.
+                .id(selectedTab)
         }
         .navigationSplitViewStyle(.balanced)
         .tint(brandAccent)

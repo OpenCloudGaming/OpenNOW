@@ -687,11 +687,26 @@ struct CatalogWallpaperBackdrop: View {
 }
 
 struct HomeView: View {
+    private enum StoreSort: String, CaseIterable {
+        case popular, title, lastPlayed
+
+        var label: String {
+            switch self {
+            case .popular: return "Most Popular"
+            case .title: return "Title A–Z"
+            case .lastPlayed: return "Last Played"
+            }
+        }
+    }
+
     @EnvironmentObject private var store: OpenNOWStore
     @State private var pendingLaunchRequest: GameLaunchRequest?
     @State private var selectedGameForDetails: CloudGame?
     @State private var selectedGameForLauncher: CloudGame?
     @State private var isSearchPresented = false
+    @State private var sort = StoreSort.popular
+    @State private var selectedStores = Set<String>()
+    @State private var selectedGenres = Set<String>()
 
     private var continueCardWidth: CGFloat {
         let baseWidth: CGFloat = store.settings.compactGameCards ? 140 : 160
@@ -708,17 +723,22 @@ struct HomeView: View {
                 emptySystemImage: store.isSearchingCatalog ? "arrow.triangle.2.circlepath"
                     : (isHomeSearchActive ? "magnifyingglass" : "square.grid.2x2"),
                 emptyDescription: homeEmptyDescription,
+                topContentPadding: isHomeSearchActive ? 12 : 2,
                 subtitle: { gameCatalogSubtitle(for: $0) },
                 badgeSystemImage: { _ in nil },
                 onOpenDetails: { selectedGameForDetails = $0 },
-                onPlay: launchFromCard
+                onPlay: launchFromCard,
+                onChooseLauncher: { selectedGameForLauncher = $0 }
             ) {
                 homeHeader
             } emptyActions: {
-                if isHomeSearchActive && !store.isSearchingCatalog {
-                    Button("Clear Search") {
+                if (isHomeSearchActive || hasCatalogFilters) && !store.isSearchingCatalog {
+                    Button(isHomeSearchActive && hasCatalogFilters ? "Clear Search and Filters" :
+                           isHomeSearchActive ? "Clear Search" : "Clear Filters") {
                         store.searchText = ""
                         isSearchPresented = false
+                        selectedStores.removeAll()
+                        selectedGenres.removeAll()
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(brandAccent)
@@ -732,6 +752,7 @@ struct HomeView: View {
             )
             .refreshable { await store.refreshCatalog() }
             .navigationTitle("Store")
+            .navigationBarTitleDisplayMode(.inline)
             .background {
                 CatalogWallpaperBackdrop(
                     isEnabled: store.settings.catalogWallpaperEnabled,
@@ -751,6 +772,10 @@ struct HomeView: View {
 
     private var homeHeader: some View {
         VStack(alignment: .leading, spacing: 22) {
+            if !isResultsMode && !newGamesHeroGames.isEmpty {
+                newGamesHeroSection
+            }
+
             if let error = store.catalogError {
                 ErrorBannerView(
                     message: error,
@@ -760,50 +785,85 @@ struct HomeView: View {
                 )
             }
 
-            if !isHomeSearchActive {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("DISCOVER")
-                        .font(.caption.weight(.bold))
-                        .tracking(2)
-                        .foregroundStyle(brandAccent)
-                    Text("Find your next game.")
-                        .font(.system(.largeTitle, design: .rounded, weight: .bold))
-                    Text("Explore the latest additions and jump back into your games.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 8)
-            }
-
-            if !isHomeSearchActive && !newGamesHeroGames.isEmpty {
-                newGamesHeroSection
-            }
-
-            if !isHomeSearchActive && jumpBackInHasContent {
+            if !isResultsMode && jumpBackInHasContent {
                 continueSection
             }
 
-            if !isHomeSearchActive && !queueGames.isEmpty {
+            if !isResultsMode && !queueGames.isEmpty {
                 CatalogPosterRail(title: "In queue", symbol: "hourglass", games: queueGames,
                     onOpenDetails: resumeQueueGame, onPlay: resumeQueueGame)
             }
 
-            if !isHomeSearchActive && !favoriteGames.isEmpty {
+            if !isResultsMode && !favoriteGames.isEmpty {
                 CatalogPosterRail(title: "Favorites", symbol: "heart.fill", games: favoriteGames,
-                    onOpenDetails: { selectedGameForDetails = $0 }, onPlay: launchFromCard)
+                    onOpenDetails: { selectedGameForDetails = $0 }, onPlay: launchFromCard,
+                    onChooseLauncher: { selectedGameForLauncher = $0 })
             }
 
             CatalogControlsHeader(
-                title: isHomeSearchActive ? "Search results" : "Recommendations",
+                title: isResultsMode ? "Results" : "Recommendations",
                 subtitle: homeHeaderTitle,
                 chips: homeActiveFilterChips,
-                onClear: isHomeSearchActive ? {
+                onClear: isResultsMode ? {
                     store.searchText = ""
                     isSearchPresented = false
+                    selectedStores.removeAll()
+                    selectedGenres.removeAll()
                 } : nil
             ) {
-                EmptyView()
+                HStack(spacing: 8) {
+                    Menu {
+                        ForEach(StoreSort.allCases, id: \.self) { option in
+                            Button {
+                                sort = option
+                            } label: {
+                                if sort == option { Label(option.label, systemImage: "checkmark") }
+                                else { Text(option.label) }
+                            }
+                        }
+                    } label: {
+                        Label("Sort", systemImage: "arrow.up.arrow.down")
+                    }
+
+                    Menu {
+                        if !availableStoreFilters.isEmpty {
+                            Section("Stores") {
+                                ForEach(availableStoreFilters, id: \.self) { storeID in
+                                    Button {
+                                        toggle(storeID, in: &selectedStores)
+                                    } label: {
+                                        if selectedStores.contains(storeID) {
+                                            Label(storeDisplayName(storeID), systemImage: "checkmark")
+                                        } else { Text(storeDisplayName(storeID)) }
+                                    }
+                                }
+                            }
+                        }
+                        if !availableGenreFilters.isEmpty {
+                            Section("Genres") {
+                                ForEach(availableGenreFilters, id: \.self) { genre in
+                                    Button {
+                                        toggle(genre, in: &selectedGenres)
+                                    } label: {
+                                        if selectedGenres.contains(genre) {
+                                            Label(genre, systemImage: "checkmark")
+                                        } else { Text(genre) }
+                                    }
+                                }
+                            }
+                        }
+                        if hasCatalogFilters {
+                            Button("Clear Filters", systemImage: "xmark.circle") {
+                                selectedStores.removeAll()
+                                selectedGenres.removeAll()
+                            }
+                        }
+                    } label: {
+                        Label(hasCatalogFilters ? "Filter \(selectedStores.count + selectedGenres.count)" : "Filter",
+                              systemImage: "line.3.horizontal.decrease")
+                    }
+                }
+                .font(.subheadline)
             }
         }
     }
@@ -819,7 +879,8 @@ struct HomeView: View {
                         GameBannerButton(
                             game: item.game,
                             subtitle: item.subtitle,
-                            badgeSystemImage: item.badgeSystemImage
+                            badgeSystemImage: item.badgeSystemImage,
+                            showsTitle: store.settings.showCardTitles
                         ) {
                             item.onSelect()
                         }
@@ -848,8 +909,8 @@ struct HomeView: View {
     private var newGamesHeroSection: some View {
         ComingNextCarousel(
             games: newGamesHeroGames,
-            onOpenDetails: { selectedGameForDetails = $0 },
-            onPlay: launchFromCard
+            isPaused: selectedGameForDetails != nil || selectedGameForLauncher != nil || pendingLaunchRequest != nil,
+            onOpenDetails: { selectedGameForDetails = $0 }
         )
     }
 
@@ -862,6 +923,8 @@ struct HomeView: View {
 
     private var newGamesExcludedGameKeys: Set<String> {
         var keys = Set(continueGameItems.map { catalogStableGameKey($0.game) })
+        keys.formUnion(queueGames.map(catalogStableGameKey))
+        keys.formUnion(favoriteGames.map(catalogStableGameKey))
         if let activeGame = store.activeSession?.game {
             keys.insert(catalogStableGameKey(activeGame))
         }
@@ -903,37 +966,66 @@ struct HomeView: View {
     private var favoriteGames: [CloudGame] {
         let byId = Dictionary((store.allGames + store.libraryGames).map { ($0.id, $0) },
             uniquingKeysWith: { first, _ in first })
-        return Array(store.settings.favoriteGameIds.compactMap { byId[$0] }.prefix(12))
+        let alreadyShown = Set((continueGameItems.map(\.game) + queueGames).map(catalogStableGameKey))
+        return Array(store.settings.favoriteGameIds.compactMap { byId[$0] }
+            .filter { !alreadyShown.contains(catalogStableGameKey($0)) }.prefix(14))
     }
 
     private var homeGridGames: [CloudGame] {
-        let games = isHomeSearchActive ? homeSearchResults : store.allGames
-        guard !store.settings.favoriteGameIds.isEmpty else { return games }
-        let favoriteIds = Set(store.settings.favoriteGameIds)
-        return games.sorted {
-            let leftFavorite = favoriteIds.contains($0.id)
-            let rightFavorite = favoriteIds.contains($1.id)
-            if leftFavorite != rightFavorite { return leftFavorite }
-            return $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+        let source = isHomeSearchActive ? homeSearchResults : store.allGames
+        let filtered = source.filter { game in
+            let storeMatch = selectedStores.isEmpty || game.launchOptions.contains {
+                selectedStores.contains($0.storefront.uppercased())
+            }
+            let genreMatch = selectedGenres.isEmpty || selectedGenres.contains(game.genre)
+            return storeMatch && genreMatch
         }
+        switch sort {
+        case .popular: return filtered
+        case .title:
+            return filtered.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        case .lastPlayed:
+            return filtered.enumerated().sorted { left, right in
+                let leftDate = left.element.lastPlayedDate ?? ""
+                let rightDate = right.element.lastPlayedDate ?? ""
+                return leftDate == rightDate ? left.offset < right.offset : leftDate > rightDate
+            }.map(\.element)
+        }
+    }
+
+    private var hasCatalogFilters: Bool { !selectedStores.isEmpty || !selectedGenres.isEmpty }
+    private var isResultsMode: Bool { isHomeSearchActive || hasCatalogFilters }
+
+    private var availableStoreFilters: [String] {
+        Array(Set(store.allGames.flatMap { $0.launchOptions.map { $0.storefront.uppercased() } }))
+            .filter { !$0.isEmpty && $0 != "AUTO" }.sorted()
+    }
+
+    private var availableGenreFilters: [String] {
+        Array(Set(store.allGames.map(\.genre)))
+            .filter { !$0.isEmpty && $0 != "Cloud Game" }.sorted()
+    }
+
+    private func toggle(_ value: String, in selected: inout Set<String>) {
+        if !selected.insert(value).inserted { selected.remove(value) }
     }
 
     /// Searching the server takes a moment; saying so beats showing "No Matches" and then
     /// silently filling the grid a second later.
     private var homeEmptyTitle: String {
         if store.isSearchingCatalog { return "Searching the catalog…" }
-        return isHomeSearchActive ? "No Matches" : "No Games"
+        return isResultsMode ? "No Matches" : "No Games"
     }
 
     private var homeEmptyDescription: String? {
         if store.isSearchingCatalog { return nil }
-        guard isHomeSearchActive else { return nil }
-        return "Nothing in the catalog matches that. Check the spelling, or try part of the name."
+        guard isResultsMode else { return nil }
+        return "No games match the selected search or filters. Try changing them."
     }
 
     private var homeHeaderTitle: String {
         let count = homeGridGames.count
-        if isHomeSearchActive {
+        if isResultsMode {
             return count == 1 ? "1 Match" : "\(count) Matches"
         }
         return count == 1 ? "1 Game" : "\(count) Games"
@@ -941,13 +1033,24 @@ struct HomeView: View {
 
     private var homeActiveFilterChips: [CatalogFilterChip] {
         let query = store.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return [] }
-        return [
-            CatalogFilterChip(label: "Search: \(query)") {
+        var chips: [CatalogFilterChip] = []
+        if !query.isEmpty {
+            chips.append(CatalogFilterChip(label: "Search: \(query)") {
                 store.searchText = ""
                 isSearchPresented = false
-            }
-        ]
+            })
+        }
+        for storeID in selectedStores.sorted() {
+            chips.append(CatalogFilterChip(label: storeDisplayName(storeID)) {
+                selectedStores.remove(storeID)
+            })
+        }
+        for genre in selectedGenres.sorted() {
+            chips.append(CatalogFilterChip(label: genre) {
+                selectedGenres.remove(genre)
+            })
+        }
+        return chips
     }
 
     private var jumpBackInHasContent: Bool {
@@ -963,12 +1066,12 @@ struct HomeView: View {
     }
 
     private func launchFromCard(_ game: CloudGame) {
-        let options = store.launchOptions(for: game)
-        if options.count > 1 {
+        switch store.launchChoice(for: game) {
+        case .chooseLauncher:
             selectedGameForLauncher = game
-            return
+        case let .launch(option):
+            pendingLaunchRequest = GameLaunchRequest(game: game, launchOption: option)
         }
-        pendingLaunchRequest = GameLaunchRequest(game: game, launchOption: store.defaultLaunchOption(for: game) ?? options.first)
     }
 
     private var resumableSessionsExcludingActive: [RemoteSessionCandidate] {
@@ -1006,6 +1109,21 @@ struct HomeView: View {
                     store.scheduleResume(candidate: candidate)
                 }
             )
+        }
+
+        let recentGames = (store.libraryGames + store.allGames)
+            .filter { $0.lastPlayedDate != nil }
+            .sorted { ($0.lastPlayedDate ?? "") > ($1.lastPlayedDate ?? "") }
+        for game in recentGames where items.count < 12 {
+            guard seenGameKeys.insert(catalogStableGameKey(game)).inserted else { continue }
+            items.append(GameBannerActionItem(
+                id: "recent-\(catalogStableGameKey(game))",
+                game: game,
+                subtitle: "Recently played",
+                badgeSystemImage: nil
+            ) {
+                selectedGameForDetails = game
+            })
         }
 
         return items
@@ -1171,10 +1289,12 @@ struct GameCatalogGridView<Header: View, EmptyActions: View>: View {
     /// every caller has a cause worth naming — but when there is one, it belongs here rather
     /// than being folded into the title.
     var emptyDescription: String? = nil
+    var topContentPadding: CGFloat = 12
     let subtitle: (CloudGame) -> String
     let badgeSystemImage: (CloudGame) -> String?
     let onOpenDetails: (CloudGame) -> Void
     let onPlay: (CloudGame) -> Void
+    var onChooseLauncher: ((CloudGame) -> Void)? = nil
     @ViewBuilder let header: () -> Header
     @ViewBuilder let emptyActions: () -> EmptyActions
 
@@ -1233,14 +1353,16 @@ struct GameCatalogGridView<Header: View, EmptyActions: View>: View {
                                 alwaysShowsFavorite: store.settings.showFavoriteIconOnGameCards,
                                 onToggleFavorite: { store.toggleFavorite(game) },
                                 onOpenDetails: { onOpenDetails(game) },
-                                onPlay: { onPlay(game) }
+                                onPlay: { onPlay(game) },
+                                onChooseLauncher: onChooseLauncher.map { choose in { choose(game) } }
                             )
                         }
                     }
                     .padding(.horizontal, 12)
                 }
             }
-            .padding(.vertical, 12)
+            .padding(.top, topContentPadding)
+            .padding(.bottom, 12)
         }
         .scrollDismissesKeyboard(.interactively)
     }
@@ -1248,6 +1370,8 @@ struct GameCatalogGridView<Header: View, EmptyActions: View>: View {
 
 private struct GameCatalogGridCard: View {
     @EnvironmentObject private var controllerShortcuts: CatalogControllerShortcutCoordinator
+    @Environment(\.gameDetailsTransition) private var detailsTransition
+    @State private var detailsSourceID = UUID()
     @FocusState private var isPosterFocused: Bool
     @State private var isLegacyPosterFocused = false
     @State private var controllerShortcutOwner = UUID()
@@ -1265,6 +1389,7 @@ private struct GameCatalogGridCard: View {
     let onToggleFavorite: () -> Void
     let onOpenDetails: () -> Void
     let onPlay: () -> Void
+    var onChooseLauncher: (() -> Void)? = nil
 
     private var controlSize: CGFloat {
         compact ? 36 : 42
@@ -1280,6 +1405,9 @@ private struct GameCatalogGridCard: View {
 
     private func openDetails() {
         Haptics.light()
+        detailsTransition?.selectSource(GameDetailsTransitionOrigin(
+            sourceID: detailsSourceID, gameKey: catalogStableGameKey(game)
+        ))
         onOpenDetails()
     }
 
@@ -1307,6 +1435,11 @@ private struct GameCatalogGridCard: View {
             if canLaunch {
                 Button { play() } label: { Label("Play", systemImage: "play.fill") }
             }
+            if canLaunch, let onChooseLauncher, game.launchOptions.count > 1 {
+                Button(action: onChooseLauncher) {
+                    Label("Choose Launcher", systemImage: "rectangle.stack")
+                }
+            }
             Button { toggleFavorite() } label: {
                 Label(
                     favorite ? "Remove from Favourites" : "Add to Favourites",
@@ -1318,6 +1451,9 @@ private struct GameCatalogGridCard: View {
         // The buttons on the artwork are already exposed individually; repeating them as custom
         // actions would make VoiceOver read the same card three times.
         .accessibilityElement(children: .contain)
+        #if DEBUG
+        .gameDetailsVisualQA(game: game, source: "grid", activate: openDetails)
+        #endif
     }
 
     @ViewBuilder
@@ -1352,6 +1488,7 @@ private struct GameCatalogGridCard: View {
                     isFocused: isPosterVisuallyFocused
                 )
                 .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .gameDetailsArtworkSource(id: detailsSourceID)
             }
             .buttonStyle(.plain)
             .controllerFocusableCompat(
@@ -1619,6 +1756,7 @@ struct GameBannerButton: View {
     let game: CloudGame
     let subtitle: String?
     let badgeSystemImage: String?
+    var showsTitle = true
     let onSelect: () -> Void
 
     private func select() {
@@ -1636,6 +1774,7 @@ struct GameBannerButton: View {
                 game: game,
                 subtitle: subtitle,
                 badgeSystemImage: badgeSystemImage,
+                showsTitle: showsTitle,
                 isFocused: isVisuallyFocused
             )
             .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -1646,6 +1785,7 @@ struct GameBannerButton: View {
             onLegacyFocusChange: { isLegacyFocused = $0 }
         )
         .focused($isFocused)
+        .accessibilityLabel([game.title, subtitle].compactMap { $0 }.joined(separator: ", "))
         .scaleEffect(isVisuallyFocused ? 1.025 : 1)
         .animation(.easeOut(duration: 0.16), value: isVisuallyFocused)
         .zIndex(isVisuallyFocused ? 2 : 0)
@@ -1657,6 +1797,7 @@ struct GameVerticalBannerCard: View {
     let subtitle: String?
     let badgeSystemImage: String?
     var fitArtwork = false
+    var showsTitle = true
     var isFocused = false
 
     var body: some View {
@@ -1664,36 +1805,34 @@ struct GameVerticalBannerCard: View {
             GameArtworkView(game: game, iconSize: 42, fit: fitArtwork)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            LinearGradient(
-                colors: [
-                    .clear,
-                    .black.opacity(0.22),
-                    .black.opacity(0.88)
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .allowsHitTesting(false)
+            if showsTitle {
+                LinearGradient(
+                    colors: [.clear, .black.opacity(0.22), .black.opacity(0.88)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .allowsHitTesting(false)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(game.title)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Color.white)
-                    .lineLimit(3)
-                    .minimumScaleFactor(0.78)
-                    .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(game.title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Color.white)
+                        .lineLimit(3)
+                        .minimumScaleFactor(0.78)
+                        .fixedSize(horizontal: false, vertical: true)
 
-                GameCapabilityBadges(labels: game.capabilityBadges)
+                    GameCapabilityBadges(labels: game.capabilityBadges)
 
-                if let subtitle, !subtitle.isEmpty {
-                    Text(subtitle)
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(Color.white.opacity(0.82))
-                        .lineLimit(1)
+                    if let subtitle, !subtitle.isEmpty {
+                        Text(subtitle)
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(Color.white.opacity(0.82))
+                            .lineLimit(1)
+                    }
                 }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .aspectRatio(gameVerticalBannerAspectRatio, contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -1742,7 +1881,7 @@ private struct GameLaunchDetailsArtworkCard: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(game.title)
-                    .font(.headline.weight(.semibold))
+                    .font(.system(.title2, design: .rounded, weight: .bold))
                     .foregroundStyle(.white)
                     .lineLimit(2)
                     .minimumScaleFactor(0.82)
@@ -1756,7 +1895,7 @@ private struct GameLaunchDetailsArtworkCard: View {
                         .lineLimit(1)
                 }
             }
-            .padding(12)
+            .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .aspectRatio(16.0 / 9.0, contentMode: .fit)
@@ -1830,6 +1969,8 @@ private struct GameLaunchDetailsArtwork: View {
 
 private struct GameScreenshotGallery: View {
     let urls: [String]
+    @State private var selectedIndex = 0
+    @State private var showingViewer = false
 
     private var screenshotURLs: [URL] {
         var seen = Set<String>()
@@ -1843,34 +1984,71 @@ private struct GameScreenshotGallery: View {
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(spacing: 10) {
-                ForEach(screenshotURLs, id: \.absoluteString) { url in
-                    CachedRemoteImage(
-                        url: url,
-                        targetPixelSize: 960,
-                        priority: .userInitiated
-                    ) { image in
-                        image
-                            .resizable()
-                            .scaledToFit()
-                    } placeholder: {
-                        GameScreenshotPlaceholder()
-                    } failure: {
-                        GameScreenshotPlaceholder(isFailure: true)
+                ForEach(Array(screenshotURLs.enumerated()), id: \.offset) { index, url in
+                    Button {
+                        selectedIndex = index
+                        showingViewer = true
+                    } label: {
+                        screenshot(url: url, pixelSize: 960)
+                            .frame(width: 288)
+                            .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                            .background(Color.black)
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .stroke(Color.white.opacity(0.10), lineWidth: 1)
+                            )
                     }
-                    .frame(width: 288)
-                    .aspectRatio(16.0 / 9.0, contentMode: .fit)
-                    .background(Color.black)
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .stroke(Color.white.opacity(0.10), lineWidth: 1)
-                    )
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Open screenshot \(index + 1) of \(screenshotURLs.count)")
                 }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 4)
         }
         .accessibilityLabel("Game screenshots")
+        .fullScreenCover(isPresented: $showingViewer) {
+            screenshotViewer
+        }
+    }
+
+    private func screenshot(url: URL, pixelSize: Int) -> some View {
+        CachedRemoteImage(url: url, targetPixelSize: pixelSize, priority: .userInitiated) { image in
+            image.resizable().scaledToFit()
+        } placeholder: {
+            GameScreenshotPlaceholder()
+        } failure: {
+            GameScreenshotPlaceholder(isFailure: true)
+        }
+    }
+
+    private var screenshotViewer: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            TabView(selection: $selectedIndex) {
+                ForEach(Array(screenshotURLs.enumerated()), id: \.offset) { index, url in
+                    GeometryReader { proxy in
+                        screenshot(url: url, pixelSize: 1600)
+                            .frame(width: proxy.size.width, height: proxy.size.height)
+                    }
+                    .tag(index)
+                }
+            }
+            .tabViewStyle(.page(indexDisplayMode: .never))
+        }
+        .overlay(alignment: .top) {
+            HStack {
+                Button("Close", systemImage: "xmark") { showingViewer = false }
+                    .labelStyle(.iconOnly)
+                Spacer()
+                Text("\(selectedIndex + 1) of \(screenshotURLs.count)")
+                    .font(.subheadline.weight(.semibold))
+            }
+            .foregroundStyle(.white)
+            .padding(14)
+            .background(.black.opacity(0.45))
+        }
+        .preferredColorScheme(.dark)
     }
 }
 
@@ -2014,6 +2192,7 @@ private struct CatalogPosterRail: View {
     let games: [CloudGame]
     let onOpenDetails: (CloudGame) -> Void
     let onPlay: (CloudGame) -> Void
+    var onChooseLauncher: ((CloudGame) -> Void)? = nil
 
     private var cardWidth: CGFloat {
         let baseWidth: CGFloat = store.settings.compactGameCards ? 140 : 160
@@ -2059,7 +2238,8 @@ private struct CatalogPosterRail: View {
                             alwaysShowsFavorite: store.settings.showFavoriteIconOnGameCards,
                             onToggleFavorite: { store.toggleFavorite(game) },
                             onOpenDetails: { onOpenDetails(game) },
-                            onPlay: { onPlay(game) }
+                            onPlay: { onPlay(game) },
+                            onChooseLauncher: onChooseLauncher.map { choose in { choose(game) } }
                         )
                         .frame(width: cardWidth)
                     }
@@ -2074,17 +2254,19 @@ private struct CatalogPosterRail: View {
 }
 
 private struct ComingNextCarousel: View {
+    private let advanceInterval: TimeInterval = 6
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var selectedPage = 0
+    @State private var pageProgress: CGFloat = 0
     @State private var focusedGameID: String?
     @FocusState private var focusedPageIndicator: Int?
     @State private var legacyFocusedPageIndicator: Int?
     @State private var voiceOverRunning = false
 
     let games: [CloudGame]
+    let isPaused: Bool
     let onOpenDetails: (CloudGame) -> Void
-    let onPlay: (CloudGame) -> Void
 
     private var gameIDs: [String] {
         games.map(\.id)
@@ -2092,6 +2274,7 @@ private struct ComingNextCarousel: View {
 
     private var shouldAutoAdvance: Bool {
         games.count > 1 &&
+            !isPaused &&
             focusedGameID == nil &&
             focusedPageIndicator == nil &&
             legacyFocusedPageIndicator == nil &&
@@ -2109,27 +2292,21 @@ private struct ComingNextCarousel: View {
             focusedPageIndicator.map(String.init) ?? "no-indicator-focus",
             legacyFocusedPageIndicator.map(String.init) ?? "no-legacy-indicator-focus",
             reduceMotion ? "reduce" : "motion",
-            voiceOverRunning ? "voiceover" : "standard"
+            voiceOverRunning ? "voiceover" : "standard",
+            isPaused ? "paused" : "visible"
         ].joined(separator: "#")
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                Label("New games added", systemImage: "sparkles")
-                    .font(.title2.weight(.bold))
-                Spacer(minLength: 8)
-                Text("GFN Thursday")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            Label("New games added", systemImage: "sparkles")
+                .font(.title2.weight(.bold))
 
             TabView(selection: $selectedPage) {
                 ForEach(Array(games.enumerated()), id: \.element.id) { index, game in
                     ComingNextHeroCard(
                         game: game,
                         onOpenDetails: { onOpenDetails(game) },
-                        onPlay: { onPlay(game) },
                         onFocusChange: { focused in
                             if focused {
                                 focusedGameID = game.id
@@ -2146,35 +2323,11 @@ private struct ComingNextCarousel: View {
             .frame(height: 218)
             .tabViewStyle(.page(indexDisplayMode: .never))
             .accessibilityLabel("New games added")
-
-            HStack(spacing: 2) {
-                ForEach(games.indices, id: \.self) { index in
-                    Button {
-                        selectPage(index)
-                    } label: {
-                        Capsule()
-                            .fill(index == selectedPage ? brandAccent : Color.secondary.opacity(0.34))
-                            .frame(width: index == selectedPage ? 14 : 6, height: 5)
-                            .frame(width: 16, height: 22)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .controllerFocusableCompat(
-                        fallbackActivation: { selectPage(index) },
-                        onLegacyFocusChange: { focused in
-                            if focused {
-                                legacyFocusedPageIndicator = index
-                            } else if legacyFocusedPageIndicator == index {
-                                legacyFocusedPageIndicator = nil
-                            }
-                        }
-                    )
-                    .focused($focusedPageIndicator, equals: index)
-                    .accessibilityLabel("Show \(games[index].title)")
-                    .accessibilityAddTraits(index == selectedPage ? .isSelected : [])
-                }
+            .overlay(alignment: .bottomTrailing) {
+                progressIndicator
+                    .padding(.trailing, 16)
+                    .padding(.bottom, 14)
             }
-            .frame(maxWidth: .infinity)
         }
         .onAppear {
             voiceOverRunning = UIAccessibility.isVoiceOverRunning
@@ -2191,9 +2344,24 @@ private struct ComingNextCarousel: View {
             voiceOverRunning = UIAccessibility.isVoiceOverRunning
         }
         .task(id: autoAdvanceID) {
+            #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--opennow-hero-half-progress-preview") {
+                pageProgress = 0.5
+                return
+            }
+            #endif
+            // Each new page or pause state starts a fresh, visible six-second countdown.
+            withTransaction(Transaction(animation: nil)) {
+                pageProgress = shouldAutoAdvance ? 0 : 1
+            }
             guard shouldAutoAdvance else { return }
+            await Task.yield()
+            guard !Task.isCancelled, shouldAutoAdvance else { return }
+            withAnimation(.linear(duration: advanceInterval)) {
+                pageProgress = 1
+            }
             do {
-                try await Task.sleep(nanoseconds: 6_000_000_000)
+                try await Task.sleep(for: .seconds(advanceInterval))
             } catch {
                 return
             }
@@ -2202,6 +2370,47 @@ private struct ComingNextCarousel: View {
                 selectedPage = (selectedPage + 1) % games.count
             }
         }
+    }
+
+    private var progressIndicator: some View {
+        HStack(spacing: 4) {
+            ForEach(games.indices, id: \.self) { index in
+                Button {
+                    selectPage(index)
+                } label: {
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(Color.white.opacity(0.35))
+                        if index == selectedPage {
+                            HeroPageProgressFill(progress: pageProgress)
+                                .fill(Color.white)
+                        }
+                    }
+                    .frame(width: index == selectedPage ? 28 : 6, height: 6)
+                    .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.85), value: selectedPage)
+                    .frame(height: 28)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .controllerFocusableCompat(
+                    fallbackActivation: { selectPage(index) },
+                    onLegacyFocusChange: { focused in
+                        if focused {
+                            legacyFocusedPageIndicator = index
+                        } else if legacyFocusedPageIndicator == index {
+                            legacyFocusedPageIndicator = nil
+                        }
+                    }
+                )
+                .focused($focusedPageIndicator, equals: index)
+                .accessibilityLabel("Show \(games[index].title)")
+                .accessibilityAddTraits(index == selectedPage ? .isSelected : [])
+            }
+        }
+        .padding(.horizontal, 5)
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Featured games, page \(selectedPage + 1) of \(games.count)")
     }
 
     private func normalizeSelectedPage() {
@@ -2220,171 +2429,90 @@ private struct ComingNextCarousel: View {
 }
 
 private struct ComingNextHeroCard: View {
-    @EnvironmentObject private var store: OpenNOWStore
-    @EnvironmentObject private var controllerShortcuts: CatalogControllerShortcutCoordinator
+    @Environment(\.gameDetailsTransition) private var detailsTransition
+    @State private var detailsSourceID = UUID()
     @FocusState private var isFocused: Bool
-    @FocusState private var favoriteFocused: Bool
-    @FocusState private var playFocused: Bool
     @State private var isLegacyFocused = false
-    @State private var favoriteLegacyFocused = false
-    @State private var playLegacyFocused = false
-    @State private var controllerShortcutOwner = UUID()
 
     let game: CloudGame
     let onOpenDetails: () -> Void
-    let onPlay: () -> Void
     let onFocusChange: (Bool) -> Void
 
     private var isVisuallyFocused: Bool {
-        isFocused || favoriteFocused || playFocused ||
-            isLegacyFocused || favoriteLegacyFocused || playLegacyFocused
-    }
-
-    private var canLaunch: Bool {
-        OpenNOWPlatform.supportsEmbeddedStreamer && !store.launchOptions(for: game).isEmpty
+        isFocused || isLegacyFocused
     }
 
     private func openDetails() {
         Haptics.light()
+        detailsTransition?.selectSource(GameDetailsTransitionOrigin(
+            sourceID: detailsSourceID, gameKey: catalogStableGameKey(game)
+        ))
         onOpenDetails()
-    }
-
-    private func toggleFavorite() {
-        Haptics.light()
-        store.toggleFavorite(game)
-    }
-
-    private func play() {
-        guard canLaunch else { return }
-        Haptics.medium()
-        onPlay()
     }
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
-        ZStack(alignment: .bottom) {
-            Button(action: openDetails) {
-                ZStack(alignment: .bottomLeading) {
-                    GameArtworkView(game: game, iconSize: 54, role: .details)
+        Button(action: openDetails) {
+            ZStack(alignment: .bottomLeading) {
+                GameArtworkView(game: game, iconSize: 54, role: .details)
 
-                    LinearGradient(
-                        colors: [.clear, .black.opacity(0.30), .black.opacity(0.92)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(game.title)
-                            .font(.title3.bold())
-                            .foregroundStyle(.white)
-                            .lineLimit(2)
-                        if let publisher = game.publisher?.trimmingCharacters(in: .whitespacesAndNewlines),
-                           !publisher.isEmpty {
-                            Text(publisher)
-                                .font(.caption.weight(.medium))
-                                .foregroundStyle(Color.white.opacity(0.78))
-                                .lineLimit(1)
-                        }
-                    }
-                    .padding(16)
-                    .padding(.bottom, 44)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .contentShape(shape)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .buttonStyle(.plain)
-            .controllerFocusableCompat(
-                fallbackActivation: openDetails,
-                onLegacyFocusChange: { isLegacyFocused = $0 }
-            )
-            .focused($isFocused)
-
-            HStack {
-                Button(action: toggleFavorite) {
-                    Image(systemName: store.isFavorite(game) ? "heart.fill" : "heart")
-                        .font(.headline.weight(.bold))
-                        .foregroundStyle(store.isFavorite(game) ? Color.red : Color.white)
-                        .artworkControlChip(diameter: 42)
-                }
-                .buttonStyle(.plain)
-                .controllerFocusableCompat(
-                    fallbackActivation: toggleFavorite,
-                    onLegacyFocusChange: { favoriteLegacyFocused = $0 }
+                LinearGradient(
+                    colors: [.clear, .black.opacity(0.30), .black.opacity(0.92)],
+                    startPoint: .top,
+                    endPoint: .bottom
                 )
-                .focused($favoriteFocused)
-                .accessibilityLabel(store.isFavorite(game) ? "Remove \(game.title) from favorites" : "Add \(game.title) to favorites")
 
-                Spacer(minLength: 8)
-
-                Button(action: play) {
-                    Image(systemName: "play.fill")
-                        .font(.headline.weight(.bold))
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(game.title)
+                        .font(.title3.bold())
                         .foregroundStyle(.white)
-                        .artworkControlChip(
-                            diameter: 46,
-                            fill: brandAccent.opacity(canLaunch ? 0.96 : 0.45)
-                        )
+                        .lineLimit(2)
+                    if let publisher = game.publisher?.trimmingCharacters(in: .whitespacesAndNewlines),
+                       !publisher.isEmpty {
+                        Text(publisher)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(Color.white.opacity(0.78))
+                            .lineLimit(1)
+                    }
                 }
-                .buttonStyle(.plain)
-                .controllerFocusableCompat(
-                    fallbackActivation: play,
-                    onLegacyFocusChange: { playLegacyFocused = $0 }
-                )
-                .focused($playFocused)
-                .disabled(!canLaunch)
-                .accessibilityLabel("Launch \(game.title)")
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(12)
+            .contentShape(shape)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .gameDetailsArtworkSource(id: detailsSourceID, cornerRadius: 18)
         }
+        .buttonStyle(.plain)
+        .controllerFocusableCompat(
+            fallbackActivation: openDetails,
+            onLegacyFocusChange: { isLegacyFocused = $0 }
+        )
+        .focused($isFocused)
+        .accessibilityLabel("Open details for \(game.title)")
         .frame(maxWidth: .infinity)
         .frame(height: 210)
         .clipShape(shape)
         .overlay(
             shape.stroke(isVisuallyFocused ? brandAccent : Color.white.opacity(0.12), lineWidth: isVisuallyFocused ? 2 : 1)
         )
-        .overlay(alignment: .topTrailing) {
-            if isVisuallyFocused,
-               controllerShortcuts.isEnabled,
-               controllerShortcuts.controllerConnected {
-                CatalogControllerShortcutHint(
-                    favorite: store.isFavorite(game),
-                    playEnabled: canLaunch
-                )
-                .padding(10)
-            }
-        }
         .scaleEffect(isVisuallyFocused ? 1.012 : 1)
         .animation(.easeOut(duration: 0.16), value: isVisuallyFocused)
-        .onAppear {
-            updateControllerShortcutRegistration(isVisuallyFocused)
-        }
         .onChangeCompat(of: isVisuallyFocused) { focused in
-            updateControllerShortcutRegistration(focused)
             onFocusChange(focused)
         }
-        .onChangeCompat(of: controllerShortcuts.isEnabled) { enabled in
-            updateControllerShortcutRegistration(enabled && isVisuallyFocused)
-        }
         .onDisappear {
-            controllerShortcuts.clearFocusedActions(owner: controllerShortcutOwner)
             onFocusChange(false)
         }
-    }
-
-    private func updateControllerShortcutRegistration(_ focused: Bool) {
-        controllerShortcuts.updateFocusedActions(
-            owner: controllerShortcutOwner,
-            isFocused: focused,
-            favorite: { toggleFavorite() },
-            play: { play() }
-        )
+        #if DEBUG
+        .gameDetailsVisualQA(game: game, source: "hero", activate: openDetails)
+        #endif
     }
 }
 
 struct FeaturedGameCard: View {
     @EnvironmentObject private var store: OpenNOWStore
+    @Environment(\.gameDetailsTransition) private var detailsTransition
+    @State private var detailsSourceID = UUID()
     @FocusState private var isFocused: Bool
     @State private var isLegacyFocused = false
     let game: CloudGame
@@ -2398,6 +2526,9 @@ struct FeaturedGameCard: View {
 
     private func openDetails() {
         Haptics.light()
+        detailsTransition?.selectSource(GameDetailsTransitionOrigin(
+            sourceID: detailsSourceID, gameKey: catalogStableGameKey(game)
+        ))
         onOpenDetails()
     }
 
@@ -2415,6 +2546,7 @@ struct FeaturedGameCard: View {
             )
             .frame(width: cardWidth)
             .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .gameDetailsArtworkSource(id: detailsSourceID)
         }
         .buttonStyle(.plain)
         .controllerFocusableCompat(
@@ -2550,6 +2682,8 @@ private struct GameCapabilityBadges: View {
 
 struct GameCardView: View {
     @EnvironmentObject private var store: OpenNOWStore
+    @Environment(\.gameDetailsTransition) private var detailsTransition
+    @State private var detailsSourceID = UUID()
     @FocusState private var isFocused: Bool
     @State private var isLegacyFocused = false
     let game: CloudGame
@@ -2557,6 +2691,9 @@ struct GameCardView: View {
 
     private func openDetails() {
         Haptics.light()
+        detailsTransition?.selectSource(GameDetailsTransitionOrigin(
+            sourceID: detailsSourceID, gameKey: catalogStableGameKey(game)
+        ))
         onOpenDetails()
     }
 
@@ -2574,6 +2711,7 @@ struct GameCardView: View {
             )
             .frame(maxWidth: .infinity, alignment: .topLeading)
             .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .gameDetailsArtworkSource(id: detailsSourceID)
         }
         .buttonStyle(.plain)
         .controllerFocusableCompat(
@@ -2592,277 +2730,404 @@ struct GameLaunchDetailsSheet: View {
     let onLaunch: (GameLaunchOption?) -> Void
     @EnvironmentObject private var store: OpenNOWStore
     @Environment(\.dismiss) private var dismiss
-    @State private var selectedOption: GameLaunchOption?
     @Environment(\.openURL) private var openURL
+    @State private var selectedOption: GameLaunchOption?
+    @State private var selectedOptionChanged = false
+    @State private var showingLauncherPicker = false
+    @State private var descriptionExpanded = true
     @State private var launchAlertMessage: String?
 
-    private var launcherOptions: [GameLaunchOption] {
-        store.launchOptions(for: game)
+    private var launcherOptions: [GameLaunchOption] { store.launchOptions(for: game) }
+    private var savedDefault: GameLaunchOption? { store.defaultLaunchOption(for: game) }
+    private var isInLibrary: Bool {
+        !game.ownedStorefronts.isEmpty || store.libraryGames.contains {
+            catalogStableGameKey($0) == catalogStableGameKey(game)
+        }
     }
-
     private var launchUnavailableMessage: String? {
-        if !OpenNOWPlatform.supportsEmbeddedStreamer {
-            return OpenNOWPlatform.streamingUnavailableReason
-        }
-        if launcherOptions.isEmpty {
-            return "This game doesn't expose launch targets yet."
-        }
+        if !OpenNOWPlatform.supportsEmbeddedStreamer { return OpenNOWPlatform.streamingUnavailableReason }
+        if launcherOptions.isEmpty { return "This game doesn't expose launch targets yet." }
         return nil
     }
 
     var body: some View {
         NavigationStack {
-            List {
-                Section {
-                    GameLaunchDetailsArtworkCard(
-                        game: game,
-                        subtitle: gameSubtitle,
-                        badgeSystemImage: store.isFavorite(game) ? "heart.fill" : nil
-                    )
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .listRowInsets(EdgeInsets())
-
-                }
-
-                if let url = GFNGameImportReference.shareURL(game: game, option: selectedOption ?? store.defaultLaunchOption(for: game) ?? launcherOptions.first) {
-                    Section {
-                        ShareLink(item: url) { Label("Share Game to OpenNOW", systemImage: "square.and.arrow.up") }
-                        #if os(iOS)
-                        Button {
-                            openHomeScreenSetup()
-                        } label: {
-                            Label("Add to Home Screen", systemImage: "plus.app")
-                        }
-                        Text("Opens the game’s setup page in your browser. In Safari, tap Share, then Add to Home Screen.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                        #endif
-                    }
-                }
-
-                if let screenshots = game.screenshotUrls, !screenshots.isEmpty {
-                    Section("Screenshots") {
-                        GameScreenshotGallery(urls: screenshots)
-                            .listRowInsets(EdgeInsets())
-                    }
-                }
-
-                if !launcherOptions.isEmpty {
-                    Section("Launch") {
-                        Picker("Launcher", selection: selectedOptionBinding) {
-                            ForEach(launcherOptions) { option in
-                                Text(storeDisplayName(option.storefront)).tag(option.id)
+            GeometryReader { proxy in
+                let landscape = proxy.size.width > 700 && proxy.size.width > proxy.size.height
+                Group {
+                    if landscape {
+                        HStack(alignment: .top, spacing: 22) {
+                            artwork
+                                .frame(width: min(proxy.size.width * 0.46, 560))
+                            ScrollView {
+                                detailContent
+                                    .padding(.trailing, 20)
+                                    .padding(.bottom, 20)
                             }
                         }
-
-                        if let selectedOption {
-                            if !selectedControlLabels.isEmpty {
-                                LabeledContent("Controls", value: selectedControlLabels.joined(separator: ", "))
+                        .padding(.horizontal, 20)
+                        .padding(.top, 12)
+                    } else {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 18) {
+                                artwork
+                                detailContent
                             }
-                            Button {
-                                store.setDefaultGameVariant(game: game, option: selectedOption)
-                            } label: {
-                                Label(
-                                    store.defaultLaunchOption(for: game)?.id == selectedOption.id ? "Default Launcher" : "Set as Default",
-                                    systemImage: store.defaultLaunchOption(for: game)?.id == selectedOption.id ? "star.fill" : "star"
-                                )
-                            }
-                            if store.defaultLaunchOption(for: game) != nil {
-                                Button(role: .destructive) {
-                                    store.setDefaultGameVariant(game: game, option: nil)
-                                } label: {
-                                    Label("Clear Default", systemImage: "star.slash")
-                                }
-                            }
+                            .padding(.horizontal, 16)
+                            .padding(.top, 10)
+                            .padding(.bottom, 24)
+                            .frame(maxWidth: 720)
+                            .frame(maxWidth: .infinity)
                         }
-                    }
-                }
-
-                Section("Details") {
-                    if let releaseDate = game.releaseDate {
-                        LabeledContent("Release", value: releaseDate)
-                    }
-                    if let publisher = game.publisher {
-                        LabeledContent("Publisher", value: publisher)
-                    }
-                    if let developer = game.developer {
-                        LabeledContent("Developer", value: developer)
-                    }
-                    if let genre = displayMetadataLabel(game.genre) {
-                        LabeledContent("Genre", value: genre)
-                    }
-                    if let platform = displayPlatform {
-                        LabeledContent("Platform", value: platform)
-                    }
-                    if !resolvedStores.isEmpty {
-                        LabeledContent("Stores", value: resolvedStores.map(storeDisplayName).joined(separator: ", "))
-                    }
-                    if let playType = displayMetadataLabel(game.playType) {
-                        LabeledContent("Play Type", value: playType)
-                    }
-                    if let tier = displayMetadataLabel(game.membershipTierLabel) {
-                        LabeledContent("Membership", value: tier)
-                    }
-                    LabeledContent(
-                        "Age Rating",
-                        value: GFNContentRatingParser.ageBadge(from: game.contentRatings) ?? "Not rated"
-                    )
-                }
-
-                Section("Streaming Support") {
-                    let selectedFeatures = selectedOption?.featureLabels ?? game.capabilityBadges
-                    GameCapabilityBadges(labels: selectedFeatures)
-                    LabeledContent("RTX 5080", value: game.capabilityBadges.contains("RTX 5080 Ready")
-                        ? "NVIDIA 5080 Ready" : "Not confirmed in catalog")
-                }
-
-                if !detailLabels.isEmpty {
-                    Section("Features") {
-                        ForEach(detailLabels.prefix(12), id: \.self) { label in
-                            Text(label)
-                        }
-                    }
-                }
-
-                if let summary = summaryText {
-                    Section("Description") {
-                        Text(summary)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                if let launchUnavailableMessage {
-                    Section {
-                        Text(launchUnavailableMessage)
-                            .foregroundStyle(.secondary)
                     }
                 }
             }
-            .listStyle(.insetGrouped)
-            .scrollContentBackground(.hidden)
+            .background(Color(uiColor: .systemGroupedBackground))
             .navigationTitle(game.title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        store.toggleFavorite(game)
-                    } label: {
-                        Image(systemName: store.isFavorite(game) ? "heart.fill" : "heart")
-                    }
-                    .tint(store.isFavorite(game) ? .red : nil)
+                    Button("Close", systemImage: "xmark") { dismiss() }
+                        .labelStyle(.iconOnly)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
+                    if let shareURL = GFNGameImportReference.shareURL(
+                        game: game, option: selectedOption ?? savedDefault ?? launcherOptions.first
+                    ) {
+                        ShareLink(item: shareURL) {
+                            Image(systemName: "square.and.arrow.up")
+                        }
+                        .accessibilityLabel("Share \(game.title)")
+                    }
                 }
             }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                VStack(spacing: 0) {
-                    Button {
-                        if let launchRestriction = store.launchRestrictionMessage(for: game) {
-                            Haptics.medium()
-                            launchAlertMessage = launchRestriction
-                            return
-                        }
-                        Haptics.medium()
-                        onLaunch(selectedOption ?? launcherOptions.first)
-                        dismiss()
-                    } label: {
-                        Text(launchUnavailableMessage == nil ? "Launch" : "Launch Unavailable")
-                            .font(.headline)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(brandAccent)
-                    .disabled(launchUnavailableMessage != nil)
-                    .padding(.horizontal, 20)
-                    .padding(.top, 12)
-                    .padding(.bottom, 8)
+            .safeAreaInset(edge: .bottom, spacing: 0) { actionBar }
+            .sheet(isPresented: $showingLauncherPicker) {
+                GameLauncherSelectionSheet(game: game) { option in
+                    showingLauncherPicker = false
+                    completeLaunch(option)
                 }
-                .frame(maxWidth: .infinity)
-                .bottomSheetFooterBackground()
+                .environmentObject(store)
             }
             .alert("Launch Unavailable", isPresented: launchAlertPresented) {
-                Button("OK", role: .cancel) {
-                    launchAlertMessage = nil
-                }
+                Button("OK", role: .cancel) { launchAlertMessage = nil }
             } message: {
                 Text(launchAlertMessage ?? "")
             }
         }
-        .onAppear {
-            selectedOption = store.defaultLaunchOption(for: game) ?? launcherOptions.first
+        .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
+        .onAppear { selectedOption = savedDefault ?? launcherOptions.first }
+        #if DEBUG
+        .task {
+            guard ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--opennow-zoom-qa-") }) else { return }
+            guard !ProcessInfo.processInfo.arguments.contains("--opennow-zoom-qa-hold") else { return }
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            dismiss()
         }
+        #endif
     }
 
-    #if os(iOS)
-    private func openHomeScreenSetup() {
-        guard let url = GFNGameImportReference.homeScreenSetupURL(game: game,
-            option: selectedOption ?? store.defaultLaunchOption(for: game) ?? launcherOptions.first) else { return }
-        openURL(url)
-    }
-    #endif
-
-    private var selectedOptionBinding: Binding<String> {
-        Binding(
-            get: { selectedOption?.id ?? launcherOptions.first?.id ?? "" },
-            set: { id in selectedOption = launcherOptions.first { $0.id == id } }
-        )
+    private var artwork: some View {
+        Button(action: primaryPlay) {
+            GameLaunchDetailsArtworkCard(
+                game: game,
+                subtitle: game.publisher,
+                badgeSystemImage: nil
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Play \(game.title)")
     }
 
-    private var launchAlertPresented: Binding<Bool> {
-        Binding(
-            get: { launchAlertMessage != nil },
-            set: { isPresented in
-                if !isPresented {
-                    launchAlertMessage = nil
+    private var detailContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            ownershipCard
+
+            if let restriction = store.launchRestrictionMessage(for: game) {
+                Label(restriction, systemImage: "lock.fill")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(14)
+                    .background(.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 14))
+            }
+
+            if let launchUnavailableMessage {
+                Label(launchUnavailableMessage, systemImage: "info.circle")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            let genres = gameMetadataDisplayLabels([game.genre] + (game.tags ?? []))
+            if !genres.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 7) {
+                        ForEach(Array(genres.prefix(6)), id: \.self) { genre in
+                            Text(genre)
+                                .font(.caption.weight(.medium))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(.thinMaterial, in: Capsule())
+                        }
+                    }
                 }
             }
-        )
-    }
 
-    private var selectedControlLabels: [String] {
-        guard let controls = selectedOption?.supportedControls else { return [] }
-        return gameMetadataDisplayLabels(controls)
-    }
+            if let lastPlayed = game.lastPlayedDate {
+                Label("Last played \(displayLastPlayed(lastPlayed))", systemImage: "clock.arrow.circlepath")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
 
-    private var resolvedStores: [String] {
-        if let stores = game.stores, !stores.isEmpty {
-            return stores
+            if let screenshots = game.screenshotUrls, !screenshots.isEmpty {
+                detailCard {
+                    Text("Screenshots").font(.headline)
+                    GameScreenshotGallery(urls: screenshots)
+                        .padding(.horizontal, -16)
+                }
+            }
+
+            detailCard {
+                DisclosureGroup(isExpanded: $descriptionExpanded) {
+                    Text(summaryText ?? "No description available.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.top, 10)
+                } label: {
+                    Text("Description").font(.headline)
+                }
+            }
+
+            detailCard {
+                Text("Game details").font(.headline)
+                if let publisher = game.publisher { detailRow("Publisher", publisher) }
+                if let developer = game.developer { detailRow("Developer", developer) }
+                if let releaseDate = game.releaseDate { detailRow("Release", releaseDate) }
+                if let platform = displayMetadataLabel(game.platform) { detailRow("Platform", platform) }
+                if let playType = displayMetadataLabel(game.playType) { detailRow("Play type", playType) }
+                detailRow("Age rating", GFNContentRatingParser.ageBadge(from: game.contentRatings) ?? "Not rated")
+                if let tier = displayMetadataLabel(game.membershipTierLabel) { detailRow("Membership", tier) }
+                let controls = Array(Set(launcherOptions.flatMap { $0.supportedControls ?? [] })).sorted()
+                if !controls.isEmpty {
+                    detailRow("Controls", gameMetadataDisplayLabels(controls).joined(separator: ", "))
+                }
+                let features = gameMetadataDisplayLabels(game.featureLabels ?? [])
+                if !features.isEmpty {
+                    detailRow("Features", Array(features.prefix(8)).joined(separator: ", "))
+                }
+                if !game.capabilityBadges.isEmpty {
+                    GameCapabilityBadges(labels: game.capabilityBadges)
+                }
+                if let appID = game.launchAppId ?? game.uuid {
+                    Button {
+                        UIPasteboard.general.string = appID
+                        Haptics.light()
+                    } label: {
+                        Label("Copy App ID", systemImage: "doc.on.doc")
+                    }
+                    .font(.footnote)
+                }
+            }
+
+            let externalStores = launcherOptions.compactMap { option -> (String, URL)? in
+                guard let url = option.externalStoreURL else { return nil }
+                return (storeDisplayName(option.storefront), url)
+            }.reduce(into: [(String, URL)]()) { stores, entry in
+                if !stores.contains(where: { $0.0 == entry.0 && $0.1 == entry.1 }) {
+                    stores.append(entry)
+                }
+            }
+            if !externalStores.isEmpty {
+                detailCard {
+                    Text("Stores").font(.headline)
+                    ForEach(Array(externalStores.enumerated()), id: \.offset) { entry in
+                        Link(destination: entry.element.1) {
+                            HStack {
+                                Text(entry.element.0)
+                                Spacer()
+                                Image(systemName: "arrow.up.right.square")
+                            }
+                        }
+                        .font(.subheadline.weight(.medium))
+                    }
+                }
+            }
+
+            if !launcherOptions.isEmpty {
+                detailCard {
+                    HStack {
+                        Text("Launchers").font(.headline)
+                        Spacer()
+                        if launcherOptions.count > 1 {
+                            Button("Choose") { showingLauncherPicker = true }
+                                .font(.subheadline.weight(.semibold))
+                        }
+                    }
+                    ForEach(launcherOptions) { option in
+                        Button {
+                            selectedOption = option
+                            selectedOptionChanged = true
+                        } label: {
+                            HStack(spacing: 12) {
+                                StoreGlyph(store: option.storefront)
+                                    .frame(width: 25, height: 25)
+                                    .frame(width: 38, height: 38)
+                                    .background(launcherBadgeColor(for: option.storefront).opacity(0.18),
+                                        in: RoundedRectangle(cornerRadius: 10))
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(storeDisplayName(option.storefront))
+                                        .font(.subheadline.weight(.semibold))
+                                    Text(option.id == savedDefault?.id ? "Default launcher" :
+                                        option.isOwned ? "In your library" : "Available launcher")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if selectedOption?.id == option.id {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundStyle(.tint)
+                                }
+                            }
+                            .padding(10)
+                            .background(option.id == selectedOption?.id ? brandAccent.opacity(0.10) : Color.secondary.opacity(0.06),
+                                in: RoundedRectangle(cornerRadius: 12))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    if let selectedOption {
+                        Button(selectedOption.id == savedDefault?.id ? "Clear default launcher" : "Set as default launcher") {
+                            store.setDefaultGameVariant(game: game,
+                                option: selectedOption.id == savedDefault?.id ? nil : selectedOption)
+                        }
+                        .font(.subheadline)
+                    }
+                }
+            }
+
+            #if os(iOS)
+            if GFNGameImportReference.homeScreenSetupURL(
+                game: game, option: selectedOption ?? savedDefault ?? launcherOptions.first
+            ) != nil {
+                Button {
+                    openHomeScreenSetup()
+                } label: {
+                    Label("Add to Home Screen", systemImage: "plus.app")
+                }
+                .font(.subheadline)
+                .padding(.horizontal, 4)
+            }
+            #endif
         }
-        let derived = Array(Set(launcherOptions.map(\.storefront))).sorted()
-        return derived
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var ownershipCard: some View {
+        detailCard {
+            if launcherOptions.contains(where: { $0.libraryStatus != nil }) {
+                ForEach(launcherOptions.filter { $0.libraryStatus != nil }) { option in
+                    Label(
+                        "\(option.isOwned ? "Owned" : "Not owned") on \(storeDisplayName(option.storefront))",
+                        systemImage: option.isOwned ? "checkmark.circle.fill" : "circle.slash"
+                    )
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(option.isOwned ? .green : .secondary)
+                }
+            } else {
+                Label(isInLibrary ? "In your library" : "Available on GeForce NOW",
+                      systemImage: isInLibrary ? "checkmark.circle.fill" : "cloud")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(isInLibrary ? .green : .secondary)
+            }
+        }
+    }
+
+    private var actionBar: some View {
+        HStack(spacing: 10) {
+            Button { store.toggleFavorite(game) } label: {
+                Image(systemName: store.isFavorite(game) ? "heart.fill" : "heart")
+                    .font(.title3)
+                    .frame(width: 46, height: 46)
+            }
+            .gameDetailsActionStyle()
+            .tint(store.isFavorite(game) ? .red : brandAccent)
+            .accessibilityLabel(store.isFavorite(game) ? "Remove from favorites" : "Add to favorites")
+
+            Button(action: primaryPlay) {
+                Label(launchUnavailableMessage == nil ? "Play" : "Play unavailable", systemImage: "play.fill")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 46)
+            }
+            .gameDetailsActionStyle(prominent: true)
+            .tint(brandAccent)
+            .disabled(launchUnavailableMessage != nil)
+
+            if launcherOptions.count > 1 {
+                Button { showingLauncherPicker = true } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.title3)
+                        .frame(width: 46, height: 46)
+                }
+                .gameDetailsActionStyle()
+                .accessibilityLabel("Choose launcher")
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity)
+        .bottomSheetFooterBackground()
+    }
+
+    private func detailCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 12, content: content)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(16)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    private func detailRow(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(label).foregroundStyle(.secondary)
+            Spacer(minLength: 12)
+            Text(value).multilineTextAlignment(.trailing)
+        }
+        .font(.subheadline)
+    }
+
+    private func primaryPlay() {
+        if let restriction = store.launchRestrictionMessage(for: game) {
+            launchAlertMessage = restriction
+            return
+        }
+        guard launchUnavailableMessage == nil else { return }
+        if launcherOptions.count > 1, savedDefault == nil, !selectedOptionChanged {
+            showingLauncherPicker = true
+            return
+        }
+        completeLaunch(selectedOption ?? savedDefault ?? launcherOptions.first)
+    }
+
+    private func completeLaunch(_ option: GameLaunchOption?) {
+        Haptics.medium()
+        onLaunch(option)
+        dismiss()
+    }
+
+    private func displayLastPlayed(_ raw: String) -> String {
+        let parser = ISO8601DateFormatter()
+        parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let date = parser.date(from: raw) ?? ISO8601DateFormatter().date(from: raw)
+        guard let date else { return raw }
+        return date.formatted(date: .abbreviated, time: .omitted)
     }
 
     private var summaryText: String? {
-        let long = game.longDescription?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !long.isEmpty {
-            return long
-        }
-        let trimmed = game.summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !trimmed.isEmpty {
-            return trimmed
-        }
-        return nil
-    }
-
-    private var detailLabels: [String] {
-        gameMetadataDisplayLabels((game.featureLabels ?? []) + (game.tags ?? [])).sorted()
-    }
-
-    private var gameSubtitle: String {
-        let stores = resolvedStores.map(storeDisplayName).joined(separator: ", ")
-        if !stores.isEmpty {
-            return stores
-        }
-        return [displayMetadataLabel(game.genre), displayPlatform].compactMap { $0 }.joined(separator: " · ")
-    }
-
-    private var displayPlatform: String? {
-        let trimmed = game.platform.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        return storeDisplayName(trimmed)
+        [game.longDescription, game.summary]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first(where: { !$0.isEmpty })
     }
 
     private func displayMetadataLabel(_ value: String?) -> String? {
@@ -2870,6 +3135,22 @@ struct GameLaunchDetailsSheet: View {
         let label = gameMetadataDisplayLabel(value)
         return label.isEmpty ? nil : label
     }
+
+    private var launchAlertPresented: Binding<Bool> {
+        Binding(
+            get: { launchAlertMessage != nil },
+            set: { if !$0 { launchAlertMessage = nil } }
+        )
+    }
+
+    #if os(iOS)
+    private func openHomeScreenSetup() {
+        guard let url = GFNGameImportReference.homeScreenSetupURL(
+            game: game, option: selectedOption ?? savedDefault ?? launcherOptions.first
+        ) else { return }
+        openURL(url)
+    }
+    #endif
 }
 
 struct GameLauncherSelectionSheet: View {
@@ -3658,15 +3939,7 @@ extension View {
         store: OpenNOWStore,
         onLaunch: @escaping (CloudGame, GameLaunchOption?) -> Void
     ) -> some View {
-        sheet(item: selectedGame) { game in
-            GameLaunchDetailsSheet(game: game) { option in
-                selectedGame.wrappedValue = nil
-                DispatchQueue.main.async {
-                    onLaunch(game, option)
-                }
-            }
-            .environmentObject(store)
-        }
+        modifier(GameDetailsPresentationModifier(selectedGame: selectedGame, store: store, onLaunch: onLaunch))
     }
 
     func launcherSelectionModalSheet(

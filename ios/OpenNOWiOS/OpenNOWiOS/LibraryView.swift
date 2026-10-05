@@ -28,8 +28,9 @@ struct LibraryView: View {
                         emptyDescription: emptyState.detail,
                         subtitle: { gameCatalogSubtitle(for: $0) },
                         badgeSystemImage: { _ in nil },
-                        onOpenDetails: { selectedGameForDetails = $0 },
-                        onPlay: launchFromCard
+                onOpenDetails: { selectedGameForDetails = $0 },
+                onPlay: launchFromCard,
+                onChooseLauncher: { selectedGameForLauncher = $0 }
                     ) {
                         libraryHeader
                     } emptyActions: {
@@ -327,12 +328,12 @@ struct LibraryView: View {
     }
 
     private func launchFromCard(_ game: CloudGame) {
-        let options = store.launchOptions(for: game)
-        if options.count > 1 {
+        switch store.launchChoice(for: game) {
+        case .chooseLauncher:
             selectedGameForLauncher = game
-            return
+        case let .launch(option):
+            pendingLaunchRequest = GameLaunchRequest(game: game, launchOption: option)
         }
-        pendingLaunchRequest = GameLaunchRequest(game: game, launchOption: store.defaultLaunchOption(for: game) ?? options.first)
     }
 
 }

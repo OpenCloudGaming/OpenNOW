@@ -105,3 +105,20 @@ struct QueueActivityAttributes {
     let storeName: String?
 }
 #endif
+
+/// Applied at rendering time too, since restored activities decode independently of the app.
+enum QueueActivityProgress {
+    static func normalized(_ progress: Double?) -> Double? {
+        guard let progress, progress.isFinite else { return nil }
+        return min(max(progress, 0), 1)
+    }
+
+    static func barFraction(_ progress: Double?, phase: QueueActivityAttributes.ContentState.Phase) -> Double {
+        let progress = normalized(progress)
+        switch phase {
+        case .ready: return 1
+        case .waiting: return max(progress ?? 0, 0.75)
+        case .queued: return progress.map { min(max($0, 0.03), 0.95) } ?? 0.06
+        }
+    }
+}

@@ -159,6 +159,8 @@ struct PrintedWasteQueueView: View {
     let onConfirm: (String?) -> Void
 
     @State private var zones: [PrintedWasteZone] = []
+    @State private var regionGroups: [(region: String, locations: [PrintedWasteLocation])] = []
+    @State private var loadGeneration = UUID()
     @State private var routingPreference: RoutingPreference = .auto
     @State private var selectedZoneId: String?
     @State private var isLoading = true
@@ -212,7 +214,7 @@ struct PrintedWasteQueueView: View {
         return computedClosestZone
     }
 
-    private var groupedZones: [(region: String, locations: [PrintedWasteLocation])] {
+    private func groupedZones(_ zones: [PrintedWasteZone]) -> [(region: String, locations: [PrintedWasteLocation])] {
         let maxPing = max(zones.compactMap(\.pingMs).max() ?? 1, 1)
         let maxQueue = max(zones.map(\.queuePosition).max() ?? 1, 1)
         let locations = Dictionary(grouping: zones, by: \.title).map { title, variants in
@@ -227,7 +229,7 @@ struct PrintedWasteQueueView: View {
                 primary: primary,
                 zoneIDs: Set(variants.map(\.id)),
                 alternateCount: variants.count - 1,
-                gpuTier: ordered.compactMap(\.gpuTier).first
+                gpuTier: variants.contains { $0.gpuTier == "RTX 5080" } ? "RTX 5080" : variants.compactMap(\.gpuTier).first
             )
         }
         return Dictionary(grouping: locations, by: { $0.primary.regionLabel })
@@ -267,29 +269,6 @@ struct PrintedWasteQueueView: View {
         }
     }
 
-    private var routingExplanation: String {
-        switch routingPreference {
-        case .auto:
-            if let autoZone {
-                return "Auto will launch on \(zoneDisplayName(autoZone))."
-            }
-            return "Auto will pick the best available server once queue data finishes loading."
-        case .closest:
-            if let closestZone {
-                return "Closest will launch on \(zoneDisplayName(closestZone))."
-            }
-            if let autoZone {
-                return "Closest is still measuring; launch will fall back to \(zoneDisplayName(autoZone))."
-            }
-            return "Closest is measuring network latency."
-        case .manual:
-            if let selectedRoutingZone {
-                return "Manual selection will launch on \(zoneDisplayName(selectedRoutingZone))."
-            }
-            return "Choose a specific server below."
-        }
-    }
-
     var body: some View {
         NavigationStack {
             Group {
@@ -303,8 +282,6 @@ struct PrintedWasteQueueView: View {
                     zoneList
                 }
             }
-            .animation(.snappy(duration: 0.25), value: isLoading)
-            .animation(.snappy(duration: 0.25), value: routingPreference)
             .navigationTitle("Server")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -315,9 +292,27 @@ struct PrintedWasteQueueView: View {
                 }
             }
         }
-        .interactiveDismissDisabled(isLoading)
         .presentationDragIndicator(.visible)
         .task {
+            #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--opennow-server-picker-preview") {
+                zones = [
+                    ("NP-PDX-01", "US Northwest", "North America", 18, 23),
+                    ("NP-LAX-02", "US Southwest", "North America", 32, 48),
+                    ("NP-LAX-03", "US Southwest", "North America", 20, 48),
+                    ("NP-CHI-01", "US Midwest", "North America", 44, 76),
+                    ("NP-LON-01", "London", "Europe", 12, 143)
+                ].map { id, title, region, queue, ping in
+                    PrintedWasteZone(id: id, title: title, region: region, regionLabel: region,
+                        queuePosition: queue, etaMs: Double(queue) * 60000,
+                        zoneUrl: "https://\(id.lowercased()).cloudmatchbeta.nvidiagrid.net",
+                        pingMs: ping, isMeasuring: false, regionSuffix: "", gpuTier: "RTX 4080")
+                }
+                regionGroups = groupedZones(zones)
+                isLoading = false
+                return
+            }
+            #endif
             await loadZones()
         }
     }
@@ -363,71 +358,89 @@ struct PrintedWasteQueueView: View {
     }
 
     private var zoneList: some View {
-        List {
-            Section {
-                launchSummary
-            }
-
-            Section {
-                Picker("Routing", selection: $routingPreference) {
-                    Text("Auto").tag(RoutingPreference.auto)
-                    Text("Closest").tag(RoutingPreference.closest)
-                    Text("Manual").tag(RoutingPreference.manual)
+        GeometryReader { geometry in
+            let wide = geometry.size.width > 650
+            let selected = selectedRoutingZone
+            let recommended = autoZone
+            HStack(alignment: .top, spacing: 24) {
+                if wide {
+                    launchSummary
+                        .frame(width: min(260, geometry.size.width * 0.3))
+                        .padding(.top, 8)
                 }
-                .pickerStyle(.segmented)
-
-                if let selectedRoutingZone {
-                    SelectedRouteRow(
-                        title: routingPreference.title,
-                        zone: selectedRoutingZone,
-                        isTesting: isTestingPings
-                    )
-                    if routingPreference == .manual,
-                       let selectedPing = selectedRoutingZone.pingMs,
-                       let closestPing = zones.compactMap(\.pingMs).min(),
-                       selectedPing > closestPing {
-                        Label("This server has more measured latency than the closest option.",
-                              systemImage: "exclamationmark.triangle")
-                            .font(.footnote)
-                            .foregroundStyle(.orange)
+                VStack(spacing: 16) {
+                    if !wide { launchSummary }
+                    Picker("Routing", selection: $routingPreference) {
+                        Text("Auto").tag(RoutingPreference.auto)
+                        Text("Closest").tag(RoutingPreference.closest)
+                        Text("Manual").tag(RoutingPreference.manual)
                     }
-                }
-            } header: {
-                Text("Routing")
-            } footer: {
-                Text(routingExplanation)
-            }
+                    .pickerStyle(.segmented)
 
-            ForEach(groupedZones, id: \.region) { group in
-                Section(group.region) {
-                    ForEach(group.locations) { location in
-                        Button {
-                            routingPreference = .manual
-                            selectedZoneId = location.primary.id
-                        } label: {
-                            ZoneRow(
-                                zone: zones.first(where: { $0.id == selectedRoutingZone?.id && location.zoneIDs.contains($0.id) }) ?? location.primary,
-                                title: location.title,
-                                alternateCount: location.alternateCount,
-                                gpuTier: location.gpuTier,
-                                isSelected: selectedRoutingZone.map { location.zoneIDs.contains($0.id) } ?? false,
-                                isManualSelection: routingPreference == .manual && selectedZoneId.map { location.zoneIDs.contains($0) } == true,
-                                isAuto: autoZone.map { location.zoneIDs.contains($0.id) } ?? false,
-                                isClosest: closestZone.map { location.zoneIDs.contains($0.id) } ?? false
-                            )
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 18) {
+                            if let recommended { recommendationCard(recommended, selected: selected) }
+                            ForEach(regionGroups, id: \.region) { group in
+                                locationGroup(group, selected: selected, recommended: recommended)
+                            }
                         }
-                        .buttonStyle(.plain)
                     }
+                    .refreshable { await loadZones() }
                 }
             }
+            .padding(.horizontal, 20)
+            .padding(.top, 16)
         }
-        .listStyle(.insetGrouped)
-        .scrollContentBackground(.hidden)
-        .refreshable {
-            await loadZones()
+        .safeAreaInset(edge: .bottom, spacing: 0) { launchFooter }
+    }
+
+    private func recommendationCard(_ zone: PrintedWasteZone, selected: PrintedWasteZone?) -> some View {
+        Button { routingPreference = .auto } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("Recommended", systemImage: "sparkles")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(brandAccent)
+                ZoneRow(zone: zone, title: zone.title, alternateCount: 0, gpuTier: zone.gpuTier,
+                        isSelected: selected?.id == zone.id, isAuto: false)
+            }
+            .padding(16)
+            .background(brandAccent.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
+            .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(brandAccent.opacity(0.18)))
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            launchFooter
+        .buttonStyle(.plain)
+    }
+
+    private func locationGroup(
+        _ group: (region: String, locations: [PrintedWasteLocation]),
+        selected: PrintedWasteZone?, recommended: PrintedWasteZone?
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(group.region)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 4)
+            VStack(spacing: 0) {
+                ForEach(group.locations) { location in
+                    Button {
+                        selectedZoneId = location.primary.id
+                        routingPreference = .manual
+                    } label: {
+                        ZoneRow(
+                            zone: selected.flatMap { location.zoneIDs.contains($0.id) ? $0 : nil } ?? location.primary,
+                            title: location.title, alternateCount: location.alternateCount,
+                            gpuTier: location.gpuTier,
+                            isSelected: selected.map { location.zoneIDs.contains($0.id) } ?? false,
+                            isAuto: recommended.map { location.zoneIDs.contains($0.id) } ?? false
+                        )
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    if location.id != group.locations.last?.id { Divider().padding(.leading, 14) }
+                }
+            }
+            .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 16))
         }
     }
 
@@ -441,18 +454,11 @@ struct PrintedWasteQueueView: View {
                 Text(game.title)
                     .font(.headline)
                     .lineLimit(2)
-                Text("Choose your preferred region before launch.")
+                Text(selectedRoutingZone?.title ?? "Choose your preferred region before launch.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            Spacer()
-            if let selectedRoutingZone {
-                Text(selectedRoutingZone.id)
-                    .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(.quaternary, in: Capsule())
-            }
+            Spacer(minLength: 0)
         }
     }
 
@@ -471,11 +477,23 @@ struct PrintedWasteQueueView: View {
                 }
             }
 
+            if routingPreference == .manual,
+               let selectedPing = selectedRoutingZone?.pingMs,
+               let nearestPing = closestZone?.pingMs, selectedPing > nearestPing {
+                Label("This server has more measured latency than the closest option.", systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
             Button {
                 onConfirm(selectedZoneUrl)
                 dismiss()
             } label: {
-                Text(launchButtonTitle)
+                HStack {
+                    Text(launchButtonTitle)
+                    Image(systemName: "arrow.right")
+                }
                     .font(.headline)
                     .frame(maxWidth: .infinity)
             }
@@ -498,20 +516,13 @@ struct PrintedWasteQueueView: View {
         case .closest:
             return "Launch with Closest"
         case .manual:
-            return "Launch on \(zone.id)"
+            return "Launch on \(zone.title)"
         }
     }
 
-    private func zoneDisplayName(_ zone: PrintedWasteZone) -> String {
-        let ping = zone.pingMs.map { "\($0) milliseconds" } ?? (zone.isMeasuring ? "measuring latency" : "latency unknown")
-        let quality = zone.pingMs.map(StreamQuality.serverPing).flatMap { $0 == .good ? nil : $0.label }
-        let people = zone.queuePosition == 1 ? "1 person in queue" : "\(zone.queuePosition) people in queue"
-        return [zone.title, "in \(zone.regionLabel)", ping, quality, people]
-            .compactMap { $0 }
-            .joined(separator: ", ")
-    }
-
     private func loadZones() async {
+        let generation = UUID()
+        loadGeneration = generation
         isLoading = true
         fetchError = nil
         do {
@@ -519,6 +530,8 @@ struct PrintedWasteQueueView: View {
             async let mappingResponse = fetchMappingResponse()
             async let regionResponse = store.queueRegions()
             let (queue, mapping, regions) = try await (queueResponse, mappingResponse, regionResponse)
+            try Task.checkCancellation()
+            guard generation == loadGeneration else { return }
             guard !regions.isEmpty else {
                 throw NSError(domain: "PrintedWaste", code: 3,
                     userInfo: [NSLocalizedDescriptionKey: "GeForce NOW regional routes are unavailable. Try again shortly."])
@@ -575,54 +588,64 @@ struct PrintedWasteQueueView: View {
             if selectedZoneId == nil {
                 selectedZoneId = autoZone?.id
             }
+            regionGroups = groupedZones(zones)
             isLoading = false
-            await measurePings()
+            await measurePings(generation: generation)
         } catch is CancellationError {
+            guard generation == loadGeneration else { return }
             isLoading = false
             return
         } catch let nsError as NSError
             where nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
+            guard generation == loadGeneration else { return }
             isLoading = false
             return
         } catch {
+            guard generation == loadGeneration else { return }
             isLoading = false
             fetchError = error.localizedDescription
         }
     }
 
-    private func measurePings() async {
-        let maxConcurrentPings = 16
-        guard !zones.isEmpty else { return }
-
-        for start in stride(from: 0, to: zones.count, by: maxConcurrentPings) {
-            let end = min(start + maxConcurrentPings, zones.count)
-            let batch = Array(zones[start..<end])
-
-            await withTaskGroup(of: (String, Int?).self) { group in
-                for zone in batch {
-                    group.addTask {
-                        let ping = await Self.measurePing(to: zone.zoneUrl)
-                        return (zone.id, ping)
-                    }
+    private func measurePings(generation: UUID) async {
+        // Variants at a location share a regional route. Probe each route once, with a bounded
+        // worker pool, and publish one snapshot per batch instead of rebuilding for every socket.
+        let routes = Array(Set(zones.map(\.zoneUrl))).sorted()
+        let maxConcurrentPings = 6
+        lastAutoZoneId = computedAutoZone?.id
+        lastClosestZoneId = computedClosestZone?.id
+        for start in stride(from: 0, to: routes.count, by: maxConcurrentPings) {
+            guard !Task.isCancelled, generation == loadGeneration else { return }
+            let batch = Array(routes[start..<min(start + maxConcurrentPings, routes.count)])
+            let results = await withTaskGroup(of: (String, Int?).self) { group in
+                for route in batch {
+                    group.addTask { (route, await Self.measurePing(to: route)) }
                 }
-
-                for await (zoneId, pingMs) in group {
-                    if Task.isCancelled {
-                        group.cancelAll()
-                        break
-                    }
-                    if let index = zones.firstIndex(where: { $0.id == zoneId }) {
-                        zones[index].pingMs = pingMs
-                        zones[index].isMeasuring = false
-                    }
+                var results: [String: Int?] = [:]
+                for await (route, ping) in group {
+                    results[route] = .some(ping)
+                    if Task.isCancelled { group.cancelAll() }
+                }
+                return results
+            }
+            guard !Task.isCancelled, generation == loadGeneration else { return }
+            var updated = zones
+            for index in updated.indices {
+                if let result = results[updated[index].zoneUrl] {
+                    updated[index].pingMs = result
+                    updated[index].isMeasuring = false
                 }
             }
-
-            if Task.isCancelled {
-                return
+            zones = updated
+            // Keep rows in place during measurement. Reorder once at completion.
+            let refreshed = groupedZones(updated)
+            let locations = Dictionary(uniqueKeysWithValues: refreshed.flatMap(\.locations).map { ($0.id, $0) })
+            regionGroups = regionGroups.map { group in
+                (region: group.region, locations: group.locations.compactMap { locations[$0.id] })
             }
         }
         persistRoutingRecommendations()
+        regionGroups = groupedZones(zones)
     }
 
     private func persistRoutingRecommendations() {
@@ -638,14 +661,16 @@ struct PrintedWasteQueueView: View {
             return nil
         }
 
-        _ = await tcpProbe(host: host, port: port, timeout: 3)
+        guard !Task.isCancelled else { return nil }
+        _ = await tcpProbe(host: host, port: port, timeout: 1.5)
 
         var samples: [Double] = []
-        for sampleIndex in 0..<3 {
+        for sampleIndex in 0..<2 {
+            guard !Task.isCancelled else { return nil }
             if sampleIndex > 0 {
-                try? await Task.sleep(nanoseconds: 100_000_000)
+                do { try await Task.sleep(nanoseconds: 100_000_000) } catch { return nil }
             }
-            if let sample = await tcpProbe(host: host, port: port, timeout: 3) {
+            if let sample = await tcpProbe(host: host, port: port, timeout: 1.5) {
                 samples.append(sample)
             }
         }
@@ -709,9 +734,7 @@ private struct ZoneRow: View {
     let alternateCount: Int
     let gpuTier: String?
     let isSelected: Bool
-    let isManualSelection: Bool
     let isAuto: Bool
-    let isClosest: Bool
 
     var body: some View {
         HStack(spacing: 14) {
@@ -722,7 +745,7 @@ private struct ZoneRow: View {
                         .lineLimit(1)
                         .minimumScaleFactor(0.85)
                         .layoutPriority(1)
-                    Text(alternateCount > 0 ? "+\(alternateCount) servers" : zone.id)
+                    Text(alternateCount > 0 ? "+\(alternateCount)" : "")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -734,19 +757,14 @@ private struct ZoneRow: View {
                     if isAuto {
                         statusText("Auto", color: .green)
                     }
-                    if isClosest {
-                        statusText("Closest", color: .blue)
-                    }
-                    if isManualSelection {
-                        statusText("Selected", color: brandAccent)
-                    }
+
                 }
             }
 
             Spacer(minLength: 8)
 
             VStack(alignment: .trailing, spacing: 4) {
-                if let etaMs = zone.etaMs {
+                if let etaMs = zone.etaMs, etaMs.isFinite, etaMs >= 0 {
                     Text(formatWait(etaMs))
                         .font(.subheadline.weight(.semibold))
                 }
@@ -755,7 +773,7 @@ private struct ZoneRow: View {
             .fixedSize(horizontal: true, vertical: false)
 
             Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                .font(.title3.weight(.semibold))
+                .font(.body.weight(.semibold))
                 .foregroundStyle(isSelected ? brandAccent : Color.secondary.opacity(0.35))
         }
         .padding(.vertical, 4)
@@ -813,48 +831,6 @@ private struct ZoneRow: View {
         let hours = mins / 60
         let remaining = mins % 60
         return remaining > 0 ? "\(hours)h\(remaining)m" : "\(hours)h"
-    }
-}
-
-private struct SelectedRouteRow: View {
-    let title: String
-    let zone: PrintedWasteZone
-    let isTesting: Bool
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: iconName)
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(brandAccent)
-                .frame(width: 30)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.subheadline.weight(.semibold))
-                Text("\(zone.id) · Queue \(zone.queuePosition)")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer(minLength: 8)
-
-            if isTesting && zone.isMeasuring {
-                ProgressView()
-                    .controlSize(.small)
-            } else if let pingMs = zone.pingMs {
-                Text("\(pingMs) ms")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private var iconName: String {
-        switch title {
-        case "Closest": return "location.fill"
-        case "Manual": return "hand.point.up.left.fill"
-        default: return "sparkles"
-        }
     }
 }
 

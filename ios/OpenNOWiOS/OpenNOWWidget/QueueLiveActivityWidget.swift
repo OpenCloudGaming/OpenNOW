@@ -304,7 +304,7 @@ private struct QueueProgressRing<Content: View>: View {
     private var trimEnd: CGFloat {
         if phase == .ready { return 1 }
         // A short fixed arc reads as "working" without pretending to know a percentage.
-        guard let progress else { return 0.18 }
+        guard let progress = QueueActivityProgress.normalized(progress) else { return 0.18 }
         return CGFloat(min(max(progress, 0.03), 1))
     }
 }
@@ -315,28 +315,14 @@ private struct QueueProgressBar: View {
     let phase: QueueActivityAttributes.ContentState.Phase
 
     var body: some View {
-        GeometryReader { proxy in
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(Color.white.opacity(0.14))
-                Capsule()
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                QueuePhaseStyle.accent(phase).opacity(0.72),
-                                QueuePhaseStyle.accent(phase)
-                            ],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-                    .frame(width: max(6, proxy.size.width * fraction))
-                    // A Live Activity redraws only when the app pushes state, so the one moment
-                    // this bar can move is the moment it changes. Letting it slide there, rather
-                    // than jump, is the difference between a panel that looks live and one that
-                    // looks like a screenshot.
-                    .animation(.smooth(duration: 0.5), value: fraction)
-            }
+        ZStack(alignment: .leading) {
+            Capsule().fill(Color.white.opacity(0.14))
+            QueueProgressFill(fraction: fraction)
+                .fill(LinearGradient(
+                    colors: [QueuePhaseStyle.accent(phase).opacity(0.72), QueuePhaseStyle.accent(phase)],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                ))
         }
         .frame(height: 5)
         .accessibilityElement(children: .ignore)
@@ -345,10 +331,7 @@ private struct QueueProgressBar: View {
     }
 
     private var fraction: CGFloat {
-        if phase == .ready { return 1 }
-        if phase == .waiting { return max(CGFloat(progress ?? 0), 0.75) }
-        guard let progress else { return 0.06 }
-        return CGFloat(min(max(progress, 0.03), 0.95))
+        CGFloat(QueueActivityProgress.barFraction(progress, phase: phase))
     }
 
     private var accessibilityValue: String {
@@ -356,9 +339,21 @@ private struct QueueProgressBar: View {
         case .ready: return "Ready"
         case .waiting: return "Preparing your rig"
         case .queued:
-            guard let progress else { return "Waiting in queue" }
+            guard let progress = QueueActivityProgress.normalized(progress) else { return "Waiting in queue" }
             return "\(Int((progress * 100).rounded())) percent through the queue"
         }
+    }
+}
+
+/// Widget snapshots can propose zero/unbounded sizes. Draw within the resolved bounds instead
+/// of introducing a GeometryReader child-placement pass (the production crash site).
+private struct QueueProgressFill: Shape {
+    let fraction: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        guard rect.width.isFinite, rect.height.isFinite, rect.width > 0, rect.height > 0 else { return Path() }
+        let width = min(rect.width, max(min(6, rect.width), rect.width * fraction))
+        return Capsule().path(in: CGRect(x: rect.minX, y: rect.minY, width: width, height: rect.height))
     }
 }
 

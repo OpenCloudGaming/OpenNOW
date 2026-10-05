@@ -139,6 +139,17 @@ struct CloudGame: Identifiable, Codable, Equatable {
     let contentRatings: [String]?
     var screenshotUrls: [String]? = nil
 
+    var lastPlayedDate: String? {
+        launchOptions.compactMap(\.lastPlayedDate).max()
+    }
+
+    var ownedStorefronts: [String] {
+        var seen = Set<String>()
+        return launchOptions.filter(\.isOwned).compactMap { option in
+            seen.insert(option.storefront.uppercased()).inserted ? option.storefront : nil
+        }
+    }
+
     var capabilityBadges: [String] {
         let labels = Set(featureLabels ?? [])
         return ["RTX 5080 Ready", "RTX", "HDR", "Reflex"].filter { labels.contains($0) }
@@ -158,7 +169,14 @@ struct CloudGame: Identifiable, Codable, Equatable {
             heroImageUrl: heroImageUrl ?? fallback.heroImageUrl,
             tvBannerUrl: tvBannerUrl ?? fallback.tvBannerUrl,
             launchAppId: launchAppId,
-            launchOptions: launchOptions,
+            launchOptions: launchOptions.map { option in
+                guard let previous = fallback.launchOptions.first(where: { $0.id == option.id }) else { return option }
+                var merged = option
+                merged.libraryStatus = option.libraryStatus ?? previous.libraryStatus
+                merged.lastPlayedDate = option.lastPlayedDate ?? previous.lastPlayedDate
+                merged.storeURL = option.storeURL ?? previous.storeURL
+                return merged
+            },
             uuid: uuid,
             summary: summary ?? fallback.summary,
             longDescription: longDescription ?? fallback.longDescription,
@@ -475,6 +493,25 @@ struct GameLaunchOption: Identifiable, Codable, Equatable {
     let appId: String
     let supportedControls: [String]?
     var featureLabels: [String]? = nil
+    var libraryStatus: String? = nil
+    var lastPlayedDate: String? = nil
+    var storeURL: String? = nil
+
+    var isOwned: Bool {
+        ["MANUAL", "PLATFORM_SYNC", "IN_LIBRARY"].contains(libraryStatus?.uppercased() ?? "")
+    }
+
+    var externalStoreURL: URL? {
+        guard let raw = storeURL?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let url = URL(string: raw), url.scheme?.lowercased() == "https",
+              let host = url.host, !host.isEmpty else { return nil }
+        return url
+    }
+}
+
+enum GameLaunchChoice: Equatable {
+    case chooseLauncher
+    case launch(GameLaunchOption?)
 }
 
 struct SessionTelemetry: Codable, Equatable {
@@ -806,10 +843,10 @@ func mergeQueueSessionState(
     next: ActiveSession,
     preserveMissingAdState: Bool = true
 ) -> ActiveSession {
-    guard next.status != 2 && next.status != 3 else {
-        return next
-    }
+    guard previous.id == next.id else { return next }
     var merged = next
+    merged.sessionControlBaseUrl = next.sessionControlBaseUrl ?? previous.sessionControlBaseUrl
+    guard next.status != 2 && next.status != 3 else { return merged }
     merged.adState = mergeQueueAdState(
         previous: previous.adState,
         next: next.adState,
@@ -946,11 +983,11 @@ struct AppSettings: Codable, Equatable {
     var liveSelectedOutlines: Bool = true
 
     // Catalog presentation
-    var showCardTitles: Bool = true
+    var showCardTitles: Bool = false
     /// True keeps the heart on every card (the behaviour iOS shipped with). False declutters
     /// the grid: the heart then appears only on games already favourited or on the focused card,
     /// and the long-press menu still reaches the toggle either way.
-    var showFavoriteIconOnGameCards: Bool = true
+    var showFavoriteIconOnGameCards: Bool = false
     var catalogWallpaperPreset: CatalogWallpaperPreset = .colorfulAbstract
 
     // Stream HUD
@@ -1176,8 +1213,8 @@ struct AppSettings: Codable, Equatable {
         uiAccent = try container.decodeIfPresent(UIAccent.self, forKey: .uiAccent) ?? .openNow
         expressiveUI = try container.decodeIfPresent(Bool.self, forKey: .expressiveUI) ?? true
         liveSelectedOutlines = try container.decodeIfPresent(Bool.self, forKey: .liveSelectedOutlines) ?? true
-        showCardTitles = try container.decodeIfPresent(Bool.self, forKey: .showCardTitles) ?? true
-        showFavoriteIconOnGameCards = try container.decodeIfPresent(Bool.self, forKey: .showFavoriteIconOnGameCards) ?? true
+        showCardTitles = try container.decodeIfPresent(Bool.self, forKey: .showCardTitles) ?? false
+        showFavoriteIconOnGameCards = try container.decodeIfPresent(Bool.self, forKey: .showFavoriteIconOnGameCards) ?? false
         catalogWallpaperPreset = try container.decodeIfPresent(CatalogWallpaperPreset.self, forKey: .catalogWallpaperPreset) ?? .colorfulAbstract
         streamStatsMetrics = try container.decodeIfPresent(StreamStatsMetrics.self, forKey: .streamStatsMetrics) ?? .default
         hideStreamButtons = try container.decodeIfPresent(Bool.self, forKey: .hideStreamButtons) ?? false
@@ -2339,7 +2376,6 @@ private enum GFNConstants {
     static let lcarsClientId = "ec7e38d4-03af-4b58-b131-cfb0495903ab"
     static let gfnClientVersion = "2.0.88.129"
     static let panelsQueryHash = "46ec15f267a056e7d5e46e629efa929529e5e7542a4850faece90b9f8fa5f810"
-    static let libraryWithTimeQueryHash = "7f54d6bbbf3b1c09d0e5264dfa36f0f4aaf5e2678f2089f0cbf0d4dda18c3af9"
     static let appMetadataQueryHash = "39187e85b6dcf60b7279a5f233288b0a8b69a8b1dbcfb5b25555afdcb988f0d7"
     static let userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NVIDIACEFClient/HEAD/debb5919f6 GFN-PC/2.0.88.129"
     /// The user agent the official GeForce NOW Android client sends for a touch session. It travels
@@ -2495,6 +2531,17 @@ enum SessionControlRouting {
         return "https://\(host)"
     }
 
+    static func readyDetailsBase(for session: ActiveSession) -> String? {
+        guard session.status == 2 || session.status == 3,
+              let launchHost = URL(string: session.streamingBaseUrl)?.host,
+              launchHost.hasSuffix(".cloudmatchbeta.nvidiagrid.net") || launchHost.hasSuffix(".cloudmatch.nvidiagrid.net"),
+              let server = normalizedEndpointHost(from: session.serverIp),
+              !server.contains("cloudmatchbeta.nvidiagrid.net"),
+              !server.contains("cloudmatch.nvidiagrid.net"),
+              let url = URL(string: "https://\(server)"), url.host != nil else { return nil }
+        return url.absoluteString
+    }
+
     static func pollBase(for session: ActiveSession) -> String {
         guard let launchHost = URL(string: session.streamingBaseUrl)?.host?.lowercased(),
               launchHost.hasSuffix(".cloudmatchbeta.nvidiagrid.net")
@@ -2510,6 +2557,27 @@ enum SessionControlRouting {
             return session.streamingBaseUrl
         }
         return validated
+    }
+}
+
+enum CatalogQueryPolicy {
+    static let libraryFilter: [String: Any] = ["variants": ["gfn": ["library": ["status": ["notEquals": "NOT_OWNED"]]]]]
+    static func isRegistryMiss(_ message: String) -> Bool {
+        message.localizedCaseInsensitiveContains("PersistedQueryNotFound")
+            || message.localizedCaseInsensitiveContains("PERSISTED_QUERY_NOT_FOUND")
+    }
+}
+
+enum QueueSessionPhase {
+    static func isQueued(_ session: ActiveSession) -> Bool {
+        guard session.status == 1 else { return false }
+        if isSessionAdsRequired(session.adState) || session.seatSetupStep == 1 { return true }
+        return (session.queuePosition ?? 0) > 1
+            || ((session.queuePosition ?? 0) == 1 && (session.seatSetupStep ?? 0) < 3)
+    }
+
+    static func isSettingUp(_ session: ActiveSession) -> Bool {
+        session.status == 1 && !isQueued(session) && (3...5).contains(session.seatSetupStep ?? 0)
     }
 }
 
@@ -3840,14 +3908,19 @@ private actor GFNAPIClient {
         return AuthSession(provider: existing.provider, tokens: retainedTokens, user: user)
     }
 
-    func fetchMainGames(session: AuthSession) async throws -> ([CloudGame], String, [StreamRegion]) {
+    func fetchMainGames(session: AuthSession) async throws -> ([CloudGame], String, [StreamRegion], Bool) {
         let token = session.tokens.idToken ?? session.tokens.accessToken
         let serverInfo = try await fetchServerInfo(token: token, streamingBaseUrl: session.provider.streamingServiceUrl)
         let vpcId = serverInfo.vpcId ?? "GFN-PC"
-        let payload = try await fetchPanels(token: token, panelNames: ["MAIN"], vpcId: vpcId)
-        let games = Self.flattenPanels(payload: payload)
-        let enrichedGames = (try? await enrichGamesWithMetadata(token: token, vpcId: vpcId, games: games)) ?? games
-        return (enrichedGames, vpcId, serverInfo.regions)
+        do {
+            let payload = try await fetchPanels(token: token, panelNames: ["MAIN"], vpcId: vpcId)
+            let games = Self.flattenPanels(payload: payload)
+            let enrichedGames = (try? await enrichGamesWithMetadata(token: token, vpcId: vpcId, games: games)) ?? games
+            return (enrichedGames, vpcId, serverInfo.regions, false)
+        } catch where CatalogQueryPolicy.isRegistryMiss(error.localizedDescription) {
+            let games = try await fetchCompleteCatalog(session: session, vpcId: vpcId)
+            return (games, vpcId, serverInfo.regions, true)
+        }
     }
 
     func fetchRegions(session: AuthSession) async throws -> [StreamRegion] {
@@ -3856,16 +3929,16 @@ private actor GFNAPIClient {
     }
 
     /// MAIN contains editorial collections, not the complete catalog. Follow every browse cursor.
-    func fetchCompleteCatalog(session: AuthSession, vpcId: String) async throws -> [CloudGame] {
+    func fetchCompleteCatalog(session: AuthSession, vpcId: String, libraryOnly: Bool = false) async throws -> [CloudGame] {
         let token = session.tokens.idToken ?? session.tokens.accessToken
         let document = """
-        query CompleteCatalog($vpcId: String!, $cursor: String!, $filters: AppFilterFields!) {
-          apps(vpcId: $vpcId, language: "en_US", orderBy: "sortName:ASC", first: 250, after: $cursor, filters: $filters) {
+        query CompleteCatalog($vpcId: String!, $cursor: String!, $filters: AppFilterFields!, $sort: String!) {
+          apps(vpcId: $vpcId, language: "en_US", orderBy: $sort, first: 250, after: $cursor, filters: $filters) {
             pageInfo { hasNextPage endCursor totalCount }
             items {
               id title shortDescription publisherName genres
               images { GAME_BOX_ART TV_BANNER HERO_IMAGE }
-              variants { id appStore supportedControls gfn { status library { status selected } features { __typename ... on GfnSubscriptionFeatureInterface { key } ... on GfnSubscriptionFeatureValue { value } ... on GfnSubscriptionFeatureValueList { values } } } }
+              variants { id appStore storeUrl supportedControls gfn { status library { status selected lastPlayedDate } features { __typename ... on GfnSubscriptionFeatureInterface { key } ... on GfnSubscriptionFeatureValue { value } ... on GfnSubscriptionFeatureValueList { values } } } }
               gfn { playType playabilityState minimumMembershipTierLabel }
             }
           }
@@ -3880,7 +3953,9 @@ private actor GFNAPIClient {
             try Task.checkCancellation()
             guard Date() < deadline else { break }
             let body = try JSONSerialization.data(withJSONObject: ["query": document, "variables": [
-                "vpcId": vpcId, "cursor": cursor, "filters": [String: Any]()
+                "vpcId": vpcId, "cursor": cursor,
+                "filters": libraryOnly ? CatalogQueryPolicy.libraryFilter : [String: Any](),
+                "sort": libraryOnly ? "variants.gfn.library.lastPlayedDate:DESC,computedValues.libraryAddedDate:DESC,sortName:ASC" : "itemMetadata.relevance:DESC,sortName:ASC"
             ]])
             let (data, response) = try await request(url: URL(string: GFNConstants.graphQL)!, method: "POST",
                 headers: Self.desktopGraphQLHeaders(token: token, contentType: "application/json"),
@@ -3907,10 +3982,9 @@ private actor GFNAPIClient {
     }
 
     func fetchLibraryGames(session: AuthSession, vpcId: String) async throws -> [CloudGame] {
-        let token = session.tokens.idToken ?? session.tokens.accessToken
-        let payload = try await fetchPanels(token: token, panelNames: ["LIBRARY"], vpcId: vpcId)
-        let games = Self.flattenPanels(payload: payload)
-        return (try? await enrichGamesWithMetadata(token: token, vpcId: vpcId, games: games)) ?? games
+        // Query the owned library directly, avoiding the optional last-played persisted hash
+        // which can disappear from the provider registry and abort the entire account refresh.
+        try await fetchCompleteCatalog(session: session, vpcId: vpcId, libraryOnly: true)
     }
 
     func fetchSubscription(session: AuthSession, vpcId: String) async throws -> SubscriptionSnapshot {
@@ -4336,18 +4410,25 @@ private actor GFNAPIClient {
         settings: AppSettings? = nil
     ) async throws -> ActiveSession {
         let primaryBase = SessionControlRouting.pollBase(for: activeSession)
-        do {
-            return try await pollSession(session: session, activeSession: activeSession, base: primaryBase, settings: settings)
-        } catch {
-            // A control host can become unavailable. The canonical zone remains a safe fallback.
-            // Terminal provider queue errors must not be retried through another host.
-            guard primaryBase != activeSession.streamingBaseUrl,
-                  (error as NSError).domain != "OpenNOW.Queue",
-                  !(error is CancellationError) else {
+        let polled = try await pollSession(session: session, activeSession: activeSession,
+                                          base: primaryBase, settings: settings)
+        // Android hydrates ready allocations from the assigned server. Queue routing stays on
+        // sessionControlInfo; a ready rig's connection metadata is owned by that rig.
+        if let directBase = SessionControlRouting.readyDetailsBase(for: polled), directBase != primaryBase {
+            do {
+                return try await pollSession(session: session, activeSession: polled,
+                                             base: directBase, settings: settings)
+            } catch where OpenNOWErrorPresenter.isCancellation(error) {
                 throw error
+            } catch where (error as NSError).domain == "OpenNOW.Queue" {
+                throw error
+            } catch {
+                // The rig may still be warming up. Preserve the successful control snapshot and
+                // retry hydration on the next poll without restarting or claiming the allocation.
+                logger.info("Ready session details not yet available; retaining control snapshot")
             }
-            return try await pollSession(session: session, activeSession: activeSession, base: activeSession.streamingBaseUrl, settings: settings)
         }
+        return polled
     }
 
     private func pollSession(
@@ -5202,8 +5283,7 @@ private actor GFNAPIClient {
             "panelNames": panelNames
         ]
         let variables = String(data: try JSONSerialization.data(withJSONObject: variablesData), encoding: .utf8) ?? "{}"
-        let panelHash = panelNames.contains("LIBRARY")
-            ? GFNConstants.libraryWithTimeQueryHash : GFNConstants.panelsQueryHash
+        let panelHash = GFNConstants.panelsQueryHash
         let extensionsData: [String: Any] = ["persistedQuery": ["sha256Hash": panelHash]]
         let extensions = String(data: try JSONSerialization.data(withJSONObject: extensionsData), encoding: .utf8) ?? "{}"
         var components = URLComponents(string: GFNConstants.graphQL)!
@@ -5235,7 +5315,12 @@ private actor GFNAPIClient {
             let text = String(data: data, encoding: .utf8) ?? "unknown"
             throw NSError(domain: "OpenNOW.Games", code: response.statusCode, userInfo: [NSLocalizedDescriptionKey: text])
         }
-        return try parseJSON(data)
+        let payload = try parseJSON(data)
+        if let errors = payload["errors"] as? [[String: Any]], !errors.isEmpty {
+            let message = errors.compactMap { $0["message"] as? String }.joined(separator: ", ")
+            throw NSError(domain: "OpenNOW.Games", code: -1, userInfo: [NSLocalizedDescriptionKey: message])
+        }
+        return payload
     }
 
     private func fetchAppMetadata(
@@ -5251,7 +5336,7 @@ private actor GFNAPIClient {
         // Explicit selection includes NVIDIA's per-store capability flags and avoids a stale
         // persisted-query registry entry. Keep metadata in one bounded request per chunk.
         let document = """
-        query AppMetadata($vpcId:String!,$appIds:[String!]!){apps(vpcId:$vpcId,appIds:$appIds,language:"en_US"){items{id title shortDescription longDescription publisherName developerName genres images{GAME_BOX_ART HERO_IMAGE TV_BANNER KEY_ART SCREENSHOTS} variants{id appStore supportedControls streetDate gfn{status library{status selected} features{__typename ... on GfnSubscriptionFeatureInterface{key} ... on GfnSubscriptionFeatureValue{value} ... on GfnSubscriptionFeatureValueList{values}}}} gfn{playType playabilityState minimumMembershipTierLabel} contentRatings{type categoryKey contentDescriptorKeys interactiveElementKeys}}}}
+        query AppMetadata($vpcId:String!,$appIds:[String!]!){apps(vpcId:$vpcId,appIds:$appIds,language:"en_US"){items{id title shortDescription longDescription publisherName developerName genres images{GAME_BOX_ART HERO_IMAGE TV_BANNER KEY_ART SCREENSHOTS} variants{id appStore storeUrl supportedControls streetDate gfn{status library{status selected lastPlayedDate} features{__typename ... on GfnSubscriptionFeatureInterface{key} ... on GfnSubscriptionFeatureValue{value} ... on GfnSubscriptionFeatureValueList{values}}}} gfn{playType playabilityState minimumMembershipTierLabel} contentRatings{type categoryKey contentDescriptorKeys interactiveElementKeys}}}}
         """
         let body = try JSONSerialization.data(withJSONObject: ["query": document,
             "variables": ["vpcId": vpcId, "appIds": uniqueAppIds]])
@@ -5530,7 +5615,7 @@ private actor GFNAPIClient {
               longDescription
               publisherName
               images { KEY_ART GAME_BOX_ART TV_BANNER HERO_IMAGE SCREENSHOTS }
-              variants { id appStore supportedControls gfn { status library { status selected lastPlayedDate } features { __typename ... on GfnSubscriptionFeatureInterface { key } ... on GfnSubscriptionFeatureValue { value } ... on GfnSubscriptionFeatureValueList { values } } } }
+              variants { id appStore storeUrl supportedControls gfn { status library { status selected lastPlayedDate } features { __typename ... on GfnSubscriptionFeatureInterface { key } ... on GfnSubscriptionFeatureValue { value } ... on GfnSubscriptionFeatureValueList { values } } } }
               gfn { playType playabilityState minimumMembershipTierLabel }
               genres
               contentRatings { type categoryKey contentDescriptorKeys interactiveElementKeys }
@@ -5643,7 +5728,10 @@ private actor GFNAPIClient {
                             storefront: storefront.isEmpty ? "Auto" : storefront,
                             appId: variantId,
                             supportedControls: toOptionalStringArray(variant["supportedControls"]),
-                featureLabels: GFNCatalogFeatureParser.labels(variant: variant)
+                            featureLabels: GFNCatalogFeatureParser.labels(variant: variant),
+                            libraryStatus: toOptionalString(((variant["gfn"] as? [String: Any])?["library"] as? [String: Any])?["status"]),
+                            lastPlayedDate: toOptionalString(((variant["gfn"] as? [String: Any])?["library"] as? [String: Any])?["lastPlayedDate"]),
+                            storeURL: toOptionalString(variant["storeUrl"])
                         )
                         if seenLaunchOptionIds.insert(option.id).inserted {
                             launchOptions.append(option)
@@ -5655,7 +5743,10 @@ private actor GFNAPIClient {
                         let defaultOption = GameLaunchOption(
                             storefront: selectedStore.isEmpty ? "Auto" : selectedStore,
                             appId: launchAppId,
-                            supportedControls: toOptionalStringArray(selectedVariant?["supportedControls"])
+                            supportedControls: toOptionalStringArray(selectedVariant?["supportedControls"]),
+                            libraryStatus: toOptionalString(((selectedVariant?["gfn"] as? [String: Any])?["library"] as? [String: Any])?["status"]),
+                            lastPlayedDate: toOptionalString(((selectedVariant?["gfn"] as? [String: Any])?["library"] as? [String: Any])?["lastPlayedDate"]),
+                            storeURL: toOptionalString(selectedVariant?["storeUrl"])
                         )
                         if seenLaunchOptionIds.insert(defaultOption.id).inserted {
                             launchOptions.insert(defaultOption, at: 0)
@@ -5760,7 +5851,8 @@ private actor GFNAPIClient {
         let longDescription = toOptionalString(app["longDescription"])
             ?? toOptionalString(app["fullDescription"])
             ?? toOptionalString(app["localizedDescription"])
-        let publisher = toOptionalString(app["publisher"])
+        let publisher = toOptionalString(app["publisherName"])
+            ?? toOptionalString(app["publisher"])
             ?? toOptionalString((app["publisherInfo"] as? [String: Any])?["name"])
             ?? toOptionalString((app["publisherInfo"] as? [String: Any])?["displayName"])
         let developer = toOptionalString(app["developer"])
@@ -5838,7 +5930,14 @@ private actor GFNAPIClient {
             heroImageUrl: heroImageUrl,
             tvBannerUrl: tvBannerUrl,
             launchAppId: game.launchAppId,
-            launchOptions: launchOptions(for: game, app: app),
+            launchOptions: launchOptions(for: game, app: app).map { option in
+                guard let previous = game.launchOptions.first(where: { $0.id == option.id }) else { return option }
+                var merged = option
+                merged.libraryStatus = option.libraryStatus ?? previous.libraryStatus
+                merged.lastPlayedDate = option.lastPlayedDate ?? previous.lastPlayedDate
+                merged.storeURL = option.storeURL ?? previous.storeURL
+                return merged
+            },
             uuid: game.uuid,
             summary: metadata.summary ?? game.summary,
             longDescription: metadata.longDescription ?? game.longDescription,
@@ -5889,7 +5988,10 @@ private actor GFNAPIClient {
                 storefront: storefront.isEmpty ? "Auto" : storefront,
                 appId: variantId,
                 supportedControls: toOptionalStringArray(variant["supportedControls"]),
-                featureLabels: GFNCatalogFeatureParser.labels(variant: variant)
+                featureLabels: GFNCatalogFeatureParser.labels(variant: variant),
+                libraryStatus: toOptionalString(((variant["gfn"] as? [String: Any])?["library"] as? [String: Any])?["status"]),
+                lastPlayedDate: toOptionalString(((variant["gfn"] as? [String: Any])?["library"] as? [String: Any])?["lastPlayedDate"]),
+                storeURL: toOptionalString(variant["storeUrl"])
             )
             if seen.insert(option.id).inserted {
                 options.append(option)
@@ -6754,6 +6856,7 @@ final class OpenNOWStore: ObservableObject {
             deviceId: "preview",
             adState: nil
         )
+        updateQueueTrend(for: activeSession)
         activeStreamSettings = settings
         settings.queueLiveActivitiesEnabled = true
         isBootstrapping = false
@@ -6775,6 +6878,51 @@ final class OpenNOWStore: ObservableObject {
                 )
             )
         }
+    }
+
+    static var debugStorePreviewGames: [CloudGame] {
+        let heroURL = "https://cdn.cloudflare.steamstatic.com/steam/apps/714010/library_hero.jpg"
+        let boxURL = "https://cdn.cloudflare.steamstatic.com/steam/apps/714010/library_600x900.jpg"
+        let titles = ["Aimlabs", "New Horizons", "Cloud City", "Night Drive", "Starfront", "Deep Blue"]
+        return titles.enumerated().map { index, title in
+            let steam = GameLaunchOption(
+                storefront: "STEAM", appId: "\(714010 + index)",
+                supportedControls: ["GAMEPAD", "KEYBOARD_MOUSE"],
+                libraryStatus: index == 0 ? "PLATFORM_SYNC" : "NOT_OWNED",
+                lastPlayedDate: index == 0 ? "2026-10-03T14:00:00Z" : nil,
+                storeURL: "https://store.steampowered.com/app/714010"
+            )
+            let epic = GameLaunchOption(storefront: "EPIC", appId: "\(814010 + index)",
+                supportedControls: ["GAMEPAD"], libraryStatus: "NOT_OWNED")
+            return CloudGame(
+                id: "debug-store-\(index)", title: title, genre: index.isMultiple(of: 2) ? "Action" : "Adventure",
+                platform: "STEAM", icon: "gamecontroller.fill", imageUrl: boxURL,
+                boxArtUrl: boxURL, heroImageUrl: heroURL,
+                tvBannerUrl: heroURL, launchAppId: steam.appId,
+                launchOptions: [steam, epic], uuid: "debug-store-\(index)",
+                summary: "A preview of the new Store details layout.",
+                longDescription: "OpenNOW brings your GeForce NOW games together. Choose a launcher, check ownership and streaming features, and play when you are ready.",
+                publisher: "Preview Studio", developer: "Preview Studio", releaseDate: "2026",
+                featureLabels: ["HDR", "RTX"], tags: ["Action", "Controller"],
+                stores: ["STEAM", "EPIC"], playType: "Single Player", membershipTierLabel: nil,
+                catalogSectionId: index < 3 ? "section-cbc43218-6ad6-4ff3-8538-bc84f90c796c-preview" : nil,
+                catalogSectionTitle: index < 3 ? "GFN Thursday" : nil,
+                contentRatings: ["ESRB T"], screenshotUrls: index == 0 ? [heroURL] : nil
+            )
+        }
+    }
+
+    func installDebugStorePreview() {
+        allGames = Self.debugStorePreviewGames
+        libraryGames = [allGames[0]]
+        settings.showCardTitles = false
+        settings.showFavoriteIconOnGameCards = false
+        settings.favoriteGameIds = [allGames[3].id]
+        if ProcessInfo.processInfo.arguments.contains("--opennow-zoom-qa-grid") {
+            searchText = "New"
+        }
+        isLoadingGames = false
+        isBootstrapping = false
     }
     #endif
 
@@ -7064,9 +7212,19 @@ final class OpenNOWStore: ObservableObject {
                 hydrateCachedCatalog(for: refreshed, onlyMissing: true)
             }
 
-            let (fetchedMainGames, vpcId, regions) = try await api.fetchMainGames(session: refreshed)
+            let (fetchedMainGames, vpcId, regions, loadedCompleteCatalog) = try await api.fetchMainGames(session: refreshed)
             let mainGames = preservingCatalogMetadata(in: fetchedMainGames, from: allGames)
-            let fetchedLibrary = try await api.fetchLibraryGames(session: refreshed, vpcId: vpcId)
+            var libraryWarning: String?
+            let fetchedLibrary: [CloudGame]
+            do {
+                fetchedLibrary = try await api.fetchLibraryGames(session: refreshed, vpcId: vpcId)
+            } catch where OpenNOWErrorPresenter.isCancellation(error) {
+                throw error
+            } catch {
+                // An optional library failure must not discard the successfully loaded Store.
+                fetchedLibrary = libraryGames
+                libraryWarning = OpenNOWErrorPresenter.message(for: error, fallback: "The library could not be refreshed.")
+            }
             let library = preservingCatalogMetadata(in: fetchedLibrary, from: libraryGames + allGames)
             let filteredRegions = regions.filter {
                 !StreamZonePolicy.isBlocked($0.url) && !StreamZonePolicy.isBlocked($0.name)
@@ -7096,11 +7254,11 @@ final class OpenNOWStore: ObservableObject {
             isLoadingGames = false
             lastError = nil
 
-            var accountWarnings: [String] = []
+            var accountWarnings: [String] = libraryWarning.map { [$0] } ?? []
             var catalogWarning: String?
             isLoadingFullCatalog = true
             do {
-                let catalog = try await api.fetchCompleteCatalog(session: refreshed, vpcId: vpcId)
+                let catalog = loadedCompleteCatalog ? fetchedMainGames : try await api.fetchCompleteCatalog(session: refreshed, vpcId: vpcId)
                 guard accountIsCurrent(requestedUserId, generation: requestedGeneration) else { return }
                 let merged = preservingCatalogMetadata(in: catalog, from: mainGames + allGames + library)
                 var seen = Set(merged.map { catalogStableGameKey($0) })
@@ -8481,6 +8639,13 @@ final class OpenNOWStore: ObservableObject {
         return []
     }
 
+    func launchChoice(for game: CloudGame) -> GameLaunchChoice {
+        let options = launchOptions(for: game)
+        if let saved = defaultLaunchOption(for: game) { return .launch(saved) }
+        if options.count > 1 { return .chooseLauncher }
+        return .launch(options.first)
+    }
+
     func defaultLaunchOption(for game: CloudGame) -> GameLaunchOption? {
         guard let defaultId = settings.defaultGameVariantIds[game.id] else { return nil }
         return launchOptions(for: game).first { $0.id == defaultId || $0.appId == defaultId }
@@ -8915,6 +9080,7 @@ final class OpenNOWStore: ObservableObject {
             var consecutivePollFailures = 0
             var setupTimeoutStartedAt: Date?
             var setupTimeoutNotified = false
+            var previousSetupStep: Int?
             var readyPollStreak = 0
             var readySince: Date?
             var loggedReadyForStreamer = false
@@ -9007,6 +9173,15 @@ final class OpenNOWStore: ObservableObject {
                         await NotificationManager.shared.sendQueueReadyNotification(gameTitle: polled.game.title)
                     }
                     previousStatus = polled.status
+                    if setupTimeoutNotified && (!self.isInSetupPhase(polled) || polled.seatSetupStep != previousSetupStep) {
+                        if self.sessionError == "Session setup is taking longer than expected. Please retry." {
+                            self.sessionError = nil
+                            self.lastError = nil
+                        }
+                        setupTimeoutNotified = false
+                    }
+                    if polled.seatSetupStep != previousSetupStep { setupTimeoutStartedAt = nil }
+                    previousSetupStep = polled.seatSetupStep
                     if self.isInSetupPhase(polled) {
                         if setupTimeoutStartedAt == nil {
                             setupTimeoutStartedAt = Date()
@@ -9067,18 +9242,11 @@ final class OpenNOWStore: ObservableObject {
     }
 
     private func isInQueuePhase(_ session: ActiveSession) -> Bool {
-        if (session.adState?.sessionAdsRequired ?? session.adState?.isAdsRequired ?? false), session.status == 1 {
-            return true
-        }
-        guard session.status == 1 else { return false }
-        if session.seatSetupStep == 1 {
-            return true
-        }
-        return (session.queuePosition ?? 0) > 1
+        QueueSessionPhase.isQueued(session)
     }
 
     private func isInSetupPhase(_ session: ActiveSession) -> Bool {
-        !isInQueuePhase(session) && session.status == 1
+        QueueSessionPhase.isSettingUp(session)
     }
 
     private func isReadyForStreamer(_ session: ActiveSession) -> Bool {
