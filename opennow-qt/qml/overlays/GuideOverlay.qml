@@ -467,7 +467,7 @@ FocusScope {
                             id: screenshotTile
                             objectName: "guideScreenshotTile"
                             text: qsTr("Screenshot")
-                            caption: root.shortcutHint("shortcutScreenshot", "Ctrl+F11")
+                            caption: glyphs.keyboard ? root.shortcutHint("shortcutScreenshot", "Ctrl+F11") : qsTr("Saves to Media")
                             enabled: root.mediaLive
                             glyphIcon: Component {
                                 Item {
@@ -517,7 +517,7 @@ FocusScope {
                             id: statsTile
                             objectName: "guideStatsTile"
                             text: qsTr("Stats overlay")
-                            caption: root.shortcutHint("shortcutToggleStats", "Ctrl+N")
+                            caption: glyphs.keyboard ? root.shortcutHint("shortcutToggleStats", "Ctrl+N") : qsTr("Show on stream")
                             glyphIcon: Component {
                                 Row {
                                     anchors.centerIn: parent
@@ -632,7 +632,8 @@ FocusScope {
                         wrapMode: Text.WordWrap
                         text: root.panelPage === "guide-controls"
                             ? qsTr("OpenNOW forwards up to four controllers to the game. Connect or wake one and it joins the next free slot.")
-                            : qsTr("Your current keyboard bindings for stream controls. Change them in Settings, outside the session.")
+                            : glyphs.keyboard ? qsTr("Your current keyboard bindings for stream controls. Change them in Settings, outside the session.")
+                            : qsTr("Keyboard bindings for stream controls, for reference only. On a controller, use the actions in this guide. Change bindings in Settings, outside the session.")
                         color: Theme.textMuted
                         font.family: Theme.bodyFont; font.pixelSize: 18
                     }
@@ -789,22 +790,23 @@ FocusScope {
             anchors.bottom: parent.bottom
             anchors.bottomMargin: 34
             spacing: 22
-            ControllerGlyph {
+            SessionGlyphs.Hint {
                 visible: root.panelPage === "guide-session"
-                glyph: glyphs.button("A")
-                keyboard: glyphs.keyboard
+                prompts: glyphs
+                button: "A"
                 glyphColor: Theme.mint
                 label: qsTr("Select")
             }
-            ControllerGlyph {
-                glyph: glyphs.button("B")
-                keyboard: glyphs.keyboard
+            SessionGlyphs.Hint {
+                prompts: glyphs
+                button: "B"
                 glyphColor: Theme.coral
                 label: root.panelPage === "guide-session" ? qsTr("Resume") : qsTr("Back to guide")
             }
-            ControllerGlyph {
-                glyph: glyphs.button("GUIDE")
-                keyboard: glyphs.keyboard
+            SessionGlyphs.Hint {
+                objectName: "guideCloseHint"
+                prompts: glyphs
+                button: "GUIDE"
                 label: qsTr("Close")
             }
         }

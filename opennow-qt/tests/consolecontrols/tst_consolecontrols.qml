@@ -214,4 +214,64 @@ TestCase {
         tryCompare(content, "contentY", 0)
         compare(actionSpy.count, 0)
     }
+
+    function focusedHalo(sheet) {
+        const list = findChild(sheet, "consoleChoiceList")
+        const item = list.itemAtIndex(sheet.focusedIndex)
+        verify(item !== null)
+        const stack = [item]
+        while (stack.length) {
+            const next = stack.pop()
+            if (next.objectName === "consoleChoiceFocusHalo")
+                return {list: list, halo: next}
+            for (const child of next.children)
+                stack.push(child)
+        }
+        return {list: list, halo: null}
+    }
+
+    function verifyRingInsideList(sheet) {
+        waitForRendering(sheet)
+        const found = focusedHalo(sheet)
+        verify(found.halo !== null)
+        verify(found.halo.visible)
+        const topLeft = found.halo.mapToItem(found.list, 0, 0)
+        const bottomRight = found.halo.mapToItem(found.list, found.halo.width, found.halo.height)
+        verify(topLeft.x >= 0, "ring clipped on the left at " + topLeft.x)
+        verify(topLeft.y >= 0, "ring clipped at the top at " + topLeft.y)
+        verify(bottomRight.x <= found.list.width, "ring clipped on the right at " + bottomRight.x)
+        verify(bottomRight.y <= found.list.height, "ring clipped at the bottom at " + bottomRight.y)
+    }
+
+    function test_focusRingStaysInsideScrollingList() {
+        const options = Array.from({length: 24}, (_, index) => ({label: "Option " + index, value: index,
+            detail: index % 3 === 0 ? "Detail for option " + index : ""}))
+        const sheet = createTemporaryObject(choiceComponent, testCase, {options: options, currentIndex: -1})
+        sheet.opened = true
+        tryCompare(sheet, "focusedIndex", 0)
+        verifyRingInsideList(sheet)
+        for (let step = 0; step < 23; ++step)
+            keyClick(Qt.Key_Down)
+        compare(sheet.focusedIndex, 23)
+        verifyRingInsideList(sheet)
+        for (let step = 0; step < 11; ++step)
+            keyClick(Qt.Key_Up)
+        compare(sheet.focusedIndex, 12)
+        verifyRingInsideList(sheet)
+        for (let step = 0; step < 12; ++step)
+            keyClick(Qt.Key_Up)
+        compare(sheet.focusedIndex, 0)
+        verifyRingInsideList(sheet)
+    }
+
+    function test_focusRingSurvivesOptionRefresh() {
+        const sheet = createTemporaryObject(choiceComponent, testCase, {currentIndex: -1})
+        sheet.opened = true
+        tryCompare(sheet, "focusedIndex", 0)
+        keyClick(Qt.Key_Down)
+        sheet.options = sheet.options.map(option => Object.assign({}, option, {detail: "Refreshed"}))
+        compare(sheet.focusedIndex, 1)
+        tryVerify(() => sheet.activeFocus)
+        verifyRingInsideList(sheet)
+    }
 }

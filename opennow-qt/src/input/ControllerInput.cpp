@@ -3,6 +3,7 @@
 #include <QCoreApplication>
 #include <QGuiApplication>
 #include <QKeyEvent>
+#include <QSet>
 #include <QVariantMap>
 #include <QWindow>
 
@@ -722,10 +723,32 @@ bool ControllerInput::updateDirection(RepeatingDirection &direction, bool active
 void ControllerInput::dispatchRepeats(qint64 now)
 {
     if (!m_shellCaptureEnabled || m_inputSuspended) return;
+    QSet<int> digitalDirections;
+    for (auto &slot : m_slots) {
+        if (!slot.gamepad || !acceptsController(slot.instanceId)) continue;
+        for (auto held = slot.shellKeys.begin(); held != slot.shellKeys.end(); ++held) {
+            const auto key = held.key();
+            if (key != Qt::Key_Left && key != Qt::Key_Right && key != Qt::Key_Up && key != Qt::Key_Down)
+                continue;
+            if (digitalDirections.contains(key)) continue;
+            digitalDirections.insert(key);
+            if (now - held->pressedAt < repeatDelayMs || now - held->repeatedAt < repeatIntervalMs)
+                continue;
+            if (held->target) {
+                postKey(key, true, true, held->target);
+                postKey(key, false, true, held->target);
+            }
+            for (auto &owner : m_slots) {
+                auto shared = owner.shellKeys.find(key);
+                if (shared != owner.shellKeys.end()) shared->repeatedAt = now;
+            }
+        }
+    }
     for (auto &slot : m_slots) {
         if (!slot.gamepad || !acceptsController(slot.instanceId)) continue;
         for (auto &direction : slot.directions) {
-            if (!direction.active || now - direction.pressedAt < repeatDelayMs
+            if (!direction.active || digitalDirections.contains(direction.key)
+                || now - direction.pressedAt < repeatDelayMs
                 || now - direction.repeatedAt < repeatIntervalMs) continue;
             direction.repeatedAt = now;
             postKey(direction.key, true, true);
@@ -746,14 +769,17 @@ void ControllerInput::handleShellButton(int slotIndex, int key, bool pressed)
 {
     auto &keys = m_slots[static_cast<std::size_t>(slotIndex)].shellKeys;
     if (keys.contains(key) == pressed) return;
-    QPointer<QObject> target = pressed ? QPointer<QObject>(QGuiApplication::focusWindow()) : keys.take(key);
+    QPointer<QObject> target = pressed ? QPointer<QObject>(QGuiApplication::focusWindow()) : keys.take(key).target;
     if (pressed && !target) target = QCoreApplication::instance();
     for (const auto &slot : m_slots) {
         if (!slot.shellKeys.contains(key)) continue;
         if (pressed) keys.insert(key, slot.shellKeys.value(key));
         return;
     }
-    if (pressed) keys.insert(key, target);
+    if (pressed) {
+        const auto now = m_clock.elapsed();
+        keys.insert(key, ShellKeyPress{target, now, now});
+    }
     if (target) postKey(key, pressed, false, target);
 }
 

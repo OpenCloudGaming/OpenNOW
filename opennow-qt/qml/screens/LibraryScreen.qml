@@ -163,18 +163,11 @@ FocusScope {
         if (event.key === Qt.Key_Back) {
             root.showSearchKeyboard()
         } else if (event.key === Qt.Key_Y) {
-            if (!event.isAutoRepeat && root.selectedGame !== null)
+            if (!event.isAutoRepeat && catalog.activeFocus && root.selectedGame !== null)
                 ShellStore.toggleFavorite(root.selectedGame)
         } else if (event.key === Qt.Key_X) {
-            if (!event.isAutoRepeat)
+            if (!event.isAutoRepeat && catalog.activeFocus)
                 root.openSelected()
-        } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-            if (event.isAutoRepeat)
-                return
-            if (root.selectedGame !== null)
-                root.openSelected()
-            else if (!root.cloudFavoritesOnly && ShellStore.catalogState === "error")
-                ShellStore.refreshCatalog("")
         } else return
         event.accepted = true
     }
@@ -186,6 +179,7 @@ FocusScope {
 
     TextField {
         id: searchField
+        objectName: "consoleLibrarySearchField"
         x: 96; y: 126
         width: 440; height: 60
         placeholderText: qsTr("Search GeForce NOW games")
@@ -201,6 +195,17 @@ FocusScope {
         KeyNavigation.down: catalog
         onTextEdited: root.searchQuery = text
         onAccepted: catalog.forceActiveFocus()
+        Keys.onPressed: event => {
+            if (event.key !== Qt.Key_Return && event.key !== Qt.Key_Enter)
+                return
+            event.accepted = true
+            if (event.isAutoRepeat)
+                return
+            if (AppController.inputMode === "controller")
+                root.showSearchKeyboard()
+            else
+                catalog.forceActiveFocus()
+        }
         Keys.onEscapePressed: catalog.forceActiveFocus()
         background: Rectangle {
             radius: 30
@@ -328,6 +333,17 @@ FocusScope {
             onCurrentIndexChanged: {
                 ShellStore.rememberFocus("library", currentIndex)
                 positionViewAtIndex(currentIndex, GridView.Contain)
+            }
+            Keys.onPressed: event => {
+                if (event.key !== Qt.Key_Return && event.key !== Qt.Key_Enter)
+                    return
+                event.accepted = true
+                if (event.isAutoRepeat)
+                    return
+                if (root.selectedGame !== null)
+                    root.openSelected()
+                else if (!root.cloudFavoritesOnly && ShellStore.catalogState === "error")
+                    ShellStore.refreshCatalog("")
             }
             Keys.onUpPressed: event => {
                 if (catalog.currentIndex < root.columnCount)

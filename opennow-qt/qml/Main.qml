@@ -20,6 +20,9 @@ ApplicationWindow {
     property bool librarySearchPending: false
     property string pendingConsoleScreenshotSession: ""
     property int pendingConsoleScreenshotFrames: 0
+    readonly property Item consoleModalFocusOwner: consoleSystemWarning.opened ? consoleSystemWarning
+        : !window.desktopSurfaceActive && consoleOverlayHost.supportedOverlay ? consoleOverlayHost : null
+    onConsoleModalFocusOwnerChanged: if (consoleModalFocusOwner) Qt.callLater(window.restoreConsoleModalFocus)
     onClosing: event => {
         if (!applicationCloseConfirmed) {
             event.accepted = false
@@ -169,8 +172,8 @@ ApplicationWindow {
         syncInputOwnership()
         if (!active)
             pendingConsoleScreenshotSession = ""
-        else if (consoleSystemWarning.opened)
-            Qt.callLater(() => { if (consoleSystemWarning.opened) consoleSystemWarning.focusSafe() })
+        else if (consoleModalFocusOwner)
+            Qt.callLater(window.restoreConsoleModalFocus)
     }
     onDesktopSurfaceActiveChanged: ShellStore.desktopUiActive = desktopSurfaceActive
 
@@ -224,18 +227,23 @@ ApplicationWindow {
         }
     }
 
-    Connections {
-        target: consoleSystemWarning.opened ? window : null
-        function onActiveFocusItemChanged() {
-            if (!window.active || !consoleSystemWarning.opened
-                    || consoleSystemWarning.focusChain.some(item => item.activeFocus))
+    function restoreConsoleModalFocus() {
+        const owner = window.consoleModalFocusOwner
+        if (!window.active || !owner)
+            return
+        for (let item = window.activeFocusItem; item; item = item.parent) {
+            if (item === owner)
                 return
-            Qt.callLater(() => {
-                if (window.active && consoleSystemWarning.opened
-                        && !consoleSystemWarning.focusChain.some(item => item.activeFocus))
-                    consoleSystemWarning.focusSafe()
-            })
         }
+        if (owner === consoleSystemWarning)
+            consoleSystemWarning.focusSafe()
+        else
+            owner.forceActiveFocus()
+    }
+
+    Connections {
+        target: window.consoleModalFocusOwner ? window : null
+        function onActiveFocusItemChanged() { Qt.callLater(window.restoreConsoleModalFocus) }
     }
 
     function syncInputOwnership() {
@@ -613,8 +621,7 @@ ApplicationWindow {
             id: routeLoader
             objectName: "mainRouteLoader"
             anchors.fill: parent
-            enabled: !consoleSystemWarning.opened
-                && (window.desktopSurfaceActive || !consoleOverlayHost.supportedOverlay)
+            enabled: window.consoleModalFocusOwner === null
             sourceComponent: window.onboardingVisible ? onboardingScreen
                 : window.desktopSurfaceActive ? desktopAppScreen : window.componentForRoute(window.activeRoute)
             opacity: 1
@@ -672,7 +679,11 @@ ApplicationWindow {
         }
         Connections {
             target: ShellStore
-            function onActiveSessionChanged() { window.updateStreamSurfaceLock() }
+            function onActiveSessionChanged() {
+                window.updateStreamSurfaceLock()
+                if (!ShellStore.canOpenSessionGuide() && AppController.overlay.startsWith("guide-"))
+                    AppController.showOverlay("")
+            }
             function onSignedInChanged() { window.syncInputOwnership() }
             function onAuthRestorePendingChanged() { window.syncInputOwnership() }
             function onStreamerChanged() { window.showConfiguredStreamStats() }
@@ -693,7 +704,7 @@ ApplicationWindow {
         }
 
         Keys.onPressed: event => {
-            if (consoleSystemWarning.opened) {
+            if (window.consoleModalFocusOwner) {
                 event.accepted = true
                 return
             }
@@ -727,8 +738,13 @@ ApplicationWindow {
                     ? AppController.cycleGuidePage(1)
                     : AppController.cyclePrimaryRoute(1)
             } else if (window.isGuideShortcut(event)) {
-                event.accepted = AppController.showOverlay(window.desktopSurfaceActive
-                    && window.activeRoute === "stream" ? "desktop-stream-menu" : "guide-session")
+                event.accepted = true
+                if (!event.isAutoRepeat) {
+                    if (ShellStore.canOpenSessionGuide())
+                        ShellStore.openSessionGuide()
+                    else
+                        AppController.showOverlay(AppController.overlay === "quick-settings" ? "" : "quick-settings")
+                }
             } else if (event.key === Qt.Key_Menu) {
                 event.accepted = AppController.showOverlay("quick-settings")
             } else if (event.key === Qt.Key_Y) {

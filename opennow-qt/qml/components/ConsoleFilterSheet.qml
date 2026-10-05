@@ -14,6 +14,8 @@ FocusScope {
     readonly property var section: sections.length
         ? sections[Math.max(0, Math.min(sectionIndex, sections.length - 1))] : null
     readonly property var options: section ? section.options || [] : []
+    readonly property int ringGutter: 14
+    readonly property int sectionWidth: 220
     signal chosen(int section, int option)
     signal resetRequested()
     signal dismissed()
@@ -28,15 +30,28 @@ FocusScope {
             return
         sectionIndex = Math.max(0, Math.min(sections.length - 1, index))
         optionIndex = Math.max(0, Math.min(options.length - 1, Number(section.currentIndex || 0)))
-        sectionList.positionViewAtIndex(sectionIndex, ListView.Contain)
-        optionList.positionViewAtIndex(optionIndex, ListView.Contain)
+        reveal(sectionList, sectionIndex)
+        reveal(optionList, optionIndex)
+    }
+
+    function reveal(list, index) {
+        if (index < 0 || index >= list.count)
+            return
+        list.positionViewAtIndex(index, ListView.Contain)
+        const item = list.itemAtIndex(index)
+        if (!item)
+            return
+        if (item.y - ringGutter < list.contentY)
+            list.contentY = item.y - ringGutter
+        else if (item.y + item.height + ringGutter > list.contentY + list.height)
+            list.contentY = item.y + item.height + ringGutter - list.height
     }
 
     function moveOption(delta) {
         if (!options.length)
             return
         optionIndex = Math.max(0, Math.min(options.length - 1, optionIndex + delta))
-        optionList.positionViewAtIndex(optionIndex, ListView.Contain)
+        reveal(optionList, optionIndex)
     }
 
     onOpenedChanged: {
@@ -125,12 +140,18 @@ FocusScope {
 
         ListView {
             id: sectionList
-            y: heading.height + 32
-            width: 220
-            height: footer.y - y - 28
+            objectName: "consoleFilterSectionList"
+            x: -root.ringGutter
+            y: heading.height + 32 - root.ringGutter
+            width: root.sectionWidth + root.ringGutter * 2
+            height: footer.y - y - 28 + root.ringGutter
             spacing: 10
             clip: true
-            interactive: contentHeight > height
+            leftMargin: root.ringGutter
+            rightMargin: root.ringGutter
+            topMargin: root.ringGutter
+            bottomMargin: root.ringGutter
+            interactive: contentHeight + topMargin + bottomMargin > height
             model: root.sections
             currentIndex: root.sectionIndex
             highlightFollowsCurrentItem: false
@@ -140,7 +161,7 @@ FocusScope {
                 required property int index
                 readonly property bool active: index === root.sectionIndex
                 readonly property bool focusedRow: active && !root.optionsPane
-                width: ListView.view.width
+                width: root.sectionWidth
                 height: 74
                 radius: 20
                 color: active ? Theme.face : "transparent"
@@ -183,26 +204,27 @@ FocusScope {
         }
 
         Rectangle {
-            x: sectionList.width + 24
-            y: sectionList.y
+            x: root.sectionWidth + 24
+            y: sectionList.y + root.ringGutter
             width: 1
-            height: sectionList.height
+            height: sectionList.height - root.ringGutter * 2
             color: Theme.seam
         }
 
         ListView {
             id: optionList
-            x: sectionList.width + 48
+            objectName: "consoleFilterOptionList"
+            x: root.sectionWidth + 48
             y: sectionList.y
             width: parent.width - x
             height: sectionList.height
             spacing: 4
             clip: true
-            leftMargin: 14
-            rightMargin: 14
-            topMargin: 12
-            bottomMargin: 12
-            interactive: contentHeight > height
+            leftMargin: root.ringGutter
+            rightMargin: root.ringGutter
+            topMargin: root.ringGutter
+            bottomMargin: root.ringGutter
+            interactive: contentHeight + topMargin + bottomMargin > height
             model: root.options
             currentIndex: root.optionIndex
             highlightFollowsCurrentItem: false
@@ -212,7 +234,7 @@ FocusScope {
                 required property int index
                 readonly property bool current: index === Number(root.section ? root.section.currentIndex : -1)
                 readonly property bool focusedRow: index === root.optionIndex
-                width: ListView.view.width - 28
+                width: ListView.view.width - root.ringGutter * 2
                 height: 62
                 Accessible.role: Accessible.RadioButton
                 Accessible.name: modelData.label
@@ -265,7 +287,7 @@ FocusScope {
                     }
                     Text {
                         anchors.verticalCenter: parent.verticalCenter
-                        width: Math.min(implicitWidth, optionRow.width - 220)
+                        width: Math.min(implicitWidth, optionRow.width - 36 - 50 - (optionRow.current ? 110 : 16))
                         text: optionRow.modelData.label
                         color: Theme.label
                         elide: Text.ElideRight

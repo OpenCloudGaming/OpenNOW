@@ -14,6 +14,7 @@ FocusScope {
     property string chooseText: qsTr("Choose")
     property string dismissText: qsTr("Cancel")
     readonly property bool present: frame.present
+    readonly property int ringGutter: 12
     signal chosen(int index)
     signal dismissed()
 
@@ -48,7 +49,7 @@ FocusScope {
         for (let next = focusedIndex + delta; next >= 0 && next < count; next += delta) {
             if (optionEnabled(next)) {
                 focusedIndex = next
-                list.positionViewAtIndex(next, ListView.Contain)
+                reveal(next)
                 return
             }
         }
@@ -68,15 +69,31 @@ FocusScope {
                     while (!optionEnabled(start) && start < next) ++start
                 }
                 focusedIndex = start
-                list.positionViewAtIndex(start, ListView.Contain)
+                reveal(start)
                 return
             }
         }
     }
+    function reveal(index) {
+        if (index < 0 || index >= list.count)
+            return
+        list.positionViewAtIndex(index, ListView.Contain)
+        const item = list.itemAtIndex(index)
+        if (!item)
+            return
+        const top = item.y - ringGutter
+        const bottom = item.y + item.height + ringGutter
+        if (top < list.contentY)
+            list.contentY = top
+        else if (bottom > list.contentY + list.height)
+            list.contentY = bottom - list.height
+    }
     function syncFocus() {
         focusedIndex = optionEnabled(currentIndex) ? currentIndex : firstEnabled()
-        if (focusedIndex >= 0)
+        if (focusedIndex >= 0) {
             list.positionViewAtIndex(focusedIndex, ListView.Center)
+            reveal(focusedIndex)
+        }
     }
     function choose(index) {
         if (opened && optionEnabled(index))
@@ -91,6 +108,8 @@ FocusScope {
     onOptionsChanged: {
         if (!optionEnabled(focusedIndex))
             focusedIndex = optionEnabled(currentIndex) ? currentIndex : firstEnabled()
+        if (opened)
+            Qt.callLater(() => { if (root.opened) root.reveal(root.focusedIndex) })
     }
 
     Keys.onPressed: event => {
@@ -155,14 +174,20 @@ FocusScope {
 
         ListView {
             id: list
+            objectName: "consoleChoiceList"
             anchors.top: header.bottom
-            anchors.topMargin: 22
+            anchors.topMargin: 22 - root.ringGutter
             anchors.bottom: footer.top
-            anchors.bottomMargin: 18
-            width: parent.width
+            anchors.bottomMargin: 18 - root.ringGutter
+            x: -root.ringGutter
+            width: parent.width + root.ringGutter * 2
+            leftMargin: root.ringGutter
+            rightMargin: root.ringGutter
+            topMargin: root.ringGutter
+            bottomMargin: root.ringGutter
             clip: true
             spacing: 2
-            interactive: contentHeight > height
+            interactive: contentHeight + topMargin + bottomMargin > height
             boundsBehavior: Flickable.StopAtBounds
             model: root.options
             highlightMoveDuration: 0
@@ -177,7 +202,7 @@ FocusScope {
                 readonly property bool startsGroup: optionItem.group !== ""
                     && (optionItem.index === 0 || String((root.options[optionItem.index - 1] || {}).group || "") !== optionItem.group)
                 readonly property string detail: String(optionItem.modelData.detail || "")
-                width: ListView.view.width
+                width: ListView.view.width - root.ringGutter * 2
                 height: (startsGroup ? 40 : 0) + Math.max(60, optionText.implicitHeight + 24)
                 Accessible.role: Accessible.ListItem
                 Accessible.name: String(optionItem.modelData.label || "")
@@ -218,6 +243,7 @@ FocusScope {
                     border.width: optionItem.focused ? 3 : 0
                     border.color: Theme.face
                     Rectangle {
+                        objectName: "consoleChoiceFocusHalo"
                         visible: optionItem.focused
                         anchors.fill: parent
                         anchors.margins: -8

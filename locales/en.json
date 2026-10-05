@@ -3967,6 +3967,11 @@
     "switchPANE": "← → SWITCH PANE",
     "keyboardShortcutsForStreamControlsShowsYourCurrentBindings": "Keyboard shortcuts for stream controls. Shows your current bindings.",
     "lockThePointerToTheGameWindow": "Lock the pointer to the game window",
-    "showStreamStatisticsWhenASessionStarts": "Show stream statistics when a session starts"
+    "showStreamStatisticsWhenASessionStarts": "Show stream statistics when a session starts",
+    "currentResolution": "Current resolution",
+    "exactStreamSizeUpDownToBrowseAToPick": "Exact stream size · up / down to browse, A to pick",
+    "keyboardBindingsForStreamControlsForReferenceOnlyOnA": "Keyboard bindings for stream controls, for reference only. On a controller, use the actions in this guide. Change bindings in Settings, outside the session.",
+    "savesToMedia": "Saves to Media",
+    "showOnStream": "Show on stream"
   }
 }

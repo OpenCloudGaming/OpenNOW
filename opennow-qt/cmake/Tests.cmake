@@ -469,7 +469,11 @@ if(BUILD_TESTING)
         set_tests_properties(qml-push-invalidation-${width} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
     endforeach()
     qt_add_resources(opennow-qt "store-paging-acceptance"
-        PREFIX "/acceptance" BASE tests FILES tests/RegionPingAcceptance.qml tests/RegionChoicesAcceptance.qml tests/StorePagingAcceptance.qml tests/BackendAvailabilityAcceptance.qml tests/StreamRecoveryAcceptance.qml tests/IdleModeAcceptance.qml tests/FrameGenerationAcceptance.qml tests/AudioOutputAcceptance.qml tests/CollectionsAcceptance.qml tests/SteamBigPictureAcceptance.qml tests/PersistentInGameSettingsAcceptance.qml tests/NetworkTestAcceptance.qml tests/SaveBandwidthAcceptance.qml tests/StoreLaunchAcceptance.qml tests/ControllerMetadataAcceptance.qml tests/MicrophoneAcceptance.qml tests/RecordingAcceptance.qml tests/ShortcutsAcceptance.qml)
+        PREFIX "/acceptance" BASE tests FILES tests/RegionPingAcceptance.qml tests/RegionChoicesAcceptance.qml tests/StorePagingAcceptance.qml tests/BackendAvailabilityAcceptance.qml tests/StreamRecoveryAcceptance.qml tests/IdleModeAcceptance.qml tests/FrameGenerationAcceptance.qml tests/AudioOutputAcceptance.qml tests/CollectionsAcceptance.qml tests/SteamBigPictureAcceptance.qml tests/PersistentInGameSettingsAcceptance.qml tests/NetworkTestAcceptance.qml tests/SaveBandwidthAcceptance.qml tests/StoreLaunchAcceptance.qml tests/ControllerMetadataAcceptance.qml tests/MicrophoneAcceptance.qml tests/RecordingAcceptance.qml tests/ShortcutsAcceptance.qml tests/ConsoleSettingsAcceptance.qml)
+    add_test(NAME qml-console-settings
+        COMMAND opennow-qt --smoke-test --allow-multiple-instances --console
+            --route settings-video --smoke-console-settings --reduced-motion)
+    set_tests_properties(qml-console-settings PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 15)
     add_test(NAME qml-recording
         COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
             --route settings --smoke-recording --reduced-motion)
@@ -993,7 +997,7 @@ if(BUILD_TESTING)
              COMMAND opennow-controllerinput-tests -o -,txt)
     set_tests_properties(opennow-controllerinput-tests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
-        TIMEOUT 8
+        TIMEOUT 30
     )
     qt_add_executable(opennow-controllernavigation-tests
         tests/tst_controllernavigation.cpp

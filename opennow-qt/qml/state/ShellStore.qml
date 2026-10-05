@@ -2440,12 +2440,23 @@ QtObject {
         return microphoneRecoveryEnabled
     }
 
+    function canOpenSessionGuide() {
+        return Boolean(activeSession) && String(activeSession.sessionId || "") !== ""
+            && AppController.route === "stream" && streamState !== "idle" && streamState !== "stopping"
+    }
+
+    function openSessionGuide() {
+        if (!canOpenSessionGuide())
+            return false
+        return AppController.showOverlay(desktopUiActive ? "desktop-stream-menu" : "guide-session")
+    }
+
     function inspectStreamerOverlayRequest(value) {
         const generation = Number(value && value.overlayRequestGeneration || 0)
         if (generation <= overlayRequestGeneration)
             return
         overlayRequestGeneration = generation
-        AppController.showOverlay(desktopUiActive ? "desktop-stream-menu" : "guide-session")
+        openSessionGuide()
     }
 
     function inspectStreamerScreenshotRequest(value) {
@@ -2539,7 +2550,7 @@ QtObject {
     function applyStreamShortcutAction(action) {
         action = String(action || "")
         if (action === "guide") {
-            AppController.showOverlay(desktopUiActive ? "desktop-stream-menu" : "guide-session")
+            openSessionGuide()
         } else if (action === "request-exit" || action === "stop-stream") {
             requestStreamExitConfirmation()
         } else if (action === "toggle-anti-afk") {

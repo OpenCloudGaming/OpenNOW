@@ -12,13 +12,43 @@ TestCase {
 
     Component { id: detailsComponent; GameDetailScreen { width: 1920; height: 1080 } }
     Component { id: libraryComponent; LibraryScreen { width: 1920; height: 1080 } }
+    Component {
+        id: libraryHostComponent
+        FocusScope {
+            property alias screen: library
+            property var leakedKeys: []
+            width: 1920
+            height: 1080
+            Keys.onPressed: event => leakedKeys = leakedKeys.concat([event.key])
+            LibraryScreen { id: library; anchors.fill: parent; focus: true }
+        }
+    }
+    Component {
+        id: homeHostComponent
+        FocusScope {
+            property alias screen: home
+            property var leakedKeys: []
+            width: 1920
+            height: 1080
+            Keys.onPressed: event => leakedKeys = leakedKeys.concat([event.key])
+            HomeScreen { id: home; anchors.fill: parent; focus: true }
+        }
+    }
+
+    property var fixtureCatalog: null
+
+    function initTestCase() {
+        fixtureCatalog = ShellStore.catalogGames
+    }
 
     function init() {
+        ShellStore.catalogGames = fixtureCatalog
         ShellStore.settings = {appTheme: "dark", favoriteGameIds: [], resolution: "1920x1080", fps: 60}
         ShellStore.launchCount = 0
         ShellStore.detailsCount = 0
         ShellStore.selectedGame = ShellStore.catalogGames[0]
         AppController.showOverlay("")
+        AppController.inputMode = "keyboard"
     }
 
     function test_detailsPlayAndFavorite() {
@@ -96,6 +126,129 @@ TestCase {
         compare(screen.libraryOptions.filter(option => option.value === "remove" || option.value === "select").length, 0)
         screen.forceActiveFocus()
         keyClick(Qt.Key_Return)
+        compare(ShellStore.launchCount, 0)
+    }
+
+    function homeFixtureGames() {
+        return ["alpha", "bravo", "charlie", "delta"].map(id => ({id: id, launchAppId: id, title: "Home " + id,
+            availableStores: ["Steam"], variants: [{store: "Steam", libraryStatus: "MANUAL"}]}))
+    }
+
+    function test_librarySearchActivationDoesNotLaunch() {
+        const screen = createTemporaryObject(libraryComponent, testCase)
+        const search = findChild(screen, "consoleLibrarySearchField")
+        const keyboard = findChild(screen, "consoleLibraryKeyboard")
+        search.forceActiveFocus()
+        AppController.inputMode = "controller"
+        keyClick(Qt.Key_Return)
+        tryCompare(keyboard, "presented", true)
+        compare(ShellStore.detailsCount, 0)
+        compare(ShellStore.launchCount, 0)
+        keyClick(Qt.Key_Escape)
+        tryCompare(keyboard, "presented", false)
+        AppController.inputMode = "keyboard"
+        search.forceActiveFocus()
+        keyClick(Qt.Key_C)
+        compare(screen.searchQuery, "c")
+        keyClick(Qt.Key_Return)
+        verify(!keyboard.presented)
+        compare(ShellStore.detailsCount, 0)
+        compare(ShellStore.launchCount, 0)
+        verify(!search.activeFocus)
+        keyClick(Qt.Key_Return)
+        compare(ShellStore.detailsCount, 1)
+        compare(ShellStore.launchCount, 0)
+    }
+
+    function test_homeResizeKeepsEditSheetAndSelection() {
+        ShellStore.catalogGames = homeFixtureGames()
+        ShellStore.settings = {appTheme: "dark", favoriteGameIds: ["alpha", "bravo", "charlie", "delta"], homeTileSizes: {}}
+        const host = createTemporaryObject(homeHostComponent, testCase)
+        const screen = host.screen
+        tryVerify(() => screen.selectedGame && screen.selectedGame.id === "alpha" && screen.activeFocus)
+        keyClick(Qt.Key_Right)
+        tryCompare(screen, "currentIndex", 1)
+        keyClick(Qt.Key_X)
+        tryCompare(screen, "editMenuOpen", true)
+        keyClick(Qt.Key_Down)
+        keyClick(Qt.Key_Down)
+        keyClick(Qt.Key_Return)
+        compare(ShellStore.homeTileSize({id: "bravo"}), "wide")
+        wait(50)
+        verify(screen.editMenuOpen)
+        compare(screen.selectedGame.id, "bravo")
+        keyClick(Qt.Key_Up)
+        keyClick(Qt.Key_Return)
+        compare(ShellStore.homeTileSize({id: "bravo"}), "square")
+        wait(50)
+        verify(screen.editMenuOpen)
+        compare(screen.selectedGame.id, "bravo")
+        keyClick(Qt.Key_Escape)
+        tryCompare(screen, "editMenuOpen", false)
+        compare(host.leakedKeys.length, 0)
+        compare(ShellStore.detailsCount, 0)
+        tryVerify(() => screen.activeFocus && screen.selectedGame.id === "bravo")
+        keyClick(Qt.Key_Right)
+        tryCompare(screen, "currentIndex", 2)
+        compare(screen.selectedGame.id, "charlie")
+    }
+
+    function test_homeWideResizeOfFirstTileKeepsSelection() {
+        ShellStore.catalogGames = homeFixtureGames()
+        ShellStore.settings = {appTheme: "dark", favoriteGameIds: ["alpha", "bravo", "charlie", "delta"], homeTileSizes: {}}
+        const host = createTemporaryObject(homeHostComponent, testCase)
+        const screen = host.screen
+        tryVerify(() => screen.selectedGame && screen.selectedGame.id === "alpha" && screen.activeFocus)
+        keyClick(Qt.Key_Right)
+        keyClick(Qt.Key_Right)
+        tryCompare(screen, "currentIndex", 2)
+        ShellStore.setHomeTileSize({id: "alpha"}, "wide")
+        tryVerify(() => screen.activeFocus && screen.selectedGame.id === "charlie")
+        ShellStore.removeFromHome({id: "charlie"})
+        tryVerify(() => screen.activeFocus && screen.selectedGame !== null)
+        compare(host.leakedKeys.length, 0)
+    }
+
+    function test_libraryGameShortcutsStayOnGrid() {
+        const host = createTemporaryObject(libraryHostComponent, testCase)
+        const screen = host.screen
+        const search = findChild(screen, "consoleLibrarySearchField")
+        const filter = findChild(screen, "consoleLibraryFilterButton")
+        const keyboard = findChild(screen, "consoleLibraryKeyboard")
+        AppController.inputMode = "controller"
+        filter.forceActiveFocus()
+        keyClick(Qt.Key_X)
+        keyClick(Qt.Key_Y)
+        verify(filter.activeFocus)
+        verify(!screen.filterSheetOpen)
+        compare(ShellStore.detailsCount, 0)
+        compare(ShellStore.launchCount, 0)
+        verify(!ShellStore.isFavorite(screen.selectedGame))
+        compare(host.leakedKeys.length, 0)
+        AppController.inputMode = "keyboard"
+        search.forceActiveFocus()
+        keyClick(Qt.Key_X)
+        keyClick(Qt.Key_Y)
+        compare(screen.searchQuery, "xy")
+        verify(search.activeFocus)
+        compare(ShellStore.detailsCount, 0)
+        verify(!ShellStore.isFavorite(ShellStore.catalogGames[0]))
+        keyClick(Qt.Key_Escape)
+        verify(!search.activeFocus)
+        verify(!keyboard.presented)
+        compare(host.leakedKeys.length, 0)
+        search.text = ""
+        screen.searchQuery = ""
+        search.forceActiveFocus()
+        keyClick(Qt.Key_Back)
+        tryCompare(keyboard, "presented", true)
+        keyClick(Qt.Key_Escape)
+        tryCompare(keyboard, "presented", false)
+        compare(host.leakedKeys.length, 0)
+        keyClick(Qt.Key_Y)
+        verify(ShellStore.isFavorite(screen.selectedGame))
+        keyClick(Qt.Key_X)
+        compare(ShellStore.detailsCount, 1)
         compare(ShellStore.launchCount, 0)
     }
 }

@@ -3,12 +3,14 @@
 #include <QCoreApplication>
 #include <QEvent>
 #include <QKeyEvent>
+#include <QScopeGuard>
 #include <QSignalSpy>
 #include <QTest>
 
 class ControllerKeySink final : public QObject
 {
 public:
+    int trackedKey = Qt::Key_Left;
     int leftPresses = 0;
     int repeatedLeftPresses = 0;
 
@@ -17,7 +19,7 @@ protected:
     {
         if (event->type() == QEvent::KeyPress) {
             const auto *key = static_cast<QKeyEvent *>(event);
-            if (key->key() == Qt::Key_Left
+            if (key->key() == trackedKey
                     && key->nativeScanCode() == ControllerInput::syntheticControllerScanCode) {
                 ++leftPresses;
                 if (key->isAutoRepeat()) ++repeatedLeftPresses;
@@ -38,6 +40,65 @@ class ControllerInputTest final : public QObject
     Q_OBJECT
 
 private slots:
+    void digitalDpadRepeatsUntilReleased_data()
+    {
+        QTest::addColumn<int>("button");
+        QTest::addColumn<int>("key");
+        QTest::newRow("left") << int(SDL_GAMEPAD_BUTTON_DPAD_LEFT) << int(Qt::Key_Left);
+        QTest::newRow("right") << int(SDL_GAMEPAD_BUTTON_DPAD_RIGHT) << int(Qt::Key_Right);
+        QTest::newRow("up") << int(SDL_GAMEPAD_BUTTON_DPAD_UP) << int(Qt::Key_Up);
+        QTest::newRow("down") << int(SDL_GAMEPAD_BUTTON_DPAD_DOWN) << int(Qt::Key_Down);
+    }
+
+    void digitalDpadRepeatsUntilReleased()
+    {
+        QFETCH(int, button);
+        QFETCH(int, key);
+        ControllerInput input;
+        ControllerKeySink sink;
+        sink.trackedKey = key;
+        QCoreApplication::instance()->installEventFilter(&sink);
+        SDL_VirtualJoystickDesc descriptor{};
+        SDL_INIT_INTERFACE(&descriptor);
+        descriptor.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+        descriptor.naxes = SDL_GAMEPAD_AXIS_COUNT;
+        descriptor.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+        descriptor.name = "OpenNOW held D-pad regression";
+        const auto id = SDL_AttachVirtualJoystick(&descriptor);
+        QVERIFY2(id != 0, SDL_GetError());
+        const auto cleanup = qScopeGuard([id] { SDL_DetachVirtualJoystick(id); });
+        QTRY_COMPARE(input.controllerCount(), 1);
+        auto *joystick = SDL_GetJoystickFromID(id);
+        QVERIFY(joystick);
+        QVERIFY(SDL_SetJoystickVirtualButton(joystick, button, true));
+        QTRY_COMPARE(sink.leftPresses, 1);
+        QTest::qWait(150);
+        QCOMPARE(sink.repeatedLeftPresses, 0);
+        QTRY_VERIFY_WITH_TIMEOUT(sink.repeatedLeftPresses >= 2, 900);
+        QVERIFY(SDL_SetJoystickVirtualButton(joystick, button, false));
+        QTest::qWait(50);
+        auto count = sink.leftPresses;
+        QTest::qWait(300);
+        QCOMPARE(sink.leftPresses, count);
+        QVERIFY(SDL_SetJoystickVirtualButton(joystick, button, true));
+        QTRY_COMPARE(sink.leftPresses, count + 1);
+        input.setInputSuspended(true);
+        count = sink.leftPresses;
+        QTest::qWait(400);
+        QCOMPARE(sink.leftPresses, count);
+        input.setInputSuspended(false);
+        QTest::qWait(350);
+        QCOMPARE(sink.leftPresses, count);
+        QVERIFY(SDL_SetJoystickVirtualButton(joystick, button, false));
+        QTest::qWait(30);
+        QVERIFY(SDL_SetJoystickVirtualButton(joystick, button, true));
+        QTRY_COMPARE(sink.leftPresses, count + 1);
+        input.setShellCaptureEnabled(false);
+        count = sink.leftPresses;
+        QTest::qWait(400);
+        QCOMPARE(sink.leftPresses, count);
+    }
+
     void suspendedInputNeutralizesAndStopsBackgroundGameplay()
     {
         ControllerInput input;
@@ -158,6 +219,17 @@ private slots:
         QVERIFY(SDL_SetJoystickVirtualAxis(joystick, SDL_GAMEPAD_AXIS_LEFTX, -19'000));
         SDL_UpdateJoysticks();
         QTRY_COMPARE_WITH_TIMEOUT(sink.leftPresses, beforeSecondPress + 1, 1'000);
+
+        QVERIFY(SDL_SetJoystickVirtualAxis(joystick, SDL_GAMEPAD_AXIS_LEFTX, 0));
+        sink.trackedKey = Qt::Key_Return;
+        sink.leftPresses = 0;
+        sink.repeatedLeftPresses = 0;
+        QVERIFY(SDL_SetJoystickVirtualButton(joystick, SDL_GAMEPAD_BUTTON_SOUTH, true));
+        QTRY_COMPARE_WITH_TIMEOUT(sink.leftPresses, 1, 1'000);
+        QTest::qWait(450);
+        QCOMPARE(sink.leftPresses, 1);
+        QCOMPARE(sink.repeatedLeftPresses, 0);
+        QVERIFY(SDL_SetJoystickVirtualButton(joystick, SDL_GAMEPAD_BUTTON_SOUTH, false));
 
         QVERIFY(SDL_DetachVirtualJoystick(id));
         QTRY_COMPARE_WITH_TIMEOUT(input.controllerCount(), initialCount, 2'000);

@@ -107,6 +107,12 @@ private:
         int key = 0;
     };
 
+    struct ShellKeyPress {
+        QPointer<QObject> target;
+        qint64 pressedAt = 0;
+        qint64 repeatedAt = 0;
+    };
+
     struct GamepadSlot {
         SDL_Gamepad *gamepad = nullptr;
         SDL_JoystickID instanceId = 0;
@@ -124,7 +130,7 @@ private:
         bool touchpadClick = false;
         bool guideLatched = false;
         std::array<SonyContact, 2> contacts{};
-        QHash<int, QPointer<QObject>> shellKeys;
+        QHash<int, ShellKeyPress> shellKeys;
         std::array<RepeatingDirection, 4> directions{{
             {false, 0, 0, Qt::Key_Left}, {false, 0, 0, Qt::Key_Right},
             {false, 0, 0, Qt::Key_Up}, {false, 0, 0, Qt::Key_Down}}};

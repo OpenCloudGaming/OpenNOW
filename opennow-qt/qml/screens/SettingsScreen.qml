@@ -22,12 +22,15 @@ FocusScope {
     property var dropdownLabels: []
     property var dropdownValues: []
     property var dropdownDisabledValues: []
-    property int resolutionMenuCurrentIndex: 1
     property string warningKind: ""
     property string presentedWarningKind: ""
     onWarningKindChanged: if (warningKind !== "") presentedWarningKind = warningKind
     readonly property bool warningOpen: warningKind !== ""
     readonly property bool sheetOpen: dropdownOpen || warningOpen || proxyEditorOpen || shortcutEditorOpen
+    property var rows: settingsModel()
+    property int rowCount: 0
+    property bool restoringRows: false
+    property string focusedRowKey: ""
     readonly property real dropdownPanelHeight: Math.max(height, 1080) - 240
     readonly property var sections: [
         {name:qsTr("Account"), icon:"settings-account.svg", color:Theme.violet},
@@ -84,113 +87,25 @@ FocusScope {
         return ""
     }
 
-    function resolutionChoices() {
-        const entries = {}
-        const defaults = [
-            "1280x720", "1920x1080", "2560x1440", "3840x2160",
-            "1280x800", "1440x900", "1680x1050",
-            "1920x1200", "2560x1600", "3840x2400",
-            "2560x1080", "3440x1440", "5120x1440"
-        ]
-        for (let index = 0; index < defaults.length; ++index)
-            entries[defaults[index]] = defaults[index]
-        const entitled = ShellStore.subscription && ShellStore.subscription.entitledResolutions
-            ? ShellStore.subscription.entitledResolutions : []
-        for (let index = 0; index < entitled.length; ++index) {
-            const width = Number(entitled[index].width || 0)
-            const height = Number(entitled[index].height || 0)
-            if (width >= 640 && height >= 480)
-                entries[width + "x" + height] = width + "x" + height
-        }
-        const values = Object.keys(entries)
-        values.sort((left, right) => {
-            const leftParts = left.split("x")
-            const rightParts = right.split("x")
-            return Number(leftParts[0]) * Number(leftParts[1]) - Number(rightParts[0]) * Number(rightParts[1])
-        })
-        return values
-    }
-
-    function resolutionDisplayLabel(value) {
-        const parts = String(value || "").split("x")
-        if (parts.length !== 2)
-            return String(value || "")
-        const height = Number(parts[1])
-        const aspect = aspectForResolution(value)
-        let name = height >= 2160 && aspect === "16:9" ? "4K" : height + "p"
-        if (aspect === "21:9")
-            name = "UW " + height + "p"
-        else if (aspect === "32:9")
-            name = qsTr("Super Ultrawide")
-        return name + (aspect.length ? " (" + aspect + ")" : "")
-            + " · " + parts[0] + "×" + parts[1]
-    }
-
-    function resolutionLabels(values) {
-        return values.map(value => resolutionDisplayLabel(value))
-    }
-
-    function resolutionDropdownItems() {
-        return [
-            {kind:"heading", label:qsTr("16:9 STANDARD"), height:24},
-            {kind:"choice", label:"720p", detail:"1280×720", values:["1280x720"], height:38},
-            {kind:"choice", label:"1080p", detail:"1920×1080", values:["1920x1080"], height:38},
-            {kind:"choice", label:"1440p", detail:"2560×1440 · up to 120", values:["2560x1440"], height:38},
-            {kind:"choice", label:"4K", detail:"3840×2160 · up to 120", values:["3840x2160"], height:38},
-            {kind:"heading", label:qsTr("16:10 WIDESCREEN"), height:28},
-            {kind:"choice", label:"720p · WXGA · WSXGA", detail:"1280×800 · 1440×900 · 1680×1050", values:["1280x800","1440x900","1680x1050"], height:38},
-            {kind:"choice", label:"1200p · 1600p · 4K", detail:"1920×1200 · 2560×1600 · 3840×2400", values:["1920x1200","2560x1600","3840x2400"], height:38},
-            {kind:"heading", label:qsTr("21:9 ULTRAWIDE"), height:28},
-            {kind:"choice", label:"UW 1080p · UW 1440p", detail:"2560×1080 · 3440×1440", values:["2560x1080","3440x1440"], height:38},
-            {kind:"heading", label:qsTr("32:9 SUPER ULTRAWIDE"), height:28},
-            {kind:"choice", label:qsTr("Super Ultrawide"), detail:"5120×1440", values:["5120x1440"], height:38}
-        ]
-    }
-
-    function resolutionItemSelected(item) {
-        return Boolean(item && item.values
-            && item.values.indexOf(String(ShellStore.settings.resolution || "")) >= 0
-        )
-    }
-
-    function prepareResolutionMenu() {
-        const items = resolutionDropdownItems()
-        resolutionMenuCurrentIndex = 1
-        for (let index = 0; index < items.length; ++index) {
-            if (items[index].kind === "choice" && resolutionItemSelected(items[index])) {
-                resolutionMenuCurrentIndex = index
-                return
-            }
-        }
-    }
-
-    function moveResolutionMenu(delta) {
-        const items = resolutionDropdownItems()
-        let next = resolutionMenuCurrentIndex
-        do {
-            next += delta
-            if (next < 0)
-                next = items.length - 1
-            else if (next >= items.length)
-                next = 0
-        } while (items[next].kind !== "choice")
-        resolutionMenuCurrentIndex = next
-    }
-
-    function chooseResolutionItem(item) {
-        if (!item || item.kind !== "choice")
-            return
+    function resolutionRowData() {
         const current = String(ShellStore.settings.resolution || "")
-        let candidate = item.values.indexOf(current) >= 0 ? current : ""
-        for (let index = 0; candidate === "" && index < item.values.length; ++index) {
-            if (dropdownValues.indexOf(item.values[index]) >= 0)
-                candidate = item.values[index]
+        const options = []
+        let group = ""
+        for (const item of ShellStore.resolutionItems()) {
+            if (item.kind === "heading") {
+                group = item.label
+                continue
+            }
+            options.push({label:item.label, value:item.value, detail:item.detail || "", disabled:item.disabled === true, group:group})
         }
-        if (candidate === "")
-            candidate = item.values[0]
-        ShellStore.setSetting("resolution", candidate)
-        ShellStore.clampFpsToEntitlement()
-        closeDropdown()
+        if (current !== "" && !options.some(option => option.value === current))
+            options.unshift({label:current.replace("x", "×"), value:current, detail:qsTr("Current resolution"), disabled:false, group:qsTr("CURRENT")})
+        return options
+    }
+
+    function resolutionLabel(value) {
+        const option = resolutionRowData().find(item => item.value === value)
+        return option ? option.label + " · " + option.detail : String(value || "").replace("x", "×")
     }
 
     function openInitialDropdown() {
@@ -337,7 +252,7 @@ FocusScope {
             ]
         }
         if (root.selectedSection === 2) {
-            const resolutions = resolutionChoices()
+            const resolutionOptions = resolutionRowData()
             const frameRates = fpsChoices()
             const shader = settings.videoShader || ({enabled:false})
             const shaderValues = [
@@ -357,7 +272,11 @@ FocusScope {
                     GraphicsDevices.choices.filter(item => item.disabled).map(item => item.value))] : []),
                 toggle(qsTr("Steam Big Picture mode"), qsTr("Request gamepad-friendly launchers such as Steam Big Picture. Applies to new GeForce NOW sessions only."), "steamBigPictureMode"),
                 {t:"Display", d:"The Qt stream surface uses the current display", v:"Monitor 1 · current display", info:true},
-                choice("Resolution", "Exact stream size · up / down to browse, A to pick", "resolution", resolutions, resolutionLabels(resolutions)),
+                {t:qsTr("Resolution"), d:qsTr("Exact stream size · up / down to browse, A to pick"), key:"resolution",
+                    v:resolutionLabel(String(settings.resolution || "")), values:resolutionOptions.map(option => option.value),
+                    labels:resolutionOptions.map(option => option.label), details:resolutionOptions.map(option => option.detail),
+                    groups:resolutionOptions.map(option => option.group), control:"dropdown",
+                    disabledValues:resolutionOptions.filter(option => option.disabled).map(option => option.value)},
                 choice("Frame rate", root.fpsNote(), "fps", frameRates, frameRates.map(value => String(value)), "segments", root.fpsLockedValues()),
                 toggle(qsTr("Fullscreen when session is ready"), qsTr("Automatically enter fullscreen when your session is ready. F11 toggles fullscreen during play."), "autoFullScreen"),
                 {t:"Video shader", d:"Post-process on this device after decode", v:["Off","Sharpen","FidelityFX","CRT"][shaderIndex], key:"videoShader", values:shaderValues, labels:["Off","Sharpen","FidelityFX","CRT"], control:"segments", selectedIndex:shaderIndex},
@@ -434,7 +353,7 @@ FocusScope {
         if (root.selectedSection === 5) {
             return [
                 choice("Theme", "Auto follows the system at sunset", "appTheme", ["auto","dark","light"], ["Auto","Midnight","Light"], "segments"),
-                {t:"Accent colour", d:"Focus ring, progress and active states", v:root.titleCase(settings.appAccentColor || "blue"), key:"appAccentColor", values:["violet","blue","amber","green","rose","coral","white"], labels:["Violet","Sky","Amber","Mint","Rose","Coral","White"], colors:[Theme.violet,Theme.focus,Theme.yellow,Theme.mint,"#FF8A9A",Theme.coral,Theme.face], control:"colors"},
+                {t:"Accent colour", d:"Focus ring, progress and active states", v:root.titleCase(settings.appAccentColor || "blue"), key:"appAccentColor", values:["violet","blue","amber","green","rose","coral","white"], labels:["Violet","Sky","Amber","Mint","Rose","Coral","White"], colors:["violet","blue","amber","green","rose","coral","white"].map(value => Theme.accentColor(value, Theme.lightMode)), control:"colors"},
                 choice("Backdrop", "What sits behind the glass", "themePack", ["nocturne","aurora","kraft","phosphor"], ["Aurora gradient","Nocturne","Console room","Off"], "segments"),
                 toggle("Translucent glass", "Blur the backdrop through panels · off is faster on iGPUs", "translucentUI"),
                 choice("Tile style", "Shape of game tiles on My games", "posterSizeScale", [0.9,1.05,1.25], ["Compact","Soft","Round"], "segments"),
@@ -480,6 +399,7 @@ FocusScope {
     }
 
     property var dropdownDetails: []
+    property var dropdownGroups: []
 
     function openChoices(row) {
         dropdownCloseTimer.stop()
@@ -489,8 +409,7 @@ FocusScope {
         dropdownValues = row.values
         dropdownDisabledValues = row.disabledValues || []
         dropdownDetails = row.details || []
-        if (row.key === "resolution")
-            prepareResolutionMenu()
+        dropdownGroups = row.groups || []
         const options = root.choiceSheetOptions()
         choiceSheet.options = options
         choiceSheet.currentIndex = root.choiceSheetCurrentIndex(options)
@@ -615,41 +534,23 @@ FocusScope {
     }
 
     function choiceSheetOptions() {
-        if (root.dropdownKey === "resolution") {
-            const options = []
-            let group = ""
-            for (const item of root.resolutionDropdownItems()) {
-                if (item.kind === "heading") {
-                    group = item.label
-                    continue
-                }
-                options.push({label:item.label, value:item, detail:item.detail || "", group:group})
-            }
-            return options
-        }
         return root.dropdownLabels.map((label, index) => ({
             label:I18n.source(String(label), I18n.revision),
             value:root.dropdownValues[index],
             detail:root.dropdownDetails[index] || (root.dropdownChoiceDisabled(index) ? qsTr("Unavailable") : ""),
-            disabled:root.dropdownChoiceDisabled(index)
+            disabled:root.dropdownChoiceDisabled(index),
+            group:root.dropdownGroups[index] || ""
         }))
     }
 
     function choiceSheetCurrentIndex(options) {
-        if (root.dropdownKey === "resolution")
-            return options.findIndex(option => root.resolutionItemSelected(option.value))
         for (let index = 0; index < root.dropdownValues.length; ++index)
             if (root.dropdownChoiceSelected(index)) return index
         return -1
     }
 
     function chooseFromSheet(index) {
-        if (root.dropdownKey === "resolution") {
-            const option = choiceSheet.options[index]
-            if (option) root.chooseResolutionItem(option.value)
-        } else {
-            root.commitDropdownChoice(index)
-        }
+        root.commitDropdownChoice(index)
     }
 
     function sectionMeta() {
@@ -733,6 +634,34 @@ FocusScope {
 
     function rowFocusKey() { return "settings-rows-" + root.selectedSection }
 
+    function rowIdentity(row) {
+        return row ? root.selectedSection + "|" + String(row.key || row.action || row.route || "") + "|" + String(row.t || "") : ""
+    }
+
+    function restoreRowFocus() {
+        const count = root.rows.length
+        if (count === 0) {
+            settingsList.currentIndex = -1
+            return
+        }
+        const keyed = root.rows.findIndex(row => root.rowIdentity(row) === root.focusedRowKey)
+        const target = keyed >= 0 ? keyed : Math.min(ShellStore.focusIndex(root.rowFocusKey()), count - 1)
+        if (settingsList.currentIndex !== target)
+            settingsList.currentIndex = target
+        if (keyed < 0)
+            root.focusedRowKey = root.rowIdentity(root.rows[target])
+        ShellStore.rememberFocus(root.rowFocusKey(), target)
+    }
+
+    function syncRows() {
+        root.restoringRows = true
+        root.rowCount = root.rows.length
+        root.restoreRowFocus()
+        root.restoringRows = false
+    }
+
+    onRowsChanged: syncRows()
+
     onDropdownOpenChanged: {
         if (dropdownOpen) {
             dropdownCloseTimer.stop()
@@ -751,12 +680,8 @@ FocusScope {
         else
             Qt.callLater(() => { if (!root.sheetOpen) settingsList.forceActiveFocus() })
     }
-    onSelectedSectionChanged: Qt.callLater(() => {
-        settingsList.currentIndex = settingsList.count
-            ? Math.min(ShellStore.focusIndex(root.rowFocusKey()), settingsList.count - 1)
-            : -1
-    })
     Component.onCompleted: {
+        root.syncRows()
         if (AppController.route === "settings")
             root.selectedSection = Math.max(0, Math.min(root.sections.length - 1, ShellStore.focusIndex("settings-section")))
     }
@@ -789,19 +714,24 @@ FocusScope {
         x: 96; y: 124; width: 360; height: 792; panelRadius: 40
         ListView {
             id: sectionList
+            objectName: "consoleSettingsSections"
             anchors.fill: parent; anchors.margins: 22; spacing: 6; clip: false; focus: false
             interactive: false
+            keyNavigationEnabled: true
+            keyNavigationWraps: false
             KeyNavigation.right: settingsList
-            model: root.sections; currentIndex: root.selectedSection
+            model: root.sections.length; currentIndex: root.selectedSection
             onCurrentIndexChanged: if (currentIndex >= 0) {
                 ShellStore.rememberFocus("settings-section", currentIndex)
                 if (activeFocus) { root.selectedSection = currentIndex; root.closeDropdown() }
             }
+            onActiveFocusChanged: if (activeFocus && currentIndex !== root.selectedSection) currentIndex = root.selectedSection
             Keys.onReturnPressed: settingsList.forceActiveFocus()
             Keys.onEnterPressed: settingsList.forceActiveFocus()
             delegate: ItemDelegate {
                 id: sectionItem
-                required property var modelData; required property int index
+                required property int index
+                readonly property var modelData: root.sections[index] || ({})
                 readonly property bool selected: root.selectedSection === sectionItem.index
                 width: sectionList.width; height: 58; focusPolicy: Qt.StrongFocus; padding: 0
                 Accessible.name: I18n.source(modelData.name, I18n.revision)
@@ -884,14 +814,15 @@ FocusScope {
             preferredHighlightBegin: 80
             preferredHighlightEnd: height - 120
             focus: true
-            model: root.settingsModel()
-            Component.onCompleted: currentIndex = count ? Math.min(ShellStore.focusIndex(root.rowFocusKey()), count - 1) : -1
-            onCountChanged: if (count > 0) currentIndex = Math.min(ShellStore.focusIndex(root.rowFocusKey()), count - 1)
-            onCurrentIndexChanged: if (currentIndex >= 0) ShellStore.rememberFocus(root.rowFocusKey(), currentIndex)
+            model: root.rowCount
+            onCurrentIndexChanged: if (currentIndex >= 0 && !root.restoringRows) {
+                ShellStore.rememberFocus(root.rowFocusKey(), currentIndex)
+                root.focusedRowKey = root.rowIdentity(root.rows[currentIndex])
+            }
             delegate: SettingRow {
                 id: settingRow
-                required property var modelData
                 required property int index
+                readonly property var modelData: root.rows[index] || ({})
                 width: ListView.view.width - 20
                 rowData: modelData
                 currentItem: ListView.isCurrentItem
@@ -903,7 +834,7 @@ FocusScope {
                 }
             }
             Keys.onPressed: event => {
-                const row = currentIndex >= 0 && model ? model[currentIndex] : null
+                const row = currentIndex >= 0 ? root.rows[currentIndex] : null
                 if (event.key === Qt.Key_Left || event.key === Qt.Key_Right) {
                     const delta = event.key === Qt.Key_Left ? -1 : 1
                     if (!root.stepRow(row, delta) && delta < 0)

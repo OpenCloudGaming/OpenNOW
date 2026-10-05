@@ -6,6 +6,7 @@ import OpenNOW
 
 FocusScope {
     id: root
+    objectName: "consoleQuickSettings"
     width: 520
     height: 687
     focus: true
@@ -140,7 +141,8 @@ FocusScope {
         Keys.onPressed: event => {
             if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter
                     || event.key === Qt.Key_Space) && row.enabled) {
-                row.triggered()
+                if (!event.isAutoRepeat)
+                    row.triggered()
                 event.accepted = true
             }
         }
@@ -223,6 +225,7 @@ FocusScope {
 
             QuickRow {
                 id: regionRow
+                objectName: "quickSettingsRegionRow"
                 title: qsTr("Region")
                 value: String(ShellStore.selectedRegion || qsTr("Automatic"))
                 statusDot: true
@@ -299,13 +302,17 @@ FocusScope {
                         model: [
                             { key: "A", label: qsTr("Adjust") },
                             { key: "Y", label: qsTr("All settings") },
-                            { key: "RT", label: qsTr("Close") }
+                            { key: "B", label: qsTr("Close") }
                         ]
-                        delegate: Row {
+                        delegate: SessionGlyphs.Hint {
                             required property var modelData
-                            spacing: 8
-                            ControllerGlyph { glyph: modelData.key; label: ""; glyphSize: 26; glyphColor: "#FFFFFF" }
-                            Text { anchors.verticalCenter: parent.verticalCenter; text: modelData.label; color: DesktopTokens.textMuted; font.family: DesktopTokens.bodyFont; font.pixelSize: 14; font.weight: Font.Bold }
+                            objectName: "quickSettingsHint" + modelData.key
+                            prompts: glyphs
+                            button: modelData.key
+                            label: modelData.label
+                            glyphColor: "#FFFFFF"
+                            keyInk: "#FFFFFF"
+                            labelColor: DesktopTokens.textMuted
                         }
                     }
                 }
@@ -313,11 +320,21 @@ FocusScope {
         }
     }
 
+    SessionGlyphs { id: glyphs }
+
     onVisibleChanged: if (visible) Qt.callLater(regionRow.forceActiveFocus)
+    Component.onCompleted: Qt.callLater(regionRow.forceActiveFocus)
     Keys.onPressed: event => {
-        if (event.key === Qt.Key_Y) {
-            root.openAllSettings()
+        const modifiers = event.modifiers & (Qt.ControlModifier | Qt.ShiftModifier | Qt.AltModifier | Qt.MetaModifier)
+        if ((event.key === Qt.Key_G && modifiers === Qt.ControlModifier)
+                || (event.key === Qt.Key_F1 && AppController.inputMode === "controller")) {
             event.accepted = true
+            if (!event.isAutoRepeat)
+                AppController.showOverlay("")
+        } else if (event.key === Qt.Key_Y) {
+            event.accepted = true
+            if (!event.isAutoRepeat)
+                root.openAllSettings()
         }
     }
 }

@@ -318,6 +318,7 @@ int AcceptanceSession::startSmokeWorkload()
                      || m_arguments.contains(u"--smoke-background-stream"_s)
                      || m_arguments.contains(u"--smoke-recording"_s)
                      || m_arguments.contains(u"--smoke-shortcuts"_s)
+                     || m_arguments.contains(u"--smoke-console-settings"_s)
                      || m_arguments.contains(u"--smoke-collections"_s)
                      || m_arguments.contains(u"--smoke-steam-big-picture"_s)
                      || m_arguments.contains(u"--smoke-persistent-in-game-settings"_s)
@@ -358,6 +359,8 @@ int AcceptanceSession::startSmokeWorkload()
             ? u"qrc:/acceptance/RecordingAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-shortcuts"_s)
             ? u"qrc:/acceptance/ShortcutsAcceptance.qml"_s
+            : m_arguments.contains(u"--smoke-console-settings"_s)
+            ? u"qrc:/acceptance/ConsoleSettingsAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-collections"_s)
             ? u"qrc:/acceptance/CollectionsAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-steam-big-picture"_s)
@@ -427,6 +430,7 @@ int AcceptanceSession::startSmokeWorkload()
             }
             if (ok && (m_arguments.contains(u"--smoke-command-search"_s)
                        || m_arguments.contains(u"--smoke-shortcuts"_s)
+                       || m_arguments.contains(u"--smoke-console-settings"_s)
                        || m_arguments.contains(u"--bug-report-notice-check"_s)
                        || m_arguments.contains(u"--smoke-game-details-layout"_s))) {
                 if (m_arguments.contains(u"--smoke-game-details-layout"_s)
@@ -569,10 +573,14 @@ int AcceptanceSession::startSmokeWorkload()
         auto *window = m_engine.rootObjects().isEmpty()
             ? nullptr : qobject_cast<QQuickWindow *>(m_engine.rootObjects().first());
         if (!window) return EXIT_FAILURE;
+        auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
+        if (!store) return EXIT_FAILURE;
+        store->setProperty("streamerStartRequestId", u"stats-shortcut-fixture"_s);
+        store->setProperty("activeSession", QVariantMap{{u"sessionId"_s, u"stats-shortcut-fixture"_s}});
+        store->setProperty("streamState", u"streaming"_s);
+        store->setProperty("streamer", QVariantMap{{u"status"_s, u"streaming"_s}, {u"firstFrameLatencyMs"_s, 37}});
         const bool configuredShortcut = m_arguments.contains(u"--smoke-configured-stats-shortcut"_s);
         if (configuredShortcut) {
-            auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
-            if (!store) return EXIT_FAILURE;
             auto settings = store->property("settings").toMap();
             settings.insert(u"shortcutToggleStats"_s, u"F3"_s);
             store->setProperty("settings", settings);

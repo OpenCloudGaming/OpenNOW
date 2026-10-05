@@ -11,6 +11,7 @@ FocusScope {
     property var editingGame: null
     property string editingGameId: ""
     property string editingTileSize: "square"
+    property string selectedGameId: ""
 
     readonly property var homeIds: moveMode
         ? movePreviewIds : (ShellStore.settings.favoriteGameIds || [])
@@ -112,6 +113,9 @@ FocusScope {
         if (!gameRepeater.count)
             return
         root.currentIndex = Math.max(0, Math.min(root.currentIndex, gameRepeater.count - 1))
+        root.selectedGameId = root.selectedItem ? root.selectedItem.gameId : ""
+        if (root.editMenuOpen)
+            return
         const item = gameRepeater.itemAt(root.currentIndex)
         if (item)
             item.forceActiveFocus()
@@ -123,6 +127,15 @@ FocusScope {
                 return index
         }
         return 0
+    }
+
+    function retainSelection() {
+        if (root.selectedGameId !== "") {
+            const index = root.layoutItems.findIndex(item => item.gameId === root.selectedGameId)
+            if (index >= 0)
+                root.currentIndex = index
+        }
+        deferredFocus.schedule(null)
     }
 
     function directionalIndex(direction) {
@@ -343,7 +356,10 @@ FocusScope {
                     parked: root.currentIndex === index
                         && (root.editMenuOpen || AppController.overlay !== "" || (Window.active && !root.activeFocus))
                     opacity: root.moveMode && modelData.gameId !== root.editingGameId ? 0.58 : 1
-                    onActiveFocusChanged: if (activeFocus) root.currentIndex = index
+                    onActiveFocusChanged: if (activeFocus) {
+                        root.currentIndex = index
+                        root.selectedGameId = modelData.gameId
+                    }
                     onClicked: {
                         if (root.moveMode) {
                             root.commitMove()
@@ -437,7 +453,7 @@ FocusScope {
         }
     }
 
-    onLayoutItemsChanged: deferredFocus.schedule(null)
+    onLayoutItemsChanged: root.retainSelection()
     Component.onCompleted: deferredFocus.schedule(
         () => Math.min(ShellStore.focusIndex("home"), Math.max(0, root.layoutItems.length - 1)))
 }

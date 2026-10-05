@@ -33,7 +33,8 @@ public slots:
                  "RoundedArtwork",
                  "PosterTile", "VirtualKeyboard", "CloudLibraryActions", "ConsoleActionButton",
                  "ConsoleSheetFrame", "ConsoleChoiceSheet", "ConsoleWarningSheet", "ConsoleStoreMark",
-                 "ConsoleStoreChip", "ConsoleFilterSheet", "FocusFrame", "MotionProgress"}) {
+                 "ConsoleStoreChip", "ConsoleFilterSheet", "FocusFrame", "MotionProgress", "GameTile",
+                 "HomeTileMenu"}) {
             qmlRegisterType(QUrl::fromLocalFile(source + "/components/" + name + ".qml"),
                             "OpenNOW", 1, 0, name);
         }
@@ -41,7 +42,7 @@ public slots:
             qmlRegisterType(QUrl::fromLocalFile(source + "/desktop/components/" + name + ".qml"),
                             "OpenNOW", 1, 0, name);
         }
-        for (const auto *name : {"GameDetailScreen", "LibraryScreen"}) {
+        for (const auto *name : {"GameDetailScreen", "LibraryScreen", "HomeScreen"}) {
             qmlRegisterType(QUrl::fromLocalFile(source + "/screens/" + name + ".qml"),
                             "OpenNOW", 1, 0, name);
         }

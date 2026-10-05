@@ -333,11 +333,11 @@ FocusScope {
         color: Qt.rgba(Theme.shell.r, Theme.shell.g, Theme.shell.b, 0.9)
         border.width: 1
         border.color: Theme.seam
-        ControllerGlyph {
+        SessionGlyphs.Hint {
             id: reconnectHint
             anchors.centerIn: parent
-            glyph: glyphs.button("GUIDE")
-            keyboard: glyphs.keyboard
+            prompts: glyphs
+            button: "GUIDE"
             label: qsTr("Session menu")
         }
         MouseArea {
@@ -377,11 +377,24 @@ FocusScope {
 
         Row {
             id: streamHints
+            objectName: "streamControlHints"
             anchors.centerIn: parent
             spacing: 22
-            ControllerGlyph { glyph: glyphs.button("GUIDE"); keyboard: glyphs.keyboard; label: qsTr("Session") }
-            ControllerGlyph { visible: ShellStore.settings.shortcutToggleStats !== ""; glyph: String(ShellStore.settings.shortcutToggleStats ?? "Ctrl+N"); keyboard: true; label: qsTr("Stats") }
-            ControllerGlyph { visible: String(ShellStore.settings.shortcutToggleFullscreen ?? "F11") !== ""; glyph: String(ShellStore.settings.shortcutToggleFullscreen ?? "F11"); keyboard: true; label: qsTr("Fullscreen") }
+            SessionGlyphs.Hint { objectName: "streamSessionHint"; prompts: glyphs; button: "GUIDE"; label: qsTr("Session") }
+            SessionGlyphs.Hint {
+                objectName: "streamStatsKeyHint"
+                visible: glyphs.keyboard && button !== ""
+                prompts: glyphs
+                button: String(ShellStore.settings.shortcutToggleStats ?? "Ctrl+N")
+                label: qsTr("Stats")
+            }
+            SessionGlyphs.Hint {
+                objectName: "streamFullscreenKeyHint"
+                visible: glyphs.keyboard && button !== ""
+                prompts: glyphs
+                button: String(ShellStore.settings.shortcutToggleFullscreen ?? "F11")
+                label: qsTr("Fullscreen")
+            }
         }
     }
 

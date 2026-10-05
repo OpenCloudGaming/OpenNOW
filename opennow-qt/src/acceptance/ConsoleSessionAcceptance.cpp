@@ -1,5 +1,6 @@
 #include "acceptance/AcceptanceSession.h"
 #include "app/AppController.h"
+#include "input/ControllerInput.h"
 
 #include <QGuiApplication>
 #include <QKeyEvent>
@@ -48,10 +49,11 @@ int AcceptanceSession::startConsoleSessionWorkload()
             }
             return ok;
         };
-        const auto key = [window](Qt::Key value) {
-            QKeyEvent press(QEvent::KeyPress, value, Qt::NoModifier);
+        const auto key = [window](Qt::Key value, bool controller = false) {
+            const auto scanCode = controller || value == Qt::Key_F1 ? ControllerInput::syntheticControllerScanCode : 0;
+            QKeyEvent press(QEvent::KeyPress, value, Qt::NoModifier, scanCode, 0, 0);
             QGuiApplication::sendEvent(window, &press);
-            QKeyEvent release(QEvent::KeyRelease, value, Qt::NoModifier);
+            QKeyEvent release(QEvent::KeyRelease, value, Qt::NoModifier, scanCode, 0, 0);
             QGuiApplication::sendEvent(window, &release);
         };
         const auto setStreamer = [store](const QString &status, bool firstFrame) {
@@ -205,9 +207,60 @@ int AcceptanceSession::startConsoleSessionWorkload()
             key(Qt::Key_Escape);
             if (!require(m_controller.route().startsWith(u"settings"_s)
                     && !page->property("dropdownOpen").toBool(), "quick double Back navigated away during sheet dismissal")) return;
+            m_controller.navigate(u"home"_s);
+            store->setProperty("selectedGame", QVariantMap{{u"title"_s, u"Fortnite"_s}});
+            key(Qt::Key_F1);
+            break;
+        case 20:
+            if (!require(m_controller.overlay() == u"quick-settings"_s
+                    && !window->findChild<QQuickItem *>(u"consoleSessionGuide"_s),
+                         "idle Guide button showed the last-selected game's session menu")) return;
+            if (auto *background = qobject_cast<QQuickItem *>(page)) background->forceActiveFocus();
+            key(Qt::Key_X, true);
+            if (!require(m_controller.overlay() == u"quick-settings"_s && m_controller.route() == u"home"_s,
+                         "background focus bypassed the idle quick menu")) return;
+            break;
+        case 21:
+            if (!require(window->activeFocusItem()
+                    && window->activeFocusItem()->objectName() == u"quickSettingsRegionRow"_s,
+                         "idle quick menu did not recover controller focus")) return;
+            key(Qt::Key_F1);
+            if (!require(QMetaObject::invokeMethod(store, "applyStreamShortcutAction", Q_ARG(QVariant, u"guide"_s))
+                    && m_controller.overlay().isEmpty() && m_controller.route() == u"home"_s,
+                         "late streamer guide event opened a menu without an active session")) return;
+            store->setProperty("catalogGames", QVariantList{QVariantMap{
+                {u"id"_s, u"fixture-game"_s}, {u"title"_s, u"First game"_s},
+                {u"launchAppId"_s, u"12345"_s}, {u"availableStores"_s, QStringList{u"Steam"_s}}}});
+            store->setProperty("catalogState", u"ready"_s);
+            m_controller.navigate(u"library"_s);
+            break;
+        case 22: {
+            auto *search = window->findChild<QQuickItem *>(u"consoleLibrarySearchField"_s);
+            if (!require(search, "library search field missing")) return;
+            search->forceActiveFocus();
+            key(Qt::Key_Return, true);
+            break;
+        }
+        case 23: {
+            auto *keyboard = window->findChild<QQuickItem *>(u"consoleLibraryKeyboard"_s);
+            if (!require(m_controller.route() == u"library"_s && keyboard
+                    && keyboard->property("presented").toBool(),
+                         "controller Cross on search opened a game instead of the keyboard")) return;
+            key(Qt::Key_Escape, true);
+            break;
+        }
+        case 24: {
+            auto *search = window->findChild<QQuickItem *>(u"consoleLibrarySearchField"_s);
+            if (!require(search, "library disappeared after search cancellation")) return;
+            search->forceActiveFocus();
+            key(Qt::Key_X, true);
+            key(Qt::Key_Y, true);
+            if (!require(m_controller.route() == u"library"_s && search->property("text").toString().isEmpty(),
+                         "textless controller face buttons activated a game behind search")) return;
             timer->stop();
             m_application.exit(EXIT_SUCCESS);
             break;
+        }
         }
     });
     timer->start();
