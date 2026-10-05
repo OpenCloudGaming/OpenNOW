@@ -53,7 +53,7 @@
                     "CARGO_HOME": "/run/build/opennow/cargo",
                     "CARGO_NET_OFFLINE": "true",
                     "LIBCLANG_PATH": "/usr/lib/sdk/llvm20/lib",
-                    "OPENNOW_FFMPEG_ARCHIVE": "/run/build/opennow/ffmpeg-source.tar.xz"
+                    "OPENNOW_FFMPEG_ARCHIVE": "/run/build/opennow/ffmpeg-source.tar"
                 }
             },
             "sources": [
@@ -97,7 +97,15 @@
                     "type": "file",
                     "url": "https://ffmpeg.org/releases/ffmpeg-9.0.tar.xz",
                     "sha256": "7f607a00dd0d28a729d5a4811205812eef01cf6ef6155025febb6f36a9062d52",
-                    "dest-filename": "ffmpeg-source.tar.xz"
+                    "only-arches": ["x86_64"],
+                    "dest-filename": "ffmpeg-source.tar"
+                },
+                {
+                    "type": "file",
+                    "url": "https://codeload.github.com/jc-kynesim/rpi-ffmpeg/tar.gz/f43bd9dafd9349b6824ee1fdcd967662fcc94c20",
+                    "sha256": "49bad030ca51b1bc5dcf4aa510139b7e5f74e09ff97741933809d37560a704c4",
+                    "only-arches": ["aarch64"],
+                    "dest-filename": "ffmpeg-source.tar"
                 }
             ]
         }

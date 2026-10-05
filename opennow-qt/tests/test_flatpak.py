@@ -17,6 +17,21 @@ SPEC.loader.exec_module(PREPARE)
 
 
 class FlatpakTests(unittest.TestCase):
+    def test_each_architecture_uses_its_native_ffmpeg_source(self):
+        manifest = json.loads((PACKAGING / "io.github.opencloudgaming.OpenNOW.json").read_text())
+        sources = manifest["modules"][-1]["sources"]
+        archives = [source for source in sources if source.get("dest-filename") == "ffmpeg-source.tar"]
+        self.assertEqual(len(archives), 2)
+        by_arch = {source["only-arches"][0]: source for source in archives}
+        self.assertEqual(set(by_arch), {"x86_64", "aarch64"})
+        self.assertEqual(by_arch["x86_64"]["url"], "https://ffmpeg.org/releases/ffmpeg-9.0.tar.xz")
+        arm = by_arch["aarch64"]
+        self.assertTrue(arm["url"].startswith("https://codeload.github.com/jc-kynesim/rpi-ffmpeg/tar.gz/"))
+        revision = arm["url"].rsplit("/", 1)[-1]
+        build = (ROOT / "native/opennow-streamer/vendor/ffmpeg-sys-next/build.rs").read_text()
+        self.assertIn(f'const RPI_FFMPEG_REVISION: &str = "{revision}";', build)
+        self.assertEqual(len(arm["sha256"]), 64)
+
     def test_export_excludes_oversized_icons_and_preserves_supported_icons(self):
         manifest = json.loads((PACKAGING / "io.github.opencloudgaming.OpenNOW.json").read_text())
         cleanup = manifest.get("cleanup", [])
@@ -35,9 +50,9 @@ class FlatpakTests(unittest.TestCase):
         self.assertNotIn("--share=network", application["build-options"].get("build-args", []))
         self.assertTrue(any(source.get("dest") == "cargo" for source in application["sources"]))
         archive = application["sources"][-1]
-        self.assertEqual(archive["dest-filename"], "ffmpeg-source.tar.xz")
+        self.assertEqual(archive["dest-filename"], "ffmpeg-source.tar")
         self.assertEqual(application["build-options"]["env"]["OPENNOW_FFMPEG_ARCHIVE"],
-                         "/run/build/opennow/ffmpeg-source.tar.xz")
+                         "/run/build/opennow/ffmpeg-source.tar")
         self.assertEqual(len(archive["sha256"]), 64)
 
     def test_sandbox_supports_native_streaming_without_host_filesystem_access(self):
