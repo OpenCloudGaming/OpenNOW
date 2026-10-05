@@ -1,3 +1,4 @@
+import fnmatch
 import importlib.util
 import json
 from pathlib import Path
@@ -16,6 +17,14 @@ SPEC.loader.exec_module(PREPARE)
 
 
 class FlatpakTests(unittest.TestCase):
+    def test_export_excludes_oversized_icons_and_preserves_supported_icons(self):
+        manifest = json.loads((PACKAGING / "io.github.opencloudgaming.OpenNOW.json").read_text())
+        cleanup = manifest.get("cleanup", [])
+        for size in (16, 24, 32, 48, 64, 128, 256, 512, 1024):
+            path = f"/share/icons/hicolor/{size}x{size}/apps/{manifest['app-id']}.png"
+            removed = any(fnmatch.fnmatch(path, pattern.rstrip("/") + "/*") for pattern in cleanup)
+            self.assertEqual(removed, size > 512, path)
+
     def test_manifest_preserves_application_identity_and_offline_build(self):
         manifest = json.loads((PACKAGING / "io.github.opencloudgaming.OpenNOW.json").read_text())
         self.assertEqual(manifest["app-id"], "io.github.opencloudgaming.OpenNOW")

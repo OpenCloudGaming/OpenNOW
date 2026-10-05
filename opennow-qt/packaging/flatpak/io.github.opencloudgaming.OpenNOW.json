@@ -8,6 +8,7 @@
         "org.freedesktop.Sdk.Extension.llvm20"
     ],
     "command": "opennow-qt",
+    "cleanup": ["/share/icons/hicolor/1024x1024"],
     "finish-args": [
         "--share=network",
         "--share=ipc",

@@ -51,6 +51,21 @@ To build in CI, select **Actions → Qt Flatpak build → Run workflow**. The wo
 installs, and checks an x86_64 bundle, then uploads `opennow-qt-flatpak-x86_64`. It does not
 create a GitHub release or require release-signing credentials.
 
+## Share the bundle
+
+Send `OpenNOW-x86_64.flatpak` to users with an x86_64 Linux system and Flatpak installed.
+They can install and launch it with:
+
+```sh
+flatpak install --user -y ./OpenNOW-x86_64.flatpak
+flatpak run io.github.opencloudgaming.OpenNOW
+```
+
+The bundle includes OpenNOW, SDL3, and the native core and streamer with bundled FFmpeg.
+Flatpak downloads the shared KDE runtime, including Qt, from Flathub when needed.
+The bundle is not a fully offline installer. Recipients need internet access for the first
+installation and working host graphics drivers. They do not need the SDK or build tools.
+
 ## Install and check the bundle
 
 ```sh
