@@ -88,16 +88,19 @@ private slots:
 
     void resolvedQmlTheme()
     {
-        QQmlEngine engine;
         QQmlPropertyMap shell;
+        QQmlPropertyMap controller;
         shell.insert("settings", QVariantMap{{"appTheme", "dark"}});
         shell.insert("previewThemePack", QString{});
-        engine.rootContext()->setContextProperty("ShellStore", &shell);
+        controller.insert("reducedMotion", true);
         QWindow window;
         window.create();
         QList<bool> requests;
         WindowTheme theme([&](QWindow *, bool dark) { requests.append(dark); });
         theme.setTargetWindow(&window);
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty("ShellStore", &shell);
+        engine.rootContext()->setContextProperty("AppController", &controller);
         engine.rootContext()->setContextProperty("TestWindowTheme", &theme);
         QQmlComponent component(&engine);
         component.setData(R"(
