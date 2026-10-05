@@ -1959,6 +1959,51 @@ mod tests {
         assert!(!should_log_event("controller-rumble", &mut last, now));
     }
 
+    #[test]
+    fn recording_completion_metadata_crosses_the_unchanged_json_callback() {
+        use opennow_streamer_protocol::{
+            PROTOCOL_VERSION, RecordingCompletion, RecordingCutReason,
+        };
+
+        let messages = CallbackMessages::default();
+        let (sender, receiver) = sync_channel(4);
+        let dispatcher = spawn_dispatcher(
+            "test-recording-events",
+            receiver,
+            Callback {
+                function: Some(collect_response),
+                user_data: ptr::from_ref(&messages) as usize,
+            },
+        )
+        .unwrap();
+        let expected: Vec<_> = [
+            RecordingCompletion::Complete,
+            RecordingCompletion::Cut {
+                reason: RecordingCutReason::Discontinuity,
+            },
+            RecordingCompletion::Cut {
+                reason: RecordingCutReason::QueueOverflow,
+            },
+            RecordingCompletion::Cut {
+                reason: RecordingCutReason::Interrupted,
+            },
+        ]
+        .into_iter()
+        .map(|completion| {
+            json!({"type":"recording-state", "state":"saved",
+            "requestId":"recording-start-9", "path":"fixture.mkv", "videoPackets":3,
+            "audioPackets":3, "completion":completion})
+        })
+        .collect();
+        for event in &expected {
+            sender.send(event.clone()).unwrap();
+        }
+        drop(sender);
+        dispatcher.join().unwrap();
+        assert_eq!(*messages.values.lock().unwrap(), expected);
+        assert_eq!(PROTOCOL_VERSION, 7);
+    }
+
     fn create_with_test_runtime(
         messages: &CallbackMessages,
     ) -> (

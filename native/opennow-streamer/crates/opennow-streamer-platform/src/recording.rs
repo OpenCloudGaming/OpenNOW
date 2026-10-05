@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
+use opennow_streamer_protocol::{RecordingCompletion, RecordingCutReason};
 use oxideav_core::{
     CodecId, CodecParameters, Muxer, Packet, Rational, StreamInfo, TimeBase, WriteSeek,
 };
@@ -90,6 +91,12 @@ pub struct RecordingSummary {
     pub audio_packets: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManualRecordingSummary {
+    pub media: RecordingSummary,
+    pub completion: RecordingCompletion,
+}
+
 struct ActiveMuxer {
     muxer: MkvMuxer,
     video_codec: MediaVideoCodec,
@@ -119,8 +126,84 @@ pub fn record_matroska(
     output_path: impl AsRef<Path>,
     stream: MediaStreamConfig,
     receiver: EncodedRecordingReceiver,
-) -> Result<RecordingSummary, String> {
-    let output_path = validate_output_path(output_path.as_ref())?;
+) -> Result<ManualRecordingSummary, String> {
+    record_matroska_with(
+        output_path.as_ref(),
+        stream,
+        receiver,
+        |path| {
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+                .map(|file| Box::new(file) as Box<dyn WriteSeek>)
+                .map_err(|error| format!("failed to create recording: {error}"))
+        },
+        |part, output| {
+            publish_manual_recording(part, output)
+                .map_err(|error| format!("failed to publish completed recording: {error}"))
+        },
+    )
+}
+
+pub(crate) fn publish_manual_recording(part: &Path, output: &Path) -> std::io::Result<()> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+
+        let part = CString::new(part.as_os_str().as_bytes())?;
+        let output = CString::new(output.as_os_str().as_bytes())?;
+        #[cfg(target_os = "linux")]
+        let result = unsafe {
+            libc::renameat2(
+                libc::AT_FDCWD,
+                part.as_ptr(),
+                libc::AT_FDCWD,
+                output.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        #[cfg(target_os = "macos")]
+        let result = unsafe { libc::renamex_np(part.as_ptr(), output.as_ptr(), libc::RENAME_EXCL) };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let part: Vec<u16> = part.as_os_str().encode_wide().chain(Some(0)).collect();
+        let output: Vec<u16> = output.as_os_str().encode_wide().chain(Some(0)).collect();
+        let result = unsafe {
+            windows_sys::Win32::Storage::FileSystem::MoveFileExW(part.as_ptr(), output.as_ptr(), 0)
+        };
+        if result != 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        let _ = (part, output);
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "atomic recording publication is unavailable on this platform",
+        ))
+    }
+}
+
+pub(crate) fn record_matroska_with(
+    output_path: &Path,
+    stream: MediaStreamConfig,
+    receiver: EncodedRecordingReceiver,
+    open: impl FnOnce(&Path) -> Result<Box<dyn WriteSeek>, String>,
+    publish: impl FnOnce(&Path, &Path) -> Result<(), String>,
+) -> Result<ManualRecordingSummary, String> {
+    let output_path = validate_output_path(output_path)?;
     let part_path = part_path_for(&output_path)?;
     if output_path.exists() {
         return Err(format!(
@@ -129,8 +212,20 @@ pub fn record_matroska(
         ));
     }
 
-    let result = record_matroska_inner(&part_path, &output_path, stream, &receiver);
-    if result.is_err() {
+    let mut owns_partial = false;
+    let result = record_matroska_inner(
+        &part_path,
+        &output_path,
+        stream,
+        &receiver,
+        |path| {
+            let output = open(path)?;
+            owns_partial = true;
+            Ok(output)
+        },
+        publish,
+    );
+    if owns_partial && result.is_err() {
         let _ = std::fs::remove_file(&part_path);
     }
     result
@@ -141,16 +236,28 @@ fn record_matroska_inner(
     output_path: &Path,
     stream: MediaStreamConfig,
     receiver: &EncodedRecordingReceiver,
-) -> Result<RecordingSummary, String> {
+    open: impl FnOnce(&Path) -> Result<Box<dyn WriteSeek>, String>,
+    publish: impl FnOnce(&Path, &Path) -> Result<(), String>,
+) -> Result<ManualRecordingSummary, String> {
     let mut active: Option<ActiveMuxer> = None;
     let mut audio_channels = 2_u8;
+    let mut open = Some(open);
 
-    while let Ok(frame) = receiver.recv() {
+    let completion = loop {
+        let frame = match receiver.recv() {
+            Ok(frame) => frame,
+            Err(completion) => break completion,
+        };
         if !frame.contiguous {
-            return Err(format!(
-                "recording stopped because the {} stream was discontinuous",
-                frame.mid
-            ));
+            if active.is_none() {
+                return Err(format!(
+                    "recording stopped because the {} stream was discontinuous",
+                    frame.mid
+                ));
+            }
+            break RecordingCompletion::Cut {
+                reason: RecordingCutReason::Discontinuity,
+            };
         }
 
         if let MediaCodec::Opus { channels } = frame.codec {
@@ -161,30 +268,91 @@ fn record_matroska_inner(
             if !frame.keyframe || !is_video_codec(&frame.codec, stream.codec) {
                 continue;
             }
-            active = Some(start_muxer(part_path, stream, audio_channels, &frame)?);
+            if !has_video_picture(&frame, stream.codec) {
+                return Err("recording keyframe did not contain a video picture".to_owned());
+            }
+            active = Some(start_muxer_with(
+                part_path,
+                stream,
+                audio_channels,
+                &frame,
+                open.take().expect("recording output opens once"),
+            )?);
         }
 
         write_frame(active.as_mut().expect("muxer was initialized"), frame)?;
-    }
-
-    if receiver.overflowed() {
-        return Err("recording stopped because its bounded media queue overflowed".to_owned());
-    }
+    };
 
     let Some(mut active) = active else {
         return Err("recording ended before a decodable video keyframe arrived".to_owned());
     };
+    if active.video_packets == 0 {
+        return Err("recording ended without a video picture".to_owned());
+    }
     active
         .muxer
         .write_trailer()
         .map_err(|error| format!("failed to finalize Matroska recording: {error}"))?;
-    std::fs::rename(part_path, output_path)
-        .map_err(|error| format!("failed to publish completed recording: {error}"))?;
-    Ok(RecordingSummary {
+    let media = RecordingSummary {
         path: output_path.to_owned(),
         video_packets: active.video_packets,
         audio_packets: active.audio_packets,
-    })
+    };
+    drop(active);
+    publish(part_path, output_path)?;
+    Ok(ManualRecordingSummary { media, completion })
+}
+
+fn has_video_picture(frame: &EncodedFrame, codec: MediaVideoCodec) -> bool {
+    match codec {
+        MediaVideoCodec::H264 => {
+            let nals = split_annex_b(&frame.data);
+            nals.iter().any(|nal| nal.len() > 1 && nal[0] & 0x1f == 5)
+                && nals.iter().any(|nal| nal.len() >= 4 && nal[0] & 0x1f == 7)
+                && nals.iter().any(|nal| nal.len() > 1 && nal[0] & 0x1f == 8)
+        }
+        MediaVideoCodec::H265 => {
+            let nals = split_annex_b(&frame.data);
+            nals.iter()
+                .any(|nal| nal.len() > 2 && matches!((nal[0] >> 1) & 0x3f, 16..=21))
+                && [32, 33, 34].into_iter().all(|kind| {
+                    nals.iter()
+                        .any(|nal| nal.len() > 2 && (nal[0] >> 1) & 0x3f == kind)
+                })
+        }
+        MediaVideoCodec::Av1 => {
+            let mut cursor = std::io::Cursor::new(frame.data.as_ref());
+            let mut frame_header = false;
+            let mut tiles = false;
+            while (cursor.position() as usize) < frame.data.len() {
+                let Ok(header) = ObuHeader::parse(&mut cursor) else {
+                    return false;
+                };
+                let Some(size) = header.size else {
+                    return false;
+                };
+                let Some(end) = cursor.position().checked_add(size) else {
+                    return false;
+                };
+                if end > frame.data.len() as u64 {
+                    return false;
+                }
+                if size > 0 {
+                    match header.obu_type {
+                        ObuType::Frame => {
+                            frame_header = true;
+                            tiles = true;
+                        }
+                        ObuType::FrameHeader => frame_header = true,
+                        ObuType::TileGroup => tiles = true,
+                        _ => {}
+                    }
+                }
+                cursor.set_position(end);
+            }
+            frame_header && tiles
+        }
+    }
 }
 
 fn start_muxer(
@@ -192,6 +360,23 @@ fn start_muxer(
     stream: MediaStreamConfig,
     audio_channels: u8,
     first_video: &EncodedFrame,
+) -> Result<ActiveMuxer, String> {
+    start_muxer_with(path, stream, audio_channels, first_video, |path| {
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map(|file| Box::new(file) as Box<dyn WriteSeek>)
+            .map_err(|error| format!("failed to create recording: {error}"))
+    })
+}
+
+fn start_muxer_with(
+    path: &Path,
+    stream: MediaStreamConfig,
+    audio_channels: u8,
+    first_video: &EncodedFrame,
+    open: impl FnOnce(&Path) -> Result<Box<dyn WriteSeek>, String>,
 ) -> Result<ActiveMuxer, String> {
     let (codec_id, codec_private) = match stream.codec {
         MediaVideoCodec::H264 => {
@@ -244,12 +429,7 @@ fn start_muxer(
         params: audio_params,
     };
 
-    let file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|error| format!("failed to create recording: {error}"))?;
-    let output: Box<dyn WriteSeek> = Box::new(file);
+    let output = open(path)?;
     let mut muxer = MkvMuxer::new_matroska(output, &[video_stream, audio_stream])
         .map_err(|error| format!("failed to configure Matroska recording: {error}"))?;
     muxer
@@ -855,6 +1035,349 @@ mod tests {
         out
     }
 
+    fn real_h264_keyframe() -> Vec<u8> {
+        use openh264::encoder::Encoder;
+        use openh264::formats::{RgbSliceU8, YUVBuffer};
+
+        let rgb = vec![64_u8; 64 * 64 * 3];
+        let yuv = YUVBuffer::from_rgb_source(RgbSliceU8::new(&rgb, (64, 64)));
+        Encoder::new().unwrap().encode(&yuv).unwrap().to_vec()
+    }
+
+    fn recording_test_directory(name: &str) -> PathBuf {
+        let directory = std::env::temp_dir().join(format!(
+            "opennow-{name}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        directory
+    }
+
+    #[test]
+    fn discontinuity_saves_only_the_committed_video_and_audio_prefix() {
+        let directory = recording_test_directory("recording-prefix");
+        let output = directory.join("cut.mkv");
+        let (sender, receiver) = channel();
+        let video = frame(MediaCodec::H264, real_h264_keyframe(), 90_000, true);
+        let mut encoder = opus::Encoder::new(
+            OPUS_SAMPLE_RATE,
+            opus::Channels::Stereo,
+            opus::Application::Audio,
+        )
+        .unwrap();
+        let mut packet = [0_u8; 1275];
+        let samples: Vec<f32> = (0..960)
+            .flat_map(|index| {
+                let sample = (index as f32 * std::f32::consts::TAU * 440.0 / 48_000.0).sin() * 0.1;
+                [sample, sample]
+            })
+            .collect();
+        let length = encoder.encode_float(&samples, &mut packet).unwrap();
+        let audio = frame(
+            MediaCodec::Opus { channels: 2 },
+            packet[..length].to_vec(),
+            48_000,
+            false,
+        );
+        sender.send(video.clone()).unwrap();
+        sender.send(audio.clone()).unwrap();
+        let mut broken = frame(
+            MediaCodec::H264,
+            vec![0, 0, 0, 1, 0x41, 0xff],
+            93_000,
+            false,
+        );
+        broken.contiguous = false;
+        sender.send(broken).unwrap();
+        sender
+            .send(frame(MediaCodec::H264, real_h264_keyframe(), 96_000, true))
+            .unwrap();
+        drop(sender);
+        let result = record_matroska(
+            &output,
+            MediaStreamConfig {
+                width: 64,
+                height: 64,
+                ..MediaStreamConfig::default()
+            },
+            EncodedRecordingReceiver::from_receiver(receiver),
+        );
+        let summary = result.expect("a valid prefix must survive the first discontinuity");
+        assert_eq!(
+            (summary.media.video_packets, summary.media.audio_packets),
+            (1, 1)
+        );
+        assert_eq!(
+            summary.completion,
+            RecordingCompletion::Cut {
+                reason: RecordingCutReason::Discontinuity
+            }
+        );
+        assert!(!part_path_for(&output).unwrap().exists());
+        let file: Box<dyn ReadSeek> = Box::new(std::fs::File::open(&output).unwrap());
+        let mut demuxer = oxideav_mkv::demux::open(file, &NullCodecResolver).unwrap();
+        let saved_video = demuxer.next_packet().unwrap();
+        let saved_audio = demuxer.next_packet().unwrap();
+        assert_eq!(
+            saved_video.data.as_slice(),
+            annexb_to_avcc(&video.data).packetized
+        );
+        assert_eq!(saved_audio.data.as_slice(), audio.data.as_ref());
+        assert!(demuxer.next_packet().is_err());
+        let mut decoder = opus::Decoder::new(OPUS_SAMPLE_RATE, opus::Channels::Stereo).unwrap();
+        let mut decoded = [0_f32; 1920];
+        assert_eq!(
+            decoder
+                .decode_float(&saved_audio.data, &mut decoded, false)
+                .unwrap(),
+            960
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn create_failure_does_not_remove_an_existing_partial_file() {
+        let directory = recording_test_directory("recording-owned-partial");
+        let output = directory.join("existing.mkv");
+        let partial = part_path_for(&output).unwrap();
+        std::fs::write(&partial, b"another writer owns this file").unwrap();
+        let (sender, receiver) = channel();
+        sender
+            .send(frame(MediaCodec::H264, real_h264_keyframe(), 90_000, true))
+            .unwrap();
+        drop(sender);
+        assert!(
+            record_matroska(
+                &output,
+                MediaStreamConfig::default(),
+                EncodedRecordingReceiver::from_receiver(receiver),
+            )
+            .is_err()
+        );
+        assert_eq!(
+            std::fs::read(&partial).unwrap(),
+            b"another writer owns this file"
+        );
+        assert!(!output.exists());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn empty_missing_and_configuration_only_prefixes_are_not_saved() {
+        let directory = recording_test_directory("recording-empty-prefix");
+        let mut broken = frame(MediaCodec::H264, real_h264_keyframe(), 90_000, true);
+        broken.contiguous = false;
+        let config_only = split_annex_b(&real_h264_keyframe())
+            .into_iter()
+            .filter(|nal| matches!(nal[0] & 0x1f, 7 | 8))
+            .flat_map(|nal| [0, 0, 0, 1].into_iter().chain(nal.iter().copied()))
+            .collect();
+        for (index, frames) in [
+            vec![],
+            vec![broken],
+            vec![frame(
+                MediaCodec::H264,
+                vec![0, 0, 1, 0x41, 1],
+                90_000,
+                false,
+            )],
+            vec![frame(MediaCodec::H264, vec![], 90_000, true)],
+            vec![frame(MediaCodec::H264, config_only, 90_000, true)],
+            vec![frame(
+                MediaCodec::H264,
+                vec![0, 0, 1, 0x65, 1],
+                90_000,
+                true,
+            )],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let output = directory.join(format!("{index}.mkv"));
+            let (sender, receiver) = channel();
+            for frame in frames {
+                sender.send(frame).unwrap();
+            }
+            drop(sender);
+            assert!(
+                record_matroska(
+                    &output,
+                    MediaStreamConfig::default(),
+                    EncodedRecordingReceiver::from_receiver(receiver)
+                )
+                .is_err()
+            );
+            assert!(!output.exists());
+            assert!(!part_path_for(&output).unwrap().exists());
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn hevc_and_av1_configuration_without_a_picture_cannot_be_saved() {
+        let directory = recording_test_directory("recording-codec-empty");
+        let sps = synthetic_hevc_sps();
+        let hevc: Vec<u8> = [&[0x40, 1, 0x0c][..], sps.as_slice(), &[0x44, 1, 0xc0][..]]
+            .into_iter()
+            .flat_map(|nal| [0, 0, 0, 1].into_iter().chain(nal.iter().copied()))
+            .collect();
+        for (codec, media, bytes, name) in [
+            (MediaVideoCodec::H265, MediaCodec::H265, hevc, "hevc"),
+            (
+                MediaVideoCodec::Av1,
+                MediaCodec::Av1,
+                b"\x0a\x0f\0\0\0j\xef\xbf\xe1\xbc\x02\x19\x90\x10\x10\x10@".to_vec(),
+                "av1",
+            ),
+        ] {
+            let output = directory.join(format!("{name}.mkv"));
+            let (sender, receiver) = channel();
+            sender.send(frame(media, bytes, 90_000, true)).unwrap();
+            drop(sender);
+            assert!(
+                record_matroska(
+                    &output,
+                    MediaStreamConfig {
+                        codec,
+                        ..MediaStreamConfig::default()
+                    },
+                    EncodedRecordingReceiver::from_receiver(receiver)
+                )
+                .is_err()
+            );
+            assert!(!output.exists());
+            assert!(!part_path_for(&output).unwrap().exists());
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    struct FailingFile {
+        file: std::fs::File,
+        payload: Vec<u8>,
+        packets: usize,
+        fail_packet: bool,
+        fail_flush: bool,
+        failed: Arc<AtomicBool>,
+    }
+
+    impl std::io::Write for FailingFile {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.ends_with(&self.payload) {
+                self.packets += 1;
+                if self.fail_packet && self.packets == 2 {
+                    self.failed.store(true, Ordering::Release);
+                    return Err(std::io::Error::other("injected packet write failure"));
+                }
+            }
+            std::io::Write::write(&mut self.file, bytes)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            if self.fail_flush {
+                self.failed.store(true, Ordering::Release);
+                return Err(std::io::Error::other("injected trailer flush failure"));
+            }
+            std::io::Write::flush(&mut self.file)
+        }
+    }
+
+    impl std::io::Seek for FailingFile {
+        fn seek(&mut self, position: std::io::SeekFrom) -> std::io::Result<u64> {
+            std::io::Seek::seek(&mut self.file, position)
+        }
+    }
+
+    #[test]
+    fn packet_trailer_and_publication_failures_never_publish_a_cut() {
+        let directory = recording_test_directory("recording-io-failures");
+        let video = real_h264_keyframe();
+        let payload = annexb_to_avcc(&video).packetized;
+        for failure in ["packet", "trailer", "publication"] {
+            let output = directory.join(format!("{failure}.mkv"));
+            let (sender, receiver) = channel();
+            sender
+                .send(frame(MediaCodec::H264, video.clone(), 90_000, true))
+                .unwrap();
+            sender
+                .send(frame(MediaCodec::H264, video.clone(), 93_000, true))
+                .unwrap();
+            let mut broken = frame(MediaCodec::H264, vec![], 96_000, false);
+            broken.contiguous = false;
+            sender.send(broken).unwrap();
+            drop(sender);
+            let failed = Arc::new(AtomicBool::new(false));
+            let published = AtomicBool::new(false);
+            let result = record_matroska_with(
+                &output,
+                MediaStreamConfig::default(),
+                EncodedRecordingReceiver::from_receiver(receiver),
+                |path| {
+                    let file = OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(path)
+                        .unwrap();
+                    Ok(Box::new(FailingFile {
+                        file,
+                        payload: payload.clone(),
+                        packets: 0,
+                        fail_packet: failure == "packet",
+                        fail_flush: failure == "trailer",
+                        failed: Arc::clone(&failed),
+                    }))
+                },
+                |_, _| {
+                    published.store(true, Ordering::Release);
+                    Err("injected publication failure".to_owned())
+                },
+            );
+            let error = result.unwrap_err();
+            assert!(error.contains(failure), "{failure}: {error}");
+            assert_eq!(failed.load(Ordering::Acquire), failure != "publication");
+            assert_eq!(published.load(Ordering::Acquire), failure == "publication");
+            assert!(!output.exists());
+            assert!(!part_path_for(&output).unwrap().exists());
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn manual_publication_does_not_overwrite_a_destination_created_during_recording() {
+        let directory = recording_test_directory("recording-publish-race");
+        let output = directory.join("existing.mkv");
+        let (sender, receiver) = channel();
+        sender
+            .send(frame(MediaCodec::H264, real_h264_keyframe(), 90_000, true))
+            .unwrap();
+        drop(sender);
+        let result = record_matroska_with(
+            &output,
+            MediaStreamConfig::default(),
+            EncodedRecordingReceiver::from_receiver(receiver),
+            |path| {
+                std::fs::write(&output, b"existing destination").unwrap();
+                Ok(Box::new(
+                    OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(path)
+                        .unwrap(),
+                ))
+            },
+            |part, output| {
+                publish_manual_recording(part, output).map_err(|error| error.to_string())
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&output).unwrap(), b"existing destination");
+        assert!(!part_path_for(&output).unwrap().exists());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     #[test]
     fn writes_atomic_h264_and_opus_matroska() {
         let unique = SystemTime::now()
@@ -901,8 +1424,9 @@ mod tests {
             EncodedRecordingReceiver::from_receiver(raw_receiver),
         )
         .expect("recording");
-        assert_eq!(summary.video_packets, 2);
-        assert_eq!(summary.audio_packets, 1);
+        assert_eq!(summary.media.video_packets, 2);
+        assert_eq!(summary.media.audio_packets, 1);
+        assert_eq!(summary.completion, RecordingCompletion::Complete);
         assert!(output.exists());
         assert!(!part_path_for(&output).unwrap().exists());
 

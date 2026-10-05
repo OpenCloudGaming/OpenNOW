@@ -57,7 +57,9 @@ pub use opennow_streamer_platform_windows::{
     AdoptedD3d11Context, D3d11Frame, D3d11FrameProducer, D3d11FrameSubmitter, D3d11RecordedFrame,
     D3d11TextureFormat, d3d11_adapter_luid,
 };
-pub use recording::{RecordingSummary, record_matroska, record_replay_matroska};
+pub use recording::{
+    ManualRecordingSummary, RecordingSummary, record_matroska, record_replay_matroska,
+};
 pub use replay::ReplaySnapshot;
 pub use runtime::{
     EmbeddedRuntimeConfig, MainThreadHost, MediaRuntime, MediaRuntimeControl,

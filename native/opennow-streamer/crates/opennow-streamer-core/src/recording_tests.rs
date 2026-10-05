@@ -5,6 +5,94 @@ fn command(value: Value) -> Command {
 }
 
 #[test]
+fn recording_cut_preserves_a_prefix_and_emits_one_completion() {
+    let (host, runtime) = opennow_streamer_platform::create_test_runtime();
+    let (events, received) = std::sync::mpsc::channel();
+    let mut engine = Engine::with_media_runtime(events, runtime.clone());
+    let (feedback, _feedback_receiver) = std::sync::mpsc::channel();
+    let session = runtime
+        .start(feedback, MediaStreamConfig::default())
+        .unwrap();
+    let sink = session.sink();
+    engine.media_session = Some(session);
+    lock_lifecycle(&engine.lifecycle).state = State::Connected;
+    let directory = std::env::temp_dir().join(format!(
+        "opennow-cut-completion-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let output = directory.join("cut.mkv");
+    let (started, _) = engine.handle(command(json!({
+        "id":"cut-start", "type":"recording-start", "outputPath":output
+    })));
+    assert_eq!(started[0]["type"], "recording-started");
+    let first_frame = EncodedFrame {
+        mid: "video".to_owned(),
+        codec: MediaCodec::H264,
+        data: Arc::from([
+            0, 0, 0, 1, 0x67, 0x64, 0x00, 0x28, 0xde, 0xad, 0, 0, 0, 1, 0x68, 0xee, 0x3c, 0x80, 0,
+            0, 0, 1, 0x65, 0x88, 0x84, 0x00, 0x10,
+        ]),
+        frame_index: Some(10),
+        timestamp: 90_000,
+        clock_rate_hz: 90_000,
+        keyframe: true,
+        contiguous: true,
+        ssrc: Some(7),
+    };
+    sink.push(first_frame.clone());
+    sink.push(EncodedFrame {
+        mid: "video".to_owned(),
+        codec: MediaCodec::H264,
+        data: Arc::from([0, 0, 0, 1, 0x41]),
+        frame_index: Some(11),
+        timestamp: 93_000,
+        clock_rate_hz: 90_000,
+        keyframe: false,
+        contiguous: false,
+        ssrc: Some(7),
+    });
+    let completion = received.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(completion["type"], "recording-state");
+    assert_eq!(completion["state"], "saved");
+    assert_eq!(completion["completion"]["kind"], "cut");
+    assert_eq!(completion["completion"]["reason"], "discontinuity");
+    assert_eq!(completion["requestId"], "cut-start");
+    assert_eq!(completion["videoPackets"], 1);
+    assert!(output.is_file());
+    let original = std::fs::read(&output).unwrap();
+    let (stopped, _) = engine.handle(command(json!({"id":"first-stop", "type":"recording-stop"})));
+    assert_eq!(stopped[0]["type"], "recording-stopped");
+    assert_eq!(stopped[0]["requestId"], "cut-start");
+    assert_eq!(stopped[0]["completion"], completion["completion"]);
+    let (repeated, _) = engine.handle(command(
+        json!({"id":"second-stop", "type":"recording-stop"}),
+    ));
+    assert_eq!(repeated[0]["type"], "recording-not-active");
+    assert!(received.try_recv().is_err());
+    assert_eq!(std::fs::read(&output).unwrap(), original);
+    let next_output = directory.join("next.mkv");
+    let (restarted, _) = engine.handle(command(json!({
+        "id":"next-start", "type":"recording-start", "outputPath":next_output
+    })));
+    assert_eq!(restarted[0]["type"], "recording-started");
+    sink.push(first_frame);
+    engine.stop("test complete");
+    let saved = received.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(saved["state"], "saved");
+    assert_eq!(saved["completion"]["kind"], "complete");
+    assert_eq!(saved["requestId"], "next-start");
+    assert!(next_output.is_file());
+    runtime.shutdown();
+    host.join().unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn recording_can_restart_after_finished_worker_failure() {
     let (host, runtime) = opennow_streamer_platform::create_test_runtime();
     let (events, received) = std::sync::mpsc::channel();
@@ -118,6 +206,7 @@ fn recording_retry_reaps_terminal_worker_before_thread_exit() {
     let worker_completed = Arc::clone(&completed);
     let events = engine.events.clone();
     engine.recording_worker = Some(RecordingWorker {
+        request_id: "terminal-fixture".to_owned(),
         completed,
         thread: thread::spawn(move || {
             worker_completed.store(true, Ordering::Release);
