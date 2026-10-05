@@ -1,6 +1,7 @@
 # Build and install the Flatpak
 
-Build the Qt/native application as a local Flatpak bundle on Linux x86_64.
+Build the Qt/native application as a local Flatpak bundle on Linux x86_64 or ARM64.
+Use a native machine for the target architecture. Flatpak names ARM64 `aarch64`.
 This does not publish OpenNOW to Flathub or change the existing signed release packages.
 
 ## Install the build tools
@@ -31,7 +32,7 @@ python3 opennow-qt/packaging/flatpak/prepare_sources.py
 flatpak-builder --user --force-clean --jobs=4 \
 	--state-dir=build/flatpak/state --repo=build/flatpak/repo \
 	build/flatpak/app opennow-qt/packaging/flatpak/io.github.opencloudgaming.OpenNOW.json
-flatpak build-bundle build/flatpak/repo build/flatpak/OpenNOW-x86_64.flatpak \
+flatpak build-bundle build/flatpak/repo "build/flatpak/OpenNOW-$(uname -m).flatpak" \
 	io.github.opencloudgaming.OpenNOW master \
 	--runtime-repo=https://flathub.org/repo/flathub.flatpakrepo
 ```
@@ -41,15 +42,33 @@ for both workspaces, including Git dependencies and their submodules. Downloads 
 compilation. The Flatpak build has no network access and uses the generated sources under
 `build/flatpak/cargo`. Do not commit that directory.
 
-The package downloads a checksum-pinned FFmpeg 9 source archive before entering the build
-sandbox. `OPENNOW_FFMPEG_ARCHIVE` tells the existing bundled-FFmpeg build to extract that
-archive into its private build directory instead of fetching Git sources. Decoder features
-and GPU presentation stay the same as the native package. The Flatpak does not
-include the Raspberry Pi-specific FFmpeg fork used by the ARM64 native packages.
+The package downloads a checksum-pinned FFmpeg source archive before entering the build
+sandbox. x86_64 uses FFmpeg 9. ARM64 uses the same pinned Raspberry Pi FFmpeg fork as the
+native ARM64 packages, preserving V4L2 request decoding support. `OPENNOW_FFMPEG_ARCHIVE`
+tells the existing bundled-FFmpeg build to extract that archive into its private build
+directory instead of fetching Git sources. Decoder features and GPU presentation stay
+the same as the native package.
 
-To build in CI, select **Actions → Qt Flatpak build → Run workflow**. The workflow builds,
-installs, and checks an x86_64 bundle, then uploads `opennow-qt-flatpak-x86_64`. It does not
+To build in CI, select **Actions → Qt Flatpak build → Run workflow** and choose `x86_64`
+or `aarch64`. The workflow builds, installs, and checks the bundle on a native runner,
+then uploads `opennow-qt-flatpak-x86_64` or `opennow-qt-flatpak-aarch64`. It does not
 create a GitHub release or require release-signing credentials.
+
+## Share the bundle
+
+Send `OpenNOW-x86_64.flatpak` to users with an x86_64 Linux system and Flatpak installed.
+For ARM64 Linux, send `OpenNOW-aarch64.flatpak` and use that filename in the commands below.
+They can install and launch it with:
+
+```sh
+flatpak install --user -y ./OpenNOW-x86_64.flatpak
+flatpak run io.github.opencloudgaming.OpenNOW
+```
+
+The bundle includes OpenNOW, SDL3, and the native core and streamer with bundled FFmpeg.
+Flatpak downloads the shared KDE runtime, including Qt, from Flathub when needed.
+The bundle is not a fully offline installer. Recipients need internet access for the first
+installation and working host graphics drivers. They do not need the SDK or build tools.
 
 ## Install and check the bundle
 
