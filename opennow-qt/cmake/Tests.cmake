@@ -1135,6 +1135,7 @@ if(BUILD_TESTING)
             add_dependencies(opennow-qt-test-runtime opennow-msvc-runtime)
         endif()
         foreach(test_target IN ITEMS
+                opennow-windowtheme-tests
                 opennow-applicationicons-tests
                 opennow-tenbitwarning-tests
                 opennow-graphicsdevices-tests
