@@ -12,6 +12,10 @@ ApplicationWindow {
     visibility: ApplicationWindow.Windowed
     color: "black"
     title: qsTr("OpenNOW")
+    WindowTheme {
+        targetWindow: window
+        darkMode: !Theme.lightMode
+    }
     property bool applicationCloseConfirmed: false
     onClosing: event => {
         if (!applicationCloseConfirmed) {

@@ -49,6 +49,8 @@ qt_add_executable(opennow-qt
     src/app/platform/MacAwdlController.h
     src/app/platform/GraphicsDeviceSelection.cpp
     src/app/platform/GraphicsDeviceSelection.h
+    src/app/platform/WindowTheme.cpp
+    src/app/platform/WindowTheme.h
     src/app/ApplicationStartup.cpp
     src/app/ApplicationStartup.h
     src/app/SingleInstance.cpp

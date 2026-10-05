@@ -1,5 +1,17 @@
 include(CTest)
 if(BUILD_TESTING)
+    qt_add_executable(opennow-windowtheme-tests tests/tst_windowtheme.cpp
+        src/app/platform/WindowTheme.cpp src/app/platform/WindowTheme.h)
+    target_include_directories(opennow-windowtheme-tests PRIVATE src)
+    target_compile_definitions(opennow-windowtheme-tests PRIVATE
+        OPENNOW_QML_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml")
+    target_link_libraries(opennow-windowtheme-tests PRIVATE Qt6::Test Qt6::Quick)
+    if(WIN32)
+        target_link_libraries(opennow-windowtheme-tests PRIVATE dwmapi)
+    endif()
+    add_test(NAME opennow-windowtheme-tests COMMAND opennow-windowtheme-tests -o -,txt)
+    set_tests_properties(opennow-windowtheme-tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
     qt_add_executable(opennow-applicationicons-tests tests/tst_applicationicons.cpp)
     target_link_libraries(opennow-applicationicons-tests PRIVATE Qt6::Test Qt6::Gui)
     opennow_add_application_icons(opennow-applicationicons-tests)
@@ -1014,6 +1026,7 @@ if(BUILD_TESTING)
         TIMEOUT 30
     )
     set(OPENNOW_CI_UNIT_TEST_TARGETS
+        opennow-windowtheme-tests
         opennow-updatefailure-tests
         opennow-queueselector-tests
         opennow-applicationicons-tests
@@ -1062,6 +1075,7 @@ if(BUILD_TESTING)
         # Qt's executable helper defaults to the GUI subsystem on Windows. Keep
         # test runners as console programs so CTest captures QtTest failures.
         set_target_properties(
+            opennow-windowtheme-tests
             opennow-applicationicons-tests
             opennow-tenbitwarning-tests
             opennow-queueselector-tests
@@ -1121,6 +1135,7 @@ if(BUILD_TESTING)
             add_dependencies(opennow-qt-test-runtime opennow-msvc-runtime)
         endif()
         foreach(test_target IN ITEMS
+                opennow-windowtheme-tests
                 opennow-applicationicons-tests
                 opennow-tenbitwarning-tests
                 opennow-graphicsdevices-tests
