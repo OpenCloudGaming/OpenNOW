@@ -143,6 +143,7 @@ Item {
         Row {
             id: statusRow
             anchors.centerIn: parent
+            anchors.alignWhenCentered: false
             spacing: 18
             Row {
                 spacing: 9; anchors.verticalCenter: parent.verticalCenter
@@ -160,6 +161,7 @@ Item {
             Text {
                 objectName: "consoleClock"
                 anchors.verticalCenter: parent.verticalCenter
+                anchors.alignWhenCentered: false
                 text: Qt.formatDateTime(root.now, "hh:mm")
                 color: Theme.label
                 font.family: Theme.monoFont

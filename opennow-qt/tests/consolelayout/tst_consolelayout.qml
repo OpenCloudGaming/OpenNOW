@@ -103,6 +103,15 @@ TestCase {
         }
     }
 
+    function test_clockOddHeightRemainsCentered() {
+        const host = createTemporaryObject(hostComponent, testCase)
+        const clock = findChild(host.chrome, "consoleClock")
+        verify(clock !== null)
+        clock.height = 25
+        waitForRendering(host.chrome)
+        verifyLayout(host)
+    }
+
     function test_fullscreenRoundTrip() {
         const host = createTemporaryObject(hostComponent, testCase)
         host.showFullScreen()

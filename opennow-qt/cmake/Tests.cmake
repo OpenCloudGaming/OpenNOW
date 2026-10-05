@@ -128,8 +128,14 @@ if(BUILD_TESTING)
     qt_add_resources(opennow-consolelayout-tests "console-layout-test-assets"
         PREFIX "/qt/qml/OpenNOW" FILES ${OPENNOW_CONTROLLER_ICON_FILES}
         res/fonts/Nunito-Variable.ttf
+        res/fonts/IBMPlexMono-Regular.ttf res/fonts/IBMPlexMono-Medium.ttf res/fonts/IBMPlexMono-Bold.ttf
         res/icons/nav-home.svg res/icons/nav-library.svg res/icons/nav-friends.svg
-        res/icons/nav-settings.svg res/icons/nav-computer.svg)
+        res/icons/nav-settings.svg res/icons/nav-computer.svg
+        res/icons/desktop-nav-home.svg res/icons/desktop-nav-home-on-light.svg
+        res/icons/desktop-nav-library.svg res/icons/desktop-nav-library-on-light.svg
+        res/icons/desktop-nav-store.svg res/icons/desktop-nav-store-on-light.svg
+        res/icons/desktop-nav-friends.svg res/icons/desktop-nav-friends-on-light.svg
+        res/icons/desktop-nav-settings.svg res/icons/desktop-nav-settings-on-light.svg)
     add_test(NAME opennow-consolelayout-tests COMMAND opennow-consolelayout-tests
         -input "${CMAKE_CURRENT_SOURCE_DIR}/tests/consolelayout")
     set_tests_properties(opennow-consolelayout-tests PROPERTIES
@@ -1057,6 +1063,7 @@ if(BUILD_TESTING)
         opennow-tenbitwarning-tests
         opennow-graphicsdevices-tests
         opennow-consolelayout-tests
+        opennow-consolecontrols-tests
         opennow-consoleactions-tests
         opennow-macawdl-tests
         opennow-controllericons-tests
@@ -1105,6 +1112,7 @@ if(BUILD_TESTING)
             opennow-queueselector-tests
             opennow-graphicsdevices-tests
             opennow-consolelayout-tests
+            opennow-consolecontrols-tests
             opennow-consoleactions-tests
             opennow-macawdl-tests
             opennow-controllericons-tests
@@ -1164,6 +1172,7 @@ if(BUILD_TESTING)
                 opennow-tenbitwarning-tests
                 opennow-graphicsdevices-tests
                 opennow-consolelayout-tests
+                opennow-consolecontrols-tests
                 opennow-consoleactions-tests
                 opennow-controllericons-tests
                 opennow-streamtoasts-tests

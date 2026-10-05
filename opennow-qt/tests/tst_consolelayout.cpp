@@ -23,6 +23,10 @@ public slots:
             qmlRegisterType(QUrl::fromLocalFile(source + "/components/" + name + ".qml"), "OpenNOW", 1, 0, name);
         }
         QFontDatabase::addApplicationFont(QStringLiteral(":/qt/qml/OpenNOW/res/fonts/Nunito-Variable.ttf"));
+        for (const auto *name : {"Regular", "Medium", "Bold"}) {
+            QFontDatabase::addApplicationFont(QStringLiteral(":/qt/qml/OpenNOW/res/fonts/IBMPlexMono-%1.ttf")
+                .arg(QString::fromLatin1(name)));
+        }
     }
 
     void qmlEngineAvailable(QQmlEngine *engine)
@@ -38,14 +42,17 @@ public slots:
         m_shell.insert("regions", QVariantList{});
         m_shell.insert("regionPingResults", QVariantMap{});
         m_controller.insert("controllers", QVariantList{});
+        m_app.insert("reducedMotion", true);
         engine->rootContext()->setContextProperty("ShellStore", &m_shell);
         engine->rootContext()->setContextProperty("ControllerInput", &m_controller);
+        engine->rootContext()->setContextProperty("AppController", &m_app);
         engine->rootContext()->setContextProperty("I18n", this);
     }
 
 private:
     QQmlPropertyMap m_shell;
     QQmlPropertyMap m_controller;
+    QQmlPropertyMap m_app;
 };
 
 QUICK_TEST_MAIN_WITH_SETUP(consolelayout, ConsoleLayoutTestSetup)
