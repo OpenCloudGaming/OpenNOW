@@ -46,6 +46,57 @@ pub fn admit_compressed_frame(
     }
 }
 
+/// Reference state of a compressed queue after it dropped a delta. Every later
+/// delta depends on the dropped frame, so none may be queued until a keyframe
+/// arrives.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum ReferenceGap {
+    #[default]
+    Intact,
+    /// The queue still holds the keyframe in front of the gap. A replacement
+    /// requested now arrives before the decoder dequeues that keyframe and
+    /// evicts it, so slow decoders would request one keyframe per arrival.
+    BehindQueuedKeyframe,
+    KeyframeRequested,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GapAdmit {
+    Admit,
+    Discard,
+    DiscardAndRequestKeyframe,
+}
+
+impl ReferenceGap {
+    pub fn admit(
+        &mut self,
+        incoming_is_keyframe: bool,
+        queue_has_keyframe: impl FnOnce() -> bool,
+    ) -> GapAdmit {
+        if incoming_is_keyframe {
+            *self = Self::Intact;
+            return GapAdmit::Admit;
+        }
+        match self {
+            Self::Intact => GapAdmit::Admit,
+            Self::BehindQueuedKeyframe if queue_has_keyframe() => GapAdmit::Discard,
+            Self::BehindQueuedKeyframe => {
+                *self = Self::KeyframeRequested;
+                GapAdmit::DiscardAndRequestKeyframe
+            }
+            Self::KeyframeRequested => GapAdmit::Discard,
+        }
+    }
+
+    pub fn record(&mut self, admitted: CompressedAdmit) {
+        match admitted {
+            CompressedAdmit::PreserveQueuedKeyframe => *self = Self::BehindQueuedKeyframe,
+            CompressedAdmit::DiscardChain { .. } => *self = Self::KeyframeRequested,
+            CompressedAdmit::Append | CompressedAdmit::ReplaceWithKeyframe { .. } => {}
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Inner<T> {
     values: VecDeque<T>,
@@ -175,6 +226,15 @@ impl<T> BoundedQueue<T> {
             .clear();
     }
 
+    pub(crate) fn any(&self, predicate: impl Fn(&T) -> bool) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .values
+            .iter()
+            .any(predicate)
+    }
+
     pub(crate) fn len(&self) -> usize {
         self.inner
             .lock()
@@ -253,9 +313,6 @@ mod tests {
     #[test]
     fn video_overflow_keeps_a_queued_keyframe_when_a_delta_does_not_fit() {
         let queue = BoundedQueue::new(2);
-        fn is_keyframe(value: &i32) -> bool {
-            *value < 0
-        }
         assert_eq!(
             queue.push_or_clear_on_overflow(-1, true, is_keyframe),
             Ok(PushOutcome::Queued)
@@ -291,6 +348,97 @@ mod tests {
             admit_compressed_frame(3, 7, false, false),
             CompressedAdmit::Append
         );
+    }
+
+    fn is_keyframe(value: &i32) -> bool {
+        *value < 0
+    }
+
+    fn submit(queue: &BoundedQueue<i32>, gap: &mut ReferenceGap, value: i32) -> GapAdmit {
+        let keyframe = is_keyframe(&value);
+        let admitted = gap.admit(keyframe, || queue.any(is_keyframe));
+        if admitted == GapAdmit::Admit {
+            match queue.push_or_clear_on_overflow(value, keyframe, is_keyframe) {
+                Ok(PushOutcome::Backpressured) => {
+                    gap.record(CompressedAdmit::PreserveQueuedKeyframe)
+                }
+                Ok(PushOutcome::DroppedOldest) if !keyframe => {
+                    gap.record(CompressedAdmit::DiscardChain { dropped: 0 })
+                }
+                _ => {}
+            }
+        }
+        admitted
+    }
+
+    #[test]
+    fn queue_reports_whether_any_value_matches() {
+        let queue = BoundedQueue::new(3);
+        queue.push(1).unwrap();
+        assert!(!queue.any(is_keyframe));
+        queue.push(-2).unwrap();
+        assert!(queue.any(is_keyframe));
+        assert_eq!(queue.try_pop(), Some(1));
+        assert_eq!(queue.try_pop(), Some(-2));
+        assert!(!queue.any(is_keyframe));
+    }
+
+    #[test]
+    fn stalled_decoder_does_not_request_a_keyframe_per_arrival() {
+        let queue = BoundedQueue::new(3);
+        let mut gap = ReferenceGap::default();
+        for value in [-1, 2, 3] {
+            assert_eq!(submit(&queue, &mut gap, value), GapAdmit::Admit);
+        }
+        assert_eq!(submit(&queue, &mut gap, 4), GapAdmit::Admit);
+        assert_eq!(gap, ReferenceGap::BehindQueuedKeyframe);
+        for value in 5..300 {
+            assert_eq!(submit(&queue, &mut gap, value), GapAdmit::Discard);
+        }
+        assert_eq!(queue.try_pop(), Some(-1));
+        assert_eq!(
+            submit(&queue, &mut gap, 300),
+            GapAdmit::DiscardAndRequestKeyframe
+        );
+        assert_eq!(submit(&queue, &mut gap, 301), GapAdmit::Discard);
+        assert_eq!(queue.try_pop(), Some(2));
+        assert_eq!(queue.try_pop(), Some(3));
+        assert_eq!(queue.try_pop(), None);
+        assert_eq!(submit(&queue, &mut gap, 302), GapAdmit::Discard);
+        assert_eq!(submit(&queue, &mut gap, -303), GapAdmit::Admit);
+        assert_eq!(gap, ReferenceGap::Intact);
+        assert_eq!(submit(&queue, &mut gap, 304), GapAdmit::Admit);
+        assert_eq!(queue.try_pop(), Some(-303));
+        assert_eq!(queue.try_pop(), Some(304));
+    }
+
+    #[test]
+    fn keyframe_arriving_behind_a_queued_keyframe_closes_the_gap() {
+        let queue = BoundedQueue::new(2);
+        let mut gap = ReferenceGap::default();
+        submit(&queue, &mut gap, -1);
+        submit(&queue, &mut gap, 2);
+        submit(&queue, &mut gap, 3);
+        assert_eq!(gap, ReferenceGap::BehindQueuedKeyframe);
+        assert_eq!(submit(&queue, &mut gap, -4), GapAdmit::Admit);
+        assert_eq!(gap, ReferenceGap::Intact);
+        assert_eq!(queue.try_pop(), Some(-4));
+        assert_eq!(queue.try_pop(), None);
+    }
+
+    #[test]
+    fn discarded_chain_drops_deltas_until_a_keyframe_without_new_requests() {
+        let queue = BoundedQueue::new(2);
+        let mut gap = ReferenceGap::default();
+        submit(&queue, &mut gap, 1);
+        submit(&queue, &mut gap, 2);
+        assert_eq!(submit(&queue, &mut gap, 3), GapAdmit::Admit);
+        assert_eq!(gap, ReferenceGap::KeyframeRequested);
+        assert_eq!(queue.try_pop(), None);
+        assert_eq!(submit(&queue, &mut gap, 4), GapAdmit::Discard);
+        assert_eq!(queue.try_pop(), None);
+        assert_eq!(submit(&queue, &mut gap, -5), GapAdmit::Admit);
+        assert_eq!(queue.try_pop(), Some(-5));
     }
 
     #[test]

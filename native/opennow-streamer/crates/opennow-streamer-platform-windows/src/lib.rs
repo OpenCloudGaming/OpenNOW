@@ -35,7 +35,7 @@ pub use format::{
     SurfaceTarget, VideoChromaFormat, VideoChromaSiting, VideoCodec, VideoColorMatrix,
     VideoColorPrimaries, VideoFormat, VideoPixelFormat, VideoTransferFunction, WindowHandle,
 };
-pub use queue::{CompressedAdmit, PushOutcome, admit_compressed_frame};
+pub use queue::{CompressedAdmit, GapAdmit, PushOutcome, ReferenceGap, admit_compressed_frame};
 
 /// Burst allowance for adaptive video delivery. The decoded presenter uses
 /// the same bound and trims stale frames before presentation, keeping latency
