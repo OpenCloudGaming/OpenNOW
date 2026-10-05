@@ -5,6 +5,12 @@ enum class StreamInputMode {
     KeyboardMouse,
 }
 
+/** A saved keyboard overlay preference must not override the host's selected touch mode. */
+internal fun keyboardOverlayEnabledForStream(
+    savedEnabled: Boolean,
+    currentMode: StreamInputMode,
+): Boolean = savedEnabled && currentMode == StreamInputMode.KeyboardMouse
+
 internal enum class StreamInputModePrompt {
     SwitchToKeyboardMouse,
     SwitchToNativeTouch,

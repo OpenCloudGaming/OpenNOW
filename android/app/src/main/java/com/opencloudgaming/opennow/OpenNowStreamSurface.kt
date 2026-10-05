@@ -164,12 +164,6 @@ internal fun StreamScreen(
     var physicalControllerPromptHandled by remember(session?.sessionId) { mutableStateOf(false) }
     var physicalControllerPromptDoNotShowAgain by remember(session?.sessionId) { mutableStateOf(false) }
     val touchInputEnabled = !state.androidPictureInPictureActive
-    val keyboardModeEnabled = state.settings.androidTouch.keyboardModeEnabled
-    val touchControlsSuppressedByPhysicalController =
-        physicalControllerConnected &&
-            state.settings.androidTouch.enabled &&
-            !showTouchControlsWithPhysicalController &&
-            !keyboardModeEnabled
     val builtInGameTouchSupported = !tvProfile && game?.let(::catalogClaimsTouchSupport) == true
     val nativeTouchAvailable = !tvProfile && shouldUseNativeTouch(
         state.settings.androidTouch.effectiveNativeTouchMode(),
@@ -182,6 +176,15 @@ internal fun StreamScreen(
     )
     var streamInputMode by remember(session?.sessionId, launchInputMode) { mutableStateOf(launchInputMode) }
     val nativeTouchProvisionedForSession = launchInputMode == StreamInputMode.NativeTouch
+    val keyboardModeEnabled = keyboardOverlayEnabledForStream(
+        state.settings.androidTouch.keyboardModeEnabled,
+        streamInputMode,
+    )
+    val touchControlsSuppressedByPhysicalController =
+        physicalControllerConnected &&
+            state.settings.androidTouch.enabled &&
+            !showTouchControlsWithPhysicalController &&
+            !keyboardModeEnabled
     var keyboardMouseBaselineCaptured by remember(session?.sessionId) { mutableStateOf(false) }
     var previousKeyboardMouseConnected by remember(session?.sessionId) {
         mutableStateOf(physicalKeyboardMouseConnected)
@@ -200,7 +203,7 @@ internal fun StreamScreen(
         game,
         state.activeStreamSettings ?: state.settings.stream,
         preferVirtualController = preferVirtualController,
-        preferKeyboardMouse = streamInputMode == StreamInputMode.KeyboardMouse || keyboardModeEnabled,
+        preferKeyboardMouse = streamInputMode == StreamInputMode.KeyboardMouse,
     )
     val touchControlsVisible = shouldShowAndroidTouchControls(
         tvProfile = tvProfile,
@@ -209,7 +212,7 @@ internal fun StreamScreen(
         suppressedByPhysicalController = touchControlsSuppressedByPhysicalController,
         physicalMouseConnected = physicalMouseConnected,
         allowWithPhysicalMouse = showTouchControlsWithPhysicalMouse || keyboardModeEnabled,
-    ) && !nativeTouchActive
+    ) && !nativeTouchActive && (!nativeTouchProvisionedForSession || keyboardModeEnabled)
     val virtualGamepadVisible = touchControlsVisible && !keyboardModeEnabled
     val touchMouseActive =
         streamReady && touchInputEnabled && state.settings.androidTouch.mousePad && !nativeTouchActive
@@ -914,7 +917,10 @@ internal fun StreamScreen(
                 TouchOverlay(
                     client = client,
                     inputResetKey = streamState,
-                    touch = state.settings.androidTouch.copy(enabled = true),
+                    touch = state.settings.androidTouch.copy(
+                        enabled = true,
+                        keyboardModeEnabled = keyboardModeEnabled,
+                    ),
                     // FLAG_IGNORE_GLOBAL_SETTING stopped working in Android 13, so the on-screen
                     // buttons went silent on any device with system touch feedback off. Drive the
                     // vibrator directly instead — see OpenNowHaptics.
@@ -1108,6 +1114,7 @@ internal fun StreamScreen(
                     touchControlsVisible = touchControlsVisible,
                     builtInGameTouchSupported = builtInGameTouchSupported,
                     nativeTouchActive = nativeTouchActive,
+                    keyboardOverlayActive = keyboardModeEnabled,
                     gyroscopeAvailable = gyroscopeAvailable,
                     controllerMouseAssistEnabled = controllerMouseAssistEnabled,
                     controllerMouseEmulationEnabled = controllerMouseEmulationEnabled,
@@ -1264,6 +1271,11 @@ internal fun StreamScreen(
                         exitConfirmOpen = true
                     },
                     onKeyboardModeToggle = { enabled ->
+                        streamInputMode = when {
+                            enabled -> StreamInputMode.KeyboardMouse
+                            nativeTouchProvisionedForSession -> StreamInputMode.NativeTouch
+                            else -> StreamInputMode.KeyboardMouse
+                        }
                         viewModel.updateSettings(
                             state.settings.copy(
                                 androidTouch = state.settings.androidTouch.copy(
@@ -1275,6 +1287,13 @@ internal fun StreamScreen(
                     },
                     onTouchControlsToggle = {
                         when {
+                            nativeTouchProvisionedForSession && !keyboardModeEnabled -> {
+                                Toast.makeText(
+                                    context,
+                                    R.string.stream_touch_controller_requires_new_session,
+                                    Toast.LENGTH_LONG,
+                                ).show()
+                            }
                             nativeTouchActive -> {
                                 preferVirtualController = true
                                 if (physicalControllerConnected) {

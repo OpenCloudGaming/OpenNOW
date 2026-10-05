@@ -13,6 +13,13 @@ import org.junit.Test
 
 class StreamInputModeChoiceTest {
     @Test
+    fun savedKeyboardOverlayDoesNotSuppressAProvisionedNativeTouchSession() {
+        assertFalse(keyboardOverlayEnabledForStream(true, StreamInputMode.NativeTouch))
+        assertTrue(keyboardOverlayEnabledForStream(true, StreamInputMode.KeyboardMouse))
+        assertFalse(keyboardOverlayEnabledForStream(false, StreamInputMode.KeyboardMouse))
+    }
+
+    @Test
     fun attachedMouseWaitsForEitherExplicitChoiceBeforeProvisioning() = runBlocking {
         for (choice in StreamInputMode.entries) {
             val answer = CompletableDeferred<StreamInputMode>()

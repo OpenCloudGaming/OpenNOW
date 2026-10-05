@@ -348,6 +348,8 @@
     <string name="stream_panel_finger_mouse">Finger mouse</string>
     <string name="stream_panel_direct_click">Direct click</string>
     <string name="stream_panel_touch_controller">Touch controller</string>
+    <string name="stream_touch_controller_requires_new_session">This session uses native touch. To use the on-screen controller, set Native touch to Off and start a new session.</string>
+    <string name="settings_native_touch_mode_desc">Native touch sends fingers directly to the streamed game. For OpenNOW’s on-screen controller, choose Off before starting a session.</string>
     <string name="stream_touch_builtin_title">Built-in game touch detected</string>
     <string name="stream_touch_builtin_available">This game supports built-in touch controls. You can still turn on OpenNOW’s touch controller below if you prefer.</string>
     <string name="stream_touch_builtin_overridden">This game supports built-in touch controls. OpenNOW’s touch controller is enabled for this session.</string>
