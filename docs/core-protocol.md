@@ -644,6 +644,11 @@ retry a selected proxy directly. Authenticated HTTP clients do not follow redire
 LCARS retains its configured shared endpoint; an Alliance provider ID does not
 select `GFNPartnerJWT` or invent a GraphQL hostname.
 
+GFN service transport failures, including server-info lookup, keep the
+`network_error` code. When the HTTP client identifies the failed stage, the
+message ends with `(dns)`, `(connect)`, `(tls)`, or `(timeout)`; the message
+never includes the request URL or host.
+
 `settings.set` for `region` also requires the current `providerIdpId`. The core
 atomically updates `region`, `regionProviderIdpId`, and the `providerRegions` map.
 The metadata fields cannot be written separately. Existing unscoped preferences
