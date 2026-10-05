@@ -75,8 +75,10 @@ fn signal_between_empty_check_and_wait_is_not_lost() {
         receiver.wait_release = Some(wait_release);
         let (entered_wait, completed, worker) = waiting_receiver(receiver);
         entered_wait.recv_timeout(DEADLOCK_TIMEOUT).unwrap();
+        drop(entered_wait);
         tap.close(completion);
         release.send(()).unwrap();
+        drop(release);
         assert_eq!(
             completed
                 .recv_timeout(DEADLOCK_TIMEOUT)
@@ -100,6 +102,7 @@ fn close_wakes_receiver_after_it_enters_wait_without_more_frames() {
         let receiver = tap.subscribe().unwrap();
         let (entered_wait, completed, worker) = waiting_receiver(receiver);
         entered_wait.recv_timeout(DEADLOCK_TIMEOUT).unwrap();
+        drop(entered_wait);
         assert!(matches!(
             tap.wake_receiver.try_lock(),
             Err(std::sync::TryLockError::WouldBlock)
@@ -121,11 +124,39 @@ fn close_wakes_receiver_after_it_enters_wait_without_more_frames() {
 }
 
 #[test]
+fn graceful_signal_before_sender_drop_can_wake_and_wait_again() {
+    let tap = RecordingTap::default();
+    let receiver = tap.subscribe().unwrap();
+    let (entered_wait, completed, worker) = waiting_receiver(receiver);
+    entered_wait.recv_timeout(DEADLOCK_TIMEOUT).unwrap();
+    tap.signal(
+        tap.terminal.load(Ordering::Acquire),
+        RecordingCompletion::Complete,
+    );
+    entered_wait.recv_timeout(DEADLOCK_TIMEOUT).unwrap();
+    drop(entered_wait);
+    assert!(matches!(
+        completed.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
+    tap.unsubscribe();
+    assert_eq!(
+        completed
+            .recv_timeout(DEADLOCK_TIMEOUT)
+            .unwrap()
+            .unwrap_err(),
+        RecordingCompletion::Complete
+    );
+    worker.join().unwrap();
+}
+
+#[test]
 fn publishing_wakes_a_waiting_receiver_with_the_original_frame() {
     let tap = RecordingTap::default();
     let receiver = tap.subscribe().unwrap();
     let (entered_wait, completed, worker) = waiting_receiver(receiver);
     entered_wait.recv_timeout(DEADLOCK_TIMEOUT).unwrap();
+    drop(entered_wait);
     let expected = frame(73);
     tap.publish(&expected);
     let received = completed.recv_timeout(DEADLOCK_TIMEOUT).unwrap().unwrap();
@@ -149,9 +180,11 @@ fn queued_data_and_close_between_empty_check_and_wait_obey_completion() {
         receiver.wait_release = Some(wait_release);
         let (entered_wait, completed, worker) = waiting_receiver(receiver);
         entered_wait.recv_timeout(DEADLOCK_TIMEOUT).unwrap();
+        drop(entered_wait);
         tap.publish(&frame(81));
         tap.close(completion);
         release.send(()).unwrap();
+        drop(release);
         let result = completed.recv_timeout(DEADLOCK_TIMEOUT).unwrap();
         match completion {
             RecordingCompletion::Complete => assert_eq!(result.unwrap().frame_index, Some(81)),
@@ -172,6 +205,7 @@ fn subscription_contention_cuts_without_blocking_the_publisher_or_more_traffic()
         }
         let (entered_wait, completed, receiver_worker) = waiting_receiver(receiver);
         entered_wait.recv_timeout(DEADLOCK_TIMEOUT).unwrap();
+        drop(entered_wait);
         let subscription = tap.subscription.lock().unwrap();
         let publisher_tap = Arc::clone(&tap);
         let (published, publication_finished) = mpsc::sync_channel(1);
@@ -183,6 +217,7 @@ fn subscription_contention_cuts_without_blocking_the_publisher_or_more_traffic()
         if hold_before_block {
             release.send(()).unwrap();
         }
+        drop(release);
         assert_eq!(
             completed
                 .recv_timeout(DEADLOCK_TIMEOUT)
@@ -296,6 +331,7 @@ fn stale_wake_is_consumed_once_then_the_new_receiver_waits_for_its_own_signal() 
     let (entered_wait, completed, worker) = waiting_receiver(receiver);
     entered_wait.recv_timeout(DEADLOCK_TIMEOUT).unwrap();
     entered_wait.recv_timeout(DEADLOCK_TIMEOUT).unwrap();
+    drop(entered_wait);
     assert!(matches!(
         tap.wake_receiver.try_lock(),
         Err(std::sync::TryLockError::WouldBlock)

@@ -175,6 +175,19 @@ pub(crate) fn publish_manual_recording(part: &Path, output: &Path) -> std::io::R
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::ffi::OsStrExt;
+        let part = std::fs::canonicalize(part)?;
+        let output = std::fs::canonicalize(output.parent().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "recording output has no directory",
+            )
+        })?)?
+        .join(output.file_name().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "recording output has no filename",
+            )
+        })?);
         let part: Vec<u16> = part.as_os_str().encode_wide().chain(Some(0)).collect();
         let output: Vec<u16> = output.as_os_str().encode_wide().chain(Some(0)).collect();
         let result = unsafe {
@@ -1375,6 +1388,28 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(std::fs::read(&output).unwrap(), b"existing destination");
         assert!(!part_path_for(&output).unwrap().exists());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_manual_publication_preserves_long_unicode_paths_and_existing_targets() {
+        let directory = recording_test_directory("recording-long-path");
+        let mut nested = directory.clone();
+        for _ in 0..8 {
+            nested.push("recording-長い名前-abcdefghijklmnopqrstuvwxyz");
+        }
+        std::fs::create_dir_all(&nested).unwrap();
+        let part = nested.join(".capture.mkv.part");
+        let output = nested.join("capture.mkv");
+        std::fs::write(&part, b"valid prefix").unwrap();
+        publish_manual_recording(&part, &output).unwrap();
+        assert!(!part.exists());
+        assert_eq!(std::fs::read(&output).unwrap(), b"valid prefix");
+        std::fs::write(&part, b"later prefix").unwrap();
+        assert!(publish_manual_recording(&part, &output).is_err());
+        assert_eq!(std::fs::read(&output).unwrap(), b"valid prefix");
+        assert_eq!(std::fs::read(&part).unwrap(), b"later prefix");
         std::fs::remove_dir_all(directory).unwrap();
     }
 
