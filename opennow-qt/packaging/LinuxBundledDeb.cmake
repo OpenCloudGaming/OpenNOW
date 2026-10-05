@@ -9,7 +9,7 @@ foreach(required IN ITEMS
     AppRun AppRun.wrapped apprun-hooks/linuxdeploy-plugin-qt-hook.sh
     usr/bin/opennow-qt usr/bin/opennow-core usr/bin/opennow-update-helper
     usr/bin/opennow-acceptance-verify usr/bin/opennow-streamer
-    usr/bin/libopennow_streamer_ffi.so usr/bin/qt.conf
+    usr/lib/libopennow_streamer_ffi.so usr/bin/qt.conf
     usr/lib/libQt6Core.so.6 usr/lib/libSDL3.so.0
     usr/lib/libva-fallback/libva.so.2 usr/lib/libva-fallback/libva-drm.so.2
     usr/plugins/imageformats/libqsvg.so

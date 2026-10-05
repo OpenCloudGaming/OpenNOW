@@ -346,6 +346,9 @@ jobs:
           if [[ -n "${OPENNOW_QT_HOST_PATH:-}" ]]; then
             OPENNOW_CMAKE_ARGS+=("-DQT_HOST_PATH=${OPENNOW_QT_HOST_PATH}")
           fi
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            OPENNOW_CMAKE_ARGS+=(-DCMAKE_INSTALL_LIBDIR=lib)
+          fi
           cmake -S opennow-qt -B build/opennow-qt-release \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
