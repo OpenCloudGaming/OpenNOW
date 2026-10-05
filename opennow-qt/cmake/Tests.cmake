@@ -139,7 +139,7 @@ if(BUILD_TESTING)
     add_test(NAME opennow-consolelayout-tests COMMAND opennow-consolelayout-tests
         -input "${CMAKE_CURRENT_SOURCE_DIR}/tests/consolelayout")
     set_tests_properties(opennow-consolelayout-tests PROPERTIES
-        ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_CONTROLS_STYLE=Basic" TIMEOUT 30)
     qt_add_executable(opennow-consolecontrols-tests tests/tst_consolecontrols.cpp)
     target_link_libraries(opennow-consolecontrols-tests PRIVATE Qt6::QuickTest Qt6::Quick)
     target_compile_definitions(opennow-consolecontrols-tests PRIVATE
@@ -149,7 +149,7 @@ if(BUILD_TESTING)
     add_test(NAME opennow-consolecontrols-tests COMMAND opennow-consolecontrols-tests
         -input "${CMAKE_CURRENT_SOURCE_DIR}/tests/consolecontrols")
     set_tests_properties(opennow-consolecontrols-tests PROPERTIES
-        ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 45)
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_CONTROLS_STYLE=Basic" TIMEOUT 45)
     qt_add_executable(opennow-onboarding-tests tests/tst_onboarding.cpp)
     target_link_libraries(opennow-onboarding-tests PRIVATE Qt6::QuickTest Qt6::Quick)
     target_compile_definitions(opennow-onboarding-tests PRIVATE
@@ -268,7 +268,7 @@ if(BUILD_TESTING)
     add_test(NAME opennow-consoleactions-tests COMMAND opennow-consoleactions-tests
         -input "${CMAKE_CURRENT_SOURCE_DIR}/tests/consoleactions")
     set_tests_properties(opennow-consoleactions-tests PROPERTIES
-        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software" TIMEOUT 30)
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic" TIMEOUT 30)
     qt_add_executable(opennow-theme-tests tests/tst_theme.cpp)
     target_link_libraries(opennow-theme-tests PRIVATE Qt6::QuickTest Qt6::Quick)
     target_compile_definitions(opennow-theme-tests PRIVATE

@@ -120,6 +120,7 @@ TestCase {
         const sheet = openWarning({actionText:"", safeText:"Got it", checkboxText:"Don't notify me again"})
         const checkbox = findChild(sheet, "noticeCheckbox")
         verify(checkbox !== null)
+        verify(waitForRendering(sheet))
         mouseClick(checkbox)
         verify(sheet.checked)
         keyClick(Qt.Key_Escape)
