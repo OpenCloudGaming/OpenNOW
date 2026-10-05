@@ -1,8 +1,90 @@
 import XCTest
 import UIKit
+import SwiftUI
 @testable import OpenNOWiOS
 
 final class OpenNOWiOSParityTests: XCTestCase {
+    @MainActor
+    func testIPadSettingsCategoriesCanReturnToHomeRepeatedly() async throws {
+        try await verifySettingsCategoriesCanReturnToHome(compact: false)
+    }
+
+    @MainActor
+    func testPhoneSettingsCategoriesCanReturnToHomeRepeatedly() async throws {
+        try await verifySettingsCategoriesCanReturnToHome(compact: true)
+    }
+
+    @MainActor
+    private func verifySettingsCategoriesCanReturnToHome(compact: Bool) async throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let previousKeyWindow = scene.windows.first(where: \.isKeyWindow)
+        let store = OpenNOWStore()
+        store.settings.analyticsConsentAsked = true
+        store.settings.analyticsOptOut = true
+        let host = UIHostingController(rootView: MainTabView(initialPage: .store)
+            .environmentObject(store).environment(\.horizontalSizeClass, compact ? .compact : .regular))
+        if #available(iOS 17.0, *) { host.traitOverrides.horizontalSizeClass = compact ? .compact : .regular }
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil; previousKeyWindow?.makeKeyAndVisible() }
+        func descendants(_ view: UIView) -> [UIView] { [view] + view.subviews.flatMap(descendants) }
+        func settle() async throws {
+            try await Task.sleep(nanoseconds: 500_000_000)
+            host.view.layoutIfNeeded()
+        }
+        func selectSidebarRow(_ row: Int) async throws {
+            if compact {
+                func controllers(_ controller: UIViewController) -> [UIViewController] {
+                    [controller] + controller.children.flatMap(controllers)
+                }
+                let tabs = try XCTUnwrap(controllers(host).compactMap { $0 as? UITabBarController }.first)
+                if #available(iOS 18.0, *), tabs.tabs.count > row {
+                    let previous = tabs.selectedTab
+                    let destination = tabs.tabs[row]
+                    tabs.selectedTab = destination
+                    tabs.delegate?.tabBarController?(tabs, didSelectTab: destination, previousTab: previous)
+                } else {
+                    let destination = try XCTUnwrap(tabs.viewControllers?[row])
+                    tabs.selectedIndex = row
+                    tabs.delegate?.tabBarController?(tabs, didSelect: destination)
+                }
+                try await settle()
+                return
+            }
+            let sidebar = try XCTUnwrap(descendants(host.view).compactMap { $0 as? UICollectionView }
+                .first {
+                    $0.numberOfSections > 0 && $0.numberOfItems(inSection: 0) == 4
+                        && $0.convert($0.bounds, to: host.view).minX < host.view.bounds.width * 0.25
+                        && $0.bounds.width < host.view.bounds.width * 0.5
+                })
+            let index = IndexPath(item: row, section: 0)
+            sidebar.delegate?.collectionView?(sidebar, didSelectItemAt: index)
+            sidebar.selectItem(at: index, animated: false, scrollPosition: [])
+            try await settle()
+        }
+        func titles() -> [String] {
+            descendants(host.view).compactMap { ($0 as? UINavigationBar)?.topItem?.title }
+        }
+        try await settle()
+        XCTAssertEqual(host.traitCollection.horizontalSizeClass, compact ? .compact : .regular)
+        for route in [SettingsRouteTarget.general, .stream, .input, .interface, .account] {
+            try await selectSidebarRow(3)
+            let settingsTitles = ["Settings", "General", "Stream", "Input", "Interface", "Account"]
+            XCTAssertTrue(titles().contains(where: settingsTitles.contains),
+                          "Selection must open the actual Settings view: \(titles())")
+            store.pendingSettingsRoute = route
+            try await settle()
+            XCTAssertNil(store.pendingSettingsRoute)
+            XCTAssertTrue(titles().contains(String(describing: route).capitalized),
+                          "The requested settings category must actually be pushed: \(titles())")
+            try await selectSidebarRow(0)
+            XCTAssertTrue(titles().contains("OpenNOW") && !titles().contains(where: settingsTitles.contains),
+                          "Home navigation must replace the settings stack: \(titles())")
+        }
+    }
+
+
     func testAccountSnapshotRoundTripsSubscriptionStorageAndConnections() throws {
         let storage = StorageAddon(
             type: "STORAGE",

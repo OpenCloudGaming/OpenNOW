@@ -98,7 +98,9 @@ private enum SettingsCategory: String, CaseIterable, Hashable, Identifiable {
 struct SettingsView: View {
     @EnvironmentObject private var store: OpenNOWStore
     @Environment(\.openURL) private var openURL
-    @State private var path: [SettingsCategory] = []
+    // Match the type-erased path storage used by the surrounding tab/split view.
+    // Typed category arrays can trap when SwiftUI compares column paths.
+    @State private var path = NavigationPath()
     @State private var bugReportDeck: BugReportPreflightDeck?
     @State private var searchText = ""
     @State private var showingResetConfirmation = false
@@ -143,7 +145,7 @@ struct SettingsView: View {
                 // Search filters the category list, so an inbound route has to clear it or the
                 // destination the caller asked for may not be reachable.
                 searchText = ""
-                path = [SettingsCategory(route)]
+                path = NavigationPath([SettingsCategory(route)])
                 store.pendingSettingsRoute = nil
             }
             .navigationDestination(for: SettingsCategory.self) { category in
