@@ -371,16 +371,28 @@ fn wake_notifications_coalesce_and_overflow_does_not_drain_pending_frames() {
 }
 
 fn directory(name: &str) -> std::path::PathBuf {
-    let directory = std::env::temp_dir().join(format!(
-        "opennow-recording-{name}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&directory).unwrap();
-    directory
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    loop {
+        let directory = std::env::temp_dir().join(format!(
+            "opennow-recording-{name}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
+        ));
+        match std::fs::create_dir(&directory) {
+            Ok(()) => return directory,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => panic!("failed to create recording fixture directory: {error}"),
+        }
+    }
+}
+
+#[test]
+fn recording_fixture_directories_are_exclusively_owned() {
+    let first = directory("same-clock-tick");
+    let second = directory("same-clock-tick");
+    assert_ne!(first, second);
+    std::fs::remove_dir_all(first).unwrap();
+    std::fs::remove_dir_all(second).unwrap();
 }
 
 #[test]
