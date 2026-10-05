@@ -2698,6 +2698,8 @@ QtObject {
             return
         }
         streamRecordingAttempt = Object.assign({}, streamRecordingAttempt, {completed: true, acceptStart: false})
+        streamRecordingStartRequestId = ""
+        streamRecordingStopRequestId = ""
         streamRecordingActive = false
         streamRecordingElapsedMs = 0
         pendingRecordingPath = ""

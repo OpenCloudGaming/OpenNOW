@@ -140,6 +140,35 @@ QtObject {
         check(ShellStore.mediaRecordingTargetRequestId === "" && runtime.commands.length === commandCount,
             "target allocation after session teardown cannot start recording")
     }
+    function runDroppedAcknowledgements() {
+        let start = beginManualRecording("dropped-acknowledgements")
+        ShellStore.acceptNativeEvent({type: "recording-state", requestId: start.id,
+            state: "saved", path: start.outputPath, completion: {kind: "cut", reason: "interrupted"}})
+        check(ShellStore.streamRecordingStartRequestId === "",
+            "terminal completion must permit retry without a start acknowledgement")
+        const oldStart = start
+        start = beginManualRecording("dropped-acknowledgements")
+        ShellStore.acceptNativeResponse({id: oldStart.id, type: "recording-started"})
+        check(!ShellStore.streamRecordingActive && ShellStore.streamRecordingStartRequestId === start.id,
+            "old acknowledgement must not activate or clear a newer attempt")
+        ShellStore.acceptNativeResponse({id: start.id, type: "recording-started"})
+        ShellStore.toggleStreamRecording()
+        const stop = runtime.commands[runtime.commands.length - 1]
+        ShellStore.acceptNativeEvent({type: "recording-state", requestId: start.id,
+            state: "saved", path: start.outputPath, completion: {kind: "cut", reason: "queue-overflow"}})
+        check(ShellStore.streamRecordingStopRequestId === "",
+            "terminal completion must permit retry without a stop acknowledgement")
+        const stoppedStart = start
+        start = beginManualRecording("dropped-acknowledgements")
+        ShellStore.acceptNativeResponse({id: stop.id, type: "recording-stopped", requestId: stoppedStart.id,
+            path: stoppedStart.outputPath, completion: {kind: "complete"}})
+        check(!ShellStore.streamRecordingActive && !ShellStore.streamRecordingAttempt.completed
+            && ShellStore.streamRecordingStartRequestId === start.id,
+            "late stop acknowledgement must not finish the retry")
+        ShellStore.acceptNativeResponse({id: start.id, type: "recording-started"})
+        ShellStore.acceptNativeEvent({type: "recording-state", requestId: start.id,
+            state: "saved", path: start.outputPath, completion: {kind: "complete"}})
+    }
     function run(parent) {
         ShellStore.settings = {}
         ShellStore.streamerStartRequestId = "fixture-blocked"
@@ -230,6 +259,7 @@ QtObject {
         ShellStore.acceptNativeEvent({type: "clip-state", requestId: "old-session", state: "failed", message: "stale error"})
         check(ShellStore.mediaMessage !== "stale error", "old session failure cannot replace current state")
         runManualRecording(status)
+        runDroppedAcknowledgements()
         binding.destroy()
         status.destroy()
         page.destroy()

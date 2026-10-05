@@ -1421,6 +1421,7 @@ private slots:
             var cut = mediaMessage;
             check(cut === 'Recording saved early because the stream was interrupted');
             check(!streamRecordingActive && refreshes === 1 && notices.length === 1 && accessibilityMessage === cut);
+            check(streamRecordingStartRequestId === '' && streamRecordingStopRequestId === '');
             acceptRecordingResponse({id:'current',type:'recording-started'},{operation:'recording-start'});
             acceptRecordingResponse({id:'stop',type:'recording-stopped',requestId:'current',path:'/current.mkv',completion:{kind:'complete'}},
                 {operation:'recording-stop',recordingRequestId:'current'});
