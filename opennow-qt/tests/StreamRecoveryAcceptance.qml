@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Window
 import OpenNOW
 
 QtObject {
@@ -21,6 +22,20 @@ QtObject {
     }
     property Component connectingDesktop: Component { DesktopStreamScreen { width: 640; height: 360 } }
     property Component connectingConsole: Component { StreamScreen { width: 640; height: 360 } }
+    property Component captureDesktop: Component { DesktopStreamScreen { anchors.fill: parent } }
+    property Component captureConsole: Component { StreamScreen { anchors.fill: parent } }
+    property Component captureContainer: Component {
+        Item {
+            id: host
+            property bool desktopMode: false
+            property Component streamComponent
+            transformOrigin: Item.TopLeft
+            ShellViewport {
+                desktopSurfaceActive: host.desktopMode
+                Loader { anchors.fill: parent; sourceComponent: host.streamComponent }
+            }
+        }
+    }
     property QtObject client: QtObject {
         property string state: "stopped"
         property string lastError: ""
@@ -631,10 +646,33 @@ QtObject {
         AppController.showOverlay(saved.overlay)
     }
 
+    function checkCaptureCoordinates(parent) {
+        const saved = ShellStore.streamCaptureRect
+        for (const desktop of [false, true]) {
+            for (const size of [[960,540,1], [1600,900,1], [1280,800,1], [960,540,1.5], [1367,769,1]]) {
+                const view = captureContainer.createObject(parent, {
+                    width:size[0], height:size[1], scale:size[2], x:31, y:27,
+                    desktopMode:desktop, streamComponent:desktop ? captureDesktop : captureConsole
+                })
+                check(view !== null, "capture viewport loads")
+                const window = view.Window.window
+                const rect = ShellStore.streamCaptureRect
+                check(window && rect.x === window.x + 31 && rect.y === window.y + 27,
+                    "capture origin uses window coordinates")
+                check(rect.width === size[0] * size[2] && rect.height === size[1] * size[2],
+                    "capture size uses mapped viewport coordinates: " + desktop + " " + size)
+                view.visible = false
+                view.destroy()
+            }
+        }
+        ShellStore.streamCaptureRect = saved
+    }
+
     function run(parent) {
         client.state = "stopped"
         ShellStore.streamerStartRequestId = "fixture-blocked"
         ShellStore.streamInputPauseRequestId = "fixture-blocked"
+        checkCaptureCoordinates(parent)
         checkConnectingPresentation(parent)
         // This is another reply for the same seat, not the first session.
         ShellStore.activeSession = {sessionId:"fixture", phase:"ready", status:2}
