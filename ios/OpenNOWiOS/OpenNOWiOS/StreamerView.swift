@@ -6150,6 +6150,7 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
     private let gpuAdmission = DispatchSemaphore(value: 2)
     private let presentations = NativeStreamPresentationTracker()
     private var displayLink: CADisplayLink?
+    private var displayTargetTimestamp: CFTimeInterval?
     private lazy var displayClock = DisplayClock(owner: self)
 
     private final class DisplayClock: NSObject {
@@ -6235,6 +6236,7 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
     }
 
     private func displayTick(_ link: CADisplayLink) {
+        displayTargetTimestamp = link.targetTimestamp
         mtkView.draw()
     }
 
@@ -6248,6 +6250,8 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
     func draw(in view: MTKView) {
         guard !isHidden, window != nil else { return }
         let drawStarted = CACurrentMediaTime()
+        let presentAt = displayTargetTimestamp
+        displayTargetTimestamp = nil
         guard gpuAdmission.wait(timeout: .now()) == .success else { return }
         var submitted = false
         defer { if !submitted { gpuAdmission.signal() } }
@@ -6266,17 +6270,25 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
 
         let bounds = CGRect(origin: .zero, size: view.drawableSize)
         let destination = stretchToFill ? bounds : Self.aspectFitRect(source: frameSize, target: bounds.size)
+        let shouldUpscale = upscalingEnabled && drawStarted >= suspendUpscalingUntil
+        let upscaleSize = shouldUpscale
+            ? NativeStreamVideoEffectsPolicy.upscaleSize(source: frameSize, destination: destination.size)
+            : nil
         let ticket = metal4Enabled ? submissionTimeline?.next() : nil
         let presentationTracker = presentations
         let mailbox = frames
-        if #available(iOS 26.0, *), metal4Enabled && !metal4Disabled, hdrTransfer != .hlg,
-           !upscalingEnabled, sharpeningAmount <= 0.001,
+        let useDirectHDRPath = NativeStreamVideoEffectsPolicy.canUseDirectHDRPath(
+            upscalingEnabled: shouldUpscale, upscaleEligible: upscaleSize != nil,
+            sharpeningAmount: sharpeningAmount
+        )
+        if #available(iOS 26.0, *), metal4Enabled && !metal4Disabled, hdrTransfer == .pq,
+           useDirectHDRPath,
            let metal4 = metal4HDRStorage as? NativeStreamMetal4HDRRenderer {
             let admission = gpuAdmission
             if metal4.submit(buffer:pixelBuffer,target:drawable.texture,destination:destination,drawable:drawable,ticket:ticket,
                 presented: { time in
                     presentationTracker.recordPresentation(at:time)
-                }, completion: { [weak self] duration,error in
+                }, presentAt: presentAt, completion: { [weak self] duration,error in
                     admission.signal()
                     mailbox.complete()
                     if let error {
@@ -6286,6 +6298,11 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
                 }) {
                 if let ticket { submissionTimeline?.accept(ticket) }
                 rendererBackend = "Metal 4 · direct 10-bit HDR"
+                if upscalingEnabled {
+                    metal4UpscalingStatus = shouldUpscale
+                        ? "No upscale: \(Int(frameSize.width))×\(Int(frameSize.height)) → \(Int(destination.width))×\(Int(destination.height))"
+                        : nil
+                }
 
                 submitted = true
                 return
@@ -6294,7 +6311,6 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
         // Cross-queue ordering also covers live switching to effects/legacy.
         if let ticket, ticket.previous > 0 { commandBuffer.encodeWaitForEvent(ticket.event,value:ticket.previous) }
         let effectsToken = effectsGeneration
-        let shouldUpscale = upscalingEnabled && drawStarted >= suspendUpscalingUntil
         let preferMetal4Effects: Bool
         if #available(iOS 26.0, *) {
             preferMetal4Effects = metal4Enabled && !metal4Disabled && metal4EffectsStorage != nil
@@ -6326,7 +6342,7 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
                effects.submit(buffer: pixelBuffer, destination: destination, upscale: shouldUpscale,
                     target: drawable.texture, sharpening:Float(sharpeningAmount),
                     drawable: drawable, ticket: ticket,
-                    presented: presentedMetal4, completion: completeMetal4) {
+                    presented: presentedMetal4, presentAt: presentAt, completion: completeMetal4) {
                 if let ticket { submissionTimeline?.accept(ticket) }
                 rendererBackend = (hdrTransfer == .pq ? "Metal 4 · native PQ conversion"
                     : hdrTransfer == .hlg ? "Metal 4 · native HLG conversion" : "Metal 4 · native SDR conversion")
@@ -6367,7 +6383,7 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
                     transfer: hdrTransfer == .pq ? 1 : hdrTransfer == .hlg ? 2 : 0,
                     upscale: shouldUpscale, context: ciContext, producer: commandBuffer,
                     target: drawable.texture, drawable: drawable, ticket: ticket,
-                    presented: presentedMetal4, completion: completeMetal4) {
+                    presented: presentedMetal4, presentAt: presentAt, completion: completeMetal4) {
                     if let ticket { submissionTimeline?.accept(ticket) }
                     rendererBackend = "Metal 4 · effects"
                     if shouldUpscale { metal4UpscalingStatus = effects.status } else { metal4UpscalingStatus = nil }
@@ -6424,7 +6440,7 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
         }
 
         if let ticket { commandBuffer.encodeSignalEvent(ticket.event,value:ticket.value) }
-        commandBuffer.present(drawable)
+        if let presentAt { commandBuffer.present(drawable, atTime: presentAt) } else { commandBuffer.present(drawable) }
         submitted = true
         commandBuffer.commit()
         if let ticket { submissionTimeline?.accept(ticket) }

@@ -594,8 +594,25 @@ final class OpenNOWiOSParityTests: XCTestCase {
         // must not be advertised as upscaling when both axes actually shrink.
         XCTAssertNil(NativeStreamVideoEffectsPolicy.upscaleSize(source: CGSize(width: 2560, height: 1600),
             destination: CGSize(width: 2064, height: 1290)))
-        XCTAssertEqual(NativeStreamVideoEffectsPolicy.upscaleSize(source: CGSize(width: 1920, height: 1200),
-            destination: CGSize(width: 2064, height: 1290)), CGSize(width: 2064, height: 1290))
+        XCTAssertNil(NativeStreamVideoEffectsPolicy.upscaleSize(source: CGSize(width: 1920, height: 1200),
+            destination: CGSize(width: 2064, height: 1290)))
+        XCTAssertNil(NativeStreamVideoEffectsPolicy.upscaleSize(source: CGSize(width: 2560, height: 1080),
+            destination: CGSize(width: 2868, height: 1320)))
+        XCTAssertEqual(NativeStreamVideoEffectsPolicy.upscaleSize(source: CGSize(width: 1920, height: 1080),
+            destination: CGSize(width: 2560, height: 1440)), CGSize(width: 2560, height: 1440))
+    }
+
+    func testMetalFXEnabledButIneligibleUsesSinglePassHDRRenderer() {
+        let source = CGSize(width: 2560, height: 1080)
+        let destination = CGSize(width: 2868, height: 1320)
+        let eligible = NativeStreamVideoEffectsPolicy.upscaleSize(source: source, destination: destination) != nil
+        XCTAssertFalse(eligible)
+        XCTAssertTrue(NativeStreamVideoEffectsPolicy.canUseDirectHDRPath(
+            upscalingEnabled: true, upscaleEligible: eligible, sharpeningAmount: 0))
+        XCTAssertFalse(NativeStreamVideoEffectsPolicy.canUseDirectHDRPath(
+            upscalingEnabled: true, upscaleEligible: true, sharpeningAmount: 0))
+        XCTAssertFalse(NativeStreamVideoEffectsPolicy.canUseDirectHDRPath(
+            upscalingEnabled: true, upscaleEligible: eligible, sharpeningAmount: 0.1))
     }
 
     func testVideoEffectsSettingsMigrateOffAndRoundTripWithoutChangingStream() throws {
