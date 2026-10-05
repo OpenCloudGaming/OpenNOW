@@ -6,47 +6,43 @@ FocusScope {
     id: root
     readonly property var state: ShellStore.updaterState || ({})
     readonly property bool available: state.status === "available"
-    Component.onCompleted: ShellStore.acknowledgeUpdateHighlights()
-
-    Dialog {
-        id: installConfirmation
-        objectName: "updateInstallConfirmation"
-        anchors.centerIn: parent
-        width: Math.min(parent.width - 48, 500)
-        implicitHeight: 220
-        height: Math.min(root.height - 48, implicitHeight)
-        modal: true
-        focus: true
-        title: root.state.downloadedVersion ? qsTr("Install %1 and restart").arg(root.state.downloadedVersion) : qsTr("Install and restart")
-        standardButtons: Dialog.Ok | Dialog.Cancel
-        onAccepted: ShellStore.installUpdate(true)
-        contentItem: Label {
-            wrapMode: Text.WordWrap
-            text: qsTr("OpenNOW will prepare the verified update, close, replace this installation, and restart. Continue?")
+    readonly property string installText: root.state.downloadedVersion ? qsTr("Install %1 and restart").arg(root.state.downloadedVersion) : qsTr("Install and restart")
+    Component.onCompleted: {
+        ShellStore.acknowledgeUpdateHighlights()
+        updateActions.focusFirst()
+    }
+    Keys.onPressed: event => {
+        if (event.key === Qt.Key_Up || event.key === Qt.Key_Down || event.key === Qt.Key_Left || event.key === Qt.Key_Right) {
+            updateActions.focusFirst()
+            event.accepted = true
         }
     }
 
     ScreenBackground { tint: "#16263D" }
+
     GlassPanel {
-        anchors.centerIn: parent; width: Math.min(980, parent.width - 180); height: 590; panelRadius: 42; strong: true
-        Column {
-            anchors.fill: parent; anchors.margins: 38; spacing: 18
-            Row {
-                width: parent.width; height: 62; spacing: 20
-                Rectangle {
-                    width: 62; height: 62; radius: 20; color: root.available ? Theme.mint : Theme.violet
-                    Text { anchors.centerIn: parent; text: root.state.status === "succeeded" ? "✓" : root.available ? "↑" : "↓"; color: Theme.contrastText(root.available ? Theme.mint : Theme.violet); font.pixelSize: 30; font.weight: Font.Black }
-                }
-                Column {
-                    anchors.verticalCenter: parent.verticalCenter; spacing: 3
-                    Text { text: root.available ? qsTr("Update available") : qsTr("OpenNOW updates"); color: Theme.label; font.family: Theme.displayFont; font.pixelSize: 31; font.weight: Font.Black }
-                    Text { text: qsTr("Installed version %1 · %2 channel").arg(root.state.currentVersion || qsTr("unknown")).arg(ShellStore.settings.updateChannel === "nightly" ? qsTr("Nightly") : qsTr("Stable")); color: Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 12 }
-                }
+        x: 96; y: 124; width: 1080; height: root.height - 288; panelRadius: 40
+        Row {
+            id: updateHeader
+            x: 56; y: 40; width: parent.width - 112; height: 64; spacing: 20
+            Rectangle {
+                width: 64; height: 64; radius: 32; color: root.available ? Theme.mint : Theme.violet
+                Text { anchors.centerIn: parent; text: root.state.status === "succeeded" ? "✓" : root.available ? "↑" : "↓"; color: Theme.contrastText(parent.color); font.pixelSize: 30; font.weight: Font.Black }
             }
+            Column {
+                anchors.verticalCenter: parent.verticalCenter; spacing: 4
+                Text { text: root.available ? qsTr("Update available") : qsTr("OpenNOW updates"); color: Theme.label; font.family: Theme.displayFont; font.pixelSize: 32; font.weight: Font.Black; font.letterSpacing: -0.3 }
+                Text { text: qsTr("Installed version %1 · %2 channel").arg(root.state.currentVersion || qsTr("unknown")).arg(ShellStore.settings.updateChannel === "nightly" ? qsTr("Nightly") : qsTr("Stable")); color: Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 14; font.weight: Font.Bold; font.letterSpacing: 0.6 }
+            }
+        }
+        Column {
+            id: statusColumn
+            anchors.top: updateHeader.bottom; anchors.topMargin: 28
+            x: 56; width: parent.width - 112; spacing: 14
             Text {
                 width: parent.width; wrapMode: Text.WordWrap
                 text: ShellStore.updaterError || root.state.message || qsTr("Check GitHub Releases for a newer OpenNOW build.")
-                color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: 17
+                color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: 19; font.weight: Font.DemiBold; lineHeight: 1.25
                 Accessible.role: Accessible.StaticText
                 Accessible.name: text
             }
@@ -56,60 +52,131 @@ FocusScope {
                 indeterminate: true
                 Accessible.name: root.state.message || qsTr("Update in progress")
             }
+        }
+        Rectangle {
+            id: notesFrame
+            anchors.top: statusColumn.bottom; anchors.topMargin: 24
+            anchors.bottom: parent.bottom; anchors.bottomMargin: 40
+            x: 40; width: parent.width - 80
+            radius: 28
+            color: notesView.activeFocus ? Qt.rgba(Theme.face.r, Theme.face.g, Theme.face.b, 0.08) : Qt.rgba(Theme.face.r, Theme.face.g, Theme.face.b, 0.04)
+            border.width: notesView.activeFocus ? 3 : 1
+            border.color: notesView.activeFocus ? Theme.face : Theme.seam
+            Rectangle {
+                anchors.fill: parent; anchors.margins: -9; radius: parent.radius + 9
+                color: "transparent"; border.width: 5
+                border.color: Qt.rgba(Theme.focus.r, Theme.focus.g, Theme.focus.b, 0.4)
+                visible: notesView.activeFocus
+            }
+            Flickable {
+                id: notesView
+                anchors.fill: parent; anchors.margins: 26; contentHeight: notes.height; clip: true
+                boundsBehavior: Flickable.StopAtBounds
+                activeFocusOnTab: true
+                Accessible.role: Accessible.Document
+                Keys.onPressed: event => {
+                    if (event.key === Qt.Key_Down || event.key === Qt.Key_Up) {
+                        const step = event.key === Qt.Key_Down ? 120 : -120
+                        contentY = Math.max(0, Math.min(Math.max(0, contentHeight - height), contentY + step))
+                        event.accepted = true
+                    } else if (event.key === Qt.Key_Right) {
+                        if (!event.isAutoRepeat) updateActions.focusFirst()
+                        event.accepted = true
+                    } else if (event.key === Qt.Key_Left) {
+                        event.accepted = true
+                    }
+                }
+                ReleaseNotes {
+                    id: notes; width: parent.width
+                    text: ShellStore.releaseHighlights.bodyMarkdown || qsTr("Check for updates to load verified release information from GitHub.")
+                    font.pixelSize: 16
+                }
+                ScrollIndicator.vertical: ScrollIndicator {}
+            }
+        }
+    }
+
+    GlassPanel {
+        x: 1200; y: 124; width: root.width - 1296; height: root.height - 288; panelRadius: 40
+        ConsoleActionColumn {
+            id: updateActions
+            x: 40; y: 40; width: parent.width - 80
+            returnTarget: notesView
+            ConsoleActionButton {
+                width: parent.width
+                visible: Boolean(root.state.canDownload)
+                text: root.state.status === "downloading" ? qsTr("Downloading…") : qsTr("Download verified update")
+                primary: true
+                enabled: !ShellStore.updaterBusy && root.state.canDownload === true
+                onClicked: ShellStore.downloadUpdate()
+            }
+            ConsoleActionButton {
+                id: installButton
+                width: parent.width
+                objectName: "updateInstallButton"
+                visible: Boolean(root.state.canInstall)
+                text: root.installText
+                primary: true
+                enabled: ShellStore.updaterCanInstall
+                onClicked: installConfirmation.open()
+            }
+            ConsoleActionButton {
+                width: parent.width
+                text: root.state.status === "checking" ? qsTr("Checking…") : qsTr("Check for updates")
+                primary: !root.state.canDownload && !root.state.canInstall
+                enabled: !ShellStore.updaterBusy && root.state.canCheck === true
+                onClicked: ShellStore.checkForUpdates()
+            }
+            ConsoleActionButton {
+                width: parent.width; text: qsTr("Open releases")
+                enabled: Boolean(root.state.releaseUrl)
+                onClicked: AppController.openExternalUrl(root.state.releaseUrl || "")
+            }
             Text {
                 width: parent.width; wrapMode: Text.WordWrap
                 visible: !ShellStore.updaterSessionSafe
                 text: qsTr("End your streaming session before installing an update. Background updates will wait.")
-                color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 14
+                color: Theme.yellow; font.family: Theme.bodyFont; font.pixelSize: 17; font.weight: Font.DemiBold; lineHeight: 1.2
                 Accessible.role: Accessible.StaticText
                 Accessible.name: text
             }
-            GlassPanel {
-                width: parent.width; height: 240; panelRadius: 26
-                Flickable {
-                    anchors.fill: parent; anchors.margins: 22; contentHeight: notes.height; clip: true
-                    ReleaseNotes {
-                        id: notes; width: parent.width
-                        text: ShellStore.releaseHighlights.bodyMarkdown || qsTr("Check for updates to load verified release information from GitHub.")
-                        font.pixelSize: 14
-                    }
-                }
-            }
-            Flow {
-                width: parent.width
-                spacing: 12
-                GlassButton {
-                    id: checkButton; width: 250
-                    text: root.state.status === "checking" ? qsTr("Checking…") : qsTr("Check for updates")
-                    primary: true; glyph: "A"; enabled: !ShellStore.updaterBusy && root.state.canCheck === true
-                    onClicked: ShellStore.checkForUpdates()
-                    Component.onCompleted: forceActiveFocus()
-                }
-                GlassButton {
-                    width: 250; text: qsTr("Open releases"); glyph: "↗"
-                    enabled: Boolean(root.state.releaseUrl)
-                    onClicked: AppController.openExternalUrl(root.state.releaseUrl || "")
-                }
-                GlassButton {
-                    width: 250
-                    visible: Boolean(root.state.canDownload)
-                    text: root.state.status === "downloading" ? qsTr("Downloading…") : qsTr("Download verified update")
-                    glyph: "↓"; primary: true
-                    enabled: !ShellStore.updaterBusy && root.state.canDownload === true
-                    onClicked: ShellStore.downloadUpdate()
-                }
-                GlassButton {
-                    width: 250
-                    objectName: "updateInstallButton"
-                    visible: Boolean(root.state.canInstall)
-                    text: root.state.downloadedVersion ? qsTr("Install %1 and restart").arg(root.state.downloadedVersion) : qsTr("Install and restart")
-                    glyph: "↑"; primary: true
-                    enabled: ShellStore.updaterCanInstall
-                    onClicked: installConfirmation.open()
-                }
-            }
         }
     }
-    HintBar { anchors.horizontalCenter: parent.horizontalCenter; y: parent.height - height - 82; hints: [{glyph:"A",label:qsTr("Check")},{glyph:"B",label:qsTr("Back")}] }
-    AppChrome { anchors.fill: parent; title: qsTr("Updates"); currentRoute: "updates"; onRouteRequested: route => AppController.navigate(route) }
+
+    AppChrome {
+        anchors.fill: parent; title: qsTr("Updates"); currentRoute: "updates"
+        leftHints: [{glyph:"B", label:qsTr("Back")}]
+        rightHints: [{glyph:"A", label:qsTr("Select")}]
+        onRouteRequested: route => AppController.navigate(route)
+    }
+
+    ConsoleWarningSheet {
+        id: installConfirmation
+        objectName: "updateInstallConfirmation"
+        signal accepted()
+        function open() { opened = true }
+        function close() {
+            opened = false
+            Qt.callLater(() => {
+                if (installConfirmation.opened)
+                    return
+                if (installButton.enabled && installButton.visible) installButton.forceActiveFocus()
+                else updateActions.focusFirst()
+            })
+        }
+        danger: false
+        eyebrow: qsTr("Updates")
+        title: root.installText
+        message: qsTr("OpenNOW will prepare the verified update, close, replace this installation, and restart. Continue?")
+        safeText: qsTr("Not now")
+        actionText: root.installText
+        safeButtonObjectName: "updateInstallCancel"
+        actionButtonObjectName: "updateInstallConfirm"
+        onSafeRequested: close()
+        onActionRequested: {
+            close()
+            accepted()
+        }
+        onAccepted: ShellStore.installUpdate(true)
+    }
 }

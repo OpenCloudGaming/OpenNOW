@@ -3,6 +3,7 @@
 #include <QCoreApplication>
 #include <QGuiApplication>
 #include <QKeyEvent>
+#include <QSet>
 #include <QVariantMap>
 #include <QWindow>
 
@@ -248,6 +249,36 @@ void ControllerInput::stopRumble()
     }
 }
 
+void ControllerInput::setShellInputBlocked(bool blocked)
+{
+    if (m_shellInputBlocked == blocked) return;
+    m_shellInputBlocked = blocked;
+    if (blocked) {
+        for (auto &slot : m_slots) slot.shellKeys.clear();
+        resetDirections();
+    }
+    updateShellInputDrain();
+    emit shellInputBlockedChanged();
+}
+
+void ControllerInput::updateShellInputDrain()
+{
+    bool draining = false;
+    if (m_shellInputBlocked || m_shellInputDraining) {
+        for (const auto &slot : m_slots) {
+            if (!slot.gamepad || !acceptsController(slot.instanceId)) continue;
+            for (int button = 0; button < SDL_GAMEPAD_BUTTON_COUNT; ++button)
+                draining |= SDL_GetGamepadButton(slot.gamepad, SDL_GamepadButton(button));
+            for (int axis = 0; axis < SDL_GAMEPAD_AXIS_COUNT; ++axis)
+                draining |= std::abs(int(SDL_GetGamepadAxis(slot.gamepad, SDL_GamepadAxis(axis))))
+                    > axisReleaseThreshold;
+        }
+    }
+    if (m_shellInputDraining == draining) return;
+    m_shellInputDraining = draining;
+    emit shellInputDrainingChanged();
+}
+
 void ControllerInput::setInputSuspended(bool suspended)
 {
     if (m_inputSuspended == suspended) return;
@@ -410,6 +441,11 @@ void ControllerInput::handleButton(const SDL_GamepadButtonEvent &event, bool pre
     }
 
     if (!m_shellCaptureEnabled || m_inputSuspended) return;
+    if (m_shellInputBlocked || m_shellInputDraining) {
+        updateShellInputDrain();
+        if (pressed && m_shellInputBlocked) emit shellInputSkipRequested();
+        return;
+    }
     const auto key = keyForButton(event.button);
     if (key != 0) {
         handleShellButton(slotIndex, key, pressed);
@@ -433,6 +469,13 @@ void ControllerInput::handleAxis(const SDL_GamepadAxisEvent &event)
     }
     if (!m_shellCaptureEnabled) publishSlotSnapshot(slotIndex);
     if (!m_shellCaptureEnabled || m_inputSuspended) return;
+
+    if (m_shellInputBlocked || m_shellInputDraining) {
+        updateShellInputDrain();
+        if (m_shellInputBlocked && std::abs(int(event.value)) > axisPressThreshold)
+            emit shellInputSkipRequested();
+        return;
+    }
 
     const auto value = event.value;
     bool activated = false;
@@ -721,11 +764,35 @@ bool ControllerInput::updateDirection(RepeatingDirection &direction, bool active
 
 void ControllerInput::dispatchRepeats(qint64 now)
 {
+    updateShellInputDrain();
+    if (m_shellInputBlocked || m_shellInputDraining) return;
     if (!m_shellCaptureEnabled || m_inputSuspended) return;
+    QSet<int> digitalDirections;
+    for (auto &slot : m_slots) {
+        if (!slot.gamepad || !acceptsController(slot.instanceId)) continue;
+        for (auto held = slot.shellKeys.begin(); held != slot.shellKeys.end(); ++held) {
+            const auto key = held.key();
+            if (key != Qt::Key_Left && key != Qt::Key_Right && key != Qt::Key_Up && key != Qt::Key_Down)
+                continue;
+            if (digitalDirections.contains(key)) continue;
+            digitalDirections.insert(key);
+            if (now - held->pressedAt < repeatDelayMs || now - held->repeatedAt < repeatIntervalMs)
+                continue;
+            if (held->target) {
+                postKey(key, true, true, held->target);
+                postKey(key, false, true, held->target);
+            }
+            for (auto &owner : m_slots) {
+                auto shared = owner.shellKeys.find(key);
+                if (shared != owner.shellKeys.end()) shared->repeatedAt = now;
+            }
+        }
+    }
     for (auto &slot : m_slots) {
         if (!slot.gamepad || !acceptsController(slot.instanceId)) continue;
         for (auto &direction : slot.directions) {
-            if (!direction.active || now - direction.pressedAt < repeatDelayMs
+            if (!direction.active || digitalDirections.contains(direction.key)
+                || now - direction.pressedAt < repeatDelayMs
                 || now - direction.repeatedAt < repeatIntervalMs) continue;
             direction.repeatedAt = now;
             postKey(direction.key, true, true);
@@ -746,14 +813,17 @@ void ControllerInput::handleShellButton(int slotIndex, int key, bool pressed)
 {
     auto &keys = m_slots[static_cast<std::size_t>(slotIndex)].shellKeys;
     if (keys.contains(key) == pressed) return;
-    QPointer<QObject> target = pressed ? QPointer<QObject>(QGuiApplication::focusWindow()) : keys.take(key);
+    QPointer<QObject> target = pressed ? QPointer<QObject>(QGuiApplication::focusWindow()) : keys.take(key).target;
     if (pressed && !target) target = QCoreApplication::instance();
     for (const auto &slot : m_slots) {
         if (!slot.shellKeys.contains(key)) continue;
         if (pressed) keys.insert(key, slot.shellKeys.value(key));
         return;
     }
-    if (pressed) keys.insert(key, target);
+    if (pressed) {
+        const auto now = m_clock.elapsed();
+        keys.insert(key, ShellKeyPress{target, now, now});
+    }
     if (target) postKey(key, pressed, false, target);
 }
 

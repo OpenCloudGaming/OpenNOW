@@ -28,6 +28,7 @@ int AcceptanceSession::prepareWindow()
                 || m_arguments.contains(u"--smoke-upscaling"_s)
                 || m_arguments.contains(u"--smoke-background-stream"_s)
                 || m_arguments.contains(u"--smoke-controller-metadata"_s)
+                || m_arguments.contains(u"--smoke-console-design"_s)
                 || m_arguments.contains(u"--smoke-custom-background"_s)
                 || m_arguments.contains(u"--smoke-frame-generation"_s)) {
             QQmlComponent component(&m_engine, QUrl(u"qrc:/acceptance/PendingSettingsClient.qml"_s));
@@ -48,6 +49,52 @@ int AcceptanceSession::prepareWindow()
         };
         if (window) window->resize(dimension(u"--smoke-width"_s, 1600),
                                    dimension(u"--smoke-height"_s, 900));
+        if (m_arguments.contains(u"--smoke-console-design"_s)) {
+            auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
+            if (!store) return EXIT_FAILURE;
+            QVariantList games;
+            QStringList favorites;
+            const QStringList storefronts{u"Steam"_s, u"Xbox"_s, u"Epic Games Store"_s, u"GOG"_s};
+            for (int index = 0; index < 18; ++index) {
+                const auto id = QString::number(1000 + index);
+                const auto platform = storefronts.at(index % storefronts.size());
+                QVariantMap game{{u"id"_s, id}, {u"title"_s, u"Sample game %1"_s.arg(index + 1)},
+                    {u"launchAppId"_s, id}, {u"selectedVariantIndex"_s, 0},
+                    {u"isAvailable"_s, true}, {u"isInLibrary"_s, true},
+                    {u"publisherName"_s, u"Acceptance fixture"_s},
+                    {u"genres"_s, QStringList{index % 2 ? u"Adventure"_s : u"Action"_s}},
+                    {u"imageUrl"_s, u"qrc:/qt/qml/OpenNOW/res/brand/desktop-renew.jpg"_s},
+                    {u"heroImageUrl"_s, u"qrc:/qt/qml/OpenNOW/res/brand/desktop-renew.jpg"_s},
+                    {u"availableStores"_s, QStringList{platform}},
+                    {u"variants"_s, QVariantList{QVariantMap{{u"id"_s, id}, {u"store"_s, platform},
+                        {u"inLibrary"_s, true}, {u"libraryStatus"_s, u"PLATFORM_SYNC"_s}}}}};
+                games.append(game);
+                if (index < 14) favorites.append(id);
+            }
+            store->setProperty("settings", QVariantMap{{u"appTheme"_s, u"dark"_s}, {u"themePack"_s, u"nocturne"_s},
+                {u"favoriteGameIds"_s, favorites}, {u"homeTileSizes"_s, QVariantMap{{u"1000"_s, u"wide"_s}}},
+                {u"resolution"_s, u"2560x1440"_s}, {u"fps"_s, 120}, {u"codec"_s, u"auto"_s},
+                {u"colorQuality"_s, u"8bit_420"_s}, {u"maxBitrateMbps"_s, 75}});
+            store->setProperty("catalogGames", games);
+            store->setProperty("catalogState", u"ready"_s);
+            store->setProperty("catalogComplete", true);
+            store->setProperty("catalogTotalCount", games.size());
+            store->setProperty("storeGames", games);
+            store->setProperty("storeState", u"ready"_s);
+            store->setProperty("storeTotalCount", games.size());
+            store->setProperty("storeHasMore", false);
+            store->setProperty("selectedGame", games.first());
+            if (m_controller.route() == u"inserting"_s || m_controller.route() == u"stream"_s) {
+                store->setProperty("streamerStartRequestId", u"console-design-fixture"_s);
+                store->setProperty("streamInputPauseRequestId", u"console-design-fixture"_s);
+                store->setProperty("activeSession", QVariantMap{{u"sessionId"_s, u"console-design-fixture"_s},
+                    {u"phase"_s, u"queued"_s}, {u"queuePosition"_s, 37}, {u"seatSetupStep"_s, 1}});
+                const bool stream = m_controller.route() == u"stream"_s;
+                store->setProperty("streamState", stream ? u"streaming"_s : u"queued"_s);
+                if (stream) store->setProperty("streamer", QVariantMap{
+                    {u"status"_s, u"streaming"_s}, {u"firstFrameLatencyMs"_s, 37}});
+            }
+        }
         if (m_arguments.contains(u"--smoke-alliance-routing"_s)) {
             auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
             if (!store) return EXIT_FAILURE;
@@ -146,7 +193,7 @@ int AcceptanceSession::prepareWindow()
                 store->setProperty("activeSession", QVariantMap{
                     {u"sessionId"_s, u"microphone-visual-fixture"_s}, {u"phase"_s, u"ready"_s}});
                 store->setProperty("streamer", QVariantMap{
-                    {u"status"_s, u"streaming"_s}, {u"microphoneState"_s, u"muted"_s},
+                    {u"status"_s, u"streaming"_s}, {u"firstFrameLatencyMs"_s, 37}, {u"microphoneState"_s, u"muted"_s},
                     {u"microphoneEnabled"_s, false},
                     {u"capabilities"_s, QVariantMap{{u"supportsMicrophone"_s, true}}}});
                 store->setProperty("streamState", u"streaming"_s);
@@ -422,6 +469,12 @@ int AcceptanceSession::prepareWindow()
                 m_application.exit(EXIT_FAILURE);
             }
             });
+        }
+        if (coreProgram(m_arguments).isEmpty() && window
+                && !window->property("settingsLoadedForSmokeTest").toBool()) {
+            auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
+            if (!store) return EXIT_FAILURE;
+            store->setProperty("settings", QVariantMap{{u"uiSoundsEnabled"_s, false}});
         }
     }
     return EXIT_SUCCESS;

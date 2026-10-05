@@ -37,6 +37,7 @@ public slots:
         m_shell.insert("settings", QVariantMap{});
         m_shell.insert("previewThemePack", QString{});
         m_controller.insert("reducedMotion", true);
+        m_controller.insert("inputMode", QStringLiteral("pointer"));
         engine->rootContext()->setContextProperty("ShellStore", &m_shell);
         engine->rootContext()->setContextProperty("AppController", &m_controller);
         engine->rootContext()->setContextProperty("I18n", this);

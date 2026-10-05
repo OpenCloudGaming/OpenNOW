@@ -17,6 +17,12 @@ ApplicationWindow {
         darkMode: !Theme.lightMode
     }
     property bool applicationCloseConfirmed: false
+    property bool librarySearchPending: false
+    property string pendingConsoleScreenshotSession: ""
+    property int pendingConsoleScreenshotFrames: 0
+    readonly property Item consoleModalFocusOwner: consoleSystemWarning.opened ? consoleSystemWarning
+        : !window.desktopSurfaceActive && consoleOverlayHost.supportedOverlay ? consoleOverlayHost : null
+    onConsoleModalFocusOwnerChanged: if (consoleModalFocusOwner) Qt.callLater(window.restoreConsoleModalFocus)
     onClosing: event => {
         if (!applicationCloseConfirmed) {
             event.accepted = false
@@ -113,12 +119,29 @@ ApplicationWindow {
     readonly property bool targetDesktopSurface: streamSurfaceLocked
         ? lockedStreamDesktopSurface : onboardingVisible || (desktopRequested && desktopEligibleRoute)
     readonly property bool streamQmlOverlayActive: (activeRoute === "stream" || activeRoute === "inserting")
-        && (AppController.overlay.startsWith("desktop-stream-")
-            || AppController.overlay.startsWith("stream-stats"))
-    readonly property bool consoleOverlayFallbackActive: desktopSurfaceActive
-        && AppController.overlay !== "" && !AppController.overlay.startsWith("desktop-stream-")
+        && ((window.desktopSurfaceActive && AppController.overlay.startsWith("desktop-stream-"))
+            || ShellStore.isStreamStatsOverlay(AppController.overlay))
     property bool desktopSurfaceActive: targetDesktopSurface
     property bool modeInitialized: false
+    property bool startupLaunchConsidered: false
+    property bool consoleEntryRequested: false
+    property bool launchFramePresented: false
+    readonly property bool consoleLaunchAllowed: !ShellStore.activeSession && !ShellStore.streamBusy
+        && !ShellStore.pendingLaunchParams && !ShellStore.pendingDirectLaunch
+        && !ShellStore.sessionRecoveryPending && !ShellStore.sessionRecoveryAwaitingAuth
+        && ShellStore.streamState !== "resuming"
+        && ["stream", "inserting", "joining"].indexOf(activeRoute) < 0
+        && AppController.overlay === "" && consoleModalFocusOwner === null
+        && !onboardingVisible
+    readonly property bool consoleLaunchInputReady: !consoleLaunch.active
+        && !AppController.consoleLaunchInputDraining && !ControllerInput.shellInputDraining
+    readonly property bool consoleLaunchActiveForSmokeTest: consoleLaunch.active
+    readonly property string consoleLaunchVariantForSmokeTest: consoleLaunch.variant
+    onConsoleLaunchAllowedChanged: if (!consoleLaunchAllowed) cancelConsoleLaunch()
+    onConsoleLaunchInputReadyChanged: {
+        if (consoleLaunchInputReady && routeLoader.item && window.active)
+            Qt.callLater(window.restoreShellFocus)
+    }
     readonly property bool settingsLoadedForSmokeTest: settingsLoaded
     readonly property bool consoleModePersistedForSmokeTest:
         ShellStore.settings.launchInConsoleMode === true
@@ -127,6 +150,13 @@ ApplicationWindow {
     readonly property string modePersistenceErrorForSmokeTest: ShellStore.lastError
     readonly property var streamerSnapshotForSmokeTest: ShellStore.streamer
     readonly property bool shellCaptureEnabledForSmokeTest: ControllerInput.shellCaptureEnabled
+    readonly property bool consoleStreamReady: window.activeRoute === "stream"
+        && !window.desktopSurfaceActive && routeLoader.item && routeLoader.item.videoReady === true
+    onConsoleStreamReadyChanged: {
+        window.syncInputOwnership()
+        if (consoleStreamReady)
+            Qt.callLater(window.restorePassiveStreamInput)
+    }
 
     Timer {
         id: geometrySaveTimer
@@ -157,7 +187,14 @@ ApplicationWindow {
             fullscreenInputSync.restart()
     }
     onVisibilityChanged: if (activeRoute === "stream") fullscreenInputSync.restart()
-    onActiveChanged: syncInputOwnership()
+    onActiveChanged: {
+        syncInputOwnership()
+        if (!active) {
+            cancelConsoleLaunch()
+            pendingConsoleScreenshotSession = ""
+        } else if (consoleModalFocusOwner)
+            Qt.callLater(window.restoreConsoleModalFocus)
+    }
     onDesktopSurfaceActiveChanged: ShellStore.desktopUiActive = desktopSurfaceActive
 
     Shortcut {
@@ -177,10 +214,61 @@ ApplicationWindow {
             if (window.activeRoute === "stream")
                 window.toggleFullscreen()
         }
+        function onConsoleScreenshotRequested() {
+            const session = ShellStore.activeSession
+            if (!session || !window.consoleStreamReady || window.pendingConsoleScreenshotSession !== "")
+                return
+            window.pendingConsoleScreenshotSession = String(session.sessionId || "")
+            window.pendingConsoleScreenshotFrames = 0
+            AppController.showOverlay("")
+            window.update()
+        }
+    }
+
+    Connections {
+        target: window.pendingConsoleScreenshotSession !== "" ? window : null
+        function onFrameSwapped() {
+            if (!window.active || !window.consoleStreamReady || AppController.overlay !== ""
+                    || !ShellStore.activeSession
+                    || String(ShellStore.activeSession.sessionId || "") !== window.pendingConsoleScreenshotSession) {
+                window.pendingConsoleScreenshotSession = ""
+                return
+            }
+            if (consoleOverlayHost.present) {
+                window.update()
+                return
+            }
+            if (++window.pendingConsoleScreenshotFrames < 2) {
+                window.update()
+                return
+            }
+            window.pendingConsoleScreenshotSession = ""
+            ShellStore.captureStreamScreenshot()
+        }
+    }
+
+    function restoreConsoleModalFocus() {
+        const owner = window.consoleModalFocusOwner
+        if (!window.active || !owner)
+            return
+        for (let item = window.activeFocusItem; item; item = item.parent) {
+            if (item === owner)
+                return
+        }
+        if (owner === consoleSystemWarning)
+            consoleSystemWarning.focusSafe()
+        else
+            owner.forceActiveFocus()
+    }
+
+    Connections {
+        target: window.consoleModalFocusOwner ? window : null
+        function onActiveFocusItemChanged() { Qt.callLater(window.restoreConsoleModalFocus) }
     }
 
     function syncInputOwnership() {
         const shellOwnsInput = !window.active || AppController.route !== "stream"
+            || (!window.desktopSurfaceActive && !window.consoleStreamReady)
             || (window.desktopSurfaceActive && !ShellStore.authRestorePending && !ShellStore.signedIn)
             || ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)
         ControllerInput.inputSuspended = !window.active
@@ -229,6 +317,15 @@ ApplicationWindow {
         enabled: window.activeRoute === "stream" && ShellStore.microphoneToggleAvailable
             && sequence !== ""
         onActivated: ShellStore.toggleMicrophone()
+    }
+    Shortcut {
+        objectName: "consoleGuideExitShortcut"
+        sequence: String(ShellStore.settings.shortcutStopStream ?? "Ctrl+Shift+Q")
+        context: Qt.ApplicationShortcut
+        autoRepeat: false
+        enabled: !window.desktopSurfaceActive && window.activeRoute === "stream"
+            && AppController.overlay.startsWith("guide-") && sequence !== ""
+        onActivated: ShellStore.requestStreamExitConfirmation()
     }
 
     function isGuideShortcut(event) {
@@ -324,6 +421,7 @@ ApplicationWindow {
     }
 
     function applyConsoleSurface(enabled) {
+        window.consoleEntryRequested = enabled && window.desktopSurfaceActive
         window.startupModeApplied = true
         window.startupConsoleRequested = false
         window.launchModeOverridden = true
@@ -340,8 +438,6 @@ ApplicationWindow {
             window.lockedStreamDesktopSurface = !enabled
             window.streamSurfaceLocked = true
         }
-        if (ShellStore.signedIn && !ShellStore.addingAccount && AppController.route === "sign-in")
-            AppController.navigate("home")
         window.synchronizeRenderedSurface()
     }
 
@@ -350,14 +446,67 @@ ApplicationWindow {
     }
 
     function synchronizeRenderedSurface() {
-        if (window.desktopSurfaceActive === window.targetDesktopSurface)
+        if (window.targetDesktopSurface || !window.consoleLaunchAllowed)
+            window.cancelConsoleLaunch()
+        if (consoleLaunch.active) {
+            window.consoleEntryRequested = false
             return
+        }
+        if (window.desktopSurfaceActive === window.targetDesktopSurface) {
+            window.consoleEntryRequested = false
+            return
+        }
+        if (window.modeInitialized && window.startupLaunchConsidered
+                && window.consoleEntryRequested && !window.targetDesktopSurface) {
+            window.consoleEntryRequested = false
+            if (window.consoleLaunchAllowed) {
+                window.startConsoleLaunch("quick")
+                return
+            }
+        }
         window.desktopSurfaceActive = window.targetDesktopSurface
-        if (modeInitialized)
+        if (modeInitialized && window.desktopSurfaceActive)
             modeTransition.restart()
     }
 
+    function startConsoleLaunch(variant) {
+        modeTransition.stop()
+        modeCurtain.opacity = 0
+        window.launchFramePresented = false
+        consoleLaunch.start(variant)
+        window.desktopSurfaceActive = window.targetDesktopSurface
+        window.update()
+    }
+
+    function cancelConsoleLaunch() {
+        if (consoleLaunch && consoleLaunch.active) {
+            consoleLaunch.cancel()
+            window.consoleEntryRequested = false
+            window.desktopSurfaceActive = window.targetDesktopSurface
+        }
+    }
+
+    function considerStartupLaunch() {
+        if (!window.modeInitialized || !window.settingsLoaded || window.startupLaunchConsidered)
+            return
+        window.startupLaunchConsidered = true
+        window.consoleEntryRequested = false
+        if (!window.targetDesktopSurface && window.consoleLaunchAllowed)
+            window.startConsoleLaunch("cold")
+    }
+
+    function restoreShellFocus() {
+        if (!window.active || !window.consoleLaunchInputReady)
+            return
+        if (window.consoleModalFocusOwner)
+            window.restoreConsoleModalFocus()
+        else if (routeLoader.item)
+            routeLoader.item.forceActiveFocus()
+    }
+
     function notePointerInput() {
+        if (!window.consoleLaunchInputReady)
+            return
         window.pointerRecentlyActive = true
         pointerGrace.restart()
         if (window.leaveConsoleOnPointer && effectiveLaunchMode !== "console" && !window.forceConsole) {
@@ -368,6 +517,8 @@ ApplicationWindow {
     }
 
     function noteControllerInput(device, control, value) {
+        if (!window.consoleLaunchInputReady)
+            return
         // Device enumeration is not user intent (virtual/idle pads are common),
         // and a live stream must never swap render trees because input mode
         // changed. Only real controller activity outside a stream selects it.
@@ -387,6 +538,7 @@ ApplicationWindow {
                 + " pointerGrace=" + window.pointerRecentlyActive)
         }
         if (allowed) {
+            window.consoleEntryRequested = window.desktopSurfaceActive
             window.desktopSelectedByPointer = false
             window.consoleHeldByPad = true
         }
@@ -400,6 +552,7 @@ ApplicationWindow {
             && !window.desktopSelectedByPointer && !window.desktopExplicitlySelected
         CoreClient.logShellDiagnostic("startup console=" + window.startupConsoleRequested
             + " autoSwitch=" + window.switchToConsoleOnPad)
+        window.considerStartupLaunch()
     }
 
     function updateStreamSurfaceLock() {
@@ -431,6 +584,7 @@ ApplicationWindow {
         updateSessionWindowMode()
         updateStreamSurfaceLock()
         modeInitialized = true
+        window.considerStartupLaunch()
         window.synchronizeRenderedSurface()
         ShellStore.desktopUiActive = window.desktopSurfaceActive
         syncInputOwnership()
@@ -446,6 +600,8 @@ ApplicationWindow {
     HoverHandler {
         acceptedDevices: PointerDevice.Mouse
         onPointChanged: {
+            if (!window.consoleLaunchInputReady)
+                return
             AppController.inputMode = "pointer"
             window.notePointerInput()
         }
@@ -544,13 +700,26 @@ ApplicationWindow {
             id: routeLoader
             objectName: "mainRouteLoader"
             anchors.fill: parent
+            enabled: window.consoleModalFocusOwner === null && window.consoleLaunchInputReady
             sourceComponent: window.onboardingVisible ? onboardingScreen
                 : window.desktopSurfaceActive ? desktopAppScreen : window.componentForRoute(window.activeRoute)
             opacity: 1
+            transform: Scale {
+                origin.x: routeLoader.width / 2
+                origin.y: routeLoader.height / 2
+                xScale: consoleLaunch.active && !window.desktopSurfaceActive ? consoleLaunch.destinationScale : 1
+                yScale: xScale
+            }
 
             onLoaded: {
                 if (item) {
-                    item.forceActiveFocus()
+                    if (routeLoader.enabled)
+                        item.forceActiveFocus()
+                    if (window.librarySearchPending && window.activeRoute === "library"
+                            && typeof item.showSearchKeyboard === "function") {
+                        window.librarySearchPending = false
+                        Qt.callLater(item.showSearchKeyboard)
+                    }
                     if (!window.desktopSurfaceActive
                             && (window.activeRoute === "settings-video-dropdown"
                             || window.activeRoute === "settings-advanced-dropdown")) {
@@ -566,6 +735,8 @@ ApplicationWindow {
             target: AppController
             function onApplicationExitCommitted() { window.applicationCloseConfirmed = true }
             function onRouteChanged() {
+                if (window.activeRoute !== "library")
+                    window.librarySearchPending = false
                 window.updateSessionWindowMode()
                 window.updateStreamSurfaceLock()
                 // The desktop shell and embedded video stay opaque. Animate
@@ -588,12 +759,18 @@ ApplicationWindow {
                     Qt.callLater(() => routeLoader.item.forceActiveFocus())
             }
             function onDirectLaunchRequested(appId, title) {
+                window.startupLaunchConsidered = true
+                window.cancelConsoleLaunch()
                 ShellStore.acceptDirectLaunch(appId, title)
             }
         }
         Connections {
             target: ShellStore
-            function onActiveSessionChanged() { window.updateStreamSurfaceLock() }
+            function onActiveSessionChanged() {
+                window.updateStreamSurfaceLock()
+                if (!ShellStore.canOpenSessionGuide() && AppController.overlay.startsWith("guide-"))
+                    AppController.showOverlay("")
+            }
             function onSignedInChanged() { window.syncInputOwnership() }
             function onAuthRestorePendingChanged() { window.syncInputOwnership() }
             function onStreamerChanged() { window.showConfiguredStreamStats() }
@@ -604,6 +781,7 @@ ApplicationWindow {
             }
             function onSettingsChanged() {
                 window.initializeStartupMode()
+                window.considerStartupLaunch()
                 window.syncInputOwnership()
                 if (window.geometryRestored || !ShellStore.settings.windowWidth)
                     return
@@ -614,6 +792,10 @@ ApplicationWindow {
         }
 
         Keys.onPressed: event => {
+            if (window.consoleModalFocusOwner) {
+                event.accepted = true
+                return
+            }
             if (window.onboardingVisible) {
                 event.accepted = true
                 return
@@ -644,12 +826,25 @@ ApplicationWindow {
                     ? AppController.cycleGuidePage(1)
                     : AppController.cyclePrimaryRoute(1)
             } else if (window.isGuideShortcut(event)) {
-                event.accepted = AppController.showOverlay(window.desktopSurfaceActive
-                    && window.activeRoute === "stream" ? "desktop-stream-menu" : "guide-session")
+                event.accepted = true
+                if (!event.isAutoRepeat) {
+                    if (ShellStore.canOpenSessionGuide())
+                        ShellStore.openSessionGuide()
+                    else
+                        AppController.showOverlay(AppController.overlay === "quick-settings" ? "" : "quick-settings")
+                }
             } else if (event.key === Qt.Key_Menu) {
                 event.accepted = AppController.showOverlay("quick-settings")
             } else if (event.key === Qt.Key_Y) {
-                event.accepted = AppController.showOverlay("friends")
+                if (!window.desktopSurfaceActive && window.activeRoute === "home" && AppController.overlay === "") {
+                    event.accepted = true
+                    if (!event.isAutoRepeat && routeLoader.item && routeLoader.item.moveMode !== true) {
+                        window.librarySearchPending = true
+                        AppController.navigate("library")
+                    }
+                } else {
+                    event.accepted = AppController.showOverlay("friends")
+                }
             } else if (event.key === Qt.Key_X
                        && (AppController.route === "home" || AppController.route === "library")) {
                 event.accepted = AppController.navigate("game-detail")
@@ -672,8 +867,7 @@ ApplicationWindow {
         scale: consoleScale
         transformOrigin: Item.TopLeft
         overlay: AppController.overlay
-        visible: (!window.desktopSurfaceActive || window.consoleOverlayFallbackActive || consoleOverlayHost.present)
-            && !window.streamQmlOverlayActive
+        visible: consoleOverlayHost.present && !window.streamQmlOverlayActive
         z: 1000
     }
 
@@ -688,8 +882,10 @@ ApplicationWindow {
         swapStats: window.swapStats
         pointerLocked: window.activeRoute === "stream" && routeLoader.item
             && routeLoader.item.streamPointerLocked === true
-        overlay: AppController.overlay
-        inputBlocking: ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)
+        overlay: window.desktopSurfaceActive || ShellStore.isStreamStatsOverlay(AppController.overlay)
+            ? AppController.overlay : ""
+        inputBlocking: window.streamQmlOverlayActive
+            && ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)
         visible: window.streamQmlOverlayActive
             || ((window.activeRoute === "stream" || window.activeRoute === "inserting") && desktopStreamOverlay.present)
         z: 1100
@@ -698,17 +894,87 @@ ApplicationWindow {
     }
 
     DesktopStreamExitConfirm {
-        objectName: "applicationQuitConfirmation"
+        objectName: window.desktopSurfaceActive ? "applicationQuitConfirmation" : "desktopApplicationQuitConfirmation"
         anchors.fill: parent
         layer.enabled: HdrOutput.chromeRequired
         layer.effect: HdrChromeEffect {}
         quittingApplication: true
-        opened: AppController.overlay === "application-quit-confirm"
+        opened: window.desktopSurfaceActive && AppController.overlay === "application-quit-confirm"
         z: 1200
         onCancelRequested: AppController.showOverlay("")
         onConfirmRequested: {
             window.applicationCloseConfirmed = true
             window.close()
+        }
+    }
+
+    Item {
+        readonly property real consoleScale: Math.min(window.width / 1920, window.height / 1080)
+        visible: consoleSystemWarning.present
+        width: window.width / consoleScale
+        height: window.height / consoleScale
+        scale: consoleScale
+        transformOrigin: Item.TopLeft
+        z: 1200
+        layer.enabled: HdrOutput.chromeRequired
+        layer.effect: HdrChromeEffect {}
+
+        ConsoleWarningSheet {
+            id: consoleSystemWarning
+            anchors.fill: parent
+            readonly property bool quittingApplication: AppController.overlay === "application-quit-confirm"
+            readonly property bool endingSession: AppController.overlay === "desktop-stream-exit-confirm"
+            readonly property bool waitingForSession: window.activeRoute === "inserting"
+            objectName: !window.desktopSurfaceActive && quittingApplication
+                ? "applicationQuitConfirmation" : "consoleSystemWarning"
+            opened: !window.desktopSurfaceActive && (quittingApplication || endingSession
+                || (AppController.overlay === "" && ShellStore.updaterSessionSafe
+                    && ShellStore.updaterFailureMessage !== ""))
+            panelSide: endingSession && !waitingForSession ? "left" : "right"
+            eyebrow: quittingApplication ? qsTr("QUIT") : endingSession
+                ? (waitingForSession ? qsTr("LEAVE QUEUE") : qsTr("END SESSION")) : qsTr("UPDATE")
+            title: quittingApplication ? qsTr("Quit OpenNOW?") : endingSession
+                ? (waitingForSession ? qsTr("Leave this session request?") : qsTr("End this session?"))
+                : qsTr("Update could not be completed")
+            message: quittingApplication
+                ? qsTr("OpenNOW will close and disconnect from any active cloud session.")
+                : endingSession
+                ? (waitingForSession ? qsTr("Your session request will be cancelled and you will leave the queue.")
+                    : qsTr("Your game will close on the remote rig. Unsaved progress may be lost. This session cannot be resumed after it ends."))
+                : ShellStore.updaterFailureMessage
+            safeText: quittingApplication ? qsTr("Keep OpenNOW open") : endingSession
+                ? (waitingForSession ? qsTr("Keep waiting") : qsTr("Keep playing")) : qsTr("Close")
+            actionText: quittingApplication ? qsTr("Quit OpenNOW") : endingSession
+                ? (waitingForSession ? qsTr("Cancel session") : qsTr("End session")) : ""
+            danger: quittingApplication || endingSession
+            safeButtonObjectName: quittingApplication ? "quitConfirmKeepOpen" : endingSession
+                ? "streamExitKeepPlaying" : "consoleUpdateFailureDismiss"
+            actionButtonObjectName: quittingApplication ? "quitConfirmQuit" : "streamExitEndSession"
+            signal confirmRequested()
+            onSafeRequested: {
+                if (quittingApplication || endingSession)
+                    AppController.showOverlay(consoleOverlayHost.retainingQueueAd ? "queue-ad" : "")
+                else
+                    ShellStore.updaterFailureMessage = ""
+            }
+            onActionRequested: confirmRequested()
+            onOpenedChanged: if (!opened) Qt.callLater(() => {
+                if (window.desktopSurfaceActive || consoleSystemWarning.opened
+                        || AppController.overlay !== "" || !routeLoader.item)
+                    return
+                if (window.activeRoute === "stream")
+                    window.restorePassiveStreamInput()
+                else
+                    routeLoader.item.forceActiveFocus()
+            })
+            onConfirmRequested: {
+                if (quittingApplication) {
+                    window.applicationCloseConfirmed = true
+                    window.close()
+                } else if (endingSession) {
+                    ShellStore.confirmStreamExit()
+                }
+            }
         }
     }
 
@@ -749,13 +1015,53 @@ ApplicationWindow {
         id: modeTransition
         NumberAnimation { target: modeCurtain; property: "opacity"; to: 1; duration: AppController.reducedMotion ? 0 : 240; easing.type: Easing.OutCubic }
         PauseAnimation { duration: AppController.reducedMotion ? 0 : 160 }
-        ScriptAction {
-            script: {
-                if (ShellStore.signedIn && !ShellStore.addingAccount && AppController.route === "sign-in")
-                    AppController.navigate("home")
-            }
-        }
         NumberAnimation { target: modeCurtain; property: "opacity"; to: 0; duration: AppController.reducedMotion ? 0 : 380; easing.type: Easing.OutCubic }
+    }
+    Binding { target: AppController; property: "consoleLaunchInputBlocked"; value: !window.consoleLaunchInputReady }
+    Binding { target: ControllerInput; property: "shellInputBlocked"; value: !window.consoleLaunchInputReady }
+    Binding {
+        target: routeLoader.item
+        property: "launchChromeProgress"
+        when: !window.desktopSurfaceActive && !window.onboardingVisible && window.activeRoute === "home"
+            && routeLoader.item !== null && routeLoader.item.launchChromeProgress !== undefined
+        value: consoleLaunch.chromeProgress
+        restoreMode: Binding.RestoreBindingOrValue
+    }
+    Binding {
+        target: routeLoader.item
+        property: "launchFocusHeld"
+        when: !window.desktopSurfaceActive && !window.onboardingVisible && window.activeRoute === "home"
+            && routeLoader.item !== null && routeLoader.item.launchFocusHeld !== undefined
+        value: !window.consoleLaunchInputReady
+        restoreMode: Binding.RestoreBindingOrValue
+    }
+    ConsoleLaunchAnimation {
+        id: consoleLaunch
+        objectName: "consoleLaunchAnimation"
+        anchors.fill: parent
+        z: 2001
+        layer.enabled: HdrOutput.chromeRequired
+        layer.effect: HdrChromeEffect {}
+        reducedMotion: AppController.reducedMotion
+        soundEnabled: window.settingsLoaded && ShellStore.settings.uiSoundsEnabled !== false
+        presentationReady: window.launchFramePresented
+        destinationReady: !window.desktopSurfaceActive && routeLoader.status === Loader.Ready && routeLoader.item !== null
+        onFinished: {
+            window.synchronizeRenderedSurface()
+            Qt.callLater(window.restoreShellFocus)
+        }
+    }
+    Connections {
+        target: consoleLaunch.active && !window.launchFramePresented ? window : null
+        function onFrameSwapped() { window.launchFramePresented = true }
+    }
+    Connections {
+        target: AppController
+        function onConsoleLaunchSkipRequested() { if (consoleLaunch.active) consoleLaunch.skip() }
+    }
+    Connections {
+        target: ControllerInput
+        function onShellInputSkipRequested() { if (consoleLaunch.active) consoleLaunch.skip() }
     }
     onTargetDesktopSurfaceChanged: {
         window.synchronizeRenderedSurface()
@@ -863,7 +1169,7 @@ ApplicationWindow {
         parent: Overlay.overlay
         anchors.centerIn: parent
         failureMessage: ShellStore.updaterFailureMessage
-        sessionSafe: ShellStore.updaterSessionSafe
+        sessionSafe: window.desktopSurfaceActive && ShellStore.updaterSessionSafe
         onDismissed: ShellStore.updaterFailureMessage = ""
     }
 

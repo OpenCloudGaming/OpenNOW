@@ -22,6 +22,8 @@ class ControllerInput final : public QObject
     Q_PROPERTY(quint32 inputControllerId READ inputControllerId WRITE setInputControllerId NOTIFY inputControllerIdChanged)
     Q_PROPERTY(bool shellCaptureEnabled READ shellCaptureEnabled WRITE setShellCaptureEnabled NOTIFY shellCaptureEnabledChanged)
     Q_PROPERTY(bool inputSuspended READ inputSuspended WRITE setInputSuspended NOTIFY inputSuspendedChanged)
+    Q_PROPERTY(bool shellInputBlocked READ shellInputBlocked WRITE setShellInputBlocked NOTIFY shellInputBlockedChanged)
+    Q_PROPERTY(bool shellInputDraining READ shellInputDraining NOTIFY shellInputDrainingChanged)
     Q_PROPERTY(int leftStickDeadzone READ leftStickDeadzone WRITE setLeftStickDeadzone NOTIFY leftStickDeadzoneChanged)
     Q_PROPERTY(int rightStickDeadzone READ rightStickDeadzone WRITE setRightStickDeadzone NOTIFY rightStickDeadzoneChanged)
     Q_PROPERTY(int vibrationIntensity READ vibrationIntensity WRITE setVibrationIntensity NOTIFY vibrationIntensityChanged)
@@ -65,6 +67,9 @@ public:
     void setShellCaptureEnabled(bool enabled);
     [[nodiscard]] bool inputSuspended() const;
     void setInputSuspended(bool suspended);
+    [[nodiscard]] bool shellInputBlocked() const { return m_shellInputBlocked; }
+    [[nodiscard]] bool shellInputDraining() const { return m_shellInputDraining; }
+    void setShellInputBlocked(bool blocked);
     [[nodiscard]] int leftStickDeadzone() const;
     [[nodiscard]] int rightStickDeadzone() const;
     [[nodiscard]] int vibrationIntensity() const;
@@ -83,6 +88,9 @@ signals:
     void inputControllerIdChanged();
     void shellCaptureEnabledChanged();
     void inputSuspendedChanged();
+    void shellInputBlockedChanged();
+    void shellInputDrainingChanged();
+    void shellInputSkipRequested();
     void leftStickDeadzoneChanged();
     void rightStickDeadzoneChanged();
     void vibrationIntensityChanged();
@@ -107,6 +115,12 @@ private:
         int key = 0;
     };
 
+    struct ShellKeyPress {
+        QPointer<QObject> target;
+        qint64 pressedAt = 0;
+        qint64 repeatedAt = 0;
+    };
+
     struct GamepadSlot {
         SDL_Gamepad *gamepad = nullptr;
         SDL_JoystickID instanceId = 0;
@@ -124,7 +138,7 @@ private:
         bool touchpadClick = false;
         bool guideLatched = false;
         std::array<SonyContact, 2> contacts{};
-        QHash<int, QPointer<QObject>> shellKeys;
+        QHash<int, ShellKeyPress> shellKeys;
         std::array<RepeatingDirection, 4> directions{{
             {false, 0, 0, Qt::Key_Left}, {false, 0, 0, Qt::Key_Right},
             {false, 0, 0, Qt::Key_Up}, {false, 0, 0, Qt::Key_Down}}};
@@ -156,6 +170,7 @@ private:
     void publishConnectedGamepads(bool neutral = false);
     void updateSlotSnapshot(int slot);
     void updatePollInterval();
+    void updateShellInputDrain();
     [[nodiscard]] bool isSonySlot(int slotIndex) const;
     void refreshControllerMetadata();
     static quint16 buttonMask(Uint8 button);
@@ -172,6 +187,8 @@ private:
     bool m_sdlReady = false;
     bool m_shellCaptureEnabled = true;
     bool m_inputSuspended = false;
+    bool m_shellInputBlocked = false;
+    bool m_shellInputDraining = false;
     int m_leftStickDeadzone = 5;
     int m_rightStickDeadzone = 5;
     int m_vibrationIntensity = 100;

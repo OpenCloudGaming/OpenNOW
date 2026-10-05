@@ -27,43 +27,162 @@ FocusScope {
         }
     }
 
+    function focusedKey() {
+        for (let index = 0; index < keys.count; ++index)
+            if (keys.itemAt(index).activeFocus) return index
+        return -1
+    }
+
+    function moveFocus(key) {
+        if (cancelButton.activeFocus) {
+            if (key === Qt.Key_Up) keys.itemAt(10).forceActiveFocus()
+            return
+        }
+        const index = focusedKey()
+        if (index < 0) {
+            keys.itemAt(0).forceActiveFocus()
+            return
+        }
+        const column = index % 3
+        const row = Math.floor(index / 3)
+        if (key === Qt.Key_Left && column > 0) keys.itemAt(index - 1).forceActiveFocus()
+        else if (key === Qt.Key_Right && column < 2) keys.itemAt(index + 1).forceActiveFocus()
+        else if (key === Qt.Key_Up && row > 0) keys.itemAt(index - 3).forceActiveFocus()
+        else if (key === Qt.Key_Down && row < 3) keys.itemAt(index + 3).forceActiveFocus()
+        else if (key === Qt.Key_Down) cancelButton.forceActiveFocus()
+    }
+
     ScreenBackground { tint: "#211D3D" }
-    GlassPanel {
-        anchors.centerIn: parent; width: 690; height: 680; panelRadius: 44; strong: true
+
+    Column {
+        x: 120
+        anchors.verticalCenter: parent.verticalCenter
+        width: root.width - 760 - 240
+        spacing: 22
+        Rectangle {
+            width: 120; height: 120; radius: 60
+            color: Theme.violet
+            Text {
+                anchors.centerIn: parent
+                text: String(ShellStore.pinTargetName || "P").slice(0, 1).toUpperCase()
+                color: Theme.contrastText(Theme.violet)
+                font.family: Theme.displayFont; font.pixelSize: 52; font.weight: Font.Black
+            }
+        }
+        Text {
+            width: parent.width
+            text: ShellStore.pinTargetName
+            color: Theme.label
+            elide: Text.ElideRight
+            font.family: Theme.displayFont; font.pixelSize: 56; font.weight: Font.Black; font.letterSpacing: -1
+        }
+    }
+
+    AppChrome { anchors.fill: parent; title: qsTr("Profile security"); currentRoute: "settings"; bottomVisible: false }
+
+    ConsoleSheetFrame {
+        opened: true
+        toneColor: Theme.violet
+
         Column {
-            anchors.fill: parent; anchors.margins: 42; spacing: 18
-            Text { anchors.horizontalCenter: parent.horizontalCenter; text: I18n.source(root.heading, I18n.revision); color: Theme.label; font.family: Theme.displayFont; font.pixelSize: 34; font.weight: Font.Black }
-            Text { anchors.horizontalCenter: parent.horizontalCenter; text: I18n.source(root.instruction, I18n.revision); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 16 }
+            width: parent.width
+            spacing: 14
+            Text {
+                width: parent.width
+                text: qsTr("Profile security")
+                color: Theme.violet
+                font.family: Theme.monoFont; font.pixelSize: 14; font.weight: Font.Bold; font.letterSpacing: 2
+                font.capitalization: Font.AllUppercase
+            }
+            Text {
+                width: parent.width
+                text: I18n.source(root.heading, I18n.revision)
+                color: Theme.label
+                wrapMode: Text.WordWrap; maximumLineCount: 2; elide: Text.ElideRight
+                font.family: Theme.displayFont; font.pixelSize: 44; font.weight: Font.Black; font.letterSpacing: -0.9
+                lineHeight: 1.05
+            }
+            Text {
+                width: parent.width
+                text: I18n.source(root.instruction, I18n.revision)
+                color: Qt.rgba(Theme.label.r, Theme.label.g, Theme.label.b, 0.76)
+                wrapMode: Text.WordWrap
+                font.family: Theme.bodyFont; font.pixelSize: 20; font.weight: Font.DemiBold
+            }
+            Item { width: 1; height: 10 }
             Row {
-                anchors.horizontalCenter: parent.horizontalCenter; spacing: 16
+                spacing: 16
+                Accessible.role: Accessible.StaticText
+                Accessible.name: qsTr("%1 of 4 digits entered").arg(root.entry.length)
                 Repeater {
                     model: 4
                     Rectangle {
                         required property int index
-                        width: 56; height: 64; radius: 18
-                        color: index < root.entry.length ? Theme.focus : Theme.glassStrong
-                        border.color: index === root.entry.length ? Theme.focus : Theme.seam
+                        width: 72; height: 80; radius: 22
+                        color: index < root.entry.length ? Theme.face : Qt.rgba(Theme.face.r, Theme.face.g, Theme.face.b, 0.06)
+                        border.color: index === root.entry.length ? Theme.face : Theme.seam
                         border.width: index === root.entry.length ? 3 : 1
-                        Text { anchors.centerIn: parent; text: index < root.entry.length ? "●" : ""; color: Theme.faceText; font.pixelSize: 18 }
+                        Rectangle {
+                            anchors.centerIn: parent
+                            visible: index < root.entry.length
+                            width: 18; height: 18; radius: 9
+                            color: Theme.faceText
+                        }
                     }
                 }
             }
-            Text { anchors.horizontalCenter: parent.horizontalCenter; height: 24; text: I18n.source(ShellStore.pinMessage, I18n.revision); color: Theme.coral; font.family: Theme.bodyFont; font.pixelSize: 14; font.weight: Font.Bold }
+            Text {
+                width: parent.width; height: 30
+                text: I18n.source(ShellStore.pinMessage, I18n.revision)
+                color: Theme.coral
+                elide: Text.ElideRight
+                font.family: Theme.bodyFont; font.pixelSize: 18; font.weight: Font.Bold
+                Accessible.role: Accessible.AlertMessage
+                Accessible.name: text
+            }
             Grid {
                 id: keypad
-                anchors.horizontalCenter: parent.horizontalCenter; columns: 3; spacing: 10
+                columns: 3; spacing: 12
                 Repeater {
+                    id: keys
                     model: root.digits
-                    GlassButton {
+                    ConsoleActionButton {
+                        id: keyButton
                         required property string modelData
                         required property int index
-                        width: 150; height: 72; text: modelData; primary: modelData === "✓"
+                        width: Math.floor((keypad.parent.width - 24) / 3); height: 80
+                        text: modelData
+                        primary: modelData === "✓"
                         onClicked: root.activate(modelData)
                         Component.onCompleted: if (index === 0) forceActiveFocus()
+                        contentItem: Text {
+                            text: keyButton.text
+                            color: keyButton.inkColor
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                            font.family: Theme.displayFont; font.pixelSize: 30; font.weight: Font.Black
+                        }
                     }
                 }
             }
-            GlassButton { anchors.horizontalCenter: parent.horizontalCenter; width: 300; glyph: "B"; text: qsTr("Cancel"); onClicked: AppController.navigate("accounts") }
+        }
+
+        Column {
+            anchors.bottom: parent.bottom
+            width: parent.width
+            spacing: 20
+            ConsoleActionButton {
+                id: cancelButton
+                width: parent.width
+                glyph: "B"
+                text: qsTr("Cancel")
+                onClicked: AppController.navigate("accounts")
+            }
+            Row {
+                spacing: 22
+                ControllerGlyph { glyph: "A"; label: qsTr("Select"); glyphSize: 28 }
+                ControllerGlyph { glyph: "B"; label: qsTr("Cancel"); glyphSize: 28 }
+            }
         }
     }
 
@@ -75,7 +194,8 @@ FocusScope {
             root.activate("⌫"); event.accepted = true
         } else if (event.key === Qt.Key_Escape || event.key === Qt.Key_Back) {
             AppController.navigate("accounts"); event.accepted = true
+        } else if (event.key === Qt.Key_Left || event.key === Qt.Key_Right || event.key === Qt.Key_Up || event.key === Qt.Key_Down) {
+            root.moveFocus(event.key); event.accepted = true
         }
     }
-    AppChrome { anchors.fill: parent; title: qsTr("Profile security"); currentRoute: "settings"; bottomVisible: false }
 }

@@ -40,7 +40,8 @@ int AcceptanceSession::startFrameGenerationStatsWorkload()
     auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
     if (!store) return EXIT_FAILURE;
     store->setProperty("settings", QVariantMap{{u"fps"_s, 60}, {u"frameGeneration"_s, u"2x"_s}});
-    store->setProperty("streamer", QVariantMap{{u"status"_s, u"streaming"_s}, {u"framesPerSecond"_s, 60}});
+    store->setProperty("streamer", QVariantMap{{u"status"_s, u"streaming"_s}, {u"framesPerSecond"_s, 60},
+        {u"firstFrameLatencyMs"_s, 37}});
     store->setProperty("streamState", u"streaming"_s);
     QTimer::singleShot(150, this, [this] {
         auto *window = m_engine.rootObjects().isEmpty() ? nullptr

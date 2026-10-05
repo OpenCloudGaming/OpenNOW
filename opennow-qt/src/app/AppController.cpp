@@ -31,6 +31,20 @@ AppController::AppController(QObject *parent)
 {
 }
 
+void AppController::setConsoleLaunchInputBlocked(bool blocked)
+{
+    if (m_consoleLaunchInputBlocked == blocked) return;
+    m_consoleLaunchInputBlocked = blocked;
+    emit consoleLaunchInputBlockedChanged();
+}
+
+void AppController::setConsoleLaunchInputDraining(bool draining)
+{
+    if (m_consoleLaunchInputDraining == draining) return;
+    m_consoleLaunchInputDraining = draining;
+    emit consoleLaunchInputDrainingChanged();
+}
+
 QString AppController::shortcutFromKey(int key, int modifiers) const
 {
     const bool supported = (key >= Qt::Key_A && key <= Qt::Key_Z)

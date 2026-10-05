@@ -15,10 +15,13 @@ QtObject {
         property int controllerCount: controllers.length
         property bool shellCaptureEnabled: true
         property bool inputSuspended: false
+        property bool shellInputBlocked: false
+        readonly property bool shellInputDraining: false
         property int leftStickDeadzone: 5
         property int rightStickDeadzone: 5
         property int vibrationIntensity: 100
         signal controllerActivity()
+        signal shellInputSkipRequested()
         signal controllerActivityDetailed(string device, string control, int value)
     }
 

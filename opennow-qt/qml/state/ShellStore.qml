@@ -820,6 +820,7 @@ QtObject {
     signal fullscreenToggleRequested()
     signal pointerLockToggleRequested()
     signal streamCaptureAnnounced(string message)
+    signal consoleScreenshotRequested()
     readonly property var resumableSession: {
         if (root.activeSession) {
             const localStatus = Number(root.activeSession.status || 0)
@@ -2003,7 +2004,8 @@ QtObject {
         const adState = activeSession.adState || ({})
         const ads = adState.sessionAds || adState.ads || []
         if ((adState.sessionAdsRequired || adState.isAdsRequired) && ads.length > 0
-                && AppController.overlay !== "queue-ad")
+                && ["queue-ad", "desktop-stream-exit-confirm", "application-quit-confirm"]
+                    .indexOf(AppController.overlay) < 0)
             AppController.showOverlay("queue-ad")
         if (streamState === "ready" || streamState === "streaming") {
             if (streamStartedAtMs === 0)
@@ -2453,12 +2455,23 @@ QtObject {
         return microphoneRecoveryEnabled
     }
 
+    function canOpenSessionGuide() {
+        return Boolean(activeSession) && String(activeSession.sessionId || "") !== ""
+            && AppController.route === "stream" && streamState !== "idle" && streamState !== "stopping"
+    }
+
+    function openSessionGuide() {
+        if (!canOpenSessionGuide())
+            return false
+        return AppController.showOverlay(desktopUiActive ? "desktop-stream-menu" : "guide-session")
+    }
+
     function inspectStreamerOverlayRequest(value) {
         const generation = Number(value && value.overlayRequestGeneration || 0)
         if (generation <= overlayRequestGeneration)
             return
         overlayRequestGeneration = generation
-        AppController.showOverlay(desktopUiActive ? "desktop-stream-menu" : "guide-session")
+        openSessionGuide()
     }
 
     function inspectStreamerScreenshotRequest(value) {
@@ -2470,6 +2483,11 @@ QtObject {
     }
 
     function captureStreamScreenshot() {
+        if (!desktopUiActive && AppController.route === "stream"
+                && AppController.overlay.startsWith("guide-")) {
+            consoleScreenshotRequested()
+            return
+        }
         const rect = streamCaptureRect
         const title = selectedGame && selectedGame.title ? selectedGame.title : "OpenNOW"
         const path = AppController.captureScreenRegion(
@@ -2478,11 +2496,15 @@ QtObject {
         if (path) {
             mediaMessage = qsTr("Screenshot saved")
             accessibilityMessage = qsTr("Screenshot saved to %1").arg(path)
+            if (!desktopUiActive)
+                streamCaptureAnnounced(mediaMessage)
             refreshMedia()
         } else {
             mediaMessage = qsTr("Screenshot capture failed")
             lastError = qsTr("The desktop compositor did not allow OpenNOW to capture the stream.")
             accessibilityMessage = lastError
+            if (!desktopUiActive)
+                streamCaptureAnnounced(mediaMessage)
         }
     }
 
@@ -2543,7 +2565,7 @@ QtObject {
     function applyStreamShortcutAction(action) {
         action = String(action || "")
         if (action === "guide") {
-            AppController.showOverlay(desktopUiActive ? "desktop-stream-menu" : "guide-session")
+            openSessionGuide()
         } else if (action === "request-exit" || action === "stop-stream") {
             requestStreamExitConfirmation()
         } else if (action === "toggle-anti-afk") {

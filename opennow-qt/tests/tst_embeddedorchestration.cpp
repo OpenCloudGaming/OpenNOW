@@ -844,11 +844,38 @@ private slots:
 
         const auto screen = source(QStringLiteral("qml/screens/StreamScreen.qml"));
         const auto clicked = QRegularExpression(QStringLiteral(
-            "text: qsTr\\(\"Stop session\"\\);[^\\n]*?onClicked: ([^;]+);")).match(screen);
+            "objectName: \"streamStopSessionButton\".*?onClicked: ([^\\n]+)"),
+            QRegularExpression::DotMatchesEverythingOption).match(screen);
         QVERIFY(clicked.hasMatch());
         QVERIFY(!engine.evaluate(QStringLiteral("AppController.overlay = ''; ") + clicked.captured(1)).isError());
         QCOMPARE(engine.evaluate(QStringLiteral("stops")).toInt(), 0);
         QCOMPARE(engine.evaluate(QStringLiteral("AppController.overlay")).toString(), QStringLiteral("desktop-stream-exit-confirm"));
+    }
+
+    void sessionGuideRequiresTheCurrentStreamContext()
+    {
+        QJSEngine engine;
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            var root = this, activeSession = null, streamState = 'idle', desktopUiActive = false;
+            var selectedGame = {title:'Fortnite'}, overlayRequestGeneration = 0;
+            var AppController = {route:'home',overlay:'',calls:0,
+                showOverlay:function(value){this.overlay=value;this.calls++;return true;}};
+        )JS")).isError());
+        QVERIFY(loadShellFunction(engine, QStringLiteral("canOpenSessionGuide")));
+        QVERIFY(loadShellFunction(engine, QStringLiteral("openSessionGuide")));
+        QVERIFY(loadShellFunction(engine, QStringLiteral("inspectStreamerOverlayRequest")));
+        QVERIFY(!engine.evaluate(QStringLiteral("openSessionGuide()")).toBool());
+        QVERIFY(!engine.evaluate(QStringLiteral("activeSession=undefined; openSessionGuide()")).toBool());
+        QVERIFY(!engine.evaluate(QStringLiteral("activeSession={sessionId:'seat'}; openSessionGuide()")).toBool());
+        QVERIFY(!engine.evaluate(QStringLiteral("AppController.route='inserting'; streamState='queued'; openSessionGuide()")).toBool());
+        QVERIFY(!engine.evaluate(QStringLiteral("inspectStreamerOverlayRequest({overlayRequestGeneration:1})")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("AppController.calls")).toInt(), 0);
+        QVERIFY(!engine.evaluate(QStringLiteral("AppController.route='stream'; streamState='stopping'; openSessionGuide()")).toBool());
+        QVERIFY(engine.evaluate(QStringLiteral("streamState='reconnecting'; openSessionGuide()")).toBool());
+        QCOMPARE(engine.evaluate(QStringLiteral("AppController.overlay")).toString(), QStringLiteral("guide-session"));
+        QVERIFY(engine.evaluate(QStringLiteral("streamState='streaming'; desktopUiActive=true; openSessionGuide()")).toBool());
+        QCOMPARE(engine.evaluate(QStringLiteral("AppController.overlay")).toString(), QStringLiteral("desktop-stream-menu"));
+        QCOMPARE(engine.evaluate(QStringLiteral("selectedGame.title")).toString(), QStringLiteral("Fortnite"));
     }
 
     void dismissingSessionConflictPreservesTheRunningGame()
@@ -884,6 +911,28 @@ private slots:
             QCOMPARE(engine.evaluate(QStringLiteral("requests")).toInt(), 0);
             QCOMPARE(engine.evaluate(QStringLiteral("remoteSessions[0].sessionId")).toString(), QStringLiteral("running"));
         }
+    }
+
+    void consoleGuideScreenshotWaitsForTheOverlayToClose()
+    {
+        QJSEngine engine;
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            var root = this, desktopUiActive = false, requests = 0, captures = 0, announcements = 0;
+            var streamCaptureRect = {x:0, y:0, width:1920, height:1080};
+            var selectedGame = {title:'Fixture'}, mediaMessage = '', accessibilityMessage = '', lastError = '';
+            var AppController = {route:'stream', overlay:'guide-session', captureScreenRegion:function(){captures++; return '/fixture.png';}};
+            function consoleScreenshotRequested() {requests++;}
+            function streamCaptureAnnounced(message) {announcements++;}
+            function refreshMedia() {}
+            function qsTr(value) {return {arg:function(arg){return value.replace('%1',arg);}, toString:function(){return value;}};}
+        )JS")).isError());
+        QVERIFY(loadShellFunction(engine, QStringLiteral("captureStreamScreenshot")));
+        QVERIFY(!engine.evaluate(QStringLiteral("captureStreamScreenshot()" )).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("requests")).toInt(), 1);
+        QCOMPARE(engine.evaluate(QStringLiteral("captures")).toInt(), 0);
+        QVERIFY(!engine.evaluate(QStringLiteral("AppController.overlay = ''; captureStreamScreenshot()")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("captures")).toInt(), 1);
+        QCOMPARE(engine.evaluate(QStringLiteral("announcements")).toInt(), 1);
     }
 
     void accountSessionDiscoveryDoesNotOwnTheLaunchSlotOrFailTheLaunch()
@@ -1927,7 +1976,9 @@ private slots:
             QVERIFY2(!qml.isEmpty(), qPrintable(path));
             QVERIFY2(liveItem.match(qml).hasMatch(), qPrintable(path));
             QVERIFY(qml.contains(QStringLiteral("visible: root.visible && root.videoSurfaceActive")));
-            QVERIFY(qml.contains(QStringLiteral("inputEnabled: root.streaming && visible")));
+            QVERIFY(qml.contains(path.startsWith(QStringLiteral("qml/desktop/"))
+                ? QStringLiteral("inputEnabled: root.streaming && visible")
+                : QStringLiteral("inputEnabled: root.videoReady && visible")));
             QVERIFY(qml.contains(QStringLiteral(
                 "!ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)")));
             QVERIFY(qml.contains(QStringLiteral(
@@ -1947,7 +1998,10 @@ private slots:
         QVERIFY(main.contains(QStringLiteral(
             "ControllerInput.shellCaptureEnabled = shellOwnsInput")));
         QVERIFY(main.contains(QStringLiteral(
-            "inputBlocking: ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)")));
+            "inputBlocking: window.streamQmlOverlayActive\n"
+            "            && ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)")));
+        QVERIFY(main.contains(QStringLiteral(
+            "overlay: window.desktopSurfaceActive || ShellStore.isStreamStatsOverlay(AppController.overlay)")));
         QVERIFY(host.contains(QStringLiteral("focus: visible && inputBlocking")));
         QVERIFY(host.contains(QStringLiteral("focus: false")));
         QVERIFY(!main.contains(QStringLiteral(
@@ -1971,7 +2025,8 @@ private slots:
             "onStopRequested: ShellStore.requestStreamExitConfirmation()")));
         for (const auto &path : screens) {
             const auto qml = source(path);
-            QVERIFY2(qml.contains(QStringLiteral("if (!root.streaming")), qPrintable(path));
+            QVERIFY2(qml.contains(path.startsWith(QStringLiteral("qml/desktop/"))
+                ? QStringLiteral("if (!root.streaming") : QStringLiteral("if (!root.videoReady")), qPrintable(path));
         }
     }
 
@@ -2048,7 +2103,7 @@ private slots:
         QJSEngine engine;
         QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
             var window = {active:true,activeRoute:'stream',streamSurfaceLocked:false,
-                desktopSurfaceActive:true,lockedStreamDesktopSurface:false,synchronizeRenderedSurface:function(){}};
+                desktopSurfaceActive:true,consoleStreamReady:true,lockedStreamDesktopSurface:false,synchronizeRenderedSurface:function(){}};
             var ShellStore = {activeSession:{sessionId:'seat'},authRestorePending:false,signedIn:false,
                 settings:{},streamOverlayBlocksGameplayInput:function(){return false;}};
             var AppController = {route:'stream',overlay:''};
@@ -2064,6 +2119,10 @@ private slots:
         QVERIFY(!engine.evaluate(QStringLiteral("updateStreamSurfaceLock(); syncInputOwnership();")).isError());
         QVERIFY(engine.evaluate(QStringLiteral("window.streamSurfaceLocked && window.lockedStreamDesktopSurface && ControllerInput.shellCaptureEnabled")).toBool());
         QVERIFY(!engine.evaluate(QStringLiteral("window.desktopSurfaceActive=false; syncInputOwnership();")).isError());
+        QVERIFY(engine.evaluate(QStringLiteral("!ControllerInput.shellCaptureEnabled && !ControllerInput.inputSuspended")).toBool());
+        QVERIFY(!engine.evaluate(QStringLiteral("window.consoleStreamReady=false; syncInputOwnership();")).isError());
+        QVERIFY(engine.evaluate(QStringLiteral("ControllerInput.shellCaptureEnabled && !ControllerInput.inputSuspended")).toBool());
+        QVERIFY(!engine.evaluate(QStringLiteral("window.consoleStreamReady=true; syncInputOwnership();")).isError());
         QVERIFY(engine.evaluate(QStringLiteral("!ControllerInput.shellCaptureEnabled && !ControllerInput.inputSuspended")).toBool());
         QVERIFY(!engine.evaluate(QStringLiteral("window.desktopSurfaceActive=true; syncInputOwnership();")).isError());
         QVERIFY(engine.evaluate(QStringLiteral("ControllerInput.shellCaptureEnabled")).toBool());
@@ -2082,7 +2141,7 @@ private slots:
         QVERIFY(!engine.evaluate(QStringLiteral("window.streamSurfaceLocked")).toBool());
         QVERIFY(!engine.evaluate(QStringLiteral("window.streamSurfaceLocked=true; ShellStore.activeSession={sessionId:'seat'}; window.activeRoute='settings'; updateStreamSurfaceLock();")).isError());
         QVERIFY(!engine.evaluate(QStringLiteral("window.streamSurfaceLocked")).toBool());
-        QVERIFY(main.contains(QStringLiteral("function onActiveSessionChanged() { window.updateStreamSurfaceLock() }")));
+        QVERIFY(main.contains(QStringLiteral("function onActiveSessionChanged() {\n                window.updateStreamSurfaceLock()")));
     }
 
     void cursorModeTransitionsCloseThePreviousButtonOwner()

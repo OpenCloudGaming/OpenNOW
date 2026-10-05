@@ -17,6 +17,8 @@ class AppController final : public QObject
     Q_PROPERTY(bool reducedMotion READ reducedMotion WRITE setReducedMotion NOTIFY reducedMotionChanged)
     Q_PROPERTY(int controllerCount READ controllerCount WRITE setControllerCount NOTIFY controllerCountChanged)
     Q_PROPERTY(QString inputMode READ inputMode WRITE setInputMode NOTIFY inputModeChanged)
+    Q_PROPERTY(bool consoleLaunchInputBlocked READ consoleLaunchInputBlocked WRITE setConsoleLaunchInputBlocked NOTIFY consoleLaunchInputBlockedChanged)
+    Q_PROPERTY(bool consoleLaunchInputDraining READ consoleLaunchInputDraining NOTIFY consoleLaunchInputDrainingChanged)
 
 public:
     explicit AppController(QObject *parent = nullptr);
@@ -27,6 +29,10 @@ public:
     [[nodiscard]] bool reducedMotion() const;
     [[nodiscard]] int controllerCount() const;
     [[nodiscard]] QString inputMode() const;
+    [[nodiscard]] bool consoleLaunchInputBlocked() const { return m_consoleLaunchInputBlocked; }
+    [[nodiscard]] bool consoleLaunchInputDraining() const { return m_consoleLaunchInputDraining; }
+    void setConsoleLaunchInputBlocked(bool blocked);
+    void setConsoleLaunchInputDraining(bool draining);
 
     Q_INVOKABLE bool navigate(const QString &route);
     Q_INVOKABLE bool navigateFromLastPrimary(const QString &route);
@@ -69,6 +75,9 @@ signals:
     void reducedMotionChanged();
     void controllerCountChanged();
     void inputModeChanged();
+    void consoleLaunchInputBlockedChanged();
+    void consoleLaunchInputDrainingChanged();
+    void consoleLaunchSkipRequested();
     void activationRequested();
     void applicationExitCommitted();
     void restartRequested();
@@ -83,6 +92,8 @@ private:
     QString m_route;
     QString m_overlay;
     bool m_reducedMotion = false;
+    bool m_consoleLaunchInputBlocked = false;
+    bool m_consoleLaunchInputDraining = false;
     int m_controllerCount = 0;
     QString m_inputMode = QStringLiteral("keyboard");
     QVector<QString> m_routeHistory;

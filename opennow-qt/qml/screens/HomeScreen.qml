@@ -1,5 +1,5 @@
 import QtQuick
-import QtQuick.Controls
+import QtQuick.Window
 import OpenNOW
 
 FocusScope {
@@ -11,6 +11,9 @@ FocusScope {
     property var editingGame: null
     property string editingGameId: ""
     property string editingTileSize: "square"
+    property string selectedGameId: ""
+    property real launchChromeProgress: 1
+    property bool launchFocusHeld: false
 
     readonly property var homeIds: moveMode
         ? movePreviewIds : (ShellStore.settings.favoriteGameIds || [])
@@ -76,29 +79,15 @@ FocusScope {
         ? layoutItems[Math.max(0, Math.min(currentIndex, layoutItems.length - 1))] : null
     readonly property var selectedGame: selectedItem && !selectedItem.add ? selectedItem.game : null
 
-    function storeGlyph(game) {
-        const store = game && game.availableStores && game.availableStores.length
-            ? String(game.availableStores[0]).toUpperCase() : "GFN"
-        if (store.indexOf("EPIC") >= 0) return "E"
-        if (store.indexOf("UBISOFT") >= 0) return "U"
-        if (store.indexOf("BATTLE") >= 0) return "B"
-        if (store.indexOf("XBOX") >= 0) return "X"
-        if (store.indexOf("GOG") >= 0) return "G"
-        return "S"
-    }
-
-    function storeColor(glyph) {
-        if (glyph === "E") return Theme.cartEpic
-        if (glyph === "U") return Theme.cartUbisoft
-        if (glyph === "B") return Theme.cartBattlenet
-        if (glyph === "X") return Theme.cartXbox
-        if (glyph === "G") return Theme.cartGog
-        return Theme.cartSteam
-    }
-
-    function storeLabel(game) {
-        return game && game.availableStores && game.availableStores.length
-            ? String(game.availableStores[0]).toUpperCase() : "GEFORCE NOW"
+    function headerEyebrow(game) {
+        const parts = []
+        const store = ConsoleStores.primaryStore(game)
+        if (store)
+            parts.push(ConsoleStores.label(store))
+        const genres = game && game.genres ? game.genres : []
+        if (genres.length)
+            parts.push(DesktopTokens.genreLabel(genres[0]))
+        return parts.join(" · ").toUpperCase()
     }
 
     // Focus is restored once the tile layout has settled. A Timer is used instead
@@ -126,6 +115,9 @@ FocusScope {
         if (!gameRepeater.count)
             return
         root.currentIndex = Math.max(0, Math.min(root.currentIndex, gameRepeater.count - 1))
+        root.selectedGameId = root.selectedItem ? root.selectedItem.gameId : ""
+        if (root.editMenuOpen)
+            return
         const item = gameRepeater.itemAt(root.currentIndex)
         if (item)
             item.forceActiveFocus()
@@ -137,6 +129,15 @@ FocusScope {
                 return index
         }
         return 0
+    }
+
+    function retainSelection() {
+        if (root.selectedGameId !== "") {
+            const index = root.layoutItems.findIndex(item => item.gameId === root.selectedGameId)
+            if (index >= 0)
+                root.currentIndex = index
+        }
+        deferredFocus.schedule(null)
     }
 
     function directionalIndex(direction) {
@@ -248,7 +249,15 @@ FocusScope {
             event.accepted = true
             return
         }
-        if (event.key === Qt.Key_Left) root.moveSelection("left")
+        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+            if (!event.isAutoRepeat) {
+                if (game)
+                    ShellStore.openGame(game)
+                else
+                    AppController.navigate("library")
+            }
+        }
+        else if (event.key === Qt.Key_Left) root.moveSelection("left")
         else if (event.key === Qt.Key_Right) root.moveSelection("right")
         else if (event.key === Qt.Key_Up) root.moveSelection("up")
         else if (event.key === Qt.Key_Down) root.moveSelection("down")
@@ -261,13 +270,64 @@ FocusScope {
         tint: "#15253A"
     }
 
+    Item {
+        id: header
+        x: 168
+        y: 124
+        width: 1584
+        height: 92
+        visible: !root.moveMode
+        Accessible.ignored: true
+        Text {
+            id: headerEyebrow
+            width: parent.width - ownership.width - 40
+            text: root.selectedGame ? root.headerEyebrow(root.selectedGame)
+                : root.games.length === 0 ? qsTr("HOME") : qsTr("ADD A GAME")
+            color: Theme.textMuted
+            elide: Text.ElideRight
+            font.family: Theme.monoFont
+            font.pixelSize: 15
+            font.weight: Font.Bold
+            font.letterSpacing: 2
+        }
+        Text {
+            y: headerEyebrow.height + 4
+            width: parent.width - ownership.width - 40
+            text: root.selectedGame ? String(root.selectedGame.title || "")
+                : root.games.length === 0 ? qsTr("Your Home is ready") : qsTr("Pin a game from Library")
+            color: Theme.label
+            elide: Text.ElideRight
+            font.family: Theme.displayFont
+            font.pixelSize: 50
+            font.weight: Font.Black
+            font.letterSpacing: -1
+        }
+        Row {
+            id: ownership
+            readonly property string store: ConsoleStores.ownedStore(root.selectedGame)
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: 12
+            visible: store !== ""
+            spacing: 10
+            Rectangle { anchors.verticalCenter: parent.verticalCenter; width: 9; height: 9; radius: 5; color: Theme.mint }
+            Text {
+                text: qsTr("Owned on %1").arg(ConsoleStores.label(ownership.store))
+                color: Theme.lightMode ? Qt.darker(Theme.mint, 2.2) : Theme.mint
+                font.family: Theme.bodyFont
+                font.pixelSize: 18
+                font.weight: Font.Bold
+            }
+        }
+    }
+
     GlassPanel {
         x: Math.round((root.width - width) / 2)
-        y: 207
-        width: 1586
+        y: 225
+        width: 1584
         height: 626
         panelRadius: 42
-        color: Qt.rgba(0.055, 0.063, 0.094, 0.58)
+        color: Qt.rgba(Theme.shell.r, Theme.shell.g, Theme.shell.b, 0.52)
 
         Item {
             x: 33
@@ -287,19 +347,22 @@ FocusScope {
                     x: modelData.x
                     y: modelData.y
                     wide: modelData.wide
-                    width: modelData.wide ? 368 : 176
                     title: isAddTile ? qsTr("Add a game") : game.title
                     artwork: isAddTile ? "" : (modelData.wide
                         ? (game.heroImageUrl || game.imageUrl || "")
                         : (game.keyArtUrl || game.imageUrl || game.heroImageUrl || ""))
-                    storeGlyph: isAddTile ? "+" : root.storeGlyph(game)
-                    storeColor: isAddTile ? Theme.glassStrong : root.storeColor(storeGlyph)
+                    store: isAddTile ? "" : ConsoleStores.primaryStore(game)
                     addTile: isAddTile
-                    session: index === 0 && !isAddTile
-                    eyebrow: index === 0 && !isAddTile ? root.storeLabel(game) + " · RECENT" : ""
+                    eyebrow: modelData.wide && store !== "" ? ConsoleStores.label(store).toUpperCase() : ""
                     currentItem: root.currentIndex === index
+                    highlighted: !root.launchFocusHeld && (activeFocus || currentItem)
+                    parked: !root.launchFocusHeld && root.currentIndex === index
+                        && (root.editMenuOpen || AppController.overlay !== "" || (Window.active && !root.activeFocus))
                     opacity: root.moveMode && modelData.gameId !== root.editingGameId ? 0.58 : 1
-                    onActiveFocusChanged: if (activeFocus) root.currentIndex = index
+                    onActiveFocusChanged: if (activeFocus) {
+                        root.currentIndex = index
+                        root.selectedGameId = modelData.gameId
+                    }
                     onClicked: {
                         if (root.moveMode) {
                             root.commitMove()
@@ -312,56 +375,60 @@ FocusScope {
                     onMenuRequested: root.openEditMenu(game, index)
                     Keys.onPressed: event => root.handleTileKey(event, game, index)
                     Behavior on opacity {
-                        NumberAnimation { duration: Theme.focusDuration }
+                        NumberAnimation { duration: AppController.reducedMotion ? 0 : 90 }
                     }
                 }
             }
         }
 
-        Column {
+        Text {
             anchors.horizontalCenter: parent.horizontalCenter
-            y: 88
-            spacing: 6
+            y: 120
             visible: root.games.length === 0
-            Text {
-                anchors.horizontalCenter: parent.horizontalCenter
-                text: qsTr("Your Home is ready")
-                color: Theme.label
-                font.family: Theme.displayFont
-                font.pixelSize: 28
-                font.weight: Font.Black
-            }
-            Text {
-                anchors.horizontalCenter: parent.horizontalCenter
-                text: qsTr("Add games from Library to build your own layout")
-                color: Theme.textMuted
-                font.family: Theme.bodyFont
-                font.pixelSize: 15
-                font.weight: Font.Bold
-            }
+            text: qsTr("Pin games from Library to build your own layout")
+            color: Theme.textMuted
+            font.family: Theme.bodyFont
+            font.pixelSize: 18
+            font.weight: Font.Bold
         }
     }
 
     GlassPanel {
         visible: root.moveMode
-        anchors.horizontalCenter: parent.horizontalCenter
-        y: 126
+        x: 168
+        y: 140
         width: moveLabel.implicitWidth + 54
-        height: 52
-        panelRadius: 26
+        height: 56
+        panelRadius: 28
         strong: true
-        border.color: Theme.focus
-        border.width: 3
+        border.color: Theme.face
+        border.width: 2
+        Accessible.role: Accessible.StaticText
+        Accessible.name: moveLabel.text
         Text {
             id: moveLabel
             anchors.centerIn: parent
             text: qsTr("MOVE TILE  ·  D-PAD MOVE  ·  A PLACE  ·  B CANCEL")
             color: Theme.label
-            font.family: Theme.bodyFont
-            font.pixelSize: 14
-            font.weight: Font.Black
-            font.letterSpacing: 0.7
+            font.family: Theme.monoFont
+            font.pixelSize: 15
+            font.weight: Font.Bold
+            font.letterSpacing: 1.4
         }
+    }
+
+    AppChrome {
+        anchors.fill: parent
+        entranceProgress: root.launchChromeProgress
+        title: qsTr("My games")
+        currentRoute: "home"
+        leftHints: root.moveMode || root.editMenuOpen ? [] : [{glyph: "Y", label: qsTr("Search")}]
+        rightHints: root.moveMode
+            ? [{glyph:"B", label:qsTr("Cancel")}, {glyph:"A", label:qsTr("Place")}]
+            : root.selectedItem && root.selectedItem.add
+                ? [{glyph:"A", label:qsTr("Add a game")}]
+                : [{glyph:"X", label:qsTr("Edit tile")}, {glyph:"A", label:qsTr("Details")}]
+        onRouteRequested: route => AppController.navigate(route)
     }
 
     HomeTileMenu {
@@ -390,19 +457,7 @@ FocusScope {
         }
     }
 
-    onLayoutItemsChanged: deferredFocus.schedule(null)
+    onLayoutItemsChanged: root.retainSelection()
     Component.onCompleted: deferredFocus.schedule(
         () => Math.min(ShellStore.focusIndex("home"), Math.max(0, root.layoutItems.length - 1)))
-
-    AppChrome {
-        anchors.fill: parent
-        title: qsTr("My games")
-        currentRoute: "home"
-        rightHints: root.moveMode
-            ? [{glyph:"A", label:qsTr("Place")}, {glyph:"B", label:qsTr("Cancel")}]
-            : root.homeIds.length === 0
-                ? [{glyph:"A", label:qsTr("Add game")}]
-                : [{glyph:"A", label:qsTr("Play")}, {glyph:"X", label:qsTr("Edit tile")}]
-        onRouteRequested: route => AppController.navigate(route)
-    }
 }

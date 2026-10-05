@@ -53,6 +53,87 @@ void presentUpdateSurface(QQmlApplicationEngine &engine, QQuickWindow *window, c
 
 int AcceptanceSession::startSmokeWorkload()
 {
+    if (m_smokeTest && m_arguments.contains(u"--smoke-console-design"_s)
+            && m_arguments.contains(u"--smoke-interactive"_s))
+        return EXIT_SUCCESS;
+    auto *launchWindow = m_engine.rootObjects().isEmpty() ? nullptr : m_engine.rootObjects().first();
+    if (m_smokeTest && launchWindow
+            && (!launchWindow->property("startupLaunchConsidered").toBool()
+                || !launchWindow->property("consoleLaunchInputReady").toBool())) {
+        auto *timer = new QTimer(this);
+        timer->setInterval(25);
+        connect(timer, &QTimer::timeout, this,
+                [this, timer, launchWindow, deadline = QDeadlineTimer(8000)] {
+            if (launchWindow->property("startupLaunchConsidered").toBool()
+                    && launchWindow->property("consoleLaunchInputReady").toBool()) {
+                timer->stop();
+                timer->deleteLater();
+                if (startSmokeWorkload() != EXIT_SUCCESS) m_application.exit(EXIT_FAILURE);
+            } else if (deadline.hasExpired()) {
+                const auto *input = m_engine.rootContext()->contextProperty(u"ControllerInput"_s).value<QObject *>();
+                qCritical() << "Console launch did not release acceptance input within eight seconds"
+                    << "startupConsidered=" << launchWindow->property("startupLaunchConsidered")
+                    << "active=" << launchWindow->property("consoleLaunchActiveForSmokeTest")
+                    << "framePresented=" << launchWindow->property("launchFramePresented")
+                    << "inputReady=" << launchWindow->property("consoleLaunchInputReady")
+                    << "settingsLoaded=" << launchWindow->property("settingsLoadedForSmokeTest")
+                    << "blocked=" << m_controller.consoleLaunchInputBlocked()
+                    << "keyboardDrain=" << m_controller.consoleLaunchInputDraining()
+                    << "controllerBlocked=" << (input ? input->property("shellInputBlocked") : QVariant())
+                    << "controllerDrain=" << (input ? input->property("shellInputDraining") : QVariant());
+                m_application.exit(EXIT_FAILURE);
+            }
+        });
+        timer->start();
+        return EXIT_SUCCESS;
+    }
+    if (m_smokeTest && m_arguments.contains(u"--smoke-initial-console-warning"_s)) {
+        auto *window = m_engine.rootObjects().isEmpty() ? nullptr
+            : qobject_cast<QQuickWindow *>(m_engine.rootObjects().first());
+        if (!window) return EXIT_FAILURE;
+        window->requestActivate();
+        QTimer::singleShot(350, this, [this, window] {
+            if (m_qmlWarningOccurred || m_controller.overlay() != u"application-quit-confirm"_s
+                    || !window->activeFocusItem()
+                    || window->activeFocusItem()->objectName() != u"quitConfirmKeepOpen"_s) {
+                qCritical("Initial console warning did not retain safe keyboard focus");
+                m_application.exit(EXIT_FAILURE);
+                return;
+            }
+            const auto route = m_controller.route();
+            auto *loader = window->findChild<QObject *>(u"mainRouteLoader"_s);
+            auto *page = loader ? qobject_cast<QQuickItem *>(loader->property("item").value<QObject *>()) : nullptr;
+            if (!page) { m_application.exit(EXIT_FAILURE); return; }
+            page->forceActiveFocus();
+            for (const auto key : {Qt::Key_X, Qt::Key_PageDown}) {
+                QKeyEvent press(QEvent::KeyPress, key, Qt::NoModifier);
+                QGuiApplication::sendEvent(window, &press);
+                QKeyEvent release(QEvent::KeyRelease, key, Qt::NoModifier);
+                QGuiApplication::sendEvent(window, &release);
+            }
+            if (m_controller.route() != route || m_controller.overlay() != u"application-quit-confirm"_s) {
+                qCritical("A background focus request bypassed the console warning");
+                m_application.exit(EXIT_FAILURE);
+                return;
+            }
+            QTimer::singleShot(50, this, [this, window, route] {
+                if (!window->activeFocusItem()
+                        || window->activeFocusItem()->objectName() != u"quitConfirmKeepOpen"_s) {
+                    qCritical("Console warning did not reclaim safe focus");
+                    m_application.exit(EXIT_FAILURE);
+                    return;
+                }
+                QKeyEvent press(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+                QGuiApplication::sendEvent(window, &press);
+                QKeyEvent release(QEvent::KeyRelease, Qt::Key_Return, Qt::NoModifier);
+                QGuiApplication::sendEvent(window, &release);
+                const bool safe = m_controller.overlay().isEmpty() && m_controller.route() == route
+                    && !window->property("applicationCloseConfirmed").toBool();
+                m_application.exit(safe ? EXIT_SUCCESS : EXIT_FAILURE);
+            });
+        });
+        return EXIT_SUCCESS;
+    }
     const auto screenshotIndex = m_arguments.indexOf(u"--screenshot"_s);
     const auto resumeIndex = m_arguments.indexOf(u"--smoke-session-resume"_s);
     if (m_smokeTest && resumeIndex >= 0 && resumeIndex + 1 < m_arguments.size()) {
@@ -101,6 +182,8 @@ int AcceptanceSession::startSmokeWorkload()
         return startThemeSettingsWorkload();
     if (m_smokeTest && m_arguments.contains(u"--smoke-session-launch"_s))
         return startSessionLaunchWorkload();
+    if (m_smokeTest && m_arguments.contains(u"--smoke-console-session"_s))
+        return startConsoleSessionWorkload();
     if (m_smokeTest && m_arguments.contains(u"--smoke-session-fullscreen"_s))
         return startSessionFullscreenWorkload();
     if (m_smokeTest && m_arguments.contains(u"--smoke-stream-exit"_s))
@@ -228,7 +311,7 @@ int AcceptanceSession::startSmokeWorkload()
     } else if (m_smokeTest && m_arguments.contains(u"--smoke-input-capture-error"_s)) {
         auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
         if (!store) return EXIT_FAILURE;
-        store->setProperty("streamer", QVariantMap{{u"status"_s, u"streaming"_s}});
+        store->setProperty("streamer", QVariantMap{{u"status"_s, u"streaming"_s}, {u"firstFrameLatencyMs"_s, 37}});
         store->setProperty("streamState", u"streaming"_s);
         QTimer::singleShot(150, this, [this] {
             auto *window = m_engine.rootObjects().isEmpty() ? nullptr
@@ -266,6 +349,7 @@ int AcceptanceSession::startSmokeWorkload()
                      || m_arguments.contains(u"--smoke-background-stream"_s)
                      || m_arguments.contains(u"--smoke-recording"_s)
                      || m_arguments.contains(u"--smoke-shortcuts"_s)
+                     || m_arguments.contains(u"--smoke-console-settings"_s)
                      || m_arguments.contains(u"--smoke-collections"_s)
                      || m_arguments.contains(u"--smoke-steam-big-picture"_s)
                      || m_arguments.contains(u"--smoke-persistent-in-game-settings"_s)
@@ -273,6 +357,7 @@ int AcceptanceSession::startSmokeWorkload()
                      || m_arguments.contains(u"--smoke-store-launch"_s)
                      || m_arguments.contains(u"--smoke-network-test"_s)
                      || m_arguments.contains(u"--smoke-idle-mode"_s)
+                     || m_arguments.contains(u"--smoke-console-launch"_s)
                      || m_arguments.contains(u"--smoke-queue-drops"_s)
                      || m_arguments.contains(u"--smoke-color-format"_s)
                      || m_arguments.contains(u"--smoke-stream-recovery"_s))) {
@@ -306,6 +391,8 @@ int AcceptanceSession::startSmokeWorkload()
             ? u"qrc:/acceptance/RecordingAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-shortcuts"_s)
             ? u"qrc:/acceptance/ShortcutsAcceptance.qml"_s
+            : m_arguments.contains(u"--smoke-console-settings"_s)
+            ? u"qrc:/acceptance/ConsoleSettingsAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-collections"_s)
             ? u"qrc:/acceptance/CollectionsAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-steam-big-picture"_s)
@@ -320,6 +407,8 @@ int AcceptanceSession::startSmokeWorkload()
             ? u"qrc:/acceptance/NetworkTestAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-idle-mode"_s)
             ? u"qrc:/acceptance/IdleModeAcceptance.qml"_s
+            : m_arguments.contains(u"--smoke-console-launch"_s)
+            ? u"qrc:/acceptance/ConsoleLaunchAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-stream-recovery"_s)
             ? u"qrc:/acceptance/StreamRecoveryAcceptance.qml"_s
             : u"qrc:/acceptance/BackendAvailabilityAcceptance.qml"_s));
@@ -375,6 +464,7 @@ int AcceptanceSession::startSmokeWorkload()
             }
             if (ok && (m_arguments.contains(u"--smoke-command-search"_s)
                        || m_arguments.contains(u"--smoke-shortcuts"_s)
+                       || m_arguments.contains(u"--smoke-console-settings"_s)
                        || m_arguments.contains(u"--bug-report-notice-check"_s)
                        || m_arguments.contains(u"--smoke-game-details-layout"_s))) {
                 if (m_arguments.contains(u"--smoke-game-details-layout"_s)
@@ -517,10 +607,14 @@ int AcceptanceSession::startSmokeWorkload()
         auto *window = m_engine.rootObjects().isEmpty()
             ? nullptr : qobject_cast<QQuickWindow *>(m_engine.rootObjects().first());
         if (!window) return EXIT_FAILURE;
+        auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
+        if (!store) return EXIT_FAILURE;
+        store->setProperty("streamerStartRequestId", u"stats-shortcut-fixture"_s);
+        store->setProperty("activeSession", QVariantMap{{u"sessionId"_s, u"stats-shortcut-fixture"_s}});
+        store->setProperty("streamState", u"streaming"_s);
+        store->setProperty("streamer", QVariantMap{{u"status"_s, u"streaming"_s}, {u"firstFrameLatencyMs"_s, 37}});
         const bool configuredShortcut = m_arguments.contains(u"--smoke-configured-stats-shortcut"_s);
         if (configuredShortcut) {
-            auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
-            if (!store) return EXIT_FAILURE;
             auto settings = store->property("settings").toMap();
             settings.insert(u"shortcutToggleStats"_s, u"F3"_s);
             store->setProperty("settings", settings);

@@ -25,8 +25,11 @@ int AcceptanceSession::startStreamExitWorkload()
     const auto originalRoute = m_controller.route();
     const auto originalState = windowClose && originalRoute != u"stream"_s
         ? (originalRoute == u"inserting"_s ? u"queued"_s : u"idle"_s) : u"streaming"_s;
-    store->setProperty("streamer", QVariantMap{{u"status"_s,
-        originalState == u"streaming"_s ? u"streaming"_s : u"stopped"_s}});
+    QVariantMap snapshot{{u"status"_s,
+        originalState == u"streaming"_s ? u"streaming"_s : u"stopped"_s}};
+    if (originalState == u"streaming"_s)
+        snapshot.insert(u"firstFrameLatencyMs"_s, 37);
+    store->setProperty("streamer", snapshot);
     store->setProperty("streamState", originalState);
     if (windowClose && originalRoute != u"home"_s)
         store->setProperty("activeSession", QVariantMap{{u"sessionId"_s, u"window-close-fixture"_s}, {u"status"_s, 3}});
@@ -99,7 +102,8 @@ int AcceptanceSession::startStreamExitWorkload()
                         && window->activeFocusItem()
                         && window->activeFocusItem()->objectName() == u"quitConfirmKeepOpen"_s,
                         "application confirmation did not retain the window and own input")) return;
-                if (state->step == 2) keyClick(Qt::Key_Space);
+                if (state->step == 2) keyClick(window->property("desktopSurfaceActive").toBool()
+                    ? Qt::Key_Space : Qt::Key_Return);
                 else if (state->step == 4) keyClick(Qt::Key_Escape);
                 else {
                     auto *confirmation = window->findChild<QQuickItem *>(u"applicationQuitConfirmation"_s);
@@ -128,13 +132,21 @@ int AcceptanceSession::startStreamExitWorkload()
                     && window->activeFocusItem()->objectName() == u"streamExitKeepPlaying"_s,
                     "confirmation did not own input with safe default focus")) return;
             if (state->step == 2) {
-                keyClick(Qt::Key_Space);
+                keyClick(window->property("desktopSurfaceActive").toBool()
+                    ? Qt::Key_Space : Qt::Key_Return);
             } else if (state->step == 4) {
                 keyClick(Qt::Key_Escape);
             } else {
                 keyClick(Qt::Key_Return, Qt::NoModifier, true);
                 if (!require(m_controller.overlay() == u"desktop-stream-exit-confirm"_s,
                              "auto-repeat confirmed session exit")) return;
+                if (!window->property("desktopSurfaceActive").toBool()
+                        && !m_arguments.contains(u"--smoke-exit-tab-space"_s)) {
+                    keyClick(Qt::Key_Down);
+                    if (!require(window->activeFocusItem()
+                            && window->activeFocusItem()->objectName() == u"streamExitEndSession"_s,
+                            "console confirmation must focus End session before Enter")) return;
+                }
                 if (m_arguments.contains(u"--smoke-exit-tab-space"_s)) {
                     keyClick(Qt::Key_Tab);
                     if (!require(window->activeFocusItem()
@@ -156,7 +168,8 @@ int AcceptanceSession::startStreamExitWorkload()
                     && store->property("streamState").toString() == u"streaming"_s,
                     "cancel ended the session or failed to restore input")) return;
             if (state->step == 3) {
-                m_controller.showOverlay(u"desktop-stream-menu"_s);
+                m_controller.showOverlay(window->property("desktopSurfaceActive").toBool()
+                    ? u"desktop-stream-menu"_s : u"guide-session"_s);
                 keyClick(Qt::Key_Q, Qt::ControlModifier | Qt::ShiftModifier);
             } else {
                 m_controller.showOverlay(u"desktop-stream-stats"_s);

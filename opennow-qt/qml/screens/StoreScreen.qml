@@ -1,14 +1,14 @@
 import QtQuick
-import QtQuick.Controls
 import OpenNOW
 
 FocusScope {
     id: root
     focus: true
-    property int currentIndex: Math.max(0, Math.min(32, ShellStore.focusIndex("store")))
+    property int currentIndex: Math.max(0, Math.min(29, ShellStore.focusIndex("store")))
     readonly property var games: ShellStore.storeGames
     readonly property var selectedGame: gameAt(currentIndex)
-    readonly property int columnCount: 11
+    readonly property int columnCount: 10
+    readonly property bool pageFailed: ShellStore.storeError !== "" || ShellStore.storeWarning !== ""
 
     function gameAt(index) {
         if (!games.length || index < 0)
@@ -22,15 +22,33 @@ FocusScope {
         if ((delta === -1 && currentIndex % columnCount === 0)
                 || (delta === 1 && currentIndex % columnCount === columnCount - 1))
             return
-        currentIndex = Math.max(0, Math.min(games.length - 1, currentIndex + delta))
+        if (delta === columnCount && currentIndex + delta >= games.length) {
+            if (Math.floor(currentIndex / columnCount) < Math.floor((games.length - 1) / columnCount))
+                currentIndex = games.length - 1
+            else
+                root.continuePaging()
+        } else {
+            currentIndex = Math.max(0, Math.min(games.length - 1, currentIndex + delta))
+        }
         ShellStore.rememberFocus("store", currentIndex)
         catalogGrid.positionViewAtIndex(currentIndex, GridView.Contain)
+    }
+
+    function continuePaging() {
+        if (ShellStore.storeLoading)
+            return
+        if (root.pageFailed)
+            ShellStore.retryStore()
+        else if (ShellStore.storeHasMore)
+            ShellStore.requestStorePage()
     }
 
     function openSelected() {
         const game = gameAt(currentIndex)
         if (game)
             ShellStore.openGame(game)
+        else if (ShellStore.storeState === "error")
+            ShellStore.retryStore()
     }
 
     Keys.onPressed: event => {
@@ -38,9 +56,10 @@ FocusScope {
         else if (event.key === Qt.Key_Right) root.moveSelection(1)
         else if (event.key === Qt.Key_Up) root.moveSelection(-root.columnCount)
         else if (event.key === Qt.Key_Down) root.moveSelection(root.columnCount)
-        else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space)
-            root.openSelected()
-        else return
+        else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+            if (!event.isAutoRepeat)
+                root.openSelected()
+        } else return
         event.accepted = true
     }
 
@@ -49,128 +68,231 @@ FocusScope {
         tint: "#18230F"
     }
 
-    GlassPanel {
-        x: 40
-        y: 108
-        width: 1840
-        height: 848
-        panelRadius: 44
+    Text {
+        id: eyebrow
+        x: 96; y: 120
+        text: qsTr("GEFORCE NOW CATALOG")
+        color: Theme.textMuted
+        font.family: Theme.monoFont
+        font.pixelSize: 15
+        font.weight: Font.Bold
+        font.letterSpacing: 2
+    }
+    Text {
+        x: 96; y: eyebrow.y + eyebrow.height + 2
+        text: qsTr("Available games")
+        color: Theme.label
+        font.family: Theme.displayFont
+        font.pixelSize: 40
+        font.weight: Font.Black
+        Accessible.role: Accessible.Heading
+        Accessible.name: text
+    }
+    Text {
+        objectName: "consoleStorePageStatus"
+        anchors.right: parent.right
+        anchors.rightMargin: 96
+        y: 164
+        text: (ShellStore.storeTotalCount > 0
+            ? qsTr("Loaded %1 of %2 games").arg(root.games.length.toLocaleString(Qt.locale(), "f", 0))
+                .arg(Number(ShellStore.storeTotalCount).toLocaleString(Qt.locale(), "f", 0))
+            : qsTr("%1 loaded").arg(root.games.length.toLocaleString(Qt.locale(), "f", 0))).toUpperCase()
+        color: Theme.textMuted
+        font.family: Theme.monoFont
+        font.pixelSize: 15
+        font.weight: Font.Bold
+        font.letterSpacing: 1.4
+    }
 
-        Item {
-            anchors.fill: parent
-            anchors.margins: 28
+    Item {
+        x: 80; y: 192
+        width: root.width - 160
+        height: strip.y - y - 8
+        clip: true
 
-            Text {
-                text: qsTr("Available games")
-                color: Theme.label
-                font.family: Theme.displayFont
-                font.pixelSize: 24
-                font.weight: Font.Black
-                font.letterSpacing: -0.48
-            }
-
-            Text {
-                anchors.right: parent.right
-                text: ShellStore.storeTotalCount > 0
-                    ? qsTr("%1 games").arg(ShellStore.storeTotalCount)
-                    : qsTr("%1 loaded").arg(root.games.length)
-                color: Theme.textMuted
-                font.family: Theme.bodyFont
-                font.pixelSize: 14
-                font.weight: Font.Bold
-            }
-
-            GridView {
-                id: catalogGrid
-                x: 0
-                y: 40
-                width: parent.width
-                height: parent.height - 40 - (pageStatus.visible ? pageStatus.height + 12 : 0)
-                cellWidth: width / root.columnCount
-                cellHeight: 250
-                model: root.games
-                currentIndex: root.currentIndex
-                clip: true
-                boundsBehavior: Flickable.StopAtBounds
-                delegate: ItemDelegate {
-                    required property int index
-                    required property var modelData
-                    readonly property var game: modelData
-                    width: GridView.view.cellWidth - 24
-                    height: 210
-                    padding: 0
+        GridView {
+            id: catalogGrid
+            x: 16; y: 16
+            width: parent.width - 32
+            height: parent.height - 16
+            cellWidth: width / root.columnCount
+            cellHeight: 256
+            model: root.games
+            currentIndex: root.currentIndex
+            highlightFollowsCurrentItem: false
+            boundsBehavior: Flickable.StopAtBounds
+            delegate: Item {
+                id: posterCell
+                required property int index
+                required property var modelData
+                width: catalogGrid.cellWidth
+                height: catalogGrid.cellHeight
+                PosterTile {
+                    x: Math.round((parent.width - width) / 2)
+                    width: Math.min(156, catalogGrid.cellWidth - 18)
+                    height: Math.round(width * 232 / 156)
+                    title: posterCell.modelData && posterCell.modelData.title ? posterCell.modelData.title : qsTr("Game")
+                    artwork: posterCell.modelData ? (posterCell.modelData.imageUrl || posterCell.modelData.heroImageUrl || "") : ""
+                    stores: ConsoleStores.stores(posterCell.modelData)
+                    showLabel: false
                     focusPolicy: Qt.NoFocus
-                    Accessible.name: game && game.title ? game.title : qsTr("Game")
-                    Accessible.role: Accessible.Button
+                    currentItem: root.activeFocus && root.currentIndex === posterCell.index
                     onClicked: {
-                        root.currentIndex = index
+                        root.currentIndex = posterCell.index
                         root.forceActiveFocus()
                         root.openSelected()
                     }
-                    background: RoundedArtwork {
-                        artwork: parent.game ? (parent.game.imageUrl || parent.game.heroImageUrl || "") : ""
-                        fallbackColor: Theme.glassStrong
-                        cornerRadius: 18
-                        scrimStart: 1
+                }
+            }
+            footer: Item {
+                width: catalogGrid.width
+                height: footerRow.visible ? 96 : 0
+                Row {
+                    id: footerRow
+                    anchors.centerIn: parent
+                    spacing: 20
+                    visible: root.games.length > 0 && (ShellStore.storeLoading || ShellStore.storeHasMore || root.pageFailed)
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: Math.min(implicitWidth, 900)
+                        text: ShellStore.storeLoading ? qsTr("Loading more games…")
+                            : ShellStore.storeError || ShellStore.storeWarning || qsTr("Move down past the last row to load more")
+                        color: root.pageFailed ? Theme.coral : Theme.textMuted
+                        wrapMode: Text.Wrap
+                        textFormat: Text.PlainText
+                        font.family: Theme.bodyFont
+                        font.pixelSize: 17
+                        font.weight: Font.DemiBold
                     }
-                    contentItem: Item {}
-                    FocusFrame {
-                        focused: root.currentIndex === parent.index
-                        frameRadius: 21
-                    }
-                    scale: !AppController.reducedMotion && root.currentIndex === index ? 1.045 : 1
-                    z: root.currentIndex === index ? 20 : 0
-                    Behavior on scale {
-                        NumberAnimation {
-                            duration: Theme.focusDuration
-                            easing.type: Easing.OutCubic
-                        }
+                    ConsoleActionButton {
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: !ShellStore.storeLoading
+                        height: 56
+                        focusPolicy: Qt.NoFocus
+                        text: root.pageFailed ? qsTr("Try again") : qsTr("Load more")
+                        onClicked: root.continuePaging()
                     }
                 }
             }
+        }
 
-            Row {
-                id: pageStatus
-                anchors.bottom: parent.bottom; width: parent.width; spacing: 16
-                visible: root.games.length > 0 && (ShellStore.storeLoading || ShellStore.storeHasMore || ShellStore.storeError !== "" || ShellStore.storeWarning !== "")
-                Text {
-                    width: parent.width - 220
-                    text: ShellStore.storeError || ShellStore.storeWarning || qsTr("Loaded %1 of %2 games").arg(root.games.length).arg(ShellStore.storeTotalCount)
-                    color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: 16
-                    wrapMode: Text.Wrap; textFormat: Text.PlainText
-                }
-                GlassButton {
-                    visible: !ShellStore.storeLoading
-                    text: ShellStore.storeError || ShellStore.storeWarning ? qsTr("Try again") : qsTr("Load more")
-                    onClicked: ShellStore.storeError || ShellStore.storeWarning ? ShellStore.retryStore() : ShellStore.requestStorePage()
+        Column {
+            anchors.centerIn: parent
+            width: Math.min(parent.width - 48, 800)
+            spacing: 14
+            visible: root.games.length === 0
+            Text {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                text: ShellStore.storeState === "error" ? qsTr("Catalog unavailable")
+                    : ShellStore.storeState === "ready" ? qsTr("No games match these filters") : qsTr("Loading the live catalog…")
+                color: Theme.label
+                font.family: Theme.displayFont
+                font.pixelSize: 30
+                font.weight: Font.Black
+            }
+            Text {
+                width: parent.width; text: ShellStore.storeError; visible: text !== ""
+                horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap; textFormat: Text.PlainText
+                color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 18
+            }
+            ConsoleActionButton {
+                anchors.horizontalCenter: parent.horizontalCenter
+                visible: ShellStore.storeState === "error"
+                text: qsTr("Try again")
+                glyph: "A"
+                primary: true
+                focusPolicy: Qt.NoFocus
+                onClicked: ShellStore.retryStore()
+            }
+        }
+    }
+
+    GlassPanel {
+        id: strip
+        readonly property var game: root.selectedGame
+        readonly property var stores: ConsoleStores.stores(game)
+        readonly property string ownedStore: ConsoleStores.ownedStore(game)
+        x: 96
+        y: root.height - 260
+        width: root.width - 192
+        height: 96
+        panelRadius: 30
+        strong: true
+        visible: game !== null
+        Accessible.role: Accessible.StaticText
+        Accessible.name: game ? String(game.title || "") : ""
+
+        Column {
+            x: 30
+            anchors.verticalCenter: parent.verticalCenter
+            width: parent.width - stripFacts.width - 90
+            spacing: 2
+            Text {
+                width: parent.width
+                text: strip.game ? String(strip.game.title || "") : ""
+                elide: Text.ElideRight
+                color: Theme.label
+                font.family: Theme.displayFont
+                font.pixelSize: 26
+                font.weight: Font.Black
+            }
+            Text {
+                width: parent.width
+                text: strip.game
+                    ? [strip.game.publisherName || strip.game.developerName || "",
+                       (strip.game.genres || []).slice(0, 1).map(genre => DesktopTokens.genreLabel(genre)).join("")]
+                        .filter(Boolean).join(" · ")
+                    : ""
+                visible: text !== ""
+                elide: Text.ElideRight
+                color: Theme.textMuted
+                font.family: Theme.bodyFont
+                font.pixelSize: 17
+                font.weight: Font.DemiBold
+            }
+        }
+
+        Row {
+            id: stripFacts
+            anchors.right: parent.right
+            anchors.rightMargin: 30
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 16
+            Text {
+                anchors.verticalCenter: parent.verticalCenter
+                visible: strip.stores.length > 0
+                text: qsTr("AVAILABLE ON")
+                color: Theme.textMuted
+                font.family: Theme.monoFont
+                font.pixelSize: 14
+                font.weight: Font.Bold
+                font.letterSpacing: 1.8
+            }
+            Repeater {
+                model: strip.stores.slice(0, 4)
+                ConsoleStoreChip {
+                    required property string modelData
+                    anchors.verticalCenter: parent.verticalCenter
+                    store: modelData
                 }
             }
-            Column {
-                anchors.centerIn: parent
-                width: Math.min(parent.width - 48, 800)
-                spacing: 12
-                visible: root.games.length === 0
+            Rectangle {
+                anchors.verticalCenter: parent.verticalCenter
+                visible: strip.ownedStore !== ""
+                width: 1; height: 40; color: Theme.seam
+            }
+            Row {
+                anchors.verticalCenter: parent.verticalCenter
+                visible: strip.ownedStore !== ""
+                spacing: 10
+                Rectangle { anchors.verticalCenter: parent.verticalCenter; width: 9; height: 9; radius: 5; color: Theme.mint }
                 Text {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    text: ShellStore.storeState === "error" ? qsTr("Catalog unavailable")
-                        : ShellStore.storeState === "ready" ? qsTr("No games match these filters") : qsTr("Loading the live catalog…")
-                    color: Theme.label
-                    font.family: Theme.displayFont
-                    font.pixelSize: 25
-                    font.weight: Font.Black
-                }
-                GlassButton {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    visible: ShellStore.storeState === "error"
-                    text: qsTr("Try again")
-                    glyph: "A"
-                    primary: true
-                    onClicked: ShellStore.retryStore()
-                }
-                Text {
-                    width: parent.width; text: ShellStore.storeError; visible: text !== ""
-                    horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap; textFormat: Text.PlainText
-                    color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 16
+                    text: qsTr("In your %1 library").arg(ConsoleStores.label(strip.ownedStore))
+                    color: Theme.lightMode ? Qt.darker(Theme.mint, 2.2) : Theme.mint
+                    font.family: Theme.bodyFont
+                    font.pixelSize: 18
+                    font.weight: Font.Bold
                 }
             }
         }
@@ -180,6 +302,9 @@ FocusScope {
         anchors.fill: parent
         title: qsTr("Store")
         currentRoute: "store"
+        leftHints: [{glyph: "B", label: qsTr("Back")}]
+        rightHints: root.selectedGame ? [{glyph: "A", label: qsTr("Details")}]
+            : ShellStore.storeState === "error" ? [{glyph: "A", label: qsTr("Try again")}] : []
         onRouteRequested: route => AppController.navigate(route)
     }
 

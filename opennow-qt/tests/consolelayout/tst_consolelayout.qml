@@ -97,10 +97,19 @@ TestCase {
         const clock = findChild(host.chrome, "consoleClock")
         for (const date of [new Date(2026, 8, 10, 19, 0), new Date(2026, 8, 10, 23, 59), new Date(2026, 8, 11, 0, 0)]) {
             host.chrome.now = date
-            tryCompare(clock, "text", Qt.formatDateTime(date, "hh:mm | MM/dd"))
+            tryCompare(clock, "text", Qt.formatDateTime(date, "hh:mm"))
             waitForRendering(host.chrome)
             verifyLayout(host)
         }
+    }
+
+    function test_clockOddHeightRemainsCentered() {
+        const host = createTemporaryObject(hostComponent, testCase)
+        const clock = findChild(host.chrome, "consoleClock")
+        verify(clock !== null)
+        clock.height = 25
+        waitForRendering(host.chrome)
+        verifyLayout(host)
     }
 
     function test_fullscreenRoundTrip() {

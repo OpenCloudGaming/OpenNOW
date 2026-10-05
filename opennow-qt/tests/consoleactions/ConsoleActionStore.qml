@@ -51,6 +51,17 @@ QtObject {
         else ids.push(game.id)
         settings = Object.assign({}, settings, {favoriteGameIds: ids})
     }
+    function gameIdentity(game) { return game ? String(game.id || "") : "" }
+    function homeTileSize(game) { return (settings.homeTileSizes || {})[gameIdentity(game)] === "wide" ? "wide" : "square" }
+    function setHomeTileSize(game, size) {
+        const sizes = Object.assign({}, settings.homeTileSizes || {})
+        sizes[gameIdentity(game)] = size === "wide" ? "wide" : "square"
+        settings = Object.assign({}, settings, {homeTileSizes: sizes})
+    }
+    function setHomeOrder(ids) { settings = Object.assign({}, settings, {favoriteGameIds: ids}) }
+    function removeFromHome(game) {
+        settings = Object.assign({}, settings, {favoriteGameIds: settings.favoriteGameIds.filter(id => id !== gameIdentity(game))})
+    }
     function openGame(game) { selectedGame = game; detailsCount++ }
     function launchSelectedGame() { launchCount++ }
 }

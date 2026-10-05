@@ -1117,7 +1117,7 @@ fn defaults() -> Map<String, Value> {
         "controllerMode":true, "controllerModePromptDismissed":false,
         "controllerLeftStickDeadzone":5, "controllerRightStickDeadzone":5,
         "controllerVibrationIntensity":100,
-        "reducedMotion":false,
+        "reducedMotion":false, "uiSoundsEnabled":true,
         "launchInConsoleMode":false, "consoleProfilePickerOnLaunch":true,
         "desktopRailCollapsed":true, "desktopSidebarHover":true, "desktopBackground":"art",
         "desktopBackgroundImage":"", "desktopBackgroundOpacity":30,
@@ -2018,6 +2018,26 @@ mod tests {
         store.set("steamBigPictureMode", json!(true)).unwrap();
         store.reset().unwrap();
         assert_eq!(store.all()["steamBigPictureMode"], false);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn ui_sounds_default_enabled_and_persist_independently() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-ui-sounds-{unique}"));
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["uiSoundsEnabled"], true);
+        store.set("uiSoundsEnabled", json!(false)).unwrap();
+        store.set("reducedMotion", json!(true)).unwrap();
+        store.set("launchInConsoleMode", json!(true)).unwrap();
+        let mut loaded = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(loaded.all()["uiSoundsEnabled"], false);
+        assert_eq!(loaded.all()["reducedMotion"], true);
+        loaded.reset().unwrap();
+        assert_eq!(loaded.all()["uiSoundsEnabled"], true);
         fs::remove_dir_all(directory).unwrap();
     }
 

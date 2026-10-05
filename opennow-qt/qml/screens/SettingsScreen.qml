@@ -6,8 +6,6 @@ import OpenNOW
 FocusScope {
     id: root
     objectName: "consoleSettingsScreen"
-    MotionProgress { id: proxyMotion; shown: root.proxyEditorOpen }
-    MotionProgress { id: shortcutMotion; shown: root.shortcutEditorOpen }
     property int initialSection: 1
     property bool initialDropdownOpen: false
     property int selectedSection: initialSection
@@ -24,12 +22,16 @@ FocusScope {
     property var dropdownLabels: []
     property var dropdownValues: []
     property var dropdownDisabledValues: []
-    property int resolutionMenuCurrentIndex: 1
-    readonly property real dropdownPanelY: dropdownKey === "resolution" ? 320
-        : Math.max(110, Math.min(height - dropdownPanelHeight - 110,
-            96 + 33 + (settingsList.currentItem ? settingsList.currentItem.y : 0) + 58))
-    readonly property real dropdownPanelHeight: dropdownKey === "resolution"
-        ? 499 : Math.min(499, 91 + dropdownLabels.length * (dropdownDetails.length ? 64 : 40))
+    property string warningKind: ""
+    property string presentedWarningKind: ""
+    onWarningKindChanged: if (warningKind !== "") presentedWarningKind = warningKind
+    readonly property bool warningOpen: warningKind !== ""
+    readonly property bool sheetOpen: dropdownOpen || warningOpen || proxyEditorOpen || shortcutEditorOpen
+    property var rows: settingsModel()
+    property int rowCount: 0
+    property bool restoringRows: false
+    property string focusedRowKey: ""
+    readonly property real dropdownPanelHeight: Math.max(height, 1080) - 240
     readonly property var sections: [
         {name:qsTr("Account"), icon:"settings-account.svg", color:Theme.violet},
         {name:qsTr("Streaming"), icon:"settings-streaming.svg", color:Theme.focus},
@@ -41,11 +43,6 @@ FocusScope {
         {name:qsTr("Recording"), icon:"settings-video.svg", color:Theme.coral}
     ]
     DesktopSettingsShortcutBinding { id: shortcutBinding }
-    TenBitWarningDialog {
-        id: tenBitWarning
-        settingsStore: ShellStore
-        onClosed: settingsList.forceActiveFocus()
-    }
 
     function titleCase(value) {
         const words = String(value || "").split("-").join(" ").split("_").join(" ").split(" ")
@@ -90,113 +87,25 @@ FocusScope {
         return ""
     }
 
-    function resolutionChoices() {
-        const entries = {}
-        const defaults = [
-            "1280x720", "1920x1080", "2560x1440", "3840x2160",
-            "1280x800", "1440x900", "1680x1050",
-            "1920x1200", "2560x1600", "3840x2400",
-            "2560x1080", "3440x1440", "5120x1440"
-        ]
-        for (let index = 0; index < defaults.length; ++index)
-            entries[defaults[index]] = defaults[index]
-        const entitled = ShellStore.subscription && ShellStore.subscription.entitledResolutions
-            ? ShellStore.subscription.entitledResolutions : []
-        for (let index = 0; index < entitled.length; ++index) {
-            const width = Number(entitled[index].width || 0)
-            const height = Number(entitled[index].height || 0)
-            if (width >= 640 && height >= 480)
-                entries[width + "x" + height] = width + "x" + height
-        }
-        const values = Object.keys(entries)
-        values.sort((left, right) => {
-            const leftParts = left.split("x")
-            const rightParts = right.split("x")
-            return Number(leftParts[0]) * Number(leftParts[1]) - Number(rightParts[0]) * Number(rightParts[1])
-        })
-        return values
-    }
-
-    function resolutionDisplayLabel(value) {
-        const parts = String(value || "").split("x")
-        if (parts.length !== 2)
-            return String(value || "")
-        const height = Number(parts[1])
-        const aspect = aspectForResolution(value)
-        let name = height >= 2160 && aspect === "16:9" ? "4K" : height + "p"
-        if (aspect === "21:9")
-            name = "UW " + height + "p"
-        else if (aspect === "32:9")
-            name = qsTr("Super Ultrawide")
-        return name + (aspect.length ? " (" + aspect + ")" : "")
-            + " · " + parts[0] + "×" + parts[1]
-    }
-
-    function resolutionLabels(values) {
-        return values.map(value => resolutionDisplayLabel(value))
-    }
-
-    function resolutionDropdownItems() {
-        return [
-            {kind:"heading", label:qsTr("16:9 STANDARD"), height:24},
-            {kind:"choice", label:"720p", detail:"1280×720", values:["1280x720"], height:38},
-            {kind:"choice", label:"1080p", detail:"1920×1080", values:["1920x1080"], height:38},
-            {kind:"choice", label:"1440p", detail:"2560×1440 · up to 120", values:["2560x1440"], height:38},
-            {kind:"choice", label:"4K", detail:"3840×2160 · up to 120", values:["3840x2160"], height:38},
-            {kind:"heading", label:qsTr("16:10 WIDESCREEN"), height:28},
-            {kind:"choice", label:"720p · WXGA · WSXGA", detail:"1280×800 · 1440×900 · 1680×1050", values:["1280x800","1440x900","1680x1050"], height:38},
-            {kind:"choice", label:"1200p · 1600p · 4K", detail:"1920×1200 · 2560×1600 · 3840×2400", values:["1920x1200","2560x1600","3840x2400"], height:38},
-            {kind:"heading", label:qsTr("21:9 ULTRAWIDE"), height:28},
-            {kind:"choice", label:"UW 1080p · UW 1440p", detail:"2560×1080 · 3440×1440", values:["2560x1080","3440x1440"], height:38},
-            {kind:"heading", label:qsTr("32:9 SUPER ULTRAWIDE"), height:28},
-            {kind:"choice", label:qsTr("Super Ultrawide"), detail:"5120×1440", values:["5120x1440"], height:38}
-        ]
-    }
-
-    function resolutionItemSelected(item) {
-        return Boolean(item && item.values
-            && item.values.indexOf(String(ShellStore.settings.resolution || "")) >= 0
-        )
-    }
-
-    function prepareResolutionMenu() {
-        const items = resolutionDropdownItems()
-        resolutionMenuCurrentIndex = 1
-        for (let index = 0; index < items.length; ++index) {
-            if (items[index].kind === "choice" && resolutionItemSelected(items[index])) {
-                resolutionMenuCurrentIndex = index
-                return
-            }
-        }
-    }
-
-    function moveResolutionMenu(delta) {
-        const items = resolutionDropdownItems()
-        let next = resolutionMenuCurrentIndex
-        do {
-            next += delta
-            if (next < 0)
-                next = items.length - 1
-            else if (next >= items.length)
-                next = 0
-        } while (items[next].kind !== "choice")
-        resolutionMenuCurrentIndex = next
-    }
-
-    function chooseResolutionItem(item) {
-        if (!item || item.kind !== "choice")
-            return
+    function resolutionRowData() {
         const current = String(ShellStore.settings.resolution || "")
-        let candidate = item.values.indexOf(current) >= 0 ? current : ""
-        for (let index = 0; candidate === "" && index < item.values.length; ++index) {
-            if (dropdownValues.indexOf(item.values[index]) >= 0)
-                candidate = item.values[index]
+        const options = []
+        let group = ""
+        for (const item of ShellStore.resolutionItems()) {
+            if (item.kind === "heading") {
+                group = item.label
+                continue
+            }
+            options.push({label:item.label, value:item.value, detail:item.detail || "", disabled:item.disabled === true, group:group})
         }
-        if (candidate === "")
-            candidate = item.values[0]
-        ShellStore.setSetting("resolution", candidate)
-        ShellStore.clampFpsToEntitlement()
-        closeDropdown()
+        if (current !== "" && !options.some(option => option.value === current))
+            options.unshift({label:current.replace("x", "×"), value:current, detail:qsTr("Current resolution"), disabled:false, group:qsTr("CURRENT")})
+        return options
+    }
+
+    function resolutionLabel(value) {
+        const option = resolutionRowData().find(item => item.value === value)
+        return option ? option.label + " · " + option.detail : String(value || "").replace("x", "×")
     }
 
     function openInitialDropdown() {
@@ -270,6 +179,21 @@ FocusScope {
     }
 
     function settingsModel() {
+        return sectionRows().map(row => {
+            if (!row || !row.values || row.control === "slider" || row.control === "colors")
+                return row
+            const fixedSheet = ["resolution", "region", "controllerInputSource", "windowsGpuDeviceId",
+                "gameLanguage", "keyboardLayout", "appLanguage", "colorQuality"].indexOf(row.key) >= 0
+            const shortDropdown = row.control === "dropdown" && row.values.length >= 2 && row.values.length <= 6
+                && !(row.details && row.details.some(detail => detail))
+            const longSegments = row.control === "segments" && row.values.length > 4
+            if (fixedSheet || !(shortDropdown || longSegments))
+                return row
+            return Object.assign({}, row, {control:"cycler"})
+        })
+    }
+
+    function sectionRows() {
         const settings = ShellStore.settings || ({})
         if (root.selectedSection === 0) {
             const user = ShellStore.authSession && ShellStore.authSession.user ? ShellStore.authSession.user : ({})
@@ -323,12 +247,12 @@ FocusScope {
                         info:settings.upscaling !== (Qt.platform.os === "osx" ? "metalfx" : "fsr1")}
                 }),
                 toggle("Cloud G-Sync", "Variable refresh on G-Sync and FreeSync displays", "enableCloudGsync"),
-                toggle("Stats overlay on launch", "Ctrl+N toggles it in-game", "showStatsOnLaunch"),
+                toggle(qsTr("Stats overlay on launch"), qsTr("Show stream statistics when a session starts"), "showStatsOnLaunch"),
                 choice("Stats overlay position", "FPS, RTT, loss and bitrate readout", "statsOverlayPosition", ["top-right","top-left","bottom-right","bottom-left"], ["Top-right","Top-left","Bottom-right","Bottom-left"])
             ]
         }
         if (root.selectedSection === 2) {
-            const resolutions = resolutionChoices()
+            const resolutionOptions = resolutionRowData()
             const frameRates = fpsChoices()
             const shader = settings.videoShader || ({enabled:false})
             const shaderValues = [
@@ -348,11 +272,15 @@ FocusScope {
                     GraphicsDevices.choices.filter(item => item.disabled).map(item => item.value))] : []),
                 toggle(qsTr("Steam Big Picture mode"), qsTr("Request gamepad-friendly launchers such as Steam Big Picture. Applies to new GeForce NOW sessions only."), "steamBigPictureMode"),
                 {t:"Display", d:"The Qt stream surface uses the current display", v:"Monitor 1 · current display", info:true},
-                choice("Resolution", "Exact stream size · up / down to browse, A to pick", "resolution", resolutions, resolutionLabels(resolutions)),
+                {t:qsTr("Resolution"), d:qsTr("Exact stream size · up / down to browse, A to pick"), key:"resolution",
+                    v:resolutionLabel(String(settings.resolution || "")), values:resolutionOptions.map(option => option.value),
+                    labels:resolutionOptions.map(option => option.label), details:resolutionOptions.map(option => option.detail),
+                    groups:resolutionOptions.map(option => option.group), control:"dropdown",
+                    disabledValues:resolutionOptions.filter(option => option.disabled).map(option => option.value)},
                 choice("Frame rate", root.fpsNote(), "fps", frameRates, frameRates.map(value => String(value)), "segments", root.fpsLockedValues()),
                 toggle(qsTr("Fullscreen when session is ready"), qsTr("Automatically enter fullscreen when your session is ready. F11 toggles fullscreen during play."), "autoFullScreen"),
                 {t:"Video shader", d:"Post-process on this device after decode", v:["Off","Sharpen","FidelityFX","CRT"][shaderIndex], key:"videoShader", values:shaderValues, labels:["Off","Sharpen","FidelityFX","CRT"], control:"segments", selectedIndex:shaderIndex},
-                choice("Cursor", "Lock the pointer to the game window · F8", "nativeCursorOverlay", [true,false], ["Lock to window","Free"], "segments"),
+                choice("Cursor", qsTr("Lock the pointer to the game window"), "nativeCursorOverlay", [true,false], ["Lock to window","Free"], "segments"),
             ]
         }
         if (root.selectedSection === 3) {
@@ -389,7 +317,7 @@ FocusScope {
                 v:qsTr("Retry"), action:"retry-languages", info:!ShellStore.settingsOwnerState.ready || ShellStore.settingsOwnerState.languageState === "loading"})
             rows.push(descriptorChoice(qsTr("Keyboard layout"), ShellStore.settingsOwnerState.keyboardLayoutDescription,
                 "keyboardLayout", ShellStore.keyboardLayoutItems))
-            rows.push({t:"Shortcuts", d:"Stats Ctrl+N · Pointer lock F8 · Fullscreen F11 · Screenshot Ctrl+F11", v:"Edit shortcuts", key:"shortcutToggleStats", action:"shortcut-editor"})
+            rows.push({t:"Shortcuts", d:qsTr("Keyboard shortcuts for stream controls. Shows your current bindings."), v:"Edit shortcuts", key:"shortcutToggleStats", action:"shortcut-editor"})
             rows.push(choice(qsTr("Microphone"), ShellStore.microphoneCaptureSupported ? ShellStore.microphoneDescription : qsTr("Microphone capture is unavailable in this build."),
                 "microphoneMode", ["disabled", "voice-activity"], [qsTr("Disabled"), qsTr("Open microphone")], "segments",
                 ShellStore.microphoneCaptureSupported ? [] : ["voice-activity"]))
@@ -425,12 +353,13 @@ FocusScope {
         if (root.selectedSection === 5) {
             return [
                 choice("Theme", "Auto follows the system at sunset", "appTheme", ["auto","dark","light"], ["Auto","Midnight","Light"], "segments"),
-                {t:"Accent colour", d:"Focus ring, progress and active states", v:root.titleCase(settings.appAccentColor || "blue"), key:"appAccentColor", values:["violet","blue","amber","green","rose","coral","white"], labels:["Violet","Sky","Amber","Mint","Rose","Coral","White"], colors:[Theme.violet,Theme.focus,Theme.yellow,Theme.mint,"#FF8A9A",Theme.coral,Theme.face], control:"colors"},
+                {t:"Accent colour", d:"Focus ring, progress and active states", v:root.titleCase(settings.appAccentColor || "blue"), key:"appAccentColor", values:["violet","blue","amber","green","rose","coral","white"], labels:["Violet","Sky","Amber","Mint","Rose","Coral","White"], colors:["violet","blue","amber","green","rose","coral","white"].map(value => Theme.accentColor(value, Theme.lightMode)), control:"colors"},
                 choice("Backdrop", "What sits behind the glass", "themePack", ["nocturne","aurora","kraft","phosphor"], ["Aurora gradient","Nocturne","Console room","Off"], "segments"),
                 toggle("Translucent glass", "Blur the backdrop through panels · off is faster on iGPUs", "translucentUI"),
                 choice("Tile style", "Shape of game tiles on My games", "posterSizeScale", [0.9,1.05,1.25], ["Compact","Soft","Round"], "segments"),
                 toggle("Tile labels", "Show the game name under each tile", "showTileLabels"),
                 toggle("Reduced motion", "Remove decorative motion without delaying actions", "reducedMotion"),
+                {t:"UI sounds", d:"Play the Game Mode startup sound", v:ShellStore.settings.uiSoundsEnabled !== false ? qsTr("On") : qsTr("Off"), key:"uiSoundsEnabled", toggle:true, control:"toggle", toggleState:ShellStore.settings.uiSoundsEnabled !== false},
                 toggle("Console mode", "Bigger 10-foot layout, profile picker on start, controller-only navigation", "launchInConsoleMode"),
                 {t:"Theme store", d:"Browse controller-first palettes from the Paper V3 collection", v:root.titleCase(settings.themePack || "default"), route:"theme-store"},
                 descriptorChoice(qsTr("Interface language"), ShellStore.settingsOwnerState.interfaceLanguageDescription,
@@ -471,6 +400,7 @@ FocusScope {
     }
 
     property var dropdownDetails: []
+    property var dropdownGroups: []
 
     function openChoices(row) {
         dropdownCloseTimer.stop()
@@ -480,9 +410,15 @@ FocusScope {
         dropdownValues = row.values
         dropdownDisabledValues = row.disabledValues || []
         dropdownDetails = row.details || []
-        if (row.key === "resolution")
-            prepareResolutionMenu()
+        dropdownGroups = row.groups || []
+        const options = root.choiceSheetOptions()
+        choiceSheet.options = options
+        choiceSheet.currentIndex = root.choiceSheetCurrentIndex(options)
         dropdownPresented = true
+        if (dropdownOpen) {
+            choiceSheet.syncFocus()
+            choiceSheet.forceActiveFocus()
+        }
         dropdownOpen = true
     }
 
@@ -491,6 +427,8 @@ FocusScope {
             return
         initialDropdownOpen = false
         dropdownOpen = false
+        if (!root.sheetOpen)
+            settingsList.forceActiveFocus()
         dropdownCloseTimer.restart()
     }
 
@@ -512,13 +450,121 @@ FocusScope {
         const key = root.dropdownKey
         const value = root.dropdownValues[index]
         const currentQuality = String(ShellStore.settings.colorQuality || "8bit_420")
+        root.applyChoice(key, value)
+        root.closeDropdown()
+        if (key === "colorQuality")
+            root.notifyTenBitSelection(currentQuality, value)
+    }
+
+    function applyChoice(key, value) {
         if (key === "controllerInputSource")
             ControllerInput.inputControllerId = Number(value)
         else
             ShellStore.setSetting(key, value)
-        root.closeDropdown()
-        if (key === "colorQuality")
-            tenBitWarning.notifySelection(currentQuality, value)
+        if (key === "resolution")
+            ShellStore.clampFpsToEntitlement()
+    }
+
+    function sameValue(left, right) {
+        if (typeof left === "object" || typeof right === "object")
+            return JSON.stringify(left) === JSON.stringify(right)
+        return left === right
+    }
+
+    function stepRow(row, delta) {
+        if (!row || row.info || !row.values || ["segments", "slider", "cycler", "colors"].indexOf(row.control) < 0)
+            return false
+        const values = row.values
+        const disabled = row.disabledValues || []
+        const current = row.key === "controllerInputSource" ? ControllerInput.inputControllerId : ShellStore.settings[row.key]
+        let index = row.selectedIndex !== undefined ? Number(row.selectedIndex)
+            : values.findIndex(value => root.sameValue(value, current))
+        if (index < 0 && row.control === "slider") {
+            let nearest = 0
+            for (let candidate = 1; candidate < values.length; ++candidate) {
+                if (Math.abs(Number(values[candidate]) - Number(current)) < Math.abs(Number(values[nearest]) - Number(current)))
+                    nearest = candidate
+            }
+            index = nearest
+        }
+        let next = index
+        do {
+            next += delta
+        } while (next >= 0 && next < values.length && disabled.indexOf(values[next]) >= 0)
+        if (next < 0 || next >= values.length || next === index)
+            return true
+        const previousQuality = String(ShellStore.settings.colorQuality || "8bit_420")
+        root.applyChoice(row.key, values[next])
+        if (row.key === "colorQuality")
+            root.notifyTenBitSelection(previousQuality, values[next])
+        return true
+    }
+
+    function notifyTenBitSelection(previous, value) {
+        if (previous === value || ["10bit_420", "10bit_444"].indexOf(value) < 0
+                || ShellStore.settings.suppressTenBitWarning === true)
+            return
+        settingsWarning.checked = false
+        root.warningKind = "ten-bit"
+    }
+
+    function openWarning(kind) {
+        settingsWarning.checked = false
+        root.warningKind = kind
+    }
+
+    function closeWarning() {
+        root.warningKind = ""
+        Qt.callLater(() => { if (!root.sheetOpen) settingsList.forceActiveFocus() })
+    }
+
+    function warningSafe() {
+        if (root.warningKind === "ten-bit" && settingsWarning.checked) {
+            ShellStore.applySetting("suppressTenBitWarning", true)
+            ShellStore.setSetting("suppressTenBitWarning", true)
+        }
+        root.closeWarning()
+    }
+
+    function warningAction() {
+        if (root.warningKind === "sign-out")
+            ShellStore.logout()
+        else if (root.warningKind === "reset")
+            ShellStore.resetSettings()
+        root.closeWarning()
+    }
+
+    function choiceSheetOptions() {
+        return root.dropdownLabels.map((label, index) => ({
+            label:I18n.source(String(label), I18n.revision),
+            value:root.dropdownValues[index],
+            detail:root.dropdownDetails[index] || (root.dropdownChoiceDisabled(index) ? qsTr("Unavailable") : ""),
+            disabled:root.dropdownChoiceDisabled(index),
+            group:root.dropdownGroups[index] || ""
+        }))
+    }
+
+    function choiceSheetCurrentIndex(options) {
+        for (let index = 0; index < root.dropdownValues.length; ++index)
+            if (root.dropdownChoiceSelected(index)) return index
+        return -1
+    }
+
+    function chooseFromSheet(index) {
+        root.commitDropdownChoice(index)
+    }
+
+    function sectionMeta() {
+        if (root.selectedSection === 0)
+            return ShellStore.subscription && ShellStore.subscription.membershipTier
+                ? String(ShellStore.subscription.membershipTier).toUpperCase() : ""
+        if (root.selectedSection === 3)
+            return qsTr("%1 CONTROLLERS CONNECTED").arg(ControllerInput.controllers.length)
+        if (root.selectedSection === 4)
+            return ShellStore.regions.length ? qsTr("%1 REGIONS DISCOVERED").arg(ShellStore.regions.length) : ""
+        if (root.selectedSection === 6)
+            return ShellStore.updaterState.currentVersion ? qsTr("OPENNOW %1").arg(ShellStore.updaterState.currentVersion) : ""
+        return ""
     }
 
     function activate(row) {
@@ -529,7 +575,7 @@ FocusScope {
         } else if (row.route) {
             AppController.navigate(row.route)
         } else if (row.toggle) {
-            ShellStore.setSetting(row.key, !Boolean(ShellStore.settings[row.key]))
+            ShellStore.setSetting(row.key, row.toggleState !== undefined ? !row.toggleState : !Boolean(ShellStore.settings[row.key]))
         } else if (row.values) {
             openChoices(row)
         } else if (row.action === "recording-settings") {
@@ -561,11 +607,11 @@ FocusScope {
         } else if (row.action === "automatic-bug-reports") {
             ShellStore.bugReports.setEnabled(!ShellStore.bugReports.enabled, "settings")
         } else if (row.action === "sign-out") {
-            ShellStore.logout()
+            root.openWarning("sign-out")
         } else if (row.action === "anti-afk") {
             ShellStore.antiAfkEnabled = !ShellStore.antiAfkEnabled
         } else if (row.action === "reset") {
-            ShellStore.resetSettings()
+            root.openWarning("reset")
         }
     }
 
@@ -589,34 +635,54 @@ FocusScope {
 
     function rowFocusKey() { return "settings-rows-" + root.selectedSection }
 
+    function rowIdentity(row) {
+        return row ? root.selectedSection + "|" + String(row.key || row.action || row.route || "") + "|" + String(row.t || "") : ""
+    }
+
+    function restoreRowFocus() {
+        const count = root.rows.length
+        if (count === 0) {
+            settingsList.currentIndex = -1
+            return
+        }
+        const keyed = root.rows.findIndex(row => root.rowIdentity(row) === root.focusedRowKey)
+        const target = keyed >= 0 ? keyed : Math.min(ShellStore.focusIndex(root.rowFocusKey()), count - 1)
+        if (settingsList.currentIndex !== target)
+            settingsList.currentIndex = target
+        if (keyed < 0)
+            root.focusedRowKey = root.rowIdentity(root.rows[target])
+        ShellStore.rememberFocus(root.rowFocusKey(), target)
+    }
+
+    function syncRows() {
+        root.restoringRows = true
+        root.rowCount = root.rows.length
+        root.restoreRowFocus()
+        root.restoringRows = false
+    }
+
+    onRowsChanged: syncRows()
+
     onDropdownOpenChanged: {
         if (dropdownOpen) {
             dropdownCloseTimer.stop()
             dropdownPresented = true
-            if (dropdownKey === "resolution")
-                Qt.callLater(resolutionMenuFocus.forceActiveFocus)
-            else
-                Qt.callLater(dropdownList.forceActiveFocus)
         }
     }
     onProxyEditorOpenChanged: {
         if (proxyEditorOpen)
             Qt.callLater(proxyField.forceActiveFocus)
         else
-            settingsList.forceActiveFocus()
+            Qt.callLater(() => { if (!root.sheetOpen) settingsList.forceActiveFocus() })
     }
     onShortcutEditorOpenChanged: {
         if (shortcutEditorOpen)
             Qt.callLater(shortcutCapture.forceActiveFocus)
         else
-            settingsList.forceActiveFocus()
+            Qt.callLater(() => { if (!root.sheetOpen) settingsList.forceActiveFocus() })
     }
-    onSelectedSectionChanged: Qt.callLater(() => {
-        settingsList.currentIndex = settingsList.count
-            ? Math.min(ShellStore.focusIndex(root.rowFocusKey()), settingsList.count - 1)
-            : -1
-    })
     Component.onCompleted: {
+        root.syncRows()
         if (AppController.route === "settings")
             root.selectedSection = Math.max(0, Math.min(root.sections.length - 1, ShellStore.focusIndex("settings-section")))
     }
@@ -638,426 +704,339 @@ FocusScope {
         repeat: false
         onTriggered: {
             root.dropdownPresented = false
-            if (!tenBitWarning.visible)
+            if (!root.sheetOpen)
                 settingsList.forceActiveFocus()
         }
     }
 
     ScreenBackground { tint: "#17233B" }
+
     GlassPanel {
-        x: 88; y: 96; width: 360; height: 848; panelRadius: 44
+        x: 96; y: 124; width: 360; height: 792; panelRadius: 40
         ListView {
             id: sectionList
-            anchors.fill: parent; anchors.margins: 24; spacing: 8; clip: true; focus: false
+            objectName: "consoleSettingsSections"
+            anchors.fill: parent; anchors.margins: 22; spacing: 6; clip: false; focus: false
+            interactive: false
+            keyNavigationEnabled: true
+            keyNavigationWraps: false
             KeyNavigation.right: settingsList
-            model: root.sections; currentIndex: root.selectedSection
+            model: root.sections.length; currentIndex: root.selectedSection
             onCurrentIndexChanged: if (currentIndex >= 0) {
                 ShellStore.rememberFocus("settings-section", currentIndex)
                 if (activeFocus) { root.selectedSection = currentIndex; root.closeDropdown() }
             }
+            onActiveFocusChanged: if (activeFocus && currentIndex !== root.selectedSection) currentIndex = root.selectedSection
+            Keys.onReturnPressed: settingsList.forceActiveFocus()
+            Keys.onEnterPressed: settingsList.forceActiveFocus()
             delegate: ItemDelegate {
-                required property var modelData; required property int index
-                width: sectionList.width; height: 56; focusPolicy: Qt.StrongFocus
+                id: sectionItem
+                required property int index
+                readonly property var modelData: root.sections[index] || ({})
+                readonly property bool selected: root.selectedSection === sectionItem.index
+                width: sectionList.width; height: 58; focusPolicy: Qt.StrongFocus; padding: 0
                 Accessible.name: I18n.source(modelData.name, I18n.revision)
-                onClicked: { root.selectedSection = index; root.closeDropdown() }
+                onClicked: { root.selectedSection = sectionItem.index; root.closeDropdown() }
                 highlighted: ListView.isCurrentItem
-                background: Rectangle { radius: 28; color: root.selectedSection === index ? Theme.face : "transparent"; border.color: parent.activeFocus ? Theme.focus : "transparent"; border.width: parent.activeFocus ? 3 : 0 }
-                contentItem: Row {
-                    spacing: 12
-                    Rectangle { width: 30; height: 30; radius: 10; color: modelData.color
-                        Image { anchors.centerIn: parent; width: modelData.icon === "settings-input.svg" ? 20 : 18; height: width; source: "qrc:/qt/qml/OpenNOW/res/icons/" + modelData.icon; sourceSize: Qt.size(width, height) }
-                    }
-                    Text { anchors.verticalCenter: parent.verticalCenter; text: I18n.source(modelData.name, I18n.revision); color: root.selectedSection === index ? Theme.faceText : Theme.label; font.family: Theme.bodyFont; font.pixelSize: 17; font.weight: Font.ExtraBold }
-                }
-            }
-        }
-    }
-
-    GlassPanel {
-        x: 472; y: 96; width: 1360; height: 848; panelRadius: 44
-        Item {
-            anchors.fill: parent; anchors.margins: 33
-            ListView {
-                id: settingsList
-                objectName: "consoleSettingsList"
-                anchors.fill: parent
-                spacing: 0; clip: true; keyNavigationWraps: false
-                focus: true
-                KeyNavigation.left: sectionList
-                model: root.settingsModel()
-                Component.onCompleted: currentIndex = count ? Math.min(ShellStore.focusIndex(root.rowFocusKey()), count - 1) : -1
-                onCountChanged: if (count > 0) currentIndex = Math.min(ShellStore.focusIndex(root.rowFocusKey()), count - 1)
-                onCurrentIndexChanged: if (currentIndex >= 0) ShellStore.rememberFocus(root.rowFocusKey(), currentIndex)
-                delegate: SettingRow {
-                    required property var modelData
-                    width: ListView.view.width
-                    rowData: modelData
-                    currentItem: ListView.isCurrentItem
-                    onClicked: root.activate(modelData)
-                }
-                Keys.onReturnPressed: if (currentItem) currentItem.clicked()
-                Keys.onEnterPressed: if (currentItem) currentItem.clicked()
-            }
-        }
-    }
-
-    Rectangle {
-        visible: root.dropdownPresented
-        anchors.fill: parent
-        color: root.dropdownOpen ? Qt.rgba(0, 0, 0, 0.12) : "transparent"
-        z: 20
-        Behavior on color { ColorAnimation { duration: Theme.overlayDuration } }
-        MouseArea { anchors.fill: parent; onClicked: root.closeDropdown() }
-    }
-    Rectangle {
-        visible: root.dropdownPresented
-        x: 1307
-        y: root.dropdownPanelY + 12
-        width: 500
-        height: root.dropdownPanelHeight
-        radius: 30
-        color: Qt.rgba(0, 0, 0, 0.38)
-        z: 20.5
-        opacity: root.dropdownOpen ? 1 : 0
-        scale: root.dropdownOpen ? 1 : 0.96
-        transformOrigin: Item.TopRight
-        Behavior on opacity { NumberAnimation { duration: Theme.overlayDuration; easing.type: Easing.OutCubic } }
-        Behavior on scale { NumberAnimation { duration: Theme.overlayDuration; easing.type: Easing.OutCubic } }
-    }
-    GlassPanel {
-        visible: root.dropdownPresented
-        z: 21
-        x: 1299
-        y: root.dropdownPanelY
-        width: 500
-        height: root.dropdownPanelHeight
-        panelRadius: 28
-        strong: true
-        color: "#10131C"
-        opacity: root.dropdownOpen ? 1 : 0
-        scale: root.dropdownOpen ? 1 : 0.96
-        transformOrigin: Item.TopRight
-        Behavior on opacity { NumberAnimation { duration: Theme.overlayDuration; easing.type: Easing.OutCubic } }
-        Behavior on scale { NumberAnimation { duration: Theme.overlayDuration; easing.type: Easing.OutCubic } }
-
-        FocusScope {
-            id: resolutionMenuFocus
-            visible: root.dropdownKey === "resolution"
-            anchors.fill: parent
-            focus: visible
-            Keys.onPressed: event => {
-                if (event.key === Qt.Key_Up)
-                    root.moveResolutionMenu(-1)
-                else if (event.key === Qt.Key_Down)
-                    root.moveResolutionMenu(1)
-                else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space)
-                    root.chooseResolutionItem(root.resolutionDropdownItems()[root.resolutionMenuCurrentIndex])
-                else if (event.key === Qt.Key_Escape || event.key === Qt.Key_Back)
-                    root.closeDropdown()
-                else return
-                event.accepted = true
-            }
-
-            Column {
-                x: 12
-                y: 12
-                width: parent.width - 24
-                spacing: 2
-
-                Repeater {
-                    model: root.resolutionDropdownItems()
-                    ItemDelegate {
-                        id: resolutionItem
-                        required property var modelData
-                        required property int index
-                        width: parent.width
-                        height: modelData.height
-                        padding: 0
-                        enabled: modelData.kind === "choice"
-                        focusPolicy: Qt.NoFocus
-                        highlighted: modelData.kind === "choice"
-                            && root.resolutionMenuCurrentIndex === index
-                        Accessible.name: modelData.label
-                        Accessible.description: modelData.detail || ""
-                        onClicked: {
-                            root.resolutionMenuCurrentIndex = index
-                            root.chooseResolutionItem(modelData)
-                        }
-
-                        background: Rectangle {
-                            radius: 19
-                            color: resolutionItem.highlighted ? Theme.face : "transparent"
-                            border.color: resolutionItem.highlighted ? Theme.focus : "transparent"
-                            border.width: resolutionItem.highlighted ? 3 : 0
-                            Behavior on color {
-                                ColorAnimation { duration: Theme.focusDuration }
-                            }
-                        }
-
-                        contentItem: Item {
-                            Text {
-                                visible: modelData.kind === "heading"
-                                x: 12
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: modelData.label
-                                color: Theme.textMuted
-                                font.family: Theme.bodyFont
-                                font.pixelSize: 11
-                                font.weight: Font.Black
-                                font.letterSpacing: 0.88
-                            }
-                            Row {
-                                visible: modelData.kind === "choice"
-                                x: 12
-                                anchors.verticalCenter: parent.verticalCenter
-                                spacing: 8
-                                Text {
-                                    visible: root.resolutionItemSelected(modelData)
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    text: "✓"
-                                    color: resolutionItem.highlighted ? Theme.faceText : Theme.label
-                                    font.family: Theme.bodyFont
-                                    font.pixelSize: 16
-                                    font.weight: Font.Black
-                                }
-                                Text {
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    text: modelData.label
-                                    color: resolutionItem.highlighted ? Theme.faceText : Theme.label
-                                    font.family: Theme.bodyFont
-                                    font.pixelSize: 15
-                                    font.weight: Font.Black
-                                }
-                            }
-                            Text {
-                                visible: modelData.kind === "choice"
-                                anchors.right: parent.right
-                                anchors.rightMargin: 12
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: modelData.detail || ""
-                                color: resolutionItem.highlighted
-                                    ? Qt.rgba(0.043, 0.059, 0.102, 0.60) : Theme.textMuted
-                                font.family: Theme.bodyFont
-                                font.pixelSize: 13
-                                font.weight: Font.Bold
-                            }
-                        }
-                    }
-                }
-
-                Item {
-                    width: parent.width
-                    height: 37
+                background: Item {
                     Rectangle {
-                        anchors.top: parent.top
-                        width: parent.width
-                        height: 1
-                        color: Theme.seam
+                        anchors.fill: parent; anchors.margins: -8; radius: 37
+                        color: "transparent"; border.width: 5
+                        border.color: Qt.rgba(Theme.focus.r, Theme.focus.g, Theme.focus.b, 0.5)
+                        visible: sectionItem.activeFocus
                     }
+                    Rectangle {
+                        anchors.fill: parent; radius: 29
+                        color: sectionItem.selected ? Theme.face : "transparent"
+                        border.width: sectionItem.activeFocus && !sectionItem.selected ? 3 : 0
+                        border.color: Theme.face
+                        Behavior on color { ColorAnimation { duration: Theme.focusDuration } }
+                    }
+                }
+                contentItem: Item {
                     Row {
-                        x: 12
+                        x: 16
                         anchors.verticalCenter: parent.verticalCenter
-                        anchors.verticalCenterOffset: 4
-                        spacing: 16
-                        ControllerGlyph { glyph: "A"; label: qsTr("Pick"); glyphSize: 22 }
-                        ControllerGlyph { glyph: "B"; label: qsTr("Cancel"); glyphSize: 22 }
+                        spacing: 14
+                        Rectangle {
+                            width: 32; height: 32; radius: 11; color: sectionItem.modelData.color
+                            anchors.verticalCenter: parent.verticalCenter
+                            Image {
+                                anchors.centerIn: parent
+                                width: sectionItem.modelData.icon === "settings-input.svg" ? 22 : 20; height: width
+                                source: "qrc:/qt/qml/OpenNOW/res/icons/" + sectionItem.modelData.icon
+                                sourceSize: Qt.size(width * 2, height * 2)
+                            }
+                        }
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: I18n.source(sectionItem.modelData.name, I18n.revision)
+                            color: sectionItem.selected ? Theme.faceText : Theme.label
+                            font.family: Theme.displayFont; font.pixelSize: 19; font.weight: Font.Black
+                        }
                     }
                 }
             }
         }
+    }
 
+    GlassPanel {
+        x: 480; y: 124; width: 1344; height: 792; panelRadius: 40
         Item {
-            visible: root.dropdownKey !== "resolution"
-            anchors.fill: parent
+            id: rowsHeader
+            x: 56; y: 34
+            width: parent.width - 112
+            height: 48
             Text {
-                x: 24
-                y: 16
-                text: I18n.source(root.dropdownTitle, I18n.revision).toUpperCase()
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                text: I18n.source(root.sections[root.selectedSection].name, I18n.revision)
+                color: Theme.label
+                font.family: Theme.displayFont; font.pixelSize: 32; font.weight: Font.Black; font.letterSpacing: -0.3
+            }
+            Text {
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.sectionMeta()
                 color: Theme.textMuted
-                font.family: Theme.bodyFont
-                font.pixelSize: 11
-                font.weight: Font.Black
-                font.letterSpacing: 0.88
-            }
-            ListView {
-                id: dropdownList
-                x: 12
-                y: 42
-                width: parent.width - 24
-                height: parent.height - 91
-                spacing: 2
-                clip: true
-                keyNavigationWraps: true
-                model: root.dropdownLabels
-                delegate: ItemDelegate {
-                    id: dropdownItem
-                    required property string modelData
-                    required property int index
-                    width: ListView.view.width
-                    height: root.dropdownDetails.length ? 64 : 38
-                    padding: 0
-                    enabled: !root.dropdownChoiceDisabled(index)
-                    highlighted: ListView.isCurrentItem && enabled
-                    opacity: enabled ? 1 : 0.42
-                    onClicked: root.commitDropdownChoice(index)
-                    background: Rectangle {
-                        radius: 19
-                        color: dropdownItem.highlighted ? Theme.face : "transparent"
-                        border.color: dropdownItem.highlighted ? Theme.focus : "transparent"
-                        border.width: dropdownItem.highlighted ? 3 : 0
-                    }
-                    contentItem: Item {
-                        Text {
-                            visible: root.dropdownChoiceSelected(index)
-                            x: 12
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: "✓"
-                            color: dropdownItem.highlighted ? Theme.faceText : Theme.label
-                            font.family: Theme.bodyFont
-                            font.pixelSize: 16
-                            font.weight: Font.Black
-                        }
-                        Text {
-                            x: root.dropdownChoiceSelected(index) ? 38 : 12
-                            anchors.verticalCenter: parent.verticalCenter
-                            width: parent.width - x - 12
-                            anchors.verticalCenterOffset: root.dropdownDetails.length ? -13 : 0
-                            text: I18n.source(modelData, I18n.revision)
-                            color: dropdownItem.highlighted ? Theme.faceText : Theme.label
-                            font.family: Theme.bodyFont
-                            font.pixelSize: 15
-                            font.weight: Font.Black
-                            elide: Text.ElideRight
-                        }
-                        Text {
-                            id: disabledReason
-                            visible: text !== ""
-                            x: 12
-                            y: 32
-                            width: parent.width - 24
-                            maximumLineCount: 2
-                            wrapMode: Text.WordWrap
-                            elide: Text.ElideRight
-                            text: root.dropdownDetails[index] || (root.dropdownChoiceDisabled(index) ? qsTr("Unavailable") : "")
-                            color: Theme.textMuted
-                            font.family: Theme.bodyFont
-                            font.pixelSize: 12
-                            font.weight: Font.Bold
-                        }
-                    }
-                }
-                Keys.onReturnPressed: root.commitDropdownChoice(currentIndex)
-                Keys.onEnterPressed: root.commitDropdownChoice(currentIndex)
-                Keys.onEscapePressed: root.closeDropdown()
-            }
-
-            Rectangle {
-                x: 12
-                y: parent.height - 49
-                width: parent.width - 24
-                height: 1
-                color: Theme.seam
-            }
-            Row {
-                x: 24
-                y: parent.height - 39
-                spacing: 16
-                ControllerGlyph { glyph: "A"; label: qsTr("Pick"); glyphSize: 22 }
-                ControllerGlyph { glyph: "B"; label: qsTr("Cancel"); glyphSize: 22 }
+                font.family: Theme.monoFont; font.pixelSize: 13; font.weight: Font.Bold; font.letterSpacing: 1.3
             }
         }
-    }
-    Rectangle {
-        visible: proxyMotion.present; enabled: root.proxyEditorOpen; opacity: proxyMotion.progress; anchors.fill: parent; color: Qt.rgba(0, 0, 0, 0.42); z: 30
-        MouseArea { anchors.fill: parent; onClicked: root.proxyEditorOpen = false }
-    }
-    GlassPanel {
-        visible: proxyMotion.present
-        enabled: root.proxyEditorOpen
-        z: 31
-        anchors.centerIn: parent
-        width: 620
-        height: 260
-        panelRadius: 30
-        strong: true
-        Column {
-            anchors.fill: parent; anchors.margins: 26; spacing: 14
-            Text { text: qsTr("Session proxy"); color: Theme.label; font.family: Theme.displayFont; font.pixelSize: 24; font.weight: Font.Black }
-            Text { width: parent.width; text: qsTr("Enter host:port or an explicit http, https, socks4 or socks5 URL."); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 14; wrapMode: Text.WordWrap }
-            TextField {
-                id: proxyField
-                width: parent.width; height: 52
-                placeholderText: qsTr("proxy.example.com:8080")
-                color: Theme.label; placeholderTextColor: Theme.textMuted
-                font.family: Theme.monoFont; font.pixelSize: 14
-                selectByMouse: true
-                inputMethodHints: Qt.ImhNoPredictiveText | Qt.ImhSensitiveData
-                Accessible.name: qsTr("Proxy address")
-                background: Rectangle { radius: 16; color: Theme.glass; border.color: proxyField.activeFocus ? Theme.focus : Theme.seam; border.width: proxyField.activeFocus ? 3 : 1 }
-                Keys.onEscapePressed: root.proxyEditorOpen = false
-            }
-            Row {
-                spacing: 12
-                Text { width: 260; anchors.verticalCenter: parent.verticalCenter; text: I18n.source(root.proxyEditorMessage, I18n.revision); color: Theme.coral; font.family: Theme.bodyFont; font.pixelSize: 12; wrapMode: Text.WordWrap }
-                GlassButton { width: 130; height: 44; text: qsTr("Cancel"); glyph: "B"; onClicked: root.proxyEditorOpen = false }
-                GlassButton {
-                    width: 150; height: 44; text: qsTr("Save"); glyph: "A"; primary: true
-                    onClicked: {
-                        if (!root.proxyLooksValid(proxyField.text)) {
-                            root.proxyEditorMessage = "Include a host and port, for example proxy.example.com:8080."
-                            Accessible.announce(root.proxyEditorMessage, Accessible.Assertive)
-                            return
-                        }
-                        ShellStore.setSetting("sessionProxyUrl", proxyField.text.trim())
-                        root.proxyEditorOpen = false
-                    }
-                }
-            }
-        }
-        scale: proxyMotion.zoom
-        opacity: proxyMotion.progress
-    }
-    Rectangle {
-        visible: shortcutMotion.present; enabled: root.shortcutEditorOpen; opacity: shortcutMotion.progress; anchors.fill: parent; color: Qt.rgba(0, 0, 0, 0.42); z: 40
-        MouseArea { anchors.fill: parent; onClicked: root.shortcutEditorOpen = false }
-    }
-    GlassPanel {
-        visible: shortcutMotion.present
-        enabled: root.shortcutEditorOpen
-        z: 41
-        anchors.centerIn: parent
-        width: 560
-        height: 290
-        panelRadius: 30
-        strong: true
-        FocusScope {
-            id: shortcutCapture
+        ListView {
+            id: settingsList
+            objectName: "consoleSettingsList"
             anchors.fill: parent
-            focus: root.shortcutEditorOpen
-            Keys.onShortcutOverride: event => { event.accepted = true }
-            Keys.onPressed: event => root.captureShortcut(event)
-            Column {
-                anchors.fill: parent; anchors.margins: 28; spacing: 16
-                Text { text: I18n.source(root.shortcutEditorTitle, I18n.revision); color: Theme.label; font.family: Theme.displayFont; font.pixelSize: 25; font.weight: Font.Black }
-                Rectangle {
-                    width: parent.width; height: 66; radius: 20; color: Theme.glass
-                    border.color: shortcutCapture.activeFocus ? Theme.focus : Theme.seam
-                    border.width: shortcutCapture.activeFocus ? 3 : 1
-                    Text { anchors.centerIn: parent; text: qsTr("Press a key combination…"); color: Theme.label; font.family: Theme.monoFont; font.pixelSize: 18; font.weight: Font.Bold }
+            anchors.leftMargin: 24; anchors.rightMargin: 24
+            anchors.topMargin: 96; anchors.bottomMargin: 18
+            leftMargin: 10; rightMargin: 10; topMargin: 10; bottomMargin: 10
+            spacing: 2; clip: true; keyNavigationWraps: false
+            highlightMoveDuration: AppController.reducedMotion ? 0 : 260
+            highlightRangeMode: ListView.ApplyRange
+            preferredHighlightBegin: 80
+            preferredHighlightEnd: height - 120
+            focus: true
+            model: root.rowCount
+            onCurrentIndexChanged: if (currentIndex >= 0 && !root.restoringRows) {
+                ShellStore.rememberFocus(root.rowFocusKey(), currentIndex)
+                root.focusedRowKey = root.rowIdentity(root.rows[currentIndex])
+            }
+            delegate: SettingRow {
+                id: settingRow
+                required property int index
+                readonly property var modelData: root.rows[index] || ({})
+                width: ListView.view.width - 20
+                rowData: modelData
+                currentItem: ListView.isCurrentItem
+                ringVisible: ListView.isCurrentItem && settingsList.activeFocus
+                parked: ListView.isCurrentItem && root.sheetOpen
+                onClicked: {
+                    settingsList.currentIndex = settingRow.index
+                    root.activate(settingRow.modelData)
                 }
-                Text { width: parent.width; text: I18n.source(root.shortcutEditorMessage, I18n.revision); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 13; wrapMode: Text.WordWrap }
-                Row {
-                    spacing: 14
-                    GlassButton { width: 130; height: 44; text: qsTr("Cancel"); glyph: "B"; onClicked: root.shortcutEditorOpen = false }
-                    GlassButton { width: 130; height: 44; text: qsTr("Clear shortcut"); onClicked: {
-                        ShellStore.setSetting(root.shortcutEditorKey, "")
-                        root.shortcutEditorOpen = false
-                    } }
+            }
+            Keys.onPressed: event => {
+                const row = currentIndex >= 0 ? root.rows[currentIndex] : null
+                if (event.key === Qt.Key_Left || event.key === Qt.Key_Right) {
+                    const delta = event.key === Qt.Key_Left ? -1 : 1
+                    if (!root.stepRow(row, delta) && delta < 0)
+                        sectionList.forceActiveFocus()
+                    event.accepted = true
+                } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                    if (!event.isAutoRepeat && currentItem) currentItem.clicked()
+                    event.accepted = true
+                } else if (event.key === Qt.Key_Escape || event.key === Qt.Key_Back) {
+                    sectionList.forceActiveFocus()
+                    event.accepted = true
                 }
             }
         }
-        scale: shortcutMotion.zoom
-        opacity: shortcutMotion.progress
+        Rectangle {
+            anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+            anchors.margins: 1
+            height: 64
+            radius: 40
+            visible: !settingsList.atYEnd
+            gradient: Gradient {
+                GradientStop { position: 0; color: "transparent" }
+                GradientStop { position: 1; color: Qt.rgba(Theme.shell.r, Theme.shell.g, Theme.shell.b, 0.9) }
+            }
+        }
     }
-    AppChrome { anchors.fill: parent; title: qsTr("Settings  ·  ") + I18n.source(root.sections[root.selectedSection].name, I18n.revision); currentRoute: "settings"; onRouteRequested: route => AppController.navigate(route) }
+
+    AppChrome {
+        anchors.fill: parent
+        title: qsTr("Settings")
+        currentRoute: "settings"
+        leftHints: [{glyph:"B", label: settingsList.activeFocus ? qsTr("Sections") : qsTr("Back")}]
+        rightHints: [{glyph:"A", label: qsTr("Select")}]
+        onRouteRequested: route => AppController.navigate(route)
+    }
+
+    ConsoleChoiceSheet {
+        id: choiceSheet
+        objectName: "consoleSettingsChoiceSheet"
+        opened: root.dropdownOpen
+        eyebrow: I18n.source(root.sections[root.selectedSection].name, I18n.revision)
+        title: I18n.source(root.dropdownTitle, I18n.revision)
+        description: root.dropdownKey === "fps" ? root.fpsNote() : ""
+        chooseText: qsTr("Choose")
+        dismissText: qsTr("Cancel")
+        onChosen: index => root.chooseFromSheet(index)
+        onDismissed: root.closeDropdown()
+    }
+
+    ConsoleWarningSheet {
+        id: settingsWarning
+        objectName: "consoleSettingsWarning"
+        opened: root.warningOpen
+        danger: root.presentedWarningKind !== "ten-bit"
+        eyebrow: root.presentedWarningKind === "ten-bit" ? qsTr("Saved · Color quality")
+            : root.presentedWarningKind === "sign-out" ? qsTr("Sign out") : qsTr("Reset")
+        title: root.presentedWarningKind === "ten-bit" ? qsTr("10-bit color")
+            : root.presentedWarningKind === "sign-out" ? qsTr("Sign out of NVIDIA?") : qsTr("Reset all settings?")
+        message: root.presentedWarningKind === "ten-bit"
+            ? qsTr("10-bit color may cause stuttering on some systems. If you notice stuttering, switch back to 8-bit.")
+            : root.presentedWarningKind === "sign-out"
+            ? qsTr("OpenNOW removes the NVIDIA token from this PC. My games stay.")
+            : qsTr("Every setting on this PC returns to its default. Your account and My games stay.")
+        detail: root.presentedWarningKind === "ten-bit" ? qsTr("Your choice is already saved. Closing this keeps it.") : ""
+        safeText: root.presentedWarningKind === "ten-bit" ? qsTr("Got it")
+            : root.presentedWarningKind === "sign-out" ? qsTr("Stay signed in") : qsTr("Keep my settings")
+        actionText: root.presentedWarningKind === "sign-out" ? qsTr("Sign out")
+            : root.presentedWarningKind === "reset" ? qsTr("Reset to defaults") : ""
+        checkboxText: root.presentedWarningKind === "ten-bit" ? qsTr("Don't notify me again") : ""
+        safeButtonObjectName: root.presentedWarningKind === "ten-bit" ? "tenBitWarningDismiss" : ""
+        checkboxObjectName: root.presentedWarningKind === "ten-bit" ? "tenBitWarningDontNotify" : ""
+        onSafeRequested: root.warningSafe()
+        onActionRequested: root.warningAction()
+    }
+
+    FocusScope {
+        id: proxyEditor
+        anchors.fill: parent
+        visible: proxyFrame.present
+        enabled: root.proxyEditorOpen
+        z: 220
+        Keys.onPressed: event => {
+            if (!root.proxyEditorOpen)
+                return
+            if (event.key === Qt.Key_Escape || event.key === Qt.Key_Back) {
+                root.proxyEditorOpen = false
+            } else if (event.key === Qt.Key_Down || event.key === Qt.Key_Tab) {
+                if (proxyField.activeFocus) proxySave.forceActiveFocus()
+                else if (proxySave.activeFocus) proxyCancel.forceActiveFocus()
+                else proxyField.forceActiveFocus()
+            } else if (event.key === Qt.Key_Up || event.key === Qt.Key_Backtab) {
+                if (proxyCancel.activeFocus) proxySave.forceActiveFocus()
+                else proxyField.forceActiveFocus()
+            }
+            event.accepted = true
+        }
+
+        function save() {
+            if (!root.proxyLooksValid(proxyField.text)) {
+                root.proxyEditorMessage = qsTr("Include a host and port, for example proxy.example.com:8080.")
+                Accessible.announce(root.proxyEditorMessage, Accessible.Assertive)
+                return
+            }
+            ShellStore.setSetting("sessionProxyUrl", proxyField.text.trim())
+            root.proxyEditorOpen = false
+        }
+
+        ConsoleSheetFrame {
+            id: proxyFrame
+            opened: root.proxyEditorOpen
+            toneColor: Theme.focus
+            onScrimClicked: root.proxyEditorOpen = false
+            Column {
+                width: parent.width
+                spacing: 18
+                Text { text: qsTr("NETWORK"); color: Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 14; font.weight: Font.Bold; font.letterSpacing: 2 }
+                Text { text: qsTr("Session proxy"); color: Theme.label; font.family: Theme.displayFont; font.pixelSize: 44; font.weight: Font.Black; font.letterSpacing: -0.9 }
+                Text { width: parent.width; text: qsTr("Enter host:port or an explicit http, https, socks4 or socks5 URL."); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 20; font.weight: Font.DemiBold; wrapMode: Text.WordWrap }
+                TextField {
+                    id: proxyField
+                    width: parent.width; height: 68
+                    leftPadding: 22; rightPadding: 22
+                    placeholderText: qsTr("proxy.example.com:8080")
+                    color: Theme.label; placeholderTextColor: Theme.textMuted
+                    font.family: Theme.monoFont; font.pixelSize: 18
+                    selectByMouse: true
+                    inputMethodHints: Qt.ImhNoPredictiveText | Qt.ImhSensitiveData
+                    Accessible.name: qsTr("Proxy address")
+                    background: Rectangle {
+                        radius: 22
+                        color: Qt.rgba(Theme.face.r, Theme.face.g, Theme.face.b, 0.06)
+                        border.color: proxyField.activeFocus ? Theme.face : Theme.seam
+                        border.width: proxyField.activeFocus ? 3 : 1
+                    }
+                    Keys.onReturnPressed: proxyEditor.save()
+                    Keys.onEnterPressed: proxyEditor.save()
+                }
+                Text {
+                    width: parent.width
+                    visible: text !== ""
+                    text: I18n.source(root.proxyEditorMessage, I18n.revision)
+                    color: Theme.coral
+                    font.family: Theme.bodyFont; font.pixelSize: 17; font.weight: Font.Bold
+                    wrapMode: Text.WordWrap
+                }
+            }
+            Column {
+                anchors.bottom: parent.bottom
+                width: parent.width
+                spacing: 12
+                ConsoleActionButton { id: proxySave; width: parent.width; height: 76; primary: true; glyph: "A"; text: qsTr("Save"); onClicked: proxyEditor.save() }
+                ConsoleActionButton { id: proxyCancel; width: parent.width; height: 72; glyph: "B"; text: qsTr("Cancel"); onClicked: root.proxyEditorOpen = false }
+            }
+        }
+    }
+
+    FocusScope {
+        id: shortcutEditor
+        anchors.fill: parent
+        visible: shortcutFrame.present
+        enabled: root.shortcutEditorOpen
+        z: 230
+        ConsoleSheetFrame {
+            id: shortcutFrame
+            opened: root.shortcutEditorOpen
+            toneColor: Theme.focus
+            onScrimClicked: root.shortcutEditorOpen = false
+            FocusScope {
+                id: shortcutCapture
+                anchors.fill: parent
+                focus: root.shortcutEditorOpen
+                Keys.onShortcutOverride: event => { event.accepted = true }
+                Keys.onPressed: event => root.captureShortcut(event)
+                Column {
+                    width: parent.width
+                    spacing: 18
+                    Text { text: qsTr("SHORTCUT"); color: Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 14; font.weight: Font.Bold; font.letterSpacing: 2 }
+                    Text { width: parent.width; text: I18n.source(root.shortcutEditorTitle, I18n.revision); color: Theme.label; font.family: Theme.displayFont; font.pixelSize: 44; font.weight: Font.Black; font.letterSpacing: -0.9; wrapMode: Text.WordWrap }
+                    Rectangle {
+                        width: parent.width; height: 96; radius: 24
+                        color: Qt.rgba(Theme.face.r, Theme.face.g, Theme.face.b, 0.06)
+                        border.color: shortcutCapture.activeFocus ? Theme.face : Theme.seam
+                        border.width: shortcutCapture.activeFocus ? 3 : 1
+                        Text { anchors.centerIn: parent; text: qsTr("Press a key combination…"); color: Theme.label; font.family: Theme.monoFont; font.pixelSize: 22; font.weight: Font.Bold }
+                    }
+                    Text { width: parent.width; text: I18n.source(root.shortcutEditorMessage, I18n.revision); color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 18; font.weight: Font.DemiBold; wrapMode: Text.WordWrap }
+                }
+                Column {
+                    anchors.bottom: parent.bottom
+                    width: parent.width
+                    spacing: 12
+                    ConsoleActionButton { width: parent.width; height: 72; focusPolicy: Qt.NoFocus; glyph: "B"; text: qsTr("Cancel"); onClicked: root.shortcutEditorOpen = false }
+                    ConsoleActionButton {
+                        width: parent.width; height: 72; focusPolicy: Qt.NoFocus; text: qsTr("Clear shortcut")
+                        onClicked: {
+                            ShellStore.setSetting(root.shortcutEditorKey, "")
+                            root.shortcutEditorOpen = false
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

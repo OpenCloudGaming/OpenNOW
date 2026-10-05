@@ -30,6 +30,7 @@ private:
     [[nodiscard]] int startStreamExitWorkload();
     [[nodiscard]] int startSessionFullscreenWorkload();
     [[nodiscard]] int startSessionLaunchWorkload();
+    [[nodiscard]] int startConsoleSessionWorkload();
 
     QGuiApplication &m_application;
     QQmlApplicationEngine &m_engine;

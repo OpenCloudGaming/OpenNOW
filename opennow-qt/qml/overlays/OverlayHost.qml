@@ -5,23 +5,26 @@ FocusScope {
     id: root
     property string overlay: ""
     objectName: "fallbackOverlayHost"
-    readonly property bool requested: overlay.startsWith("guide-")
+    readonly property bool supportedOverlay: overlay.startsWith("guide-")
         || ["friends", "friend-actions", "quick-settings", "session-conflict", "session-report", "queue-ad"].indexOf(overlay) >= 0
+    readonly property bool retainingQueueAd: presentedOverlay === "queue-ad"
+        && ["desktop-stream-exit-confirm", "application-quit-confirm"].indexOf(overlay) >= 0
+    readonly property bool requested: supportedOverlay || retainingQueueAd
     property string presentedOverlay: ""
     readonly property bool present: reveal.present
-    onOverlayChanged: if (requested) presentedOverlay = overlay
-    onRequestedChanged: if (requested) presentedOverlay = overlay
-    Component.onCompleted: if (requested) presentedOverlay = overlay
+    onOverlayChanged: if (supportedOverlay) presentedOverlay = overlay
+    onRequestedChanged: if (supportedOverlay) presentedOverlay = overlay
+    Component.onCompleted: if (supportedOverlay) presentedOverlay = overlay
     MotionProgress {
         id: reveal
         shown: root.requested
         onHidden: if (!root.requested) root.presentedOverlay = ""
     }
     visible: present
-    enabled: requested
+    enabled: supportedOverlay
     opacity: reveal.progress
-    focus: requested
-    onVisibleChanged: if (visible && requested) forceActiveFocus()
+    focus: supportedOverlay
+    onVisibleChanged: if (visible && supportedOverlay) forceActiveFocus()
     Keys.onTabPressed: event => event.accepted = true
     Keys.onBacktabPressed: event => event.accepted = true
 
@@ -51,17 +54,22 @@ FocusScope {
 
     Loader {
         anchors.fill: parent
-        scale: root.presentedOverlay.startsWith("guide-") ? 1 : reveal.zoom
+        scale: ShellStore.desktopUiActive && !root.presentedOverlay.startsWith("guide-") ? reveal.zoom : 1
         sourceComponent: root.presentedOverlay.startsWith("guide-") ? guideComponent
-                       : root.presentedOverlay === "friends" || root.presentedOverlay === "friend-actions" ? friendsComponent
+                       : root.presentedOverlay === "friends" || root.presentedOverlay === "friend-actions"
+                            ? (ShellStore.desktopUiActive ? friendsComponent : consoleFriendsComponent)
                        : root.presentedOverlay === "quick-settings" ? quickSettingsComponent
-                       : root.presentedOverlay === "session-conflict" ? sessionConflictComponent
-                       : root.presentedOverlay === "session-report" ? sessionReportComponent
-                       : root.presentedOverlay === "queue-ad" ? queueAdComponent
+                       : root.presentedOverlay === "session-conflict"
+                            ? (ShellStore.desktopUiActive ? sessionConflictComponent : consoleSessionConflictComponent)
+                       : root.presentedOverlay === "session-report"
+                            ? (ShellStore.desktopUiActive ? sessionReportComponent : consoleSessionReportComponent)
+                       : root.presentedOverlay === "queue-ad"
+                            ? (ShellStore.desktopUiActive ? queueAdComponent : consoleQueueAdComponent)
                        : undefined
     }
 
-    Component { id: guideComponent; GuideOverlay { page: root.presentedOverlay } }
+    Component { id: guideComponent; GuideOverlay { page: root.presentedOverlay; revealProgress: reveal.progress } }
+    Component { id: consoleFriendsComponent; ConsoleFriendsOverlay {} }
     Component {
         id: friendsComponent
         Item {
@@ -78,5 +86,8 @@ FocusScope {
     Component { id: sessionConflictComponent; SessionConflictOverlay {} }
     Component { id: sessionReportComponent; SessionReportOverlay {} }
     Component { id: queueAdComponent; QueueAdOverlay {} }
+    Component { id: consoleSessionConflictComponent; ConsoleSessionConflict {} }
+    Component { id: consoleSessionReportComponent; ConsoleSessionReport {} }
+    Component { id: consoleQueueAdComponent; ConsoleQueueAd {} }
 
 }

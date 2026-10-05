@@ -16,28 +16,35 @@ Item {
     signal hidden()
 
     function synchronize() {
-        if (initialized) progress = shown ? 1 : 0
+        if (!initialized)
+            return
+        const target = shown ? 1 : 0
+        animation.stop()
+        if (AppController.reducedMotion || progress === target) {
+            progress = target
+            return
+        }
+        animation.from = progress
+        animation.to = target
+        animation.duration = shown ? enterDuration : exitDuration
+        animation.start()
     }
     onShownChanged: synchronize()
     Component.onCompleted: { initialized = true; synchronize() }
     onProgressChanged: if (initialized && progress === 0 && !shown)
         Qt.callLater(() => { if (!root.shown && root.progress === 0) root.hidden() })
 
-    Behavior on progress {
-        enabled: !AppController.reducedMotion
-        NumberAnimation {
-            id: animation
-            duration: root.shown ? root.enterDuration : root.exitDuration
-            easing.type: Easing.OutCubic
-        }
+    NumberAnimation {
+        id: animation
+        target: root
+        property: "progress"
+        easing.type: Easing.OutCubic
     }
     Connections {
         target: AppController
         function onReducedMotionChanged() {
-            if (AppController.reducedMotion) {
-                animation.stop()
+            if (AppController.reducedMotion)
                 root.synchronize()
-            }
         }
     }
 }
