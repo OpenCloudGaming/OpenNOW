@@ -699,9 +699,16 @@ window. CPack installs the Qt executable, `opennow-core`, the runtime library
 and `opennow-streamer` for the core's capability probe. Qt streaming still runs
 in process through the runtime library, not in the probe executable. CI produces
 the platform packages from that layout.
-The screenshot shortcut captures the exact stream region, and F12 records the
-negotiated H.264/H.265/AV1 source stream plus Opus audio atomically into Matroska
-before generating a media thumbnail.
+F12 records the negotiated H.264/H.265/AV1 source stream plus Opus audio atomically
+into Matroska.
+
+The screenshot shortcut, Ctrl+F11 by default, grabs the stream's desktop region
+and saves a PNG. This is a compositor-dependent desktop grab, not a video-frame
+snapshot. Visible local menus, statistics, capture indicators, or other windows
+can appear in the image. The compositor can refuse capture. Capture uses a single
+screen. Multi-monitor boundaries, display scaling, and HDR image output require
+target validation. Neither screenshots nor source recordings remove GFN or game UI
+already encoded into the server's video.
 
 Settings → Recording exposes source capture information, the recordings folder,
 editable recording/clipping shortcuts, and an opt-in replay buffer. Replay is off
