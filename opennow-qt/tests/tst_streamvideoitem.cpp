@@ -2731,6 +2731,41 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(callback->releaseCount.load() > 0, 5'000);
     }
 
+    void disabledConnectingPresenterKeepsRenderingWithoutTakingFocus()
+    {
+        if (QGuiApplication::platformName() == QStringLiteral("offscreen"))
+            QSKIP("The offscreen platform plugin does not create a QRhi.");
+
+        const auto callback = std::make_shared<TestRenderCallback>();
+        QQuickWindow window;
+        window.resize(640, 480);
+        auto *item = new StreamVideoItem(window.contentItem());
+        item->setSize(window.size());
+        item->setInputEnabled(false);
+        item->setEnabled(false);
+        item->setRenderCallback(callback);
+        auto *control = new QQuickItem(window.contentItem());
+        control->setActiveFocusOnTab(true);
+        window.show();
+        window.requestActivate();
+        QTRY_VERIFY(window.isActive());
+        control->forceActiveFocus();
+        QTRY_COMPARE(window.activeFocusItem(), control);
+        item->requestFrame();
+        QTRY_VERIFY_WITH_TIMEOUT(callback->initializeCount.load() > 0, 5'000);
+        QTRY_VERIFY_WITH_TIMEOUT(callback->frameCount.load() > 0, 5'000);
+        QVERIFY(callback->validContext.load());
+        QVERIFY(item->isVisible());
+        QVERIFY(!item->captureActive());
+        QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier, QPoint(40, 40));
+        QCOMPARE(window.activeFocusItem(), control);
+        QTest::keyClick(&window, Qt::Key_Tab);
+        QVERIFY(window.activeFocusItem() != item);
+        const auto rendered = callback->frameCount.load();
+        item->requestFrame();
+        QTRY_VERIFY_WITH_TIMEOUT(callback->frameCount.load() > rendered, 5'000);
+    }
+
     void rawPointerLockPinsTheCursorWithoutRestrictingAbsoluteInput()
     {
         for (const QRect viewport : {QRect(100, 80, 960, 540), QRect(0, 0, 1920, 1080),

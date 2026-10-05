@@ -599,16 +599,20 @@ QtObject {
             check(surface !== null, "connecting view retains its native video item")
             check(surface.visible, "connecting must expose the video item before its first frame")
             check(!surface.inputEnabled && !surface.focus, "connecting does not capture gameplay input")
+            if (component === connectingConsole)
+                check(!surface.enabled, "connecting console video must not accept pointer or Tab focus")
             ShellStore.streamState = "reconnecting"
             ShellStore.streamerRestartAttempts = 1
             check(surface.visible && !surface.inputEnabled, "a reconnect also initializes presentation before its first frame")
+            if (component === connectingConsole)
+                check(!surface.enabled, "reconnecting console video must not accept pointer or Tab focus")
             AppController.showOverlay("desktop-stream-menu")
             check(surface.visible && !surface.inputEnabled, "a connecting overlay must not hide the video surface")
             AppController.showOverlay("")
             ShellStore.streamerRestartAttempts = 0
             ShellStore.streamState = "streaming"
             ShellStore.streamer = {sessionId:"connecting-fixture", status:"streaming", firstFrameLatencyMs:1}
-            check(find(view, "streamSurfaceHost") === surface && surface.visible && surface.inputEnabled,
+            check(find(view, "streamSurfaceHost") === surface && surface.visible && surface.enabled && surface.inputEnabled,
                 "first presentation enables input without recreating the video item")
             AppController.showOverlay("desktop-stream-menu")
             check(surface.visible && !surface.inputEnabled, "streaming overlays retain presentation but release input")
