@@ -6,6 +6,21 @@ pub mod text_input;
 
 pub const PROTOCOL_VERSION: u64 = 7;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RecordingCutReason {
+    Discontinuity,
+    QueueOverflow,
+    Interrupted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum RecordingCompletion {
+    Complete,
+    Cut { reason: RecordingCutReason },
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct ReplayBufferConfig {
     pub enabled: bool,

@@ -6,6 +6,7 @@ use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -1900,16 +1901,20 @@ fn execute_recording(
     enabled: bool,
     output_path: Option<&Path>,
 ) -> Result<Value, StreamerError> {
-    const ID: &str = "recording-control";
+    static RECORDING_COMMAND_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let id = format!(
+        "recording-control-{}",
+        RECORDING_COMMAND_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    );
     write_child(
         stdin,
         &json!({
-            "id":ID,
+            "id":id,
             "type":if enabled { "recording-start" } else { "recording-stop" },
             "outputPath":output_path.map(|path| path.to_string_lossy().into_owned()),
         }),
     )?;
-    let response = wait_for_child(child_rx, ID, Duration::from_secs(12), state)?;
+    let response = wait_for_child(child_rx, &id, Duration::from_secs(12), state)?;
     if response["type"] == "error" {
         return Err(StreamerError {
             code: "recording_failed",
@@ -1924,6 +1929,8 @@ fn execute_recording(
         "path":response["path"],
         "videoPackets":response["videoPackets"],
         "audioPackets":response["audioPackets"],
+        "requestId":if enabled { Value::String(id) } else { response["requestId"].clone() },
+        "completion":response["completion"],
         "streamerRunning":true,
     }))
 }
@@ -2130,6 +2137,72 @@ fn internal(message: impl Into<String>) -> StreamerError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn recording_bridge_preserves_completion_and_unique_start_identity() {
+        let mut child = Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let responder = thread::spawn(move || {
+            let mut lines = BufReader::new(stdout).lines();
+            let mut starts = Vec::new();
+            for index in 0..4 {
+                let request: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+                let response = if index < 2 {
+                    starts.push(request["id"].clone());
+                    json!({"id":request["id"],"type":"recording-started","path":"/capture.mkv"})
+                } else if index == 2 {
+                    json!({"id":request["id"],"type":"recording-stopped","requestId":starts[1],
+                        "path":"/capture.mkv","videoPackets":5,"audioPackets":3,
+                        "completion":{"kind":"cut","reason":"queue-overflow"}})
+                } else {
+                    json!({"id":request["id"],"type":"error","message":"trailer failed"})
+                };
+                sender.send(response).unwrap();
+            }
+            starts
+        });
+        let state = Arc::new(Mutex::new(Snapshot::default()));
+        let first = execute_recording(
+            &mut stdin,
+            &receiver,
+            &state,
+            true,
+            Some(Path::new("/first.mkv")),
+        )
+        .unwrap();
+        let second = execute_recording(
+            &mut stdin,
+            &receiver,
+            &state,
+            true,
+            Some(Path::new("/second.mkv")),
+        )
+        .unwrap();
+        let stopped = execute_recording(&mut stdin, &receiver, &state, false, None).unwrap();
+        let failed = execute_recording(&mut stdin, &receiver, &state, false, None).unwrap_err();
+        drop(stdin);
+        assert!(child.wait().unwrap().success());
+        let starts = responder.join().unwrap();
+        assert_ne!(starts[0], starts[1]);
+        assert_eq!(first["requestId"], starts[0]);
+        assert_eq!(second["requestId"], starts[1]);
+        assert_eq!(stopped["requestId"], starts[1]);
+        assert_eq!(
+            stopped["completion"],
+            json!({"kind":"cut","reason":"queue-overflow"})
+        );
+        assert_eq!(stopped["videoPackets"], 5);
+        assert_eq!(stopped["audioPackets"], 3);
+        assert_eq!(failed.code, "recording_failed");
+        assert_eq!(failed.message, "trailer failed");
+    }
 
     #[test]
     fn external_stream_window_is_the_native_input_owner() {

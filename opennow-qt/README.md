@@ -751,6 +751,15 @@ enabling it or changing its limits takes effect next session.
 Both stream interfaces show a recording timer and transient clip results above the
 same video item without taking focus or opening a blocking overlay.
 
+If a manual recording encounters stream discontinuity, recording-queue overflow,
+or a stream interruption, it stops and finalizes the valid prefix already written
+to the muxer. The capture notice distinguishes this early save from normal
+completion. Recording does not restart automatically. No file is saved before a
+usable video keyframe, and write, finalization, or publication errors remain
+failures. Publication uses a same-directory no-replace rename, not a hard link or
+copy. A filesystem that cannot perform that operation reports a save failure.
+Replay buffering and its discontinuity policy are unchanged.
+
 Recording and clips use the incoming resolution, frame rate, codec and bitrate.
 There is no independent scaling or encoding pass; change Stream settings to change
 the source profile. Clips can be shorter than their target when constrained by

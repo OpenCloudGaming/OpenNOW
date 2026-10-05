@@ -928,6 +928,27 @@ clears buffered media and cancels an in-progress clip export.
 These commands use the embedded streamer's protocol-7 JSON payload without
 changing the C ABI:
 
+- Manual `recording-start` uses its command `id` as the recording identity. A
+  `recording-state` terminal event carries that identity as `requestId` and a
+  `state` of `saved` or `failed`. A saved result includes `path`, `videoPackets`,
+  `audioPackets`, and `completion`. Normal completion is `{"kind":"complete"}`.
+  A preserved valid prefix is `{"kind":"cut","reason":"discontinuity"}`,
+  `{"kind":"cut","reason":"queue-overflow"}`, or
+  `{"kind":"cut","reason":"interrupted"}`. A cut stops manual recording and
+  produces a visible early-save notice; it does not start another file or change
+  replay capture.
+- `recording-stopped` repeats the terminal result and its originating `requestId`;
+  its `id` still identifies the stop command. Qt applies a correlated terminal
+  result once, whether the event or stop response arrives first. A repeated stop
+  returns `recording-not-active` without replacing an earlier cut or failure.
+  Packet-write, trailer, publication, and no-valid-keyframe failures remain
+  failures, not saved prefixes.
+- Completion metadata and event correlation are additive protocol-7 fields. Qt
+  ignores uncorrelated terminal events and stale recording identities. A missing
+  completion field means ordinary saved output only on an authoritative,
+  correlated stop response. Historical producers without correlated terminal
+  events do not provide the new unsolicited-completion behavior. These fields do
+  not guarantee callback delivery or preservation after a process crash.
 - The `start` response includes `replayEnabled` for the actual session.
 - `clip-save` accepts `id` and an absolute `.mkv` `outputPath` allocated by
   `media.recording.target`. It returns `clip-saving` promptly or a typed error if

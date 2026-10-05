@@ -4,6 +4,11 @@ import OpenNOW
 QtObject {
     id: fixture
     property int selectedSection: 12
+    property int recordingNotices: 0
+    property Connections recordingAnnouncements: Connections {
+        target: ShellStore
+        function onStreamCaptureAnnounced(message) { fixture.recordingNotices += 1 }
+    }
     property QtObject runtime: QtObject {
         property bool running: true
         property string lastError: ""
@@ -50,6 +55,119 @@ QtObject {
             if (found) return found
         }
         return null
+    }
+    function beginManualRecording(sessionId) {
+        ShellStore.activeSession = {sessionId: sessionId, phase: "ready", status: 2}
+        ShellStore.streamer = {status: "streaming"}
+        ShellStore.streamerStopExpected = false
+        ShellStore.toggleStreamRecording()
+        const target = ShellStore.mediaRecordingTargetRequestId
+        check(target !== "", "manual recording must allocate a target")
+        client.responseReceived(target, {path: "/recording-fixture/" + target + ".mkv"})
+        const command = runtime.commands[runtime.commands.length - 1]
+        check(command.type === "recording-start", "manual capture must use the native recorder")
+        return command
+    }
+    function runManualRecording(status) {
+        ShellStore.streamRecordingActive = false
+        recordingNotices = 0
+        let start = beginManualRecording("manual-one")
+        ShellStore.acceptNativeEvent({type: "recording-state", requestId: start.id,
+            state: "saved", path: start.outputPath,
+            completion: {kind: "cut", reason: "discontinuity"}})
+        const cutMessage = ShellStore.mediaMessage
+        check(cutMessage === qsTr("Recording saved early because the stream was interrupted")
+            && status.notice === cutMessage && !ShellStore.streamRecordingActive,
+            "early terminal events must display the cut through the existing notice")
+        ShellStore.acceptNativeResponse({id: start.id, type: "recording-started"})
+        check(!ShellStore.streamRecordingActive && ShellStore.streamRecordingStartRequestId === "",
+            "late start acknowledgement must not resurrect completed recording")
+        ShellStore.acceptNativeEvent({type: "recording-state", requestId: start.id,
+            state: "failed", message: "duplicate failure"})
+        check(ShellStore.mediaMessage === cutMessage && recordingNotices === 1,
+            "duplicate terminal events must not overwrite or announce twice")
+        const oldStart = start
+        start = beginManualRecording("manual-two")
+        ShellStore.acceptNativeResponse({id: start.id, type: "recording-started"})
+        check(ShellStore.streamRecordingActive, "acknowledged manual recording must run")
+        ShellStore.acceptNativeEvent({type: "recording-state", requestId: oldStart.id,
+            state: "saved", path: oldStart.outputPath, completion: {kind: "complete"}})
+        ShellStore.acceptNativeEvent({type: "recording-state", state: "failed", message: "uncorrelated"})
+        ShellStore.acceptNativeEvent({type: "recording-state", requestId: start.id,
+            state: "saved", path: start.outputPath})
+        check(ShellStore.streamRecordingActive && recordingNotices === 1,
+            "stale, uncorrelated and metadata-free events must not complete current capture")
+        ShellStore.toggleStreamRecording()
+        const stop = runtime.commands[runtime.commands.length - 1]
+        check(stop.type === "recording-stop", "manual stop must use the existing command")
+        ShellStore.acceptNativeEvent({type: "recording-state", requestId: start.id,
+            state: "saved", path: start.outputPath, completion: {kind: "cut", reason: "queue-overflow"}})
+        const overflowMessage = ShellStore.mediaMessage
+        ShellStore.acceptNativeResponse({id: stop.id, type: "recording-stopped", requestId: start.id,
+            path: start.outputPath, completion: {kind: "complete"}})
+        check(ShellStore.mediaMessage === overflowMessage && recordingNotices === 2
+            && ShellStore.streamRecordingStopRequestId === "",
+            "stop acknowledgement must release the command without replacing an earlier cut")
+        start = beginManualRecording("manual-three")
+        ShellStore.acceptNativeResponse({id: start.id, type: "recording-started"})
+        ShellStore.toggleStreamRecording()
+        const fallbackStop = runtime.commands[runtime.commands.length - 1]
+        ShellStore.acceptNativeResponse({id: fallbackStop.id, type: "recording-stopped", path: start.outputPath})
+        check(!ShellStore.streamRecordingActive && ShellStore.mediaMessage === qsTr("Recording saved")
+            && recordingNotices === 3, "authoritative older stop responses retain normal-save semantics")
+        ShellStore.acceptNativeEvent({type: "recording-state", requestId: start.id,
+            state: "saved", path: start.outputPath, completion: {kind: "complete"}})
+        check(recordingNotices === 3, "event after stop response must not announce again")
+        start = beginManualRecording("manual-four")
+        ShellStore.acceptNativeResponse({id: start.id, type: "recording-started"})
+        ShellStore.activeSession = null
+        ShellStore.acceptNativeEvent({type: "recording-state", requestId: start.id,
+            state: "saved", path: start.outputPath, completion: {kind: "cut", reason: "interrupted"}})
+        check(ShellStore.mediaMessage === qsTr("Recording saved early because the stream stopped")
+            && recordingNotices === 4, "finalization must survive session teardown")
+        start = beginManualRecording("manual-five")
+        ShellStore.acceptNativeEvent({type: "recording-state", requestId: start.id,
+            state: "failed", message: "failed to finalize Matroska recording"})
+        ShellStore.acceptNativeResponse({id: start.id, type: "recording-started"})
+        check(!ShellStore.streamRecordingActive && ShellStore.lastError === "failed to finalize Matroska recording"
+            && status.notice === ShellStore.lastError && recordingNotices === 5,
+            "storage failures must remain visible failures without an active indicator")
+        ShellStore.toggleStreamRecording()
+        const cancelledTarget = ShellStore.mediaRecordingTargetRequestId
+        ShellStore.activeSession = null
+        const commandCount = runtime.commands.length
+        client.responseReceived(cancelledTarget, {path: "/recording-fixture/too-late.mkv"})
+        check(ShellStore.mediaRecordingTargetRequestId === "" && runtime.commands.length === commandCount,
+            "target allocation after session teardown cannot start recording")
+    }
+    function runDroppedAcknowledgements() {
+        let start = beginManualRecording("dropped-acknowledgements")
+        ShellStore.acceptNativeEvent({type: "recording-state", requestId: start.id,
+            state: "saved", path: start.outputPath, completion: {kind: "cut", reason: "interrupted"}})
+        check(ShellStore.streamRecordingStartRequestId === "",
+            "terminal completion must permit retry without a start acknowledgement")
+        const oldStart = start
+        start = beginManualRecording("dropped-acknowledgements")
+        ShellStore.acceptNativeResponse({id: oldStart.id, type: "recording-started"})
+        check(!ShellStore.streamRecordingActive && ShellStore.streamRecordingStartRequestId === start.id,
+            "old acknowledgement must not activate or clear a newer attempt")
+        ShellStore.acceptNativeResponse({id: start.id, type: "recording-started"})
+        ShellStore.toggleStreamRecording()
+        const stop = runtime.commands[runtime.commands.length - 1]
+        ShellStore.acceptNativeEvent({type: "recording-state", requestId: start.id,
+            state: "saved", path: start.outputPath, completion: {kind: "cut", reason: "queue-overflow"}})
+        check(ShellStore.streamRecordingStopRequestId === "",
+            "terminal completion must permit retry without a stop acknowledgement")
+        const stoppedStart = start
+        start = beginManualRecording("dropped-acknowledgements")
+        ShellStore.acceptNativeResponse({id: stop.id, type: "recording-stopped", requestId: stoppedStart.id,
+            path: stoppedStart.outputPath, completion: {kind: "complete"}})
+        check(!ShellStore.streamRecordingActive && !ShellStore.streamRecordingAttempt.completed
+            && ShellStore.streamRecordingStartRequestId === start.id,
+            "late stop acknowledgement must not finish the retry")
+        ShellStore.acceptNativeResponse({id: start.id, type: "recording-started"})
+        ShellStore.acceptNativeEvent({type: "recording-state", requestId: start.id,
+            state: "saved", path: start.outputPath, completion: {kind: "complete"}})
     }
     function run(parent) {
         ShellStore.settings = {}
@@ -140,6 +258,8 @@ QtObject {
         ShellStore.acceptNativeResponse({id: "old-session", type: "error", message: "stale error"})
         ShellStore.acceptNativeEvent({type: "clip-state", requestId: "old-session", state: "failed", message: "stale error"})
         check(ShellStore.mediaMessage !== "stale error", "old session failure cannot replace current state")
+        runManualRecording(status)
+        runDroppedAcknowledgements()
         binding.destroy()
         status.destroy()
         page.destroy()

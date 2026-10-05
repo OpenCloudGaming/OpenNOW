@@ -1,11 +1,13 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, RecvError, Sender, SyncSender, TrySendError, sync_channel};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{Receiver, Sender, SyncSender, TryRecvError, TrySendError, sync_channel};
+use std::sync::{Arc, Mutex, Weak};
 use std::thread::{self, JoinHandle};
 #[cfg(target_os = "windows")]
 use std::time::Duration;
 use std::time::Instant;
+
+use opennow_streamer_protocol::{RecordingCompletion, RecordingCutReason};
 
 use openh264::OpenH264API;
 use openh264::decoder::{Decoder as OpenH264Decoder, DecoderConfig};
@@ -31,81 +33,225 @@ const AUDIO_QUEUE_CAPACITY: usize = 10;
 const OPUS_SAMPLE_RATE: u32 = 48_000;
 const MAX_OPUS_FRAME_SAMPLES_PER_CHANNEL: usize = 5_760;
 const RECORDING_TAP_QUEUE_CAPACITY: usize = 256;
+const RECORDING_RUNNING: u64 = 0;
+const RECORDING_GRACEFUL: u64 = 1;
+const RECORDING_DISCONTINUITY: u64 = 2;
+const RECORDING_OVERFLOW: u64 = 3;
+const RECORDING_INTERRUPTED: u64 = 4;
+const RECORDING_STATE_MASK: u64 = 7;
+
+#[cfg(test)]
+#[path = "media_recording_tests.rs"]
+mod recording_tests;
 
 pub struct EncodedRecordingReceiver {
     receiver: Receiver<EncodedFrame>,
-    overflowed: Arc<AtomicBool>,
+    terminal: Arc<AtomicU64>,
+    wake: Arc<Mutex<Receiver<()>>>,
+    _lifetime: Arc<()>,
+    #[cfg(test)]
+    before_wait: Option<SyncSender<()>>,
+    #[cfg(test)]
+    wait_release: Option<Receiver<()>>,
 }
 
 impl EncodedRecordingReceiver {
-    pub fn recv(&self) -> Result<EncodedFrame, RecvError> {
-        self.receiver.recv()
+    pub fn recv(&self) -> Result<EncodedFrame, RecordingCompletion> {
+        loop {
+            if let Some(completion) = self.cut() {
+                return Err(completion);
+            }
+            match self.receiver.try_recv() {
+                Ok(frame) => return self.cut().map_or(Ok(frame), Err),
+                Err(TryRecvError::Empty) => {
+                    let wake = self
+                        .wake
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    #[cfg(test)]
+                    if let Some(before_wait) = &self.before_wait {
+                        let _ = before_wait.send(());
+                    }
+                    #[cfg(test)]
+                    if let Some(wait_release) = &self.wait_release {
+                        let _ = wait_release.recv();
+                    }
+                    if wake.recv().is_err() {
+                        return self
+                            .receiver
+                            .recv()
+                            .map_err(|_| self.cut().unwrap_or(RecordingCompletion::Complete));
+                    }
+                }
+                Err(TryRecvError::Disconnected) => {
+                    return Err(self.cut().unwrap_or(RecordingCompletion::Complete));
+                }
+            }
+        }
+    }
+
+    fn cut(&self) -> Option<RecordingCompletion> {
+        let reason = match self.terminal.load(Ordering::Acquire) & RECORDING_STATE_MASK {
+            RECORDING_RUNNING | RECORDING_GRACEFUL => return None,
+            RECORDING_DISCONTINUITY => RecordingCutReason::Discontinuity,
+            RECORDING_OVERFLOW => RecordingCutReason::QueueOverflow,
+            RECORDING_INTERRUPTED => RecordingCutReason::Interrupted,
+            _ => unreachable!(),
+        };
+        Some(RecordingCompletion::Cut { reason })
     }
 
     pub fn overflowed(&self) -> bool {
-        self.overflowed.load(Ordering::Acquire)
+        self.cut()
+            == Some(RecordingCompletion::Cut {
+                reason: RecordingCutReason::QueueOverflow,
+            })
     }
 
     #[cfg(test)]
     pub(crate) fn from_receiver(receiver: Receiver<EncodedFrame>) -> Self {
+        let (_, wake) = sync_channel(1);
         Self {
             receiver,
-            overflowed: Arc::new(AtomicBool::new(false)),
+            terminal: Arc::new(AtomicU64::new(RECORDING_RUNNING)),
+            _lifetime: Arc::new(()),
+            wake: Arc::new(Mutex::new(wake)),
+            #[cfg(test)]
+            before_wait: None,
+            #[cfg(test)]
+            wait_release: None,
         }
     }
 }
 
 #[derive(Default)]
+struct RecordingSubscription {
+    sender: Option<SyncSender<EncodedFrame>>,
+    receiver: Weak<()>,
+}
+
 struct RecordingTap {
-    sender: Mutex<Option<SyncSender<EncodedFrame>>>,
-    overflowed: Arc<AtomicBool>,
+    subscription: Mutex<RecordingSubscription>,
+    terminal: Arc<AtomicU64>,
+    wake_sender: SyncSender<()>,
+    wake_receiver: Arc<Mutex<Receiver<()>>>,
+}
+
+impl Default for RecordingTap {
+    fn default() -> Self {
+        let (wake_sender, wake_receiver) = sync_channel(1);
+        Self {
+            subscription: Mutex::default(),
+            terminal: Arc::new(AtomicU64::new(RECORDING_RUNNING)),
+            wake_sender,
+            wake_receiver: Arc::new(Mutex::new(wake_receiver)),
+        }
+    }
 }
 
 impl RecordingTap {
     fn subscribe(&self) -> Result<EncodedRecordingReceiver, String> {
         let mut active = self
-            .sender
+            .subscription
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if active.is_some() {
+        if active.sender.is_some() || active.receiver.upgrade().is_some() {
             return Err("a native stream recording is already active".to_owned());
         }
-        self.overflowed.store(false, Ordering::Release);
+        let generation = (self.terminal.load(Ordering::Acquire) & !RECORDING_STATE_MASK)
+            .wrapping_add(RECORDING_STATE_MASK + 1);
+        self.terminal.store(generation, Ordering::Release);
         let (sender, receiver) = sync_channel(RECORDING_TAP_QUEUE_CAPACITY);
-        *active = Some(sender);
+        let lifetime = Arc::new(());
+        active.sender = Some(sender);
+        active.receiver = Arc::downgrade(&lifetime);
         Ok(EncodedRecordingReceiver {
             receiver,
-            overflowed: Arc::clone(&self.overflowed),
+            terminal: Arc::clone(&self.terminal),
+            _lifetime: lifetime,
+            wake: Arc::clone(&self.wake_receiver),
+            #[cfg(test)]
+            before_wait: None,
+            #[cfg(test)]
+            wait_release: None,
         })
     }
 
     fn unsubscribe(&self) {
-        self.sender
+        self.close(RecordingCompletion::Complete);
+    }
+
+    fn close(&self, completion: RecordingCompletion) {
+        let mut active = self
+            .subscription
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.signal(self.terminal.load(Ordering::Acquire), completion);
+        active.sender.take();
+        let _ = self.wake_sender.try_send(());
+    }
+
+    fn signal(&self, status: u64, completion: RecordingCompletion) {
+        if status & RECORDING_STATE_MASK != RECORDING_RUNNING {
+            return;
+        }
+        let code = match completion {
+            RecordingCompletion::Complete => RECORDING_GRACEFUL,
+            RecordingCompletion::Cut {
+                reason: RecordingCutReason::Discontinuity,
+            } => RECORDING_DISCONTINUITY,
+            RecordingCompletion::Cut {
+                reason: RecordingCutReason::QueueOverflow,
+            } => RECORDING_OVERFLOW,
+            RecordingCompletion::Cut {
+                reason: RecordingCutReason::Interrupted,
+            } => RECORDING_INTERRUPTED,
+        };
+        let _ = self.terminal.compare_exchange(
+            status,
+            status | code,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        let _ = self.wake_sender.try_send(());
     }
 
     fn publish(&self, frame: &EncodedFrame) {
-        let Ok(mut active) = self.sender.try_lock() else {
-            self.overflowed.store(true, Ordering::Release);
+        let status = self.terminal.load(Ordering::Acquire);
+        let Ok(mut active) = self.subscription.try_lock() else {
+            self.signal(
+                status,
+                RecordingCompletion::Cut {
+                    reason: RecordingCutReason::QueueOverflow,
+                },
+            );
             return;
         };
-        if self.overflowed.load(Ordering::Acquire) {
-            active.take();
+        if self.terminal.load(Ordering::Acquire) != status {
             return;
         }
-        let Some(sender) = active.as_ref() else {
+        if self.terminal.load(Ordering::Acquire) & RECORDING_STATE_MASK != RECORDING_RUNNING {
+            active.sender.take();
+            return;
+        }
+        let Some(sender) = active.sender.as_ref() else {
             return;
         };
         match sender.try_send(frame.clone()) {
-            Ok(()) => {}
+            Ok(()) => {
+                let _ = self.wake_sender.try_send(());
+            }
             Err(TrySendError::Full(_)) => {
-                self.overflowed.store(true, Ordering::Release);
-                active.take();
+                self.signal(
+                    self.terminal.load(Ordering::Acquire),
+                    RecordingCompletion::Cut {
+                        reason: RecordingCutReason::QueueOverflow,
+                    },
+                );
+                active.sender.take();
             }
             Err(TrySendError::Disconnected(_)) => {
-                active.take();
+                active.sender.take();
             }
         }
     }
@@ -2493,6 +2639,12 @@ impl MediaControl {
         self.shared.recording_tap.unsubscribe();
     }
 
+    pub fn cut_recording(&self, reason: RecordingCutReason) {
+        self.shared
+            .recording_tap
+            .close(RecordingCompletion::Cut { reason });
+    }
+
     pub fn update_cursor(&self, bytes: Vec<u8>) {
         let _ = self.host_commands.send(HostCommand::Cursor(bytes));
     }
@@ -2503,7 +2655,7 @@ impl MediaControl {
         }
         self.shared.video.close();
         self.shared.audio.close();
-        self.shared.recording_tap.unsubscribe();
+        self.cut_recording(RecordingCutReason::Interrupted);
         self.shared.replay_tap.stop();
         self.shared.output.stop_microphone();
         self.shared.output.clear();
@@ -5068,11 +5220,14 @@ mod tests {
             tap.publish(&frame);
         }
         assert!(receiver.overflowed());
-        for _ in 0..RECORDING_TAP_QUEUE_CAPACITY {
-            receiver.recv().expect("queued recording frame");
-        }
-        assert!(receiver.recv().is_err());
+        assert_eq!(
+            receiver.recv().unwrap_err(),
+            RecordingCompletion::Cut {
+                reason: RecordingCutReason::QueueOverflow,
+            }
+        );
     }
+
     use openh264::encoder::Encoder;
     use openh264::formats::{RgbSliceU8, YUVBuffer};
     use opus::{Application, Encoder as OpusEncoder};

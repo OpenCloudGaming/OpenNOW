@@ -13,14 +13,15 @@ use decode_progress::{
 use opennow_streamer_hid::HidRuntime;
 use opennow_streamer_platform::{
     CapturedInput, CapturedInputQueue, CapturedInputSample, DecodeStageTimings,
-    DecodeTimingsReport, EncodedFrame, MediaCodec, MediaColorQuality, MediaControl, MediaFeedback,
-    MediaRuntime, MediaRuntimeControl, MediaSession, MediaSink, MediaStreamConfig, MediaVideoCodec,
-    PushOutcome, RecordingSummary, StreamShortcutAction, StreamShortcutBindings, record_matroska,
-    record_replay_matroska, supports_audio_decode, supports_audio_output, video_backends,
+    DecodeTimingsReport, EncodedFrame, ManualRecordingSummary, MediaCodec, MediaColorQuality,
+    MediaControl, MediaFeedback, MediaRuntime, MediaRuntimeControl, MediaSession, MediaSink,
+    MediaStreamConfig, MediaVideoCodec, PushOutcome, StreamShortcutAction, StreamShortcutBindings,
+    record_matroska, record_replay_matroska, supports_audio_decode, supports_audio_output,
+    video_backends,
 };
 use opennow_streamer_protocol::{
-    Capabilities, Command, PROTOCOL_VERSION, ReplayBufferConfig, SessionContext, error, event,
-    response,
+    Capabilities, Command, PROTOCOL_VERSION, RecordingCutReason, ReplayBufferConfig,
+    SessionContext, error, event, response,
 };
 use opennow_streamer_transport::{
     FrameStageTimings, NvstControllerRumble, NvstDropReason, NvstReceiveEvent, NvstReceiverState,
@@ -118,6 +119,7 @@ trait NvstSessionResources {
         }
     }
     fn request_keyframe(&self);
+    fn cut_recording(&self, reason: RecordingCutReason);
     fn acknowledge_video_frame(&self, frame_index: u32, bytes: u32);
     fn send_captured_input(&self, bytes: Vec<u8>) -> Result<(), String>;
     fn send_captured_text(
@@ -156,6 +158,12 @@ impl NvstSessionResources for ActiveNvstResources {
     }
     fn request_keyframe(&self) {
         self.feedback.request_keyframe();
+    }
+
+    fn cut_recording(&self, reason: RecordingCutReason) {
+        if let Some(media) = self.media.as_ref() {
+            media.cut_recording(reason);
+        }
     }
 
     fn acknowledge_video_frame(&self, frame_index: u32, bytes: u32) {
@@ -232,7 +240,8 @@ pub struct Engine {
 }
 
 struct RecordingWorker {
-    thread: JoinHandle<Result<RecordingSummary, String>>,
+    request_id: String,
+    thread: JoinHandle<Result<ManualRecordingSummary, String>>,
     completed: Arc<AtomicBool>,
 }
 
@@ -1258,6 +1267,9 @@ impl Engine {
 
     fn stop(&mut self, reason: &str) {
         self.clip_cancelled.store(true, Ordering::Release);
+        if let Some(session) = self.media_session.as_ref() {
+            session.control().unsubscribe_recording();
+        }
         if let Some(generation) = self.hid_runtime.session_generation() {
             self.hid_runtime.unbind_session(generation);
         }
@@ -1472,6 +1484,7 @@ impl Engine {
             .map_err(|message| error(Some(&command.id), "recording-start-failed", message))?;
         let events = self.events.clone();
         let worker_path = path.clone();
+        let request_id = command.id.clone();
         let completed = Arc::new(AtomicBool::new(false));
         let worker_completed = Arc::clone(&completed);
         let worker = thread::Builder::new()
@@ -1482,11 +1495,15 @@ impl Engine {
                 let payload = match &result {
                     Ok(summary) => json!({
                         "state":"saved",
-                        "path":summary.path,
-                        "videoPackets":summary.video_packets,
-                        "audioPackets":summary.audio_packets,
+                        "path":summary.media.path,
+                        "videoPackets":summary.media.video_packets,
+                        "audioPackets":summary.media.audio_packets,
+                        "completion":summary.completion,
+                        "requestId":request_id,
                     }),
-                    Err(message) => json!({"state":"failed","message":message}),
+                    Err(message) => {
+                        json!({"state":"failed","message":message,"requestId":request_id})
+                    }
                 };
                 let _ = events.send(event("recording-state", payload));
                 result
@@ -1500,6 +1517,7 @@ impl Engine {
                 )
             })?;
         self.recording_worker = Some(RecordingWorker {
+            request_id: command.id.clone(),
             thread: worker,
             completed,
         });
@@ -1512,12 +1530,14 @@ impl Engine {
 
     fn stop_recording(&mut self, command: Command) -> Result<Vec<Value>, Value> {
         match self.stop_recording_inner() {
-            Ok(Some(summary)) => Ok(vec![json!({
+            Ok(Some((request_id, summary))) => Ok(vec![json!({
                 "id":command.id,
                 "type":"recording-stopped",
-                "path":summary.path,
-                "videoPackets":summary.video_packets,
-                "audioPackets":summary.audio_packets,
+                "path":summary.media.path,
+                "videoPackets":summary.media.video_packets,
+                "audioPackets":summary.media.audio_packets,
+                "completion":summary.completion,
+                "requestId":request_id,
             })]),
             Ok(None) => Ok(vec![response(command.id, "recording-not-active")]),
             Err(message) => Err(error(Some(&command.id), "recording-failed", message)),
@@ -1570,7 +1590,7 @@ impl Engine {
         Ok(vec![response(command.id, "ok")])
     }
 
-    fn stop_recording_inner(&mut self) -> Result<Option<RecordingSummary>, String> {
+    fn stop_recording_inner(&mut self) -> Result<Option<(String, ManualRecordingSummary)>, String> {
         let Some(worker) = self.recording_worker.take() else {
             return Ok(None);
         };
@@ -1581,7 +1601,7 @@ impl Engine {
             .thread
             .join()
             .map_err(|_| "native recording worker panicked".to_owned())?
-            .map(Some)
+            .map(|summary| Some((worker.request_id, summary)))
     }
 }
 
@@ -2146,6 +2166,7 @@ fn forward_nvst_event<R: NvstSessionResources>(
             first_missing_index,
             last_missing_index,
         }) => {
+            resources.cut_recording(RecordingCutReason::Discontinuity);
             // Packet loss is expected on the UDP media leg. The reorder buffer
             // has already skipped the unrecoverable range and reset the frame
             // assembler, so request a clean decoder reference without spending
@@ -2299,6 +2320,7 @@ fn attempt_nvst_recovery<R: NvstSessionResources>(
     }
 
     *recovery_attempts += 1;
+    resources.cut_recording(RecordingCutReason::Interrupted);
     resources.request_keyframe();
     if let Err(recovery_error) = resources.recover() {
         return emit_nvst_terminal(
@@ -3356,6 +3378,7 @@ mod tests {
         frame_stage_timings: Option<FrameStageTimings>,
         decode_progress_policy: Option<DecodeProgressPolicy>,
         keyframe_requests: Arc<AtomicUsize>,
+        recording_cuts: Mutex<Vec<RecordingCutReason>>,
         acknowledged_frames: AtomicUsize,
         acknowledged_frame_data: Mutex<Vec<(u32, u32)>>,
         recoveries: Arc<AtomicUsize>,
@@ -3392,6 +3415,10 @@ mod tests {
 
         fn request_keyframe(&self) {
             self.keyframe_requests.fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn cut_recording(&self, reason: RecordingCutReason) {
+            self.recording_cuts.lock().unwrap().push(reason);
         }
 
         fn acknowledge_video_frame(&self, frame_index: u32, bytes: u32) {
@@ -5468,6 +5495,10 @@ mod tests {
         assert!(!terminal);
         assert_eq!(recovery_attempts, 1);
         assert_eq!(resources.recoveries.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            *resources.recording_cuts.lock().unwrap(),
+            vec![RecordingCutReason::Interrupted]
+        );
         assert_eq!(resources.keyframe_requests.load(Ordering::Relaxed), 1);
         assert_eq!(resources.stops.load(Ordering::Relaxed), 0);
         assert_eq!(lock_lifecycle(&lifecycle).state, State::Connected);
@@ -5603,6 +5634,10 @@ mod tests {
         assert_eq!(recovery_attempts, 0);
         assert_eq!(resources.recoveries.load(Ordering::Relaxed), 0);
         assert_eq!(resources.keyframe_requests.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            *resources.recording_cuts.lock().unwrap(),
+            vec![RecordingCutReason::Discontinuity; 2]
+        );
         assert_eq!(resources.stops.load(Ordering::Relaxed), 0);
         assert_eq!(lock_lifecycle(&lifecycle).state, State::Connected);
         assert!(

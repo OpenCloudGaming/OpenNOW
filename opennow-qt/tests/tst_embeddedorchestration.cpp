@@ -50,6 +50,16 @@ bool loadShellFunction(QJSEngine &engine, const QString &name, int indentation =
     return !result.isError();
 }
 
+bool prepareRecordingTeardown(QJSEngine &engine)
+{
+    if (engine.evaluate(QStringLiteral(R"JS(
+        var mediaRecordingTargetRequestId = '', mediaRecordingTargetSessionId = '';
+        var streamRecordingAttempt = null, streamRecordingElapsedMs = 0;
+    )JS")).isError()) return false;
+    return loadShellFunction(engine, QStringLiteral("cancelRecordingTarget"))
+        && loadShellFunction(engine, QStringLiteral("suspendRecordingStart"));
+}
+
 bool prepareAuthentication(QJSEngine &engine)
 {
     const auto setup = engine.evaluate(QStringLiteral(R"JS(
@@ -283,6 +293,7 @@ private slots:
         QFETCH(bool, terminal);
         QFETCH(bool, recoveryPending);
         QJSEngine engine;
+        QVERIFY(prepareRecordingTeardown(engine));
         QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
             var root=this, activeSession={sessionId:'seat'},streamer={status:'starting'},runtimeStreamProfile={};
             var streamInputStateKnown=true,streamReplayEnabled=false,mediaClipTargetRequestId='',streamClipRequestId='';
@@ -655,6 +666,7 @@ private slots:
     void cancelledMediaPreparationCannotStartOrRecover()
     {
         QJSEngine engine;
+        QVERIFY(prepareRecordingTeardown(engine));
         QVERIFY(prepareAuthentication(engine));
         QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
             var remoteSessionsRequestId = '', streamCreateRequestId = '', streamPollRequestId = '';
@@ -1368,6 +1380,94 @@ private slots:
         QCOMPARE(engine.evaluate(QStringLiteral("streamClipRequestId")).toString(), QString());
     }
 
+    void manualRecordingCompletionIsCorrelatedAndIdempotent()
+    {
+        QJSEngine engine;
+        QVERIFY(prepareRecordingTeardown(engine));
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            var streamRecordingStartRequestId = 'current', streamRecordingStopRequestId = 'stop';
+            var streamRecordingActive = true, streamRecordingStartedAtMs = 0;
+            var pendingRecordingPath = '/current.mkv', pendingRecordingThumbnailPath = '';
+            var activeSession = {sessionId:'seat'}, streamer = {status:'streaming'};
+            var streamerStopExpected = false, streamCaptureRect = {};
+            var mediaMessage = '', accessibilityMessage = '', lastError = '';
+            var notices = [], refreshes = 0, commands = [], cancelled = [];
+            var CoreClient = {cancel:function(id) {cancelled.push(id);}};
+            function qsTr(text) {return text;}
+            function refreshMedia() {refreshes++;}
+            function streamCaptureAnnounced(message) {notices.push(message);}
+            function updateStreamerFields(fields) {streamer = Object.assign({},streamer,fields);}
+            function sendNativeCommand(type) {commands.push(type);return 'created';}
+            function check(value) {if (!value) throw Error('recording assertion');}
+            function begin(id) {
+                streamRecordingAttempt = {requestId:id,sessionId:'seat',completed:false,acceptStart:true};
+                streamRecordingStartRequestId = id;
+                streamRecordingActive = true;
+                activeSession = {sessionId:'seat'};
+                streamer.status = 'streaming';
+            }
+            begin('current');
+        )JS")).isError());
+        for (const auto &name : {"acceptRecordingCompletion", "acceptRecordingResponse",
+                                "acceptRecordingTarget", "acceptNativeEvent"})
+            QVERIFY(loadShellFunction(engine, QString::fromLatin1(name)));
+        const auto result = engine.evaluate(QStringLiteral(R"JS(
+            acceptNativeEvent({type:'recording-state',requestId:'old',state:'failed',message:'old'});
+            acceptNativeEvent({type:'recording-state',state:'failed',message:'unowned'});
+            acceptNativeEvent({type:'recording-state',requestId:'current',state:'saved',path:'/current.mkv'});
+            acceptNativeEvent({type:'recording-state',requestId:'current',state:'saved',path:'/current.mkv',completion:{kind:'future'}});
+            check(streamRecordingActive && refreshes === 0);
+            acceptNativeEvent({type:'recording-state',requestId:'current',state:'saved',path:'/current.mkv',completion:{kind:'cut',reason:'discontinuity'}});
+            var cut = mediaMessage;
+            check(cut === 'Recording saved early because the stream was interrupted');
+            check(!streamRecordingActive && refreshes === 1 && notices.length === 1 && accessibilityMessage === cut);
+            check(streamRecordingStartRequestId === '' && streamRecordingStopRequestId === '');
+            acceptRecordingResponse({id:'current',type:'recording-started'},{operation:'recording-start'});
+            acceptRecordingResponse({id:'stop',type:'recording-stopped',requestId:'current',path:'/current.mkv',completion:{kind:'complete'}},
+                {operation:'recording-stop',recordingRequestId:'current'});
+            acceptNativeEvent({type:'recording-state',requestId:'current',state:'failed',message:'late error'});
+            check(!streamRecordingActive && streamRecordingStartRequestId === '' && streamRecordingStopRequestId === '');
+            check(mediaMessage === cut && notices.length === 1 && refreshes === 1);
+            begin('next');
+            acceptRecordingResponse({id:'old-stop',type:'error',message:'stale failure'},
+                {operation:'recording-stop',recordingRequestId:'current'});
+            check(streamRecordingActive && lastError === '');
+            acceptRecordingResponse({id:'stop-next',type:'recording-stopped',requestId:'wrong',path:'/next.mkv'},
+                {operation:'recording-stop',recordingRequestId:'next'});
+            check(streamRecordingActive);
+            acceptRecordingResponse({id:'stop-next',type:'recording-stopped',path:'/next.mkv'},
+                {operation:'recording-stop',recordingRequestId:'next'});
+            check(!streamRecordingActive && mediaMessage === 'Recording saved' && refreshes === 2);
+            acceptRecordingResponse({id:'again',type:'recording-not-active'},
+                {operation:'recording-stop',recordingRequestId:'next'});
+            check(mediaMessage === 'Recording saved' && refreshes === 2);
+            for (var reason of ['queue-overflow','interrupted']) {
+                begin(reason);
+                suspendRecordingStart();
+                activeSession = null;
+                streamer.status = 'stopped';
+                acceptNativeEvent({type:'recording-state',requestId:reason,state:'saved',path:'/cut.mkv',completion:{kind:'cut',reason:reason}});
+                check(streamRecordingAttempt.completed && !streamRecordingActive && mediaMessage.indexOf('Recording saved early') === 0);
+                acceptRecordingResponse({id:reason,type:'recording-started'},{operation:'recording-start'});
+                check(!streamRecordingActive);
+            }
+            begin('storage');
+            acceptNativeEvent({type:'recording-state',requestId:'storage',state:'failed',message:'trailer failed'});
+            acceptRecordingResponse({id:'storage',type:'recording-started'},{operation:'recording-start'});
+            check(!streamRecordingActive && mediaMessage === 'trailer failed' && lastError === 'trailer failed');
+            var completedRefreshes = refreshes;
+            mediaRecordingTargetRequestId = 'target'; mediaRecordingTargetSessionId = 'seat';
+            cancelRecordingTarget();
+            acceptRecordingTarget('target',{path:'/cancelled.mkv'});
+            check(commands.length === 0 && cancelled[0] === 'target');
+            mediaRecordingTargetRequestId = 'replacement'; mediaRecordingTargetSessionId = 'old-seat';
+            acceptRecordingTarget('replacement',{path:'/wrong-seat.mkv'});
+            check(commands.length === 0 && mediaRecordingTargetRequestId === '');
+            check(refreshes === completedRefreshes && notices.length === refreshes);
+        )JS"));
+        QVERIFY2(!result.isError(), qPrintable(result.toString() + result.property("stack").toString()));
+    }
+
     void webRtcStartAcknowledgementPreservesMediaProgress_data()
     {
         QTest::addColumn<QString>("transport");
@@ -1585,6 +1685,7 @@ private slots:
         // rather than just checking source text for a retry-limit constant.
         QJSEngine engine;
         QVERIFY(prepareLaunchGuards(engine));
+        QVERIFY(prepareRecordingTeardown(engine));
         auto evaluate = [&](const QString &script) {
             const auto result = engine.evaluate(script);
             if (result.isError())
