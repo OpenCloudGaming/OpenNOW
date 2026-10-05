@@ -71,13 +71,13 @@ fn candidate_defaults_and_terminal_messages_are_parsed() {
     assert!(
         matches!(incoming, Some(Incoming::Candidate(candidate)) if candidate.sdp_m_line_index == Some(0))
     );
-    for packet in [
-        json!({"error":"peerRemoved"}),
-        json!({"peer_msg":{"msg":"BYE"}}),
+    for (packet, detail) in [
+        (json!({"error":"peerRemoved"}), "peer-removed"),
+        (json!({"peer_msg":{"msg":"BYE"}}), "bye"),
     ] {
         assert!(matches!(
             protocol.receive(&packet.to_string()).unwrap().1,
-            Some(Incoming::Closed)
+            Some(Incoming::Closed(closed)) if closed == detail
         ));
     }
     assert!(protocol.receive("not JSON").is_err());
@@ -214,4 +214,71 @@ fn pending_writes_have_a_fixed_deadline_and_a_bounded_buffer() {
             .contains("message exceeds")
     );
     assert!(signaling.socket.get_ref().written.is_empty());
+}
+
+struct FailingStream(Option<std::io::Error>);
+
+impl Read for FailingStream {
+    fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+        self.0.take().map_or(Ok(0), Err)
+    }
+}
+
+impl Write for FailingStream {
+    fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+        Err(std::io::Error::new(
+            ErrorKind::ConnectionAborted,
+            "203.0.113.9:443 private",
+        ))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn failing_signaling(error: Option<std::io::Error>) -> Signaling<FailingStream> {
+    Signaling {
+        socket: WebSocket::from_raw_socket(
+            FailingStream(error),
+            tungstenite::protocol::Role::Client,
+            None,
+        ),
+        protocol: Protocol::new("fixture".to_owned()),
+        heartbeat_at: Instant::now(),
+        write_pending_since: None,
+    }
+}
+
+#[test]
+fn signaling_failures_name_the_transport_cause_without_endpoints() {
+    let error = std::io::Error::from_raw_os_error(10054);
+    let expected = format!(
+        "Signaling connection closed (io kind={:?} os_code=10054)",
+        error.kind()
+    );
+    let failure = failing_signaling(Some(error)).poll().err().unwrap();
+    assert_eq!(failure.code, "webrtc-signaling-failed");
+    assert_eq!(failure.message, expected);
+
+    assert_eq!(
+        failing_signaling(None).poll().err().unwrap().message,
+        "Signaling connection closed (protocol=ResetWithoutClosingHandshake)"
+    );
+
+    let failure = failing_signaling(None).send(json!({"hb":1})).unwrap_err();
+    assert_eq!(
+        failure.message,
+        "Signaling write failed (io kind=ConnectionAborted os_code=none)"
+    );
+    assert!(!failure.message.contains("203.0.113.9") && !failure.message.contains("private"));
+
+    let mut signaling = nonblocking_signaling(0, 1024);
+    let mut close = vec![0x88, 9, 0x03, 0xf3];
+    close.extend_from_slice(b"private");
+    signaling.socket.get_mut().incoming = std::io::Cursor::new(close);
+    assert!(matches!(
+        signaling.poll().unwrap(),
+        Some(Incoming::Closed(detail)) if detail == "close_code=1011"
+    ));
 }

@@ -348,8 +348,10 @@ impl Worker {
                     }
                     candidates.push(candidate);
                 }
-                Some(signaling::Incoming::Closed) => {
-                    return Err(Failure::signaling("Signaling peer closed before the offer"));
+                Some(signaling::Incoming::Closed(detail)) => {
+                    return Err(Failure::signaling(format!(
+                        "Signaling peer closed before the offer ({detail})"
+                    )));
                 }
                 None => thread::sleep(SIGNALING_POLL_INTERVAL),
             }
@@ -539,8 +541,10 @@ impl Worker {
                             "WebRTC renegotiation requires a fresh session start",
                         ));
                     }
-                    Some(signaling::Incoming::Closed) => {
-                        return Err(Failure::signaling("Signaling peer closed"));
+                    Some(signaling::Incoming::Closed(detail)) => {
+                        return Err(Failure::signaling(format!(
+                            "Signaling peer closed ({detail})"
+                        )));
                     }
                     None => {}
                 }

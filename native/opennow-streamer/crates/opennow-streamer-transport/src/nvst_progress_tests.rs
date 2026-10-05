@@ -428,7 +428,7 @@ fn pause_and_stop_never_report_a_progress_stall() {
         "resume must open a fresh stall window instead of inheriting the paused interval"
     );
 
-    receiver.stop();
+    receiver.stop(NvstStopCause::Requested);
     assert_eq!(
         receiver.poll_frame_progress(origin + Duration::from_secs(60), policy),
         None
