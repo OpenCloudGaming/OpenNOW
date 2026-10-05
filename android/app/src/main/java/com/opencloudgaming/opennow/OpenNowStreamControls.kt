@@ -699,6 +699,7 @@ internal fun StreamControlsPanel(
     touchControlsVisible: Boolean,
     builtInGameTouchSupported: Boolean,
     nativeTouchActive: Boolean,
+    keyboardOverlayActive: Boolean,
     gyroscopeAvailable: Boolean,
     controllerMouseAssistEnabled: Boolean,
     controllerMouseEmulationEnabled: Boolean,
@@ -888,7 +889,7 @@ internal fun StreamControlsPanel(
                                 },
                                 value = onOffLabel(touchLayoutEditing),
                             )
-                            if (touchControlsVisible && !settings.androidTouch.keyboardModeEnabled) {
+                            if (touchControlsVisible && !keyboardOverlayActive) {
                                 // Cycles rather than opens a menu: this row is used mid-session,
                                 // often one-handed, and each press shows its result immediately
                                 // behind the panel.
@@ -926,12 +927,12 @@ internal fun StreamControlsPanel(
                             }
                             ControlSwitchRow(
                                 label = stringResource(R.string.stream_panel_keyboard_overlay),
-                                checked = settings.androidTouch.keyboardModeEnabled,
+                                checked = keyboardOverlayActive,
                                 onCheckedChange = { enabled ->
                                     onButtonTone()
                                     onKeyboardModeToggle(enabled)
                                 },
-                                value = onOffLabel(settings.androidTouch.keyboardModeEnabled),
+                                value = onOffLabel(keyboardOverlayActive),
                                 description = stringResource(R.string.stream_panel_keyboard_overlay_summary),
                             )
                             ControlSwitchRow(
@@ -949,9 +950,9 @@ internal fun StreamControlsPanel(
                     item {
                         ControlSection(stringResource(R.string.stream_joysticks_title)) {
                             val dynamic = settings.androidTouch.joystickMode == TouchJoystickMode.Dynamic
-                            val lockZone = !settings.androidTouch.keyboardModeEnabled &&
+                            val lockZone = !keyboardOverlayActive &&
                                 settings.androidTouch.aimMode == TouchAimMode.LockZone
-                            if (!settings.androidTouch.keyboardModeEnabled) ControlSwitchRow(
+                            if (!keyboardOverlayActive) ControlSwitchRow(
                                 label = stringResource(R.string.stream_joysticks_aim_mode),
                                 checked = lockZone,
                                 onCheckedChange = {
@@ -1025,12 +1026,12 @@ internal fun StreamControlsPanel(
                         }
                     }
                     item {
-                        if (!settings.androidTouch.keyboardModeEnabled && !touchLayoutEditing) {
+                        if (!keyboardOverlayActive && !touchLayoutEditing) {
                             TouchControlPresetEditor(settings.androidTouch, settings.touchControlPresets, onTouchSettingsChange, onTouchPresetsChange)
                         }
                         TouchButtonAppearanceEditor(settings.androidTouch, onTouchSettingsChange)
                     }
-                    if (!settings.androidTouch.keyboardModeEnabled) item {
+                    if (!keyboardOverlayActive) item {
                         ControlSection(stringResource(R.string.settings_touch_visible_controls)) {
                             Text(
                                 text = stringResource(R.string.settings_touch_visible_controls_desc),
@@ -1053,7 +1054,7 @@ internal fun StreamControlsPanel(
                             }
                         }
                     }
-                    if (!settings.androidTouch.keyboardModeEnabled) item {
+                    if (!keyboardOverlayActive) item {
                         ControlSection(stringResource(R.string.settings_touch_extra_buttons)) {
                             Text(
                                 text = stringResource(R.string.settings_touch_extra_buttons_desc),
@@ -1105,37 +1106,37 @@ internal fun StreamControlsPanel(
                             // against the game without leaving the stream.
                             TouchLayoutSlider(R.string.stream_panel_layout_scale, settings.androidTouch.scale, 0.6f, 1.4f, TOUCH_SCALE_SLIDER_STEP, onTouchScaleChange)
                             TouchLayoutSlider(R.string.stream_panel_button_size, settings.androidTouch.buttonScale, 0.65f, 1.5f, TOUCH_SCALE_SLIDER_STEP, onButtonScaleChange)
-                            if (!settings.androidTouch.keyboardModeEnabled) TouchLayoutSlider(R.string.settings_touch_face_size, settings.androidTouch.faceButtonScale, 0.6f, 1.5f, TOUCH_SCALE_SLIDER_STEP, onChange = { value ->
+                            if (!keyboardOverlayActive) TouchLayoutSlider(R.string.settings_touch_face_size, settings.androidTouch.faceButtonScale, 0.6f, 1.5f, TOUCH_SCALE_SLIDER_STEP, onChange = { value ->
                                 onTouchSettingsChange(settings.androidTouch.copy(faceButtonScale = value))
                             })
-                            if (!settings.androidTouch.keyboardModeEnabled) TouchLayoutSlider(R.string.settings_touch_dpad_size, settings.androidTouch.dpadScale, 0.6f, 1.5f, TOUCH_SCALE_SLIDER_STEP, onChange = { value ->
+                            if (!keyboardOverlayActive) TouchLayoutSlider(R.string.settings_touch_dpad_size, settings.androidTouch.dpadScale, 0.6f, 1.5f, TOUCH_SCALE_SLIDER_STEP, onChange = { value ->
                                 onTouchSettingsChange(settings.androidTouch.copy(dpadScale = value))
                             })
-                            if (!settings.androidTouch.keyboardModeEnabled) TouchLayoutSlider(R.string.settings_touch_shoulders_size, settings.androidTouch.shoulderButtonScale, 0.6f, 1.5f, TOUCH_SCALE_SLIDER_STEP, onChange = { value ->
+                            if (!keyboardOverlayActive) TouchLayoutSlider(R.string.settings_touch_shoulders_size, settings.androidTouch.shoulderButtonScale, 0.6f, 1.5f, TOUCH_SCALE_SLIDER_STEP, onChange = { value ->
                                 onTouchSettingsChange(settings.androidTouch.copy(shoulderButtonScale = value))
                             })
-                            if (!settings.androidTouch.keyboardModeEnabled) TouchLayoutSlider(R.string.settings_touch_center_size, settings.androidTouch.centerButtonScale, 0.6f, 1.5f, TOUCH_SCALE_SLIDER_STEP, onChange = { value ->
+                            if (!keyboardOverlayActive) TouchLayoutSlider(R.string.settings_touch_center_size, settings.androidTouch.centerButtonScale, 0.6f, 1.5f, TOUCH_SCALE_SLIDER_STEP, onChange = { value ->
                                 onTouchSettingsChange(settings.androidTouch.copy(centerButtonScale = value))
                             })
                             TouchLayoutSlider(R.string.settings_touch_left_stick_size, settings.androidTouch.leftStickScale, 0.6f, 1.5f, TOUCH_SCALE_SLIDER_STEP, onChange = { value ->
                                 onTouchSettingsChange(settings.androidTouch.copy(leftStickScale = value))
                             })
-                            if (!settings.androidTouch.keyboardModeEnabled) TouchLayoutSlider(R.string.settings_touch_right_stick_size, settings.androidTouch.rightStickScale, 0.6f, 1.5f, TOUCH_SCALE_SLIDER_STEP, onChange = { value ->
+                            if (!keyboardOverlayActive) TouchLayoutSlider(R.string.settings_touch_right_stick_size, settings.androidTouch.rightStickScale, 0.6f, 1.5f, TOUCH_SCALE_SLIDER_STEP, onChange = { value ->
                                 onTouchSettingsChange(settings.androidTouch.copy(rightStickScale = value))
                             })
-                            if (!settings.androidTouch.keyboardModeEnabled) TouchLayoutSlider(R.string.settings_touch_stick_knob_size, settings.androidTouch.stickKnobScale, 0.28f, 0.72f, 0.02f, onChange = { value ->
+                            if (!keyboardOverlayActive) TouchLayoutSlider(R.string.settings_touch_stick_knob_size, settings.androidTouch.stickKnobScale, 0.28f, 0.72f, 0.02f, onChange = { value ->
                                 onTouchSettingsChange(settings.androidTouch.copy(stickKnobScale = value))
                             })
                             TouchLayoutSlider(R.string.stream_panel_opacity, settings.androidTouch.opacity, 0f, 1f, TOUCH_SCALE_SLIDER_STEP, onOpacityChange)
                             TouchLayoutSlider(R.string.stream_panel_edge_padding, settings.androidTouch.edgePaddingDp, 0f, 72f, TOUCH_DP_SLIDER_STEP, onTouchEdgePaddingChange, unit = DP_UNIT)
                             TouchLayoutSlider(R.string.stream_panel_bottom_padding, settings.androidTouch.bottomPaddingDp, 0f, 120f, TOUCH_DP_SLIDER_STEP, onTouchBottomPaddingChange, unit = DP_UNIT)
-                            if (!settings.androidTouch.keyboardModeEnabled) {
+                            if (!keyboardOverlayActive) {
                                 TouchLayoutSlider(R.string.stream_panel_left_position, settings.androidTouch.leftOffsetYDp, -160f, 160f, TOUCH_DP_SLIDER_STEP, onTouchLeftOffsetChange, unit = DP_UNIT)
                                 TouchLayoutSlider(R.string.stream_panel_right_position, settings.androidTouch.rightOffsetYDp, -160f, 160f, TOUCH_DP_SLIDER_STEP, onTouchRightOffsetChange, unit = DP_UNIT)
                             }
                         }
                     }
-                    if (!settings.androidTouch.keyboardModeEnabled) item {
+                    if (!keyboardOverlayActive) item {
                         ControlSection(stringResource(R.string.stream_panel_section_motion_aiming)) {
                             ControlSwitchRow(
                                 label = stringResource(R.string.settings_touch_gyro),
@@ -1563,7 +1564,7 @@ private fun BuiltInGameTouchNotice(usingBuiltInTouch: Boolean) {
             Text(
                 stringResource(
                     if (usingBuiltInTouch) {
-                        R.string.stream_touch_builtin_available
+                        R.string.stream_touch_controller_requires_new_session
                     } else {
                         R.string.stream_touch_builtin_overridden
                     },

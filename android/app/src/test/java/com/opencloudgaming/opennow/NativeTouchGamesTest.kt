@@ -79,6 +79,27 @@ class NativeTouchGamesTest {
     }
 
     @Test
+    fun savedKeyboardOverlayCannotDisableTouchProvisionedForThisSession() {
+        val game = game(title = "Genshin Impact", supportedControls = listOf("TOUCHSCREEN", "KEYBOARD"))
+        val settings = AndroidTouchSettings(
+            nativeTouchMode = NativeTouchMode.Auto,
+            keyboardModeEnabled = true,
+        )
+        val launchMode = StreamInputMode.NativeTouch
+
+        assertFalse(keyboardOverlayEnabledForStream(settings.keyboardModeEnabled, launchMode))
+        assertTrue(
+            shouldUseNativeTouchForStream(
+                settings.effectiveNativeTouchMode(),
+                game,
+                StreamSettings(),
+                preferVirtualController = false,
+                preferKeyboardMouse = launchMode == StreamInputMode.KeyboardMouse,
+            ),
+        )
+    }
+
+    @Test
     fun catalogTouchFlagIsCaseInsensitive() {
         assertTrue(catalogClaimsTouchSupport(game(supportedControls = listOf("Touchscreen"))))
         assertFalse(catalogClaimsTouchSupport(game(supportedControls = listOf("X_INPUT_GAMEPAD"))))

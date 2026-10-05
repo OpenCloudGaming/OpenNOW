@@ -1368,6 +1368,7 @@ private fun SettingsContent(
                             ChoiceMenuOption(value = mode.name, label = nativeTouchModeLabel(mode))
                         },
                         selectedLabel = nativeTouchModeLabel(effectiveNativeTouchMode),
+                        description = stringResource(R.string.settings_native_touch_mode_desc),
                     ) { value ->
                         val mode = NativeTouchMode.entries.firstOrNull { it.name == value } ?: NativeTouchMode.Off
                         viewModel.updateSettings(
