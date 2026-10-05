@@ -58,9 +58,10 @@ FocusScope {
         const window = root.Window.window
         if (!window)
             return
-        const point = root.mapToItem(null, 0, 0)
+        const rect = root.mapToItem(null, 0, 0, root.width, root.height)
         ShellStore.streamCaptureRect = Qt.rect(
-            window.x + point.x, window.y + point.y, root.width, root.height)
+            Math.round(window.x + rect.x), Math.round(window.y + rect.y),
+            Math.round(rect.width), Math.round(rect.height))
     }
     function resynchronizeStreamInput() {
         root.publishCaptureRect()
