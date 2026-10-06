@@ -36,10 +36,14 @@ enum NativeStreamAudioSessionPolicy {
 
 func nativeStreamShouldUseFilteredRenderer(
     osMajorVersion: Int,
+    videoCodec: NativeStreamVideoCodec,
     streamSharpeningEnabled: Bool,
     isSimulator: Bool
 ) -> Bool {
-    isSimulator || osMajorVersion >= 26 || streamSharpeningEnabled
+    // VideoToolbox HEVC frames can reach RTCMTLVideoView without producing a picture
+    // on older iOS devices. Use the same surface that restores video with sharpening,
+    // independently of whether the user wants the sharpening effect.
+    isSimulator || osMajorVersion >= 26 || videoCodec == .h265 || streamSharpeningEnabled
 }
 
 enum NativeStreamTransportPolicy {
@@ -2555,7 +2559,9 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     private var ackCounter = 0
     private var started = false
     private var stopped = false
-    private var selectedCodec: NativeStreamVideoCodec = .h264
+    private var selectedCodec: NativeStreamVideoCodec = .h264 {
+        didSet { renderer?.setVideoCodec(selectedCodec) }
+    }
     private var streamProfile: StreamVideoProfile
     /// What the user actually asked for, before CloudMatch had a say. `streamProfile` already
     /// carries the negotiated geometry, so the two have to be kept apart to spot a difference.
@@ -3526,6 +3532,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
             pictureInPictureBridge.attach(displayLayer: renderer.pictureInPictureDisplayLayer)
         }
         self.renderer = renderer
+        renderer.setVideoCodec(selectedCodec)
         renderer.setStretchStreamToFill(streamerPreferences.stretchStreamToFill)
         renderer.setStreamSharpening(enabled: streamSharpeningEnabled, amount: streamSharpeningAmount)
         renderer.setViewportTransform(scale: streamZoomScale, offset: streamZoomOffset)
@@ -5793,6 +5800,7 @@ private final class NativeStreamRenderView: UIView {
     private var filteredMetalView: NativeStreamFilteredMetalView?
     private var filteredRendererActive = false
     private var stretchStreamToFill = false
+    private var videoCodec: NativeStreamVideoCodec = .h264
     private var streamSharpeningEnabled = false
     private var streamSharpeningAmount = 0.25
     private var metal4Enabled = false
@@ -5800,6 +5808,14 @@ private final class NativeStreamRenderView: UIView {
     var videoEffectsStatus: String { filteredMetalView?.videoEffectsStatus ?? "" }
     var presentationRates: NativeStreamPresentationRates? {
         filteredRendererActive ? filteredMetalView?.presentationRates : nil
+    }
+
+    func setVideoCodec(_ codec: NativeStreamVideoCodec) {
+        rendererStateLock.lock()
+        videoCodec = codec
+        rendererStateLock.unlock()
+        if shouldRequestFilteredRenderer { ensureFilteredMetalView() }
+        updateRendererVisibility()
     }
 
     func setVideoEffects(upscaling: Bool, metal4: Bool) {
@@ -5938,6 +5954,7 @@ private final class NativeStreamRenderView: UIView {
     private var shouldRequestFilteredRenderer: Bool {
         upscalingEnabled || nativeStreamShouldUseFilteredRenderer(
             osMajorVersion: ProcessInfo.processInfo.operatingSystemVersion.majorVersion,
+            videoCodec: videoCodec,
             streamSharpeningEnabled: streamSharpeningEnabled,
             isSimulator: {
                 #if targetEnvironment(simulator)
@@ -5976,9 +5993,8 @@ private final class NativeStreamRenderView: UIView {
     }
 }
 
-/// `RTCMTLVideoView` does not reliably present IOSurfaces in CoreSimulator or
-/// iOS 26+ runtimes. This Core Image + Metal surface is the reliable fallback
-/// there and remains opt-in through sharpening on older devices.
+/// Core Image + Metal presents HEVC frames and provides the fallback for CoreSimulator,
+/// iOS 26+ runtimes, and optional effects on older devices.
 /// Bridge software-decoded WebRTC I420 frames to the NV12 IOSurface used by Core Image.
 final class NativeStreamFramePixelBufferBridge {
     private let lock = NSLock()

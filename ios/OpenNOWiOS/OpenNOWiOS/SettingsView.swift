@@ -1010,11 +1010,10 @@ struct SettingsView: View {
 
             Toggle("Expressive Surfaces", isOn: $store.settings.expressiveUI)
             Toggle("Animated Selection", isOn: $store.settings.liveSelectedOutlines)
-            Toggle("Nerd Mode", isOn: $store.settings.nerdMode)
         } header: {
             Text("Appearance")
         } footer: {
-            Text("Expressive surfaces add the gradient washes and softer cards. Turning both off gives a flatter interface that costs less to draw. Nerd Mode reveals the Advanced category and the technical readouts.")
+            Text("Expressive surfaces add the gradient washes and softer cards. Turning both off gives a flatter interface that costs less to draw.")
         }
     }
 
@@ -1137,12 +1136,7 @@ struct SettingsView: View {
     }
 
     private var landingCategories: [SettingsCategory] {
-        var categories: [SettingsCategory] = [.general, .stream, .input, .interface]
-        if store.settings.nerdMode {
-            categories.append(.advanced)
-        }
-        categories.append(.about)
-        return categories
+        [.general, .stream, .input, .interface, .advanced, .about]
     }
 
     private var privacySection: some View {

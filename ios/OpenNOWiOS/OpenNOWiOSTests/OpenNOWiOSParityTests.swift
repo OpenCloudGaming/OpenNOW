@@ -4108,6 +4108,7 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertTrue(
             nativeStreamShouldUseFilteredRenderer(
                 osMajorVersion: 26,
+                videoCodec: .h264,
                 streamSharpeningEnabled: false,
                 isSimulator: false
             )
@@ -4115,6 +4116,7 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertFalse(
             nativeStreamShouldUseFilteredRenderer(
                 osMajorVersion: 25,
+                videoCodec: .h264,
                 streamSharpeningEnabled: false,
                 isSimulator: false
             )
@@ -4122,10 +4124,28 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertTrue(
             nativeStreamShouldUseFilteredRenderer(
                 osMajorVersion: 25,
+                videoCodec: .h264,
                 streamSharpeningEnabled: true,
                 isSimulator: false
             )
         )
+    }
+
+    func testHEVCUsesFilteredRendererOnIOS18WithoutSharpening() {
+        XCTAssertTrue(nativeStreamShouldUseFilteredRenderer(
+            osMajorVersion: 18, videoCodec: .h265,
+            streamSharpeningEnabled: false, isSimulator: false
+        ))
+        XCTAssertTrue(nativeStreamShouldUseFilteredRenderer(
+            osMajorVersion: 18, videoCodec: .h265,
+            streamSharpeningEnabled: true, isSimulator: false
+        ))
+        for codec in [NativeStreamVideoCodec.h264, .av1] {
+            XCTAssertFalse(nativeStreamShouldUseFilteredRenderer(
+                osMajorVersion: 18, videoCodec: codec,
+                streamSharpeningEnabled: false, isSimulator: false
+            ))
+        }
     }
 
     func testNativeStreamTransportRecoveryMatchesAndroidMobileTiming() {
