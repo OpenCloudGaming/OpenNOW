@@ -71,7 +71,7 @@ Column {
                 width: parent.width; glyph: "globe"
                 title: qsTr("WebRTC compatibility mode")
                 description: qsTr("Automatic uses WebRTC for signed-in alliance accounts and NVST for NVIDIA accounts. Choose WebRTC or NVST to override either account type. Applies to new sessions only; existing sessions keep their transport.")
-                    + "\n" + qsTr("WebRTC is for compatibility only. Expect lower performance than NVST. Up to 1080p60, H.264, SDR, and stereo. No microphone or clipboard text. Requires direct UDP connectivity.")
+                    + "\n" + qsTr("WebRTC is for compatibility only. Expect lower performance than NVST. Supports H.264 and H.265, SDR, and stereo. H.265 supports 10-bit color and the selected resolution and frame rate. No microphone or clipboard text. Requires direct UDP connectivity.")
                 enabled: !ShellStore.activeSession && !ShellStore.streamBusy && !ShellStore.pendingLaunchParams
                 maximumColumns: 3
                 items: [{value:"auto", label:qsTr("Automatic")},

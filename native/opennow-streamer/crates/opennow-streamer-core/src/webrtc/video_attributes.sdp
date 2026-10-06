@@ -70,6 +70,5 @@ a=video.maxNumReferenceFrames:4
 a=video.mapRtpTimestampsToFrames:1
 a=video.encoderCscMode:3
 a=video.dynamicRangeMode:0
-a=video.bitDepth:8
 a=video.scalingFeature1:0
 a=video.prefilterParams.prefilterModel:0

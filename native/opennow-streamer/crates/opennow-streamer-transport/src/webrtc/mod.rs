@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use opennow_streamer_protocol::Session;
 use serde::{Deserialize, Serialize};
 use str0m::change::SdpOffer;
-use str0m::format::Codec;
+use str0m::format::{Codec, PayloadParams};
 use str0m::media::{Direction, KeyframeRequestKind, MediaData, MediaKind, Mid};
 use str0m::net::{Protocol, Receive};
 use str0m::{Candidate, Event, IceConnectionState, Input, Output, Rtc, RtcConfig};
@@ -53,6 +53,26 @@ pub struct IceCandidate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NegotiatedVideoCodec {
     H264,
+    H265Main,
+    H265Main10,
+}
+
+impl NegotiatedVideoCodec {
+    fn matches(self, params: &PayloadParams) -> bool {
+        let spec = params.spec();
+        match self {
+            Self::H264 => spec.codec == Codec::H264,
+            Self::H265Main | Self::H265Main10 => {
+                let profile = spec
+                    .format
+                    .h265_profile_tier_level
+                    .map(|ptl| u32::from(ptl.profile().to_id()))
+                    .or(spec.format.profile_id)
+                    .unwrap_or(1);
+                spec.codec == Codec::H265 && profile == if self == Self::H265Main10 { 2 } else { 1 }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -318,6 +338,22 @@ pub fn negotiate(
                 );
             }
         }
+        NegotiatedVideoCodec::H265Main | NegotiatedVideoCodec::H265Main10 => {
+            let profile = if codec == NegotiatedVideoCodec::H265Main10 {
+                2
+            } else {
+                1
+            };
+            for (payload, tier) in [(96_u8, 0), (98, 1)] {
+                builder.codec_config().add_h265(
+                    payload.into(),
+                    Some((payload + 1).into()),
+                    profile,
+                    tier,
+                    180,
+                );
+            }
+        }
     }
     let mut rtc = builder.build(Instant::now());
     rtc.add_local_candidate(local.clone());
@@ -431,11 +467,11 @@ pub fn negotiate(
                 if !section
                     .rtp_params()
                     .iter()
-                    .any(|params| params.spec().codec == Codec::H264)
+                    .any(|params| codec.matches(params))
                 {
-                    return Err(TransportError::Offer(
-                        "peer did not negotiate H264 video".to_owned(),
-                    ));
+                    return Err(TransportError::Offer(format!(
+                        "peer did not negotiate {codec:?} video"
+                    )));
                 }
                 video_mid = Some(mid);
             }
@@ -459,7 +495,7 @@ pub fn negotiate(
         }
     }
     let video_mid = video_mid
-        .ok_or_else(|| TransportError::Offer("peer did not negotiate H264 video".to_owned()))?;
+        .ok_or_else(|| TransportError::Offer(format!("peer did not negotiate {codec:?} video")))?;
     let answer_sdp = answer.to_string();
     opennow_streamer_protocol::log::log_line(
         "INFO",
@@ -496,6 +532,7 @@ pub fn negotiate(
                 commands: receiver,
                 events,
                 media_consumer,
+                video_codec: codec,
                 channels,
                 input: InputChannelState::default(),
                 input_ready,
@@ -748,6 +785,7 @@ struct TransportWorker {
     commands: Receiver<TransportCommand>,
     events: SyncSender<TransportEvent>,
     media_consumer: MediaConsumer,
+    video_codec: NegotiatedVideoCodec,
     channels: InputChannels,
     input: InputChannelState,
     input_ready: Arc<AtomicBool>,
@@ -803,10 +841,10 @@ impl TransportWorker {
 
     fn media(&mut self, data: MediaData) -> Result<(), String> {
         let codec = data.params.spec().codec;
-        if !matches!(codec, Codec::H264 | Codec::Opus) {
+        let is_video = self.video_codec.matches(&data.params);
+        if !is_video && codec != Codec::Opus {
             return Err("received an unnegotiated media codec".to_owned());
         }
-        let is_video = codec == Codec::H264;
         let keyframe = data.is_keyframe();
         let ssrc = self
             .rtc
@@ -830,7 +868,11 @@ impl TransportWorker {
         }
         let frame = EncodedMediaFrame {
             mid: data.mid.to_string(),
-            codec: if is_video { "H264" } else { "Opus" }.to_owned(),
+            codec: if is_video {
+                codec.to_string()
+            } else {
+                "Opus".to_owned()
+            },
             payload: data.data,
             frame_index: None,
             rtp_timestamp: data.time.numer() & u64::from(u32::MAX),

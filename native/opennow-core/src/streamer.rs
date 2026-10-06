@@ -603,15 +603,15 @@ impl StreamerService {
             }
             if profile["codec"]
                 .as_str()
-                .is_some_and(|codec| codec != "H264")
+                .is_some_and(|codec| !matches!(codec, "H264" | "H265"))
                 || (profile["codecSource"] == "server" && profile["codec"].as_str().is_none())
                 || profile["enableHdr"] == true
-                || profile["colorQuality"]
-                    .as_str()
-                    .is_some_and(|color| color != "8bit_420")
+                || profile["colorQuality"].as_str().is_some_and(|color| {
+                    color != "8bit_420" && !(profile["codec"] == "H265" && color == "10bit_420")
+                })
             {
                 return Err(invalid(
-                    "WebRTC compatibility requires an allocated H.264 SDR 8-bit 4:2:0 session",
+                    "WebRTC compatibility requires H.264 8-bit or H.265 8/10-bit SDR 4:2:0",
                 ));
             }
         }
@@ -1771,8 +1771,11 @@ fn streamer_context(mut session: Value, settings: &Value) -> Value {
         "nvst"
     });
     if session["transportMode"] == "webrtc" {
-        normalized["codec"] = json!("H264");
-        normalized["colorQuality"] = json!("8bit_420");
+        normalized["colorQuality"] = json!(
+            session["negotiatedStreamProfile"]["colorQuality"]
+                .as_str()
+                .unwrap_or("8bit_420")
+        );
         normalized["enableHdr"] = json!(false);
         normalized["microphoneMode"] = json!("disabled");
         normalized["enableCloudGsync"] = json!(false);
@@ -2247,6 +2250,44 @@ mod tests {
         let failure = ensure_child_running(&mut child).expect_err("exited child must fail");
         assert_eq!(failure.code, "streamer_exited");
         assert!(failure.message.contains("23"));
+    }
+
+    #[test]
+    fn webrtc_hevc_preparation_preserves_owned_output() {
+        for color in ["8bit_420", "10bit_420"] {
+            let session = json!({"sessionId":"hevc-seat","status":3,"transportMode":"webrtc",
+                "signalingUrl":"wss://seat.partner.example/nvst/",
+                "connectionInfo":[{"usage":14,"appLevelProtocol":4,"ip":"seat.partner.example","port":443,"resourcePath":"/nvst/"}],
+                "negotiatedStreamProfile":{"codec":"H265","codecSource":"request",
+                    "colorQuality":color,"enableHdr":false,"resolution":"1920x1200","fps":60}});
+            let settings = json!({"codec":"h264","colorQuality":"8bit_420",
+                "resolution":"1280x720","fps":30,"enableHdr":true});
+            let prepared = StreamerService::new()
+                .prepare_embedded(&json!({"session":session}), &settings)
+                .unwrap();
+            let output = &prepared["context"]["settings"];
+            assert_eq!(output["codec"], "H265");
+            assert_eq!(output["colorQuality"], color);
+            assert_eq!(output["resolution"], "1920x1200");
+            assert_eq!(output["fps"], 60);
+            assert_eq!(output["enableHdr"], false);
+            assert_eq!(prepared["context"]["session"], session);
+            for available in [false, true] {
+                let capabilities = json!({"protocolVersion":7,"videoBackends":[{
+                    "backend":"videotoolbox","platform":"macos","available":true,
+                    "codecs":[{"codec":"h265","available":available,
+                        "colorQualities":["8bit_420","10bit_420"]}]}]});
+                assert_eq!(
+                    StreamerService::new()
+                        .prepare_embedded(
+                            &json!({"session":session,"runtimeCapabilities":capabilities}),
+                            &settings,
+                        )
+                        .is_ok(),
+                    available
+                );
+            }
+        }
     }
 
     #[test]
