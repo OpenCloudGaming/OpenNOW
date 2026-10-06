@@ -8,11 +8,12 @@ ambiguous state.
 
 ## Handshake
 
-Plugin-capable cores also advertise the optional `plugins.v1` and
-`sources.catalog.v1` capabilities. Their additive management and catalog-preview
-RPCs are documented in [Plugin API v1](plugins.md). They do not change existing
-GeForce NOW account or session envelopes and do not make native stream contexts
-an external plugin API.
+Plugin-capable cores advertise `plugins.v1` and `sources.catalog.v1` for
+[management and catalog previews](plugins.md). Full provider integration adds
+`sources.v2`, documented in [Provider plugin API v2](provider-plugins.md).
+A `sources.v2` shell can initialize without NVIDIA-specific capabilities.
+Existing GeForce NOW account and session envelopes remain compatible. Raw GFN
+stream contexts are not part of the external provider API.
 
 The first shell request is always:
 
@@ -24,7 +25,8 @@ Protocol 5 requires an exact selected catalog variant and account scope for fres
 session allocation. It retains the bounded library-page contract introduced in
 protocol 4. Older shells are rejected with `incompatible_protocol` during
 `core.hello`, and protocol-5 shells reject older cores. The native streamer
-protocol remains 7.
+protocol is 8, with C ABI 12. These versions are independent of core protocol 5
+and provider control protocol 2.
 
 The core must return the same protocol version and its capabilities. The shell
 does not send product requests before this succeeds. Version mismatches, a

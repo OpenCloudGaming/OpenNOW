@@ -1,124 +1,162 @@
 # Provider modules and community plugins
 
-OpenNOW separates provider services from the application host. The built-in
-GeForce NOW module owns NVIDIA and Alliance authentication, catalogs, account
-services, CloudMatch sessions, and provider-specific recovery. Qt still owns the
-interface and the native streamer still owns media, input, decoding, and recording.
+OpenNOW separates service integration from its Qt interface and native player.
+A provider owns authentication, catalog access, launch authorization, remote
+sessions, and its service's transport. OpenNOW owns the window, decoder, audio
+output, input capture, overlays, and recording.
 
-Community plugin version 1 supports catalog previews. It does not support
-third-party authentication, session allocation, or playback. Boosteroid, Xbox
-Cloud Gaming, and personal-PC streaming need real integrations and compatible
-native transports before they can become playable sources.
+Protocol-2 packages contain a control executable and a headless media worker.
+A compatible service can implement those roles without adding its authentication
+or transport logic to the application core. That does not make an unimplemented
+service playable. Xbox Cloud Gaming, Boosteroid, and personal-PC streaming still
+need their own working integrations.
 
-## Ownership
+The [SDK demo](../examples/provider-plugin/README.md) exercises these contracts
+with generated H.264 video, Opus audio, and explicitly simulated sign-in. It does
+not authenticate to a commercial service. Protocol-1 catalog plugins remain
+preview-only.
 
-The application core composes a source host with the built-in GFN module and the
-community plugin manager. Application dispatch, reporting, and update admission
-do not receive a concrete `GfnService`.
+## One host and one player
 
-The source host has two contracts:
+The Rust core composes `SourceHost`, the built-in GFN module, and `PluginManager`.
+Application dispatch, reporting, and update admission do not own `GfnService`.
+The typed `ProviderSource` contract covers provider operations. The built-in
+compatibility contract preserves existing GFN RPCs, but its session operations
+enter the same host admission and journal as external providers.
 
-- The shared catalog contract supplies validated, bounded pages to the Plugins
-  preview. Both GFN and community plugins implement it.
-- The built-in module contract retains the existing GFN RPCs and their lifecycle
-  obligations. Community plugins cannot register those methods or impersonate
-  their events.
+GFN's NVIDIA and Alliance authentication, CloudMatch rules, account services,
+push registry, and provider-specific recovery stay in `sources/gfn/`. Generic
+providers do not imitate GFN membership tiers, numeric status codes, or catalog
+identifiers. The shell retains a source ID with each provider-local game ID and
+the complete account-qualified session key.
 
-This separation is intentional. GFN's existing account and session schemas are
-not a universal provider API. Reusing them for other services would make those
-services imitate NVIDIA membership, Alliance identities, and CloudMatch state.
-The current Qt account, library, and launch flows retain their GFN contracts.
+Qt composes the same `StreamVideoItem` for both execution paths. A provider does
+not inject QML, load a presenter DLL, open another player window, or introduce a
+browser runtime. Local menus, focus handling, fullscreen, and controller routing
+stay with the existing Qt owners. Changing the browsing service does not retarget
+an active stream.
 
-The GFN module owns its push registry, region validation, allocation policy,
-session receipts, reporting identity, and stream-preparation authorization. The
-host retains settings persistence, application diagnostics, updates, and local
-media services. The module receives only the host services it needs, not the
-entire application object.
+## Control and media have different lifetimes
 
-## Existing accounts and sessions
+The core supervises the provider's control process. The native runtime owns the
+media process, so restarting the core does not end healthy media. Both roles use
+the same host-assigned provider data directory. The media worker can validate
+private attachment credentials against durable provider state without depending
+on the control process remaining alive.
 
-The extraction preserves GFN's existing data paths and credential-store names.
-There is no move into a new plugin directory, new account identity, or reset of
-saved profiles, PINs, device IDs, or pending session cleanup.
+The core resolves the installed media role and constructs a private, host-bound
+lease. Providers return only bounded accepted-media data and opaque bootstrap
+bytes. They cannot choose executable paths, package manifests, local output
+devices, or host graphics handles through that reply.
 
-A fresh allocation retains the original service owner until Qt acknowledges
-delivery or the receipt expires. Cancellation of the request does not cancel the
-obligation to settle that receipt. Failed remote cleanup remains observable and
-does not become a successful local termination.
+The native runtime verifies the immutable package and retains its shared pin
+until the worker retires. Disable, uninstall, and replacement take exclusive
+pins before changing package files or provider data. Pin files live outside the
+directories uninstall removes, so another process cannot bypass a held lock by
+recreating its pathname.
 
-Stream preparation still resolves the retained GFN seat under its ownership
-guards. A caller-supplied session cannot replace that seat. Update admission
-checks retained allocation and cleanup state rather than treating a different
-selected account as proof that the provider is idle.
+## Allocation is not acceptance
 
-Provider activity reports come from requests admitted to the module. A request
-rejected by the host's update or session gate does not record a provider launch
-attempt. Such rejections still return their existing protocol errors.
+The host journals the original source, account, and operation before allocation.
+A fresh allocation returns a receipt. The host settles that receipt on the
+original owner even when the calling request is cancelled or the response
+arrives after the control process fails.
 
-The shell/core protocol remains version 5, native streamer JSON remains version
-7, and the C ABI remains version 11. Plugin management and catalog preview use
-separate optional capabilities. Existing GFN request and event shapes remain
-unchanged.
+Providers persist operation and receipt identities across process restarts.
+Recovery distinguishes an accepted session from a fresh allocation still waiting
+for acceptance. A pending receipt cannot become playable merely because remote
+discovery reports an active seat. Rejection and stop intents persist before
+provider I/O, and failed cleanup remains an ownership obligation.
 
-## Community execution and trust
+An error name, an empty discovery result, or idle local media does not prove that
+no remote allocation occurred. `NotAllocated` requires authoritative evidence
+for the original operation. GFN records its actual request stage so failures
+before allocation and confirmed cleanup do not leave a false ownership record.
+A lost GFN POST response with no session ID remains unknown when the upstream
+service cannot correlate the operation. The host does not guess a seat or silently
+clear that uncertainty.
 
-A community plugin is a self-contained native executable with a versioned
-catalog protocol. The core launches it in a separate process and validates its
-messages. The plugin does not load a DLL into OpenNOW, inject QML, create a new
-presenter, or send commands to the native streamer.
+## Playback preparation is private
 
-**A separate process is not a security sandbox.** A plugin runs with the user's
-operating-system permissions. It can read user files, access credentials
-available to that user, and use the network. This remains true even though
-OpenNOW does not pass the plugin its NVIDIA credentials or inherited secret
-environment variables. Install and enable only code you trust.
+`SourceBridge` coordinates the new provider path in C++. QML supplies a launch
+intent and receives public session handles and status. Native offers, package
+paths, bootstrap bytes, and preparation leases use private callbacks rather than
+QML-visible signals or properties.
 
-Inside Flatpak, a child inherits OpenNOW's application permissions, including
-its `org.freedesktop.secrets` keyring access. The application sandbox does not
-isolate a plugin from OpenNOW's own resources.
+Browser authentication follows the same boundary. The provider owns OAuth,
+PKCE, tokens, and callbacks. The core exposes an expiring, scoped open handle.
+C++ resolves that handle privately and opens the HTTPS URL in the system browser.
+Human-facing device and pairing codes are intentional display exceptions.
 
-Inspection and installation do not execute the plugin. Installation requires
-explicit consent and leaves the plugin disabled. Enabling starts the inspected
-code. Package hashes bind the reviewed bytes and detect changes. They do not
-authenticate a publisher, and publisher metadata is self-declared.
+Native initialization is not proof of playback or input readiness. The worker
+must complete its authenticated handshake before gameplay input is enabled.
+Decoded feedback comes from actual decoder output. Presented feedback comes
+from Qt's successful frame-swap path. Sender IDs and timestamps remain distinct
+from local publication sequence numbers.
 
-The host bounds protocol frames, queued work, calls, and deadlines. It terminates
-failed or unresponsive processes instead of retrying them indefinitely. These
-are protocol and lifecycle limits, not restrictions on malicious code's CPU,
-memory, filesystem, or network access outside the protocol.
+The external media contract currently admits SDR formats supported by the local
+native offer. It does not advertise external HDR or microphone support. GFN's
+existing private HDR and codec negotiation remain separate.
 
-Version 1 does not download plugins, automatically update them, or replace an
-installed package. Uninstalling a community plugin removes its package and its
-private data. GFN is a required built-in module and cannot be uninstalled.
+## Recovery preserves both remote and local ownership
 
-## Why not a universal streaming API yet?
+Remote termination and native retirement are separate facts. A remote-ended
+session remains occupied while native resources still own its media. Conversely,
+a crashed worker does not prove that the remote seat ended.
 
-The existing NVST engine implements NVIDIA's protocol. The existing WebRTC
-compatibility engine also uses NVIDIA-specific signaling and session metadata.
-Neither is an arbitrary WebRTC client.
+After a core restart, C++ observes the journal's media revision, queries native
+status, and reconciles that exact observation. The core rejects an older idle
+observation if a newer preparation changed ownership. A matching healthy lease
+reattaches bookkeeping without starting another worker.
 
-Plugin version 1 rejects authentication, session, playback, and executable-UI
-capabilities. Its catalog results contain plain titles and source-qualified IDs,
-not stream URLs or Play actions. That restriction keeps the first community
-contract testable without weakening GFN's session ownership checks.
+Legacy GFN starts retain their validated native compatibility path. Successful
+legacy preparation records a separate media obligation. An empty bound-lease
+field is not evidence that legacy media is idle. Only confirmed native retirement
+clears that local obligation.
 
-A future streaming contract needs another real provider implementation, typed
-engine-specific connection data, allocation receipts, and recovery tests. It
-must keep credentials and host media policy out of arbitrary plugin payloads.
+GFN retains its existing credential-store names, data paths, device IDs, profiles,
+and account identities. It is enabled by default and can be disabled while idle,
+but it cannot be uninstalled. Core protocol 5 remains compatible with existing
+GFN envelopes. Provider control uses protocol 2, native JSON uses protocol 8,
+and the native C ABI is version 12.
 
-## Alternatives considered
+## Native plugins are trusted code, not a sandbox
 
-In-process native libraries would share crashes, memory corruption, and unsafe
-unloading with the application. They are not used.
+A plugin runs with the user's operating-system permissions. It can access user
+files, credentials available to that user, and the network. Clearing inherited
+environment variables prevents accidental secret handoff. It does not restrict
+what a malicious native executable can access.
 
-A WebAssembly sandbox could enforce narrower access than trusted executables.
-It would also need a supported runtime and brokered network, storage, and
-authentication APIs for provider integrations. This version chooses an explicit
-trusted-native tier rather than claiming subprocesses provide those guarantees.
+Inside Flatpak, children inherit OpenNOW's application permissions, including its
+keyring access. The application sandbox does not isolate a plugin from OpenNOW's
+own resources. Platform execution policies still apply.
 
-Moving GFN into another executable would add a process-failure boundary to its
-existing credential, push, and cleanup lifecycle. Keeping it built in isolates
-its ownership without changing that failure model.
+Inspection does not execute either role. Installation requires explicit consent
+and leaves the package disabled. Hashes identify the inspected bytes, not the
+publisher. Publisher metadata is self-declared. There is no marketplace,
+automatic download, or in-place package update in this implementation.
 
-For the public protocol and package format, see [Plugin API](plugins.md). For a
-standalone authoring example, see [Example catalog plugin](../examples/catalog-plugin/README.md).
+Protocol bounds, deadlines, process cleanup, and package pins protect application
+lifecycle behavior. They are not CPU, filesystem, or network restrictions on
+trusted native code. Existing GFN reporting consent does not authorize uploading
+another provider's account IDs, game IDs, bootstrap data, or input text.
+
+## Why not another player or an in-process library?
+
+The existing NVST and GFN WebRTC paths have NVIDIA-specific negotiation and
+input behavior. Changing a signaling URL does not turn them into a generic
+service client. A provider media worker owns that service-specific transport and
+supplies encoded media through a bounded protocol instead.
+
+This keeps decoding and presentation in the existing player while separating
+provider transport failures from the core process. An in-process library would
+share memory corruption and unsafe unloading with OpenNOW. A separate presenter
+would duplicate focus, overlays, scaling, and input ownership.
+
+A sandboxed runtime would need brokered storage, network, and authentication
+APIs. This implementation uses an explicit trusted-native tier rather than
+claiming that process separation provides those guarantees.
+
+The [provider reference](provider-plugins.md) describes the contracts. The
+[standalone demo](../examples/provider-plugin/README.md) describes authoring and
+packaging. The [catalog reference](plugins.md) remains the protocol-1 contract.

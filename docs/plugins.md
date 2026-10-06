@@ -1,8 +1,9 @@
-# Plugin API v1
+# Catalog plugin API v1
 
-This reference describes trusted community catalog plugins. It is not a
-streaming-provider SDK. The [module architecture](provider-modules.md) explains
-the ownership and security boundaries.
+This reference describes the retained catalog-only protocol. Playable services
+use [Provider plugin API v2](provider-plugins.md). The
+[module architecture](provider-modules.md) explains both execution models and
+their security boundaries.
 
 ## Application capabilities
 
@@ -35,7 +36,9 @@ between inspection and consent.
 
 Installation leaves the plugin disabled. An existing installed ID is rejected;
 version 1 has no package-replacement operation. Uninstall removes both the
-package and its private data. Required built-ins cannot be disabled or removed.
+package and its private data. The built-in GeForce NOW module can be disabled
+while idle, but it cannot be removed. Active sessions, unresolved allocation
+obligations, and native package pins prevent destructive changes.
 
 `plugins.changed` carries `{generation}`. Clients fetch `plugins.list` rather
 than applying a partial update to their cached descriptor list. A stale mutation
