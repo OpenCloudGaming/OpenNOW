@@ -8,6 +8,9 @@ ItemDelegate {
     property string title: String(rowData.t || qsTr("Setting"))
     property string description: String(rowData.d || "")
     property string value: String(rowData.v || "")
+    readonly property bool plainText: rowData.plainText === true
+    readonly property int textFormat: plainText ? Text.PlainText : Text.AutoText
+    function rowText(text) { return plainText ? text : I18n.source(text, I18n.revision) }
     property bool currentItem: false
     property bool ringVisible: activeFocus || currentItem
     property bool parked: false
@@ -25,9 +28,9 @@ ItemDelegate {
     implicitHeight: cardRow ? Number(rowData.height || 120)
         : Math.max(Number(rowData.height || 84), textColumn.implicitHeight + 24)
     focusPolicy: root.controlType === "info" ? Qt.NoFocus : Qt.StrongFocus
-    Accessible.name: I18n.source(title, I18n.revision)
-    Accessible.description: I18n.source(description, I18n.revision)
-        + (value.length > 0 ? qsTr(". Current value: ") + I18n.source(value, I18n.revision) : "")
+    Accessible.name: rowText(title)
+    Accessible.description: rowText(description)
+        + (value.length > 0 ? qsTr(". Current value: ") + rowText(value) : "")
     Accessible.role: Accessible.Button
     padding: 0
 
@@ -86,7 +89,8 @@ ItemDelegate {
                 width: parent.width
                 height: root.compact ? 24 : 26
                 verticalAlignment: Text.AlignVCenter
-                text: I18n.source(root.title, I18n.revision)
+                text: root.rowText(root.title)
+                textFormat: root.textFormat
                 color: root.controlType === "info" ? Theme.textMuted : Theme.label
                 font.family: Theme.displayFont
                 font.pixelSize: root.compact ? 18 : 21
@@ -99,7 +103,8 @@ ItemDelegate {
                 y: root.compact ? 24 : 29
                 width: parent.width
                 visible: root.description.length > 0
-                text: I18n.source(root.description, I18n.revision)
+                text: root.rowText(root.description)
+                textFormat: root.textFormat
                 color: Theme.textMuted
                 font.family: Theme.bodyFont
                 font.pixelSize: root.compact ? 13 : 16
@@ -134,7 +139,8 @@ ItemDelegate {
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
                 width: Math.min(460, implicitWidth)
-                text: I18n.source(root.value, I18n.revision)
+                text: root.rowText(root.value)
+                textFormat: root.textFormat
                 color: Theme.textMuted
                 font.family: Theme.displayFont
                 font.pixelSize: 18
@@ -245,7 +251,8 @@ ItemDelegate {
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
                     width: 96
-                    text: I18n.source(root.value, I18n.revision)
+                    text: root.rowText(root.value)
+                    textFormat: root.textFormat
                     color: Theme.label
                     font.family: Theme.displayFont
                     font.pixelSize: 19
@@ -303,7 +310,8 @@ ItemDelegate {
                         height: 24
                         verticalAlignment: Text.AlignVCenter
                         horizontalAlignment: Text.AlignHCenter
-                        text: root.value !== "" ? I18n.source(root.value, I18n.revision) : "—"
+                        text: root.value !== "" ? root.rowText(root.value) : "—"
+                        textFormat: root.textFormat
                         color: Theme.label
                         elide: Text.ElideRight
                         font.family: Theme.displayFont
@@ -364,7 +372,8 @@ ItemDelegate {
                     anchors.right: chevron.left
                     anchors.rightMargin: 12
                     anchors.verticalCenter: parent.verticalCenter
-                    text: root.value !== "" ? I18n.source(root.value, I18n.revision) : "—"
+                    text: root.value !== "" ? root.rowText(root.value) : "—"
+                    textFormat: root.textFormat
                     color: root.rowData.danger ? Theme.coral : Theme.label
                     font.family: Theme.displayFont
                     font.pixelSize: 18

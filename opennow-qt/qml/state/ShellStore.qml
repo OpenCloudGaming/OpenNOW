@@ -105,6 +105,15 @@ QtObject {
     readonly property bool onboardingAwdlReady: !onboardingAwdlController.busy
         && [MacAwdlController.Unsupported, MacAwdlController.Unavailable, MacAwdlController.Disabled]
             .indexOf(onboardingAwdlController.state) >= 0
+    property PluginState pluginOwnerState: PluginState {
+        id: pluginOwner
+        coreClient: CoreClient
+        ready: root.ready
+        available: (CoreClient.capabilities || []).indexOf("plugins.v1") >= 0
+        catalogAvailable: (CoreClient.capabilities || []).indexOf("sources.catalog.v1") >= 0
+    }
+    readonly property alias plugins: pluginOwner.plugins
+    readonly property alias pluginsAvailable: pluginOwner.available
     property OnboardingState onboardingOwnerState: OnboardingState {
         id: onboardingOwner
         coreClient: CoreClient
@@ -963,6 +972,7 @@ QtObject {
         ensureNativeRuntimeReady()
         updaterStateRequestId = CoreClient.request("updater.state.get", {})
         socialCapabilitiesRequestId = CoreClient.request("social.capabilities.get", {})
+        pluginOwner.refresh()
         refreshCatalog()
     }
 
@@ -3574,6 +3584,7 @@ QtObject {
         }
         function onResponseReceived(requestId, result) {
             if (settingsOwner.acceptResponse(requestId, result)) return
+            if (pluginOwner.acceptResponse(requestId, result)) return
             const ownedTermination = root.ownedSessionTermination(result)
             if (ownedTermination) {
                 root.finishRemoteSession(ownedTermination)
@@ -4005,6 +4016,7 @@ QtObject {
         }
         function onRequestFailed(requestId, code, message) {
             if (settingsOwner.acceptFailure(requestId, message)) return
+            if (pluginOwner.acceptFailure(requestId, code, message)) return
             if (onboardingOwner.acceptFailure(requestId, message)) {
                 return
             } else if (requestId === root.storePresentationRequestId && requestId !== "") {
@@ -4216,7 +4228,9 @@ QtObject {
                     root.finishRemoteSession(payload.termination)
                 else
                     root.acceptStreamingSession(payload.session || null)
-            } else if (name === "account.push.changed")
+            } else if (name === "plugins.changed")
+                pluginOwner.acceptChanged(payload)
+            else if (name === "account.push.changed")
                 root.acceptPushInvalidation(payload)
             else if (name === "streamer.changed")
                 root.acceptStreamerSnapshot(payload.streamer || payload || null)

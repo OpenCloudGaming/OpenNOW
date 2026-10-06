@@ -596,7 +596,7 @@ impl StreamerService {
                     "CloudMatch returned a native allocation for this WebRTC session",
                 ));
             }
-            if !crate::cloudmatch::has_webrtc_endpoint(&session) {
+            if !crate::playback_endpoints::has_webrtc_endpoint(&session) {
                 return Err(invalid(
                     "The WebRTC session has no valid signaling endpoint",
                 ));

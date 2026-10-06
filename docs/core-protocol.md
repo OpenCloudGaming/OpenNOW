@@ -8,6 +8,12 @@ ambiguous state.
 
 ## Handshake
 
+Plugin-capable cores also advertise the optional `plugins.v1` and
+`sources.catalog.v1` capabilities. Their additive management and catalog-preview
+RPCs are documented in [Plugin API v1](plugins.md). They do not change existing
+GeForce NOW account or session envelopes and do not make native stream contexts
+an external plugin API.
+
 The first shell request is always:
 
 ```json

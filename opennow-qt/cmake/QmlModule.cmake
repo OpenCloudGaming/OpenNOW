@@ -314,6 +314,7 @@ qt_add_qml_module(opennow-qt
         qml/desktop/settings/pages/DesktopSettingsInterfacePage.qml
         qml/desktop/settings/pages/DesktopSettingsLookPage.qml
         qml/desktop/settings/pages/DesktopSettingsNetworkPage.qml
+        qml/desktop/settings/pages/DesktopSettingsPluginsPage.qml
         qml/desktop/settings/pages/DesktopSettingsProfilePage.qml
         qml/desktop/settings/pages/DesktopSettingsRecordingPage.qml
         qml/desktop/settings/pages/DesktopSettingsShortcutsPage.qml
@@ -375,6 +376,7 @@ qt_add_qml_module(opennow-qt
         qml/state/BackgroundStreamState.qml
         qml/state/ConnectionHealthState.qml
         qml/state/settings/OnboardingState.qml
+        qml/state/plugins/PluginState.qml
         qml/theme/Theme.qml
     RESOURCES
         ${OPENNOW_CONTROLLER_ICON_FILES}
@@ -393,6 +395,7 @@ qt_add_qml_module(opennow-qt
         res/icons/settings-network.svg
         res/icons/settings-themes.svg
         res/icons/settings-advanced.svg
+        res/icons/settings-plugins.svg
         res/icons/store-steam.svg
         res/icons/store-xbox.svg
         res/icons/store-gog.svg

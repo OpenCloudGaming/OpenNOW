@@ -17,6 +17,206 @@ std::string field(const std::string &json, const std::string &name)
     const auto end = json.find('"', valueStart);
     return end == std::string::npos ? std::string{} : json.substr(valueStart, end - valueStart);
 }
+
+std::string paramField(const std::string &json, const std::string &name)
+{
+    const auto params = json.find("\"params\":");
+    return params == std::string::npos ? std::string{} : field(json.substr(params), name);
+}
+
+bool paramBool(const std::string &json, const std::string &name)
+{
+    const auto params = json.find("\"params\":");
+    return params != std::string::npos
+        && json.find("\"" + name + "\":true", params) != std::string::npos;
+}
+
+long paramNumber(const std::string &json, const std::string &name, long fallback)
+{
+    const auto params = json.find("\"params\":");
+    if (params == std::string::npos) return fallback;
+    const auto marker = "\"" + name + "\":";
+    const auto start = json.find(marker, params);
+    if (start == std::string::npos) return fallback;
+    try {
+        return std::stol(json.substr(start + marker.size()));
+    } catch (...) {
+        return fallback;
+    }
+}
+
+struct FakePluginRegistry {
+    static constexpr const char *GfnId = "org.opennow.geforce-now";
+    static constexpr const char *ExampleId = "org.opennow.example.catalog";
+    long generation = 1;
+    bool installed = false;
+    bool enabled = false;
+    long sourceGeneration = 0;
+    bool restarting = false;
+    bool staleSourceSent = false;
+    std::string token;
+
+    static std::string descriptor(const std::string &id, const std::string &name, const std::string &publisher,
+                                  const std::string &description, bool builtin, bool on)
+    {
+        return "{\"id\":\"" + id + "\",\"name\":\"" + name + "\",\"version\":\"" + (builtin ? "0.9.15" : "1.0.0")
+            + "\",\"publisher\":\"" + publisher + "\",\"description\":\"" + description
+            + "\",\"builtin\":" + (builtin ? "true" : "false") + ",\"required\":" + (builtin ? "true" : "false")
+            + ",\"enabled\":" + (on ? "true" : "false") + ",\"state\":\"" + (on ? "ready" : "disabled")
+            + "\",\"capabilities\":[\"catalog.v1\"],\"trust\":\"" + (builtin ? "builtin" : "unsigned-native")
+            + "\",\"lastError\":null}";
+    }
+    std::string example(bool on) const
+    {
+        return descriptor(ExampleId, "Example Catalog", "OpenNOW example",
+                          "Lists sample titles to show how a catalog plugin works.", false, on);
+    }
+    std::string snapshot() const
+    {
+        std::string plugins = descriptor(GfnId, "GeForce NOW", "OpenNOW",
+                                         "The built-in GeForce NOW catalog and streaming service.", true, true);
+        if (installed) {
+            auto entry = example(enabled);
+            const auto state = entry.find("\"state\":\"ready\"");
+            if (restarting && state != std::string::npos) entry.replace(state, 15, "\"state\":\"starting\"");
+            plugins += "," + entry;
+        }
+        return "{\"generation\":" + std::to_string(generation) + ",\"plugins\":[" + plugins + "]}";
+    }
+};
+
+void respond(const std::string &id, const std::string &result)
+{
+    std::cout << "{\"type\":\"response\",\"id\":\"" << id << "\",\"ok\":true,\"result\":" << result << "}\n" << std::flush;
+}
+
+void fail(const std::string &id, const std::string &code, const std::string &message)
+{
+    std::cout << "{\"type\":\"response\",\"id\":\"" << id << "\",\"ok\":false,\"error\":{\"code\":\"" << code
+              << "\",\"message\":\"" << message << "\"}}\n" << std::flush;
+}
+
+void pluginsChanged(const FakePluginRegistry &registry)
+{
+    std::cout << "{\"type\":\"event\",\"name\":\"plugins.changed\",\"payload\":{\"generation\":"
+              << registry.generation << "}}\n" << std::flush;
+}
+
+bool handlePluginRequest(FakePluginRegistry &registry, const std::string &line, const std::string &id,
+                         const std::string &method)
+{
+    if (method == "plugins.list") {
+        respond(id, registry.snapshot());
+    } else if (method == "plugins.install.inspect") {
+        const auto path = paramField(line, "path");
+        if (path.rfind("file://", 0) != 0 && path.rfind("/", 0) != 0) {
+            fail(id, "invalid_package_path", "Choose a local plugin package file.");
+        } else if (registry.installed) {
+            fail(id, "plugin_exists", "This plugin is already installed. Remove it before installing another copy.");
+        } else {
+            registry.token = "fixture-token-" + std::to_string(registry.generation);
+            respond(id, "{\"generation\":" + std::to_string(registry.generation) + ",\"inspection\":{\"token\":\""
+                + registry.token + "\",\"expiresAt\":\"2026-10-06T23:59:59Z\",\"plugin\":" + registry.example(false)
+                + ",\"packageSha256\":\"9f2c4e1b7a6d3c5e8f0a1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c2d3e4f5a6\"}}");
+        }
+    } else if (method == "plugins.install.commit") {
+        if (!paramBool(line, "consent") || paramField(line, "token") != registry.token || registry.token.empty()) {
+            fail(id, "consent_required", "Confirm the plugin warning before installing.");
+        } else if (paramNumber(line, "expectedGeneration", -1) != registry.generation) {
+            fail(id, "stale_generation", "Your plugins changed. Choose the package again.");
+        } else {
+            registry.token.clear();
+            registry.installed = true;
+            registry.enabled = false;
+            ++registry.generation;
+            respond(id, registry.snapshot());
+            pluginsChanged(registry);
+        }
+    } else if (method == "test.plugins.restart") {
+        registry.restarting = !registry.restarting;
+        if (!registry.restarting) ++registry.sourceGeneration;
+        ++registry.generation;
+        respond(id, "{}");
+        pluginsChanged(registry);
+    } else if (method == "plugins.install.cancel") {
+        registry.token.clear();
+        respond(id, "{\"cancelled\":true}");
+    } else if (method == "plugins.setEnabled") {
+        const auto target = paramField(line, "id");
+        if (target == FakePluginRegistry::GfnId) {
+            fail(id, "plugin_required", "GeForce NOW is required and can't be turned off.");
+        } else if (target != FakePluginRegistry::ExampleId || !registry.installed) {
+            fail(id, "plugin_not_found", "That plugin is not installed.");
+        } else if (paramNumber(line, "expectedGeneration", -1) != registry.generation) {
+            fail(id, "stale_generation", "Your plugins changed. Try again.");
+        } else {
+            registry.enabled = paramBool(line, "enabled");
+            if (registry.enabled) ++registry.sourceGeneration;
+            ++registry.generation;
+            respond(id, registry.snapshot());
+            pluginsChanged(registry);
+        }
+    } else if (method == "plugins.uninstall") {
+        if (paramField(line, "id") == FakePluginRegistry::GfnId) {
+            fail(id, "plugin_required", "GeForce NOW is built in and can't be removed.");
+        } else if (!registry.installed || !paramBool(line, "confirmed")) {
+            fail(id, "plugin_not_found", "That plugin is not installed.");
+        } else {
+            registry.installed = false;
+            registry.enabled = false;
+            ++registry.generation;
+            respond(id, registry.snapshot());
+            pluginsChanged(registry);
+        }
+    } else if (method == "sources.catalog.page") {
+        const auto source = paramField(line, "sourceId");
+        const bool example = source == FakePluginRegistry::ExampleId && registry.installed && registry.enabled
+            && !registry.restarting;
+        if (source != FakePluginRegistry::GfnId && !example) {
+            fail(id, "source_unavailable", "This plugin is not running.");
+            return true;
+        }
+        const auto query = paramField(line, "query");
+        if (query == "stale-source" && example && !registry.staleSourceSent) {
+            registry.staleSourceSent = true;
+            fail(id, "stale_source", "The plugin restarted. Try again.");
+            return true;
+        }
+        if (query == "special-ids") {
+            std::string items;
+            for (const char *localId : {"__proto__", "constructor", "toString", "hasOwnProperty"}) {
+                if (!items.empty()) items += ",";
+                items += "{\"id\":{\"sourceId\":\"" + source + "\",\"localId\":\"" + localId
+                    + "\"},\"title\":\"Title " + localId + "\"}";
+            }
+            respond(id, "{\"sourceId\":\"" + source + "\",\"generation\":" + std::to_string(example ? registry.sourceGeneration : 1)
+                + ",\"items\":[" + items + "],\"nextCursor\":null,\"coverage\":\"complete\"}");
+            return true;
+        }
+        const auto cursor = paramField(line, "cursor");
+        const long limit = paramNumber(line, "limit", 20);
+        const int total = example ? 45 : 3;
+        int offset = cursor.rfind("page-", 0) == 0 ? std::atoi(cursor.c_str() + 5) : 0;
+        std::string items;
+        int emitted = 0;
+        int index = offset;
+        for (; index < total && emitted < limit; ++index) {
+            const auto title = (example ? std::string{"Example title "} : std::string{"Fixture game "}) + std::to_string(index + 1);
+            if (!query.empty() && query != "stale-source" && title.find(query) == std::string::npos) continue;
+            if (!items.empty()) items += ",";
+            items += "{\"id\":{\"sourceId\":\"" + source + "\",\"localId\":\"" + (example ? "demo-" : "gfn-")
+                + std::to_string(index + 1) + "\"},\"title\":\"" + title + "\"}";
+            ++emitted;
+        }
+        const bool more = index < total && query.empty();
+        respond(id, "{\"sourceId\":\"" + source + "\",\"generation\":" + std::to_string(example ? registry.sourceGeneration : 1)
+            + ",\"items\":[" + items + "],\"nextCursor\":" + (more ? "\"page-" + std::to_string(index) + "\"" : std::string{"null"})
+            + ",\"coverage\":\"" + (example ? (more ? "partial" : "complete") : "unknown") + "\"}");
+    } else {
+        return false;
+    }
+    return true;
+}
 }
 
 int main(int argc, char **argv)
@@ -39,6 +239,8 @@ int main(int argc, char **argv)
     if (argc == 3 && std::string(argv[1]) == "--eof-marker") {
         eofMarker = argv[2];
     }
+    FakePluginRegistry pluginRegistry;
+    const bool pluginsEnabled = std::getenv("OPENNOW_TEST_PLUGINS") != nullptr;
     std::string line;
     while (std::getline(std::cin, line)) {
         const auto id = field(line, "id");
@@ -56,7 +258,16 @@ int main(int argc, char **argv)
                       << "\",\"ok\":true,\"result\":{\"protocolVersion\":" << protocolVersion
                       << ",\"capabilities\":[\"settings\",\"catalog.libraryPages.v1\",\"catalog.metadata.v1\",\"account.syncObservation.v1\",\"catalog.languages.v1\",\"nativeStreamer.v7\",\"nativeStreamer.ownedNvstNegotiation\""
                       << (std::getenv("OPENNOW_TEST_NO_QUEUE_CAPABILITY") ? "" : ",\"queue.servers.v1\"")
+                      << (pluginsEnabled ? ",\"plugins.v1\",\"sources.catalog.v1\"" : "")
+                      << [] {
+                             if (!std::getenv("OPENNOW_TEST_CAPABILITY_FLOOD")) return std::string{};
+                             std::string extra = ",\"settings\",\"" + std::string(200, 'x') + "\",42";
+                             for (int index = 0; index < 200; ++index) extra += ",\"flood." + std::to_string(index) + "\"";
+                             return extra;
+                         }()
                       << "]}}\n" << std::flush;
+        } else if (pluginsEnabled && handlePluginRequest(pluginRegistry, line, id, method)) {
+            continue;
         } else if (method == "updater.startup.ack") {
             ++startupAcknowledgements;
             std::cout << "{\"type\":\"response\",\"id\":\"" << id

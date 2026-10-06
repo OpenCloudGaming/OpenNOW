@@ -3,7 +3,10 @@ use std::collections::HashSet;
 
 const MANIFEST: &str = include_str!("../contracts/legacy-open-now-api.json");
 const SCHEMA: &str = include_str!("../contracts/legacy-open-now-api.schema.json");
-const CORE_DISPATCH: &str = include_str!("../src/main.rs");
+const CORE_DISPATCH: &str = concat!(
+    include_str!("../src/main.rs"),
+    include_str!("../src/sources/gfn/compat.rs")
+);
 
 #[test]
 fn legacy_api_manifest_is_complete_unique_and_fixture_backed() {

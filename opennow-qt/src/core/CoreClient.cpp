@@ -186,6 +186,14 @@ CoreClient::~CoreClient()
 QString CoreClient::state() const { return m_state; }
 QString CoreClient::lastError() const { return m_lastError; }
 int CoreClient::protocolVersion() const { return CurrentProtocolVersion; }
+QStringList CoreClient::capabilities() const { return m_capabilities; }
+
+void CoreClient::setCapabilities(const QStringList &capabilities)
+{
+    if (m_capabilities == capabilities) return;
+    m_capabilities = capabilities;
+    emit capabilitiesChanged();
+}
 
 bool CoreClient::start(const QString &program, const QStringList &arguments)
 {
@@ -419,6 +427,8 @@ void CoreClient::setState(const QString &state)
 {
     if (m_state == state) return;
     m_state = state;
+    if (state != u"ready"_s)
+        setCapabilities({});
     if (state == u"failed"_s || state == u"stopping"_s || state == u"stopped"_s) {
         m_events.clear();
         m_droppedEvents = 0;
@@ -488,8 +498,20 @@ void CoreClient::processLine(const QByteArray &line)
                         return;
                     }
                 }
+                QStringList negotiated;
+                for (const auto &capability : capabilities) {
+                    const auto name = capability.toString();
+                    if (!capability.isString() || name.isEmpty() || name.size() > MaximumCapabilityLength
+                            || negotiated.contains(name))
+                        continue;
+                    if (negotiated.size() >= MaximumCapabilities)
+                        break;
+                    negotiated.append(name);
+                }
                 m_restartAttempts = 0;
+                m_capabilities = negotiated;
                 setState(u"ready"_s);
+                emit capabilitiesChanged();
                 acknowledgeUpdateStartup();
             }
             emit responseReceived(id, result);

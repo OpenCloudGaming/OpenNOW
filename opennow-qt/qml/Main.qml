@@ -640,6 +640,8 @@ ApplicationWindow {
             return settingsAdvancedScreen
         if (route === "settings-advanced-dropdown")
             return settingsAdvancedDropdownScreen
+        if (route === "settings-plugins")
+            return settingsPluginsScreen
         if (route === "game-detail")
             return gameDetailScreen
         if (route === "game-detail-platform-dropdown")
@@ -1103,6 +1105,7 @@ ApplicationWindow {
                 "settings-themes": qsTr("Theme settings"),
                 "settings-advanced": qsTr("Advanced settings"),
                 "settings-advanced-dropdown": qsTr("Advanced setting choices"),
+                "settings-plugins": qsTr("Plugin settings"),
                 "game-detail": qsTr("Game details"),
                 "sign-in": qsTr("Sign in"),
                 "joining": qsTr("Controller order"),
@@ -1197,6 +1200,7 @@ ApplicationWindow {
     Component { id: settingsThemesScreen; SettingsScreen { initialSection: 5 } }
     Component { id: settingsAdvancedScreen; SettingsScreen { initialSection: 6 } }
     Component { id: settingsAdvancedDropdownScreen; SettingsScreen { initialSection: 6; initialDropdownOpen: true } }
+    Component { id: settingsPluginsScreen; SettingsScreen { initialSection: 8 } }
     Component { id: gameDetailScreen; GameDetailScreen {} }
     Component {
         id: gameDetailPlatformDropdownScreen

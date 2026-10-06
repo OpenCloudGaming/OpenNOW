@@ -454,6 +454,56 @@ private slots:
         QVERIFY(responses.isEmpty());
     }
 
+    void exposesNegotiatedCapabilitiesAndClearsThemWhenStopped()
+    {
+        const auto previous = qgetenv("OPENNOW_TEST_PLUGINS");
+        const auto restore = qScopeGuard([previous] {
+            if (previous.isNull()) qunsetenv("OPENNOW_TEST_PLUGINS");
+            else qputenv("OPENNOW_TEST_PLUGINS", previous);
+        });
+        qunsetenv("OPENNOW_TEST_PLUGINS");
+        {
+            CoreClient client;
+            QVERIFY(client.capabilities().isEmpty());
+            QVERIFY(client.start(fakeCorePath()));
+            QTRY_COMPARE_WITH_TIMEOUT(client.state(), QStringLiteral("ready"), 2'000);
+            QVERIFY(client.capabilities().contains(QStringLiteral("queue.servers.v1")));
+            QVERIFY(!client.capabilities().contains(QStringLiteral("plugins.v1")));
+        }
+        qputenv("OPENNOW_TEST_PLUGINS", "1");
+        CoreClient client;
+        QSignalSpy changes(&client, &CoreClient::capabilitiesChanged);
+        QVERIFY(client.start(fakeCorePath()));
+        QTRY_COMPARE_WITH_TIMEOUT(client.state(), QStringLiteral("ready"), 2'000);
+        QVERIFY(client.capabilities().contains(QStringLiteral("plugins.v1")));
+        QVERIFY(client.capabilities().contains(QStringLiteral("sources.catalog.v1")));
+        QCOMPARE(changes.count(), 1);
+        client.stop();
+        QTRY_VERIFY_WITH_TIMEOUT(client.state() != QStringLiteral("ready"), 2'000);
+        QVERIFY(client.capabilities().isEmpty());
+        QCOMPARE(changes.count(), 2);
+    }
+
+    void boundsNegotiatedCapabilities()
+    {
+        const auto previous = qgetenv("OPENNOW_TEST_CAPABILITY_FLOOD");
+        const auto restore = qScopeGuard([previous] {
+            if (previous.isNull()) qunsetenv("OPENNOW_TEST_CAPABILITY_FLOOD");
+            else qputenv("OPENNOW_TEST_CAPABILITY_FLOOD", previous);
+        });
+        qputenv("OPENNOW_TEST_CAPABILITY_FLOOD", "1");
+        CoreClient client;
+        QVERIFY(client.start(fakeCorePath()));
+        QTRY_COMPARE_WITH_TIMEOUT(client.state(), QStringLiteral("ready"), 2'000);
+        const auto capabilities = client.capabilities();
+        QCOMPARE(capabilities.size(), CoreClient::MaximumCapabilities);
+        QCOMPARE(capabilities.count(QStringLiteral("settings")), 1);
+        QVERIFY(std::all_of(capabilities.cbegin(), capabilities.cend(), [](const QString &name) {
+            return !name.isEmpty() && name.size() <= CoreClient::MaximumCapabilityLength;
+        }));
+        QVERIFY(capabilities.contains(QStringLiteral("queue.servers.v1")));
+    }
+
     void rejectsCatalogRequestsDuringHandshakeAndProtocolFailure()
     {
         const auto previous = qgetenv("OPENNOW_TEST_OLD_CORE");

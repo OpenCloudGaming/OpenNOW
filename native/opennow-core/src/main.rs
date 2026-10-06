@@ -1,46 +1,34 @@
 #![recursion_limit = "512"]
 
-mod account_connections;
 mod analytics;
 mod artwork_cache;
 mod bug_reports;
-mod catalog_types;
-mod cloudmatch;
-mod community;
-mod console_profiles;
-mod credential_vault;
-mod device_identity;
 mod diagnostics;
 mod discord;
 mod frame_rate;
-mod gfn;
 mod language;
 mod media;
 mod network;
-mod network_test;
-mod persistent_storage;
+mod playback_endpoints;
+mod plugins;
 mod proxy;
-mod push_registry;
-mod queue_servers;
 mod reports;
 mod requests;
-mod server_vpc_cache;
+mod service_error;
 mod settings;
-mod store_cache;
-mod store_catalog_page;
-mod store_index;
-mod store_requests;
+mod sources;
 mod streamer;
 mod thanks;
 mod updater;
 mod version;
 
 use fs2::FileExt;
-use gfn::GfnService;
 use opennow_core::update_apply;
 use rand::RngCore;
 use serde_json::{Map, Value, json};
 use settings::{SettingsStore, resolve_data_dir};
+use sources::SourceHost;
+use sources::contract::{Completion, ReportingEffect, SessionOccupancy};
 use std::env;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -57,20 +45,26 @@ static PROFILE_LOCK: OnceLock<std::fs::File> = OnceLock::new();
 struct AppCore {
     session_update_gate: Mutex<()>,
     artwork: artwork_cache::ArtworkCache,
-    settings: Mutex<SettingsStore>,
-    gfn: Arc<GfnService>,
-    streamer: StreamerService,
-    diagnostics: diagnostics::DiagnosticsService,
+    settings: Arc<Mutex<SettingsStore>>,
+    sources: Arc<SourceHost>,
+    streamer: Arc<StreamerService>,
+    diagnostics: Arc<diagnostics::DiagnosticsService>,
     media: media::MediaService,
     updater: updater::UpdaterService,
-    push: Mutex<push_registry::PushRegistry>,
-    community: community::CommunityService,
     thanks: thanks::ThanksService,
     discord: discord::DiscordService,
     reports: reports::ReportsClient,
     analytics: Arc<analytics::AnalyticsService>,
     pending_reports_retried: AtomicBool,
     bug_reports: bug_reports::BugReporter,
+}
+
+struct SourceShutdown(Arc<SourceHost>);
+
+impl Drop for SourceShutdown {
+    fn drop(&mut self) {
+        self.0.shutdown();
+    }
 }
 
 fn main() {
@@ -123,29 +117,38 @@ fn run() -> Result<(), String> {
         })
         .map_err(|error| error.to_string())?;
     let reports_api = reports::api_base_from_env();
-    let gfn = Arc::new(GfnService::new(data_dir.clone())?);
-    let push = Mutex::new(push_registry::PushRegistry::new(
-        Arc::clone(&gfn),
-        output_tx.clone(),
-        data_dir.clone(),
+    let settings = Arc::new(Mutex::new(
+        SettingsStore::load(Some(data_dir.clone())).map_err(|error| error.to_string())?,
     ));
+    let streamer = Arc::new(StreamerService::new());
+    let diagnostics = Arc::new(
+        diagnostics::DiagnosticsService::new(&data_dir)
+            .map_err(|error| format!("Could not initialize diagnostics: {error}"))?,
+    );
+    let builtin = Arc::new(sources::gfn::GfnModule::open(
+        data_dir.clone(),
+        output_tx.clone(),
+        Arc::clone(&settings),
+        Arc::clone(&streamer),
+        Arc::clone(&diagnostics),
+    )?);
+    let plugins = Arc::new(
+        plugins::PluginManager::open(&data_dir, output_tx.clone())
+            .map_err(|error| error.to_string())?,
+    );
+    let sources = Arc::new(SourceHost::new(builtin, plugins));
+    let initializing_sources = SourceShutdown(Arc::clone(&sources));
     let core = Arc::new(AppCore {
         session_update_gate: Mutex::new(()),
         artwork: artwork_cache::ArtworkCache::new(&data_dir, output_tx.clone()),
-        settings: Mutex::new(
-            SettingsStore::load(Some(data_dir.clone())).map_err(|error| error.to_string())?,
-        ),
-        gfn,
-        streamer: StreamerService::new(),
-        diagnostics: diagnostics::DiagnosticsService::new(&data_dir)
-            .map_err(|error| format!("Could not initialize diagnostics: {error}"))?,
+        settings,
+        sources,
+        streamer,
+        diagnostics,
         media: media::MediaService::new()
             .map_err(|error| format!("Could not initialize media library: {error}"))?,
         updater: updater::UpdaterService::new(&data_dir)
             .map_err(|error| format!("Could not initialize updater: {error}"))?,
-        push,
-        community: community::CommunityService::new()
-            .map_err(|error| format!("Could not initialize community services: {error}"))?,
         thanks: thanks::ThanksService::new()
             .map_err(|error| format!("Could not initialize acknowledgements: {error}"))?,
         discord: discord::DiscordService::new(),
@@ -158,12 +161,12 @@ fn run() -> Result<(), String> {
         pending_reports_retried: AtomicBool::new(false),
         bug_reports: bug_reports::BugReporter::default(),
     });
+    let _source_shutdown = initializing_sources;
     if !reporting_enabled(&core) {
         core.analytics.wipe();
         core.reports.clear_pending();
     }
     let analytics_finished = core.analytics.start()?;
-    reconcile_push(&core);
     let requests = Arc::new(requests::Requests::default());
     let stdin = io::stdin();
 
@@ -209,101 +212,121 @@ fn run() -> Result<(), String> {
         let worker_output = output_tx.clone();
         thread::Builder::new().name(format!("opennow-rpc-{id}")).spawn(move || {
             let started = Instant::now();
-            let result = requests::scope(permit.token.clone(), || {
-                requests::check().map_err(|error| (error.code.to_owned(), error.message))?;
+            let completion = requests::scope(permit.token.clone(), || {
+                if let Err(error) = requests::check() {
+                    return Completion::from(Err((error.code.to_owned(), error.message)));
+                }
                 dispatch(&method, &params, &worker_core, &worker_output)
             });
-            let outcome = match &result {
+            let outcome = match &completion.result {
                 Ok(_) => "ok",
                 Err((code, _)) => code.as_str(),
             };
-            worker_core.diagnostics.record(
-                "rpc",
-                &method,
-                format!("outcome={outcome} durationMs={}", started.elapsed().as_millis()),
-            );
-            observe_reporting(&worker_core, &worker_output, &method, &params, &result);
-            let was_cancelled = permit.token.cancelled();
-            if method == "session.create"
-                && let Err((code, message)) = &result
-                && code == "session_cleanup_pending"
-            {
-                let _ = worker_output.send(json!({"type":"event","name":"session.cleanup.pending",
-                    "payload":{"code":code,"message":message}}));
-            }
-            if method == "session.create"
-                && let Ok((value, _)) = &result
-                && let Some(session_id) = value["session"]["sessionId"].as_str()
-            {
-                let delivered = !was_cancelled && worker_output.send(json!({"type":"response", "id":id, "ok":true, "result":value})).is_ok();
-                let accepted = delivered && permit.token.await_acceptance(std::time::Duration::from_secs(10));
-                let cleanup = worker_core.gfn.finish_session_create(session_id, accepted);
-                worker_core.diagnostics.record("session", "allocation-handoff", format!(
-                    "accepted={accepted} cleanup={}", cleanup.as_ref().map_or_else(|error| error.code, |()| "ok")
-                ));
-                if let Err(error) = cleanup {
-                    let _ = worker_output.send(json!({"type":"event","name":"session.cleanup.pending","payload":{
-                        "sessionId":session_id,"code":error.code,"message":"The cancelled cloud session could not be closed. End it before starting another game."
-                    }}));
-                }
-                return;
-            }
+            worker_core.diagnostics.record("rpc", &method, format!("outcome={outcome} durationMs={}", started.elapsed().as_millis()));
+            for effect in &completion.reporting { observe_module_reporting(&worker_core, &worker_output, effect); }
+            observe_host_reporting(&worker_core, &worker_output, &method, &params, &completion.result);
+            let result = &completion.result;
             if matches!(method.as_str(), "updater.check" | "updater.download" | "updater.install") {
                 if let Err((_, message)) = &result {
                     worker_core.updater.request_failed(message);
                 }
                 let _ = worker_output.send(json!({"type":"event", "name":"updater.changed", "payload":worker_core.updater.state()}));
             }
-            if matches!(
-                method.as_str(),
-                "auth.device.complete"
-                    | "auth.logout"
-                    | "auth.accounts.logoutAll"
-                    | "auth.accounts.switch"
-                    | "auth.accounts.remove"
-                    | "settings.set"
-            ) {
-                reconcile_push(&worker_core);
-            }
-            if !was_cancelled {
-                match result {
-                    Ok((value, event)) => {
-                        if let Some(("settings.changed", payload)) = &event {
-                            let _ = worker_output.send(json!({"type":"event", "name":"settings.changed", "payload":payload}));
-                        }
-                        let _ = worker_output.send(json!({"type":"response", "id":id, "ok":true, "result":value}));
-                        if let Some((name, payload)) = event && name != "settings.changed" {
-                            let _ = worker_output.send(json!({"type":"event", "name":name, "payload":payload}));
-                        }
-                    }
-                    Err((code, message)) => {
-                        let _ = worker_output.send(json!({"type":"response", "id":id, "ok":false, "error":{"code":code, "message":message}}));
-                    }
-                }
-            }
+            deliver_completion(completion, &id, &permit.token, &worker_output, &worker_core.diagnostics);
             drop(permit);
         }).map_err(|error| error.to_string())?;
     }
+    core.sources.shutdown();
     core.analytics.shutdown(&analytics_finished);
     Ok(())
 }
 
 type DispatchResult = Result<(Value, Option<(&'static str, Value)>), (String, String)>;
 
-fn update_session_idle(session: &Value, streamer: &Value) -> bool {
-    session.get("session") == Some(&Value::Null)
+fn deliver_completion(
+    completion: Completion,
+    id: &str,
+    cancellation: &requests::Cancellation,
+    output: &mpsc::Sender<Value>,
+    diagnostics: &diagnostics::DiagnosticsService,
+) {
+    for (name, payload) in completion.required_events {
+        let _ = output.send(json!({"type":"event","name":name,"payload":payload}));
+    }
+    let mut delivered = false;
+    if !cancellation.cancelled() {
+        match completion.result {
+            Ok((value, event)) => {
+                if let Some(("settings.changed", payload)) = &event {
+                    let _ = output
+                        .send(json!({"type":"event","name":"settings.changed","payload":payload}));
+                }
+                delivered = output
+                    .send(json!({"type":"response","id":id,"ok":true,"result":value}))
+                    .is_ok();
+                if let Some((name, payload)) = event
+                    && name != "settings.changed"
+                {
+                    let _ = output.send(json!({"type":"event","name":name,"payload":payload}));
+                }
+            }
+            Err((code, message)) => {
+                let _ = output.send(json!({"type":"response","id":id,"ok":false,"error":{"code":code,"message":message}}));
+            }
+        }
+    }
+    if let Some(receipt) = completion.receipt {
+        let accepted =
+            delivered && cancellation.await_acceptance(std::time::Duration::from_secs(10));
+        let outcome = requests::scope(requests::Cancellation::default(), || {
+            receipt.settle(accepted)
+        });
+        diagnostics.record(
+            "session",
+            "allocation-handoff",
+            format!(
+                "accepted={accepted} cleanup={}",
+                outcome
+                    .result
+                    .as_ref()
+                    .map_or_else(|error| error.code.as_str(), |()| "ok")
+            ),
+        );
+        for (name, payload) in outcome.required_events {
+            let _ = output.send(json!({"type":"event","name":name,"payload":payload}));
+        }
+    }
+}
+
+fn core_capabilities(core: &AppCore) -> Vec<&'static str> {
+    let mut capabilities = vec![
+        "plugins.v1",
+        "sources.catalog.v1",
+        "settings",
+        "catalogArtworkCache.v1",
+        "nativeStreamer.v7",
+        "nativeStreamer.ownedNvstNegotiation",
+        "nativeStreamer.dynamicSurface",
+        "nativeStreamer.acceptanceEvidence",
+        "liveAcceptance.v1",
+        "redactedDiagnostics",
+        "mediaLibrary",
+        "githubUpdateDiscovery",
+        "discordRpc",
+        "feedback",
+        "bugReports",
+        "automaticBugReports.v2",
+    ];
+    capabilities.extend_from_slice(core.sources.core_capabilities());
+    capabilities
+}
+
+fn update_session_idle(occupancy: SessionOccupancy, streamer: &Value) -> bool {
+    occupancy == SessionOccupancy::Idle
         && matches!(
             streamer["streamer"]["status"].as_str(),
             Some("stopped" | "error")
         )
-}
-
-fn reconcile_push(core: &AppCore) {
-    let _ = core
-        .push
-        .lock()
-        .expect("push registry poisoned")
-        .reconcile();
 }
 
 fn unix_time_millis() -> u128 {
@@ -392,28 +415,90 @@ fn dispatch(
     params: &Value,
     core: &Arc<AppCore>,
     output: &mpsc::Sender<Value>,
-) -> DispatchResult {
+) -> Completion {
+    with_session_update_gate(
+        method,
+        &core.session_update_gate,
+        || core.updater.installation_pending(),
+        || {
+            if let Some(completion) =
+                core.sources
+                    .dispatch_builtin(method, params, &requests::current())
+            {
+                return completion;
+            }
+            let result = dispatch_host(method, params, core, output);
+            if method == "settings.set" {
+                core.sources.settings_changed();
+            }
+            Completion::from(result)
+        },
+    )
+}
+
+fn with_session_update_gate(
+    method: &str,
+    gate: &Mutex<()>,
+    update_pending: impl FnOnce() -> bool,
+    invoke: impl FnOnce() -> Completion,
+) -> Completion {
     let session_transition = matches!(
         method,
         "session.create" | "session.claim" | "session.poll" | "streamer.start" | "streamer.prepare"
     );
     let _session_update_guard = if session_transition || method == "updater.install" {
-        Some(core.session_update_gate.try_lock().map_err(|_| {
-            (
-                "session_update_busy".to_owned(),
-                "A session transition or update preparation is in progress".to_owned(),
-            )
-        })?)
+        match gate.try_lock() {
+            Ok(guard) => Some(guard),
+            Err(_) => {
+                return Completion::from(Err((
+                    "session_update_busy".into(),
+                    "A session transition or update preparation is in progress".into(),
+                )));
+            }
+        }
     } else {
         None
     };
-    if session_transition && core.updater.installation_pending() {
-        return Err((
-            "update_pending".to_owned(),
-            "An update is waiting for OpenNOW to exit".to_owned(),
-        ));
+    if session_transition && update_pending() {
+        return Completion::from(Err((
+            "update_pending".into(),
+            "An update is waiting for OpenNOW to exit".into(),
+        )));
     }
+    invoke()
+}
+
+fn dispatch_host(
+    method: &str,
+    params: &Value,
+    core: &Arc<AppCore>,
+    output: &mpsc::Sender<Value>,
+) -> DispatchResult {
     match method {
+        "plugins.list"
+        | "plugins.install.inspect"
+        | "plugins.install.commit"
+        | "plugins.install.cancel"
+        | "plugins.setEnabled"
+        | "plugins.uninstall" => core
+            .sources
+            .dispatch_plugins(method, params, &requests::current())
+            .map(|value| (value, None))
+            .map_err(Into::into),
+        "sources.catalog.page" => core
+            .sources
+            .catalog_page(params, &requests::current())
+            .and_then(|page| {
+                serde_json::to_value(page).map_err(|_| {
+                    sources::contract::SourceError::new(
+                        "catalog_invalid",
+                        "Could not encode catalog page",
+                    )
+                })
+            })
+            .map(|value| (value, None))
+            .map_err(Into::into),
+
         "core.hello" => {
             if params["protocolVersion"].as_i64() != Some(PROTOCOL_VERSION) {
                 return Err((
@@ -422,22 +507,12 @@ fn dispatch(
                 ));
             }
             Ok((
-                json!({"protocolVersion":PROTOCOL_VERSION, "coreVersion":version::APPLICATION_VERSION, "capabilities":["settings", "gfn.deviceAuth", "gfn.providers", "gfn.publicCatalog", "catalog.storePages.v1", "catalog.libraryPages.v1", "catalog.metadata.v1", "account.syncObservation.v1", "account.pushInvalidation.v1", "catalog.languages.v1", "queue.servers.v1", "catalog.storeLocal.v1", "gfn.accountLibrary", "gfn.regions", "gfn.subscription", "gfn.cloudmatch", "sessionProxy", "catalogArtworkCache.v1", "nativeStreamer.v7", "nativeStreamer.ownedNvstNegotiation", "nativeStreamer.dynamicSurface", "nativeStreamer.acceptanceEvidence", "liveAcceptance.v1", "osCredentialStore", "electronAccountMigration", "redactedDiagnostics", "mediaLibrary", "githubUpdateDiscovery", "discordRpc", "feedback", "bugReports", "automaticBugReports.v2", "social.capabilitySurface"]}),
+                json!({"protocolVersion":PROTOCOL_VERSION, "coreVersion":version::APPLICATION_VERSION, "capabilities":core_capabilities(core)}),
                 None,
             ))
         }
         "app.status" => Ok((
             json!({"status":"ready", "version":version::APPLICATION_VERSION}),
-            None,
-        )),
-        "social.capabilities.get" => Ok((
-            json!({
-                "friendsAvailable":false,
-                "presenceAvailable":false,
-                "invitesAvailable":false,
-                "localControllerJoin":true,
-                "reason":"NVIDIA does not expose the GeForce NOW friends, presence, or invitation service to third-party clients. OpenNOW will not display invented contacts or claim invitations were sent."
-            }),
             None,
         )),
         "settings.get" => Ok((
@@ -466,17 +541,6 @@ fn dispatch(
                 "invalid_params".to_owned(),
                 "settings.set requires a value".to_owned(),
             ))?;
-            if key == "region" {
-                let provider = params["providerIdpId"].as_str().unwrap_or("");
-                let event = core.gfn.with_region_provider(provider, || {
-                    let mut settings = core.settings.lock().expect("settings poisoned");
-                    let applied = settings.set_provider_region(provider, value).map_err(|message| gfn::ServiceError { code: "invalid_setting", message })?;
-                    Ok(json!({"key":key,"value":applied,"changes":{
-                        "regionProviderIdpId":provider,"providerRegions":settings.all()["providerRegions"]
-                    }}))
-                }).map_err(gfn_error)?;
-                return Ok((event.clone(), Some(("settings.changed", event))));
-            }
             let mut settings = core.settings.lock().expect("settings poisoned");
             let codec_before = settings.all()["codec"].clone();
             let fallback_before = settings.all()["fallbackCodec"].clone();
@@ -551,167 +615,6 @@ fn dispatch(
                 Some(("settings.reset", json!({}))),
             ))
         }
-        "auth.providers.list" => core
-            .gfn
-            .providers()
-            .map(|value| (value, None))
-            .map_err(gfn_error),
-        "auth.device.start" => core
-            .gfn
-            .start_device_login(params)
-            .map(|value| (value, None))
-            .map_err(gfn_error),
-        "auth.device.poll" => core
-            .gfn
-            .poll_device_login(params)
-            .map(|value| (value, None))
-            .map_err(gfn_error),
-        "auth.device.complete" => core
-            .gfn
-            .complete_device_login(params)
-            .map(|value| (value.clone(), Some(("auth.session.changed", value))))
-            .map_err(gfn_error),
-        "auth.device.cancel" => core
-            .gfn
-            .cancel_device_login(params)
-            .map(|value| (value, None))
-            .map_err(gfn_error),
-        "auth.session.get" => core
-            .gfn
-            .session()
-            .map(|value| (value, None))
-            .map_err(gfn_error),
-        "auth.logout" => {
-            let value = core.gfn.logout().map_err(gfn_error)?;
-            Ok((value.clone(), Some(("auth.session.changed", value))))
-        }
-        "auth.accounts.logoutAll" => {
-            let value = core.gfn.logout_all().map_err(gfn_error)?;
-            Ok((value.clone(), Some(("auth.session.changed", value))))
-        }
-        "auth.accounts.list" => core
-            .gfn
-            .saved_accounts()
-            .map(|value| (value, None))
-            .map_err(gfn_error),
-        "auth.accounts.switch" => core
-            .gfn
-            .switch_account(params)
-            .map(|value| (value.clone(), Some(("auth.session.changed", value))))
-            .map_err(gfn_error),
-        "auth.accounts.remove" => core
-            .gfn
-            .remove_account(params)
-            .map(|value| (value.clone(), Some(("auth.session.changed", value))))
-            .map_err(gfn_error),
-        "auth.pin.status" => core
-            .gfn
-            .pin_status(params)
-            .map(|value| (value, None))
-            .map_err(gfn_error),
-        "auth.pin.set" => core
-            .gfn
-            .set_pin(params)
-            .map(|value| (value, None))
-            .map_err(gfn_error),
-        "auth.pin.clear" => core
-            .gfn
-            .clear_pin(params)
-            .map(|value| (value, None))
-            .map_err(gfn_error),
-        "auth.pin.verify" => core
-            .gfn
-            .verify_pin(params)
-            .map(|value| (value, None))
-            .map_err(gfn_error),
-        "catalog.public.list" => {
-            let settings = core.settings.lock().expect("settings poisoned").all();
-            core.gfn
-                .public_catalog(params, &settings)
-                .map(|value| (value, None))
-                .map_err(gfn_error)
-        }
-        "catalog.library.list" => {
-            let settings = core.settings.lock().expect("settings poisoned").all();
-            core.gfn
-                .library_catalog(params, &settings)
-                .map(|value| (value, None))
-                .map_err(gfn_error)
-        }
-        "catalog.game.get" => {
-            let settings = core.settings.lock().expect("settings poisoned").all();
-            core.gfn
-                .catalog_game(params, &settings)
-                .map(|value| (value, None))
-                .map_err(gfn_error)
-        }
-        "catalog.launch.inspect" => {
-            let settings = core.settings.lock().expect("settings poisoned").all();
-            core.gfn
-                .catalog_launch_inspect(params, &settings)
-                .map(|value| (value, None))
-                .map_err(gfn_error)
-        }
-        "catalog.launch.store.inspect" => {
-            let settings = core.settings.lock().expect("settings poisoned").all();
-            core.gfn
-                .store_launch_inspect(params, None, &settings)
-                .map(|value| (value, None))
-                .map_err(gfn_error)
-        }
-        "catalog.favorites.list" => {
-            let settings = core.settings.lock().expect("settings poisoned").all();
-            core.gfn
-                .catalog_favorites(&settings)
-                .map(|value| (value, None))
-                .map_err(gfn_error)
-        }
-        "catalog.favorites.add"
-        | "catalog.favorites.remove"
-        | "catalog.ownership.add"
-        | "catalog.ownership.remove"
-        | "catalog.ownership.select" => {
-            let settings = core.settings.lock().expect("settings poisoned").all();
-            core.gfn
-                .catalog_mutate(method, params, &settings)
-                .map(|value| (value, None))
-                .map_err(gfn_error)
-        }
-        "catalog.definitions.get" => {
-            let settings = core.settings.lock().expect("settings poisoned").all();
-            core.gfn
-                .catalog_definitions(params, &settings)
-                .map(|value| (value, None))
-                .map_err(gfn_error)
-        }
-        "catalog.languages.get" => {
-            let settings = core.settings.lock().expect("settings poisoned").all();
-            core.gfn
-                .catalog_languages(params, &settings)
-                .map(|value| (value, None))
-                .map_err(gfn_error)
-        }
-        "catalog.store.local" => {
-            let settings = core.settings.lock().expect("settings poisoned").all();
-            core.gfn
-                .store_local_catalog(params, &settings)
-                .map(|value| (value, None))
-                .map_err(gfn_error)
-        }
-        "catalog.store.list" => {
-            let settings = core.settings.lock().expect("settings poisoned").all();
-            core.gfn
-                .store_catalog(params, &settings)
-                .map(|value| (value, None))
-                .map_err(gfn_error)
-        }
-        "catalog.store.presentation" => {
-            let settings = core.settings.lock().expect("settings poisoned").all();
-            core.gfn
-                .store_presentation(params, &settings)
-                .map(|value| (value, None))
-                .map_err(gfn_error)
-        }
         "artwork.resolve" => {
             let settings = core.settings.lock().expect("settings poisoned").all();
             core.artwork
@@ -719,155 +622,9 @@ fn dispatch(
                 .map(|value| (value, None))
                 .map_err(|message| ("invalid_params".to_owned(), message))
         }
-        "network.regions.list" => {
-            let settings = core.settings.lock().expect("settings poisoned").all();
-            core.gfn
-                .regions(&settings)
-                .map(|value| (value, None))
-                .map_err(gfn_error)
-        }
         "network.regions.ping" => network::ping_regions(params)
             .map(|value| (value, None))
             .map_err(|message| ("region_ping_failed".to_owned(), message)),
-        "queue.servers.list" => queue_servers::list()
-            .map(|value| (value, None))
-            .map_err(gfn_error),
-        "account.subscription.get" => {
-            let settings = core.settings.lock().expect("settings poisoned").all();
-            core.gfn
-                .subscription(&settings)
-                .map(|value| (value, None))
-                .map_err(gfn_error)
-        }
-        "account.connections.list" => {
-            let settings = core.settings.lock().expect("settings poisoned").all();
-            core.gfn
-                .account_connections(&settings)
-                .map(|value| (value, None))
-                .map_err(gfn_error)
-        }
-        "account.connections.sync" => {
-            let settings = core.settings.lock().expect("settings poisoned").all();
-            core.gfn
-                .sync_account_connection(params, &settings)
-                .map(|value| (value, None))
-                .map_err(gfn_error)
-        }
-        "account.connections.unlink" => {
-            let settings = core.settings.lock().expect("settings poisoned").all();
-            core.gfn
-                .unlink_account_connection(params, &settings)
-                .map(|value| (value, None))
-                .map_err(gfn_error)
-        }
-        "account.connections.link.start" => {
-            let settings = core.settings.lock().expect("settings poisoned").all();
-            core.gfn
-                .start_account_link(params, &settings)
-                .map(|value| (value, None))
-                .map_err(gfn_error)
-        }
-        "account.connections.link.poll" => {
-            let settings = core.settings.lock().expect("settings poisoned").all();
-            core.gfn
-                .poll_account_link(params, &settings)
-                .map(|value| (value, None))
-                .map_err(gfn_error)
-        }
-        "account.connections.sync.status" => {
-            let settings = core.settings.lock().expect("settings poisoned").all();
-            core.gfn
-                .account_sync_status(params, &settings)
-                .map(|value| (value, None))
-                .map_err(gfn_error)
-        }
-        "account.connections.sync.cancel" => {
-            let settings = core.settings.lock().expect("settings poisoned").all();
-            core.gfn
-                .account_sync_status(
-                    &json!({"operationId":params["operationId"],"cancelObservation":true}),
-                    &settings,
-                )
-                .map(|value| (value, None))
-                .map_err(gfn_error)
-        }
-        "account.storage.locations" => core
-            .gfn
-            .persistent_storage_locations(params)
-            .map(|value| (value, None))
-            .map_err(gfn_error),
-        "account.storage.reset" => core
-            .gfn
-            .reset_persistent_storage(params)
-            .map(|value| (value, None))
-            .map_err(gfn_error),
-        "session.create" => {
-            let settings = core.settings.lock().expect("settings poisoned").all();
-            let (auth, _) = core
-                .gfn
-                .authenticated_snapshot(gfn::TokenPurpose::ServiceId, false)
-                .map_err(gfn_error)?;
-            let settings = cloudmatch::allocation_settings(&settings, &auth);
-            let settings = if !params["runtimeCapabilities"].is_null() {
-                StreamerService::embedded_session_settings(
-                    &settings,
-                    &params["runtimeCapabilities"],
-                )
-                .map_err(streamer_error)?
-            } else {
-                core.streamer
-                    .validate_codec(&settings)
-                    .map_err(streamer_error)?;
-                settings
-            };
-            core.gfn
-                .create_session(params, &settings)
-                .map(|value| (value.clone(), Some(("session.changed", value))))
-                .map_err(gfn_error)
-        }
-        "session.poll" => core
-            .gfn
-            .poll_session(params)
-            .map(|value| {
-                (
-                    value.clone(),
-                    (params["recoveryMode"] != true).then_some(("session.changed", value)),
-                )
-            })
-            .map_err(gfn_error),
-        "session.stop" => {
-            let settings = core.settings.lock().expect("settings poisoned").all();
-            core.gfn
-                .stop_session(params, &settings)
-                .map(|value| (value.clone(), Some(("session.changed", value))))
-                .map_err(gfn_error)
-        }
-        "session.active.get" => {
-            let settings = core.settings.lock().expect("settings poisoned").all();
-            core.gfn
-                .reconcile_active_session(params, &settings)
-                .map(|value| (value, None))
-                .map_err(gfn_error)
-        }
-        "session.remote.list" => {
-            let settings = core.settings.lock().expect("settings poisoned").all();
-            core.gfn
-                .remote_sessions(params, &settings)
-                .map(|value| (value, None))
-                .map_err(gfn_error)
-        }
-        "session.claim" => {
-            let settings = core.settings.lock().expect("settings poisoned").all();
-            core.gfn
-                .claim_session(params, &settings)
-                .map(|value| (value.clone(), Some(("session.changed", value))))
-                .map_err(gfn_error)
-        }
-        "session.ad.report" => core
-            .gfn
-            .report_session_ad(params)
-            .map(|value| (value.clone(), Some(("session.changed", value))))
-            .map_err(gfn_error),
         "streamer.detect" => {
             let settings = core.settings.lock().expect("settings poisoned").all();
             core.streamer
@@ -881,47 +638,6 @@ fn dispatch(
                 .start(params, &settings)
                 .map(|value| (value.clone(), Some(("streamer.changed", value))))
                 .map_err(streamer_error)
-        }
-        "streamer.prepare" => {
-            let settings = core.settings.lock().expect("settings poisoned").all();
-            if params["session"]["transportMode"] == "webrtc" {
-                core.diagnostics.record(
-                    "streamer",
-                    "prepare_endpoints",
-                    diagnostics::stream_endpoint_evidence(&params["session"]).to_string(),
-                );
-            }
-            core.gfn
-                .prepare_owned_stream(params, |owned| {
-                    core.streamer
-                        .prepare_embedded(owned, &settings)
-                        .map_err(|error| gfn::ServiceError {
-                            code: error.code,
-                            message: error.message,
-                        })
-                })
-                .inspect(|prepared| {
-                    core.diagnostics.record(
-                        "streamer",
-                        "prepare_profile",
-                        diagnostics::stream_profile_evidence(&prepared["context"]["session"])
-                            .to_string(),
-                    );
-                })
-                .inspect_err(|error| {
-                    core.diagnostics.record(
-                        "streamer",
-                        "prepare_profile",
-                        diagnostics::stream_profile_evidence(&params["session"]).to_string(),
-                    );
-                    core.diagnostics.record(
-                        "streamer",
-                        "prepare_rejected",
-                        diagnostics::runtime_failure_reason(&error.message),
-                    );
-                })
-                .map(|value| (value, None))
-                .map_err(gfn_error)
         }
         "streamer.status.get" => Ok((core.streamer.status(), None)),
         "streamer.stop" => core
@@ -1057,23 +773,7 @@ fn dispatch(
             .delete(params)
             .map(|value| (value.clone(), Some(("media.changed", value))))
             .map_err(|message| ("media_delete_failed".to_owned(), message)),
-        "cache.delete" => Ok((core.gfn.clear_cache(), Some(("cache.changed", json!({}))))),
-        "queue.status.get" => core
-            .community
-            .queue()
-            .map(|value| (value, None))
-            .map_err(|message| ("queue_fetch_failed".to_owned(), message)),
-        "queue.serverMapping.get" => core
-            .community
-            .server_mapping()
-            .map(|value| (value, None))
-            .map_err(|message| ("server_mapping_fetch_failed".to_owned(), message)),
         "thanks.data.get" => Ok((core.thanks.data(), None)),
-        "communityProxy.provision" => core
-            .community
-            .provision_proxy(core.gfn.device_id())
-            .map(|value| (value, None))
-            .map_err(|message| ("community_proxy_failed".to_owned(), message)),
         "updater.state.get" => Ok((core.updater.state(), None)),
         "updater.startup.ack" => {
             update_apply::acknowledge_startup_from_env(version::APPLICATION_VERSION)
@@ -1138,8 +838,7 @@ fn dispatch(
             .map(|value| (value, None))
             .map_err(|message| ("update_download_failed".to_owned(), message)),
         "updater.install" => {
-            let session = core.gfn.active_session().map_err(gfn_error)?;
-            if !update_session_idle(&session, &core.streamer.status()) {
+            if !update_session_idle(core.sources.session_occupancy(), &core.streamer.status()) {
                 return Err((
                     "update_session_active".to_owned(),
                     "End the active session before installing an update".to_owned(),
@@ -1221,7 +920,7 @@ fn dispatch(
             };
             let report = reports::Document {
                 install_id: &install_id,
-                account: &core.gfn.bug_report_identity(),
+                account: &core.sources.reporting_identity(),
                 activity: core.bug_reports.activity(),
                 app: report_app(core, true),
             }
@@ -1269,50 +968,74 @@ fn dispatch(
     }
 }
 
-fn observe_reporting(
+fn observe_host_reporting(
     core: &Arc<AppCore>,
     output: &mpsc::Sender<Value>,
     method: &str,
     params: &Value,
     result: &DispatchResult,
 ) {
-    match (method, result) {
-        ("session.create", _) => {
+    if method == "settings.set"
+        && params["key"] == "automaticBugReports"
+        && let Ok((value, _)) = result
+    {
+        observe_consent(core, &value["value"], &params["source"]);
+    }
+    if method == "streamer.start"
+        && let Err((code, message)) = result
+    {
+        observe_module_reporting(
+            core,
+            output,
+            &ReportingEffect::RpcFailure {
+                method: method.into(),
+                code: code.clone(),
+                message: message.clone(),
+            },
+        );
+    }
+}
+
+fn observe_module_reporting(
+    core: &Arc<AppCore>,
+    output: &mpsc::Sender<Value>,
+    effect: &ReportingEffect,
+) {
+    match effect {
+        ReportingEffect::LaunchRequested { params } => {
             let detail = core.bug_reports.observe_launch(params);
             core.diagnostics.record("activity", "game_launch", detail);
             track(
                 core,
                 "game_launch_requested",
-                json!({"game_id":params["appId"], "game_title":params["title"],
-                    "store":params["store"], "zone":params["zone"]}),
+                json!({"game_id":params["appId"], "game_title":params["title"], "store":params["store"], "zone":params["zone"]}),
             );
         }
-        ("session.stop", Ok(_)) => core.bug_reports.observe_stop(),
-        ("streamer.prepare", _) => core
-            .analytics
-            .observe_runtime(&params["runtimeCapabilities"]),
-        ("auth.device.complete", Ok(_)) => observe_sign_in(core, false),
-        ("auth.session.get" | "auth.accounts.switch", Ok(_)) => observe_sign_in(core, true),
-        ("auth.logout" | "auth.accounts.logoutAll", Ok(_)) => core.analytics.observe_sign_out(),
-        ("settings.set", Ok((value, _))) if params["key"] == "automaticBugReports" => {
-            observe_consent(core, &value["value"], &params["source"])
+        ReportingEffect::SessionStopped => core.bug_reports.observe_stop(),
+        ReportingEffect::RuntimeObserved { capabilities } => {
+            core.analytics.observe_runtime(capabilities)
         }
-        _ => {}
-    }
-    if let Err((code, message)) = result
-        && let Some(incident) = bug_reports::BugReporter::rpc_incident(method, code, message)
-    {
-        if incident.kind == bug_reports::Kind::LibraryError {
-            track(core, "library_load_failed", json!({"code":incident.code}));
-        } else {
-            let game_id = core.bug_reports.activity()["currentGame"]["appId"].clone();
-            track(
-                core,
-                "session_error",
-                json!({"stage":method.split('.').nth(1), "code":incident.code, "game_id":game_id}),
-            );
+        ReportingEffect::SignedIn { restored } => observe_sign_in(core, *restored),
+        ReportingEffect::SignedOut => core.analytics.observe_sign_out(),
+        ReportingEffect::RpcFailure {
+            method,
+            code,
+            message,
+        } => {
+            if let Some(incident) = bug_reports::BugReporter::rpc_incident(method, code, message) {
+                if incident.kind == bug_reports::Kind::LibraryError {
+                    track(core, "library_load_failed", json!({"code":incident.code}));
+                } else {
+                    let game_id = core.bug_reports.activity()["currentGame"]["appId"].clone();
+                    track(
+                        core,
+                        "session_error",
+                        json!({"stage":method.split('.').nth(1), "code":incident.code, "game_id":game_id}),
+                    );
+                }
+                submit_automatic_report(core, output, incident);
+            }
         }
-        submit_automatic_report(core, output, incident);
     }
 }
 
@@ -1328,7 +1051,7 @@ fn track(core: &AppCore, event: &str, props: Value) -> Value {
         Ok(install_id) => install_id,
         Err((_, message)) => return json!({"accepted":false,"reason":message}),
     };
-    let identity = core.gfn.bug_report_identity();
+    let identity = core.sources.reporting_identity();
     let account = if identity.is_null() {
         Value::Null
     } else {
@@ -1370,7 +1093,7 @@ fn observe_consent(core: &AppCore, value: &Value, source: &Value) {
 }
 
 fn observe_sign_in(core: &Arc<AppCore>, restored: bool) {
-    let identity = core.gfn.bug_report_identity();
+    let identity = core.sources.reporting_identity();
     let Some(user_id) = identity["userId"].as_str() else {
         return;
     };
@@ -1471,7 +1194,7 @@ fn submit_automatic_report(
     if !reporting_enabled(core) {
         return json!({"accepted":false,"reason":"disabled"});
     }
-    let account = core.gfn.bug_report_identity();
+    let account = core.sources.reporting_identity();
     if account.is_null() {
         return json!({"accepted":false,"reason":"signed_out"});
     }
@@ -1570,10 +1293,6 @@ fn ensure_install_id(core: &AppCore) -> Result<String, (String, String)> {
     Ok(install_id)
 }
 
-fn gfn_error(error: gfn::ServiceError) -> (String, String) {
-    (error.code.to_owned(), error.message)
-}
-
 fn streamer_error(error: streamer::StreamerError) -> (String, String) {
     (error.code.to_owned(), error.message)
 }
@@ -1598,11 +1317,136 @@ fn argument_value(name: &str) -> Option<String> {
 mod acceptance_tests {
     use super::*;
 
+    struct DeliveryReceipt(Arc<Mutex<Vec<bool>>>);
+
+    #[test]
+    fn host_transition_gate_rejects_before_module_action_receipt_or_reporting() {
+        let gate = Mutex::new(());
+        let held = gate.lock().unwrap();
+        let blocked = with_session_update_gate(
+            "session.create",
+            &gate,
+            || panic!("update state must be checked under the acquired gate"),
+            || panic!("blocked request must not reach a module"),
+        );
+        assert_eq!(blocked.result.unwrap_err().0, "session_update_busy");
+        assert!(blocked.receipt.is_none());
+        assert!(blocked.reporting.is_empty());
+        assert!(blocked.required_events.is_empty());
+        drop(held);
+        let pending = with_session_update_gate(
+            "session.create",
+            &gate,
+            || {
+                assert!(gate.try_lock().is_err());
+                true
+            },
+            || panic!("pending update must prevent provider allocation"),
+        );
+        assert_eq!(pending.result.unwrap_err().0, "update_pending");
+        assert!(pending.receipt.is_none());
+        assert!(pending.reporting.is_empty());
+        let admitted = with_session_update_gate(
+            "session.create",
+            &gate,
+            || false,
+            || {
+                assert!(gate.try_lock().is_err());
+                Completion::from(Ok((json!({"invoked":true}), None)))
+            },
+        );
+        assert_eq!(admitted.result.unwrap().0["invoked"], true);
+        assert!(gate.try_lock().is_ok());
+    }
+
+    impl sources::contract::AllocationReceipt for DeliveryReceipt {
+        fn settle(self: Box<Self>, accepted: bool) -> sources::contract::ReceiptOutcome {
+            assert!(requests::check().is_ok());
+            self.0.lock().unwrap().push(accepted);
+            sources::contract::ReceiptOutcome {
+                result: Ok(()),
+                required_events: vec![("receipt.settled", json!({"accepted":accepted}))],
+            }
+        }
+    }
+
+    #[test]
+    fn module_completion_preserves_settings_before_response_and_normal_events_after() {
+        let directory = tempfile::tempdir().unwrap();
+        let diagnostics = diagnostics::DiagnosticsService::new(directory.path()).unwrap();
+        for (name, before) in [("settings.changed", true), ("auth.session.changed", false)] {
+            let (output, received) = mpsc::channel();
+            let value = json!({"key":"fixture","value":true});
+            deliver_completion(
+                Completion::from(Ok((value.clone(), Some((name, value))))),
+                "fixture",
+                &requests::Cancellation::default(),
+                &output,
+                &diagnostics,
+            );
+            let first = received.try_recv().unwrap();
+            let second = received.try_recv().unwrap();
+            assert_eq!(first["type"], if before { "event" } else { "response" });
+            assert_eq!(second["type"], if before { "response" } else { "event" });
+            assert!(received.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn cancelled_module_completion_keeps_required_events_and_settles_uncancelled() {
+        let directory = tempfile::tempdir().unwrap();
+        let diagnostics = diagnostics::DiagnosticsService::new(directory.path()).unwrap();
+        let requests = Arc::new(requests::Requests::default());
+        let permit = requests.admit("create", "session.create").unwrap();
+        requests.cancel("create");
+        let outcomes = Arc::new(Mutex::new(Vec::new()));
+        let (output, received) = mpsc::channel();
+        let mut completion = Completion::from(Err(("fixture_failure".into(), "fixture".into())));
+        completion
+            .required_events
+            .push(("session.cleanup.pending", json!({"code":"fixture"})));
+        completion.receipt = Some(Box::new(DeliveryReceipt(Arc::clone(&outcomes))));
+        requests::scope(permit.token.clone(), || {
+            deliver_completion(completion, "create", &permit.token, &output, &diagnostics);
+        });
+        assert_eq!(*outcomes.lock().unwrap(), vec![false]);
+        assert_eq!(
+            received.try_recv().unwrap()["name"],
+            "session.cleanup.pending"
+        );
+        assert_eq!(received.try_recv().unwrap()["name"], "receipt.settled");
+        assert!(received.try_recv().is_err());
+    }
+
+    #[test]
+    fn module_receipt_accepts_only_delivered_acknowledged_allocation() {
+        let directory = tempfile::tempdir().unwrap();
+        let diagnostics = diagnostics::DiagnosticsService::new(directory.path()).unwrap();
+        for delivered in [true, false] {
+            let requests = Arc::new(requests::Requests::default());
+            let permit = requests.admit("create", "session.create").unwrap();
+            requests.acknowledge("create");
+            let outcomes = Arc::new(Mutex::new(Vec::new()));
+            let (output, received) = mpsc::channel();
+            let received = delivered.then_some(received);
+            let mut completion =
+                Completion::from(Ok((json!({"session":{"sessionId":"seat"}}), None)));
+            completion.receipt = Some(Box::new(DeliveryReceipt(Arc::clone(&outcomes))));
+            deliver_completion(completion, "create", &permit.token, &output, &diagnostics);
+            assert_eq!(*outcomes.lock().unwrap(), vec![delivered]);
+            if let Some(received) = received {
+                assert_eq!(received.try_recv().unwrap()["type"], "response");
+                assert_eq!(received.try_recv().unwrap()["name"], "receipt.settled");
+                assert!(received.try_recv().is_err());
+            }
+        }
+    }
+
     #[test]
     fn updates_require_no_session_and_a_terminal_streamer() {
         for status in ["stopped", "error"] {
             assert!(update_session_idle(
-                &json!({"session":null}),
+                SessionOccupancy::Idle,
                 &json!({"streamer":{"status":status}})
             ));
         }
@@ -1614,19 +1458,17 @@ mod acceptance_tests {
             "unknown",
         ] {
             assert!(!update_session_idle(
-                &json!({"session":null}),
+                SessionOccupancy::Idle,
                 &json!({"streamer":{"status":status}})
             ));
         }
-        for session in [
-            json!({}),
-            json!({"session":{"phase":"queued"}}),
-            json!({"session":{"phase":"ready"}}),
-        ] {
-            assert!(!update_session_idle(
-                &session,
-                &json!({"streamer":{"status":"stopped"}})
-            ));
+        for occupancy in [SessionOccupancy::InUse, SessionOccupancy::Unknown] {
+            for status in ["stopped", "error", "streaming"] {
+                assert!(!update_session_idle(
+                    occupancy,
+                    &json!({"streamer":{"status":status}})
+                ));
+            }
         }
     }
 

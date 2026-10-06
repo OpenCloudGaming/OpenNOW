@@ -74,6 +74,8 @@ runs:
       working-directory: ${{ env.OPENNOW_CHECKOUT }}
       run: |
         cargo fmt --manifest-path native/opennow-core/Cargo.toml -- --check
+        cargo fmt --manifest-path native/opennow-plugin-api/Cargo.toml -- --check
+        cargo fmt --manifest-path examples/catalog-plugin/Cargo.toml -- --check
         cargo fmt --manifest-path native/opennow-streamer/Cargo.toml --all -- --check
     - name: Install Linux test dependencies
       if: runner.os == 'Linux'
@@ -102,6 +104,8 @@ runs:
         CARGO_BUILD_JOBS: ${{ inputs.parallel }}
       run: |
         cargo clippy --locked --manifest-path native/opennow-core/Cargo.toml --all-targets -- -D warnings
+        cargo clippy --locked --manifest-path native/opennow-plugin-api/Cargo.toml --all-targets -- -D warnings
+        cargo clippy --locked --manifest-path examples/catalog-plugin/Cargo.toml --all-targets -- -D warnings
         cargo clippy --locked --manifest-path native/opennow-streamer/Cargo.toml --workspace --all-targets -- -D warnings
     - name: Test Rust
       shell: bash
@@ -110,6 +114,8 @@ runs:
         CARGO_BUILD_JOBS: ${{ inputs.parallel }}
       run: |
         cargo test --locked --manifest-path native/opennow-core/Cargo.toml
+        cargo test --locked --manifest-path native/opennow-plugin-api/Cargo.toml
+        cargo test --locked --manifest-path examples/catalog-plugin/Cargo.toml
         cargo test --locked --manifest-path native/opennow-streamer/Cargo.toml --workspace
     - name: Test signed update helper integration
       shell: bash

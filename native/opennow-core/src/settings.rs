@@ -1296,7 +1296,7 @@ mod tests {
         assert_eq!(settings["gameLanguage"], "auto");
         assert_eq!(settings["keyboardLayout"], "unknown");
         let mut url = url::Url::parse("https://fixture.invalid/").unwrap();
-        crate::language::append_session_preferences(&mut url, &settings);
+        crate::sources::gfn::session_language::append_session_preferences(&mut url, &settings);
         assert_eq!(url.query(), Some("keyboardLayout=en-US&languageCode=en_US"));
     }
 

@@ -174,7 +174,7 @@ if(BUILD_TESTING)
     qt_add_resources(opennow-qt "console-spacing-acceptance"
         PREFIX "/acceptance" BASE tests FILES tests/ConsoleSpacingAcceptance.qml)
     foreach(spacing_route home library settings-account settings-streaming settings-video
-            settings-input settings-network settings-themes settings-advanced settings-recording)
+            settings-input settings-network settings-themes settings-advanced settings-recording settings-plugins)
         set(spacing_start_route "${spacing_route}")
         set(spacing_args)
         if(spacing_route STREQUAL "settings-recording")
@@ -540,6 +540,28 @@ if(BUILD_TESTING)
         COMMAND opennow-qt --smoke-test --allow-multiple-instances --console
             --route settings-video --smoke-console-settings --reduced-motion)
     set_tests_properties(qml-console-settings PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 15)
+    qt_add_resources(opennow-qt "plugins-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/PluginsAcceptance.qml)
+    foreach(plugin_surface desktop console)
+        add_test(NAME qml-plugins-${plugin_surface}
+            COMMAND opennow-qt --smoke-test --allow-multiple-instances --${plugin_surface}
+                --core "$<TARGET_FILE:opennow-fake-core>"
+                --route settings-plugins --smoke-plugins --reduced-motion)
+        set_tests_properties(qml-plugins-${plugin_surface} PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen;OPENNOW_TEST_PLUGINS=1" TIMEOUT 25)
+        add_test(NAME qml-plugins-signed-in-${plugin_surface}
+            COMMAND opennow-qt --smoke-test --allow-multiple-instances --${plugin_surface}
+                --core "$<TARGET_FILE:opennow-fake-core>"
+                --route settings-plugins --smoke-plugins --plugins-signed-in --reduced-motion)
+        set_tests_properties(qml-plugins-signed-in-${plugin_surface} PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen;OPENNOW_TEST_PLUGINS=1" TIMEOUT 25)
+        add_test(NAME qml-plugins-unavailable-${plugin_surface}
+            COMMAND opennow-qt --smoke-test --allow-multiple-instances --${plugin_surface}
+                --core "$<TARGET_FILE:opennow-fake-core>"
+                --route settings-plugins --smoke-plugins --plugins-unavailable --reduced-motion)
+        set_tests_properties(qml-plugins-unavailable-${plugin_surface} PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 25)
+    endforeach()
     add_test(NAME qml-recording
         COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
             --route settings --smoke-recording --reduced-motion)

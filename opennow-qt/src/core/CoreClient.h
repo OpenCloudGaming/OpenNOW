@@ -18,11 +18,14 @@ class CoreClient final : public QObject
     Q_PROPERTY(QString state READ state NOTIFY stateChanged)
     Q_PROPERTY(QString lastError READ lastError NOTIFY lastErrorChanged)
     Q_PROPERTY(int protocolVersion READ protocolVersion CONSTANT)
+    Q_PROPERTY(QStringList capabilities READ capabilities NOTIFY capabilitiesChanged)
 
 public:
     static constexpr int CurrentProtocolVersion = 5;
     static constexpr qsizetype MaximumLineBytes = 1024 * 1024;
     static constexpr qsizetype MaximumQueuedEvents = 512;
+    static constexpr qsizetype MaximumCapabilities = 128;
+    static constexpr qsizetype MaximumCapabilityLength = 128;
     static QString graphicsPreference(const QString &program);
 
     explicit CoreClient(QObject *parent = nullptr);
@@ -31,6 +34,7 @@ public:
     [[nodiscard]] QString state() const;
     [[nodiscard]] QString lastError() const;
     [[nodiscard]] int protocolVersion() const;
+    [[nodiscard]] QStringList capabilities() const;
 
     struct NativeHdrDisplay {
         bool available = false;
@@ -53,6 +57,7 @@ public:
 
 signals:
     void stateChanged();
+    void capabilitiesChanged();
     void lastErrorChanged();
     void responseReceived(const QString &requestId, const QJsonObject &result);
     void requestFailed(const QString &requestId, const QString &code, const QString &message);
@@ -76,6 +81,7 @@ private:
 
     void setState(const QString &state);
     void setLastError(const QString &error);
+    void setCapabilities(const QStringList &capabilities);
     bool writeMessage(const QJsonObject &message);
     void processLine(const QByteArray &line);
     void failAll(const QString &code, const QString &message);
@@ -94,6 +100,7 @@ private:
     QHash<QString, PendingRequest> m_pending;
     QQueue<QJsonObject> m_events;
     QString m_state = QStringLiteral("stopped");
+    QStringList m_capabilities;
     QString m_lastError;
     quint64 m_nextRequestId = 1;
     int m_droppedEvents = 0;

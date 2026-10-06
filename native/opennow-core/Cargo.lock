@@ -1401,6 +1401,7 @@ dependencies = [
  "keyring",
  "libc",
  "md5",
+ "opennow-plugin-api",
  "p256",
  "qrcode",
  "rand 0.9.5",
@@ -1418,6 +1419,15 @@ dependencies = [
  "webpki-roots",
  "windows-sys 0.59.0",
  "zip",
+]
+
+[[package]]
+name = "opennow-plugin-api"
+version = "0.1.0"
+dependencies = [
+ "semver",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
