@@ -57,6 +57,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -953,7 +954,7 @@ private fun SettingsContent(
                     description = stringResource(R.string.settings_codec_desc),
                 ) { value ->
                     val selectedCodec = VideoCodec.valueOf(value)
-                    val downgradedTenBit = selectedCodec == VideoCodec.AV1 &&
+                    val downgradedTenBit = selectedCodec == VideoCodec.AV1 && !settings.stream.hdrEnabled &&
                         settings.stream.usesTenBitStreamProfile()
                     viewModel.updateStreamSettings { s ->
                         s.copy(codec = selectedCodec).withCodecColorCompatibility()
@@ -961,7 +962,7 @@ private fun SettingsContent(
                     if (downgradedTenBit) {
                         Toast.makeText(
                             context,
-                            context.getString(R.string.settings_av1_ten_bit_downgraded),
+                            context.getString(R.string.settings_av1_sdr_color_hint),
                             Toast.LENGTH_LONG,
                         ).show()
                     }
@@ -970,8 +971,7 @@ private fun SettingsContent(
                 ChoiceMenuRow(
                     label = stringResource(R.string.settings_color),
                     options = ColorQuality.entries.map { quality ->
-                        val available = quality.availableForCodec(settingsAvailableStream.codec) &&
-                            !(settingsAvailableStream.hdrEnabled && quality.isTenBit())
+                        val available = !settingsAvailableStream.hdrEnabled && quality.availableForCodec(settingsAvailableStream.codec)
                         ChoiceMenuOption(
                             value = quality.name,
                             label = quality.label,
@@ -995,9 +995,9 @@ private fun SettingsContent(
                         s.copy(colorQuality = ColorQuality.valueOf(value)).withCodecColorCompatibility()
                     }
                 }
-                if (settingsAvailableStream.codec == VideoCodec.AV1) {
+                if (settingsAvailableStream.codec == VideoCodec.AV1 && !settingsAvailableStream.hdrEnabled) {
                     Text(
-                        stringResource(R.string.settings_av1_ten_bit_hint),
+                        stringResource(R.string.settings_av1_sdr_color_hint),
                         color = SettingsTextMuted,
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -1013,29 +1013,25 @@ private fun SettingsContent(
                     label = stringResource(R.string.settings_hdr),
                     checked = settings.stream.hdrEnabled && hdrAvailable,
                     enabled = hdrAvailable,
-                    description = stringResource(R.string.settings_hdr_desc),
+                    description = stringResource(R.string.settings_hdr10_surface_desc),
                 ) { enabled ->
                     viewModel.updateStreamSettings { s ->
                         s.copy(
                             hdrEnabled = enabled,
-                            colorQuality = if (enabled) ColorQuality.EightBit420 else s.colorQuality,
+                            colorQuality = if (enabled) ColorQuality.TenBit420 else s.colorQuality,
                         ).withCodecColorCompatibility()
                     }
                 }
                 if (settingsAvailableStream.hdrEnabled) {
                     Text(
-                        stringResource(R.string.settings_hdr_ten_bit_warning),
+                        stringResource(R.string.settings_hdr10_color_hint),
                         color = Color(0xffffb74d),
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
                 if (!hdrDeviceAvailable) {
                     Text(
-                        if (state.androidTvProfile) {
-                            stringResource(R.string.settings_hdr_android_tv_compatibility_hint)
-                        } else {
-                            stringResource(R.string.settings_hdr_android_handheld_hint)
-                        },
+                        stringResource(R.string.settings_hdr10_unavailable_hint),
                         color = SettingsTextMuted,
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -1434,6 +1430,7 @@ private fun SettingsContent(
                         )
                     }
                 }
+                KishiHapticsSettings(settings, viewModel)
                 SettingSwitch(stringResource(R.string.stream_touch_controls_title), settings.androidTouch.enabled) { enabled -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(enabled = enabled))) }
                 val touchStyleOptions = TouchControllerStyle.entries.map { style ->
                     SettingsChoiceOption(style.name, touchControllerStyleLabel(style))
@@ -2453,4 +2450,26 @@ private fun settingsRouteDepth(category: SettingsCategory?): Int = when (categor
     null -> 0
     SettingsCategory.TvPairing -> 2
     else -> 1
+}
+
+@Composable
+private fun KishiHapticsSettings(settings: AppSettings, viewModel: OpenNowViewModel) {
+    val status by viewModel.kishiHapticsStatus.collectAsState()
+    DisposableEffect(viewModel) { onDispose { viewModel.cancelKishiHapticsTest() } }
+    SettingSwitch(
+        label = "Kishi V3 Pro USB haptics (Experimental)",
+        checked = settings.kishiUsbHaptics,
+        description = "Send game rumble to the controller's Sensa actuators. USB authorization is required.",
+    ) { enabled -> viewModel.updateSettings(settings.copy(kishiUsbHaptics = enabled)) }
+    if (settings.kishiUsbHaptics) {
+        Text(status, color = SettingsTextMuted, style = MaterialTheme.typography.bodySmall)
+        ControlActionRow(label = "Kishi USB permission", actionLabel = "Authorize / Retry", onClick = viewModel::authorizeKishiHaptics)
+        ChoiceOptionRow(
+            "Kishi rumble strength",
+            listOf(20, 40, 60, 80, 100).map { SettingsChoiceOption(it.toString(), "$it%") },
+            settings.kishiHapticsStrength.toString(),
+        ) { value -> viewModel.updateSettings(settings.copy(kishiHapticsStrength = value.toInt())) }
+        ControlActionRow(label = "Test left actuator", actionLabel = "Test", onClick = { viewModel.testKishiHaptics(true) })
+        ControlActionRow(label = "Test right actuator", actionLabel = "Test", onClick = { viewModel.testKishiHaptics(false) })
+    }
 }

@@ -87,6 +87,7 @@ internal fun nvstSessionContext(session: SessionInfo, settings: StreamSettings):
         put("serverIp", session.serverIp)
         session.mediaConnectionInfo?.let { put("mediaConnectionInfo", OpenNowJson.encodeToJsonElement(it)) }
         put("rtspsEndpoints", JsonArray(session.rtspsEndpoints.map(::JsonPrimitive)))
+        session.negotiatedStreamProfile?.let { put("negotiatedStreamProfile", OpenNowJson.encodeToJsonElement(it)) }
     })
     put("settings", buildJsonObject {
         put("resolution", settings.resolution)
@@ -181,6 +182,15 @@ internal class NvstTransport(
     private var decoder: VideoDecoder? = null
     private var audio: NvstAudioOutput? = null
     private var needsKeyframe = true
+    private var keyframeWaitStartedMs = SystemClock.elapsedRealtime()
+    private var keyframeWaitMaxMs = 0L
+    private var keyframeSkips = 0
+    private var discontinuousFrames = 0
+    private var decoderRejects = 0
+    private var lastDecoderReject: VideoCodecStatus? = null
+    private var submitMaxNs = 0L
+    private val sinkMaxNs = AtomicLong()
+    private var latestVideoStats = ""
     private val firstDecoded = java.util.concurrent.atomic.AtomicBoolean()
     private val lastDecodedAt = AtomicLong(SystemClock.elapsedRealtime())
     private val decodedFrames = AtomicInteger()
@@ -244,11 +254,41 @@ internal class NvstTransport(
     }
 
     @Keep fun onNativeInput(bytes: ByteArray) {
-        if (!stopped && inputReady) NvstHaptics.parse(bytes).forEach(rumble)
+        if (stopped || !inputReady) return
+        val type = (bytes.getOrNull(0)?.toInt()?.and(255) ?: 0) or
+            ((bytes.getOrNull(1)?.toInt()?.and(255) ?: 0) shl 8)
+        // Header metadata only; decoded rumble fields below replace raw report retention.
+        NativeInputDiagnostics.retainThrottled("nvst.server.$type", 1_000L) {
+            val header = bytes.take(4).joinToString("") { "%02x".format(it.toInt() and 255) }
+            "NVST server input bytes=${bytes.size} header=$header"
+        }
+        NvstHaptics.parse(bytes).forEach { command ->
+            NativeInputDiagnostics.retain("nvst.rumble", "NVST rumble controller=${command.controllerId} strong=${command.strongMagnitude} weak=${command.weakMagnitude}")
+            if (command.strongMagnitude != 0 || command.weakMagnitude != 0) {
+                NativeInputDiagnostics.retain("nvst.rumble.active", "NVST active rumble controller=${command.controllerId} strong=${command.strongMagnitude} weak=${command.weakMagnitude}")
+            }
+            rumble(command)
+        }
     }
 
     @Keep fun onNativeEvent(kind: String, detail: String) {
         if (stopped) return
+        if (kind == "video-diagnostics") {
+            val now = SystemClock.elapsedRealtime()
+            val waitingMs = if (needsKeyframe) now - keyframeWaitStartedMs else 0L
+            NativeInputDiagnostics.addRetained("nvst.video", "NVST video $latestVideoStats $detail " +
+                "noncontiguous=$discontinuousFrames keyframeSkips=$keyframeSkips " +
+                "waitingMs=$waitingMs waitMaxMs=${maxOf(keyframeWaitMaxMs, waitingMs)} " +
+                "decoderRejects=$decoderRejects lastReject=$lastDecoderReject " +
+                "submitMaxUs=${submitMaxNs / 1000} sinkMaxUs=${sinkMaxNs.getAndSet(0) / 1000}")
+            discontinuousFrames = 0
+            keyframeSkips = 0
+            keyframeWaitMaxMs = 0
+            decoderRejects = 0
+            lastDecoderReject = null
+            submitMaxNs = 0
+            return
+        }
         when (kind) {
             "input-ready" -> inputReady = true
             "input-unavailable", "error" -> inputReady = false
@@ -272,11 +312,13 @@ internal class NvstTransport(
                 )
             }
             val decodedFps = (decodedFrames.getAndSet(0) / seconds).toInt()
+            val receivedFps = (receivedFrames.getAndSet(0) / seconds).toInt()
+            latestVideoStats = "receivedFps=$receivedFps decodedFps=$decodedFps decodeMs=$decodeTimeMs"
             stats(StreamRuntimeStats(
                 codec = codecName,
                 fps = decodedFps,
                 decodeMs = decodeTimeMs,
-                receivedFps = (receivedFrames.getAndSet(0) / seconds).toInt(),
+                receivedFps = receivedFps,
                 decodedFps = decodedFps,
                 bitrateKbps = (receivedBytes.getAndSet(0) * 8 / seconds / 1000).toInt(),
                 jitterMs = network.jitterMs,
@@ -297,8 +339,16 @@ internal class NvstTransport(
         }
         receivedFrames.incrementAndGet()
         receivedBytes.addAndGet(bytes.remaining().toLong())
-        if (!contiguous) needsKeyframe = true
-        if (needsKeyframe && !keyframe) return false
+        if (!contiguous) {
+            discontinuousFrames++
+            if (!needsKeyframe) keyframeWaitStartedMs = SystemClock.elapsedRealtime()
+            needsKeyframe = true
+        }
+        if (needsKeyframe && !keyframe) {
+            keyframeSkips++
+            return false
+        }
+        val submitStartedNs = SystemClock.elapsedRealtimeNanos()
         val activeDecoder = decoder ?: run {
             val created = decoderFactory.createDecoder(VideoCodecInfo(codec, emptyMap(), emptyList()))
                 ?: error("No Android decoder for negotiated NVST codec $codec")
@@ -310,7 +360,9 @@ internal class NvstTransport(
                     decodeTimeMs = decodeMs?.toDouble()
                     decodedFrames.incrementAndGet()
                     lastDecodedAt.set(SystemClock.elapsedRealtime())
+                    val sinkStartedNs = SystemClock.elapsedRealtimeNanos()
                     sink()?.onFrame(frame)
+                    sinkMaxNs.accumulateAndGet(SystemClock.elapsedRealtimeNanos() - sinkStartedNs, ::maxOf)
                     if (firstDecoded.compareAndSet(false, true)) event("streaming", "")
                 }
             })
@@ -328,9 +380,19 @@ internal class NvstTransport(
         return try {
             val status = activeDecoder.decode(image, VideoDecoder.DecodeInfo(false, 0))
             val accepted = status == VideoCodecStatus.OK
+            if (accepted && needsKeyframe) {
+                keyframeWaitMaxMs = maxOf(keyframeWaitMaxMs, SystemClock.elapsedRealtime() - keyframeWaitStartedMs)
+            } else if (!accepted) {
+                decoderRejects++
+                lastDecoderReject = status
+                if (!needsKeyframe) keyframeWaitStartedMs = SystemClock.elapsedRealtime()
+            }
             needsKeyframe = !accepted
             accepted
-        } finally { image.release() }
+        } finally {
+            image.release()
+            submitMaxNs = maxOf(submitMaxNs, SystemClock.elapsedRealtimeNanos() - submitStartedNs)
+        }
     }
 }
 

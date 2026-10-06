@@ -109,6 +109,35 @@ object SdpTools {
         return output.joinToString(lineEnding)
     }
 
+    /** Capability summary only: never persist raw SDP, addresses, keys, or SSRC values. */
+    internal fun videoRepairSummary(sdp: String): String {
+        val video = sdp.split(Regex("\\r?\\n"))
+            .dropWhile { !it.startsWith("m=video ") }.let { lines ->
+                if (lines.isEmpty()) emptyList() else listOf(lines.first()) + lines.drop(1).takeWhile { !it.startsWith("m=") }
+            }
+        val media = video.firstOrNull()?.split(Regex("\\s+"))
+        val active = media?.getOrNull(1)?.let { it != "0" } ?: false
+        val payloads = if (active) media.orEmpty().drop(3).toSet() else emptySet()
+        val codecs = video.filter { it.startsWith("a=rtpmap:") }.associate { line ->
+            line.substringAfter(':').substringBefore(' ') to line.substringAfter(' ').substringBefore('/').uppercase(Locale.US)
+        }.filterKeys { it in payloads }
+        val primary = codecs.filterValues { it in setOf("H264", "H265", "HEVC", "AV1") }.keys
+        val feedback = video.filter { it.startsWith("a=rtcp-fb:") }.mapNotNull { line ->
+            val pt = line.substringAfter(':').substringBefore(' ')
+            line.substringAfter(' ', "").trim().takeIf { active && (pt == "*" || pt in primary) }
+        }
+        val rtx = video.any { line ->
+            if (!line.startsWith("a=fmtp:")) false else {
+                val pt = line.substringAfter(':').substringBefore(' ')
+                val apt = Regex("(?:^|;)\\s*apt=(\\d+)").find(line.substringAfter(' ', ""))?.groupValues?.get(1)
+                codecs[pt] == "RTX" && apt in primary
+            }
+        }
+        return "active=$active nack=${"nack" in feedback} pli=${"nack pli" in feedback} " +
+            "rtx=$rtx flexfec=${"FLEXFEC-03" in codecs.values} red=${"RED" in codecs.values} " +
+            "ulpfec=${"ULPFEC" in codecs.values} fecGroup=${active && video.any { it.startsWith("a=ssrc-group:FEC-FR ") }}"
+    }
+
     fun rewriteH265TierFlag(sdp: String, tierFlag: Int): RewriteResult {
         val payloads = h265PayloadTypes(sdp)
         if (payloads.isEmpty()) return RewriteResult(sdp, 0)
@@ -470,7 +499,7 @@ object SdpTools {
             add("a=video.maxNumReferenceFrames:4")
             add("a=video.mapRtpTimestampsToFrames:1")
             add("a=video.encoderCscMode:3")
-            add("a=video.dynamicRangeMode:0")
+            add("a=video.dynamicRangeMode:${if (ANDROID_HDR_STREAMING_ENABLED && settings.hdrEnabled) 1 else 0}")
             add("a=video.bitDepth:$bitDepth")
             // Keep codec-specific horizontal scaling disabled. Network resolution
             // adaptation is owned by DRC above, with the requested viewport retained.

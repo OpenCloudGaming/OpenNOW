@@ -35,7 +35,6 @@ const COMMAND_MOUSE_CURSOR_CAPTURE: u16 = 0x0308;
 const COMMAND_TRACK_REMOTE_CURSOR_IMAGE: u16 = 0x030d;
 const COMMAND_WINDOW_STATE: u16 = 0x0320;
 const COMMAND_SYSTEM_STATE: u16 = 0x0321;
-const COMMAND_HAPTICS_STATE: u16 = 0x0322;
 
 const INPUT_KEY_DOWN: u32 = 3;
 const INPUT_KEY_UP: u32 = 4;
@@ -536,7 +535,7 @@ impl fmt::Display for NvstInputCodecError {
 
 #[derive(Debug, Default)]
 pub(crate) struct NvstInputCodec {
-    gamepad_sequences: [u8; 4],
+    gamepad_sequences: [u16; 4],
     gamepad_registered: u8,
 }
 
@@ -675,10 +674,10 @@ impl NvstInputCodec {
                 }
                 INPUT_HAPTICS_ENABLED => {
                     require_len(event.bytes, 6, "short haptics packet")?;
-                    encoded.push(NvstEncodedInput {
-                        route: NvstInputRoute::ControlReliable,
-                        bytes: haptics_state(read_u16_be(event.bytes, 4).unwrap_or_default() != 0),
-                    });
+                    encoded.push(haptics_state(
+                        read_u16_be(event.bytes, 4).unwrap_or_default() != 0,
+                        event.timestamp_us,
+                    ));
                 }
                 INPUT_LOCK_KEYS_SYNC => {
                     require_len(event.bytes, 5, "short lock-key sync packet")?;
@@ -861,7 +860,7 @@ fn remote_input_packet(input_type: u32, body: &[u8]) -> Vec<u8> {
 fn gamepad_command(
     packet: &[u8],
     timestamp_us: u64,
-    sequence: u8,
+    sequence: u16,
     descriptor_index: u8,
 ) -> Vec<u8> {
     let mut payload = Vec::with_capacity(52);
@@ -872,7 +871,9 @@ fn gamepad_command(
         0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x55, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     ];
-    body[3] = sequence;
+    // Protocol-v3's 0x26 wrapper carries a big-endian u16 sequence. Truncating it to
+    // one byte wraps at 256 and makes later snapshots look older than the last state.
+    body[2..4].copy_from_slice(&sequence.to_be_bytes());
     body[13] = descriptor_index;
     body[17..19].copy_from_slice(&packet[12..14]);
     body[19] = packet[14];
@@ -957,10 +958,10 @@ fn activation_chain(timestamp_us: u64) -> [Vec<u8>; 8] {
         device_descriptor(timestamp_us, 2),
         mouse_cursor_capture(true),
         remote_cursor_tracking(true),
-        haptics_state(false),
         state_change(COMMAND_WINDOW_STATE, 19, 0),
         state_change(COMMAND_SYSTEM_STATE, 0, 0),
         enable_input(1, true),
+        haptics_state(false, timestamp_us).bytes,
     ]
 }
 
@@ -972,8 +973,13 @@ fn remote_cursor_tracking(enabled: bool) -> Vec<u8> {
     control_command(COMMAND_TRACK_REMOTE_CURSOR_IMAGE, &[u8::from(enabled)])
 }
 
-fn haptics_state(enabled: bool) -> Vec<u8> {
-    control_command(COMMAND_HAPTICS_STATE, &[u8::from(enabled)])
+fn haptics_state(enabled: bool, timestamp_us: u64) -> NvstEncodedInput {
+    // GFN handles this as RemoteInput type 13, not a one-byte ServerControl 0x0322.
+    // The existing RemoteInput encoder owns padding, timestamps and reliable routing.
+    remote_input_message(
+        remote_input_packet(INPUT_HAPTICS_ENABLED, &u16::from(enabled).to_le_bytes()),
+        timestamp_us,
+    )
 }
 
 fn control_keepalive(stream_value: u32) -> Vec<u8> {
@@ -1246,10 +1252,10 @@ mod tests {
         );
         assert_eq!(chain[2], hex("0803010001"));
         assert_eq!(chain[3], hex("0d03010001"));
-        assert_eq!(chain[4], hex("2203010000"));
-        assert_eq!(chain[5], hex("20030c00000000001300000000000000"));
-        assert_eq!(chain[6], hex("21030c00000000000000000000000000"));
-        assert_eq!(chain[7], hex("0b020c00000000000100000001000000"));
+        assert_eq!(chain[4], hex("20030c00000000001300000000000000"));
+        assert_eq!(chain[5], hex("21030c00000000000000000000000000"));
+        assert_eq!(chain[6], hex("0b020c00000000000100000001000000"));
+        assert_eq!(chain[7], haptics_state(false, 20_102_193).bytes);
     }
 
     #[test]
@@ -1325,6 +1331,34 @@ mod tests {
     }
 
     #[test]
+    fn gamepad_release_remains_newer_after_255_snapshots_and_u16_wrap() {
+        let mut codec = NvstInputCodec::default();
+        let mut packet = vec![0; 38];
+        packet[..4].copy_from_slice(&INPUT_GAMEPAD.to_le_bytes());
+        packet[16..18].copy_from_slice(&32767_i16.to_le_bytes());
+        let mut last = Vec::new();
+        for _ in 0..255 {
+            last = codec.encode(&packet, 0).expect("held stick").pop().unwrap().bytes;
+        }
+        assert_eq!(&last[15..17], &255_u16.to_be_bytes());
+        packet[16..24].fill(0);
+        let release = codec.encode(&packet, 0).expect("release").pop().unwrap();
+        assert_eq!(release.route, NvstInputRoute::InputPartial);
+        assert_eq!(&release.bytes[15..17], &256_u16.to_be_bytes());
+        assert_eq!(&release.bytes[34..42], &[0; 8]);
+        // Exercise the real codec through a complete protocol-sized wrap, then a new deflection.
+        for _ in 256..65535 {
+            codec.encode(&packet, 0).expect("neutral keepalive");
+        }
+        let wrap = codec.encode(&packet, 0).expect("wrap").pop().unwrap();
+        assert_eq!(&wrap.bytes[15..17], &[0, 0]);
+        packet[20..22].copy_from_slice(&(-32768_i16).to_le_bytes());
+        let next = codec.encode(&packet, 0).expect("after wrap").pop().unwrap();
+        assert_eq!(&next.bytes[15..17], &[0, 1]);
+        assert_eq!(&next.bytes[38..40], &(-32768_i16).to_le_bytes());
+    }
+
+    #[test]
     fn gamepads_keep_independent_descriptor_identity_and_sequences() {
         let mut codec = NvstInputCodec::default();
         let packet = |controller_id: u16, timestamp: u64| {
@@ -1375,7 +1409,9 @@ mod tests {
         let haptics = codec.encode(&haptics, 0).unwrap();
         assert_eq!(haptics.len(), 1);
         assert_eq!(haptics[0].route, NvstInputRoute::ControlReliable);
-        assert_eq!(haptics[0].bytes, hex("2203010001"));
+        assert_eq!(haptics[0].bytes, hex(
+            "06022800000000240e000000000000060d000000010000000000000000000000000000000b00000000000000"
+        ));
 
         let mut lock_keys = vec![0x23];
         lock_keys.extend_from_slice(&12_u64.to_be_bytes());
@@ -1393,6 +1429,23 @@ mod tests {
                 .any(|bytes| bytes == lock_keys_type)
         );
         assert!(encoded[0].bytes.contains(&0b011));
+    }
+
+    #[test]
+    fn haptics_disable_preserves_timestamp_and_rejects_truncated_notifications() {
+        let mut codec = NvstInputCodec::default();
+        let disabled = hex("0d0000000000");
+        let encoded = codec.encode(&disabled, 12).unwrap();
+        assert_eq!(encoded.len(), 1);
+        assert_eq!(encoded[0].route, NvstInputRoute::ControlReliable);
+        assert_eq!(encoded[0].bytes, hex(
+            "06022800000000240e000000000000060d000000000000000000000000000000000000000c00000000000000"
+        ));
+        let mut wrapped = hex("23000000000000000c22");
+        wrapped.extend_from_slice(&disabled);
+        assert_eq!(codec.encode(&wrapped, 999).unwrap(), encoded);
+        assert!(codec.encode(&disabled[..5], 12).is_err());
+        assert!(codec.encode(&wrapped[..wrapped.len() - 1], 999).is_err());
     }
 
     #[test]

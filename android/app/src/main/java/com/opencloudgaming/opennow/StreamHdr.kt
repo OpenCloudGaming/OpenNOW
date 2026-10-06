@@ -30,36 +30,56 @@ internal object StreamHdr {
             capabilities.desiredMaxAverageLuminance)
     }
 
-    fun decoderName(width: Int, height: Int, fps: Int): String? {
-        if (Build.VERSION.SDK_INT < 26) return null
-        // Match the negotiated Android HDR compatibility profile; Main10 requires changing the
-        // CloudMatch, SDP, and decoder contracts together rather than only the local decoder.
+    fun decoderName(width: Int, height: Int, fps: Int, codec: VideoCodec = VideoCodec.H265): String? {
+        if (Build.VERSION.SDK_INT < 26 || (codec == VideoCodec.AV1 && Build.VERSION.SDK_INT < 29)) return null
+        hdrCodecProfile(codec) ?: return null
+        val mime = codec.mediaMimeType()
         return runCatching {
             MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.firstOrNull { info ->
                 !info.isEncoder && CodecProbe.isOpenNowHardwareDecoderAllowed(info) &&
                     runCatching {
-                        val caps = info.getCapabilitiesForType("video/hevc")
-                        caps.profileLevels.any { it.profile in hdrHevcProfiles } &&
-                            (caps.videoCapabilities?.let {
-                                it.areSizeAndRateSupported(width, height, fps.toDouble()) ||
-                                    it.isSizeSupported(width, height)
-                            } ?: true)
+                        val caps = info.getCapabilitiesForType(mime)
+                        caps.profileLevels.any { hdrDecoderProfileSupported(codec, it.profile) } &&
+                            caps.isFormatSupported(format(width, height, fps, codec)) &&
+                            caps.videoCapabilities?.areSizeAndRateSupported(width, height, fps.toDouble()) == true
                     }.getOrDefault(false)
             }?.name
         }.getOrNull()
     }
 
-    fun format(width: Int, height: Int, fps: Int): MediaFormat =
-        MediaFormat.createVideoFormat("video/hevc", width, height).apply {
-            setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10)
+    fun format(width: Int, height: Int, fps: Int, codec: VideoCodec = VideoCodec.H265): MediaFormat =
+        MediaFormat.createVideoFormat(codec.mediaMimeType(), width, height).apply {
+            setInteger(MediaFormat.KEY_PROFILE, requireNotNull(hdrCodecProfile(codec)))
             setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT2020)
             setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_ST2084)
             setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
             setInteger(MediaFormat.KEY_FRAME_RATE, fps)
+            // Match the SDR decoder's real-time scheduling hints. In particular, a
+            // 120-FPS HDR decoder must not retain the platform's background priority.
+            setInteger(MediaFormat.KEY_PRIORITY, 0)
+            setInteger(MediaFormat.KEY_OPERATING_RATE, fps)
             // No SDR white-point multiplier, tone-map request, or invented mastering metadata.
-            // The HEVC VUI/SEI and opaque decoder surface carry the source metadata to Android.
+            // The bitstream color metadata and opaque decoder surface carry HDR to Android.
         }
 }
+
+internal fun hdrCodecProfile(codec: VideoCodec): Int? = when (codec) {
+    VideoCodec.H265 -> MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10
+    VideoCodec.AV1 -> MediaCodecInfo.CodecProfileLevel.AV1ProfileMain10
+    VideoCodec.H264 -> null
+}
+
+internal fun hdrDecoderProfileSupported(codec: VideoCodec, profile: Int): Boolean = when (codec) {
+    VideoCodec.H265 -> profile in hdrHevcProfiles
+    VideoCodec.AV1 -> profile in hdrAv1Profiles
+    VideoCodec.H264 -> false
+}
+
+private val hdrAv1Profiles = setOf(
+    MediaCodecInfo.CodecProfileLevel.AV1ProfileMain10,
+    MediaCodecInfo.CodecProfileLevel.AV1ProfileMain10HDR10,
+    MediaCodecInfo.CodecProfileLevel.AV1ProfileMain10HDR10Plus,
+)
 
 private val hdrHevcProfiles = setOf(
     MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10,
@@ -75,7 +95,7 @@ internal fun StreamSettings.withHdrDeviceSupport(context: Context): StreamSettin
     val display = StreamHdr.displayProfile(context)
     val (width, height) = streamResolutionPixels(this)
     val supported = hdrAvailableForAndroid(isAndroidTvProfile(context)) && display != null &&
-        StreamHdr.decoderName(width, height, fps) != null
+        StreamHdr.decoderName(width, height, fps, codec) != null
     return copy(hdrEnabled = supported, hdrDisplay = if (supported) display else null)
 }
 

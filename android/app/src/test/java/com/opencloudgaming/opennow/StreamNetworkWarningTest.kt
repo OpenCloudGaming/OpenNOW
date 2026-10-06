@@ -25,6 +25,17 @@ class StreamNetworkWarningTest {
     }
 
     @Test
+    fun signedCorrectionDoesNotInvalidateMeasuredRollingLoss() {
+        val warning = streamNetworkWarning(StreamRuntimeStats(
+            packetLossPct = 3.25, packetsLostDelta = -2, packetsReceivedDelta = 100,
+        ))
+        assertEquals("loss", warning?.key)
+        assertNull(streamNetworkWarning(StreamRuntimeStats(
+            packetLossPct = 0.0, packetsLostDelta = -2, packetsReceivedDelta = 100,
+        )))
+    }
+
+    @Test
     fun ignoresLossPercentageWithoutUsableCounterDelta() {
         assertNull(
             streamNetworkWarning(
