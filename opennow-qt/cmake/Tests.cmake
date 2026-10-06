@@ -464,6 +464,18 @@ if(BUILD_TESTING)
             endforeach()
         endforeach()
     endforeach()
+    foreach(report_motion normal reduced)
+        set(report_motion_args)
+        if(report_motion STREQUAL "reduced")
+            list(APPEND report_motion_args --reduced-motion)
+        endif()
+        add_test(NAME qml-desktop-session-report-focus-${report_motion} COMMAND opennow-qt
+            --smoke-test --allow-multiple-instances --desktop --route home
+            --smoke-game-details-layout --details-owned --details-session-report
+            --smoke-width 1280 --smoke-height 800 ${report_motion_args})
+        set_tests_properties(qml-desktop-session-report-focus-${report_motion} PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+    endforeach()
     foreach(search_case compact normal scaled-light)
         if(search_case STREQUAL "normal")
             set(search_width 1440)

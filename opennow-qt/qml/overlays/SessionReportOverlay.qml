@@ -4,6 +4,7 @@ import OpenNOW
 
 FocusScope {
     id: root
+    objectName: "desktopSessionReport"
     anchors.fill: parent
     focus: true
     readonly property var report: ShellStore.lastSessionReport || ({})
@@ -92,8 +93,8 @@ FocusScope {
                 }
                 Row {
                     anchors.horizontalCenter: parent.horizontalCenter; spacing: 14
-                    GlassButton { id: doneButton; width: 210; text: qsTr("Done"); glyph: "A"; primary: true; onClicked: AppController.showOverlay("") }
-                    GlassButton { width: 250; text: qsTr("Open diagnostics"); glyph: "X"; onClicked: { AppController.showOverlay(""); AppController.navigate("diagnostics") } }
+                    GlassButton { id: doneButton; objectName: "sessionReportDoneButton"; width: 210; text: qsTr("Done"); glyph: "A"; primary: true; onClicked: AppController.showOverlay("") }
+                    GlassButton { objectName: "sessionReportDiagnosticsButton"; width: 250; text: qsTr("Open diagnostics"); glyph: "X"; onClicked: { AppController.showOverlay(""); AppController.navigate("diagnostics") } }
                 }
             }
         }
