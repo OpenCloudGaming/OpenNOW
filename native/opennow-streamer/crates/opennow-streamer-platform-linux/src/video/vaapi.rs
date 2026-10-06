@@ -18,6 +18,14 @@ use crate::{
 
 const MAX_DECODE_RETRIES: usize = 16;
 
+fn h264_access_unit_payload(data: &[u8]) -> &[u8] {
+    let end = data
+        .iter()
+        .rposition(|byte| *byte != 0)
+        .map_or(data.len(), |index| index + 1);
+    &data[..end]
+}
+
 /// One DMA-BUF object of a DRM-PRIME export. Mirrors cros-libva's descriptor,
 /// which cannot be constructed outside that crate.
 struct ExportedObject {
@@ -388,16 +396,17 @@ fn validate_initial_context(display: &Arc<Display>) -> std::result::Result<(), S
 
 impl VideoDecoder for VaApiDecoder {
     fn decode(&mut self, frame: &EncodedVideoFrame) -> Result<Vec<DecodedVideoFrame>> {
+        let data = h264_access_unit_payload(&frame.data);
         let mut offset = 0;
         let mut output = Vec::new();
         let mut retries = 0;
-        while offset < frame.data.len() {
+        while offset < data.len() {
             let visible = self.allocation_visible;
             let coded = self.allocation_coded;
             let mut allocate = || Some(VaFrame::new(visible, coded));
             match self
                 .decoder
-                .decode(frame.timestamp_us, &frame.data[offset..], &mut allocate)
+                .decode(frame.timestamp_us, &data[offset..], &mut allocate)
             {
                 Ok(consumed) if consumed > 0 => {
                     offset += consumed;
@@ -464,6 +473,49 @@ fn validate_h264_display(display: &Display) -> std::result::Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cros_codecs::codec::h264::parser::Nalu;
+    use std::io::Cursor;
+
+    #[test]
+    fn h264_access_unit_padding_does_not_require_an_extra_nal() {
+        for prefix in [&[0, 0, 1][..], &[0, 0, 0, 1][..]] {
+            for padding in [1, 2, 1280] {
+                let mut encoded = prefix.to_vec();
+                encoded.extend_from_slice(&[0x65, 0x80]);
+                encoded.resize(encoded.len() + padding, 0);
+                let data = h264_access_unit_payload(&encoded);
+                let mut offset = 0;
+                let mut nals = 0;
+                while offset < data.len() {
+                    let nal = Nalu::next(&mut Cursor::new(&data[offset..])).unwrap();
+                    offset += nal.offset + nal.size;
+                    nals += 1;
+                }
+                assert_eq!(nals, 1);
+            }
+        }
+    }
+
+    #[test]
+    fn h264_access_unit_payload_preserves_internal_zeroes_and_nals() {
+        let encoded = [0, 0, 0, 1, 0x67, 0x80, 0, 0, 0, 1, 0x65, 0, 0, 3, 0, 0x80];
+        let mut padded = encoded.to_vec();
+        padded.extend_from_slice(&[0; 32]);
+        let data = h264_access_unit_payload(&padded);
+        assert_eq!(data, encoded);
+        let first = Nalu::next(&mut Cursor::new(data)).unwrap();
+        let consumed = first.offset + first.size;
+        let second = Nalu::next(&mut Cursor::new(&data[consumed..])).unwrap();
+        assert_eq!(consumed + second.offset + second.size, data.len());
+        assert_eq!(h264_access_unit_payload(&encoded), encoded);
+    }
+
+    #[test]
+    fn h264_access_unit_payload_does_not_hide_invalid_framing() {
+        for encoded in [&[0, 0, 0, 0][..], &[0x65, 0x80, 0, 0][..], &[0, 0, 1][..]] {
+            assert!(Nalu::next(&mut Cursor::new(h264_access_unit_payload(encoded))).is_err());
+        }
+    }
 
     #[test]
     #[ignore = "requires the isolated VA-API mock driver harness"]
