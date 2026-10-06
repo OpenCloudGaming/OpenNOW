@@ -630,6 +630,20 @@ impl StreamerService {
             ));
         }
         let mut context = streamer_context(session, settings);
+        if !params["runtimeCapabilities"].is_null() {
+            let mut negotiated_settings = context["settings"].clone();
+            if context["settings"]["transportMode"] != "webrtc"
+                && context["session"]["negotiatedStreamProfile"]["codec"].as_str().is_none()
+            {
+                negotiated_settings["codec"] = json!(settings["codec"].as_str().unwrap_or("auto"));
+            }
+            let resolved = Self::embedded_session_settings(
+                &negotiated_settings,
+                &params["runtimeCapabilities"],
+            )?;
+            context["settings"]["codec"] = json!(resolved["codec"].as_str().unwrap().to_ascii_uppercase());
+            context["settings"]["nativeHdrSupported"] = resolved["nativeHdrSupported"].clone();
+        }
         // The codec is client-selected (CloudMatch no longer carries it, matching
         // the official client), so validate HDR against the normalized settings
         // codec (negotiated-or-settings) rather than the raw profile, which is
@@ -654,21 +668,6 @@ impl StreamerService {
             return Err(invalid(
                 "Resuming HDR requires current embedded window output capabilities",
             ));
-        }
-        if !params["runtimeCapabilities"].is_null() {
-            // Re-check the server's negotiated codec on resume/attachment as well. Never
-            // reinterpret compressed AV1 bytes as H.264 when a persisted session is resumed.
-            let mut negotiated_settings = context["settings"].clone();
-            if let Some(color) =
-                context["session"]["negotiatedStreamProfile"]["colorQuality"].as_str()
-            {
-                negotiated_settings["colorQuality"] = json!(color);
-            }
-            let resolved = Self::embedded_session_settings(
-                &negotiated_settings,
-                &params["runtimeCapabilities"],
-            )?;
-            context["settings"]["nativeHdrSupported"] = resolved["nativeHdrSupported"].clone();
         }
         context["surface"] = Value::Null;
         Ok(json!({
@@ -3192,6 +3191,60 @@ mod tests {
             &json!({"codec":"auto", "colorQuality":"8bit_420"}),
         ).unwrap();
         assert_eq!(prepared["context"]["settings"]["colorQuality"], "10bit_420");
+    }
+
+    #[test]
+    fn embedded_prepare_resolves_auto_for_an_unreported_codec() {
+        let service = StreamerService::new();
+        let capabilities = json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+            "backend":"d3d11","available":true,"codecs":[
+                {"codec":"h264","available":true,"colorQualities":["8bit_420"]},
+                {"codec":"h265","available":true,"hdrSupported":true,
+                    "colorQualities":["8bit_420","10bit_420","10bit_444"],
+                    "hdrColorQualities":["10bit_420","10bit_444"]},
+                {"codec":"av1","available":false}
+            ]
+        }]});
+        for color in ["10bit_420", "10bit_444", "8bit_420"] {
+            for hdr in [false, true] {
+                if hdr && color == "8bit_420" {
+                    continue;
+                }
+                for codec in [json!("auto"), Value::Null] {
+                    let params = json!({"session":{"sessionId":"auto-attach","status":2,
+                        "negotiatedStreamProfile":{"codec":null,"codecSource":"unreported",
+                            "colorQuality":color,"enableHdr":hdr}},
+                        "runtimeCapabilities":capabilities});
+                    let settings = json!({"codec":codec,"colorQuality":"8bit_420","enableHdr":false});
+                    let prepared = service.prepare_embedded(&params, &settings).unwrap();
+                    assert_eq!(prepared["context"]["settings"]["codec"], "H265");
+                    assert_eq!(prepared["context"]["settings"]["colorQuality"], color);
+                    assert_eq!(prepared["context"]["settings"]["enableHdr"], hdr);
+                    assert_eq!(prepared["context"]["settings"]["nativeHdrSupported"], true);
+                    assert_eq!(prepared["context"]["session"], params["session"]);
+                    assert_eq!(settings["codec"], codec);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn embedded_prepare_does_not_replace_an_explicit_codec() {
+        let service = StreamerService::new();
+        let params = json!({"session":{"sessionId":"explicit-attach","status":2,
+            "negotiatedStreamProfile":{"codec":null,"codecSource":"unreported",
+                "colorQuality":"10bit_420","enableHdr":false}},
+            "runtimeCapabilities":{"protocolVersion":7,"videoBackends":[{
+                "backend":"d3d11","available":true,"codecs":[
+                    {"codec":"h264","available":true,"colorQualities":["8bit_420"]},
+                    {"codec":"h265","available":true,"colorQualities":["10bit_420"]}
+                ]
+            }]}});
+        let error = service
+            .prepare_embedded(&params, &json!({"codec":"h264"}))
+            .unwrap_err();
+        assert_eq!(error.code, "streamer_codec_unavailable");
+        assert!(error.message.contains("H264 is unavailable"));
     }
 
     #[test]
