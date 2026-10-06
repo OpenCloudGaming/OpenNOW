@@ -35,18 +35,25 @@ struct Changes {
 
 impl Changes {
     fn bump(&self) {
-        let generation =
-            match self
-                .generation
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
-                    value.checked_add(1).filter(|next| *next <= MAX_GENERATION)
-                }) {
-                Ok(previous) => previous + 1,
-                Err(value) => {
-                    self.exhausted.store(true, Ordering::Release);
-                    value
-                }
+        let mut previous = self.generation.load(Ordering::Acquire);
+        let generation = loop {
+            let Some(next) = previous
+                .checked_add(1)
+                .filter(|next| *next <= MAX_GENERATION)
+            else {
+                self.exhausted.store(true, Ordering::Release);
+                break previous;
             };
+            match self.generation.compare_exchange_weak(
+                previous,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break next,
+                Err(current) => previous = current,
+            }
+        };
         let _ = self.output.send(
             json!({"type":"event","name":"plugins.changed","payload":{"generation":generation}}),
         );
@@ -852,4 +859,58 @@ fn error(code: &str) -> SourceError {
         ),
     };
     SourceError::new(code, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    #[test]
+    fn generation_changes_remain_unique_under_concurrent_updates() {
+        let (output, events) = mpsc::channel();
+        let changes = Arc::new(Changes {
+            generation: AtomicU64::new(1),
+            persisted: AtomicU64::new(1),
+            exhausted: AtomicBool::new(false),
+            output,
+        });
+        thread::scope(|scope| {
+            for _ in 0..8 {
+                let changes = Arc::clone(&changes);
+                scope.spawn(move || {
+                    for _ in 0..100 {
+                        changes.bump();
+                    }
+                });
+            }
+        });
+        let mut generations: Vec<_> = events
+            .try_iter()
+            .map(|event| event["payload"]["generation"].as_u64().unwrap())
+            .collect();
+        generations.sort_unstable();
+        assert_eq!(generations, (2..=801).collect::<Vec<_>>());
+        assert_eq!(changes.generation.load(Ordering::Acquire), 801);
+        assert!(!changes.exhausted.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn exhausted_generation_stops_without_wrapping() {
+        let (output, events) = mpsc::channel();
+        let changes = Changes {
+            generation: AtomicU64::new(MAX_GENERATION - 1),
+            persisted: AtomicU64::new(MAX_GENERATION - 1),
+            exhausted: AtomicBool::new(false),
+            output,
+        };
+        changes.bump();
+        assert!(!changes.exhausted.load(Ordering::Acquire));
+        changes.bump();
+        assert!(changes.exhausted.load(Ordering::Acquire));
+        assert_eq!(changes.generation.load(Ordering::Acquire), MAX_GENERATION);
+        for event in events.try_iter() {
+            assert_eq!(event["payload"]["generation"], MAX_GENERATION);
+        }
+    }
 }
