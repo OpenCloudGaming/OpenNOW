@@ -25,6 +25,15 @@ QtObject {
     property var ownershipConfirmation: null
     property var remoteFavorites: []
     property string remoteFavoritesError: ""
+    property var focusIndexes: ({})
+    property var storeGames: []
+    property string storeState: "ready"
+    property string storeError: ""
+    property string storeWarning: ""
+    property int storeTotalCount: 0
+    property bool storeLoading: false
+    property bool storeHasMore: false
+    signal storeSessionReset()
     function selectedGameActionLabel() { return "Play" }
     function activateSelectedGame() { launchSelectedGame() }
     function isCloudFavorite(game) { return false }
@@ -35,8 +44,12 @@ QtObject {
     function refreshSelectedMetadata() {}
     function refreshCloudFavorites() {}
 
-    function focusIndex(route) { return 0 }
-    function rememberFocus(route, index) {}
+    function focusIndex(route) { return focusIndexes[route] || 0 }
+    function rememberFocus(route, index) { focusIndexes = Object.assign({}, focusIndexes, {[route]: index}) }
+    function ensureStore() {}
+    function requestStorePage() {}
+    function retryStore() {}
+    function readinessNotice() { return "" }
     function artworkUrl(source) { return source }
     function retainArtwork(source) {}
     function releaseArtwork(source) {}

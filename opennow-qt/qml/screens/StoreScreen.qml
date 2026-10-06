@@ -4,11 +4,16 @@ import OpenNOW
 FocusScope {
     id: root
     focus: true
-    property int currentIndex: Math.max(0, Math.min(29, ShellStore.focusIndex("store")))
+    property int currentIndex: Math.max(0, Math.min(games.length - 1, ShellStore.focusIndex("store")))
     readonly property var games: ShellStore.storeGames
     readonly property var selectedGame: gameAt(currentIndex)
     readonly property int columnCount: 10
     readonly property bool pageFailed: ShellStore.storeError !== "" || ShellStore.storeWarning !== ""
+    onCurrentIndexChanged: Qt.callLater(root.revealSelection)
+
+    function revealSelection() {
+        catalogGrid.positionViewAtIndex(root.currentIndex, GridView.Contain)
+    }
 
     function gameAt(index) {
         if (!games.length || index < 0)
@@ -31,7 +36,6 @@ FocusScope {
             currentIndex = Math.max(0, Math.min(games.length - 1, currentIndex + delta))
         }
         ShellStore.rememberFocus("store", currentIndex)
-        catalogGrid.positionViewAtIndex(currentIndex, GridView.Contain)
     }
 
     function continuePaging() {
@@ -112,6 +116,7 @@ FocusScope {
 
         GridView {
             id: catalogGrid
+            objectName: "consoleStoreGrid"
             x: 16; y: 16
             width: parent.width - 32
             height: parent.height - 16
@@ -312,5 +317,8 @@ FocusScope {
         target: ShellStore
         function onStoreSessionReset() { if (root.visible) ShellStore.ensureStore("") }
     }
-    Component.onCompleted: ShellStore.ensureStore("")
+    Component.onCompleted: {
+        ShellStore.ensureStore("")
+        Qt.callLater(root.revealSelection)
+    }
 }

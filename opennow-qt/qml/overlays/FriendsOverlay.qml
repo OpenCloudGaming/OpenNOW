@@ -75,6 +75,7 @@ GlassPanel {
                     required property int index
                     width: ListView.view.width
                     height: 56
+                    compact: true
                     title: modelData.glyph + "  " + modelData.t
                     description: modelData.d
                     value: index === 0 ? "A" : ""

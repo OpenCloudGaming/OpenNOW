@@ -42,7 +42,7 @@ public slots:
             qmlRegisterType(QUrl::fromLocalFile(source + "/desktop/components/" + name + ".qml"),
                             "OpenNOW", 1, 0, name);
         }
-        for (const auto *name : {"GameDetailScreen", "LibraryScreen", "HomeScreen"}) {
+        for (const auto *name : {"GameDetailScreen", "LibraryScreen", "HomeScreen", "StoreScreen"}) {
             qmlRegisterType(QUrl::fromLocalFile(source + "/screens/" + name + ".qml"),
                             "OpenNOW", 1, 0, name);
         }
