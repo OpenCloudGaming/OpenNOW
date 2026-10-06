@@ -5,6 +5,23 @@ smoke test is not release acceptance. The legacy Electron source has been remove
 acceptance still requires every row to be executed on the named hardware, the artifacts to be
 reviewed, and the staged rollout to complete.
 
+## Windows update scheduling
+
+Windows startup defaults `QT_D3D_NO_VBLANK_THREAD` to `1` before creating the Qt
+application. An explicitly supplied value is preserved. This disables Qt's DXGI
+vblank notification thread, not D3D11 presentation vsync or the threaded render loop.
+
+On the tested RTX 3080 with Qt 6.11.2, the notification path stopped delivering window
+update requests after the first frame. The window remained active and exposed, but
+FrameAnimation stayed at frame zero and Game Mode entry could not finish. Disabling
+that notification path restored normal animation on the unchanged executable while
+retaining the threaded renderer and its vsync animation driver. Switching to the
+basic render loop also avoided the failure, but is not the production workaround.
+
+When checking this path, use a native Windows window. The offscreen platform can fail
+the explicit adapter-selection precondition before any layout workload starts. Set
+`QT_FORCE_STDERR_LOGGING=1` to capture Qt diagnostics from the GUI executable.
+
 ## FSR 1 upscaling on Windows and Linux
 
 Stream settings and onboarding offer Off or FSR 1 on Windows and Linux. macOS retains
