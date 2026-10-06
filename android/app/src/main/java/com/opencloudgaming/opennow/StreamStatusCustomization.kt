@@ -27,6 +27,7 @@ internal enum class StreamStatusItem(
     Bitrate(R.string.stream_statusbar_metric_bitrate, R.string.setup_play_metric_bitrate_preview),
     Battery(R.string.stream_statusbar_metric_battery, R.string.setup_play_metric_battery_preview),
     SessionBattery(R.string.stream_statusbar_metric_session_battery, R.string.setup_play_metric_session_battery_preview),
+    Playtime(R.string.stream_statusbar_metric_playtime, R.string.setup_play_metric_playtime_preview),
     Connection(R.string.stream_statusbar_metric_connection, R.string.setup_play_metric_connection_preview),
     Resolution(R.string.stream_statusbar_metric_resolution, R.string.setup_play_metric_resolution_preview),
     Codec(R.string.stream_statusbar_metric_codec, R.string.setup_play_metric_codec_preview),
@@ -42,6 +43,7 @@ internal enum class StreamStatusItem(
         Bitrate -> settings.streamStatsMetrics.bitrate
         Battery -> settings.streamStatsMetrics.battery
         SessionBattery -> settings.streamStatsMetrics.sessionBattery
+        Playtime -> settings.streamStatsMetrics.playtime
         Connection -> settings.streamStatsMetrics.connection
         Resolution -> settings.streamStatsMetrics.resolution
         Codec -> settings.streamStatsMetrics.codec
@@ -62,6 +64,7 @@ internal enum class StreamStatusItem(
             Bitrate -> metrics.copy(bitrate = enabled)
             Battery -> metrics.copy(battery = enabled)
             SessionBattery -> metrics.copy(sessionBattery = enabled)
+            Playtime -> metrics.copy(playtime = enabled)
             Connection -> metrics.copy(connection = enabled)
             Resolution -> metrics.copy(resolution = enabled)
             Codec -> metrics.copy(codec = enabled)

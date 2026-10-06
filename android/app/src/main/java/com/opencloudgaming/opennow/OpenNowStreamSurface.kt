@@ -622,23 +622,25 @@ internal fun StreamScreen(
         }
     }
 
-    LaunchedEffect(streamReady, state.settings.sessionCounterEnabled, session?.sessionId, sessionStartedAtMs, smartSessionLimit) {
+    LaunchedEffect(streamReady, state.settings.sessionCounterEnabled, state.settings.streamStatsMetrics.playtime, statsVisible, session?.sessionId, sessionStartedAtMs, smartSessionLimit) {
         var previousRemainingSeconds: Int? = null
         val sentSessionWarnings = mutableSetOf<Int>()
-        while (streamReady && state.settings.sessionCounterEnabled) {
+        while (streamReady && (state.settings.sessionCounterEnabled || (statsVisible && state.settings.streamStatsMetrics.playtime))) {
             val nowMs = System.currentTimeMillis()
             timerNowMs = nowMs
-            val remainingSeconds = sessionRemainingSeconds(smartSessionLimit, sessionStartedAtMs, nowMs)
-            sessionWarningThresholdCrossed(previousRemainingSeconds, remainingSeconds)?.let { thresholdSeconds ->
-                if (sentSessionWarnings.add(thresholdSeconds)) {
-                    Toast.makeText(
-                        context,
-                        "${formatSessionWarningThreshold(thresholdSeconds)} left in this session",
-                        Toast.LENGTH_SHORT,
-                    ).show()
+            if (state.settings.sessionCounterEnabled) {
+                val remainingSeconds = sessionRemainingSeconds(smartSessionLimit, sessionStartedAtMs, nowMs)
+                sessionWarningThresholdCrossed(previousRemainingSeconds, remainingSeconds)?.let { thresholdSeconds ->
+                    if (sentSessionWarnings.add(thresholdSeconds)) {
+                        Toast.makeText(
+                            context,
+                            "${formatSessionWarningThreshold(thresholdSeconds)} left in this session",
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    }
                 }
+                previousRemainingSeconds = remainingSeconds
             }
-            previousRemainingSeconds = remainingSeconds
             delay(1000L)
         }
     }
@@ -831,6 +833,8 @@ internal fun StreamScreen(
                     style = state.settings.streamStatsStyle,
                     metrics = state.settings.streamStatsMetrics,
                     sessionStartBatteryPercent = sessionStartBatteryPercent,
+                    sessionStartedAtMs = sessionStartedAtMs,
+                    sessionNowMs = timerNowMs,
                     backgroundAlpha = state.settings.streamStatsBackgroundAlpha(),
                     serverLocation = session.reportedServerZone(),
                     keyboardButtonEnabled = !state.settings.hideStreamButtons,

@@ -255,6 +255,8 @@ internal fun StreamStatsPill(
     style: StreamStatsStyle,
     metrics: StreamStatsMetrics,
     sessionStartBatteryPercent: Int?,
+    sessionStartedAtMs: Long,
+    sessionNowMs: Long,
     backgroundAlpha: Float,
     serverLocation: String?,
     keyboardButtonEnabled: Boolean,
@@ -280,7 +282,7 @@ internal fun StreamStatsPill(
                 horizontalArrangement = Arrangement.spacedBy(OpenNowSpacing.md),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                StreamStatsMetricItems(streamStats, streamSettings, metrics, deviceStatus, sessionStartBatteryPercent, serverLocation)
+                StreamStatsMetricItems(streamStats, streamSettings, metrics, deviceStatus, sessionStartBatteryPercent, sessionStartedAtMs, sessionNowMs, serverLocation)
                 if (keyboardButtonEnabled) {
                     StreamStatusKeyboardButton(onClick = onKeyboardOpen)
                 }
@@ -300,6 +302,8 @@ internal fun StreamStatsPill(
                     metrics,
                     deviceStatus,
                     sessionStartBatteryPercent,
+                    sessionStartedAtMs,
+                    sessionNowMs,
                     serverLocation,
                     // Two aligned columns instead of a ragged pair of runs.
                     itemModifier = Modifier.weight(1f),
@@ -858,6 +862,8 @@ private fun StreamStatsMetricItems(
     metrics: StreamStatsMetrics,
     deviceStatus: CompactStreamDeviceStatus,
     sessionStartBatteryPercent: Int?,
+    sessionStartedAtMs: Long,
+    sessionNowMs: Long,
     serverLocation: String?,
     /** Applied to every item; the expanded layout passes a weight so its two columns line up. */
     itemModifier: Modifier = Modifier,
@@ -926,6 +932,14 @@ private fun StreamStatsMetricItems(
     }
     if (metrics.sessionBattery) {
         SessionBatteryIndicator(sessionStartBatteryPercent, deviceStatus.batteryPercent, itemModifier)
+    }
+    if (metrics.playtime) {
+        val elapsed = formatSessionTimerDuration(sessionElapsedSeconds(sessionStartedAtMs, sessionNowMs))
+        StreamStatsText(
+            value = stringResource(R.string.stream_stats_playtime, elapsed),
+            modifier = itemModifier,
+            contentDescription = stringResource(R.string.stream_stats_playtime_cd, elapsed),
+        )
     }
     if (metrics.connection) {
         StreamNetworkIndicator(deviceStatus, itemModifier)

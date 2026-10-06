@@ -61,6 +61,7 @@ class AppSettingsDefaultsTest {
         assertFalse(metrics.bitrate)
         assertTrue(metrics.battery)
         assertFalse(metrics.sessionBattery)
+        assertFalse(metrics.playtime)
         assertTrue(metrics.connection)
         assertFalse(metrics.resolution)
         assertFalse(metrics.codec)

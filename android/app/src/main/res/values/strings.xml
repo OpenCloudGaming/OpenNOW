@@ -417,6 +417,7 @@
     <string name="stream_statusbar_metric_bitrate">Bitrate</string>
     <string name="stream_statusbar_metric_battery">Battery</string>
     <string name="stream_statusbar_metric_session_battery">Session battery</string>
+    <string name="stream_statusbar_metric_playtime">Playtime</string>
     <string name="stream_statusbar_metric_connection">Connection</string>
     <string name="stream_statusbar_metric_resolution">Resolution</string>
     <string name="stream_statusbar_metric_codec">Codec</string>
@@ -848,6 +849,9 @@
     <string name="setup_play_metric_bitrate_preview">35 Mbps</string>
     <string name="setup_play_metric_battery_preview">Battery 82%%</string>
     <string name="setup_play_metric_session_battery_preview">Used 5%%</string>
+    <string name="setup_play_metric_playtime_preview">Played 1:23</string>
+    <string name="stream_stats_playtime">Played %1$s</string>
+    <string name="stream_stats_playtime_cd">Elapsed playtime %1$s</string>
     <string name="stream_stats_session_battery_used">Used %1$d%%</string>
     <string name="stream_stats_session_battery_charged">Charged %1$d%%</string>
     <string name="stream_stats_session_battery_unknown">Used --</string>
