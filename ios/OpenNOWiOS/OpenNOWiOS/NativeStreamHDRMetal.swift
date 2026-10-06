@@ -2,6 +2,18 @@ import Foundation
 import CoreVideo
 import Metal
 
+enum NativeStreamMetal4FrameSlotPolicy {
+    static let inFlightCount = 3
+    static var indices: [Int] { Array(0..<inFlightCount) }
+    static func isComplete(_ count: Int) -> Bool { count == inFlightCount }
+}
+
+enum NativeStreamSubmissionQueue: Equatable {
+    case metal4HDR, metal4Effects, metal3
+
+    func requiresWait(from previous: Self?) -> Bool { previous != self }
+}
+
 /// Shared interpretation for rendering and actual-output status.
 enum NativeStreamTenBitSurface {
     static func chroma(_ format: OSType) -> String? {
@@ -163,24 +175,18 @@ final class NativeStreamMetalFrameTimeline {
 }
 
 #if !targetEnvironment(simulator)
-/// The layer tracks all allocations needed to render and present its drawables.
-/// Keep its unmodified set on the queue for the renderer's lifetime.
+/// Decoder pools reuse IOSurfaces through independently cached texture views.
+/// Buffer retention protects their lifetime; alias visibility protects their contents.
 @available(iOS 26.0, macOS 26.0, *)
-final class NativeStreamMetalDrawableResidency {
-    private let queue: any MTL4CommandQueue
-    private var registered: (any MTLResidencySet)?
-    var isRegistered: Bool { registered != nil }
-    init(queue: any MTL4CommandQueue) { self.queue = queue }
-    func update(_ residency: any MTLResidencySet) {
-        if let current = registered, current === residency { return }
-        if let current = registered { queue.removeResidencySet(current) }
-        queue.addResidencySet(residency)
-        registered = residency
+enum NativeStreamMetalDecoderCoherency {
+    static func prepareReads(on encoder: any MTL4RenderCommandEncoder) {
+        encoder.barrier(afterQueueStages: .all, beforeStages: .fragment,
+                        visibilityOptions: [.device, .resourceAlias])
     }
 }
 
 /// Direct Metal 4 streaming: explicit allocators, argument tables,
-/// residency, commit feedback and drawable synchronization. Two bounded slots;
+/// residency and commit feedback. Presentation has a separate owner. Three bounded slots;
 /// reuse begins only after GPU feedback, retaining every IOSurface until then.
 @available(iOS 26.0, macOS 26.0, *)
 final class NativeStreamMetal4HDRRenderer {
@@ -194,14 +200,9 @@ final class NativeStreamMetal4HDRRenderer {
     private let queue: any MTL4CommandQueue
     private let pipeline: any MTLRenderPipelineState
     private let cache: CVMetalTextureCache
-    private let drawableResidency: NativeStreamMetalDrawableResidency
-    func setDrawableResidency(_ residency: any MTLResidencySet) {
-        drawableResidency.update(residency)
-    }
-
     private let slots: [Slot]
     private let lock = NSLock()
-    private var available = [0,1]
+    private var available = NativeStreamMetal4FrameSlotPolicy.indices
     static func isSupported(device: any MTLDevice) -> Bool { device.supportsFamily(.metal4) }
     init?(device: any MTLDevice) {
         guard Self.isSupported(device:device), let queue = device.makeMTL4CommandQueue() else { return nil }
@@ -217,7 +218,7 @@ final class NativeStreamMetal4HDRRenderer {
             descriptor.colorAttachments[0].pixelFormat = .bgr10a2Unorm
             pipeline = try compiler.makeRenderPipelineState(descriptor:descriptor)
             var slots: [Slot] = []
-            for _ in 0..<2 {
+            for _ in 0..<NativeStreamMetal4FrameSlotPolicy.inFlightCount {
                 let table = MTL4ArgumentTableDescriptor(); table.maxBufferBindCount = 1; table.maxTextureBindCount = 2
                 let residency = MTLResidencySetDescriptor(); residency.initialCapacity = 4
                 guard let allocator = device.makeCommandAllocator(), let command = device.makeCommandBuffer(),
@@ -227,18 +228,16 @@ final class NativeStreamMetal4HDRRenderer {
                     uniforms:uniforms,residency:try device.makeResidencySet(descriptor:residency)))
             }
             self.queue = queue; self.cache = cache; self.slots = slots
-            drawableResidency = NativeStreamMetalDrawableResidency(queue: queue)
         } catch { return nil }
     }
     /// Returns false before submitting any work if unsupported or busy; caller
     /// can use the unchanged legacy renderer and the same timeline ticket.
     func submit(buffer: CVPixelBuffer, target: any MTLTexture, destination: CGRect,
-                drawable: (any MTLDrawable)? = nil, ticket: NativeStreamMetalFrameTimeline.Ticket? = nil,
-                presented: (@Sendable (Double) -> Void)? = nil, presentAt: CFTimeInterval? = nil,
+                ticket: NativeStreamMetalFrameTimeline.Ticket? = nil,
+                waitForPrevious: Bool = true,
                 completion: @escaping @Sendable (Double,NSError?) -> Void) -> Bool {
         guard let input = NativeStreamHDRMetalProgram.Input(buffer:buffer,cache:cache,target:target,destination:destination)
             else { return false }
-        guard drawable == nil || drawableResidency.isRegistered else { return false }
         lock.lock(); let index = available.popLast(); lock.unlock()
         guard let index else { return false }
         let slot = slots[index]
@@ -258,44 +257,24 @@ final class NativeStreamMetal4HDRRenderer {
         guard let encoder = slot.command.makeRenderCommandEncoder(descriptor:pass) else {
             slot.command.endCommandBuffer(); release(index); return false
         }
-        // Decoder pools expose reused IOSurface memory through new texture views.
-        // Metal 4 does not infer alias hazards. Invalidate aliased plane reads at
-        // the consumer boundary; retention alone does not establish visibility.
-        encoder.barrier(afterQueueStages: .all, beforeStages: .fragment,
-                        visibilityOptions: [.device, .resourceAlias])
+        NativeStreamMetalDecoderCoherency.prepareReads(on: encoder)
         encoder.setRenderPipelineState(pipeline)
         encoder.setViewport(MTLViewport(originX:destination.minX,originY:destination.minY,
             width:destination.width,height:destination.height,znear:0,zfar:1))
         encoder.setArgumentTable(slot.arguments,stages:.fragment)
         encoder.drawPrimitives(primitiveType:.triangleStrip,vertexStart:0,vertexCount:4)
-        // Store tile results before handing this drawable to the compositor,
-        // which consumes another view of the same IOSurface allocation.
-        encoder.barrier(afterStages: [.fragment, .tile], beforeQueueStages: .all,
-                        visibilityOptions: [.device, .resourceAlias])
         encoder.endEncoding(); slot.command.endCommandBuffer()
         let options = MTL4CommitOptions()
-        options.addFeedbackHandler { [self,input,slot,target,drawable] feedback in
-            _ = (input,slot,target,drawable)
+        options.addFeedbackHandler { [self,input,slot,target] feedback in
+            _ = (input,slot,target)
             let error = feedback.error as NSError?
             if error != nil { ticket?.recoverAfterGPUFailure() }
             release(index)
             completion(max(feedback.gpuEndTime-feedback.gpuStartTime,0),error)
         }
-        if let ticket, ticket.previous > 0 { queue.waitForEvent(ticket.event,value:ticket.previous) }
-        if let drawable {
-            #if !targetEnvironment(simulator)
-            if let presented { drawable.addPresentedHandler { value in
-                if value.presentedTime > 0 { presented(value.presentedTime) }
-            } }
-            #endif
-            queue.waitForDrawable(drawable)
-        }
+        if waitForPrevious, let ticket, ticket.previous > 0 { queue.waitForEvent(ticket.event,value:ticket.previous) }
         queue.commit([slot.command],options:options)
         if let ticket { queue.signalEvent(ticket.event,value:ticket.value) }
-        if let drawable {
-            queue.signalDrawable(drawable)
-            if let presentAt { drawable.present(at: presentAt) } else { drawable.present() }
-        }
         return true
     }
     private func release(_ index: Int) { lock.lock(); available.append(index); lock.unlock() }
@@ -308,10 +287,9 @@ final class NativeStreamMetal4HDRRenderer {
 final class NativeStreamMetal4HDRRenderer {
     static func isSupported(device: any MTLDevice) -> Bool { false }
     init?(device: any MTLDevice) { return nil }
-    func setDrawableResidency(_ residency: any MTLResidencySet) {}
     func submit(buffer: CVPixelBuffer, target: any MTLTexture, destination: CGRect,
-                drawable: (any MTLDrawable)? = nil, ticket: NativeStreamMetalFrameTimeline.Ticket? = nil,
-                presented: (@Sendable (Double) -> Void)? = nil, presentAt: CFTimeInterval? = nil,
+                ticket: NativeStreamMetalFrameTimeline.Ticket? = nil,
+                waitForPrevious: Bool = true,
                 completion: @escaping @Sendable (Double,NSError?) -> Void) -> Bool { false }
 }
 #endif

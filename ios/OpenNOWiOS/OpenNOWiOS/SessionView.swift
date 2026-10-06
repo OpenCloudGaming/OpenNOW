@@ -104,7 +104,6 @@ struct SessionView: View {
             }
             LabeledContent("HDR", value: (session.finalizedStreamingFeatures?.trueHdr ?? store.settings.hdrEnabled) ? "On" : "Off")
             LabeledContent("L4S", value: (session.finalizedStreamingFeatures?.enabledL4S ?? store.settings.enableL4S) ? "On" : "Off")
-            LabeledContent("G-Sync", value: (session.finalizedStreamingFeatures?.cloudGsync ?? store.settings.enableCloudGsync) ? "On" : "Off")
         }
     }
 

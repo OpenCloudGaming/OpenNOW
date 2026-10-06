@@ -31,7 +31,7 @@ final class NativeStreamMetal4EffectsRenderer {
     private final class Resources {
         let slots: [Slot]
         private let lock = NSLock()
-        private var available = [0,1]
+        private var available = NativeStreamMetal4FrameSlotPolicy.indices
         init(slots: [Slot]) { self.slots = slots }
         func take() -> Int? { lock.lock(); defer { lock.unlock() }; return available.popLast() }
         func release(_ index: Int) { lock.lock(); available.append(index); lock.unlock() }
@@ -46,11 +46,6 @@ final class NativeStreamMetal4EffectsRenderer {
     private let hlgConversion: any MTLTexture
     private let videoTransfer: any MTLTexture
     private let textureCache: CVMetalTextureCache
-    private let drawableResidency: NativeStreamMetalDrawableResidency
-    func setDrawableResidency(_ residency: any MTLResidencySet) {
-        drawableResidency.update(residency)
-    }
-
     private let producerEvent: any MTLSharedEvent
     private var producerValue: UInt64 = 0
     private let setupQueue = DispatchQueue(label: "OpenNOW.Metal4FX.setup", qos: .userInitiated)
@@ -88,40 +83,35 @@ final class NativeStreamMetal4EffectsRenderer {
             sharpeningPipeline = try compiler.makeComputePipelineState(descriptor: compute)
             textureCache = cache; hlgConversion = hlg; videoTransfer = video
             self.device = device; self.queue = queue; self.compiler = compiler; producerEvent = event
-            drawableResidency = NativeStreamMetalDrawableResidency(queue: queue)
         } catch { return nil }
     }
     /// Called on the display thread. False leaves the producer uncommitted for legacy fallback.
     func submit(image: CIImage, destination: CGRect, transfer: Int, upscale: Bool,
                 context: CIContext, producer: any MTLCommandBuffer, target: any MTLTexture,
-                drawable: (any MTLDrawable)? = nil, ticket: NativeStreamMetalFrameTimeline.Ticket? = nil,
-                presented: (@Sendable (Double) -> Void)? = nil,
-                presentAt: Double? = nil, completion: @escaping @Sendable (Double, NSError?) -> Void) -> Bool {
+                ticket: NativeStreamMetalFrameTimeline.Ticket? = nil,
+                waitForPrevious: Bool = true, completion: @escaping @Sendable (Double, NSError?) -> Void) -> Bool {
         submit(image: image, native: nil, destination: destination, transfer: transfer, upscale: upscale,
-               context: context, producer: producer, sharpening: 0, target: target, drawable: drawable, ticket: ticket,
-               presented: presented, presentAt: presentAt, completion: completion)
+               context: context, producer: producer, sharpening: 0, target: target, ticket: ticket,
+               waitForPrevious: waitForPrevious, completion: completion)
     }
     /// Zero-copy native SDR/PQ/HLG or a tagged linear RGB surface.
     /// Unknown color metadata/warm-up retains the compatible CI fallback.
     func submit(buffer: CVPixelBuffer, destination: CGRect, upscale: Bool, target: any MTLTexture,
                 sharpening: Float = 0, producer: (any MTLCommandBuffer)? = nil,
-                drawable: (any MTLDrawable)? = nil, ticket: NativeStreamMetalFrameTimeline.Ticket? = nil,
-                presented: (@Sendable (Double) -> Void)? = nil, presentAt: Double? = nil,
-                completion: @escaping @Sendable (Double, NSError?) -> Void) -> Bool {
+                ticket: NativeStreamMetalFrameTimeline.Ticket? = nil,
+                waitForPrevious: Bool = true, completion: @escaping @Sendable (Double, NSError?) -> Void) -> Bool {
         guard let input = NativeStreamMetalVideoInput.Input(buffer: buffer, cache: textureCache, target: target) else { return false }
         return submit(image: nil, native: input, destination: destination,
                       transfer: input.color.presentationTransfer, upscale: upscale,
                       context: nil, producer: producer, sharpening: sharpening,
-                      target: target, drawable: drawable, ticket: ticket,
-                      presented: presented, presentAt: presentAt, completion: completion)
+                      target: target, ticket: ticket,
+                      waitForPrevious: waitForPrevious, completion: completion)
     }
     private func submit(image: CIImage?, native: NativeStreamMetalVideoInput.Input?,
                 destination: CGRect, transfer: Int, upscale: Bool,
                 context: CIContext?, producer: (any MTLCommandBuffer)?, sharpening: Float, target: any MTLTexture,
-                drawable: (any MTLDrawable)?, ticket: NativeStreamMetalFrameTimeline.Ticket?,
-                presented: (@Sendable (Double) -> Void)?, presentAt: Double?,
-                completion: @escaping @Sendable (Double, NSError?) -> Void) -> Bool {
-        guard drawable == nil || drawableResidency.isRegistered else { return false }
+                ticket: NativeStreamMetalFrameTimeline.Ticket?,
+                waitForPrevious: Bool, completion: @escaping @Sendable (Double, NSError?) -> Void) -> Bool {
         let size = native.map { CGSize(width: $0.y.width, height: $0.y.height) } ?? image?.extent.size ?? .zero
         guard size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0,
               native != nil || (image != nil && context != nil && producer != nil),
@@ -172,10 +162,7 @@ final class NativeStreamMetal4EffectsRenderer {
             guard let encoder = slot.command.makeRenderCommandEncoder(descriptor: conversionPass) else {
                 slot.command.endCommandBuffer(); resource.release(index); return false
             }
-            // Pooled decoder IOSurfaces can arrive with a different texture view
-            // over recycled memory. Explicitly make aliased reads coherent.
-            encoder.barrier(afterQueueStages: .all, beforeStages: .fragment,
-                            visibilityOptions: [.device, .resourceAlias])
+            NativeStreamMetalDecoderCoherency.prepareReads(on: encoder)
             encoder.setRenderPipelineState(conversionPipeline)
             encoder.setViewport(MTLViewport(originX: 0, originY: 0, width: Double(key.width), height: Double(key.height), znear: 0, zfar: 1))
             encoder.setArgumentTable(slot.conversionArguments, stages: .fragment)
@@ -222,10 +209,6 @@ final class NativeStreamMetal4EffectsRenderer {
             width: destination.width, height: destination.height, znear: 0, zfar: 1))
         encoder.setArgumentTable(slot.arguments, stages: .fragment)
         encoder.drawPrimitives(primitiveType: .triangleStrip, vertexStart: 0, vertexCount: 4)
-        // Store tile results before handing this drawable to the compositor,
-        // which consumes another view of the same IOSurface allocation.
-        encoder.barrier(afterStages: [.fragment, .tile], beforeQueueStages: .all,
-                        visibilityOptions: [.device, .resourceAlias])
         encoder.endEncoding(); slot.command.endCommandBuffer()
         // A failed producer can skip its GPU signal. Only unblock after completion;
         // report the error to the consumer completion as well as recovering the event.
@@ -242,8 +225,8 @@ final class NativeStreamMetal4EffectsRenderer {
             }
         }
         let options = MTL4CommitOptions()
-        options.addFeedbackHandler { [resource, slot, target, drawable, producer, native, hlgConversion, videoTransfer] feedback in
-            _ = (slot, target, drawable, native, hlgConversion, videoTransfer)
+        options.addFeedbackHandler { [resource, slot, target, producer, native, hlgConversion, videoTransfer] feedback in
+            _ = (slot, target, native, hlgConversion, videoTransfer)
             let error = producerFailure.error ?? feedback.error as NSError?
             if error != nil { ticket?.recoverAfterGPUFailure() }
             resource.release(index)
@@ -251,16 +234,12 @@ final class NativeStreamMetal4EffectsRenderer {
             let duration = max(feedback.gpuEndTime - feedback.gpuStartTime, 0) + producerDuration
             completion(duration, error)
         }
-        if let drawable, let presented { drawable.addPresentedHandler { value in
-            if value.presentedTime > 0 { presented(value.presentedTime) }
-        } }
         if let producer {
             producer.commit(); queue.waitForEvent(producerEvent, value: producerValue)
-        } else if let ticket, ticket.previous > 0 { queue.waitForEvent(ticket.event, value: ticket.previous) }
-        if let drawable { queue.waitForDrawable(drawable) }
+        }
+        if waitForPrevious, let ticket, ticket.previous > 0 { queue.waitForEvent(ticket.event, value: ticket.previous) }
         queue.commit([slot.command], options: options)
         if let ticket { queue.signalEvent(ticket.event, value: ticket.value) }
-        if let drawable { queue.signalDrawable(drawable); if let presentAt { drawable.present(at:presentAt) } else { drawable.present() } }
         status = key.upscale ? "Metal 4 · \(key.width)×\(key.height) → \(key.outputWidth)×\(key.outputHeight)"
             : upscale ? "No upscale: \(key.width)×\(key.height) → \(Int(destination.width))×\(Int(destination.height))" : "Metal 4 · presentation"
         return true
@@ -277,7 +256,7 @@ final class NativeStreamMetal4EffectsRenderer {
         setupQueue.async { [weak self] in
             var slots: [Slot] = []
             do {
-                for _ in 0..<2 {
+                for _ in 0..<NativeStreamMetal4FrameSlotPolicy.inFlightCount {
                     var scaler: (any MTL4FXSpatialScaler)?
                     if key.upscale {
                         let descriptor = MTLFXSpatialScalerDescriptor()
@@ -309,7 +288,7 @@ final class NativeStreamMetal4EffectsRenderer {
                         residency: try device.makeResidencySet(descriptor: residency), uniforms: uniforms, input: input, output: output, sharpened: sharp, scaler: scaler))
                 }
             } catch { slots.removeAll() }
-            let result = slots.count == 2 ? Resources(slots: slots) : nil
+            let result = NativeStreamMetal4FrameSlotPolicy.isComplete(slots.count) ? Resources(slots: slots) : nil
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.preparing.remove(key)
@@ -466,6 +445,5 @@ final class NativeStreamMetal4EffectsRenderer {
 @available(iOS 26.0, macOS 26.0, *)
 final class NativeStreamMetal4EffectsRenderer {
     init?(device: any MTLDevice) { return nil }
-    func setDrawableResidency(_ residency: any MTLResidencySet) {}
 }
 #endif

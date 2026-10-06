@@ -731,7 +731,6 @@ enum StreamStatsPosition: String, Codable, CaseIterable, Identifiable {
 struct StreamingFeatures: Codable, Equatable {
     var reflex: Bool?
     var bitDepth: Int?
-    var cloudGsync: Bool?
     var chromaFormat: Int?
     var enabledL4S: Bool?
     var trueHdr: Bool?
@@ -743,7 +742,6 @@ struct NegotiatedStreamProfile: Codable, Equatable {
     var codec: String?
     var colorQuality: StreamColorQuality?
     var enableL4S: Bool?
-    var enableCloudGsync: Bool?
     var enableReflex: Bool?
 }
 
@@ -939,7 +937,6 @@ struct AppSettings: Codable, Equatable {
     var sessionProxyEnabled: Bool = false
     var sessionProxyUrl: String = ""
     var enableL4S: Bool
-    var enableCloudGsync: Bool
     var metal4Enabled: Bool = false
     var metalFXUpscalingEnabled: Bool = false
     var metalFXQualityPreset: MetalFXQualityPreset = .manual
@@ -949,6 +946,8 @@ struct AppSettings: Codable, Equatable {
     var mouseAcceleration: Int = 1
     var fingerMouseEnabled: Bool = true
     var phoneRumbleFallback: Bool = true
+    var controllerRumbleStrength: Double = 1
+    var controllerShortcuts = NativeStreamControllerShortcuts()
     var launchPage: AppLaunchPage = .store
     var posterSizeScale: Double = 1
     var compactGameCards: Bool = true
@@ -1051,7 +1050,6 @@ struct AppSettings: Codable, Equatable {
         case sessionProxyEnabled
         case sessionProxyUrl
         case enableL4S
-        case enableCloudGsync
         case metal4Enabled
         case metalFXUpscalingEnabled
         case metalFXQualityPreset
@@ -1061,6 +1059,8 @@ struct AppSettings: Codable, Equatable {
         case mouseAcceleration
         case fingerMouseEnabled
         case phoneRumbleFallback
+        case controllerRumbleStrength
+        case controllerShortcuts
         case launchPage
         case posterSizeScale
         case compactGameCards
@@ -1121,7 +1121,6 @@ struct AppSettings: Codable, Equatable {
         keyboardLayout: String,
         gameLanguage: String,
         enableL4S: Bool,
-        enableCloudGsync: Bool,
         keepMicEnabled: Bool,
         showStatsOverlay: Bool,
         hideServerSelector: Bool,
@@ -1142,7 +1141,6 @@ struct AppSettings: Codable, Equatable {
         self.keyboardLayout = keyboardLayout
         self.gameLanguage = gameLanguage
         self.enableL4S = enableL4S
-        self.enableCloudGsync = enableCloudGsync
         self.keepMicEnabled = keepMicEnabled
         self.showStatsOverlay = showStatsOverlay
         self.hideServerSelector = hideServerSelector
@@ -1175,7 +1173,6 @@ struct AppSettings: Codable, Equatable {
         sessionProxyEnabled = try container.decodeIfPresent(Bool.self, forKey: .sessionProxyEnabled) ?? false
         sessionProxyUrl = try container.decodeIfPresent(String.self, forKey: .sessionProxyUrl) ?? ""
         enableL4S = try container.decodeIfPresent(Bool.self, forKey: .enableL4S) ?? false
-        enableCloudGsync = try container.decodeIfPresent(Bool.self, forKey: .enableCloudGsync) ?? false
         metal4Enabled = try container.decodeIfPresent(Bool.self, forKey: .metal4Enabled) ?? false
         metalFXUpscalingEnabled = try container.decodeIfPresent(Bool.self, forKey: .metalFXUpscalingEnabled) ?? false
         metalFXQualityPreset = try container.decodeIfPresent(MetalFXQualityPreset.self, forKey: .metalFXQualityPreset) ?? .manual
@@ -1185,6 +1182,8 @@ struct AppSettings: Codable, Equatable {
         mouseAcceleration = try container.decodeIfPresent(Int.self, forKey: .mouseAcceleration) ?? 1
         fingerMouseEnabled = try container.decodeIfPresent(Bool.self, forKey: .fingerMouseEnabled) ?? true
         phoneRumbleFallback = try container.decodeIfPresent(Bool.self, forKey: .phoneRumbleFallback) ?? true
+        controllerRumbleStrength = try container.decodeIfPresent(Double.self, forKey: .controllerRumbleStrength) ?? 1
+        controllerShortcuts = try container.decodeIfPresent(NativeStreamControllerShortcuts.self, forKey: .controllerShortcuts) ?? .init()
         launchPage = try container.decodeIfPresent(AppLaunchPage.self, forKey: .launchPage) ?? .store
         posterSizeScale = try container.decodeIfPresent(Double.self, forKey: .posterSizeScale) ?? 1
         compactGameCards = try container.decodeIfPresent(Bool.self, forKey: .compactGameCards) ?? true
@@ -1263,7 +1262,6 @@ struct AppSettings: Codable, Equatable {
         keyboardLayout: "en-US",
         gameLanguage: "en_US",
         enableL4S: false,
-        enableCloudGsync: false,
         keepMicEnabled: false,
         showStatsOverlay: true,
         hideServerSelector: false,
@@ -1289,6 +1287,7 @@ struct AppSettings: Codable, Equatable {
     }
 
     mutating func normalizeStreamDefaults() {
+        controllerRumbleStrength = NativeStreamControllerRumbleGain.normalize(controllerRumbleStrength)
         if sessionReportDefaultVersion < appSettingsSessionReportDefaultVersion {
             showSessionReportAfterStream = false
         }
@@ -1347,7 +1346,6 @@ struct AppSettings: Codable, Equatable {
         fallback.preferredCodec = "H264"
         fallback.preferredColorQuality = StreamColorQuality.eightBit420.rawValue
         fallback.hdrEnabled = false
-        fallback.enableCloudGsync = false
         fallback.normalizeStreamDefaults()
         return fallback
     }
@@ -1608,6 +1606,9 @@ struct TouchControlLayout: Codable, Equatable {
     var leftStick: TouchControlPoint
     var rightCluster: TouchControlPoint
     var bottomCenter: TouchControlPoint
+    /// Optional per-control positions used by independent presets. Old group layouts omit
+    /// these keys and continue using their existing grouped positions.
+    var independentPositions: [String: TouchControlPoint]
 
     enum CodingKeys: String, CodingKey {
         case scale
@@ -1620,6 +1621,7 @@ struct TouchControlLayout: Codable, Equatable {
         case leftStick
         case rightCluster
         case bottomCenter
+        case independentPositions
     }
 
     init(
@@ -1632,7 +1634,8 @@ struct TouchControlLayout: Codable, Equatable {
         topRight: TouchControlPoint,
         leftStick: TouchControlPoint,
         rightCluster: TouchControlPoint,
-        bottomCenter: TouchControlPoint
+        bottomCenter: TouchControlPoint,
+        independentPositions: [String: TouchControlPoint] = [:]
     ) {
         self.scale = scale
         self.opacity = opacity
@@ -1644,6 +1647,7 @@ struct TouchControlLayout: Codable, Equatable {
         self.leftStick = leftStick
         self.rightCluster = rightCluster
         self.bottomCenter = bottomCenter
+        self.independentPositions = independentPositions
     }
 
     init(from decoder: Decoder) throws {
@@ -1659,6 +1663,7 @@ struct TouchControlLayout: Codable, Equatable {
         leftStick = try container.decodeIfPresent(TouchControlPoint.self, forKey: .leftStick) ?? fallback.leftStick
         rightCluster = try container.decodeIfPresent(TouchControlPoint.self, forKey: .rightCluster) ?? fallback.rightCluster
         bottomCenter = try container.decodeIfPresent(TouchControlPoint.self, forKey: .bottomCenter) ?? fallback.bottomCenter
+        independentPositions = try container.decodeIfPresent([String: TouchControlPoint].self, forKey: .independentPositions) ?? [:]
     }
 
     static let standard = TouchControlLayout(
@@ -1850,7 +1855,7 @@ enum StreamSettingsResolver {
             guard isResolutionAvailable(choice, membershipTier: membershipTier) else { return false }
             let source = pixelSize(choice.value)
             let target = NativeStreamVideoEffectsPolicy.presentationSize(source: source, display: displaySize, stretch: stretch)
-            return NativeStreamVideoEffectsPolicy.upscaleSize(source: source, destination: target) != nil
+            return NativeStreamVideoEffectsPolicy.canSelectUpscaleResolution(source: source, destination: target)
         }.min { left, right in
             func distance(_ choice: StreamResolutionChoice) -> CGFloat {
                 let source = pixelSize(choice.value)
@@ -1993,7 +1998,6 @@ enum StreamSettingsResolver {
         updated.preferredResolution = choice.value
         updated.preferredColorQuality = StreamColorQuality.eightBit420.rawValue
         updated.hdrEnabled = false
-        updated.enableCloudGsync = false
         switch preset {
         case .custom:
             break
@@ -2031,7 +2035,6 @@ enum StreamSettingsResolver {
             "color=\(color)",
             "hdr=\(settings.hdrEnabled ? 1 : 0)",
             "l4s=\(settings.enableL4S ? 1 : 0)",
-            "gsync=\(settings.enableCloudGsync ? 1 : 0)",
             "keyboard=\(settings.keyboardLayout.trimmingCharacters(in: .whitespacesAndNewlines))",
             "language=\(settings.gameLanguage.trimmingCharacters(in: .whitespacesAndNewlines))"
         ]
@@ -3184,11 +3187,10 @@ enum CloudMatchStreamingFeatureRequest {
     static func build(settings: AppSettings, profile: StreamVideoProfile,
                       bitDepth: Int, chromaFormat: Int) -> [String: Any] {
         [
-            "reflex": settings.enableCloudGsync || profile.fps >= 120,
+            "reflex": profile.fps >= 120,
             // CloudMatch uses enums, unlike the literal bit count in the NVST SDP.
             "bitDepth": bitDepth == 10 ? 1 : 0,
             "trueHdr": settings.hdrEnabled,
-            "cloudGsync": settings.enableCloudGsync,
             "enabledL4S": settings.enableL4S,
             "supportedHidDevices": 0,
             "profile": 0,
@@ -5123,14 +5125,12 @@ private actor GFNAPIClient {
         let normalized = StreamingFeatures(
             reflex: toBoolean(features["reflex"]),
             bitDepth: toNonnegativeInt(features["bitDepth"]),
-            cloudGsync: toBoolean(features["cloudGsync"]),
             chromaFormat: toNonnegativeInt(features["chromaFormat"]),
             enabledL4S: toBoolean(features["enabledL4S"]),
             trueHdr: toBoolean(features["trueHdr"])
         )
         if normalized.reflex == nil,
            normalized.bitDepth == nil,
-           normalized.cloudGsync == nil,
            normalized.chromaFormat == nil,
            normalized.enabledL4S == nil,
            normalized.trueHdr == nil {
@@ -5160,7 +5160,6 @@ private actor GFNAPIClient {
             codec: toOptionalString(sessionObj["codec"]) ?? toOptionalString(finalized?["codec"]) ?? toOptionalString(requested?["codec"]),
             colorQuality: colorQuality,
             enableL4S: toBoolean(finalized?["enabledL4S"]) ?? toBoolean(requested?["enabledL4S"]),
-            enableCloudGsync: toBoolean(finalized?["cloudGsync"]) ?? toBoolean(requested?["cloudGsync"]),
             enableReflex: toBoolean(finalized?["reflex"]) ?? toBoolean(requested?["reflex"])
         )
         if normalized.resolution == nil,
@@ -5168,7 +5167,6 @@ private actor GFNAPIClient {
            normalized.codec == nil,
            normalized.colorQuality == nil,
            normalized.enableL4S == nil,
-           normalized.enableCloudGsync == nil,
            normalized.enableReflex == nil {
             return nil
         }
@@ -6370,6 +6368,7 @@ private enum AuthKeychainStore {
 
 @MainActor
 final class OpenNOWStore: ObservableObject {
+    let sessionHistory = StreamSessionHistoryStore()
     @Published private(set) var user: UserProfile?
     @Published private(set) var providers: [LoginProvider] = []
     @Published private(set) var allGames: [CloudGame] = []
@@ -6615,7 +6614,7 @@ final class OpenNOWStore: ObservableObject {
             "session.server=\(active?.serverIp ?? "none") media=\(active?.mediaIp ?? "none"):\(active?.mediaPort ?? 0) signaling=\(active?.signalingServer ?? "none")",
             "session.adsRequired=\(isSessionAdsRequired(adState)) ads=\(sessionAdItems(adState).count) queuePaused=\(adState?.isQueuePaused ?? false) activeAd=\(activeQueueAd?.adId ?? "none")",
             "requested.resolution=\(profile.width)x\(profile.height) fps=\(profile.fps) bitrateKbps=\(profile.maxBitrateKbps) codec=\(currentStreamerSettings.preferredCodec) quality=\(currentStreamerSettings.preferredQuality)",
-            "requested.aspect=\(currentStreamerSettings.preferredAspectRatio) color=\(currentStreamerSettings.preferredColorQuality) hdr=\(currentStreamerSettings.hdrEnabled) l4s=\(currentStreamerSettings.enableL4S) gsync=\(currentStreamerSettings.enableCloudGsync)",
+            "requested.aspect=\(currentStreamerSettings.preferredAspectRatio) color=\(currentStreamerSettings.preferredColorQuality) hdr=\(currentStreamerSettings.hdrEnabled) l4s=\(currentStreamerSettings.enableL4S)",
             "requested.region=\(currentStreamerSettings.preferredRegion.isEmpty ? "automatic" : currentStreamerSettings.preferredRegion) proxy=\(proxyHost)",
             "negotiated.resolution=\(negotiated?.resolution ?? "unknown") fps=\(negotiated?.fps.map(String.init) ?? "unknown") codec=\(negotiated?.codec ?? "unknown") color=\(negotiated?.colorQuality?.rawValue ?? "unknown")",
             "input.keyboard=\(settings.keyboardLayout) language=\(settings.gameLanguage) fingerMouse=\(settings.fingerMouseEnabled) sensitivity=\(settings.mouseSensitivity) acceleration=\(settings.mouseAcceleration) phoneRumble=\(settings.phoneRumbleFallback)",
@@ -6858,6 +6857,7 @@ final class OpenNOWStore: ObservableObject {
         )
         updateQueueTrend(for: activeSession)
         activeStreamSettings = settings
+        syncTrackedSessionSurface()
         settings.queueLiveActivitiesEnabled = true
         isBootstrapping = false
         showStreamLoading = true
@@ -8369,6 +8369,8 @@ final class OpenNOWStore: ObservableObject {
     func applyStreamerSettings(_ updated: AppSettings) {
         var next = settings
         next.streamStatsMetrics = updated.streamStatsMetrics
+        next.controllerRumbleStrength = updated.controllerRumbleStrength
+        next.controllerShortcuts = updated.controllerShortcuts
         next.metal4Enabled = updated.metal4Enabled
         next.metalFXUpscalingEnabled = updated.metalFXUpscalingEnabled
         next.touch = updated.touch
@@ -8376,6 +8378,12 @@ final class OpenNOWStore: ObservableObject {
         next.mouseScrollSensitivity = updated.mouseScrollSensitivity
         next.controllerMouseEmulation = updated.controllerMouseEmulation
         next.streamKeyboardClearConfirmationDisabled = updated.streamKeyboardClearConfirmationDisabled
+        if let active = activeStreamSettings,
+           active.controllerRumbleStrength != next.controllerRumbleStrength || active.controllerShortcuts != next.controllerShortcuts {
+            activeStreamSettings?.controllerRumbleStrength = next.controllerRumbleStrength
+            activeStreamSettings?.controllerShortcuts = next.controllerShortcuts
+            syncTrackedSessionSurface()
+        }
         guard next != settings else { return }
         settings = next
         persistSettings()

@@ -1,8 +1,8 @@
 import SwiftUI
 import UIKit
 
-/// A presented controller owns the system's pointer preference. An embedded SwiftUI
-/// video view cannot override the preference of the app's root hosting controller.
+/// A full-screen controller owns the stream's pointer and status bar preferences.
+/// An embedded SwiftUI video view cannot override the app's root controller.
 struct NativeStreamPresentation<Content: View>: UIViewControllerRepresentable {
     @Environment(\.scenePhase) private var scenePhase
     let content: Content
@@ -49,6 +49,7 @@ final class NativeStreamPresentationController: UIViewController {
     func tearDown() {
         dismantled = true
         host.pointerCaptureRequested = false
+        host.statusBarHidden = false
         if host.presentingViewController != nil { host.dismiss(animated: false) }
     }
 }
@@ -62,27 +63,45 @@ final class NativeStreamHostingController: UIHostingController<AnyView> {
     }
 
     override var prefersPointerLocked: Bool { pointerCaptureRequested }
+
+    var statusBarHidden = false {
+        didSet {
+            guard oldValue != statusBarHidden else { return }
+            // SwiftUI applies this during a view update. Invalidate after that transaction
+            // so UIKit observes the new preference on repeated show/hide changes.
+            DispatchQueue.main.async { [weak self] in self?.setNeedsStatusBarAppearanceUpdate() }
+        }
+    }
+
+    override var prefersStatusBarHidden: Bool { statusBarHidden }
+
+    // The full-screen container owns this preference, independent of SwiftUI children.
+    override var childForStatusBarHidden: UIViewController? { nil }
 }
 
-struct NativeStreamPointerLockPreference: UIViewControllerRepresentable {
-    let requested: Bool
+struct NativeStreamPresentationPreferences: UIViewControllerRepresentable {
+    let pointerCaptureRequested: Bool
+    let statusBarHidden: Bool
 
     func makeUIViewController(context: Context) -> PreferenceController {
         PreferenceController()
     }
 
     func updateUIViewController(_ controller: PreferenceController, context: Context) {
-        controller.requested = requested
-        controller.applyPreference()
+        controller.pointerCaptureRequested = pointerCaptureRequested
+        controller.statusBarHidden = statusBarHidden
+        controller.applyPreferences()
     }
 
     static func dismantleUIViewController(_ controller: PreferenceController, coordinator: ()) {
-        controller.requested = false
-        controller.applyPreference()
+        controller.pointerCaptureRequested = false
+        controller.statusBarHidden = false
+        controller.applyPreferences()
     }
 
     final class PreferenceController: UIViewController {
-        var requested = false
+        var pointerCaptureRequested = false
+        var statusBarHidden = false
 
         override func loadView() {
             view = UIView()
@@ -91,19 +110,20 @@ struct NativeStreamPointerLockPreference: UIViewControllerRepresentable {
 
         override func didMove(toParent parent: UIViewController?) {
             super.didMove(toParent: parent)
-            applyPreference()
+            applyPreferences()
         }
 
         override func viewDidAppear(_ animated: Bool) {
             super.viewDidAppear(animated)
-            applyPreference()
+            applyPreferences()
         }
 
-        func applyPreference() {
+        func applyPreferences() {
             var ancestor = parent
             while let controller = ancestor {
                 if let host = controller as? NativeStreamHostingController {
-                    host.pointerCaptureRequested = requested
+                    host.pointerCaptureRequested = pointerCaptureRequested
+                    host.statusBarHidden = statusBarHidden
                     return
                 }
                 ancestor = controller.parent

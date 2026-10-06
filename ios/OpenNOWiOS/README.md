@@ -40,3 +40,9 @@ Native microphone carriage requires a host bundle offering it and the microphone
 ## Checks
 
 Run the simulator test scheme `OpenNOWiOS`, plus the GPU validation commands in [METAL4.md](METAL4.md). Simulator and Mac checks cannot establish iPhone/iPad performance. Build 149 verified the visible iPhone block repair; consistent 120 FPS, the separate decoder recovery event and physical iPad behavior remain separate validation targets.
+
+## Controller rumble diagnostics
+
+Build 152 adds a direct output test under Settings → Input → Touch & Controller. Connect the G8+ MFi, check the reported controller name/category and iOS haptics availability, then use Test Controller Rumble. Left/right tests appear only for exposed handle outputs. A successful API call reports acceptance, not proof that the physical motors moved. The pulse lasts 0.4 seconds; Stop Test, leaving the page, backgrounding and connection changes clean up the test engine. No stream or phone vibration fallback is used.
+
+If controller haptics are unavailable, the normal GameController API cannot drive this controller's motors in its current connection/firmware state. If the direct test works but game rumble does not, investigate host haptic events and controller-slot routing next. No unsupported vendor protocol or firmware change is attempted by this branch.

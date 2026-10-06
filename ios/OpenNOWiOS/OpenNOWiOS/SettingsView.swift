@@ -66,7 +66,7 @@ private enum SettingsCategory: String, CaseIterable, Hashable, Identifiable {
         case .interface:
             return ["interface", "ui", "accent", "color", "theme", "expressive", "outline", "cards", "titles", "favorites", "favourites", "store labels", "card size", "launch page", "stats", "hud", "metrics", "position", "afk", "idle", "keep awake", "server selector", "queue", "live activities", "sound", "chime", "ready", "catalog", "wallpaper", "background", "photo", "session report", "counter"]
         case .advanced:
-            return ["advanced", "experimental", "l4s", "cloud g-sync", "gsync", "diagnostics", "debug", "logs", "codec", "probe", "decoder", "decoders", "hardware", "native", "h264", "h265", "hevc", "av1"]
+            return ["advanced", "experimental", "l4s", "diagnostics", "debug", "logs", "codec", "probe", "decoder", "decoders", "hardware", "native", "h264", "h265", "hevc", "av1"]
         case .account:
             return ["account", "login", "logout", "sign in", "saved", "provider", "membership", "subscription", "storage", "hours", "play time", "stores", "steam", "epic", "xbox"]
         case .about:
@@ -306,7 +306,11 @@ struct SettingsView: View {
         case .input:
             inputAudioKeyboardSection
             inputPointerSection
-            inputTouchControllerSection
+            inputTouchSection
+            #if os(iOS)
+            inputControllerSection
+            #endif
+            inputTutorialSection
         case .interface:
             interfaceAppearanceSection
             interfaceCatalogSection
@@ -800,7 +804,7 @@ struct SettingsView: View {
         }
     }
 
-    private var inputTouchControllerSection: some View {
+    private var inputTouchSection: some View {
         Section {
             #if !os(tvOS)
             Picker("Touch Mode", selection: $store.settings.touch.nativeTouchMode) {
@@ -837,9 +841,41 @@ struct SettingsView: View {
             Toggle("Touch Controller", isOn: $store.settings.streamerPreferences.touchControllerVisible)
 
             if store.settings.streamerPreferences.touchControllerVisible {
-                Picker("Style", selection: $store.settings.touch.style) {
-                    ForEach(TouchControllerStyle.allCases) { style in
-                        Text(style.label).tag(style)
+                Picker("Preset", selection: $store.settings.touch.controllerPreset) {
+                    ForEach(TouchControllerPreset.allCases) { preset in
+                        Text(preset.label).tag(preset)
+                    }
+                }
+                if !store.settings.touch.controllerPreset.supportsControlModeSelection {
+                    Text("Virtual sticks")
+                        .foregroundStyle(.secondary)
+                } else {
+                    Picker("Control layout", selection: $store.settings.touch.controlMode) {
+                        ForEach(TouchControlMode.allCases) { mode in
+                            Text(mode.label).tag(mode)
+                        }
+                    }
+                }
+                if store.settings.touch.controllerPreset.supportsControlModeSelection && store.settings.touch.controlMode == .splitTouchpad {
+                    Text("Drag the left half to move and the right half to look.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    settingsSlider(
+                        "Touchpad Sensitivity",
+                        value: $store.settings.touch.touchpadSensitivity,
+                        range: 0.5...2,
+                        step: 0.05,
+                        format: { String(format: "%.0f%%", $0 * 100) }
+                    )
+                }
+                if store.settings.touch.controllerPreset == .geForceNOW {
+                    Text("Outlined controls with separate sticks and stick-click buttons. The center gamepad opens stream controls. Edit the layout to move each control.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if store.settings.touch.controllerPreset != .geForceNOW {
+                    Picker("Style", selection: $store.settings.touch.style) {
+                        ForEach(TouchControllerStyle.allCases) { style in
+                            Text(style.label).tag(style)
+                        }
                     }
                 }
                 Picker("Joystick", selection: $store.settings.touch.joystickMode) {
@@ -910,24 +946,44 @@ struct SettingsView: View {
                 }
             }
 
-            Toggle("Rumble", isOn: $store.settings.phoneRumbleFallback)
             #endif
+        } header: {
+            Text("Touch Controls")
+        } footer: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Currently: \(resolvedTouchMode.label).")
+                Text("Automatic sends real touch only to games known to support it. Everything else gets a cursor or the on-screen controller.")
+            }
+        }
+    }
 
-            LabeledContent("Physical Controller", value: "Detected automatically")
+    #if os(iOS)
+    private var inputControllerSection: some View {
+        Section {
+            settingsSlider("Vibration Strength", value: $store.settings.controllerRumbleStrength,
+                range: NativeStreamControllerRumbleGain.range, step: 0.64, format: NativeStreamControllerRumbleGain.label)
+            Toggle("Phone Vibration", isOn: $store.settings.phoneRumbleFallback)
+            NavigationLink {
+                NativeStreamControllerShortcutsView(settings: $store.settings)
+            } label: {
+                Label("Controller Shortcuts", systemImage: "gamecontroller")
+            }
+        } header: {
+            Text("Controller")
+        } footer: {
+            Text("Controllers connect automatically. Set vibration strength to 0% to turn it off. Phone vibration is used when the controller has no vibration support.")
+        }
+    }
+    #endif
+
+    private var inputTutorialSection: some View {
+        Section {
             Button {
                 store.setStreamTutorialCompleted(false)
             } label: {
                 Label("Replay Stream Tutorial", systemImage: "questionmark.circle")
             }
             .disabled(!store.settings.streamTutorialCompleted)
-        } header: {
-            Text("Touch & Controller")
-        } footer: {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Currently: \(resolvedTouchMode.label).")
-                Text("Automatic sends real touch only to games known to support it. Everything else gets a cursor or the on-screen controller.")
-                Text("Rumble uses the phone's own motor when a paired controller has none.")
-            }
         }
     }
 
@@ -1113,10 +1169,11 @@ struct SettingsView: View {
             }
 
             Toggle("Keep Session Awake", isOn: $store.settings.showAntiAfkIndicator)
+            Toggle("Immersive Mode", isOn: $store.settings.hideStreamButtons)
         } header: {
             Text("Stats HUD")
         } footer: {
-            Text("Keeping the session awake nudges the cursor by a pixel after two idle minutes so GeForce NOW does not disconnect you mid-cutscene; a dot in the corner shows while it is doing that. The HUD sits over the game, so keep it to the numbers you actually watch. Values in the normal range stay untinted on purpose — amber and red are what should catch your eye.")
+            Text("Immersive mode hides stream controls, stats, and the system status bar. Double tap near the top to show or hide them. Keeping the session awake nudges the cursor by a pixel after two idle minutes so GeForce NOW does not disconnect you mid-cutscene; a dot in the corner shows while it is doing that. The HUD sits over the game, so keep it to the numbers you actually watch.")
         }
     }
 
@@ -1167,11 +1224,10 @@ struct SettingsView: View {
     private var experimentalSection: some View {
         Section {
             Toggle("L4S Low Latency", isOn: $store.settings.enableL4S)
-            Toggle("Cloud G-Sync", isOn: $store.settings.enableCloudGsync)
         } header: {
             Text("Experimental")
         } footer: {
-            Text("Both are negotiated with the server and may be refused. If a game stops launching after you turn one on, turn it off again first.")
+            Text("L4S is negotiated with the server and may be refused. If a game stops launching after you turn it on, turn it off again first.")
         }
     }
 
@@ -1854,6 +1910,7 @@ private struct StatsMetricsPicker: View {
         Form {
             Section("Connection") {
                 metricToggle("Frame Rate", \.fps)
+                metricToggle("Displayed FPS", \.displayedFPS)
                 metricToggle("Ping", \.ping)
                 metricToggle("Latency", \.latency)
                 metricToggle("Bitrate", \.bitrate)
@@ -1862,9 +1919,12 @@ private struct StatsMetricsPicker: View {
 
             Section {
                 metricToggle("Resolution", \.resolution)
+                metricToggle("Renderer status", \.renderer)
+                metricToggle("GPU", \.gpu)
                 metricToggle("Codec", \.codec)
                 metricToggle("Server", \.location)
                 metricToggle("Battery", \.battery)
+                metricToggle("Session battery", \.sessionBattery)
                 metricToggle("Network Type", \.connection)
             } header: {
                 Text("Session")
