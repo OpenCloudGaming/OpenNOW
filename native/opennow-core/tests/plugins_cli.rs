@@ -198,19 +198,6 @@ fn fixture_for(directory: &Path, mode: &str, id: &str) -> PathBuf {
     let executable = directory.join(format!("fixture{}", std::env::consts::EXE_SUFFIX));
     let source =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/catalog_plugin_process.rs");
-    assert!(
-        Command::new("rustc")
-            .arg(source)
-            .arg("-o")
-            .arg(&executable)
-            .env("PLUGIN_FIXTURE_MODE", mode)
-            .env("PLUGIN_FIXTURE_ID", id)
-            .status()
-            .unwrap()
-            .success()
-    );
-    let package = directory.join("fixture.opennow-plugin");
-    let bytes = fs::read(executable).unwrap();
     let target = if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         "x86_64-unknown-linux-gnu"
     } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
@@ -224,6 +211,25 @@ fn fixture_for(directory: &Path, mode: &str, id: &str) -> PathBuf {
     } else {
         "x86_64-pc-windows-msvc"
     };
+    let mut compiler = Command::new("rustc");
+    compiler
+        .arg(source)
+        .arg("-o")
+        .arg(&executable)
+        .env("PLUGIN_FIXTURE_MODE", mode)
+        .env("PLUGIN_FIXTURE_ID", id);
+    let linker_key = format!(
+        "CARGO_TARGET_{}_LINKER",
+        target.replace('-', "_").to_ascii_uppercase()
+    );
+    if let Some(linker) = std::env::var_os(linker_key) {
+        let mut argument = std::ffi::OsString::from("linker=");
+        argument.push(linker);
+        compiler.arg("-C").arg(argument);
+    }
+    assert!(compiler.status().unwrap().success());
+    let package = directory.join("fixture.opennow-plugin");
+    let bytes = fs::read(executable).unwrap();
     let manifest = json!({"schemaVersion":1,"id":id,"name":"Process test fixture","description":"Synthetic protocol fixture","version":"1.0.0","publisher":"Test fixture","protocolVersion":1,"capabilities":["catalog.v1"],"entrypoints":{target:"plugin"},"files":[{"path":"plugin","sha256":format!("{:x}",Sha256::digest(&bytes))}]});
     let mut zip = zip::ZipWriter::new(fs::File::create(&package).unwrap());
     zip.start_file("manifest.json", zip::write::SimpleFileOptions::default())
