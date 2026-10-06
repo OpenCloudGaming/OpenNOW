@@ -27,6 +27,7 @@ QtObject {
         property color labelColor: Theme.label
         property color keyInk: Theme.label
         property real glyphSize: 26
+        property int labelWeight: Font.Bold
         readonly property bool keyboard: !prompts || prompts.keyboard
         readonly property string prompt: prompts ? prompts.button(button) : button
         spacing: 8
@@ -55,7 +56,7 @@ QtObject {
             color: hint.labelColor
             font.family: Theme.bodyFont
             font.pixelSize: 16
-            font.weight: Font.Bold
+            font.weight: hint.labelWeight
         }
     }
 }

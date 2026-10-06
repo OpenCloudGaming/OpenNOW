@@ -358,6 +358,7 @@ int AcceptanceSession::startSmokeWorkload()
                      || m_arguments.contains(u"--smoke-network-test"_s)
                      || m_arguments.contains(u"--smoke-idle-mode"_s)
                      || m_arguments.contains(u"--smoke-console-launch"_s)
+                     || m_arguments.contains(u"--smoke-console-spacing"_s)
                      || m_arguments.contains(u"--smoke-queue-drops"_s)
                      || m_arguments.contains(u"--smoke-color-format"_s)
                      || m_arguments.contains(u"--smoke-stream-recovery"_s))) {
@@ -409,12 +410,16 @@ int AcceptanceSession::startSmokeWorkload()
             ? u"qrc:/acceptance/IdleModeAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-console-launch"_s)
             ? u"qrc:/acceptance/ConsoleLaunchAcceptance.qml"_s
+            : m_arguments.contains(u"--smoke-console-spacing"_s)
+            ? u"qrc:/acceptance/ConsoleSpacingAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-stream-recovery"_s)
             ? u"qrc:/acceptance/StreamRecoveryAcceptance.qml"_s
             : u"qrc:/acceptance/BackendAvailabilityAcceptance.qml"_s));
         auto *fixture = component.create();
         if (!fixture) { qCritical() << component.errors(); return EXIT_FAILURE; }
         fixture->setParent(&m_engine);
+        if (m_arguments.contains(u"--smoke-console-spacing"_s))
+            fixture->setProperty("recordingSection", m_arguments.contains(u"--smoke-spacing-recording"_s));
         if (m_arguments.contains(u"--smoke-stream-recovery"_s)
             || m_arguments.contains(u"--smoke-microphone"_s)
             || m_arguments.contains(u"--smoke-recording"_s)

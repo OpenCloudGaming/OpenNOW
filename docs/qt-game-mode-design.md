@@ -53,6 +53,35 @@ The deterministic standard-library generator is `opennow-qt/tools/synth-launch-s
 
 ## Interaction contracts
 
+### Layout coordinates
+
+The Paper reference uses a 1920×1080 canvas. Console geometry uses those design units,
+scaled uniformly by `min(window.width / 1920, window.height / 1080)`. The other axis can
+grow on wider or taller windows. Bottom controls remain attached to the bottom edge,
+and console overlays use the same expanding canvas as the screens.
+
+The following bounds are measured at the reference size:
+
+| Element | Bounds or spacing |
+| --- | --- |
+| Profile and status pills | y 36, height 60, outer horizontal margins 64. Their widths follow their contents. |
+| Screen title | Centred between the profile pill's right edge and the status pill's left edge, not across the full window. |
+| Bottom navigation | Height 72, bottom margin 60, centred horizontally. |
+| Home tile panel | x 167, y 224, width 1586, height 626. |
+| Library posters | 156×234, first poster at 99,232, column pitch 172, row pitch 269. |
+| Library detail panel | x 1336, y 228, width 488, height 680. |
+| Settings section items | x 119, y 147, width 314, height 58, pitch 64. |
+| Settings rows | x 515, y 213, width 1274, minimum height 84, gap 4. Profile and controller cards have their own heights. |
+| Guide and its end-session confirmation | x 48, y 48, width 620, height 984. Both keep 48-unit vertical margins on taller windows. |
+
+Text aligns by its baseline. Qt's natural font height is not the CSS line height from
+Paper, so changing the font size or a `Text.lineHeight` multiplier alone does not fix
+vertical spacing. Wrapped descriptions can still increase a row's height. Tile and
+poster focus rings use a 3-unit inner border with a 5-unit outer halo; action buttons
+retain the separate shell-colour gap specified for those controls.
+
+### Input and session ownership
+
 - The console does not hand gameplay input to the native video item until streaming status
   includes the current attempt's first-frame metadata. A ready cloud seat is not sufficient.
 - Guide panels, warning sheets, and their focus changes do not replace the native video item.
@@ -94,6 +123,19 @@ release, destination preservation, and session bypass:
 ctest --test-dir build/opennow-qt --output-on-failure \
   -R 'opennow-consolelaunch.*-tests|qml-console-launch-'
 ```
+
+The spacing workload checks Home, Library, and all eight settings sections at
+1920×1080, 2560×1440, 1280×800, and 960×540. It measures the live scene rather than
+reading constants from source files:
+
+```sh
+ctest --test-dir build/opennow-qt --output-on-failure \
+  -R 'qml-console-spacing-|opennow-consolelayout-tests|qml-console-session-'
+```
+
+For screenshot comparisons, verify the captured viewport dimensions first. A window
+manager can shrink a requested 1920×1080 client to fit its title bar and desktop panels.
+Use fullscreen captures for that reference size when the display itself is 1920×1080.
 
 For an interactive entry capture with sample artwork, run the application without
 `--reduced-motion` and add `--smoke-interactive` to the console-design workload. This

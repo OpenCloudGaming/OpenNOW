@@ -78,17 +78,18 @@ FocusScope {
         text: qsTr("GEFORCE NOW CATALOG")
         color: Theme.textMuted
         font.family: Theme.monoFont
-        font.pixelSize: 15
-        font.weight: Font.Bold
-        font.letterSpacing: 2
+        font.pixelSize: 14
+        font.weight: Font.DemiBold
+        font.letterSpacing: 1.68
     }
     Text {
-        x: 96; y: eyebrow.y + eyebrow.height + 2
+        x: 96; y: 139
         text: qsTr("Available games")
         color: Theme.label
         font.family: Theme.displayFont
         font.pixelSize: 40
         font.weight: Font.Black
+        font.letterSpacing: -0.8
         Accessible.role: Accessible.Heading
         Accessible.name: text
     }
@@ -96,7 +97,7 @@ FocusScope {
         objectName: "consoleStorePageStatus"
         anchors.right: parent.right
         anchors.rightMargin: 96
-        y: 164
+        y: 163
         text: (ShellStore.storeTotalCount > 0
             ? qsTr("Loaded %1 of %2 games").arg(root.games.length.toLocaleString(Qt.locale(), "f", 0))
                 .arg(Number(ShellStore.storeTotalCount).toLocaleString(Qt.locale(), "f", 0))
@@ -104,7 +105,7 @@ FocusScope {
         color: Theme.textMuted
         font.family: Theme.monoFont
         font.pixelSize: 15
-        font.weight: Font.Bold
+        font.weight: Font.DemiBold
         font.letterSpacing: 1.4
     }
 
@@ -117,8 +118,8 @@ FocusScope {
         GridView {
             id: catalogGrid
             objectName: "consoleStoreGrid"
-            x: 16; y: 16
-            width: parent.width - 32
+            x: 20; y: 16
+            width: parent.width - 20
             height: parent.height - 16
             cellWidth: width / root.columnCount
             cellHeight: 256
@@ -133,9 +134,8 @@ FocusScope {
                 width: catalogGrid.cellWidth
                 height: catalogGrid.cellHeight
                 PosterTile {
-                    x: Math.round((parent.width - width) / 2)
                     width: Math.min(156, catalogGrid.cellWidth - 18)
-                    height: Math.round(width * 232 / 156)
+                    height: Math.round(width * 234 / 156)
                     title: posterCell.modelData && posterCell.modelData.title ? posterCell.modelData.title : qsTr("Game")
                     artwork: posterCell.modelData ? (posterCell.modelData.imageUrl || posterCell.modelData.heroImageUrl || "") : ""
                     stores: ConsoleStores.stores(posterCell.modelData)
@@ -222,17 +222,17 @@ FocusScope {
         y: root.height - 260
         width: root.width - 192
         height: 96
-        panelRadius: 30
+        panelRadius: 32
         strong: true
         visible: game !== null
         Accessible.role: Accessible.StaticText
         Accessible.name: game ? String(game.title || "") : ""
 
         Column {
-            x: 30
+            x: 29
             anchors.verticalCenter: parent.verticalCenter
-            width: parent.width - stripFacts.width - 90
-            spacing: 2
+            width: parent.width - stripFacts.width - 80
+            spacing: -1
             Text {
                 width: parent.width
                 text: strip.game ? String(strip.game.title || "") : ""
@@ -253,51 +253,57 @@ FocusScope {
                 elide: Text.ElideRight
                 color: Theme.textMuted
                 font.family: Theme.bodyFont
-                font.pixelSize: 17
-                font.weight: Font.DemiBold
+                font.pixelSize: 16
+                font.weight: Font.Bold
             }
         }
 
         Row {
             id: stripFacts
             anchors.right: parent.right
-            anchors.rightMargin: 30
+            anchors.rightMargin: 29
             anchors.verticalCenter: parent.verticalCenter
-            spacing: 16
+            spacing: 22
             Text {
                 anchors.verticalCenter: parent.verticalCenter
                 visible: strip.stores.length > 0
                 text: qsTr("AVAILABLE ON")
                 color: Theme.textMuted
                 font.family: Theme.monoFont
-                font.pixelSize: 14
+                font.pixelSize: 13
                 font.weight: Font.Bold
-                font.letterSpacing: 1.8
+                font.letterSpacing: 1.56
             }
-            Repeater {
-                model: strip.stores.slice(0, 4)
-                ConsoleStoreChip {
-                    required property string modelData
-                    anchors.verticalCenter: parent.verticalCenter
-                    store: modelData
+            Row {
+                anchors.verticalCenter: parent.verticalCenter
+                visible: strip.stores.length > 0
+                spacing: 8
+                Repeater {
+                    model: strip.stores.slice(0, 4)
+                    ConsoleStoreChip {
+                        required property string modelData
+                        store: modelData
+                        markSize: 32
+                        inset: 6
+                    }
                 }
             }
             Rectangle {
                 anchors.verticalCenter: parent.verticalCenter
                 visible: strip.ownedStore !== ""
-                width: 1; height: 40; color: Theme.seam
+                width: 1; height: 44; color: Theme.seam
             }
             Row {
                 anchors.verticalCenter: parent.verticalCenter
                 visible: strip.ownedStore !== ""
-                spacing: 10
+                spacing: 8
                 Rectangle { anchors.verticalCenter: parent.verticalCenter; width: 9; height: 9; radius: 5; color: Theme.mint }
                 Text {
                     text: qsTr("In your %1 library").arg(ConsoleStores.label(strip.ownedStore))
                     color: Theme.lightMode ? Qt.darker(Theme.mint, 2.2) : Theme.mint
                     font.family: Theme.bodyFont
-                    font.pixelSize: 18
-                    font.weight: Font.Bold
+                    font.pixelSize: 17
+                    font.weight: Font.ExtraBold
                 }
             }
         }

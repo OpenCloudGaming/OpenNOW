@@ -99,20 +99,22 @@ FocusScope {
     ConsoleSheetFrame {
         id: frame
         opened: root.opened
+        contentInset: 56
+        contentTop: 64
         onScrimClicked: root.dismissed()
 
         Column {
             id: heading
             width: parent.width
-            spacing: 8
+            spacing: 1
             Text {
                 text: root.eyebrow
                 visible: text !== ""
                 color: Theme.textMuted
                 font.family: Theme.monoFont
-                font.pixelSize: 15
-                font.weight: Font.Bold
-                font.letterSpacing: 2
+                font.pixelSize: 14
+                font.weight: Font.DemiBold
+                font.letterSpacing: 1.68
             }
             Text {
                 width: parent.width
@@ -120,8 +122,9 @@ FocusScope {
                 color: Theme.label
                 elide: Text.ElideRight
                 font.family: Theme.displayFont
-                font.pixelSize: 44
+                font.pixelSize: 40
                 font.weight: Font.Black
+                font.letterSpacing: -0.8
                 Accessible.role: Accessible.Heading
                 Accessible.name: text
             }
@@ -135,6 +138,7 @@ FocusScope {
                 color: Theme.textMuted
                 font.family: Theme.bodyFont
                 font.pixelSize: 18
+                font.weight: Font.DemiBold
             }
         }
 
@@ -142,10 +146,10 @@ FocusScope {
             id: sectionList
             objectName: "consoleFilterSectionList"
             x: -root.ringGutter
-            y: heading.height + 32 - root.ringGutter
+            y: heading.height + 27 - root.ringGutter
             width: root.sectionWidth + root.ringGutter * 2
             height: footer.y - y - 28 + root.ringGutter
-            spacing: 10
+            spacing: 6
             clip: true
             leftMargin: root.ringGutter
             rightMargin: root.ringGutter
@@ -162,7 +166,7 @@ FocusScope {
                 readonly property bool active: index === root.sectionIndex
                 readonly property bool focusedRow: active && !root.optionsPane
                 width: root.sectionWidth
-                height: 74
+                height: 73
                 radius: 20
                 color: active ? Theme.face : "transparent"
                 Accessible.role: Accessible.PageTab
@@ -173,7 +177,7 @@ FocusScope {
                     x: 18
                     anchors.verticalCenter: parent.verticalCenter
                     width: parent.width - 36
-                    spacing: 2
+                    spacing: 1
                     Text {
                         width: parent.width
                         text: sectionRow.modelData.title
@@ -190,7 +194,7 @@ FocusScope {
                         elide: Text.ElideRight
                         font.family: Theme.bodyFont
                         font.pixelSize: 15
-                        font.weight: Font.DemiBold
+                        font.weight: Font.Bold
                     }
                 }
                 MouseArea {
@@ -214,11 +218,11 @@ FocusScope {
         ListView {
             id: optionList
             objectName: "consoleFilterOptionList"
-            x: root.sectionWidth + 48
+            x: root.sectionWidth + 35
             y: sectionList.y
-            width: parent.width - x
+            width: parent.width - x + root.ringGutter
             height: sectionList.height
-            spacing: 4
+            spacing: 6
             clip: true
             leftMargin: root.ringGutter
             rightMargin: root.ringGutter
@@ -235,7 +239,7 @@ FocusScope {
                 readonly property bool current: index === Number(root.section ? root.section.currentIndex : -1)
                 readonly property bool focusedRow: index === root.optionIndex
                 width: ListView.view.width - root.ringGutter * 2
-                height: 62
+                height: 60
                 Accessible.role: Accessible.RadioButton
                 Accessible.name: modelData.label
                 Accessible.checked: current
@@ -252,7 +256,9 @@ FocusScope {
                     frameRadius: 20
                 }
                 Text {
-                    x: 0
+                    x: 23
+                    width: 24
+                    horizontalAlignment: Text.AlignHCenter
                     anchors.verticalCenter: parent.verticalCenter
                     visible: optionRow.current
                     text: "✓"
@@ -261,9 +267,9 @@ FocusScope {
                     font.weight: Font.Black
                 }
                 Row {
-                    x: 36
+                    x: 61
                     anchors.verticalCenter: parent.verticalCenter
-                    spacing: 16
+                    spacing: 14
                     ConsoleStoreMark {
                         anchors.verticalCenter: parent.verticalCenter
                         visible: Boolean(optionRow.modelData.store)
@@ -287,7 +293,7 @@ FocusScope {
                     }
                     Text {
                         anchors.verticalCenter: parent.verticalCenter
-                        width: Math.min(implicitWidth, optionRow.width - 36 - 50 - (optionRow.current ? 110 : 16))
+                        width: Math.min(implicitWidth, optionRow.width - 61 - 48 - (optionRow.current ? 110 : 23))
                         text: optionRow.modelData.label
                         color: Theme.label
                         elide: Text.ElideRight
@@ -298,15 +304,15 @@ FocusScope {
                 }
                 Text {
                     anchors.right: parent.right
-                    anchors.rightMargin: 18
+                    anchors.rightMargin: 23
                     anchors.verticalCenter: parent.verticalCenter
                     visible: optionRow.current
                     text: qsTr("CURRENT")
                     color: Theme.textMuted
                     font.family: Theme.monoFont
                     font.pixelSize: 13
-                    font.weight: Font.Bold
-                    font.letterSpacing: 1.6
+                    font.weight: Font.DemiBold
+                    font.letterSpacing: 1.04
                 }
                 MouseArea {
                     anchors.fill: parent
@@ -323,27 +329,26 @@ FocusScope {
             id: footer
             y: parent.height - height
             width: parent.width
-            height: 64
+            height: 51
             Accessible.ignored: true
             Rectangle { width: parent.width; height: 1; color: Theme.seam }
             Row {
-                anchors.verticalCenter: parent.verticalCenter
-                anchors.verticalCenterOffset: 8
-                spacing: 26
-                ControllerGlyph { glyph: "A"; label: qsTr("Choose"); glyphSize: 30 }
-                ControllerGlyph { glyph: "B"; label: qsTr("Done"); glyphSize: 30 }
-                ControllerGlyph { glyph: "X"; label: qsTr("Reset all"); glyphSize: 30 }
+                id: footerHints
+                anchors.bottom: parent.bottom
+                spacing: 22
+                ControllerGlyph { glyph: "A"; label: qsTr("Choose"); glyphSize: 30; spacing: 10; labelPixelSize: 17; labelWeight: Font.ExtraBold }
+                ControllerGlyph { glyph: "B"; label: qsTr("Done"); glyphSize: 30; spacing: 10; labelPixelSize: 17; labelWeight: Font.ExtraBold }
+                ControllerGlyph { glyph: "X"; label: qsTr("Reset all"); glyphSize: 30; spacing: 10; labelPixelSize: 17; labelWeight: Font.ExtraBold }
             }
             Text {
                 anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                anchors.verticalCenterOffset: 8
+                anchors.verticalCenter: footerHints.verticalCenter
                 text: qsTr("← → SWITCH PANE")
                 color: Theme.textMuted
                 font.family: Theme.monoFont
                 font.pixelSize: 13
-                font.weight: Font.Bold
-                font.letterSpacing: 1.6
+                font.weight: Font.DemiBold
+                font.letterSpacing: 1.04
             }
         }
     }

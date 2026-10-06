@@ -13,7 +13,7 @@ ItemDelegate {
     property string eyebrow: ""
     property bool currentItem: false
     property bool parked: false
-    readonly property real cornerRadius: 22
+    readonly property real cornerRadius: highlighted ? 30 : 26
     readonly property bool labelVisible: !addTile && ShellStore.settings.showTileLabels !== false
         && (wide || highlighted || artwork === "")
     signal menuRequested()
@@ -60,18 +60,19 @@ ItemDelegate {
 
     contentItem: Item {
         ConsoleStoreMark {
-            x: 12; y: 12
+            x: root.highlighted ? 13 : 11
+            y: x
             visible: !root.addTile && root.store !== ""
             store: root.store
-            markSize: 32
+            markSize: 30
         }
 
         Column {
             visible: root.labelVisible
-            x: 18
-            y: parent.height - height - 16
-            width: parent.width - 36
-            spacing: 4
+            x: 19
+            y: parent.height - height - 15
+            width: parent.width - 38
+            spacing: 0
             Text {
                 visible: root.eyebrow.length > 0
                 width: parent.width
@@ -80,8 +81,8 @@ ItemDelegate {
                 elide: Text.ElideRight
                 font.family: Theme.monoFont
                 font.pixelSize: 12
-                font.weight: Font.Bold
-                font.letterSpacing: 1.6
+                font.weight: Font.DemiBold
+                font.letterSpacing: 1.2
             }
             Text {
                 width: parent.width
@@ -89,7 +90,7 @@ ItemDelegate {
                 color: Theme.mediaForeground
                 elide: Text.ElideRight
                 font.family: Theme.displayFont
-                font.pixelSize: root.wide ? 22 : 17
+                font.pixelSize: root.wide ? 20 : 17
                 font.weight: Font.Black
             }
         }
@@ -97,21 +98,20 @@ ItemDelegate {
         Column {
             visible: root.addTile
             anchors.centerIn: parent
-            spacing: 12
-            Text {
+            spacing: 10
+            Item {
                 anchors.horizontalCenter: parent.horizontalCenter
-                text: "+"
-                color: Theme.label
-                font.family: Theme.bodyFont
-                font.pixelSize: 40
-                font.weight: Font.Bold
+                width: 30
+                height: 30
+                Rectangle { anchors.centerIn: parent; width: 20; height: 3; radius: 1.5; color: Theme.label }
+                Rectangle { anchors.centerIn: parent; width: 3; height: 20; radius: 1.5; color: Theme.label }
             }
             Text {
                 anchors.horizontalCenter: parent.horizontalCenter
                 text: qsTr("Add a game")
                 color: Theme.label
                 font.family: Theme.bodyFont
-                font.pixelSize: 16
+                font.pixelSize: 15
                 font.weight: Font.ExtraBold
             }
         }

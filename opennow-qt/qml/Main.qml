@@ -869,10 +869,8 @@ ApplicationWindow {
             && presentedOverlay === "session-conflict"
         readonly property real consoleScale: desktopSessionConflict
             ? 1 : Math.min(window.width / 1920, window.height / 1080)
-        x: Math.round((window.width - width * consoleScale) / 2)
-        y: Math.round((window.height - height * consoleScale) / 2)
-        width: desktopSessionConflict ? window.width : 1920
-        height: desktopSessionConflict ? window.height : 1080
+        width: desktopSessionConflict ? window.width : window.width / consoleScale
+        height: desktopSessionConflict ? window.height : window.height / consoleScale
         scale: consoleScale
         transformOrigin: Item.TopLeft
         overlay: AppController.overlay
@@ -940,6 +938,7 @@ ApplicationWindow {
                 || (AppController.overlay === "" && ShellStore.updaterSessionSafe
                     && ShellStore.updaterFailureMessage !== ""))
             panelSide: endingSession && !waitingForSession ? "left" : "right"
+            panelInset: endingSession && !waitingForSession ? 48 : 0
             eyebrow: quittingApplication ? qsTr("QUIT") : endingSession
                 ? (waitingForSession ? qsTr("LEAVE QUEUE") : qsTr("END SESSION")) : qsTr("UPDATE")
             title: quittingApplication ? qsTr("Quit OpenNOW?") : endingSession

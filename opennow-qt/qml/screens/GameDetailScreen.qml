@@ -219,9 +219,9 @@ FocusScope {
 
     Column {
         id: heroCopy
-        x: 120; y: 196
+        x: 120; y: 199
         width: 860
-        spacing: 14
+        spacing: -2
         Text {
             width: parent.width
             text: [root.game.publisherName || root.game.developerName || ""].concat(
@@ -231,9 +231,9 @@ FocusScope {
             elide: Text.ElideRight
             color: Theme.textMuted
             font.family: Theme.monoFont
-            font.pixelSize: 16
-            font.weight: Font.Bold
-            font.letterSpacing: 2.2
+            font.pixelSize: 15
+            font.weight: Font.DemiBold
+            font.letterSpacing: 1.8
         }
         Text {
             width: parent.width
@@ -243,15 +243,16 @@ FocusScope {
             elide: Text.ElideRight
             color: Theme.label
             font.family: Theme.displayFont
-            font.pixelSize: 80
+            font.pixelSize: 88
             font.weight: Font.Black
-            font.letterSpacing: -1.6
-            lineHeight: 0.92
+            font.letterSpacing: -2.64
+            lineHeight: 0.75
             Accessible.role: Accessible.Heading
             Accessible.name: text
         }
         Text {
-            width: 740
+            width: 760
+            topPadding: 2
             text: String(root.game.longDescription || root.game.description || root.game.shortDescription || "")
             visible: text !== ""
             wrapMode: Text.WordWrap
@@ -261,7 +262,8 @@ FocusScope {
             color: Theme.textMuted
             font.family: Theme.bodyFont
             font.pixelSize: 20
-            lineHeight: 1.25
+            font.weight: Font.DemiBold
+            lineHeight: 1.1
         }
     }
 
@@ -269,21 +271,21 @@ FocusScope {
         x: 120
         y: Math.max(476, heroCopy.y + heroCopy.height + 56)
         width: 1180
-        spacing: 16
+        spacing: 13
 
         Text {
             visible: root.variants.length > 0
             text: qsTr("PLAY ON")
             color: Theme.textMuted
             font.family: Theme.monoFont
-            font.pixelSize: 15
-            font.weight: Font.Bold
-            font.letterSpacing: 2
+            font.pixelSize: 14
+            font.weight: Font.DemiBold
+            font.letterSpacing: 1.68
         }
         Row {
             id: chipRow
             visible: root.variants.length > 0
-            spacing: 14
+            spacing: 12
             Repeater {
                 id: chipRepeater
                 model: root.chipEntries.length
@@ -301,7 +303,7 @@ FocusScope {
                     readonly property bool selectedVariant: entry.index === root.selectedVariantIndex
                     readonly property string ownership: ConsoleStores.ownership(variant)
                     objectName: "consolePlatformChip" + entry.index
-                    width: chipContent.implicitWidth + 40
+                    width: chipContent.implicitWidth + 38
                     height: 72
                     padding: 0
                     focusPolicy: Qt.StrongFocus
@@ -317,11 +319,11 @@ FocusScope {
                     Keys.onEnterPressed: event => { if (!event.isAutoRepeat) root.activateFocusedVariant() }
                     onClicked: root.selectVariant(entry.index)
                     background: Rectangle {
-                        radius: 22
+                        radius: 24
                         color: chip.selectedVariant
                             ? Qt.rgba(Theme.face.r, Theme.face.g, Theme.face.b, 0.16)
                             : Qt.rgba(Theme.shell.r, Theme.shell.g, Theme.shell.b, 0.7)
-                        FocusFrame { focused: chip.activeFocus; frameRadius: 22 }
+                        FocusFrame { focused: chip.activeFocus; frameRadius: 24 }
                     }
                     contentItem: Item {
                         Row {
@@ -332,16 +334,16 @@ FocusScope {
                             ConsoleStoreMark {
                                 anchors.verticalCenter: parent.verticalCenter
                                 store: chip.variant.store || ""
-                                markSize: 44
+                                markSize: 42
                             }
                             Column {
                                 anchors.verticalCenter: parent.verticalCenter
-                                spacing: 1
+                                spacing: -1
                                 Text {
                                     text: ConsoleStores.label(chip.variant.store)
                                     color: Theme.label
                                     font.family: Theme.displayFont
-                                    font.pixelSize: 20
+                                    font.pixelSize: 19
                                     font.weight: Font.Black
                                 }
                                 Text {
@@ -349,8 +351,8 @@ FocusScope {
                                     color: chip.ownership === "owned"
                                         ? (Theme.lightMode ? Qt.darker(Theme.mint, 2.2) : Theme.mint) : Theme.textMuted
                                     font.family: Theme.bodyFont
-                                    font.pixelSize: 16
-                                    font.weight: Font.DemiBold
+                                    font.pixelSize: 15
+                                    font.weight: Font.Bold
                                 }
                             }
                             Text {
@@ -384,12 +386,12 @@ FocusScope {
                     root.platformSheetOpen = true
                 }
                 background: Rectangle {
-                    radius: 22
+                    radius: 24
                     color: Qt.rgba(Theme.shell.r, Theme.shell.g, Theme.shell.b, 0.7)
                     FocusFrame {
                         focused: moreStores.activeFocus || root.platformSheetOpen
                         parked: root.platformSheetOpen
-                        frameRadius: 22
+                        frameRadius: 24
                     }
                 }
                 contentItem: Item {
@@ -399,7 +401,7 @@ FocusScope {
                         text: qsTr("All %1 stores ›").arg(root.variants.length)
                         color: Theme.label
                         font.family: Theme.displayFont
-                        font.pixelSize: 20
+                        font.pixelSize: 19
                         font.weight: Font.Black
                     }
                 }
@@ -417,15 +419,19 @@ FocusScope {
             font.pixelSize: 17
             font.weight: Font.DemiBold
         }
-        Item { width: 1; height: 20 }
+        Item { width: 1; height: 34 }
         Row {
-            spacing: 18
+            spacing: 14
             ConsoleActionButton {
                 id: play
                 objectName: "consolePlayButton"
                 text: ShellStore.selectedGameActionLabel()
                 glyph: "A"
                 primary: true
+                cornerRadius: height / 2
+                rightPadding: 36
+                labelSize: 24
+                glyphSize: 34
                 enabled: root.canLaunch && !ShellStore.cloudMutationBusy
                 KeyNavigation.right: favoriteButton
                 Keys.onUpPressed: root.focusChips()
@@ -441,6 +447,12 @@ FocusScope {
                 objectName: "consoleFavoriteButton"
                 text: ShellStore.isFavorite(root.game) ? qsTr("Remove from Home") : qsTr("Pin to Home")
                 glyph: "Y"
+                cornerRadius: height / 2
+                rightPadding: 28
+                labelSize: 20
+                labelWeight: Font.ExtraBold
+                glyphSize: 30
+                contentSpacing: 12
                 KeyNavigation.left: play
                 KeyNavigation.right: optionsButton
                 Keys.onUpPressed: root.focusChips()
@@ -451,6 +463,12 @@ FocusScope {
                 objectName: "consoleLibraryOptionsButton"
                 text: qsTr("Library options")
                 glyph: "MENU"
+                cornerRadius: height / 2
+                rightPadding: 28
+                labelSize: 20
+                labelWeight: Font.ExtraBold
+                glyphSize: 30
+                contentSpacing: 12
                 currentItem: root.libraryOptionsOpen
                 KeyNavigation.left: favoriteButton
                 Keys.onUpPressed: root.focusChips()
@@ -476,73 +494,79 @@ FocusScope {
         x: root.width - width - 96
         y: 470
         width: 472
-        height: requestsColumn.implicitHeight + 56
-        panelRadius: 30
+        height: requestsColumn.implicitHeight + 58
+        panelRadius: 32
         strong: true
         Column {
             id: requestsColumn
-            x: 28; y: 28
-            width: parent.width - 56
-            spacing: 12
+            x: 29; y: 29
+            width: parent.width - 58
+            spacing: 16
             Item {
                 width: parent.width
-                height: requestsTitle.implicitHeight
+                height: 18
                 Text {
                     id: requestsTitle
+                    anchors.verticalCenter: parent.verticalCenter
                     text: qsTr("NEXT LAUNCH REQUESTS")
                     color: Theme.textMuted
                     font.family: Theme.monoFont
-                    font.pixelSize: 14
-                    font.weight: Font.Bold
-                    font.letterSpacing: 1.8
+                    font.pixelSize: 13
+                    font.weight: Font.DemiBold
+                    font.letterSpacing: 1.56
                 }
                 Text {
                     anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
                     text: qsTr("Settings → Streaming")
                     color: Theme.textMuted
                     font.family: Theme.bodyFont
                     font.pixelSize: 15
-                    font.weight: Font.Bold
+                    font.weight: Font.ExtraBold
                     Accessible.role: Accessible.Link
                     Accessible.name: qsTr("Open streaming settings")
                     TapHandler { onTapped: AppController.navigate("settings-streaming") }
                 }
             }
-            Repeater {
-                model: [
-                    {label: qsTr("Picture"), value: root.streamQualityLabel(), region: false},
-                    {label: qsTr("Codec"), value: root.codecLabel(), region: false},
-                    {label: qsTr("Region"), value: root.regionLabel(), region: true}
-                ]
-                Item {
-                    required property var modelData
-                    width: requestsColumn.width
-                    height: 30
-                    Accessible.role: Accessible.StaticText
-                    Accessible.name: modelData.label + ": " + modelData.value
-                    Text {
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: modelData.label
-                        color: Theme.textMuted
-                        font.family: Theme.bodyFont
-                        font.pixelSize: 19
-                        font.weight: Font.DemiBold
-                    }
-                    Row {
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: 8
-                        Rectangle {
-                            visible: modelData.region
-                            anchors.verticalCenter: parent.verticalCenter
-                            width: 8; height: 8; radius: 4; color: Theme.mint
-                        }
+            Column {
+                width: parent.width
+                spacing: 10
+                Repeater {
+                    model: [
+                        {label: qsTr("Picture"), value: root.streamQualityLabel(), region: false},
+                        {label: qsTr("Codec"), value: root.codecLabel(), region: false},
+                        {label: qsTr("Region"), value: root.regionLabel(), region: true}
+                    ]
+                    Item {
+                        required property var modelData
+                        width: requestsColumn.width
+                        height: 24
+                        Accessible.role: Accessible.StaticText
+                        Accessible.name: modelData.label + ": " + modelData.value
                         Text {
-                            text: modelData.value
-                            color: Theme.label
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: modelData.label
+                            color: Theme.textMuted
                             font.family: Theme.bodyFont
                             font.pixelSize: 19
-                            font.weight: Font.Black
+                            font.weight: Font.Bold
+                        }
+                        Row {
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: 8
+                            Rectangle {
+                                visible: modelData.region
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 9; height: 9; radius: 4.5; color: Theme.mint
+                            }
+                            Text {
+                                text: modelData.value
+                                color: Theme.label
+                                font.family: Theme.bodyFont
+                                font.pixelSize: 19
+                                font.weight: Font.ExtraBold
+                            }
                         }
                     }
                 }
@@ -554,6 +578,8 @@ FocusScope {
                 color: Theme.textMuted
                 font.family: Theme.bodyFont
                 font.pixelSize: 15
+                font.weight: Font.DemiBold
+                lineHeight: 1.03
             }
         }
     }

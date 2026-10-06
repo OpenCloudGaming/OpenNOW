@@ -240,6 +240,29 @@ TestCase {
         compare(actionSpy.count, 0)
     }
 
+    function test_choiceTagsRelayoutWithoutBindingLoops() {
+        failOnWarning(/Binding loop detected/)
+        const sheet = createTemporaryObject(choiceComponent, testCase, {
+            options: [{label:"English", value:"en", detail:"English"},
+                      {label:"Deutsch", value:"de", detail:"German"},
+                      {label:"日本語", value:"ja", detail:"Japanese"}],
+            currentIndex: 0
+        })
+        verify(sheet !== null)
+        sheet.opened = true
+        tryCompare(sheet, "visible", true)
+        for (let index = 0; index < 9; ++index) {
+            sheet.currentIndex = index % 3
+            sheet.options = [
+                {label:"English", value:"en", detail:index % 2 ? "English" : ""},
+                {label:"Deutsch", value:"de", detail:index % 2 ? "German" : "A longer translated description for this language"},
+                {label:"日本語", value:"ja", detail:index % 2 ? "日本語" : "Japanese"}
+            ]
+            waitForRendering(sheet)
+            verify(sheet.opened)
+        }
+    }
+
     function focusedHalo(sheet) {
         const list = findChild(sheet, "consoleChoiceList")
         const item = list.itemAtIndex(sheet.focusedIndex)

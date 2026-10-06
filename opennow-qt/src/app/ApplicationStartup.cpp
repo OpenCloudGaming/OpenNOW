@@ -69,6 +69,10 @@ private:
 
 static int runApplicationSession(int argc, char *argv[], QString &restartExecutable)
 {
+#ifdef Q_OS_WIN
+    if (!qEnvironmentVariableIsSet("QT_D3D_NO_VBLANK_THREAD"))
+        qputenv("QT_D3D_NO_VBLANK_THREAD", "1");
+#endif
     qputenv("QT_TLS_BACKEND", "schannel");
     QElapsedTimer startupTimer;
     startupTimer.start();

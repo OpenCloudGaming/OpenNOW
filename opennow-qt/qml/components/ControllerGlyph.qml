@@ -10,6 +10,8 @@ Row {
     property color glyphColor: Theme.face
     property real glyphSize: 26
     property bool keyboard: false
+    property real labelPixelSize: 16
+    property int labelWeight: Font.Bold
     spacing: 8
 
     Item {
@@ -49,7 +51,7 @@ Row {
         text: I18n.source(root.label, I18n.revision)
         color: Theme.label
         font.family: Theme.bodyFont
-        font.pixelSize: 16
-        font.weight: Font.Bold
+        font.pixelSize: root.labelPixelSize
+        font.weight: root.labelWeight
     }
 }

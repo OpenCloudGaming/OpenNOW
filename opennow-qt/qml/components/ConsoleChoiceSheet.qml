@@ -131,6 +131,8 @@ FocusScope {
     ConsoleSheetFrame {
         id: frame
         opened: root.opened
+        contentInset: 56
+        contentTop: 64
         onScrimClicked: root.dismissed()
 
         Column {
@@ -140,6 +142,8 @@ FocusScope {
             Text {
                 visible: text !== ""
                 width: parent.width
+                height: 18
+                verticalAlignment: Text.AlignVCenter
                 text: root.eyebrow.toUpperCase()
                 color: Theme.textMuted
                 elide: Text.ElideRight
@@ -150,6 +154,8 @@ FocusScope {
             }
             Text {
                 width: parent.width
+                height: 44
+                verticalAlignment: Text.AlignVCenter
                 text: root.title !== "" ? root.title : qsTr("Choose a value")
                 color: Theme.label
                 elide: Text.ElideRight
@@ -158,17 +164,25 @@ FocusScope {
                 font.weight: Font.Black
                 font.letterSpacing: -0.8
             }
-            Text {
-                visible: text !== ""
+            Item {
+                visible: root.description !== ""
                 width: parent.width
-                text: root.description
-                color: Theme.textMuted
-                wrapMode: Text.WordWrap
-                maximumLineCount: 3
-                elide: Text.ElideRight
-                font.family: Theme.bodyFont
-                font.pixelSize: 18
-                font.weight: Font.DemiBold
+                height: Math.max(1, descriptionText.lineCount) * 22
+                Text {
+                    id: descriptionText
+                    y: -1
+                    width: parent.width
+                    text: root.description
+                    color: Theme.textMuted
+                    wrapMode: Text.WordWrap
+                    maximumLineCount: 3
+                    elide: Text.ElideRight
+                    lineHeightMode: Text.FixedHeight
+                    lineHeight: 22
+                    font.family: Theme.bodyFont
+                    font.pixelSize: 18
+                    font.weight: Font.DemiBold
+                }
             }
         }
 
@@ -178,7 +192,7 @@ FocusScope {
             anchors.top: header.bottom
             anchors.topMargin: 22 - root.ringGutter
             anchors.bottom: footer.top
-            anchors.bottomMargin: 18 - root.ringGutter
+            anchors.bottomMargin: 22 - root.ringGutter
             x: -root.ringGutter
             width: parent.width + root.ringGutter * 2
             leftMargin: root.ringGutter
@@ -202,8 +216,9 @@ FocusScope {
                 readonly property bool startsGroup: optionItem.group !== ""
                     && (optionItem.index === 0 || String((root.options[optionItem.index - 1] || {}).group || "") !== optionItem.group)
                 readonly property string detail: String(optionItem.modelData.detail || "")
+                readonly property bool detailTag: optionItem.detail.length <= 24
                 width: ListView.view.width - root.ringGutter * 2
-                height: (startsGroup ? 40 : 0) + Math.max(60, optionText.implicitHeight + 24)
+                height: (startsGroup ? 32 : 0) + Math.max(56, optionText.implicitHeight + 24)
                 Accessible.role: Accessible.ListItem
                 Accessible.name: String(optionItem.modelData.label || "")
                 Accessible.description: optionItem.detail
@@ -214,10 +229,12 @@ FocusScope {
                     x: 20
                     y: 10
                     width: parent.width - 40
+                    height: 16
                     spacing: 12
                     Text {
                         id: groupLabel
-                        anchors.verticalCenter: parent.verticalCenter
+                        height: 16
+                        verticalAlignment: Text.AlignVCenter
                         text: optionItem.group
                         color: Theme.textMuted
                         font.family: Theme.monoFont
@@ -235,7 +252,7 @@ FocusScope {
 
                 Rectangle {
                     id: optionBox
-                    y: optionItem.startsGroup ? 40 : 0
+                    y: optionItem.startsGroup ? 32 : 0
                     width: parent.width
                     height: parent.height - y
                     radius: 20
@@ -246,15 +263,17 @@ FocusScope {
                         objectName: "consoleChoiceFocusHalo"
                         visible: optionItem.focused
                         anchors.fill: parent
-                        anchors.margins: -8
-                        radius: parent.radius + 8
+                        anchors.margins: -5
+                        radius: parent.radius + 5
                         color: "transparent"
                         border.width: 5
                         border.color: Qt.rgba(Theme.focus.r, Theme.focus.g, Theme.focus.b, 0.4)
                     }
 
                     Text {
-                        x: 20
+                        x: 23
+                        width: 24
+                        horizontalAlignment: Text.AlignHCenter
                         anchors.verticalCenter: parent.verticalCenter
                         visible: optionItem.current
                         text: "✓"
@@ -264,7 +283,7 @@ FocusScope {
                         font.weight: Font.Black
                     }
                     Item {
-                        x: 24
+                        x: 28
                         anchors.verticalCenter: parent.verticalCenter
                         width: 14
                         height: 16
@@ -277,12 +296,14 @@ FocusScope {
                     }
                     Column {
                         id: optionText
-                        x: 58
+                        x: 61
                         anchors.verticalCenter: parent.verticalCenter
-                        width: parent.width - x - currentTag.width - 36
+                        width: parent.width - x - currentTag.width - 37
                         spacing: 3
                         Text {
                             width: parent.width
+                            height: 24
+                            verticalAlignment: Text.AlignVCenter
                             text: String(optionItem.modelData.label || "")
                             color: optionItem.unavailable ? Theme.textMuted : Theme.label
                             elide: Text.ElideRight
@@ -291,7 +312,7 @@ FocusScope {
                             font.weight: optionItem.current || optionItem.focused ? Font.Black : Font.Bold
                         }
                         Text {
-                            visible: text !== ""
+                            visible: text !== "" && !optionItem.detailTag
                             width: parent.width
                             text: optionItem.detail
                             color: Theme.textMuted
@@ -303,19 +324,23 @@ FocusScope {
                             font.weight: Font.DemiBold
                         }
                     }
+                    TextMetrics {
+                        id: tagMetrics
+                        text: optionItem.current ? currentTagMetrics.text : optionItem.detail
+                        font: currentTagMetrics.font
+                    }
                     Text {
                         id: currentTag
                         anchors.right: parent.right
-                        anchors.rightMargin: 20
+                        anchors.rightMargin: 23
                         anchors.verticalCenter: parent.verticalCenter
-                        visible: optionItem.current
-                        width: visible ? currentTagMetrics.advanceWidth + 12 : 0
-                        text: currentTagMetrics.text
-                        color: Theme.mint
-                        font.family: Theme.monoFont
-                        font.pixelSize: 13
-                        font.weight: Font.Bold
-                        font.letterSpacing: 1.2
+                        visible: optionItem.current || (optionItem.detailTag && optionItem.detail !== "")
+                        width: visible ? Math.ceil(Math.min(tagMetrics.advanceWidth, Math.max(currentTagMetrics.advanceWidth, optionBox.width * 0.4))) : 0
+                        horizontalAlignment: Text.AlignRight
+                        elide: Text.ElideRight
+                        text: tagMetrics.text
+                        color: optionItem.current ? Theme.mint : Theme.textMuted
+                        font: currentTagMetrics.font
                     }
                     TapHandler {
                         enabled: !optionItem.unavailable
@@ -342,7 +367,7 @@ FocusScope {
             id: footer
             anchors.bottom: parent.bottom
             width: parent.width
-            height: 52
+            height: 51
             Rectangle { width: parent.width; height: 1; color: Theme.seam }
             Row {
                 anchors.bottom: parent.bottom

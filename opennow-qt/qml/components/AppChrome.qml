@@ -62,10 +62,11 @@ Item {
 
     GlassPanel {
         id: profilePanel
+        objectName: "consoleProfilePanel"
         opacity: root.entranceProgress
         transform: Translate { y: -16 * (1 - root.entranceProgress) }
         x: 64; y: 36
-        width: Math.min(460, profileRow.implicitWidth + 40); height: 60
+        width: Math.min(460, profileRow.implicitWidth + 32); height: 60
         panelRadius: 30
         strong: true
         Accessible.role: Accessible.StaticText
@@ -76,7 +77,7 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             spacing: 12
             Rectangle {
-                width: 40; height: 40; radius: 20
+                width: 42; height: 42; radius: 21
                 color: Theme.violet
                 border.color: Qt.rgba(1, 1, 1, 0.7); border.width: 2
                 Text {
@@ -84,7 +85,7 @@ Item {
                     text: root.profileInitial
                     color: Theme.contrastText(Theme.violet)
                     font.family: Theme.displayFont
-                    font.pixelSize: 17
+                    font.pixelSize: 18
                     font.weight: Font.Black
                 }
             }
@@ -95,7 +96,7 @@ Item {
                 color: Theme.label
                 font.family: Theme.bodyFont
                 font.pixelSize: 19
-                font.weight: Font.Bold
+                font.weight: Font.ExtraBold
                 elide: Text.ElideRight
             }
             Rectangle {
@@ -103,7 +104,7 @@ Item {
                 readonly property string badge: root.membershipTier !== "" ? root.membershipTier
                     : ShellStore.signedIn ? "" : qsTr("SIGNED OUT")
                 visible: badge !== ""
-                width: tierText.implicitWidth + 20; height: 26; radius: 13
+                width: tierText.implicitWidth + 20; height: 24; radius: 12
                 color: Qt.rgba(Theme.violet.r, Theme.violet.g, Theme.violet.b, 0.18)
                 Text {
                     id: tierText
@@ -112,8 +113,8 @@ Item {
                     color: Theme.lightMode ? Qt.darker(Theme.violet, 1.6) : Theme.violet
                     font.family: Theme.monoFont
                     font.pixelSize: 13
-                    font.weight: Font.Bold
-                    font.letterSpacing: 1.2
+                    font.weight: Font.DemiBold
+                    font.letterSpacing: 1.04
                 }
             }
         }
@@ -121,19 +122,22 @@ Item {
 
     Text {
         id: titleText
+        objectName: "consoleChromeTitle"
+        readonly property real gapStart: profilePanel.x + profilePanel.width
         opacity: root.entranceProgress
         transform: Translate { y: -16 * (1 - root.entranceProgress) }
-        x: Math.round((parent.width - width) / 2)
+        x: Math.round(gapStart + (statusPanel.x - gapStart - width) / 2)
         y: 66 - Math.round(height / 2)
-        width: Math.min(implicitWidth, statusPanel.x - profilePanel.x - profilePanel.width - 80)
+        width: Math.min(implicitWidth, statusPanel.x - gapStart - 80)
         visible: text !== ""
         horizontalAlignment: Text.AlignHCenter
         elide: Text.ElideRight
         text: root.title
         color: Theme.label
         font.family: Theme.displayFont
-        font.pixelSize: 24
+        font.pixelSize: 22
         font.weight: Font.Black
+        font.letterSpacing: 0.22
         Accessible.role: Accessible.Heading
         Accessible.name: text
     }
@@ -144,7 +148,7 @@ Item {
         opacity: root.entranceProgress
         transform: Translate { y: -16 * (1 - root.entranceProgress) }
         x: parent.width - width - 64; y: 36
-        width: statusRow.implicitWidth + 48; height: 60
+        width: statusRow.implicitWidth + 50; height: 60
         panelRadius: 30
         strong: true
         Row {
@@ -153,15 +157,15 @@ Item {
             anchors.alignWhenCentered: false
             spacing: 18
             Row {
-                spacing: 9; anchors.verticalCenter: parent.verticalCenter
+                spacing: 8; anchors.verticalCenter: parent.verticalCenter
                 Rectangle {
                     anchors.verticalCenter: parent.verticalCenter
-                    width: 8; height: 8; radius: 4
+                    width: 9; height: 9; radius: 4.5
                     color: root.regionPing() !== null ? Theme.mint : Theme.textMuted
                 }
                 Text {
                     text: root.regionStatus()
-                    color: Theme.label; font.family: Theme.monoFont; font.pixelSize: 16; font.weight: Font.Bold
+                    color: Theme.label; font.family: Theme.monoFont; font.pixelSize: 15; font.weight: Font.DemiBold
                 }
             }
             Rectangle { anchors.verticalCenter: parent.verticalCenter; width: 1; height: 22; color: Theme.seam }
@@ -172,8 +176,8 @@ Item {
                 text: Qt.formatDateTime(root.now, "hh:mm")
                 color: Theme.label
                 font.family: Theme.monoFont
-                font.pixelSize: 16
-                font.weight: Font.Bold
+                font.pixelSize: 15
+                font.weight: Font.DemiBold
             }
             Rectangle {
                 visible: root.batteryKnown
@@ -200,7 +204,7 @@ Item {
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
                     text: qsTr("%1%").arg(root.batteryKnown ? root.primaryController.batteryPercent : 0)
-                    color: Theme.label; font.family: Theme.monoFont; font.pixelSize: 16; font.weight: Font.Bold
+                    color: Theme.label; font.family: Theme.monoFont; font.pixelSize: 15; font.weight: Font.DemiBold
                 }
             }
         }
@@ -208,12 +212,13 @@ Item {
 
     Row {
         id: leftHintRow
+        objectName: "consoleHintsLeft"
         opacity: root.entranceProgress
         transform: Translate { y: 16 * (1 - root.entranceProgress) }
         visible: root.bottomVisible && root.leftHints.length > 0
         x: 64
-        y: parent.height - 97 - Math.round(height / 2)
-        spacing: 28
+        y: parent.height - 96 - Math.round(height / 2)
+        spacing: 22
         Accessible.ignored: true
         Repeater {
             model: root.leftHints
@@ -223,11 +228,15 @@ Item {
                 keyboard: Boolean(modelData.keyboard)
                 label: modelData.label
                 glyphSize: 30
+                spacing: 10
+                labelPixelSize: 17
+                labelWeight: Font.ExtraBold
             }
         }
     }
 
     NavPill {
+        objectName: "consoleNavPill"
         opacity: root.entranceProgress
         transform: Translate { y: 16 * (1 - root.entranceProgress) }
         visible: root.bottomVisible && root.navVisible
@@ -246,12 +255,13 @@ Item {
 
     Row {
         id: rightHintRow
+        objectName: "consoleHintsRight"
         opacity: root.entranceProgress
         transform: Translate { y: 16 * (1 - root.entranceProgress) }
         visible: root.bottomVisible && root.rightHints.length > 0
         x: parent.width - width - 64
-        y: parent.height - 97 - Math.round(height / 2)
-        spacing: 28
+        y: parent.height - 96 - Math.round(height / 2)
+        spacing: 22
         Accessible.ignored: true
         Repeater {
             model: root.rightHints
@@ -261,6 +271,9 @@ Item {
                 keyboard: Boolean(modelData.keyboard)
                 label: modelData.label
                 glyphSize: 30
+                spacing: 10
+                labelPixelSize: 17
+                labelWeight: Font.ExtraBold
             }
         }
     }

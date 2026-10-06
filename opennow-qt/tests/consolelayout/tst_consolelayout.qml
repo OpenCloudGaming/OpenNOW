@@ -24,6 +24,41 @@ TestCase {
         }
     }
 
+    Component {
+        id: focusComponent
+        Item {
+            width: 176
+            height: 176
+            property alias frame: frame
+            FocusFrame { id: frame; focused: true }
+        }
+    }
+
+    function test_focusRingMatchesPaperInsets_data() {
+        return [{tag:"square", width:176}, {tag:"wide", width:368}]
+    }
+
+    function test_focusRingMatchesPaperInsets(data) {
+        const host = createTemporaryObject(focusComponent, testCase.Window.window.contentItem, {width:data.width})
+        verify(host !== null)
+        const rings = host.frame.children.filter(child => child.visible)
+        compare(Math.min(...rings.map(ring => ring.x)), -5)
+        compare(Math.max(...rings.map(ring => ring.x + ring.width)), data.width + 5)
+        const white = rings.find(ring => Qt.colorEqual(ring.border.color, Theme.face))
+        verify(white !== undefined)
+        compare(white.x, 0)
+        compare(white.y, 0)
+        compare(white.width, data.width)
+        compare(white.height, 176)
+        compare(white.border.width, 3)
+        host.frame.parked = true
+        const parked = host.frame.children.filter(child => child.visible)
+        compare(parked.length, 1)
+        compare(parked[0].x, 0)
+        compare(parked[0].width, data.width)
+        compare(parked[0].border.width, 2)
+    }
+
     function verifyLayout(host) {
         const viewport = host.viewport
         const origin = viewport.mapToItem(host.contentItem, 0, 0)

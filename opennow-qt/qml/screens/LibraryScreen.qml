@@ -186,9 +186,9 @@ FocusScope {
         text: root.searchQuery
         color: Theme.label
         placeholderTextColor: Theme.textMuted
-        font.family: Theme.bodyFont; font.pixelSize: 19
-        font.weight: Font.DemiBold
-        leftPadding: 112
+        font.family: Theme.bodyFont; font.pixelSize: 18
+        font.weight: Font.Bold
+        leftPadding: 110
         rightPadding: 24
         Accessible.name: qsTr("Search games")
         KeyNavigation.right: filterButton
@@ -213,13 +213,13 @@ FocusScope {
             FocusFrame { focused: searchField.activeFocus; frameRadius: 30 }
         }
         ControllerGlyph {
-            x: 16; anchors.verticalCenter: parent.verticalCenter
-            glyph: "VIEW"; label: ""; glyphSize: 32
+            x: 15; anchors.verticalCenter: parent.verticalCenter
+            glyph: "VIEW"; label: ""; glyphSize: 30
             TapHandler { onTapped: root.showSearchKeyboard() }
         }
         Image {
-            x: 72; anchors.verticalCenter: parent.verticalCenter
-            width: 22; height: 22
+            x: 76; anchors.verticalCenter: parent.verticalCenter
+            width: 20; height: 20
             source: "qrc:/qt/qml/OpenNOW/res/icons/desktop-search" + (Theme.lightMode ? "-on-light" : "") + ".svg"
             sourceSize: Qt.size(44, 44)
         }
@@ -228,8 +228,8 @@ FocusScope {
     Button {
         id: filterButton
         objectName: "consoleLibraryFilterButton"
-        x: searchField.x + searchField.width + 16; y: 126
-        width: Math.min(620, filterRow.implicitWidth + 48); height: 60
+        x: searchField.x + searchField.width + 14; y: 126
+        width: Math.min(620, filterRow.implicitWidth + 40); height: 60
         padding: 0
         focusPolicy: Qt.StrongFocus
         Accessible.name: qsTr("Filter and sort: %1").arg(filterSummary.text)
@@ -251,9 +251,9 @@ FocusScope {
         contentItem: Item {
             Row {
                 id: filterRow
-                x: 24
+                x: 15
                 anchors.verticalCenter: parent.verticalCenter
-                spacing: 14
+                spacing: 12
                 Image {
                     anchors.verticalCenter: parent.verticalCenter
                     width: 22; height: 22
@@ -265,7 +265,7 @@ FocusScope {
                     text: qsTr("Filter & sort")
                     color: Theme.label
                     font.family: Theme.displayFont
-                    font.pixelSize: 20
+                    font.pixelSize: 18
                     font.weight: Font.Black
                 }
                 Rectangle { anchors.verticalCenter: parent.verticalCenter; width: 1; height: 24; color: Theme.seam }
@@ -278,8 +278,8 @@ FocusScope {
                         [root.storeFilterLabel, root.genreFilterLabel, root.sortLabels[root.sortIndex]]).join(" · ")
                     color: Theme.textMuted
                     font.family: Theme.bodyFont
-                    font.pixelSize: 18
-                    font.weight: Font.DemiBold
+                    font.pixelSize: 17
+                    font.weight: Font.Bold
                 }
             }
         }
@@ -313,17 +313,18 @@ FocusScope {
     }
 
     Item {
+        objectName: "consoleLibraryGrid"
         x: 80; y: 214
-        width: root.columnCount * 172 + 32
-        height: root.height - y - 152
+        width: root.columnCount * 172 + 38
+        height: root.height - y - 164
         clip: true
         GridView {
             id: catalog
-            x: 16; y: 16
+            x: 19; y: 18
             width: root.columnCount * 172
-            height: parent.height - 16
+            height: parent.height - 18
             cellWidth: 172
-            cellHeight: 268
+            cellHeight: 269
             clip: false
             model: root.games
             focus: true
@@ -358,7 +359,7 @@ FocusScope {
                 width: catalog.cellWidth; height: catalog.cellHeight
                 PosterTile {
                     width: 156
-                    height: 232
+                    height: 234
                     title: gameDelegate.modelData.title
                     artwork: gameDelegate.modelData.imageUrl || ""
                     showLabel: false
@@ -413,8 +414,9 @@ FocusScope {
 
     GlassPanel {
         id: detailPanel
-        x: 1338
-        y: 230
+        objectName: "consoleLibraryDetailPanel"
+        x: 1336
+        y: 228
         width: root.width - x - 96
         height: root.height - y - 172
         panelRadius: 40
@@ -423,9 +425,9 @@ FocusScope {
         readonly property var stores: ConsoleStores.stores(game)
 
         Column {
-            x: 36; y: 40
-            width: parent.width - 72
-            spacing: 14
+            x: 37; y: 37
+            width: parent.width - 74
+            spacing: 0
             Text {
                 width: parent.width
                 text: detailPanel.game
@@ -438,9 +440,10 @@ FocusScope {
                 color: Theme.textMuted
                 font.family: Theme.monoFont
                 font.pixelSize: 14
-                font.weight: Font.Bold
-                font.letterSpacing: 1.8
+                font.weight: Font.DemiBold
+                font.letterSpacing: 1.68
             }
+            Item { width: 1; height: 2 }
             Text {
                 width: parent.width
                 text: detailPanel.game ? String(detailPanel.game.title || "") : qsTr("Pick a game")
@@ -451,39 +454,44 @@ FocusScope {
                 font.family: Theme.displayFont
                 font.pixelSize: 40
                 font.weight: Font.Black
+                font.letterSpacing: -0.8
             }
+            Item { width: 1; height: 16; visible: detailPanel.ownedStore !== "" }
             Row {
                 visible: detailPanel.ownedStore !== ""
-                spacing: 10
+                spacing: 8
                 Rectangle { anchors.verticalCenter: parent.verticalCenter; width: 9; height: 9; radius: 5; color: Theme.mint }
                 Text {
                     text: qsTr("In your %1 library").arg(ConsoleStores.label(detailPanel.ownedStore))
                     color: Theme.lightMode ? Qt.darker(Theme.mint, 2.2) : Theme.mint
                     font.family: Theme.bodyFont
-                    font.pixelSize: 18
-                    font.weight: Font.Bold
+                    font.pixelSize: 17
+                    font.weight: Font.ExtraBold
                 }
             }
-            Item { width: 1; height: 4; visible: detailPanel.stores.length > 0 }
+            Item { width: 1; height: 20; visible: detailPanel.stores.length > 0 }
             Text {
                 visible: detailPanel.stores.length > 0
                 text: qsTr("AVAILABLE ON")
                 color: Theme.textMuted
                 font.family: Theme.monoFont
-                font.pixelSize: 14
-                font.weight: Font.Bold
-                font.letterSpacing: 1.8
+                font.pixelSize: 13
+                font.weight: Font.DemiBold
+                font.letterSpacing: 1.56
             }
+            Item { width: 1; height: 9; visible: detailPanel.stores.length > 0 }
             Flow {
                 width: parent.width
-                spacing: 10
+                spacing: 8
                 visible: detailPanel.stores.length > 0
                 Repeater {
                     model: detailPanel.stores
                     ConsoleStoreChip { required property string modelData; store: modelData }
                 }
             }
+            Item { width: 1; height: 23; visible: descriptionText.visible }
             Text {
+                id: descriptionText
                 width: parent.width
                 text: detailPanel.game ? String(detailPanel.game.description || detailPanel.game.shortDescription || "") : ""
                 visible: text !== ""
@@ -494,16 +502,17 @@ FocusScope {
                 color: Theme.textMuted
                 font.family: Theme.bodyFont
                 font.pixelSize: 18
-                lineHeight: 1.2
+                font.weight: Font.DemiBold
+                lineHeight: 1.1
             }
         }
 
         Column {
-            x: 36
-            width: parent.width - 72
+            x: 37
+            width: parent.width - 74
             anchors.bottom: parent.bottom
-            anchors.bottomMargin: 36
-            spacing: 14
+            anchors.bottomMargin: 37
+            spacing: 12
             Text {
                 width: parent.width
                 visible: text !== ""
@@ -518,7 +527,11 @@ FocusScope {
                 font.family: Theme.bodyFont
                 font.pixelSize: 15
             }
-            Rectangle { width: parent.width; height: 1; color: Theme.seam }
+            Item {
+                width: parent.width
+                height: 7
+                Rectangle { width: parent.width; height: 1; color: Theme.seam }
+            }
             Repeater {
                 model: detailPanel.game ? [
                     {glyph: "A", label: qsTr("Open details & play"), pin: false},
@@ -527,13 +540,16 @@ FocusScope {
                 ItemDelegate {
                     required property var modelData
                     width: parent.width
-                    height: 40
+                    height: 30
                     padding: 0
                     focusPolicy: Qt.NoFocus
                     Accessible.name: modelData.label
                     Accessible.role: Accessible.Button
                     background: Item {}
-                    contentItem: ControllerGlyph { glyph: modelData.glyph; label: modelData.label; glyphSize: 30 }
+                    contentItem: ControllerGlyph {
+                        glyph: modelData.glyph; label: modelData.label; glyphSize: 30
+                        spacing: 12; labelPixelSize: 18; labelWeight: Font.ExtraBold
+                    }
                     onClicked: modelData.pin ? ShellStore.toggleFavorite(detailPanel.game) : root.openSelected()
                 }
             }

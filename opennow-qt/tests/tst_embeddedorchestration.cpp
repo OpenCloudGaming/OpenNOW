@@ -1932,6 +1932,19 @@ private slots:
         QVERIFY(!main.contains(QStringLiteral("StreamSurfaceController")));
     }
 
+    void windowsUpdateSchedulingIsConfiguredBeforeApplicationCreation()
+    {
+        const auto main = source(QStringLiteral("src/app/ApplicationStartup.cpp"));
+        const auto guard = main.indexOf(QStringLiteral("if (!qEnvironmentVariableIsSet(\"QT_D3D_NO_VBLANK_THREAD\"))"));
+        const auto setting = main.indexOf(QStringLiteral("qputenv(\"QT_D3D_NO_VBLANK_THREAD\", \"1\")"));
+        const auto application = main.indexOf(QStringLiteral("QGuiApplication application"));
+        QVERIFY(guard >= 0);
+        QVERIFY(setting > guard);
+        QVERIFY(application > setting);
+        QVERIFY(main.left(guard).endsWith(QStringLiteral("#ifdef Q_OS_WIN\n    ")));
+        QVERIFY(!main.contains(QStringLiteral("qputenv(\"QSG_RENDER_LOOP\", \"basic\")")));
+    }
+
     void linuxVulkanOwnerOutlivesRuntimeAndHiddenRootAdoption()
     {
         const auto main = source(QStringLiteral("src/app/ApplicationStartup.cpp"));
