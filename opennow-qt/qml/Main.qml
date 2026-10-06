@@ -21,7 +21,8 @@ ApplicationWindow {
     property string pendingConsoleScreenshotSession: ""
     property int pendingConsoleScreenshotFrames: 0
     readonly property Item consoleModalFocusOwner: consoleSystemWarning.opened ? consoleSystemWarning
-        : !window.desktopSurfaceActive && consoleOverlayHost.supportedOverlay ? consoleOverlayHost : null
+        : (!window.desktopSurfaceActive || AppController.overlay === "session-report")
+            && consoleOverlayHost.supportedOverlay ? consoleOverlayHost : null
     onConsoleModalFocusOwnerChanged: if (consoleModalFocusOwner) Qt.callLater(window.restoreConsoleModalFocus)
     onClosing: event => {
         if (!applicationCloseConfirmed) {
