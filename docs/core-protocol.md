@@ -1311,8 +1311,17 @@ default `false` migrates to `auto`. The historical boolean remains a compatibili
 alias for explicit on/off writes. Session ownership and authentication remain
 required. Legacy persisted
 `transportMode` values still normalize to `nvst`; only the core-owned session's
-transport selects the embedded WebRTC path. Its initial profile is at most
-1920×1080 at 60 FPS, H.264, 8-bit 4:2:0 SDR, stereo, and no microphone.
+transport selects the embedded WebRTC path. An explicit H.265 selection preserves
+the requested resolution and frame rate, subject to the normal allocation and
+decoder checks, and supports 8-bit or 10-bit 4:2:0 SDR. WebRTC requests use
+`requestedStreamingFeatures.bitDepth: 10` for 10-bit, matching the Android native
+client, while NVST retains its existing enum value of `1`. The owned session
+profile carries the selected codec through polling, restart, and attachment;
+changed preferences cannot reinterpret an existing stream. H.264, Auto, and AV1
+selections retain the H.264 compatibility profile, at most 1920×1080 at 60 FPS
+with 8-bit 4:2:0. Both WebRTC codecs use SDR, stereo, and no microphone.
+WebRTC startup rejects profiles outside the native runtime's dimensions or frame
+rate bounds rather than substituting a different viewport in its SDP answer.
 WebRTC signaling endpoints remain separate
 from RTSPS endpoints, including their server-provided paths and ports. The native
 runtime owns the WebSocket offer, answer, NVIDIA quality SDP, and ICE exchange.
@@ -1326,7 +1335,8 @@ and ports. `prepare_endpoints` diagnostics record bounded descriptor types and
 numeric protocol/port fields, never hosts, URLs, session IDs, or credentials.
 WebRTC offers may contain additional microphone or inactive media sections.
 Negotiation keeps their order and MIDs, disables RTP upload, and accepts one
-incoming H.264 video track and at most one incoming Opus audio track. Unsupported
+incoming video track matching the selected H.264, H.265 Main, or H.265 Main10
+profile and at most one incoming Opus audio track. Unsupported
 microphone codecs are rejected in place with valid SDP format identifiers rather
 than rejecting the whole session. Offers remain bounded to eight media sections.
 The `webrtc-offer` diagnostic records section kinds and directions without SDP

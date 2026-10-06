@@ -115,6 +115,7 @@ pub(super) fn nvst_answer(
         format!("a=video.clientViewportWd:{}", stream.width),
         format!("a=video.clientViewportHt:{}", stream.height),
         format!("a=video.maxFPS:{}", stream.fps),
+        format!("a=video.bitDepth:{}", stream.color_quality.bit_depth()),
         format!("a=video.initialBitrateKbps:{initial}"),
         format!("a=video.initialPeakBitrateKbps:{initial}"),
         format!("a=vqos.bw.maximumBitrateKbps:{maximum}"),
@@ -162,6 +163,41 @@ mod tests {
         }
         assert!(!sdp.contains("remote"));
         assert!(!sdp.contains("m=mic"));
+    }
+
+    #[test]
+    fn hevc_main10_sdr_answer_preserves_1920x1200_at_60_fps() {
+        use opennow_streamer_platform::{MediaColorQuality, MediaVideoCodec};
+        let answer = "v=0\r\na=ice-ufrag:local\r\na=ice-pwd:local-password\r\na=fingerprint:sha-256 AA:BB\r\n";
+        let stream = MediaStreamConfig {
+            codec: MediaVideoCodec::H265,
+            color_quality: MediaColorQuality::TenBit420,
+            width: 1920,
+            height: 1200,
+            fps: 60,
+            hdr: false,
+            ..MediaStreamConfig::default()
+        };
+        let sdp = nvst_answer("", answer, stream).unwrap();
+        for expected in [
+            "a=video.clientViewportWd:1920",
+            "a=video.clientViewportHt:1200",
+            "a=video.maxFPS:60",
+            "a=video.bitDepth:10",
+            "a=video.dynamicRangeMode:0",
+            "a=video.framePacing.pid.minTargetFrameTimeUs:15833",
+        ] {
+            assert!(
+                sdp.lines().any(|line| line == expected),
+                "missing {expected}"
+            );
+        }
+        assert_eq!(
+            sdp.lines()
+                .filter(|line| line.starts_with("a=video.bitDepth:"))
+                .count(),
+            1
+        );
     }
 
     #[test]

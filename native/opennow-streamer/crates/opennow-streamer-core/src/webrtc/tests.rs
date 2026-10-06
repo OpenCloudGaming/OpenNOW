@@ -166,6 +166,7 @@ fn worker(output: EventSender) -> Worker {
         })),
         context,
         stream: MediaStreamConfig::default(),
+        video_codec: transport::NegotiatedVideoCodec::H264,
         start_id: "fixture".to_owned(),
         generation: 1,
         cancelled: Arc::new(AtomicBool::new(false)),
@@ -216,7 +217,8 @@ fn incompatible_profile_is_rejected_before_opening_signaling() {
     let (consumer, _receiver) = mpsc::sync_channel(8);
     let mut engine = Engine::with_media_consumer(output, consumer);
     for (codec, color) in [
-        ("H265", "8bit_420"),
+        ("H265", "8bit_444"),
+        ("H265", "10bit_444"),
         ("H264", "10bit_420"),
         ("AV1", "8bit_420"),
     ] {
@@ -236,10 +238,55 @@ fn incompatible_profile_is_rejected_before_opening_signaling() {
 struct PeerFixture {
     signaling_url: String,
     media_port: u16,
+    stream: MediaStreamConfig,
     stopped: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
     input: Receiver<Vec<u8>>,
     partial_signaling_sent: Arc<AtomicBool>,
+}
+
+#[test]
+fn unsupported_webrtc_dimensions_fps_and_hdr_are_rejected_before_signaling() {
+    let (output, _) = mpsc::channel();
+    let (consumer, _receiver) = mpsc::sync_channel(8);
+    let mut engine = Engine::with_media_consumer(output, consumer);
+    for profile in [
+        json!({"resolution":"5120x2880","fps":60}),
+        json!({"resolution":"7680x4320","fps":60}),
+        json!({"resolution":"1920x1200","fps":1000}),
+        json!({"resolution":"1920x1200","fps":0}),
+        json!({"resolution":"1920x1200","fps":"60"}),
+        json!({"resolution":"invalid","fps":60}),
+        json!({"resolution":"1920x1200","fps":60,"enableHdr":true}),
+    ] {
+        for finalized in [false, true] {
+            let mut context = json!({
+                "session":{"sessionId":"fixture","serverIp":"127.0.0.1","signalingUrl":"wss://127.0.0.1/nvst/"},
+                "settings":{"transportMode":"webrtc","codec":"H265","colorQuality":"10bit_420"},
+                "shortcuts":{}
+            });
+            if finalized || profile.get("enableHdr").is_some() {
+                context["session"]["negotiatedStreamProfile"] = profile.clone();
+                context["session"]["negotiatedStreamProfile"]["codec"] = json!("H265");
+                context["session"]["negotiatedStreamProfile"]["colorQuality"] = json!("10bit_420");
+            } else {
+                context["settings"]
+                    .as_object_mut()
+                    .unwrap()
+                    .extend(profile.as_object().unwrap().clone());
+            }
+            let command = serde_json::from_value(
+                json!({"id":"invalid-profile","type":"start","context":context}),
+            )
+            .unwrap();
+            let (response, _) = engine.handle(command);
+            assert_eq!(
+                response[0]["code"], "webrtc-profile-unsupported",
+                "{profile:?}: {response:?}"
+            );
+            assert!(engine.webrtc_session.is_none());
+        }
+    }
 }
 
 impl PeerFixture {
@@ -248,6 +295,22 @@ impl PeerFixture {
     }
 
     fn start_with_partial_signaling(video: Vec<u8>, partial_signaling: bool) -> Self {
+        Self::start_with_stream(
+            video,
+            partial_signaling,
+            MediaStreamConfig {
+                width: 64,
+                height: 64,
+                ..MediaStreamConfig::default()
+            },
+        )
+    }
+
+    fn start_with_stream(
+        video: Vec<u8>,
+        partial_signaling: bool,
+        profile: MediaStreamConfig,
+    ) -> Self {
         use std::io::ErrorKind;
         use str0m::change::SdpAnswer;
         use str0m::format::Codec;
@@ -270,11 +333,25 @@ impl PeerFixture {
         let partial_sent = partial_signaling_sent.clone();
         let (input_sender, input) = mpsc::channel();
         let worker = thread::spawn(move || {
-            let mut rtc = RtcConfig::new()
-                .clear_codecs()
-                .enable_h264(true)
-                .enable_opus(true)
-                .build(Instant::now());
+            let mut config = RtcConfig::new().clear_codecs().enable_opus(true);
+            let video_codec = if profile.codec == MediaVideoCodec::H265 {
+                config.codec_config().add_h265(
+                    96.into(),
+                    Some(97.into()),
+                    if profile.color_quality == MediaColorQuality::TenBit420 {
+                        2
+                    } else {
+                        1
+                    },
+                    0,
+                    153,
+                );
+                Codec::H265
+            } else {
+                config = config.enable_h264(true);
+                Codec::H264
+            };
+            let mut rtc = config.build(Instant::now());
             rtc.add_local_candidate(Candidate::host(address, "udp").unwrap());
             let mut changes = rtc.sdp_api();
             let microphone_mid =
@@ -338,7 +415,10 @@ impl PeerFixture {
             .unwrap();
             let peer_info = websocket.read().unwrap().into_text().unwrap();
             let peer_info: Value = serde_json::from_str(&peer_info).unwrap();
-            assert_eq!(peer_info["peer_info"]["resolution"], "64x64");
+            assert_eq!(
+                peer_info["peer_info"]["resolution"],
+                format!("{}x{}", profile.width, profile.height)
+            );
             websocket.get_mut().set_nonblocking(true).unwrap();
             websocket.set_config(|config| config.max_write_buffer_size = 1024 * 1024);
             fixture_write(
@@ -384,8 +464,21 @@ impl PeerFixture {
                                     assert!(nvst.contains(&format!(
                                         "a=general.iceUserNameFragment:{local_ufrag}"
                                     )));
-                                    assert!(nvst.contains("a=video.clientViewportWd:64"));
-                                    assert!(nvst.contains("a=video.bitDepth:8"));
+                                    for expected in [
+                                        format!("a=video.clientViewportWd:{}", profile.width),
+                                        format!("a=video.clientViewportHt:{}", profile.height),
+                                        format!("a=video.maxFPS:{}", profile.fps),
+                                        format!(
+                                            "a=video.bitDepth:{}",
+                                            profile.color_quality.bit_depth()
+                                        ),
+                                        "a=video.dynamicRangeMode:0".to_owned(),
+                                    ] {
+                                        assert!(
+                                            nvst.lines().any(|line| line == expected),
+                                            "missing {expected}"
+                                        );
+                                    }
                                     rtc.sdp_api()
                                         .accept_answer(
                                             pending.take().unwrap(),
@@ -489,7 +582,7 @@ impl PeerFixture {
                     for (mid, codec, time, bytes) in [
                         (
                             video_mid,
-                            Codec::H264,
+                            video_codec,
                             MediaTime::from_90khz(timestamp),
                             video.clone(),
                         ),
@@ -521,6 +614,7 @@ impl PeerFixture {
         Self {
             signaling_url,
             media_port,
+            stream: profile,
             stopped,
             worker: Some(worker),
             input,
@@ -556,8 +650,117 @@ fn start_command(peer: &PeerFixture, id: &str) -> Command {
     serde_json::from_value(json!({"id":id,"type":"start","context":{
         "session":{"sessionId":"fixture-seat","serverIp":"127.0.0.1","signalingUrl":peer.signaling_url,
             "mediaConnectionInfo":{"ip":"127.0.0.1","port":peer.media_port,"usage":15}},
-        "settings":{"transportMode":"webrtc","codec":"H264","colorQuality":"8bit_420","resolution":"64x64","fps":60,"maxBitrateMbps":10},"shortcuts":{}
+        "settings":{"transportMode":"webrtc",
+            "codec":if peer.stream.codec == MediaVideoCodec::H265 { "H265" } else { "H264" },
+            "colorQuality":if peer.stream.color_quality == MediaColorQuality::TenBit420 { "10bit_420" } else { "8bit_420" },
+            "resolution":format!("{}x{}", peer.stream.width, peer.stream.height),
+            "fps":peer.stream.fps,"maxBitrateMbps":10},"shortcuts":{}
     }})).unwrap()
+}
+
+#[test]
+fn nullable_finalized_fps_uses_settings_without_changing_the_webrtc_stream() {
+    for fps in [30, 60, 120] {
+        for finalized_fps in [None, Some(Value::Null)] {
+            let video = vec![0, 0, 0, 1, 0x65, 0x88, 0x84, 0x21];
+            let peer = PeerFixture::start_with_stream(
+                video.clone(),
+                false,
+                MediaStreamConfig {
+                    width: 64,
+                    height: 64,
+                    fps,
+                    ..MediaStreamConfig::default()
+                },
+            );
+            let (output, events) = mpsc::channel();
+            let (consumer, received) = mpsc::sync_channel(8);
+            let mut engine = Engine::with_media_consumer(output, consumer);
+            let mut command = start_command(&peer, "nullable-fps");
+            let context = command.context.as_mut().unwrap();
+            context["session"]["negotiatedStreamProfile"] = json!({
+                "codec":"H264", "colorQuality":"8bit_420", "resolution":null, "enableHdr":false
+            });
+            if let Some(finalized_fps) = finalized_fps {
+                context["session"]["negotiatedStreamProfile"]["fps"] = finalized_fps;
+            }
+            let (responses, _) = engine.handle(command);
+            assert_eq!(responses[0]["transport"], "webrtc", "{responses:?}");
+            let deadline = Instant::now() + Duration::from_secs(8);
+            loop {
+                assert!(
+                    Instant::now() < deadline,
+                    "media did not arrive: {:?}",
+                    events.try_iter().collect::<Vec<_>>()
+                );
+                if let Ok(frame) = received.recv_timeout(Duration::from_millis(50)) {
+                    if frame.codec == "H264" {
+                        assert_eq!(frame.payload.as_ref(), video);
+                        break;
+                    }
+                }
+            }
+            engine.stop("fixture stop");
+        }
+    }
+}
+
+#[test]
+fn engine_signaling_delivers_hevc_main10_sdr_to_native_media_consumer() {
+    let video = include_bytes!(
+        "../../../opennow-streamer-platform-windows/fixtures/probe/hevc-p010-sdr.hevc"
+    )
+    .to_vec();
+    let peer = PeerFixture::start_with_stream(
+        video,
+        false,
+        MediaStreamConfig {
+            codec: MediaVideoCodec::H265,
+            color_quality: MediaColorQuality::TenBit420,
+            width: 1920,
+            height: 1080,
+            fps: 60,
+            hdr: false,
+            ..MediaStreamConfig::default()
+        },
+    );
+    let (output, events) = mpsc::channel();
+    let (consumer, received) = mpsc::sync_channel(8);
+    let mut engine = Engine::with_media_consumer(output, consumer);
+    let (responses, _) = engine.handle(start_command(&peer, "hevc-main10"));
+    assert_eq!(responses[0]["transport"], "webrtc", "{responses:?}");
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "HEVC did not arrive: {:?}",
+            events.try_iter().collect::<Vec<_>>()
+        );
+        if let Ok(frame) = received.recv_timeout(Duration::from_millis(50)) {
+            if frame.codec == "H265" {
+                assert!(frame.keyframe);
+                assert_eq!(frame.clock_rate_hz, 90_000);
+                assert!(frame.ssrc.is_some());
+                assert_eq!(frame.frame_index, None);
+                for nal_type in [32, 33, 34, 20] {
+                    assert!(
+                        frame.payload.windows(6).any(|nal| {
+                            nal.starts_with(&[0, 0, 0, 1]) && (nal[4] >> 1) & 0x3f == nal_type
+                        }),
+                        "missing HEVC NAL type {nal_type}"
+                    );
+                }
+                break;
+            }
+        }
+    }
+    assert!(
+        !events
+            .try_iter()
+            .any(|event| event["status"] == "streaming")
+    );
+    engine.stop("fixture stop");
+    assert_eq!(lock_lifecycle(&engine.lifecycle).state, State::Idle);
 }
 
 #[test]

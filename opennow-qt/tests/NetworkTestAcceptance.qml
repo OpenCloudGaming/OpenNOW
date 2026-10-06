@@ -40,7 +40,7 @@ QtObject {
         check(compatibility.title === qsTr("WebRTC compatibility mode"), "compatibility is not labeled as alliance-only")
         check(compatibility.description.indexOf(qsTr("Automatic uses WebRTC for signed-in alliance accounts and NVST for NVIDIA accounts. Choose WebRTC or NVST to override either account type. Applies to new sessions only; existing sessions keep their transport.")) >= 0,
             "automatic routing and the new-session restriction must be explained")
-        check(compatibility.description.indexOf(qsTr("WebRTC is for compatibility only. Expect lower performance than NVST. Up to 1080p60, H.264, SDR, and stereo. No microphone or clipboard text. Requires direct UDP connectivity.")) >= 0,
+        check(compatibility.description.indexOf(qsTr("WebRTC is for compatibility only. Expect lower performance than NVST. Supports H.264 and H.265, SDR, and stereo. H.265 supports 10-bit color and the selected resolution and frame rate. No microphone or clipboard text. Requires direct UDP connectivity.")) >= 0,
             "the performance warning and restrictions must be visible before choosing compatibility")
         check(compatibility.value === "auto" && compatibility.enabled,
             "compatibility defaults to automatic and is selectable before launch")

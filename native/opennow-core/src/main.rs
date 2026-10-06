@@ -900,6 +900,14 @@ fn dispatch(
                             message: error.message,
                         })
                 })
+                .inspect(|prepared| {
+                    core.diagnostics.record(
+                        "streamer",
+                        "prepare_profile",
+                        diagnostics::stream_profile_evidence(&prepared["context"]["session"])
+                            .to_string(),
+                    );
+                })
                 .inspect_err(|error| {
                     core.diagnostics.record(
                         "streamer",

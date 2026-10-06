@@ -43,8 +43,17 @@ pub(crate) fn allocation_settings(settings: &Value, auth: &AuthSession) -> Value
     let enabled = webrtc_compatibility_enabled(&settings, auth);
     settings["allianceWebrtcCompatibility"] = json!(enabled);
     if enabled {
-        settings["codec"] = json!("h264");
-        settings["colorQuality"] = json!("8bit_420");
+        let hevc = codec_wire(&setting_string(&settings, "codec", "auto")) == 2;
+        settings["codec"] = json!(if hevc { "h265" } else { "h264" });
+        settings["colorQuality"] = json!(if hevc
+            && matches!(
+                settings["colorQuality"].as_str(),
+                Some("10bit_420" | "10bit_444")
+            ) {
+            "10bit_420"
+        } else {
+            "8bit_420"
+        });
         settings["enableHdr"] = json!(false);
         settings["nativeHdrSupported"] = json!(false);
         settings["microphoneMode"] = json!("disabled");
@@ -52,7 +61,7 @@ pub(crate) fn allocation_settings(settings: &Value, auth: &AuthSession) -> Value
         settings["nativeCloudGsyncMode"] = json!("disabled");
         let (width, height) =
             parse_resolution(&setting_string(&settings, "resolution", "1920x1080"));
-        if width > 1920 || height > 1080 || width == 0 || height == 0 {
+        if (!hevc && (width > 1920 || height > 1080)) || width == 0 || height == 0 {
             settings["resolution"] = json!("1920x1080");
         }
         settings["fps"] = json!(
@@ -60,7 +69,7 @@ pub(crate) fn allocation_settings(settings: &Value, auth: &AuthSession) -> Value
                 .as_u64()
                 .filter(|fps| *fps > 0)
                 .unwrap_or(60)
-                .clamp(30, 60)
+                .clamp(30, if hevc { 360 } else { 60 })
         );
     }
     settings
@@ -402,7 +411,8 @@ impl CloudMatchService {
             request_profile["codecSource"] = json!("request");
         }
         if info["transportMode"] == "webrtc" {
-            request_profile["codec"] = json!("H264");
+            request_profile["codec"] =
+                json!(setting_string(settings, "codec", "h264").to_ascii_uppercase());
             request_profile["codecSource"] = json!("request");
             request_profile["enableHdr"] = json!(false);
             request_profile["enableHdrSource"] = json!("request");
@@ -1714,6 +1724,8 @@ fn build_create_body(app_id: &str, params: &Value, settings: &Value, device_id: 
     }});
     if settings["allianceWebrtcCompatibility"] == true {
         let request = &mut body["sessionRequestData"];
+        request["requestedStreamingFeatures"]["bitDepth"] =
+            json!(if bit_depth == 1 { 10 } else { 0 });
         request["sdkVersion"] = json!("1.0");
         request["streamerVersion"] = json!(1);
         request["enhancedStreamMode"] = json!(1);
@@ -3975,6 +3987,94 @@ mod tests {
             "tokens":{"accessToken":"test-token", "expiresAt":0, "authClientId":"test"},
             "user":{"userId":"test-user", "displayName":"Test", "membershipTier":""}
         })).unwrap()
+    }
+
+    #[test]
+    fn webrtc_hevc_allocation_preserves_requested_output() {
+        let mut auth = conflict_auth();
+        auth.provider.code = "YES".into();
+        for codec in ["h265", "HEVC"] {
+            for color in ["8bit_420", "10bit_420"] {
+                let requested = json!({"webrtcCompatibilityMode":"auto", "codec":codec,
+                    "colorQuality":color,"resolution":"1920x1200","fps":60,
+                    "maxBitrateMbps":200,"enableHdr":false});
+                let settings = allocation_settings(&requested, &auth);
+                assert_eq!(settings["codec"], "h265");
+                assert_eq!(settings["colorQuality"], color);
+                assert_eq!(settings["resolution"], "1920x1200");
+                assert_eq!(settings["fps"], 60);
+                assert_eq!(settings["maxBitrateMbps"], 200);
+                assert_eq!(requested["codec"], codec);
+                let body = build_create_body("123", &json!({}), &settings, "device");
+                let request = &body["sessionRequestData"];
+                assert!(reported_webrtc_session(&body));
+                assert_eq!(
+                    request["clientRequestMonitorSettings"][0]["heightInPixels"],
+                    1200
+                );
+                assert_eq!(
+                    request["requestedStreamingFeatures"]["bitDepth"],
+                    if color == "10bit_420" { 10 } else { 0 }
+                );
+                assert_eq!(request["requestedStreamingFeatures"]["chromaFormat"], 0);
+                assert_eq!(request["requestedStreamingFeatures"]["trueHdr"], false);
+                assert_eq!(request["sdrHdrMode"], 0);
+            }
+        }
+    }
+
+    #[test]
+    fn webrtc_hevc_profile_survives_allocation_poll_and_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("pending-session-cleanup.json");
+        let ready = json!({"sessionId":"hevc-seat","status":3,"connectionInfo":[
+            {"usage":14,"appLevelProtocol":4,"ip":"seat.partner.example","port":443,"resourcePath":"/nvst/"}]});
+        let (base, server) = session_server(
+            vec![
+                (
+                    200,
+                    json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"hevc-seat","status":1,
+                "sessionControlInfo":{"ip":"seat.nvidiagrid.net","port":443}}}),
+                ),
+                (
+                    200,
+                    json!({"requestStatus":{"statusCode":1},"session":ready}),
+                ),
+            ],
+            |_| {},
+        );
+        let mut auth = conflict_auth();
+        auth.provider.code = "YES".into();
+        let client = Client::new();
+        let mut service = CloudMatchService::with_cleanup_path(client.clone(), path.clone());
+        service.set_test_control_base(base.clone());
+        let settings = json!({"webrtcCompatibilityMode":"auto","codec":"h265",
+            "colorQuality":"10bit_420","resolution":"1920x1200","fps":60});
+        let created = service
+            .create_at(&json!({"appId":"123"}), &settings, &auth, "device", || {
+                Ok((client, base))
+            })
+            .unwrap();
+        service.finish_create("hevc-seat", true).unwrap();
+        let polled = service
+            .poll(&json!({"sessionId":"hevc-seat"}), &auth, "device")
+            .unwrap();
+        assert_eq!(server.join().unwrap().len(), 2);
+        drop(service);
+        let restored = CloudMatchService::with_cleanup_path(Client::new(), path);
+        let retained = restored
+            .retained_webrtc_allocation("hevc-seat", &auth)
+            .unwrap();
+        for session in [&created["session"], &polled["session"], &retained] {
+            assert_eq!(session["transportMode"], "webrtc");
+            let profile = &session["negotiatedStreamProfile"];
+            assert_eq!(profile["codec"], "H265");
+            assert_eq!(profile["codecSource"], "request");
+            assert_eq!(profile["colorQuality"], "10bit_420");
+            assert_eq!(profile["bitDepth"], 10);
+            assert_eq!(profile["resolution"], "1920x1200");
+            assert_eq!(profile["fps"], 60);
+        }
     }
 
     #[test]

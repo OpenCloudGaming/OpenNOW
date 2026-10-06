@@ -87,9 +87,19 @@ impl Engine {
     pub(super) fn start_webrtc(
         &mut self,
         id: String,
-        context: SessionContext,
+        mut context: SessionContext,
         audio_device: AudioOutputDevice,
     ) -> Result<Vec<Value>, Value> {
+        if let Some(profile) = context
+            .session
+            .extra
+            .get_mut("negotiatedStreamProfile")
+            .and_then(Value::as_object_mut)
+        {
+            if profile.get("fps").is_some_and(Value::is_null) {
+                profile.remove("fps");
+            }
+        }
         let stream = media_stream_config(&context);
         let accepted = context.session.extra.get("negotiatedStreamProfile");
         let codec = accepted
@@ -102,16 +112,55 @@ impl Engine {
             .and_then(Value::as_str)
             .or_else(|| context.settings.get("colorQuality").and_then(Value::as_str))
             .unwrap_or("8bit_420");
-        if !codec.eq_ignore_ascii_case("H264")
-            || color != "8bit_420"
-            || stream.codec != MediaVideoCodec::H264
-            || stream.color_quality != MediaColorQuality::EightBit420
-            || stream.hdr
-        {
+        let video_codec = match (
+            codec.to_ascii_uppercase().as_str(),
+            color,
+            stream.codec,
+            stream.color_quality,
+        ) {
+            ("H264", "8bit_420", MediaVideoCodec::H264, MediaColorQuality::EightBit420) => {
+                Some(transport::NegotiatedVideoCodec::H264)
+            }
+            (
+                "H265" | "HEVC",
+                "8bit_420",
+                MediaVideoCodec::H265,
+                MediaColorQuality::EightBit420,
+            ) => Some(transport::NegotiatedVideoCodec::H265Main),
+            ("H265" | "HEVC", "10bit_420", MediaVideoCodec::H265, MediaColorQuality::TenBit420) => {
+                Some(transport::NegotiatedVideoCodec::H265Main10)
+            }
+            _ => None,
+        };
+        let Some(video_codec) = video_codec.filter(|_| !stream.hdr) else {
             return Err(error(
                 Some(&id),
                 "webrtc-profile-unsupported",
-                "WebRTC compatibility requires an accepted H264 8-bit 4:2:0 SDR profile",
+                "WebRTC requires H264 8-bit or H265 8/10-bit 4:2:0 SDR",
+            ));
+        };
+        let resolution_matches = accepted
+            .and_then(|profile| profile.get("resolution"))
+            .and_then(Value::as_str)
+            .or_else(|| context.settings.get("resolution").and_then(Value::as_str))
+            .is_none_or(|resolution| {
+                resolution
+                    .to_ascii_lowercase()
+                    .split_once('x')
+                    .and_then(|(width, height)| {
+                        Some((width.parse::<u32>().ok()?, height.parse::<u32>().ok()?))
+                    })
+                    == Some((stream.width, stream.height))
+            });
+        let fps_matches = accepted
+            .and_then(|profile| profile.get("fps"))
+            .or_else(|| context.settings.get("fps"))
+            .is_none_or(|fps| fps.as_u64() == Some(u64::from(stream.fps)));
+        if !resolution_matches || !fps_matches {
+            return Err(error(
+                Some(&id),
+                "webrtc-profile-unsupported",
+                "WebRTC resolution and frame rate must match the supported native stream configuration",
             ));
         }
         signaling::sign_in_url(&context.session, "validation")
@@ -201,6 +250,7 @@ impl Engine {
         let resources = Worker {
             context,
             stream,
+            video_codec,
             start_id: id.clone(),
             lifecycle: self.lifecycle.clone(),
             generation,
@@ -262,6 +312,7 @@ impl Engine {
 struct Worker {
     context: SessionContext,
     stream: MediaStreamConfig,
+    video_codec: transport::NegotiatedVideoCodec,
     start_id: String,
     lifecycle: Arc<Mutex<Lifecycle>>,
     generation: u64,
@@ -379,7 +430,7 @@ impl Worker {
         let negotiated = transport::negotiate(
             &offer,
             &transport_session,
-            transport::NegotiatedVideoCodec::H264,
+            self.video_codec,
             threshold,
             sender,
             consumer,

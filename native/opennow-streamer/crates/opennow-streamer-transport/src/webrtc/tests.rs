@@ -50,6 +50,22 @@ impl Peer {
         extra: Option<(MediaKind, Direction)>,
         passive_ice_lite: bool,
     ) -> Self {
+        Self::connect_with_codec(
+            capacity,
+            profile,
+            extra,
+            passive_ice_lite,
+            NegotiatedVideoCodec::H264,
+        )
+    }
+
+    fn connect_with_codec(
+        capacity: usize,
+        profile: Option<u32>,
+        extra: Option<(MediaKind, Direction)>,
+        passive_ice_lite: bool,
+        codec: NegotiatedVideoCodec,
+    ) -> Self {
         install_crypto();
         let socket = bind_routed_socket("127.0.0.1".parse().unwrap()).unwrap();
         socket.set_nonblocking(true).unwrap();
@@ -59,7 +75,18 @@ impl Peer {
         if pcmu_microphone {
             config.codec_config().enable_pcmu(true);
         }
-        if let Some(profile) = profile {
+        if codec != NegotiatedVideoCodec::H264 {
+            for (payload, profile, tier) in [(100_u8, 1, 0), (102, 2, 0), (104, 2, 1)] {
+                config.codec_config().add_h265(
+                    payload.into(),
+                    Some((payload + 1).into()),
+                    profile,
+                    tier,
+                    153,
+                );
+            }
+            config = config.enable_h264(true);
+        } else if let Some(profile) = profile {
             config
                 .codec_config()
                 .add_h264(96.into(), Some(97.into()), true, profile);
@@ -101,16 +128,18 @@ impl Peer {
         .unwrap();
         let (events, event_rx) = mpsc::sync_channel(8);
         let (media, media_rx) = mpsc::sync_channel(capacity);
-        let negotiated = negotiate(
-            &offer_sdp,
-            &session,
-            NegotiatedVideoCodec::H264,
-            300,
-            events.clone(),
-            media,
-        )
-        .unwrap();
-        assert!(negotiated.answer_sdp.contains("H264/90000"));
+        let negotiated =
+            negotiate(&offer_sdp, &session, codec, 300, events.clone(), media).unwrap();
+        let video_codec = if codec == NegotiatedVideoCodec::H264 {
+            "H264"
+        } else {
+            "H265"
+        };
+        assert!(
+            negotiated
+                .answer_sdp
+                .contains(&format!("{video_codec}/90000"))
+        );
         assert_eq!(negotiated.video_mid, video);
         assert!(negotiated.answer_sdp.contains("opus/48000/2"));
         assert!(!negotiated.answer_sdp.contains("VP8/90000"));
@@ -275,13 +304,18 @@ impl Peer {
 
     fn write(&mut self, video: bool, timestamp: u64, data: &[u8]) -> u32 {
         let mid = if video { self.video } else { self.audio };
-        let codec = if video { Codec::H264 } else { Codec::Opus };
         let pt = self
             .rtc
             .writer(mid)
             .unwrap()
             .payload_params()
-            .find(|params| params.spec().codec == codec)
+            .find(|params| {
+                if video {
+                    matches!(params.spec().codec, Codec::H264 | Codec::H265)
+                } else {
+                    params.spec().codec == Codec::Opus
+                }
+            })
             .unwrap()
             .pt();
         let time = if video {
@@ -911,6 +945,123 @@ fn media_section_limit_remains_bounded() {
             .to_string()
             .contains("too many SDP media sections")
     );
+}
+
+#[test]
+fn hevc_profiles_negotiate_exactly_and_deliver_fragmented_reference() {
+    for (codec, profile) in [
+        (NegotiatedVideoCodec::H265Main, 1),
+        (NegotiatedVideoCodec::H265Main10, 2),
+    ] {
+        let mut peer = Peer::connect_with_codec(4, None, None, false, codec);
+        assert!(!peer.answer_sdp.contains("H264/90000"));
+        let answer = SdpAnswer::from_sdp_string(&peer.answer_sdp).unwrap();
+        let video = answer
+            .media_lines
+            .iter()
+            .find(|line| line.mid() == peer.video)
+            .unwrap();
+        let params = video.rtp_params();
+        assert!(!params.is_empty());
+        for params in params {
+            assert!(codec.matches(&params));
+            assert_eq!(
+                params
+                    .spec()
+                    .format
+                    .h265_profile_tier_level
+                    .unwrap()
+                    .profile()
+                    .to_id(),
+                profile
+            );
+        }
+        let mut access_unit = vec![0, 0, 0, 1, 0x26, 0x01, 0xaf];
+        access_unit.extend(std::iter::repeat_n(0x55, 6000));
+        let ssrc = peer.write(true, 90_123, &access_unit);
+        let frame = peer.frame();
+        assert_eq!(frame.codec, "H265");
+        assert!(frame.keyframe);
+        assert_eq!(frame.payload.as_ref(), access_unit);
+        assert_eq!(frame.ssrc, Some(ssrc));
+        assert_eq!(frame.rtp_timestamp, 90_123);
+        assert_eq!(frame.clock_rate_hz, 90_000);
+        assert_eq!(frame.frame_index, None);
+        assert!(peer.rtp_transmits > 2);
+        let delta = [0, 0, 0, 1, 0x02, 0x01, 0x55];
+        peer.write(true, 93_123, &delta);
+        let frame = peer.frame();
+        assert!(!frame.keyframe);
+        assert!(frame.contiguous);
+        assert_eq!(frame.payload.as_ref(), delta);
+    }
+}
+
+#[test]
+fn incompatible_video_codec_or_hevc_profile_is_rejected_before_media() {
+    install_crypto();
+    for (offered, requested) in [
+        (NegotiatedVideoCodec::H264, NegotiatedVideoCodec::H265Main10),
+        (
+            NegotiatedVideoCodec::H265Main,
+            NegotiatedVideoCodec::H265Main10,
+        ),
+        (
+            NegotiatedVideoCodec::H265Main10,
+            NegotiatedVideoCodec::H265Main,
+        ),
+        (NegotiatedVideoCodec::H265Main10, NegotiatedVideoCodec::H264),
+    ] {
+        let mut config = RtcConfig::new().clear_codecs().enable_opus(true);
+        match offered {
+            NegotiatedVideoCodec::H264 => config = config.enable_h264(true),
+            NegotiatedVideoCodec::H265Main | NegotiatedVideoCodec::H265Main10 => {
+                config.codec_config().add_h265(
+                    96.into(),
+                    Some(97.into()),
+                    if offered == NegotiatedVideoCodec::H265Main10 {
+                        2
+                    } else {
+                        1
+                    },
+                    0,
+                    153,
+                );
+            }
+        }
+        let mut remote = config.build(Instant::now());
+        remote.add_local_candidate(
+            Candidate::host("127.0.0.1:49153".parse().unwrap(), "udp").unwrap(),
+        );
+        let mut changes = remote.sdp_api();
+        changes.add_media(MediaKind::Video, Direction::SendOnly, None, None, None);
+        changes.add_channel("data".to_owned());
+        let (offer, _) = changes.apply().unwrap();
+        let session: Session = serde_json::from_value(
+            serde_json::json!({"sessionId":"fixture","serverIp":"127.0.0.1"}),
+        )
+        .unwrap();
+        let (events, event_rx) = mpsc::sync_channel(8);
+        let (media, media_rx) = mpsc::sync_channel(8);
+        let error = negotiate(
+            &offer.to_sdp_string(),
+            &session,
+            requested,
+            300,
+            events,
+            media,
+        )
+        .err()
+        .unwrap();
+        assert!(matches!(error, TransportError::Offer(_)));
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("did not negotiate {requested:?}"))
+        );
+        assert!(event_rx.try_recv().is_err());
+        assert!(media_rx.try_recv().is_err());
+    }
 }
 
 #[test]
