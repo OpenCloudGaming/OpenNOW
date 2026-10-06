@@ -11,6 +11,7 @@ ItemDelegate {
     property bool currentItem: false
     property bool ringVisible: activeFocus || currentItem
     property bool parked: false
+    property bool compact: false
     readonly property string controlType: rowData.control || (rowData.info ? "info" : (rowData.toggle ? "toggle" : rowData.values ? "dropdown" : "button"))
     readonly property int selectedChoice: rowData.selectedIndex !== undefined
                                           ? Number(rowData.selectedIndex)
@@ -38,9 +39,9 @@ ItemDelegate {
     background: Item {
         Rectangle {
             anchors.fill: parent
-            anchors.margins: -5
-            anchors.bottomMargin: root.cardGap - 5
-            radius: root.cardRadius + 5
+            anchors.margins: root.compact ? 0 : -5
+            anchors.bottomMargin: root.cardGap - (root.compact ? 0 : 5)
+            radius: root.compact ? 24 : root.cardRadius + 5
             color: "transparent"
             border.width: 5
             border.color: Qt.rgba(Theme.focus.r, Theme.focus.g, Theme.focus.b, 0.4)
@@ -72,40 +73,41 @@ ItemDelegate {
             id: textColumn
             visible: !root.cardRow
             anchors.left: parent.left
-            anchors.leftMargin: 25
+            anchors.leftMargin: root.compact ? 22 : 25
             anchors.right: trailing.left
-            anchors.rightMargin: 24
+            anchors.rightMargin: root.compact ? 28 : 24
             anchors.verticalCenter: parent.verticalCenter
-            anchors.verticalCenterOffset: 1
-            implicitHeight: descriptionText.visible ? 30 + Math.max(1, descriptionText.lineCount) * 20 : 26
+            anchors.verticalCenterOffset: root.compact ? 0 : 1
+            implicitHeight: root.compact ? (descriptionText.visible ? 42 : 24)
+                : descriptionText.visible ? 30 + Math.max(1, descriptionText.lineCount) * 20 : 26
             height: implicitHeight
             Text {
                 objectName: "consoleSettingTitle"
                 width: parent.width
-                height: 26
+                height: root.compact ? 24 : 26
                 verticalAlignment: Text.AlignVCenter
                 text: I18n.source(root.title, I18n.revision)
                 color: root.controlType === "info" ? Theme.textMuted : Theme.label
                 font.family: Theme.displayFont
-                font.pixelSize: 21
+                font.pixelSize: root.compact ? 18 : 21
                 font.weight: Font.Black
                 elide: Text.ElideRight
             }
             Text {
                 id: descriptionText
                 objectName: "consoleSettingDescription"
-                y: 29
+                y: root.compact ? 24 : 29
                 width: parent.width
                 visible: root.description.length > 0
                 text: I18n.source(root.description, I18n.revision)
                 color: Theme.textMuted
                 font.family: Theme.bodyFont
-                font.pixelSize: 16
+                font.pixelSize: root.compact ? 13 : 16
                 font.weight: Font.DemiBold
                 lineHeightMode: Text.FixedHeight
-                lineHeight: 20
-                wrapMode: Text.WordWrap
-                maximumLineCount: 2
+                lineHeight: root.compact ? 18 : 20
+                wrapMode: root.compact ? Text.NoWrap : Text.WordWrap
+                maximumLineCount: root.compact ? 1 : 2
                 elide: Text.ElideRight
             }
         }

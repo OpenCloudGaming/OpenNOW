@@ -153,6 +153,8 @@ ApplicationWindow {
     readonly property bool consoleStreamReady: window.activeRoute === "stream"
         && !window.desktopSurfaceActive && routeLoader.item && routeLoader.item.videoReady === true
     onConsoleStreamReadyChanged: {
+        if (!consoleStreamReady)
+            pendingConsoleScreenshotSession = ""
         window.syncInputOwnership()
         if (consoleStreamReady)
             Qt.callLater(window.restorePassiveStreamInput)
@@ -207,6 +209,11 @@ ApplicationWindow {
 
     Connections {
         target: ShellStore
+        function onActiveSessionChanged() {
+            if (!ShellStore.activeSession
+                    || String(ShellStore.activeSession.sessionId || "") !== window.pendingConsoleScreenshotSession)
+                window.pendingConsoleScreenshotSession = ""
+        }
         function onBackgroundStreamReminderRequested() {
             AppController.requestWindowAttention(window)
         }
@@ -746,6 +753,8 @@ ApplicationWindow {
                 Qt.callLater(() => window.showConfiguredStreamStats())
             }
             function onOverlayChanged() {
+                if (AppController.overlay !== "")
+                    window.pendingConsoleScreenshotSession = ""
                 if (window.desktopSurfaceActive && window.activeRoute === "stream"
                         && AppController.overlay === "guide-session") {
                     Qt.callLater(() => AppController.showOverlay("desktop-stream-menu"))

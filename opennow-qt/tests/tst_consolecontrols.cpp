@@ -20,7 +20,7 @@ public slots:
         qmlRegisterSingletonType(QUrl::fromLocalFile(source + "/theme/Theme.qml"), "OpenNOW", 1, 0, "Theme");
         qmlRegisterSingletonType(QUrl::fromLocalFile(source + "/components/InputPromptIcons.qml"), "OpenNOW", 1, 0, "InputPromptIcons");
         for (const auto *name : {"ConsoleActionButton", "ConsoleSheetFrame", "ConsoleChoiceSheet", "ConsoleWarningSheet",
-                                "MotionProgress", "ControllerGlyph", "KeyboardGlyph"}) {
+                                "MotionProgress", "ControllerGlyph", "KeyboardGlyph", "SettingRow", "LockGlyph"}) {
             qmlRegisterType(QUrl::fromLocalFile(source + "/components/" + name + ".qml"), "OpenNOW", 1, 0, name);
         }
         QFontDatabase::addApplicationFont(source + "/../res/fonts/Nunito-Variable.ttf");

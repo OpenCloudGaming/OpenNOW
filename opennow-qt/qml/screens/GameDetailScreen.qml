@@ -9,6 +9,8 @@ FocusScope {
     property bool libraryOptionsOpen: false
     property bool platformSheetOpen: false
     property Item focusOrigin: play
+    property string focusedVariantId: ""
+    property bool chipFocusLost: false
     readonly property var game: previewGame || ShellStore.selectedGame || ({ title: qsTr("Choose a game"), availableStores: [], variants: [] })
     readonly property string artwork: game.heroImageUrl || game.imageUrl || ""
     readonly property bool canLaunch: Boolean(previewGame) || !ShellStore.signedIn || ShellStore.selectedLaunchAppId() !== ""
@@ -22,6 +24,7 @@ FocusScope {
         ? variants.map((variant, index) => ({variant: variant, index: index}))
         : (selectedVariant ? [{variant: selectedVariant, index: selectedVariantIndex}] : [])
     readonly property bool sheetOpen: libraryOptionsOpen || platformSheetOpen || ownershipSheet.opened
+    onVariantsChanged: Qt.callLater(root.restoreChipFocus)
     readonly property var libraryOptions: {
         const busy = ShellStore.cloudMutationBusy
         const options = []
@@ -116,6 +119,31 @@ FocusScope {
         const chip = chipRepeater.itemAt(Math.max(0, position))
         if (chip)
             chip.forceActiveFocus()
+    }
+
+    function restoreChipFocus() {
+        const lost = root.chipFocusLost
+        root.chipFocusLost = false
+        if (root.sheetOpen || (lost && [play, favoriteButton, optionsButton, moreStores].some(item => item.activeFocus)))
+            return
+        if (!lost && !root.chipEntries.some((entry, position) => {
+                const chip = chipRepeater.itemAt(position)
+                return chip && chip.activeFocus
+            }))
+            return
+        const next = root.chipEntries.findIndex(entry => String(entry.variant.id || entry.variant.store || "") === root.focusedVariantId)
+        if (next >= 0)
+            root.focusChip(next)
+        else if (play.enabled)
+            play.forceActiveFocus()
+        else
+            favoriteButton.forceActiveFocus()
+    }
+
+    function activateFocusedVariant() {
+        const index = root.variants.findIndex(variant => String(variant.id || variant.store || "") === root.focusedVariantId)
+        if (index >= 0)
+            root.selectVariant(index)
     }
 
     function openLibraryOptions() {
@@ -262,8 +290,10 @@ FocusScope {
                 id: chipRepeater
                 model: root.chipEntries.length
                 onItemRemoved: (index, item) => {
-                    if (item.activeFocus)
-                        Qt.callLater(root.focusChips)
+                    if (item.activeFocus) {
+                        root.chipFocusLost = true
+                        Qt.callLater(root.restoreChipFocus)
+                    }
                 }
                 ItemDelegate {
                     id: chip
@@ -277,6 +307,7 @@ FocusScope {
                     height: 72
                     padding: 0
                     focusPolicy: Qt.StrongFocus
+                    onActiveFocusChanged: if (activeFocus) root.focusedVariantId = String(variant.id || variant.store || "")
                     Accessible.role: Accessible.RadioButton
                     Accessible.name: ConsoleStores.label(variant.store)
                     Accessible.description: ConsoleStores.ownershipLabel(variant)
@@ -284,8 +315,8 @@ FocusScope {
                     KeyNavigation.down: play
                     Keys.onLeftPressed: root.focusChip(index - 1)
                     Keys.onRightPressed: root.focusChip(index + 1)
-                    Keys.onReturnPressed: event => { if (!event.isAutoRepeat) root.selectVariant(entry.index) }
-                    Keys.onEnterPressed: event => { if (!event.isAutoRepeat) root.selectVariant(entry.index) }
+                    Keys.onReturnPressed: event => { if (!event.isAutoRepeat) root.activateFocusedVariant() }
+                    Keys.onEnterPressed: event => { if (!event.isAutoRepeat) root.activateFocusedVariant() }
                     onClicked: root.selectVariant(entry.index)
                     background: Rectangle {
                         radius: 24

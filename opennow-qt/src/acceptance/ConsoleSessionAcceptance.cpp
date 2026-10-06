@@ -274,10 +274,47 @@ int AcceptanceSession::startConsoleSessionWorkload()
             key(Qt::Key_Y, true);
             if (!require(m_controller.route() == u"library"_s && search->property("text").toString().isEmpty(),
                          "textless controller face buttons activated a game behind search")) return;
+            store->setProperty("streamerStartRequestId", u"console-session-fixture"_s);
+            store->setProperty("streamInputPauseRequestId", u"console-session-fixture"_s);
+            store->setProperty("activeSession", QVariantMap{{u"sessionId"_s, u"console-session-fixture"_s},
+                {u"phase"_s, u"streaming"_s}});
+            setStreamer(u"streaming"_s, true);
+            store->setProperty("streamState", u"streaming"_s);
+            m_controller.navigate(u"stream"_s);
+            break;
+        }
+        case 25:
+            state->surface = surface;
+            if (!require(surface && surface->property("inputEnabled").toBool(),
+                         "screenshot cancellation fixture did not restore ready media")) return;
+            m_controller.showOverlay(u"guide-session"_s);
+            break;
+        case 26:
+            if (!require(QMetaObject::invokeMethod(store, "captureStreamScreenshot")
+                    && window->property("pendingConsoleScreenshotSession").toString() == u"console-session-fixture"_s,
+                         "guide screenshot did not defer until rendered frames")) return;
+            m_controller.showOverlay(u"quick-settings"_s);
+            m_controller.showOverlay(QString{});
+            if (!require(window->property("pendingConsoleScreenshotSession").toString().isEmpty(),
+                         "a transient new overlay did not cancel the pending screenshot")) return;
+            m_controller.showOverlay(u"guide-session"_s);
+            break;
+        case 27:
+            if (!require(QMetaObject::invokeMethod(store, "captureStreamScreenshot")
+                    && !window->property("pendingConsoleScreenshotSession").toString().isEmpty(),
+                         "second guide screenshot did not defer")) return;
+            setStreamer(u"starting"_s, false);
+            setStreamer(u"streaming"_s, true);
+            if (!require(window->property("pendingConsoleScreenshotSession").toString().isEmpty(),
+                         "transient media-readiness loss did not cancel the pending screenshot")) return;
+            break;
+        case 28:
+            if (!require(surface == state->surface && surface->property("inputEnabled").toBool()
+                    && window->property("pendingConsoleScreenshotSession").toString().isEmpty(),
+                         "cancelled screenshot survived settling or disturbed media")) return;
             timer->stop();
             m_application.exit(EXIT_SUCCESS);
             break;
-        }
         }
     });
     timer->start();
