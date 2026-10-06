@@ -3066,6 +3066,31 @@ mod tests {
     }
 
     #[test]
+    fn embedded_software_av1_unavailable_falls_back_only_for_auto() {
+        let mut capabilities = json!({"protocolVersion":STREAMER_PROTOCOL_VERSION,"videoBackends":[
+            {"backend":"ffmpeg", "platform":"linux", "available":true, "codecs":[
+                {"codec":"h264", "available":true, "colorQualities":["8bit_420"]},
+                {"codec":"h265", "available":true, "colorQualities":["8bit_420"]},
+                {"codec":"av1", "available":false, "colorQualities":["8bit_420"]}]}
+        ]});
+        let settings = json!({"nativeVideoBackend":"software", "codec":"auto"});
+        let resolved =
+            StreamerService::embedded_session_settings(&settings, &capabilities).unwrap();
+        assert_eq!(resolved["codec"], "h265");
+        assert_eq!(settings["codec"], "auto");
+        capabilities["videoBackends"][0]["codecs"][1]["available"] = json!(false);
+        let resolved =
+            StreamerService::embedded_session_settings(&settings, &capabilities).unwrap();
+        assert_eq!(resolved["codec"], "h264");
+        let error = StreamerService::embedded_session_settings(
+            &json!({"nativeVideoBackend":"software", "codec":"av1"}),
+            &capabilities,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "streamer_codec_unavailable");
+    }
+
+    #[test]
     fn embedded_macos_codec_policy_never_falls_back_to_unsupported_hardware() {
         let mut caps = json!({"protocolVersion":STREAMER_PROTOCOL_VERSION,"videoBackends":[{
             "backend":"videotoolbox","platform":"macos","available":true,"codecs":[

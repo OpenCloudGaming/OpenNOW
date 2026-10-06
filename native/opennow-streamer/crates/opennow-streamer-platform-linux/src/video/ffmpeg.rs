@@ -156,15 +156,21 @@ impl FfmpegDecoder {
             ));
         }
         initialize_ffmpeg()?;
-        let decoder_definition = if mode == FfmpegMode::Software {
-            ffmpeg::decoder::find(codec_id(codec))
-        } else {
-            ffmpeg::decoder::find_by_name(native_decoder_name(codec))
+        let decoder_definition = match (mode, codec) {
+            (FfmpegMode::Software, VideoCodec::Av1) => ["libdav1d", "libaom-av1"]
+                .into_iter()
+                .find_map(ffmpeg::decoder::find_by_name),
+            (FfmpegMode::Software, _) => ffmpeg::decoder::find(codec_id(codec)),
+            _ => ffmpeg::decoder::find_by_name(native_decoder_name(codec)),
         }
         .ok_or_else(|| {
             Error::unavailable(
                 Subsystem::Ffmpeg,
-                format!("FFmpeg was built without the {} decoder", codec.label()),
+                if mode == FfmpegMode::Software && codec == VideoCodec::Av1 {
+                    "software AV1 requires FFmpeg built with libdav1d or libaom-av1".to_owned()
+                } else {
+                    format!("FFmpeg was built without the {} decoder", codec.label())
+                },
             )
         })?;
         let mut context = codec::Context::new_with_codec(decoder_definition);
@@ -1932,6 +1938,47 @@ mod tests {
         for codec in [VideoCodec::H264, VideoCodec::H265, VideoCodec::Av1] {
             assert!(ffmpeg::decoder::find(codec_id(codec)).is_some());
         }
+    }
+
+    #[test]
+    fn software_av1_requires_a_cpu_decoder() {
+        initialize_ffmpeg().unwrap();
+        let available = ["libdav1d", "libaom-av1"]
+            .into_iter()
+            .any(|name| ffmpeg::decoder::find_by_name(name).is_some());
+        let format = StreamFormat::video_default(64, 64).unwrap();
+        let opened = FfmpegDecoder::open(VideoCodec::Av1, format, FfmpegMode::Software);
+        let probe = super::super::probe_ffmpeg_software(VideoCodec::Av1);
+        if !available {
+            assert!(matches!(opened, Err(Error::Unavailable { .. })));
+            assert!(probe.is_err());
+            return;
+        }
+        assert!(probe.is_ok());
+        let mut decoder = opened.unwrap();
+        assert!(matches!(
+            decoder.decoder.codec().unwrap().name(),
+            "libdav1d" | "libaom-av1"
+        ));
+        let packet = EncodedVideoFrame::new(
+            vec![
+                0x12, 0x00, 0x0a, 0x0a, 0x00, 0x00, 0x00, 0x02, 0xaf, 0xff, 0x9b, 0x5f, 0x20, 0x08,
+                0x32, 0x0e, 0x10, 0x00, 0xc0, 0x00, 0x00, 0x02, 0x80, 0x00, 0x00, 0x0a, 0x05, 0x77,
+                0x64, 0x80,
+            ],
+            12_345,
+            true,
+        )
+        .unwrap();
+        let mut frames = decoder.decode(&packet).unwrap();
+        frames.extend(decoder.flush().unwrap());
+        assert_eq!(frames.len(), 1);
+        assert_eq!((frames[0].format.width, frames[0].format.height), (64, 64));
+        assert_eq!(frames[0].timestamp_us, 12_345);
+        assert_eq!(frames[0].format.pixel_format, PixelFormat::Nv12);
+        assert!(frames[0].dmabuf.is_none());
+        assert!(frames[0].vulkan.is_none());
+        frames[0].validate().unwrap();
     }
 
     #[cfg(feature = "vulkan")]
