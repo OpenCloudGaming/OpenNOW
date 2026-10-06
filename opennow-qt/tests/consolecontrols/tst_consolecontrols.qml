@@ -27,6 +27,17 @@ TestCase {
     }
 
     Component {
+        id: compactRowComponent
+        SettingRow {
+            width: 362
+            height: 56
+            compact: true
+            title: "Invite to co-op"
+            description: "Provider capability unavailable"
+        }
+    }
+
+    Component {
         id: choiceComponent
         ConsoleChoiceSheet {
             width: testCase.width
@@ -74,6 +85,19 @@ TestCase {
 
     function test_enterActivatesSafeDefault_data() {
         return [{tag:"return", key:Qt.Key_Return}, {tag:"keypad-enter", key:Qt.Key_Enter}, {tag:"space", key:Qt.Key_Space}]
+    }
+
+    function test_fixedHeightSharedRowsKeepCopyInside_data() {
+        return [{tag: "with-value", value: "A"}, {tag: "without-value", value: ""}]
+    }
+
+    function test_fixedHeightSharedRowsKeepCopyInside(data) {
+        const row = createTemporaryObject(compactRowComponent, testCase, {value: data.value})
+        verify(row !== null)
+        verify(waitForRendering(row))
+        const copy = row.contentItem.children[0]
+        verify(copy.y >= 0, "copy starts above its fixed-height row at " + copy.y)
+        verify(copy.y + copy.height <= row.height, "copy extends into the next row")
     }
 
     function test_enterActivatesSafeDefault(data) {

@@ -11,6 +11,7 @@ ItemDelegate {
     property bool currentItem: false
     property bool ringVisible: activeFocus || currentItem
     property bool parked: false
+    property bool compact: false
     readonly property string controlType: rowData.control || (rowData.info ? "info" : (rowData.toggle ? "toggle" : rowData.values ? "dropdown" : "button"))
     readonly property int selectedChoice: rowData.selectedIndex !== undefined
                                           ? Number(rowData.selectedIndex)
@@ -36,8 +37,8 @@ ItemDelegate {
     background: Item {
         Rectangle {
             anchors.fill: parent
-            anchors.margins: -8
-            radius: 32
+            anchors.margins: root.compact ? 0 : -8
+            radius: root.compact ? 24 : 32
             color: "transparent"
             border.width: 5
             border.color: Qt.rgba(Theme.focus.r, Theme.focus.g, Theme.focus.b, 0.4)
@@ -72,13 +73,13 @@ ItemDelegate {
             anchors.right: trailing.left
             anchors.rightMargin: 28
             anchors.verticalCenter: parent.verticalCenter
-            spacing: 4
+            spacing: root.compact ? 0 : 4
             Text {
                 width: parent.width
                 text: I18n.source(root.title, I18n.revision)
                 color: root.controlType === "info" ? Theme.textMuted : Theme.label
                 font.family: Theme.displayFont
-                font.pixelSize: 21
+                font.pixelSize: root.compact ? 18 : 21
                 font.weight: Font.Black
                 elide: Text.ElideRight
             }
@@ -88,10 +89,10 @@ ItemDelegate {
                 text: I18n.source(root.description, I18n.revision)
                 color: Theme.textMuted
                 font.family: Theme.bodyFont
-                font.pixelSize: 16
+                font.pixelSize: root.compact ? 13 : 16
                 font.weight: Font.DemiBold
-                wrapMode: Text.WordWrap
-                maximumLineCount: 2
+                wrapMode: root.compact ? Text.NoWrap : Text.WordWrap
+                maximumLineCount: root.compact ? 1 : 2
                 elide: Text.ElideRight
             }
         }
