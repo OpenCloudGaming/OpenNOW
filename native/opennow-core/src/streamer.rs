@@ -633,7 +633,9 @@ impl StreamerService {
         if !params["runtimeCapabilities"].is_null() {
             let mut negotiated_settings = context["settings"].clone();
             if context["settings"]["transportMode"] != "webrtc"
-                && context["session"]["negotiatedStreamProfile"]["codec"].as_str().is_none()
+                && context["session"]["negotiatedStreamProfile"]["codec"]
+                    .as_str()
+                    .is_none()
             {
                 negotiated_settings["codec"] = json!(settings["codec"].as_str().unwrap_or("auto"));
             }
@@ -641,7 +643,8 @@ impl StreamerService {
                 &negotiated_settings,
                 &params["runtimeCapabilities"],
             )?;
-            context["settings"]["codec"] = json!(resolved["codec"].as_str().unwrap().to_ascii_uppercase());
+            context["settings"]["codec"] =
+                json!(resolved["codec"].as_str().unwrap().to_ascii_uppercase());
             context["settings"]["nativeHdrSupported"] = resolved["nativeHdrSupported"].clone();
         }
         // The codec is client-selected (CloudMatch no longer carries it, matching
@@ -3215,7 +3218,8 @@ mod tests {
                         "negotiatedStreamProfile":{"codec":null,"codecSource":"unreported",
                             "colorQuality":color,"enableHdr":hdr}},
                         "runtimeCapabilities":capabilities});
-                    let settings = json!({"codec":codec,"colorQuality":"8bit_420","enableHdr":false});
+                    let settings =
+                        json!({"codec":codec,"colorQuality":"8bit_420","enableHdr":false});
                     let prepared = service.prepare_embedded(&params, &settings).unwrap();
                     assert_eq!(prepared["context"]["settings"]["codec"], "H265");
                     assert_eq!(prepared["context"]["settings"]["colorQuality"], color);
@@ -3232,14 +3236,14 @@ mod tests {
     fn embedded_prepare_does_not_replace_an_explicit_codec() {
         let service = StreamerService::new();
         let params = json!({"session":{"sessionId":"explicit-attach","status":2,
-            "negotiatedStreamProfile":{"codec":null,"codecSource":"unreported",
-                "colorQuality":"10bit_420","enableHdr":false}},
-            "runtimeCapabilities":{"protocolVersion":7,"videoBackends":[{
-                "backend":"d3d11","available":true,"codecs":[
-                    {"codec":"h264","available":true,"colorQualities":["8bit_420"]},
-                    {"codec":"h265","available":true,"colorQualities":["10bit_420"]}
-                ]
-            }]}});
+        "negotiatedStreamProfile":{"codec":null,"codecSource":"unreported",
+            "colorQuality":"10bit_420","enableHdr":false}},
+        "runtimeCapabilities":{"protocolVersion":7,"videoBackends":[{
+            "backend":"d3d11","available":true,"codecs":[
+                {"codec":"h264","available":true,"colorQualities":["8bit_420"]},
+                {"codec":"h265","available":true,"colorQualities":["10bit_420"]}
+            ]
+        }]}});
         let error = service
             .prepare_embedded(&params, &json!({"codec":"h264"}))
             .unwrap_err();
