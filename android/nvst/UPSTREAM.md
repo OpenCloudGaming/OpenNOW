@@ -22,9 +22,21 @@ native-bundle path already announced by dev: MID 3 (the Android GFN microphone c
 PT 111 inside RFC 2198 RED PT 63, stereo 48 kHz / 20 ms / 16 kbps, with three prior blocks and
 in-band FEC disabled. Opus is built from the Cargo-locked audiopus_sys sources, statically per ABI.
 
-Rumble ServerControl framing (0x010b, reserved/controller/low-frequency/high-frequency) follows
+Classic rumble ServerControl framing (0x010b, reserved/controller/low-frequency/high-frequency) follows
 wire facts documented in Moonlight's ControlStream.c; no Moonlight implementation code is copied:
 https://github.com/moonlight-stream/moonlight-common-c/blob/master/src/ControlStream.c
+
+2026-10-05: align haptics capability notification with current OpenNOW dev's
+RemoteInput type 13 inside command 0x0206, carrying a little-endian u16 and
+the standard padded/timestamped envelope. The previous one-byte 0x0322
+notification did not produce rumble in the observed GFN NVST session.
+Startup remains disabled until Android determines user/device availability.
+Reference: https://github.com/OpenCloudGaming/OpenNOW/blob/6a19aa63fbec95bee0ce394e3e63e5bbdc23a983/native/opennow-streamer/crates/opennow-streamer-transport/src/nvst_input.rs
+
+The observed GFN NVST 0x010b message instead contains kind=1, length=6,
+controller, weak and strong (little-endian u16 fields). It now shares the
+WebRTC legacy motor order; reserved-zero classic packets keep their low/high
+ordering. These formats are selected by validated headers, not byte scanning.
 Touch records and OC report layout reuse Android's existing input protocol. Mapping those records
 onto native RemoteInput and the native descriptor indices needs live GFN/device verification;
 unit tests cover framing, bounds, motor ordering, and Opus/RED round trips, not host acceptance.

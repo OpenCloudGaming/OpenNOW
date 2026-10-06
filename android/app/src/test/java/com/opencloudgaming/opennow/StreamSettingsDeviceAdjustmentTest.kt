@@ -118,7 +118,7 @@ class StreamSettingsDeviceAdjustmentTest {
     }
 
     @Test
-    fun av1DowngradesTenBitAndDisablesHdrBeforeLaunch() {
+    fun av1PreservesTenBitHdrBeforeLaunch() {
         val adjusted = StreamSettings(codec = VideoCodec.AV1, colorQuality = ColorQuality.TenBit444, hdrEnabled = true)
             .adjustedForDevice(
                 codecReport(
@@ -131,8 +131,8 @@ class StreamSettingsDeviceAdjustmentTest {
             )
 
         assertEquals(VideoCodec.AV1, adjusted.codec)
-        assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
-        assertFalse(adjusted.hdrEnabled)
+        assertEquals(ColorQuality.TenBit420, adjusted.colorQuality)
+        assertTrue(adjusted.hdrEnabled)
     }
 
     @Test
@@ -158,7 +158,7 @@ class StreamSettingsDeviceAdjustmentTest {
     }
 
     @Test
-    fun av1SettingsNormalizePersistedTenBitHdrToEightBitSdr() {
+    fun av1HdrSettingsRetainTenBit420() {
         val adjusted = StreamSettings(
             codec = VideoCodec.AV1,
             colorQuality = ColorQuality.TenBit420,
@@ -166,9 +166,9 @@ class StreamSettingsDeviceAdjustmentTest {
         ).withCodecColorCompatibility()
 
         assertEquals(VideoCodec.AV1, adjusted.codec)
-        assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
-        assertFalse(adjusted.hdrEnabled)
-        assertFalse(adjusted.usesTenBitStreamProfile())
+        assertEquals(ColorQuality.TenBit420, adjusted.colorQuality)
+        assertTrue(adjusted.hdrEnabled)
+        assertTrue(adjusted.usesTenBitStreamProfile())
     }
 
     @Test
@@ -227,7 +227,7 @@ class StreamSettingsDeviceAdjustmentTest {
     }
 
     @Test
-    fun forcesEightBitWhenHdrIsEnabled() {
+    fun usesMain10WhenHdrIsEnabled() {
         val adjusted = StreamSettings(codec = VideoCodec.H265, colorQuality = ColorQuality.TenBit420, hdrEnabled = true)
             .adjustedForDevice(
                 codecReport(
@@ -240,8 +240,8 @@ class StreamSettingsDeviceAdjustmentTest {
             )
 
         assertEquals(VideoCodec.H265, adjusted.codec)
-        assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
-        assertFalse(adjusted.usesTenBitStreamProfile())
+        assertEquals(ColorQuality.TenBit420, adjusted.colorQuality)
+        assertTrue(adjusted.usesTenBitStreamProfile())
     }
 
     @Test

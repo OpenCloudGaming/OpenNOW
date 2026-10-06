@@ -1100,4 +1100,8 @@
     <string name="settings_recording_sharpness_desc">Apply the stream sharpness filter to the saved video only; this does not increase its resolution.</string>
     <string name="settings_recording_sharpness_amount">Sharpness amount</string>
     <string name="settings_recording_sharpness_amount_desc">Use a subtle value to avoid halos around edges.</string>
+    <string name="settings_hdr10_surface_desc">HDR10 uses the display’s HDR processing with a hardware H.265 or AV1 Main10 decoder. Requires a supported membership and HDR10 display; up to 4K at 120 FPS when the decoder supports it. Sharpening is unavailable in HDR.</string>
+    <string name="settings_hdr10_color_hint">HDR10 automatically uses 10-bit 4:2:0 video with H.265 or AV1.</string>
+    <string name="settings_av1_sdr_color_hint">AV1 SDR uses 8-bit color. HDR10 uses AV1 Main10 on compatible displays and decoders.</string>
+    <string name="settings_hdr10_unavailable_hint">HDR10 requires an HDR10 display and a Main10 hardware decoder supporting the selected codec, resolution and frame rate. Try H.265 or AV1 at up to 120 FPS.</string>
 </resources>

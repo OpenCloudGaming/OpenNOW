@@ -146,7 +146,7 @@ internal class StreamSessionReportAccumulator(
         }
         val lostDelta = stats.packetsLostDelta
         val receivedDelta = stats.packetsReceivedDelta
-        if (lostDelta != null && receivedDelta != null && lostDelta >= 0L && receivedDelta >= 0L) {
+        if (lostDelta != null && receivedDelta != null && receivedDelta >= 0L) {
             hasPacketDeltas = true
             packetsLost += lostDelta
             packetsReceived += receivedDelta
@@ -186,7 +186,7 @@ internal class StreamSessionReportAccumulator(
         val averageDecodedFps = averageLong(decodedFpsTotal, decodedFpsCount)
         val averageDecodeMs = averageDouble(decodeTotal, decodeCount)
         val packetLossPct = if (hasPacketDeltas && packetsLost + packetsReceived > 0L) {
-            packetsLost.toDouble() / (packetsLost + packetsReceived).toDouble() * 100.0
+            (packetsLost.toDouble() / (packetsLost + packetsReceived).toDouble() * 100.0).coerceIn(0.0, 100.0)
         } else {
             averageDouble(packetLossSampleTotal, packetLossSampleCount)
         }

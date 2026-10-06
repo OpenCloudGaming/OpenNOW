@@ -182,7 +182,33 @@ class LowLatencyVideoDecoder(
         private val lowLatencyEnabled: Boolean,
         private val standardLowLatencyEnabled: Boolean,
     ) : InvocationHandler {
+        private var effectiveLowLatency = lowLatencyEnabled
+
         override fun invoke(proxy: Any?, method: Method, args: Array<out Any>?): Any? {
+            if ("configure" == method.name && lowLatencyEnabled && isQualcommDecoder(codecName) &&
+                Build.VERSION.SDK_INT >= 29 && args?.firstOrNull() is MediaFormat) {
+                val original = args[0] as MediaFormat
+                val field = findMediaCodecField(delegateCodec.javaClass)
+                field?.isAccessible = true
+                val actualCodec = field?.get(delegateCodec) as? android.media.MediaCodec
+                var first = true
+                return tryDecoderLatencyProfiles(
+                    if (actualCodec != null) decoderLatencyProfiles(true) else listOf(DecoderLatencyProfile.CORE),
+                    { profile, error -> NativeInputDiagnostics.addRetained("decoder.configureFallback",
+                        "SDR rejected profile=$profile error=${error.javaClass.simpleName}") },
+                ) { profile ->
+                    if (!first) requireNotNull(actualCodec).reset()
+                    first = false
+                    val format = MediaFormat(original)
+                    applyDecoderPerformanceFormat(format, requestedFps, false, standardLowLatencyEnabled)
+                    applyDecoderLatencyProfile(format, codecName, requestedFps, profile)
+                    val configuredArgs = Array<Any>(args.size) { i -> if (i == 0) format else args[i] }
+                    val result = invokeDelegate(delegateCodec, method, configuredArgs)
+                    effectiveLowLatency = profile != DecoderLatencyProfile.REALTIME
+                    NativeInputDiagnostics.add("SDR decoder codec=$codecName profile=$profile format=$format")
+                    result
+                }
+            }
             if ("configure" == method.name && args != null && args.isNotEmpty() && args[0] is MediaFormat) {
                 val format = args[0] as MediaFormat
                 NativeInputDiagnostics.add(
@@ -195,16 +221,16 @@ class LowLatencyVideoDecoder(
                     lowLatencyEnabled = lowLatencyEnabled,
                     standardLowLatencyEnabled = standardLowLatencyEnabled,
                 )
-                if (lowLatencyEnabled) applyLowLatencyFormat(format, codecName)
+                if (lowLatencyEnabled) applyLowLatencyFormat(format, codecName, requestedFps)
                 NativeInputDiagnostics.add("MediaCodecVideoDecoder: configured format=$format")
             }
             val result = invokeDelegate(delegateCodec, method, args)
-            if ("start" == method.name && (lowLatencyEnabled || standardLowLatencyEnabled)) {
+            if ("start" == method.name && (effectiveLowLatency || standardLowLatencyEnabled)) {
                 NativeInputDiagnostics.add("LowLatencyVideoDecoder: Intercepted start() for codec=$codecName")
                 applyLowLatencyParameters(
                     delegateCodec = delegateCodec,
-                    standardLowLatencyEnabled = standardLowLatencyEnabled || lowLatencyEnabled,
-                    vendorLowLatencyEnabled = lowLatencyEnabled,
+                    standardLowLatencyEnabled = standardLowLatencyEnabled || effectiveLowLatency,
+                    vendorLowLatencyEnabled = effectiveLowLatency,
                 )
             }
             return result
@@ -270,27 +296,21 @@ class LowLatencyVideoDecoder(
             }
         }
 
-        private fun applyLowLatencyFormat(format: MediaFormat, codecName: String) {
-            putInt(format, "low-latency", 1)
-
+        private fun applyLowLatencyFormat(format: MediaFormat, codecName: String, requestedFps: Int) {
             val normalizedCodecName = codecName.lowercase(Locale.US)
+            if (isQualcommDecoder(normalizedCodecName)) {
+                // Older APIs retain core hints; modern codecs use the fresh-format retry path above.
+                applyDecoderLatencyProfile(format, codecName, requestedFps, DecoderLatencyProfile.CORE)
+                return
+            }
+            putInt(format, "low-latency", 1)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 putInt(format, "priority", 0)
-                // Use Short.MAX_VALUE (0x7FFF) for non-Snapdragon decoders; for Qualcomm,
-                // forcing 32767 fps operating rate forces Adreno GPU/VPU clocks to maximum state,
-                // causing extreme power drain and overheating. Use 120 (or target FPS) instead.
-                val operatingRate = if (isQualcommDecoder(normalizedCodecName)) 120 else OPERATING_RATE
-                putInt(format, "operating-rate", operatingRate)
+                putInt(format, "operating-rate", OPERATING_RATE)
             }
             putInt(format, "allow-frame-drop", 1)
             putInt(format, "vdec-lowlatency", 1)
             putInt(format, "vendor.low-latency.enable", 1)
-
-            if (isQualcommDecoder(normalizedCodecName)) {
-                putInt(format, "vendor.qti-ext-dec-picture-order.enable", 1)
-                putInt(format, "vendor.qti-ext-dec-low-latency.enable", 1)
-                putInt(format, "vendor.rtc-ext-dec-low-latency.enable", 1)
-            }
 
             if (isHiSiliconDecoder(normalizedCodecName)) {
                 putInt(format, "vendor.hisi-ext-low-latency-video-dec.video-scene-for-low-latency-req", 1)

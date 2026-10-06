@@ -26,6 +26,22 @@ class StreamPacketLossTest {
     }
 
     @Test
+    fun latePacketsCorrectLossWithoutResettingWindow() {
+        assertEquals(StreamPacketDelta(lost = -3, received = 100), streamPacketDelta(1, 200, 4, 100))
+        val window = StreamPacketLossWindow(maximumSamples = 3, minimumSamples = 3)
+        window.add(StreamPacketDelta(lost = 4, received = 100))
+        window.add(StreamPacketDelta(lost = -3, received = 100))
+        assertEquals(100.0 / 301.0, window.add(StreamPacketDelta(lost = 0, received = 100))!!, 0.0001)
+    }
+
+    @Test
+    fun negativeCumulativeLossDoesNotCreateNegativeDisplayedLoss() {
+        assertEquals(StreamPacketDelta(lost = -3, received = 100), streamPacketDelta(-2, 200, 1, 100))
+        val window = StreamPacketLossWindow(maximumSamples = 1, minimumSamples = 1)
+        assertEquals(0.0, window.add(StreamPacketDelta(lost = -3, received = 100))!!, 0.0)
+    }
+
+    @Test
     fun rollingWindowDoesNotPublishAOneSampleFiftyPercentSpike() {
         val window = StreamPacketLossWindow(maximumSamples = 5, minimumSamples = 3)
 

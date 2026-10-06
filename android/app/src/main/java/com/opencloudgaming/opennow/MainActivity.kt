@@ -50,6 +50,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
+    private val openNowApplication get() = application as OpenNowApplication
     private val viewModel: OpenNowViewModel by viewModels()
     private val mascotActivity = MascotActivityTracker()
     private val queueStatusNotifier by lazy { AndroidQueueStatusNotifier(this) }
@@ -91,7 +92,6 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         defaultRequestedOrientation = requestedOrientation
         volumeControlStream = AudioManager.STREAM_MUSIC
-        val openNowApplication = application as OpenNowApplication
         pendingExternalLaunchIntent = intent
         setContent {
             var ready by remember { mutableStateOf(false) }
@@ -185,6 +185,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        if (!isAndroidPictureInPictureActive()) openNowApplication.kishiHaptics.onAppForegrounded()
         mascotActivity.updateResumed(true)
         if (startupDataReady) {
             viewModel.setAndroidPictureInPictureActive(isAndroidPictureInPictureActive())
@@ -245,6 +246,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
+        openNowApplication.kishiHaptics.onAppBackgrounded()
         enterStreamPictureInPictureIfReady()
     }
 
@@ -261,6 +263,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
+        if (!isChangingConfigurations) openNowApplication.kishiHaptics.onAppBackgrounded()
         // Backgrounding mid-tap gives us no UP or CANCEL, so without this the host keeps the mouse
         // button held down. PiP does not stop the activity, hence the separate call above.
         NativeStreamInputRouter.releaseInputForLifecycle("activity-stopped")

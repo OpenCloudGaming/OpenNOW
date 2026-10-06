@@ -526,6 +526,7 @@ class NativeStreamClient(
     private var lastStatsSample: StreamStatsSample? = null
     private val processCpuSampler = ProcessCpuSampler()
     private val packetLossWindow = StreamPacketLossWindow()
+    private val webRtcRecoveryWindow = WebRtcRecoveryWindow()
     private val packetLossRecoveryGate = StreamPacketLossRecoveryGate()
     private val decoderRecoveryGate = StreamDecoderRecoveryGate()
     private var androidTvProfile = initialAndroidTvProfile
@@ -543,6 +544,16 @@ class NativeStreamClient(
     private var hapticsOutputPreference = HapticsOutputPreference.Auto
     private var deviceHapticsSupportLogged = false
     private var released = false
+    private val kishiHaptics = (appContext as OpenNowApplication).kishiHaptics
+    private var kishiRumbleEvents = 0L
+    private val removeKishiListener = kishiHaptics.addAvailabilityListener {
+        scope.launch {
+            if (!released) {
+                updateHapticsAdvertisement(force = true)
+                if (hasAnyControllerState()) sendCurrentGamepadState()
+            }
+        }
+    }
     private var controllerMouseLoopJob: Job? = null
     private var physicalLeftStickX = 0f
     private var physicalLeftStickY = 0f
@@ -647,7 +658,8 @@ class NativeStreamClient(
     }
 
     fun createRenderer(context: Context, settings: StreamSettings): StreamVideoSurface =
-        StreamVideoSurface(context, settings.hdrEnabled).also { rendererView ->
+        StreamVideoSurface(context, settings.hdrEnabled, settings.fps,
+            hdrFramePacing = !settings.experimentalNvst).also { rendererView ->
             renderer?.let { oldRenderer ->
                 releaseRendererInternal(oldRenderer)
             }
@@ -984,6 +996,7 @@ class NativeStreamClient(
 
     fun start(session: SessionInfo, settings: StreamSettings, physicalInput: PhysicalInputSettings = PhysicalInputSettings()) {
         if (released) return
+        kishiHaptics.beginStream()
         physicalInputSettings = physicalInput.normalized()
         this.session = session
         this.settings = settings
@@ -998,6 +1011,7 @@ class NativeStreamClient(
         bitrateUpdateJob = null
         liveBitrateLimitKbps = null
         lastStatsSample = null
+        webRtcRecoveryWindow.reset()
         processCpuSampler.reset()
         ProcessCpuDiagnostics.beginStream()
         packetLossWindow.reset()
@@ -1027,6 +1041,7 @@ class NativeStreamClient(
     }
 
     fun stop() {
+        kishiHaptics.endStream()
         stopStreamRecording()
         stopControllerMouseLoop()
         transportGeneration += 1
@@ -1048,6 +1063,7 @@ class NativeStreamClient(
     fun release() {
         if (released) return
         released = true
+        removeKishiListener()
         if (androidTvProfile) {
             val activeRenderer = renderer
             activeRenderer?.let(::prepareRendererForRelease)
@@ -2487,6 +2503,7 @@ class NativeStreamClient(
         inputDropLogged = false
         lastIceState = null
         lastStatsSample = null
+        webRtcRecoveryWindow.reset()
         packetLossWindow.reset()
         packetLossRecoveryGate.reset()
         transportHasStableMedia = false
@@ -2610,6 +2627,7 @@ class NativeStreamClient(
         resetNativeTouchMoveLimiter()
         resetGamepadStateBurstLimiter()
         lastStatsSample = null
+        webRtcRecoveryWindow.reset()
         packetLossWindow.reset()
         packetLossRecoveryGate.reset()
         decoderRecoveryGate.reset()
@@ -2772,6 +2790,7 @@ class NativeStreamClient(
         recordStreamDiagnostic(sdpDiagnosticSummary("raw offer", rawOffer))
         val fixed = prepareRemoteOffer(rawOffer, currentSession)
         val preferred = SdpTools.preferCodec(fixed, settings)
+        NativeInputDiagnostics.addRetained("webrtc.repair.offer", "WebRTC repair offer ${SdpTools.videoRepairSummary(preferred)}")
         if (fixed != rawOffer) {
             recordStreamDiagnostic(sdpDiagnosticSummary("fixed offer", fixed))
         }
@@ -2826,6 +2845,7 @@ class NativeStreamClient(
                                             settings.maxBitrateMbps * 1000,
                                         )
                                         recordStreamDiagnostic(sdpDiagnosticSummary("created answer", munged))
+                                        NativeInputDiagnostics.addRetained("webrtc.repair.answer", "WebRTC repair answer ${SdpTools.videoRepairSummary(munged)}")
                                         if (
                                             settings.codec != VideoCodec.H264 &&
                                             !SdpTools.negotiatesCodec(munged, settings.codec)
@@ -3697,6 +3717,11 @@ class NativeStreamClient(
             ?.let(::formatStatsCodec)
 
         val members = inboundVideo?.members.orEmpty()
+        inboundVideo?.let { inbound ->
+            webRtcRecoveryWindow.observe(inbound.id, timestampMs, members)?.let { interval ->
+                NativeInputDiagnostics.addRetained("webrtc.recovery", interval.diagnostic() + " monoNs=${System.nanoTime()}")
+            }
+        }
         val bytesReceived = members["bytesReceived"].statsLong()
         val framesReceived = members["framesReceived"].statsLong()
         val framesDecoded = members["framesDecoded"].statsLong()
@@ -4811,7 +4836,7 @@ class NativeStreamClient(
     private fun hapticsOutputAvailable(): Boolean =
         selectHapticsOutputTarget(
             vibrationEnabled = vibrationEnabled,
-            controllerRumbleAvailable = hapticControllerDevices().isNotEmpty(),
+            controllerRumbleAvailable = hapticControllerDevices().isNotEmpty() || kishiHaptics.inputDeviceId() != null,
             deviceHapticsAvailable = hasDeviceHaptics(),
             preference = hapticsOutputPreference,
         ) != HapticsOutputTarget.None
@@ -4837,6 +4862,16 @@ class NativeStreamClient(
 
     @Suppress("DEPRECATION")
     private fun applyGamepadRumble(controllerId: Int, weakMagnitude16: Int, strongMagnitude16: Int) {
+        // Dedicated USB streaming must receive raw 16-bit values, including every stop,
+        // before the Android one-shot output's throttle and amplitude mixing.
+        if (vibrationEnabled && hapticsOutputPreference != HapticsOutputPreference.Device &&
+            kishiOwnsController(kishiHaptics.inputDeviceId(), controllerSlots, controllerId) &&
+            kishiHaptics.rumble(strongMagnitude16, weakMagnitude16)
+        ) {
+            kishiRumbleEvents++
+            NativeInputDiagnostics.retain("kishi.game.rumble", "Kishi game rumble events=$kishiRumbleEvents controller=$controllerId strong=$strongMagnitude16 weak=$weakMagnitude16")
+            return
+        }
         val slot = controllerId.coerceIn(0, GAMEPAD_MAX_CONTROLLERS - 1)
         val profile = buildRumbleEffectProfile(weakMagnitude16, strongMagnitude16)
         val isStop = profile.isStop
@@ -4889,6 +4924,7 @@ class NativeStreamClient(
     }
 
     private fun stopAllGamepadRumble() {
+        kishiHaptics.silence()
         hapticControllerDevices().forEach { device ->
             cancelControllerRumble(device)
         }

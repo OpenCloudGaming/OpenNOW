@@ -35,6 +35,16 @@ class StreamPacketLossRecoveryGateTest {
     }
 
     @Test
+    fun signedLossCorrectionAllowsOneRecoveryAfterSustainedBurst() {
+        val gate = StreamPacketLossRecoveryGate(badSamplesBeforeArmed = 2, cooldownSamples = 3)
+        val bad = stats(lost = 60, received = 940)
+        assertFalse(gate.observe(bad, recoveryEligible = true))
+        assertFalse(gate.observe(bad, recoveryEligible = true))
+        assertTrue(gate.observe(stats(lost = -10, received = 1010), recoveryEligible = true))
+        assertFalse(gate.observe(stats(lost = -2, received = 1002), recoveryEligible = true))
+    }
+
+    @Test
     fun ineligibleTransportClearsArmedRecovery() {
         val gate = StreamPacketLossRecoveryGate(badSamplesBeforeArmed = 2)
         val bad = stats(lost = 60, received = 940)

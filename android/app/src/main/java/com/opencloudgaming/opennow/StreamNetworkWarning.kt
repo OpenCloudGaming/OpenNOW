@@ -21,7 +21,6 @@ internal fun streamNetworkWarning(
 
         val packetDeltaIsUsable = stats.packetsLostDelta != null &&
             stats.packetsReceivedDelta != null &&
-            stats.packetsLostDelta >= 0L &&
             stats.packetsReceivedDelta >= 0L &&
             stats.packetsLostDelta + stats.packetsReceivedDelta > 0L
         stats.packetLossPct

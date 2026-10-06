@@ -29,7 +29,9 @@ internal fun aspectFitStreamSurfaceSize(
 }
 
 /** Owns one surface producer: WebRTC GL for SDR, or the hardware decoder for HDR. */
-class StreamVideoSurface(context: Context, private val hdr: Boolean) : FrameLayout(context), VideoSink {
+class StreamVideoSurface(context: Context, private val hdr: Boolean, requestedFps: Int = 60,
+    hdrFramePacing: Boolean = false) : FrameLayout(context), VideoSink {
+    private val hdrPresenter = if (hdr && hdrFramePacing) HdrFramePresenter(requestedFps) else null
     private val sdr = if (hdr) null else SurfaceViewRenderer(context)
     private val surfaceView = sdr ?: SurfaceView(context)
     val holder: SurfaceHolder get() = surfaceView.holder
@@ -59,10 +61,15 @@ class StreamVideoSurface(context: Context, private val hdr: Boolean) : FrameLayo
         addView(surfaceView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT, Gravity.CENTER))
         if (hdr) holder.addCallback(object : SurfaceHolder.Callback {
             override fun surfaceCreated(holder: SurfaceHolder) {
+                if (released) return
                 hdrTarget = if (StreamHdr.displayProfile(context) != null) HdrSurfaceTarget(holder.surface) else null
+                if (hdrTarget != null) hdrPresenter?.start { display?.refreshRate ?: 60f }
                 if (hdrTarget == null) NativeInputDiagnostics.add("HDR surface unavailable: display no longer supports HDR10")
             }
-            override fun surfaceDestroyed(holder: SurfaceHolder) { hdrTarget = null }
+            override fun surfaceDestroyed(holder: SurfaceHolder) {
+                hdrTarget = null
+                hdrPresenter?.stop()
+            }
             override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) = Unit
         })
     }
@@ -107,7 +114,8 @@ class StreamVideoSurface(context: Context, private val hdr: Boolean) : FrameLayo
             return
         }
         val buffer = frame.buffer as? HdrSurfaceBuffer ?: return
-        if (!buffer.present()) return
+        buffer.flow?.sink(System.nanoTime())
+        if (!(hdrPresenter?.present(buffer) ?: buffer.present())) return
         val width = frame.rotatedWidth
         val height = frame.rotatedHeight
         if (frameWidth != width || frameHeight != height) {
@@ -164,6 +172,7 @@ class StreamVideoSurface(context: Context, private val hdr: Boolean) : FrameLayo
         released = true
         recordingSink = null
         hdrTarget = null
+        hdrPresenter?.stop()
         sdr?.release()
     }
 }
