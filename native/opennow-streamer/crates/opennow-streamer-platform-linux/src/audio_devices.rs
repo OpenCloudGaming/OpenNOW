@@ -17,8 +17,22 @@ pub struct AudioOutputDevice {
 }
 
 pub fn audio_output_devices() -> Result<Vec<AudioOutputDevice>> {
-    let pipewire = pipewire_devices();
-    let alsa = alsa_devices();
+    listed_output_devices(pipewire_sinks(), alsa_devices)
+}
+
+/// Devices offered for selection. Opening a saved device validates against the
+/// unfiltered `pipewire_devices` and `alsa_devices` lists instead.
+fn listed_output_devices(
+    pipewire: Result<Vec<PipeWireSink>>,
+    alsa_devices: impl FnOnce() -> Result<Vec<AudioOutputDevice>>,
+) -> Result<Vec<AudioOutputDevice>> {
+    // A raw ALSA PCM opens the hardware underneath a running PipeWire graph,
+    // which then cannot use that device for any application, so ALSA is only
+    // offered when PipeWire has no sinks to list.
+    let alsa = match &pipewire {
+        Ok(sinks) if !sinks.is_empty() => Ok(Vec::new()),
+        _ => alsa_devices(),
+    };
     if let (Err(pipewire), Err(alsa)) = (&pipewire, &alsa) {
         return Err(Error::unavailable(
             Subsystem::Session,
@@ -28,6 +42,8 @@ pub fn audio_output_devices() -> Result<Vec<AudioOutputDevice>> {
     let devices = pipewire
         .unwrap_or_default()
         .into_iter()
+        .filter(|sink| sink.port_available)
+        .map(|sink| sink.device)
         .chain(alsa.unwrap_or_default())
         .collect();
     Ok(unique_devices(devices))
@@ -55,8 +71,23 @@ pub(crate) fn require_device(id: &str, devices: &[AudioOutputDevice]) -> Result<
 }
 
 pub(crate) fn pipewire_devices() -> Result<Vec<AudioOutputDevice>> {
+    Ok(pipewire_sinks()?
+        .into_iter()
+        .map(|sink| sink.device)
+        .collect())
+}
+
+fn pipewire_sinks() -> Result<Vec<PipeWireSink>> {
     let bytes = bounded_command_output(&mut Command::new("pw-dump"), Duration::from_millis(1500))?;
-    parse_pipewire_devices(&bytes)
+    parse_pipewire_sinks(&bytes)
+}
+
+struct PipeWireSink {
+    device: AudioOutputDevice,
+    /// False when the sink's card port reports `available: no`, such as an
+    /// HDMI output with no display attached. Sinks without a card port, and
+    /// ports that cannot detect a connection, count as available.
+    port_available: bool,
 }
 
 pub(crate) fn bounded_command_output(command: &mut Command, timeout: Duration) -> Result<Vec<u8>> {
@@ -131,7 +162,47 @@ pub(crate) fn bounded_command_output(command: &mut Command, timeout: Duration) -
     result
 }
 
+#[cfg(test)]
 fn parse_pipewire_devices(bytes: &[u8]) -> Result<Vec<AudioOutputDevice>> {
+    Ok(parse_pipewire_sinks(bytes)?
+        .into_iter()
+        .map(|sink| sink.device)
+        .collect())
+}
+
+/// Whether the output port behind a card sink can currently play. The sink's
+/// `card.profile.device` is listed in the `devices` of its card's output routes.
+fn sink_port_available(objects: &[Value], props: &Value) -> bool {
+    let (Some(card), Some(profile_device)) = (
+        props["device.id"].as_u64(),
+        props["card.profile.device"].as_u64(),
+    ) else {
+        return true;
+    };
+    let Some(params) = objects
+        .iter()
+        .find(|object| {
+            object["type"] == "PipeWire:Interface:Device" && object["id"].as_u64() == Some(card)
+        })
+        .map(|device| &device["info"]["params"])
+    else {
+        return true;
+    };
+    let routes = params["EnumRoute"]
+        .as_array()
+        .or_else(|| params["Route"].as_array());
+    !routes.into_iter().flatten().any(|route| {
+        route["direction"] == "Output"
+            && route["available"] == "no"
+            && route["devices"].as_array().is_some_and(|devices| {
+                devices
+                    .iter()
+                    .any(|device| device.as_u64() == Some(profile_device))
+            })
+    })
+}
+
+fn parse_pipewire_sinks(bytes: &[u8]) -> Result<Vec<PipeWireSink>> {
     let objects: Vec<Value> = serde_json::from_slice(bytes).map_err(|error| {
         Error::backend(
             Subsystem::PipeWire,
@@ -139,7 +210,7 @@ fn parse_pipewire_devices(bytes: &[u8]) -> Result<Vec<AudioOutputDevice>> {
         )
     })?;
     let mut devices = Vec::new();
-    for object in objects {
+    for object in &objects {
         if object["type"] != "PipeWire:Interface:Node"
             || object["info"]["props"]["media.class"] != "Audio/Sink"
         {
@@ -161,9 +232,12 @@ fn parse_pipewire_devices(bytes: &[u8]) -> Result<Vec<AudioOutputDevice>> {
             .as_str()
             .or_else(|| props["node.nick"].as_str())
             .unwrap_or(node_name);
-        devices.push(AudioOutputDevice {
-            id,
-            name: name.chars().take(1024).collect(),
+        devices.push(PipeWireSink {
+            device: AudioOutputDevice {
+                id,
+                name: name.chars().take(1024).collect(),
+            },
+            port_available: sink_port_available(&objects, props),
         });
         if devices.len() > 1024 {
             return Err(Error::unavailable(
@@ -309,5 +383,81 @@ mod tests {
         assert!(require_device(&devices[0].id, &devices).is_ok());
         assert!(require_device(&devices[0].id, &[devices[0].clone(), devices[0].clone()]).is_err());
         assert!(unique_devices(vec![devices[0].clone(), devices[0].clone()]).is_empty());
+    }
+
+    /// One SOF laptop card with a speaker and two HDMI sinks, plus a Bluetooth
+    /// sink that has no card routes.
+    fn laptop_dump() -> Vec<u8> {
+        let sink = |name: &str, profile_device: Option<u64>| {
+            let mut props =
+                json!({"media.class": "Audio/Sink", "node.name": name, "node.description": name});
+            if let Some(profile_device) = profile_device {
+                props["device.id"] = json!(80);
+                props["card.profile.device"] = json!(profile_device);
+            }
+            json!({"id": 100, "type": "PipeWire:Interface:Node", "info": {"props": props}})
+        };
+        let route = |name: &str, available: &str, device: u64| json!({"direction": "Output", "name": name, "available": available, "devices": [device]});
+        serde_json::to_vec(&json!([
+            {"id": 80, "type": "PipeWire:Interface:Device", "info": {"params": {"EnumRoute": [
+                route("[Out] HDMI2", "no", 1),
+                route("[Out] HDMI1", "yes", 2),
+                route("[Out] Speaker", "unknown", 3),
+                {"direction": "Input", "name": "[In] Mic1", "available": "no", "devices": [3]},
+            ]}}},
+            sink("hdmi2", Some(1)),
+            sink("hdmi1", Some(2)),
+            sink("speaker", Some(3)),
+            sink("bluez_output.headset", None),
+        ]))
+        .unwrap()
+    }
+
+    fn ids(devices: &[AudioOutputDevice]) -> Vec<&str> {
+        devices.iter().map(|device| device.id.as_str()).collect()
+    }
+
+    #[test]
+    fn disconnected_ports_are_not_listed_but_still_validate_a_saved_choice() {
+        let listed = listed_output_devices(
+            parse_pipewire_sinks(&laptop_dump()),
+            || -> Result<Vec<AudioOutputDevice>> {
+                panic!("ALSA is not enumerated while PipeWire lists sinks")
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            ids(&listed),
+            [
+                "pipewire:hdmi1",
+                "pipewire:speaker",
+                "pipewire:bluez_output.headset"
+            ]
+        );
+
+        let all = parse_pipewire_devices(&laptop_dump()).unwrap();
+        assert!(require_device("pipewire:hdmi2", &all).is_ok());
+    }
+
+    #[test]
+    fn raw_alsa_pcms_are_offered_only_without_pipewire_sinks() {
+        let alsa = || {
+            Ok(vec![AudioOutputDevice {
+                id: "alsa:sysdefault:CARD=sofhdadsp".to_owned(),
+                name: "sof-hda-dsp (ALSA)".to_owned(),
+            }])
+        };
+        for pipewire in [
+            Ok(Vec::new()),
+            Err(Error::unavailable(
+                Subsystem::PipeWire,
+                "pw-dump is missing",
+            )),
+        ] {
+            assert_eq!(
+                ids(&listed_output_devices(pipewire, alsa).unwrap()),
+                ["alsa:sysdefault:CARD=sofhdadsp"]
+            );
+        }
     }
 }
