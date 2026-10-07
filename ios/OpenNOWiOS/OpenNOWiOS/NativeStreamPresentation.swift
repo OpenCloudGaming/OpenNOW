@@ -48,8 +48,7 @@ final class NativeStreamPresentationController: UIViewController {
 
     func tearDown() {
         dismantled = true
-        host.pointerCaptureRequested = false
-        host.statusBarHidden = false
+        host.releaseSystemPreferences()
         if host.presentingViewController != nil { host.dismiss(animated: false) }
     }
 }
@@ -64,13 +63,17 @@ final class NativeStreamHostingController: UIHostingController<AnyView> {
 
     override var prefersPointerLocked: Bool { pointerCaptureRequested }
 
-    var statusBarHidden = false {
+    private(set) var statusBarHidden = true {
         didSet {
             guard oldValue != statusBarHidden else { return }
-            // SwiftUI applies this during a view update. Invalidate after that transaction
-            // so UIKit observes the new preference on repeated show/hide changes.
+            // Invalidate outside a SwiftUI transaction when returning to the catalog.
             DispatchQueue.main.async { [weak self] in self?.setNeedsStatusBarAppearanceUpdate() }
         }
+    }
+
+    func releaseSystemPreferences() {
+        pointerCaptureRequested = false
+        statusBarHidden = false
     }
 
     override var prefersStatusBarHidden: Bool { statusBarHidden }
@@ -81,7 +84,6 @@ final class NativeStreamHostingController: UIHostingController<AnyView> {
 
 struct NativeStreamPresentationPreferences: UIViewControllerRepresentable {
     let pointerCaptureRequested: Bool
-    let statusBarHidden: Bool
 
     func makeUIViewController(context: Context) -> PreferenceController {
         PreferenceController()
@@ -89,19 +91,16 @@ struct NativeStreamPresentationPreferences: UIViewControllerRepresentable {
 
     func updateUIViewController(_ controller: PreferenceController, context: Context) {
         controller.pointerCaptureRequested = pointerCaptureRequested
-        controller.statusBarHidden = statusBarHidden
         controller.applyPreferences()
     }
 
     static func dismantleUIViewController(_ controller: PreferenceController, coordinator: ()) {
         controller.pointerCaptureRequested = false
-        controller.statusBarHidden = false
         controller.applyPreferences()
     }
 
     final class PreferenceController: UIViewController {
         var pointerCaptureRequested = false
-        var statusBarHidden = false
 
         override func loadView() {
             view = UIView()
@@ -123,7 +122,6 @@ struct NativeStreamPresentationPreferences: UIViewControllerRepresentable {
             while let controller = ancestor {
                 if let host = controller as? NativeStreamHostingController {
                     host.pointerCaptureRequested = pointerCaptureRequested
-                    host.statusBarHidden = statusBarHidden
                     return
                 }
                 ancestor = controller.parent

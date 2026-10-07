@@ -1204,7 +1204,7 @@ final class OpenNOWiOSParityTests: XCTestCase {
         }
         let presenter = NativeStreamPresentationController(content: AnyView(
             Color.black.background(NativeStreamPresentationPreferences(
-                pointerCaptureRequested: true, statusBarHidden: true))))
+                pointerCaptureRequested: true))))
         window.rootViewController = presenter
         window.makeKeyAndVisible()
         defer { presenter.tearDown(); window.rootViewController = priorController }
@@ -1214,17 +1214,21 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertTrue(presenter.host.prefersStatusBarHidden)
         try await waitForStatusBar(hidden: true)
 
-        // Revealing controls updates the existing presented host, without dismissal.
+        // Revealing controls releases pointer lock but keeps the system bar hidden.
         presenter.host.rootView = AnyView(Color.black.background(NativeStreamPresentationPreferences(
-            pointerCaptureRequested: false, statusBarHidden: false)))
+            pointerCaptureRequested: false)))
         try await Task.sleep(nanoseconds: 300_000_000)
         XCTAssertTrue(presenter.presentedViewController === presenter.host)
         XCTAssertFalse(presenter.host.prefersPointerLocked)
-        XCTAssertFalse(presenter.host.prefersStatusBarHidden)
-        try await waitForStatusBar(hidden: false)
+        XCTAssertTrue(presenter.host.prefersStatusBarHidden)
+        try await waitForStatusBar(hidden: true)
 
         presenter.host.rootView = AnyView(Color.black.background(NativeStreamPresentationPreferences(
-            pointerCaptureRequested: true, statusBarHidden: true)))
+            pointerCaptureRequested: true)))
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertTrue(presenter.host.prefersStatusBarHidden)
+        try await waitForStatusBar(hidden: true)
+        presenter.host.rootView = AnyView(Color.black)
         try await Task.sleep(nanoseconds: 300_000_000)
         XCTAssertTrue(presenter.host.prefersStatusBarHidden)
         try await waitForStatusBar(hidden: true)

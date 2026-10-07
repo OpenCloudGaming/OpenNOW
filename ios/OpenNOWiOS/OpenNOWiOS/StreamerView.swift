@@ -788,7 +788,7 @@ struct StreamerView: View {
                 sceneActive: scenePhase == .active, controlsVisible: coordinator.controlsPanelVisible,
                 editing: coordinator.touchLayoutEditing, guidanceVisible: coordinator.presentedGuidanceSheet != nil
                     || coordinator.inputModePrompt != nil,
-                pipActive: coordinator.isPictureInPictureActive), statusBarHidden: streamChromeHidden))
+                pipActive: coordinator.isPictureInPictureActive)))
         .sheet(item: $coordinator.presentedGuidanceSheet) { destination in
             switch destination {
             case .streamTutorial:
