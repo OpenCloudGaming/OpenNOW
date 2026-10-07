@@ -920,13 +920,22 @@ fn main() {
                 "fixture"
             });
             fs::write(&source, FIXTURE).unwrap();
-            let output = Command::new("rustc")
+            let mut compiler = Command::new("rustc");
+            compiler
                 .args(["--edition=2024", "-O"])
                 .arg(&source)
                 .arg("-o")
-                .arg(&executable)
-                .output()
-                .unwrap();
+                .arg(&executable);
+            let linker_key = format!(
+                "CARGO_TARGET_{}_LINKER",
+                current_target().replace('-', "_").to_ascii_uppercase()
+            );
+            if let Some(linker) = std::env::var_os(linker_key) {
+                let mut argument = std::ffi::OsString::from("linker=");
+                argument.push(linker);
+                compiler.arg("-C").arg(argument);
+            }
+            let output = compiler.output().unwrap();
             assert!(
                 output.status.success(),
                 "fixture build failed: {}",
