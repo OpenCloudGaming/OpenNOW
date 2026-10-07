@@ -13,6 +13,13 @@ use crate::{Error, Result, Subsystem};
 
 const OPUS_OK: c_int = 0;
 const OPUS_MAX_FRAME_MS: usize = 120;
+/// Node latency requested from pw-cat. Its 100 ms default exceeds the usual
+/// 2048-sample maximum quantum, so the graph would ask pw-cat for ~43 ms of
+/// PCM per cycle while packets arrive every 5-20 ms, and pw-cat underruns.
+const PIPEWIRE_LATENCY_MS: u32 = 10;
+/// Silence queued in the pw-cat pipe before the first packet so network jitter
+/// does not empty it.
+const PIPEWIRE_PREFILL_MS: usize = 20;
 const OPUS_RESET_STATE: c_int = 4028;
 const MAX_PLC_MS: usize = 100;
 const PLC_CHUNK_TENTHS_MS: [usize; 6] = [600, 400, 200, 100, 50, 25];
@@ -674,6 +681,8 @@ impl PipeWireSink {
         let mut child = command
             .args([
                 "--playback",
+                "--latency",
+                &format!("{PIPEWIRE_LATENCY_MS}ms"),
                 "--format",
                 "f32",
                 "--rate",
@@ -711,7 +720,7 @@ impl PipeWireSink {
                 format!("pw-cat exited during startup with {status}"),
             ));
         }
-        Ok(Self {
+        let mut sink = Self {
             child,
             stdin,
             muted: Arc::clone(&config.muted),
@@ -721,7 +730,14 @@ impl PipeWireSink {
                     / 1000
                     * mem::size_of::<f32>()
             ],
-        })
+        };
+        let prefill =
+            vec![
+                0.0;
+                config.sample_rate as usize * config.channels as usize * PIPEWIRE_PREFILL_MS / 1000
+            ];
+        sink.write(&prefill, &|| false)?;
+        Ok(sink)
     }
 }
 
