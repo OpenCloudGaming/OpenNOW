@@ -44,11 +44,24 @@ impl CorrelatedDecoder {
 
 impl VideoDecoder for CorrelatedDecoder {
     fn decode(&mut self, frame: &EncodedVideoFrame) -> Result<Vec<DecodedVideoFrame>> {
-        let token = NEXT_TOKEN
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |token| {
-                (token < i64::MAX as u64).then_some(token + 1)
-            })
-            .map_err(|_| Error::backend(Subsystem::Session, "decoder token space exhausted"))?;
+        let mut token = NEXT_TOKEN.load(Ordering::Relaxed);
+        loop {
+            if token >= i64::MAX as u64 {
+                return Err(Error::backend(
+                    Subsystem::Session,
+                    "decoder token space exhausted",
+                ));
+            }
+            match NEXT_TOKEN.compare_exchange_weak(
+                token,
+                token + 1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(current) => token = current,
+            }
+        }
         if self.pending.len() == MAX_PENDING {
             self.pending.pop_front();
         }

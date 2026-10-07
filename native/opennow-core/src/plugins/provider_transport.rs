@@ -161,11 +161,21 @@ impl ProviderTransport {
         }
         request.validate().map_err(|_| failure("invalid_params"))?;
         let timeout_ms = timeout.as_millis().clamp(1, 120_000) as u32;
-        let id = self
-            .serial
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
-            .map_err(|_| failure("provider_unavailable"))?
-            .to_string();
+        let mut serial = self.serial.load(Ordering::Acquire);
+        let id = loop {
+            let next = serial
+                .checked_add(1)
+                .ok_or_else(|| failure("provider_unavailable"))?;
+            match self.serial.compare_exchange_weak(
+                serial,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break serial.to_string(),
+                Err(current) => serial = current,
+            }
+        };
         let wire = HostRequestV2 {
             v: Version2,
             epoch: self.epoch,

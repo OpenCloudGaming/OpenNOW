@@ -145,12 +145,14 @@ impl PackagePin {
             .parent()
             .unwrap_or(&parent)
             .join(".opennow-package-pins");
-        let mut directory = fs::DirBuilder::new();
+        let directory = fs::DirBuilder::new();
         #[cfg(unix)]
-        {
+        let directory = {
             use std::os::unix::fs::DirBuilderExt;
+            let mut directory = directory;
             directory.mode(0o700);
-        }
+            directory
+        };
         match directory.create(&lock_directory) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}

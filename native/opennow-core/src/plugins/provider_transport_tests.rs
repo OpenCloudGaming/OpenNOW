@@ -97,6 +97,18 @@ fn wait_for(mut predicate: impl FnMut() -> bool) {
 }
 
 #[test]
+fn exhausted_request_ids_fail_before_dispatch_without_wrapping() {
+    let data = tempfile::tempdir().unwrap();
+    let runtime = runtime(data.path());
+    runtime.serial.store(u64::MAX, Ordering::Release);
+    let result = runtime.submit(&catalog(), &Cancellation::default(), Duration::from_secs(1));
+    assert!(matches!(result, Err(error) if error.code == "provider_unavailable"));
+    assert_eq!(runtime.serial.load(Ordering::Acquire), u64::MAX);
+    assert!(!runtime.busy());
+    runtime.stop();
+}
+
+#[test]
 fn child_responses_are_correlated_when_they_arrive_out_of_order() {
     let data = tempfile::tempdir().unwrap();
     fs::write(data.path().join("1.delay"), "200").unwrap();

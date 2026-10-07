@@ -130,7 +130,7 @@ impl Fixture {
     }
 
     pub fn audio(&mut self, index: u64, attempt: u64) -> io::Result<(Header, Vec<u8>)> {
-        for (offset, stereo) in self.pcm.chunks_exact_mut(2).enumerate() {
+        for (offset, stereo) in self.pcm.as_chunks_mut::<2>().0.iter_mut().enumerate() {
             let sample = (index * SAMPLES as u64 + offset as u64) % 48_000;
             let value = (sample as f32 * 440.0 * TAU / 48_000.0).sin() * 0.15;
             stereo.fill(value);
@@ -328,7 +328,7 @@ mod tests {
                 SAMPLES
             );
             if index > 0 {
-                for stereo in pcm.chunks_exact(2) {
+                for stereo in pcm.as_chunks::<2>().0 {
                     assert!((stereo[0] - stereo[1]).abs() < 0.02);
                     samples.push(stereo[0]);
                 }
