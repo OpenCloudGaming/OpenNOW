@@ -25,6 +25,10 @@ struct Location {
     ping_ms: Option<u64>,
     streaming_base_url: String,
     alternate_count: usize,
+    /// Every zone at this location, closest first, so a player can trade a
+    /// longer queue for a lower-latency zone. Empty on the zones themselves.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    zones: Vec<Location>,
 }
 
 fn error(message: impl Into<String>) -> ServiceError {
@@ -193,6 +197,7 @@ fn parse_zones(queue: &Value, mapping: &Value, now: u64) -> Result<Vec<Location>
             ping_ms: None,
             streaming_base_url,
             alternate_count: 0,
+            zones: Vec::new(),
         });
     }
     if zones.len() > MAX_ZONES {
@@ -259,9 +264,20 @@ fn locations(zones: Vec<Location>) -> Value {
     }
     let mut locations = groups
         .into_values()
-        .map(|group| {
+        .map(|mut group| {
             let mut primary = group[best(&group)].clone();
             primary.alternate_count = group.len() - 1;
+            if group.len() > 1 {
+                group.sort_by(|a, b| {
+                    (a.ping_ms.is_none(), a.ping_ms, a.queue_position, &a.zone_id).cmp(&(
+                        b.ping_ms.is_none(),
+                        b.ping_ms,
+                        b.queue_position,
+                        &b.zone_id,
+                    ))
+                });
+                primary.zones = group;
+            }
             primary
         })
         .collect::<Vec<_>>();
@@ -462,6 +478,18 @@ mod tests {
             result["recommendedZoneId"],
             result["locations"][0]["zoneId"]
         );
+        let zones = result["locations"][0]["zones"].as_array().unwrap();
+        assert_eq!(zones.len(), 2);
+        assert_eq!(zones[0]["zoneId"], "NP-NEW9-02");
+        assert_eq!(zones[0]["pingMs"], 20);
+        assert_eq!(zones[1]["zoneId"], "NP-NEW9-01");
+        assert!(zones.iter().all(|zone| {
+            zone["streamingBaseUrl"]
+                .as_str()
+                .unwrap()
+                .starts_with("https://np-new9-0")
+                && zone.get("zones").is_none()
+        }));
     }
 
     fn fetch_response(response: Vec<u8>) -> Result<Value, ServiceError> {
