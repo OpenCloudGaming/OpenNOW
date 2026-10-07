@@ -430,7 +430,8 @@ fn cooperative_preview_cancellation_keeps_enabled_process_and_next_query_works()
     let package_dir = TempDir::new().unwrap();
     let mut core = Core::start(data.path());
     core.install(&fixture(package_dir.path(), "cooperative_cancel"));
-    assert_eq!(core.set_enabled(true)["ok"], true);
+    let enabled = core.set_enabled(true);
+    assert_eq!(enabled["ok"], true, "{enabled}");
     let process = pid(data.path());
     let id = core.send(
         "sources.catalog.page",
