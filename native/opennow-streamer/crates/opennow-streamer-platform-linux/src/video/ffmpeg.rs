@@ -1435,6 +1435,7 @@ fn decoded_metadata(frame: &frame::Video, defaults: StreamFormat) -> Result<Stre
         ffmpeg::chroma::Location::Unspecified => defaults.chroma_location,
         ffmpeg::chroma::Location::Center => ChromaLocation::Center,
         ffmpeg::chroma::Location::Left => ChromaLocation::Left,
+        ffmpeg::chroma::Location::TopLeft => ChromaLocation::TopLeft,
         _ => return Err(unsupported()),
     };
     Ok(StreamFormat {
@@ -1809,6 +1810,13 @@ mod tests {
         frame.set_color_space(ffmpeg::color::Space::BT2020NCL);
         unsafe {
             (*frame.as_mut_ptr()).chroma_location = ffmpeg::chroma::Location::TopLeft.into();
+        }
+        assert_eq!(
+            decoded_metadata(&frame, defaults).unwrap().chroma_location,
+            ChromaLocation::TopLeft
+        );
+        unsafe {
+            (*frame.as_mut_ptr()).chroma_location = ffmpeg::chroma::Location::Bottom.into();
         }
         assert!(decoded_metadata(&frame, defaults).is_err());
     }

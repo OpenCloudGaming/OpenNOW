@@ -1313,6 +1313,19 @@ impl LinuxFrameProducer {
                 &[renderer.descriptor_sets[slot]],
                 &[],
             );
+            // Offsets are in sampled-texture units, which include any decoder
+            // padding below the visible picture.
+            let chroma_offset = chroma_sample_offset(
+                chroma_location,
+                prepared.source().format.pixel_format,
+                width,
+                match prepared {
+                    PreparedLinuxFrame::DmaBuf(frame) if frame.coded_height > 0 => {
+                        frame.coded_height
+                    }
+                    _ => height,
+                },
+            );
             let constants = ConversionConstants {
                 // A DMA-BUF import may be taller than the visible picture when
                 // the decoder pads it; sample only the visible rows.
@@ -1346,13 +1359,7 @@ impl LinuxFrameProducer {
                     }
                     _ => 8,
                 },
-                chroma_offset_x: if chroma_location == crate::ChromaLocation::Left
-                    && !prepared.source().format.pixel_format.is_444()
-                {
-                    0.5 / width as f32
-                } else {
-                    0.0
-                },
+                chroma_offset,
             };
             let constants = std::slice::from_raw_parts(
                 (&constants as *const ConversionConstants).cast::<u8>(),
@@ -1451,7 +1458,27 @@ struct ConversionConstants {
     color_matrix: u32,
     full_range: u32,
     sample_bits: u32,
-    chroma_offset_x: f32,
+    chroma_offset: [f32; 2],
+}
+
+/// Texture-space offset that moves bilinear chroma sampling from the centre of
+/// each 2x2 luma block to where the stream sited its chroma samples.
+fn chroma_sample_offset(
+    location: crate::ChromaLocation,
+    pixel_format: PixelFormat,
+    texture_width: u32,
+    texture_height: u32,
+) -> [f32; 2] {
+    if pixel_format.is_444() {
+        return [0.0, 0.0];
+    }
+    let half_column = 0.5 / texture_width as f32;
+    let half_row = 0.5 / texture_height as f32;
+    match location {
+        crate::ChromaLocation::Center => [0.0, 0.0],
+        crate::ChromaLocation::Left => [half_column, 0.0],
+        crate::ChromaLocation::TopLeft => [half_column, half_row],
+    }
 }
 
 impl Drop for LinuxFrameProducer {
@@ -2316,6 +2343,36 @@ fn decode_readiness(result: std::result::Result<(), vk::Result>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chroma_offsets_follow_the_signalled_siting() {
+        use crate::ChromaLocation::{Center, Left, TopLeft};
+        assert_eq!(
+            chroma_sample_offset(Center, PixelFormat::Nv12, 1920, 1200),
+            [0.0, 0.0]
+        );
+        assert_eq!(
+            chroma_sample_offset(Left, PixelFormat::Nv12, 1920, 1200),
+            [0.5 / 1920.0, 0.0]
+        );
+        // A padded DMA-BUF is sampled in units of its coded height.
+        assert_eq!(
+            chroma_sample_offset(TopLeft, PixelFormat::P010, 1920, 1216),
+            [0.5 / 1920.0, 0.5 / 1216.0]
+        );
+        for location in [Center, Left, TopLeft] {
+            assert_eq!(
+                chroma_sample_offset(location, PixelFormat::Nv24, 1920, 1200),
+                [0.0, 0.0]
+            );
+        }
+    }
+
+    #[test]
+    fn conversion_constants_match_the_fragment_shader_push_block() {
+        // embedded_yuv.frag: vec2, three uints and two floats, tightly packed.
+        assert_eq!(size_of::<ConversionConstants>(), 28);
+    }
 
     #[test]
     fn packed_nv12_rows_copy_as_one_span() {

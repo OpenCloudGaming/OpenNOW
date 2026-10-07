@@ -72,6 +72,9 @@ pub enum ColorPrimaries {
 pub enum ChromaLocation {
     Left,
     Center,
+    /// Co-sited with the top-left luma sample, as AV1 signals with
+    /// `CSP_COLOCATED`.
+    TopLeft,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
