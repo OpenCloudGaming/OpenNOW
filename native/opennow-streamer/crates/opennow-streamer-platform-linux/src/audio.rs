@@ -13,6 +13,18 @@ use crate::{Error, Result, Subsystem};
 
 const OPUS_OK: c_int = 0;
 const OPUS_MAX_FRAME_MS: usize = 120;
+/// Node latency requested from pw-cat. Its 100 ms default exceeds the usual
+/// 2048-sample maximum quantum, so the graph would ask pw-cat for ~43 ms of
+/// PCM per cycle while packets arrive every 5-20 ms, and pw-cat underruns.
+const PIPEWIRE_LATENCY_MS: u32 = 10;
+/// Bounds on the PCM waiting in the pw-cat pipe. The sender's audio clock is not
+/// locked to the local device: a slightly faster sender fills the pipe until
+/// writes block and the packet queue drops whole packets, and a slower one
+/// empties it so pw-cat underruns every cycle. Leaving these bounds trims or
+/// pads the next write back to the target, which also absorbs network jitter.
+const PIPEWIRE_MIN_QUEUED_MS: usize = 5;
+const PIPEWIRE_MAX_QUEUED_MS: usize = 60;
+const PIPEWIRE_TARGET_QUEUED_MS: usize = 30;
 const OPUS_RESET_STATE: c_int = 4028;
 const MAX_PLC_MS: usize = 100;
 const PLC_CHUNK_TENTHS_MS: [usize; 6] = [600, 400, 200, 100, 50, 25];
@@ -368,6 +380,11 @@ unsafe fn opus_error(strerror: OpusStrError, code: c_int) -> String {
 pub(crate) trait AudioSink {
     fn backend(&self) -> AudioBackend;
     fn write(&mut self, pcm: &[f32], cancelled: &dyn Fn() -> bool) -> Result<()>;
+    /// Interleaved samples the sink discarded since the last call, so the worker
+    /// can report them as `audio-output` queue drops.
+    fn take_discarded_samples(&mut self) -> usize {
+        0
+    }
 }
 
 pub(crate) fn open_audio_sink(config: &AudioConfig) -> Result<Box<dyn AudioSink + Send>> {
@@ -635,6 +652,12 @@ struct PipeWireSink {
     silence: Vec<u8>,
     child: Child,
     stdin: ChildStdin,
+    channels: usize,
+    samples_per_ms: usize,
+    discarded_samples: usize,
+    min_queued_bytes: usize,
+    max_queued_bytes: usize,
+    target_queued_bytes: usize,
 }
 
 impl PipeWireSink {
@@ -674,6 +697,8 @@ impl PipeWireSink {
         let mut child = command
             .args([
                 "--playback",
+                "--latency",
+                &format!("{PIPEWIRE_LATENCY_MS}ms"),
                 "--format",
                 "f32",
                 "--rate",
@@ -711,7 +736,9 @@ impl PipeWireSink {
                 format!("pw-cat exited during startup with {status}"),
             ));
         }
-        Ok(Self {
+        let bytes_per_ms =
+            config.sample_rate as usize * config.channels as usize * mem::size_of::<f32>() / 1000;
+        let sink = Self {
             child,
             stdin,
             muted: Arc::clone(&config.muted),
@@ -721,7 +748,14 @@ impl PipeWireSink {
                     / 1000
                     * mem::size_of::<f32>()
             ],
-        })
+            channels: config.channels as usize,
+            samples_per_ms: (config.sample_rate as usize * config.channels as usize / 1000).max(1),
+            discarded_samples: 0,
+            min_queued_bytes: bytes_per_ms * PIPEWIRE_MIN_QUEUED_MS,
+            max_queued_bytes: bytes_per_ms * PIPEWIRE_MAX_QUEUED_MS,
+            target_queued_bytes: bytes_per_ms * PIPEWIRE_TARGET_QUEUED_MS,
+        };
+        Ok(sink)
     }
 }
 
@@ -731,8 +765,89 @@ impl AudioSink for PipeWireSink {
     }
 
     fn write(&mut self, pcm: &[f32], cancelled: &dyn Fn() -> bool) -> Result<()> {
-        write_pipewire_pcm(&mut self.stdin, pcm, &self.silence, &self.muted, cancelled)
+        let queued = queued_pipe_bytes(&self.stdin);
+        let padding = queued.map_or(0, |queued| {
+            silence_samples_to_insert(
+                queued,
+                self.channels,
+                self.min_queued_bytes,
+                self.target_queued_bytes,
+            )
+        });
+        if padding > 0 {
+            eprintln!(
+                "PipeWire audio pipe drained; padded {} ms of silence",
+                padding / self.samples_per_ms
+            );
+            write_pipewire_pcm(
+                &mut self.stdin,
+                &vec![0.0; padding],
+                &self.silence,
+                &self.muted,
+                cancelled,
+            )?;
+        }
+        let dropped = queued.map_or(0, |queued| {
+            backlog_samples_to_drop(
+                queued,
+                pcm.len(),
+                self.channels,
+                self.max_queued_bytes,
+                self.target_queued_bytes,
+            )
+        });
+        self.discarded_samples += dropped;
+        write_pipewire_pcm(
+            &mut self.stdin,
+            &pcm[dropped..],
+            &self.silence,
+            &self.muted,
+            cancelled,
+        )
     }
+
+    fn take_discarded_samples(&mut self) -> usize {
+        mem::take(&mut self.discarded_samples)
+    }
+}
+
+/// Bytes waiting in a pipe, read from either end.
+fn queued_pipe_bytes(pipe: &impl std::os::fd::AsRawFd) -> Option<usize> {
+    let mut queued: c_int = 0;
+    let status = unsafe { libc::ioctl(pipe.as_raw_fd(), libc::FIONREAD, &mut queued) };
+    (status == 0).then_some(queued.max(0) as usize)
+}
+
+/// Silent samples to write ahead of the next PCM once the pipe has drained
+/// below `min_bytes`, refilling it to `target_bytes`. Whole frames only.
+fn silence_samples_to_insert(
+    queued_bytes: usize,
+    channels: usize,
+    min_bytes: usize,
+    target_bytes: usize,
+) -> usize {
+    if queued_bytes >= min_bytes {
+        return 0;
+    }
+    (target_bytes - queued_bytes) / mem::size_of::<f32>() / channels * channels
+}
+
+/// Leading samples of the next write to discard so the pipe holds no more than
+/// `target_bytes` once the backlog has passed `max_bytes`. Whole frames only.
+fn backlog_samples_to_drop(
+    queued_bytes: usize,
+    pcm_samples: usize,
+    channels: usize,
+    max_bytes: usize,
+    target_bytes: usize,
+) -> usize {
+    let pcm_bytes = pcm_samples * mem::size_of::<f32>();
+    if queued_bytes + pcm_bytes <= max_bytes {
+        return 0;
+    }
+    let excess_samples = (queued_bytes + pcm_bytes - target_bytes) / mem::size_of::<f32>();
+    let whole_frames = excess_samples / channels * channels;
+    whole_frames.min(pcm_samples / channels * channels)
 }
 
 fn write_pipewire_pcm(
@@ -808,6 +923,60 @@ fn find_in_path(executable: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pipewire_backlog_drops_only_past_the_limit_and_whole_frames() {
+        // 48 kHz stereo f32: 384 bytes per millisecond.
+        let (max, target) = (384 * 60, 384 * 30);
+        let packet = 480; // 5 ms of stereo samples
+        assert_eq!(backlog_samples_to_drop(384 * 40, packet, 2, max, target), 0);
+        assert_eq!(backlog_samples_to_drop(384 * 55, packet, 2, max, target), 0);
+        // Past the limit, the excess over the target exceeds one packet, so all of it goes.
+        assert_eq!(
+            backlog_samples_to_drop(384 * 58, packet, 2, max, target),
+            packet
+        );
+        // A long write drops only enough to land on the target: 25 + 40 - 30 = 35 ms.
+        let long = 96 * 40;
+        assert_eq!(
+            backlog_samples_to_drop(384 * 25, long, 2, max, target),
+            96 * 35
+        );
+        // An odd excess still drops whole stereo frames.
+        assert_eq!(
+            backlog_samples_to_drop(384 * 25 + 4, long, 2, max, target),
+            96 * 35
+        );
+    }
+
+    #[test]
+    fn a_drained_pipewire_pipe_is_padded_back_to_the_target() {
+        let (min, target) = (384 * 5, 384 * 30);
+        assert_eq!(silence_samples_to_insert(384 * 5, 2, min, target), 0);
+        assert_eq!(silence_samples_to_insert(384 * 20, 2, min, target), 0);
+        // Empty, as when the first packet arrives or a slower sender has drained it.
+        assert_eq!(silence_samples_to_insert(0, 2, min, target), 96 * 30);
+        // A partial frame left in the pipe still pads whole frames.
+        // (30 ms - 4 ms - 4 bytes) is 2495 samples, rounded down to 2494.
+        assert_eq!(silence_samples_to_insert(384 * 4 + 4, 2, min, target), 2494);
+    }
+
+    #[test]
+    fn queued_pipe_bytes_reads_the_backlog_from_the_write_end() {
+        use std::os::fd::FromRawFd;
+        let mut fds = [0; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let (read, mut write) = unsafe {
+            (
+                std::fs::File::from_raw_fd(fds[0]),
+                std::fs::File::from_raw_fd(fds[1]),
+            )
+        };
+        assert_eq!(queued_pipe_bytes(&write), Some(0));
+        write.write_all(&[0; 1536]).unwrap();
+        assert_eq!(queued_pipe_bytes(&write), Some(1536));
+        drop(read);
+    }
     use opus::{Application, Channels, Encoder as OpusEncoder};
 
     fn encoded_frame(

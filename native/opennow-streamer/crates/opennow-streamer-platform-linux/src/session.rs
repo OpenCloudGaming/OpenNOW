@@ -165,6 +165,11 @@ pub enum BackendEvent {
     QueueOverflow {
         media: &'static str,
     },
+    /// Interleaved PCM samples the audio output discarded to keep its backlog
+    /// bounded.
+    AudioOutputDiscarded {
+        samples: usize,
+    },
     DeviceLost {
         subsystem: Subsystem,
         reason: String,
@@ -1115,6 +1120,13 @@ fn write_audio(
             backend: *backend,
             reason: message,
         });
+    }
+    let discarded = sink.take_discarded_samples();
+    if discarded > 0 {
+        emit(
+            events,
+            BackendEvent::AudioOutputDiscarded { samples: discarded },
+        );
     }
     Ok(())
 }
@@ -2216,6 +2228,59 @@ mod tests {
         assert!(packets.is_closed());
         assert!(unavailable.load(Ordering::Acquire));
         worker.join().expect("audio worker thread");
+    }
+
+    struct TrimmingAudioSink {
+        discard_next_write: usize,
+        discarded: usize,
+    }
+
+    impl super::AudioSink for TrimmingAudioSink {
+        fn backend(&self) -> crate::AudioBackend {
+            crate::AudioBackend::PipeWire
+        }
+
+        fn write(&mut self, _: &[f32], _: &dyn Fn() -> bool) -> crate::Result<()> {
+            self.discarded += std::mem::take(&mut self.discard_next_write);
+            Ok(())
+        }
+
+        fn take_discarded_samples(&mut self) -> usize {
+            std::mem::take(&mut self.discarded)
+        }
+    }
+
+    #[test]
+    fn samples_the_output_discards_are_reported_as_audio_output_drops() {
+        let events: super::EventQueue = Arc::new(super::BoundedQueue::new(32));
+        let config = super::AudioConfig::default();
+        let pcm = [0.0f32; 960 * 2];
+        let mut sink: Box<dyn super::AudioSink + Send> = Box::new(TrimmingAudioSink {
+            discard_next_write: 960,
+            discarded: 0,
+        });
+        let mut backend = crate::AudioBackend::PipeWire;
+
+        for _ in 0..2 {
+            assert!(
+                super::write_audio(&mut sink, &mut backend, &config, &events, &pcm, &|| false)
+                    .is_ok()
+            );
+        }
+
+        let observed = collect_events(&events);
+        let discarded = observed
+            .iter()
+            .filter_map(|event| match event {
+                super::BackendEvent::AudioOutputDiscarded { samples } => Some(*samples),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            discarded,
+            [960],
+            "one report per write that discarded, saw {observed:?}"
+        );
     }
 
     #[test]
