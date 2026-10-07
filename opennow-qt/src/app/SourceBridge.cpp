@@ -79,10 +79,12 @@ QString SourceBridge::create(const QString &sourceId, const QJsonObject &intent)
         const QJsonObject params{{u"sourceId"_s, sourceId}, {u"request"_s, intent},
                                  {u"offer"_s, offer->offer},
                                  {u"runtimeCapabilities"_s, offer->runtimeCapabilities}};
+        guard->m_creates[requestId].offer = offer->offer;
         const auto coreId = guard->m_core.requestPrivate(
             u"sources.session.create"_s, params,
             [guard, requestId](bool ok, const QJsonObject &result, const QString &code, const QString &message) {
-                if (!guard || !guard->m_creates.remove(requestId)) return;
+                if (!guard || !guard->m_creates.contains(requestId)) return;
+                guard->cancelOffer(guard->m_creates.take(requestId).offer);
                 if (ok)
                     emit guard->created(requestId, result);
                 else
@@ -95,7 +97,7 @@ QString SourceBridge::create(const QString &sourceId, const QJsonObject &intent)
             emit guard->failed(requestId, u"core_not_ready"_s, u"The core is not ready"_s);
             return;
         }
-        guard->m_creates.insert(requestId, coreId);
+        guard->m_creates[requestId].coreId = coreId;
     });
     return requestId;
 }
@@ -103,16 +105,18 @@ QString SourceBridge::create(const QString &sourceId, const QJsonObject &intent)
 bool SourceBridge::cancel(const QString &requestId)
 {
     if (const auto create = m_creates.find(requestId); create != m_creates.end()) {
-        const auto coreId = *create;
+        const auto pending = *create;
         m_creates.erase(create);
-        if (!coreId.isEmpty()) m_core.cancel(coreId);
+        cancelOffer(pending.offer);
+        if (!pending.coreId.isEmpty()) m_core.cancel(pending.coreId);
         emit failed(requestId, u"cancelled"_s, u"Request cancelled"_s);
         return true;
     }
     if (!m_playback || m_playback->startId != requestId || !m_playback->leaseId.isEmpty())
         return false;
-    const auto prepareId = std::exchange(m_playback, std::nullopt)->prepareId;
-    if (!prepareId.isEmpty()) m_core.cancel(prepareId);
+    const auto playback = std::exchange(m_playback, std::nullopt);
+    cancelOffer(playback->offer);
+    if (!playback->prepareId.isEmpty()) m_core.cancel(playback->prepareId);
     emit failed(requestId, u"cancelled"_s, u"Request cancelled"_s);
     return true;
 }
@@ -138,6 +142,7 @@ QString SourceBridge::start(const QString &sourceId, const QJsonObject &session,
             guard->failStart(startId, code, message);
             return;
         }
+        guard->m_playback->offer = offer->offer;
         guard->prepare(startId, sessionHandle, *offer, 0);
     });
     return startId;
@@ -145,10 +150,7 @@ QString SourceBridge::start(const QString &sourceId, const QJsonObject &session,
 
 void SourceBridge::prepare(const QString &startId, const QString &sessionHandle, const Offer &offer, int attempt)
 {
-    if (!m_playback || m_playback->startId != startId) {
-        cancelOffer(offer.offer);
-        return;
-    }
+    if (!m_playback || m_playback->startId != startId) return;
     const QPointer guard(this);
     const QJsonObject params{{u"sessionHandle"_s, sessionHandle}, {u"offer"_s, offer.offer},
                              {u"runtimeCapabilities"_s, offer.runtimeCapabilities}};
@@ -167,7 +169,6 @@ void SourceBridge::prepare(const QString &startId, const QString &sessionHandle,
                 return;
             }
             if (!ok) {
-                guard->cancelOffer(offer.offer);
                 guard->failStart(startId, code, message);
                 return;
             }
@@ -191,7 +192,6 @@ void SourceBridge::prepare(const QString &startId, const QString &sessionHandle,
         },
         SourceRequestTimeoutMs);
     if (prepareId.isEmpty()) {
-        cancelOffer(offer.offer);
         failStart(startId, u"core_not_ready"_s, u"The core is not ready"_s);
         return;
     }
@@ -267,10 +267,13 @@ void SourceBridge::cancelOffer(const QJsonObject &offer)
                           [](const QJsonObject &) {});
 }
 
-void SourceBridge::failStart(const QString &startId, const QString &code, const QString &message)
+void SourceBridge::failStart(QString startId, const QString &code, const QString &message)
 {
     if (m_activeProfile.value(u"startId"_s).toString() == startId) setActiveProfile({});
-    if (m_playback && m_playback->startId == startId) m_playback.reset();
+    if (m_playback && m_playback->startId == startId) {
+        cancelOffer(m_playback->offer);
+        m_playback.reset();
+    }
     QMetaObject::invokeMethod(this, [this, startId, code, message] { emit failed(startId, code, message); },
                               Qt::QueuedConnection);
 }
@@ -283,6 +286,7 @@ void SourceBridge::onNativeResponse(const QJsonObject &response)
     if (response.value(u"type"_s).toString() == u"ok"_s
             && response.value(u"leaseId"_s).toString() == m_playback->leaseId) {
         m_playback->accepted = true;
+        m_playback->offer = {};
         m_core.settleReceipt(m_playback->prepareId, true);
         if (!m_playback->profile.isEmpty()) {
             auto profile = m_playback->profile;
@@ -293,7 +297,12 @@ void SourceBridge::onNativeResponse(const QJsonObject &response)
         return;
     }
     m_core.settleReceipt(m_playback->prepareId, false);
-    m_playback.reset();
+    const bool mismatchedLease = response.value(u"type"_s).toString() == u"ok"_s;
+    failStart(m_playback->startId,
+              mismatchedLease ? u"invalid_source_lease"_s
+                              : response.value(u"code"_s).toString(u"native_start_failed"_s),
+              mismatchedLease ? u"The media runtime accepted a different session lease"_s
+                              : response.value(u"message"_s).toString(u"The media runtime rejected playback"_s));
 }
 
 void SourceBridge::onNativeEvent(const QJsonObject &event)

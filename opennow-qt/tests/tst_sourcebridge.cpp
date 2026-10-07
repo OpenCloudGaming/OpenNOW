@@ -9,6 +9,7 @@
 #include <QSignalSpy>
 #include <QTest>
 
+#include <algorithm>
 #include <mutex>
 #include <thread>
 
@@ -23,6 +24,7 @@ QList<QJsonObject> commands;
 bool failStart = false;
 bool inputBeforeOk = false;
 bool okWithoutLease = false;
+bool wrongLease = false;
 QString lastStartId;
 
 void deliver(const FakeRuntime *runtime, bool event, const QJsonObject &message)
@@ -72,8 +74,10 @@ OpenNowStreamerStatus fakeSend(const OpenNowStreamer *handle, const std::uint8_t
                 {QStringLiteral("startId"), id}, {QStringLiteral("leaseId"), QStringLiteral("lease-1")}});
         QJsonObject ok{{QStringLiteral("id"), id}, {QStringLiteral("type"), QStringLiteral("ok")},
             {QStringLiteral("transport"), QStringLiteral("provider-worker")}, {QStringLiteral("inputReady"), false}};
-        if (!okWithoutLease) ok.insert(QStringLiteral("leaseId"), QStringLiteral("lease-1"));
+        if (!okWithoutLease) ok.insert(QStringLiteral("leaseId"), wrongLease ? QStringLiteral("other-lease") : QStringLiteral("lease-1"));
         deliver(runtime, false, ok);
+    } else if (type == QStringLiteral("media-cancel-offer")) {
+        deliver(runtime, false, {{QStringLiteral("id"), id}, {QStringLiteral("type"), QStringLiteral("ok")}});
     } else if (type == QStringLiteral("stop")) {
         deliver(runtime, false, {{QStringLiteral("id"), id}, {QStringLiteral("type"), QStringLiteral("ok")}});
         deliver(runtime, true, {{QStringLiteral("type"), QStringLiteral("status")}, {QStringLiteral("status"), QStringLiteral("stopped")},
@@ -124,6 +128,7 @@ private slots:
         failStart = false;
         inputBeforeOk = false;
         okWithoutLease = false;
+        wrongLease = false;
         lastStartId.clear();
     }
 
@@ -252,6 +257,152 @@ private slots:
         QVERIFY(!profile.contains(QStringLiteral("bitDepth")) && !profile.contains(QStringLiteral("colorQuality")));
         QVERIFY(!profile.contains(QStringLiteral("colorRange")));
         QCOMPARE(profile.size(), 3);
+    }
+
+    void createOffersAreReleased_data()
+    {
+        QTest::addColumn<QString>("outcome");
+        QTest::newRow("success") << QStringLiteral("success");
+        QTest::newRow("failure") << QStringLiteral("failure");
+        QTest::newRow("cancel-before-offer") << QStringLiteral("cancel-before-offer");
+        QTest::newRow("cancel-after-dispatch") << QStringLiteral("cancel-after-dispatch");
+    }
+
+    void createOffersAreReleased()
+    {
+        QFETCH(QString, outcome);
+        const auto previous = qgetenv("OPENNOW_TEST_SOURCES");
+        const auto restore = qScopeGuard([previous] {
+            if (previous.isNull()) qunsetenv("OPENNOW_TEST_SOURCES");
+            else qputenv("OPENNOW_TEST_SOURCES", previous);
+        });
+        qputenv("OPENNOW_TEST_SOURCES", "1");
+        CoreClient core;
+        QSignalSpy events(&core, &CoreClient::eventReceived);
+        QVERIFY(core.start(QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("opennow-fake-core"))));
+        QTRY_COMPARE_WITH_TIMEOUT(core.state(), QStringLiteral("ready"), 2'000);
+        NativeStreamRuntime::Api api;
+        api.create = fakeCreate;
+        api.send = fakeSend;
+        api.destroy = fakeDestroy;
+        NativeStreamRuntime runtime(api);
+        QVERIFY(runtime.start());
+        SourceBridge bridge(core, runtime);
+        QSignalSpy created(&bridge, &SourceBridge::created);
+        QSignalSpy failed(&bridge, &SourceBridge::failed);
+        const auto provider = outcome == QStringLiteral("failure") ? QStringLiteral("invalid")
+            : outcome == QStringLiteral("cancel-after-dispatch") ? QStringLiteral("pending")
+            : QStringLiteral("org.opennow.example.provider");
+        const QJsonObject intent{{QStringLiteral("scope"), QJsonValue::Null},
+            {QStringLiteral("target"), QJsonObject{{QStringLiteral("game"), QStringLiteral("game-1")},
+                                                   {QStringLiteral("variant"), QStringLiteral("default")}}},
+            {QStringLiteral("catalogRevision"), QStringLiteral("rev-1")}};
+        const auto requestId = bridge.create(provider, intent);
+        QVERIFY(!requestId.isEmpty());
+        if (outcome == QStringLiteral("cancel-after-dispatch")) {
+            QTRY_VERIFY_WITH_TIMEOUT(std::any_of(events.cbegin(), events.cend(), [](const auto &event) {
+                return event.at(0).toString() == QStringLiteral("test.source-create-pending");
+            }), 2'000);
+        }
+        if (outcome.startsWith(QStringLiteral("cancel-"))) QVERIFY(bridge.cancel(requestId));
+        if (outcome == QStringLiteral("success")) {
+            QTRY_COMPARE_WITH_TIMEOUT(created.size(), 1, 2'000);
+            QCOMPARE(failed.size(), 0);
+        } else {
+            QTRY_COMPARE_WITH_TIMEOUT(failed.size(), 1, 2'000);
+            QCOMPARE(failed.first().at(0).toString(), requestId);
+            QCOMPARE(created.size(), 0);
+        }
+        QTRY_COMPARE_WITH_TIMEOUT(sent(QStringLiteral("media-cancel-offer")).size(), 1, 2'000);
+        QCOMPARE(sent(QStringLiteral("media-cancel-offer")).first().value(QStringLiteral("offerId")).toString(),
+                 QStringLiteral("offer-1"));
+        QVERIFY(!bridge.cancel(requestId));
+        QVERIFY(runtime.shutdown());
+    }
+
+    void rejectedNativeStartSignalsFailure_data()
+    {
+        QTest::addColumn<QString>("outcome");
+        QTest::newRow("error") << QStringLiteral("error");
+        QTest::newRow("missing-lease") << QStringLiteral("missing-lease");
+        QTest::newRow("wrong-lease") << QStringLiteral("wrong-lease");
+    }
+
+    void cancelledPrepareReleasesOffer()
+    {
+        const auto previous = qgetenv("OPENNOW_TEST_SOURCES");
+        const auto restore = qScopeGuard([previous] {
+            if (previous.isNull()) qunsetenv("OPENNOW_TEST_SOURCES");
+            else qputenv("OPENNOW_TEST_SOURCES", previous);
+        });
+        qputenv("OPENNOW_TEST_SOURCES", "1");
+        CoreClient core;
+        QSignalSpy events(&core, &CoreClient::eventReceived);
+        QVERIFY(core.start(QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("opennow-fake-core"))));
+        QTRY_COMPARE_WITH_TIMEOUT(core.state(), QStringLiteral("ready"), 2'000);
+        NativeStreamRuntime::Api api;
+        api.create = fakeCreate;
+        api.send = fakeSend;
+        api.destroy = fakeDestroy;
+        NativeStreamRuntime runtime(api);
+        QVERIFY(runtime.start());
+        SourceBridge bridge(core, runtime);
+        QSignalSpy failed(&bridge, &SourceBridge::failed);
+        const QJsonObject session{{QStringLiteral("account"), QJsonValue::Null}, {QStringLiteral("remoteId"), QStringLiteral("s1")}};
+        const auto startId = bridge.start(QStringLiteral("org.opennow.example.provider"), session, QStringLiteral("pending"));
+        QVERIFY(!startId.isEmpty());
+        QTRY_VERIFY_WITH_TIMEOUT(std::any_of(events.cbegin(), events.cend(), [](const auto &event) {
+            return event.at(0).toString() == QStringLiteral("test.source-prepare-pending");
+        }), 2'000);
+        QVERIFY(bridge.cancel(startId));
+        QTRY_COMPARE_WITH_TIMEOUT(failed.size(), 1, 2'000);
+        QCOMPARE(failed.first().at(0).toString(), startId);
+        QCOMPARE(failed.first().at(1).toString(), QStringLiteral("cancelled"));
+        QCOMPARE(sent(QStringLiteral("media-cancel-offer")).size(), 1);
+        QCOMPARE(sent(QStringLiteral("media-cancel-offer")).first().value(QStringLiteral("offerId")).toString(),
+                 QStringLiteral("offer-1"));
+        QVERIFY(sent(QStringLiteral("start")).isEmpty());
+        QVERIFY(!bridge.cancel(startId));
+        QVERIFY(runtime.shutdown());
+    }
+
+    void rejectedNativeStartSignalsFailure()
+    {
+        QFETCH(QString, outcome);
+        const auto previous = qgetenv("OPENNOW_TEST_SOURCES");
+        const auto restore = qScopeGuard([previous] {
+            if (previous.isNull()) qunsetenv("OPENNOW_TEST_SOURCES");
+            else qputenv("OPENNOW_TEST_SOURCES", previous);
+        });
+        qputenv("OPENNOW_TEST_SOURCES", "1");
+        failStart = outcome == QStringLiteral("error");
+        okWithoutLease = outcome == QStringLiteral("missing-lease");
+        wrongLease = outcome == QStringLiteral("wrong-lease");
+        CoreClient core;
+        QSignalSpy coreResponses(&core, &CoreClient::responseReceived);
+        QVERIFY(core.start(QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("opennow-fake-core"))));
+        QTRY_COMPARE_WITH_TIMEOUT(core.state(), QStringLiteral("ready"), 2'000);
+        NativeStreamRuntime::Api api;
+        api.create = fakeCreate;
+        api.send = fakeSend;
+        api.destroy = fakeDestroy;
+        NativeStreamRuntime runtime(api);
+        QVERIFY(runtime.start());
+        SourceBridge bridge(core, runtime);
+        QSignalSpy failed(&bridge, &SourceBridge::failed);
+        const auto provider = QStringLiteral("org.opennow.example.provider");
+        const QJsonObject session{{QStringLiteral("account"), QJsonValue::Null}, {QStringLiteral("remoteId"), QStringLiteral("s1")}};
+        const auto startId = bridge.start(provider, session, QStringLiteral("op-1"));
+        QVERIFY(!startId.isEmpty());
+        QTRY_COMPARE_WITH_TIMEOUT(failed.size(), 1, 2'000);
+        QCOMPARE(failed.first().at(0).toString(), startId);
+        QCOMPARE(failed.first().at(1).toString(), failStart ? QStringLiteral("worker-rejected") : QStringLiteral("invalid_source_lease"));
+        QVERIFY(!failed.first().at(2).toString().isEmpty());
+        QVERIFY(bridge.activeProfile().isEmpty());
+        QCOMPARE(sent(QStringLiteral("media-cancel-offer")).size(), 1);
+        QCOMPARE(coreCounter(core, coreResponses, QStringLiteral("test.create-receipts"), QStringLiteral("receipts")), 0);
+        QVERIFY(!bridge.start(provider, session, QStringLiteral("op-1")).isEmpty());
+        QVERIFY(runtime.shutdown());
     }
 
     void rejectedNativeStartDeclinesThePreparedLease()

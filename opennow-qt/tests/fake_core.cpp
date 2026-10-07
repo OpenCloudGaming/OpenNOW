@@ -353,6 +353,10 @@ bool handleSourceRequest(FakeSourceRegistry &registry, const std::string &line, 
         return true;
     }
     if (method == "streamer.source.prepare") {
+        if (paramField(line, "sessionHandle") == "pending") {
+            std::cout << "{\"type\":\"event\",\"name\":\"test.source-prepare-pending\",\"payload\":{}}\n" << std::flush;
+            return true;
+        }
         if (paramField(line, "sessionHandle") != "op-1" || line.find("\"offer\":{") == std::string::npos) {
             fail(id, "session_owner_mismatch", "The private source handle is unavailable or no longer owned");
             return true;
@@ -431,7 +435,9 @@ bool handleSourceRequest(FakeSourceRegistry &registry, const std::string &line, 
         return true;
     }
     if (method == "sources.session.create") {
-        if (paramField(line, "sourceId") == "invalid") {
+        if (paramField(line, "sourceId") == "pending") {
+            std::cout << "{\"type\":\"event\",\"name\":\"test.source-create-pending\",\"payload\":{}}\n" << std::flush;
+        } else if (paramField(line, "sourceId") == "invalid") {
             respond(id, "{\"sourceId\":\"other\",\"generation\":1,\"result\":{}}");
         } else if (line.find("\"offer\":{") == std::string::npos) {
             fail(id, "invalid_params", "A native media offer is required");

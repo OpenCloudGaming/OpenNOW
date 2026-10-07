@@ -43,12 +43,17 @@ private:
     };
     using OfferHandler = std::function<void(std::optional<Offer> offer, const QString &code,
                                             const QString &message)>;
+    struct PendingCreate {
+        QString coreId;
+        QJsonObject offer;
+    };
     struct Playback {
         QString startId;
         QString sourceId;
         QJsonObject session;
         QString prepareId;
         QString leaseId;
+        QJsonObject offer;
         QVariantMap profile;
         bool accepted = false;
         bool releasing = false;
@@ -60,7 +65,7 @@ private:
     void requestOffer(OfferHandler handler);
     void prepare(const QString &startId, const QString &sessionHandle, const Offer &offer, int attempt);
     void cancelOffer(const QJsonObject &offer);
-    void failStart(const QString &startId, const QString &code, const QString &message);
+    void failStart(QString startId, const QString &code, const QString &message);
     void onNativeResponse(const QJsonObject &response);
     void onNativeEvent(const QJsonObject &event);
     void confirmRetirement(int attempt);
@@ -72,7 +77,7 @@ private:
 
     CoreClient &m_core;
     NativeStreamRuntime &m_runtime;
-    QHash<QString, QString> m_creates;
+    QHash<QString, PendingCreate> m_creates;
     std::optional<Playback> m_playback;
     QVariantMap m_activeProfile;
     quint64 m_nextId = 1;
