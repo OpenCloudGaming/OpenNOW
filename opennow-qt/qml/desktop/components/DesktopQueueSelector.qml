@@ -12,7 +12,7 @@ Dialog {
     required property var settingsStore
     property string selectedZoneId: ""
     readonly property bool compact: height < DesktopTokens.px(600)
-    readonly property var selectedLocation: selector.locations.find(item => item.zoneId === selectedZoneId) || null
+    readonly property var selectedLocation: selector.zone(selectedZoneId)
     readonly property bool higherLatency: {
         if (!selectedLocation || selectedLocation.pingMs === null) return false
         return selector.locations.some(item => item.pingMs !== null && item.pingMs < selectedLocation.pingMs)
@@ -165,12 +165,14 @@ Dialog {
                     width: ListView.view.width - DesktopTokens.px(12)
                     implicitHeight: Math.max(DesktopTokens.px(82), contentItem.implicitHeight + padding * 2)
                     padding: DesktopTokens.px(14)
+                    readonly property var zones: modelData.zones || []
                     highlighted: root.selectedZoneId === modelData.zoneId
+                        || zones.some(zone => zone.zoneId === root.selectedZoneId)
                     Accessible.role: Accessible.RadioButton
                     Accessible.checked: highlighted
                     Accessible.name: modelData.title + ", " + qsTr("%1 in queue").arg(modelData.queuePosition)
                         + ", " + (modelData.pingMs === null ? qsTr("Latency unavailable") : qsTr("%1 ms").arg(modelData.pingMs))
-                    onClicked: root.selectedZoneId = modelData.zoneId
+                    onClicked: if (!highlighted) root.selectedZoneId = modelData.zoneId
                     background: Rectangle {
                         radius: DesktopTokens.px(12)
                         color: option.highlighted ? DesktopTokens.raisedStrong : option.hovered ? DesktopTokens.raised : "transparent"
@@ -210,6 +212,25 @@ Dialog {
                                 font.family: DesktopTokens.bodyFont
                                 font.pixelSize: DesktopTokens.smallSize
                                 font.weight: Font.Bold
+                            }
+                            Flow {
+                                objectName: "queueLocationZones_" + option.modelData.zoneId
+                                Layout.fillWidth: true
+                                Layout.topMargin: DesktopTokens.px(6)
+                                visible: option.highlighted && option.zones.length > 1
+                                spacing: DesktopTokens.px(6)
+                                Repeater {
+                                    model: option.zones
+                                    delegate: DesktopSettingsButton {
+                                        required property var modelData
+                                        objectName: "queueZone_" + modelData.zoneId
+                                        compact: true
+                                        primary: root.selectedZoneId === modelData.zoneId
+                                        text: modelData.zoneId + " · " + qsTr("%1 in queue").arg(modelData.queuePosition)
+                                            + " · " + (modelData.pingMs === null ? qsTr("No ping") : qsTr("%1 ms").arg(modelData.pingMs))
+                                        onClicked: root.selectedZoneId = modelData.zoneId
+                                    }
+                                }
                             }
                         }
                         ColumnLayout {
