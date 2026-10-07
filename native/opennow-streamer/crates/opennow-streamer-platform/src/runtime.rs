@@ -310,16 +310,14 @@ impl MediaRuntime {
             #[cfg(target_os = "macos")]
             if stream.audio_enabled
                 && let Some(id) = audio_device.device_name()
-            {
-                if self
+                && self
                     .audio_devices()?
                     .iter()
                     .filter(|device| device.id == id)
                     .count()
                     != 1
-                {
-                    return Err("The selected audio output device is unavailable or ambiguous. Select another device or System default.".to_owned());
-                }
+            {
+                return Err("The selected audio output device is unavailable or ambiguous. Select another device or System default.".to_owned());
             }
             #[cfg(target_os = "windows")]
             {
