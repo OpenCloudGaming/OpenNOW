@@ -690,7 +690,7 @@ impl Read for MediaPipe {
                 return Err(io::ErrorKind::WouldBlock.into());
             }
             let length = bytes.len().min(available as usize);
-            return self.0.read(&mut bytes[..length]);
+            self.0.read(&mut bytes[..length])
         }
         #[cfg(unix)]
         self.0.read(bytes)
@@ -753,6 +753,57 @@ impl BootstrapWriter {
 impl Drop for BootstrapWriter {
     fn drop(&mut self) {
         self.bytes.fill(0);
+    }
+}
+
+#[cfg(windows)]
+struct BootstrapWriter {
+    writer: Option<JoinHandle<io::Result<()>>>,
+}
+
+#[cfg(windows)]
+impl BootstrapWriter {
+    fn new(mut pipe: ChildStdin, mut bytes: Vec<u8>) -> io::Result<Self> {
+        let writer = thread::Builder::new()
+            .name("provider-private-bootstrap".into())
+            .spawn(move || {
+                let result = pipe.write_all(&bytes);
+                bytes.fill(0);
+                result
+            })?;
+        Ok(Self {
+            writer: Some(writer),
+        })
+    }
+
+    fn poll(&mut self) -> io::Result<()> {
+        if self.writer.as_ref().is_some_and(JoinHandle::is_finished) {
+            return self
+                .writer
+                .take()
+                .unwrap()
+                .join()
+                .map_err(|_| io::Error::other("Bootstrap writer failed"))?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+impl Drop for BootstrapWriter {
+    fn drop(&mut self) {
+        use std::os::windows::io::AsRawHandle;
+        if let Some(writer) = self.writer.take() {
+            while !writer.is_finished() {
+                unsafe {
+                    windows_sys::Win32::System::IO::CancelSynchronousIo(
+                        writer.as_raw_handle().cast(),
+                    );
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+            let _ = writer.join();
+        }
     }
 }
 
@@ -1682,56 +1733,5 @@ fn main() {
             }
         }
         assert!(session.pid().is_none());
-    }
-}
-
-#[cfg(windows)]
-struct BootstrapWriter {
-    writer: Option<JoinHandle<io::Result<()>>>,
-}
-
-#[cfg(windows)]
-impl BootstrapWriter {
-    fn new(mut pipe: ChildStdin, mut bytes: Vec<u8>) -> io::Result<Self> {
-        let writer = thread::Builder::new()
-            .name("provider-private-bootstrap".into())
-            .spawn(move || {
-                let result = pipe.write_all(&bytes);
-                bytes.fill(0);
-                result
-            })?;
-        Ok(Self {
-            writer: Some(writer),
-        })
-    }
-
-    fn poll(&mut self) -> io::Result<()> {
-        if self.writer.as_ref().is_some_and(JoinHandle::is_finished) {
-            return self
-                .writer
-                .take()
-                .unwrap()
-                .join()
-                .map_err(|_| io::Error::other("Bootstrap writer failed"))?;
-        }
-        Ok(())
-    }
-}
-
-#[cfg(windows)]
-impl Drop for BootstrapWriter {
-    fn drop(&mut self) {
-        use std::os::windows::io::AsRawHandle;
-        if let Some(writer) = self.writer.take() {
-            while !writer.is_finished() {
-                unsafe {
-                    windows_sys::Win32::System::IO::CancelSynchronousIo(
-                        writer.as_raw_handle().cast(),
-                    );
-                }
-                thread::sleep(Duration::from_millis(1));
-            }
-            let _ = writer.join();
-        }
     }
 }
