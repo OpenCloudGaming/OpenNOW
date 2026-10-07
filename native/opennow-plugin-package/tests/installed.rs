@@ -7,6 +7,7 @@ fn package() -> (tempfile::TempDir, std::path::PathBuf, InstalledManifest) {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("version");
     fs::create_dir(&root).unwrap();
+    let root = root.canonicalize().unwrap();
     let executable = fs::read(std::env::current_exe().unwrap()).unwrap();
     fs::write(root.join("control"), &executable).unwrap();
     fs::write(root.join("media"), &executable).unwrap();
@@ -52,6 +53,26 @@ fn both_roles_are_verified_and_package_clones_retain_the_pin() {
     assert_eq!(PackagePin::shared(&root).unwrap_err().code, "plugin_in_use");
     drop(exclusive);
     assert!(PackagePin::shared(&root).is_ok());
+}
+
+#[cfg(unix)]
+#[test]
+fn ancestor_alias_resolves_to_the_same_package_and_pin() {
+    let (temp, root, manifest) = package();
+    let alias_parent = tempfile::tempdir().unwrap();
+    let alias = alias_parent.path().join("alias");
+    std::os::unix::fs::symlink(temp.path(), &alias).unwrap();
+    let aliased_root = alias.join("version");
+    let verified = verify(&aliased_root, &manifest).unwrap();
+    assert_eq!(verified.root(), root);
+    assert_eq!(
+        verified.entrypoint(Role::Control),
+        Some(root.join("control").as_path())
+    );
+    assert_eq!(
+        PackagePin::try_exclusive(&root).unwrap_err().code,
+        "plugin_in_use"
+    );
 }
 
 #[test]
