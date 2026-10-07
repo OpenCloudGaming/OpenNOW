@@ -3489,6 +3489,12 @@ fn run_embedded_linux_monitor(
                         .feedback
                         .send(MediaFeedback::QueueDropped { media, count: 1 });
                 }
+                opennow_streamer_platform_linux::BackendEvent::AudioOutputDiscarded { samples } => {
+                    let _ = shared.feedback.send(MediaFeedback::QueueDropped {
+                        media: "audio-output",
+                        count: samples,
+                    });
+                }
                 opennow_streamer_platform_linux::BackendEvent::DeviceLost { subsystem, reason } => {
                     let _ = shared.feedback.send(MediaFeedback::DeviceLost {
                         subsystem: linux_subsystem_name(subsystem),
@@ -3621,6 +3627,12 @@ fn run_linux_monitor(shared: Arc<SharedPipeline>, host_commands: Sender<HostComm
                     let _ = shared
                         .feedback
                         .send(MediaFeedback::QueueDropped { media, count: 1 });
+                }
+                opennow_streamer_platform_linux::BackendEvent::AudioOutputDiscarded { samples } => {
+                    let _ = shared.feedback.send(MediaFeedback::QueueDropped {
+                        media: "audio-output",
+                        count: samples,
+                    });
                 }
                 opennow_streamer_platform_linux::BackendEvent::DeviceLost { subsystem, reason } => {
                     let _ = shared.feedback.send(MediaFeedback::DeviceLost {

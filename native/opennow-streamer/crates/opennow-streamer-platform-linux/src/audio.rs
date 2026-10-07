@@ -380,6 +380,11 @@ unsafe fn opus_error(strerror: OpusStrError, code: c_int) -> String {
 pub(crate) trait AudioSink {
     fn backend(&self) -> AudioBackend;
     fn write(&mut self, pcm: &[f32], cancelled: &dyn Fn() -> bool) -> Result<()>;
+    /// Interleaved samples the sink discarded since the last call, so the worker
+    /// can report them as `audio-output` queue drops.
+    fn take_discarded_samples(&mut self) -> usize {
+        0
+    }
 }
 
 pub(crate) fn open_audio_sink(config: &AudioConfig) -> Result<Box<dyn AudioSink + Send>> {
@@ -648,6 +653,8 @@ struct PipeWireSink {
     child: Child,
     stdin: ChildStdin,
     channels: usize,
+    samples_per_ms: usize,
+    discarded_samples: usize,
     min_queued_bytes: usize,
     max_queued_bytes: usize,
     target_queued_bytes: usize,
@@ -742,6 +749,8 @@ impl PipeWireSink {
                     * mem::size_of::<f32>()
             ],
             channels: config.channels as usize,
+            samples_per_ms: (config.sample_rate as usize * config.channels as usize / 1000).max(1),
+            discarded_samples: 0,
             min_queued_bytes: bytes_per_ms * PIPEWIRE_MIN_QUEUED_MS,
             max_queued_bytes: bytes_per_ms * PIPEWIRE_MAX_QUEUED_MS,
             target_queued_bytes: bytes_per_ms * PIPEWIRE_TARGET_QUEUED_MS,
@@ -766,6 +775,10 @@ impl AudioSink for PipeWireSink {
             )
         });
         if padding > 0 {
+            eprintln!(
+                "PipeWire audio pipe drained; padded {} ms of silence",
+                padding / self.samples_per_ms
+            );
             write_pipewire_pcm(
                 &mut self.stdin,
                 &vec![0.0; padding],
@@ -783,6 +796,7 @@ impl AudioSink for PipeWireSink {
                 self.target_queued_bytes,
             )
         });
+        self.discarded_samples += dropped;
         write_pipewire_pcm(
             &mut self.stdin,
             &pcm[dropped..],
@@ -790,6 +804,10 @@ impl AudioSink for PipeWireSink {
             &self.muted,
             cancelled,
         )
+    }
+
+    fn take_discarded_samples(&mut self) -> usize {
+        mem::take(&mut self.discarded_samples)
     }
 }
 
