@@ -26,7 +26,9 @@ fn field<'a>(line: &'a str, key: &str) -> &'a str {
 }
 fn main() {
     let data = PathBuf::from(std::env::var_os("OPENNOW_PLUGIN_DATA_DIR").unwrap());
-    std::fs::write(data.join("last-process-id"), std::process::id().to_string()).unwrap();
+    let pending_pid = data.join(format!("process-id-{}.tmp", std::process::id()));
+    std::fs::write(&pending_pid, std::process::id().to_string()).unwrap();
+    std::fs::rename(pending_pid, data.join("last-process-id")).unwrap();
     let names: Vec<_> = std::env::vars_os().map(|(key, _)| key).collect();
     assert!(names.iter().all(|key| key == "OPENNOW_PLUGIN_DATA_DIR" || key == "LANG" || key == "SystemRoot"));
     let output = Arc::new(Mutex::new(std::io::stdout()));
