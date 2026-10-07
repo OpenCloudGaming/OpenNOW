@@ -1,6 +1,6 @@
 use super::contract::{
     AllocationDisposition, AllocationReceipt, Completion, ProviderCompletion, ProviderContext,
-    ProviderSource, ReceiptOutcome, SessionOccupancy, SourceError,
+    ProviderNotification, ProviderSource, ReceiptOutcome, SessionOccupancy, SourceError,
 };
 use super::journal::{Phase, SessionJournal};
 use crate::requests::{self, Cancellation};
@@ -13,15 +13,22 @@ use std::sync::{Arc, Mutex, MutexGuard, mpsc::Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+#[derive(Clone)]
 struct Watched {
     source: PluginId,
     provider: Arc<dyn ProviderSource>,
+}
+
+struct NotificationBatch {
+    owner: Watched,
+    notifications: Vec<ProviderNotification>,
 }
 
 pub struct SessionManager {
     pub journal: Arc<SessionJournal>,
     transition: Mutex<()>,
     watched: Mutex<Vec<Watched>>,
+    pending_notifications: Mutex<Vec<NotificationBatch>>,
     closing: AtomicBool,
     monitor: Mutex<Option<JoinHandle<()>>>,
     output: Sender<Value>,
@@ -38,6 +45,7 @@ impl SessionManager {
             journal: Arc::new(SessionJournal::open(path)),
             transition: Mutex::new(()),
             watched: Mutex::new(Vec::new()),
+            pending_notifications: Mutex::new(Vec::new()),
             closing: AtomicBool::new(false),
             monitor: Mutex::new(None),
             output,
@@ -610,18 +618,43 @@ impl SessionManager {
     }
 
     fn drain_notifications(self: &Arc<Self>) {
+        let Ok(mut pending) = self.pending_notifications.try_lock() else {
+            return;
+        };
+        let mut retired = Vec::new();
+        if pending.is_empty() {
+            let watched = self
+                .watched
+                .lock()
+                .expect("provider observations poisoned")
+                .clone();
+            for owner in watched {
+                let notifications = owner.provider.take_notifications();
+                if notifications.is_empty() {
+                    let descriptor = owner.provider.descriptor();
+                    if !descriptor.enabled
+                        && descriptor.state == opennow_plugin_api::PluginState::Disabled
+                        && !self.journal.source_in_use(&owner.source)
+                    {
+                        retired.push(owner);
+                    }
+                } else {
+                    pending.push(NotificationBatch {
+                        owner,
+                        notifications,
+                    });
+                }
+            }
+        }
+        if pending.is_empty() && retired.is_empty() {
+            return;
+        }
         let Ok(_guard) = self.transition.try_lock() else {
             return;
         };
-        let watched = {
-            let watched = self.watched.lock().expect("provider observations poisoned");
-            watched
-                .iter()
-                .map(|item| (item.source.clone(), Arc::clone(&item.provider)))
-                .collect::<Vec<_>>()
-        };
-        for (source, provider) in watched {
-            for notification in provider.take_notifications() {
+        for batch in pending.drain(..) {
+            let Watched { source, provider } = batch.owner;
+            for notification in batch.notifications {
                 if let api::ProviderRequest::SessionCreate(create) = &notification.request
                     && let Some(ticket) = notification.response.allocation
                     && ticket.operation == create.operation
@@ -681,6 +714,12 @@ impl SessionManager {
             .lock()
             .expect("provider observations poisoned")
             .retain(|item| {
+                if !retired
+                    .iter()
+                    .any(|owner| Arc::ptr_eq(&owner.provider, &item.provider))
+                {
+                    return true;
+                }
                 let descriptor = item.provider.descriptor();
                 self.journal.source_in_use(&item.source)
                     || descriptor.enabled
@@ -871,20 +910,24 @@ mod tests {
 
     struct Fixture {
         generation: AtomicU64,
+        disabled: AtomicBool,
         cleanup: AtomicUsize,
         recovery_mode: AtomicUsize,
         captured: Mutex<Option<api::ProviderRequest>>,
         notifications: Mutex<Vec<ProviderNotification>>,
+        on_collection: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     }
 
     impl Fixture {
         fn new() -> Self {
             Self {
                 generation: AtomicU64::new(1),
+                disabled: AtomicBool::new(false),
                 cleanup: AtomicUsize::new(0),
                 recovery_mode: AtomicUsize::new(0),
                 captured: Mutex::new(None),
                 notifications: Mutex::new(Vec::new()),
+                on_collection: Mutex::new(None),
             }
         }
     }
@@ -899,8 +942,12 @@ mod tests {
                 description: "Fixture".into(),
                 builtin: false,
                 required: false,
-                enabled: true,
-                state: PluginState::Failed,
+                enabled: !self.disabled.load(Ordering::Acquire),
+                state: if self.disabled.load(Ordering::Acquire) {
+                    PluginState::Disabled
+                } else {
+                    PluginState::Failed
+                },
                 capabilities: vec![],
                 trust: PluginTrust::UnsignedNative,
                 last_error: None,
@@ -987,6 +1034,9 @@ mod tests {
             Err(owner_mismatch())
         }
         fn take_notifications(&self) -> Vec<ProviderNotification> {
+            if let Some(on_collection) = self.on_collection.lock().unwrap().take() {
+                on_collection();
+            }
             std::mem::take(&mut *self.notifications.lock().unwrap())
         }
     }
@@ -1020,6 +1070,168 @@ mod tests {
                 "audioFormats":[],"input":{"keyboard":true,"relativeMouse":true,"absoluteMouse":false,"text":false,"gamepadSlots":0,"rumble":false},
                 "limits":{"maxVideoAccessUnitBytes":1048576,"maxAudioPacketBytes":65536,"maxBufferedVideoBytes":2097152,"maxBufferedVideoFrames":2,"maxBufferedAudioMs":100,"maxControlMessageBytes":65536,"maxPendingInputEvents":64}}
         }})).unwrap()
+    }
+
+    fn manual_manager(path: &Path, output: Sender<Value>) -> Arc<SessionManager> {
+        Arc::new(SessionManager {
+            journal: Arc::new(SessionJournal::open(path)),
+            transition: Mutex::new(()),
+            watched: Mutex::new(Vec::new()),
+            pending_notifications: Mutex::new(Vec::new()),
+            closing: AtomicBool::new(false),
+            monitor: Mutex::new(None),
+            output,
+        })
+    }
+
+    fn auth_notification(index: usize) -> ProviderNotification {
+        ProviderNotification {
+            request: api::ProviderRequest::AuthStatus(api::Empty {}),
+            response: api::ProviderResponseV2 {
+                v: api::Version2,
+                epoch: NonZeroU64::new(1).unwrap(),
+                id: api::Text::new(format!("auth-{index}")).unwrap(),
+                outcome: api::ProviderOutcome::Success {
+                    reply: Box::new(api::ProviderReply::AuthStatus(api::AuthState::SignedOut)),
+                },
+                effects: api::List::new(vec![api::ProviderEffect::AuthChanged {
+                    revision: index as u64,
+                }])
+                .unwrap(),
+                allocation: None,
+            },
+        }
+    }
+
+    #[test]
+    fn idle_notification_collection_does_not_block_session_recovery() {
+        let directory = tempfile::tempdir().unwrap();
+        let (output, _) = std::sync::mpsc::channel();
+        let manager = manual_manager(directory.path(), output);
+        let provider = Arc::new(Fixture::new());
+        let cancellation = Cancellation::default();
+        manager.execute(
+            source(),
+            provider.clone(),
+            create_request(),
+            &ProviderContext {
+                cancellation: &cancellation,
+                runtime_capabilities: None,
+                gfn_settings: None,
+            },
+        );
+        let operation = manager.journal.snapshot().unwrap().unwrap().operation;
+        let weak_manager = Arc::downgrade(&manager);
+        let weak_provider = Arc::downgrade(&provider);
+        *provider.on_collection.lock().unwrap() = Some(Box::new(move || {
+            let cancellation = Cancellation::default();
+            let completion = weak_manager.upgrade().unwrap().execute(
+                source(),
+                weak_provider.upgrade().unwrap(),
+                api::ProviderRequest::SessionReconcile(api::ReconcileSession {
+                    scope: None,
+                    operation,
+                    session: None,
+                }),
+                &ProviderContext {
+                    cancellation: &cancellation,
+                    runtime_capabilities: None,
+                    gfn_settings: None,
+                },
+            );
+            assert!(completion.result.is_ok(), "{:?}", completion.result);
+        }));
+        manager.drain_notifications();
+        assert_eq!(manager.occupancy(), SessionOccupancy::Idle);
+        assert!(provider.on_collection.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn busy_notification_admission_retains_whole_batch_and_original_owner() {
+        let directory = tempfile::tempdir().unwrap();
+        let (output, events) = std::sync::mpsc::channel();
+        let manager = manual_manager(directory.path(), output);
+        let provider = Arc::new(Fixture::new());
+        let cancellation = Cancellation::default();
+        manager.execute(
+            source(),
+            provider.clone(),
+            create_request(),
+            &ProviderContext {
+                cancellation: &cancellation,
+                runtime_capabilities: None,
+                gfn_settings: None,
+            },
+        );
+        let request = provider.captured.lock().unwrap().clone().unwrap();
+        let api::ProviderRequest::SessionCreate(create) = &request else {
+            panic!("captured create")
+        };
+        let mut batch = (0..31).map(auth_notification).collect::<Vec<_>>();
+        let mut late = auth_notification(31);
+        late.response.allocation = Some(api::AllocationTicket {
+            operation: create.operation.clone(),
+            receipt: api::ReceiptId::new("receipt").unwrap(),
+            session: key(),
+        });
+        late.request = request;
+        batch.push(late);
+        provider.generation.store(2, Ordering::Release);
+        *provider.notifications.lock().unwrap() = batch;
+        let replacement = Arc::new(Fixture::new());
+        let replacement_source: Arc<dyn ProviderSource> = replacement.clone();
+        manager.track(&source(), &replacement_source).unwrap();
+        manager.with_held_transition(|| {
+            manager.drain_notifications();
+            assert!(provider.notifications.lock().unwrap().is_empty());
+            {
+                let pending = manager.pending_notifications.lock().unwrap();
+                assert_eq!(pending.len(), 1);
+                assert_eq!(pending[0].owner.source, source());
+                let original: Arc<dyn ProviderSource> = provider.clone();
+                assert!(Arc::ptr_eq(&pending[0].owner.provider, &original));
+                assert_eq!(pending[0].notifications.len(), 32);
+                for (index, notification) in pending[0].notifications.iter().enumerate() {
+                    assert_eq!(notification.response.epoch.get(), 1);
+                    assert_eq!(
+                        &*notification.response.effects,
+                        &[api::ProviderEffect::AuthChanged {
+                            revision: index as u64,
+                        }]
+                    );
+                }
+                assert!(pending[0].notifications[31].response.allocation.is_some());
+            }
+            provider
+                .notifications
+                .lock()
+                .unwrap()
+                .push(auth_notification(32));
+            manager.drain_notifications();
+            assert_eq!(provider.notifications.lock().unwrap().len(), 1);
+            assert_eq!(provider.cleanup.load(Ordering::Acquire), 0);
+            assert_eq!(manager.occupancy(), SessionOccupancy::Unknown);
+            assert!(events.try_recv().is_err());
+        });
+        manager.drain_notifications();
+        assert_eq!(provider.cleanup.load(Ordering::Acquire), 1);
+        assert_eq!(replacement.cleanup.load(Ordering::Acquire), 0);
+        assert_eq!(manager.occupancy(), SessionOccupancy::Idle);
+        assert!(manager.pending_notifications.lock().unwrap().is_empty());
+        assert_eq!(provider.notifications.lock().unwrap().len(), 1);
+        provider.disabled.store(true, Ordering::Release);
+        manager.drain_notifications();
+        assert!(provider.notifications.lock().unwrap().is_empty());
+        assert_eq!(manager.watched.lock().unwrap().len(), 2);
+        manager.drain_notifications();
+        assert_eq!(manager.watched.lock().unwrap().len(), 1);
+        assert_eq!(
+            events
+                .try_iter()
+                .filter(|event| event["name"] == "sources.changed")
+                .count(),
+            33
+        );
     }
 
     #[test]

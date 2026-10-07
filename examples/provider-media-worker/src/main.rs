@@ -9,7 +9,7 @@ use opennow_media_protocol::{MAX_BOOTSTRAP_BYTES, MEDIA_PROTOCOL_VERSION};
 use opennow_plugin_api::media::{AudioCodec, AudioFormat, MediaLimits};
 use opennow_sdk_demo::authorization::{authorize_media, session_is_active};
 use std::fs::File;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Read, Write};
 use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::sync::{
@@ -19,6 +19,32 @@ use std::sync::{
 };
 use std::thread;
 use std::time::{Duration, Instant};
+
+struct ControlReader<'a> {
+    socket: &'a mut TcpStream,
+    stop: &'a AtomicBool,
+}
+
+impl Read for ControlReader<'_> {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            if self.stop.load(Ordering::Acquire) {
+                return Err(io::ErrorKind::ConnectionAborted.into());
+            }
+            match self.socket.read(bytes) {
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) => {}
+                result => return result,
+            }
+        }
+    }
+}
 
 fn bootstrap(reader: impl BufRead) -> io::Result<WorkerBootstrap> {
     let mut bytes = Vec::new();
@@ -161,8 +187,7 @@ fn run() -> io::Result<()> {
         },
         maximum,
     )?;
-    socket.set_read_timeout(None)?;
-    let shutdown = socket.try_clone()?;
+    socket.set_read_timeout(Some(Duration::from_millis(50)))?;
     let stop = Arc::new(AtomicBool::new(false));
     let keyframe = Arc::new(AtomicBool::new(false));
     let (completed_tx, completed_rx) = mpsc::sync_channel(2);
@@ -176,7 +201,13 @@ fn run() -> io::Result<()> {
             let result = (|| {
                 let mut input = InputState::default();
                 loop {
-                    let message = match read_control(&mut socket, maximum) {
+                    let message = match read_control(
+                        &mut ControlReader {
+                            socket: &mut socket,
+                            stop: &stop,
+                        },
+                        maximum,
+                    ) {
                         Ok(message) => message,
                         Err(_) if stop.load(Ordering::Acquire) => break,
                         Err(error) => return Err(error),
@@ -200,7 +231,7 @@ fn run() -> io::Result<()> {
             })();
             let _ = completed.send(result);
             stop.store(true, Ordering::Release);
-            let _ = socket.shutdown(Shutdown::Both);
+            let _ = socket.shutdown(Shutdown::Write);
         })
     };
     let media = {
@@ -228,7 +259,6 @@ fn run() -> io::Result<()> {
         }
     };
     stop.store(true, Ordering::Release);
-    let _ = shutdown.shutdown(Shutdown::Read);
     let deadline = Instant::now() + Duration::from_millis(250);
     while !control.is_finished() || !media.is_finished() {
         let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
@@ -267,6 +297,92 @@ mod tests {
     use opennow_plugin_api::provider::{
         AttemptId, OfferId, SecretBytes, SessionId, SessionKey, Text,
     };
+
+    #[test]
+    fn control_reader_preserves_partial_frames_across_timeout_polls() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut sender = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut receiver, _) = listener.accept().unwrap();
+        receiver
+            .set_read_timeout(Some(Duration::from_millis(10)))
+            .unwrap();
+        let bytes = opennow_media_protocol::wire::encode_control(
+            &ControlMessage::Neutral {
+                attempt_generation: 7,
+                sequence: 42,
+            },
+            4096,
+        )
+        .unwrap();
+        let writer = thread::spawn(move || {
+            sender.write_all(&bytes[..2]).unwrap();
+            thread::sleep(Duration::from_millis(60));
+            sender.write_all(&bytes[2..10]).unwrap();
+            thread::sleep(Duration::from_millis(60));
+            sender.write_all(&bytes[10..]).unwrap();
+        });
+        let stop = AtomicBool::new(false);
+        let message = read_control(
+            &mut ControlReader {
+                socket: &mut receiver,
+                stop: &stop,
+            },
+            4096,
+        )
+        .unwrap();
+        assert!(matches!(
+            message,
+            ControlMessage::Neutral {
+                attempt_generation: 7,
+                sequence: 42
+            }
+        ));
+        writer.join().unwrap();
+    }
+
+    #[test]
+    fn idle_control_stop_preserves_the_socket_for_terminal_notification() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_millis(10)))
+            .unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let signal = Arc::clone(&stop);
+        let stopper = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            signal.store(true, Ordering::Release);
+        });
+        let started = Instant::now();
+        let error = read_control(
+            &mut ControlReader {
+                socket: &mut socket,
+                stop: &stop,
+            },
+            4096,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::ConnectionAborted);
+        assert!(started.elapsed() < Duration::from_secs(1));
+        write_control(
+            &mut socket,
+            &ControlMessage::Ended {
+                attempt_generation: 7,
+            },
+            4096,
+        )
+        .unwrap();
+        socket.shutdown(Shutdown::Write).unwrap();
+        assert!(matches!(
+            read_control(&mut peer, 4096).unwrap(),
+            ControlMessage::Ended {
+                attempt_generation: 7
+            }
+        ));
+        stopper.join().unwrap();
+    }
 
     #[test]
     fn bootstrap_accepts_video_only_but_rejects_unimplemented_formats_and_oversize() {
