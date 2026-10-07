@@ -14,6 +14,7 @@
 #include "streaming/rendering/HdrChromeEffect.h"
 #ifdef OPENNOW_EMBEDDED_STREAMER
 #include "streaming/NativeStreamRuntime.h"
+#include "app/SourceBridge.h"
 #endif
 #include "app/SingleInstance.h"
 #include "streaming/StreamVideoItem.h"
@@ -173,6 +174,7 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
         qWarning("Could not start the embedded streamer runtime: %s",
                  qUtf8Printable(nativeStreamRuntime.lastError()));
     StreamVideoItem::setNativeStreamRuntime(&nativeStreamRuntime);
+    SourceBridge sourceBridge(coreClient, nativeStreamRuntime);
     QObject::connect(&nativeStreamRuntime, &NativeStreamRuntime::controllerRumbleRequested,
                      &controllerInput, &ControllerInput::playRumble);
     QObject::connect(&nativeStreamRuntime, &NativeStreamRuntime::controllerRumbleStopped,
@@ -255,6 +257,7 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
 #ifdef OPENNOW_EMBEDDED_STREAMER
     engine.rootContext()->setContextProperty(u"NativeStreamRuntime"_s,
                                              &nativeStreamRuntime);
+    engine.rootContext()->setContextProperty(u"SourceBridge"_s, &sourceBridge);
 #endif
     engine.rootContext()->setContextProperty(
         u"LaunchModeOverride"_s,

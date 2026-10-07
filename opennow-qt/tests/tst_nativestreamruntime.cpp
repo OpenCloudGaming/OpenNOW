@@ -1060,7 +1060,7 @@ private slots:
         QVERIFY2(runtime.start(), qPrintable(runtime.lastError()));
         QVERIFY2(runtime.send(QJsonObject{{QStringLiteral("id"), QStringLiteral("abi-hello")},
                                           {QStringLiteral("type"), QStringLiteral("hello")},
-                                          {QStringLiteral("protocolVersion"), 7}}),
+                                          {QStringLiteral("protocolVersion"), 8}}),
                  qPrintable(runtime.lastError()));
         QTRY_VERIFY_WITH_TIMEOUT(!responses.isEmpty(), 5'000);
         QCOMPARE(responses.first().first().toJsonObject().value(QStringLiteral("id")).toString(),

@@ -1,23 +1,32 @@
 use std::ffi::c_void;
 use std::ptr::{self, NonNull};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use objc2_core_foundation::{
-    CFData, CFDictionary, CFNumber, CFNumberType, CFRetained, CFString, kCFBooleanTrue,
-    kCFTypeDictionaryKeyCallBacks, kCFTypeDictionaryValueCallBacks,
+    CFBoolean, CFData, CFDictionary, CFMutableDictionary, CFNumber, CFNumberType, CFRetained,
+    CFString, kCFBooleanFalse, kCFBooleanTrue, kCFTypeDictionaryKeyCallBacks,
+    kCFTypeDictionaryValueCallBacks,
 };
 use objc2_core_media::{
     CMBlockBuffer, CMFormatDescription, CMSampleBuffer, CMSampleTimingInfo, CMTime,
     CMVideoFormatDescriptionCreate, CMVideoFormatDescriptionCreateFromH264ParameterSets,
-    CMVideoFormatDescriptionCreateFromHEVCParameterSets,
-    kCMFormatDescriptionExtension_BitsPerComponent,
-    kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms, kCMTimeInvalid,
-    kCMVideoCodecType_AV1,
+    CMVideoFormatDescriptionCreateFromHEVCParameterSets, CMVideoFormatDescriptionGetDimensions,
+    kCMFormatDescriptionChromaLocation_Center, kCMFormatDescriptionChromaLocation_Left,
+    kCMFormatDescriptionColorPrimaries_ITU_R_709_2, kCMFormatDescriptionExtension_BitsPerComponent,
+    kCMFormatDescriptionExtension_ChromaLocationBottomField,
+    kCMFormatDescriptionExtension_ChromaLocationTopField,
+    kCMFormatDescriptionExtension_ColorPrimaries, kCMFormatDescriptionExtension_FullRangeVideo,
+    kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms,
+    kCMFormatDescriptionExtension_TransferFunction, kCMFormatDescriptionExtension_YCbCrMatrix,
+    kCMFormatDescriptionTransferFunction_ITU_R_709_2, kCMFormatDescriptionTransferFunction_sRGB,
+    kCMFormatDescriptionYCbCrMatrix_ITU_R_601_4, kCMFormatDescriptionYCbCrMatrix_ITU_R_709_2,
+    kCMTimeInvalid, kCMVideoCodecType_AV1,
 };
 use objc2_core_video::{
     CVImageBuffer, CVPixelBufferGetPixelFormatType, kCVPixelBufferIOSurfacePropertiesKey,
     kCVPixelBufferMetalCompatibilityKey, kCVPixelBufferPixelFormatTypeKey,
+    kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
     kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
     kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
     kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
@@ -42,6 +51,8 @@ use super::{BackendError, Counters};
 
 #[derive(Clone)]
 pub(super) struct DecodedFrame {
+    pub(super) color: Option<opennow_media_protocol::ColorDescription>,
+    pub(super) provenance: opennow_media_protocol::FrameProvenance,
     pub(super) image: CFRetained<CVImageBuffer>,
     pub(super) color_space: VideoColorSpace,
     pub(super) transfer: VideoTransfer,
@@ -55,36 +66,41 @@ unsafe impl Sync for DecodedFrame {}
 
 #[derive(Clone)]
 pub(super) enum DecodedFrameOutput {
-    PresentationQueue(Arc<BoundedQueue<DecodedFrame>>),
+    PresentationQueue {
+        queue: Arc<BoundedQueue<DecodedFrame>>,
+        decoded: Option<Arc<dyn Fn(opennow_media_protocol::FrameProvenance) + Send + Sync>>,
+    },
     EmbeddedMailbox {
         mailbox: Arc<LatestMailbox<DecodedFrame>>,
-        frame_available: Option<Arc<dyn Fn() + Send + Sync>>,
+        publish: Option<Arc<dyn Fn(DecodedFrame) -> bool + Send + Sync>>,
     },
 }
 
 impl DecodedFrameOutput {
     fn publish(&self, frame: DecodedFrame) -> bool {
         match self {
-            Self::PresentationQueue(queue) => matches!(
-                queue.push_drop_oldest(frame),
-                PushResult::Replaced(_) | PushResult::Closed(_)
-            ),
-            Self::EmbeddedMailbox {
-                mailbox,
-                frame_available,
-            } => {
-                let replaced = mailbox.replace(frame);
-                if let Some(frame_available) = frame_available {
-                    frame_available();
+            Self::PresentationQueue { queue, decoded } => {
+                if let Some(decoded) = decoded {
+                    decoded(frame.provenance);
                 }
-                replaced
+                matches!(
+                    queue.push_drop_oldest(frame),
+                    PushResult::Replaced(_) | PushResult::Closed(_)
+                )
+            }
+            Self::EmbeddedMailbox { mailbox, publish } => {
+                if let Some(publish) = publish {
+                    publish(frame)
+                } else {
+                    mailbox.replace(frame)
+                }
             }
         }
     }
 
     pub(super) fn clear(&self) -> usize {
         match self {
-            Self::PresentationQueue(queue) => queue.clear(),
+            Self::PresentationQueue { queue, .. } => queue.clear(),
             Self::EmbeddedMailbox { mailbox, .. } => usize::from(mailbox.clear()),
         }
     }
@@ -117,6 +133,8 @@ impl InFlight {
 }
 
 struct CallbackContext {
+    color: Option<opennow_media_protocol::ColorDescription>,
+    provenance: Mutex<crate::provenance::DecoderProvenance>,
     output: DecodedFrameOutput,
     counters: Arc<Counters>,
     failures: Arc<FailureReporter>,
@@ -146,9 +164,10 @@ impl VideoDecoder {
         failures: Arc<FailureReporter>,
         maximum_in_flight: usize,
     ) -> Result<Self, BackendError> {
+        let (color_space, transfer) = format.resolved_color()?;
         let format_description = create_format_description(format)?;
-        if matches!(&output, DecodedFrameOutput::PresentationQueue(_))
-            && (format.chroma() == VideoChroma::Yuv444 || format.transfer() == VideoTransfer::Pq)
+        if matches!(&output, DecodedFrameOutput::PresentationQueue { .. })
+            && (format.chroma() == VideoChroma::Yuv444 || transfer == VideoTransfer::Pq)
         {
             return Err(BackendError::Metal(
                 "HDR and 4:4:4 require embedded Metal presentation".into(),
@@ -158,15 +177,14 @@ impl VideoDecoder {
             unsafe { format_description.extension(kCMFormatDescriptionExtension_BitsPerComponent) }
                 .and_then(|value| value.downcast_ref::<CFNumber>().and_then(CFNumber::as_i32));
         let bit_depth = format.destination_bit_depth(bitstream_depth)?;
-        if (format.chroma() == VideoChroma::Yuv444 || format.transfer() == VideoTransfer::Pq)
+        if (format.chroma() == VideoChroma::Yuv444 || transfer == VideoTransfer::Pq)
             && bit_depth != VideoBitDepth::Ten
         {
             return Err(BackendError::Metal(
                 "4:4:4 and HDR require ten-bit output".into(),
             ));
         }
-        if format.transfer() == VideoTransfer::Pq && format.color_space() != VideoColorSpace::Bt2020
-        {
+        if transfer == VideoTransfer::Pq && color_space != VideoColorSpace::Bt2020 {
             return Err(BackendError::Metal(
                 "PQ output requires negotiated BT.2020 color".into(),
             ));
@@ -176,26 +194,50 @@ impl VideoDecoder {
             maximum: maximum_in_flight,
         });
         let mut callback_context = Box::new(CallbackContext {
+            color: format.color(),
+            provenance: Mutex::new(crate::provenance::DecoderProvenance::new(maximum_in_flight)),
             output,
             counters,
             failures,
             in_flight: Arc::clone(&in_flight),
-            color_space: format.color_space(),
+            color_space,
             bit_depth,
             chroma: format.chroma(),
-            transfer: format.transfer(),
+            transfer,
         });
         let callback = VTDecompressionOutputCallbackRecord {
             decompressionOutputCallback: Some(decompression_callback),
             decompressionOutputRefCon: (&mut *callback_context as *mut CallbackContext).cast(),
         };
 
-        let pixel_format = match (bit_depth, format.chroma()) {
-            (VideoBitDepth::Ten, VideoChroma::Yuv444) => {
+        let full_range = if format.color().is_some() {
+            let bitstream_range = unsafe {
+                format_description.extension(kCMFormatDescriptionExtension_FullRangeVideo)
+            }
+            .map(|value| {
+                value
+                    .downcast_ref::<CFBoolean>()
+                    .map(CFBoolean::value)
+                    .ok_or_else(|| {
+                        BackendError::Metal("invalid CoreMedia full-range extension".into())
+                    })
+            })
+            .transpose()?;
+            format.destination_full_range(bitstream_range)
+        } else {
+            false
+        };
+        let pixel_format = match (bit_depth, format.chroma(), full_range) {
+            (VideoBitDepth::Ten, VideoChroma::Yuv444, true) => {
+                kCVPixelFormatType_444YpCbCr10BiPlanarFullRange
+            }
+            (VideoBitDepth::Ten, VideoChroma::Yuv444, false) => {
                 kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange
             }
-            (VideoBitDepth::Eight, _) => kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
-            (VideoBitDepth::Ten, _) => kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+            (VideoBitDepth::Eight, _, true) => kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+            (VideoBitDepth::Eight, _, false) => kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+            (VideoBitDepth::Ten, _, true) => kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
+            (VideoBitDepth::Ten, _, false) => kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
         } as i32;
         let pixel_format_number = unsafe {
             CFNumber::new(
@@ -272,9 +314,28 @@ impl VideoDecoder {
         if !self.in_flight.try_acquire() {
             return Ok(false);
         }
-        let result = self.submit_acquired(avcc_access_unit, timing);
-        if result.is_err() {
+        let token = self
+            .callback_context
+            .provenance
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(timing.provenance);
+        let Some(token) = token else {
             self.in_flight.release();
+            return Ok(false);
+        };
+        let result = self.submit_acquired(avcc_access_unit, timing, token);
+        if result.is_err() {
+            if self
+                .callback_context
+                .provenance
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take(token)
+                .is_some()
+            {
+                self.in_flight.release();
+            }
             self.callback_context
                 .counters
                 .video_decode_errors
@@ -292,6 +353,7 @@ impl VideoDecoder {
         &self,
         avcc_access_unit: &[u8],
         timing: FrameTiming,
+        token: usize,
     ) -> Result<(), BackendError> {
         let mut block_ptr = ptr::null_mut();
         let status = unsafe {
@@ -352,7 +414,7 @@ impl VideoDecoder {
             session.decode_frame(
                 &sample,
                 VTDecodeFrameFlags::Frame_EnableAsynchronousDecompression,
-                ptr::null_mut(),
+                ptr::without_provenance_mut(token),
                 ptr::null_mut(),
             )
         };
@@ -362,6 +424,11 @@ impl VideoDecoder {
 
 impl Drop for VideoDecoder {
     fn drop(&mut self) {
+        self.callback_context
+            .provenance
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .invalidate();
         if let Some(session) = self.session.take() {
             let _ = unsafe { session.wait_for_asynchronous_frames() };
             unsafe { session.invalidate() };
@@ -374,7 +441,7 @@ impl Drop for VideoDecoder {
 
 unsafe extern "C-unwind" fn decompression_callback(
     output_refcon: *mut c_void,
-    _source_refcon: *mut c_void,
+    source_refcon: *mut c_void,
     status: i32,
     _info_flags: VTDecodeInfoFlags,
     image_buffer: *mut CVImageBuffer,
@@ -385,6 +452,13 @@ unsafe extern "C-unwind" fn decompression_callback(
         return;
     };
     let context = unsafe { context.as_ref() };
+    let provenance = context
+        .provenance
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take(source_refcon.addr());
+    let correlated = provenance.is_some();
+    let provenance = provenance.unwrap_or_default();
     if status == 0 {
         if let Some(image_buffer) = NonNull::new(image_buffer) {
             let image = unsafe { CFRetained::retain(image_buffer) };
@@ -410,10 +484,14 @@ unsafe extern "C-unwind" fn decompression_callback(
                     BackendSubsystem::VideoToolbox,
                     format!("VideoToolbox did not preserve negotiated depth/chroma: pixel format {pixel_format:#010x}"),
                 );
-                context.in_flight.release();
+                if correlated {
+                    context.in_flight.release();
+                }
                 return;
             }
             let frame = DecodedFrame {
+                color: context.color,
+                provenance,
                 image,
                 color_space: context.color_space,
                 transfer: context.transfer,
@@ -449,7 +527,9 @@ unsafe extern "C-unwind" fn decompression_callback(
             .fetch_add(1, Ordering::Relaxed);
         context.failures.video_decode_failed(Some(status));
     }
-    context.in_flight.release();
+    if correlated {
+        context.in_flight.release();
+    }
 }
 
 fn frame_duration_seconds(duration: CMTime) -> f64 {
@@ -480,11 +560,95 @@ fn time_to_100ns(time: CMTime) -> i64 {
 fn create_format_description(
     format: &VideoFormat,
 ) -> Result<CFRetained<CMFormatDescription>, BackendError> {
-    match format {
+    format.resolved_color()?;
+    let description = match format {
         VideoFormat::H264(format) => create_h264_format_description(format),
         VideoFormat::H265(format) => create_h265_format_description(format),
         VideoFormat::Av1(format) => create_av1_format_description(format),
+    }?;
+    let Some(color) = format.color() else {
+        return Ok(description);
+    };
+    use opennow_media_protocol::{ChromaLocation, ColorRange, Matrix, Transfer};
+    let existing = unsafe { description.extensions() }
+        .ok_or_else(|| BackendError::Metal("video format has no codec extensions".into()))?;
+    let extensions = unsafe { CFMutableDictionary::new_copy(None, 0, Some(&existing)) }
+        .ok_or_else(|| BackendError::Metal("failed to copy video format extensions".into()))?;
+    let full_range = unsafe {
+        match color.range {
+            ColorRange::Full => kCFBooleanTrue,
+            ColorRange::Limited => kCFBooleanFalse,
+        }
     }
+    .ok_or_else(|| BackendError::Metal("CoreFoundation boolean is unavailable".into()))?;
+    let transfer = unsafe {
+        match color.transfer {
+            Transfer::Bt709 => kCMFormatDescriptionTransferFunction_ITU_R_709_2,
+            Transfer::Srgb => kCMFormatDescriptionTransferFunction_sRGB,
+            _ => return Err(crate::format::FormatError::UnsupportedExplicitColor.into()),
+        }
+    };
+    let matrix = unsafe {
+        match color.matrix {
+            Matrix::Bt601 => kCMFormatDescriptionYCbCrMatrix_ITU_R_601_4,
+            Matrix::Bt709 => kCMFormatDescriptionYCbCrMatrix_ITU_R_709_2,
+            Matrix::Bt2020NonConstant => {
+                return Err(crate::format::FormatError::UnsupportedExplicitColor.into());
+            }
+        }
+    };
+    let chroma = unsafe {
+        match color.chroma_location {
+            ChromaLocation::Left => kCMFormatDescriptionChromaLocation_Left,
+            ChromaLocation::Center => kCMFormatDescriptionChromaLocation_Center,
+        }
+    };
+    let defaults = unsafe {
+        [
+            (
+                kCMFormatDescriptionExtension_ColorPrimaries,
+                cf_ptr(kCMFormatDescriptionColorPrimaries_ITU_R_709_2),
+            ),
+            (
+                kCMFormatDescriptionExtension_TransferFunction,
+                cf_ptr(transfer),
+            ),
+            (kCMFormatDescriptionExtension_YCbCrMatrix, cf_ptr(matrix)),
+            (
+                kCMFormatDescriptionExtension_FullRangeVideo,
+                cf_ptr(full_range),
+            ),
+            (
+                kCMFormatDescriptionExtension_ChromaLocationTopField,
+                cf_ptr(chroma),
+            ),
+            (
+                kCMFormatDescriptionExtension_ChromaLocationBottomField,
+                cf_ptr(chroma),
+            ),
+        ]
+    };
+    for (key, value) in defaults {
+        unsafe { CFMutableDictionary::add_value(Some(&extensions), cf_ptr(key), value) };
+    }
+    let dimensions = unsafe { CMVideoFormatDescriptionGetDimensions(&description) };
+    let mut updated = ptr::null();
+    let status = unsafe {
+        CMVideoFormatDescriptionCreate(
+            None,
+            description.media_sub_type(),
+            dimensions.width,
+            dimensions.height,
+            Some(&extensions),
+            NonNull::from(&mut updated),
+        )
+    };
+    check_status("CMVideoFormatDescriptionCreate(color defaults)", status)?;
+    let updated = NonNull::new(updated.cast_mut()).ok_or(BackendError::AppleApi {
+        api: "CMVideoFormatDescriptionCreate(color defaults)",
+        status: -1,
+    })?;
+    Ok(unsafe { CFRetained::from_raw(updated) })
 }
 
 fn create_av1_format_description(
@@ -626,6 +790,179 @@ fn check_status(api: &'static str, status: i32) -> Result<(), BackendError> {
 #[cfg(test)]
 mod tests {
     use super::{InFlight, frame_duration_seconds, time_to_100ns};
+
+    #[test]
+    fn two_decoded_outputs_publish_exact_provenance_once_without_recording() {
+        use super::*;
+        use crate::EmbeddedFrameProducer;
+        use objc2_core_video::CVPixelBufferCreate;
+        use opennow_media_protocol::{FrameProvenance, SourceStamp};
+
+        let mut image = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                CVPixelBufferCreate(
+                    None,
+                    16,
+                    16,
+                    kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                    None,
+                    NonNull::from(&mut image),
+                )
+            },
+            0
+        );
+        let image = unsafe { CFRetained::from_raw(NonNull::new(image).unwrap()) };
+        for embedded in [false, true] {
+            let received = Arc::new(Mutex::new(Vec::new()));
+            let counters = Arc::new(Counters::default());
+            let failures = Arc::new(FailureReporter::default());
+            let mailbox = Arc::new(LatestMailbox::new());
+            let producer = EmbeddedFrameProducer::new(
+                Arc::clone(&mailbox),
+                Arc::clone(&counters),
+                Arc::clone(&failures),
+            );
+            let feedback = Arc::clone(&received);
+            let output = if embedded {
+                let publisher = producer.clone();
+                DecodedFrameOutput::EmbeddedMailbox {
+                    mailbox,
+                    publish: Some(Arc::new(move |frame| {
+                        let frame = publisher.decoded_frame(frame);
+                        feedback.lock().unwrap().push(frame.provenance());
+                        false
+                    })),
+                }
+            } else {
+                DecodedFrameOutput::PresentationQueue {
+                    queue: Arc::new(BoundedQueue::new(1)),
+                    decoded: Some(Arc::new(move |provenance| {
+                        feedback.lock().unwrap().push(provenance);
+                    })),
+                }
+            };
+            let in_flight = Arc::new(InFlight {
+                count: AtomicUsize::new(0),
+                maximum: 3,
+            });
+            let mut context = CallbackContext {
+                color: None,
+                provenance: Mutex::new(crate::provenance::DecoderProvenance::new(3)),
+                output,
+                counters: Arc::clone(&counters),
+                failures,
+                in_flight: Arc::clone(&in_flight),
+                color_space: VideoColorSpace::Bt709,
+                bit_depth: VideoBitDepth::Eight,
+                chroma: VideoChroma::Yuv420,
+                transfer: VideoTransfer::Sdr,
+            };
+            let sources = [Some(u64::MAX), Some(0)].map(|sender_frame_id| FrameProvenance {
+                attempt_generation: 23,
+                track_id: 5,
+                source: Some(SourceStamp {
+                    sender_frame_id,
+                    timestamp: u64::MAX,
+                    clock_rate_hz: 90_000,
+                    ssrc: Some(0),
+                }),
+            });
+            let tokens = sources.map(|provenance| {
+                assert!(in_flight.try_acquire());
+                context
+                    .provenance
+                    .lock()
+                    .unwrap()
+                    .insert(provenance)
+                    .unwrap()
+            });
+            for index in [1, 0] {
+                unsafe {
+                    decompression_callback(
+                        ptr::from_mut(&mut context).cast(),
+                        ptr::without_provenance_mut(tokens[index]),
+                        0,
+                        VTDecodeInfoFlags(0),
+                        ptr::from_ref::<CVImageBuffer>(&image).cast_mut(),
+                        CMTime::new(0, 90_000),
+                        CMTime::new(1500, 90_000),
+                    )
+                };
+            }
+            assert_eq!(*received.lock().unwrap(), [sources[1], sources[0]]);
+            assert_eq!(counters.video_decoded.load(Ordering::Relaxed), 2);
+            assert_eq!(in_flight.count.load(Ordering::Acquire), 0);
+            assert!(producer.acquire_latest().is_none());
+            context.output.clear();
+            assert_eq!(received.lock().unwrap().len(), 2);
+        }
+    }
+
+    #[test]
+    fn initial_av1_description_contains_explicit_color_defaults_and_codec_atoms() {
+        use super::*;
+        use opennow_media_protocol::{
+            ChromaLocation, ColorDescription, ColorRange, Matrix, Primaries, Transfer,
+        };
+        let color = ColorDescription {
+            range: ColorRange::Full,
+            primaries: Primaries::Bt709,
+            transfer: Transfer::Srgb,
+            matrix: Matrix::Bt601,
+            chroma_location: ChromaLocation::Left,
+        };
+        let format: VideoFormat =
+            Av1Format::new([0x81, 0x0d, 0x0c, 0], 1920, 1080, VideoColorSpace::Bt709)
+                .unwrap()
+                .with_color(Some(color))
+                .into();
+        let description = create_format_description(&format).unwrap();
+        for (key, expected) in unsafe {
+            [
+                (
+                    kCMFormatDescriptionExtension_ColorPrimaries,
+                    kCMFormatDescriptionColorPrimaries_ITU_R_709_2,
+                ),
+                (
+                    kCMFormatDescriptionExtension_TransferFunction,
+                    kCMFormatDescriptionTransferFunction_sRGB,
+                ),
+                (
+                    kCMFormatDescriptionExtension_YCbCrMatrix,
+                    kCMFormatDescriptionYCbCrMatrix_ITU_R_601_4,
+                ),
+                (
+                    kCMFormatDescriptionExtension_ChromaLocationTopField,
+                    kCMFormatDescriptionChromaLocation_Left,
+                ),
+                (
+                    kCMFormatDescriptionExtension_ChromaLocationBottomField,
+                    kCMFormatDescriptionChromaLocation_Left,
+                ),
+            ]
+        } {
+            assert_eq!(
+                unsafe { description.extension(key) }
+                    .unwrap()
+                    .downcast_ref::<CFString>(),
+                Some(expected)
+            );
+        }
+        assert!(
+            unsafe { description.extension(kCMFormatDescriptionExtension_FullRangeVideo) }
+                .unwrap()
+                .downcast_ref::<CFBoolean>()
+                .unwrap()
+                .value()
+        );
+        assert!(
+            unsafe {
+                description.extension(kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms)
+            }
+            .is_some()
+        );
+    }
     use objc2_core_media::{CMTime, CMTimeFlags};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -746,7 +1083,7 @@ mod tests {
             &format,
             DecodedFrameOutput::EmbeddedMailbox {
                 mailbox,
-                frame_available: None,
+                publish: None,
             },
             Arc::clone(&counters),
             Arc::clone(&failures),
@@ -755,10 +1092,23 @@ mod tests {
         .expect("hardware VideoToolbox session");
         let mut sample = (idr.len() as u32).to_be_bytes().to_vec();
         sample.extend_from_slice(&idr);
-        for _ in 0..3 {
+        for sender_frame_id in [Some(u64::MAX), Some(0), None] {
+            let provenance = opennow_media_protocol::FrameProvenance {
+                attempt_generation: 3,
+                track_id: 7,
+                source: Some(opennow_media_protocol::SourceStamp {
+                    sender_frame_id,
+                    timestamp: u64::MAX,
+                    clock_rate_hz: 90_000,
+                    ssrc: Some(0),
+                }),
+            };
             assert!(
                 decoder
-                    .submit(&sample, FrameTiming::from_90khz(90_000, 1500))
+                    .submit(
+                        &sample,
+                        FrameTiming::from_90khz(90_000, 1500).with_provenance(provenance)
+                    )
                     .unwrap()
             );
             assert_eq!(
@@ -789,6 +1139,7 @@ mod tests {
                 )
             }
             .expect("zero-copy IOSurface import and Metal conversion");
+            assert_eq!(recorded.provenance, provenance);
             assert!(!recorded.texture.is_null());
             assert_eq!((recorded.width, recorded.height), (64, 64));
             producer.release_graphics_resources();

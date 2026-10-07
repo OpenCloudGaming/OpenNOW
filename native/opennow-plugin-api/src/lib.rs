@@ -1,8 +1,12 @@
+#![doc = include_str!("../README.md")]
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fmt;
 
 pub mod manifest;
+pub mod media;
+pub mod provider;
 pub mod wire;
 
 pub use manifest::*;

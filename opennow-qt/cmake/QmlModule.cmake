@@ -315,6 +315,11 @@ qt_add_qml_module(opennow-qt
         qml/desktop/settings/pages/DesktopSettingsLookPage.qml
         qml/desktop/settings/pages/DesktopSettingsNetworkPage.qml
         qml/desktop/settings/pages/DesktopSettingsPluginsPage.qml
+        qml/desktop/sources/DesktopSourceLibraryScreen.qml
+        qml/desktop/sources/DesktopSourceSignInPanel.qml
+        qml/desktop/sources/DesktopSourceSettingRow.qml
+        qml/desktop/sources/DesktopSourceSettings.qml
+        qml/desktop/sources/DesktopSourceSwitcher.qml
         qml/desktop/settings/pages/DesktopSettingsProfilePage.qml
         qml/desktop/settings/pages/DesktopSettingsRecordingPage.qml
         qml/desktop/settings/pages/DesktopSettingsShortcutsPage.qml
@@ -360,6 +365,7 @@ qt_add_qml_module(opennow-qt
         qml/screens/PersistentStorageScreen.qml
         qml/screens/ProfilePinScreen.qml
         qml/screens/SettingsScreen.qml
+        qml/screens/SourceLibraryScreen.qml
         qml/screens/SignInScreen.qml
         qml/screens/StoreScreen.qml
         qml/screens/StreamScreen.qml
@@ -377,6 +383,9 @@ qt_add_qml_module(opennow-qt
         qml/state/ConnectionHealthState.qml
         qml/state/settings/OnboardingState.qml
         qml/state/plugins/PluginState.qml
+        qml/state/sources/SourceState.qml
+        qml/state/sources/SourceLibraryState.qml
+        qml/state/sources/SourceSessionState.qml
         qml/theme/Theme.qml
     RESOURCES
         ${OPENNOW_CONTROLLER_ICON_FILES}

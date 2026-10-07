@@ -24,13 +24,34 @@ pub(super) struct Transport {
     child: Mutex<Child>,
     owner: ProcessOwner,
     writes: SyncSender<Vec<u8>>,
-    replies: Mutex<Receiver<Result<PluginMessage, Failure>>>,
+    replies: Mutex<Receiver<Vec<u8>>>,
     stopped: Arc<AtomicBool>,
     failed: Arc<AtomicBool>,
 }
 
 impl Transport {
     pub(super) fn spawn(executable: &Path, data: &Path) -> Result<Arc<Self>, Failure> {
+        Self::spawn_checked(executable, data, QUEUE_LIMIT, |frame| {
+            serde_json::from_slice::<PluginMessage>(frame).is_ok()
+        })
+    }
+
+    pub(super) fn spawn_bounded(
+        executable: &Path,
+        data: &Path,
+        queue_limit: usize,
+    ) -> Result<Arc<Self>, Failure> {
+        Self::spawn_checked(executable, data, queue_limit, |frame| {
+            serde_json::from_slice::<Value>(frame).is_ok()
+        })
+    }
+
+    fn spawn_checked(
+        executable: &Path,
+        data: &Path,
+        queue_limit: usize,
+        valid_frame: fn(&[u8]) -> bool,
+    ) -> Result<Arc<Self>, Failure> {
         let mut command = Command::new(executable);
         command
             .env_clear()
@@ -62,8 +83,8 @@ impl Transport {
         }
         let stopped = Arc::new(AtomicBool::new(false));
         let failed = Arc::new(AtomicBool::new(false));
-        let (writes, writer_rx) = mpsc::sync_channel(QUEUE_LIMIT);
-        let (reader_tx, replies) = mpsc::sync_channel(QUEUE_LIMIT);
+        let (writes, writer_rx) = mpsc::sync_channel(queue_limit);
+        let (reader_tx, replies) = mpsc::sync_channel(queue_limit);
         let state = Arc::new(Self {
             child: Mutex::new(child),
             owner,
@@ -109,11 +130,8 @@ impl Transport {
                     };
                     for byte in &buffer[..count] {
                         if *byte == b'\n' {
-                            let value = serde_json::from_slice::<PluginMessage>(&frame)
-                                .map_err(|_| Failure::Protocol);
-                            frame.clear();
-                            let invalid = value.is_err();
-                            if reader_tx.try_send(value).is_err() || invalid {
+                            let valid = valid_frame(&frame);
+                            if reader_tx.try_send(std::mem::take(&mut frame)).is_err() || !valid {
                                 failure.store(true, Ordering::Release);
                                 return;
                             }
@@ -171,16 +189,23 @@ impl Transport {
     }
 
     pub(super) fn receive(&self, timeout: Duration) -> Result<Option<PluginMessage>, Failure> {
+        self.receive_frame(timeout)?
+            .map(|frame| serde_json::from_slice(&frame).map_err(|_| Failure::Protocol))
+            .transpose()
+    }
+
+    pub(super) fn receive_frame(&self, timeout: Duration) -> Result<Option<Vec<u8>>, Failure> {
+        let replies = self.replies.lock().unwrap_or_else(|e| e.into_inner());
+        match replies.try_recv() {
+            Ok(frame) => return Ok(Some(frame)),
+            Err(mpsc::TryRecvError::Disconnected) => return Err(Failure::Closed),
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
         if self.stopped.load(Ordering::Acquire) || self.failed.load(Ordering::Acquire) {
             return Err(Failure::Closed);
         }
-        match self
-            .replies
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .recv_timeout(timeout)
-        {
-            Ok(value) => value.map(Some),
+        match replies.recv_timeout(timeout) {
+            Ok(value) => Ok(Some(value)),
             Err(mpsc::RecvTimeoutError::Timeout) => Ok(None),
             Err(mpsc::RecvTimeoutError::Disconnected) => Err(Failure::Closed),
         }

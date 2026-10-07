@@ -151,11 +151,9 @@ impl VideoQueue {
     /// The caller already asked for one IDR. Keep discarding deltas until that
     /// IDR arrives, and do not ask again for each discarded delta.
     ///
-    /// Embedded D3D11 is the production caller. The same gate is covered by unit tests.
-    #[cfg(any(windows, test))]
     pub fn hold_keyframe_request(&self) {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        state.waiting_for_keyframe = true;
+        Self::invalidate_locked(&mut state);
         state.request_pending = true;
     }
 
@@ -175,6 +173,7 @@ mod tests {
 
     fn frame(id: u32, keyframe: bool) -> EncodedFrame {
         EncodedFrame {
+            provenance: Default::default(),
             mid: "video".into(),
             codec: MediaCodec::H264,
             data: Arc::from([1]),
@@ -270,6 +269,27 @@ mod tests {
         let idr = queue.push(frame(3, true)).unwrap();
         assert!(!idr.request_keyframe);
         assert!(queue.pop_packet().unwrap().reset_decoder);
+    }
+
+    #[test]
+    fn holding_a_keyframe_request_atomically_invalidates_queued_and_dequeued_video() {
+        let queue = VideoQueue::new(3);
+        queue.push(frame(1, true)).unwrap();
+        let in_flight = queue.pop_packet().unwrap();
+        queue.push(frame(2, false)).unwrap();
+        queue.hold_keyframe_request();
+        assert!(
+            queue
+                .submit_if_current(in_flight.generation, || ())
+                .is_none()
+        );
+        let rejected = queue.push(frame(3, false)).unwrap();
+        assert_eq!(rejected.dropped, 1);
+        assert!(!rejected.request_keyframe);
+        queue.push(frame(4, true)).unwrap();
+        let recovered = queue.pop_packet().unwrap();
+        assert_eq!(recovered.frame.frame_index, Some(4));
+        assert!(recovered.reset_decoder);
     }
 
     #[test]

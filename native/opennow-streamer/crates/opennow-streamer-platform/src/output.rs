@@ -97,6 +97,21 @@ fn select_playback_device<'a>(
     Ok(Some(name))
 }
 
+fn open_stream_audio_playback(
+    sdl: &sdl2::Sdl,
+    output: &Arc<OutputBuffers>,
+    selected: &AudioOutputDevice,
+    enabled: bool,
+) -> Result<Option<AudioDevice<StreamAudioCallback>>, String> {
+    if !enabled {
+        return Ok(None);
+    }
+    let audio = sdl
+        .audio()
+        .map_err(|error| format!("SDL audio initialization failed: {error}"))?;
+    open_audio_playback(&audio, output, selected).map(Some)
+}
+
 fn open_audio_playback(
     audio: &sdl2::AudioSubsystem,
     output: &Arc<OutputBuffers>,
@@ -453,7 +468,7 @@ pub(crate) struct LinuxHardwareOutput {
     window: sdl2::video::Window,
     video: sdl2::VideoSubsystem,
     event_pump: sdl2::EventPump,
-    audio: AudioDevice<StreamAudioCallback>,
+    audio: Option<AudioDevice<StreamAudioCallback>>,
     output: Arc<OutputBuffers>,
     external_renderer: bool,
     stream_size: (u32, u32),
@@ -477,9 +492,6 @@ impl LinuxHardwareOutput {
         let video = sdl
             .video()
             .map_err(|error| format!("SDL video initialization failed: {error}"))?;
-        let audio_subsystem = sdl
-            .audio()
-            .map_err(|error| format!("SDL audio initialization failed: {error}"))?;
         let video_driver = video.current_video_driver();
         if !matches!(video_driver, "x11" | "wayland") {
             return Err(format!(
@@ -525,7 +537,7 @@ impl LinuxHardwareOutput {
         } else {
             NativeSurface::new(&window)
         };
-        let audio = open_audio_playback(&audio_subsystem, &output, audio_device)?;
+        let audio = open_stream_audio_playback(&sdl, &output, audio_device, stream.audio_enabled)?;
         let event_pump = sdl
             .event_pump()
             .map_err(|error| format!("native window event pump creation failed: {error}"))?;
@@ -576,7 +588,9 @@ impl LinuxHardwareOutput {
         self.paused = false;
         self.frame_pacer.reset();
         self.output.clear();
-        self.audio.resume();
+        if let Some(audio) = &self.audio {
+            audio.resume();
+        }
         if let Some(surface) = surface {
             self.update_surface(surface)?;
         }
@@ -592,12 +606,16 @@ impl LinuxHardwareOutput {
             if let Some(raw_input) = self.raw_input.as_ref() {
                 raw_input.set_enabled(false);
             }
-            self.audio.pause();
+            if let Some(audio) = &self.audio {
+                audio.pause();
+            }
             self.output.clear();
         } else {
             self.input_capture
                 .set_input_paused(false, &self._sdl, &mut self.window);
-            self.audio.resume();
+            if let Some(audio) = &self.audio {
+                audio.resume();
+            }
         }
     }
 
@@ -607,7 +625,9 @@ impl LinuxHardwareOutput {
             raw_input.set_enabled(false);
         }
         self.output.clear();
-        self.audio.pause();
+        if let Some(audio) = &self.audio {
+            audio.pause();
+        }
         self.presenter = None;
         self.surface_size = None;
         if let Ok(surface) = self.native_surface.as_mut() {
@@ -1537,7 +1557,7 @@ pub(crate) struct SoftwareOutput {
     texture_size: Option<(u32, u32)>,
     texture_format: Option<PixelFormatEnum>,
     event_pump: sdl2::EventPump,
-    audio: AudioDevice<StreamAudioCallback>,
+    audio: Option<AudioDevice<StreamAudioCallback>>,
     output: Arc<OutputBuffers>,
     external_renderer: bool,
     #[cfg(target_os = "linux")]
@@ -1559,9 +1579,6 @@ impl SoftwareOutput {
         let video = sdl
             .video()
             .map_err(|error| format!("SDL video initialization failed: {error}"))?;
-        let audio_subsystem = sdl
-            .audio()
-            .map_err(|error| format!("SDL audio initialization failed: {error}"))?;
         let external_renderer = external_renderer_enabled();
         let mut window_builder = video.window("OpenNOW Stream", 1280, 720);
         window_builder
@@ -1586,8 +1603,10 @@ impl SoftwareOutput {
         canvas.clear();
         canvas.present();
 
-        let audio = open_audio_playback(&audio_subsystem, &output, audio_device)?;
-        if audio.spec().freq != AUDIO_SAMPLE_RATE || audio.spec().channels != AUDIO_CHANNELS {
+        let audio = open_stream_audio_playback(&sdl, &output, audio_device, stream.audio_enabled)?;
+        if let Some(audio) = audio.as_ref()
+            && (audio.spec().freq != AUDIO_SAMPLE_RATE || audio.spec().channels != AUDIO_CHANNELS)
+        {
             return Err(format!(
                 "native audio output returned unsupported format: {} Hz, {} channels",
                 audio.spec().freq,
@@ -1659,7 +1678,9 @@ impl SoftwareOutput {
             self.presented_linux_frame = false;
         }
         self.output.clear();
-        self.audio.resume();
+        if let Some(audio) = &self.audio {
+            audio.resume();
+        }
         if let Some(surface) = surface {
             self.update_surface(surface)?;
         }
@@ -1675,12 +1696,16 @@ impl SoftwareOutput {
             if let Some(raw_input) = self.raw_input.as_ref() {
                 raw_input.set_enabled(false);
             }
-            self.audio.pause();
+            if let Some(audio) = &self.audio {
+                audio.pause();
+            }
             self.output.clear();
         } else {
             self.input_capture
                 .set_input_paused(false, &self._sdl, self.canvas.window_mut());
-            self.audio.resume();
+            if let Some(audio) = &self.audio {
+                audio.resume();
+            }
         }
     }
 
@@ -1692,7 +1717,9 @@ impl SoftwareOutput {
             raw_input.set_enabled(false);
         }
         self.flush_captured_input();
-        self.audio.pause();
+        if let Some(audio) = &self.audio {
+            audio.pause();
+        }
         self.output.clear();
         if let Ok(surface) = self.native_surface.as_mut() {
             surface.hide();
@@ -2354,7 +2381,7 @@ impl ActiveOutput {
         }
         #[cfg(target_os = "windows")]
         if use_hardware || stream.codec != crate::media::MediaVideoCodec::H264 {
-            if audio_device.device_name().is_some() {
+            if stream.audio_enabled && audio_device.device_name().is_some() {
                 return Err("Fixed audio output selection requires the embedded Windows stream view or SDL software output".to_owned());
             }
             let decoder_mode = if use_hardware {
@@ -2454,7 +2481,7 @@ impl ActiveOutput {
                 }
             }),
             #[cfg(target_os = "macos")]
-            Self::Mac(output) => output.pump().map(|_| OutputEvent::None),
+            Self::Mac(output) => output.pump(),
         }
     }
 
@@ -2558,6 +2585,8 @@ impl ActiveOutput {
 pub(crate) enum OutputEvent {
     None,
     Presented(&'static str),
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    VideoFrameDecoded(opennow_media_protocol::FrameProvenance),
     #[cfg(target_os = "windows")]
     RequestKeyframe,
     #[cfg(target_os = "windows")]
@@ -2566,8 +2595,11 @@ pub(crate) enum OutputEvent {
         recovered: bool,
         message: Option<String>,
     },
-    #[cfg(target_os = "windows")]
-    QueueDropped(&'static str),
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    QueueDropped {
+        media: &'static str,
+        count: usize,
+    },
     #[cfg(target_os = "windows")]
     Fatal(String),
 }
@@ -2813,6 +2845,7 @@ impl WindowsOutput {
                 graphics_api,
                 decoder_mode,
                 BackendConfig {
+                    audio_enabled: stream.audio_enabled,
                     video: VideoFormat {
                         codec: match stream.codec {
                             crate::media::MediaVideoCodec::H264 => VideoCodec::H264,
@@ -2848,7 +2881,8 @@ impl WindowsOutput {
                         color_primaries:
                             opennow_streamer_platform_windows::VideoColorPrimaries::Bt709,
                         color_matrix: opennow_streamer_platform_windows::VideoColorMatrix::Bt709,
-                    },
+                    }
+                    .with_color(stream.color),
                     audio: AudioFormat {
                         sample_rate: AUDIO_SAMPLE_RATE as u32,
                         channels: AUDIO_CHANNELS as u16,
@@ -2913,6 +2947,9 @@ impl WindowsOutput {
             return Ok(OutputEvent::None);
         };
         Ok(match event {
+            BackendEvent::VideoFrameDecoded { provenance } => {
+                OutputEvent::VideoFrameDecoded(provenance)
+            }
             BackendEvent::FirstFramePresented => {
                 OutputEvent::Presented(match (self.graphics_api, self.decoder_mode) {
                     (WindowsGraphicsApi::D3d12, WindowsDecoderMode::Hardware) => {
@@ -2943,7 +2980,10 @@ impl WindowsOutput {
                 if subsystem == Subsystem::VideoDecode {
                     self.bridge.require_keyframe();
                 }
-                OutputEvent::QueueDropped(subsystem_label(subsystem))
+                OutputEvent::QueueDropped {
+                    media: subsystem_label(subsystem),
+                    count: 1,
+                }
             }
             BackendEvent::StateChanged(_) | BackendEvent::VideoFormatChanged(_) => {
                 OutputEvent::None
@@ -3151,6 +3191,23 @@ mod tests {
     }
 
     #[test]
+    fn video_only_output_does_not_open_or_validate_an_audio_device() {
+        let sdl = sdl2::init().unwrap();
+        let output = Arc::new(OutputBuffers::new());
+        let missing = AudioOutputDevice::new("opennow-test-missing-output".to_owned()).unwrap();
+        let initialized = unsafe { sdl2::sys::SDL_WasInit(sdl2::sys::SDL_INIT_AUDIO) };
+        assert!(
+            open_stream_audio_playback(&sdl, &output, &missing, false)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            unsafe { sdl2::sys::SDL_WasInit(sdl2::sys::SDL_INIT_AUDIO) },
+            initialized
+        );
+    }
+
+    #[test]
     fn audio_enumeration_excludes_all_ambiguous_names() {
         let device = |name: &str| PlaybackDevice {
             id: name.to_owned(),
@@ -3265,6 +3322,8 @@ mod tests {
         use opennow_streamer_platform_linux::StreamFormat;
 
         let frame = |timestamp_us| LinuxDecodedVideoFrame {
+            provenance: Default::default(),
+            correlation_timestamp_us: None,
             format: StreamFormat::video_default(2, 2).expect("format"),
             planes: Vec::new(),
             dmabuf: None,

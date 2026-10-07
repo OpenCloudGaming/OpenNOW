@@ -15,6 +15,7 @@ linux-ffmpeg = ["opennow-streamer-platform/linux-ffmpeg"]
 linux-ffmpeg-bundled = ["opennow-streamer-platform/linux-ffmpeg-bundled"]
 
 [dependencies]
+opennow-media-protocol.workspace = true
 opennow-streamer-core = { path = "../opennow-streamer-core" }
 opennow-streamer-hid = { path = "../opennow-streamer-hid" }
 opennow-streamer-platform = { path = "../opennow-streamer-platform" }

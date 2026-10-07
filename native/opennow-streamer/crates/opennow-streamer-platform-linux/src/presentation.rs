@@ -2417,6 +2417,8 @@ mod tests {
         use crate::{ChromaLocation, FramePlane, StreamFormat};
 
         let frame = DecodedVideoFrame {
+            provenance: Default::default(),
+            correlation_timestamp_us: None,
             format: StreamFormat {
                 width: 1920,
                 height: 1080,

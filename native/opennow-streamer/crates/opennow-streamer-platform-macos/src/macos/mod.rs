@@ -89,6 +89,8 @@ pub enum BackendError {
     MainThreadRequired,
     #[error("the backend is stopping or stopped")]
     Stopped,
+    #[error("audio is disabled for this stream")]
+    AudioDisabled,
     #[error("video access unit is {actual} bytes; configured maximum is {maximum}")]
     AccessUnitTooLarge { actual: usize, maximum: usize },
     #[error("Opus packet is {0} bytes; the maximum is 1275")]
@@ -334,6 +336,9 @@ impl StreamSink {
         if packet.len() > MAX_OPUS_PACKET_BYTES {
             return Err(BackendError::OpusPacketTooLarge(packet.len()));
         }
+        if !self.shared.audio_enabled {
+            return Err(BackendError::AudioDisabled);
+        }
         self.submit_opus_owned(packet.to_vec())
     }
 
@@ -419,6 +424,9 @@ impl StreamSink {
 
     pub fn reconfigure_audio(&self, format: AudioFormat) -> Result<(), BackendError> {
         format.validate()?;
+        if !self.shared.audio_enabled {
+            return Err(BackendError::AudioDisabled);
+        }
         if self.shared.lifecycle.state() != BackendState::Running {
             return Err(BackendError::Stopped);
         }
@@ -463,6 +471,7 @@ impl StreamSink {
 }
 
 struct Shared {
+    audio_enabled: bool,
     audio_muted: Arc<AtomicBool>,
     lifecycle: Lifecycle,
     paused: AtomicBool,
@@ -524,13 +533,30 @@ pub struct MacOsBackend {
 
 impl MacOsBackend {
     pub fn start(config: BackendConfig) -> Result<Self, BackendError> {
+        Self::start_inner(config, None)
+    }
+
+    pub fn start_with_decoded_callback(
+        config: BackendConfig,
+        decoded: impl Fn(opennow_media_protocol::FrameProvenance) + Send + Sync + 'static,
+    ) -> Result<Self, BackendError> {
+        Self::start_inner(config, Some(Arc::new(decoded)))
+    }
+
+    fn start_inner(
+        config: BackendConfig,
+        decoded: Option<Arc<dyn Fn(opennow_media_protocol::FrameProvenance) + Send + Sync>>,
+    ) -> Result<Self, BackendError> {
         let main_thread = MainThreadMarker::new().ok_or(BackendError::MainThreadRequired)?;
         config.validate()?;
         let surface = SurfaceOwner::attach(config.surface, main_thread)?;
         let counters = Arc::new(Counters::default());
         let failures = Arc::new(FailureReporter::default());
         let video_queue = Arc::new(BoundedQueue::new(config.queues.decoded_video_frames));
-        let video_output = DecodedFrameOutput::PresentationQueue(Arc::clone(&video_queue));
+        let video_output = DecodedFrameOutput::PresentationQueue {
+            queue: Arc::clone(&video_queue),
+            decoded,
+        };
         let presenter = PresenterHandle::start(
             surface.metal_layer(),
             surface.presentation_visibility(),
@@ -545,16 +571,22 @@ impl MacOsBackend {
             Arc::clone(&failures),
             config.queues.video_frames_in_flight,
         )?;
-        let audio = AudioPipeline::start(
-            config.audio,
-            config.audio_output_device.as_deref(),
-            Arc::clone(&config.audio_muted),
-            config.queues.opus_packets,
-            config.queues.pcm_milliseconds,
-            Arc::clone(&counters),
-            Arc::clone(&failures),
-        )?;
+        let audio = config
+            .audio_enabled
+            .then(|| {
+                AudioPipeline::start(
+                    config.audio,
+                    config.audio_output_device.as_deref(),
+                    Arc::clone(&config.audio_muted),
+                    config.queues.opus_packets,
+                    config.queues.pcm_milliseconds,
+                    Arc::clone(&counters),
+                    Arc::clone(&failures),
+                )
+            })
+            .transpose()?;
         let shared = Arc::new(Shared {
+            audio_enabled: config.audio_enabled,
             audio_muted: config.audio_muted,
             lifecycle: Lifecycle::running(),
             paused: AtomicBool::new(false),
@@ -562,7 +594,7 @@ impl MacOsBackend {
             failures,
             video_output,
             video: Mutex::new(Some(video)),
-            audio: Mutex::new(Some(audio)),
+            audio: Mutex::new(audio),
             presenter: Mutex::new(Some(presenter)),
             video_frames_in_flight: config.queues.video_frames_in_flight,
             opus_packets: config.queues.opus_packets,
@@ -609,26 +641,14 @@ impl MacOsBackend {
         let mailbox = Arc::new(LatestMailbox::new());
         let frame_producer =
             EmbeddedFrameProducer::new(mailbox, Arc::clone(&counters), Arc::clone(&failures));
-        let frame_available = publish.map(|publish| {
+        let publish = publish.map(|publish| {
             let producer = frame_producer.clone();
-            Arc::new(move || {
-                if let Some(frame) = producer.acquire_latest() {
-                    let replaced = publish(frame);
-                    if replaced {
-                        let counters = producer.counters();
-                        counters
-                            .video_decoded_queue_dropped
-                            .fetch_add(1, Ordering::Relaxed);
-                        counters
-                            .video_frames_dropped
-                            .fetch_add(1, Ordering::Relaxed);
-                    }
-                }
-            }) as Arc<dyn Fn() + Send + Sync>
+            Arc::new(move |frame| publish(producer.decoded_frame(frame)))
+                as Arc<dyn Fn(video::DecodedFrame) -> bool + Send + Sync>
         });
         let video_output = DecodedFrameOutput::EmbeddedMailbox {
             mailbox: Arc::clone(frame_producer.mailbox()),
-            frame_available,
+            publish,
         };
         let video = VideoDecoder::new(
             &config.video,
@@ -637,16 +657,22 @@ impl MacOsBackend {
             Arc::clone(&failures),
             config.queues.video_frames_in_flight,
         )?;
-        let audio = AudioPipeline::start(
-            config.audio,
-            config.audio_output_device.as_deref(),
-            Arc::clone(&config.audio_muted),
-            config.queues.opus_packets,
-            config.queues.pcm_milliseconds,
-            Arc::clone(&counters),
-            Arc::clone(&failures),
-        )?;
+        let audio = config
+            .audio_enabled
+            .then(|| {
+                AudioPipeline::start(
+                    config.audio,
+                    config.audio_output_device.as_deref(),
+                    Arc::clone(&config.audio_muted),
+                    config.queues.opus_packets,
+                    config.queues.pcm_milliseconds,
+                    Arc::clone(&counters),
+                    Arc::clone(&failures),
+                )
+            })
+            .transpose()?;
         let shared = Arc::new(Shared {
+            audio_enabled: config.audio_enabled,
             audio_muted: config.audio_muted,
             lifecycle: Lifecycle::running(),
             paused: AtomicBool::new(false),
@@ -654,7 +680,7 @@ impl MacOsBackend {
             failures,
             video_output,
             video: Mutex::new(Some(video)),
-            audio: Mutex::new(Some(audio)),
+            audio: Mutex::new(audio),
             presenter: Mutex::new(None),
             video_frames_in_flight: config.queues.video_frames_in_flight,
             opus_packets: config.queues.opus_packets,
@@ -792,4 +818,48 @@ impl Drop for MacOsBackend {
 fn assert_stream_sink_is_send_and_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<StreamSink>();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn video_only_sink_cannot_start_audio_through_reconfiguration() {
+        let shared = Arc::new(Shared {
+            audio_enabled: false,
+            audio_muted: Arc::new(AtomicBool::new(false)),
+            lifecycle: Lifecycle::running(),
+            paused: AtomicBool::new(false),
+            counters: Arc::new(Counters::default()),
+            failures: Arc::new(FailureReporter::default()),
+            video_output: DecodedFrameOutput::PresentationQueue {
+                queue: Arc::new(BoundedQueue::new(1)),
+                decoded: None,
+            },
+            video: Mutex::new(None),
+            audio: Mutex::new(None),
+            presenter: Mutex::new(None),
+            video_frames_in_flight: 1,
+            opus_packets: 1,
+            pcm_milliseconds: 10,
+            audio_output_device: None,
+            max_video_access_unit_bytes: 1024,
+        });
+        let sink = StreamSink {
+            shared: Arc::clone(&shared),
+        };
+        assert!(matches!(
+            sink.submit_opus(&[0xf8, 0xff, 0xfe]),
+            Err(BackendError::AudioDisabled)
+        ));
+        assert!(matches!(
+            sink.reconfigure_audio(AudioFormat::OPUS_STEREO_48KHZ),
+            Err(BackendError::AudioDisabled)
+        ));
+        assert!(shared.audio.lock().unwrap().is_none());
+        assert_eq!(sink.state(), BackendState::Running);
+        shared.stop();
+        assert_eq!(sink.state(), BackendState::Stopped);
+    }
 }

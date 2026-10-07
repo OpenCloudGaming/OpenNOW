@@ -556,7 +556,10 @@ impl Worker {
                 config.video.codec.label()
             ))
         })?;
-        let audio = AudioRenderer::new(config.audio)
+        let audio = config
+            .audio_enabled
+            .then(|| AudioRenderer::new(config.audio))
+            .transpose()
             .map_err(|error| BackendError::Startup(format!("WASAPI: {error}")))?;
         let presentation_clock = PresentationClock::new(config.video.frame_duration_100ns());
         shared.set_state(LifecycleState::Running);
@@ -571,7 +574,7 @@ impl Worker {
             decoded_video: VecDeque::with_capacity(ADAPTIVE_VIDEO_QUEUE_CAPACITY),
             presentation_clock,
             first_frame_presented: false,
-            audio: Some(audio),
+            audio,
             audio_recovery: None,
             _runtime: runtime,
         })

@@ -194,6 +194,12 @@ Column {
                             font.family: Theme.bodyFont; font.pixelSize: DesktopTokens.captionSize; font.weight: Font.DemiBold
                             wrapMode: Text.WordWrap
                         }
+                        DesktopSourceSettings {
+                            sourceId: pluginEntry.modelData.id
+                            availableWidth: parent.width - parent.leftPadding - parent.rightPadding
+                            visible: ShellStore.sourceOwnerState.sourceById(pluginEntry.modelData.id) !== null
+                                && pluginEntry.modelData.id !== ShellStore.sourceOwnerState.gfnId
+                        }
                         Row {
                             spacing: DesktopTokens.px(10)
                             topPadding: DesktopTokens.px(4)

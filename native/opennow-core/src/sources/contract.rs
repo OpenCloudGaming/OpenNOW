@@ -68,6 +68,95 @@ pub trait CatalogSource: Send + Sync {
     ) -> Result<CatalogPage, SourceError>;
 }
 
+pub struct ProviderContext<'a> {
+    pub cancellation: &'a Cancellation,
+    pub runtime_capabilities: Option<&'a Value>,
+    pub gfn_settings: Option<&'a Value>,
+}
+
+pub enum NativePreparation {
+    Gfn(Value),
+    External(opennow_plugin_api::media::PreparedWorker),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AllocationDisposition {
+    NotDispatched,
+    MayHaveAllocated,
+    Rejected,
+    Allocated { session_id: String },
+    CleanedUp { session_id: String },
+}
+
+pub struct ProviderCompletion {
+    pub result: Result<opennow_plugin_api::provider::ProviderReply, SourceError>,
+    pub effects: Vec<opennow_plugin_api::provider::ProviderEffect>,
+    pub allocation: Option<opennow_plugin_api::provider::AllocationTicket>,
+    pub dispatched: bool,
+    pub allocation_disposition: Option<AllocationDisposition>,
+    pub dispatched_generation: Option<u64>,
+}
+
+pub struct ProviderNotification {
+    pub request: opennow_plugin_api::provider::ProviderRequest,
+    pub response: opennow_plugin_api::provider::ProviderResponseV2,
+}
+
+impl ProviderCompletion {
+    #[cfg(test)]
+    pub fn reply(reply: opennow_plugin_api::provider::ProviderReply) -> Self {
+        Self {
+            result: Ok(reply),
+            effects: Vec::new(),
+            allocation: None,
+            dispatched: true,
+            allocation_disposition: None,
+            dispatched_generation: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn failed(error: SourceError) -> Self {
+        Self {
+            result: Err(error),
+            effects: Vec::new(),
+            allocation: None,
+            dispatched: true,
+            allocation_disposition: None,
+            dispatched_generation: None,
+        }
+    }
+
+    pub fn not_dispatched(error: SourceError) -> Self {
+        Self {
+            result: Err(error),
+            effects: Vec::new(),
+            allocation: None,
+            dispatched: false,
+            allocation_disposition: None,
+            dispatched_generation: None,
+        }
+    }
+}
+
+pub trait ProviderSource: CatalogSource {
+    fn provider_capabilities(&self) -> Vec<opennow_plugin_api::provider::Capability>;
+    fn auth_kinds(&self) -> Vec<opennow_plugin_api::provider::AuthKind>;
+    fn provider_call(
+        &self,
+        request: &opennow_plugin_api::provider::ProviderRequest,
+        context: &ProviderContext<'_>,
+    ) -> ProviderCompletion;
+    fn prepare_native(
+        &self,
+        request: &opennow_plugin_api::provider::PrepareSession,
+        context: &ProviderContext<'_>,
+    ) -> Result<NativePreparation, SourceError>;
+    fn take_notifications(&self) -> Vec<ProviderNotification> {
+        Vec::new()
+    }
+}
+
 pub type CoreEvent = (&'static str, Value);
 pub type LegacyResult = Result<(Value, Option<CoreEvent>), (String, String)>;
 
@@ -76,6 +165,7 @@ pub struct Completion {
     pub required_events: Vec<CoreEvent>,
     pub receipt: Option<Box<dyn AllocationReceipt>>,
     pub reporting: Vec<ReportingEffect>,
+    pub allocation_disposition: Option<AllocationDisposition>,
 }
 
 pub enum ReportingEffect {
@@ -104,6 +194,7 @@ impl From<LegacyResult> for Completion {
             required_events: Vec::new(),
             receipt: None,
             reporting: Vec::new(),
+            allocation_disposition: None,
         }
     }
 }
@@ -124,7 +215,7 @@ pub enum SessionOccupancy {
     Unknown,
 }
 
-pub trait BuiltinModule: CatalogSource {
+pub trait BuiltinModule: ProviderSource {
     fn routes(&self) -> &'static [&'static str];
     fn core_capabilities(&self) -> &'static [&'static str];
     fn dispatch(
@@ -137,4 +228,24 @@ pub trait BuiltinModule: CatalogSource {
     fn session_occupancy(&self) -> SessionOccupancy;
     fn settings_changed(&self);
     fn shutdown(&self);
+    fn set_enabled(&self, enabled: bool);
+    fn legacy_account(
+        &self,
+        params: &Value,
+    ) -> Result<opennow_plugin_api::provider::AccountKey, SourceError>;
+    fn legacy_session_result(
+        &self,
+        method: &str,
+        params: &Value,
+        value: &Value,
+    ) -> Result<Option<(opennow_plugin_api::provider::SessionKey, bool)>, SourceError>;
+    fn apply_profile(
+        &self,
+        base: &Value,
+        profile: &opennow_plugin_api::provider::StreamPreferences,
+    ) -> Value;
+    fn legacy_control_session(
+        &self,
+        params: &Value,
+    ) -> Result<Option<opennow_plugin_api::provider::SessionKey>, SourceError>;
 }

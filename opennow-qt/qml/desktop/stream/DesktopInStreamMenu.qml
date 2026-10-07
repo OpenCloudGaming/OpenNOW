@@ -27,9 +27,10 @@ FocusScope {
     property int pendingAction: -1
     property bool closing: false
     property double nowMs: Date.now()
-    readonly property var game: ShellStore.selectedGame || ({})
+    readonly property var game: ShellStore.sourceStreamGame || ShellStore.selectedGame || ({})
     readonly property var session: ShellStore.activeSession || ({})
-    readonly property var profile: session.negotiatedStreamProfile || session.streamProfile || ({})
+    readonly property var profile: ShellStore.sourceStreamActive ? ShellStore.activeStreamProfile
+        : session.negotiatedStreamProfile || session.streamProfile || ({})
     readonly property var live: ShellStore.streamer || ({})
     readonly property bool liveTelemetryAvailable: ["starting", "negotiating", "connecting", "streaming", "error"]
         .indexOf(String(live.status || "")) >= 0
@@ -163,6 +164,7 @@ FocusScope {
                 y: 4
                 width: 300
                 text: String(root.game.title || qsTr("GeForce NOW"))
+                textFormat: Text.PlainText
                 color: DesktopTokens.text
                 font.family: DesktopTokens.displayFont
                 font.pixelSize: 20
@@ -450,7 +452,7 @@ FocusScope {
         }
     }
 
-    Timer { interval: 1000; repeat: true; running: root.visible; onTriggered: root.nowMs = Date.now() }
+    Timer { interval: 1000; repeat: true; running: root.visible; triggeredOnStart: true; onTriggered: root.nowMs = Date.now() }
     onOpenedChanged: if (opened) {
         closing = false
         pendingAction = -1

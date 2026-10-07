@@ -136,7 +136,16 @@ fn run() -> Result<(), String> {
         plugins::PluginManager::open(&data_dir, output_tx.clone())
             .map_err(|error| error.to_string())?,
     );
-    let sources = Arc::new(SourceHost::new(builtin, plugins));
+    let sources = Arc::new(
+        SourceHost::new(
+            builtin,
+            plugins,
+            &data_dir,
+            output_tx.clone(),
+            Arc::clone(&settings),
+        )
+        .map_err(|error| error.to_string())?,
+    );
     let initializing_sources = SourceShutdown(Arc::clone(&sources));
     let core = Arc::new(AppCore {
         session_update_gate: Mutex::new(()),
@@ -302,9 +311,10 @@ fn core_capabilities(core: &AppCore) -> Vec<&'static str> {
     let mut capabilities = vec![
         "plugins.v1",
         "sources.catalog.v1",
+        "sources.v2",
         "settings",
         "catalogArtworkCache.v1",
-        "nativeStreamer.v7",
+        "nativeStreamer.v8",
         "nativeStreamer.ownedNvstNegotiation",
         "nativeStreamer.dynamicSurface",
         "nativeStreamer.acceptanceEvidence",
@@ -423,6 +433,18 @@ fn dispatch(
         || {
             if let Some(completion) =
                 core.sources
+                    .dispatch_private(method, params, &requests::current())
+            {
+                return completion;
+            }
+            if method.starts_with("sources.") && method != "sources.catalog.page" {
+                return core
+                    .sources
+                    .dispatch_sources(method, params, &requests::current());
+            }
+
+            if let Some(completion) =
+                core.sources
                     .dispatch_builtin(method, params, &requests::current())
             {
                 return completion;
@@ -444,7 +466,17 @@ fn with_session_update_gate(
 ) -> Completion {
     let session_transition = matches!(
         method,
-        "session.create" | "session.claim" | "session.poll" | "streamer.start" | "streamer.prepare"
+        "session.create"
+            | "session.claim"
+            | "session.poll"
+            | "session.active.get"
+            | "streamer.start"
+            | "streamer.prepare"
+            | "sources.session.create"
+            | "sources.session.claim"
+            | "sources.session.reconcile"
+            | "sources.session.poll"
+            | "streamer.source.prepare"
     );
     let _session_update_guard = if session_transition || method == "updater.install" {
         match gate.try_lock() {
@@ -1044,6 +1076,9 @@ fn reporting_enabled(core: &AppCore) -> bool {
 }
 
 fn track(core: &AppCore, event: &str, props: Value) -> Value {
+    if !core.sources.allows_legacy_reporting() {
+        return json!({"accepted":false,"reason":"provider_privacy"});
+    }
     if !reporting_enabled(core) {
         return json!({"accepted":false,"reason":"disabled"});
     }

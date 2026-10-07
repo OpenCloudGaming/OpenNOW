@@ -14,7 +14,33 @@ pub(crate) struct ConversionParameters {
     pub blue_cb: f32,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RenderParameters {
+    pub conversion: ConversionParameters,
+    pub chroma_sample_offset: f32,
+}
+
 impl ConversionParameters {
+    pub(crate) fn with_chroma_location(
+        self,
+        location: opennow_media_protocol::ChromaLocation,
+        luma_width: usize,
+        subsampled: bool,
+    ) -> RenderParameters {
+        RenderParameters {
+            conversion: self,
+            chroma_sample_offset: if subsampled
+                && location == opennow_media_protocol::ChromaLocation::Left
+                && luma_width != 0
+            {
+                0.5 / luma_width as f32
+            } else {
+                0.0
+            },
+        }
+    }
+
     pub(crate) fn new(
         bit_depth: VideoBitDepth,
         full_range: bool,
@@ -55,6 +81,39 @@ impl ConversionParameters {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_left_chroma_offsets_half_a_luma_pixel_only_for_subsampled_planes() {
+        use opennow_media_protocol::ChromaLocation;
+        let conversion =
+            ConversionParameters::new(VideoBitDepth::Eight, true, VideoColorSpace::Bt709);
+        let left = conversion.with_chroma_location(ChromaLocation::Left, 1920, true);
+        let center = conversion.with_chroma_location(ChromaLocation::Center, 1920, true);
+        assert_eq!(left.chroma_sample_offset * 1920.0, 0.5);
+        assert_eq!(center.chroma_sample_offset, 0.0);
+        assert_eq!(
+            conversion
+                .with_chroma_location(ChromaLocation::Left, 1920, false)
+                .chroma_sample_offset,
+            0.0
+        );
+        assert_eq!(
+            conversion
+                .with_chroma_location(ChromaLocation::Left, 0, true)
+                .chroma_sample_offset,
+            0.0
+        );
+        assert_eq!(left.conversion.luma_offset, 0.0);
+        assert_eq!(left.conversion.luma_scale, 1.0);
+        assert_eq!(
+            std::mem::offset_of!(RenderParameters, chroma_sample_offset),
+            9 * std::mem::size_of::<f32>()
+        );
+        assert_eq!(
+            std::mem::size_of::<RenderParameters>(),
+            10 * std::mem::size_of::<f32>()
+        );
+    }
 
     fn convert_codes(
         parameters: ConversionParameters,

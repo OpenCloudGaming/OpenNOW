@@ -4,7 +4,12 @@ use crate::{DecodedVideoFrame, EncodedVideoFrame, Result, StreamFormat, VideoCod
 
 #[cfg(feature = "ffmpeg")]
 mod ffmpeg;
+mod provenance;
 mod v4l2;
+
+pub(crate) fn correlate_decoder(decoder: Box<dyn VideoDecoder>) -> Box<dyn VideoDecoder> {
+    Box::new(provenance::CorrelatedDecoder::new(decoder))
+}
 #[cfg(any(feature = "ffmpeg", test))]
 #[cfg_attr(not(feature = "ffmpeg"), allow(dead_code))]
 mod v4l2_request;

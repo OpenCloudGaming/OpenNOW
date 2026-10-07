@@ -12,8 +12,8 @@ use cros_codecs::{Fourcc, Resolution};
 
 use super::VideoDecoder;
 use crate::{
-    ChromaLocation, DecodedVideoFrame, DmaBufFrame, DmaBufLayer, DmaBufObject, DmaBufPlane,
-    EncodedVideoFrame, Error, PixelFormat, Result, StreamFormat, Subsystem,
+    DecodedVideoFrame, DmaBufFrame, DmaBufLayer, DmaBufObject, DmaBufPlane, EncodedVideoFrame,
+    Error, PixelFormat, Result, StreamFormat, Subsystem,
 };
 
 const MAX_DECODE_RETRIES: usize = 16;
@@ -313,11 +313,12 @@ impl VaApiDecoder {
                         .collect();
                     let dmabuf = DmaBufFrame::new(objects, layers, frame);
                     let decoded = DecodedVideoFrame {
+                        provenance: Default::default(),
+                        correlation_timestamp_us: Some(timestamp_us),
                         format: StreamFormat {
                             width: visible.width,
                             height: visible.height,
                             pixel_format: PixelFormat::Nv12,
-                            chroma_location: ChromaLocation::Left,
                             ..self.requested_format
                         },
                         planes: Vec::new(),

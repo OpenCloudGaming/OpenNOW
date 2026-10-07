@@ -1,5 +1,6 @@
 use super::{GfnModule, cloudmatch, queue_servers, service};
 use crate::diagnostics;
+use crate::sources::contract::AllocationDisposition;
 use crate::streamer::StreamerService;
 use serde_json::{Value, json};
 
@@ -71,6 +72,7 @@ impl GfnModule {
         &self,
         method: &str,
         params: &Value,
+        disposition: &mut AllocationDisposition,
     ) -> CompatibilityResult {
         match method {
             "settings.set" => {
@@ -360,7 +362,7 @@ impl GfnModule {
                     settings
                 };
                 self.service
-                    .create_session(params, &settings)
+                    .create_session_tracked(params, &settings, disposition)
                     .map(|value| (value.clone(), Some(("session.changed", value))))
                     .map_err(service_error)
             }

@@ -1,5 +1,6 @@
 use crate::proxy::{client_for_settings, config_from_settings};
 use crate::service_error::{ServiceError, transport_failure};
+use crate::sources::contract::AllocationDisposition;
 use crate::sources::gfn::account_connections::AccountConnectionsService;
 use crate::sources::gfn::cloudmatch::CloudMatchService;
 use crate::sources::gfn::console_profiles::ConsoleProfiles;
@@ -1098,6 +1099,10 @@ impl GfnService {
     }
 
     pub fn logout(&self) -> Result<Value, ServiceError> {
+        self.logout_owned(&json!({}))
+    }
+
+    pub(super) fn logout_owned(&self, params: &Value) -> Result<Value, ServiceError> {
         let _operation = self
             .auth_operation
             .lock()
@@ -1109,6 +1114,14 @@ impl GfnService {
             .expect("GFN state poisoned")
             .session
             .clone();
+        if params.get("providerIdpId").is_some() || params.get("userId").is_some() {
+            let session = session.as_ref().ok_or_else(session_owner_error)?;
+            if params["providerIdpId"] != session.provider.idp_id
+                || params["userId"] != session.user.user_id
+            {
+                return Err(session_owner_error());
+            }
+        }
         self.invalidate_auth_work(true);
         let cleanup = session.as_ref().map(|session| {
             self.cleanup_account(
@@ -1300,6 +1313,51 @@ impl GfnService {
         )
     }
 
+    pub(super) fn provider_saved_accounts(&self) -> Result<Value, ServiceError> {
+        let _operation = crate::sources::gfn::store_requests::lock(&self.auth_operation)?;
+        let mut result = self.saved_accounts()?;
+        let accounts = result["accounts"]
+            .as_array_mut()
+            .ok_or_else(|| ServiceError::invalid("Saved accounts are unavailable"))?;
+        if accounts.len() > 64 {
+            return Err(ServiceError::invalid("Too many saved accounts"));
+        }
+        for account in accounts {
+            crate::requests::check()?;
+            let user_id = required_param(account, "userId")?;
+            let session = self
+                .vault
+                .load(user_id)
+                .map_err(|message| ServiceError {
+                    code: "credential_store_error",
+                    message,
+                })?
+                .ok_or_else(|| ServiceError {
+                    code: "credential_store_error",
+                    message: "A saved account's original authority could not be recovered".into(),
+                })?;
+            if session.user.user_id != user_id {
+                return Err(session_owner_error());
+            }
+            account["providerIdpId"] = json!(session.provider.idp_id);
+            account["reauthenticationRequired"] = json!(
+                session.tokens.expiry(TokenPurpose::ServiceId) <= now_ms()
+                    && session.tokens.refresh_token.is_none()
+            );
+        }
+        Ok(result)
+    }
+
+    #[cfg(test)]
+    pub(super) fn seed_provider_authorization(&self, attempt_id: &str) {
+        let mut state = self.state.lock().unwrap();
+        state.restore_attempted = true;
+        state.attempts.insert(
+            attempt_id.into(),
+            tests::pending_attempt(Some(tests::auth_fixture("typed-player"))),
+        );
+    }
+
     pub fn switch_account(&self, params: &Value) -> Result<Value, ServiceError> {
         let _operation = self
             .auth_operation
@@ -1307,6 +1365,21 @@ impl GfnService {
             .expect("GFN auth operation poisoned");
         crate::requests::check()?;
         let user_id = required_param(params, "userId")?;
+        if let Some(authority) = params.get("providerIdpId") {
+            let session = self
+                .vault
+                .load(user_id)
+                .map_err(|message| ServiceError {
+                    code: "credential_store_error",
+                    message,
+                })?
+                .ok_or_else(session_owner_error)?;
+            if authority.as_str() != Some(session.provider.idp_id.as_str())
+                || session.user.user_id != user_id
+            {
+                return Err(session_owner_error());
+            }
+        }
         if self.profiles.has_pin(user_id) {
             let verification = self
                 .profiles
@@ -1383,6 +1456,14 @@ impl GfnService {
         let selected = active
             .filter(|session| session.user.user_id == user_id)
             .or_else(|| self.vault.load(user_id).ok().flatten());
+        if let Some(authority) = params.get("providerIdpId") {
+            let session = selected.as_ref().ok_or_else(session_owner_error)?;
+            if authority.as_str() != Some(session.provider.idp_id.as_str())
+                || session.user.user_id != user_id
+            {
+                return Err(session_owner_error());
+            }
+        }
         self.invalidate_auth_work(was_active);
         let cleanup = self.cleanup_account(
             user_id,
@@ -1642,7 +1723,18 @@ impl GfnService {
         })
     }
 
+    #[cfg(test)]
     pub fn create_session(&self, params: &Value, settings: &Value) -> Result<Value, ServiceError> {
+        self.create_session_tracked(params, settings, &mut AllocationDisposition::NotDispatched)
+    }
+
+    pub(super) fn create_session_tracked(
+        &self,
+        params: &Value,
+        settings: &Value,
+        disposition: &mut AllocationDisposition,
+    ) -> Result<Value, ServiceError> {
+        *disposition = AllocationDisposition::NotDispatched;
         let admission = self.cloudmatch.admit_create()?;
         let app_id = params["catalogAppId"].as_str().unwrap_or_default();
         let variant_id = params["variantId"].as_str().unwrap_or_default();
@@ -1707,7 +1799,7 @@ impl GfnService {
             variant["supportsInGameSettingsPersistence"].clone();
         params["title"] = inspection["game"]["title"].clone();
         let result = admission
-            .create(&params, &settings, &session, &self.device_id)
+            .create(&params, &settings, &session, &self.device_id, disposition)
             .map(|result| scoped_result(result, &session, generation));
         if !self.cloudmatch.active()["session"].is_null() {
             routing.active_owner = Some(ActiveSeatOwner::capture(
@@ -1732,6 +1824,7 @@ impl GfnService {
                 .as_ref()
                 .is_some_and(|current| owner.matches(current, &owner.session_id))
         {
+            check_requested_session_owner(params, &owner.auth)?;
             if owner.auth.tokens.expiry(TokenPurpose::ServiceId) <= now_ms() {
                 return Err(ServiceError {
                     code: "session_owner_authentication_required",
@@ -1810,6 +1903,7 @@ impl GfnService {
                 .active_owner
                 .as_ref()
                 .ok_or_else(session_owner_error)?;
+            check_requested_session_owner(params, &owner.auth)?;
             let selected_owner = self
                 .state
                 .lock()
@@ -1953,6 +2047,72 @@ impl GfnService {
         self.publish_active_result(&mut routing, &session, generation, active)
     }
 
+    pub(super) fn session_owner_scope(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<Value>, ServiceError> {
+        let routing = crate::sources::gfn::store_requests::lock(&self.session_routing)?;
+        let _operation = crate::sources::gfn::store_requests::lock(&self.auth_operation)?;
+        Ok(routing
+            .active_owner
+            .as_ref()
+            .filter(|owner| session_id.is_empty() || owner.session_id == session_id)
+            .map(|owner| {
+                scoped_result(json!({}), &owner.auth, owner.last_published_generation)["scope"]
+                    .clone()
+            }))
+    }
+
+    pub(super) fn session_control_owner(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<(String, Value)>, ServiceError> {
+        let routing = crate::sources::gfn::store_requests::lock(&self.session_routing)?;
+        let _operation = crate::sources::gfn::store_requests::lock(&self.auth_operation)?;
+        if let Some(owner) = routing.active_owner.as_ref().filter(|owner| {
+            (session_id.is_empty() || owner.session_id == session_id)
+                && self.cloudmatch.active()["session"]["sessionId"] == owner.session_id
+        }) {
+            return Ok(Some((
+                owner.session_id.clone(),
+                scoped_result(json!({}), &owner.auth, owner.last_published_generation)["scope"]
+                    .clone(),
+            )));
+        }
+        if session_id.is_empty() {
+            return Ok(None);
+        }
+        let state = self.state.lock().expect("GFN state poisoned");
+        let Some(session) = state.session.as_ref() else {
+            return Ok(None);
+        };
+        let authorized =
+            routing
+                .discovery_owner
+                .as_ref()
+                .is_some_and(|(provider, user, generation)| {
+                    provider == &session.provider.idp_id
+                        && user == &session.user.user_id
+                        && *generation == state.generation
+                });
+        let discovered = authorized
+            && self
+                .cloudmatch
+                .discovered_session(session_id)
+                .is_some_and(|seat| seat["sessionId"] == session_id);
+        let cleanup = self
+            .cloudmatch
+            .cleanup_session(session, session_id)
+            .is_some_and(|seat| seat["sessionId"] == session_id);
+        if !discovered && !cleanup {
+            return Ok(None);
+        }
+        Ok(Some((
+            session_id.to_owned(),
+            scoped_result(json!({}), session, state.generation)["scope"].clone(),
+        )))
+    }
+
     pub(super) fn occupied(&self) -> Option<bool> {
         let _routing = self.session_routing.try_lock().ok()?;
         self.cloudmatch.occupied()
@@ -1963,6 +2123,7 @@ impl GfnService {
         let mut routing = crate::sources::gfn::store_requests::lock(&self.session_routing)?;
         let _operation = crate::sources::gfn::store_requests::lock(&self.auth_operation)?;
         let (result, session, generation) = self.session_read_locked(|session, _| {
+            check_requested_session_owner(params, session)?;
             let (mut params, settings) = self.scoped_session_route(params, settings, session)?;
             if routing.active_owner.as_ref().is_none_or(|owner| {
                 !owner.matches(session, params["sessionId"].as_str().unwrap_or(""))
@@ -2122,6 +2283,7 @@ impl GfnService {
         generation: u64,
         allow_discovered: bool,
     ) -> Result<Value, ServiceError> {
+        check_requested_session_owner(params, session)?;
         let active = self.cloudmatch.active()["session"].clone();
         let id = params["sessionId"]
             .as_str()
@@ -3414,6 +3576,20 @@ fn session_owner_error() -> ServiceError {
     ServiceError { code: "session_owner_mismatch", message: "This session is not owned by the current account and provider. Refresh active sessions.".into() }
 }
 
+fn check_requested_session_owner(
+    params: &Value,
+    session: &AuthSession,
+) -> Result<(), ServiceError> {
+    if let Some(owner) = params.get("ownerScope") {
+        if owner["providerIdpId"].as_str() != Some(session.provider.idp_id.as_str())
+            || owner["userId"].as_str() != Some(session.user.user_id.as_str())
+        {
+            return Err(session_owner_error());
+        }
+    }
+    Ok(())
+}
+
 fn verified_vpc(payload: &Value) -> Result<String, ServiceError> {
     let status = &payload["requestStatus"];
     if status.get("statusCode").is_some() && number_value(&status["statusCode"]) != Some(1.0) {
@@ -3785,6 +3961,302 @@ pub(crate) mod tests {
                 "private field escaped: {private}"
             );
         }
+    }
+
+    #[test]
+    fn allocation_preflight_network_failure_proves_no_game_post_and_allows_journal_retry() {
+        use std::io::{BufRead, BufReader};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut first = String::new();
+            reader.read_line(&mut first).unwrap();
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            first
+        });
+        let (mut service, path) = test_service(&url);
+        service.endpoints.server_info = Some(format!("{url}/v2/serverInfo"));
+        service.endpoints.graphql = format!("{url}/graphql");
+        let auth = auth_fixture("original-player");
+        let scope = scoped_result(json!({}), &auth, 0)["scope"].clone();
+        {
+            let mut state = service.state.lock().unwrap();
+            state.session = Some(auth);
+            state.restore_attempted = true;
+        }
+        let mut disposition = AllocationDisposition::NotDispatched;
+        let result = service.create_session_tracked(
+            &json!({"catalogAppId":"catalog-game","variantId":"123","appId":"123","scope":scope}),
+            &json!({}),
+            &mut disposition,
+        );
+        assert_eq!(result.unwrap_err().code, "network_error");
+        assert_eq!(disposition, AllocationDisposition::NotDispatched);
+        assert!(server.join().unwrap().starts_with("GET /v2/serverInfo "));
+        let journal = crate::sources::journal::SessionJournal::open(&path);
+        let source = opennow_plugin_api::PluginId::new(opennow_plugin_api::BUILTIN_GFN_ID).unwrap();
+        let first = opennow_plugin_api::provider::OperationId::new("preflight-failed").unwrap();
+        journal.begin(source.clone(), None, first.clone()).unwrap();
+        journal.rejected_before_allocation(&source, &first).unwrap();
+        assert_eq!(
+            journal.occupancy(),
+            crate::sources::contract::SessionOccupancy::Idle
+        );
+        journal
+            .begin(
+                source,
+                None,
+                opennow_plugin_api::provider::OperationId::new("retry").unwrap(),
+            )
+            .unwrap();
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn control_owner_requires_an_exact_authorized_discovered_seat() {
+        let (service, path) = test_service("http://127.0.0.1:1");
+        let auth = auth_fixture("discovery-owner");
+        {
+            let mut state = service.state.lock().unwrap();
+            state.session = Some(auth.clone());
+            state.generation = 7;
+        }
+        service
+            .cloudmatch
+            .seed_discovered_sessions(&[json!({"sessionId":"discovered-seat","status":3})]);
+        assert_eq!(
+            service
+                .session_control_owner("discovered-seat")
+                .unwrap()
+                .map(|(_, scope)| scope),
+            None
+        );
+        service.session_routing.lock().unwrap().discovery_owner =
+            Some((auth.provider.idp_id.clone(), auth.user.user_id.clone(), 7));
+        assert_eq!(
+            service
+                .session_control_owner("discovered-seat")
+                .unwrap()
+                .map(|(_, scope)| scope),
+            Some(scoped_result(json!({}), &auth, 7)["scope"].clone())
+        );
+        assert_eq!(
+            service.session_control_owner("discovered-seat").unwrap(),
+            Some((
+                "discovered-seat".into(),
+                scoped_result(json!({}), &auth, 7)["scope"].clone()
+            ))
+        );
+        assert_eq!(
+            service
+                .session_control_owner("not-discovered")
+                .unwrap()
+                .map(|(_, scope)| scope),
+            None
+        );
+        assert_eq!(
+            service
+                .session_control_owner("")
+                .unwrap()
+                .map(|(_, scope)| scope),
+            None
+        );
+        assert_eq!(
+            service.session_owner_scope("discovered-seat").unwrap(),
+            None
+        );
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn control_owner_rejects_discovery_after_generation_account_or_authority_changes() {
+        let (service, path) = test_service("http://127.0.0.1:1");
+        let auth = auth_fixture("discovery-owner");
+        service
+            .cloudmatch
+            .seed_discovered_sessions(&[json!({"sessionId":"discovered-seat","status":3})]);
+        service.session_routing.lock().unwrap().discovery_owner =
+            Some((auth.provider.idp_id.clone(), auth.user.user_id.clone(), 7));
+        for mutation in ["generation", "account", "authority", "signed-out"] {
+            {
+                let mut state = service.state.lock().unwrap();
+                state.generation = 7;
+                let mut current = auth.clone();
+                match mutation {
+                    "generation" => state.generation = 8,
+                    "account" => current.user.user_id = "another-account".into(),
+                    "authority" => current.provider.idp_id = "another-authority".into(),
+                    _ => (),
+                }
+                state.session = (mutation != "signed-out").then_some(current);
+            }
+            assert_eq!(
+                service
+                    .session_control_owner("discovered-seat")
+                    .unwrap()
+                    .map(|(_, scope)| scope),
+                None,
+                "{mutation}"
+            );
+        }
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn control_owner_preserves_original_active_owner_and_verifies_the_active_id() {
+        let (service, path) = test_service("http://127.0.0.1:1");
+        let original = auth_fixture("original-owner");
+        let seat = json!({"sessionId":"active-seat","status":3});
+        service.cloudmatch.seed_owned_session(seat.clone());
+        service.session_routing.lock().unwrap().active_owner =
+            Some(ActiveSeatOwner::capture(original.clone(), 7, &seat, None).unwrap());
+        {
+            let mut state = service.state.lock().unwrap();
+            state.session = Some(auth_fixture("selected-account"));
+            state.generation = 8;
+        }
+        let expected = Some(scoped_result(json!({}), &original, 7)["scope"].clone());
+        assert_eq!(
+            service
+                .session_control_owner("active-seat")
+                .unwrap()
+                .map(|(_, scope)| scope),
+            expected
+        );
+        assert_eq!(
+            service
+                .session_control_owner("")
+                .unwrap()
+                .map(|(_, scope)| scope),
+            expected
+        );
+        assert_eq!(
+            service.session_control_owner("").unwrap(),
+            Some(("active-seat".into(), expected.clone().unwrap()))
+        );
+        assert_eq!(
+            service.session_control_owner("active-seat").unwrap(),
+            Some(("active-seat".into(), expected.clone().unwrap()))
+        );
+        assert_eq!(
+            service
+                .session_control_owner("foreign-seat")
+                .unwrap()
+                .map(|(_, scope)| scope),
+            None
+        );
+        service
+            .cloudmatch
+            .seed_owned_session(json!({"sessionId":"different-seat","status":3}));
+        assert_eq!(
+            service
+                .session_control_owner("active-seat")
+                .unwrap()
+                .map(|(_, scope)| scope),
+            None
+        );
+        assert_eq!(
+            service.session_owner_scope("active-seat").unwrap(),
+            expected
+        );
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn provider_accounts_preserve_vault_authority_without_serializing_credentials() {
+        let (mut service, path) = test_service("http://127.0.0.1:1");
+        service.vault = CredentialVault::without_os_store(path.clone());
+        let account = auth_fixture("saved-player");
+        service.vault.save(&account).unwrap();
+        let result = service.provider_saved_accounts().unwrap();
+        assert_eq!(
+            result["accounts"][0]["providerIdpId"],
+            account.provider.idp_id
+        );
+        assert_eq!(result["accounts"][0]["userId"], "saved-player");
+        assert_public_auth(&result);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn typed_authority_mismatch_cannot_switch_remove_or_log_out_an_account() {
+        let (mut service, path) = test_service("http://127.0.0.1:1");
+        service.vault = CredentialVault::without_os_store(path.clone());
+        service.vault.save(&auth_fixture("saved-player")).unwrap();
+        service.state.lock().unwrap().session = Some(auth_fixture("saved-player"));
+        service.state.lock().unwrap().restore_attempted = true;
+        let params = json!({"userId":"saved-player","providerIdpId":"another-authority"});
+        assert_eq!(
+            service.switch_account(&params).unwrap_err().code,
+            "session_owner_mismatch"
+        );
+        assert_eq!(
+            service.remove_account(&params).unwrap_err().code,
+            "session_owner_mismatch"
+        );
+        assert_eq!(
+            service.logout_owned(&params).unwrap_err().code,
+            "session_owner_mismatch"
+        );
+        assert_eq!(service.auth_generation(), 0);
+        assert_eq!(
+            service
+                .state
+                .lock()
+                .unwrap()
+                .session
+                .as_ref()
+                .unwrap()
+                .user
+                .user_id,
+            "saved-player"
+        );
+        assert!(service.vault.load("saved-player").unwrap().is_some());
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn typed_session_owner_checks_use_original_owner_after_account_switch() {
+        let (service, path) = test_service("http://127.0.0.1:1");
+        let owner = auth_fixture("original-player");
+        let seat = json!({"sessionId":"owned-seat","status":3});
+        service.cloudmatch.seed_owned_session(seat.clone());
+        service.session_routing.lock().unwrap().active_owner =
+            Some(ActiveSeatOwner::capture(owner.clone(), 7, &seat, None).unwrap());
+        service.state.lock().unwrap().session = Some(auth_fixture("new-player"));
+        service.state.lock().unwrap().restore_attempted = true;
+        let expected = json!({"userId":"original-player","providerIdpId":owner.provider.idp_id,"generation":7});
+        assert_eq!(
+            service.session_owner_scope("owned-seat").unwrap(),
+            Some(expected.clone())
+        );
+        assert_eq!(service.session_owner_scope("other-seat").unwrap(), None);
+        let foreign = json!({"sessionId":"owned-seat","ownerScope":{"userId":"new-player","providerIdpId":owner.provider.idp_id,"generation":7}});
+        assert_eq!(
+            service.poll_session(&foreign).unwrap_err().code,
+            "session_owner_mismatch"
+        );
+        assert_eq!(
+            service.stop_session(&foreign, &json!({})).unwrap_err().code,
+            "session_owner_mismatch"
+        );
+        assert_eq!(
+            service.session_owner_scope("owned-seat").unwrap(),
+            Some(expected)
+        );
+        assert!(check_requested_session_owner(&json!({}), &owner).is_ok());
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

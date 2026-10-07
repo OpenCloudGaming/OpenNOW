@@ -6,6 +6,10 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+opennow-plugin-api.workspace = true
+opennow-plugin-package.workspace = true
+libc = "0.2"
+opennow-media-protocol.workspace = true
 base64.workspace = true
 getrandom.workspace = true
 opennow-streamer-platform = { path = "../opennow-streamer-platform" }
@@ -17,7 +21,12 @@ serde_json.workspace = true
 tungstenite.workspace = true
 
 [dev-dependencies]
+sha2 = "0.10"
+tempfile = "3"
 openh264.workspace = true
 str0m.workspace = true
 opennow-streamer-platform = { path = "../opennow-streamer-platform", features = ["test-runtime"] }
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Diagnostics_ToolHelp", "Win32_System_IO", "Win32_System_Pipes", "Win32_Storage_FileSystem"] }

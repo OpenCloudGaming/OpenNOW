@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 
 class NativeStreamRuntime final : public QObject
@@ -58,6 +59,8 @@ public:
             const OpenNowStreamer *, const OpenNowSdlDeviceClaim *, std::size_t);
         using SubmitSonySnapshot = OpenNowStreamerStatus (*)(
             const OpenNowStreamer *, const OpenNowSonySnapshot *);
+        using NotifyPresented = OpenNowStreamerStatus (*)(
+            const OpenNowStreamer *, const OpenNowStreamerFrameProvenance *);
 
         Create create = nullptr;
         Send send = nullptr;
@@ -79,6 +82,7 @@ public:
         SubmitSonySnapshot submitSonySnapshot = nullptr;
         SetLogFile setLogFile = nullptr;
         Send submitText = nullptr;
+        NotifyPresented notifyPresented = nullptr;
     };
 
     static constexpr int DefaultShutdownTimeoutMs = 1'500;
@@ -99,6 +103,8 @@ public:
     [[nodiscard]] QString lastError() const;
     [[nodiscard]] quint64 presentationGeneration() const;
     [[nodiscard]] bool presentationAllowed() const;
+    [[nodiscard]] bool startPending() const;
+    [[nodiscard]] quint64 startEpoch() const;
     struct UpstreamProgress
     {
         bool stalled = false;
@@ -117,6 +123,8 @@ public:
     Q_INVOKABLE bool start();
     Q_INVOKABLE bool send(const QJsonObject &command);
     bool sendBytes(const QByteArray &command);
+    using PrivateResponse = std::function<void(const QJsonObject &response)>;
+    bool sendPrivate(const QJsonObject &command, PrivateResponse handler);
     Q_INVOKABLE bool shutdown(int timeoutMs = DefaultShutdownTimeoutMs);
 
     OpenNowStreamerStatus setGraphicsContext(
@@ -127,6 +135,7 @@ public:
         OpenNowStreamerRecordedFrame *recorded,
         OpenNowStreamerFrame **frame);
     OpenNowStreamerStatus releaseFrame(OpenNowStreamerFrame *frame);
+    OpenNowStreamerStatus notifyPresented(const OpenNowStreamerFrameProvenance &provenance);
     OpenNowStreamerStatus sceneGraphShutdown();
     OpenNowStreamerStatus submitKey(std::uint16_t virtualKey, std::uint16_t modifiers,
                                     bool pressed);

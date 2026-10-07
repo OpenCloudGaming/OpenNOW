@@ -351,6 +351,7 @@ int AcceptanceSession::startSmokeWorkload()
                      || m_arguments.contains(u"--smoke-shortcuts"_s)
                      || m_arguments.contains(u"--smoke-console-settings"_s)
                      || m_arguments.contains(u"--smoke-plugins"_s)
+                     || m_arguments.contains(u"--smoke-sources"_s)
                      || m_arguments.contains(u"--smoke-collections"_s)
                      || m_arguments.contains(u"--smoke-steam-big-picture"_s)
                      || m_arguments.contains(u"--smoke-persistent-in-game-settings"_s)
@@ -397,6 +398,8 @@ int AcceptanceSession::startSmokeWorkload()
             ? u"qrc:/acceptance/ConsoleSettingsAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-plugins"_s)
             ? u"qrc:/acceptance/PluginsAcceptance.qml"_s
+            : m_arguments.contains(u"--smoke-sources"_s)
+            ? u"qrc:/acceptance/SourcesAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-collections"_s)
             ? u"qrc:/acceptance/CollectionsAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-steam-big-picture"_s)
@@ -474,6 +477,7 @@ int AcceptanceSession::startSmokeWorkload()
                        || m_arguments.contains(u"--smoke-shortcuts"_s)
                        || m_arguments.contains(u"--smoke-console-settings"_s)
                        || m_arguments.contains(u"--smoke-plugins"_s)
+                       || m_arguments.contains(u"--smoke-sources"_s)
                        || m_arguments.contains(u"--bug-report-notice-check"_s)
                        || m_arguments.contains(u"--smoke-game-details-layout"_s))) {
                 if (m_arguments.contains(u"--smoke-game-details-layout"_s)

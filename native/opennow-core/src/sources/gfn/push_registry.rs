@@ -115,6 +115,12 @@ impl PushRegistry {
         }
     }
 
+    pub fn pause(&mut self) {
+        if let Some(owner) = &mut self.owner {
+            owner.stop();
+        }
+    }
+
     pub fn core_exit_signal(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.core_exit)
     }

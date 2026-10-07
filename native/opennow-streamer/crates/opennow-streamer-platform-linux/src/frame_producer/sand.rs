@@ -1058,6 +1058,8 @@ mod tests {
             let (metadata, format) = fixture(false, width, height);
             let disabled = producer
                 .prepare(DecodedVideoFrame {
+                    provenance: Default::default(),
+                    correlation_timestamp_us: None,
                     format,
                     planes: Vec::new(),
                     dmabuf: Some(Arc::new(metadata)),
@@ -1195,6 +1197,8 @@ mod tests {
                     device.unmap_memory(buffers[index].memory);
                 }
                 let source = Arc::new(DecodedVideoFrame {
+                    provenance: Default::default(),
+                    correlation_timestamp_us: None,
                     format,
                     planes: Vec::new(),
                     dmabuf: Some(Arc::new(metadata)),

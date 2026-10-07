@@ -10,6 +10,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use decode_progress::{
     DecodeProgressEvent, DecodeProgressPolicy, DecodeProgressStage, DecodeProgressWatchdog,
 };
+use opennow_media_protocol::{FrameProvenance, SourceStamp};
 use opennow_streamer_hid::HidRuntime;
 use opennow_streamer_platform::{
     CapturedInput, CapturedInputQueue, CapturedInputSample, DecodeStageTimings,
@@ -35,6 +36,7 @@ use serde_json::{Value, json};
 static LOG_SINK_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 mod decode_progress;
+mod external;
 mod microphone;
 mod nvst_rtsp;
 mod queue_drops;
@@ -217,6 +219,10 @@ impl NvstSessionResources for ActiveNvstResources {
 }
 
 pub struct Engine {
+    external_session: Option<external::ExternalSession>,
+    native_offers: std::collections::BTreeMap<String, external::RetainedOffer>,
+    native_epoch: u64,
+    active_lease: Option<external::ActiveLease>,
     lifecycle: Arc<Mutex<Lifecycle>>,
     webrtc_session: Option<webrtc::OwnedSession>,
     nvst_transport: Option<NvstUdpReceiverSession>,
@@ -265,6 +271,10 @@ impl Engine {
                 generation: 0,
             })),
             nvst_transport: None,
+            external_session: None,
+            native_offers: std::collections::BTreeMap::new(),
+            native_epoch: external::runtime_epoch(),
+            active_lease: None,
             webrtc_session: None,
             nvst_mjolnir_transport: None,
             reserved_nvst_bundle: None,
@@ -305,6 +315,10 @@ impl Engine {
                 generation: 0,
             })),
             nvst_transport: None,
+            external_session: None,
+            native_offers: std::collections::BTreeMap::new(),
+            native_epoch: external::runtime_epoch(),
+            active_lease: None,
             webrtc_session: None,
             nvst_mjolnir_transport: None,
             reserved_nvst_bundle: None,
@@ -341,6 +355,10 @@ impl Engine {
                 generation: 0,
             })),
             nvst_transport: None,
+            external_session: None,
+            native_offers: std::collections::BTreeMap::new(),
+            native_epoch: external::runtime_epoch(),
+            active_lease: None,
             webrtc_session: None,
             nvst_mjolnir_transport: None,
             reserved_nvst_bundle: None,
@@ -388,6 +406,9 @@ impl Engine {
         let mut stage = opennow_streamer_protocol::log::Stage::begin("engine.command");
         let id = command.id.clone();
         let result = match command.kind.as_str() {
+            "media-offer" => self.media_offer(command),
+            "media-status" => self.media_status(command),
+            "media-cancel-offer" => self.cancel_media_offer(command),
             "hello" => self.hello(&command),
             "audioDevices" => self.audio_devices(&command),
             "setAudioMuted" => self.set_audio_muted(command),
@@ -660,6 +681,39 @@ impl Engine {
     }
 
     fn start(&mut self, command: Command) -> Result<Vec<Value>, Value> {
+        if command
+            .context
+            .as_ref()
+            .is_some_and(|context| context.get("lease").is_some())
+        {
+            return self.start_prepared(command);
+        }
+        let external_context = command.context.as_ref().is_some_and(|context| {
+            ["externalSpike", "worker", "packageRoot", "preparedWorker"]
+                .iter()
+                .any(|key| context.get(*key).is_some())
+                || context["settings"]["transportMode"]
+                    .as_str()
+                    .is_some_and(|mode| !matches!(mode, "nvst" | "webrtc"))
+        });
+        if external_context {
+            return Err(error(
+                Some(&command.id),
+                "prepared-lease-required",
+                "Provider workers require a host-bound prepared lease",
+            ));
+        }
+        if self.external_session.is_some() || self.active_lease.is_some() {
+            return Err(error(
+                Some(&command.id),
+                "native-session-busy",
+                "Stop the active native session before starting another",
+            ));
+        }
+        self.start_gfn(command)
+    }
+
+    fn start_gfn(&mut self, command: Command) -> Result<Vec<Value>, Value> {
         let mut context = parse_context(command.context, &command.id)?;
         validate_context(&context, &command.id)?;
         let audio_device =
@@ -838,13 +892,15 @@ impl Engine {
                 Arc::clone(&self.replay_budget),
             );
             let sink = session.sink();
+            let attempt_generation = lock_lifecycle(&self.lifecycle).generation.wrapping_add(1);
             let (media_consumer, media_receiver) =
                 std::sync::mpsc::sync_channel(ENCODED_MEDIA_QUEUE_CAPACITY);
             let output = self.events.clone();
             let media_worker = match thread::Builder::new()
                 .name("opennow-media-consumer".to_owned())
-                .spawn(move || consume_encoded_media(&output, media_receiver, sink))
-            {
+                .spawn(move || {
+                    consume_encoded_media(&output, media_receiver, sink, attempt_generation)
+                }) {
                 Ok(worker) => worker,
                 Err(spawn_error) => {
                     session.stop();
@@ -1180,6 +1236,17 @@ impl Engine {
     }
 
     fn set_paused(&self, command: Command) -> Result<Vec<Value>, Value> {
+        if let Some(session) = self.external_session.as_ref() {
+            let paused = command.paused.ok_or_else(|| {
+                error(
+                    Some(&command.id),
+                    "missing-paused",
+                    "Pause state is required",
+                )
+            })?;
+            session.set_paused(paused);
+            return Ok(vec![response(command.id, "ok")]);
+        }
         if let Some(session) = self.webrtc_session.as_ref() {
             let paused = command.paused.ok_or_else(|| {
                 error(
@@ -1266,6 +1333,15 @@ impl Engine {
     }
 
     fn stop(&mut self, reason: &str) {
+        let retiring_lease = self
+            .active_lease
+            .as_ref()
+            .map(|lease| (lease.binding["leaseId"].clone(), lease.start_id.clone()));
+        let had_external = self.external_session.is_some();
+        if let Some(session) = self.external_session.take() {
+            session.stop();
+        }
+        self.active_lease = None;
         self.clip_cancelled.store(true, Ordering::Release);
         if let Some(session) = self.media_session.as_ref() {
             session.control().unsubscribe_recording();
@@ -1275,7 +1351,8 @@ impl Engine {
         }
         let was_active = {
             let mut lifecycle = lock_lifecycle(&self.lifecycle);
-            let was_active = lifecycle.state != State::Idle;
+            let was_active =
+                lifecycle.state != State::Idle || had_external || retiring_lease.is_some();
             lifecycle.generation = lifecycle.generation.wrapping_add(1);
             lifecycle.context = None;
             lifecycle.state = State::Idle;
@@ -1301,10 +1378,12 @@ impl Engine {
                 "microphone-state",
                 json!({"state":"disabled", "enabled":false}),
             ));
-            let _ = self.events.send(event(
-                "status",
-                json!({ "status": "stopped", "message": reason }),
-            ));
+            let mut stopped = json!({ "status": "stopped", "message": reason });
+            if let Some((lease_id, start_id)) = retiring_lease {
+                stopped["leaseId"] = lease_id;
+                stopped["startId"] = json!(start_id);
+            }
+            let _ = self.events.send(event("status", stopped));
         }
     }
 
@@ -1482,6 +1561,12 @@ impl Engine {
         let (stream, receiver) = control
             .subscribe_recording()
             .map_err(|message| error(Some(&command.id), "recording-start-failed", message))?;
+        if let Some(session) = &self.external_session {
+            session.request_keyframe().map_err(|message| {
+                control.unsubscribe_recording();
+                error(Some(&command.id), "recording-start-failed", message)
+            })?;
+        }
         let events = self.events.clone();
         let worker_path = path.clone();
         let request_id = command.id.clone();
@@ -2542,6 +2627,7 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
         return;
     }
     match feedback {
+        MediaFeedback::VideoFrameDecoded { .. } => {}
         MediaFeedback::VideoFrameAccepted {
             frame_index,
             bytes,
@@ -2987,6 +3073,8 @@ fn media_stream_config(context: &SessionContext) -> MediaStreamConfig {
         .and_then(Value::as_bool)
         .unwrap_or(false);
     MediaStreamConfig {
+        audio_enabled: true,
+        color: None,
         codec,
         color_quality,
         hdr,
@@ -3003,6 +3091,7 @@ fn consume_encoded_media(
     output: &EventSender,
     receiver: Receiver<EncodedMediaFrame>,
     sink: MediaSink,
+    attempt_generation: u64,
 ) {
     let mut video = 0_u64;
     let mut audio = 0_u64;
@@ -3070,6 +3159,20 @@ fn consume_encoded_media(
             MediaCodec::Unsupported(frame.codec)
         };
         match sink.push(EncodedFrame {
+            provenance: FrameProvenance {
+                attempt_generation,
+                track_id: if matches!(codec, MediaCodec::Opus { .. }) {
+                    2
+                } else {
+                    1
+                },
+                source: Some(SourceStamp {
+                    sender_frame_id: frame.frame_index.map(u64::from),
+                    timestamp: frame.rtp_timestamp,
+                    clock_rate_hz: frame.clock_rate_hz,
+                    ssrc: frame.ssrc,
+                }),
+            },
             mid: frame.mid,
             codec,
             data: frame.payload,
@@ -3155,6 +3258,7 @@ mod tests {
             ("failed", 180_000, vec![0, 0, 0, 1, 0x65], "failed"),
         ] {
             sink.push(EncodedFrame {
+                provenance: Default::default(),
                 mid: "video".to_owned(),
                 codec: MediaCodec::H264,
                 data: Arc::from(data),
@@ -3662,6 +3766,7 @@ mod tests {
             7,
             &resources,
             MediaFeedback::VideoFrameAccepted {
+                provenance: Default::default(),
                 frame_index: Some(71),
                 timestamp: 90_000,
                 bytes: 1_024,
@@ -3696,6 +3801,7 @@ mod tests {
             7,
             &resources,
             MediaFeedback::VideoFrameAccepted {
+                provenance: Default::default(),
                 frame_index: Some(72),
                 timestamp: 90_000,
                 bytes: 125_000,
@@ -3791,6 +3897,7 @@ mod tests {
                 7,
                 &resources,
                 MediaFeedback::VideoFrameAccepted {
+                    provenance: Default::default(),
                     frame_index: Some(72),
                     timestamp: 90_000,
                     bytes: 125_000,
@@ -3951,6 +4058,7 @@ mod tests {
             7,
             &resources,
             MediaFeedback::VideoFrameAccepted {
+                provenance: Default::default(),
                 frame_index: Some(73),
                 timestamp: 90_000,
                 bytes: 125_000,
@@ -4027,6 +4135,7 @@ mod tests {
             7,
             &resources,
             MediaFeedback::VideoFrameAccepted {
+                provenance: Default::default(),
                 frame_index: Some(74),
                 timestamp: 90_000,
                 bytes: 125_000,
@@ -4093,6 +4202,7 @@ mod tests {
             7,
             &resources,
             MediaFeedback::VideoFrameAccepted {
+                provenance: Default::default(),
                 frame_index: Some(76),
                 timestamp: 90_000,
                 bytes: 125_000,
@@ -4211,6 +4321,7 @@ mod tests {
             7,
             &resources,
             MediaFeedback::VideoFrameAccepted {
+                provenance: Default::default(),
                 frame_index: Some(11),
                 timestamp: 90_000,
                 bytes: 1_000_000,
@@ -4277,6 +4388,7 @@ mod tests {
             7,
             &resources,
             MediaFeedback::VideoFrameAccepted {
+                provenance: Default::default(),
                 frame_index: Some(75),
                 timestamp: 90_000,
                 bytes: 125_000,
@@ -4357,6 +4469,7 @@ mod tests {
             7,
             &resources,
             MediaFeedback::VideoFrameAccepted {
+                provenance: Default::default(),
                 frame_index: Some(72),
                 timestamp: 90_000,
                 bytes: 125_000,
@@ -6154,6 +6267,8 @@ mod tests {
         assert_eq!(
             media_stream_config(&context),
             MediaStreamConfig {
+                audio_enabled: true,
+                color: None,
                 codec: MediaVideoCodec::H264,
                 color_quality: MediaColorQuality::EightBit420,
                 hdr: false,

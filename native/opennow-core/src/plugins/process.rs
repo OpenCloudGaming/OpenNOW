@@ -117,7 +117,10 @@ impl ProcessModule {
             descriptor.last_error = None;
         }
         self.changed();
-        let executable = match super::package::verify(&launch.root, &launch.manifest) {
+        let executable = match super::package::verify(
+            &launch.root,
+            &opennow_plugin_package::InstalledManifest::Catalog(launch.manifest.clone()),
+        ) {
             Ok(executable) => executable,
             Err(_) => {
                 self.fail(epoch, "package_changed");

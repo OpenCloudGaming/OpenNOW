@@ -73,7 +73,7 @@ FocusScope {
                 id: heading
                 objectName: "desktopHeaderHeading"
                 x: DesktopTokens.px(24); anchors.verticalCenter: parent.verticalCenter
-                width: Math.max(0, (search.visible ? search.x : activeSessionButton.visible ? activeSessionButton.x : parent.width - DesktopTokens.px(14)) - x - DesktopTokens.px(10))
+                width: Math.max(0, (sourceSwitcher.visible ? sourceSwitcher.x : search.visible ? search.x : activeSessionButton.visible ? activeSessionButton.x : parent.width - DesktopTokens.px(14)) - x - DesktopTokens.px(10))
                 height: headerTitle.implicitHeight
                 Text {
                     id: headerTitle
@@ -92,6 +92,14 @@ FocusScope {
                     color: DesktopTokens.textMuted; font.family: DesktopTokens.monoFont
                     font.pixelSize: DesktopTokens.captionSize; font.weight: Font.DemiBold; font.letterSpacing: 0.45
                 }
+            }
+            DesktopSourceSwitcher {
+                id: sourceSwitcher
+                visible: store.available && choices.length > 1 && !root.settingsPage
+                anchors.right: search.visible ? search.left : activeSessionButton.visible ? activeSessionButton.left : parent.right
+                anchors.rightMargin: DesktopTokens.px(10)
+                anchors.verticalCenter: parent.verticalCenter
+                width: implicitWidth
             }
             TextField {
                 id: search
@@ -177,9 +185,9 @@ FocusScope {
             }
             Row { anchors.right: parent.right; anchors.rightMargin: DesktopTokens.px(24); anchors.verticalCenter: parent.verticalCenter; spacing: DesktopTokens.px(10)
                 visible: x >= shortcutHints.x + shortcutHints.width + DesktopTokens.px(16)
-                Rectangle { width: 8; height: 8; radius: 4; color: DesktopTokens.green }
-                Text { text: root.regionStatusText(); color: DesktopTokens.textBody; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.px(11); font.weight: Font.DemiBold; font.letterSpacing: 0.4 }
-                Rectangle { width: 1; height: DesktopTokens.px(16); color: DesktopTokens.seam }
+                Rectangle { visible: !ShellStore.browsingExternalSource; width: 8; height: 8; radius: 4; color: DesktopTokens.green }
+                Text { visible: !ShellStore.browsingExternalSource; text: root.regionStatusText(); color: DesktopTokens.textBody; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.px(11); font.weight: Font.DemiBold; font.letterSpacing: 0.4 }
+                Rectangle { visible: !ShellStore.browsingExternalSource; width: 1; height: DesktopTokens.px(16); color: DesktopTokens.seam }
                 Text { text: String(ShellStore.settings.themePack || "nocturne").toUpperCase() + qsTr(" THEME"); color: DesktopTokens.textMuted; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.px(11); font.weight: Font.DemiBold; font.letterSpacing: 0.4 }
             }
         }

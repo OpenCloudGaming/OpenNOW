@@ -15,6 +15,8 @@ hkdf = "0.12"
 httpdate = "1"
 md5 = "0.7"
 opennow-plugin-api = { path = "../opennow-plugin-api" }
+opennow-plugin-package = { path = "../opennow-plugin-package" }
+opennow-media-protocol = { path = "../opennow-media-protocol" }
 keyring = { version = "3.6", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 p256 = { version = "0.13", features = ["ecdh", "pkcs8"] }
 qrcode = { version = "0.14", default-features = false }

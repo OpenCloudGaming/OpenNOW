@@ -122,23 +122,31 @@ pub(crate) fn select_video_path() -> LinuxVideoSelection {
     )
 }
 
+pub(crate) fn effective_embedded_video_backend(requested: &str) -> String {
+    resolve_embedded_video_backend(requested, std::env::var(VIDEO_BACKEND_ENV).ok().as_deref())
+}
+
+fn resolve_embedded_video_backend(requested: &str, policy: Option<&str>) -> String {
+    let requested = if requested == "auto" {
+        policy.unwrap_or("auto")
+    } else {
+        requested
+    };
+    let requested = requested.trim().to_ascii_lowercase();
+    if requested.is_empty() {
+        "auto".to_owned()
+    } else {
+        requested
+    }
+}
+
 pub(crate) fn select_embedded_video_path(
     requested: &str,
     device: Option<&crate::SharedVulkanDevice>,
     stream: crate::MediaStreamConfig,
 ) -> LinuxVideoSelection {
-    let policy = std::env::var(VIDEO_BACKEND_ENV).unwrap_or_else(|_| "auto".to_owned());
-    let requested = if requested == "auto" {
-        policy.as_str()
-    } else {
-        requested
-    };
-    let requested = requested.trim().to_ascii_lowercase();
-    let requested = if requested.is_empty() {
-        "auto"
-    } else {
-        &requested
-    };
+    let requested = effective_embedded_video_backend(requested);
+    let requested = requested.as_str();
     let codec = match stream.codec {
         crate::MediaVideoCodec::H264 => opennow_streamer_platform_linux::VideoCodec::H264,
         crate::MediaVideoCodec::H265 => opennow_streamer_platform_linux::VideoCodec::H265,
@@ -193,10 +201,7 @@ fn select_embedded_fallback(
             if stream.color_quality.bit_depth() == 10 && name != "vaapi" {
                 continue;
             }
-            if !matches!(requested, "auto" | "hardware")
-                && requested != name
-                && !(requested == "nvdec" && name == "cuda")
-            {
+            if !crate::embedded_backend_allowed_by_policy(requested, name) {
                 continue;
             }
             if backends.iter().any(|backend| {
@@ -821,6 +826,39 @@ mod tests {
                 "{color_quality:?} hdr={hdr}: {reason}"
             );
             assert!(reason.contains(color_quality.protocol_name()));
+        }
+    }
+
+    #[test]
+    fn embedded_offer_and_selection_share_environment_override_policy() {
+        let backends = [software_backend("h264", vec!["8bit_420"])];
+        for (requested, environment, expected, software_allowed) in [
+            ("auto", None, "auto", false),
+            ("auto", Some(""), "auto", false),
+            ("auto", Some("hardware"), "hardware", false),
+            ("auto", Some("software"), "software", true),
+            ("auto", Some(" FFmPeG "), "ffmpeg", true),
+            ("software", Some("vulkan"), "software", true),
+            ("cuda", Some("software"), "cuda", false),
+        ] {
+            let effective = resolve_embedded_video_backend(requested, environment);
+            assert_eq!(effective, expected);
+            assert_eq!(
+                crate::embedded_backend_allowed_by_policy(&effective, "ffmpeg"),
+                software_allowed,
+            );
+            let selected = select_embedded_fallback(
+                &effective,
+                crate::MediaStreamConfig::default(),
+                &backends,
+            );
+            assert_eq!(
+                matches!(
+                    selected.path,
+                    LinuxVideoPath::Hardware(DecoderPreference::SoftwareOnly)
+                ),
+                software_allowed,
+            );
         }
     }
 

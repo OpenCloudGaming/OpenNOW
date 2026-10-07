@@ -6,8 +6,10 @@ mod compat;
 mod console_profiles;
 mod credential_vault;
 mod device_identity;
+mod legacy;
 mod network_test;
 mod persistent_storage;
+mod provider;
 mod push;
 mod push_registry;
 mod queue_servers;
@@ -42,6 +44,7 @@ pub(crate) struct GfnModule {
     push: Mutex<push_registry::PushRegistry>,
     community: community::CommunityService,
     closing: Arc<AtomicBool>,
+    provider: Mutex<provider::ProviderState>,
 }
 
 impl GfnModule {
@@ -63,6 +66,7 @@ impl GfnModule {
             push: Mutex::new(push),
             community: community::CommunityService::new()?,
             closing,
+            provider: Mutex::new(provider::ProviderState::default()),
         };
         module.settings_changed();
         Ok(module)
@@ -211,12 +215,16 @@ impl BuiltinModule for GfnModule {
         {
             return None;
         }
+        let mut disposition = crate::sources::contract::AllocationDisposition::NotDispatched;
         let mut completion = Completion::from(requests::scope(cancellation.clone(), || {
             cancellation
                 .check()
                 .map_err(|error| (error.code.to_owned(), error.message))?;
-            self.execute_compatibility(method, params)
+            self.execute_compatibility(method, params, &mut disposition)
         }));
+        if method == "session.create" {
+            completion.allocation_disposition = Some(disposition);
+        }
         match (method, &completion.result) {
             ("session.create", _) => completion.reporting.push(ReportingEffect::LaunchRequested {
                 params: json!({"appId":params["appId"], "title":params["title"], "store":params["store"], "zone":params["zone"]}),
@@ -249,6 +257,16 @@ impl BuiltinModule for GfnModule {
             completion.receipt = Some(Box::new(SessionReceipt {
                 service: Arc::clone(&self.service),
                 session_id: session_id.into(),
+            }));
+        }
+        if method == "session.create"
+            && completion.receipt.is_none()
+            && let Some(crate::sources::contract::AllocationDisposition::Allocated { session_id }) =
+                &completion.allocation_disposition
+        {
+            completion.receipt = Some(Box::new(SessionReceipt {
+                service: Arc::clone(&self.service),
+                session_id: session_id.clone(),
             }));
         }
         if matches!(
@@ -293,6 +311,45 @@ impl BuiltinModule for GfnModule {
             push.stop_for_core_exit();
         }
     }
+
+    fn set_enabled(&self, enabled: bool) {
+        if enabled {
+            self.settings_changed();
+        } else {
+            self.push.lock().expect("push registry poisoned").pause();
+        }
+    }
+
+    fn legacy_account(
+        &self,
+        params: &Value,
+    ) -> Result<opennow_plugin_api::provider::AccountKey, SourceError> {
+        self.legacy_account_key(params)
+    }
+
+    fn apply_profile(
+        &self,
+        base: &Value,
+        profile: &opennow_plugin_api::provider::StreamPreferences,
+    ) -> Value {
+        Self::apply_stream_preferences(base, profile)
+    }
+
+    fn legacy_control_session(
+        &self,
+        params: &Value,
+    ) -> Result<Option<opennow_plugin_api::provider::SessionKey>, SourceError> {
+        self.legacy_control_key(params)
+    }
+
+    fn legacy_session_result(
+        &self,
+        method: &str,
+        params: &Value,
+        value: &Value,
+    ) -> Result<Option<(opennow_plugin_api::provider::SessionKey, bool)>, SourceError> {
+        self.legacy_session_state(method, params, value)
+    }
 }
 
 #[cfg(test)]
@@ -322,6 +379,7 @@ mod tests {
             diagnostics: Arc::new(DiagnosticsService::new(path).unwrap()),
             community: community::CommunityService::new().unwrap(),
             closing,
+            provider: Mutex::new(provider::ProviderState::default()),
         }
     }
 

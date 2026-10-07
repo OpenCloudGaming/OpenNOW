@@ -27,7 +27,7 @@ FocusScope {
     readonly property bool pluginManagerVisible: !profileRouteVisible && !ShellStore.authRestorePending
         && !ShellStore.signedIn && route === "settings-plugins"
     readonly property bool signInVisible: !profileRouteVisible && !pluginManagerVisible && !ShellStore.authRestorePending
-        && (!ShellStore.signedIn || route === "sign-in")
+        && ((!ShellStore.signedIn && !ShellStore.browsingExternalSource) || route === "sign-in")
     readonly property bool sessionStartingVisible: !signInVisible
         && (route === "inserting" || (streamVisible && !desktopStream.videoReady))
     readonly property bool streamVisible: !signInVisible && route === "stream"
@@ -47,6 +47,8 @@ FocusScope {
     }
     function subtitleForRoute(value) {
         if (value === "updates") return ""
+        if (ShellStore.browsingExternalSource && ["home", "library", "store", "game-detail"].indexOf(value) >= 0)
+            return String(ShellStore.sourceOwnerState.selectedSource ? ShellStore.sourceOwnerState.selectedSource.name || "" : "")
         if (value === "library" || value === "game-detail") return qsTr("%1 games").arg(ShellStore.catalogTotalCount || ShellStore.catalogGames.length)
         if (value === "store") return qsTr("%1 in catalog").arg(ShellStore.storeTotalCount || ShellStore.storeGames.length)
         if (value === "friends") return qsTr("Coming soon")
@@ -72,6 +74,8 @@ FocusScope {
     }
     function contentForRoute(value) {
         if (value === "updates") return updatesComponent
+        if (ShellStore.browsingExternalSource && ["home", "library", "store", "game-detail"].indexOf(value) >= 0)
+            return sourceLibraryComponent
         if (value === "store") return storeComponent
         if (value === "friends") return friendsComponent
         if (value.indexOf("settings") === 0 || value === "controllers") return settingsComponent
@@ -363,6 +367,10 @@ FocusScope {
         }
     }
     Component { id: friendsComponent; DesktopFriendsScreen {} }
+    Component {
+        id: sourceLibraryComponent
+        DesktopSourceLibraryScreen { searchQuery: root.searchText }
+    }
     Component { id: updatesComponent; DesktopUpdateScreen {} }
     Component {
         id: settingsComponent

@@ -9,6 +9,7 @@
 #include <QQueue>
 #include <QStringList>
 #include <QTimer>
+#include <functional>
 #include <optional>
 #include "streaming/rendering/WindowsHdrDisplay.h"
 
@@ -50,6 +51,14 @@ public:
                                 const QJsonObject &params = {},
                                 int timeoutMs = 15'000);
     Q_INVOKABLE bool cancel(const QString &requestId);
+    using PrivateHandler = std::function<void(bool ok, const QJsonObject &result,
+                                              const QString &code, const QString &message)>;
+    QString requestPrivate(const QString &method, const QJsonObject &params, PrivateHandler handler,
+                           int timeoutMs = 15'000);
+    static bool isPrivateMethod(const QString &method);
+    void settleReceipt(const QString &requestId, bool accepted);
+    [[nodiscard]] quint64 mediaEpoch() const { return m_mediaEpoch; }
+    [[nodiscard]] bool mediaPreparationPending() const;
     Q_INVOKABLE void logShellDiagnostic(const QString &message);
     Q_INVOKABLE void markUiReady();
     void setNativeHdrSupported(bool supported) { m_nativeHdrSupported = supported; }
@@ -82,12 +91,15 @@ private:
     void setState(const QString &state);
     void setLastError(const QString &error);
     void setCapabilities(const QStringList &capabilities);
+    QString sendRequest(const QString &method, const QJsonObject &params, int timeoutMs);
+    void deliverFailure(const QString &id, const QString &code, const QString &message);
     bool writeMessage(const QJsonObject &message);
     void processLine(const QByteArray &line);
     void failAll(const QString &code, const QString &message);
     void protocolFailure(const QString &message);
     void scheduleRestart();
     void acknowledgeUpdateStartup();
+    void releaseHeldPreparations();
 
     QProcess m_process;
     QProcessEnvironment m_updateStartupEnvironment;
@@ -98,6 +110,9 @@ private:
     QByteArray m_stdoutBuffer;
     QByteArray m_stderrBuffer;
     QHash<QString, PendingRequest> m_pending;
+    QHash<QString, PrivateHandler> m_privateHandlers;
+    QString m_reconcileId;
+    quint64 m_mediaEpoch = 0;
     QQueue<QJsonObject> m_events;
     QString m_state = QStringLiteral("stopped");
     QStringList m_capabilities;

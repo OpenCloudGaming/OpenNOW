@@ -8,9 +8,10 @@ FocusScope {
     focus: true
     Accessible.role: Accessible.Pane
     Accessible.name: qsTr("Live session")
-    readonly property var game: ShellStore.selectedGame || ({})
+    readonly property var game: ShellStore.sourceStreamGame || ShellStore.selectedGame || ({})
     readonly property var session: ShellStore.activeSession || ({})
-    readonly property var profile: session.negotiatedStreamProfile || ({})
+    readonly property var profile: ShellStore.sourceStreamActive ? ShellStore.activeStreamProfile
+        : session.negotiatedStreamProfile || ({})
     readonly property var streamer: ShellStore.streamer || ({})
     readonly property string status: {
         if (ShellStore.streamState === "error")
@@ -218,6 +219,7 @@ FocusScope {
                 objectName: "streamRetryMediaButton"
                 visible: root.failed
                 enabled: !ShellStore.streamBusy
+                    || (ShellStore.sourceSession.phase === "failed" && ShellStore.activeSession === null)
                 primary: true
                 text: qsTr("Retry media")
                 detail: qsTr("Reconnects to the same session")

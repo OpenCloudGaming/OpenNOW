@@ -4,6 +4,7 @@
 #include <chrono>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <cstdlib>
 #include <iomanip>
 
@@ -75,6 +76,9 @@ struct FakePluginRegistry {
     {
         std::string plugins = descriptor(GfnId, "GeForce NOW", "OpenNOW",
                                          "The built-in GeForce NOW catalog and streaming service.", true, true);
+        if (std::getenv("OPENNOW_TEST_SOURCES"))
+            plugins += "," + descriptor("org.opennow.example.provider", "Example Provider", "OpenNOW example",
+                                        "Example Provider fixture.", false, true);
         if (installed) {
             auto entry = example(enabled);
             const auto state = entry.find("\"state\":\"ready\"");
@@ -219,6 +223,325 @@ bool handlePluginRequest(FakePluginRegistry &registry, const std::string &line, 
 }
 }
 
+struct FakeSourceRegistry {
+    static constexpr const char *GfnId = "org.opennow.geforce-now";
+    static constexpr const char *ProviderId = "org.opennow.example.provider";
+    static constexpr const char *AnonymousId = "org.opennow.example.anonymous";
+    long generation = 1;
+    long providerGeneration = 1;
+    std::string selected = GfnId;
+    bool gfnEnabled = true;
+    int authPolls = 0;
+    bool signedIn = false;
+    std::string attempt;
+    std::string attemptKind;
+    long accountRevision = 0;
+    long settingsRevision = 1;
+    bool hdrPreferred = false;
+    std::string region = "eu";
+    long streamRevision = 1;
+    std::string streamCodec = "auto";
+    int sessionPolls = 0;
+    bool sessionActive = false;
+    int releases = 0;
+    int releaseAttempts = 0;
+    bool failNextRelease = false;
+    int reconciles = 0;
+    long mediaRevision = 7;
+
+    static std::string row(const std::string &id, const std::string &name, bool builtin, bool enabled,
+                           const std::string &capabilities, const std::string &authKinds, const std::string &playback)
+    {
+        return "{\"id\":\"" + id + "\",\"name\":\"" + name + "\",\"version\":\"1.0.0\",\"publisher\":\"OpenNOW example\","
+            "\"description\":\"" + name + " fixture.\",\"builtin\":" + (builtin ? "true" : "false")
+            + ",\"required\":false,\"enabled\":" + (enabled ? "true" : "false") + ",\"state\":\"" + (enabled ? "ready" : "disabled")
+            + "\",\"capabilities\":[\"catalog.v1\"],\"trust\":\"" + (builtin ? "builtin" : "unsigned-native")
+            + "\",\"lastError\":null,\"protocolVersion\":2,\"providerCapabilities\":[" + capabilities + "],\"authKinds\":["
+            + authKinds + "],\"playback\":" + playback + "}";
+    }
+    std::string snapshot() const
+    {
+        return "{\"generation\":" + std::to_string(generation) + ",\"selectedSourceId\":\"" + selected + "\",\"sources\":["
+            + row(GfnId, "GeForce NOW", true, gfnEnabled,
+                  "\"auth.deviceCode.v2\",\"accounts.v2\",\"catalog.library.v2\",\"catalog.details.v2\",\"launch.v2\",\"sessions.v2\"",
+                  "\"device-code\"", "\"gfn-native\"") + ","
+            + row(ProviderId, "Example Provider", false, true,
+                  "\"auth.deviceCode.v2\",\"auth.browser.v2\",\"accounts.v2\",\"catalog.public.v2\",\"catalog.library.v2\",\"catalog.details.v2\",\"launch.v2\",\"sessions.v2\",\"settings.v2\",\"media.worker.v1\"",
+                  "\"device-code\",\"browser\"", "\"media-worker-v1\"") + ","
+            + row(AnonymousId, "Example Anonymous", false, true,
+                  "\"auth.anonymous.v2\",\"catalog.public.v2\",\"catalog.details.v2\"", "\"anonymous\"", "null")
+            + "]}";
+    }
+    std::string account() const
+    {
+        return "{\"key\":{\"authority\":\"example\",\"account\":\"player-1\"},\"name\":\"Example player\","
+               "\"persistence\":\"durable\",\"reauthenticationRequired\":false,\"pinLocked\":false}";
+    }
+    std::string authState() const
+    {
+        if (signedIn)
+            return "{\"state\":\"signed-in\",\"account\":" + account() + ",\"revision\":" + std::to_string(accountRevision) + "}";
+        if (!attempt.empty() && authPolls >= 2)
+            return "{\"state\":\"authorized\",\"attempt\":\"" + attempt + "\"}";
+        if (!attempt.empty() && attemptKind == "browser")
+            return "{\"state\":\"pending\",\"challenge\":{\"kind\":\"browser\",\"attempt\":\"" + attempt
+                + "\",\"openHandle\":\"open-handle-1\",\"expiresAtMs\":4102444800000,\"pollAfterMs\":300}}";
+        if (!attempt.empty())
+            return "{\"state\":\"pending\",\"challenge\":{\"kind\":\"device-code\",\"attempt\":\"" + attempt
+                + "\",\"userCode\":\"WXYZ-1234\",\"verificationUri\":\"https://example.invalid/link\","
+                  "\"expiresAtMs\":4102444800000,\"pollAfterMs\":300}}";
+        return "{\"state\":\"signed-out\"}";
+    }
+    std::string streamSettingsView() const
+    {
+        return "{\"revision\":" + std::to_string(streamRevision) + ",\"settings\":["
+            "{\"key\":\"stream.codec\",\"label\":\"Requested codec\",\"control\":{\"kind\":\"choice\",\"choices\":["
+            "{\"value\":\"auto\",\"label\":\"auto\"},{\"value\":\"h264\",\"label\":\"h264\"}]},"
+            "\"value\":{\"kind\":\"choice\",\"value\":\"" + streamCodec + "\"}}]}";
+    }
+    std::string sessionView() const
+    {
+        return std::string("{\"key\":{\"account\":null,\"remoteId\":\"s1\"},\"target\":{\"game\":\"game-1\",\"variant\":\"default\"},"
+            "\"state\":") + (!sessionActive ? "{\"state\":\"finished\",\"reason\":\"user_stopped\"}"
+                : sessionPolls < 1 ? "{\"state\":\"queued\",\"position\":2,\"waitSeconds\":30}" : "{\"state\":\"ready\"}") + "}";
+    }
+    std::string settingsView() const
+    {
+        return "{\"revision\":" + std::to_string(settingsRevision) + ",\"settings\":["
+            "{\"key\":\"hdr\",\"label\":\"Prefer HDR\",\"control\":{\"kind\":\"boolean\"},\"value\":{\"kind\":\"boolean\",\"value\":"
+            + (hdrPreferred ? "true" : "false") + "}},"
+            "{\"key\":\"region\",\"label\":\"Region\",\"control\":{\"kind\":\"choice\",\"choices\":[{\"value\":\"eu\",\"label\":\"Europe\"},"
+            "{\"value\":\"us\",\"label\":\"United States\"}]},\"value\":{\"kind\":\"choice\",\"value\":\"" + region + "\"}}]}";
+    }
+};
+
+std::string wrap(const std::string &source, long generation, const std::string &result)
+{
+    return "{\"sourceId\":\"" + source + "\",\"generation\":" + std::to_string(generation) + ",\"result\":" + result + "}";
+}
+
+void sourcesChanged(const std::string &source)
+{
+    std::cout << "{\"type\":\"event\",\"name\":\"sources.changed\",\"payload\":{\"sourceId\":\"" << source << "\"}}\n" << std::flush;
+}
+
+std::string gamePage(const std::string &source, const std::string &scope, const std::string &query, const std::string &cursor, long limit)
+{
+    const int total = source == FakeSourceRegistry::AnonymousId ? 4 : 30;
+    const int offset = cursor.rfind("page-", 0) == 0 ? std::atoi(cursor.c_str() + 5) : 0;
+    std::string items;
+    int index = offset, emitted = 0;
+    for (; index < total && emitted < limit; ++index) {
+        const auto title = std::string(source == FakeSourceRegistry::AnonymousId ? "Free title " : "Provider game ") + std::to_string(index + 1);
+        if (!query.empty() && title.find(query) == std::string::npos) continue;
+        if (!items.empty()) items += ",";
+        items += "{\"id\":\"game-" + std::to_string(index + 1) + "\",\"title\":\"" + title + "\",\"artwork\":null,"
+            "\"subtitle\":\"Fixture\",\"badges\":[\"<b>Plain</b>\"],\"availability\":\""
+            + (index == 2 ? std::string("maintenance") : std::string("available")) + "\"}";
+        ++emitted;
+    }
+    const bool more = index < total && query.empty();
+    return "{\"items\":[" + items + "],\"nextCursor\":" + (more ? "\"page-" + std::to_string(index) + "\"" : std::string("null"))
+        + ",\"coverage\":\"" + (more ? "partial" : "complete") + "\",\"revision\":\"rev-1\",\"scope\":" + scope + "}";
+}
+
+bool handleSourceRequest(FakeSourceRegistry &registry, const std::string &line, const std::string &id, const std::string &method)
+{
+    if (method == "streamer.source.policy") {
+        respond(id, "{\"localPolicy\":{\"videoBackend\":\"auto\",\"audioOutputDevice\":\"\",\"maxBitrateMbps\":75,"
+            "\"replayBufferEnabled\":false,\"replayBufferSeconds\":30,\"replayBufferMemoryMiB\":256,\"shortcuts\":{}}}");
+        return true;
+    }
+    if (method == "streamer.source.prepare") {
+        if (paramField(line, "sessionHandle") != "op-1" || line.find("\"offer\":{") == std::string::npos) {
+            fail(id, "session_owner_mismatch", "The private source handle is unavailable or no longer owned");
+            return true;
+        }
+        respond(id, std::string("{\"version\":1,\"leaseId\":\"lease-1\",\"offerId\":\"offer-1\",\"runtimeEpoch\":1,\"sourceId\":\"")
+            + FakeSourceRegistry::ProviderId + "\",\"session\":{\"account\":null,\"remoteId\":\"s1\"},\"attemptId\":\"attempt-1\","
+            "\"expiresAtMs\":4102444800000,\"media\":{\"kind\":\"worker\",\"package\":{\"versionRoot\":\"/private/root\"},"
+            "\"prepared\":{\"accepted\":{\"offerId\":\"offer-1\",\"runtimeEpoch\":1,\"video\":{\"encoding\":\"h264-annex-b\","
+            "\"width\":320,\"height\":240,\"fps\":50,\"bitDepth\":8,\"chroma\":\"yuv420\",\"color\":{\"range\":\"limited\","
+            "\"primaries\":\"bt709\",\"transfer\":\"bt709\",\"matrix\":\"bt709\",\"chromaLocation\":\"left\",\"note\":\"<b>x</b>\"},"
+            "\"secretTag\":\"private-video-tag\"},\"audio\":null,\"input\":{\"keyboard\":true}},"
+            "\"bootstrap\":\"private-bootstrap-secret\"}}}");
+        return true;
+    }
+    if (method == "test.fail-next-release") {
+        registry.failNextRelease = true;
+        respond(id, "{\"armed\":1}");
+        return true;
+    }
+    if (method == "streamer.source.release") {
+        ++registry.releaseAttempts;
+        if (std::exchange(registry.failNextRelease, false)) {
+            fail(id, "session_journal_unavailable", "The session journal is unavailable");
+            return true;
+        }
+        if (paramField(line, "leaseId") == "lease-1" && line.find("\"remoteId\":\"s1\"") != std::string::npos)
+            ++registry.releases;
+        respond(id, "{\"released\":true}");
+        return true;
+    }
+    if (method == "streamer.source.observe") {
+        respond(id, "{\"mediaRevision\":" + std::to_string(registry.mediaRevision) + "}");
+        return true;
+    }
+    if (method == "streamer.source.reconcile") {
+        if (paramNumber(line, "mediaRevision", -1) != registry.mediaRevision) {
+            fail(id, "stale_media_observation", "Observe the media state again");
+            return true;
+        }
+        if (line.find("\"status\":{") != std::string::npos && line.find("\"nativeIdle\":") != std::string::npos
+                && line.find("\"type\":\"media-status\"") == std::string::npos)
+            ++registry.reconciles;
+        respond(id, "{\"reconciled\":true}");
+        return true;
+    }
+    if (method == "test.source-releases") {
+        respond(id, "{\"releases\":" + std::to_string(registry.releases) + ",\"reconciles\":"
+            + std::to_string(registry.reconciles) + ",\"releaseAttempts\":" + std::to_string(registry.releaseAttempts) + "}");
+        return true;
+    }
+    if (method == "sources.auth.open") {
+        if (paramField(line, "openHandle") != "open-handle-1") {
+            fail(id, "session_owner_mismatch", "The private source handle is unavailable or no longer owned");
+            return true;
+        }
+        respond(id, "{\"url\":\"https://example.invalid/authorize?secret=private-browser-url\",\"attempt\":\"" + registry.attempt + "\"}");
+        return true;
+    }
+    if (method == "sources.session.current") {
+        respond(id, "{\"session\":null}");
+        return true;
+    }
+    if (method == "sources.list") {
+        respond(id, registry.snapshot());
+        return true;
+    }
+    if (method == "sources.select") {
+        const auto source = paramField(line, "sourceId");
+        if (source != FakeSourceRegistry::GfnId && source != FakeSourceRegistry::ProviderId && source != FakeSourceRegistry::AnonymousId) {
+            fail(id, "source_unavailable", "That service isn't available.");
+            return true;
+        }
+        registry.selected = source;
+        ++registry.generation;
+        respond(id, registry.snapshot());
+        return true;
+    }
+    if (method == "sources.session.create") {
+        if (paramField(line, "sourceId") == "invalid") {
+            respond(id, "{\"sourceId\":\"other\",\"generation\":1,\"result\":{}}");
+        } else if (line.find("\"offer\":{") == std::string::npos) {
+            fail(id, "invalid_params", "A native media offer is required");
+        } else {
+            registry.sessionActive = true;
+            registry.sessionPolls = 0;
+            respond(id, wrap(paramField(line, "sourceId"), 1, "{\"session\":" + registry.sessionView() + ",\"sessionHandle\":\"op-1\"}"));
+        }
+        return true;
+    }
+    if (method.rfind("sources.", 0) != 0)
+        return false;
+    const auto source = paramField(line, "sourceId");
+    const bool provider = source == FakeSourceRegistry::ProviderId;
+    const bool anonymous = source == FakeSourceRegistry::AnonymousId;
+    if (!provider && !anonymous) {
+        fail(id, "source_unavailable", "That service isn't available.");
+        return true;
+    }
+    const long generation = anonymous ? 1 : registry.providerGeneration;
+    if (method == "sources.auth.state") {
+        respond(id, wrap(source, generation, anonymous ? "{\"state\":\"not-required\"}" : registry.authState()));
+    } else if (method == "sources.auth.start" && provider) {
+        registry.attempt = "attempt-" + std::to_string(++registry.accountRevision);
+        registry.attemptKind = paramField(line, "kind");
+        registry.authPolls = 0;
+        respond(id, wrap(source, generation, registry.authState()));
+    } else if (method == "sources.auth.poll" && provider) {
+        if (paramField(line, "attempt") != registry.attempt) {
+            fail(id, "stale_source", "This sign-in attempt is no longer current.");
+            return true;
+        }
+        ++registry.authPolls;
+        respond(id, wrap(source, generation, registry.authState()));
+    } else if (method == "sources.auth.complete" && provider) {
+        if (registry.authPolls < 2 || paramField(line, "attempt") != registry.attempt) {
+            fail(id, "auth_required", "Approve the sign-in first.");
+            return true;
+        }
+        registry.attempt.clear();
+        registry.signedIn = true;
+        respond(id, wrap(source, generation, registry.authState()));
+        sourcesChanged(source);
+    } else if (method == "sources.auth.cancel" && provider) {
+        registry.attempt.clear();
+        respond(id, wrap(source, generation, "{}"));
+    } else if (method == "sources.auth.logout" && provider) {
+        registry.signedIn = false;
+        respond(id, wrap(source, generation, registry.authState()));
+        sourcesChanged(source);
+    } else if (method == "sources.accounts.list" && provider) {
+        respond(id, wrap(source, generation, std::string("{\"accounts\":[") + (registry.signedIn ? registry.account() : "")
+            + "],\"selected\":" + (registry.signedIn ? "{\"authority\":\"example\",\"account\":\"player-1\"}" : "null")
+            + ",\"revision\":" + std::to_string(registry.accountRevision) + "}"));
+    } else if (method == "sources.public.page" || method == "sources.library.page") {
+        const bool library = method == "sources.library.page";
+        if (library && (!provider || !registry.signedIn)) {
+            fail(id, "auth_required", "Sign in to see your library.");
+            return true;
+        }
+        const auto scope = library ? "{\"kind\":\"account\",\"scope\":{\"account\":{\"authority\":\"example\",\"account\":\"player-1\"},\"revision\":"
+            + std::to_string(registry.accountRevision) + "}}" : std::string("{\"kind\":\"public\"}");
+        respond(id, wrap(source, generation, gamePage(source, scope, paramField(line, "query"), paramField(line, "cursor"),
+            paramNumber(line, "limit", 20))));
+    } else if (method == "sources.game.get") {
+        const auto game = paramField(line, "game");
+        respond(id, wrap(source, generation, "{\"game\":{\"id\":\"" + game + "\",\"title\":\"Detail " + game
+            + "\",\"artwork\":null,\"subtitle\":null,\"badges\":[],\"availability\":\"available\"},\"description\":\"A <i>plain</i> description.\","
+              "\"variants\":[{\"id\":\"default\",\"label\":\"Standard\",\"availability\":\"available\"}],\"revision\":\"rev-1\",\"scope\":{\"kind\":\"public\"}}"));
+    } else if (method == "sources.launch.inspect") {
+        respond(id, wrap(source, generation, "{\"state\":\"ready\",\"target\":{\"game\":\"" + paramField(line, "game")
+            + "\",\"variant\":\"default\"},\"revision\":\"rev-1\"}"));
+    } else if (method == "sources.session.poll" && provider) {
+        ++registry.sessionPolls;
+        respond(id, wrap(source, generation, registry.sessionView()));
+    } else if (method == "sources.session.stop" && provider) {
+        registry.sessionActive = false;
+        respond(id, wrap(source, generation, "{\"state\":\"resolved\"}"));
+    } else if (method == "sources.settings.get" && provider) {
+        respond(id, wrap(source, generation, registry.streamSettingsView()));
+    } else if (method == "sources.settings.set" && provider) {
+        if (paramNumber(line, "expectedRevision", -1) != registry.streamRevision) {
+            fail(id, "stale_settings", "Source settings changed before this request");
+            return true;
+        }
+        registry.streamCodec = line.find("\"value\":\"h264\"") != std::string::npos ? "h264" : "auto";
+        ++registry.streamRevision;
+        respond(id, wrap(source, generation, registry.streamSettingsView()));
+    } else if (method == "sources.providerSettings.get" && provider) {
+        respond(id, wrap(source, generation, registry.settingsView()));
+    } else if (method == "sources.providerSettings.set" && provider) {
+        if (paramNumber(line, "expectedRevision", -1) != registry.settingsRevision) {
+            fail(id, "stale_source", "Settings changed. Try again.");
+            return true;
+        }
+        const auto key = paramField(line, "key");
+        if (key == "hdr") registry.hdrPreferred = line.find("\"value\":true") != std::string::npos;
+        else if (key == "region") {
+            const auto marker = std::string{"\"kind\":\"choice\",\"value\":\""};
+            const auto at = line.find(marker);
+            if (at != std::string::npos) registry.region = line.substr(at + marker.size(), line.find('"', at + marker.size()) - at - marker.size());
+        }
+        ++registry.settingsRevision;
+        respond(id, wrap(source, generation, registry.settingsView()));
+    } else {
+        fail(id, "unsupported_feature", "This service doesn't support that.");
+    }
+    return true;
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 2 && std::string(argv[1]) == "--graphics-preferences") {
@@ -241,6 +564,9 @@ int main(int argc, char **argv)
     }
     FakePluginRegistry pluginRegistry;
     const bool pluginsEnabled = std::getenv("OPENNOW_TEST_PLUGINS") != nullptr;
+    const bool sourcesEnabled = std::getenv("OPENNOW_TEST_SOURCES") != nullptr;
+    const bool sourcesOnly = std::getenv("OPENNOW_TEST_SOURCES_ONLY") != nullptr;
+    FakeSourceRegistry sourceRegistry;
     std::string line;
     while (std::getline(std::cin, line)) {
         const auto id = field(line, "id");
@@ -256,8 +582,10 @@ int main(int argc, char **argv)
             const auto protocolVersion = std::getenv("OPENNOW_TEST_OLD_CORE") ? 4 : 5;
             std::cout << "{\"type\":\"response\",\"id\":\"" << id
                       << "\",\"ok\":true,\"result\":{\"protocolVersion\":" << protocolVersion
-                      << ",\"capabilities\":[\"settings\",\"catalog.libraryPages.v1\",\"catalog.metadata.v1\",\"account.syncObservation.v1\",\"catalog.languages.v1\",\"nativeStreamer.v7\",\"nativeStreamer.ownedNvstNegotiation\""
-                      << (std::getenv("OPENNOW_TEST_NO_QUEUE_CAPABILITY") ? "" : ",\"queue.servers.v1\"")
+                      << (sourcesOnly ? ",\"capabilities\":[\"settings\",\"sources.v2\""
+                          : ",\"capabilities\":[\"settings\",\"catalog.libraryPages.v1\",\"catalog.metadata.v1\",\"account.syncObservation.v1\",\"catalog.languages.v1\",\"nativeStreamer.v7\",\"nativeStreamer.ownedNvstNegotiation\"")
+                      << (sourcesOnly || std::getenv("OPENNOW_TEST_NO_QUEUE_CAPABILITY") ? "" : ",\"queue.servers.v1\"")
+                      << (sourcesEnabled && !sourcesOnly ? ",\"sources.v2\"" : "")
                       << (pluginsEnabled ? ",\"plugins.v1\",\"sources.catalog.v1\"" : "")
                       << [] {
                              if (!std::getenv("OPENNOW_TEST_CAPABILITY_FLOOD")) return std::string{};
@@ -267,6 +595,8 @@ int main(int argc, char **argv)
                          }()
                       << "]}}\n" << std::flush;
         } else if (pluginsEnabled && handlePluginRequest(pluginRegistry, line, id, method)) {
+            continue;
+        } else if ((sourcesEnabled || sourcesOnly) && handleSourceRequest(sourceRegistry, line, id, method)) {
             continue;
         } else if (method == "updater.startup.ack") {
             ++startupAcknowledgements;

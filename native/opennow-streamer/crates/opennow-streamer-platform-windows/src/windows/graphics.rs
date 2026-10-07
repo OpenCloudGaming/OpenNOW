@@ -1047,7 +1047,7 @@ fn create_swap_chain(
 }
 
 fn validate_standalone_color(format: VideoFormat) -> Result<(), String> {
-    if format.transfer_function != crate::VideoTransferFunction::Sdr {
+    if !format.transfer_function.is_sdr() {
         return Err("HDR requires the embedded Qt HDR presenter; the standalone Windows swapchain is SDR-only".to_owned());
     }
     input_color_space(format)?;

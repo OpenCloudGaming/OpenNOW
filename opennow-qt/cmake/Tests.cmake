@@ -542,6 +542,22 @@ if(BUILD_TESTING)
     set_tests_properties(qml-console-settings PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 15)
     qt_add_resources(opennow-qt "plugins-acceptance"
         PREFIX "/acceptance" BASE tests FILES tests/PluginsAcceptance.qml)
+    qt_add_resources(opennow-qt "sources-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/SourcesAcceptance.qml)
+    foreach(source_surface desktop console)
+        add_test(NAME qml-sources-${source_surface}
+            COMMAND opennow-qt --smoke-test --allow-multiple-instances --${source_surface}
+                --core "$<TARGET_FILE:opennow-fake-core>"
+                --route home --smoke-sources --reduced-motion)
+        set_tests_properties(qml-sources-${source_surface} PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen;OPENNOW_TEST_SOURCES=1;OPENNOW_TEST_PLUGINS=1" TIMEOUT 25)
+        add_test(NAME qml-sources-only-${source_surface}
+            COMMAND opennow-qt --smoke-test --allow-multiple-instances --${source_surface}
+                --core "$<TARGET_FILE:opennow-fake-core>"
+                --route home --smoke-sources --sources-only --reduced-motion)
+        set_tests_properties(qml-sources-only-${source_surface} PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen;OPENNOW_TEST_SOURCES_ONLY=1" TIMEOUT 25)
+    endforeach()
     foreach(plugin_surface desktop console)
         add_test(NAME qml-plugins-${plugin_surface}
             COMMAND opennow-qt --smoke-test --allow-multiple-instances --${plugin_surface}
@@ -986,6 +1002,21 @@ if(BUILD_TESTING)
              COMMAND opennow-nativestreamruntime-tests -o -,txt)
     set_tests_properties(opennow-nativestreamruntime-tests PROPERTIES TIMEOUT 8)
 
+    qt_add_executable(opennow-sourcebridge-tests
+        tests/tst_sourcebridge.cpp
+        src/app/SourceBridge.cpp
+        src/app/SourceBridge.h
+        src/core/CoreClient.cpp
+        src/core/CoreClient.h
+        ${OPENNOW_STREAM_RUNTIME_SOURCES}
+    )
+    target_include_directories(opennow-sourcebridge-tests PRIVATE src)
+    target_link_libraries(opennow-sourcebridge-tests PRIVATE
+        Qt6::Test Qt6::Core Qt6::Gui opennow-streamer-ffi)
+    add_dependencies(opennow-sourcebridge-tests opennow-fake-core opennow-streamer-ffi-build)
+    add_test(NAME opennow-sourcebridge-tests COMMAND opennow-sourcebridge-tests -o -,txt)
+    set_tests_properties(opennow-sourcebridge-tests PROPERTIES TIMEOUT 20)
+
     if(UNIX AND NOT APPLE)
         qt_add_executable(opennow-sonychain-tests
             tests/tst_sonychain.cpp
@@ -1034,7 +1065,8 @@ if(BUILD_TESTING)
             COMMENT "Deploying the embedded streamer runtime for CTest")
         foreach(test_target IN ITEMS
                 opennow-streamvideo-tests
-                opennow-nativestreamruntime-tests)
+                opennow-nativestreamruntime-tests
+                opennow-sourcebridge-tests)
             add_dependencies(${test_target} opennow-streamer-ffi-test-runtime)
             set_property(TARGET ${test_target} APPEND PROPERTY BUILD_RPATH "@loader_path")
         endforeach()

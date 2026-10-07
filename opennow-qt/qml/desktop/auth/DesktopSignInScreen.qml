@@ -481,6 +481,9 @@ FocusScope {
                             enabled: ShellStore.ready && ShellStore.selectedProvider !== null
                             onClicked: { root.qrRequested = true; ShellStore.startDeviceLogin(root.selectedProvider.idpId || "", root.staySignedIn) }
                         }
+                        DesktopSourceSwitcher {
+                            width: parent.width
+                        }
                         AuthButton {
                             objectName: "signInManagePlugins"
                             width: parent.width

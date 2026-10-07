@@ -504,6 +504,172 @@ private slots:
         QVERIFY(capabilities.contains(QStringLiteral("queue.servers.v1")));
     }
 
+    void sourcesV2CoreConnectsWithoutGeForceNowCapabilities()
+    {
+        const auto previous = qgetenv("OPENNOW_TEST_SOURCES_ONLY");
+        const auto restore = qScopeGuard([previous] {
+            if (previous.isNull()) qunsetenv("OPENNOW_TEST_SOURCES_ONLY");
+            else qputenv("OPENNOW_TEST_SOURCES_ONLY", previous);
+        });
+        qputenv("OPENNOW_TEST_SOURCES_ONLY", "1");
+        CoreClient client;
+        QVERIFY(client.start(fakeCorePath()));
+        QTRY_COMPARE_WITH_TIMEOUT(client.state(), QStringLiteral("ready"), 2'000);
+        QVERIFY(client.capabilities().contains(QStringLiteral("sources.v2")));
+        QVERIFY(!client.capabilities().contains(QStringLiteral("queue.servers.v1")));
+    }
+
+    void privateRequestsNeverReachPublicSignals()
+    {
+        const auto previous = qgetenv("OPENNOW_TEST_SOURCES");
+        const auto restore = qScopeGuard([previous] {
+            if (previous.isNull()) qunsetenv("OPENNOW_TEST_SOURCES");
+            else qputenv("OPENNOW_TEST_SOURCES", previous);
+        });
+        qputenv("OPENNOW_TEST_SOURCES", "1");
+        CoreClient client;
+        QSignalSpy responses(&client, &CoreClient::responseReceived);
+        QSignalSpy failures(&client, &CoreClient::requestFailed);
+        QVERIFY(client.start(fakeCorePath()));
+        QTRY_COMPARE_WITH_TIMEOUT(client.state(), QStringLiteral("ready"), 2'000);
+        responses.clear();
+        const QJsonObject params{{QStringLiteral("sessionHandle"), QStringLiteral("op-1")},
+                                 {QStringLiteral("offer"), QJsonObject{{QStringLiteral("offerId"), QStringLiteral("offer-1")}}}};
+        for (const auto &method : {QStringLiteral("sources.session.create"), QStringLiteral("streamer.source.policy"),
+                                   QStringLiteral("streamer.source.prepare"), QStringLiteral("streamer.source.release"),
+                                   QStringLiteral("sources.auth.open")})
+            QVERIFY(client.request(method, params).isEmpty());
+        QVERIFY(client.requestPrivate(QStringLiteral("sources.list"), {}, [](bool, const QJsonObject &, const QString &,
+                                                                          const QString &) {}).isEmpty());
+        bool delivered = false;
+        QJsonObject privateResult;
+        const auto id = client.requestPrivate(QStringLiteral("streamer.source.prepare"), params,
+            [&](bool ok, const QJsonObject &result, const QString &, const QString &) {
+                delivered = ok;
+                privateResult = result;
+            });
+        QVERIFY(!id.isEmpty());
+        QTRY_VERIFY_WITH_TIMEOUT(delivered, 2'000);
+        QCOMPARE(privateResult.value(QStringLiteral("media")).toObject().value(QStringLiteral("prepared")).toObject()
+                     .value(QStringLiteral("bootstrap")).toString(), QStringLiteral("private-bootstrap-secret"));
+        QString openedUrl;
+        const auto open = client.requestPrivate(QStringLiteral("sources.auth.open"),
+            {{QStringLiteral("sourceId"), QStringLiteral("org.opennow.example.provider")},
+             {QStringLiteral("openHandle"), QStringLiteral("open-handle-1")}},
+            [&](bool, const QJsonObject &result, const QString &, const QString &) {
+                openedUrl = result.value(QStringLiteral("url")).toString();
+            });
+        QVERIFY(!open.isEmpty());
+        QTRY_VERIFY_WITH_TIMEOUT(openedUrl.contains(QStringLiteral("private-browser-url")), 2'000);
+        QString cancelledCode;
+        const auto cancelled = client.requestPrivate(QStringLiteral("streamer.source.prepare"), params,
+            [&](bool, const QJsonObject &, const QString &code, const QString &) { cancelledCode = code; });
+        QVERIFY(client.cancel(cancelled));
+        QCOMPARE(cancelledCode, QStringLiteral("cancelled"));
+        const auto probe = client.request(QStringLiteral("test.echo"));
+        QTRY_VERIFY_WITH_TIMEOUT(std::any_of(responses.begin(), responses.end(), [&](const auto &response) {
+            return response.at(0).toString() == probe;
+        }), 2'000);
+        for (const auto &response : responses) {
+            QVERIFY(response.at(0).toString() != id && response.at(0).toString() != open);
+            const auto text = QJsonDocument(response.at(1).toJsonObject()).toJson();
+            QVERIFY(!text.contains("private-bootstrap-secret") && !text.contains("private-browser-url"));
+        }
+        for (const auto &failure : failures)
+            QVERIFY(failure.at(0).toString() != id && failure.at(0).toString() != cancelled
+                    && failure.at(0).toString() != open);
+    }
+
+    void acknowledgesOnlyMatchingSourceSessions()
+    {
+        const auto previous = qgetenv("OPENNOW_TEST_SOURCES");
+        const auto restore = qScopeGuard([previous] {
+            if (previous.isNull()) qunsetenv("OPENNOW_TEST_SOURCES");
+            else qputenv("OPENNOW_TEST_SOURCES", previous);
+        });
+        qputenv("OPENNOW_TEST_SOURCES", "1");
+        CoreClient client;
+        QSignalSpy responses(&client, &CoreClient::responseReceived);
+        QVERIFY(client.start(fakeCorePath()));
+        QTRY_COMPARE_WITH_TIMEOUT(client.state(), QStringLiteral("ready"), 2'000);
+        const QJsonObject offer{{QStringLiteral("offerId"), QStringLiteral("offer-1")}};
+        const auto receipts = [&] {
+            const auto query = client.request(QStringLiteral("test.create-receipts"));
+            int count = -1;
+            static_cast<void>(QTest::qWaitFor([&] {
+                for (const auto &response : responses)
+                    if (response.at(0).toString() == query)
+                        count = response.at(1).toJsonObject().value(QStringLiteral("receipts")).toInt();
+                return count >= 0;
+            }, 2'000));
+            return count;
+        };
+        QString acceptedCode = QStringLiteral("pending");
+        QString mismatchedCode = QStringLiteral("pending");
+        client.requestPrivate(QStringLiteral("sources.session.create"),
+            {{QStringLiteral("sourceId"), QStringLiteral("org.opennow.example.provider")}, {QStringLiteral("offer"), offer}},
+            [&](bool ok, const QJsonObject &, const QString &code, const QString &) { acceptedCode = ok ? QString() : code; });
+        client.requestPrivate(QStringLiteral("sources.session.create"),
+            {{QStringLiteral("sourceId"), QStringLiteral("invalid")}, {QStringLiteral("offer"), offer}},
+            [&](bool ok, const QJsonObject &, const QString &code, const QString &) { mismatchedCode = ok ? QString() : code; });
+        QTRY_VERIFY_WITH_TIMEOUT(acceptedCode != QStringLiteral("pending")
+                                 && mismatchedCode != QStringLiteral("pending"), 2'000);
+        QVERIFY(acceptedCode.isEmpty());
+        QCOMPARE(mismatchedCode, QStringLiteral("invalid_source_session"));
+        QCOMPARE(receipts(), 1);
+
+        QString prepareId;
+        bool prepared = false;
+        prepareId = client.requestPrivate(QStringLiteral("streamer.source.prepare"),
+            {{QStringLiteral("sessionHandle"), QStringLiteral("op-1")}, {QStringLiteral("offer"), offer}},
+            [&](bool ok, const QJsonObject &, const QString &, const QString &) { prepared = ok; });
+        QTRY_VERIFY_WITH_TIMEOUT(prepared, 2'000);
+        QCOMPARE(receipts(), 1);
+        client.settleReceipt(prepareId, true);
+        QCOMPARE(receipts(), 2);
+    }
+
+    void reconcileIsFencedAgainstMediaPreparation()
+    {
+        const auto previous = qgetenv("OPENNOW_TEST_SOURCES");
+        const auto restore = qScopeGuard([previous] {
+            if (previous.isNull()) qunsetenv("OPENNOW_TEST_SOURCES");
+            else qputenv("OPENNOW_TEST_SOURCES", previous);
+        });
+        qputenv("OPENNOW_TEST_SOURCES", "1");
+        CoreClient client;
+        QSignalSpy responses(&client, &CoreClient::responseReceived);
+        QSignalSpy failures(&client, &CoreClient::requestFailed);
+        QVERIFY(client.start(fakeCorePath()));
+        QTRY_COMPARE_WITH_TIMEOUT(client.state(), QStringLiteral("ready"), 2'000);
+        const auto noop = [](bool, const QJsonObject &, const QString &, const QString &) {};
+        const QJsonObject status{{QStringLiteral("mediaRevision"), 7}, {QStringLiteral("status"), QJsonObject{
+            {QStringLiteral("runtimeEpoch"), 1}, {QStringLiteral("nativeIdle"), true},
+            {QStringLiteral("legacyActive"), false}, {QStringLiteral("active"), QJsonValue::Null}}}};
+        const auto epoch = client.mediaEpoch();
+        bool prepared = false;
+        client.requestPrivate(QStringLiteral("streamer.source.prepare"),
+            {{QStringLiteral("sessionHandle"), QStringLiteral("op-1")},
+             {QStringLiteral("offer"), QJsonObject{{QStringLiteral("offerId"), QStringLiteral("offer-1")}}}},
+            [&](bool ok, const QJsonObject &, const QString &, const QString &) { prepared = ok; });
+        QCOMPARE(client.mediaEpoch(), epoch + 1);
+        QVERIFY(client.mediaPreparationPending());
+        QVERIFY(client.requestPrivate(QStringLiteral("streamer.source.reconcile"), status, noop).isEmpty());
+        QTRY_VERIFY_WITH_TIMEOUT(prepared, 2'000);
+        bool reconciled = false;
+        QVERIFY(!client.requestPrivate(QStringLiteral("streamer.source.reconcile"), status,
+            [&](bool ok, const QJsonObject &, const QString &, const QString &) { reconciled = ok; }).isEmpty());
+        QVERIFY(client.requestPrivate(QStringLiteral("streamer.source.reconcile"), status, noop).isEmpty());
+        const auto held = client.request(QStringLiteral("streamer.prepare"), {});
+        QVERIFY(!held.isEmpty());
+        QTRY_VERIFY_WITH_TIMEOUT(reconciled, 2'000);
+        QTRY_VERIFY_WITH_TIMEOUT(std::any_of(responses.begin(), responses.end(), [&](const auto &response) {
+            return response.at(0).toString() == held;
+        }) || std::any_of(failures.begin(), failures.end(), [&](const auto &failure) {
+            return failure.at(0).toString() == held;
+        }), 2'000);
+    }
+
     void rejectsCatalogRequestsDuringHandshakeAndProtocolFailure()
     {
         const auto previous = qgetenv("OPENNOW_TEST_OLD_CORE");
@@ -643,7 +809,7 @@ private slots:
             display.minimumNits = 0.005;
             display.maximumNits = 620;
             client.setNativeHdrDisplay(display);
-            const auto capabilities = QJsonDocument::fromJson(R"({"protocolVersion":7,
+            const auto capabilities = QJsonDocument::fromJson(R"({"protocolVersion":8,
                 "videoBackends":[{"backend":"vaapi","available":true,"codecs":[
                     {"codec":"h265","available":true,"hdrSupported":true,
                      "colorQualities":["8bit_420","10bit_420"],"hdrColorQualities":["10bit_420"]}]}]})").object();

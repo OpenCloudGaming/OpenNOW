@@ -1,12 +1,17 @@
+mod module;
 mod package;
 mod process;
+mod provider_process;
+#[cfg(test)]
+mod provider_registry_tests;
+mod provider_transport;
 mod transport;
 
 use crate::requests::Cancellation;
-use crate::sources::contract::{CatalogSource, SourceError};
-use opennow_plugin_api::manifest::PluginManifest;
+use crate::sources::contract::{CatalogSource, ProviderSource, SourceError};
+use module::Module;
 use opennow_plugin_api::{PluginDescriptor, PluginId, PluginSnapshot, PluginState, PluginTrust};
-use process::ProcessModule;
+use opennow_plugin_package::{InstalledManifest, PackagePin, VerifiedPackage};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -63,7 +68,7 @@ impl Changes {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Record {
-    manifest: PluginManifest,
+    manifest: InstalledManifest,
     package_sha256: String,
     enabled: bool,
     consent_version: u32,
@@ -79,7 +84,7 @@ struct Registry {
 
 struct Entry {
     record: Record,
-    module: Arc<ProcessModule>,
+    module: Arc<Module>,
 }
 
 struct Inspection {
@@ -191,7 +196,7 @@ impl PluginManager {
             if record.consent_version != 1 || !valid_digest(&record.package_sha256) {
                 return Err(error("plugin_storage_error"));
             }
-            let id = record.manifest.id.to_string();
+            let id = record.manifest.id().to_string();
             if entries.contains_key(&id) {
                 return Err(error("plugin_storage_error"));
             }
@@ -203,7 +208,7 @@ impl PluginManager {
                 initial.enabled = true;
                 initial.state = PluginState::Starting;
             }
-            let module = Arc::new(ProcessModule::new(initial, Arc::clone(&changes)));
+            let module = Arc::new(Module::new(&record.manifest, initial, Arc::clone(&changes)));
             entries.insert(id, Entry { record, module });
         }
         if restore.len() > MAX_RUNNING {
@@ -294,6 +299,78 @@ impl PluginManager {
             .ok_or_else(|| error("plugin_not_found"))
     }
 
+    pub fn provider(&self, id: &PluginId) -> Result<Arc<dyn ProviderSource>, SourceError> {
+        self.ensure_available()?;
+        let module = self.module(id)?;
+        match module.as_ref() {
+            Module::Provider(provider) => Ok(Arc::clone(provider) as Arc<dyn ProviderSource>),
+            Module::Catalog(_) => Err(error("unsupported_capability")),
+        }
+    }
+
+    pub fn media_package(&self, id: &PluginId) -> Result<VerifiedPackage, SourceError> {
+        self.ensure_available()?;
+        let entries = self.inner.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = entries
+            .get(id.as_str())
+            .ok_or_else(|| error("plugin_not_found"))?;
+        if !matches!(entry.record.manifest, InstalledManifest::Provider(_))
+            || entry.module.descriptor().state != PluginState::Ready
+        {
+            return Err(error("provider_unavailable"));
+        }
+        let root = self
+            .inner
+            .root
+            .join("installed")
+            .join(id.as_str())
+            .join(&entry.record.package_sha256);
+        opennow_plugin_package::verify(&root, &entry.record.manifest)
+            .map_err(|failure| SourceError::new(failure.code, failure.message))
+    }
+
+    pub fn media_data_dir(&self, id: &PluginId) -> Result<PathBuf, SourceError> {
+        self.ensure_available()?;
+        let entries = self.inner.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = entries
+            .get(id.as_str())
+            .ok_or_else(|| error("plugin_not_found"))?;
+        if !matches!(entry.record.manifest, InstalledManifest::Provider(_))
+            || entry.module.descriptor().state != PluginState::Ready
+        {
+            return Err(error("provider_unavailable"));
+        }
+        let path = self.inner.root.join("data").join(id.as_str());
+        private_dir(&path)?;
+        path.canonicalize()
+            .map_err(|_| error("plugin_storage_error"))
+    }
+
+    fn package_locks(&self, id: &PluginId) -> Result<Vec<PackagePin>, SourceError> {
+        let root = self.inner.root.join("installed").join(id.as_str());
+        let entries = match fs::read_dir(&root) {
+            Ok(entries) => entries,
+            Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(_) => return Err(error("plugin_storage_error")),
+        };
+        let mut pins = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|_| error("plugin_storage_error"))?;
+            let name = entry.file_name();
+            let name = name.to_str().ok_or_else(|| error("plugin_storage_error"))?;
+            if name.starts_with('.') && name.ends_with(".pin") {
+                continue;
+            }
+            if !valid_digest(name) {
+                return Err(error("plugin_storage_error"));
+            }
+            let pin = PackagePin::try_exclusive(&entry.path())
+                .map_err(|failure| SourceError::new(failure.code, failure.message))?;
+            pins.push(pin);
+        }
+        Ok(pins)
+    }
+
     pub fn dispatch(
         &self,
         method: &str,
@@ -365,6 +442,7 @@ impl PluginManager {
                 if request.enabled {
                     self.inner.enable(request.id.as_str(), cancellation)?;
                 } else {
+                    let _pins = self.package_locks(&request.id)?;
                     let module = self.module(&request.id)?;
                     module.disable();
                 }
@@ -388,9 +466,8 @@ impl PluginManager {
                 {
                     return Err(error("plugin_in_use"));
                 }
+                let _pins = self.package_locks(&request.id)?;
                 module.disable();
-                remove_entry(&self.inner.root.join("data").join(request.id.as_str()))?;
-                remove_entry(&self.inner.root.join("installed").join(request.id.as_str()))?;
                 let removed = self
                     .inner
                     .entries
@@ -407,6 +484,8 @@ impl PluginManager {
                     }
                     return Err(failure);
                 }
+                remove_entry(&self.inner.root.join("data").join(request.id.as_str()))?;
+                remove_entry(&self.inner.root.join("installed").join(request.id.as_str()))?;
                 self.inner.changes.bump();
                 Ok(json!(self.snapshot()))
             }
@@ -416,7 +495,7 @@ impl PluginManager {
         result
     }
 
-    fn module(&self, id: &PluginId) -> Result<Arc<ProcessModule>, SourceError> {
+    fn module(&self, id: &PluginId) -> Result<Arc<Module>, SourceError> {
         self.inner
             .entries
             .lock()
@@ -479,7 +558,7 @@ impl PluginManager {
             .entries
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .contains_key(staged.manifest.id.as_str())
+            .contains_key(staged.manifest.id().as_str())
         {
             let _ = remove_entry(&root);
             return Err(error("plugin_already_installed"));
@@ -513,12 +592,13 @@ impl PluginManager {
             return Err(error("inspection_expired"));
         }
         let staged = &inspection.staged;
-        package::verify(&staged.root, &staged.manifest).map_err(|_| error("package_changed"))?;
+        opennow_plugin_package::validate_staged(&staged.root, &staged.manifest)
+            .map_err(|_| error("package_changed"))?;
         if cancellation.cancelled() {
             return Err(SourceError::cancelled());
         }
         let mut entries = self.inner.entries.lock().unwrap_or_else(|e| e.into_inner());
-        if entries.contains_key(staged.manifest.id.as_str()) {
+        if entries.contains_key(staged.manifest.id().as_str()) {
             return Err(error("plugin_already_installed"));
         }
         if entries.len() >= MAX_INSTALLED {
@@ -528,16 +608,25 @@ impl PluginManager {
             .inner
             .root
             .join("installed")
-            .join(staged.manifest.id.as_str());
+            .join(staged.manifest.id().as_str());
         private_dir(&parent)?;
+        let _pins = self.package_locks(staged.manifest.id())?;
         let destination = parent.join(&staged.package_sha256);
+        let _new_version_pin = if destination.exists() {
+            None
+        } else {
+            Some(
+                PackagePin::try_exclusive(&destination)
+                    .map_err(|failure| SourceError::new(failure.code, failure.message))?,
+            )
+        };
         remove_entry(&destination)?;
         remove_entry(
             &self
                 .inner
                 .root
                 .join("data")
-                .join(staged.manifest.id.as_str()),
+                .join(staged.manifest.id().as_str()),
         )?;
         fs::rename(&staged.root, &destination).map_err(|_| error("plugin_storage_error"))?;
         let record = Record {
@@ -546,18 +635,19 @@ impl PluginManager {
             enabled: false,
             consent_version: 1,
         };
-        let module = Arc::new(ProcessModule::new(
+        let module = Arc::new(Module::new(
+            &record.manifest,
             descriptor(&record.manifest),
             Arc::clone(&self.inner.changes),
         ));
-        entries.insert(record.manifest.id.to_string(), Entry { record, module });
+        entries.insert(record.manifest.id().to_string(), Entry { record, module });
         drop(entries);
         if let Err(failure) = self.inner.save() {
             self.inner
                 .entries
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .remove(staged.manifest.id.as_str());
+                .remove(staged.manifest.id().as_str());
             let _ = remove_entry(&destination);
             return Err(failure);
         }
@@ -619,7 +709,7 @@ impl Inner {
             if entries
                 .values()
                 .filter(|entry| {
-                    entry.record.manifest.id.as_str() != id
+                    entry.record.manifest.id().as_str() != id
                         && matches!(
                             entry.module.descriptor().state,
                             PluginState::Ready | PluginState::Starting
@@ -695,18 +785,46 @@ impl Inner {
     }
 }
 
-fn descriptor(manifest: &PluginManifest) -> PluginDescriptor {
+fn descriptor(manifest: &InstalledManifest) -> PluginDescriptor {
+    let (id, name, version, publisher, description, capabilities) = match manifest {
+        InstalledManifest::Catalog(manifest) => (
+            manifest.id.clone(),
+            manifest.name.clone(),
+            manifest.version.clone(),
+            manifest.publisher.clone(),
+            manifest.description.clone(),
+            manifest.capabilities.clone(),
+        ),
+        InstalledManifest::Provider(manifest) => (
+            manifest.id.clone(),
+            manifest.name.clone(),
+            manifest.version.clone(),
+            manifest.publisher.clone(),
+            manifest.description.clone(),
+            manifest
+                .capabilities
+                .iter()
+                .map(|capability| {
+                    serde_json::to_value(capability)
+                        .expect("capability serializes")
+                        .as_str()
+                        .expect("capability string")
+                        .to_owned()
+                })
+                .collect(),
+        ),
+    };
     PluginDescriptor {
-        id: manifest.id.clone(),
-        name: manifest.name.clone(),
-        version: manifest.version.clone(),
-        publisher: manifest.publisher.clone(),
-        description: manifest.description.clone(),
+        id,
+        name,
+        version,
+        publisher,
+        description,
+        capabilities,
         builtin: false,
         required: false,
         enabled: false,
         state: PluginState::Disabled,
-        capabilities: manifest.capabilities.clone(),
         trust: PluginTrust::UnsignedNative,
         last_error: None,
     }
@@ -798,6 +916,14 @@ fn error(code: &str) -> SourceError {
     let (code, message) = match code {
         "invalid_params" => ("invalid_params", "Plugin request parameters are invalid"),
         "plugins_unavailable" => ("plugins_unavailable", "Plugin services are unavailable"),
+        "provider_unavailable" => (
+            "provider_unavailable",
+            "The provider control process is unavailable",
+        ),
+        "busy_before_dispatch" => (
+            "busy_before_dispatch",
+            "The provider has no capacity for this request",
+        ),
         "invalid_plugin_package" => ("invalid_plugin_package", "The plugin package is invalid"),
         "incompatible_plugin" => (
             "incompatible_plugin",

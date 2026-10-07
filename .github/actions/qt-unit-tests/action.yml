@@ -49,6 +49,17 @@ runs:
       run: |
         $ErrorActionPreference = "Stop"
         .github/scripts/ensure-windows-llvm.ps1
+        if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
+          choco install cmake -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw "CMake installation failed with exit code $LASTEXITCODE" }
+          $cmakeBin = Join-Path $env:ProgramFiles "CMake\bin"
+          if (-not (Test-Path (Join-Path $cmakeBin "cmake.exe"))) { throw "CMake installation is missing cmake.exe" }
+          $cmakeBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        }
+        if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
+          choco install ninja -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw "Ninja installation failed with exit code $LASTEXITCODE" }
+        }
         if ($env:NASM_CACHE_HIT -ne "true") {
           choco install nasm --version=3.2.0 -y --no-progress
           if ($LASTEXITCODE -ne 0) { throw "NASM installation failed with exit code $LASTEXITCODE" }
@@ -75,7 +86,11 @@ runs:
       run: |
         cargo fmt --manifest-path native/opennow-core/Cargo.toml -- --check
         cargo fmt --manifest-path native/opennow-plugin-api/Cargo.toml -- --check
+        cargo fmt --manifest-path native/opennow-plugin-package/Cargo.toml -- --check
+        cargo fmt --manifest-path native/opennow-media-protocol/Cargo.toml -- --check
         cargo fmt --manifest-path examples/catalog-plugin/Cargo.toml -- --check
+        cargo fmt --manifest-path examples/provider-plugin/Cargo.toml -- --check
+        cargo fmt --manifest-path examples/provider-media-worker/Cargo.toml -- --check
         cargo fmt --manifest-path native/opennow-streamer/Cargo.toml --all -- --check
     - name: Install Linux test dependencies
       if: runner.os == 'Linux'
@@ -84,11 +99,48 @@ runs:
         sudo bash .github/scripts/configure-ubuntu-apt.sh
         sudo apt-get update --error-on=any
         sudo apt-get install -y \
-          clang libclang-dev libasound2-dev libdbus-1-dev libdrm-dev libegl1-mesa-dev libgl1-mesa-dev \
+          build-essential cmake clang libclang-dev libasound2-dev libdbus-1-dev libdrm-dev libegl1-mesa-dev libgl1-mesa-dev \
           libpulse-dev libsecret-1-dev libva-dev libvulkan-dev libwayland-dev \
           libx11-dev libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcursor-dev libxext-dev libxfixes-dev \
           libxi-dev libxkbcommon-dev libxkbcommon-x11-0 libxrandr-dev libxrender-dev libxss-dev \
           mesa-vulkan-drivers nasm ninja-build pkg-config wayland-protocols xvfb
+    - name: Install macOS test dependencies
+      if: runner.os == 'macOS'
+      shell: bash
+      env:
+        HOMEBREW_NO_AUTO_UPDATE: "1"
+      run: |
+        for tool in cmake ninja pkg-config; do
+          if ! command -v "$tool" >/dev/null 2>&1; then
+            brew install "$tool"
+          fi
+        done
+    - name: Verify native codec build tools
+      shell: bash
+      run: |
+        cmake --version
+        ninja --version
+        case "$RUNNER_OS" in
+          Linux)
+            c++ --version
+            make --version
+            nasm -v
+            ;;
+          macOS)
+            xcrun --find clang
+            xcrun --find clang++
+            xcrun --show-sdk-path
+            make --version
+            ;;
+          Windows)
+            command -v cl.exe nmake.exe
+            nasm -v
+            ;;
+          *)
+            echo "Unsupported native test platform: $RUNNER_OS" >&2
+            exit 1
+            ;;
+        esac
     - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       with:
         shared-key: qt-checks-${{ inputs.label }}
@@ -96,6 +148,12 @@ runs:
         cache-on-failure: true
         workspaces: |
           native/opennow-core -> target
+          native/opennow-plugin-api -> target
+          native/opennow-plugin-package -> target
+          native/opennow-media-protocol -> target
+          examples/catalog-plugin -> target
+          examples/provider-plugin -> target
+          examples/provider-media-worker -> target
           native/opennow-streamer -> target
     - name: Lint Rust
       shell: bash
@@ -105,7 +163,11 @@ runs:
       run: |
         cargo clippy --locked --manifest-path native/opennow-core/Cargo.toml --all-targets -- -D warnings
         cargo clippy --locked --manifest-path native/opennow-plugin-api/Cargo.toml --all-targets -- -D warnings
+        cargo clippy --locked --manifest-path native/opennow-plugin-package/Cargo.toml --all-targets -- -D warnings
+        cargo clippy --locked --manifest-path native/opennow-media-protocol/Cargo.toml --all-targets -- -D warnings
         cargo clippy --locked --manifest-path examples/catalog-plugin/Cargo.toml --all-targets -- -D warnings
+        cargo clippy --locked --manifest-path examples/provider-plugin/Cargo.toml --all-targets -- -D warnings
+        cargo clippy --locked --manifest-path examples/provider-media-worker/Cargo.toml --all-targets -- -D warnings
         cargo clippy --locked --manifest-path native/opennow-streamer/Cargo.toml --workspace --all-targets -- -D warnings
     - name: Test Rust
       shell: bash
@@ -115,7 +177,11 @@ runs:
       run: |
         cargo test --locked --manifest-path native/opennow-core/Cargo.toml
         cargo test --locked --manifest-path native/opennow-plugin-api/Cargo.toml
+        cargo test --locked --manifest-path native/opennow-plugin-package/Cargo.toml
+        cargo test --locked --manifest-path native/opennow-media-protocol/Cargo.toml
         cargo test --locked --manifest-path examples/catalog-plugin/Cargo.toml
+        cargo test --locked --manifest-path examples/provider-plugin/Cargo.toml
+        cargo test --locked --manifest-path examples/provider-media-worker/Cargo.toml
         cargo test --locked --manifest-path native/opennow-streamer/Cargo.toml --workspace
     - name: Test signed update helper integration
       shell: bash

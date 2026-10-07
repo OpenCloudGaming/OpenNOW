@@ -1,3 +1,6 @@
+use opennow_media_protocol::{
+    ChromaLocation, ColorDescription, ColorRange, Matrix, Primaries, Transfer,
+};
 use std::num::{NonZeroIsize, NonZeroU32};
 
 use crate::BackendError;
@@ -55,14 +58,22 @@ pub enum VideoChromaFormat {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VideoChromaSiting {
     Left,
+    Center,
     TopLeft,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VideoTransferFunction {
     Sdr,
+    Srgb,
     Pq,
     Hlg,
+}
+
+impl VideoTransferFunction {
+    pub const fn is_sdr(self) -> bool {
+        matches!(self, Self::Sdr | Self::Srgb)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,6 +109,32 @@ pub struct VideoFormat {
 }
 
 impl VideoFormat {
+    pub fn with_color(mut self, color: Option<ColorDescription>) -> Self {
+        if let Some(color) = color {
+            self.full_range = color.range == ColorRange::Full;
+            self.color_primaries = match color.primaries {
+                Primaries::Bt709 => VideoColorPrimaries::Bt709,
+                Primaries::Bt2020 => VideoColorPrimaries::Bt2020,
+            };
+            self.transfer_function = match color.transfer {
+                Transfer::Bt709 => VideoTransferFunction::Sdr,
+                Transfer::Srgb => VideoTransferFunction::Srgb,
+                Transfer::Pq => VideoTransferFunction::Pq,
+                Transfer::Hlg => VideoTransferFunction::Hlg,
+            };
+            self.color_matrix = match color.matrix {
+                Matrix::Bt601 => VideoColorMatrix::Bt601,
+                Matrix::Bt709 => VideoColorMatrix::Bt709,
+                Matrix::Bt2020NonConstant => VideoColorMatrix::Bt2020,
+            };
+            self.chroma_siting = match color.chroma_location {
+                ChromaLocation::Left => VideoChromaSiting::Left,
+                ChromaLocation::Center => VideoChromaSiting::Center,
+            };
+        }
+        self
+    }
+
     pub fn validate(self) -> Result<(), BackendError> {
         self.validate_color()?;
         if !(48..=4096).contains(&self.width) || !(48..=2304).contains(&self.height) {
@@ -121,7 +158,7 @@ impl VideoFormat {
     }
 
     pub fn validate_color(self) -> Result<(), BackendError> {
-        if self.transfer_function != VideoTransferFunction::Sdr
+        if !self.transfer_function.is_sdr()
             && (self.pixel_format.bit_depth() != 10
                 || self.color_primaries != VideoColorPrimaries::Bt2020
                 || self.color_matrix != VideoColorMatrix::Bt2020)
@@ -244,6 +281,7 @@ impl SurfaceTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncodedVideoFrame {
+    pub provenance: opennow_media_protocol::FrameProvenance,
     pub codec: VideoCodec,
     pub data: Vec<u8>,
     pub timestamp_100ns: i64,
@@ -328,6 +366,7 @@ impl PcmFrame {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BackendConfig {
+    pub audio_enabled: bool,
     pub video: VideoFormat,
     pub audio: AudioFormat,
     pub surface: SurfaceTarget,
@@ -402,6 +441,62 @@ mod tests {
             VideoPixelFormat::Y410,
         ] {
             assert!(pixel_format.supports_decoded_output(pixel_format));
+        }
+    }
+
+    #[test]
+    fn canonical_color_overrides_every_color_field_without_changing_decode_format() {
+        let fallback = video_format();
+        assert_eq!(fallback.with_color(None), fallback);
+        for (range, full_range) in [(ColorRange::Limited, false), (ColorRange::Full, true)] {
+            for (primaries, color_primaries) in [
+                (Primaries::Bt709, VideoColorPrimaries::Bt709),
+                (Primaries::Bt2020, VideoColorPrimaries::Bt2020),
+            ] {
+                for (transfer, transfer_function) in [
+                    (Transfer::Bt709, VideoTransferFunction::Sdr),
+                    (Transfer::Srgb, VideoTransferFunction::Srgb),
+                    (Transfer::Pq, VideoTransferFunction::Pq),
+                    (Transfer::Hlg, VideoTransferFunction::Hlg),
+                ] {
+                    for (matrix, color_matrix) in [
+                        (Matrix::Bt601, VideoColorMatrix::Bt601),
+                        (Matrix::Bt709, VideoColorMatrix::Bt709),
+                        (Matrix::Bt2020NonConstant, VideoColorMatrix::Bt2020),
+                    ] {
+                        for (chroma_location, chroma_siting) in [
+                            (ChromaLocation::Left, VideoChromaSiting::Left),
+                            (ChromaLocation::Center, VideoChromaSiting::Center),
+                        ] {
+                            let actual = fallback.with_color(Some(ColorDescription {
+                                range,
+                                primaries,
+                                transfer,
+                                matrix,
+                                chroma_location,
+                            }));
+                            assert_eq!(
+                                actual,
+                                VideoFormat {
+                                    full_range,
+                                    color_primaries,
+                                    transfer_function,
+                                    color_matrix,
+                                    chroma_siting,
+                                    ..fallback
+                                }
+                            );
+                            assert_eq!(actual.with_color(None), actual);
+                            if primaries == Primaries::Bt709
+                                && transfer_function.is_sdr()
+                                && matrix != Matrix::Bt2020NonConstant
+                            {
+                                assert!(actual.validate().is_ok());
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -571,6 +666,7 @@ mod tests {
     #[test]
     fn requires_annex_b_access_units() {
         let valid = EncodedVideoFrame {
+            provenance: Default::default(),
             codec: VideoCodec::H264,
             data: vec![0, 0, 0, 1, 0x67],
             timestamp_100ns: 0,

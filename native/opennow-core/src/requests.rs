@@ -61,6 +61,14 @@ impl Requests {
         let background = method.starts_with("catalog.")
             || method.starts_with("artwork.")
             || method == "sources.catalog.page"
+            || matches!(
+                method,
+                "sources.public.page"
+                    | "sources.library.page"
+                    | "sources.store.page"
+                    | "sources.game.get"
+                    | "sources.launch.inspect"
+            )
             || method == "network.regions.ping"
             || method == "queue.servers.list";
         let mut active = self.0.lock().expect("request state poisoned");
@@ -231,6 +239,36 @@ mod tests {
         );
         permits.pop();
         assert!(requests.admit("released", "sources.catalog.page").is_some());
+    }
+
+    #[test]
+    fn provider_v2_catalog_methods_reserve_control_admission() {
+        let requests = Arc::new(Requests::default());
+        let methods = [
+            "sources.public.page",
+            "sources.library.page",
+            "sources.store.page",
+            "sources.game.get",
+        ];
+        let permits = methods
+            .iter()
+            .enumerate()
+            .map(|(index, method)| requests.admit(&format!("read-{index}"), method).unwrap())
+            .collect::<Vec<_>>();
+        assert!(
+            requests
+                .admit("inspect", "sources.launch.inspect")
+                .is_none()
+        );
+        assert!(requests.admit("extra", "sources.library.page").is_none());
+        let stop = requests.admit("stop", "sources.session.stop").unwrap();
+        let prepare = requests
+            .admit("prepare", "streamer.source.prepare")
+            .unwrap();
+        assert!(!stop.token.cancelled());
+        assert!(!prepare.token.cancelled());
+        drop(permits);
+        assert!(requests.admit("next", "sources.launch.inspect").is_some());
     }
     #[test]
     fn unknown_cancels_do_not_accumulate_and_scopes_restore() {

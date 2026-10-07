@@ -20,7 +20,7 @@ GlassPanel {
         { route: "friends", icon: "desktop-nav-friends", label: qsTr("Friends") },
         { route: "settings", icon: "desktop-nav-settings", label: qsTr("Settings") },
         { route: "computer", icon: "", label: qsTr("Computer mode") }
-    ]
+    ].filter(item => item.route !== "friends" || !ShellStore.browsingExternalSource)
 
     function selected(route) {
         if (route === "settings")

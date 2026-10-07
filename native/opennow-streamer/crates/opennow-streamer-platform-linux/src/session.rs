@@ -133,8 +133,11 @@ pub enum PushOutcome {
     AudioDisabled,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum BackendEvent {
+    VideoFrameDecoded {
+        provenance: opennow_media_protocol::FrameProvenance,
+    },
     StateChanged(LifecycleState),
     DecoderSelected(DecoderBackend),
     DecoderChanged {
@@ -1204,6 +1207,14 @@ fn open_decoder(
     format: StreamFormat,
     backend: DecoderBackend,
 ) -> Result<Box<dyn VideoDecoder>> {
+    open_uncorrelated_decoder(config, format, backend).map(crate::video::correlate_decoder)
+}
+
+fn open_uncorrelated_decoder(
+    config: &SessionConfig,
+    format: StreamFormat,
+    backend: DecoderBackend,
+) -> Result<Box<dyn VideoDecoder>> {
     if config.embedded_presentation && config.vulkan_device.is_none() {
         validate_decoder_presentation(backend)?;
     }
@@ -1328,6 +1339,7 @@ fn enqueue_frames(
     frames: Vec<DecodedVideoFrame>,
 ) {
     for frame in frames {
+        let provenance = frame.provenance;
         if queue.push_latest(frame) == QueuePush::DroppedOldest {
             emit(
                 events,
@@ -1335,6 +1347,15 @@ fn enqueue_frames(
                     media: "decoded-video",
                 },
             );
+        }
+        if events.push(BackendEvent::VideoFrameDecoded { provenance }) == QueuePush::Full {
+            events.replace_where(
+                BackendEvent::QueueOverflow {
+                    media: "decoded-feedback",
+                },
+                |event| matches!(event, BackendEvent::VideoFrameDecoded { .. }),
+            );
+            events.push(BackendEvent::VideoFrameDecoded { provenance });
         }
     }
 }
@@ -1428,11 +1449,149 @@ fn report_worker_error(state: &Mutex<LifecycleState>, events: &EventQueue, error
 }
 
 fn emit(events: &EventQueue, event: BackendEvent) {
-    events.push_latest(event);
+    if events.push(event.clone()) == QueuePush::Full
+        && events.replace_where(event.clone(), |queued| {
+            matches!(queued, BackendEvent::VideoFrameDecoded { .. })
+        }) == QueuePush::Full
+        && events.replace_where(event.clone(), |queued| {
+            matches!(queued, BackendEvent::QueueOverflow { .. })
+        }) == QueuePush::Full
+    {
+        events.push_latest(event);
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn decoded_feedback_reports_each_actual_output_once_and_preserves_unknown() {
+        use opennow_media_protocol::{FrameProvenance, SourceStamp};
+        let queue = super::BoundedQueue::new(4);
+        let events = std::sync::Arc::new(super::BoundedQueue::new(8));
+        let provenance = FrameProvenance {
+            attempt_generation: 5,
+            track_id: 2,
+            source: Some(SourceStamp {
+                sender_frame_id: Some(u64::MAX),
+                timestamp: 0,
+                clock_rate_hz: 90_000,
+                ssrc: None,
+            }),
+        };
+        let output = |provenance| super::DecodedVideoFrame {
+            provenance,
+            correlation_timestamp_us: None,
+            format: super::StreamFormat::video_default(2, 2).unwrap(),
+            planes: Vec::new(),
+            dmabuf: None,
+            vulkan: None,
+            timestamp_us: 0,
+        };
+        super::enqueue_frames(
+            &queue,
+            &events,
+            vec![output(provenance), output(FrameProvenance::default())],
+        );
+        assert!(
+            matches!(events.try_pop(), Some(super::BackendEvent::VideoFrameDecoded { provenance: actual }) if actual == provenance)
+        );
+        assert!(
+            matches!(events.try_pop(), Some(super::BackendEvent::VideoFrameDecoded { provenance: actual }) if actual.source.is_none())
+        );
+        assert!(events.try_pop().is_none());
+        let frame = queue.try_pop().unwrap();
+        assert_eq!(frame.clone().provenance, provenance);
+        assert_eq!(frame.provenance, provenance);
+        assert!(events.try_pop().is_none());
+    }
+
+    #[test]
+    fn decoded_feedback_overload_coalesces_outputs_without_displacing_control_events() {
+        let queue = super::BoundedQueue::new(4);
+        let events = std::sync::Arc::new(super::BoundedQueue::new(3));
+        events.push(super::BackendEvent::NeedKeyframe);
+        for _ in 0..2 {
+            events.push(super::BackendEvent::VideoFrameDecoded {
+                provenance: Default::default(),
+            });
+        }
+        let provenance = opennow_media_protocol::FrameProvenance {
+            attempt_generation: 4,
+            track_id: 2,
+            source: None,
+        };
+        super::enqueue_frames(
+            &queue,
+            &events,
+            vec![super::DecodedVideoFrame {
+                provenance,
+                correlation_timestamp_us: None,
+                format: super::StreamFormat::video_default(2, 2).unwrap(),
+                planes: Vec::new(),
+                dmabuf: None,
+                vulkan: None,
+                timestamp_us: 0,
+            }],
+        );
+        assert!(matches!(
+            events.try_pop(),
+            Some(super::BackendEvent::NeedKeyframe)
+        ));
+        assert!(matches!(
+            events.try_pop(),
+            Some(super::BackendEvent::QueueOverflow {
+                media: "decoded-feedback"
+            })
+        ));
+        assert!(
+            matches!(events.try_pop(), Some(super::BackendEvent::VideoFrameDecoded { provenance: actual }) if actual == provenance)
+        );
+        assert!(events.try_pop().is_none());
+    }
+
+    #[test]
+    fn stalled_decoded_frame_and_feedback_queues_retain_recovery_events() {
+        let queue = super::BoundedQueue::new(1);
+        let events = std::sync::Arc::new(super::BoundedQueue::new(8));
+        super::emit(&events, super::BackendEvent::NeedKeyframe);
+        super::emit(
+            &events,
+            super::BackendEvent::DeviceLost {
+                subsystem: super::Subsystem::V4l2,
+                reason: "device lost".to_owned(),
+            },
+        );
+        for _ in 0..200 {
+            super::enqueue_frames(
+                &queue,
+                &events,
+                vec![super::DecodedVideoFrame {
+                    provenance: Default::default(),
+                    correlation_timestamp_us: None,
+                    format: super::StreamFormat::video_default(2, 2).unwrap(),
+                    planes: Vec::new(),
+                    dmabuf: None,
+                    vulkan: None,
+                    timestamp_us: 0,
+                }],
+            );
+        }
+        assert!(matches!(
+            events.try_pop(),
+            Some(super::BackendEvent::NeedKeyframe)
+        ));
+        assert!(matches!(
+            events.try_pop(),
+            Some(super::BackendEvent::DeviceLost { .. })
+        ));
+        let rest: Vec<_> = std::iter::from_fn(|| events.try_pop()).collect();
+        assert!(rest.len() <= 6);
+        assert!(
+            rest.iter()
+                .any(|event| matches!(event, super::BackendEvent::QueueOverflow { .. }))
+        );
+    }
+
     struct DelayedDecoder {
         frame: Option<super::DecodedVideoFrame>,
         reference_lost: bool,
@@ -1470,6 +1629,8 @@ mod tests {
         let format = super::StreamFormat::video_default(2, 2).unwrap();
         let mut decoder: Box<dyn super::VideoDecoder> = Box::new(DelayedDecoder {
             frame: Some(super::DecodedVideoFrame {
+                provenance: Default::default(),
+                correlation_timestamp_us: None,
                 format,
                 timestamp_us: 1234,
                 planes: Vec::new(),
@@ -1528,6 +1689,8 @@ mod tests {
             assert!(decoded.try_pop().is_none());
             finish_decoder_drain(
                 Ok(vec![DecodedVideoFrame {
+                    provenance: Default::default(),
+                    correlation_timestamp_us: None,
                     format: StreamFormat::video_default(2, 2).unwrap(),
                     timestamp_us: 1234,
                     planes: Vec::new(),
@@ -1540,6 +1703,9 @@ mod tests {
                 phase,
             );
             assert_eq!(decoded.try_pop().unwrap().timestamp_us, 1234);
+            assert!(
+                matches!(events.try_pop(), Some(BackendEvent::VideoFrameDecoded { provenance }) if provenance.source.is_none())
+            );
             assert!(events.try_pop().is_none());
         }
     }

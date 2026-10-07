@@ -29,6 +29,7 @@ FocusScope {
     property string pluginSheetId: ""
     property string pluginWarningId: ""
     readonly property var pluginStore: ShellStore.pluginOwnerState
+    readonly property var sourceStore: ShellStore.sourceOwnerState
     readonly property var pluginSheetPlugin: pluginStore.pluginById(pluginSheetId)
     readonly property bool pluginSheetOpen: pluginSheetId !== ""
     readonly property bool pluginPreviewOpen: pluginStore.previewSourceId !== ""
@@ -190,7 +191,7 @@ FocusScope {
         return sectionRows().map(row => {
             if (!row || !row.values || row.control === "slider" || row.control === "colors")
                 return row
-            const fixedSheet = ["resolution", "region", "controllerInputSource", "windowsGpuDeviceId",
+            const fixedSheet = ["selectedSourceId", "resolution", "region", "controllerInputSource", "windowsGpuDeviceId",
                 "gameLanguage", "keyboardLayout", "appLanguage", "colorQuality"].indexOf(row.key) >= 0
             const shortDropdown = row.control === "dropdown" && row.values.length >= 2 && row.values.length <= 6
                 && !(row.details && row.details.some(detail => detail))
@@ -224,10 +225,20 @@ FocusScope {
         if (!pluginStore.available)
             return [{t:qsTr("Plugins are unavailable"), d:ShellStore.ready ? qsTr("This OpenNOW core does not support plugins.")
                 : qsTr("Plugins appear when OpenNOW finishes starting."), info:true}]
-        const rows = pluginStore.plugins.map(plugin => ({
-            t:String(plugin.name || plugin.id), d:root.pluginSummary(plugin), v:root.pluginStateLabel(plugin),
-            action:"plugin", pluginId:plugin.id, plainText:true, danger:plugin.state === "failed"
-        }))
+        const browse = sourceStore.available && sourceStore.playableSources.length > 1 ? [{
+            t:qsTr("Browse with"), d:qsTr("The service Home and Library show. A running session keeps its own service."),
+            v:sourceStore.selectedSource ? String(sourceStore.selectedSource.name || sourceStore.selectedSourceId) : "",
+            key:"selectedSourceId", values:sourceStore.playableSources.map(source => source.id),
+            labels:sourceStore.playableSources.map(source => String(source.name || source.id)),
+            control:"dropdown", plainText:true
+        }] : []
+        const rows = browse
+        for (const plugin of pluginStore.plugins) {
+            rows.push({t:String(plugin.name || plugin.id), d:root.pluginSummary(plugin), v:root.pluginStateLabel(plugin),
+                action:"plugin", pluginId:plugin.id, plainText:true, danger:plugin.state === "failed"})
+            for (const domain of ["provider", "stream"])
+                rows.push(...root.sourceSettingRows(plugin.id, domain))
+        }
         if (pluginStore.error !== "")
             rows.unshift({t:qsTr("Plugins need attention"), d:pluginStore.error, info:true, plainText:true})
         rows.push({t:qsTr("Install plugins in Desktop mode"),
@@ -235,6 +246,75 @@ FocusScope {
             info:true})
         return rows
     }
+
+    function sourceSettingKey(domain, sourceId, key) {
+        return "source-setting:" + JSON.stringify([domain, sourceId, key])
+    }
+
+    function sourceSettingTarget(rowKey) {
+        if (String(rowKey).indexOf("source-setting:") !== 0)
+            return null
+        const parts = JSON.parse(String(rowKey).slice(15))
+        const view = (parts[0] === "stream" ? sourceStore.streamSettingsViews : sourceStore.settingsViews)[parts[1]]
+        const definition = view ? view.settings.find(item => item.key === parts[2]) || null : null
+        return definition ? {domain: parts[0], sourceId: parts[1], definition: definition} : null
+    }
+
+    function numericSettingValues(control, current) {
+        const min = Number(control.min)
+        const max = Number(control.max)
+        const step = Number(control.step || 1)
+        const decimals = (String(step).split(".")[1] || "").length
+        const count = Math.floor((max - min) / step + 1e-9)
+        const stride = Math.max(1, Math.ceil(count / 24))
+        const values = []
+        for (let index = 0; index <= count; index += stride)
+            values.push(Number((min + index * step).toFixed(decimals)))
+        if (values[values.length - 1] !== max)
+            values.push(max)
+        if (!values.some(value => Math.abs(value - current) < step / 2))
+            values.push(current)
+        return values.sort((left, right) => left - right)
+    }
+
+    function sourceSettingRows(sourceId, domain) {
+        const source = sourceId !== sourceStore.gfnId ? sourceStore.sourceById(sourceId) : null
+        const view = source && source.enabled === true
+            ? (domain === "stream" ? sourceStore.streamSettingsViews : sourceStore.settingsViews)[sourceId] : null
+        const detail = domain === "stream" ? qsTr("Stream quality for this service") : String(source ? source.name || source.id : "")
+        return (view ? view.settings : []).map(definition => {
+            const kind = definition.control.kind
+            const key = root.sourceSettingKey(domain, sourceId, definition.key)
+            const base = {t:String(definition.label), d:detail, key:key, sourceSetting:true, plainText:true}
+            if (kind === "boolean")
+                return Object.assign(base, {toggle:true, toggleState:definition.value.value === true})
+            if (kind === "choice") {
+                const choices = definition.control.choices || []
+                const index = choices.findIndex(choice => choice.value === definition.value.value)
+                return Object.assign(base, {control:"cycler", values:choices.map(choice => choice.value),
+                    labels:choices.map(choice => String(choice.label)), selectedIndex:index,
+                    v:index >= 0 ? String(choices[index].label) : String(definition.value.value)})
+            }
+            if (kind === "integer" || kind === "number") {
+                const current = Number(definition.value.value)
+                const values = root.numericSettingValues(definition.control, current)
+                const min = Number(definition.control.min)
+                const max = Number(definition.control.max)
+                return Object.assign(base, {control:"slider", values:values, labels:values.map(String),
+                    selectedIndex:values.findIndex(value => Math.abs(value - current) < 1e-9), v:String(current),
+                    sliderPercent:max > min ? (current - min) / (max - min) : 0})
+            }
+            return Object.assign(base, {info:true, v:String(definition.value.value)})
+        })
+    }
+
+    function loadSourceSettings() {
+        for (const source of sourceStore.sources)
+            if (source.id !== sourceStore.gfnId && source.enabled === true)
+                sourceStore.loadSettings(source.id)
+    }
+
+    onSelectedSectionChanged: if (selectedSection === 8) loadSourceSettings()
 
     function pluginSheetOptions() {
         const plugin = root.pluginSheetPlugin
@@ -245,6 +325,11 @@ FocusScope {
         options.push({label:qsTr("Browse catalog"), value:"browse",
             detail:pluginStore.catalogAvailable && pluginStore.catalogReady(plugin) ? "" : qsTr("Turn it on first"),
             disabled:!pluginStore.catalogAvailable || !pluginStore.catalogReady(plugin)})
+        const source = plugin.id !== sourceStore.gfnId ? sourceStore.sourceById(plugin.id) : null
+        const auth = source ? sourceStore.authState(source.id) : null
+        if (auth && auth.state === "signed-in")
+            options.push({label:qsTr("Sign out"), value:"source-sign-out",
+                detail:String(auth.account && auth.account.name || ""), disabled:false})
         if (plugin.builtin !== true && plugin.required !== true)
             options.push({label:qsTr("Remove…"), value:"remove", detail:"", disabled:pluginStore.busyId !== ""})
         return options
@@ -265,6 +350,8 @@ FocusScope {
         if (!pluginStore.pluginById(id))
             return
         root.pluginSheetId = id
+        if (id !== sourceStore.gfnId)
+            sourceStore.loadSettings(id)
         pluginSheet.focusedIndex = 0
         pluginSheet.syncFocus()
         pluginSheet.forceActiveFocus()
@@ -286,6 +373,8 @@ FocusScope {
         } else if (option.value === "browse") {
             if (pluginStore.openPreview(plugin.id))
                 Qt.callLater(() => pluginPreviewSearch.forceActiveFocus())
+        } else if (option.value === "source-sign-out") {
+            sourceStore.signOut(plugin.id)
         } else if (option.value === "remove") {
             root.pluginWarningId = plugin.id
             root.openWarning("plugin-remove")
@@ -539,7 +628,10 @@ FocusScope {
     }
 
     function dropdownChoiceSelected(index) {
-        const current = root.dropdownKey === "controllerInputSource" ? ControllerInput.inputControllerId : ShellStore.settings[root.dropdownKey]
+        const target = root.sourceSettingTarget(root.dropdownKey)
+        const current = target ? target.definition.value.value
+            : root.dropdownKey === "controllerInputSource" ? ControllerInput.inputControllerId
+            : root.dropdownKey === "selectedSourceId" ? sourceStore.selectedSourceId : ShellStore.settings[root.dropdownKey]
         const candidate = root.dropdownValues[index]
         if (typeof current === "object" || typeof candidate === "object")
             return JSON.stringify(current) === JSON.stringify(candidate)
@@ -563,7 +655,15 @@ FocusScope {
     }
 
     function applyChoice(key, value) {
-        if (key === "controllerInputSource")
+        const target = root.sourceSettingTarget(key)
+        if (target) {
+            sourceStore.setSetting(target.sourceId, target.definition.key,
+                {kind: target.definition.control.kind, value: value}, target.domain)
+            return
+        }
+        if (key === "selectedSourceId")
+            sourceStore.select(value)
+        else if (key === "controllerInputSource")
             ControllerInput.inputControllerId = Number(value)
         else
             ShellStore.setSetting(key, value)
@@ -646,7 +746,7 @@ FocusScope {
 
     function choiceSheetOptions() {
         return root.dropdownLabels.map((label, index) => ({
-            label:I18n.source(String(label), I18n.revision),
+            label:root.dropdownKey === "selectedSourceId" ? String(label) : I18n.source(String(label), I18n.revision),
             value:root.dropdownValues[index],
             detail:root.dropdownDetails[index] || (root.dropdownChoiceDisabled(index) ? qsTr("Unavailable") : ""),
             disabled:root.dropdownChoiceDisabled(index),
@@ -682,6 +782,10 @@ FocusScope {
     function activate(row) {
         if (!row || row.info)
             return
+        if (row.sourceSetting && row.toggle) {
+            root.applyChoice(row.key, !row.toggleState)
+            return
+        }
         if (row.action === "retry-languages") {
             ShellStore.settingsOwnerState.ensureGameLanguages(true)
         } else if (row.route) {
@@ -796,6 +900,8 @@ FocusScope {
             Qt.callLater(() => { if (!root.sheetOpen) settingsList.forceActiveFocus() })
     }
     Component.onCompleted: {
+        if (root.selectedSection === 8)
+            root.loadSourceSettings()
         root.syncRows()
         if (AppController.route === "settings")
             root.selectedSection = Math.max(0, Math.min(root.sections.length - 1, ShellStore.focusIndex("settings-section")))
@@ -995,6 +1101,7 @@ FocusScope {
         id: choiceSheet
         objectName: "consoleSettingsChoiceSheet"
         opened: root.dropdownOpen
+        textFormat: root.dropdownKey === "selectedSourceId" ? Text.PlainText : Text.AutoText
         eyebrow: I18n.source(root.sections[root.selectedSection].name, I18n.revision)
         title: I18n.source(root.dropdownTitle, I18n.revision)
         description: root.dropdownKey === "fps" ? root.fpsNote() : ""

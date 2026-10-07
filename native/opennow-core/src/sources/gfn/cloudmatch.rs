@@ -1,6 +1,7 @@
 use crate::playback_endpoints::{has_webrtc_endpoint, webrtc_signaling_endpoint};
 use crate::proxy::client_for_settings;
 use crate::service_error::ServiceError;
+use crate::sources::contract::AllocationDisposition;
 use crate::sources::gfn::service::AuthSession;
 use rand::RngCore as _;
 use reqwest::blocking::{Client, Response};
@@ -149,9 +150,10 @@ impl CreateAdmission<'_> {
         settings: &Value,
         auth: &AuthSession,
         device_id: &str,
+        disposition: &mut AllocationDisposition,
     ) -> Result<Value, ServiceError> {
         let service = self.service;
-        self.create_at(params, settings, auth, device_id, || {
+        self.create_at(params, settings, auth, device_id, disposition, || {
             let client = client_for_settings(&service.client, settings).map_err(invalid)?;
             #[cfg(test)]
             if let Some(base) = &service.test_control_base {
@@ -176,10 +178,11 @@ impl CreateAdmission<'_> {
         settings: &Value,
         auth: &AuthSession,
         device_id: &str,
+        disposition: &mut AllocationDisposition,
         connection: impl FnOnce() -> Result<(Client, Url), ServiceError>,
     ) -> Result<Value, ServiceError> {
         self.service
-            .create_admitted(params, settings, auth, device_id, connection)
+            .create_admitted(params, settings, auth, device_id, disposition, connection)
     }
 }
 
@@ -255,8 +258,13 @@ impl CloudMatchService {
         auth: &AuthSession,
         device_id: &str,
     ) -> Result<Value, ServiceError> {
-        self.admit_create()?
-            .create(params, settings, auth, device_id)
+        self.admit_create()?.create(
+            params,
+            settings,
+            auth,
+            device_id,
+            &mut AllocationDisposition::NotDispatched,
+        )
     }
 
     #[cfg(test)]
@@ -268,8 +276,14 @@ impl CloudMatchService {
         device_id: &str,
         connection: impl FnOnce() -> Result<(Client, Url), ServiceError>,
     ) -> Result<Value, ServiceError> {
-        self.admit_create()?
-            .create_at(params, settings, auth, device_id, connection)
+        self.admit_create()?.create_at(
+            params,
+            settings,
+            auth,
+            device_id,
+            &mut AllocationDisposition::NotDispatched,
+            connection,
+        )
     }
 
     pub(crate) fn admit_create(&self) -> Result<CreateAdmission<'_>, ServiceError> {
@@ -309,6 +323,7 @@ impl CloudMatchService {
         settings: &Value,
         auth: &AuthSession,
         device_id: &str,
+        disposition: &mut AllocationDisposition,
         connection: impl FnOnce() -> Result<(Client, Url), ServiceError>,
     ) -> Result<Value, ServiceError> {
         let settings = allocation_settings(settings, auth);
@@ -349,18 +364,40 @@ impl CloudMatchService {
             .join("v2/session")
             .map_err(|_| invalid("Invalid CloudMatch session URL"))?;
         crate::sources::gfn::session_language::append_session_preferences(&mut url, settings);
-        let response = client
+        let headers = cloudmatch_headers(token, device_id)?;
+        let request = client
             .post(url)
-            .headers(cloudmatch_headers(token, device_id)?)
+            .headers(headers.clone())
             .json(&body)
-            .send()
+            .build()
+            .map_err(|error| network("Session request preparation failed", error))?;
+        crate::requests::check()?;
+        *disposition = AllocationDisposition::MayHaveAllocated;
+        let response = client
+            .execute(request)
             .map_err(|error| network("Session creation failed", error))?;
         let status = response.status();
         let payload = response.json::<Value>();
         if let Ok(payload) = &payload
             && let Some(error) = self.capture_session_conflict(status, payload, &base, auth)
         {
+            if !status.is_server_error()
+                && value_i64(&payload["requestStatus"]["statusCode"]) != Some(1)
+            {
+                *disposition = AllocationDisposition::Rejected;
+            }
             return Err(error);
+        }
+        if matches!(
+            status,
+            reqwest::StatusCode::UNAUTHORIZED
+                | reqwest::StatusCode::FORBIDDEN
+                | reqwest::StatusCode::TOO_MANY_REQUESTS
+        ) && payload
+            .as_ref()
+            .is_ok_and(|payload| payload["session"]["sessionId"].is_null())
+        {
+            *disposition = AllocationDisposition::Rejected;
         }
         let payload =
             validate_cloudmatch_response("Session creation failed", status, payload, false)?;
@@ -371,6 +408,10 @@ impl CloudMatchService {
             .or_else(|| base.host_str().map(ToOwned::to_owned))
             .unwrap_or_default();
         let mut info = session_info(&payload, &base, &zone, &app_id, device_id)?;
+        let session_id = info["sessionId"]
+            .as_str()
+            .expect("validated allocation identity")
+            .to_owned();
         info["transportMode"] = json!(if settings["allianceWebrtcCompatibility"] == true {
             "webrtc"
         } else {
@@ -393,11 +434,15 @@ impl CloudMatchService {
             info: info.clone(),
             base: control_base,
             client: client.clone(),
-            headers: cloudmatch_headers(token, device_id)?,
+            headers,
             owner: (auth.provider.idp_id.clone(), auth.user.user_id.clone()),
         });
+        *disposition = AllocationDisposition::Allocated {
+            session_id: session_id.clone(),
+        };
         if crate::requests::current().cancelled() {
-            self.finish_create(info["sessionId"].as_str().unwrap_or_default(), false)?;
+            self.finish_create(&session_id, false)?;
+            *disposition = AllocationDisposition::CleanedUp { session_id };
             return Err(cancelled_allocation());
         }
         let mut request_profile = negotiated_profile(
@@ -427,7 +472,8 @@ impl CloudMatchService {
         preserve_session_profile(&mut info, &request_codec);
 
         if crate::requests::current().cancelled() {
-            self.finish_create(info["sessionId"].as_str().unwrap_or_default(), false)?;
+            self.finish_create(&session_id, false)?;
+            *disposition = AllocationDisposition::CleanedUp { session_id };
             return Err(cancelled_allocation());
         }
         self.store_active(&mut info, &base, &zone, &app_id, client)?;
@@ -3015,6 +3061,202 @@ mod tests {
     use super::*;
 
     #[test]
+    fn allocation_post_reply_loss_remains_ambiguous_even_when_local_state_is_idle() {
+        use std::io::{BufRead, BufReader, Read};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(&mut stream);
+            let mut first = String::new();
+            reader.read_line(&mut first).unwrap();
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse::<usize>().unwrap();
+                }
+            }
+            reader.read_exact(&mut vec![0; length]).unwrap();
+            first
+        });
+        let client = Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let service = CloudMatchService::new(client.clone());
+        let mut disposition = AllocationDisposition::NotDispatched;
+        let result = service.admit_create().unwrap().create_at(
+            &json!({"appId":"123"}),
+            &json!({}),
+            &conflict_auth(),
+            "device",
+            &mut disposition,
+            || Ok((client, base)),
+        );
+        assert_eq!(result.unwrap_err().code, "network_error");
+        assert!(server.join().unwrap().starts_with("POST /v2/session?"));
+        assert_eq!(disposition, AllocationDisposition::MayHaveAllocated);
+        assert_eq!(service.occupied(), Some(false));
+        let directory = tempfile::tempdir().unwrap();
+        let journal = crate::sources::journal::SessionJournal::open(directory.path());
+        let source = opennow_plugin_api::PluginId::new(opennow_plugin_api::BUILTIN_GFN_ID).unwrap();
+        let operation = opennow_plugin_api::provider::OperationId::new("lost-create").unwrap();
+        journal
+            .begin(source.clone(), None, operation.clone())
+            .unwrap();
+        journal.unknown(&source, &operation).unwrap();
+        assert_eq!(
+            journal.occupancy(),
+            crate::sources::contract::SessionOccupancy::Unknown
+        );
+        assert!(
+            journal
+                .begin(
+                    source,
+                    None,
+                    opennow_plugin_api::provider::OperationId::new("unsafe-retry").unwrap()
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn allocation_disposition_distinguishes_rejection_missing_id_and_internal_failure() {
+        for (status, payload, expected) in [
+            (
+                200,
+                json!({"requestStatus":{"statusCode":11,"statusDescription":"SESSION_LIMIT_PER_DEVICE_EXCEEDED_STATUS"}}),
+                AllocationDisposition::Rejected,
+            ),
+            (
+                401,
+                json!({"requestStatus":{"statusCode":0}}),
+                AllocationDisposition::Rejected,
+            ),
+            (
+                200,
+                json!({"requestStatus":{"statusCode":4,"statusDescription":"INTERNAL_ERROR_STATUS"}}),
+                AllocationDisposition::MayHaveAllocated,
+            ),
+            (503, json!({}), AllocationDisposition::MayHaveAllocated),
+            (
+                200,
+                json!({"requestStatus":{"statusCode":1},"session":{}}),
+                AllocationDisposition::MayHaveAllocated,
+            ),
+        ] {
+            let (base, server) = session_server(vec![(status, payload)], |_| {});
+            let client = Client::builder().no_proxy().build().unwrap();
+            let service = CloudMatchService::new(client.clone());
+            let mut disposition = AllocationDisposition::NotDispatched;
+            assert!(
+                service
+                    .admit_create()
+                    .unwrap()
+                    .create_at(
+                        &json!({"appId":"123"}),
+                        &json!({}),
+                        &conflict_auth(),
+                        "device",
+                        &mut disposition,
+                        || Ok((client, base))
+                    )
+                    .is_err()
+            );
+            assert_eq!(disposition, expected);
+            assert!(server.join().unwrap()[0].starts_with("POST /v2/session?"));
+        }
+    }
+
+    #[test]
+    fn allocation_disposition_records_exact_seat_and_only_confirmed_cancel_cleanup() {
+        for delete_status in [204, 503] {
+            let requests = std::sync::Arc::new(crate::requests::Requests::default());
+            let permit = requests.admit("allocate", "session.create").unwrap();
+            let cancel = std::sync::Arc::clone(&requests);
+            let (base, server) = session_server(
+                vec![
+                    (
+                        200,
+                        json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"allocated-seat","status":1}}),
+                    ),
+                    (delete_status, json!({})),
+                ],
+                move |index| {
+                    if index == 0 {
+                        cancel.cancel("allocate");
+                    }
+                },
+            );
+            let client = Client::builder().no_proxy().build().unwrap();
+            let service = CloudMatchService::new(client.clone());
+            let mut disposition = AllocationDisposition::NotDispatched;
+            let result = crate::requests::scope(permit.token.clone(), || {
+                service.admit_create().unwrap().create_at(
+                    &json!({"appId":"123"}),
+                    &json!({}),
+                    &conflict_auth(),
+                    "device",
+                    &mut disposition,
+                    || Ok((client, base)),
+                )
+            });
+            let expected = if delete_status == 204 {
+                assert_eq!(result.unwrap_err().code, "cancelled");
+                AllocationDisposition::CleanedUp {
+                    session_id: "allocated-seat".into(),
+                }
+            } else {
+                assert_eq!(result.unwrap_err().code, "session_cleanup_pending");
+                AllocationDisposition::Allocated {
+                    session_id: "allocated-seat".into(),
+                }
+            };
+            assert_eq!(disposition, expected);
+            assert!(server.join().unwrap()[1].starts_with("DELETE /v2/session/allocated-seat "));
+        }
+        let (base, server) = session_server(
+            vec![(
+                200,
+                json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"original-seat","status":1}}),
+            )],
+            |_| {},
+        );
+        let client = Client::builder().no_proxy().build().unwrap();
+        let service = CloudMatchService::new(client.clone());
+        let mut disposition = AllocationDisposition::NotDispatched;
+        service
+            .admit_create()
+            .unwrap()
+            .create_at(
+                &json!({"appId":"123"}),
+                &json!({}),
+                &conflict_auth(),
+                "device",
+                &mut disposition,
+                || Ok((client, base)),
+            )
+            .unwrap();
+        assert_eq!(
+            disposition,
+            AllocationDisposition::Allocated {
+                session_id: "original-seat".into()
+            }
+        );
+        service.finish_create("original-seat", true).unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
     fn occupancy_tracks_ownership_not_restored_webrtc_provenance() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("pending-session-cleanup.json");
@@ -3922,7 +4164,7 @@ mod tests {
             let mut sdr = partial.clone();
             sdr["negotiatedStreamProfile"]["enableHdr"] = json!(false);
             let prepared = crate::streamer::StreamerService::new().prepare_embedded(
-                &json!({"session":sdr,"runtimeCapabilities":{"protocolVersion":7,"videoBackends":[{
+                &json!({"session":sdr,"runtimeCapabilities":{"protocolVersion":8,"videoBackends":[{
                     "backend":"vaapi","platform":"linux","available":true,"codecs":[{
                         "codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420","10bit_444"]
                     }]
@@ -5155,7 +5397,7 @@ mod tests {
 
     #[test]
     fn hdr_444_request_and_accepted_session_preserve_wire_chroma() {
-        let capabilities = json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+        let capabilities = json!({"protocolVersion":8,"nativeHdrSupported":true,"videoBackends":[{
             "backend":"d3d11","available":true,"codecs":[
                 {"codec":"h265","available":true,"hdrSupported":true,
                     "colorQualities":["10bit_444"],"hdrColorQualities":["10bit_444"]}
@@ -5193,7 +5435,7 @@ mod tests {
 
     #[test]
     fn hdr_request_requires_resolved_runtime_opt_in_and_uses_cloudmatch_enums() {
-        let capabilities = json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+        let capabilities = json!({"protocolVersion":8,"nativeHdrSupported":true,"videoBackends":[{
             "backend":"d3d11","available":true,"codecs":[
                 {"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420"]}
             ]
@@ -5235,7 +5477,7 @@ mod tests {
 
     #[test]
     fn validated_display_luminance_replaces_requested_content_defaults() {
-        let capabilities = json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+        let capabilities = json!({"protocolVersion":8,"nativeHdrSupported":true,"videoBackends":[{
             "backend":"vaapi","available":true,"codecs":[
                 {"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420"]}
             ]
@@ -5276,7 +5518,7 @@ mod tests {
                 "maximumFullFrameNits":full_frame,
                 "redX":0.64,"redY":0.33,"greenX":0.30,"greenY":0.60,
                 "blueX":0.15,"blueY":0.06,"whiteX":0.3127,"whiteY":0.329});
-            let capabilities = json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+            let capabilities = json!({"protocolVersion":8,"nativeHdrSupported":true,"videoBackends":[{
                 "backend":"vaapi","available":true,"codecs":[
                     {"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420"]}
                 ]}],"nativeHdrDisplay":display});
@@ -5344,7 +5586,7 @@ mod tests {
             "redX":0.64,"redY":0.33,"greenX":0.30,"greenY":0.60,
             "blueX":0.15,"blueY":0.06,"whiteX":0.3127,"whiteY":0.329});
         let capabilities = |display: Value| {
-            json!({"protocolVersion":7,"nativeHdrSupported":true,
+            json!({"protocolVersion":8,"nativeHdrSupported":true,
             "videoBackends":[{"backend":"vaapi","available":true,"codecs":[
                 {"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420"]}
             ]}],"nativeHdrDisplay":display})
@@ -5394,7 +5636,7 @@ mod tests {
         }
         let no_display = crate::streamer::StreamerService::embedded_session_settings(
             &json!({"codec":"h265","enableHdr":true,"nativeHdrDisplay":valid}),
-            &json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+            &json!({"protocolVersion":8,"nativeHdrSupported":true,"videoBackends":[{
             "backend":"vaapi","available":true,"codecs":[
                 {"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420"]}
             ]}]}),
@@ -5433,7 +5675,7 @@ mod tests {
     #[test]
     fn native_hdr_display_capability_requires_a_validated_pair() {
         let capabilities = |display: Value| {
-            json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+            json!({"protocolVersion":8,"nativeHdrSupported":true,"videoBackends":[{
                 "backend":"vaapi","available":true,"codecs":[
                     {"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420"]}
                 ]
@@ -5470,7 +5712,7 @@ mod tests {
     #[test]
     fn stale_display_snapshot_is_dropped_across_output_transitions() {
         let capabilities = |display: Value| {
-            json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+            json!({"protocolVersion":8,"nativeHdrSupported":true,"videoBackends":[{
                 "backend":"vaapi","available":true,"codecs":[
                     {"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420"]}
                 ]
@@ -5480,7 +5722,7 @@ mod tests {
             "nativeHdrDisplay":{"minimumNits":0.005,"maximumNits":620}});
         let resolved = crate::streamer::StreamerService::embedded_session_settings(
             &previous,
-            &json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+            &json!({"protocolVersion":8,"nativeHdrSupported":true,"videoBackends":[{
                 "backend":"vaapi","available":true,"codecs":[
                     {"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420"]}
                 ]
@@ -5901,10 +6143,10 @@ mod tests {
 
     #[test]
     fn session_create_requests_the_documented_frame_rate_ceiling() {
-        let hardware = json!({"protocolVersion":7, "videoBackends":[{"backend":"vaapi",
+        let hardware = json!({"protocolVersion":8, "videoBackends":[{"backend":"vaapi",
             "available":true, "codecs":[{"codec":"h265", "available":true,
                 "colorQualities":["8bit_420"]}]}]});
-        let software = json!({"protocolVersion":7, "videoBackends":[{"backend":"software",
+        let software = json!({"protocolVersion":8, "videoBackends":[{"backend":"software",
             "available":true, "codecs":[{"codec":"h265", "available":true,
                 "colorQualities":["8bit_420"]}]}]});
         let request = |resolution: &str, fps: i64, capabilities: &Value, entitled: i64| {
@@ -5969,10 +6211,10 @@ mod tests {
 
     #[test]
     fn the_network_test_profile_matches_the_session_profile() {
-        let hardware = json!({"protocolVersion":7, "videoBackends":[{"backend":"vaapi",
+        let hardware = json!({"protocolVersion":8, "videoBackends":[{"backend":"vaapi",
             "available":true, "codecs":[{"codec":"h265", "available":true,
                 "colorQualities":["8bit_420"]}]}]});
-        let software = json!({"protocolVersion":7, "videoBackends":[{"backend":"software",
+        let software = json!({"protocolVersion":8, "videoBackends":[{"backend":"software",
             "available":true, "codecs":[{"codec":"h265", "available":true,
                 "colorQualities":["8bit_420"]}]}]});
         let settings = json!({"resolution":"1920x1080", "fps":360, "codec":"h265"});
@@ -6198,7 +6440,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(initial["negotiatedStreamProfile"]["codec"], Value::Null);
-        let capabilities = json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+        let capabilities = json!({"protocolVersion":8,"nativeHdrSupported":true,"videoBackends":[{
             "backend":"videotoolbox","platform":"macos","available":true,"codecs":[{
                 "codec":"h265","available":true,"hdrSupported":true,
                 "colorQualities":["10bit_420"],"hdrColorQualities":["10bit_420"]
@@ -6412,7 +6654,7 @@ mod tests {
     #[test]
     fn nested_negotiated_codec_reaches_hdr_preparation() {
         let base = Url::parse(DEFAULT_STREAMING_BASE).unwrap();
-        let capabilities = json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+        let capabilities = json!({"protocolVersion":8,"nativeHdrSupported":true,"videoBackends":[{
             "backend":"videotoolbox","platform":"macos","available":true,"codecs":[{
                 "codec":"h265","available":true,"hdrSupported":true,
                 "colorQualities":["10bit_420"],"hdrColorQualities":["10bit_420"]

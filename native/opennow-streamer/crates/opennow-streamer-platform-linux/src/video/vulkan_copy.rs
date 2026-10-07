@@ -428,6 +428,8 @@ impl VulkanCopyPool {
             .with_completed_gpu_copy()
         };
         let output = DecodedVideoFrame {
+            provenance: Default::default(),
+            correlation_timestamp_us: None,
             format,
             planes: Vec::new(),
             dmabuf: None,
