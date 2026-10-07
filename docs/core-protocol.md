@@ -670,7 +670,11 @@ Arbitrary partner domains require a separate evidenced trust policy.
 contains `zoneId`, `title`, `region`, `queuePosition` (nonnegative integer),
 `etaMs` (milliseconds or null), `lastUpdated` (Unix seconds), `pingMs`
 (milliseconds or null), `streamingBaseUrl`, and `alternateCount` (the number of
-other fresh zones folded into this location). Missing mapping entries retain
+other fresh zones folded into this location). A location with alternates also
+carries `zones`: every zone at that location, including the primary, as objects
+with the same fields (without `zones`), ordered by measured ping (unmeasured
+last), then queue position, then zone ID. A launch may name any of them through
+its own `zoneId` and `streamingBaseUrl`. Missing mapping entries retain
 their raw zone ID as the title and a friendly continent name as the region.
 Mapping failure does not prevent use of valid queue data. Mapping entries marked
 `nuked: true`, malformed rows, non-NVIDIA zones, timestamps over 15 minutes old,
