@@ -74,7 +74,9 @@ for the original operation. GFN records its actual request stage so failures
 before allocation and confirmed cleanup do not leave a false ownership record.
 A lost GFN POST response with no session ID remains unknown when the upstream
 service cannot correlate the operation. The host does not guess a seat or silently
-clear that uncertainty.
+clear that uncertainty. There is no "Forget unresolved launch" action. New launches
+and update installation remain blocked until authoritative recovery resolves the
+original allocation.
 
 ## Playback preparation is private
 

@@ -832,7 +832,7 @@ fn main() {
     assert_eq!(std::env::args().count(), 1);
     assert!(std::env::vars_os().all(|(key,_)| key == "SystemRoot" || key == "OPENNOW_PLUGIN_DATA_DIR"));
     let data_root = std::path::PathBuf::from(std::env::var_os("OPENNOW_PLUGIN_DATA_DIR").unwrap());
-    assert_eq!(data_root, std::env::current_dir().unwrap());
+    assert_eq!(data_root, std::env::current_dir().unwrap().canonicalize().unwrap());
     std::fs::write(data_root.join("worker-directory-proof"), b"private data").unwrap();
     let exe = std::env::current_exe().unwrap();
     let mode = exe.file_stem().unwrap().to_str().unwrap();
