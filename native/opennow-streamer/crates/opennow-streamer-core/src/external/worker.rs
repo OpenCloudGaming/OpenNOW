@@ -1444,12 +1444,17 @@ fn main() {
         let (events, _received) = mpsc::channel();
         let mut engine = Engine::with_media_runtime(events, runtime.clone());
         let (feedback, feedback_rx) = mpsc::channel();
-        let session = runtime.start(feedback, MediaStreamConfig {
-            width: 64,
-            height: 64,
-            audio_enabled: false,
-            ..Default::default()
-        }).unwrap();
+        let session = runtime
+            .start(
+                feedback,
+                MediaStreamConfig {
+                    width: 64,
+                    height: 64,
+                    audio_enabled: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         let sink = session.sink();
         engine.media_session = Some(session);
         lock_lifecycle(&engine.lifecycle).state = LifecycleState::Connected;
@@ -1477,12 +1482,17 @@ fn main() {
             contiguous: true,
         };
         sink.push(frame.clone());
-        assert!(matches!(feedback_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
-            MediaFeedback::VideoFrameAccepted { keyframe: true, .. }));
+        assert!(matches!(
+            feedback_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            MediaFeedback::VideoFrameAccepted { keyframe: true, .. }
+        ));
         let output = temp.path().join("mid-gop.mkv");
-        let (started, _) = engine.handle(serde_json::from_value(json!({
-            "id":"mid-gop-start","type":"recording-start","outputPath":output
-        })).unwrap());
+        let (started, _) = engine.handle(
+            serde_json::from_value(json!({
+                "id":"mid-gop-start","type":"recording-start","outputPath":output
+            }))
+            .unwrap(),
+        );
         assert_eq!(started[0]["type"], "recording-started");
         let requested = lock(&worker.state.channels).outgoing();
         assert!(lock(&worker.state.channels).outgoing().is_none());
@@ -1495,18 +1505,28 @@ fn main() {
         frame.timestamp += 1800;
         frame.keyframe = false;
         sink.push(frame.clone());
-        assert!(matches!(feedback_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
-            MediaFeedback::VideoFrameAccepted { keyframe: false, .. }));
+        assert!(matches!(
+            feedback_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            MediaFeedback::VideoFrameAccepted {
+                keyframe: false,
+                ..
+            }
+        ));
         encoder.force_intra_frame();
         frame.data = Arc::from(encoder.encode(&picture).unwrap().to_vec());
         frame.timestamp += 1800;
         frame.keyframe = true;
         sink.push(frame);
-        assert!(matches!(feedback_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
-            MediaFeedback::VideoFrameAccepted { keyframe: true, .. }));
-        let (stopped, _) = engine.handle(serde_json::from_value(json!({
-            "id":"record-stop","type":"recording-stop"
-        })).unwrap());
+        assert!(matches!(
+            feedback_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            MediaFeedback::VideoFrameAccepted { keyframe: true, .. }
+        ));
+        let (stopped, _) = engine.handle(
+            serde_json::from_value(json!({
+                "id":"record-stop","type":"recording-stop"
+            }))
+            .unwrap(),
+        );
         assert_eq!(stopped[0]["type"], "recording-stopped");
         assert_eq!(stopped[0]["completion"]["kind"], "complete");
         assert_eq!(stopped[0]["videoPackets"], 1);
@@ -1514,9 +1534,16 @@ fn main() {
         engine.stop("recording test complete");
         runtime.shutdown();
         host.join().unwrap();
-        assert!(matches!(requested, Some(ControlMessage::Keyframe {
-            attempt_generation: 7, track_id: VIDEO_TRACK_ID,
-        })), "recording must request a fresh worker keyframe");
+        assert!(
+            matches!(
+                requested,
+                Some(ControlMessage::Keyframe {
+                    attempt_generation: 7,
+                    track_id: VIDEO_TRACK_ID,
+                })
+            ),
+            "recording must request a fresh worker keyframe"
+        );
     }
 
     #[cfg(unix)]
