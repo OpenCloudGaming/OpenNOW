@@ -3769,7 +3769,8 @@ QtObject {
         target: typeof SourceBridge !== "undefined" ? SourceBridge : null
         function onCreated(requestId, result) { sourceSessionOwner.acceptCreated(requestId, result) }
         function onFailed(requestId, code, message) {
-            if (requestId !== "" && requestId === sourceSessionOwner.startId && root.takeNativeRequest(requestId)) {
+            if (requestId !== "" && requestId === sourceSessionOwner.startId) {
+                root.takeNativeRequest(requestId)
                 root.streamerStartRequestId = ""
                 root.updateStreamerFields({status: "error", message: String(message || ""),
                                            errorCode: String(code || "source_start_failed")})

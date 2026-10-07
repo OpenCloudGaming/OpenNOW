@@ -221,6 +221,63 @@ QtObject {
         check(ShellStore.streamOwnerSignedIn === ShellStore.signedIn, "input ownership returns to the GeForce NOW sign-in state")
     }
 
+    function checkRejectedSourceStartOrdering() {
+        const owner = ShellStore.sourceSessionOwnerState
+        const previousStreamer = ShellStore.streamer
+        const previousRequests = ShellStore.nativeRequests
+        const previousStartRequest = ShellStore.streamerStartRequestId
+        const previousState = ShellStore.streamState
+        const previousMessage = ShellStore.streamMessage
+        const keepPreview = showcaseStage === "rejected-start"
+        try {
+            for (const scenario of ["missing-lease", "wrong-lease", "failure-before-response"]) {
+                const startId = "rejected-source-start-" + scenario
+                owner.sourceId = providerId
+                owner.title = "Provider startup failure fixture"
+                owner.phase = "connecting"
+                owner.startId = startId
+                ShellStore.nativeRequests = Object.assign({}, previousRequests, {[startId]: {operation: "source-start"}})
+                ShellStore.streamerStartRequestId = startId
+                ShellStore.streamer = {status: "starting", message: "Preparing provider playback"}
+                ShellStore.streamState = "starting"
+                const response = {id: startId, type: "ok", transport: "provider-worker"}
+                if (scenario !== "missing-lease")
+                    response.leaseId = "wrong-lease"
+                const message = "The media runtime accepted a different session lease"
+                SourceBridge.failed("unrelated-start", "invalid_source_lease", "Unrelated failure")
+                check(ShellStore.streamer.status === "starting" && owner.startId === startId,
+                    "an unrelated failure cannot change the current start")
+                if (scenario === "failure-before-response") {
+                    SourceBridge.failed(startId, "invalid_source_lease", message)
+                    ShellStore.acceptNativeResponse(response)
+                } else {
+                    ShellStore.acceptNativeResponse(response)
+                    check(ShellStore.streamer.status === "connecting" && !ShellStore.nativeRequests[startId],
+                        "the native response consumes the request before the queued bridge failure")
+                    SourceBridge.failed(startId, "invalid_source_lease", message)
+                }
+                check(ShellStore.streamer.status === "error" && ShellStore.streamState === "error",
+                    "a rejected lease leaves both stream state owners in error: " + scenario)
+                check(owner.phase === "failed" && owner.startId === "" && owner.message === message,
+                    "the source session retains the correlated startup failure")
+                check(ShellStore.streamerStartRequestId === "" && !ShellStore.nativeRequests[startId],
+                    "the rejected native request is cleared")
+                SourceBridge.failed(startId, "duplicate", "Do not replace the original failure")
+                check(ShellStore.streamer.message === message && owner.message === message,
+                    "duplicate failure delivery preserves the original error")
+            }
+        } finally {
+            if (!keepPreview) {
+                owner.reset()
+                ShellStore.streamer = previousStreamer
+                ShellStore.nativeRequests = previousRequests
+                ShellStore.streamerStartRequestId = previousStartRequest
+                ShellStore.streamState = previousState
+                ShellStore.streamMessage = previousMessage
+            }
+        }
+    }
+
     function run(parent) {
         root = parent
         return true
@@ -336,6 +393,12 @@ QtObject {
             check(library.playbackSupported(), "the provider advertises playback")
             check(library.defaultVariant() !== null, "a playable variant is chosen")
             checkSourceStreamOverlays()
+            checkRejectedSourceStartOrdering()
+            if (showcaseStage === "rejected-start") {
+                AppController.navigate("stream")
+                phase = 62
+                return 0
+            }
             if (showcaseStage === "settings") {
                 AppController.navigate("settings-plugins")
                 phase = 50
@@ -346,6 +409,8 @@ QtObject {
             phase = 7
             return 0
         }
+        if (phase === 62)
+            return settle(100)
         if (phase === 7) {
             if (store.selectedSourceId !== anonymousId || library.sourceId !== anonymousId || library.loading
                     || library.items.length === 0)
