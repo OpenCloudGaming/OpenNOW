@@ -151,6 +151,124 @@ QtObject {
         }
     }
 
+    function checkSourceDetailsLaunch() {
+        const core = Qt.createQmlObject(`import QtQuick
+            QtObject {
+                property int next: 1
+                property var requests: ({})
+                function request(method, params) {
+                    const id = "detail-" + next++
+                    const copy = Object.assign({}, requests)
+                    copy[id] = {method: method, params: params}
+                    requests = copy
+                    return id
+                }
+                function cancel(id) { return true }
+                function idsFor(method) { return Object.keys(requests).filter(id => requests[id].method === method) }
+            }`, root)
+        const stateComponent = Qt.createQmlObject("import QtQuick; import OpenNOW; Component { SourceState {} }", root, "detailsSourceStub")
+        const libraryComponent = Qt.createQmlObject("import QtQuick; import OpenNOW; Component { SourceLibraryState {} }", root, "detailsLibraryStub")
+        const modalComponent = Qt.createQmlObject("import QtQuick; import OpenNOW; Component { DesktopSourceGameModal {} }", root, "detailsModalStub")
+        const state = stateComponent.createObject(root, {coreClient: core, bridge: null, ready: true, available: true})
+        const lib = libraryComponent.createObject(root, {coreClient: core, sources: state})
+        let modal = null
+        const last = method => core.idsFor(method).slice(-1)[0]
+        const reply = (id, body) => ({sourceId: providerId, generation: 1, result: body})
+        try {
+            check(state.acceptSnapshot({generation: 1, selectedSourceId: providerId, sources: [{id: providerId,
+                name: "Example Provider", enabled: true, state: "ready", builtin: false, protocolVersion: 2,
+                providerCapabilities: ["auth.deviceCode.v2", "catalog.library.v2", "catalog.details.v2", "launch.v2",
+                    "sessions.v2", "settings.v2"], authKinds: ["device-code"], playback: {transport: "provider-worker"}}]}),
+                "the playable source snapshot is accepted")
+            check(state.acceptResponse(last("sources.auth.state"), reply("", {state: "signed-in",
+                account: {key: "account-a", name: "Example player"}, revision: "auth-1"})), "the source account signs in")
+            lib.sync()
+            check(lib.mode === "library", "the account library is requested")
+            lib.acceptResponse(lib.pageRequestId, reply("", {items: [{id: "game-1", title: "Provider <b>game</b>",
+                artwork: null, subtitle: "Action", badges: [], availability: "available"}], nextCursor: null, coverage: "complete"}))
+            modal = modalComponent.createObject(root, {library: lib, width: 1280, height: 800})
+            check(modal.store === state, "the details view uses the library's own source owner")
+            check(modal.show(lib.items[0]), "activating a poster requests source details")
+            check(modal.requested && modal.game.title === "Provider <b>game</b>", "details open on the activated poster")
+            const get = core.requests[lib.detailsRequestId]
+            check(get.method === "sources.game.get" && get.params.request.game === "game-1"
+                && JSON.stringify(get.params.request.scope) === JSON.stringify({kind: "account", scope: {account: "account-a", revision: "auth-1"}}),
+                "details are requested for the selected account")
+            lib.acceptResponse(lib.detailsRequestId, reply("", {game: {id: "game-1", title: "Provider <b>game</b>",
+                artwork: null, subtitle: "Action", badges: [], availability: "available"}, description: "Plain <i>text</i>.",
+                variants: [{id: "variant-a", label: "Windows", availability: "available"}], revision: "catalog-9"}))
+            modal.opened = true
+            check(find(modal, "sourceDetailsDialog") !== null && find(modal, "sourceDetailsScroll") !== null
+                && find(modal, "sourceDetailsClose") !== null, "source details use the shared game details dialog")
+            check(find(modal, "gameDetailsSummary") === null && find(modal, "cloudLibraryActions") === null
+                && find(modal, "desktopGamePlay") === null, "GeForce NOW-only actions stay out of source details")
+            const title = find(modal, "sourceDetailsTitle")
+            check(title.text === "Provider <b>game</b>" && title.textFormat === Text.PlainText, "the title stays plain text")
+            check(modal.badgeText === "EXAMPLE PROVIDER" && modal.metaText === "Action", "the header names the service and subtitle")
+            check(find(modal, "desktopSourceDescription").text === "Plain <i>text</i>."
+                && find(modal, "desktopSourceDescription").textFormat === Text.PlainText, "the description stays plain text")
+            const variant = find(modal, "sourceDetailsVariant")
+            check(variant.visible && variant.title === "Windows" && variant.detail === "Available", "the playable version is shown")
+            check(find(modal, "sourceDetailsSettings").visible, "service settings are offered when the source has settings")
+            const play = find(modal, "desktopSourcePlay")
+            check(play.enabled && play.text === "Play" && find(modal, "desktopSourcePlayNote").text === "",
+                "a playable source game offers Play")
+            let ready = null
+            lib.playReady.connect((details, decision) => ready = {details: details, decision: decision})
+            play.clicked()
+            const inspect = core.requests[lib.inspectRequestId]
+            check(inspect && inspect.method === "sources.launch.inspect"
+                && inspect.params.request.target.game === "game-1" && inspect.params.request.target.variant === "variant-a"
+                && inspect.params.request.catalogRevision === "catalog-9"
+                && inspect.params.request.scope.account === "account-a", "Play inspects the account-scoped launch target")
+            check(!play.enabled && play.text === "Checking…", "Play waits for the launch decision")
+            lib.acceptResponse(lib.inspectRequestId, reply("", {state: "ready", target: {game: "game-1", variant: "variant-a"},
+                revision: "catalog-9"}))
+            check(ready !== null && ready.details.id === "game-1" && ready.decision.state === "ready",
+                "a ready decision hands the details to the session owner")
+            check(core.idsFor("sources.session.create").length === 0, "the details view never allocates a session itself")
+            play.clicked()
+            lib.acceptResponse(lib.inspectRequestId, reply("", {state: "blocked", reason: "maintenance", message: "Down for maintenance"}))
+            check(find(modal, "desktopSourcePlayNote").text === "Down for maintenance", "a blocked launch explains why")
+            lib.details = Object.assign({}, lib.details, {variants: [
+                {id: "maintenance", label: "Updating", availability: "maintenance"},
+                {id: "unknown", label: "Boosteroid", availability: "unknown"}
+            ]})
+            ready = null
+            check(lib.defaultVariant() !== null && lib.defaultVariant().id === "unknown" && play.enabled,
+                "an unknown version permits an authoritative launch check without selecting an unavailable version")
+            check(variant.visible && variant.title === "Boosteroid" && variant.detail === "",
+                "unknown availability is not presented as available or unavailable")
+            play.clicked()
+            check(core.requests[lib.inspectRequestId].params.request.target.variant === "unknown",
+                "an unknown version still goes through launch inspection")
+            lib.acceptResponse(lib.inspectRequestId, reply("", {state: "blocked", reason: "subscription-required", message: "Subscription needed"}))
+            check(ready === null && core.idsFor("sources.session.create").length === 0
+                && find(modal, "desktopSourcePlayNote").text === "Subscription needed",
+                "a blocked inspection cannot launch an unknown version")
+            lib.details = Object.assign({}, lib.details, {variants: [
+                {id: "unknown", label: "Boosteroid", availability: "unknown"},
+                {id: "available", label: "Ready", availability: "available"}
+            ]})
+            check(lib.defaultVariant().id === "available", "an available version is preferred over an unknown version")
+            lib.details = Object.assign({}, lib.details, {variants: [
+                {id: "maintenance", label: "Updating", availability: "maintenance"}
+            ]})
+            check(lib.defaultVariant() === null && !play.enabled, "known unavailable versions do not enable Play")
+            modal.closeRequested()
+            check(lib.details === null && !modal.requested && modal.preview === null, "closing details clears the source details")
+        } finally {
+            if (modal)
+                modal.destroy()
+            lib.destroy()
+            state.destroy()
+            modalComponent.destroy()
+            stateComponent.destroy()
+            libraryComponent.destroy()
+            core.destroy()
+        }
+    }
+
     function checkPaletteGames(external) {
         const palette = Qt.createQmlObject("import OpenNOW; DesktopCommandPalette { visible: false }", root)
         try {
@@ -308,6 +426,7 @@ QtObject {
             check(CoreClient.capabilities.indexOf("sources.v2") >= 0, "the core advertises sources.v2")
             checkReinstallWithLowerGeneration()
             checkAnonymousLibraryOnly()
+            checkSourceDetailsLaunch()
             if (sourcesOnly)
                 check(CoreClient.capabilities.indexOf("queue.servers.v1") < 0, "a sources-only core connects without GeForce NOW capabilities")
             check(store.sources.length === 3 && store.selectedIsGfn, "three services are listed and GeForce NOW is selected")
@@ -348,7 +467,19 @@ QtObject {
             check(state.account.name === "Example player", "sign-in completes only after explicit completion")
             check(store.accountScope(providerId).revision === state.revision, "the account scope follows the signed-in revision")
             check(library.items.length === 30, "the account library replaces the public catalog")
-            check(library.openDetails("game-1"), "details open")
+            const grid = find(root, "desktopSourceGrid")
+            if (grid !== null) {
+                const poster = grid.itemAtIndex(0)
+                check(poster !== null && poster.game.title === library.items[0].title && poster.playHint
+                    && grid.cellHeight === Math.round((grid.cellWidth - 12) * 198 / 132) + 12,
+                    "source games use the shared library poster grid")
+                poster.clicked()
+                const modal = find(root, "desktopSourceDetails")
+                check(modal.opened && modal.game.title === library.items[0].title && library.detailsRequestId !== "",
+                    "activating a poster opens the shared details dialog")
+            } else {
+                check(library.openDetails("game-1"), "details open")
+            }
             phase = 4
             return 0
         }
@@ -356,6 +487,10 @@ QtObject {
             if (library.details === null)
                 return 0
             check(library.details.description === "A <i>plain</i> description.", "description stays plain text")
+            const details = find(root, "desktopSourceDetails")
+            if (details !== null)
+                check(find(details, "desktopSourceDescription").text === library.details.description
+                    && find(details, "desktopSourcePlay").enabled, "the details dialog shows the loaded game")
             if (showcaseStage === "library")
                 return settle(100)
             check(store.loadSettings(providerId), "service settings load")
@@ -405,6 +540,8 @@ QtObject {
                 return 0
             }
             library.closeDetails()
+            const closed = find(root, "desktopSourceDetails")
+            check(closed === null || !closed.opened, "closing source details dismisses the dialog")
             check(store.select(anonymousId), "the anonymous service is selected")
             phase = 7
             return 0

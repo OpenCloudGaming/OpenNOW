@@ -1,5 +1,12 @@
 include(CTest)
 if(BUILD_TESTING)
+    qt_add_executable(opennow-qmlnetwork-tests tests/tst_qmlnetwork.cpp
+        src/app/QmlNetworkAccessManagerFactory.cpp src/app/QmlNetworkAccessManagerFactory.h)
+    target_include_directories(opennow-qmlnetwork-tests PRIVATE src)
+    target_link_libraries(opennow-qmlnetwork-tests PRIVATE Qt6::Test Qt6::Quick Qt6::Network)
+    add_test(NAME opennow-qmlnetwork-tests COMMAND opennow-qmlnetwork-tests -o -,txt)
+    set_tests_properties(opennow-qmlnetwork-tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
     qt_add_executable(opennow-windowtheme-tests tests/tst_windowtheme.cpp
         src/app/platform/WindowTheme.cpp src/app/platform/WindowTheme.h)
     target_include_directories(opennow-windowtheme-tests PRIVATE src)

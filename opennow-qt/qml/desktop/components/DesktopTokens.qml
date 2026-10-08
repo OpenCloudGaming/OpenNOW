@@ -123,6 +123,16 @@ QtObject {
         return String(value).toLowerCase().replace(/_/g, " ").replace(/\b\w/g, letter => letter.toUpperCase())
     }
 
+    function sourceAvailabilityText(value) {
+        return value === "available" ? qsTr("Available")
+            : value === "maintenance" ? qsTr("Maintenance")
+            : value === "patching" ? qsTr("Updating")
+            : value === "subscription-required" ? qsTr("Subscription required")
+            : value === "ownership-required" ? qsTr("Not owned")
+            : value === "account-link-required" ? qsTr("Link an account")
+            : value === "unavailable" ? qsTr("Unavailable") : ""
+    }
+
     function artworkUrl(game, preferHero) {
         if (!game)
             return ""

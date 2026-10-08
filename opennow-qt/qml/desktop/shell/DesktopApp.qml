@@ -111,7 +111,7 @@ FocusScope {
             bugReportNotice.restoreFocus()
             return
         }
-        if (root.shellVisible && root.route !== "game-detail" && !root.commandOpen
+        if (root.shellVisible && root.route !== "game-detail" && !sourceDetails.opened && !root.commandOpen
                 && AppController.overlay === "" && pageLoader.item)
             pageLoader.item.forceActiveFocus()
     }
@@ -270,6 +270,13 @@ FocusScope {
         onPlayRequested: ShellStore.activateSelectedGame()
         onVariantSelected: index => ShellStore.selectGameVariant(index)
     }
+    DesktopSourceGameModal {
+        id: sourceDetails
+        anchors.fill: parent
+        opened: root.shellVisible && ShellStore.browsingExternalSource && sourceDetails.requested
+        z: 100
+        onOpenedChanged: if (!opened) Qt.callLater(root.restoreShellFocus)
+    }
     DesktopCommandPalette {
         objectName: "desktopCommandPalette"
         opened: root.commandOpen && root.shellVisible
@@ -288,7 +295,7 @@ FocusScope {
         id: bugReportNotice
         anchors.fill: parent
         opened: root.shellVisible && root.bugReportNoticeAllowed && ShellStore.bugReports.noticePending
-            && AppController.overlay === "" && root.route !== "game-detail"
+            && AppController.overlay === "" && root.route !== "game-detail" && !sourceDetails.opened
             && !ShellStore.queueSelector.opened
         z: 130
         onOpenedChanged: {
@@ -369,7 +376,10 @@ FocusScope {
     Component { id: friendsComponent; DesktopFriendsScreen {} }
     Component {
         id: sourceLibraryComponent
-        DesktopSourceLibraryScreen { searchQuery: root.searchText }
+        DesktopSourceLibraryScreen {
+            searchQuery: root.searchText
+            onDetailsRequested: item => sourceDetails.show(item)
+        }
     }
     Component { id: updatesComponent; DesktopUpdateScreen {} }
     Component {
@@ -387,6 +397,8 @@ FocusScope {
         function onRouteChanged() {
             root.commandOpen = false
             root.searchText = ""
+            if (sourceDetails.requested)
+                sourceDetails.library.closeDetails()
             Qt.callLater(root.restoreShellFocus)
         }
     }
