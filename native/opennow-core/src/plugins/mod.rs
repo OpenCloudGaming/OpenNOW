@@ -1,5 +1,7 @@
 mod module;
 mod package;
+#[cfg(windows)]
+mod private_directory_windows;
 mod process;
 mod provider_process;
 #[cfg(test)]
@@ -830,6 +832,12 @@ fn descriptor(manifest: &InstalledManifest) -> PluginDescriptor {
     }
 }
 
+#[cfg(windows)]
+fn private_dir(path: &Path) -> Result<(), SourceError> {
+    private_directory_windows::ensure(path).map_err(|_| error("plugin_storage_error"))
+}
+
+#[cfg(not(windows))]
 fn private_dir(path: &Path) -> Result<(), SourceError> {
     if let Ok(metadata) = fs::symlink_metadata(path) {
         if !metadata.is_dir() || metadata.file_type().is_symlink() {

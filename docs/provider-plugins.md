@@ -43,6 +43,14 @@ inventory and match the host target. Neither role is executed during inspection
 or installation. There are no provider-supplied executable arguments, environment
 variables, or installation hooks. The host supplies `OPENNOW_PLUGIN_DATA_DIR`.
 
+On Windows, plugin-managed directories use a protected, inheritable owner-only
+DACL rather than inheriting profile-wide access. The host hardens existing owned
+directories before use, but does not recursively change existing files or linked
+targets. Providers must still validate their own stored files. Directory setup
+rejects foreign ownership, reparse points, and filesystems without persistent
+ACLs. Ancestors need directory-list access so the host can hold handles that
+prevent path replacement during setup; traverse-only custom paths fail closed.
+
 `ProviderManifest::validate` defines required playback capabilities and accepted
 authentication kinds. SDK enum membership does not mean a capability is available
 on a particular provider or native device.
