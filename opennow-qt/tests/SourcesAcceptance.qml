@@ -421,7 +421,7 @@ QtObject {
 
     function step() {
         if (phase === 0) {
-            if (!ShellStore.ready || !store.loaded)
+            if (!ShellStore.ready || !store.loaded || !ShellStore.nativeRuntimeReady)
                 return 0
             check(CoreClient.capabilities.indexOf("sources.v2") >= 0, "the core advertises sources.v2")
             checkReinstallWithLowerGeneration()
