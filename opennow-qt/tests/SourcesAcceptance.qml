@@ -473,6 +473,8 @@ QtObject {
                 check(poster !== null && poster.game.title === library.items[0].title && poster.playHint
                     && grid.cellHeight === Math.round((grid.cellWidth - 12) * 198 / 132) + 12,
                     "source games use the shared library poster grid")
+                check(poster.Accessible.name === library.items[0].title,
+                    "shared poster buttons announce their game title")
                 poster.clicked()
                 const modal = find(root, "desktopSourceDetails")
                 check(modal.opened && modal.game.title === library.items[0].title && library.detailsRequestId !== "",
