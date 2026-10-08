@@ -14,39 +14,11 @@ FocusScope {
     readonly property bool canSignIn: source !== null && authState !== null && authState.state === "signed-out"
         && store.authKinds(source.id).length > 0
     onSourceChanged: signInRequested = false
-    readonly property bool detailsOpen: library.details !== null || library.detailsRequestId !== "" || library.detailsError !== ""
     readonly property var session: ShellStore.sourceSession
-    readonly property bool sessionHere: session.active && source !== null && session.sourceId === source.id
-    readonly property bool playEnabled: library.playbackSupported() && ShellStore.sourcePlaybackAvailable
-        && library.defaultVariant() !== null && !library.playRequested && !ShellStore.streamBusy
-        && ShellStore.activeSession === null
-    readonly property string playNote: {
-        if (!library.details)
-            return ""
-        if (!library.playbackSupported())
-            return qsTr("This service only lists games. They can't be played from OpenNOW.")
-        if (!ShellStore.sourcePlaybackAvailable)
-            return qsTr("This device can't play games from this service.")
-        if (library.defaultVariant() === null)
-            return qsTr("This game isn't available to play right now.")
-        if (library.launchDecision && library.launchDecision.state === "blocked")
-            return String(library.launchDecision.message || qsTr("The service can't start this game right now."))
-        if (session.active || ShellStore.activeSession !== null)
-            return qsTr("Finish your current session before starting another.")
-        return ""
-    }
+    signal detailsRequested(var item)
 
     onSearchQueryChanged: searchTimer.restart()
     Timer { id: searchTimer; interval: 300; onTriggered: root.library.search(root.searchQuery) }
-
-    function availabilityText(value) {
-        return value === "maintenance" ? qsTr("Maintenance")
-            : value === "patching" ? qsTr("Updating")
-            : value === "subscription-required" ? qsTr("Subscription required")
-            : value === "ownership-required" ? qsTr("Not owned")
-            : value === "account-link-required" ? qsTr("Link an account")
-            : value === "unavailable" ? qsTr("Unavailable") : ""
-    }
 
     function accountText() {
         if (!root.authState)
@@ -156,134 +128,18 @@ FocusScope {
         wrapMode: Text.WordWrap
     }
 
-    GridView {
+    DesktopPosterGrid {
         id: grid
         objectName: "desktopSourceGrid"
-        x: header.x
+        x: header.x - 6
         y: (statusLine.visible ? statusLine.y + statusLine.height : signIn.visible ? signIn.y + signIn.height : header.y + header.height) + DesktopTokens.px(16)
-        width: (root.detailsOpen ? parent.width - details.width - DesktopTokens.px(24) : parent.width) - 2 * header.x
-        height: parent.height - y - DesktopTokens.px(16)
-        clip: true
-        cellWidth: DesktopTokens.px(188)
-        cellHeight: DesktopTokens.px(292)
+        width: parent.width - 2 * x
+        height: parent.height - y
         model: root.library.items
-        boundsBehavior: Flickable.StopAtBounds
-        ScrollBar.vertical: ScrollBar {}
+        focus: true
+        playHints: root.library.playbackSupported() && ShellStore.sourcePlaybackAvailable
+        noteForGame: item => item.availability === "available" ? "" : DesktopTokens.sourceAvailabilityText(item.availability)
         onAtYEndChanged: if (atYEnd && count > 0) root.library.loadMore()
-        delegate: ItemDelegate {
-            required property var modelData
-            required property int index
-            objectName: "desktopSourceTile-" + modelData.ref.localId
-            width: grid.cellWidth - DesktopTokens.px(14)
-            height: grid.cellHeight - DesktopTokens.px(14)
-            padding: 0
-            Accessible.name: modelData.title
-            background: Rectangle {
-                radius: DesktopTokens.px(14)
-                color: parent.hovered ? DesktopTokens.raisedStrong : DesktopTokens.raised
-                border.width: parent.activeFocus ? 2 : 1
-                border.color: parent.activeFocus ? Theme.focus : Theme.seam
-            }
-            contentItem: Column {
-                spacing: DesktopTokens.px(8)
-                Rectangle {
-                    width: parent.width; height: DesktopTokens.px(210)
-                    radius: DesktopTokens.px(14)
-                    color: DesktopTokens.seamSoft
-                    clip: true
-                    Image {
-                        id: artwork
-                        anchors.fill: parent
-                        visible: artwork.status === Image.Ready
-                        source: modelData.imageUrl
-                        fillMode: Image.PreserveAspectCrop
-                        asynchronous: true
-                    }
-                    Text {
-                        anchors.centerIn: parent
-                        visible: modelData.imageUrl === ""
-                        text: modelData.title.charAt(0).toUpperCase()
-                        color: Theme.textMuted; font.family: Theme.displayFont
-                        font.pixelSize: DesktopTokens.px(48); font.weight: Font.Black
-                    }
-                }
-                Text {
-                    x: DesktopTokens.px(10); width: parent.width - DesktopTokens.px(20)
-                    text: modelData.title
-                    textFormat: Text.PlainText
-                    elide: Text.ElideRight
-                    color: Theme.label; font.family: Theme.bodyFont
-                    font.pixelSize: DesktopTokens.bodySize; font.weight: Font.Bold
-                }
-                Text {
-                    x: DesktopTokens.px(10); width: parent.width - DesktopTokens.px(20)
-                    text: root.availabilityText(modelData.availability) || modelData.subtitle
-                    textFormat: Text.PlainText
-                    elide: Text.ElideRight
-                    color: modelData.availability === "available" ? Theme.textMuted : Theme.yellow
-                    font.family: Theme.bodyFont; font.pixelSize: DesktopTokens.captionSize
-                }
-            }
-            onClicked: root.library.openDetails(modelData.ref.localId)
-        }
-    }
-
-    Rectangle {
-        id: details
-        objectName: "desktopSourceDetails"
-        visible: root.detailsOpen
-        anchors.right: parent.right; anchors.rightMargin: DesktopTokens.px(24)
-        y: grid.y
-        width: Math.min(DesktopTokens.px(380), parent.width * 0.4)
-        height: Math.min(parent.height - y - DesktopTokens.px(16), detailsColumn.implicitHeight + DesktopTokens.px(48))
-        radius: DesktopTokens.px(16)
-        color: Theme.lightMode ? Theme.glass : "#C70B0F1A"
-        border.color: Theme.seam
-        Column {
-            id: detailsColumn
-            x: DesktopTokens.px(24); y: DesktopTokens.px(24)
-            width: parent.width - DesktopTokens.px(48)
-            spacing: DesktopTokens.px(12)
-            Text {
-                width: parent.width
-                text: root.library.details ? root.library.details.game.title
-                    : root.library.detailsError !== "" ? root.library.detailsError : qsTr("Loading…")
-                textFormat: Text.PlainText
-                color: root.library.detailsError !== "" ? Theme.coral : Theme.label
-                font.family: Theme.displayFont; font.pixelSize: DesktopTokens.px(22); font.weight: Font.Black
-                wrapMode: Text.WordWrap
-            }
-            Text {
-                objectName: "desktopSourceDescription"
-                width: parent.width
-                visible: text !== ""
-                text: root.library.details ? root.library.details.description : ""
-                textFormat: Text.PlainText
-                color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: DesktopTokens.bodySize
-                wrapMode: Text.WordWrap
-            }
-            DesktopButton {
-                objectName: "desktopSourcePlay"
-                width: parent.width
-                primary: enabled
-                visible: root.library.details !== null
-                enabled: root.playEnabled
-                text: root.library.playRequested ? qsTr("Checking…") : qsTr("Play")
-                onClicked: root.library.play()
-            }
-            Text {
-                objectName: "desktopSourcePlayNote"
-                width: parent.width
-                visible: text !== ""
-                text: root.playNote
-                textFormat: Text.PlainText
-                color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: DesktopTokens.captionSize
-                wrapMode: Text.WordWrap
-            }
-            DesktopButton {
-                text: qsTr("Close")
-                onClicked: root.library.closeDetails()
-            }
-        }
+        onGameActivated: item => root.detailsRequested(item)
     }
 }

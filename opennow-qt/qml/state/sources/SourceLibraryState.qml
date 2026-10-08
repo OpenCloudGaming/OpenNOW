@@ -185,7 +185,8 @@ QtObject {
     }
 
     function defaultVariant() {
-        return details ? details.variants.find(variant => variant.availability === "available") || null : null
+        return details ? details.variants.find(variant => variant.availability === "available")
+            || details.variants.find(variant => variant.availability === "unknown") || null : null
     }
 
     function play() {

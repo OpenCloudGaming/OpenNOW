@@ -266,11 +266,14 @@ qt_add_qml_module(opennow-qt
         qml/desktop/components/DesktopBackdrop.qml
         qml/desktop/components/DesktopBrandLockup.qml
         qml/desktop/components/DesktopButton.qml
+        qml/desktop/components/DesktopGameDetailsDialog.qml
+        qml/desktop/components/DesktopGameDetailsSummaryCard.qml
         qml/desktop/components/DesktopGameModal.qml
         qml/desktop/components/DesktopQueueSelector.qml
         qml/desktop/components/DesktopGlyph.qml
         qml/desktop/components/DesktopKeyHint.qml
         qml/desktop/components/DesktopPoster.qml
+        qml/desktop/components/DesktopPosterGrid.qml
         qml/desktop/components/DesktopPosterOverlay.qml
         qml/desktop/components/DesktopTokens.qml
         qml/desktop/friends/DesktopFriendsScreen.qml
@@ -315,6 +318,7 @@ qt_add_qml_module(opennow-qt
         qml/desktop/settings/pages/DesktopSettingsLookPage.qml
         qml/desktop/settings/pages/DesktopSettingsNetworkPage.qml
         qml/desktop/settings/pages/DesktopSettingsPluginsPage.qml
+        qml/desktop/sources/DesktopSourceGameModal.qml
         qml/desktop/sources/DesktopSourceLibraryScreen.qml
         qml/desktop/sources/DesktopSourceSignInPanel.qml
         qml/desktop/sources/DesktopSourceSettingRow.qml

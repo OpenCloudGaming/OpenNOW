@@ -3,6 +3,7 @@
 #include "app/platform/WindowTheme.h"
 #include "acceptance/AcceptanceSession.h"
 #include "app/ApplicationStartup.h"
+#include "app/QmlNetworkAccessManagerFactory.h"
 #include "app/platform/MacAwdlController.h"
 #include "input/ControllerInput.h"
 #include "core/CoreClient.h"
@@ -243,7 +244,9 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     qmlRegisterUncreatableType<MacAwdlController>("OpenNOW", 1, 0, "MacAwdlController",
                                                 u"Use the application-owned MacAwdl instance"_s);
     MacAwdlController macAwdl;
+    QmlNetworkAccessManagerFactory networkFactory;
     QQmlApplicationEngine engine;
+    engine.setNetworkAccessManagerFactory(&networkFactory);
     engine.setInitialProperties({{u"visible"_s, false}, {u"visibility"_s, QWindow::Hidden}});
     AcceptanceSession acceptance(application, engine, controller, coreClient, arguments);
     engine.rootContext()->setContextProperty(u"AppController"_s, &controller);
