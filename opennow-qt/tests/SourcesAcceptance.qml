@@ -421,7 +421,7 @@ QtObject {
 
     function step() {
         if (phase === 0) {
-            if (!ShellStore.ready || !store.loaded)
+            if (!ShellStore.ready || !store.loaded || !ShellStore.nativeRuntimeReady)
                 return 0
             check(CoreClient.capabilities.indexOf("sources.v2") >= 0, "the core advertises sources.v2")
             checkReinstallWithLowerGeneration()
@@ -473,6 +473,8 @@ QtObject {
                 check(poster !== null && poster.game.title === library.items[0].title && poster.playHint
                     && grid.cellHeight === Math.round((grid.cellWidth - 12) * 198 / 132) + 12,
                     "source games use the shared library poster grid")
+                check(poster.Accessible.name === library.items[0].title,
+                    "shared poster buttons announce their game title")
                 poster.clicked()
                 const modal = find(root, "desktopSourceDetails")
                 check(modal.opened && modal.game.title === library.items[0].title && library.detailsRequestId !== "",

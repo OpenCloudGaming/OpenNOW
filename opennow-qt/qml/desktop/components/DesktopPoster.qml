@@ -17,6 +17,7 @@ ItemDelegate {
     readonly property int artHeight: Math.round(artWidth * 198 / 132)
     readonly property bool cardLifted: hovered || activeFocus
     readonly property string artwork: DesktopTokens.artworkUrl(game, false)
+    Accessible.name: root.game ? String(root.game.title || "") : ""
     signal contextRequested(real sceneX, real sceneY)
     // Keep focus geometry inside the delegate so GridView clipping never cuts
     // off the top/left ring while the tile scales up.
