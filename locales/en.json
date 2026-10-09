@@ -677,7 +677,12 @@
   "androidStreamInput": {
     "settings_high_settings_warning_title": "High settings may prevent a session from launching",
     "settings_high_settings_warning_body": "You can try these settings, but some devices or servers may not support them. If the session fails to launch, lower the resolution, frame rate, or bitrate and try again.",
-    "stream_input_choose_at_launch_body": "A keyboard or mouse is connected. Use native touch for this game, or switch to keyboard and mouse?",
+    "stream_input_choose_at_launch_title": "Choose input for this game",
+    "stream_input_choose_at_launch_body": "A keyboard or mouse is connected. Choose how to control this game before joining the queue.",
+    "stream_input_choose_at_launch_no_device_body": "Choose native touch or controller input before joining the queue.",
+    "stream_input_use_native_touch": "Native touch",
+    "stream_input_use_controller": "Controller",
+    "stream_input_use_keyboard_mouse_controller": "Keyboard, mouse or controller",
     "stream_menu_shortcut": "Open Stream Controls shortcut",
     "stream_menu_shortcut_description": "Choose the physical-keyboard shortcut that opens the in-stream menu. Shift + right-click will no longer open it unless you explicitly bind the Menu key combination.",
     "stream_menu_shortcut_configure": "Configure",

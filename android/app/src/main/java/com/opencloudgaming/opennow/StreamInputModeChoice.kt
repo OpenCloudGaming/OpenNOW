@@ -40,12 +40,20 @@ internal fun streamInputModeAtStart(
     StreamInputMode.KeyboardMouse
 }
 
-/** Wait for a choice before CloudMatch creates a session with a mouse attached. */
+/** Touch-capable games need a host input choice even when no physical device is connected. */
+internal fun shouldPromptForLaunchInputMode(
+    nativeTouchAvailable: Boolean,
+    catalogTouchSupported: Boolean,
+    keyboardMouseConnected: Boolean,
+): Boolean = nativeTouchAvailable && (catalogTouchSupported || keyboardMouseConnected)
+
+/** Wait for a choice before CloudMatch provisions the session's input devices. */
 internal suspend fun chooseStreamInputModeAtStart(
     nativeTouchAvailable: Boolean,
     keyboardMouseConnected: Boolean,
+    promptForChoice: Boolean,
     choose: suspend () -> StreamInputMode,
-): StreamInputMode = if (nativeTouchAvailable && keyboardMouseConnected) {
+): StreamInputMode = if (promptForChoice) {
     choose()
 } else {
     streamInputModeAtStart(nativeTouchAvailable, keyboardMouseConnected)

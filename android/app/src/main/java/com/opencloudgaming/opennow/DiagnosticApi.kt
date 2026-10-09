@@ -100,6 +100,7 @@ internal data class DiagnosticApiEntry(
         val providerStatus = (response.json as? JsonObject)?.get("requestStatus") as? JsonObject
         val description = (providerStatus?.get("statusDescription") as? JsonPrimitive)?.contentOrNull
         return "${diagnosticTimestamp(timestampMs)} $method $url -> ${statusCode ?: "ERR"} " +
+            "started=${diagnosticTimestamp(timestampMs - elapsedMs)} " +
             "${elapsedMs}ms responseChars=$responseChars count=$count" +
             (description?.let { " providerStatus=$it" } ?: "") + (error?.let { " error=$it" } ?: "")
     }

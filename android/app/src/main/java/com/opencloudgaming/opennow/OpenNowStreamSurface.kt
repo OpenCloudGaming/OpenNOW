@@ -795,7 +795,7 @@ internal fun StreamScreen(
                 canEndSession = state.authSession != null,
                 onBack = { viewModel.setPage(AppPage.Home) },
                 onResumeSession = viewModel::resumeActiveSession,
-                onEndSession = viewModel::stopStream,
+                onEndSession = { viewModel.stopStream(StreamStopOrigin.NoActiveStream) },
             )
         } else if (!streamReady) {
             QueueLoadingScreen(state, viewModel)
@@ -1564,7 +1564,7 @@ internal fun StreamScreen(
                         onKeepPlaying = { exitConfirmOpen = false },
                         onExit = {
                             exitConfirmOpen = false
-                            viewModel.stopStream()
+                            viewModel.stopStream(StreamStopOrigin.StreamExitConfirmation)
                         },
                     )
                 }

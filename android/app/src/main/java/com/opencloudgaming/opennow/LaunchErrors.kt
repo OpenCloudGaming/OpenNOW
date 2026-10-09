@@ -28,8 +28,8 @@ internal fun normalizeLaunchErrorMessage(error: Throwable, gameTitle: String? = 
     val terminalSession = error.terminalSessionStatusException()
     return when {
         terminalSession != null ->
-            "The cloud provider ended this session (status ${terminalSession.status}). " +
-                "OpenNOW did not stop it or start a replacement queue."
+            "The cloud session is no longer available (status ${terminalSession.status}). " +
+                "Start the game again to open a new session."
         cloudMatchFailure?.isEntitlementError() == true ->
             "GeForce NOW rejected this launch because it could not verify a playable membership for the signed-in account. If Free is active, confirm you signed in with the same NVIDIA account, then sign out and back in."
         cloudMatchFailure?.isLimitedModeStreamingError() == true -> limitedModeStreamingMessage(gameTitle)

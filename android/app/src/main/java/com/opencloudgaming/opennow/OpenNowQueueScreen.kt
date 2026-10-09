@@ -184,7 +184,7 @@ internal fun QueueLoadingScreen(state: OpenNowUiState, viewModel: OpenNowViewMod
                         playbackKey = session?.sessionId.orEmpty(),
                         compact = useLandscapeAdLayout,
                         onMinimize = viewModel::minimizeStreamLaunch,
-                        onCancel = viewModel::stopStream,
+                        onCancel = { viewModel.stopStream(StreamStopOrigin.QueueCancel) },
                         modifier = Modifier
                             .fillMaxWidth(if (useLandscapeAdLayout) 0.72f else 1f)
                             .widthIn(max = if (useLandscapeAdLayout) 900.dp else 620.dp),
@@ -198,7 +198,7 @@ internal fun QueueLoadingScreen(state: OpenNowUiState, viewModel: OpenNowViewMod
                         error = state.error,
                         compact = false,
                         onMinimize = viewModel::minimizeStreamLaunch,
-                        onCancel = viewModel::stopStream,
+                        onCancel = { viewModel.stopStream(StreamStopOrigin.QueueCancel) },
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }

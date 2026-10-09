@@ -771,12 +771,11 @@ fun OpenNowApp(
                     }
                 }
                 if (state.awaitingLaunchInputModeChoice) {
-                    StreamInputModeSwitchDialog(
-                        prompt = StreamInputModePrompt.SwitchToKeyboardMouse,
-                        onStay = { viewModel.chooseLaunchInputMode(StreamInputMode.NativeTouch) },
-                        onSwitch = { viewModel.chooseLaunchInputMode(StreamInputMode.KeyboardMouse) },
+                    StreamLaunchInputModeDialog(
+                        keyboardMouseConnected = connectedPhysicalKeyboardMouse().connected,
+                        onNativeTouch = { viewModel.chooseLaunchInputMode(StreamInputMode.NativeTouch) },
+                        onController = { viewModel.chooseLaunchInputMode(StreamInputMode.KeyboardMouse) },
                         onDismiss = viewModel::cancelLaunchInputModeChoice,
-                        atLaunch = true,
                     )
                 }
                 if (state.pendingGfnMembershipActivation) {
@@ -1051,7 +1050,7 @@ private fun MainShell(
                             MinimizedQueueDock(
                                 state = state,
                                 onRestore = viewModel::restoreStreamLaunch,
-                                onCancel = viewModel::stopStream,
+                                onCancel = { viewModel.stopStream(StreamStopOrigin.MinimizedQueueCancel) },
                             )
                         }
                         NavigationBar(
@@ -1298,7 +1297,7 @@ private fun MainShell(
                             MinimizedQueueDock(
                                 state = state,
                                 onRestore = viewModel::restoreStreamLaunch,
-                                onCancel = viewModel::stopStream,
+                                onCancel = { viewModel.stopStream(StreamStopOrigin.MinimizedQueueCancel) },
                             )
                         }
                     }

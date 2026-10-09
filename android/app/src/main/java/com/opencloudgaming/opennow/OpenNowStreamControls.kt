@@ -534,13 +534,12 @@ internal fun StreamInputModeSwitchDialog(
     onStay: () -> Unit,
     onSwitch: () -> Unit,
     onDismiss: () -> Unit = onStay,
-    atLaunch: Boolean = false,
 ) {
     val title = when (prompt) {
         StreamInputModePrompt.SwitchToKeyboardMouse -> R.string.stream_keyboard_mouse_detected
         StreamInputModePrompt.SwitchToNativeTouch -> R.string.stream_keyboard_mouse_disconnected
     }
-    val body = if (atLaunch) R.string.stream_input_choose_at_launch_body else when (prompt) {
+    val body = when (prompt) {
         StreamInputModePrompt.SwitchToKeyboardMouse -> R.string.stream_keyboard_mouse_detected_body
         StreamInputModePrompt.SwitchToNativeTouch -> R.string.stream_keyboard_mouse_disconnected_body
     }
@@ -569,6 +568,41 @@ internal fun StreamInputModeSwitchDialog(
         dismissButton = {
             TextButton(onClick = onStay) {
                 Text(stringResource(stayLabel))
+            }
+        },
+    )
+}
+
+@Composable
+internal fun StreamLaunchInputModeDialog(
+    keyboardMouseConnected: Boolean,
+    onNativeTouch: () -> Unit,
+    onController: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.stream_input_choose_at_launch_title)) },
+        text = {
+            Text(
+                stringResource(
+                    if (keyboardMouseConnected) R.string.stream_input_choose_at_launch_body
+                    else R.string.stream_input_choose_at_launch_no_device_body,
+                ),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onNativeTouch) {
+                Text(stringResource(R.string.stream_input_use_native_touch))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onController) {
+                Text(stringResource(
+                    if (keyboardMouseConnected) R.string.stream_input_use_keyboard_mouse_controller
+                    else R.string.stream_input_use_controller,
+                ))
             }
         },
     )
