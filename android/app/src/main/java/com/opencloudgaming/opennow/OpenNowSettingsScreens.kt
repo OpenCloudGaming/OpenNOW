@@ -43,6 +43,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.DeveloperMode
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Monitor
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Person
@@ -221,6 +222,7 @@ private enum class SettingsCategory(
     ),
     TvPairing(R.string.tv_pair_settings_title, R.string.tv_pair_settings_summary, Icons.Outlined.Tv),
     Advanced(R.string.settings_category_advanced, R.string.settings_category_advanced_summary, Icons.Outlined.Science),
+    Changelogs(R.string.changelog_title, R.string.changelog_summary, Icons.Outlined.History),
     About(R.string.settings_category_about, R.string.settings_category_about_summary, Icons.Outlined.Info),
 
     /** Hidden until the About build-number gesture unlocks it. See `AndroidDeveloperOptions.kt`. */
@@ -471,7 +473,10 @@ internal fun SettingsScreen(
                             selectedCategory = category,
                             categories = categories,
                             detailFocusRequester = detailFocusRequester,
-                            onSelectCategory = { selectedCategory = it },
+                            onSelectCategory = {
+                                onSearchQueryChange("")
+                                selectedCategory = it
+                            },
                             onBack = { selectedCategory = settingsCategoryParent(selectedCategory) },
                             showSessionProxyWarning = { showSessionProxyWarning = true },
                         )
@@ -522,7 +527,10 @@ internal fun SettingsScreen(
                                 selectedCategory = category,
                                 categories = categories,
                                 detailFocusRequester = detailFocusRequester,
-                                onSelectCategory = { selectedCategory = it },
+                                onSelectCategory = {
+                                    onSearchQueryChange("")
+                                    selectedCategory = it
+                                },
                                 onBack = { selectedCategory = settingsCategoryParent(selectedCategory) },
                                 showSessionProxyWarning = { showSessionProxyWarning = true },
                             )
@@ -664,6 +672,13 @@ private fun SettingsContent(
 ) {
     val settings = state.settings
     val context = LocalContext.current
+    val changelogs by produceState(emptyList<ChangelogEntry>(), context) {
+        value = withContext(Dispatchers.IO) { ChangelogRepository(context).entries }
+    }
+    if (selectedCategory == SettingsCategory.Changelogs && searchQuery.isBlank()) {
+        ChangelogSettingsContent(changelogs)
+        return
+    }
     val gyroscopeAvailable = remember(context) { hasMobileGyroscope(context) }
     val deviceHasBattery = rememberDeviceHasBattery()
     val fallbackMembershipTier = state.authSession?.user?.membershipTier
@@ -745,9 +760,6 @@ private fun SettingsContent(
                 )
             },
             descriptionRes = R.string.bug_report_describe_english_from_settings,
-            titleRes = R.string.bug_report_inbox_new,
-            wideDialog = true,
-            showCommunityLink = false,
             onDismiss = {
                 if (!state.bugReportSubmission.uploading) {
                     val submitted = state.bugReportSubmission.submitted
@@ -935,7 +947,28 @@ private fun SettingsContent(
                     viewModel.updateStreamSettings { s -> s.copy(maxBitrateMbps = it.roundToInt()) }
                 }
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Stream, searchQuery, stringResource(R.string.settings_section_stream_video), "stream", "video", "codec", "color", "hdr", "sharpening", "native streamer", "low latency", "native decoder", "decoder") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.Stream, searchQuery, stringResource(R.string.settings_section_stream_video), "stream", "video", "codec", "color", "hdr", "sharpening", "native streamer", "low latency", "native decoder", "decoder", "video output", "surface", "webrtc", "texture") {
+                val defaultVideoOutputLabel = stringResource(when (defaultStreamVideoOutput(BuildConfig.PLAY_STORE_RELEASE)) {
+                    StreamVideoOutput.MediaCodecSurface -> R.string.settings_video_output_default_surface
+                    StreamVideoOutput.WebRtcTexture -> R.string.settings_video_output_default_texture
+                    StreamVideoOutput.Default -> R.string.settings_video_output_default
+                })
+                val videoOutputOptions = listOf(
+                    SettingsChoiceOption(StreamVideoOutput.Default.name, defaultVideoOutputLabel),
+                    SettingsChoiceOption(StreamVideoOutput.MediaCodecSurface.name, stringResource(R.string.settings_video_output_surface)),
+                    SettingsChoiceOption(StreamVideoOutput.WebRtcTexture.name, stringResource(R.string.settings_video_output_texture)),
+                )
+                ChoiceOptionRow(
+                    stringResource(R.string.settings_video_output),
+                    videoOutputOptions,
+                    settings.stream.videoOutput.name,
+                    description = stringResource(R.string.settings_video_output_desc),
+                    selectedDisplayLabel = stringResource(when (settings.stream.videoOutput) {
+                        StreamVideoOutput.Default -> R.string.settings_video_output_default
+                        StreamVideoOutput.MediaCodecSurface -> R.string.settings_video_output_direct_short
+                        StreamVideoOutput.WebRtcTexture -> R.string.settings_video_output_textures_short
+                    }),
+                ) { output -> viewModel.updateVideoOutput(StreamVideoOutput.valueOf(output)) }
                 val comingSoonLabel = stringResource(R.string.option_coming_soon)
                 val unavailableLabel = stringResource(R.string.common_unavailable)
                 val h264H265OnlyLabel = stringResource(R.string.settings_av1_ten_bit_badge)
@@ -1989,6 +2022,16 @@ private fun SettingsContent(
                 OpenNowGitHubPanel()
                 DeveloperPanel()
             }
+    if (searchQuery.isNotBlank()) {
+        CategorySettingsSection(selectedCategory, SettingsCategory.Changelogs, searchQuery, stringResource(R.string.changelog_title), "changelog", "release", "notes", "what's new", "update") {
+                ControlActionRow(
+                    label = stringResource(R.string.changelog_history),
+                    actionLabel = stringResource(R.string.changelog_open),
+                    value = changelogs.firstOrNull()?.let { "${it.version} · ${it.versionCode}" },
+                    onClick = { onSelectCategory(SettingsCategory.Changelogs) },
+                )
+        }
+    }
     CategorySettingsSection(selectedCategory, SettingsCategory.About, searchQuery, stringResource(R.string.settings_section_thanks), "thanks", "credits", "contributors", "darkevilpt", "discord", "community", "support", "donate", "paypal", "printedwaste") {
                 ThanksPanel()
             }

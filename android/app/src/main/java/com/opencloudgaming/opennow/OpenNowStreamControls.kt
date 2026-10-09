@@ -83,16 +83,12 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.layout.layout
@@ -685,7 +681,6 @@ private enum class StreamControlsPage {
 @Composable
 private fun ControlBitrateLiveHint(
     liveBitrateMbps: Int,
-    liveOverridden: Boolean,
 ) {
     Column(
         Modifier
@@ -700,12 +695,12 @@ private fun ControlBitrateLiveHint(
             Box(
                 Modifier
                     .clip(RoundedCornerShape(999.dp))
-                    .background(Green.copy(alpha = if (liveOverridden) 0.18f else 0.10f))
+                    .background(Green.copy(alpha = 0.18f))
                     .padding(horizontal = 7.dp, vertical = 2.dp),
             ) {
                 Text(
                     stringResource(R.string.stream_panel_bitrate_live_badge),
-                    color = if (liveOverridden) Green else TextMuted,
+                    color = Green,
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.Bold,
                 )
@@ -747,7 +742,7 @@ internal fun StreamControlsPanel(
     microphoneEnabled: Boolean,
     statsVisible: Boolean,
     statusBarDragging: Boolean,
-    liveBitrateLimitKbps: Int?,
+    receivedBitrateKbps: Int?,
     recordingPhase: StreamRecorderPhase?,
     touchLayoutEditing: Boolean,
     bugReportSubmission: BugReportSubmissionState,
@@ -1291,9 +1286,12 @@ internal fun StreamControlsPanel(
                     ) { Text(stringResource(R.string.stream_panel_keyboard), maxLines = 1) }
                     OutlinedButton(
                         onClick = { onButtonTone(); onExit() },
-                        modifier = Modifier.weight(1f).streamExitGlow(),
+                        modifier = Modifier.weight(1f),
                         border = BorderStroke(1.dp, OpenNowPalette.AccentSwitchRed),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = OpenNowPalette.AccentSwitchRed),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = OpenNowPalette.AccentSwitchRed.copy(alpha = 0.10f),
+                            contentColor = OpenNowPalette.AccentSwitchRed,
+                        ),
                     ) { Text(stringResource(R.string.stream_panel_exit), maxLines = 1) }
                 }
             }
@@ -1383,10 +1381,11 @@ internal fun StreamControlsPanel(
                             descriptionProvider = { mbps -> streamBitrateUsageEstimate(mbps) },
                             onChange = { value -> onMaxBitrateChange(value.roundToInt()) },
                         )
-                        ControlBitrateLiveHint(
-                            liveBitrateMbps = liveBitrateLimitKbps?.div(1000) ?: settings.stream.maxBitrateMbps,
-                            liveOverridden = liveBitrateLimitKbps != null,
-                        )
+                        // A requested ceiling can be queued for a later offer. Only measured
+                        // receive traffic can truthfully be shown as live in the current session.
+                        receivedBitrateKbps?.takeIf { it >= 0 }?.let { bitrate ->
+                            ControlBitrateLiveHint(liveBitrateMbps = bitrate / 1000)
+                        }
                     }
                 }
             }
@@ -1559,20 +1558,6 @@ internal fun StreamControlsPanel(
         onDispose {
             NativeStreamInputRouter.clearStreamPanelTouchPassthroughBounds()
         }
-    }
-}
-
-/** A static halo keeps the exit action visible over video without running a draw animation. */
-internal fun Modifier.streamExitGlow(): Modifier = drawBehind {
-    val red = OpenNowPalette.AccentSwitchRed
-    for (layer in 3 downTo 1) {
-        val spread = layer * 2.dp.toPx()
-        drawRoundRect(
-            color = red.copy(alpha = 0.05f + (4 - layer) * 0.045f),
-            topLeft = Offset(-spread, -spread),
-            size = Size(size.width + spread * 2f, size.height + spread * 2f),
-            cornerRadius = CornerRadius(size.height / 2f + spread),
-        )
     }
 }
 

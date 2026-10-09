@@ -47,6 +47,9 @@ internal fun isMissingGfnPlanError(error: Throwable): Boolean =
 internal fun isAbandonedQueueError(error: Throwable): Boolean =
     error.cloudMatchRequestStatusException()?.isQueueAbandoned() == true
 
+internal fun shouldForgetActiveSessionAfterResumeFailure(error: Throwable): Boolean =
+    error.terminalSessionStatusException() != null
+
 internal fun shouldOfferLowerSettingsRetry(
     error: Throwable,
     requestedSettings: StreamSettings,

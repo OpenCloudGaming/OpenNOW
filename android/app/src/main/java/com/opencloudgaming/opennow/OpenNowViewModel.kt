@@ -2516,6 +2516,10 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun updateVideoOutput(output: StreamVideoOutput) {
+        settingsStore.update { current -> current.copy(stream = current.stream.copy(videoOutput = output)) }
+    }
+
     fun updateDynamicNetworkAdjustment(enabled: Boolean) {
         settingsStore.update { current ->
             current.copy(stream = current.stream.copy(experimentalDynamicNetworkAdjustment = enabled))
@@ -3400,9 +3404,12 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 recordDebugEvent("queue", "Resume failed error=${error.debugMessage()}")
                 val failureReturnPage = state.value.streamReturnPage ?: AppPage.Home
                 val normalizedError = normalizeLaunchError(error, state.value.streamGame?.title)
+                val forgetActiveSession = shouldForgetActiveSessionAfterResumeFailure(error)
                 _state.update {
                     it.copy(
                         error = normalizedError,
+                        activeSession = if (forgetActiveSession) null else it.activeSession,
+                        streamSession = if (forgetActiveSession) null else it.streamSession,
                         pendingGfnMembershipActivation = isMissingGfnPlanError(error),
                         streamStatus = "idle",
                         activeStreamSettings = null,
@@ -3466,9 +3473,12 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 if (error is CancellationException) return@onFailure
                 recordDebugEvent("queue", "Pending resume failed error=${error.debugMessage()}")
                 val normalizedError = normalizeLaunchError(error, pending.game.title)
+                val forgetActiveSession = shouldForgetActiveSessionAfterResumeFailure(error)
                 _state.update {
                     it.copy(
                         error = normalizedError,
+                        activeSession = if (forgetActiveSession) null else it.activeSession,
+                        streamSession = if (forgetActiveSession) null else it.streamSession,
                         pendingGfnMembershipActivation = isMissingGfnPlanError(error),
                         streamStatus = "idle",
                         activeStreamSettings = null,
@@ -4180,7 +4190,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 put("category", event.category)
                 put("message", event.message)
             } }))
-            put("api", JsonArray(api.map(DiagnosticApiEntry::toJson)))
         }
         val human = buildString {
             appendLine("OpenNOW Android diagnostics | format=2")
@@ -4253,7 +4262,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             appendLine()
             appendLine("[Machine-readable JSON — schema 2]")
         }
-        return renderDiagnosticReport(human, parser)
+        return renderDiagnosticReport(human, parser, api)
     }
 
     fun debugLogText(): String = appendPreviousDiagnosticSnapshot(

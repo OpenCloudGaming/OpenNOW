@@ -193,6 +193,13 @@ internal fun sessionWarningThresholdCrossed(previousRemainingSeconds: Int?, rema
 }
 
 @Serializable
+enum class StreamVideoOutput {
+    Default,
+    MediaCodecSurface,
+    WebRtcTexture,
+}
+
+@Serializable
 data class StreamSettings(
     val resolution: String = "1920x1080",
     val aspectRatio: String = "16:9",
@@ -216,6 +223,8 @@ data class StreamSettings(
     val mouseSensitivity: Float = 1f,
     val mouseAcceleration: Int = 1,
     val streamSharpeningEnabled: Boolean = false,
+    /** Default follows the APK/Play profile; explicit choices survive updates and presets. */
+    val videoOutput: StreamVideoOutput = StreamVideoOutput.Default,
     val streamSharpeningAmount: Float = 0.25f,
     val microphoneMode: MicrophoneMode = MicrophoneMode.Disabled,
     val microphoneDeviceId: String = "",
@@ -231,6 +240,7 @@ data class StreamSettings(
 internal fun StreamSettings.withUserStreamOptionsFrom(source: StreamSettings): StreamSettings =
     copy(
         microphoneMode = source.microphoneMode,
+        videoOutput = source.videoOutput,
         microphoneDeviceId = source.microphoneDeviceId,
         experimentalNvst = source.experimentalNvst,
         experimentalDynamicNetworkAdjustment = source.experimentalDynamicNetworkAdjustment,
@@ -440,7 +450,7 @@ data class AndroidTouchSettings(
     val aimZoneScale: Float = 1f,
     /** Multiplies Lock Zone right-stick response without changing the zone footprint. */
     val aimZoneSensitivity: Float = 1f,
-    val joystickDeadZone: Float = 0f,
+    val joystickDeadZone: Float = DEFAULT_TOUCH_JOYSTICK_DEAD_ZONE,
     /** Opt-in motion aiming. Kept off for compatibility and to avoid unexpected camera motion. */
     val gyroscopeEnabled: Boolean = false,
     val gyroscopeSensitivity: Float = 1f,
@@ -569,6 +579,7 @@ data class AndroidTouchSettings(
 }
 
 internal const val TOUCH_EXTRA_BUTTON_COUNT = 8
+internal const val DEFAULT_TOUCH_JOYSTICK_DEAD_ZONE = 0.05f
 
 internal const val DEFAULT_CATALOG_SORT_ID = "most_popular"
 internal const val NEWLY_ADDED_CATALOG_SORT_ID = "last_added"
@@ -706,6 +717,8 @@ data class AppSettings(
     val clipboardPaste: Boolean = true,
     val physicalInput: PhysicalInputSettings = PhysicalInputSettings(),
     val androidTouch: AndroidTouchSettings = AndroidTouchSettings(),
+    /** One-time upgrade from the old 0% touch-stick default; later explicit choices are retained. */
+    val touchJoystickDefaultVersion: Int = 0,
     val touchControlPresets: List<TouchControlPreset> = emptyList(),
     val androidStreamGuideDismissed: Boolean = false,
     val androidPhysicalControllerPromptDismissed: Boolean = false,

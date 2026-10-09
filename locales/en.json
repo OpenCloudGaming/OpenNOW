@@ -693,7 +693,27 @@
     "stream_menu_shortcut_disable": "Disable shortcut",
     "stream_menu_shortcut_reset": "Reset"
   },
+  "androidStreamVideo": {
+    "settings_video_output": "Video output",
+    "settings_video_output_default": "Default",
+    "settings_video_output_default_surface": "Default (MediaCodec Direct)",
+    "settings_video_output_default_texture": "Default (MediaCodec Textures)",
+    "settings_video_output_surface": "Direct (MediaCodec)",
+    "settings_video_output_texture": "Textures (MediaCodec)",
+    "settings_video_output_direct_short": "Direct",
+    "settings_video_output_textures_short": "Textures",
+    "settings_video_output_desc": "Applies the next time you start or resume a stream."
+  },
   "androidSetup": {
+    "changelog_title": "Changelogs",
+    "changelog_summary": "Release notes by version",
+    "changelog_empty": "No changelogs are available yet.",
+    "changelog_version": "Version %1$s (build %2$d)",
+    "changelog_done": "Done",
+    "changelog_open": "Open",
+    "changelog_history": "Release history",
+    "changelog_expand": "Expand",
+    "changelog_collapse": "Collapse",
     "setup_action_finish_anyway": "Finish anyway",
     "setup_gfn_action_acknowledge": "Got it",
     "setup_gfn_title": "About GeForce NOW",

@@ -198,6 +198,8 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.MutableIntState
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.staticCompositionLocalOf
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
@@ -578,6 +580,13 @@ fun OpenNowApp(
     var queuedForStartCue by remember { mutableStateOf(false) }
     var lastStartCueSessionId by remember { mutableStateOf<String?>(null) }
     var hiddenUpdatePromptKey by remember { mutableStateOf<String?>(null) }
+    val changelogRepository = remember(context) { ChangelogRepository(context) }
+    var pendingChangelogs by remember(context) { mutableStateOf(emptyList<ChangelogEntry>()) }
+    LaunchedEffect(changelogRepository) {
+        pendingChangelogs = withContext(Dispatchers.IO) {
+            changelogRepository.pendingPlayUpdate(state.androidUpdate.installSource)
+        }
+    }
     var completedSessionBugReportOpen by rememberSaveable { mutableStateOf(false) }
     val updatePromptKey = state.androidUpdate.visibleNoticeKey(state.dismissedAndroidUpdateNoticeKey)
     // After sign-in, not before: the appearance step previews the user's own box art, and there is
@@ -598,6 +607,22 @@ fun OpenNowApp(
         !showCompletedSessionBugReport &&
         !diagnosticDialogVisible &&
         state.androidUpdate.status in setOf(AndroidUpdateStatus.Available, AndroidUpdateStatus.Downloaded)
+    val showChangelogPrompt = pendingChangelogs.isNotEmpty() &&
+        !streamActive &&
+        !state.initializing &&
+        !showSetupFlow &&
+        !showUpdatePrompt &&
+        !showSessionReport &&
+        !showCompletedSessionBugReport &&
+        !diagnosticDialogVisible &&
+        state.deviceLoginPrompt == null &&
+        state.pendingStoreChoiceGame == null &&
+        state.pendingMembershipNotice == null &&
+        state.pendingPrintedWasteGame == null &&
+        !state.pendingGfnMembershipActivation &&
+        state.pendingBatteryOptimizationLaunch == null &&
+        state.pendingLaunchRecovery == null &&
+        state.error == null && !state.loginToolsVisible
 
     val messageCheckBlocked = streamActive || state.isAndroidUpdateCheckBlockedByStream()
     LaunchedEffect(lifecycleOwner, messageCheckBlocked) {
@@ -865,7 +890,13 @@ fun OpenNowApp(
                         onDismiss = viewModel::dismissAndroidUpdateNotice,
                     )
                 }
-                if (!messageCheckBlocked && !showSetupFlow && !showUpdatePrompt && !showSessionReport &&
+                if (showChangelogPrompt) {
+                    ChangelogDialog(pendingChangelogs) {
+                        changelogRepository.markSeen()
+                        pendingChangelogs = emptyList()
+                    }
+                }
+                if (!messageCheckBlocked && !showSetupFlow && !showUpdatePrompt && !showChangelogPrompt && !showSessionReport &&
                     !showCompletedSessionBugReport && !diagnosticDialogVisible &&
                     state.deviceLoginPrompt == null && state.pendingStoreChoiceGame == null &&
                     state.pendingMembershipNotice == null && state.pendingPrintedWasteGame == null &&

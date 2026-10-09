@@ -272,5 +272,16 @@ private fun okhttp3.RequestBody.safeContentLength(): Long =
     runCatching { contentLength() }.getOrDefault(-1L)
 
 /** Render from the existing JSON tree; do not serialize then parse it again just to redact it. */
-internal fun renderDiagnosticReport(humanText: String, data: JsonObject): String =
-    sanitizeDiagnosticText(humanText).trimEnd() + "\n\n" + diagnosticParserBlock(sanitizeDiagnosticParserJson(data))
+internal fun renderDiagnosticReport(
+    humanText: String,
+    data: JsonObject,
+    apiEntries: List<DiagnosticApiEntry>? = null,
+): String {
+    // Only immutable API entries supply cached redaction; all other report fields are still
+    // sanitized on every capture. Generic callers with data.api retain full sanitization.
+    val current = if (apiEntries == null) data else JsonObject(data - "api")
+    val sanitized = sanitizeDiagnosticParserJson(current).jsonObject
+    val complete = if (apiEntries == null) sanitized else JsonObject(sanitized +
+        ("api" to JsonArray(apiEntries.map { it.sanitizedExport })))
+    return sanitizeDiagnosticText(humanText).trimEnd() + "\n\n" + diagnosticParserBlock(complete)
+}

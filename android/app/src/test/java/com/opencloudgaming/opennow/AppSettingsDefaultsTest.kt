@@ -106,9 +106,23 @@ class AppSettingsDefaultsTest {
         assertTrue(settings.showSessionReportAfterStream)
         assertEquals(TouchJoystickMode.Fixed, settings.androidTouch.joystickMode)
         assertEquals(TouchAimMode.LockJoystick, settings.androidTouch.aimMode)
-        assertEquals(0f, settings.androidTouch.joystickDeadZone, 0.0001f)
+        assertEquals(0.05f, settings.androidTouch.joystickDeadZone, 0.0001f)
         assertEquals(TouchControlGroup.entries.toSet(), settings.androidTouch.visibleControlGroups)
         assertEquals(TouchExtraButtonAction.Guide, settings.androidTouch.extraButtonAction(0))
+    }
+
+    @Test
+    fun oldTouchStickDefaultMovesToFivePercentOnlyOnce() {
+        val legacy = AppSettings(androidTouch = AndroidTouchSettings(joystickDeadZone = 0f))
+        val upgraded = legacy.normalizedForAndroid()
+
+        assertEquals(0.05f, upgraded.androidTouch.joystickDeadZone, 0.0001f)
+        assertEquals(1, upgraded.touchJoystickDefaultVersion)
+        assertEquals(0.05f, upgraded.normalizedForAndroid().androidTouch.joystickDeadZone, 0.0001f)
+        assertEquals(0f, upgraded.copy(androidTouch = upgraded.androidTouch.copy(joystickDeadZone = 0f))
+            .normalizedForAndroid().androidTouch.joystickDeadZone, 0.0001f)
+        assertEquals(0.12f, legacy.copy(androidTouch = legacy.androidTouch.copy(joystickDeadZone = 0.12f))
+            .normalizedForAndroid().androidTouch.joystickDeadZone, 0.0001f)
     }
 
     @Test

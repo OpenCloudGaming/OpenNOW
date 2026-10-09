@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -72,6 +73,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import java.util.Locale
 import com.opencloudgaming.opennow.ui.theme.OpenNowPalette
@@ -349,13 +351,8 @@ internal fun CompletedSessionBugReportDialog(
     preflightProvider: () -> BugReportPreflightDeck,
     onDismiss: () -> Unit,
     @StringRes descriptionRes: Int = R.string.bug_report_describe_english,
-    @StringRes titleRes: Int = R.string.bug_report_feedback_title,
-    wideDialog: Boolean = false,
-    showCommunityLink: Boolean = true,
 ) {
-    val configuration = LocalConfiguration.current
     val appLocale = currentAndroidAppLocale(LocalContext.current)
-    val landscapeLayout = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
     var title by rememberSaveable { mutableStateOf("") }
     var description by rememberSaveable { mutableStateOf("") }
     var consentChecked by rememberSaveable { mutableStateOf(false) }
@@ -380,203 +377,199 @@ internal fun CompletedSessionBugReportDialog(
         if (update.installSource.isGooglePlay) onVersionCheck()
     }
 
-    AlertDialog(
+    Dialog(
         onDismissRequest = {
             if (!submission.uploading) onDismiss()
         },
-        modifier = if (landscapeLayout || wideDialog) {
-            Modifier.widthIn(max = 960.dp).fillMaxWidth(0.94f)
-        } else {
-            Modifier
-        },
-        properties = DialogProperties(usePlatformDefaultWidth = !landscapeLayout && !wideDialog),
-        title = { Text(stringResource(titleRes)) },
-        text = {
-            Column(
-                modifier = Modifier
-                    .heightIn(
-                        max = if (landscapeLayout) {
-                            (configuration.screenHeightDp * 0.68f).dp
-                        } else {
-                            620.dp
-                        },
-                    )
-                    .verticalScroll(formScrollState),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                if (showCommunityLink) {
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+    ) {
+        Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            Column(modifier = Modifier.fillMaxSize().safeDrawingPadding()) {
+                Text(
+                    stringResource(R.string.bug_report_feedback_title),
+                    modifier = Modifier.padding(horizontal = OpenNowSpacing.lg, vertical = OpenNowSpacing.md),
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Column(
+                    modifier = Modifier.weight(1f).fillMaxWidth().verticalScroll(formScrollState)
+                        .padding(horizontal = OpenNowSpacing.lg, vertical = OpenNowSpacing.sm),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
                     DiscordCommunityLink(
                         summary = stringResource(R.string.discord_community_bug_report_summary),
                     )
-                }
-                when {
-                    submission.submitted -> {
-                        Surface(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(OpenNowRadius.lg),
-                            color = Green.copy(alpha = 0.12f),
-                            border = BorderStroke(1.dp, Green.copy(alpha = 0.42f)),
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(OpenNowSpacing.lg),
-                                verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm),
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm),
-                                ) {
-                                    Icon(Icons.Rounded.Check, contentDescription = null, tint = Green)
-                                    Text(
-                                        stringResource(R.string.bug_report_feedback_sent),
-                                        color = Green,
-                                        style = MaterialTheme.typography.titleMedium,
-                                        fontWeight = FontWeight.SemiBold,
-                                    )
-                                }
-                                submission.reference?.let { reference ->
-                                    CopyableBugReportId(reference)
-                                }
-                            }
-                        }
-                    }
-                    !appLocale.bugReportsAllowed -> BugReportLocaleGateCard()
-                    !androidBugReportsAllowed(update, versionCheck) -> BugReportVersionGateCard(
-                        update = update,
-                        versionCheck = versionCheck,
-                        onRetry = onVersionCheck,
-                        onOpenUpdate = onOpenUpdate,
-                    )
-                    else -> {
-                        NvstBugReportWarning(experimentalNvstEnabled)
-                        if (!preflightComplete) {
-                            BugReportPreflightDeckView(
-                                deck = preflightDeck,
-                                page = preflightPage.coerceIn(preflightDeck.cards.indices),
-                                additionalWarning = experimentalNvstEnabled,
-                                consentChecked = consentChecked,
-                                warningsAcknowledged = warningsAcknowledged,
-                                onConsentChange = { consentChecked = it },
-                                onWarningsAcknowledgedChange = { warningsAcknowledged = it },
-                                onPrevious = { preflightPage = (preflightPage - 1).coerceAtLeast(0) },
-                                onNext = {
-                                    if (preflightPage < preflightDeck.cards.lastIndex) {
-                                        preflightPage += 1
-                                    } else if (canContinueBugReportPreflight(
-                                            preflightDeck, consentChecked, warningsAcknowledged, experimentalNvstEnabled,
-                                        )) {
-                                        preflightReviewed = true
-                                    }
-                                },
-                                onRefresh = {
-                                    preflightPage = 0
-                                    warningsAcknowledged = false
-                                    preflightDeck = preflightProvider()
-                                },
-                                onCancel = onDismiss,
-                            )
-                        } else {
-                            TextButton(onClick = { preflightReviewed = false }, enabled = !submission.uploading) {
-                                Text(stringResource(R.string.bug_report_checks_tab))
-                            }
-                            Text(
-                                stringResource(descriptionRes),
-                                color = TextMuted,
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                            OutlinedTextField(
-                                value = title,
-                                onValueChange = { value ->
-                                    title = value
-                                    if (submission.error != null) onReset()
-                                },
+                    when {
+                        submission.submitted -> {
+                            Surface(
                                 modifier = Modifier.fillMaxWidth(),
-                                enabled = !submission.uploading,
-                                singleLine = true,
-                                label = { Text(stringResource(R.string.bug_report_title_label)) },
-                                placeholder = { Text(stringResource(R.string.bug_report_title_placeholder)) },
-                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-                            )
-                            OutlinedTextField(
-                                value = description,
-                                onValueChange = { value ->
-                                    description = value
-                                    if (submission.error != null) onReset()
-                                },
-                                modifier = Modifier.fillMaxWidth().heightIn(min = 128.dp),
-                                enabled = !submission.uploading,
-                                minLines = 4,
-                                maxLines = 7,
-                                label = { Text(stringResource(R.string.bug_report_description_label)) },
-                                placeholder = { Text(stringResource(R.string.bug_report_description_placeholder)) },
-                                supportingText = {
-                                    Text(
-                                        androidBugReportDescriptionError(description)
-                                            ?: "${androidBugReportMeaningfulCharacterCount(description)} / $ANDROID_BUG_REPORT_MIN_MEANINGFUL_CHARS meaningful characters",
-                                    )
-                                },
-                                isError = description.isNotEmpty() &&
-                                    androidBugReportDescriptionError(description) != null,
-                            )
-                            BugReportDescriptionFeedback(
-                                description = description,
-                                error = androidBugReportDescriptionError(description),
-                            )
-                            BugReportOptions(
-                                details = details,
-                                attachments = attachments,
-                                enabled = !submission.uploading,
-                                onDetailsChange = { details = it },
-                                onAttachmentsChange = { attachments = it },
-                            )
-                            knownIssueBlock?.let { block ->
-                                BugReportKnownIssueOverride(
-                                    block = block,
-                                    checked = acknowledgedKnownIssueKey == block.key,
-                                    enabled = !submission.uploading,
-                                    onCheckedChange = { checked ->
-                                        acknowledgedKnownIssueKey = block.key.takeIf { checked }
-                                    },
-                                )
+                                shape = RoundedCornerShape(OpenNowRadius.lg),
+                                color = Green.copy(alpha = 0.12f),
+                                border = BorderStroke(1.dp, Green.copy(alpha = 0.42f)),
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(OpenNowSpacing.lg),
+                                    verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm),
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm),
+                                    ) {
+                                        Icon(Icons.Rounded.Check, contentDescription = null, tint = Green)
+                                        Text(
+                                            stringResource(R.string.bug_report_feedback_sent),
+                                            color = Green,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.SemiBold,
+                                        )
+                                    }
+                                    submission.reference?.let { reference ->
+                                        CopyableBugReportId(reference)
+                                    }
+                                }
                             }
-                            submission.error?.let { error ->
-                                Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                        }
+                        !appLocale.bugReportsAllowed -> BugReportLocaleGateCard()
+                        !androidBugReportsAllowed(update, versionCheck) -> BugReportVersionGateCard(
+                            update = update,
+                            versionCheck = versionCheck,
+                            onRetry = onVersionCheck,
+                            onOpenUpdate = onOpenUpdate,
+                        )
+                        else -> {
+                            NvstBugReportWarning(experimentalNvstEnabled)
+                            if (!preflightComplete) {
+                                BugReportPreflightDeckView(
+                                    deck = preflightDeck,
+                                    page = preflightPage.coerceIn(preflightDeck.cards.indices),
+                                    additionalWarning = experimentalNvstEnabled,
+                                    consentChecked = consentChecked,
+                                    warningsAcknowledged = warningsAcknowledged,
+                                    onConsentChange = { consentChecked = it },
+                                    onWarningsAcknowledgedChange = { warningsAcknowledged = it },
+                                    onPrevious = { preflightPage = (preflightPage - 1).coerceAtLeast(0) },
+                                    onNext = {
+                                        if (preflightPage < preflightDeck.cards.lastIndex) {
+                                            preflightPage += 1
+                                        } else if (canContinueBugReportPreflight(
+                                                preflightDeck, consentChecked, warningsAcknowledged, experimentalNvstEnabled,
+                                            )) {
+                                            preflightReviewed = true
+                                        }
+                                    },
+                                    onRefresh = {
+                                        preflightPage = 0
+                                        warningsAcknowledged = false
+                                        preflightDeck = preflightProvider()
+                                    },
+                                    onCancel = onDismiss,
+                                )
+                            } else {
+                                TextButton(onClick = { preflightReviewed = false }, enabled = !submission.uploading) {
+                                    Text(stringResource(R.string.bug_report_checks_tab))
+                                }
+                                Text(
+                                    stringResource(descriptionRes),
+                                    color = TextMuted,
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                                OutlinedTextField(
+                                    value = title,
+                                    onValueChange = { value ->
+                                        title = value
+                                        if (submission.error != null) onReset()
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    enabled = !submission.uploading,
+                                    singleLine = true,
+                                    label = { Text(stringResource(R.string.bug_report_title_label)) },
+                                    placeholder = { Text(stringResource(R.string.bug_report_title_placeholder)) },
+                                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                                )
+                                OutlinedTextField(
+                                    value = description,
+                                    onValueChange = { value ->
+                                        description = value
+                                        if (submission.error != null) onReset()
+                                    },
+                                    modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp),
+                                    enabled = !submission.uploading,
+                                    minLines = 6,
+                                    maxLines = 12,
+                                    label = { Text(stringResource(R.string.bug_report_description_label)) },
+                                    placeholder = { Text(stringResource(R.string.bug_report_description_placeholder)) },
+                                    supportingText = {
+                                        Text(
+                                            androidBugReportDescriptionError(description)
+                                                ?: "${androidBugReportMeaningfulCharacterCount(description)} / $ANDROID_BUG_REPORT_MIN_MEANINGFUL_CHARS meaningful characters",
+                                        )
+                                    },
+                                    isError = description.isNotEmpty() &&
+                                        androidBugReportDescriptionError(description) != null,
+                                )
+                                BugReportDescriptionFeedback(
+                                    description = description,
+                                    error = androidBugReportDescriptionError(description),
+                                )
+                                BugReportOptions(
+                                    details = details,
+                                    attachments = attachments,
+                                    enabled = !submission.uploading,
+                                    onDetailsChange = { details = it },
+                                    onAttachmentsChange = { attachments = it },
+                                )
+                                knownIssueBlock?.let { block ->
+                                    BugReportKnownIssueOverride(
+                                        block = block,
+                                        checked = acknowledgedKnownIssueKey == block.key,
+                                        enabled = !submission.uploading,
+                                        onCheckedChange = { checked ->
+                                            acknowledgedKnownIssueKey = block.key.takeIf { checked }
+                                        },
+                                    )
+                                }
+                                submission.error?.let { error ->
+                                    Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                                }
                             }
                         }
                     }
                 }
-            }
-        },
-        confirmButton = {
-            when {
-                submission.submitted -> Button(onClick = onDismiss) { Text(stringResource(R.string.stream_panel_done)) }
-                submission.uploading -> Button(enabled = false, onClick = {}) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(18.dp),
-                        strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.onPrimary,
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(stringResource(R.string.bug_report_sending))
-                }
-                preflightComplete && appLocale.bugReportsAllowed && androidBugReportsAllowed(update, versionCheck) -> Button(
-                    onClick = { confirmationOpen = true },
-                    enabled = androidBugReportTitleError(title) == null &&
-                        androidBugReportDescriptionError(description) == null &&
-                        consentChecked &&
-                        bugReportKnownIssueAllowsSubmission(knownIssueBlock, acknowledgedKnownIssueKey),
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = OpenNowSpacing.lg, vertical = OpenNowSpacing.sm),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(stringResource(if (knownIssueBlock == null) R.string.bug_report_review_send else R.string.bug_report_send_anyway))
+                    if (!submission.submitted) {
+                        TextButton(onClick = onDismiss, enabled = !submission.uploading) {
+                            Text(stringResource(R.string.action_close))
+                        }
+                    }
+                    when {
+                        submission.submitted -> Button(onClick = onDismiss) { Text(stringResource(R.string.stream_panel_done)) }
+                        submission.uploading -> Button(enabled = false, onClick = {}) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onPrimary,
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(stringResource(R.string.bug_report_sending))
+                        }
+                        preflightComplete && appLocale.bugReportsAllowed && androidBugReportsAllowed(update, versionCheck) -> Button(
+                            onClick = { confirmationOpen = true },
+                            enabled = androidBugReportTitleError(title) == null &&
+                                androidBugReportDescriptionError(description) == null &&
+                                consentChecked &&
+                                bugReportKnownIssueAllowsSubmission(knownIssueBlock, acknowledgedKnownIssueKey),
+                        ) {
+                            Text(stringResource(if (knownIssueBlock == null) R.string.bug_report_review_send else R.string.bug_report_send_anyway))
+                        }
+                    }
                 }
             }
-        },
-        dismissButton = {
-            if (!submission.submitted) {
-                TextButton(onClick = onDismiss, enabled = !submission.uploading) {
-                    Text(stringResource(R.string.action_close))
-                }
-            }
-        },
-    )
+        }
+    }
 
     if (confirmationOpen) {
         AlertDialog(

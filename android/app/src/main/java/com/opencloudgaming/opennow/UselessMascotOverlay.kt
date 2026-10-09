@@ -1,10 +1,11 @@
 package com.opencloudgaming.opennow
 
+import android.graphics.Movie
 import android.os.SystemClock
-import android.view.TextureView
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -30,8 +31,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
@@ -39,10 +40,11 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -51,10 +53,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
-import androidx.media3.common.MediaItem
-import androidx.media3.common.Player
-import androidx.media3.exoplayer.ExoPlayer
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
@@ -62,7 +60,7 @@ import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.random.Random
 
-private const val GOOFY_VIDEO_SIZE_DP = 45
+private const val GOOFY_ANIMATION_SIZE_DP = 45
 private val goofyCorners = listOf(
     Alignment.TopStart,
     Alignment.TopEnd,
@@ -169,7 +167,7 @@ private fun BouncingMascot() {
                 }
             }
         }
-        GoofyCornerVideo(Modifier.align(Alignment.TopStart))
+        GoofyCornerAnimation()
         Image(
             painter = painterResource(R.drawable.opennow_icon),
             contentDescription = null,
@@ -237,40 +235,41 @@ private fun BouncingMascot() {
 }
 
 @Composable
-private fun GoofyCornerVideo(modifier: Modifier = Modifier) {
+private fun GoofyCornerAnimation() {
     val context = LocalContext.current
+    val movie = remember(context) {
+        context.resources.openRawResource(R.raw.goofy_screensaver).use(Movie::decodeStream)
+    } ?: return
     var cornerIndex by remember { mutableIntStateOf(Random.nextInt(goofyCorners.size)) }
-    val player = remember(context) {
-        ExoPlayer.Builder(context).build().apply {
-            volume = 0f
-            setMediaItem(MediaItem.fromUri("android.resource://${context.packageName}/${R.raw.goofy_screensaver}"))
-            prepare()
-            playWhenReady = true
-        }
-    }
-    DisposableEffect(player) {
-        val listener = object : Player.Listener {
-            override fun onPlaybackStateChanged(playbackState: Int) {
-                if (playbackState == Player.STATE_ENDED) {
-                    cornerIndex = (cornerIndex + 1 + Random.nextInt(goofyCorners.size - 1)) % goofyCorners.size
-                    player.seekTo(0)
-                    player.play()
-                }
+    var frameTimeMillis by remember(movie) { mutableIntStateOf(0) }
+    LaunchedEffect(movie) {
+        val durationMillis = movie.duration().takeIf { it > 0 } ?: 5_400
+        val startMillis = SystemClock.uptimeMillis()
+        var lastLoop = 0L
+        while (isActive) {
+            val elapsed = SystemClock.uptimeMillis() - startMillis
+            val loop = elapsed / durationMillis
+            if (loop > lastLoop) {
+                cornerIndex = (cornerIndex + 1 + Random.nextInt(goofyCorners.size - 1)) % goofyCorners.size
+                lastLoop = loop
             }
-        }
-        player.addListener(listener)
-        onDispose {
-            player.removeListener(listener)
-            player.release()
+            frameTimeMillis = (elapsed % durationMillis).toInt()
+            delay(40L)
         }
     }
     Box(
-        modifier = modifier.fillMaxSize().padding(8.dp),
+        modifier = Modifier.fillMaxSize().padding(8.dp),
         contentAlignment = goofyCorners[cornerIndex],
     ) {
-        AndroidView(
-            factory = { TextureView(it).also(player::setVideoTextureView) },
-            modifier = Modifier.size(GOOFY_VIDEO_SIZE_DP.dp),
-        )
+        Canvas(Modifier.size(GOOFY_ANIMATION_SIZE_DP.dp)) {
+            val canvas = drawContext.canvas.nativeCanvas
+            val scale = minOf(size.width / movie.width(), size.height / movie.height())
+            val saved = canvas.save()
+            canvas.translate((size.width - movie.width() * scale) / 2f, (size.height - movie.height() * scale) / 2f)
+            canvas.scale(scale, scale)
+            movie.setTime(frameTimeMillis)
+            movie.draw(canvas, 0f, 0f)
+            canvas.restoreToCount(saved)
+        }
     }
 }

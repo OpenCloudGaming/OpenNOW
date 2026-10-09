@@ -317,6 +317,12 @@ class MainActivity : ComponentActivity() {
         ) {
             return
         }
+        fun hasExternalMouse(): Boolean = if (deviceId != null) {
+            isPhysicalMouseDevice(InputDevice.getDevice(deviceId))
+        } else {
+            connectedPhysicalKeyboardMouse().mouseConnected
+        }
+        if (!hasExternalMouse()) return
         externalMousePointerCaptureRequestPending = true
         val requestOrigin = if (source != null && deviceId != null) {
             "source=$source device=$deviceId"
@@ -325,6 +331,7 @@ class MainActivity : ComponentActivity() {
         }
         decorView.post {
             externalMousePointerCaptureRequestPending = false
+            if (!hasExternalMouse()) return@post
             if (
                 !shouldRequestAndroidMousePointerCapture(
                     streamActive = streamSystemUiActive,

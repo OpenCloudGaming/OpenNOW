@@ -136,8 +136,6 @@ internal fun StreamScreen(
     var streamGuideOpen by remember(session?.sessionId) { mutableStateOf(false) }
     var streamGuideStep by remember(session?.sessionId) { mutableStateOf(StreamGuideStep.OpenControls) }
     var statsVisible by remember(state.settings.showStatsOnLaunch) { mutableStateOf(state.settings.showStatsOnLaunch) }
-    // Bitrate ceiling (kbps) the live session is currently capped at; mirrors client.liveBitrateLimitKbps.
-    var liveBitrateLimitKbps by remember(session?.sessionId) { mutableStateOf<Int?>(null) }
     var streamStats by remember { mutableStateOf(StreamRuntimeStats()) }
     var networkNotice by remember(session?.sessionId) { mutableStateOf<StreamNetworkWarning?>(null) }
     var networkNoticeSequence by remember(session?.sessionId) { mutableIntStateOf(0) }
@@ -260,6 +258,7 @@ internal fun StreamScreen(
         }
     }
     val streamSettings = launchStreamSettings.copy(
+        videoOutput = state.settings.stream.videoOutput,
         mouseSensitivity = state.settings.stream.mouseSensitivity,
         mouseAcceleration = state.settings.stream.mouseAcceleration,
         streamSharpeningEnabled = launchStreamSettings.streamSharpeningEnabled && state.settings.stream.streamSharpeningEnabled,
@@ -507,13 +506,6 @@ internal fun StreamScreen(
     LaunchedEffect(client, session?.sessionId, touchControlsVisible, virtualGamepadVisible) {
         client.setVirtualControllerVisible(virtualGamepadVisible)
         NativeStreamInputRouter.setTouchControllerVisible(touchControlsVisible)
-    }
-
-    LaunchedEffect(streamReady, session?.sessionId, controlsOpen) {
-        while (streamReady && controlsOpen) {
-            liveBitrateLimitKbps = client.liveBitrateLimitKbps
-            delay(1000L)
-        }
     }
 
     LaunchedEffect(streamReady, state.settings.androidStreamGuideDismissed, session?.sessionId) {
@@ -1129,7 +1121,7 @@ internal fun StreamScreen(
                     microphoneEnabled = microphoneEnabled,
                     statsVisible = statsVisible,
                     statusBarDragging = statusBarDragging,
-                    liveBitrateLimitKbps = liveBitrateLimitKbps,
+                    receivedBitrateKbps = streamStats.bitrateKbps,
                     recordingPhase = recordingPhase,
                     touchLayoutEditing = touchLayoutEditing,
                     bugReportSubmission = state.bugReportSubmission,
@@ -1440,8 +1432,6 @@ internal fun StreamScreen(
                         // the next legitimate offer because replacing a healthy transport here can
                         // strand the allocated cloud session on a stale signaling endpoint.
                         client.updateBitrateLimit(value * 1000)
-                        // Optimistic indicator for the requested next-offer ceiling.
-                        liveBitrateLimitKbps = value * 1000
                     },
                     onTouchScaleChange = { value ->
                         viewModel.updateSettings(state.settings.copy(androidTouch = state.settings.androidTouch.copy(scale = value)))
@@ -1855,8 +1845,8 @@ private fun StreamVideoSurface(
             contentAlignment = Alignment.Center,
         ) {
             // The sharpness drawer is always attached (Streaming.kt createRenderer), so toggling
-            // sharpening mid-session is handled entirely by the update lambda below via
-            // applyLiveSettings → drawer.amount. Re-keying this AndroidView on that flag used to
+            // sharpening mid-session uses applyLiveSettings to request texture output and update
+            // drawer.amount. Re-keying this AndroidView on that flag used to
             // tear down and recreate the SurfaceViewRenderer on every toggle, causing a visible
             // restart/flicker of the video surface.
             AndroidView(

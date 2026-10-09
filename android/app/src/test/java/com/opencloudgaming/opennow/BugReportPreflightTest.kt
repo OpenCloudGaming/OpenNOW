@@ -375,10 +375,26 @@ class BugReportPreflightTest {
             ),
         ).cards.last()
         assertEquals(BugReportPreflightTone.Healthy, captured.tone)
-        assertTrue(captured.facts.any { it.contains("External mouse") })
+        assertTrue(captured.facts.any { it.contains("Mouse input") })
         assertTrue(captured.facts.contains("Input channels opened"))
         assertTrue(captured.facts.contains("Mouse movement sent"))
         assertTrue(captured.recommendations.isEmpty())
+    }
+
+    @Test
+    fun pointerCaptureAloneDoesNotClaimMouseInput() {
+        val input = buildBugReportPreflightDeck(
+            BugReportPreflightEvidence(
+                requestedSettings = settings,
+                inputDiagnostics = """
+                    external mouse pointer capture requested origin=window-focus
+                    external mouse pointer capture changed granted=true streamActive=true enabled=true
+                """.trimIndent(),
+            ),
+        ).cards.last()
+
+        assertFalse(input.facts.any { it.contains("Mouse input") })
+        assertEquals(BugReportPreflightTone.Notice, input.tone)
     }
 
     @Test

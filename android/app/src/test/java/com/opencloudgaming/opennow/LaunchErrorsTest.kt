@@ -7,6 +7,19 @@ import org.junit.Test
 
 class LaunchErrorsTest {
     @Test
+    fun confirmedTerminalResumeFailureForgetsTheEndedSession() {
+        val error = IllegalStateException("Resume failed", TerminalSessionStatusException(7, null))
+
+        assertTrue(shouldForgetActiveSessionAfterResumeFailure(error))
+    }
+
+    @Test
+    fun temporaryResumeFailureKeepsTheSessionAvailableForRecovery() {
+        assertFalse(shouldForgetActiveSessionAfterResumeFailure(java.io.IOException("Connection reset")))
+        assertFalse(shouldForgetActiveSessionAfterResumeFailure(SessionClaimNotReadyException(null)))
+    }
+
+    @Test
     fun entitlementFailureExplainsProviderRejectionWithoutAssumingPlanIsInactive() {
         val error = CloudMatchRequestStatusException(
             statusCode = 18,

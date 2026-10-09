@@ -4,13 +4,10 @@ import android.media.MediaFormat
 import android.os.Build
 import android.util.Log
 import org.webrtc.EncodedImage
+import org.webrtc.OpenNowMediaCodecTuning
 import org.webrtc.VideoCodecStatus
 import org.webrtc.VideoDecoder
 import java.lang.reflect.Field
-import java.lang.reflect.InvocationHandler
-import java.lang.reflect.InvocationTargetException
-import java.lang.reflect.Method
-import java.lang.reflect.Proxy
 import java.util.Locale
 
 class LowLatencyVideoDecoder(
@@ -73,18 +70,27 @@ class LowLatencyVideoDecoder(
                 return
             }
 
-            val factoryInterface = factoryField.type
-            val proxyFactory = Proxy.newProxyInstance(
-                factoryInterface.classLoader,
-                arrayOf(factoryInterface),
-                MediaCodecWrapperFactoryHandler(
-                    delegateFactory = originalFactory,
-                    requestedFps = requestedFps,
-                    lowLatencyEnabled = lowLatencyEnabled,
-                    standardLowLatencyEnabled = standardLowLatencyEnabled,
-                )
+            val tunedFactory = OpenNowMediaCodecTuning.wrapFactory(
+                originalFactory,
+                object : OpenNowMediaCodecTuning.Tuning {
+                    override fun selectCodecName(originalName: String): String =
+                        selectStreamCodecName(originalName, lowLatencyEnabled)
+
+                    override fun configure(codecName: String, format: MediaFormat) {
+                        NativeInputDiagnostics.add(
+                            "MediaCodecVideoDecoder: configure codec=$codecName requestedFps=$requestedFps " +
+                                "lowLatency=$lowLatencyEnabled standardLowLatency=$standardLowLatencyEnabled before=$format",
+                        )
+                        applyStreamFormat(format, codecName, requestedFps, lowLatencyEnabled, standardLowLatencyEnabled)
+                        NativeInputDiagnostics.add("MediaCodecVideoDecoder: configured format=$format")
+                    }
+
+                    override fun started(codecName: String, parameters: OpenNowMediaCodecTuning.ParameterSetter) {
+                        applyStreamParameters(parameters, lowLatencyEnabled, standardLowLatencyEnabled)
+                    }
+                },
             )
-            factoryField.set(delegate, proxyFactory)
+            factoryField.set(delegate, tunedFactory)
             val msg = "Successfully patched MediaCodecWrapperFactory on ${delegate.javaClass.name}"
             Log.i(TAG, msg)
             NativeInputDiagnostics.add("LowLatencyVideoDecoder: $msg")
@@ -110,110 +116,24 @@ class LowLatencyVideoDecoder(
         return null
     }
 
-    private class MediaCodecWrapperFactoryHandler(
-        private val delegateFactory: Any,
-        private val requestedFps: Int,
-        private val lowLatencyEnabled: Boolean,
-        private val standardLowLatencyEnabled: Boolean,
-    ) : InvocationHandler {
-        override fun invoke(proxy: Any?, method: Method, args: Array<out Any>?): Any? {
-            val originalCodecName = if ("createByCodecName" == method.name && args != null && args.isNotEmpty() && args[0] is String) {
-                args[0] as String
-            } else {
-                ""
-            }
-
-            val modifiedCodecName = if (lowLatencyEnabled && originalCodecName.isNotEmpty()) {
-                getLowLatencyCodecNameIfApplicable(originalCodecName)
-            } else {
-                originalCodecName
-            }
-
-            val finalArgs = if (modifiedCodecName != originalCodecName && args != null) {
-                Array<Any>(args.size) { i ->
-                    if (i == 0) modifiedCodecName else args[i]
-                }
-            } else {
-                args
-            }
-
-            val result = invokeDelegate(delegateFactory, method, finalArgs)
-            if ("createByCodecName" != method.name || result == null) {
-                return result
-            }
-
-            val codecName = modifiedCodecName
-            NativeInputDiagnostics.add("LowLatencyVideoDecoder: createByCodecName called for codecName=$codecName")
-
-            var codecWrapperInterface: Class<*>? = if (result.javaClass.interfaces.isNotEmpty()) {
-                result.javaClass.interfaces[0]
-            } else {
-                null
-            }
-
-            if (codecWrapperInterface == null || "org.webrtc.MediaCodecWrapper" != codecWrapperInterface.name) {
-                codecWrapperInterface = findInterface(result.javaClass, "org.webrtc.MediaCodecWrapper")
-            }
-
-            if (codecWrapperInterface == null) {
-                NativeInputDiagnostics.add("LowLatencyVideoDecoder: MediaCodecWrapper interface not found on ${result.javaClass.name}")
-                return result
-            }
-
-            NativeInputDiagnostics.add("LowLatencyVideoDecoder: Successfully wrapping MediaCodecWrapper of class ${result.javaClass.name}")
-            return Proxy.newProxyInstance(
-                codecWrapperInterface.classLoader,
-                arrayOf(codecWrapperInterface),
-                MediaCodecWrapperHandler(
-                    delegateCodec = result,
-                    codecName = codecName,
-                    requestedFps = requestedFps,
-                    lowLatencyEnabled = lowLatencyEnabled,
-                    standardLowLatencyEnabled = standardLowLatencyEnabled,
-                )
-            )
-        }
-    }
-
-    private class MediaCodecWrapperHandler(
-        private val delegateCodec: Any,
-        private val codecName: String,
-        private val requestedFps: Int,
-        private val lowLatencyEnabled: Boolean,
-        private val standardLowLatencyEnabled: Boolean,
-    ) : InvocationHandler {
-        override fun invoke(proxy: Any?, method: Method, args: Array<out Any>?): Any? {
-            if ("configure" == method.name && args != null && args.isNotEmpty() && args[0] is MediaFormat) {
-                val format = args[0] as MediaFormat
-                NativeInputDiagnostics.add(
-                    "MediaCodecVideoDecoder: configure codec=$codecName requestedFps=$requestedFps " +
-                        "lowLatency=$lowLatencyEnabled standardLowLatency=$standardLowLatencyEnabled before=$format",
-                )
-                applyDecoderPerformanceFormat(
-                    format = format,
-                    requestedFps = requestedFps,
-                    lowLatencyEnabled = lowLatencyEnabled,
-                    standardLowLatencyEnabled = standardLowLatencyEnabled,
-                )
-                if (lowLatencyEnabled) applyLowLatencyFormat(format, codecName)
-                NativeInputDiagnostics.add("MediaCodecVideoDecoder: configured format=$format")
-            }
-            val result = invokeDelegate(delegateCodec, method, args)
-            if ("start" == method.name && (lowLatencyEnabled || standardLowLatencyEnabled)) {
-                NativeInputDiagnostics.add("LowLatencyVideoDecoder: Intercepted start() for codec=$codecName")
-                applyLowLatencyParameters(
-                    delegateCodec = delegateCodec,
-                    standardLowLatencyEnabled = standardLowLatencyEnabled || lowLatencyEnabled,
-                    vendorLowLatencyEnabled = lowLatencyEnabled,
-                )
-            }
-            return result
-        }
-    }
-
     companion object {
         private const val TAG = "LowLatencyDecoder"
         private const val OPERATING_RATE = 0x7FFF
+
+        internal fun selectStreamCodecName(originalName: String, lowLatency: Boolean): String =
+            if (lowLatency) getLowLatencyCodecNameIfApplicable(originalName) else originalName
+
+        internal fun applyStreamFormat(format: MediaFormat, codecName: String, fps: Int,
+            lowLatency: Boolean, standardLowLatency: Boolean) {
+            applyDecoderPerformanceFormat(format, fps, lowLatency, standardLowLatency)
+            if (lowLatency) applyLowLatencyFormat(format, codecName, fps)
+        }
+
+        internal fun applyStreamParameters(parameters: OpenNowMediaCodecTuning.ParameterSetter,
+            lowLatency: Boolean, standardLowLatency: Boolean) {
+            if (lowLatency || standardLowLatency) applyLowLatencyParameters(parameters,
+                standardLowLatencyEnabled = standardLowLatency || lowLatency, vendorLowLatencyEnabled = lowLatency)
+        }
 
         private fun applyDecoderPerformanceFormat(
             format: MediaFormat,
@@ -238,39 +158,7 @@ class LowLatencyVideoDecoder(
             }
         }
 
-        private fun findInterface(clazz: Class<*>?, interfaceName: String): Class<*>? {
-            var current = clazz
-            while (current != null) {
-                for (item in current.interfaces) {
-                    if (interfaceName == item.name) {
-                        return item
-                    }
-                }
-                current = current.superclass
-            }
-            return null
-        }
-
-        private fun invokeDelegate(target: Any, method: Method, args: Array<out Any>?): Any? {
-            return try {
-                method.isAccessible = true
-                if (args == null) {
-                    method.invoke(target)
-                } else {
-                    method.invoke(target, *args)
-                }
-            } catch (ex: InvocationTargetException) {
-                throw ex.cause ?: ex
-            } catch (ex: SecurityException) {
-                if (args == null) {
-                    method.invoke(target)
-                } else {
-                    method.invoke(target, *args)
-                }
-            }
-        }
-
-        private fun applyLowLatencyFormat(format: MediaFormat, codecName: String) {
+        private fun applyLowLatencyFormat(format: MediaFormat, codecName: String, requestedFps: Int) {
             putInt(format, "low-latency", 1)
 
             val normalizedCodecName = codecName.lowercase(Locale.US)
@@ -279,7 +167,7 @@ class LowLatencyVideoDecoder(
                 // Use Short.MAX_VALUE (0x7FFF) for non-Snapdragon decoders; for Qualcomm,
                 // forcing 32767 fps operating rate forces Adreno GPU/VPU clocks to maximum state,
                 // causing extreme power drain and overheating. Use 120 (or target FPS) instead.
-                val operatingRate = if (isQualcommDecoder(normalizedCodecName)) 120 else OPERATING_RATE
+                val operatingRate = vendorLowLatencyOperatingRate(codecName, requestedFps)
                 putInt(format, "operating-rate", operatingRate)
             }
             putInt(format, "allow-frame-drop", 1)
@@ -379,15 +267,11 @@ class LowLatencyVideoDecoder(
         }
 
         private fun applyLowLatencyParameters(
-            delegateCodec: Any,
+            parameters: OpenNowMediaCodecTuning.ParameterSetter,
             standardLowLatencyEnabled: Boolean,
             vendorLowLatencyEnabled: Boolean,
         ) {
             try {
-                val field = findMediaCodecField(delegateCodec.javaClass) ?: return
-                field.isAccessible = true
-                val mediaCodec = field.get(delegateCodec) as? android.media.MediaCodec ?: return
-                
                 val bundle = android.os.Bundle()
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && standardLowLatencyEnabled) {
                     bundle.putInt(android.media.MediaCodec.PARAMETER_KEY_LOW_LATENCY, 1)
@@ -406,26 +290,13 @@ class LowLatencyVideoDecoder(
                     bundle.putInt("vendor.mtk.ext.dec.lowlatency.enable", 1)
                 }
 
-                mediaCodec.setParameters(bundle)
+                parameters.setParameters(bundle)
                 Log.i(TAG, "LowLatencyVideoDecoder: Successfully set MediaCodec parameters: $bundle")
                 NativeInputDiagnostics.add("LowLatencyVideoDecoder: Successfully set MediaCodec parameters: $bundle")
             } catch (tr: Throwable) {
                 Log.w(TAG, "Failed to apply dynamic MediaCodec parameters", tr)
                 NativeInputDiagnostics.add("LowLatencyVideoDecoder: Failed to apply dynamic MediaCodec parameters: ${tr.message}")
             }
-        }
-
-        private fun findMediaCodecField(clazz: Class<*>?): Field? {
-            var current = clazz
-            while (current != null) {
-                for (field in current.declaredFields) {
-                    if (field.type == android.media.MediaCodec::class.java) {
-                        return field
-                    }
-                }
-                current = current.superclass
-            }
-            return null
         }
     }
 }
@@ -466,3 +337,7 @@ internal fun shouldUseMediaCodecDecoderTuning(
             requestedFps = requestedFps,
             lowLatencyEnabled = lowLatencyEnabled,
         )
+
+// Preserve the existing Qualcomm low-latency floor without limiting 240/360 FPS sessions to 120.
+internal fun vendorLowLatencyOperatingRate(codecName: String?, requestedFps: Int): Int =
+    if (isQualcommMediaCodecDecoder(codecName)) maxOf(120, requestedFps) else 0x7FFF

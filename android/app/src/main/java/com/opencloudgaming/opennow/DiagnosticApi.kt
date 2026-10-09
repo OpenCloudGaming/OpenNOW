@@ -92,6 +92,10 @@ internal data class DiagnosticApiEntry(
     val requestHeaders: DiagnosticApiBody = DiagnosticApiBody(""),
     val responseHeaders: DiagnosticApiBody = DiagnosticApiBody(""),
 ) {
+    // Entries and their bodies are immutable. Reuse the fully redacted tree across periodic
+    // snapshots instead of rescanning up to two MiB of retained responses every 30 seconds.
+    val sanitizedExport: JsonObject by lazy { sanitizeDiagnosticParserJson(toJson()).jsonObject }
+
     val capturedChars: Int get() = request.capturedChars + response.capturedChars +
         requestQuery.capturedChars + requestHeaders.capturedChars + responseHeaders.capturedChars
     val truncatedBodies: Int get() = listOf(request, response, requestQuery, requestHeaders, responseHeaders).count { it.truncated }

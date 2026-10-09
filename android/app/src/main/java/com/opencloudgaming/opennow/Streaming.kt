@@ -639,7 +639,9 @@ class NativeStreamClient(
                     nativeLowLatencyDecoderEnabled = lowLatencyEnabled,
                     requestedFps = { settings.fps },
                     hdrEnabled = { settings.hdrEnabled },
-                    hdrSurface = { renderer?.hdrTarget },
+                    decoderSurface = { renderer?.decoderTarget },
+                    directSdrEnabled = { renderer?.prefersDirectSdr == true },
+                    requestTextureOutput = { reason -> renderer?.requestTextureOutput(reason) },
                 ),
             )
             .setVideoEncoderFactory(DefaultVideoEncoderFactory(eglBase.eglBaseContext, true, true))
@@ -647,7 +649,7 @@ class NativeStreamClient(
     }
 
     fun createRenderer(context: Context, settings: StreamSettings): StreamVideoSurface =
-        StreamVideoSurface(context, settings.hdrEnabled).also { rendererView ->
+        StreamVideoSurface(context, settings.hdrEnabled, shouldPreferDirectSdrSurface(settings)).also { rendererView ->
             renderer?.let { oldRenderer ->
                 releaseRendererInternal(oldRenderer)
             }
@@ -753,10 +755,11 @@ class NativeStreamClient(
             renderer = rendererView
             rendererSurfaceCallback = object : SurfaceHolder.Callback {
                 override fun surfaceCreated(holder: SurfaceHolder) {
-                    attachRendererSinkIfAvailable(rendererView)
+                    if (rendererView.holder === holder) attachRendererSinkIfAvailable(rendererView)
                 }
 
                 override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+                    if (rendererView.holder !== holder) return
                     NativeInputDiagnostics.add(
                         "video renderer surface changed=${width}x$height " +
                             "view=${rendererView.width}x${rendererView.height} fixed=$fixedSizeSurface",
@@ -765,9 +768,9 @@ class NativeStreamClient(
                 }
 
                 override fun surfaceDestroyed(holder: SurfaceHolder) {
-                    detachRendererSink(rendererView)
+                    if (rendererView.holder === holder) detachRendererSink(rendererView)
                 }
-            }.also(rendererView.holder::addCallback)
+            }.also(rendererView::addSurfaceCallback)
             attachRendererSinkIfAvailable(rendererView)
         }
 
@@ -820,7 +823,7 @@ class NativeStreamClient(
         if (renderer === candidate) {
             detachRendererSink(candidate)
         }
-        rendererSurfaceCallback?.let(candidate.holder::removeCallback)
+        rendererSurfaceCallback?.let(candidate::removeSurfaceCallback)
         rendererSurfaceCallback = null
         candidate.hideSurfaceBeforeRelease()
     }
@@ -843,6 +846,7 @@ class NativeStreamClient(
         )
         if (updatedSettings == this.settings) return
         this.settings = updatedSettings
+        if (updatedSettings.streamSharpeningEnabled) renderer?.requestTextureOutput("sharpening needs texture frames")
         rendererSharpnessDrawer?.amount = streamSharpnessShaderStrength(settings.streamSharpeningEnabled, settings.streamSharpeningAmount)
     }
 
@@ -2511,7 +2515,9 @@ class NativeStreamClient(
                     OpenNowVideoDecoderFactory(eglBase.eglBaseContext,
                         nativeLowLatencyDecoderEnabled = SettingsStore(appContext).settings.value.nativeLowLatencyDecoder,
                         requestedFps = { settings.fps }, hdrEnabled = { settings.hdrEnabled },
-                        hdrSurface = { renderer?.hdrTarget }, directJavaDecode = true),
+                        decoderSurface = { renderer?.decoderTarget },
+                        directSdrEnabled = { renderer?.prefersDirectSdr == true },
+                        requestTextureOutput = { reason -> renderer?.requestTextureOutput(reason) }, directJavaDecode = true),
                     sink = { renderer },
                     recordingAudio = { pcm ->
                         streamRecorder?.queueAudio(

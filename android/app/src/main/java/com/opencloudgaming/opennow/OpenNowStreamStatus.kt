@@ -1410,7 +1410,7 @@ internal fun StreamExitConfirmation(
                     ) { Text(stringResource(R.string.stream_exit_keep_playing), maxLines = 1) }
                     Button(
                         onClick = onExit,
-                        modifier = Modifier.weight(1f).streamExitGlow(),
+                        modifier = Modifier.weight(1f),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = OpenNowPalette.AccentSwitchRed,
                             contentColor = OpenNowPalette.OnAccent,

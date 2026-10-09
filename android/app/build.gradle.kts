@@ -35,8 +35,8 @@ android {
         // target changes are audited; LAN access is permission-gated at its feature boundary.
         //noinspection EditedTargetSdkVersion
         targetSdk = 37
-        versionCode = 159
-        versionName = "2.0.3"
+        versionCode = 161
+        versionName = "2.0.5"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         buildConfigField("boolean", "APK_UPDATES_SUPPORTED", "true")
@@ -119,6 +119,7 @@ val generateTouchButtonResources = tasks.register("generateTouchButtonResources"
         val source = groovy.json.JsonSlurper().parse(inputs.files.singleFile) as Map<*, *>
         val strings = (source["androidTouchButtons"] as Map<*, *>) +
             (source["androidStreamInput"] as Map<*, *>) +
+            (source["androidStreamVideo"] as Map<*, *>) +
             (source["androidSetup"] as Map<*, *>)
         fun xml(value: String) = value.replace("&", "&amp;").replace("<", "&lt;")
             .replace(">", "&gt;").replace("\"", "\\\"").replace("'", "\\'")
@@ -131,6 +132,15 @@ val generateTouchButtonResources = tasks.register("generateTouchButtonResources"
 }
 android.sourceSets.getByName("main").res.directories.add(touchButtonResources.get().asFile.absolutePath)
 tasks.named("preBuild").configure { dependsOn(generateTouchButtonResources) }
+
+// Keep the editable changelog at the Android project root while packaging it as an app asset.
+val changelogAssets = layout.buildDirectory.dir("generated/changelogAssets")
+val packageChangelog = tasks.register<Copy>("packageChangelog") {
+    from(rootProject.file("changelogs.json"))
+    into(changelogAssets)
+}
+android.sourceSets.getByName("main").assets.directories.add(changelogAssets.get().asFile.absolutePath)
+tasks.named("preBuild").configure { dependsOn(packageChangelog) }
 
 val nvstJniOutput = layout.buildDirectory.dir("generated/nvstJniLibs")
 val buildNvst = tasks.register<Exec>("buildNvst") {

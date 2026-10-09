@@ -3,6 +3,8 @@ package com.opencloudgaming.opennow
 import android.content.res.Configuration
 import android.view.KeyEvent
 import androidx.compose.foundation.Canvas
+import androidx.compose.animation.core.animateOffsetAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -1432,6 +1434,18 @@ internal fun applyTouchJoystickDeadZone(value: Float, deadZone: Float): Float {
     return if (clampedValue < 0f) -adjusted else adjusted
 }
 
+/** Offset the fixed origin toward the finger without a response jump at the calibration limit. */
+internal fun touchStickGestureCenter(
+    fixedCenter: Offset,
+    downPosition: Offset,
+    maxRadius: Float,
+    mode: TouchJoystickMode,
+): Offset {
+    if (mode == TouchJoystickMode.Dynamic) return downPosition
+    val offset = downPosition - fixedCenter
+    return fixedCenter + clampStickOffset(offset, maxRadius * 0.6f)
+}
+
 @Composable
 private fun LockZoneAimSurface(
     id: String,
@@ -1580,6 +1594,12 @@ private fun VirtualStick(
     val currentOnChange by rememberUpdatedState(onChange)
     var knobOffset by remember { mutableStateOf(Offset.Zero) }
     var baseOffset by remember { mutableStateOf(Offset.Zero) }
+    var pressed by remember { mutableStateOf(false) }
+    val displayedBaseOffset = animateOffsetAsState(
+        targetValue = baseOffset,
+        animationSpec = tween(durationMillis = if (pressed) 0 else 120),
+        label = "Touch stick recenter",
+    )
 
     DisposableEffect(client) {
         onDispose {
@@ -1595,14 +1615,19 @@ private fun VirtualStick(
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
                     val fixedCenter = Offset(size.width / 2f, size.height / 2f)
-                    val gestureCenter = if (mode == TouchJoystickMode.Dynamic) down.position else fixedCenter
                     val maxRadius = min(size.width, size.height) * 0.34f
+                    val gestureCenter = touchStickGestureCenter(fixedCenter, down.position, maxRadius, mode)
+                    pressed = true
                     baseOffset = gestureCenter - fixedCenter
+                    var lastValue = Offset.Zero
 
                     fun updateStick(position: Offset) {
                         val clamped = clampStickOffset(position - gestureCenter, maxRadius)
                         val value = touchStickValue(clamped.x, clamped.y, maxRadius, deadZone)
-                        currentOnChange(value.x, value.y)
+                        if (value != lastValue) {
+                            currentOnChange(value.x, value.y)
+                            lastValue = value
+                        }
                         knobOffset = clamped
                     }
 
@@ -1623,12 +1648,13 @@ private fun VirtualStick(
                         currentOnChange(0f, 0f)
                         knobOffset = Offset.Zero
                         baseOffset = Offset.Zero
+                        pressed = false
                     }
                 }
             },
         contentAlignment = Alignment.Center,
     ) {
-        TouchStickFace(diameter = diameter, base = { baseOffset }, knob = { knobOffset })
+        TouchStickFace(diameter = diameter, base = { displayedBaseOffset.value }, knob = { knobOffset })
     }
 }
 
