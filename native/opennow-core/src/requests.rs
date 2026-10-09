@@ -1,5 +1,5 @@
 //! Bounded RPC ownership, cooperative cancellation, and allocation receipts.
-use crate::gfn::ServiceError;
+use crate::service_error::ServiceError;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -60,6 +60,15 @@ impl Requests {
     pub fn admit(self: &Arc<Self>, id: &str, method: &str) -> Option<Permit> {
         let background = method.starts_with("catalog.")
             || method.starts_with("artwork.")
+            || method == "sources.catalog.page"
+            || matches!(
+                method,
+                "sources.public.page"
+                    | "sources.library.page"
+                    | "sources.store.page"
+                    | "sources.game.get"
+                    | "sources.launch.inspect"
+            )
             || method == "network.regions.ping"
             || method == "queue.servers.list";
         let mut active = self.0.lock().expect("request state poisoned");
@@ -207,6 +216,59 @@ mod tests {
         assert!(requests.admit("overflow", "session.stop").is_none());
         permits.clear();
         assert!(requests.admit("new", "catalog.store.local").is_some());
+    }
+
+    #[test]
+    fn source_catalog_shares_background_capacity_without_starving_session_control() {
+        let requests = Arc::new(Requests::default());
+        let mut permits = Vec::new();
+        for index in 0..4 {
+            permits.push(
+                requests
+                    .admit(&format!("catalog-{index}"), "sources.catalog.page")
+                    .unwrap(),
+            );
+        }
+        assert!(requests.admit("overflow", "catalog.library.list").is_none());
+        assert!(requests.admit("control", "session.stop").is_some());
+        requests.cancel("catalog-0");
+        assert!(
+            requests
+                .admit("cancel-still-running", "sources.catalog.page")
+                .is_none()
+        );
+        permits.pop();
+        assert!(requests.admit("released", "sources.catalog.page").is_some());
+    }
+
+    #[test]
+    fn provider_v2_catalog_methods_reserve_control_admission() {
+        let requests = Arc::new(Requests::default());
+        let methods = [
+            "sources.public.page",
+            "sources.library.page",
+            "sources.store.page",
+            "sources.game.get",
+        ];
+        let permits = methods
+            .iter()
+            .enumerate()
+            .map(|(index, method)| requests.admit(&format!("read-{index}"), method).unwrap())
+            .collect::<Vec<_>>();
+        assert!(
+            requests
+                .admit("inspect", "sources.launch.inspect")
+                .is_none()
+        );
+        assert!(requests.admit("extra", "sources.library.page").is_none());
+        let stop = requests.admit("stop", "sources.session.stop").unwrap();
+        let prepare = requests
+            .admit("prepare", "streamer.source.prepare")
+            .unwrap();
+        assert!(!stop.token.cancelled());
+        assert!(!prepare.token.cancelled());
+        drop(permits);
+        assert!(requests.admit("next", "sources.launch.inspect").is_some());
     }
     #[test]
     fn unknown_cancels_do_not_accumulate_and_scopes_restore() {

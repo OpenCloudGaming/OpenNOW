@@ -16,7 +16,7 @@ QtObject {
     property BackgroundStreamState backgroundStreamState: BackgroundStreamState {
         settings: root.settings
         applicationActive: Qt.application.state === Qt.ApplicationActive
-        streaming: root.activeSession !== null && root.streamerStatus === "streaming"
+        streaming: (root.activeSession !== null || root.sourceStreamActive) && root.streamerStatus === "streaming"
         nativeRuntimeReady: root.nativeRuntimeReady
         onAudioMuteRequested: muted => root.sendNativeCommand("setAudioMuted", {muted: muted})
         onReminderRequested: root.backgroundStreamReminderRequested()
@@ -105,6 +105,80 @@ QtObject {
     readonly property bool onboardingAwdlReady: !onboardingAwdlController.busy
         && [MacAwdlController.Unsupported, MacAwdlController.Unavailable, MacAwdlController.Disabled]
             .indexOf(onboardingAwdlController.state) >= 0
+    property SourceState sourceOwnerState: SourceState {
+        id: sourceOwner
+        coreClient: CoreClient
+        bridge: typeof SourceBridge !== "undefined" ? SourceBridge : null
+        ready: root.ready
+        available: (CoreClient.capabilities || []).indexOf("sources.v2") >= 0
+    }
+    property SourceLibraryState sourceLibraryOwnerState: SourceLibraryState {
+        id: sourceLibraryOwner
+        coreClient: CoreClient
+        sources: sourceOwner
+        onPlayReady: (details, decision) => root.playSourceGame(details, decision)
+    }
+    property SourceSessionState sourceSessionOwnerState: SourceSessionState {
+        id: sourceSessionOwner
+        coreClient: CoreClient
+        playback: typeof SourceBridge !== "undefined" ? SourceBridge : null
+        sources: sourceOwner
+        ready: root.ready && sourceOwner.available && sourceOwner.loaded
+        onStreamRequested: startId => root.beginSourceStream(startId)
+        onStreamStopRequested: root.stopNativeStreamer("User stopped the session")
+        onFinished: message => root.finishSourceSession(message)
+    }
+    readonly property var sourceSession: sourceSessionOwner
+    readonly property bool sourceStreamActive: activeSession === null && sourceSessionOwner.active
+    readonly property bool streamOwnerSignedIn: activeSession !== null ? signedIn : sourceStreamActive || signedIn
+    readonly property string activeStreamId: activeSession ? String(activeSession.sessionId || "")
+        : sourceStreamActive && sourceSessionOwner.mediaActive
+            ? "source:" + sourceSessionOwner.sourceId + ":" + sourceSessionOwner.startId : ""
+    readonly property var activeStreamProfile: {
+        if (activeSession)
+            return activeSession.negotiatedStreamProfile || activeSession.streamProfile || ({})
+        if (!sourceStreamActive || typeof SourceBridge === "undefined")
+            return ({})
+        const profile = SourceBridge.activeProfile || ({})
+        return profile.startId === sourceSessionOwner.startId && profile.sourceId === sourceSessionOwner.sourceId
+            ? profile : ({})
+    }
+    readonly property string activeStreamTitle: sourceStreamActive ? String(sourceSessionOwner.title || "OpenNOW")
+        : selectedGame && selectedGame.title ? String(selectedGame.title) : "OpenNOW"
+    readonly property var sourceStreamGame: sourceStreamActive ? ({
+        title: sourceSessionOwner.title,
+        imageUrl: sourceSessionOwner.artworkUrl,
+        boxArtUrl: sourceSessionOwner.artworkUrl,
+        heroImageUrl: sourceSessionOwner.artworkUrl,
+        sourceName: String((sourceOwner.sourceById(sourceSessionOwner.sourceId) || {}).name || "")
+    }) : null
+    readonly property bool sourcePlaybackAvailable: typeof SourceBridge !== "undefined"
+        && streamerDetection.available === true
+    property var pendingSourcePlay: null
+    readonly property alias sources: sourceOwner.sources
+    readonly property alias sourcesAvailable: sourceOwner.available
+    readonly property alias selectedSourceId: sourceOwner.selectedSourceId
+    readonly property bool browsingExternalSource: sourceOwner.available && !sourceOwner.selectedIsGfn
+    readonly property bool gfnServiceEnabled: !sourceOwner.available || sourceOwner.gfnEnabled
+    property bool gfnServicesStarted: false
+    onGfnServiceEnabledChanged: syncGfnServices()
+    property Connections sourceListConnections: Connections {
+        target: sourceOwner
+        function onLoadedChanged() { root.syncGfnServices() }
+    }
+    property Connections pluginListConnections: Connections {
+        target: pluginOwner
+        function onPluginsChanged() { sourceOwner.refresh() }
+    }
+    property PluginState pluginOwnerState: PluginState {
+        id: pluginOwner
+        coreClient: CoreClient
+        ready: root.ready
+        available: (CoreClient.capabilities || []).indexOf("plugins.v1") >= 0
+        catalogAvailable: (CoreClient.capabilities || []).indexOf("sources.catalog.v1") >= 0
+    }
+    readonly property alias plugins: pluginOwner.plugins
+    readonly property alias pluginsAvailable: pluginOwner.available
     property OnboardingState onboardingOwnerState: OnboardingState {
         id: onboardingOwner
         coreClient: CoreClient
@@ -731,6 +805,7 @@ QtObject {
     property string pendingRecordingPath: ""
     property string pendingRecordingThumbnailPath: ""
     property string mediaClipTargetRequestId: ""
+    property string mediaClipTargetSessionId: ""
     property string streamClipRequestId: ""
     readonly property bool streamClipBusy: mediaClipTargetRequestId !== "" || streamClipRequestId !== ""
     property bool streamReplayEnabled: false
@@ -762,7 +837,7 @@ QtObject {
     property string streamControlMessage: ""
     property rect streamCaptureRect: Qt.rect(0, 0, 0, 0)
     property bool nativeRuntimeReady: false
-    readonly property int nativeProtocolVersion: 7
+    readonly property int nativeProtocolVersion: 8
     property var nativeRuntimeCapabilities: ({})
     property var audioOutputDevices: []
     property bool audioOutputDevicesBusy: false
@@ -813,6 +888,7 @@ QtObject {
         return ""
     }
     readonly property bool streamBusy: streamCreateRequestId !== "" || streamStopRequestId !== ""
+        || sourceSessionOwner.active
         || remoteSessionsRequestId !== "" || sessionClaimRequestId !== "" || launchInspectRequestId !== ""
         || queueSelector.opened || queueLaunchWaitingForSubscription
         || settingsOwner.settingWrites.webrtcCompatibilityMode !== undefined
@@ -882,7 +958,7 @@ QtObject {
     property Timer remoteSessionRefreshTimer: Timer {
         interval: 30000
         repeat: true
-        running: root.signedIn && AppController.route !== "stream"
+        running: root.signedIn && root.gfnServiceEnabled && AppController.route !== "stream"
         onTriggered: root.refreshRemoteSessions()
     }
 
@@ -946,9 +1022,30 @@ QtObject {
     function initializeServices() {
         if (!ready)
             return
+        gfnServicesStarted = false
         if (!signedIn)
             authRestorePending = true
         refreshSettings()
+        ensureNativeRuntimeReady()
+        updaterStateRequestId = CoreClient.request("updater.state.get", {})
+        pluginOwner.refresh()
+        sourceOwner.refresh()
+        syncGfnServices()
+    }
+
+    function syncGfnServices() {
+        if (!ready || gfnServicesStarted)
+            return
+        if (gfnServiceEnabled)
+            startGfnServices()
+        else if (sourceOwner.loaded)
+            authRestorePending = false
+    }
+
+    function startGfnServices() {
+        gfnServicesStarted = true
+        if (!signedIn)
+            authRestorePending = true
         providersRequestId = CoreClient.request("auth.providers.list", {}, 25000)
         authSessionRequestId = CoreClient.request("auth.session.get", {})
         refreshSavedAccounts()
@@ -960,8 +1057,6 @@ QtObject {
         } else {
             activeSessionRequestId = CoreClient.request("session.active.get", {})
         }
-        ensureNativeRuntimeReady()
-        updaterStateRequestId = CoreClient.request("updater.state.get", {})
         socialCapabilitiesRequestId = CoreClient.request("social.capabilities.get", {})
         refreshCatalog()
     }
@@ -1734,6 +1829,55 @@ QtObject {
         AppController.navigate("inserting")
     }
 
+    function playSourceGame(details, decision) {
+        if (activeSession || streamBusy || !sourceLibraryOwner.source)
+            return false
+        if (!nativeRuntimeReady) {
+            pendingSourcePlay = {sourceId: sourceLibraryOwner.sourceId, details: details, decision: decision}
+            ensureNativeRuntimeReady()
+            return true
+        }
+        pendingSourcePlay = null
+        return sourceSessionOwner.play(sourceLibraryOwner.sourceId, details, decision)
+    }
+
+    function beginSourceStream(startId) {
+        streamStartedAtMs = 0
+        const requests = Object.assign({}, nativeRequests)
+        requests[startId] = {operation: "source-start"}
+        nativeRequests = requests
+        streamerStartRequestId = startId
+        streamerStopExpected = false
+        streamColorFormat = null
+        streamer = {
+            status: "starting",
+            message: qsTr("Preparing the embedded native media runtime…"),
+            sessionId: null,
+            sessionStartedAtMs: String(Date.now()),
+            inputReady: false,
+            inputPauseCount: 0,
+            inputResumeCount: 0,
+            recordingStartCount: 0,
+            recordingStopCount: 0,
+            queueDropCount: 0
+        }
+        streamState = "starting"
+        streamMessage = streamer.message
+        if (AppController.route !== "stream")
+            AppController.navigate("stream")
+    }
+
+    function finishSourceSession(message) {
+        pendingSourcePlay = null
+        streamStartedAtMs = 0
+        streamState = "idle"
+        streamMessage = String(message || "")
+        if (streamMessage !== "")
+            lastError = streamMessage
+        if (AppController.route === "stream" || AppController.route === "inserting")
+            AppController.navigateFromLastPrimary("library")
+    }
+
     function launchSelectedGame(directConsoleMode) {
         if (!signedIn) {
             AppController.navigate("sign-in")
@@ -2105,6 +2249,10 @@ QtObject {
     }
 
     function retryNativeStreamer() {
+        if (sourceSessionOwner.active && !activeSession) {
+            sourceSessionOwner.retryStream()
+            return
+        }
         streamerRestartTimer.stop()
         streamerRestartAttempts = 0
         sessionReconnectAttempts = 0
@@ -2144,7 +2292,8 @@ QtObject {
             streamStartedAtMs = startedAt
 
         const status = String(streamer.status || "unknown")
-        if (activeSession && !sessionRecoveryPending && status !== "stopped" && status !== "error") {
+        if ((activeSession || sourceSessionOwner.mediaActive) && !sessionRecoveryPending
+                && status !== "stopped" && status !== "error") {
             streamState = status
             streamMessage = streamer.message || streamMessage
             setStreamInputPaused(desiredStreamInputPaused)
@@ -2168,12 +2317,17 @@ QtObject {
         }
         cancelRecordingTarget()
         suspendRecordingStart()
-        if (status === "stopped" && (streamerStopExpected || !activeSession)) {
+        if (status === "stopped" && (streamerStopExpected || (!activeSession && !sourceSessionOwner.mediaActive))) {
             streamInputStateKnown = false
             return
         }
         streamMessage = streamer.message || (status === "error"
             ? qsTr("Native media startup failed") : qsTr("The native media runtime stopped unexpectedly"))
+        if (!activeSession && sourceSessionOwner.mediaActive) {
+            streamState = "error"
+            sourceSessionOwner.streamFailed(streamMessage)
+            return
+        }
         if (!activeSession)
             return
         if (streamer.errorCode === "missing-video-peer"
@@ -2403,7 +2557,7 @@ QtObject {
     function controlStream(action) {
         if (streamControlRequestId !== "")
             return
-        if (!activeSession || !streamer || streamer.status !== "streaming") {
+        if (activeStreamId === "" || !streamer || streamer.status !== "streaming") {
             streamControlMessage = qsTr("Stream controls are available once the session is live.")
             return
         }
@@ -2456,7 +2610,8 @@ QtObject {
     }
 
     function canOpenSessionGuide() {
-        return Boolean(activeSession) && String(activeSession.sessionId || "") !== ""
+        return (Boolean(activeSession) && String(activeSession.sessionId || "") !== ""
+                || sourceSessionOwner.mediaActive)
             && AppController.route === "stream" && streamState !== "idle" && streamState !== "stopping"
     }
 
@@ -2489,7 +2644,7 @@ QtObject {
             return
         }
         const rect = streamCaptureRect
-        const title = selectedGame && selectedGame.title ? selectedGame.title : "OpenNOW"
+        const title = activeStreamTitle
         const path = AppController.captureScreenRegion(
             Number(rect.x || 0), Number(rect.y || 0),
             Number(rect.width || 0), Number(rect.height || 0), title)
@@ -2568,6 +2723,10 @@ QtObject {
             openSessionGuide()
         } else if (action === "request-exit" || action === "stop-stream") {
             requestStreamExitConfirmation()
+        } else if (action === "toggle-anti-afk" && sourceStreamActive) {
+            antiAfkEnabled = false
+            streamControlMessage = qsTr("Anti-AFK isn't available for this service")
+            accessibilityMessage = streamControlMessage
         } else if (action === "toggle-anti-afk") {
             antiAfkEnabled = !antiAfkEnabled
             streamControlMessage = antiAfkEnabled ? qsTr("Anti-AFK on") : qsTr("Anti-AFK off")
@@ -2631,12 +2790,13 @@ QtObject {
     function saveStreamClip() {
         if (streamClipBusy)
             return
-        if (!activeSession || !streamer || streamer.status !== "streaming") {
+        if (activeStreamId === "" || !streamer || streamer.status !== "streaming") {
             mediaMessage = qsTr("Start a native stream before saving a clip")
         } else if (!streamReplayEnabled || !replayBufferRequested) {
             mediaMessage = qsTr("Enable replay buffering in Recording settings before starting a session")
         } else {
-            const title = selectedGame && selectedGame.title ? selectedGame.title : "OpenNOW"
+            const title = activeStreamTitle
+            mediaClipTargetSessionId = activeStreamId
             mediaClipTargetRequestId = CoreClient.request("media.recording.target", {
                 gameTitle: title + "-clip"
             }, 5000)
@@ -2667,7 +2827,7 @@ QtObject {
         const sessionId = mediaRecordingTargetSessionId
         mediaRecordingTargetRequestId = ""
         mediaRecordingTargetSessionId = ""
-        if (!activeSession || String(activeSession.sessionId) !== sessionId
+        if (activeStreamId === "" || activeStreamId !== sessionId
                 || !streamer || streamer.status !== "streaming" || streamerStopExpected)
             return
         pendingRecordingPath = String(result.path || "")
@@ -2757,7 +2917,7 @@ QtObject {
             return
         }
         if (response.type !== "recording-started" || !streamRecordingAttempt.acceptStart
-                || !activeSession || String(activeSession.sessionId) !== streamRecordingAttempt.sessionId
+                || activeStreamId === "" || activeStreamId !== streamRecordingAttempt.sessionId
                 || !streamer || streamer.status !== "streaming" || streamerStopExpected)
             return
         streamRecordingActive = true
@@ -2786,14 +2946,14 @@ QtObject {
             accessibilityMessage = mediaMessage
             return
         }
-        if (!activeSession || !streamer || streamer.status !== "streaming") {
+        if (activeStreamId === "" || !streamer || streamer.status !== "streaming") {
             mediaMessage = qsTr("Start a native stream before recording")
             accessibilityMessage = mediaMessage
             return
         }
-        const title = selectedGame && selectedGame.title ? selectedGame.title : "OpenNOW"
+        const title = activeStreamTitle
         AppController.showOverlay("")
-        mediaRecordingTargetSessionId = String(activeSession.sessionId)
+        mediaRecordingTargetSessionId = activeStreamId
         mediaRecordingTargetRequestId = CoreClient.request("media.recording.target", {
             gameTitle: title
         }, 5000)
@@ -2857,6 +3017,12 @@ QtObject {
     }
 
     function stopStreamingSession() {
+        if (sourceSessionOwner.active && !activeSession) {
+            streamState = "stopping"
+            streamMessage = qsTr("Closing your session…")
+            sourceSessionOwner.stop()
+            return
+        }
         sessionStopIntentId = activeSession ? String(activeSession.sessionId) : ""
         if (coreSessionRestoreId !== "") streamPollFailureAttempts = 0
         invalidateLaunchInspection()
@@ -3209,6 +3375,11 @@ QtObject {
                 streamerStartRequestId = ""
                 updateStreamerFields({status: "error", message: message,
                                       errorCode: String(response.code || "native_stream_error")})
+            } else if (pending.operation === "source-start") {
+                streamerStartRequestId = ""
+                updateStreamerFields({status: "error", message: message,
+                                      errorCode: String(response.code || "native_stream_error")})
+                sourceSessionOwner.streamFailed(message)
             } else if (pending.operation === "stop") {
                 streamerStopRequestId = ""
                 lastError = message
@@ -3254,6 +3425,12 @@ QtObject {
             }
             acceptNativeCapabilities(response.capabilities || ({}))
             bugReports.openApp(nativeRuntimeCapabilities)
+            if (pendingSourcePlay) {
+                const play = pendingSourcePlay
+                pendingSourcePlay = null
+                if (play.sourceId === sourceLibraryOwner.sourceId)
+                    Qt.callLater(() => root.playSourceGame(play.details, play.decision))
+            }
             if (activeSession && (!streamer || streamer.status === "starting"))
                 Qt.callLater(() => root.startNativeStreamer())
         } else if (pending.operation === "start") {
@@ -3277,6 +3454,19 @@ QtObject {
                                             response.capabilities || ({}),
                                             {supportsMicrophone: Boolean(response.capabilities
                                                 && response.capabilities.supportsMicrophone === true)}),
+                errorCode: null
+            })
+        } else if (pending.operation === "source-start") {
+            streamerStartRequestId = ""
+            if (streamer && (streamer.status === "error" || streamer.status === "stopped")) return
+            streamReplayEnabled = response.replayEnabled === true
+            if (!replayBufferRequested)
+                disableStreamReplay()
+            const mediaArrived = streamer && streamer.status === "streaming"
+            updateStreamerFields({
+                status: mediaArrived ? "streaming" : "connecting",
+                message: mediaArrived ? streamer.message : qsTr("Waiting for the first video frame…"),
+                transport: String(response.transport || "provider-worker"),
                 errorCode: null
             })
         } else if (pending.operation === "stop") {
@@ -3397,8 +3587,14 @@ QtObject {
                     ? null : Number(event[key])
         }
         if (event.event === "first-frame") {
-            if (!activeSession || !streamer || streamer.status === "error" || streamer.status === "stopped")
+            if ((!activeSession && !sourceSessionOwner.mediaActive) || !streamer
+                    || streamer.status === "error" || streamer.status === "stopped")
                 return
+            if (!activeSession) {
+                updateStreamerFields({status: "streaming", mediaBackend: String(event.backend || ""),
+                    firstFrameLatencyMs: Math.max(0, Date.now() - Number(streamer.sessionStartedAtMs || Date.now()))})
+                return
+            }
             // Only real video progress closes the recovery episode. A ready
             // seat, successful PLAY, or audio/control traffic is insufficient.
             streamerRestartRecoveryCount += streamerRestartAttempts
@@ -3441,6 +3637,13 @@ QtObject {
             fields.status = event.status === "ready" ? "streaming" : String(event.status || "streaming")
             fields.message = String(event.message || streamMessage)
             fields.termination = event.termination || null
+            if (!activeSession && sourceSessionOwner.mediaActive && fields.status === "streaming"
+                    && Number.isFinite(Number(event.firstFrameLatencyMs))
+                    && (!streamer || streamer.firstFrameLatencyMs === undefined || streamer.firstFrameLatencyMs === null)) {
+                fields.firstFrameLatencyMs = Number(event.firstFrameLatencyMs)
+                fields.mediaBackend = String(event.mediaBackend || "")
+                fields.sessionStartedAtMs = String(Date.now())
+            }
         } else if (type === "error") {
             fields.status = "error"
             fields.message = String(event.message || qsTr("Native media runtime failed"))
@@ -3448,6 +3651,11 @@ QtObject {
             fields.termination = event.termination || null
             if (activeSession && !streamerStopExpected)
                 bugReports.reportStreamError(fields.errorCode, fields.message, "stream")
+        } else if (type === "input") {
+            if (!sourceSessionOwner.mediaActive || String(event.startId || "") !== sourceSessionOwner.startId)
+                return
+            fields.inputReady = event.ready === true
+            fields.inputUnavailableReason = null
         } else if (type === "input-ready") {
             fields.inputReady = true
             fields.inputUnavailableReason = null
@@ -3557,6 +3765,20 @@ QtObject {
         }
     }
 
+    property Connections sourceBridgeConnections: Connections {
+        target: typeof SourceBridge !== "undefined" ? SourceBridge : null
+        function onCreated(requestId, result) { sourceSessionOwner.acceptCreated(requestId, result) }
+        function onFailed(requestId, code, message) {
+            if (requestId !== "" && requestId === sourceSessionOwner.startId) {
+                root.takeNativeRequest(requestId)
+                root.streamerStartRequestId = ""
+                root.updateStreamerFields({status: "error", message: String(message || ""),
+                                           errorCode: String(code || "source_start_failed")})
+            }
+            sourceSessionOwner.acceptPlaybackFailure(requestId, code, message)
+        }
+    }
+
     property Connections coreConnections: Connections {
         target: CoreClient
         function onStateChanged() {
@@ -3574,6 +3796,10 @@ QtObject {
         }
         function onResponseReceived(requestId, result) {
             if (settingsOwner.acceptResponse(requestId, result)) return
+            if (pluginOwner.acceptResponse(requestId, result)) return
+            if (sourceOwner.acceptResponse(requestId, result)) return
+            if (sourceLibraryOwner.acceptResponse(requestId, result)) return
+            if (sourceSessionOwner.acceptResponse(requestId, result)) return
             const ownedTermination = root.ownedSessionTermination(result)
             if (ownedTermination) {
                 root.finishRemoteSession(ownedTermination)
@@ -3807,8 +4033,9 @@ QtObject {
                 root.refreshMedia()
             } else if (requestId === root.mediaClipTargetRequestId && requestId !== "") {
                 root.mediaClipTargetRequestId = ""
-                if (!root.streamReplayEnabled || !root.replayBufferRequested
-                        || !root.activeSession || !root.streamer || root.streamer.status !== "streaming")
+                if (!root.streamReplayEnabled || !root.replayBufferRequested || root.activeStreamId === ""
+                        || root.activeStreamId !== root.mediaClipTargetSessionId
+                        || !root.streamer || root.streamer.status !== "streaming")
                     return
                 root.streamClipRequestId = root.sendNativeCommand("clip-save", {
                     outputPath: String(result.path || "")
@@ -4005,6 +4232,10 @@ QtObject {
         }
         function onRequestFailed(requestId, code, message) {
             if (settingsOwner.acceptFailure(requestId, message)) return
+            if (pluginOwner.acceptFailure(requestId, code, message)) return
+            if (sourceOwner.acceptFailure(requestId, code, message)) return
+            if (sourceLibraryOwner.acceptFailure(requestId, code, message)) return
+            if (sourceSessionOwner.acceptFailure(requestId, code, message)) return
             if (onboardingOwner.acceptFailure(requestId, message)) {
                 return
             } else if (requestId === root.storePresentationRequestId && requestId !== "") {
@@ -4216,7 +4447,15 @@ QtObject {
                     root.finishRemoteSession(payload.termination)
                 else
                     root.acceptStreamingSession(payload.session || null)
-            } else if (name === "account.push.changed")
+            } else if (name === "sources.changed")
+                sourceOwner.acceptChanged(payload)
+            else if (name === "sources.session.changed")
+                sourceSessionOwner.acceptSessionChanged(payload)
+            else if (name === "sources.session.cleanup")
+                sourceSessionOwner.acceptCleanup(payload)
+            else if (name === "plugins.changed")
+                pluginOwner.acceptChanged(payload)
+            else if (name === "account.push.changed")
                 root.acceptPushInvalidation(payload)
             else if (name === "streamer.changed")
                 root.acceptStreamerSnapshot(payload.streamer || payload || null)

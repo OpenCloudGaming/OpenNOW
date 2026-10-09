@@ -15,7 +15,8 @@ FocusScope {
     Rectangle { anchors.fill: parent; color: "black"; z: -1 }
 
     readonly property var session: ShellStore.activeSession || ({})
-    readonly property var profile: session.negotiatedStreamProfile || session.streamProfile || ({})
+    readonly property var profile: ShellStore.sourceStreamActive ? ShellStore.activeStreamProfile
+        : session.negotiatedStreamProfile || session.streamProfile || ({})
     readonly property var streamer: ShellStore.streamer || ({})
     readonly property string status: {
         if (ShellStore.streamState === "error")

@@ -16,6 +16,7 @@
 
 #include <utility>
 #include <atomic>
+#include <mutex>
 #include <chrono>
 
 namespace {
@@ -277,6 +278,7 @@ public:
         }
         m_outputDirty = true;
         m_outputKind = 1;
+        m_frameProvenance = recorded.provenance;
         if (m_sourceColorSpace != OPENNOW_STREAMER_COLOR_SPACE_SDR709) {
             m_frameGenerationStatus.store(m_frameGeneration ? FrameGenerationState::HdrUnsupported : FrameGenerationState::Off);
             return;
@@ -404,6 +406,14 @@ public:
             ++m_outputCount;
             m_swapTimings.markSwap(clockNs());
         }
+        if (kind == 1 && m_runtime) {
+            OpenNowStreamerFrameProvenance provenance{};
+            {
+                const std::lock_guard lock(m_provenanceMutex);
+                provenance = std::exchange(m_submittedProvenance, {});
+            }
+            if (provenance.flags) m_runtime->notifyPresented(provenance);
+        }
         if (kind == 2) m_midpointSwapped.store(true);
         const auto now = clockNs();
         const auto start = m_sampleStart.load();
@@ -457,6 +467,10 @@ public:
                 || m_presentationGeneration != m_runtime->presentationGeneration()) return;
         m_textures.render(commandBuffer, m_stencil, m_stencilReference);
         if (m_outputDirty) {
+            if (m_outputKind == 1) {
+                const std::lock_guard lock(m_provenanceMutex);
+                m_submittedProvenance = std::exchange(m_frameProvenance, {});
+            }
             m_submittedKind.store(m_outputKind);
             m_outputDirty = false;
             if (m_outputKind == 1) m_swapTimings.markSubmit(clockNs());
@@ -555,6 +569,9 @@ private:
     std::atomic_bool m_needsFrame = false;
     std::atomic_bool m_midpointSwapped = false;
     std::atomic_int m_submittedKind = 0;
+    OpenNowStreamerFrameProvenance m_frameProvenance{};
+    std::mutex m_provenanceMutex;
+    OpenNowStreamerFrameProvenance m_submittedProvenance{};
     std::atomic<FrameGenerationState> m_frameGenerationStatus = FrameGenerationState::Off;
     std::atomic_uint64_t m_outputCount = 0;
     std::atomic_int64_t m_sampleStart = 0;

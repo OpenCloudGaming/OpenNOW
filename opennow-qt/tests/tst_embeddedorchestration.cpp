@@ -11,8 +11,23 @@ QString source(const QString &relativePath)
     return QString::fromUtf8(file.readAll());
 }
 
+bool prepareStreamIdentity(QJSEngine &engine)
+{
+    if (engine.evaluate(QStringLiteral("typeof activeStreamId")).toString() != QStringLiteral("undefined"))
+        return true;
+    return !engine.evaluate(QStringLiteral(R"JS(
+        Object.defineProperty(this, 'activeStreamId', {configurable: true, get: function() {
+            return typeof activeSession !== 'undefined' && activeSession ? String(activeSession.sessionId || '') : ''; }});
+        Object.defineProperty(this, 'activeStreamTitle', {configurable: true, get: function() {
+            return typeof selectedGame !== 'undefined' && selectedGame && selectedGame.title ? String(selectedGame.title) : 'OpenNOW'; }});
+        Object.defineProperty(this, 'sourceStreamActive', {configurable: true, get: function() { return false; }});
+    )JS")).isError();
+}
+
 bool prepareLaunchGuards(QJSEngine &engine)
 {
+    if (!prepareStreamIdentity(engine))
+        return false;
     if (engine.evaluate(QStringLiteral(R"JS(
         var launchInspectRequestId='', launchInspectStage='', directLookupRequestId='', authGeneration=0;
         var catalogOwner={selectedIdentity:'selection',actionGeneration:0,requestContextKey:'',mutationBusy:false,authScope:{generation:0}};
@@ -22,6 +37,7 @@ bool prepareLaunchGuards(QJSEngine &engine)
         var coreSessionRestoreId='', sessionStopIntentId='';
         var queueSelector={opened:false,begin:function(title){return false}};
         var bugReports={observeTelemetry:function(){},observeFrameDrops:function(){},reportStreamError:function(){}};
+        var sourceSessionOwner = {active:false,mediaActive:false,startId:'',acceptResponse:function() {return false;},acceptFailure:function() {return false;},acceptSessionChanged:function() {},acceptCleanup:function() {},streamFailed:function() {},stop:function() {return false;}};
         var launchRequestedAtMs=0;
         function reportSessionStart() {}
         function reportSessionEnd() {}
@@ -39,6 +55,11 @@ bool prepareLaunchGuards(QJSEngine &engine)
 
 bool loadShellFunction(QJSEngine &engine, const QString &name, int indentation = 4)
 {
+    if (!prepareStreamIdentity(engine))
+        return false;
+    if (engine.evaluate(QStringLiteral("typeof sourceSessionOwner")).toString() == QStringLiteral("undefined")
+            && engine.evaluate(QStringLiteral(R"JS(var sourceSessionOwner = {active:false,mediaActive:false,startId:'',acceptResponse:function() {return false;},acceptFailure:function() {return false;},acceptSessionChanged:function() {},acceptCleanup:function() {},streamFailed:function() {},stop:function() {return false;}};)JS")).isError())
+        return false;
     const auto prefix = QString(indentation, u' ');
     const auto shell = source(QStringLiteral("qml/state/ShellStore.qml"));
     const auto match = QRegularExpression(prefix + QStringLiteral("function %1\\([^\\n]*\\) \\{\\n.*?\\n").arg(name)
@@ -85,6 +106,10 @@ bool prepareAuthentication(QJSEngine &engine)
         var AppController = {route:'accounts',navigate:function(route) {this.route=route;}};
         var settingsOwner = {settingWrites:{},acceptResponse:function() {return false;},acceptFailure:function() {return false;}};
         var onboardingOwner = {acceptResponse:function() {return false;},acceptFailure:function() {return false;}};
+        var pluginOwner = {acceptResponse:function() {return false;},acceptFailure:function() {return false;}};
+        var sourceOwner = {acceptResponse:function() {return false;},acceptFailure:function() {return false;},acceptChanged:function() {}};
+        var sourceLibraryOwner = {acceptResponse:function() {return false;},acceptFailure:function() {return false;}};
+        var sourceSessionOwner = {active:false,mediaActive:false,startId:'',acceptResponse:function() {return false;},acceptFailure:function() {return false;},acceptSessionChanged:function() {},acceptCleanup:function() {},streamFailed:function() {},stop:function() {return false;}};
         var bugReports = {observeTelemetry:function() {},observeFrameDrops:function() {},reportStreamError:function() {}};
         var launchRequestedAtMs = 0;
         function reportSessionStart() {}
@@ -967,6 +992,10 @@ private slots:
             var CoreClient = {request:function(method,params){requests.push(method);return 'request-'+requests.length;}};
             var AppController = {navigate:function(){}};
             var onboardingOwner = {acceptFailure:function(){return false;}};
+            var pluginOwner = {acceptResponse:function() {return false;},acceptFailure:function() {return false;}};
+            var sourceOwner = {acceptResponse:function() {return false;},acceptFailure:function() {return false;},acceptChanged:function() {}};
+            var sourceLibraryOwner = {acceptResponse:function() {return false;},acceptFailure:function() {return false;}};
+            var sourceSessionOwner = {active:false,mediaActive:false,startId:'',acceptResponse:function() {return false;},acceptFailure:function() {return false;},acceptSessionChanged:function() {},acceptCleanup:function() {},streamFailed:function() {},stop:function() {return false;}};
             var settingsOwner = {settingWrites:{},acceptFailure:function(){return false;}};
             function finishArtworkRequest(){return false;}
             function selectedLaunchAppId(){return '123';}
@@ -1555,6 +1584,55 @@ private slots:
             QCOMPARE(engine.evaluate(QStringLiteral("streamer.message")).toString(), QStringLiteral("Earlier media event"));
     }
 
+    void sourceStartAcknowledgementAppliesReplayAndPreservesMediaProgress_data()
+    {
+        QTest::addColumn<QString>("initialStatus");
+        QTest::addColumn<bool>("replayEnabled");
+        QTest::addColumn<bool>("replayRequested");
+        QTest::addColumn<QString>("expectedStatus");
+        QTest::addColumn<bool>("expectedReplay");
+        QTest::addColumn<bool>("expectedDisable");
+        QTest::newRow("starting-replay") << QStringLiteral("starting") << true << true << QStringLiteral("connecting") << true << false;
+        QTest::newRow("starting-no-replay") << QStringLiteral("starting") << false << true << QStringLiteral("connecting") << false << false;
+        QTest::newRow("replay-not-requested") << QStringLiteral("starting") << true << false << QStringLiteral("connecting") << true << true;
+        QTest::newRow("first-frame-arrived-first") << QStringLiteral("streaming") << true << true << QStringLiteral("streaming") << true << false;
+        QTest::newRow("error-arrived-first") << QStringLiteral("error") << true << true << QStringLiteral("error") << false << false;
+        QTest::newRow("stopped-arrived-first") << QStringLiteral("stopped") << true << true << QStringLiteral("stopped") << false << false;
+    }
+
+    void sourceStartAcknowledgementAppliesReplayAndPreservesMediaProgress()
+    {
+        QFETCH(QString, initialStatus);
+        QFETCH(bool, replayEnabled);
+        QFETCH(bool, replayRequested);
+        QFETCH(QString, expectedStatus);
+        QFETCH(bool, expectedReplay);
+        QFETCH(bool, expectedDisable);
+        QJSEngine engine;
+        engine.installExtensions(QJSEngine::TranslationExtension);
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            var streamerStartRequestId = 'source', streamReplayEnabled = false, disableCalls = 0;
+            var streamer = {message:'Earlier media event'};
+            function takeNativeRequest(id) { return {operation:'source-start'}; }
+            function updateStreamerFields(fields) { streamer = Object.assign({}, streamer, fields); }
+            function disableStreamReplay() { ++disableCalls; }
+        )JS")).isError());
+        engine.globalObject().setProperty(QStringLiteral("initialStatus"), initialStatus);
+        engine.globalObject().setProperty(QStringLiteral("replayEnabled"), replayEnabled);
+        engine.globalObject().setProperty(QStringLiteral("replayBufferRequested"), replayRequested);
+        QVERIFY(!engine.evaluate(QStringLiteral("streamer.status = initialStatus")).isError());
+        QVERIFY(loadShellFunction(engine, QStringLiteral("acceptNativeResponse")));
+        const auto result = engine.evaluate(QStringLiteral(
+            "acceptNativeResponse({id:'source',type:'ok',transport:'provider-worker',replayEnabled:replayEnabled})"));
+        QVERIFY2(!result.isError(), qPrintable(result.toString()));
+        QCOMPARE(engine.evaluate(QStringLiteral("streamer.status")).toString(), expectedStatus);
+        QCOMPARE(engine.evaluate(QStringLiteral("streamReplayEnabled")).toBool(), expectedReplay);
+        QCOMPARE(engine.evaluate(QStringLiteral("disableCalls > 0")).toBool(), expectedDisable);
+        QCOMPARE(engine.evaluate(QStringLiteral("streamerStartRequestId")).toString(), QString());
+        if (initialStatus != QStringLiteral("starting"))
+            QCOMPARE(engine.evaluate(QStringLiteral("streamer.message")).toString(), QStringLiteral("Earlier media event"));
+    }
+
     void lastPlayedUsesElapsedUnits_data()
     {
         QTest::addColumn<QString>("raw");
@@ -2117,11 +2195,17 @@ private slots:
         QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
             var window = {active:true,activeRoute:'stream',streamSurfaceLocked:false,
                 desktopSurfaceActive:true,consoleStreamReady:true,lockedStreamDesktopSurface:false,synchronizeRenderedSurface:function(){}};
-            var ShellStore = {activeSession:{sessionId:'seat'},authRestorePending:false,signedIn:false,
+            var ShellStore = {activeSession:{sessionId:'seat'},authRestorePending:false,signedIn:false,sourceStreamActive:false,
                 settings:{},streamOverlayBlocksGameplayInput:function(){return false;}};
             var AppController = {route:'stream',overlay:''};
             var ControllerInput = {};
         )JS")).isError());
+        const auto ownerSignedIn = QRegularExpression(QStringLiteral(
+            "readonly property bool streamOwnerSignedIn: ([^\\n]+)")).match(source(QStringLiteral("qml/state/ShellStore.qml")));
+        QVERIFY(ownerSignedIn.hasMatch());
+        QVERIFY(!engine.evaluate(QStringLiteral(
+            "Object.defineProperty(ShellStore, 'streamOwnerSignedIn', {get: function() { with (this) return %1; }});")
+            .arg(ownerSignedIn.captured(1))).isError());
         for (const auto *name : {"updateStreamSurfaceLock", "syncInputOwnership"}) {
             const auto match = QRegularExpression(QStringLiteral(
                 "    function %1\\([^\\n]*\\) \\{.*?\\n    \\}").arg(QString::fromLatin1(name)),
@@ -2155,6 +2239,17 @@ private slots:
         QVERIFY(!engine.evaluate(QStringLiteral("window.streamSurfaceLocked=true; ShellStore.activeSession={sessionId:'seat'}; window.activeRoute='settings'; updateStreamSurfaceLock();")).isError());
         QVERIFY(!engine.evaluate(QStringLiteral("window.streamSurfaceLocked")).toBool());
         QVERIFY(main.contains(QStringLiteral("function onActiveSessionChanged() {\n                window.updateStreamSurfaceLock()")));
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            ShellStore.activeSession=null; ShellStore.signedIn=false; ShellStore.sourceStreamActive=true;
+            window.activeRoute='stream'; AppController.route='stream'; window.desktopSurfaceActive=true;
+            updateStreamSurfaceLock(); syncInputOwnership();
+        )JS")).isError());
+        QVERIFY(engine.evaluate(QStringLiteral("window.streamSurfaceLocked && !ControllerInput.shellCaptureEnabled && !ControllerInput.inputSuspended")).toBool());
+        QVERIFY(!engine.evaluate(QStringLiteral("window.activeRoute='profile-pin'; updateStreamSurfaceLock();")).isError());
+        QVERIFY(engine.evaluate(QStringLiteral("window.streamSurfaceLocked")).toBool());
+        QVERIFY(!engine.evaluate(QStringLiteral("ShellStore.sourceStreamActive=false; updateStreamSurfaceLock(); syncInputOwnership();")).isError());
+        QVERIFY(engine.evaluate(QStringLiteral("!window.streamSurfaceLocked && ControllerInput.shellCaptureEnabled")).toBool());
+        QVERIFY(main.contains(QStringLiteral("function onStreamOwnerSignedInChanged() { window.syncInputOwnership() }")));
     }
 
     void cursorModeTransitionsCloseThePreviousButtonOwner()

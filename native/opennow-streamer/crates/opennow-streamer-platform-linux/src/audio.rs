@@ -103,9 +103,65 @@ impl AudioConfig {
 #[derive(Debug, Clone)]
 pub struct AudioPacket {
     pub data: Arc<[u8]>,
-    pub rtp_timestamp: u32,
     pub clock_rate_hz: u32,
-    pub ssrc: u32,
+    timing: AudioTiming,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AudioTiming {
+    Rtp { timestamp: u32, ssrc: u32 },
+    Source(opennow_media_protocol::FrameProvenance),
+}
+
+impl AudioTiming {
+    fn same_source(self, other: Self) -> bool {
+        match (self, other) {
+            (Self::Rtp { ssrc: left, .. }, Self::Rtp { ssrc: right, .. }) => left == right,
+            (Self::Source(left), Self::Source(right)) => {
+                left.attempt_generation == right.attempt_generation
+                    && left.track_id == right.track_id
+                    && left.source.zip(right.source).is_some_and(|(left, right)| {
+                        left.ssrc == right.ssrc && left.clock_rate_hz == right.clock_rate_hz
+                    })
+            }
+            _ => false,
+        }
+    }
+
+    fn elapsed_since(self, previous: Self) -> Option<u64> {
+        match (self, previous) {
+            (
+                Self::Rtp { timestamp, .. },
+                Self::Rtp {
+                    timestamp: previous,
+                    ..
+                },
+            ) => {
+                let elapsed = timestamp.wrapping_sub(previous);
+                (elapsed < 1 << 31).then_some(u64::from(elapsed))
+            }
+            (Self::Source(current), Self::Source(previous)) => current
+                .source?
+                .timestamp
+                .checked_sub(previous.source?.timestamp),
+            _ => None,
+        }
+    }
+
+    fn preceding(self, ticks: u64) -> Self {
+        match self {
+            Self::Rtp { timestamp, ssrc } => Self::Rtp {
+                timestamp: timestamp.wrapping_sub(ticks as u32),
+                ssrc,
+            },
+            Self::Source(mut provenance) => {
+                if let Some(source) = provenance.source.as_mut() {
+                    source.timestamp = source.timestamp.saturating_sub(ticks);
+                }
+                Self::Source(provenance)
+            }
+        }
+    }
 }
 
 impl AudioPacket {
@@ -118,9 +174,30 @@ impl AudioPacket {
         let data = data.into();
         let packet = Self {
             data,
-            rtp_timestamp,
             clock_rate_hz,
-            ssrc,
+            timing: AudioTiming::Rtp {
+                timestamp: rtp_timestamp,
+                ssrc,
+            },
+        };
+        packet.validate()?;
+        Ok(packet)
+    }
+
+    pub fn from_source(
+        data: impl Into<Arc<[u8]>>,
+        provenance: opennow_media_protocol::FrameProvenance,
+    ) -> Result<Self> {
+        provenance
+            .validate()
+            .map_err(|error| Error::InvalidFormat(error.to_owned()))?;
+        let source = provenance
+            .source
+            .ok_or_else(|| Error::InvalidFormat("audio source timestamp is unknown".to_owned()))?;
+        let packet = Self {
+            data: data.into(),
+            clock_rate_hz: source.clock_rate_hz,
+            timing: AudioTiming::Source(provenance),
         };
         packet.validate()?;
         Ok(packet)
@@ -161,8 +238,7 @@ pub(crate) struct OpusDecoder {
     sample_rate: u32,
     channels: usize,
     pcm: Vec<f32>,
-    last_ssrc: Option<u32>,
-    last_timestamp: Option<u32>,
+    last_timing: Option<AudioTiming>,
     last_frame_samples_per_channel: usize,
 }
 
@@ -214,15 +290,14 @@ impl OpusDecoder {
                 sample_rate: config.sample_rate,
                 channels,
                 pcm: vec![0.0; config.sample_rate as usize * OPUS_MAX_FRAME_MS / 1000 * channels],
-                last_ssrc: None,
-                last_timestamp: None,
+                last_timing: None,
                 last_frame_samples_per_channel: 0,
             })
         }
     }
 
     pub fn decode<'a>(&'a mut self, packet: &AudioPacket) -> Result<&'a [f32]> {
-        if self.source_changed(packet.ssrc) {
+        if self.source_changed(packet.timing) {
             self.reset_decoder_state()?;
         }
         let max_samples_per_channel = self.sample_rate as usize * OPUS_MAX_FRAME_MS / 1000;
@@ -245,8 +320,7 @@ impl OpusDecoder {
         if samples_per_channel > 0 {
             self.last_frame_samples_per_channel = samples_per_channel;
         }
-        self.last_ssrc = Some(packet.ssrc);
-        self.last_timestamp = Some(packet.rtp_timestamp);
+        self.last_timing = Some(packet.timing);
         Ok(&self.pcm[..samples_per_channel * self.channels])
     }
 
@@ -257,22 +331,20 @@ impl OpusDecoder {
         }
         let frame_ticks =
             (frame_samples as u64) * u64::from(packet.clock_rate_hz) / u64::from(self.sample_rate);
-        self.last_ssrc = Some(packet.ssrc);
-        self.last_timestamp = Some(packet.rtp_timestamp.wrapping_sub(frame_ticks as u32));
+        self.last_timing = Some(packet.timing.preceding(frame_ticks));
     }
 
     pub fn conceal_before<'a>(&'a mut self, packet: &AudioPacket) -> Result<&'a [f32]> {
-        if self.source_changed(packet.ssrc) {
+        if self.source_changed(packet.timing) {
             self.reset_decoder_state()?;
             return Ok(&self.pcm[..0]);
         }
-        let Some(previous) = self.last_timestamp else {
+        let Some(previous) = self.last_timing else {
             return Ok(&self.pcm[..0]);
         };
-        let span = packet.rtp_timestamp.wrapping_sub(previous);
-        if span >= 1 << 31 {
+        let Some(span) = packet.timing.elapsed_since(previous) else {
             return Ok(&self.pcm[..0]);
-        }
+        };
         let frame_samples = self.last_frame_samples_per_channel;
         if frame_samples == 0 {
             return Ok(&self.pcm[..0]);
@@ -319,8 +391,9 @@ impl OpusDecoder {
         Ok(&self.pcm[..produced * self.channels])
     }
 
-    fn source_changed(&self, ssrc: u32) -> bool {
-        self.last_ssrc.is_some_and(|last| last != ssrc)
+    fn source_changed(&self, timing: AudioTiming) -> bool {
+        self.last_timing
+            .is_some_and(|last| !last.same_source(timing))
     }
 
     fn reset_decoder_state(&mut self) -> Result<()> {
@@ -330,15 +403,15 @@ impl OpusDecoder {
                 opus_error(self.strerror, status)
             }));
         }
-        self.last_ssrc = None;
-        self.last_timestamp = None;
+        self.last_timing = None;
         self.last_frame_samples_per_channel = 0;
         Ok(())
     }
 }
 
-fn ticks_to_samples(ticks: u32, clock_rate_hz: u32, sample_rate: u32) -> usize {
-    (u64::from(ticks) * u64::from(sample_rate) / u64::from(clock_rate_hz)) as usize
+fn ticks_to_samples(ticks: u64, clock_rate_hz: u32, sample_rate: u32) -> usize {
+    usize::try_from(u128::from(ticks) * u128::from(sample_rate) / u128::from(clock_rate_hz))
+        .unwrap_or(usize::MAX)
 }
 
 fn plc_chunk_samples(remaining: usize, sample_rate: u32) -> usize {
@@ -845,6 +918,42 @@ mod tests {
         assert_eq!(ticks_to_samples(960, 48_000, 24_000), 480);
         assert_eq!(ticks_to_samples(1_440, 48_000, 24_000), 720);
         assert_eq!(ticks_to_samples(0, 48_000, 48_000), 0);
+    }
+
+    #[test]
+    fn source_audio_preserves_u64_clock_without_ssrc_and_resets_on_attempt_change() {
+        use opennow_media_protocol::{FrameProvenance, SourceStamp};
+        let (mut decoder, mut encoder) = decoder_and_encoder();
+        let mut packet = |timestamp, generation| {
+            AudioPacket::from_source(
+                encoded_frame(&mut encoder, 960, 440.0),
+                FrameProvenance {
+                    attempt_generation: generation,
+                    track_id: 2,
+                    source: Some(SourceStamp {
+                        sender_frame_id: None,
+                        timestamp,
+                        clock_rate_hz: 48_000,
+                        ssrc: None,
+                    }),
+                },
+            )
+            .unwrap()
+        };
+        let base = u64::MAX - 10_000;
+        let first = packet(base, 1);
+        assert_eq!(decoder.decode(&first).unwrap().len(), 1_920);
+        let next = packet(base + 1_920, 1);
+        assert_eq!(decoder.conceal_before(&next).unwrap().len(), 1_920);
+        assert_eq!(decoder.decode(&next).unwrap().len(), 1_920);
+        let restarted = packet(base + 7_680, 2);
+        assert!(decoder.conceal_before(&restarted).unwrap().is_empty());
+        assert_eq!(decoder.decode(&restarted).unwrap().len(), 1_920);
+        assert!(
+            matches!(restarted.timing, super::AudioTiming::Source(provenance)
+            if provenance.source.unwrap().timestamp == base + 7_680
+                && provenance.source.unwrap().ssrc.is_none())
+        );
     }
 
     #[test]

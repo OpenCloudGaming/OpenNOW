@@ -841,6 +841,10 @@ private slots:
 
     void handlesUnknownAndInvalidSizesPredictably()
     {
+        QCOMPARE(StreamVideoItem::aspectFitRect(QSize(320, 240), QSize(1920, 1080)),
+                 QRect(240, 0, 1440, 1080));
+        QCOMPARE(StreamVideoItem::mapRemoteCursorPosition(QPoint(0, 0), QSize(320, 240), QSizeF(1920, 1080)),
+                 QPoint(240, 0));
         QCOMPARE(StreamVideoItem::aspectFitRect(QSize(), QSize(640, 360)),
                  QRect(0, 0, 640, 360));
         QCOMPARE(StreamVideoItem::aspectFitRect(QSize(1920, 1080), QSize()), QRect());

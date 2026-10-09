@@ -44,6 +44,7 @@ use ::windows::Win32::System::Threading::{
 };
 use ::windows::core::{IUnknown, Interface};
 
+use crate::event_queue::EventQueue;
 use crate::queue::BoundedQueue;
 use crate::{
     ADAPTIVE_VIDEO_QUEUE_CAPACITY, BackendError, BackendEvent, EncodedVideoFrame, PushOutcome,
@@ -137,6 +138,7 @@ pub enum D3d11ColorSpace {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct D3d11RecordedFrame {
+    pub provenance: opennow_media_protocol::FrameProvenance,
     pub texture: *mut c_void,
     pub texture_format: D3d11TextureFormat,
     pub color_space: D3d11ColorSpace,
@@ -150,7 +152,7 @@ pub struct D3d11RecordedFrame {
 #[derive(Clone)]
 pub struct D3d11FrameSubmitter {
     encoded: Arc<BoundedQueue<EncodedVideoFrame>>,
-    events: Arc<BoundedQueue<BackendEvent>>,
+    events: Arc<EventQueue>,
 }
 
 impl D3d11FrameSubmitter {
@@ -175,6 +177,10 @@ impl D3d11FrameSubmitter {
 
     pub fn holds_keyframe(&self) -> bool {
         self.encoded.any(|queued| queued.key_frame)
+    }
+
+    pub fn try_event(&self) -> Option<BackendEvent> {
+        self.events.try_pop()
     }
 }
 
@@ -396,7 +402,10 @@ impl AdoptedResources {
             input_description.ArraySize,
         )?;
         self.reconfigure(frame.format);
-        if frame.format.pixel_format == VideoPixelFormat::Y410 {
+        if frame.format.pixel_format == VideoPixelFormat::Y410
+            || (frame.format.chroma_siting == crate::VideoChromaSiting::Center
+                && frame.format.chroma_format == crate::VideoChromaFormat::Cs420)
+        {
             if self.y410.is_none() {
                 self.y410 = Some(super::y410::Y410Converter::new(
                     &self.device,
@@ -411,6 +420,7 @@ impl AdoptedResources {
                 .record(slot, frame)?;
             self.generation = self.generation.wrapping_add(1).max(1);
             return Ok(D3d11RecordedFrame {
+                provenance: frame.provenance,
                 texture: texture.as_raw(),
                 texture_format: D3d11TextureFormat::Rgb10A2,
                 color_space: if frame.format.transfer_function == VideoTransferFunction::Pq {
@@ -537,6 +547,7 @@ impl AdoptedResources {
         }
         self.generation = self.generation.wrapping_add(1).max(1);
         Ok(D3d11RecordedFrame {
+            provenance: frame.provenance,
             texture: active_slot.texture.as_raw(),
             texture_format: d3d11_texture_format(processor.output_format),
             color_space: recorded_color_space(self.format.transfer_function),
@@ -610,7 +621,7 @@ impl AdoptedResources {
                 &processor,
                 output_color_space(self.format.transfer_function),
             );
-            if self.format.transfer_function != VideoTransferFunction::Sdr {
+            if !self.format.transfer_function.is_sdr() {
                 self.video_context_1
                     .VideoProcessorSetStreamAutoProcessingMode(&processor, 0, false);
             }
@@ -810,7 +821,7 @@ struct D3d11Pipeline {
     resources: AdoptedResources,
     decoded: Arc<Mutex<VecDeque<ReadyDecodedFrame>>>,
     encoded: Arc<BoundedQueue<EncodedVideoFrame>>,
-    events: Arc<BoundedQueue<BackendEvent>>,
+    events: Arc<EventQueue>,
     presented_decoder_generation: u64,
     stopping: Arc<AtomicBool>,
     decoder_worker: Option<JoinHandle<()>>,
@@ -915,7 +926,7 @@ impl D3d11FrameProducer {
         let decoder_device =
             DecoderDeviceSnapshot::new(&resources).map_err(BackendError::Startup)?;
         let encoded = Arc::new(BoundedQueue::new(ADAPTIVE_VIDEO_QUEUE_CAPACITY));
-        let events = Arc::new(BoundedQueue::new(64));
+        let events = Arc::new(EventQueue::new(64));
         let decoded = Arc::new(Mutex::new(VecDeque::with_capacity(
             ADAPTIVE_VIDEO_QUEUE_CAPACITY,
         )));
@@ -1083,7 +1094,7 @@ fn run_decoder_worker(
     mode: WindowsDecoderMode,
     encoded: Arc<BoundedQueue<EncodedVideoFrame>>,
     decoded: Arc<Mutex<VecDeque<ReadyDecodedFrame>>>,
-    events: Arc<BoundedQueue<BackendEvent>>,
+    events: Arc<EventQueue>,
     decoder_generation: Arc<AtomicU64>,
     stopping: Arc<AtomicBool>,
     frame_ready: Arc<dyn Fn() + Send + Sync>,
@@ -1323,7 +1334,7 @@ fn wait_for_recovery_keyframe(
     mode: WindowsDecoderMode,
     encoded: &BoundedQueue<EncodedVideoFrame>,
     decoded: &Mutex<VecDeque<ReadyDecodedFrame>>,
-    events: &BoundedQueue<BackendEvent>,
+    events: &EventQueue,
     decoder_generation: &AtomicU64,
     stopping: &AtomicBool,
     frame_ready: &dyn Fn(),
@@ -1466,8 +1477,7 @@ fn validate_conversion(
 }
 
 fn output_dxgi_format(format: VideoFormat) -> DXGI_FORMAT {
-    if format.transfer_function != VideoTransferFunction::Sdr || format.pixel_format.bit_depth() > 8
-    {
+    if !format.transfer_function.is_sdr() || format.pixel_format.bit_depth() > 8 {
         DXGI_FORMAT_R10G10B10A2_UNORM
     } else {
         DXGI_FORMAT_R8G8B8A8_UNORM
@@ -1476,7 +1486,9 @@ fn output_dxgi_format(format: VideoFormat) -> DXGI_FORMAT {
 
 fn output_color_space(transfer: VideoTransferFunction) -> DXGI_COLOR_SPACE_TYPE {
     match transfer {
-        VideoTransferFunction::Sdr => DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
+        VideoTransferFunction::Sdr | VideoTransferFunction::Srgb => {
+            DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709
+        }
         VideoTransferFunction::Pq | VideoTransferFunction::Hlg => {
             DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020
         }
@@ -1485,7 +1497,7 @@ fn output_color_space(transfer: VideoTransferFunction) -> DXGI_COLOR_SPACE_TYPE 
 
 fn recorded_color_space(transfer: VideoTransferFunction) -> D3d11ColorSpace {
     match transfer {
-        VideoTransferFunction::Sdr => D3d11ColorSpace::Sdr709,
+        VideoTransferFunction::Sdr | VideoTransferFunction::Srgb => D3d11ColorSpace::Sdr709,
         VideoTransferFunction::Pq | VideoTransferFunction::Hlg => D3d11ColorSpace::Pq2020,
     }
 }
@@ -1519,6 +1531,34 @@ fn chroma_format(format: VideoPixelFormat) -> crate::VideoChromaFormat {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn submitter_drains_decoded_events_without_a_producer_or_render_context() {
+        let events = std::sync::Arc::new(crate::event_queue::EventQueue::new(8));
+        let submitter = super::D3d11FrameSubmitter {
+            encoded: std::sync::Arc::new(crate::queue::BoundedQueue::new(1)),
+            events: std::sync::Arc::clone(&events),
+        };
+        let provenance = opennow_media_protocol::FrameProvenance {
+            attempt_generation: 7,
+            track_id: 2,
+            source: None,
+        };
+        assert_eq!(
+            events.push(crate::BackendEvent::VideoFrameDecoded { provenance }),
+            PushOutcome::Queued
+        );
+        std::thread::spawn(move || {
+            assert_eq!(
+                submitter.try_event(),
+                Some(crate::BackendEvent::VideoFrameDecoded { provenance })
+            );
+            assert_eq!(submitter.try_event(), None);
+        })
+        .join()
+        .unwrap();
+        assert_eq!(events.try_pop(), None);
+    }
+
     use super::*;
     use crate::{VideoChromaFormat, VideoChromaSiting, VideoColorMatrix};
     use ::windows::Win32::Graphics::Direct3D11::{
@@ -1721,6 +1761,7 @@ mod tests {
 
     fn encoded_frame(sequence: i64, key_frame: bool) -> EncodedVideoFrame {
         EncodedVideoFrame {
+            provenance: Default::default(),
             codec: crate::VideoCodec::H264,
             data: vec![0, 0, 0, 1, if key_frame { 0x65 } else { 0x41 }],
             timestamp_100ns: sequence * 166_667,
@@ -1777,7 +1818,7 @@ mod tests {
     #[test]
     fn full_decode_queue_retains_an_incoming_recovery_keyframe() {
         let encoded = Arc::new(BoundedQueue::new(2));
-        let events = Arc::new(BoundedQueue::new(8));
+        let events = Arc::new(EventQueue::new(8));
         let submitter = D3d11FrameSubmitter {
             encoded: Arc::clone(&encoded),
             events: Arc::clone(&events),
@@ -1985,8 +2026,19 @@ mod tests {
             )
         }
         .expect("adopt D3D11 device with a requested Y410 decoder");
+        let provenance = opennow_media_protocol::FrameProvenance {
+            attempt_generation: 5,
+            track_id: 3,
+            source: Some(opennow_media_protocol::SourceStamp {
+                sender_frame_id: Some(u64::MAX),
+                timestamp: 9000,
+                clock_rate_hz: 90_000,
+                ssrc: Some(7),
+            }),
+        };
         submitter
             .submit_video(EncodedVideoFrame {
+                provenance,
                 codec: requested.codec,
                 data: include_bytes!("../../fixtures/probe/hevc-p010-sdr.hevc").to_vec(),
                 timestamp_100ns: 0,
@@ -1996,15 +2048,20 @@ mod tests {
             })
             .expect("submit HEVC P010 SDR access unit");
         let deadline = Instant::now() + Duration::from_secs(5);
+        let mut decoded_events = 0;
         let frame = loop {
             let frame = producer
                 .acquire_latest()
                 .expect("acquire validated decoder output");
-            while let Some(event) = producer.try_event() {
-                assert!(
-                    matches!(event, BackendEvent::VideoFormatChanged(_)),
-                    "unexpected decoder recovery event: {event:?}"
-                );
+            while let Some(event) = submitter.try_event() {
+                match event {
+                    BackendEvent::VideoFrameDecoded { provenance: actual } => {
+                        assert_eq!(actual, provenance);
+                        decoded_events += 1;
+                    }
+                    BackendEvent::VideoFormatChanged(_) => {}
+                    event => panic!("unexpected decoder recovery event: {event:?}"),
+                }
             }
             if let Some(frame) = frame {
                 break frame;
@@ -2013,6 +2070,7 @@ mod tests {
                 .recv_timeout(deadline.saturating_duration_since(Instant::now()))
                 .expect("P010 output must arrive without a replacement keyframe");
         };
+        assert_eq!(decoded_events, 1);
         let actual = frame.format();
         assert_eq!(actual.pixel_format, VideoPixelFormat::P010);
         assert_eq!(actual.chroma_format, VideoChromaFormat::Cs420);
@@ -2597,7 +2655,7 @@ mod tests {
     #[test]
     fn full_decode_queue_reports_loss_synchronously_without_a_stale_recovery_event() {
         let encoded = Arc::new(BoundedQueue::new(2));
-        let events = Arc::new(BoundedQueue::new(8));
+        let events = Arc::new(EventQueue::new(8));
         let submitter = D3d11FrameSubmitter {
             encoded: Arc::clone(&encoded),
             events: Arc::clone(&events),

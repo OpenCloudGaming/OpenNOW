@@ -8,6 +8,7 @@ const DEADLOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn frame(index: u32) -> EncodedFrame {
     EncodedFrame {
+        provenance: Default::default(),
         mid: "video".to_owned(),
         codec: MediaCodec::H264,
         data: Arc::from([0, 0, 0, 1, 0x65, 0x88]),
@@ -485,6 +486,7 @@ fn assert_mux_committed_prefix(reason: RecordingCutReason) {
     let packetized = annexb_to_avcc(&encoded).packetized;
     assert!(!packetized.is_empty());
     let first = EncodedFrame {
+        provenance: Default::default(),
         data: encoded.into(),
         ..frame(0)
     };

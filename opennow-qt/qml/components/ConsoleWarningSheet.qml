@@ -8,6 +8,7 @@ FocusScope {
     property string title: ""
     property string eyebrow: ""
     property string message: ""
+    property int textFormat: Text.AutoText
     property string detail: ""
     property string safeText: qsTr("Cancel")
     property string actionText: ""
@@ -133,6 +134,7 @@ FocusScope {
                             y: -6
                             width: parent.width
                             text: root.title
+                            textFormat: root.textFormat
                             color: Theme.label
                             wrapMode: Text.WordWrap
                             maximumLineCount: 3
@@ -155,6 +157,7 @@ FocusScope {
                         y: 1
                         width: parent.width
                         text: root.message
+                        textFormat: root.textFormat
                         color: Qt.rgba(Theme.label.r, Theme.label.g, Theme.label.b, 0.76)
                         wrapMode: Text.WordWrap
                         font.family: Theme.bodyFont

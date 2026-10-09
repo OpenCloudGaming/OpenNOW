@@ -17,6 +17,9 @@
 #include <QJsonParseError>
 #include <QProcessEnvironment>
 
+#include <algorithm>
+#include <limits>
+
 using namespace Qt::StringLiterals;
 
 QString CoreClient::graphicsPreference(const QString &program)
@@ -186,6 +189,14 @@ CoreClient::~CoreClient()
 QString CoreClient::state() const { return m_state; }
 QString CoreClient::lastError() const { return m_lastError; }
 int CoreClient::protocolVersion() const { return CurrentProtocolVersion; }
+QStringList CoreClient::capabilities() const { return m_capabilities; }
+
+void CoreClient::setCapabilities(const QStringList &capabilities)
+{
+    if (m_capabilities == capabilities) return;
+    m_capabilities = capabilities;
+    emit capabilitiesChanged();
+}
 
 bool CoreClient::start(const QString &program, const QStringList &arguments)
 {
@@ -252,7 +263,82 @@ void CoreClient::stop()
     }
 }
 
+bool CoreClient::isPrivateMethod(const QString &method)
+{
+    return method == u"sources.session.create"_s || method == u"streamer.source.policy"_s
+        || method == u"streamer.source.prepare"_s || method == u"streamer.source.release"_s
+        || method == u"streamer.source.observe"_s || method == u"streamer.source.reconcile"_s
+        || method == u"sources.auth.open"_s;
+}
+
+namespace {
+bool isMediaPreparation(const QString &method)
+{
+    return method == u"streamer.prepare"_s || method == u"streamer.source.prepare"_s;
+}
+}
+
+bool CoreClient::mediaPreparationPending() const
+{
+    return std::any_of(m_pending.cbegin(), m_pending.cend(), [](const PendingRequest &pending) {
+        return isMediaPreparation(pending.message.value(u"method"_s).toString());
+    });
+}
+
+void CoreClient::releaseHeldPreparations()
+{
+    m_reconcileId.clear();
+    const auto now = QDateTime::currentMSecsSinceEpoch();
+    bool released = false;
+    for (auto &pending : m_pending) {
+        if (pending.retryAtMs == std::numeric_limits<qint64>::max()) {
+            pending.retryAtMs = now;
+            released = true;
+        }
+    }
+    if (released) QTimer::singleShot(0, this, &CoreClient::processTimeouts);
+}
+
 QString CoreClient::request(const QString &method, const QJsonObject &params, int timeoutMs)
+{
+    if (isPrivateMethod(method))
+        return {};
+    return sendRequest(method, params, timeoutMs);
+}
+
+QString CoreClient::requestPrivate(const QString &method, const QJsonObject &params, PrivateHandler handler,
+                                   int timeoutMs)
+{
+    if (!isPrivateMethod(method) || !handler)
+        return {};
+    const bool reconcile = method == u"streamer.source.reconcile"_s;
+    if (reconcile && (!m_reconcileId.isEmpty() || mediaPreparationPending()))
+        return {};
+    const auto pendingBefore = m_nextRequestId;
+    m_privateHandlers.insert(QString::number(pendingBefore), reconcile
+        ? PrivateHandler([this, handler](bool ok, const QJsonObject &result, const QString &code, const QString &message) {
+              releaseHeldPreparations();
+              handler(ok, result, code, message);
+          })
+        : handler);
+    const auto id = sendRequest(method, params, timeoutMs);
+    if (id != QString::number(pendingBefore))
+        m_privateHandlers.remove(QString::number(pendingBefore));
+    else if (reconcile)
+        m_reconcileId = id;
+    return id;
+}
+
+void CoreClient::deliverFailure(const QString &id, const QString &code, const QString &message)
+{
+    if (const auto handler = m_privateHandlers.take(id)) {
+        handler(false, {}, code, message);
+        return;
+    }
+    emit requestFailed(id, code, message);
+}
+
+QString CoreClient::sendRequest(const QString &method, const QJsonObject &params, int timeoutMs)
 {
     if (method.trimmed().isEmpty() || m_process.state() != QProcess::Running
         || (m_state != u"ready"_s && !(m_state == u"handshaking"_s && method == u"core.hello"_s))) {
@@ -262,7 +348,8 @@ QString CoreClient::request(const QString &method, const QJsonObject &params, in
     const auto deadline = QDateTime::currentMSecsSinceEpoch() + qBound(100, timeoutMs, 300'000);
     auto runtimeParams = params;
     if (method == u"session.create"_s || method == u"streamer.prepare"_s
-            || method == u"settings.choices.get"_s) {
+            || method == u"settings.choices.get"_s || method == u"sources.session.create"_s
+            || method == u"streamer.source.prepare"_s) {
         auto capabilities = runtimeParams.value(u"runtimeCapabilities"_s).toObject();
         capabilities.insert(u"nativeHdrSupported"_s, m_nativeHdrSupported);
         if (m_nativeHdrDisplay.available) {
@@ -291,13 +378,25 @@ QString CoreClient::request(const QString &method, const QJsonObject &params, in
                               {u"id"_s, id},
                               {u"method"_s, method},
                               {u"params"_s, runtimeParams}};
+    const bool preparation = isMediaPreparation(method);
+    if (preparation) ++m_mediaEpoch;
+    if (preparation && !m_reconcileId.isEmpty()) {
+        m_pending.insert(id, PendingRequest{message, deadline, std::numeric_limits<qint64>::max()});
+        return id;
+    }
     m_pending.insert(id, PendingRequest{message, deadline});
     if (!writeMessage(message)) {
         m_pending.remove(id);
-        emit requestFailed(id, u"core_not_writable"_s, u"Core transport is not writable"_s);
+        if (!m_privateHandlers.remove(id))
+            emit requestFailed(id, u"core_not_writable"_s, u"Core transport is not writable"_s);
         return {};
     }
     return id;
+}
+
+void CoreClient::settleReceipt(const QString &requestId, bool accepted)
+{
+    writeMessage(QJsonObject{{u"type"_s, accepted ? u"ack"_s : u"cancel"_s}, {u"id"_s, requestId}});
 }
 
 bool CoreClient::cancel(const QString &requestId)
@@ -306,7 +405,7 @@ bool CoreClient::cancel(const QString &requestId)
         return false;
     }
     writeMessage(QJsonObject{{u"type"_s, u"cancel"_s}, {u"id"_s, requestId}});
-    emit requestFailed(requestId, u"cancelled"_s, u"Request cancelled"_s);
+    deliverFailure(requestId, u"cancelled"_s, u"Request cancelled"_s);
     return true;
 }
 
@@ -384,7 +483,7 @@ void CoreClient::processTimeouts()
             return;
         }
         writeMessage(QJsonObject{{u"type"_s, u"cancel"_s}, {u"id"_s, id}});
-        emit requestFailed(id, u"deadline_exceeded"_s, u"Core request timed out"_s);
+        deliverFailure(id, u"deadline_exceeded"_s, u"Core request timed out"_s);
     }
     for (const auto &id : retries) {
         const auto pending = m_pending.find(id);
@@ -392,7 +491,7 @@ void CoreClient::processTimeouts()
         pending->retryAtMs = 0;
         if (!writeMessage(pending->message)) {
             m_pending.erase(pending);
-            emit requestFailed(id, u"core_not_writable"_s, u"Core transport is not writable"_s);
+            deliverFailure(id, u"core_not_writable"_s, u"Core transport is not writable"_s);
         }
     }
 }
@@ -419,6 +518,8 @@ void CoreClient::setState(const QString &state)
 {
     if (m_state == state) return;
     m_state = state;
+    if (state != u"ready"_s)
+        setCapabilities({});
     if (state == u"failed"_s || state == u"stopping"_s || state == u"stopped"_s) {
         m_events.clear();
         m_droppedEvents = 0;
@@ -465,14 +566,25 @@ void CoreClient::processLine(const QByteArray &line)
             return;
         }
         const auto method = pending->message.value(u"method"_s).toString();
+        const auto requestedSource = pending->message.value(u"params"_s).toObject().value(u"sourceId"_s).toString();
         m_pending.erase(pending);
         if (message.value(u"ok"_s).toBool(false)) {
-            if (method == u"session.create"_s
-                    && !writeMessage(QJsonObject{{u"type"_s, u"ack"_s}, {u"id"_s, id}})) {
-                emit requestFailed(id, u"core_write_failed"_s, u"Could not accept the allocated session"_s);
+            const auto result = message.value(u"result"_s).toObject();
+            if (method == u"sources.session.create"_s
+                    && (result.value(u"sourceId"_s).toString() != requestedSource || requestedSource.isEmpty()
+                        || !result.value(u"result"_s).toObject().value(u"session"_s).isObject())) {
+                deliverFailure(id, u"invalid_source_session"_s, u"The core returned an invalid session for this source"_s);
                 return;
             }
-            const auto result = message.value(u"result"_s).toObject();
+            if ((method == u"session.create"_s || method == u"sources.session.create"_s)
+                    && !writeMessage(QJsonObject{{u"type"_s, u"ack"_s}, {u"id"_s, id}})) {
+                deliverFailure(id, u"core_write_failed"_s, u"Could not accept the allocated session"_s);
+                return;
+            }
+            if (const auto handler = m_privateHandlers.take(id)) {
+                handler(true, result, {}, {});
+                return;
+            }
             if (id == m_handshakeRequestId) {
                 const auto version = result.value(u"protocolVersion"_s).toInt(-1);
                 if (version != CurrentProtocolVersion) {
@@ -480,16 +592,29 @@ void CoreClient::processLine(const QByteArray &line)
                     return;
                 }
                 const auto capabilities = result.value(u"capabilities"_s).toArray();
+                const bool sourcesV2 = capabilities.contains(u"sources.v2"_s);
                 for (const auto &capability : {u"catalog.libraryPages.v1"_s, u"catalog.metadata.v1"_s,
                                              u"account.syncObservation.v1"_s, u"catalog.languages.v1"_s,
                                              u"queue.servers.v1"_s}) {
-                    if (!capabilities.contains(capability)) {
+                    if (!sourcesV2 && !capabilities.contains(capability)) {
                         protocolFailure(u"The packaged core lacks a required capability: "_s + capability);
                         return;
                     }
                 }
+                QStringList negotiated;
+                for (const auto &capability : capabilities) {
+                    const auto name = capability.toString();
+                    if (!capability.isString() || name.isEmpty() || name.size() > MaximumCapabilityLength
+                            || negotiated.contains(name))
+                        continue;
+                    if (negotiated.size() >= MaximumCapabilities)
+                        break;
+                    negotiated.append(name);
+                }
                 m_restartAttempts = 0;
+                m_capabilities = negotiated;
                 setState(u"ready"_s);
+                emit capabilitiesChanged();
                 acknowledgeUpdateStartup();
             }
             emit responseReceived(id, result);
@@ -501,7 +626,7 @@ void CoreClient::processLine(const QByteArray &line)
                 protocolFailure(detail);
                 return;
             }
-            emit requestFailed(id, code, detail);
+            deliverFailure(id, code, detail);
         }
         return;
     }
@@ -532,8 +657,10 @@ void CoreClient::failAll(const QString &code, const QString &message)
     const auto ids = m_pending.keys();
     m_pending.clear();
     for (const auto &id : ids) {
-        emit requestFailed(id, code, message);
+        deliverFailure(id, code, message);
     }
+    m_privateHandlers.clear();
+    m_reconcileId.clear();
 }
 
 void CoreClient::protocolFailure(const QString &message)

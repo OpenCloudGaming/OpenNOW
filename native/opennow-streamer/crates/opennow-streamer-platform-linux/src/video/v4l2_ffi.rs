@@ -31,7 +31,10 @@ pub const v4l2_colorspace_V4L2_COLORSPACE_SMPTE170M: v4l2_colorspace = 1;
 pub const v4l2_colorspace_V4L2_COLORSPACE_REC709: v4l2_colorspace = 3;
 pub const v4l2_colorspace_V4L2_COLORSPACE_BT2020: v4l2_colorspace = 10;
 pub type v4l2_quantization = u32;
+pub const v4l2_quantization_V4L2_QUANTIZATION_DEFAULT: v4l2_quantization = 0;
 pub const v4l2_quantization_V4L2_QUANTIZATION_FULL_RANGE: v4l2_quantization = 1;
+#[cfg(test)]
+pub const v4l2_quantization_V4L2_QUANTIZATION_LIM_RANGE: v4l2_quantization = 2;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]

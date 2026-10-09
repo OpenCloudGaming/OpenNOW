@@ -34,6 +34,7 @@ mod color;
 mod failure;
 mod format;
 mod lifecycle;
+mod provenance;
 mod queue;
 mod ring;
 mod spatial;

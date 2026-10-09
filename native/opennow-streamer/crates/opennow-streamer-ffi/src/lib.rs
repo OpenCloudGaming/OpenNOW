@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::thread::{self, JoinHandle};
 
+use opennow_media_protocol::{FrameProvenance, SourceStamp};
 use opennow_streamer_core::{Engine, EventSender};
 use opennow_streamer_hid::{
     HidRuntime, InventoryOutcome, SdlDeviceClaim, SnapshotAdmission, SonySnapshot,
@@ -23,7 +24,7 @@ use serde_json::Value;
 
 static FIRST_FRAME_LOGGED: AtomicBool = AtomicBool::new(false);
 
-pub const OPENNOW_STREAMER_FFI_ABI_VERSION: u32 = 11;
+pub const OPENNOW_STREAMER_FFI_ABI_VERSION: u32 = 12;
 pub const OPENNOW_STREAMER_MAX_TEXT_BYTES: usize =
     opennow_streamer_protocol::text_input::MAX_TEXT_BYTES;
 pub const OPENNOW_STREAMER_VULKAN_DEVICE_INFO_VERSION: u32 = 1;
@@ -301,6 +302,62 @@ pub struct OpenNowStreamerFrameInfo {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct OpenNowStreamerFrameProvenance {
+    pub flags: u32,
+    pub track_id: u32,
+    pub attempt_generation: u64,
+    pub sender_timestamp: u64,
+    pub clock_rate_hz: u32,
+    pub ssrc: u32,
+    pub sender_frame_id: u64,
+}
+
+impl From<FrameProvenance> for OpenNowStreamerFrameProvenance {
+    fn from(value: FrameProvenance) -> Self {
+        let mut result = Self {
+            track_id: value.track_id,
+            attempt_generation: value.attempt_generation,
+            ..Self::default()
+        };
+        if let Some(source) = value.source {
+            result.flags = 1
+                | (u32::from(source.sender_frame_id.is_some()) << 1)
+                | (u32::from(source.ssrc.is_some()) << 2);
+            result.sender_timestamp = source.timestamp;
+            result.clock_rate_hz = source.clock_rate_hz;
+            result.ssrc = source.ssrc.unwrap_or_default();
+            result.sender_frame_id = source.sender_frame_id.unwrap_or_default();
+        }
+        result
+    }
+}
+
+impl TryFrom<OpenNowStreamerFrameProvenance> for FrameProvenance {
+    type Error = OpenNowStreamerStatus;
+
+    fn try_from(value: OpenNowStreamerFrameProvenance) -> Result<Self, Self::Error> {
+        if value.flags & !7 != 0 || (value.flags & 1 == 0 && value.flags != 0) {
+            return Err(OpenNowStreamerStatus::InvalidConfig);
+        }
+        let result = Self {
+            attempt_generation: value.attempt_generation,
+            track_id: value.track_id,
+            source: (value.flags & 1 != 0).then_some(SourceStamp {
+                sender_frame_id: (value.flags & 2 != 0).then_some(value.sender_frame_id),
+                timestamp: value.sender_timestamp,
+                clock_rate_hz: value.clock_rate_hz,
+                ssrc: (value.flags & 4 != 0).then_some(value.ssrc),
+            }),
+        };
+        result
+            .validate()
+            .map_err(|_| OpenNowStreamerStatus::InvalidConfig)?;
+        Ok(result)
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct OpenNowStreamerRecordedFrame {
     pub resource: u64,
     pub resource_view: u64,
@@ -312,6 +369,7 @@ pub struct OpenNowStreamerRecordedFrame {
     pub frame_slot: u32,
     pub generation: u64,
     pub presentation_time_ns: u64,
+    pub provenance: OpenNowStreamerFrameProvenance,
 }
 
 pub struct OpenNowStreamerFrame {
@@ -366,6 +424,7 @@ impl Callback {
 
 enum WorkerCommand {
     Send(Vec<u8>),
+    Presented(FrameProvenance),
     Destroy,
 }
 
@@ -624,9 +683,26 @@ fn run_engine(
     engine_factory: impl FnOnce(EventSender) -> Engine,
 ) {
     let mut engine = engine_factory(events);
-    while let Ok(command) = commands.recv() {
+    loop {
+        engine.poll_lifecycle();
+        let command = if engine.needs_lifecycle_poll() {
+            match commands.recv_timeout(std::time::Duration::from_millis(25)) {
+                Ok(command) => command,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        } else {
+            match commands.recv() {
+                Ok(command) => command,
+                Err(_) => break,
+            }
+        };
         let bytes = match command {
             WorkerCommand::Send(bytes) => bytes,
+            WorkerCommand::Presented(provenance) => {
+                engine.notify_presented(provenance);
+                continue;
+            }
             WorkerCommand::Destroy => break,
         };
         let command: Command = match serde_json::from_slice(&bytes) {
@@ -751,6 +827,7 @@ fn recorded_frame(
         frame_slot: frame.frame_slot,
         generation: frame.generation,
         presentation_time_ns: frame.presentation_time_ns,
+        provenance: frame.provenance.into(),
     })
 }
 
@@ -1367,6 +1444,35 @@ pub unsafe extern "C" fn opennow_streamer_set_graphics_context(
 }
 
 #[unsafe(no_mangle)]
+/// # Safety
+/// `handle` must be live and `source` must point to a readable provenance value.
+pub unsafe extern "C" fn opennow_streamer_notify_presented(
+    handle: *const OpenNowStreamer,
+    source: *const OpenNowStreamerFrameProvenance,
+) -> OpenNowStreamerStatus {
+    match catch_unwind(AssertUnwindSafe(|| {
+        if handle.is_null() || source.is_null() {
+            return OpenNowStreamerStatus::NullPointer;
+        }
+        let provenance = match FrameProvenance::try_from(unsafe { *source }) {
+            Ok(provenance) => provenance,
+            Err(status) => return status,
+        };
+        let Some(commands) = (unsafe { &*handle }).commands.as_ref() else {
+            return OpenNowStreamerStatus::Closed;
+        };
+        match commands.try_send(WorkerCommand::Presented(provenance)) {
+            Ok(()) => OpenNowStreamerStatus::Ok,
+            Err(TrySendError::Full(_)) => OpenNowStreamerStatus::QueueFull,
+            Err(TrySendError::Disconnected(_)) => OpenNowStreamerStatus::Closed,
+        }
+    })) {
+        Ok(status) => status,
+        Err(_) => OpenNowStreamerStatus::Panic,
+    }
+}
+
+#[unsafe(no_mangle)]
 /// Acquires the newest pending GPU frame and transfers one retained reference to the caller.
 ///
 /// # Safety
@@ -1702,6 +1808,7 @@ mod tests {
                 let result = recorded_frame(
                     GraphicsApi::Vulkan,
                     GraphicsRecordedFrame {
+                        provenance: Default::default(),
                         resource: 1,
                         resource_view: 2,
                         texture_format,
@@ -1777,7 +1884,7 @@ mod tests {
 
     #[test]
     fn abi_eleven_appends_the_sony_snapshot_contract() {
-        assert_eq!(OPENNOW_STREAMER_FFI_ABI_VERSION, 11);
+        assert_eq!(OPENNOW_STREAMER_FFI_ABI_VERSION, 12);
         assert_eq!(std::mem::offset_of!(OpenNowSdlDeviceClaim, incarnation), 8);
         assert_eq!(std::mem::offset_of!(OpenNowSdlDeviceClaim, vendor), 16);
         assert_eq!(std::mem::offset_of!(OpenNowSdlDeviceClaim, product), 18);
@@ -1804,6 +1911,88 @@ mod tests {
             72
         );
         assert_eq!(size_of::<OpenNowSonySnapshot>(), 80);
+    }
+
+    #[test]
+    fn abi_twelve_appends_actual_frame_provenance() {
+        assert_eq!(size_of::<OpenNowStreamerFrameProvenance>(), 40);
+        assert_eq!(
+            std::mem::offset_of!(OpenNowStreamerFrameProvenance, attempt_generation),
+            8
+        );
+        assert_eq!(
+            std::mem::offset_of!(OpenNowStreamerFrameProvenance, sender_frame_id),
+            32
+        );
+        assert_eq!(
+            std::mem::offset_of!(OpenNowStreamerRecordedFrame, provenance),
+            56
+        );
+        assert_eq!(size_of::<OpenNowStreamerRecordedFrame>(), 96);
+        for id in [Some(0), Some(u64::MAX), None] {
+            let provenance = FrameProvenance {
+                attempt_generation: 7,
+                track_id: 2,
+                source: Some(SourceStamp {
+                    sender_frame_id: id,
+                    timestamp: u64::MAX - 7,
+                    clock_rate_hz: 90_000,
+                    ssrc: Some(0),
+                }),
+            };
+            let frame = recorded_frame(
+                GraphicsApi::Vulkan,
+                GraphicsRecordedFrame {
+                    provenance,
+                    resource: 1,
+                    resource_view: 2,
+                    texture_format: GraphicsTextureFormat::Rgba8,
+                    color_space: opennow_streamer_platform::GraphicsColorSpace::Sdr709,
+                    width: 2,
+                    height: 2,
+                    frame_slot: 0,
+                    generation: 99,
+                    presentation_time_ns: 42,
+                },
+            )
+            .unwrap();
+            assert_eq!(frame.provenance.sender_frame_id, id.unwrap_or_default());
+            assert_eq!(frame.provenance.flags & 2 != 0, id.is_some());
+            assert_eq!(
+                FrameProvenance::try_from(frame.provenance).unwrap(),
+                provenance
+            );
+        }
+        let unknown = OpenNowStreamerFrameProvenance::from(FrameProvenance::default());
+        assert_eq!(unknown.flags, 0);
+        assert_eq!(FrameProvenance::try_from(unknown).unwrap().source, None);
+    }
+
+    #[test]
+    fn presentation_provenance_rejects_invalid_boundary_flags_and_clock() {
+        for flags in [2, 4, 6, 8, u32::MAX] {
+            assert_eq!(
+                FrameProvenance::try_from(OpenNowStreamerFrameProvenance {
+                    flags,
+                    ..Default::default()
+                }),
+                Err(OpenNowStreamerStatus::InvalidConfig)
+            );
+        }
+        assert_eq!(
+            FrameProvenance::try_from(OpenNowStreamerFrameProvenance {
+                flags: 1,
+                attempt_generation: 1,
+                track_id: 1,
+                clock_rate_hz: 0,
+                ..Default::default()
+            }),
+            Err(OpenNowStreamerStatus::InvalidConfig)
+        );
+        assert_eq!(
+            unsafe { opennow_streamer_notify_presented(ptr::null(), ptr::null()) },
+            OpenNowStreamerStatus::NullPointer
+        );
     }
 
     #[test]
@@ -2001,7 +2190,7 @@ mod tests {
         drop(sender);
         dispatcher.join().unwrap();
         assert_eq!(*messages.values.lock().unwrap(), expected);
-        assert_eq!(PROTOCOL_VERSION, 7);
+        assert_eq!(PROTOCOL_VERSION, 8);
     }
 
     fn create_with_test_runtime(
@@ -2061,6 +2250,7 @@ mod tests {
                 .expect("recorded commands")
                 .push((context, command));
             Ok(GraphicsRecordedFrame {
+                provenance: Default::default(),
                 resource: 0xfeed,
                 resource_view: 0xbeef,
                 texture_format: GraphicsTextureFormat::Rgb10A2,
@@ -2247,6 +2437,45 @@ mod tests {
             || {},
         )
         .expect("FFI handle")
+    }
+
+    #[test]
+    fn presented_feedback_is_copied_into_a_bounded_nonblocking_typed_queue() {
+        let messages = CallbackMessages::default();
+        let mut handle = graphics_test_handle(&messages);
+        handle.shutdown();
+        let (sender, receiver) = sync_channel(1);
+        handle.commands = Some(sender);
+        let expected = FrameProvenance {
+            attempt_generation: 17,
+            track_id: 3,
+            source: Some(SourceStamp {
+                sender_frame_id: Some(u64::MAX),
+                timestamp: 0,
+                clock_rate_hz: 90_000,
+                ssrc: None,
+            }),
+        };
+        let mut source = OpenNowStreamerFrameProvenance::from(expected);
+        assert_eq!(
+            unsafe { opennow_streamer_notify_presented(&handle, &source) },
+            OpenNowStreamerStatus::Ok
+        );
+        source.sender_frame_id = 0;
+        assert_eq!(
+            unsafe { opennow_streamer_notify_presented(&handle, &source) },
+            OpenNowStreamerStatus::QueueFull
+        );
+        match receiver.try_recv().unwrap() {
+            WorkerCommand::Presented(actual) => assert_eq!(actual, expected),
+            _ => panic!("expected typed presentation feedback"),
+        }
+        drop(receiver);
+        assert_eq!(
+            unsafe { opennow_streamer_notify_presented(&handle, &source) },
+            OpenNowStreamerStatus::Closed
+        );
+        handle.commands = None;
     }
 
     #[test]
@@ -3281,7 +3510,7 @@ mod tests {
         let command = serde_json::to_vec(&json!({
             "id": "hello-1",
             "type": "hello",
-            "protocolVersion": 7
+            "protocolVersion": 8
         }))
         .expect("hello command");
 
@@ -3346,7 +3575,7 @@ mod tests {
         assert_eq!(response["type"], "audioDevices");
         assert_eq!(response["devices"], json!([]));
         assert_eq!(
-            handle.send(br#"{"id":"hello-after-audio","type":"hello","protocolVersion":7}"#),
+            handle.send(br#"{"id":"hello-after-audio","type":"hello","protocolVersion":8}"#),
             OpenNowStreamerStatus::Ok
         );
         assert_eq!(messages.wait_for_id("hello-after-audio")["type"], "ready");
@@ -3367,7 +3596,7 @@ mod tests {
         let command = serde_json::to_vec(&json!({
             "id": "hello-production",
             "type": "hello",
-            "protocolVersion": 7
+            "protocolVersion": 8
         }))
         .expect("hello command");
         assert_eq!(

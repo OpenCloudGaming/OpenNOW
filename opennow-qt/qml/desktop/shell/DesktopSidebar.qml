@@ -41,7 +41,7 @@ FocusScope {
         { route: "store", icon: "desktop-nav-store.svg", name: qsTr("Store") },
         { route: "friends", icon: "desktop-nav-friends.svg", name: qsTr("Friends") },
         { route: "settings", icon: "desktop-nav-settings.svg", name: qsTr("Settings") }
-    ]
+    ].filter(item => item.route !== "friends" || !ShellStore.browsingExternalSource)
 
     function liveMembershipTier() {
         // The login claim goes stale (e.g. upgrade after sign-in); the live

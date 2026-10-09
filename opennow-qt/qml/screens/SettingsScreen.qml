@@ -26,7 +26,15 @@ FocusScope {
     property string presentedWarningKind: ""
     onWarningKindChanged: if (warningKind !== "") presentedWarningKind = warningKind
     readonly property bool warningOpen: warningKind !== ""
+    property string pluginSheetId: ""
+    property string pluginWarningId: ""
+    readonly property var pluginStore: ShellStore.pluginOwnerState
+    readonly property var sourceStore: ShellStore.sourceOwnerState
+    readonly property var pluginSheetPlugin: pluginStore.pluginById(pluginSheetId)
+    readonly property bool pluginSheetOpen: pluginSheetId !== ""
+    readonly property bool pluginPreviewOpen: pluginStore.previewSourceId !== ""
     readonly property bool sheetOpen: dropdownOpen || warningOpen || proxyEditorOpen || shortcutEditorOpen
+        || pluginSheetOpen || pluginPreviewOpen
     property var rows: settingsModel()
     property int rowCount: 0
     property bool restoringRows: false
@@ -40,7 +48,8 @@ FocusScope {
         {name:qsTr("Network"), icon:"settings-network.svg", color:Theme.coral},
         {name:qsTr("Themes"), icon:"settings-themes.svg", color:Theme.face},
         {name:qsTr("Advanced"), icon:"settings-advanced.svg", color:"#252A35"},
-        {name:qsTr("Recording"), icon:"settings-video.svg", color:Theme.coral}
+        {name:qsTr("Recording"), icon:"settings-video.svg", color:Theme.coral},
+        {name:qsTr("Plugins"), icon:"settings-plugins.svg", color:Theme.violet}
     ]
     DesktopSettingsShortcutBinding { id: shortcutBinding }
 
@@ -182,7 +191,7 @@ FocusScope {
         return sectionRows().map(row => {
             if (!row || !row.values || row.control === "slider" || row.control === "colors")
                 return row
-            const fixedSheet = ["resolution", "region", "controllerInputSource", "windowsGpuDeviceId",
+            const fixedSheet = ["selectedSourceId", "resolution", "region", "controllerInputSource", "windowsGpuDeviceId",
                 "gameLanguage", "keyboardLayout", "appLanguage", "colorQuality"].indexOf(row.key) >= 0
             const shortDropdown = row.control === "dropdown" && row.values.length >= 2 && row.values.length <= 6
                 && !(row.details && row.details.some(detail => detail))
@@ -193,8 +202,194 @@ FocusScope {
         })
     }
 
+    function pluginStateLabel(plugin) {
+        if (pluginStore.busyId === plugin.id)
+            return qsTr("Working…")
+        if (plugin.state === "ready")
+            return qsTr("Running")
+        if (plugin.state === "starting")
+            return qsTr("Starting…")
+        if (plugin.state === "failed")
+            return qsTr("Failed")
+        return qsTr("Off")
+    }
+
+    function pluginSummary(plugin) {
+        const parts = [qsTr("Version %1").arg(String(plugin.version || "")), String(plugin.publisher || ""),
+            plugin.builtin === true ? qsTr("Built in") : qsTr("Community")].filter(part => part !== "")
+        const error = plugin.lastError ? String(plugin.lastError.message || plugin.lastError.code || "") : ""
+        return parts.join(" · ") + (error !== "" ? "\n" + error : "")
+    }
+
+    function pluginRows() {
+        if (!pluginStore.available)
+            return [{t:qsTr("Plugins are unavailable"), d:ShellStore.ready ? qsTr("This OpenNOW core does not support plugins.")
+                : qsTr("Plugins appear when OpenNOW finishes starting."), info:true}]
+        const browse = sourceStore.available && sourceStore.playableSources.length > 1 ? [{
+            t:qsTr("Browse with"), d:qsTr("The service Home and Library show. A running session keeps its own service."),
+            v:sourceStore.selectedSource ? String(sourceStore.selectedSource.name || sourceStore.selectedSourceId) : "",
+            key:"selectedSourceId", values:sourceStore.playableSources.map(source => source.id),
+            labels:sourceStore.playableSources.map(source => String(source.name || source.id)),
+            control:"dropdown", plainText:true
+        }] : []
+        const rows = browse
+        for (const plugin of pluginStore.plugins) {
+            rows.push({t:String(plugin.name || plugin.id), d:root.pluginSummary(plugin), v:root.pluginStateLabel(plugin),
+                action:"plugin", pluginId:plugin.id, plainText:true, danger:plugin.state === "failed"})
+            for (const domain of ["provider", "stream"])
+                rows.push(...root.sourceSettingRows(plugin.id, domain))
+        }
+        if (pluginStore.error !== "")
+            rows.unshift({t:qsTr("Plugins need attention"), d:pluginStore.error, info:true, plainText:true})
+        rows.push({t:qsTr("Install plugins in Desktop mode"),
+            d:qsTr("Installing a plugin means choosing its package file and reading a security warning. Switch to Desktop mode to install one."),
+            info:true})
+        return rows
+    }
+
+    function sourceSettingKey(domain, sourceId, key) {
+        return "source-setting:" + JSON.stringify([domain, sourceId, key])
+    }
+
+    function sourceSettingTarget(rowKey) {
+        if (String(rowKey).indexOf("source-setting:") !== 0)
+            return null
+        const parts = JSON.parse(String(rowKey).slice(15))
+        const view = (parts[0] === "stream" ? sourceStore.streamSettingsViews : sourceStore.settingsViews)[parts[1]]
+        const definition = view ? view.settings.find(item => item.key === parts[2]) || null : null
+        return definition ? {domain: parts[0], sourceId: parts[1], definition: definition} : null
+    }
+
+    function numericSettingValues(control, current) {
+        const min = Number(control.min)
+        const max = Number(control.max)
+        const step = Number(control.step || 1)
+        const decimals = (String(step).split(".")[1] || "").length
+        const count = Math.floor((max - min) / step + 1e-9)
+        const stride = Math.max(1, Math.ceil(count / 24))
+        const values = []
+        for (let index = 0; index <= count; index += stride)
+            values.push(Number((min + index * step).toFixed(decimals)))
+        if (values[values.length - 1] !== max)
+            values.push(max)
+        if (!values.some(value => Math.abs(value - current) < step / 2))
+            values.push(current)
+        return values.sort((left, right) => left - right)
+    }
+
+    function sourceSettingRows(sourceId, domain) {
+        const source = sourceId !== sourceStore.gfnId ? sourceStore.sourceById(sourceId) : null
+        const view = source && source.enabled === true
+            ? (domain === "stream" ? sourceStore.streamSettingsViews : sourceStore.settingsViews)[sourceId] : null
+        const detail = domain === "stream" ? qsTr("Stream quality for this service") : String(source ? source.name || source.id : "")
+        return (view ? view.settings : []).map(definition => {
+            const kind = definition.control.kind
+            const key = root.sourceSettingKey(domain, sourceId, definition.key)
+            const base = {t:String(definition.label), d:detail, key:key, sourceSetting:true, plainText:true}
+            if (kind === "boolean")
+                return Object.assign(base, {toggle:true, toggleState:definition.value.value === true})
+            if (kind === "choice") {
+                const choices = definition.control.choices || []
+                const index = choices.findIndex(choice => choice.value === definition.value.value)
+                return Object.assign(base, {control:"cycler", values:choices.map(choice => choice.value),
+                    labels:choices.map(choice => String(choice.label)), selectedIndex:index,
+                    v:index >= 0 ? String(choices[index].label) : String(definition.value.value)})
+            }
+            if (kind === "integer" || kind === "number") {
+                const current = Number(definition.value.value)
+                const values = root.numericSettingValues(definition.control, current)
+                const min = Number(definition.control.min)
+                const max = Number(definition.control.max)
+                return Object.assign(base, {control:"slider", values:values, labels:values.map(String),
+                    selectedIndex:values.findIndex(value => Math.abs(value - current) < 1e-9), v:String(current),
+                    sliderPercent:max > min ? (current - min) / (max - min) : 0})
+            }
+            return Object.assign(base, {info:true, v:String(definition.value.value)})
+        })
+    }
+
+    function loadSourceSettings() {
+        for (const source of sourceStore.sources)
+            if (source.id !== sourceStore.gfnId && source.enabled === true)
+                sourceStore.loadSettings(source.id)
+    }
+
+    onSelectedSectionChanged: if (selectedSection === 8) loadSourceSettings()
+
+    function pluginSheetOptions() {
+        const plugin = root.pluginSheetPlugin
+        if (!plugin)
+            return []
+        const options = [{label:plugin.enabled === true ? qsTr("Turn off") : qsTr("Turn on"), value:"toggle",
+            detail:plugin.required === true ? qsTr("Required by OpenNOW") : "", disabled:plugin.required === true || pluginStore.busyId !== ""}]
+        options.push({label:qsTr("Browse catalog"), value:"browse",
+            detail:pluginStore.catalogAvailable && pluginStore.catalogReady(plugin) ? "" : qsTr("Turn it on first"),
+            disabled:!pluginStore.catalogAvailable || !pluginStore.catalogReady(plugin)})
+        const source = plugin.id !== sourceStore.gfnId ? sourceStore.sourceById(plugin.id) : null
+        const auth = source ? sourceStore.authState(source.id) : null
+        if (auth && auth.state === "signed-in")
+            options.push({label:qsTr("Sign out"), value:"source-sign-out",
+                detail:String(auth.account && auth.account.name || ""), disabled:false})
+        if (plugin.builtin !== true && plugin.required !== true)
+            options.push({label:qsTr("Remove…"), value:"remove", detail:"", disabled:pluginStore.busyId !== ""})
+        return options
+    }
+
+    function pluginSheetDescription() {
+        const plugin = root.pluginSheetPlugin
+        if (!plugin)
+            return ""
+        const lines = [plugin.trust === "builtin" ? qsTr("Built into OpenNOW.")
+            : qsTr("Unsigned native code · publisher not verified"), root.pluginSummary(plugin)]
+        if (String(plugin.description || "") !== "")
+            lines.push(String(plugin.description))
+        return lines.join("\n")
+    }
+
+    function openPluginSheet(id) {
+        if (!pluginStore.pluginById(id))
+            return
+        root.pluginSheetId = id
+        if (id !== sourceStore.gfnId)
+            sourceStore.loadSettings(id)
+        pluginSheet.focusedIndex = 0
+        pluginSheet.syncFocus()
+        pluginSheet.forceActiveFocus()
+    }
+
+    function closePluginSheet() {
+        root.pluginSheetId = ""
+        Qt.callLater(() => { if (!root.sheetOpen) settingsList.forceActiveFocus() })
+    }
+
+    function choosePluginOption(index) {
+        const plugin = root.pluginSheetPlugin
+        const option = pluginSheet.options[index]
+        if (!plugin || !option || option.disabled)
+            return
+        root.closePluginSheet()
+        if (option.value === "toggle") {
+            pluginStore.setEnabled(plugin.id, plugin.enabled !== true)
+        } else if (option.value === "browse") {
+            if (pluginStore.openPreview(plugin.id))
+                Qt.callLater(() => pluginPreviewSearch.forceActiveFocus())
+        } else if (option.value === "source-sign-out") {
+            sourceStore.signOut(plugin.id)
+        } else if (option.value === "remove") {
+            root.pluginWarningId = plugin.id
+            root.openWarning("plugin-remove")
+        }
+    }
+
+    function closePluginPreview() {
+        pluginStore.closePreview()
+        Qt.callLater(() => { if (!root.sheetOpen) settingsList.forceActiveFocus() })
+    }
+
     function sectionRows() {
         const settings = ShellStore.settings || ({})
+        if (root.selectedSection === 8)
+            return root.pluginRows()
         if (root.selectedSection === 0) {
             const user = ShellStore.authSession && ShellStore.authSession.user ? ShellStore.authSession.user : ({})
             const accountName = String(user.displayName || qsTr("OpenNOW profile"))
@@ -433,7 +628,10 @@ FocusScope {
     }
 
     function dropdownChoiceSelected(index) {
-        const current = root.dropdownKey === "controllerInputSource" ? ControllerInput.inputControllerId : ShellStore.settings[root.dropdownKey]
+        const target = root.sourceSettingTarget(root.dropdownKey)
+        const current = target ? target.definition.value.value
+            : root.dropdownKey === "controllerInputSource" ? ControllerInput.inputControllerId
+            : root.dropdownKey === "selectedSourceId" ? sourceStore.selectedSourceId : ShellStore.settings[root.dropdownKey]
         const candidate = root.dropdownValues[index]
         if (typeof current === "object" || typeof candidate === "object")
             return JSON.stringify(current) === JSON.stringify(candidate)
@@ -457,7 +655,15 @@ FocusScope {
     }
 
     function applyChoice(key, value) {
-        if (key === "controllerInputSource")
+        const target = root.sourceSettingTarget(key)
+        if (target) {
+            sourceStore.setSetting(target.sourceId, target.definition.key,
+                {kind: target.definition.control.kind, value: value}, target.domain)
+            return
+        }
+        if (key === "selectedSourceId")
+            sourceStore.select(value)
+        else if (key === "controllerInputSource")
             ControllerInput.inputControllerId = Number(value)
         else
             ShellStore.setSetting(key, value)
@@ -514,6 +720,8 @@ FocusScope {
     }
 
     function closeWarning() {
+        if (root.warningKind === "plugin-remove")
+            root.pluginWarningId = ""
         root.warningKind = ""
         Qt.callLater(() => { if (!root.sheetOpen) settingsList.forceActiveFocus() })
     }
@@ -531,12 +739,14 @@ FocusScope {
             ShellStore.logout()
         else if (root.warningKind === "reset")
             ShellStore.resetSettings()
+        else if (root.warningKind === "plugin-remove")
+            pluginStore.uninstall(root.pluginWarningId)
         root.closeWarning()
     }
 
     function choiceSheetOptions() {
         return root.dropdownLabels.map((label, index) => ({
-            label:I18n.source(String(label), I18n.revision),
+            label:root.dropdownKey === "selectedSourceId" ? String(label) : I18n.source(String(label), I18n.revision),
             value:root.dropdownValues[index],
             detail:root.dropdownDetails[index] || (root.dropdownChoiceDisabled(index) ? qsTr("Unavailable") : ""),
             disabled:root.dropdownChoiceDisabled(index),
@@ -564,12 +774,18 @@ FocusScope {
             return ShellStore.regions.length ? qsTr("%1 REGIONS DISCOVERED").arg(ShellStore.regions.length) : ""
         if (root.selectedSection === 6)
             return ShellStore.updaterState.currentVersion ? qsTr("OPENNOW %1").arg(ShellStore.updaterState.currentVersion) : ""
+        if (root.selectedSection === 8)
+            return pluginStore.available ? qsTr("%1 INSTALLED").arg(pluginStore.plugins.length) : ""
         return ""
     }
 
     function activate(row) {
         if (!row || row.info)
             return
+        if (row.sourceSetting && row.toggle) {
+            root.applyChoice(row.key, !row.toggleState)
+            return
+        }
         if (row.action === "retry-languages") {
             ShellStore.settingsOwnerState.ensureGameLanguages(true)
         } else if (row.route) {
@@ -612,6 +828,8 @@ FocusScope {
             ShellStore.antiAfkEnabled = !ShellStore.antiAfkEnabled
         } else if (row.action === "reset") {
             root.openWarning("reset")
+        } else if (row.action === "plugin") {
+            root.openPluginSheet(row.pluginId)
         }
     }
 
@@ -682,6 +900,8 @@ FocusScope {
             Qt.callLater(() => { if (!root.sheetOpen) settingsList.forceActiveFocus() })
     }
     Component.onCompleted: {
+        if (root.selectedSection === 8)
+            root.loadSourceSettings()
         root.syncRows()
         if (AppController.route === "settings")
             root.selectedSection = Math.max(0, Math.min(root.sections.length - 1, ShellStore.focusIndex("settings-section")))
@@ -881,6 +1101,7 @@ FocusScope {
         id: choiceSheet
         objectName: "consoleSettingsChoiceSheet"
         opened: root.dropdownOpen
+        textFormat: root.dropdownKey === "selectedSourceId" ? Text.PlainText : Text.AutoText
         eyebrow: I18n.source(root.sections[root.selectedSection].name, I18n.revision)
         title: I18n.source(root.dropdownTitle, I18n.revision)
         description: root.dropdownKey === "fps" ? root.fpsNote() : ""
@@ -895,20 +1116,28 @@ FocusScope {
         objectName: "consoleSettingsWarning"
         opened: root.warningOpen
         danger: root.presentedWarningKind !== "ten-bit"
+        textFormat: root.presentedWarningKind === "plugin-remove" ? Text.PlainText : Text.AutoText
         eyebrow: root.presentedWarningKind === "ten-bit" ? qsTr("Saved · Color quality")
-            : root.presentedWarningKind === "sign-out" ? qsTr("Sign out") : qsTr("Reset")
+            : root.presentedWarningKind === "sign-out" ? qsTr("Sign out")
+            : root.presentedWarningKind === "plugin-remove" ? qsTr("Plugins") : qsTr("Reset")
         title: root.presentedWarningKind === "ten-bit" ? qsTr("10-bit color")
-            : root.presentedWarningKind === "sign-out" ? qsTr("Sign out of NVIDIA?") : qsTr("Reset all settings?")
+            : root.presentedWarningKind === "sign-out" ? qsTr("Sign out of NVIDIA?")
+            : root.presentedWarningKind === "plugin-remove" ? qsTr("Remove this plugin?") : qsTr("Reset all settings?")
         message: root.presentedWarningKind === "ten-bit"
             ? qsTr("10-bit color may cause stuttering on some systems. If you notice stuttering, switch back to 8-bit.")
             : root.presentedWarningKind === "sign-out"
             ? qsTr("OpenNOW removes the NVIDIA token from this PC. My games stay.")
+            : root.presentedWarningKind === "plugin-remove"
+            ? qsTr("OpenNOW removes %1 and the plugin's data from this PC. To use it again, install its package file again in Desktop mode.")
+                .arg(pluginStore.pluginById(root.pluginWarningId) ? String(pluginStore.pluginById(root.pluginWarningId).name || root.pluginWarningId) : root.pluginWarningId)
             : qsTr("Every setting on this PC returns to its default. Your account and My games stay.")
         detail: root.presentedWarningKind === "ten-bit" ? qsTr("Your choice is already saved. Closing this keeps it.") : ""
         safeText: root.presentedWarningKind === "ten-bit" ? qsTr("Got it")
-            : root.presentedWarningKind === "sign-out" ? qsTr("Stay signed in") : qsTr("Keep my settings")
+            : root.presentedWarningKind === "sign-out" ? qsTr("Stay signed in")
+            : root.presentedWarningKind === "plugin-remove" ? qsTr("Keep plugin") : qsTr("Keep my settings")
         actionText: root.presentedWarningKind === "sign-out" ? qsTr("Sign out")
-            : root.presentedWarningKind === "reset" ? qsTr("Reset to defaults") : ""
+            : root.presentedWarningKind === "reset" ? qsTr("Reset to defaults")
+            : root.presentedWarningKind === "plugin-remove" ? qsTr("Remove plugin") : ""
         checkboxText: root.presentedWarningKind === "ten-bit" ? qsTr("Don't notify me again") : ""
         safeButtonObjectName: root.presentedWarningKind === "ten-bit" ? "tenBitWarningDismiss" : ""
         checkboxObjectName: root.presentedWarningKind === "ten-bit" ? "tenBitWarningDontNotify" : ""
@@ -1040,6 +1269,160 @@ FocusScope {
                             root.shortcutEditorOpen = false
                         }
                     }
+                }
+            }
+        }
+    }
+
+    ConsoleChoiceSheet {
+        id: pluginSheet
+        objectName: "consolePluginSheet"
+        opened: root.pluginSheetOpen
+        textFormat: Text.PlainText
+        eyebrow: qsTr("Plugins")
+        title: root.pluginSheetPlugin ? String(root.pluginSheetPlugin.name || root.pluginSheetId) : ""
+        description: root.pluginSheetDescription()
+        options: root.pluginSheetOptions()
+        currentIndex: -1
+        chooseText: qsTr("Select")
+        dismissText: qsTr("Back")
+        onChosen: index => root.choosePluginOption(index)
+        onDismissed: root.closePluginSheet()
+    }
+
+    FocusScope {
+        id: pluginPreview
+        objectName: "consolePluginPreview"
+        anchors.fill: parent
+        visible: pluginPreviewFrame.present
+        enabled: root.pluginPreviewOpen
+        z: 240
+        Keys.onPressed: event => {
+            if (!root.pluginPreviewOpen)
+                return
+            if (event.key === Qt.Key_Escape || event.key === Qt.Key_Back) {
+                root.closePluginPreview()
+            } else if (event.key === Qt.Key_Down || event.key === Qt.Key_Tab) {
+                if (pluginPreviewSearch.activeFocus) pluginPreviewList.forceActiveFocus()
+                else if (pluginPreviewList.activeFocus && pluginPreviewList.currentIndex < pluginPreviewList.count - 1) pluginPreviewList.incrementCurrentIndex()
+                else if (pluginPreviewList.activeFocus && pluginPreviewMore.visible) pluginPreviewMore.forceActiveFocus()
+                else pluginPreviewClose.forceActiveFocus()
+            } else if (event.key === Qt.Key_Up || event.key === Qt.Key_Backtab) {
+                if (pluginPreviewClose.activeFocus && pluginPreviewMore.visible) pluginPreviewMore.forceActiveFocus()
+                else if (pluginPreviewClose.activeFocus || pluginPreviewMore.activeFocus) pluginPreviewList.forceActiveFocus()
+                else if (pluginPreviewList.activeFocus && pluginPreviewList.currentIndex > 0) pluginPreviewList.decrementCurrentIndex()
+                else pluginPreviewSearch.forceActiveFocus()
+            } else {
+                return
+            }
+            event.accepted = true
+        }
+
+        ConsoleSheetFrame {
+            id: pluginPreviewFrame
+            opened: root.pluginPreviewOpen
+            toneColor: Theme.violet
+            onScrimClicked: root.closePluginPreview()
+            Column {
+                id: pluginPreviewHeader
+                width: parent.width
+                spacing: 14
+                Text { text: qsTr("CATALOG PREVIEW"); color: Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 14; font.weight: Font.Bold; font.letterSpacing: 2 }
+                Text {
+                    width: parent.width
+                    text: root.pluginStore.previewPlugin ? String(root.pluginStore.previewPlugin.name || root.pluginStore.previewSourceId) : ""
+                    textFormat: Text.PlainText
+                    color: Theme.label; font.family: Theme.displayFont; font.pixelSize: 44; font.weight: Font.Black; font.letterSpacing: -0.9
+                    elide: Text.ElideRight
+                }
+                Text {
+                    width: parent.width
+                    text: qsTr("Read-only titles from this plugin. They can't be played from OpenNOW.")
+                    color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: 18; font.weight: Font.DemiBold; wrapMode: Text.WordWrap
+                }
+                TextField {
+                    id: pluginPreviewSearch
+                    objectName: "consolePluginPreviewSearch"
+                    width: parent.width; height: 64
+                    leftPadding: 22; rightPadding: 22
+                    placeholderText: qsTr("Search this catalog")
+                    maximumLength: 512
+                    color: Theme.label; placeholderTextColor: Theme.textMuted
+                    font.family: Theme.bodyFont; font.pixelSize: 19
+                    Accessible.name: qsTr("Search this catalog")
+                    background: Rectangle {
+                        radius: 22
+                        color: Qt.rgba(Theme.face.r, Theme.face.g, Theme.face.b, 0.06)
+                        border.color: pluginPreviewSearch.activeFocus ? Theme.face : Theme.seam
+                        border.width: pluginPreviewSearch.activeFocus ? 3 : 1
+                    }
+                    Keys.onReturnPressed: root.pluginStore.searchPreview(text)
+                    Keys.onEnterPressed: root.pluginStore.searchPreview(text)
+                }
+            }
+            ListView {
+                id: pluginPreviewList
+                objectName: "consolePluginPreviewList"
+                anchors.top: pluginPreviewHeader.bottom; anchors.topMargin: 14
+                anchors.bottom: pluginPreviewFooter.top; anchors.bottomMargin: 14
+                width: parent.width
+                clip: true
+                spacing: 4
+                model: root.pluginStore.previewItems
+                highlightMoveDuration: AppController.reducedMotion ? 0 : 160
+                keyNavigationEnabled: false
+                delegate: Rectangle {
+                    required property var modelData
+                    required property int index
+                    width: pluginPreviewList.width
+                    height: 56
+                    radius: 18
+                    color: ListView.isCurrentItem && pluginPreviewList.activeFocus
+                        ? Qt.rgba(Theme.face.r, Theme.face.g, Theme.face.b, 0.12) : "transparent"
+                    border.width: ListView.isCurrentItem && pluginPreviewList.activeFocus ? 3 : 0
+                    border.color: Theme.face
+                    Text {
+                        x: 20; width: parent.width - 40
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: modelData.title
+                        textFormat: Text.PlainText
+                        elide: Text.ElideRight
+                        color: Theme.label; font.family: Theme.bodyFont; font.pixelSize: 19; font.weight: Font.Bold
+                    }
+                }
+            }
+            Column {
+                id: pluginPreviewFooter
+                anchors.bottom: parent.bottom
+                width: parent.width
+                spacing: 12
+                Text {
+                    objectName: "consolePluginPreviewStatus"
+                    width: parent.width
+                    text: root.pluginStore.previewError !== "" ? root.pluginStore.previewError
+                    : root.pluginStore.previewWaiting ? qsTr("The plugin is restarting. Titles reload when it's ready.")
+                        : root.pluginStore.previewLoading ? qsTr("Loading titles…")
+                        : root.pluginStore.previewSummary
+                    textFormat: Text.PlainText
+                    color: root.pluginStore.previewError !== "" ? Theme.coral : Theme.textMuted
+                    font.family: Theme.bodyFont; font.pixelSize: 17; font.weight: Font.Bold
+                    wrapMode: Text.WordWrap
+                }
+                ConsoleActionButton {
+                    id: pluginPreviewMore
+                    objectName: "consolePluginPreviewMore"
+                    width: parent.width; height: 72
+                    visible: root.pluginStore.previewNextCursor !== null
+                    enabled: !root.pluginStore.previewLoading
+                    glyph: "A"; text: qsTr("Load more")
+                    onClicked: root.pluginStore.loadMorePreview()
+                }
+                ConsoleActionButton {
+                    id: pluginPreviewClose
+                    objectName: "consolePluginPreviewClose"
+                    width: parent.width; height: 72
+                    glyph: "B"; text: qsTr("Close")
+                    onClicked: root.closePluginPreview()
                 }
             }
         }

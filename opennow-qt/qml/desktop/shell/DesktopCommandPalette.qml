@@ -20,7 +20,8 @@ FocusScope {
     property int queryRevision: 0
     property var searchIntent: null
     readonly property string normalizedQuery: query.trim().replace(/\s+/g, " ")
-    readonly property bool gamesQuery: normalizedQuery !== "" && scopeFilter !== "actions"
+    readonly property bool gfnGames: !ShellStore.browsingExternalSource
+    readonly property bool gamesQuery: gfnGames && normalizedQuery !== "" && scopeFilter !== "actions"
     readonly property string searchContext: JSON.stringify([ShellStore.catalogOwnerState.authScope,
         ShellStore.catalogOwnerState.catalogContext, ShellStore.catalogOwnerState.catalogRevision])
     readonly property string searchStatus: {
@@ -65,7 +66,7 @@ FocusScope {
         searchError = ""
         searchHasMore = false
         currentIndex = 0
-        if (opened && query.trim() !== "" && scopeFilter !== "actions" && ShellStore.ready && ShellStore.signedIn) {
+        if (opened && gfnGames && query.trim() !== "" && scopeFilter !== "actions" && ShellStore.ready && ShellStore.signedIn) {
             searchState = "waiting"
             searchDelay.start()
         }
@@ -135,6 +136,7 @@ FocusScope {
         function onRequestContextKeyChanged() { root.scheduleSearch() }
     }
     onSearchContextChanged: root.scheduleSearch()
+    onGfnGamesChanged: root.scheduleSearch()
     Component.onDestruction: root.cancelSearch()
     signal closeRequested()
     signal routeRequested(string route)
@@ -193,7 +195,7 @@ FocusScope {
             q === "" || String(item.name + " " + item.detail).toLocaleLowerCase().indexOf(q) >= 0)
     }
 
-    readonly property var gameList: root.scopeFilter === "actions" ? [] : root.matchedGames()
+    readonly property var gameList: !root.gfnGames || root.scopeFilter === "actions" ? [] : root.matchedGames()
     readonly property var actionList: root.scopeFilter === "games" ? [] : root.matchedActions()
     readonly property int flatCount: gameList.length + actionList.length
     readonly property int resultCount: flatCount
@@ -238,7 +240,7 @@ FocusScope {
     onWidthChanged: root.scheduleCurrentVisibility()
 
     function cycleScope() {
-        root.scopeFilter = root.scopeFilter === "all" ? "games"
+        root.scopeFilter = root.scopeFilter === "all" ? (root.gfnGames ? "games" : "actions")
             : root.scopeFilter === "games" ? "actions" : "all"
         root.currentIndex = 0
     }

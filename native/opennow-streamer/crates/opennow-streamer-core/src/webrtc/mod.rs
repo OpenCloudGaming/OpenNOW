@@ -206,11 +206,12 @@ impl Engine {
                 Arc::clone(&self.replay_budget),
             );
             let sink = session.sink();
+            let attempt_generation = lock_lifecycle(&self.lifecycle).generation.wrapping_add(1);
             let (consumer, receiver) = mpsc::sync_channel(ENCODED_MEDIA_QUEUE_CAPACITY);
             let output = self.events.clone();
             let worker = match thread::Builder::new()
                 .name("opennow-media-consumer".to_owned())
-                .spawn(move || consume_encoded_media(&output, receiver, sink))
+                .spawn(move || consume_encoded_media(&output, receiver, sink, attempt_generation))
             {
                 Ok(worker) => worker,
                 Err(spawn_error) => {
@@ -622,6 +623,7 @@ impl Worker {
     ) -> Result<(), Failure> {
         progress.observe_feedback(&feedback, Instant::now());
         match feedback {
+            MediaFeedback::VideoFrameDecoded { .. } => {},
             MediaFeedback::VideoFrameAccepted { .. } => {}
             MediaFeedback::PlaybackStarted { backend } => {
                 self.emit("status", json!({"event":"first-frame","backend":backend,"status":"streaming","message":"WebRTC presented the first video frame"}));

@@ -15,7 +15,8 @@ FocusScope {
     signal cancelRequested()
     signal retryRequested()
 
-    readonly property var game: ShellStore.selectedGame || ({})
+    readonly property bool sourcePlayback: ShellStore.sourceStreamActive
+    readonly property var game: ShellStore.sourceStreamGame || ShellStore.selectedGame || ({})
     readonly property var session: ShellStore.activeSession || ({})
     readonly property var streamer: ShellStore.streamer || ({})
     readonly property bool connecting: AppController.route === "stream"
@@ -119,6 +120,7 @@ FocusScope {
             width: parent.width
             topPadding: 10
             text: String(root.game.title || qsTr("GeForce NOW"))
+            textFormat: Text.PlainText
             color: Theme.mediaForeground
             font.family: DesktopTokens.displayFont
             font.pixelSize: root.width < 800 ? 34 : 44
@@ -184,7 +186,7 @@ FocusScope {
                 onMediaBackground: true
                 visible: root.failed && (root.connecting || ShellStore.activeSession !== null
                     || ShellStore.pendingLaunchParams !== null || ShellStore.conflictSession !== null)
-                enabled: !ShellStore.streamBusy
+                enabled: !ShellStore.streamBusy || root.sourcePlayback
                 text: root.connecting ? qsTr("Retry connection") : qsTr("Try again")
                 primary: true
                 onClicked: root.retryRequested()
@@ -193,7 +195,8 @@ FocusScope {
                 id: cancelButton
                 onMediaBackground: true
                 enabled: !root.stopping
-                text: root.failed && !ShellStore.activeSession ? qsTr("Back") : qsTr("Cancel session")
+                text: root.sourcePlayback ? qsTr("End session")
+                    : root.failed && !ShellStore.activeSession ? qsTr("Back") : qsTr("Cancel session")
                 shortcutText: qsTr("Esc")
                 onClicked: root.cancelRequested()
             }

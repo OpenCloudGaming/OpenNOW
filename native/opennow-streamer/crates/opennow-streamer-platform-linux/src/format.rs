@@ -87,6 +87,38 @@ pub struct StreamFormat {
 }
 
 impl StreamFormat {
+    pub fn with_color(mut self, color: Option<opennow_media_protocol::ColorDescription>) -> Self {
+        use opennow_media_protocol::{
+            ChromaLocation as Location, ColorRange as Range, Matrix, Primaries, Transfer,
+        };
+        let Some(color) = color else {
+            return self;
+        };
+        self.color_range = match color.range {
+            Range::Limited => ColorRange::Limited,
+            Range::Full => ColorRange::Full,
+        };
+        self.color_matrix = match color.matrix {
+            Matrix::Bt601 => ColorMatrix::Bt601,
+            Matrix::Bt709 => ColorMatrix::Bt709,
+            Matrix::Bt2020NonConstant => ColorMatrix::Bt2020,
+        };
+        self.color_primaries = match color.primaries {
+            Primaries::Bt709 => ColorPrimaries::Bt709,
+            Primaries::Bt2020 => ColorPrimaries::Bt2020,
+        };
+        self.color_transfer = match color.transfer {
+            Transfer::Bt709 | Transfer::Srgb => ColorTransfer::Sdr,
+            Transfer::Pq => ColorTransfer::Pq,
+            Transfer::Hlg => ColorTransfer::Hlg,
+        };
+        self.chroma_location = match color.chroma_location {
+            Location::Left => ChromaLocation::Left,
+            Location::Center => ChromaLocation::Center,
+        };
+        self
+    }
+
     pub fn video_default(width: u32, height: u32) -> Result<Self> {
         let format = Self {
             width,
@@ -137,6 +169,7 @@ impl StreamFormat {
 
 #[derive(Debug, Clone)]
 pub struct EncodedVideoFrame {
+    pub provenance: opennow_media_protocol::FrameProvenance,
     pub data: Arc<[u8]>,
     pub timestamp_us: u64,
     pub keyframe: bool,
@@ -146,12 +179,18 @@ impl EncodedVideoFrame {
     pub fn new(data: impl Into<Arc<[u8]>>, timestamp_us: u64, keyframe: bool) -> Result<Self> {
         let data = data.into();
         let frame = Self {
+            provenance: Default::default(),
             data,
             timestamp_us,
             keyframe,
         };
         frame.validate()?;
         Ok(frame)
+    }
+
+    pub fn with_provenance(mut self, provenance: opennow_media_protocol::FrameProvenance) -> Self {
+        self.provenance = provenance;
+        self
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -461,6 +500,8 @@ impl fmt::Debug for DmaBufFrame {
 
 #[derive(Debug, Clone)]
 pub struct DecodedVideoFrame {
+    pub provenance: opennow_media_protocol::FrameProvenance,
+    pub correlation_timestamp_us: Option<u64>,
     pub format: StreamFormat,
     pub planes: Vec<FramePlane>,
     pub dmabuf: Option<Arc<DmaBufFrame>>,
@@ -546,6 +587,47 @@ impl DecodedVideoFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_color_defaults_map_every_component_without_resolution_inference() {
+        use opennow_media_protocol::{
+            ChromaLocation as Location, ColorDescription, ColorRange as Range, Matrix, Primaries,
+            Transfer,
+        };
+        let base = StreamFormat::video_default(3840, 2160).unwrap();
+        assert_eq!(base.with_color(None), base);
+        let specified = base.with_color(Some(ColorDescription {
+            range: Range::Full,
+            primaries: Primaries::Bt709,
+            transfer: Transfer::Srgb,
+            matrix: Matrix::Bt601,
+            chroma_location: Location::Center,
+        }));
+        assert_eq!(specified.color_range, ColorRange::Full);
+        assert_eq!(specified.color_matrix, ColorMatrix::Bt601);
+        assert_eq!(specified.color_transfer, ColorTransfer::Sdr);
+        assert_eq!(specified.color_primaries, ColorPrimaries::Bt709);
+        assert_eq!(specified.chroma_location, ChromaLocation::Center);
+        assert_eq!((specified.width, specified.height), (3840, 2160));
+        for (source_transfer, expected) in [
+            (Transfer::Pq, ColorTransfer::Pq),
+            (Transfer::Hlg, ColorTransfer::Hlg),
+        ] {
+            let hdr = base.with_color(Some(ColorDescription {
+                range: Range::Limited,
+                primaries: Primaries::Bt2020,
+                transfer: source_transfer,
+                matrix: Matrix::Bt2020NonConstant,
+                chroma_location: Location::Left,
+            }));
+            assert_eq!(hdr.color_transfer, expected);
+            assert_eq!(hdr.color_primaries, ColorPrimaries::Bt2020);
+            assert_eq!(hdr.color_matrix, ColorMatrix::Bt2020);
+            assert_eq!(hdr.color_range, ColorRange::Limited);
+            assert_eq!(hdr.chroma_location, ChromaLocation::Left);
+            assert!(hdr.validate().is_err());
+        }
+    }
 
     #[test]
     fn sdr_defaults_remain_bt709_when_resolution_changes() {
@@ -637,6 +719,8 @@ mod tests {
             }
             format.color_transfer = ColorTransfer::Sdr;
             let frame = DecodedVideoFrame {
+                provenance: Default::default(),
+                correlation_timestamp_us: None,
                 format,
                 planes: Vec::new(),
                 dmabuf: None,
@@ -670,6 +754,8 @@ mod tests {
     #[test]
     fn accepts_padded_nv12_planes() {
         let frame = DecodedVideoFrame {
+            provenance: Default::default(),
+            correlation_timestamp_us: None,
             format: StreamFormat::h264_default(4, 4).unwrap(),
             planes: vec![
                 FramePlane {
@@ -693,6 +779,8 @@ mod tests {
     #[test]
     fn p010_requires_even_dimensions_and_sixteen_bit_storage() {
         let mut frame = DecodedVideoFrame {
+            provenance: Default::default(),
+            correlation_timestamp_us: None,
             format: StreamFormat {
                 pixel_format: PixelFormat::P010,
                 ..StreamFormat::video_default(4, 4).unwrap()
@@ -725,6 +813,8 @@ mod tests {
     fn rejects_odd_420_dimensions_and_short_planes() {
         assert!(StreamFormat::h264_default(1919, 1080).is_err());
         let frame = DecodedVideoFrame {
+            provenance: Default::default(),
+            correlation_timestamp_us: None,
             format: StreamFormat::h264_default(4, 4).unwrap(),
             planes: vec![
                 FramePlane {

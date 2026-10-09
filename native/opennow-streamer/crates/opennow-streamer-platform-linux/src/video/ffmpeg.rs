@@ -342,7 +342,12 @@ impl FfmpegDecoder {
         loop {
             let mut decoded = frame::Video::empty();
             match self.decoder.receive_frame(&mut decoded) {
-                Ok(()) => frames.push(self.convert_frame(&decoded)?),
+                Ok(()) => {
+                    let mut output = self.convert_frame(&decoded)?;
+                    output.correlation_timestamp_us =
+                        decoded.pts().and_then(|pts| u64::try_from(pts).ok());
+                    frames.push(output);
+                }
                 Err(ffmpeg::Error::Other { errno }) if errno == ffmpeg::error::EAGAIN => break,
                 Err(ffmpeg::Error::Eof) if draining => break,
                 Err(error) => {
@@ -621,6 +626,8 @@ impl FfmpegDecoder {
             .and_then(|timestamp| u64::try_from(timestamp).ok())
             .unwrap_or(self.last_timestamp_us);
         Ok(DecodedVideoFrame {
+            provenance: Default::default(),
+            correlation_timestamp_us: None,
             format: output_format,
             planes,
             dmabuf: None,
@@ -753,6 +760,8 @@ fn map_vulkan_frame_direct(
         .and_then(|timestamp| u64::try_from(timestamp).ok())
         .unwrap_or(fallback_timestamp_us);
     let output = DecodedVideoFrame {
+        provenance: Default::default(),
+        correlation_timestamp_us: None,
         format: output_format,
         planes: Vec::new(),
         dmabuf: None,
@@ -1172,6 +1181,8 @@ fn drm_frame(
     }
     let dmabuf = Arc::new(DmaBufFrame::new(objects, layers, Arc::new(mapped)));
     let frame = DecodedVideoFrame {
+        provenance: Default::default(),
+        correlation_timestamp_us: None,
         format: output_format,
         planes: Vec::new(),
         dmabuf: Some(dmabuf),
@@ -1811,6 +1822,32 @@ mod tests {
             (*frame.as_mut_ptr()).chroma_location = ffmpeg::chroma::Location::TopLeft.into();
         }
         assert!(decoded_metadata(&frame, defaults).is_err());
+    }
+
+    #[test]
+    fn canonical_color_defaults_apply_until_the_decoder_reports_authored_metadata() {
+        let defaults = StreamFormat::video_default(64, 64)
+            .unwrap()
+            .with_color(Some(opennow_media_protocol::ColorDescription {
+                range: opennow_media_protocol::ColorRange::Full,
+                primaries: opennow_media_protocol::Primaries::Bt709,
+                transfer: opennow_media_protocol::Transfer::Srgb,
+                matrix: opennow_media_protocol::Matrix::Bt601,
+                chroma_location: opennow_media_protocol::ChromaLocation::Center,
+            }));
+        let mut decoded = frame::Video::new(Pixel::NV12, 2, 2);
+        assert_eq!(decoded_metadata(&decoded, defaults).unwrap(), defaults);
+        decoded.set_color_range(ffmpeg::color::Range::MPEG);
+        decoded.set_color_space(ffmpeg::color::Space::BT709);
+        unsafe {
+            (*decoded.as_mut_ptr()).chroma_location = ffmpeg::chroma::Location::Left.into();
+        }
+        let actual = decoded_metadata(&decoded, defaults).unwrap();
+        assert_eq!(actual.color_range, ColorRange::Limited);
+        assert_eq!(actual.color_matrix, ColorMatrix::Bt709);
+        assert_eq!(actual.chroma_location, ChromaLocation::Left);
+        assert_eq!(actual.color_primaries, ColorPrimaries::Bt709);
+        assert_eq!(actual.color_transfer, ColorTransfer::Sdr);
     }
 
     #[test]

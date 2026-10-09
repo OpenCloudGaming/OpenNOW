@@ -24,15 +24,18 @@ FocusScope {
             contentRoute = requestedContentRoute
     }
     readonly property bool profileRouteVisible: route === "accounts" || route === "profile-pin"
-    readonly property bool signInVisible: !profileRouteVisible && !ShellStore.authRestorePending
-        && (!ShellStore.signedIn || route === "sign-in")
+    readonly property bool pluginManagerVisible: !profileRouteVisible && !ShellStore.authRestorePending
+        && !ShellStore.signedIn && route === "settings-plugins"
+    readonly property bool signInVisible: !profileRouteVisible && !pluginManagerVisible && !ShellStore.authRestorePending
+        && ((!ShellStore.signedIn && !ShellStore.browsingExternalSource) || route === "sign-in")
     readonly property bool sessionStartingVisible: !signInVisible
         && (route === "inserting" || (streamVisible && !desktopStream.videoReady))
     readonly property bool streamVisible: !signInVisible && route === "stream"
     readonly property bool streamPointerLocked: streamVisible && desktopStream.streamPointerLocked
     readonly property var frameGenerationStats: streamVisible ? desktopStream.frameGenerationStats : ({})
     readonly property var swapStats: streamVisible ? desktopStream.swapStats : ({})
-    readonly property bool shellVisible: !profileRouteVisible && !signInVisible && !sessionStartingVisible && !streamVisible
+    readonly property bool shellVisible: !profileRouteVisible && !pluginManagerVisible && !signInVisible
+        && !sessionStartingVisible && !streamVisible
 
     function titleForRoute(value) {
         if (value === "updates") return qsTr("Updates")
@@ -44,6 +47,8 @@ FocusScope {
     }
     function subtitleForRoute(value) {
         if (value === "updates") return ""
+        if (ShellStore.browsingExternalSource && ["home", "library", "store", "game-detail"].indexOf(value) >= 0)
+            return String(ShellStore.sourceOwnerState.selectedSource ? ShellStore.sourceOwnerState.selectedSource.name || "" : "")
         if (value === "library" || value === "game-detail") return qsTr("%1 games").arg(ShellStore.catalogTotalCount || ShellStore.catalogGames.length)
         if (value === "store") return qsTr("%1 in catalog").arg(ShellStore.storeTotalCount || ShellStore.storeGames.length)
         if (value === "friends") return qsTr("Coming soon")
@@ -63,11 +68,14 @@ FocusScope {
         if (value === "settings-console") return 9
         if (value === "settings-shortcuts") return 10
         if (value === "settings-advanced" || value === "settings-advanced-dropdown") return 11
+        if (value === "settings-plugins") return 13
         if (value === "settings-account") return 0
         return 3
     }
     function contentForRoute(value) {
         if (value === "updates") return updatesComponent
+        if (ShellStore.browsingExternalSource && ["home", "library", "store", "game-detail"].indexOf(value) >= 0)
+            return sourceLibraryComponent
         if (value === "store") return storeComponent
         if (value === "friends") return friendsComponent
         if (value.indexOf("settings") === 0 || value === "controllers") return settingsComponent
@@ -103,7 +111,7 @@ FocusScope {
             bugReportNotice.restoreFocus()
             return
         }
-        if (root.shellVisible && root.route !== "game-detail" && !root.commandOpen
+        if (root.shellVisible && root.route !== "game-detail" && !sourceDetails.opened && !root.commandOpen
                 && AppController.overlay === "" && pageLoader.item)
             pageLoader.item.forceActiveFocus()
     }
@@ -115,6 +123,59 @@ FocusScope {
         z: 50
         onSignedIn: if (root.route === "sign-in")
             AppController.navigate(ShellStore.activeSession && ShellStore.sessionOwnerSignedIn() ? "stream" : "home")
+    }
+
+    FocusScope {
+        id: signedOutPlugins
+        objectName: "desktopSignedOutPlugins"
+        anchors.fill: parent
+        visible: root.pluginManagerVisible
+        z: 60
+        function leave() {
+            if (!AppController.goBack())
+                AppController.navigate("home")
+        }
+        Keys.onEscapePressed: event => { leave(); event.accepted = true }
+        Rectangle { anchors.fill: parent; color: Theme.shell }
+        Item {
+            id: signedOutHeader
+            width: parent.width
+            height: DesktopTokens.px(72)
+            DesktopSettingsButton {
+                objectName: "signedOutPluginsBack"
+                x: DesktopTokens.px(32)
+                anchors.verticalCenter: parent.verticalCenter
+                text: qsTr("Back to sign in")
+                onClicked: signedOutPlugins.leave()
+            }
+            Text {
+                anchors.centerIn: parent
+                text: qsTr("Plugins")
+                color: Theme.label
+                font.family: Theme.displayFont
+                font.pixelSize: DesktopTokens.px(20)
+                font.weight: Font.Black
+            }
+        }
+        Flickable {
+            id: signedOutPluginsFlick
+            anchors.top: signedOutHeader.bottom
+            anchors.bottom: parent.bottom
+            anchors.horizontalCenter: parent.horizontalCenter
+            width: Math.min(parent.width - DesktopTokens.px(64), DesktopTokens.px(960))
+            contentHeight: signedOutPluginsLoader.height + DesktopTokens.px(32)
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.vertical: ScrollBar {}
+            Loader {
+                id: signedOutPluginsLoader
+                width: parent.width
+                active: root.pluginManagerVisible
+                sourceComponent: DesktopSettingsPluginsPage {
+                    availableWidth: signedOutPluginsFlick.width
+                }
+            }
+        }
     }
 
     Item {
@@ -209,6 +270,13 @@ FocusScope {
         onPlayRequested: ShellStore.activateSelectedGame()
         onVariantSelected: index => ShellStore.selectGameVariant(index)
     }
+    DesktopSourceGameModal {
+        id: sourceDetails
+        anchors.fill: parent
+        opened: root.shellVisible && ShellStore.browsingExternalSource && sourceDetails.requested
+        z: 100
+        onOpenedChanged: if (!opened) Qt.callLater(root.restoreShellFocus)
+    }
     DesktopCommandPalette {
         objectName: "desktopCommandPalette"
         opened: root.commandOpen && root.shellVisible
@@ -227,7 +295,7 @@ FocusScope {
         id: bugReportNotice
         anchors.fill: parent
         opened: root.shellVisible && root.bugReportNoticeAllowed && ShellStore.bugReports.noticePending
-            && AppController.overlay === "" && root.route !== "game-detail"
+            && AppController.overlay === "" && root.route !== "game-detail" && !sourceDetails.opened
             && !ShellStore.queueSelector.opened
         z: 130
         onOpenedChanged: {
@@ -306,6 +374,13 @@ FocusScope {
         }
     }
     Component { id: friendsComponent; DesktopFriendsScreen {} }
+    Component {
+        id: sourceLibraryComponent
+        DesktopSourceLibraryScreen {
+            searchQuery: root.searchText
+            onDetailsRequested: item => sourceDetails.show(item)
+        }
+    }
     Component { id: updatesComponent; DesktopUpdateScreen {} }
     Component {
         id: settingsComponent
@@ -322,6 +397,8 @@ FocusScope {
         function onRouteChanged() {
             root.commandOpen = false
             root.searchText = ""
+            if (sourceDetails.requested)
+                sourceDetails.library.closeDetails()
             Qt.callLater(root.restoreShellFocus)
         }
     }
@@ -334,6 +411,7 @@ FocusScope {
             modeErrorTimer.restart()
         }
     }
+    onPluginManagerVisibleChanged: if (pluginManagerVisible) Qt.callLater(() => signedOutPlugins.forceActiveFocus())
     onSignInVisibleChanged: Qt.callLater(() => {
         if (root.signInVisible)
             desktopSignIn.forceActiveFocus()

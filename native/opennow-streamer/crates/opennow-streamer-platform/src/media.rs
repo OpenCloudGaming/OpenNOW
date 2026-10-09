@@ -523,6 +523,8 @@ impl MediaColorQuality {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MediaStreamConfig {
+    pub color: Option<opennow_media_protocol::ColorDescription>,
+    pub audio_enabled: bool,
     pub codec: MediaVideoCodec,
     /// Color class accepted by CloudMatch and requested again during NVST setup.
     pub color_quality: MediaColorQuality,
@@ -539,6 +541,8 @@ pub struct MediaStreamConfig {
 impl Default for MediaStreamConfig {
     fn default() -> Self {
         Self {
+            color: None,
+            audio_enabled: true,
             codec: MediaVideoCodec::H264,
             color_quality: MediaColorQuality::default(),
             hdr: false,
@@ -585,6 +589,7 @@ impl MediaStreamConfig {
                 VideoChroma::Yuv420
             })
             .with_transfer(self.macos_transfer())
+            .with_color(self.color)
     }
 }
 
@@ -599,6 +604,7 @@ pub enum MediaCodec {
 
 #[derive(Debug, Clone)]
 pub struct EncodedFrame {
+    pub provenance: opennow_media_protocol::FrameProvenance,
     pub mid: String,
     pub codec: MediaCodec,
     pub data: Arc<[u8]>,
@@ -838,7 +844,11 @@ pub struct DecodeTimingsReport {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MediaFeedback {
+    VideoFrameDecoded {
+        provenance: opennow_media_protocol::FrameProvenance,
+    },
     VideoFrameAccepted {
+        provenance: opennow_media_protocol::FrameProvenance,
         frame_index: Option<u32>,
         timestamp: u64,
         bytes: u32,
@@ -930,6 +940,17 @@ pub struct MediaSink {
     shared: Arc<SharedPipeline>,
 }
 
+fn spawn_audio_worker(
+    enabled: bool,
+    name: String,
+    worker: impl FnOnce() + Send + 'static,
+) -> std::io::Result<Option<JoinHandle<()>>> {
+    if !enabled {
+        return Ok(None);
+    }
+    thread::Builder::new().name(name).spawn(worker).map(Some)
+}
+
 impl MediaSink {
     pub fn push(&self, frame: EncodedFrame) -> PushOutcome {
         if self.shared.stopped.load(Ordering::Acquire) {
@@ -937,6 +958,9 @@ impl MediaSink {
         }
         if self.shared.paused.load(Ordering::Acquire) {
             return PushOutcome::Paused;
+        }
+        if !self.shared.stream.audio_enabled && matches!(frame.codec, MediaCodec::Opus { .. }) {
+            return PushOutcome::Unsupported;
         }
         match frame.codec {
             MediaCodec::H264 | MediaCodec::H265 | MediaCodec::Av1 | MediaCodec::Opus { .. } => {
@@ -1081,7 +1105,10 @@ impl MediaSession {
             ));
         }
         let video_decoder = (!use_windows_backend).then(H264Decoder::new).transpose()?;
-        let audio_decoder = OpusDecoder::new(2)?;
+        let audio_decoder = stream
+            .audio_enabled
+            .then(|| OpusDecoder::new(2))
+            .transpose()?;
         let shared = Arc::new(SharedPipeline {
             video: Arc::new(VideoQueue::new(video_queue_capacity(stream.fps))),
             audio: Arc::new(BoundedQueue::new(AUDIO_QUEUE_CAPACITY)),
@@ -1125,10 +1152,11 @@ impl MediaSession {
             })
             .map_err(|error| format!("failed to start video decoder worker: {error}"))?;
         let audio_shared = Arc::clone(&shared);
-        let audio_worker = match thread::Builder::new()
-            .name("opennow-opus-decode".to_owned())
-            .spawn(move || run_audio_decoder(audio_shared, audio_decoder))
-        {
+        let audio_worker = match spawn_audio_worker(
+            stream.audio_enabled,
+            "opennow-opus-decode".to_owned(),
+            move || run_audio_decoder(audio_shared, audio_decoder.expect("audio decoder enabled")),
+        ) {
             Ok(worker) => worker,
             Err(error) => {
                 shared.video.close();
@@ -1139,7 +1167,7 @@ impl MediaSession {
         Ok(Self {
             sink: MediaSink { shared },
             video_worker: Some(video_worker),
-            audio_worker: Some(audio_worker),
+            audio_worker,
             #[cfg(target_os = "linux")]
             linux_monitor: None,
             embedded_host_worker: None,
@@ -1194,10 +1222,11 @@ impl MediaSession {
             })
             .map_err(|error| format!("failed to start VideoToolbox submit worker: {error}"))?;
         let audio_shared = Arc::clone(&shared);
-        let audio_worker = match thread::Builder::new()
-            .name("opennow-coreaudio-submit".to_owned())
-            .spawn(move || run_macos_audio(audio_shared))
-        {
+        let audio_worker = match spawn_audio_worker(
+            stream.audio_enabled,
+            "opennow-coreaudio-submit".to_owned(),
+            move || run_macos_audio(audio_shared),
+        ) {
             Ok(worker) => worker,
             Err(error) => {
                 shared.video.close();
@@ -1208,7 +1237,7 @@ impl MediaSession {
         Ok(Self {
             sink: MediaSink { shared },
             video_worker: Some(video_worker),
-            audio_worker: Some(audio_worker),
+            audio_worker,
             #[cfg(target_os = "linux")]
             linux_monitor: None,
             embedded_host_worker: None,
@@ -1231,7 +1260,8 @@ impl MediaSession {
             stream.height,
         )
         .map_err(|error| error.to_string())?;
-        let mut config = opennow_streamer_platform_linux::SessionConfig::new(format);
+        let mut config =
+            opennow_streamer_platform_linux::SessionConfig::new(format.with_color(stream.color));
         config.codec = match stream.codec {
             MediaVideoCodec::H264 => opennow_streamer_platform_linux::VideoCodec::H264,
             MediaVideoCodec::H265 => opennow_streamer_platform_linux::VideoCodec::H265,
@@ -1264,12 +1294,16 @@ impl MediaSession {
             .name("opennow-linux-video-submit".to_owned())
             .spawn(move || run_linux_video(video_shared, video_commands))
             .map_err(|error| format!("failed to start Linux video submit worker: {error}"))?;
-        let audio_decoder = OpusDecoder::new(2)?;
+        let audio_decoder = stream
+            .audio_enabled
+            .then(|| OpusDecoder::new(2))
+            .transpose()?;
         let audio_shared = Arc::clone(&shared);
-        let audio_worker = match thread::Builder::new()
-            .name("opennow-opus-decode".to_owned())
-            .spawn(move || run_audio_decoder(audio_shared, audio_decoder))
-        {
+        let audio_worker = match spawn_audio_worker(
+            stream.audio_enabled,
+            "opennow-opus-decode".to_owned(),
+            move || run_audio_decoder(audio_shared, audio_decoder.expect("audio decoder enabled")),
+        ) {
             Ok(worker) => worker,
             Err(error) => {
                 shared.video.close();
@@ -1290,14 +1324,16 @@ impl MediaSession {
                 shared.video.close();
                 shared.audio.close();
                 let _ = video_worker.join();
-                let _ = audio_worker.join();
+                if let Some(audio_worker) = audio_worker {
+                    let _ = audio_worker.join();
+                }
                 return Err(format!("failed to start Linux media monitor: {error}"));
             }
         };
         Ok(Self {
             sink: MediaSink { shared },
             video_worker: Some(video_worker),
-            audio_worker: Some(audio_worker),
+            audio_worker,
             linux_monitor: Some(linux_monitor),
             embedded_host_worker: None,
             embedded_frames: None,
@@ -1390,8 +1426,11 @@ impl MediaSession {
         };
         config.decoder_preference = decoder_preference;
         config.embedded_presentation = true;
+        if !stream.audio_enabled {
+            config.audio = None;
+        }
         config.stream_format.pixel_format = stream.color_quality.linux_pixel_format();
-        if stream.hdr {
+        if stream.hdr && stream.color.is_none() {
             config.stream_format.color_transfer =
                 opennow_streamer_platform_linux::ColorTransfer::Pq;
             config.stream_format.color_primaries =
@@ -1399,6 +1438,7 @@ impl MediaSession {
             config.stream_format.color_matrix =
                 opennow_streamer_platform_linux::ColorMatrix::Bt2020;
         }
+        config.stream_format = config.stream_format.with_color(stream.color);
         if let Some(audio) = config.audio.as_mut() {
             audio.muted = Arc::clone(&output.audio_muted);
             audio.output_device = audio_device.device_name().unwrap_or_default().to_owned();
@@ -1460,10 +1500,11 @@ impl MediaSession {
             .spawn(move || run_embedded_linux_video(video_shared))
             .map_err(|error| format!("failed to start embedded Linux video submitter: {error}"))?;
         let audio_shared = Arc::clone(&shared);
-        let audio_worker = match thread::Builder::new()
-            .name("opennow-embedded-linux-audio-submit".to_owned())
-            .spawn(move || run_embedded_linux_audio(audio_shared))
-        {
+        let audio_worker = match spawn_audio_worker(
+            stream.audio_enabled,
+            "opennow-embedded-linux-audio-submit".to_owned(),
+            move || run_embedded_linux_audio(audio_shared),
+        ) {
             Ok(worker) => worker,
             Err(error) => {
                 shared.video.close();
@@ -1488,7 +1529,9 @@ impl MediaSession {
                 shared.video.close();
                 shared.audio.close();
                 let _ = video_worker.join();
-                let _ = audio_worker.join();
+                if let Some(audio_worker) = audio_worker {
+                    let _ = audio_worker.join();
+                }
                 stop_linux_session(&shared);
                 return Err(format!(
                     "failed to start embedded Linux frame publisher: {error}"
@@ -1498,7 +1541,7 @@ impl MediaSession {
         Ok(Self {
             sink: MediaSink { shared },
             video_worker: Some(video_worker),
-            audio_worker: Some(audio_worker),
+            audio_worker,
             linux_monitor: Some(linux_monitor),
             embedded_host_worker: None,
             embedded_frames: Some(embedded_frames),
@@ -1541,6 +1584,7 @@ impl MediaSession {
         });
         let audio_output_device = audio_device.device_name().map(str::to_owned);
         let audio_muted = Arc::clone(&shared.output.audio_muted);
+        let decoded_feedback = shared.feedback.clone();
         let (host_commands, host_receiver) = std::sync::mpsc::channel();
         let embedded_frames = frames.clone();
         let embedded_host_worker = thread::Builder::new()
@@ -1556,8 +1600,10 @@ impl MediaSession {
                 while let Ok(command) = host_receiver.recv() {
                     let start = |video| {
                         let publisher = frames.clone();
+                        let decoded_feedback = decoded_feedback.clone();
                         MacOsBackend::start_embedded_with_publisher(
                             EmbeddedBackendConfig {
+                                audio_enabled: stream.audio_enabled,
                                 audio_muted: Arc::clone(&audio_muted),
                                 video,
                                 audio: AudioFormat::OPUS_STEREO_48KHZ,
@@ -1565,6 +1611,9 @@ impl MediaSession {
                                 queues: QueueLimits::default(),
                             },
                             move |frame| {
+                                let _ = decoded_feedback.send(MediaFeedback::VideoFrameDecoded {
+                                    provenance: frame.provenance(),
+                                });
                                 let Some(lease) = publisher.context() else {
                                     return false;
                                 };
@@ -1586,7 +1635,9 @@ impl MediaSession {
                             reply,
                         } => {
                             let result = start(
-                                H264Format::new(parameter_sets, VideoColorSpace::Bt709).into(),
+                                H264Format::new(parameter_sets, VideoColorSpace::Bt709)
+                                    .with_color(stream.color)
+                                    .into(),
                             )
                             .and_then(|mut started| {
                                 started.set_paused(paused)?;
@@ -1685,10 +1736,11 @@ impl MediaSession {
             }
         };
         let audio_shared = Arc::clone(&shared);
-        let audio_worker = match thread::Builder::new()
-            .name("opennow-embedded-coreaudio-submit".to_owned())
-            .spawn(move || run_macos_audio(audio_shared))
-        {
+        let audio_worker = match spawn_audio_worker(
+            stream.audio_enabled,
+            "opennow-embedded-coreaudio-submit".to_owned(),
+            move || run_macos_audio(audio_shared),
+        ) {
             Ok(worker) => worker,
             Err(error) => {
                 shared.video.close();
@@ -1703,7 +1755,7 @@ impl MediaSession {
         Ok(Self {
             sink: MediaSink { shared },
             video_worker: Some(video_worker),
-            audio_worker: Some(audio_worker),
+            audio_worker,
             embedded_host_worker: Some(embedded_host_worker),
             embedded_frames: Some(embedded_frames),
             host_commands,
@@ -1745,6 +1797,7 @@ impl MediaSession {
         )));
         let notifier = Arc::new(EmbeddedD3d11FrameNotifier {
             state: Arc::downgrade(&producer),
+            submission: Arc::clone(&submission),
             frames: frames.clone(),
             shared: Arc::clone(&shared),
             stream,
@@ -1792,6 +1845,7 @@ impl MediaSession {
                         media_timestamp_100ns(frame.timestamp, frame.clock_rate_hz);
                     let duration_100ns = clock.observe(timestamp_100ns);
                     let encoded = opennow_streamer_platform_windows::EncodedVideoFrame {
+                        provenance: frame.provenance,
                         codec: match frame.codec {
                             MediaCodec::H264 => opennow_streamer_platform_windows::VideoCodec::H264,
                             MediaCodec::H265 => opennow_streamer_platform_windows::VideoCodec::H265,
@@ -1897,11 +1951,15 @@ impl MediaSession {
             })
             .map_err(|error| format!("failed to start embedded D3D11 submitter: {error}"))?;
         let audio_shared = Arc::clone(&shared);
-        let audio_decoder = OpusDecoder::new(2)?;
-        let audio_worker = match thread::Builder::new()
-            .name("opennow-embedded-opus-decode".to_owned())
-            .spawn(move || run_audio_decoder(audio_shared, audio_decoder))
-        {
+        let audio_decoder = stream
+            .audio_enabled
+            .then(|| OpusDecoder::new(2))
+            .transpose()?;
+        let audio_worker = match spawn_audio_worker(
+            stream.audio_enabled,
+            "opennow-embedded-opus-decode".to_owned(),
+            move || run_audio_decoder(audio_shared, audio_decoder.expect("audio decoder enabled")),
+        ) {
             Ok(worker) => worker,
             Err(error) => {
                 shared.video.close();
@@ -1912,7 +1970,7 @@ impl MediaSession {
         Ok(Self {
             sink: MediaSink { shared },
             video_worker: Some(video_worker),
-            audio_worker: Some(audio_worker),
+            audio_worker,
             embedded_host_worker: None,
             embedded_d3d11: Some(producer),
             embedded_frames: Some(embedded_frames),
@@ -1966,10 +2024,11 @@ impl MediaSession {
             })
             .map_err(|error| format!("failed to start test video consumer: {error}"))?;
         let audio_shared = Arc::clone(&shared);
-        let audio_worker = match thread::Builder::new()
-            .name("opennow-test-audio-consumer".to_owned())
-            .spawn(move || while audio_shared.audio.pop().is_some() {})
-        {
+        let audio_worker = match spawn_audio_worker(
+            stream.audio_enabled,
+            "opennow-test-audio-consumer".to_owned(),
+            move || while audio_shared.audio.pop().is_some() {},
+        ) {
             Ok(worker) => worker,
             Err(error) => {
                 shared.video.close();
@@ -1980,7 +2039,7 @@ impl MediaSession {
         Ok(Self {
             sink: MediaSink { shared },
             video_worker: Some(video_worker),
-            audio_worker: Some(audio_worker),
+            audio_worker,
             #[cfg(target_os = "linux")]
             linux_monitor: None,
             embedded_host_worker: None,
@@ -2160,7 +2219,8 @@ impl EmbeddedD3d11State {
                 } else {
                     opennow_streamer_platform_windows::VideoColorMatrix::Bt709
                 },
-            },
+            }
+            .with_color(stream.color),
             submission,
             producer: None,
             frame_ready: Arc::new(|| {}),
@@ -2240,16 +2300,6 @@ impl EmbeddedD3d11State {
             self.producer = Some((context, producer));
         }
         let (_, producer) = self.producer.as_ref().expect("producer initialized");
-        while let Some(event) = producer.try_event() {
-            match event {
-                opennow_streamer_platform_windows::BackendEvent::KeyFrameRequired
-                | opennow_streamer_platform_windows::BackendEvent::DeviceLost {
-                    subsystem: opennow_streamer_platform_windows::Subsystem::VideoDecode,
-                    ..
-                } => self.keyframe_required = true,
-                _ => {}
-            }
-        }
         let frame = producer
             .acquire_latest()
             .map_err(|error| error.to_string())?
@@ -2283,6 +2333,7 @@ impl EmbeddedD3d11State {
         };
         Ok((
             crate::GraphicsRecordedFrame {
+                provenance: recorded.provenance,
                 resource: recorded.texture as usize as u64,
                 resource_view: 0,
                 color_space: recorded.color_space.into(),
@@ -2470,6 +2521,7 @@ impl EmbeddedD3d11Submission {
 #[cfg(target_os = "windows")]
 struct EmbeddedD3d11FrameNotifier {
     state: std::sync::Weak<Mutex<EmbeddedD3d11State>>,
+    submission: Arc<Mutex<EmbeddedD3d11Submission>>,
     frames: crate::GraphicsFramePublisher,
     shared: Arc<SharedPipeline>,
     stream: MediaStreamConfig,
@@ -2491,6 +2543,52 @@ impl EmbeddedD3d11FrameNotifier {
     }
 
     fn publish_decoded(&self) {
+        use opennow_streamer_platform_windows::{BackendEvent, Subsystem};
+        let events = {
+            let submission = self
+                .submission
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            submission
+                .submitter
+                .as_ref()
+                .map_or_else(Vec::new, |submitter| {
+                    std::iter::from_fn(|| submitter.try_event())
+                        .take(64)
+                        .collect::<Vec<_>>()
+                })
+        };
+        let mut needs_keyframe = false;
+        for event in events {
+            match event {
+                BackendEvent::VideoFrameDecoded { provenance } => {
+                    let _ = self
+                        .shared
+                        .feedback
+                        .send(MediaFeedback::VideoFrameDecoded { provenance });
+                }
+                BackendEvent::KeyFrameRequired
+                | BackendEvent::DeviceLost {
+                    subsystem: Subsystem::VideoDecode,
+                    ..
+                } => needs_keyframe = true,
+                BackendEvent::QueueOverflow(_) => {
+                    let _ = self.shared.feedback.send(MediaFeedback::QueueDropped {
+                        media: "d3d11-decode",
+                        count: 1,
+                    });
+                }
+                _ => {}
+            }
+        }
+        if needs_keyframe {
+            let mid = self
+                .mid
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone();
+            invalidate_embedded_video(&self.shared, &mid, "embedded D3D11 decoder lost references");
+        }
         self.publish(true);
     }
 
@@ -2605,6 +2703,14 @@ impl crate::GraphicsFrame for PendingD3d11Frame {
 }
 
 impl MediaControl {
+    pub fn invalidate_video(&self) {
+        self.shared.video_desynced.store(true, Ordering::Release);
+        self.shared
+            .keyframe_requested
+            .store(true, Ordering::Release);
+        self.shared.video.hold_keyframe_request();
+    }
+
     pub fn start_replay(
         &self,
         config: opennow_streamer_protocol::ReplayBufferConfig,
@@ -2705,6 +2811,7 @@ fn run_windows_video(shared: Arc<SharedPipeline>, maximum_fps: u32) {
             && (shared.video_desynced.load(Ordering::Acquire)
                 || shared.windows_bridge.keyframe_required());
         match backend.submit_video(EncodedVideoFrame {
+            provenance: frame.provenance,
             codec: match frame.codec {
                 MediaCodec::H264 => VideoCodec::H264,
                 MediaCodec::H265 => VideoCodec::H265,
@@ -2838,7 +2945,6 @@ fn invalidate_embedded_video(shared: &SharedPipeline, mid: &str, reason: &str) {
     // submission must never clear a newer decoder/transport failure. The hold
     // keeps the following deltas from each requesting another IDR; `clear`
     // alone re-arms that request.
-    shared.video.clear();
     shared.video.hold_keyframe_request();
     opennow_streamer_protocol::log::log_async("WARN", "video-reference", reason);
     let _ = shared.feedback.send(MediaFeedback::RequestKeyframe {
@@ -3020,6 +3126,9 @@ fn run_video_decoder_from(
                 }
                 shared.keyframe_requested.store(false, Ordering::Release);
                 report_video_frame_accepted(&shared, &frame);
+                let _ = shared.feedback.send(MediaFeedback::VideoFrameDecoded {
+                    provenance: opennow_media_protocol::FrameProvenance::default(),
+                });
                 if shared.output.replace_video(decoded) {
                     let _ = shared.feedback.send(MediaFeedback::QueueDropped {
                         media: "present",
@@ -3192,7 +3301,7 @@ fn run_linux_video(shared: Arc<SharedPipeline>, host_commands: Sender<HostComman
             timestamp_us,
             frame.keyframe,
         ) {
-            Ok(encoded) => encoded,
+            Ok(encoded) => encoded.with_provenance(frame.provenance),
             Err(error) => {
                 trigger_linux_fallback(
                     &shared,
@@ -3257,7 +3366,7 @@ fn run_embedded_linux_video(shared: Arc<SharedPipeline>) {
             media_timestamp_us(frame.timestamp, frame.clock_rate_hz),
             frame.keyframe,
         ) {
-            Ok(encoded) => encoded,
+            Ok(encoded) => encoded.with_provenance(frame.provenance),
             Err(error) => {
                 let _ = shared.feedback.send(MediaFeedback::DecoderError {
                     codec: shared.linux_codec.label(),
@@ -3314,28 +3423,26 @@ fn run_embedded_linux_audio(shared: Arc<SharedPipeline>) {
         let MediaCodec::Opus { .. } = frame.codec else {
             continue;
         };
-        let Some(ssrc) = frame.ssrc else {
-            let _ = shared.feedback.send(MediaFeedback::DecoderError {
-                codec: "opus",
-                message: "embedded Linux audio frame carries no sender source identifier"
-                    .to_owned(),
-            });
-            continue;
+        let packet = if let Some(ssrc) = frame.ssrc {
+            u32::try_from(frame.timestamp)
+                .map_err(|_| "embedded Linux RTP audio timestamp exceeds u32".to_owned())
+                .and_then(|timestamp| {
+                    opennow_streamer_platform_linux::AudioPacket::new(
+                        Arc::clone(&frame.data),
+                        timestamp,
+                        frame.clock_rate_hz,
+                        ssrc,
+                    )
+                    .map_err(|error| error.to_string())
+                })
+        } else {
+            opennow_streamer_platform_linux::AudioPacket::from_source(
+                Arc::clone(&frame.data),
+                frame.provenance,
+            )
+            .map_err(|error| error.to_string())
         };
-        let Ok(rtp_timestamp) = u32::try_from(frame.timestamp) else {
-            let _ = shared.feedback.send(MediaFeedback::DecoderError {
-                codec: "opus",
-                message: "embedded Linux audio frame carries an out-of-range RTP timestamp"
-                    .to_owned(),
-            });
-            continue;
-        };
-        let packet = match opennow_streamer_platform_linux::AudioPacket::new(
-            Arc::clone(&frame.data),
-            rtp_timestamp,
-            frame.clock_rate_hz,
-            ssrc,
-        ) {
+        let packet = match packet {
             Ok(packet) => packet,
             Err(error) => {
                 let _ = shared.feedback.send(MediaFeedback::DecoderError {
@@ -3470,6 +3577,11 @@ fn run_embedded_linux_monitor(
         }
         for event in events {
             match event {
+                opennow_streamer_platform_linux::BackendEvent::VideoFrameDecoded { provenance } => {
+                    let _ = shared
+                        .feedback
+                        .send(MediaFeedback::VideoFrameDecoded { provenance });
+                }
                 opennow_streamer_platform_linux::BackendEvent::DecoderChanged {
                     from,
                     to,
@@ -3603,6 +3715,11 @@ fn run_linux_monitor(shared: Arc<SharedPipeline>, host_commands: Sender<HostComm
         }
         for event in events {
             match event {
+                opennow_streamer_platform_linux::BackendEvent::VideoFrameDecoded { provenance } => {
+                    let _ = shared
+                        .feedback
+                        .send(MediaFeedback::VideoFrameDecoded { provenance });
+                }
                 opennow_streamer_platform_linux::BackendEvent::DecoderChanged {
                     from,
                     to,
@@ -4005,7 +4122,8 @@ fn run_macos_h264_video(
                 || shared.video_desynced.load(Ordering::Acquire))
             && frame.keyframe
         {
-            let format = H264Format::new(parameter_sets.clone(), VideoColorSpace::Bt709);
+            let format = H264Format::new(parameter_sets.clone(), VideoColorSpace::Bt709)
+                .with_color(shared.stream.color);
             let Some(sink) = backend_sink.as_ref() else {
                 return;
             };
@@ -4041,7 +4159,8 @@ fn run_macos_h264_video(
             i64::try_from(frame.timestamp).unwrap_or(i64::MAX),
             i64::from(timescale) / i64::from(stream_fps.max(1)),
             timescale,
-        );
+        )
+        .with_provenance(frame.provenance);
         let Some(sink) = backend_sink.as_ref() else {
             return;
         };
@@ -4221,7 +4340,8 @@ fn run_macos_h265_video(
             i64::try_from(frame.timestamp).unwrap_or(i64::MAX),
             i64::from(timescale) / i64::from(stream_fps.max(1)),
             timescale,
-        );
+        )
+        .with_provenance(frame.provenance);
         let Some(sink) = backend_sink.as_ref() else {
             return;
         };
@@ -4325,7 +4445,9 @@ fn run_macos_av1_video(
                 stream.height,
                 stream.macos_color_space(),
             ) {
-                Ok(format) => format.with_transfer(stream.macos_transfer()),
+                Ok(format) => format
+                    .with_transfer(stream.macos_transfer())
+                    .with_color(stream.color),
                 Err(error) => {
                     let _ = shared.feedback.send(MediaFeedback::DecoderError {
                         codec: "av1",
@@ -4380,7 +4502,9 @@ fn run_macos_av1_video(
                 stream.height,
                 stream.macos_color_space(),
             ) {
-                Ok(format) => format.with_transfer(stream.macos_transfer()),
+                Ok(format) => format
+                    .with_transfer(stream.macos_transfer())
+                    .with_color(stream.color),
                 Err(error) => {
                     eprintln!("Rejected AV1 configuration update: {error}");
                     mark_macos_video_desynced(
@@ -4419,7 +4543,8 @@ fn run_macos_av1_video(
             i64::try_from(frame.timestamp).unwrap_or(i64::MAX),
             i64::from(timescale) / i64::from(stream.fps.max(1)),
             timescale,
-        );
+        )
+        .with_provenance(frame.provenance);
         let Some(sink) = backend_sink.as_ref() else {
             return;
         };
@@ -4457,6 +4582,7 @@ fn run_macos_av1_video(
 
 fn report_video_frame_accepted(shared: &SharedPipeline, frame: &EncodedFrame) {
     let _ = shared.feedback.send(MediaFeedback::VideoFrameAccepted {
+        provenance: frame.provenance,
         frame_index: frame.frame_index,
         timestamp: frame.timestamp,
         bytes: u32::try_from(frame.data.len()).unwrap_or(u32::MAX),
@@ -4838,6 +4964,7 @@ mod tests {
         key_frame: bool,
     ) -> opennow_streamer_platform_windows::EncodedVideoFrame {
         opennow_streamer_platform_windows::EncodedVideoFrame {
+            provenance: Default::default(),
             codec: opennow_streamer_platform_windows::VideoCodec::H264,
             data: vec![0, 0, 0, 1, if key_frame { 0x65 } else { 0x41 }],
             timestamp_100ns,
@@ -5151,6 +5278,7 @@ mod tests {
             ),
         );
         let frame = EncodedFrame {
+            provenance: Default::default(),
             mid: "video".to_owned(),
             codec: MediaCodec::H264,
             data: Arc::from([0_u8, 0, 0, 1, 0x65]),
@@ -5173,6 +5301,50 @@ mod tests {
         assert!(recording.subscribe().is_err());
         recording.unsubscribe();
         assert!(receiver.recv().is_err());
+    }
+
+    #[test]
+    fn recording_and_replay_clones_preserve_optional_full_width_provenance() {
+        use opennow_media_protocol::{FrameProvenance, SourceStamp};
+        for sender_frame_id in [Some(u64::MAX), Some(0), None] {
+            let recording = RecordingTap::default();
+            let receiver = recording.subscribe().unwrap();
+            let replay = crate::replay::ReplayTap::default();
+            replay.start(
+                opennow_streamer_protocol::ReplayBufferConfig::from_settings(
+                    &serde_json::json!({"replayBufferEnabled":true}),
+                ),
+            );
+            let provenance = FrameProvenance {
+                attempt_generation: 123,
+                track_id: 2,
+                source: Some(SourceStamp {
+                    sender_frame_id,
+                    timestamp: u64::MAX - 9,
+                    clock_rate_hz: 90_000,
+                    ssrc: None,
+                }),
+            };
+            let frame = EncodedFrame {
+                provenance,
+                mid: "video".to_owned(),
+                codec: MediaCodec::H264,
+                data: Arc::from([0, 0, 0, 1, 0x65]),
+                frame_index: None,
+                timestamp: u64::MAX - 9,
+                clock_rate_hz: 90_000,
+                keyframe: true,
+                contiguous: true,
+                ssrc: None,
+            };
+            recording.publish(&frame);
+            replay.publish(&frame);
+            assert_eq!(receiver.recv().unwrap().provenance, provenance);
+            assert_eq!(
+                replay.snapshot().unwrap().frames[0].frame.provenance,
+                provenance
+            );
+        }
     }
 
     #[test]
@@ -5206,6 +5378,7 @@ mod tests {
         let tap = RecordingTap::default();
         let receiver = tap.subscribe().expect("recording subscription");
         let frame = EncodedFrame {
+            provenance: Default::default(),
             mid: "video".to_owned(),
             codec: MediaCodec::H264,
             data: Arc::from([0_u8, 0, 0, 1, 0x65]),
@@ -5375,6 +5548,78 @@ mod tests {
     }
 
     #[test]
+    fn acceptance_feedback_keeps_generic_provenance_separate_from_nvst_frame_ids() {
+        let (shared, receiver) = software_test_pipeline();
+        let provenance = opennow_media_protocol::FrameProvenance {
+            attempt_generation: 8,
+            track_id: 1,
+            source: Some(opennow_media_protocol::SourceStamp {
+                sender_frame_id: Some(u64::MAX),
+                timestamp: u64::MAX,
+                clock_rate_hz: 90_000,
+                ssrc: None,
+            }),
+        };
+        let frame = EncodedFrame {
+            provenance,
+            mid: "video".to_owned(),
+            codec: MediaCodec::H264,
+            data: Arc::from([0]),
+            frame_index: Some(7),
+            timestamp: 123,
+            clock_rate_hz: 90_000,
+            keyframe: true,
+            contiguous: true,
+            ssrc: Some(5),
+        };
+        report_video_frame_accepted(&shared, &frame);
+        assert_eq!(
+            receiver.try_recv().unwrap(),
+            MediaFeedback::VideoFrameAccepted {
+                provenance,
+                frame_index: Some(7),
+                timestamp: 123,
+                bytes: 1,
+                keyframe: true,
+            }
+        );
+    }
+
+    #[test]
+    fn video_invalidation_keeps_audio_and_media_lifecycle_running() {
+        let (shared, feedback) = software_test_pipeline();
+        let (host_commands, host) = std::sync::mpsc::channel();
+        let control = MediaControl {
+            shared: Arc::clone(&shared),
+            host_commands,
+        };
+        let sink = MediaSink {
+            shared: Arc::clone(&shared),
+        };
+        let audio = EncodedFrame {
+            provenance: Default::default(),
+            mid: "audio".to_owned(),
+            codec: MediaCodec::Opus { channels: 2 },
+            data: Arc::from([0]),
+            frame_index: None,
+            timestamp: 0,
+            clock_rate_hz: 48_000,
+            keyframe: false,
+            contiguous: true,
+            ssrc: Some(5),
+        };
+        assert_eq!(sink.push(audio.clone()), PushOutcome::Queued);
+        control.invalidate_video();
+        assert!(!shared.paused.load(Ordering::Acquire));
+        assert!(!shared.stopped.load(Ordering::Acquire));
+        assert!(shared.video_desynced.load(Ordering::Acquire));
+        assert_eq!(shared.audio.pop().unwrap().ssrc, Some(5));
+        assert_eq!(sink.push(audio), PushOutcome::Queued);
+        assert!(feedback.try_recv().is_err());
+        assert!(host.try_recv().is_err());
+    }
+
+    #[test]
     fn software_handoff_decodes_the_pending_h264_keyframe() {
         let width = 32;
         let height = 32;
@@ -5389,6 +5634,7 @@ mod tests {
             shared,
             H264Decoder::new().expect("decoder"),
             Some(EncodedFrame {
+                provenance: Default::default(),
                 mid: "video".to_owned(),
                 codec: MediaCodec::H264,
                 data: encoded,
@@ -5430,6 +5676,7 @@ mod tests {
             shared,
             decoder,
             Some(EncodedFrame {
+                provenance: Default::default(),
                 mid: "video".to_owned(),
                 codec: MediaCodec::H264,
                 data: idr_only.into(),
@@ -5452,6 +5699,12 @@ mod tests {
                 ..
             })
         ));
+        assert_eq!(
+            feedback.try_recv().unwrap(),
+            MediaFeedback::VideoFrameDecoded {
+                provenance: Default::default()
+            }
+        );
         assert!(feedback.try_recv().is_err());
     }
 
@@ -5476,6 +5729,7 @@ mod tests {
             Arc::clone(&shared),
             decoder,
             Some(EncodedFrame {
+                provenance: Default::default(),
                 mid: "video".to_owned(),
                 codec: MediaCodec::H264,
                 data: delta.into(),
@@ -5508,6 +5762,7 @@ mod tests {
             run_video_decoder(worker_shared, H264Decoder::new().unwrap());
         });
         let make_frame = |id, data: Arc<[u8]>| EncodedFrame {
+            provenance: Default::default(),
             mid: "video".to_owned(),
             codec: MediaCodec::H264,
             data,
@@ -5552,6 +5807,12 @@ mod tests {
         assert!(!shared.video_desynced.load(Ordering::Acquire));
         assert!(!shared.keyframe_requested.load(Ordering::Acquire));
         assert!(shared.output.take_video().is_some());
+        assert_eq!(
+            feedback.try_recv().unwrap(),
+            MediaFeedback::VideoFrameDecoded {
+                provenance: Default::default()
+            }
+        );
         assert!(feedback.try_recv().is_err());
     }
 
@@ -5582,6 +5843,7 @@ mod tests {
         shared
             .video
             .push(EncodedFrame {
+                provenance: Default::default(),
                 mid: "video".to_owned(),
                 codec: MediaCodec::H264,
                 data: Arc::from(&b"idr"[..]),
@@ -5596,6 +5858,16 @@ mod tests {
         shared
             .video
             .push(EncodedFrame {
+                provenance: opennow_media_protocol::FrameProvenance {
+                    attempt_generation: 5,
+                    track_id: 2,
+                    source: Some(opennow_media_protocol::SourceStamp {
+                        sender_frame_id: Some(u64::MAX),
+                        timestamp: 1500,
+                        clock_rate_hz: 90_000,
+                        ssrc: None,
+                    }),
+                },
                 mid: "video".to_owned(),
                 codec: MediaCodec::H264,
                 data: Arc::from(&b"delta"[..]),
@@ -5619,6 +5891,12 @@ mod tests {
         assert!(!shared.video_desynced.load(Ordering::Acquire));
         assert!(!shared.keyframe_requested.load(Ordering::Acquire));
         assert!(shared.output.take_video().is_some());
+        assert_eq!(
+            feedback.try_recv().unwrap(),
+            MediaFeedback::VideoFrameDecoded {
+                provenance: Default::default()
+            }
+        );
         assert!(feedback.try_recv().is_err());
     }
 
@@ -5694,6 +5972,7 @@ mod tests {
         session.set_paused(true);
         assert_eq!(
             sink.push(EncodedFrame {
+                provenance: Default::default(),
                 mid: "video".to_owned(),
                 codec: MediaCodec::H264,
                 data: Arc::from([]),
@@ -5709,6 +5988,7 @@ mod tests {
         session.stop();
         assert_eq!(
             sink.push(EncodedFrame {
+                provenance: Default::default(),
                 mid: "video".to_owned(),
                 codec: MediaCodec::H264,
                 data: Arc::from([]),
@@ -5747,6 +6027,7 @@ mod tests {
         .expect("session");
         assert_eq!(
             session.sink().push(EncodedFrame {
+                provenance: Default::default(),
                 mid: "video".to_owned(),
                 codec: MediaCodec::H264,
                 data: Arc::from([0_u8, 0, 0, 1, 1]),
@@ -5764,6 +6045,60 @@ mod tests {
             Ok(MediaFeedback::RequestKeyframe { mid, .. }) if mid == "video"
         ));
         session.stop();
+    }
+
+    #[test]
+    fn video_only_session_has_no_audio_worker_and_rejects_audio_before_recording() {
+        let (feedback, receiver) = std::sync::mpsc::channel();
+        let (commands, _host) = std::sync::mpsc::channel();
+        let session = MediaSession::spawn(
+            Arc::new(OutputBuffers::new()),
+            feedback,
+            commands,
+            false,
+            MediaStreamConfig {
+                audio_enabled: false,
+                ..Default::default()
+            },
+            #[cfg(target_os = "windows")]
+            Arc::new(WindowsBridge::new()),
+            #[cfg(target_os = "linux")]
+            LinuxVideoSelection {
+                path: LinuxVideoPath::Software,
+                use_vulkan_output: false,
+                fallback_reason: None,
+            },
+            #[cfg(target_os = "linux")]
+            Arc::new(AtomicBool::new(true)),
+        )
+        .unwrap();
+        assert!(session.audio_worker.is_none());
+        assert!(session.video_worker.is_some());
+        let (_, recording) = session.control().subscribe_recording().unwrap();
+        let frame = EncodedFrame {
+            provenance: Default::default(),
+            mid: "audio".to_owned(),
+            codec: MediaCodec::Opus { channels: 2 },
+            data: Arc::from([0]),
+            frame_index: None,
+            timestamp: 0,
+            clock_rate_hz: 48_000,
+            keyframe: false,
+            contiguous: true,
+            ssrc: None,
+        };
+        assert_eq!(session.sink().push(frame.clone()), PushOutcome::Unsupported);
+        assert!(receiver.try_recv().is_err());
+        let mut video = frame;
+        video.codec = MediaCodec::H264;
+        assert_eq!(session.sink().push(video), PushOutcome::DroppedOldest);
+        assert!(matches!(
+            receiver.recv_timeout(std::time::Duration::from_secs(1)),
+            Ok(MediaFeedback::RequestKeyframe { .. })
+        ));
+        assert_eq!(recording.recv().unwrap().codec, MediaCodec::H264);
+        session.stop();
+        assert!(recording.recv().is_err());
     }
 
     #[cfg(target_os = "linux")]

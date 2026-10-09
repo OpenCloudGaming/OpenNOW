@@ -48,6 +48,7 @@ pub enum MetalFrameFormat {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FrameTiming {
+    pub provenance: opennow_media_protocol::FrameProvenance,
     pub presentation_value: i64,
     pub duration_value: i64,
     pub timescale: i32,
@@ -56,6 +57,11 @@ pub struct FrameTiming {
 impl FrameTiming {
     pub const fn new(presentation_value: i64, duration_value: i64, timescale: i32) -> Self {
         Self {
+            provenance: opennow_media_protocol::FrameProvenance {
+                attempt_generation: 0,
+                track_id: 0,
+                source: None,
+            },
             presentation_value,
             duration_value,
             timescale,
@@ -64,6 +70,14 @@ impl FrameTiming {
 
     pub const fn from_90khz(presentation_value: i64, duration_value: i64) -> Self {
         Self::new(presentation_value, duration_value, 90_000)
+    }
+
+    pub const fn with_provenance(
+        mut self,
+        provenance: opennow_media_protocol::FrameProvenance,
+    ) -> Self {
+        self.provenance = provenance;
+        self
     }
 
     pub(crate) fn validate(self) -> Result<(), FormatError> {
@@ -101,6 +115,7 @@ impl H264ParameterSets {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct H264Format {
+    color: Option<opennow_media_protocol::ColorDescription>,
     pub parameter_sets: H264ParameterSets,
     pub color_space: VideoColorSpace,
     pub bit_depth: VideoBitDepth,
@@ -143,6 +158,7 @@ impl H265ParameterSets {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct H265Format {
+    color: Option<opennow_media_protocol::ColorDescription>,
     pub parameter_sets: H265ParameterSets,
     pub color_space: VideoColorSpace,
     pub bit_depth: VideoBitDepth,
@@ -152,6 +168,7 @@ pub struct H265Format {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Av1Format {
+    color: Option<opennow_media_protocol::ColorDescription>,
     codec_configuration: Vec<u8>,
     width: i32,
     height: i32,
@@ -162,6 +179,14 @@ pub struct Av1Format {
 }
 
 impl Av1Format {
+    pub const fn with_color(
+        mut self,
+        color: Option<opennow_media_protocol::ColorDescription>,
+    ) -> Self {
+        self.color = color;
+        self
+    }
+
     pub fn new(
         codec_configuration: impl AsRef<[u8]>,
         width: u32,
@@ -190,6 +215,7 @@ impl Av1Format {
             .filter(|value| *value > 0)
             .ok_or(FormatError::InvalidVideoDimensions)?;
         Ok(Self {
+            color: None,
             codec_configuration: codec_configuration.to_vec(),
             width,
             height,
@@ -227,6 +253,14 @@ impl Av1Format {
 }
 
 impl H265Format {
+    pub const fn with_color(
+        mut self,
+        color: Option<opennow_media_protocol::ColorDescription>,
+    ) -> Self {
+        self.color = color;
+        self
+    }
+
     pub const fn with_chroma(mut self, chroma: VideoChroma) -> Self {
         self.chroma = chroma;
         self
@@ -239,6 +273,7 @@ impl H265Format {
 
     pub const fn new(parameter_sets: H265ParameterSets, color_space: VideoColorSpace) -> Self {
         Self {
+            color: None,
             parameter_sets,
             color_space,
             bit_depth: VideoBitDepth::Eight,
@@ -261,6 +296,38 @@ pub enum VideoFormat {
 }
 
 impl VideoFormat {
+    pub const fn color(&self) -> Option<opennow_media_protocol::ColorDescription> {
+        match self {
+            Self::H264(format) => format.color,
+            Self::H265(format) => format.color,
+            Self::Av1(format) => format.color,
+        }
+    }
+
+    pub(crate) fn resolved_color(&self) -> Result<(VideoColorSpace, VideoTransfer), FormatError> {
+        use opennow_media_protocol::{Matrix, Primaries, Transfer};
+        let Some(color) = self.color() else {
+            return Ok((self.color_space(), self.transfer()));
+        };
+        if color.primaries != Primaries::Bt709
+            || !matches!(color.transfer, Transfer::Bt709 | Transfer::Srgb)
+        {
+            return Err(FormatError::UnsupportedExplicitColor);
+        }
+        let matrix = match color.matrix {
+            Matrix::Bt601 => VideoColorSpace::Bt601,
+            Matrix::Bt709 => VideoColorSpace::Bt709,
+            Matrix::Bt2020NonConstant => return Err(FormatError::UnsupportedExplicitColor),
+        };
+        Ok((matrix, VideoTransfer::Sdr))
+    }
+
+    pub(crate) fn destination_full_range(&self, bitstream_range: Option<bool>) -> bool {
+        self.color().is_some_and(|color| {
+            bitstream_range.unwrap_or(color.range == opennow_media_protocol::ColorRange::Full)
+        })
+    }
+
     pub const fn chroma(&self) -> VideoChroma {
         match self {
             Self::H264(format) => format.chroma,
@@ -308,6 +375,104 @@ impl VideoFormat {
 #[cfg(test)]
 mod hdr_format_tests {
     use super::*;
+
+    fn explicit_color() -> opennow_media_protocol::ColorDescription {
+        use opennow_media_protocol::*;
+        ColorDescription {
+            range: ColorRange::Full,
+            primaries: Primaries::Bt709,
+            transfer: Transfer::Srgb,
+            matrix: Matrix::Bt601,
+            chroma_location: ChromaLocation::Left,
+        }
+    }
+
+    #[test]
+    fn explicit_color_survives_each_codec_and_overrides_legacy_hdr_defaults() {
+        let color = explicit_color();
+        let formats: [VideoFormat; 3] = [
+            H264Format::new(
+                H264ParameterSets::new([0x67, 0x64, 0], [0x68, 0xee]).unwrap(),
+                VideoColorSpace::Bt2020,
+            )
+            .with_transfer(VideoTransfer::Pq)
+            .with_color(Some(color))
+            .into(),
+            H265Format::new(
+                H265ParameterSets::new([0x40, 1], [0x42, 1], [0x44, 1]).unwrap(),
+                VideoColorSpace::Bt2020,
+            )
+            .with_transfer(VideoTransfer::Pq)
+            .with_color(Some(color))
+            .into(),
+            Av1Format::new([0x81, 0x0d, 0x0c, 0], 1920, 1080, VideoColorSpace::Bt2020)
+                .unwrap()
+                .with_transfer(VideoTransfer::Pq)
+                .with_color(Some(color))
+                .into(),
+        ];
+        for format in formats {
+            assert_eq!(format.color(), Some(color));
+            assert_eq!(
+                format.resolved_color(),
+                Ok((VideoColorSpace::Bt601, VideoTransfer::Sdr))
+            );
+            assert!(format.destination_full_range(None));
+            assert!(!format.destination_full_range(Some(false)));
+            assert!(format.destination_full_range(Some(true)));
+        }
+    }
+
+    #[test]
+    fn absent_explicit_color_preserves_gfn_hdr_and_limited_output_defaults() {
+        let format: VideoFormat = H265Format::new(
+            H265ParameterSets::new([0x40, 1], [0x42, 1], [0x44, 1]).unwrap(),
+            VideoColorSpace::Bt2020,
+        )
+        .with_transfer(VideoTransfer::Pq)
+        .with_color(None)
+        .into();
+        assert_eq!(format.color(), None);
+        assert_eq!(
+            format.resolved_color(),
+            Ok((VideoColorSpace::Bt2020, VideoTransfer::Pq))
+        );
+        assert!(!format.destination_full_range(None));
+        assert!(!format.destination_full_range(Some(true)));
+    }
+
+    #[test]
+    fn explicit_hdr_hlg_and_bt2020_are_rejected_not_inferred_as_sdr() {
+        use opennow_media_protocol::{Matrix, Primaries, Transfer};
+        for color in [
+            opennow_media_protocol::ColorDescription {
+                transfer: Transfer::Hlg,
+                ..explicit_color()
+            },
+            opennow_media_protocol::ColorDescription {
+                transfer: Transfer::Pq,
+                ..explicit_color()
+            },
+            opennow_media_protocol::ColorDescription {
+                primaries: Primaries::Bt2020,
+                ..explicit_color()
+            },
+            opennow_media_protocol::ColorDescription {
+                matrix: Matrix::Bt2020NonConstant,
+                ..explicit_color()
+            },
+        ] {
+            let format: VideoFormat =
+                Av1Format::new([0x81, 0x0d, 0x0c, 0], 1920, 1080, VideoColorSpace::Bt709)
+                    .unwrap()
+                    .with_color(Some(color))
+                    .into();
+            assert_eq!(
+                format.resolved_color(),
+                Err(FormatError::UnsupportedExplicitColor)
+            );
+        }
+    }
 
     #[test]
     fn h265_keeps_explicit_hdr_and_chroma_through_the_format_boundary() {
@@ -364,6 +529,14 @@ impl From<Av1Format> for VideoFormat {
 }
 
 impl H264Format {
+    pub const fn with_color(
+        mut self,
+        color: Option<opennow_media_protocol::ColorDescription>,
+    ) -> Self {
+        self.color = color;
+        self
+    }
+
     pub const fn with_chroma(mut self, chroma: VideoChroma) -> Self {
         self.chroma = chroma;
         self
@@ -376,6 +549,7 @@ impl H264Format {
 
     pub const fn new(parameter_sets: H264ParameterSets, color_space: VideoColorSpace) -> Self {
         Self {
+            color: None,
             parameter_sets,
             color_space,
             bit_depth: VideoBitDepth::Eight,
@@ -642,6 +816,7 @@ pub enum SurfaceTarget {
 
 #[derive(Clone, Debug)]
 pub struct BackendConfig {
+    pub audio_enabled: bool,
     pub audio_muted: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub surface: SurfaceTarget,
     pub video: VideoFormat,
@@ -652,6 +827,7 @@ pub struct BackendConfig {
 
 #[derive(Clone, Debug)]
 pub struct EmbeddedBackendConfig {
+    pub audio_enabled: bool,
     pub audio_muted: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub video: VideoFormat,
     pub audio: AudioFormat,
@@ -661,6 +837,7 @@ pub struct EmbeddedBackendConfig {
 
 impl EmbeddedBackendConfig {
     pub(crate) fn validate(&self) -> Result<(), FormatError> {
+        self.video.resolved_color()?;
         crate::audio_device::validate_audio_output_device(self.audio_output_device.as_deref())?;
         self.audio.validate()?;
         self.queues.validate()
@@ -669,6 +846,7 @@ impl EmbeddedBackendConfig {
 
 impl BackendConfig {
     pub(crate) fn validate(&self) -> Result<(), FormatError> {
+        self.video.resolved_color()?;
         crate::audio_device::validate_audio_output_device(self.audio_output_device.as_deref())?;
         self.audio.validate()?;
         self.queues.validate()?;
@@ -684,6 +862,8 @@ impl BackendConfig {
 
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum FormatError {
+    #[error("explicit color requires BT.709 primaries, SDR transfer and BT.601/709 matrix")]
+    UnsupportedExplicitColor,
     #[error(
         "audio output device must be a nonempty coreaudio: UID of at most 1024 bytes without NUL"
     )]
@@ -1035,6 +1215,31 @@ mod tests {
             ..QueueLimits::default()
         };
         assert_eq!(limits.validate(), Err(FormatError::ZeroQueueLimit));
+    }
+
+    #[test]
+    fn video_only_config_preserves_format_and_queue_validation() {
+        let mut config = EmbeddedBackendConfig {
+            audio_enabled: false,
+            audio_muted: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            video: H264Format::new(
+                H264ParameterSets::new([0x67, 0x64, 0x00], [0x68, 0xee]).unwrap(),
+                VideoColorSpace::Bt709,
+            )
+            .into(),
+            audio: AudioFormat::OPUS_STEREO_48KHZ,
+            audio_output_device: None,
+            queues: QueueLimits::default(),
+        };
+        assert_eq!(config.validate(), Ok(()));
+        config.audio = AudioFormat::new(44_100, 2);
+        assert_eq!(
+            config.validate(),
+            Err(FormatError::UnsupportedOpusSampleRate(44_100))
+        );
+        config.audio = AudioFormat::OPUS_STEREO_48KHZ;
+        config.queues.video_frames_in_flight = 0;
+        assert_eq!(config.validate(), Err(FormatError::ZeroQueueLimit));
     }
 
     #[test]

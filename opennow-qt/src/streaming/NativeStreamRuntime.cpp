@@ -5,6 +5,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QHash>
 #include <QDateTime>
 #include <QSysInfo>
 #include <QJsonDocument>
@@ -204,6 +205,11 @@ struct NativeStreamRuntime::Private {
     QString acceptedSessionStartId;
     QString rumbleStartId;
     quint64 rumbleStartEpoch = 0;
+    QHash<QString, PrivateResponse> privateResponses;
+    quint64 startEpoch = 0;
+    QString inputLeaseId;
+    QString earlyInputLeaseId;
+    bool earlyInputReady = false;
 };
 
 NativeStreamRuntime::NativeStreamRuntime(QObject *parent,
@@ -228,7 +234,8 @@ NativeStreamRuntime::NativeStreamRuntime(QObject *parent,
                               &opennow_streamer_replace_sdl_device_claims,
                               &opennow_streamer_submit_sony_snapshot,
                               &opennow_streamer_set_log_file,
-                              &opennow_streamer_submit_text}, parent, vulkanDevice, windowsAdapterLuid)
+                              &opennow_streamer_submit_text,
+                              &opennow_streamer_notify_presented}, parent, vulkanDevice, windowsAdapterLuid)
 {
 }
 
@@ -404,6 +411,19 @@ bool NativeStreamRuntime::send(const QJsonObject &command)
     return sendBytes(QJsonDocument(command).toJson(QJsonDocument::Compact));
 }
 
+bool NativeStreamRuntime::sendPrivate(const QJsonObject &command, PrivateResponse handler)
+{
+    const auto id = command.value(u"id"_s).toString();
+    const auto type = command.value(u"type"_s).toString();
+    if (!handler || id.isEmpty() || type == u"start"_s || type == u"stop"_s
+            || d->privateResponses.contains(id))
+        return false;
+    d->privateResponses.insert(id, std::move(handler));
+    if (sendBytes(QJsonDocument(command).toJson(QJsonDocument::Compact))) return true;
+    d->privateResponses.remove(id);
+    return false;
+}
+
 bool NativeStreamRuntime::sendBytes(const QByteArray &command)
 {
     if (command.size() > MaximumCallbackBytes) {
@@ -444,6 +464,7 @@ bool NativeStreamRuntime::sendBytes(const QByteArray &command)
             d->serverCursorComposited = true;
             d->firstNotification = false;
             d->presentationStartId = object.value(u"id"_s).toString();
+            ++d->startEpoch;
             d->cursorStartId = d->presentationStartId;
             d->rumbleStartId = d->presentationStartId;
             if (d->callbackState) {
@@ -480,6 +501,10 @@ bool NativeStreamRuntime::shutdown(int timeoutMs)
     }
     if (!handle) return true;
     emit runningChanged();
+    for (const auto &handler : std::exchange(d->privateResponses, {})) {
+        handler(QJsonObject{{u"type"_s, u"error"_s}, {u"code"_s, u"runtime-stopped"_s},
+                            {u"message"_s, u"The embedded media runtime stopped"_s}});
+    }
 
     if (callbacks) {
         const std::lock_guard lock(callbacks->mutex);
@@ -578,6 +603,23 @@ OpenNowStreamerStatus NativeStreamRuntime::releaseFrame(OpenNowStreamerFrame *fr
     // A frame token owns its backing resources and the release ABI deliberately does not take the
     // runtime handle. Avoid serializing this cheap drop with decoder/render work.
     return d->api.releaseFrame ? d->api.releaseFrame(frame) : OPENNOW_STREAMER_CLOSED;
+}
+
+bool NativeStreamRuntime::startPending() const
+{
+    return !d->presentationStartId.isEmpty();
+}
+
+quint64 NativeStreamRuntime::startEpoch() const
+{
+    return d->startEpoch;
+}
+
+OpenNowStreamerStatus NativeStreamRuntime::notifyPresented(const OpenNowStreamerFrameProvenance &provenance)
+{
+    const std::shared_lock lock(d->handleMutex);
+    if (!d->handle || !d->api.notifyPresented) return OPENNOW_STREAMER_CLOSED;
+    return d->api.notifyPresented(d->handle, &provenance);
 }
 
 OpenNowStreamerStatus NativeStreamRuntime::sceneGraphShutdown()
@@ -934,6 +976,24 @@ void NativeStreamRuntime::drainCallbacks(const std::shared_ptr<CallbackState> &s
             }
             continue;
         }
+        if (message.event && kind == u"input"_s && d->inputLeaseId.isEmpty() && !d->presentationStartId.isEmpty()) {
+            const auto object = document.object();
+            if (object.value(u"startId"_s).toString() == d->presentationStartId
+                    && !object.value(u"leaseId"_s).toString().isEmpty()) {
+                d->earlyInputLeaseId = object.value(u"leaseId"_s).toString();
+                d->earlyInputReady = object.value(u"ready"_s).toBool(false);
+            }
+        } else if (message.event && kind == u"input"_s && !d->inputLeaseId.isEmpty()) {
+            const auto object = document.object();
+            if (object.value(u"startId"_s).toString() == d->acceptedSessionStartId
+                    && object.value(u"leaseId"_s).toString() == d->inputLeaseId) {
+                const bool allowed = object.value(u"ready"_s).toBool(false) && presentationAllowed();
+                if (d->inputAllowed.exchange(allowed, std::memory_order_acq_rel) != allowed) {
+                    emit inputAllowedChanged();
+                    if (!current()) return;
+                }
+            }
+        }
         if (message.event && (kind == u"error"_s
                 || (kind == u"status"_s && (status == u"stopped"_s || status == u"error"_s)))) {
             resetInputCapture();
@@ -945,7 +1005,15 @@ void NativeStreamRuntime::drainCallbacks(const std::shared_ptr<CallbackState> &s
             d->presentationStartId.clear();
             d->upstreamProgressSamples.publish(false, false, 0, 0);
             d->presentationAllowed.store(kind == u"ok"_s, std::memory_order_release);
-            const bool allowed = std::exchange(d->inputAuthorizationPending, false) && kind == u"ok"_s;
+            const auto response = document.object();
+            const bool deferred = kind == u"ok"_s && response.value(u"inputReady"_s) == QJsonValue(false);
+            const bool authorized = std::exchange(d->inputAuthorizationPending, false) && kind == u"ok"_s;
+            d->inputLeaseId = authorized && deferred ? response.value(u"leaseId"_s).toString() : QString();
+            const bool earlyReady = !d->inputLeaseId.isEmpty() && d->earlyInputLeaseId == d->inputLeaseId
+                && d->earlyInputReady;
+            d->earlyInputLeaseId.clear();
+            d->earlyInputReady = false;
+            const bool allowed = authorized && (!deferred || earlyReady);
             if (d->inputAllowed.exchange(allowed, std::memory_order_acq_rel) != allowed) {
                 emit inputAllowedChanged();
                 if (!current()) return;
@@ -956,10 +1024,14 @@ void NativeStreamRuntime::drainCallbacks(const std::shared_ptr<CallbackState> &s
         if (kind != u"telemetry"_s && kind != u"stats"_s && kind != u"log"_s)
             handshakeLog(u"delivered %1 bytes=%2"_s.arg(handshakeSummary(document.object()))
                          .arg(message.bytes.size()));
-        if (message.event)
+        if (message.event) {
             emit eventReceived(document.object());
-        else
+        } else if (const auto handler = d->privateResponses.take(
+                       document.object().value(u"id"_s).toString())) {
+            handler(document.object());
+        } else {
             emit responseReceived(document.object());
+        }
     }
     if (current() && reschedule) scheduleDrain(state);
 }
@@ -968,6 +1040,9 @@ void NativeStreamRuntime::resetInputCapture()
 {
     const bool wasAllowed = d->inputAllowed.exchange(false, std::memory_order_acq_rel);
     d->inputAuthorizationPending = false;
+    d->inputLeaseId.clear();
+    d->earlyInputLeaseId.clear();
+    d->earlyInputReady = false;
     emit inputCaptureReset();
     bool rawInput = false;
     setCaptureActive(false, false, 0, &rawInput);

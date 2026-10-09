@@ -334,6 +334,26 @@ fn backend_allowed_by_policy(requested: &str, backend: &str) -> bool {
     }
 }
 
+pub fn effective_embedded_video_backend(requested: &str) -> String {
+    #[cfg(target_os = "linux")]
+    {
+        linux_backend::effective_embedded_video_backend(requested)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        requested.to_owned()
+    }
+}
+
+pub fn embedded_backend_allowed_by_policy(requested: &str, backend: &str) -> bool {
+    let requested = if cfg!(target_os = "linux") && requested == "auto" {
+        "hardware"
+    } else {
+        requested
+    };
+    backend_allowed_by_policy(requested, backend)
+}
+
 pub const fn supports_audio_decode() -> bool {
     true
 }

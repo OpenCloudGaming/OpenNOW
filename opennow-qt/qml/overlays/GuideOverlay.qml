@@ -12,9 +12,10 @@ FocusScope {
     property double nowMs: Date.now()
     property string toastTitle: ""
     property string toastDetail: ""
-    readonly property var game: ShellStore.selectedGame || ({title: qsTr("GeForce NOW")})
+    readonly property var game: ShellStore.sourceStreamGame || ShellStore.selectedGame || ({title: qsTr("GeForce NOW")})
     readonly property var session: ShellStore.activeSession || ({})
-    readonly property var profile: session.negotiatedStreamProfile || ({})
+    readonly property var profile: ShellStore.sourceStreamActive ? ShellStore.activeStreamProfile
+        : session.negotiatedStreamProfile || ({})
     readonly property var streamer: ShellStore.streamer || ({})
     readonly property bool mediaLive: streamer.status === "streaming"
         && streamer.firstFrameLatencyMs !== undefined && streamer.firstFrameLatencyMs !== null
@@ -22,8 +23,9 @@ FocusScope {
     readonly property bool fullscreen: Window.window !== null && Window.window.visibility === Window.FullScreen
     readonly property var variant: game.variants && Number(game.selectedVariantIndex) >= 0
         ? (game.variants[Number(game.selectedVariantIndex)] || null) : null
-    readonly property string subtitle: [variant && variant.store ? DesktopTokens.storeLabel(variant.store) : "",
-        String(session.serverLocation || ShellStore.selectedRegion || "")].filter(part => part !== "").join(" · ")
+    readonly property string subtitle: ShellStore.sourceStreamActive ? String(game.sourceName || "")
+        : [variant && variant.store ? DesktopTokens.storeLabel(variant.store) : "",
+            String(session.serverLocation || ShellStore.selectedRegion || "")].filter(part => part !== "").join(" · ")
     readonly property string profileLine: [
         profile.width && profile.height ? profile.width + " × " + profile.height : String(profile.resolution || ""),
         profile.fps ? qsTr("%1 FPS").arg(profile.fps) : "",
@@ -152,7 +154,7 @@ FocusScope {
     }
 
     Timer { id: toastTimer; interval: 4000; onTriggered: root.toastTitle = "" }
-    Timer { interval: 1000; repeat: true; running: root.visible; onTriggered: root.nowMs = Date.now() }
+    Timer { interval: 1000; repeat: true; running: root.visible; triggeredOnStart: true; onTriggered: root.nowMs = Date.now() }
     SessionGlyphs { id: glyphs }
 
     component GuideTile: Button {
@@ -388,6 +390,7 @@ FocusScope {
                             anchors.verticalCenterOffset: guideSubtitle.visible ? -11 : 0
                             width: parent.width
                             text: String(root.game.title || qsTr("GeForce NOW"))
+                            textFormat: Text.PlainText
                             elide: Text.ElideRight
                             color: Theme.label
                             font.family: Theme.displayFont; font.pixelSize: 26; font.weight: Font.Black
@@ -399,6 +402,7 @@ FocusScope {
                             visible: root.subtitle !== ""
                             width: parent.width
                             text: root.subtitle
+                            textFormat: Text.PlainText
                             elide: Text.ElideRight
                             color: Theme.textMuted
                             font.family: Theme.bodyFont; font.pixelSize: 16; font.weight: Font.Bold
@@ -590,7 +594,9 @@ FocusScope {
                             id: antiAfkTile
                             objectName: "guideAntiAfkTile"
                             text: qsTr("Anti-AFK")
-                            caption: ShellStore.antiAfkEnabled ? qsTr("On") : qsTr("Off")
+                            enabled: !ShellStore.sourceStreamActive
+                            caption: ShellStore.sourceStreamActive ? qsTr("Not available")
+                                : ShellStore.antiAfkEnabled ? qsTr("On") : qsTr("Off")
                             captionColor: ShellStore.antiAfkEnabled ? Theme.mint : Theme.textMuted
                             glyphIcon: Component { SvgIcon { icon: "qrc:/qt/qml/OpenNOW/res/icons/desktop-clock.svg" } }
                             KeyNavigation.up: microphoneTile
@@ -693,6 +699,7 @@ FocusScope {
                         height: 18
                         verticalAlignment: Text.AlignVCenter
                         text: (qsTr("Guide") + "  ›  " + String(root.game.title || qsTr("GeForce NOW"))).toUpperCase()
+                        textFormat: Text.PlainText
                         elide: Text.ElideRight
                         color: Theme.textMuted
                         font.family: Theme.monoFont; font.pixelSize: 14; font.weight: Font.DemiBold; font.letterSpacing: 1.4

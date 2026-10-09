@@ -1,0 +1,27 @@
+[package]
+name = "provider-media-worker"
+version = "1.0.0"
+edition = "2024"
+publish = false
+license = "MIT"
+
+[workspace]
+
+[features]
+default = []
+fault-injection = []
+
+[dependencies]
+opennow-media-protocol = { path = "../../native/opennow-media-protocol" }
+opennow-plugin-api = { path = "../../native/opennow-plugin-api" }
+opennow-sdk-demo = { path = "../provider-plugin" }
+openh264 = { version = "=0.9.8", default-features = false, features = ["source"] }
+opus = "=0.3.1"
+audiopus_sys = { version = "0.2.2", features = ["static"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[patch.crates-io]
+audiopus_sys = { path = "../../native/opennow-streamer/vendor/audiopus-sys" }

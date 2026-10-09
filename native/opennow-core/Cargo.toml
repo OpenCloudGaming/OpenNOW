@@ -14,6 +14,9 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 hkdf = "0.12"
 httpdate = "1"
 md5 = "0.7"
+opennow-plugin-api = { path = "../opennow-plugin-api" }
+opennow-plugin-package = { path = "../opennow-plugin-package" }
+opennow-media-protocol = { path = "../opennow-media-protocol" }
 keyring = { version = "3.6", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 p256 = { version = "0.13", features = ["ecdh", "pkcs8"] }
 qrcode = { version = "0.14", default-features = false }
@@ -35,7 +38,7 @@ fs2 = "0.4"
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_ProcessStatus", "Win32_System_ApplicationInstallationAndServicing", "Win32_System_SystemServices", "Win32_System_IO", "Win32_Storage_FileSystem", "Wdk_System_Threading"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_ProcessStatus", "Win32_System_ApplicationInstallationAndServicing", "Win32_System_SystemServices", "Win32_System_IO", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Wdk_System_Threading"] }
 
 [dev-dependencies]
 tempfile = "3"

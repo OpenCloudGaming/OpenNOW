@@ -13,6 +13,7 @@ Item {
     property string title: ""
     property string description: ""
     property string value: ""
+    property int textFormat: Text.AutoText
     property int rowHeight: DesktopTokens.rowHeight
     property bool showDivider: true
     property string leadingLetter: ""
@@ -77,6 +78,7 @@ Item {
             id: titleLabel
             width: parent.width
             text: root.title
+            textFormat: root.textFormat
             color: Theme.label
             font.family: Theme.bodyFont
             font.pixelSize: DesktopTokens.bodySize
@@ -87,6 +89,7 @@ Item {
             width: parent.width
             visible: root.description !== ""
             text: root.description
+            textFormat: root.textFormat
             color: Theme.textMuted
             font.family: Theme.bodyFont
             font.pixelSize: DesktopTokens.captionSize
@@ -112,6 +115,7 @@ Item {
         Text {
             visible: root.value !== ""
             text: root.value
+            textFormat: root.textFormat
             color: Theme.label
             font.family: Theme.monoFont
             font.pixelSize: DesktopTokens.monoSize

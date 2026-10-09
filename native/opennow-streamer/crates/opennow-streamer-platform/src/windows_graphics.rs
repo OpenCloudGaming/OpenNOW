@@ -53,6 +53,7 @@ impl GraphicsFrame for D3d11Frame {
         }
         .map_err(|error| error.to_string())?;
         Ok(GraphicsRecordedFrame {
+            provenance: frame.provenance,
             resource: frame.texture as usize as u64,
             resource_view: 0,
             color_space: frame.color_space.into(),

@@ -83,6 +83,7 @@ fn accepted_compressed_frames_do_not_refresh_observable_decoded_health() {
         let at = now + Duration::from_secs(second);
         progress.observe_feedback(
             &MediaFeedback::VideoFrameAccepted {
+                provenance: Default::default(),
                 frame_index: None,
                 timestamp: second * 90_000,
                 bytes: 1000,

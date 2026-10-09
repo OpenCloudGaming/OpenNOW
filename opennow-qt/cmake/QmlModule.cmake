@@ -266,11 +266,14 @@ qt_add_qml_module(opennow-qt
         qml/desktop/components/DesktopBackdrop.qml
         qml/desktop/components/DesktopBrandLockup.qml
         qml/desktop/components/DesktopButton.qml
+        qml/desktop/components/DesktopGameDetailsDialog.qml
+        qml/desktop/components/DesktopGameDetailsSummaryCard.qml
         qml/desktop/components/DesktopGameModal.qml
         qml/desktop/components/DesktopQueueSelector.qml
         qml/desktop/components/DesktopGlyph.qml
         qml/desktop/components/DesktopKeyHint.qml
         qml/desktop/components/DesktopPoster.qml
+        qml/desktop/components/DesktopPosterGrid.qml
         qml/desktop/components/DesktopPosterOverlay.qml
         qml/desktop/components/DesktopTokens.qml
         qml/desktop/friends/DesktopFriendsScreen.qml
@@ -314,6 +317,13 @@ qt_add_qml_module(opennow-qt
         qml/desktop/settings/pages/DesktopSettingsInterfacePage.qml
         qml/desktop/settings/pages/DesktopSettingsLookPage.qml
         qml/desktop/settings/pages/DesktopSettingsNetworkPage.qml
+        qml/desktop/settings/pages/DesktopSettingsPluginsPage.qml
+        qml/desktop/sources/DesktopSourceGameModal.qml
+        qml/desktop/sources/DesktopSourceLibraryScreen.qml
+        qml/desktop/sources/DesktopSourceSignInPanel.qml
+        qml/desktop/sources/DesktopSourceSettingRow.qml
+        qml/desktop/sources/DesktopSourceSettings.qml
+        qml/desktop/sources/DesktopSourceSwitcher.qml
         qml/desktop/settings/pages/DesktopSettingsProfilePage.qml
         qml/desktop/settings/pages/DesktopSettingsRecordingPage.qml
         qml/desktop/settings/pages/DesktopSettingsShortcutsPage.qml
@@ -359,6 +369,7 @@ qt_add_qml_module(opennow-qt
         qml/screens/PersistentStorageScreen.qml
         qml/screens/ProfilePinScreen.qml
         qml/screens/SettingsScreen.qml
+        qml/screens/SourceLibraryScreen.qml
         qml/screens/SignInScreen.qml
         qml/screens/StoreScreen.qml
         qml/screens/StreamScreen.qml
@@ -375,6 +386,10 @@ qt_add_qml_module(opennow-qt
         qml/state/BackgroundStreamState.qml
         qml/state/ConnectionHealthState.qml
         qml/state/settings/OnboardingState.qml
+        qml/state/plugins/PluginState.qml
+        qml/state/sources/SourceState.qml
+        qml/state/sources/SourceLibraryState.qml
+        qml/state/sources/SourceSessionState.qml
         qml/theme/Theme.qml
     RESOURCES
         ${OPENNOW_CONTROLLER_ICON_FILES}
@@ -393,6 +408,7 @@ qt_add_qml_module(opennow-qt
         res/icons/settings-network.svg
         res/icons/settings-themes.svg
         res/icons/settings-advanced.svg
+        res/icons/settings-plugins.svg
         res/icons/store-steam.svg
         res/icons/store-xbox.svg
         res/icons/store-gog.svg

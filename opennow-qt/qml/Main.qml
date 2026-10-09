@@ -127,7 +127,7 @@ ApplicationWindow {
     property bool startupLaunchConsidered: false
     property bool consoleEntryRequested: false
     property bool launchFramePresented: false
-    readonly property bool consoleLaunchAllowed: !ShellStore.activeSession && !ShellStore.streamBusy
+    readonly property bool consoleLaunchAllowed: !ShellStore.activeSession && !ShellStore.sourceStreamActive && !ShellStore.streamBusy
         && !ShellStore.pendingLaunchParams && !ShellStore.pendingDirectLaunch
         && !ShellStore.sessionRecoveryPending && !ShellStore.sessionRecoveryAwaitingAuth
         && ShellStore.streamState !== "resuming"
@@ -210,9 +210,8 @@ ApplicationWindow {
 
     Connections {
         target: ShellStore
-        function onActiveSessionChanged() {
-            if (!ShellStore.activeSession
-                    || String(ShellStore.activeSession.sessionId || "") !== window.pendingConsoleScreenshotSession)
+        function onActiveStreamIdChanged() {
+            if (ShellStore.activeStreamId === "" || ShellStore.activeStreamId !== window.pendingConsoleScreenshotSession)
                 window.pendingConsoleScreenshotSession = ""
         }
         function onBackgroundStreamReminderRequested() {
@@ -223,10 +222,9 @@ ApplicationWindow {
                 window.toggleFullscreen()
         }
         function onConsoleScreenshotRequested() {
-            const session = ShellStore.activeSession
-            if (!session || !window.consoleStreamReady || window.pendingConsoleScreenshotSession !== "")
+            if (ShellStore.activeStreamId === "" || !window.consoleStreamReady || window.pendingConsoleScreenshotSession !== "")
                 return
-            window.pendingConsoleScreenshotSession = String(session.sessionId || "")
+            window.pendingConsoleScreenshotSession = ShellStore.activeStreamId
             window.pendingConsoleScreenshotFrames = 0
             AppController.showOverlay("")
             window.update()
@@ -237,8 +235,8 @@ ApplicationWindow {
         target: window.pendingConsoleScreenshotSession !== "" ? window : null
         function onFrameSwapped() {
             if (!window.active || !window.consoleStreamReady || AppController.overlay !== ""
-                    || !ShellStore.activeSession
-                    || String(ShellStore.activeSession.sessionId || "") !== window.pendingConsoleScreenshotSession) {
+                    || ShellStore.activeStreamId === ""
+                    || ShellStore.activeStreamId !== window.pendingConsoleScreenshotSession) {
                 window.pendingConsoleScreenshotSession = ""
                 return
             }
@@ -277,7 +275,7 @@ ApplicationWindow {
     function syncInputOwnership() {
         const shellOwnsInput = !window.active || AppController.route !== "stream"
             || (!window.desktopSurfaceActive && !window.consoleStreamReady)
-            || (window.desktopSurfaceActive && !ShellStore.authRestorePending && !ShellStore.signedIn)
+            || (window.desktopSurfaceActive && !ShellStore.authRestorePending && !ShellStore.streamOwnerSignedIn)
             || ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)
         ControllerInput.inputSuspended = !window.active
             || (shellOwnsInput && ShellStore.settings.controllerMode === false)
@@ -568,7 +566,7 @@ ApplicationWindow {
             if (!window.streamSurfaceLocked)
                 window.lockedStreamDesktopSurface = window.desktopSurfaceActive
             window.streamSurfaceLocked = true
-        } else if (!ShellStore.activeSession
+        } else if ((!ShellStore.activeSession && !ShellStore.sourceStreamActive)
                    || ["sign-in", "accounts", "profile-pin"].indexOf(window.activeRoute) < 0) {
             window.streamSurfaceLocked = false
         }
@@ -616,6 +614,8 @@ ApplicationWindow {
     }
 
     function componentForRoute(route) {
+        if (ShellStore.browsingExternalSource && ["home", "library", "store"].indexOf(route) >= 0)
+            return route === "home" ? sourceHomeScreen : sourceLibraryScreen
         if (route === "library")
             return libraryScreen
         if (route === "store")
@@ -640,6 +640,8 @@ ApplicationWindow {
             return settingsAdvancedScreen
         if (route === "settings-advanced-dropdown")
             return settingsAdvancedDropdownScreen
+        if (route === "settings-plugins")
+            return settingsPluginsScreen
         if (route === "game-detail")
             return gameDetailScreen
         if (route === "game-detail-platform-dropdown")
@@ -782,6 +784,7 @@ ApplicationWindow {
                     AppController.showOverlay("")
             }
             function onSignedInChanged() { window.syncInputOwnership() }
+            function onStreamOwnerSignedInChanged() { window.syncInputOwnership() }
             function onAuthRestorePendingChanged() { window.syncInputOwnership() }
             function onStreamerChanged() { window.showConfiguredStreamStats() }
             function onConsoleSurfaceRequested(enabled) { window.applyConsoleSurface(enabled) }
@@ -1103,6 +1106,7 @@ ApplicationWindow {
                 "settings-themes": qsTr("Theme settings"),
                 "settings-advanced": qsTr("Advanced settings"),
                 "settings-advanced-dropdown": qsTr("Advanced setting choices"),
+                "settings-plugins": qsTr("Plugin settings"),
                 "game-detail": qsTr("Game details"),
                 "sign-in": qsTr("Sign in"),
                 "joining": qsTr("Controller order"),
@@ -1197,6 +1201,9 @@ ApplicationWindow {
     Component { id: settingsThemesScreen; SettingsScreen { initialSection: 5 } }
     Component { id: settingsAdvancedScreen; SettingsScreen { initialSection: 6 } }
     Component { id: settingsAdvancedDropdownScreen; SettingsScreen { initialSection: 6; initialDropdownOpen: true } }
+    Component { id: settingsPluginsScreen; SettingsScreen { initialSection: 8 } }
+    Component { id: sourceHomeScreen; SourceLibraryScreen { currentRoute: "home" } }
+    Component { id: sourceLibraryScreen; SourceLibraryScreen { currentRoute: "library" } }
     Component { id: gameDetailScreen; GameDetailScreen {} }
     Component {
         id: gameDetailPlatformDropdownScreen

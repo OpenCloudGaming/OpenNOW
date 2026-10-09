@@ -21,6 +21,9 @@ license = "MIT"
 rust-version = "1.85"
 
 [workspace.dependencies]
+opennow-media-protocol = { path = "../opennow-media-protocol" }
+opennow-plugin-api = { path = "../opennow-plugin-api" }
+opennow-plugin-package = { path = "../opennow-plugin-package" }
 aes = "0.8"
 aes-gcm = "0.10"
 audiopus_sys = { version = "0.2.2", features = ["static"] }

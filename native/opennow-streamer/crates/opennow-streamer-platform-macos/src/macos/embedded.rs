@@ -12,7 +12,9 @@ use objc2_core_foundation::{CFRetained, CFString};
 use objc2_core_video::{
     CVMetalTexture, CVMetalTextureCache, CVMetalTextureGetTexture, CVPixelBufferGetHeightOfPlane,
     CVPixelBufferGetIOSurface, CVPixelBufferGetPixelFormatType, CVPixelBufferGetPlaneCount,
-    CVPixelBufferGetWidthOfPlane, kCVImageBufferColorPrimaries_EBU_3213,
+    CVPixelBufferGetWidthOfPlane, kCVImageBufferChromaLocation_Center,
+    kCVImageBufferChromaLocation_Left, kCVImageBufferChromaLocationBottomFieldKey,
+    kCVImageBufferChromaLocationTopFieldKey, kCVImageBufferColorPrimaries_EBU_3213,
     kCVImageBufferColorPrimaries_ITU_R_709_2, kCVImageBufferColorPrimaries_ITU_R_2020,
     kCVImageBufferColorPrimaries_SMPTE_C, kCVImageBufferColorPrimariesKey,
     kCVImageBufferTransferFunction_ITU_R_709_2, kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ,
@@ -107,6 +109,7 @@ struct ConversionParameters {
     float green_cb;
     float green_cr;
     float blue_cb;
+    float chroma_sample_offset;
 };
 
 vertex VertexOut embedded_video_vertex(uint vertex_id [[vertex_id]]) {
@@ -125,7 +128,7 @@ float3 embedded_video_rgb(
     constant ConversionParameters &parameters) {
     constexpr sampler linear_sampler(coord::normalized, address::clamp_to_edge, filter::linear);
     float y = luma.sample(linear_sampler, uv).r * parameters.sample_scale;
-    float2 cbcr = chroma.sample(linear_sampler, uv).rg * parameters.sample_scale;
+    float2 cbcr = chroma.sample(linear_sampler, uv + float2(parameters.chroma_sample_offset, 0.0)).rg * parameters.sample_scale;
     y = (y - parameters.luma_offset) * parameters.luma_scale;
     cbcr = (cbcr - parameters.chroma_offset) * parameters.chroma_scale;
     float3 rgb = float3(
@@ -235,7 +238,7 @@ impl MetalFrameFormat {
     }
 }
 
-fn frame_color_space(frame: &DecodedFrame) -> Result<VideoColorSpace, BackendError> {
+pub(super) fn frame_color_space(frame: &DecodedFrame) -> Result<VideoColorSpace, BackendError> {
     let Some(attachment) = (unsafe {
         frame
             .image
@@ -259,7 +262,7 @@ fn frame_color_space(frame: &DecodedFrame) -> Result<VideoColorSpace, BackendErr
     }
 }
 
-fn validate_frame_color(
+pub(super) fn validate_frame_color(
     frame: &DecodedFrame,
     matrix: VideoColorSpace,
 ) -> Result<VideoTransfer, BackendError> {
@@ -318,8 +321,52 @@ fn validate_frame_color(
             "VideoToolbox changed the frame transfer function without explicit color primaries"
                 .into(),
         ));
+    } else if frame.color.is_some_and(|color| {
+        use opennow_media_protocol::Primaries;
+        (color.primaries == Primaries::Bt2020) != pq
+    }) {
+        return Err(BackendError::Metal(
+            "negotiated color primaries conflict with the frame transfer function".into(),
+        ));
     }
     Ok(transfer)
+}
+
+pub(super) fn frame_chroma_location(
+    frame: &DecodedFrame,
+) -> Result<opennow_media_protocol::ChromaLocation, BackendError> {
+    use opennow_media_protocol::ChromaLocation;
+    let Some(color) = frame.color else {
+        return Ok(ChromaLocation::Center);
+    };
+    let mut actual = None;
+    for key in unsafe {
+        [
+            kCVImageBufferChromaLocationTopFieldKey,
+            kCVImageBufferChromaLocationBottomFieldKey,
+        ]
+    } {
+        let Some(value) = (unsafe { frame.image.attachment(key, ptr::null_mut()) }) else {
+            continue;
+        };
+        let value = value.downcast_ref::<CFString>();
+        let location = if value == Some(unsafe { kCVImageBufferChromaLocation_Left }) {
+            ChromaLocation::Left
+        } else if value == Some(unsafe { kCVImageBufferChromaLocation_Center }) {
+            ChromaLocation::Center
+        } else {
+            return Err(BackendError::Metal(
+                "VideoToolbox returned an unsupported chroma location".into(),
+            ));
+        };
+        if actual.is_some_and(|previous| previous != location) {
+            return Err(BackendError::Metal(
+                "VideoToolbox returned conflicting field chroma locations".into(),
+            ));
+        }
+        actual = Some(location);
+    }
+    Ok(actual.unwrap_or(color.chroma_location))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -334,6 +381,7 @@ pub struct AdoptedMetalContext {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MetalRecordedFrame {
+    pub provenance: opennow_media_protocol::FrameProvenance,
     pub texture: *mut c_void,
     pub format: MetalFrameFormat,
     pub color_space: VideoColorSpace,
@@ -354,6 +402,10 @@ pub struct MetalFrame {
 }
 
 impl MetalFrame {
+    pub const fn provenance(&self) -> opennow_media_protocol::FrameProvenance {
+        self.frame.provenance
+    }
+
     pub fn width(&self) -> u32 {
         u32::try_from(CVPixelBufferGetWidthOfPlane(&self.frame.image, 0)).unwrap_or(0)
     }
@@ -457,14 +509,18 @@ impl EmbeddedFrameProducer {
 
     pub fn acquire_latest(&self) -> Option<MetalFrame> {
         let frame = self.mailbox.take()?;
+        Some(self.decoded_frame(frame))
+    }
+
+    pub(super) fn decoded_frame(&self, frame: DecodedFrame) -> MetalFrame {
         let sequence = self.sequence.fetch_add(1, Ordering::AcqRel) + 1;
-        Some(MetalFrame {
+        MetalFrame {
             frame,
             state: Arc::clone(&self.state),
             counters: Arc::clone(&self.counters),
             failures: Arc::clone(&self.failures),
             sequence,
-        })
+        }
     }
 
     pub fn clear(&self) -> bool {
@@ -481,10 +537,6 @@ impl EmbeddedFrameProducer {
 
     pub(super) fn mailbox(&self) -> &Arc<LatestMailbox<DecodedFrame>> {
         &self.mailbox
-    }
-
-    pub(super) fn counters(&self) -> &Arc<Counters> {
-        &self.counters
     }
 }
 
@@ -584,7 +636,6 @@ impl MetalState {
         } else {
             format.output_format()
         };
-        let parameters = format.parameters(matrix);
         self.ensure_pipeline(output_format)?;
         let width = CVPixelBufferGetWidthOfPlane(&frame.image, 0);
         let height = CVPixelBufferGetHeightOfPlane(&frame.image, 0);
@@ -604,6 +655,11 @@ impl MetalState {
                 "VideoToolbox returned invalid chroma plane geometry".into(),
             ));
         }
+        let parameters = format.parameters(matrix).with_chroma_location(
+            frame_chroma_location(&frame)?,
+            width,
+            divisor == 2,
+        );
         let (luma_format, chroma_format) = format.plane_formats();
         let luma_cv_texture = self.make_plane_texture(&frame, luma_format, width, height, 0)?;
         let chroma_cv_texture =
@@ -715,6 +771,7 @@ impl MetalState {
         let output_width = sampled_output.width();
         let output_height = sampled_output.height();
         self.slots.insert(frame_slot, output.clone());
+        let provenance = frame.provenance;
         let resources = InFlightResources {
             _output: output,
             _spatial: spatial,
@@ -757,6 +814,7 @@ impl MetalState {
         unsafe { command_buffer.addCompletedHandler(RcBlock::as_ptr(&completed)) };
         self.generation = self.generation.wrapping_add(1);
         Ok(MetalRecordedFrame {
+            provenance,
             texture,
             format: output_format,
             color_space: matrix,
@@ -935,6 +993,8 @@ mod tests {
             unsafe { image.set_attachment(key, value, CVAttachmentMode::ShouldPropagate) };
         }
         DecodedFrame {
+            color: None,
+            provenance: Default::default(),
             image,
             color_space: VideoColorSpace::Bt2020,
             transfer: VideoTransfer::Pq,
@@ -971,6 +1031,54 @@ mod tests {
             VideoTransfer::Sdr
         );
         assert_eq!(frame.transfer, VideoTransfer::Pq);
+    }
+
+    #[test]
+    fn actual_matrix_and_chroma_attachments_override_explicit_defaults() {
+        use super::*;
+        use opennow_media_protocol::{
+            ChromaLocation, ColorDescription, ColorRange, Matrix, Primaries, Transfer,
+        };
+        let mut frame = color_frame(&unsafe {
+            [
+                (
+                    kCVImageBufferYCbCrMatrixKey,
+                    kCVImageBufferYCbCrMatrix_ITU_R_601_4.as_ref(),
+                ),
+                (
+                    kCVImageBufferChromaLocationTopFieldKey,
+                    kCVImageBufferChromaLocation_Center.as_ref(),
+                ),
+                (
+                    kCVImageBufferChromaLocationBottomFieldKey,
+                    kCVImageBufferChromaLocation_Center.as_ref(),
+                ),
+            ]
+        });
+        frame.color_space = VideoColorSpace::Bt709;
+        frame.transfer = VideoTransfer::Sdr;
+        frame.color = Some(ColorDescription {
+            range: ColorRange::Full,
+            primaries: Primaries::Bt709,
+            transfer: Transfer::Srgb,
+            matrix: Matrix::Bt709,
+            chroma_location: ChromaLocation::Left,
+        });
+        assert_eq!(frame_color_space(&frame).unwrap(), VideoColorSpace::Bt601);
+        assert_eq!(
+            validate_frame_color(&frame, VideoColorSpace::Bt601).unwrap(),
+            VideoTransfer::Sdr
+        );
+        assert_eq!(
+            frame_chroma_location(&frame).unwrap(),
+            ChromaLocation::Center
+        );
+        let mut untagged = color_frame(&[]);
+        untagged.color = frame.color;
+        assert_eq!(
+            frame_chroma_location(&untagged).unwrap(),
+            ChromaLocation::Left
+        );
     }
 
     #[test]
@@ -1289,12 +1397,17 @@ mod tests {
                 attachment.setStoreAction(MTLStoreAction::Store);
                 let encoder = command.renderCommandEncoderWithDescriptor(&pass).unwrap();
                 encoder.setRenderPipelineState(&pipeline);
+                let render_parameters = parameters.with_chroma_location(
+                    opennow_media_protocol::ChromaLocation::Center,
+                    64,
+                    false,
+                );
                 unsafe {
                     encoder.setFragmentTexture_atIndex(Some(&luma), 0);
                     encoder.setFragmentTexture_atIndex(Some(&chroma), 1);
                     encoder.setFragmentBytes_length_atIndex(
-                        NonNull::from(&parameters).cast(),
-                        std::mem::size_of_val(&parameters),
+                        NonNull::from(&render_parameters).cast(),
+                        std::mem::size_of_val(&render_parameters),
                         0,
                     );
                     encoder.setFragmentBytes_length_atIndex(
@@ -1503,7 +1616,8 @@ mod tests {
         let chroma = texture(MTLPixelFormat::RG16Unorm);
         let output = texture(MTLPixelFormat::RGBA16Float);
         let parameters =
-            ConversionParameters::new(VideoBitDepth::Ten, false, VideoColorSpace::Bt2020);
+            ConversionParameters::new(VideoBitDepth::Ten, false, VideoColorSpace::Bt2020)
+                .with_chroma_location(opennow_media_protocol::ChromaLocation::Center, 64, false);
         let neutral = vec![512u16 << 6; 64 * 64 * 2];
         unsafe {
             chroma.replaceRegion_mipmapLevel_withBytes_bytesPerRow(

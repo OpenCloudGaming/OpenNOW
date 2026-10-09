@@ -14,6 +14,23 @@ const SECOND_KEYFRAME: usize = 15;
 const FRAME_INTERVAL_US: u64 = 33_333;
 const ADMISSION_TIMEOUT: Duration = Duration::from_secs(5);
 
+fn source_provenance(index: usize) -> opennow_media_protocol::FrameProvenance {
+    opennow_media_protocol::FrameProvenance {
+        attempt_generation: 3,
+        track_id: 2,
+        source: Some(opennow_media_protocol::SourceStamp {
+            sender_frame_id: match index % 3 {
+                0 => Some(u64::MAX - index as u64),
+                1 => Some(0),
+                _ => None,
+            },
+            timestamp: u64::MAX - 10_000 + index as u64,
+            clock_rate_hz: 90_000,
+            ssrc: None,
+        }),
+    }
+}
+
 fn access_units(stream: &[u8]) -> Vec<(Vec<u8>, bool)> {
     let mut starts = Vec::new();
     for index in 0..stream.len().saturating_sub(3) {
@@ -49,7 +66,15 @@ fn drain_until_silent(
 
 #[test]
 fn software_only_decodes_cpu_nv12_sdr_frames_for_embedded_presentation() {
-    let mut config = SessionConfig::new(StreamFormat::h264_default(64, 64).unwrap());
+    let mut config = SessionConfig::new(StreamFormat::h264_default(64, 64).unwrap().with_color(
+        Some(opennow_media_protocol::ColorDescription {
+            range: opennow_media_protocol::ColorRange::Full,
+            primaries: opennow_media_protocol::Primaries::Bt709,
+            transfer: opennow_media_protocol::Transfer::Srgb,
+            matrix: opennow_media_protocol::Matrix::Bt709,
+            chroma_location: opennow_media_protocol::ChromaLocation::Center,
+        }),
+    ));
     config.decoder_preference = DecoderPreference::SoftwareOnly;
     config.embedded_presentation = true;
     config.audio = None;
@@ -79,6 +104,7 @@ fn software_only_decodes_cpu_nv12_sdr_frames_for_embedded_presentation() {
                         *keyframe
                     )
                     .unwrap()
+                    .with_provenance(source_provenance(index))
                 )
                 .expect("access unit is admitted"),
             PushOutcome::Queued
@@ -107,6 +133,7 @@ fn software_only_decodes_cpu_nv12_sdr_frames_for_embedded_presentation() {
         frames.len()
     );
     for (index, frame) in frames.iter().enumerate() {
+        assert_eq!(frame.provenance, source_provenance(index));
         assert_eq!(
             frame.timestamp_us,
             index as u64 * FRAME_INTERVAL_US,
@@ -115,6 +142,18 @@ fn software_only_decodes_cpu_nv12_sdr_frames_for_embedded_presentation() {
         assert_eq!((frame.format.width, frame.format.height), (64, 64));
         assert_eq!(frame.format.pixel_format, PixelFormat::Nv12);
         assert_eq!(frame.format.color_transfer, ColorTransfer::Sdr);
+        assert_eq!(
+            frame.format.color_range,
+            opennow_streamer_platform_linux::ColorRange::Limited
+        );
+        assert_eq!(
+            frame.format.color_matrix,
+            opennow_streamer_platform_linux::ColorMatrix::Bt601
+        );
+        assert_eq!(
+            frame.format.chroma_location,
+            opennow_streamer_platform_linux::ChromaLocation::Left
+        );
         assert!(frame.vulkan.is_none() && frame.dmabuf.is_none());
         assert_eq!(frame.planes.len(), 2);
         assert_eq!(frame.planes[0].stride, 64);
@@ -126,6 +165,22 @@ fn software_only_decodes_cpu_nv12_sdr_frames_for_embedded_presentation() {
     }
 
     let delivered = frames.len();
+    let mut decoded_feedback = Vec::new();
+    while let Some(event) = session.try_recv_event() {
+        if let opennow_streamer_platform_linux::BackendEvent::VideoFrameDecoded { provenance } =
+            event
+        {
+            decoded_feedback.push(provenance);
+        }
+    }
+    assert_eq!(decoded_feedback.len(), delivered);
+    assert_eq!(
+        decoded_feedback,
+        frames
+            .iter()
+            .map(|frame| frame.provenance)
+            .collect::<Vec<_>>()
+    );
     session
         .submit_video(
             EncodedVideoFrame::new(Arc::<[u8]>::from(units[0].0.as_slice()), 1_000_000, true)
