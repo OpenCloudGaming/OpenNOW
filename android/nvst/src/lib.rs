@@ -159,10 +159,11 @@ pub extern "system" fn Java_com_opencloudgaming_opennow_NvstBridge_keyframe(
     _: JObject,
     id: jlong,
 ) {
-    if let Some(state) = attachment(id) {
-        if let Some(feedback) = state.feedback.lock().unwrap().as_ref() {
-            feedback.request_keyframe();
-        }
+    let Some(state) = attachment(id) else {
+        return;
+    };
+    if let Some(feedback) = state.feedback.lock().unwrap().as_ref() {
+        feedback.request_keyframe();
     }
 }
 fn event(
@@ -371,10 +372,14 @@ pub extern "system" fn Java_com_opencloudgaming_opennow_NvstBridge_run(
     }))
     .unwrap_or_else(|_| Err("NVST transport panic; cloud session retained".into()));
     // Do not replace a Java exception with another JNI call.
-    if !state.stopped.load(Ordering::Acquire) && !env.exception_check().unwrap_or(true) {
-        if let Err(message) = result {
-            let _ = event(&mut env, &callback, "error", &message);
-        }
+    let error = if !state.stopped.load(Ordering::Acquire) && !env.exception_check().unwrap_or(true)
+    {
+        result.err()
+    } else {
+        None
+    };
+    if let Some(message) = error {
+        let _ = event(&mut env, &callback, "error", &message);
     }
     attachments().lock().unwrap().remove(&id);
 }
