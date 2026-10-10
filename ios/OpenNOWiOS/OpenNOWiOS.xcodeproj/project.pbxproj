@@ -7,6 +7,15 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		4A9F701B95F642B4B396FF48 /* StreamSessionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12734E3A4AF1481E9CA7E9E4; };
+		DC2C1BC3FB56423B96FF2C69 /* StreamSessionHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BEF4FE1193044C9B24243CB; };
+		8E278E5098934E5AB52375FC /* NativeStreamGeForceNOWControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A1DC3C28C7F44DC86ADCDC8; };
+		BB0000000000000000000081 /* NativeStreamMetal4Presentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000091; };
+		EF1590000000000000000001 /* NativeStreamControllerHUD.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF1590000000000000000011; };
+		EF1580000000000000000001 /* NativeStreamGameSirRumbler.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF1580000000000000000011; };
+		BB0000000000000000000061 /* NativeStreamMetal4Effects.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000071; };
+		BB0000000000000000000041 /* NativeStreamVideoEffects.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000051; };
+		BB0000000000000000000021 /* NativeStreamHDRMetal.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000031 /* NativeStreamHDRMetal.swift */; };
 		00011D19F6D5A547098B779C /* NVST/NvstReceiverFixtures.swift in Sources */ = {isa = PBXBuildFile; fileRef = A069F9F629064E25EDB36A88 /* NVST/NvstReceiverFixtures.swift */; };
 		02A1CFDA397938348803A72E /* NVST/BifrostFree/NvstInputActivation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0EDD7007984C5B5DE29F21CE /* NVST/BifrostFree/NvstInputActivation.swift */; };
 		04937EADD6D6B625A79E37F9 /* NVST/BifrostFree/GeronimoInputProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8EB51AE2654616A0453827E /* NVST/BifrostFree/GeronimoInputProtocol.swift */; };
@@ -197,6 +206,15 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		12734E3A4AF1481E9CA7E9E4 /* StreamSessionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamSessionsView.swift; sourceTree = "<group>"; };
+		6BEF4FE1193044C9B24243CB /* StreamSessionHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamSessionHistory.swift; sourceTree = "<group>"; };
+		5A1DC3C28C7F44DC86ADCDC8 /* NativeStreamGeForceNOWControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeStreamGeForceNOWControls.swift; sourceTree = "<group>"; };
+		BB0000000000000000000091 /* NativeStreamMetal4Presentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeStreamMetal4Presentation.swift; sourceTree = "<group>"; };
+		EF1590000000000000000011 /* NativeStreamControllerHUD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeStreamControllerHUD.swift; sourceTree = "<group>"; };
+		EF1580000000000000000011 /* NativeStreamGameSirRumbler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeStreamGameSirRumbler.swift; sourceTree = "<group>"; };
+		BB0000000000000000000071 /* NativeStreamMetal4Effects.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeStreamMetal4Effects.swift; sourceTree = "<group>"; };
+		BB0000000000000000000051 /* NativeStreamVideoEffects.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeStreamVideoEffects.swift; sourceTree = "<group>"; };
+		BB0000000000000000000031 /* NativeStreamHDRMetal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeStreamHDRMetal.swift; sourceTree = "<group>"; };
 		0343683395FDFCF237023580 /* NVST/Native/NvstSctpAssociation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NVST/Native/NvstSctpAssociation.swift; sourceTree = "<group>"; };
 		034B974A326598B9BDBEA109 /* NVST/BifrostFree/NvstHidPassthrough.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NVST/BifrostFree/NvstHidPassthrough.swift; sourceTree = "<group>"; };
 		0555D545EE58990F18D35C3D /* NVST/Rtsp/NvstBundleReservation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NVST/Rtsp/NvstBundleReservation.swift; sourceTree = "<group>"; };
@@ -497,11 +515,17 @@
 				BB000000000000000000001A /* StreamerView.swift */,
 				BB000000000000000000001C /* NativeStreamSDP.swift */,
 				BB000000000000000000001D /* NativeStreamInput.swift */,
+				EF1590000000000000000011 /* NativeStreamControllerHUD.swift */,
+				EF1580000000000000000011 /* NativeStreamGameSirRumbler.swift */,
 				BB000000000000000000001E /* NativeStreamCodec.swift */,
 				BB0000000000000000000030 /* NativeStreamAV1.swift */,
 				BB0000000000000000000051 /* NativeStreamVideoEffects.swift */,
 				BB0000000000000000000071 /* NativeStreamMetal4Effects.swift */,
 				BB0000000000000000000031 /* NativeStreamHDRMetal.swift */,
+				BB0000000000000000000091 /* NativeStreamMetal4Presentation.swift */,
+				12734E3A4AF1481E9CA7E9E4 /* StreamSessionsView.swift */,
+				6BEF4FE1193044C9B24243CB /* StreamSessionHistory.swift */,
+				5A1DC3C28C7F44DC86ADCDC8 /* NativeStreamGeForceNOWControls.swift */,
 				BB000000000000000000001F /* NativeStreamAudioDevice.swift */,
 				A27000000000000000000011 /* GameDetailsPresentation.swift */,
 				A26000000000000000000011 /* OpenNOWVisualComponents.swift */,
@@ -807,11 +831,17 @@
 				BB000000000000000000000A /* StreamerView.swift in Sources */,
 				BB000000000000000000000C /* NativeStreamSDP.swift in Sources */,
 				BB000000000000000000000D /* NativeStreamInput.swift in Sources */,
+				EF1590000000000000000001 /* NativeStreamControllerHUD.swift in Sources */,
+				EF1580000000000000000001 /* NativeStreamGameSirRumbler.swift in Sources */,
 				BB000000000000000000000E /* NativeStreamCodec.swift in Sources */,
 				BB0000000000000000000020 /* NativeStreamAV1.swift in Sources */,
 				BB0000000000000000000041 /* NativeStreamVideoEffects.swift in Sources */,
 				BB0000000000000000000061 /* NativeStreamMetal4Effects.swift in Sources */,
 				BB0000000000000000000021 /* NativeStreamHDRMetal.swift in Sources */,
+				BB0000000000000000000081 /* NativeStreamMetal4Presentation.swift in Sources */,
+				4A9F701B95F642B4B396FF48 /* StreamSessionsView.swift in Sources */,
+				DC2C1BC3FB56423B96FF2C69 /* StreamSessionHistory.swift in Sources */,
+				8E278E5098934E5AB52375FC /* NativeStreamGeForceNOWControls.swift in Sources */,
 				BB000000000000000000000F /* NativeStreamAudioDevice.swift in Sources */,
 				A27000000000000000000001 /* GameDetailsPresentation.swift in Sources */,
 				A26000000000000000000001 /* OpenNOWVisualComponents.swift in Sources */,
@@ -921,7 +951,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 115;
+				CURRENT_PROJECT_VERSION = 190;
 				DEVELOPMENT_TEAM = VR766AGP7G;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -942,7 +972,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.1;
+				MARKETING_VERSION = 1.1.190;
 				OTHER_CFLAGS = (
 					"$(inherited)",
 					"-Wno-incomplete-umbrella",
@@ -965,7 +995,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 115;
+				CURRENT_PROJECT_VERSION = 190;
 				DEVELOPMENT_TEAM = VR766AGP7G;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -985,7 +1015,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.1;
+				MARKETING_VERSION = 1.1.190;
 				OTHER_CFLAGS = (
 					"$(inherited)",
 					"-Wno-incomplete-umbrella",
@@ -1008,7 +1038,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 115;
+				CURRENT_PROJECT_VERSION = 190;
 				DEVELOPMENT_TEAM = VR766AGP7G;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = OpenNOWWidget/Info.plist;
@@ -1019,7 +1049,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.1;
+				MARKETING_VERSION = 1.1.190;
 				PRODUCT_BUNDLE_IDENTIFIER = com.opencloudgaming.opennow.widget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -1037,7 +1067,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 115;
+				CURRENT_PROJECT_VERSION = 190;
 				DEVELOPMENT_TEAM = VR766AGP7G;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = OpenNOWWidget/Info.plist;
@@ -1048,7 +1078,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.1;
+				MARKETING_VERSION = 1.1.190;
 				PRODUCT_BUNDLE_IDENTIFIER = com.opencloudgaming.opennow.widget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;

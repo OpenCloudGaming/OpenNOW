@@ -51,6 +51,79 @@ private struct GameDetailsPresentationTestRoot: View {
 }
 
 final class OpenNOWiOSParityTests: XCTestCase {
+    func testControllerShortcutsPersistWithoutChangingSavedRumbleGain() throws {
+        let legacy = try JSONDecoder().decode(AppSettings.self, from: Data("{}".utf8))
+        XCTAssertEqual(legacy.controllerShortcuts.action(for: "Button A"), .none)
+        var settings = legacy
+        settings.controllerRumbleStrength = 48
+        settings.controllerShortcuts.firstButton = "Back Left Button 0"
+        settings.controllerShortcuts.secondButton = "Back Right Button 0"
+        let restored = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
+        XCTAssertEqual(restored.controllerShortcuts.action(for: "Back Left Button 0"), .controls)
+        XCTAssertEqual(restored.controllerShortcuts.action(for: "Back Right Button 0"), .stats)
+        XCTAssertEqual(restored.controllerShortcuts.action(for: ""), .none)
+        XCTAssertEqual(restored.controllerRumbleStrength, 48)
+        XCTAssertEqual(NativeStreamControllerRumbleGain.label(48), "75%")
+    }
+
+    func testControllerHUDDirectionRejectsDriftAndInvalidAxes() {
+        XCTAssertNil(NativeStreamControllerHUDRouting.direction(x: 0.59, y: 0.1))
+        XCTAssertNil(NativeStreamControllerHUDRouting.direction(x: .nan, y: 1))
+        XCTAssertNil(NativeStreamControllerHUDRouting.direction(x: 1, y: .infinity))
+        XCTAssertEqual(NativeStreamControllerHUDRouting.direction(x: -0.8, y: 0.2), .left)
+        XCTAssertEqual(NativeStreamControllerHUDRouting.direction(x: 0.7, y: -1), .down)
+        XCTAssertEqual(NativeStreamControllerHUDRouting.direction(x: 0, y: 1), .up)
+    }
+
+    func testControllerHUDReleasesGameControlsWhileKeepingControllerConnected() {
+        let held = NativeStreamGamepadState(controllerId: 2, buttons: 0xffff, leftTrigger: 255,
+            rightTrigger: 255, leftStickX: 32767, leftStickY: -32767,
+            rightStickX: 1000, rightStickY: -1000, connected: true)
+        let neutral = NativeStreamControllerHUDRouting.gameState(held, captured: true)
+        XCTAssertEqual(neutral.controllerId, 2)
+        XCTAssertTrue(neutral.connected)
+        XCTAssertEqual(neutral.buttons, 0)
+        XCTAssertEqual(neutral.leftTrigger, 0)
+        XCTAssertEqual(neutral.rightTrigger, 0)
+        XCTAssertEqual(neutral.leftStickX, 0)
+        XCTAssertEqual(neutral.leftStickY, 0)
+        XCTAssertEqual(neutral.rightStickX, 0)
+        XCTAssertEqual(neutral.rightStickY, 0)
+        XCTAssertEqual(NativeStreamControllerHUDRouting.gameState(held, captured: false), held)
+        let disconnected = NativeStreamGamepadState(controllerId: 2, buttons: 0, leftTrigger: 0,
+            rightTrigger: 0, leftStickX: 0, leftStickY: 0, rightStickX: 0, rightStickY: 0, connected: false)
+        XCTAssertEqual(NativeStreamControllerHUDRouting.gameState(disconnected, captured: true), disconnected)
+    }
+
+    @MainActor
+    func testControllerHUDNavigationSkipsDisabledAndAdjustsSlider() {
+        let nav = NativeStreamControllerHUDNavigator()
+        let first = UUID(), disabled = UUID(), slider = UUID()
+        var activations = 0
+        var value = 50.0
+        nav.register(first, enabled: true, activate: { activations += 1 }, adjust: nil)
+        nav.register(disabled, enabled: false, activate: { XCTFail("Disabled control activated") }, adjust: nil)
+        nav.register(slider, enabled: true, activate: {}, adjust: { value += $0 })
+        nav.updatePositions([first: CGRect(x: 0, y: 0, width: 100, height: 20),
+            disabled: CGRect(x: 0, y: 30, width: 100, height: 20),
+            slider: CGRect(x: 0, y: 60, width: 100, height: 20)])
+        nav.handle(.down)
+        XCTAssertEqual(nav.selected, first)
+        nav.handle(.activate)
+        XCTAssertEqual(activations, 1)
+        nav.handle(.down)
+        XCTAssertEqual(nav.selected, slider)
+        nav.handle(.right)
+        XCTAssertEqual(value, 51)
+        nav.handle(.left)
+        XCTAssertEqual(value, 50)
+        nav.remove(slider)
+        XCTAssertNil(nav.selected)
+        nav.handle(.activate)
+        XCTAssertEqual(nav.selected, first)
+        XCTAssertEqual(activations, 1, "Selecting after a page change must not activate a control")
+    }
+
     @MainActor
     func testGameDetailsUsesNativeZoomOnFirstPresentationAndClearsSourceAfterDismissal() async throws {
         guard #available(iOS 18, *) else { throw XCTSkip("Native zoom requires iOS 18") }
@@ -266,6 +339,7 @@ final class OpenNOWiOSParityTests: XCTestCase {
         }
         let store = OpenNOWStore()
         var live = AppSettings.default
+        live.controllerRumbleStrength = 4
         live.metal4Enabled = false
         store.settings.metal4Enabled = true
         live.metalFXUpscalingEnabled = false
@@ -274,21 +348,22 @@ final class OpenNOWiOSParityTests: XCTestCase {
         store.settings.preferredAspectRatio = "21:9"
         store.settings.preferredResolution = "2560x1080"
         store.settings.hdrEnabled = true
-        store.settings.enableCloudGsync = false
         let before = store.settings
         store.applyStreamerSettings(live)
         XCTAssertFalse(store.settings.metalFXUpscalingEnabled)
         XCTAssertEqual(store.settings.preferredFPS, before.preferredFPS)
         XCTAssertEqual(store.settings.preferredResolution, before.preferredResolution)
         XCTAssertEqual(store.settings.hdrEnabled, before.hdrEnabled)
-        XCTAssertEqual(store.settings.enableCloudGsync, before.enableCloudGsync)
         let saved = try JSONDecoder().decode(AppSettings.self, from: XCTUnwrap(defaults.data(forKey: key)))
+        XCTAssertEqual(saved.controllerRumbleStrength, 4)
         XCTAssertFalse(saved.metal4Enabled)
         XCTAssertFalse(saved.metalFXUpscalingEnabled)
+        live.controllerRumbleStrength = 24
         live.metal4Enabled = true
         live.metalFXUpscalingEnabled = true
         store.applyStreamerSettings(live)
         let savedOn = try JSONDecoder().decode(AppSettings.self, from: XCTUnwrap(defaults.data(forKey: key)))
+        XCTAssertEqual(savedOn.controllerRumbleStrength, 24)
         XCTAssertTrue(savedOn.metal4Enabled)
         XCTAssertTrue(savedOn.metalFXUpscalingEnabled)
     }
@@ -314,6 +389,7 @@ final class OpenNOWiOSParityTests: XCTestCase {
             .environmentObject(store).environment(\.horizontalSizeClass, compact ? .compact : .regular))
         if #available(iOS 17.0, *) { host.traitOverrides.horizontalSizeClass = compact ? .compact : .regular }
         let window = UIWindow(windowScene: scene)
+        if !compact { window.frame = CGRect(x: 0, y: 0, width: 1024, height: 768) }
         window.rootViewController = host
         window.makeKeyAndVisible()
         defer { window.isHidden = true; window.rootViewController = nil; previousKeyWindow?.makeKeyAndVisible() }
@@ -343,7 +419,7 @@ final class OpenNOWiOSParityTests: XCTestCase {
             }
             let sidebar = try XCTUnwrap(descendants(host.view).compactMap { $0 as? UICollectionView }
                 .first {
-                    $0.numberOfSections > 0 && $0.numberOfItems(inSection: 0) == 4
+                    $0.numberOfSections > 0 && $0.numberOfItems(inSection: 0) == 5
                         && $0.convert($0.bounds, to: host.view).minX < host.view.bounds.width * 0.25
                         && $0.bounds.width < host.view.bounds.width * 0.5
                 })
@@ -357,9 +433,12 @@ final class OpenNOWiOSParityTests: XCTestCase {
         }
         try await settle()
         XCTAssertEqual(host.traitCollection.horizontalSizeClass, compact ? .compact : .regular)
+        try await selectSidebarRow(3)
+        XCTAssertTrue(titles().contains("Sessions"), "Sessions must open its actual history page: \(titles())")
+        try await selectSidebarRow(0)
         for route in [SettingsRouteTarget.general, .stream, .input, .interface, .account] {
             NSLog("[SettingsNavigationTest] opening settings for %@", String(describing: route))
-            try await selectSidebarRow(3)
+            try await selectSidebarRow(4)
             let settingsTitles = ["Settings", "General", "Stream", "Input", "Interface", "Account"]
             XCTAssertTrue(titles().contains(where: settingsTitles.contains),
                           "Selection must open the actual Settings view: \(titles())")
@@ -373,6 +452,71 @@ final class OpenNOWiOSParityTests: XCTestCase {
             NSLog("[SettingsNavigationTest] home selected")
             XCTAssertTrue(titles().contains("Store") && !titles().contains(where: settingsTitles.contains),
                           "Home navigation must replace the settings stack: \(titles())")
+        }
+    }
+
+    func testControllerRumbleGainPreservesZeroAndCapsAmplifiedOutput() {
+        XCTAssertEqual(NativeStreamControllerRumbleGain.apply(0, multiplier: 8), 0)
+        XCTAssertEqual(NativeStreamControllerRumbleGain.apply(0.066, multiplier: 8), 0.528, accuracy: 0.00001)
+        XCTAssertEqual(NativeStreamControllerRumbleGain.apply(0.8, multiplier: 8), 1)
+        XCTAssertEqual(NativeStreamControllerRumbleGain.apply(0, multiplier: 32), 0)
+        XCTAssertEqual(NativeStreamControllerRumbleGain.apply(0.0030469215, multiplier: 32), 0.09750149, accuracy: 0.00001)
+        XCTAssertEqual(NativeStreamControllerRumbleGain.apply(0.066, multiplier: 16), 1)
+        XCTAssertEqual(NativeStreamControllerRumbleGain.apply(0.25, multiplier: 1), 0.25)
+        XCTAssertEqual(NativeStreamControllerRumbleGain.apply(0.8, multiplier: 0), 0)
+        XCTAssertEqual(NativeStreamControllerRumbleGain.apply(0, multiplier: 48), 0)
+        XCTAssertEqual(NativeStreamControllerRumbleGain.apply(0.0030469215, multiplier: 48), 0.14625223, accuracy: 0.00001)
+        XCTAssertEqual(NativeStreamControllerRumbleGain.normalize(.infinity), 1)
+        XCTAssertEqual(NativeStreamControllerRumbleGain.normalize(-1), 0)
+        XCTAssertEqual(NativeStreamControllerRumbleGain.normalize(99), 64)
+    }
+
+    func testGameSirMotorCommandsPreserveFramingAndIndependentMotors() {
+        XCTAssertEqual(Array(NativeStreamGameSirMotorPacket.packet(low: 0, high: 0)), [4, 0, 1, 0, 1, 0, 0, 0, 0])
+        XCTAssertEqual(Array(NativeStreamGameSirMotorPacket.packet(low: 65535, high: 0)), [4, 255, 1, 0, 1, 0, 0, 0, 0])
+        XCTAssertEqual(Array(NativeStreamGameSirMotorPacket.packet(low: 0, high: 65535)), [4, 0, 1, 255, 1, 0, 0, 0, 0])
+        XCTAssertEqual(NativeStreamGameSirMotorPacket.amplitude(512, gain: 48), 24576)
+        XCTAssertEqual(NativeStreamGameSirMotorPacket.amplitude(512, gain: 64), 32768)
+        XCTAssertEqual(NativeStreamGameSirMotorPacket.amplitude(65535, gain: 64), 65535)
+        XCTAssertEqual(NativeStreamControllerRumbleGain.apply(0, multiplier: 64), 0)
+        XCTAssertEqual(NativeStreamGameSirMotorPacket.amplitude(512, gain: 0), 0)
+        XCTAssertEqual(NativeStreamGameSirMotorPacket.amplitude(65535, gain: 48), 65535)
+        XCTAssertEqual(NativeStreamGameSirMotorPacket.amplitude(-1, gain: 48), 0)
+    }
+
+    func testGameSirAccessoryRoutingMatchesOnlyG8MFi() {
+        XCTAssertTrue(NativeStreamGameSirMotorPacket.isTarget(vendorName: "GameSir-G8+ MFi"))
+        XCTAssertTrue(NativeStreamGameSirMotorPacket.isTarget(vendorName: "gamesir g8+ mfi"))
+        XCTAssertFalse(NativeStreamGameSirMotorPacket.isTarget(vendorName: "GameSir G8 Plus Bluetooth"))
+        XCTAssertFalse(NativeStreamGameSirMotorPacket.isTarget(vendorName: "Xbox Wireless Controller"))
+        XCTAssertFalse(NativeStreamGameSirMotorPacket.isTarget(vendorName: nil))
+    }
+
+    func testControllerRumblePercentLabelsMatchQuarterSteps() {
+        for (gain, label) in [(0.0, "Off"), (16.0, "25%"), (32.0, "50%"), (48.0, "75%"), (64.0, "100%")] {
+            XCTAssertEqual(NativeStreamControllerRumbleGain.label(gain), label)
+        }
+        XCTAssertEqual(NativeStreamControllerRumbleGain.label(32), "50%")
+    }
+
+    func testControllerRumbleGainMigratesAndPersistsWithoutChangingPhoneFallback() throws {
+        let legacy = try JSONDecoder().decode(AppSettings.self, from: Data("{}".utf8))
+        XCTAssertEqual(legacy.controllerRumbleStrength, 1)
+        var settings = AppSettings.default
+        settings.controllerRumbleStrength = 8
+        settings.phoneRumbleFallback = false
+        let restored = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
+        XCTAssertEqual(restored.controllerRumbleStrength, 8)
+        XCTAssertFalse(restored.phoneRumbleFallback)
+        settings.controllerRumbleStrength = 32
+        let strongest = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
+        XCTAssertEqual(strongest.controllerRumbleStrength, 32)
+        XCTAssertFalse(strongest.phoneRumbleFallback)
+        for gain in [0.0, 48.0, 64.0] {
+            settings.controllerRumbleStrength = gain
+            let saved = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
+            XCTAssertEqual(saved.controllerRumbleStrength, gain)
+            XCTAssertFalse(saved.phoneRumbleFallback)
         }
     }
 
@@ -594,25 +738,62 @@ final class OpenNOWiOSParityTests: XCTestCase {
         // must not be advertised as upscaling when both axes actually shrink.
         XCTAssertNil(NativeStreamVideoEffectsPolicy.upscaleSize(source: CGSize(width: 2560, height: 1600),
             destination: CGSize(width: 2064, height: 1290)))
-        XCTAssertNil(NativeStreamVideoEffectsPolicy.upscaleSize(source: CGSize(width: 1920, height: 1200),
-            destination: CGSize(width: 2064, height: 1290)))
-        XCTAssertNil(NativeStreamVideoEffectsPolicy.upscaleSize(source: CGSize(width: 2560, height: 1080),
-            destination: CGSize(width: 2868, height: 1320)))
+        XCTAssertEqual(NativeStreamVideoEffectsPolicy.upscaleSize(source: CGSize(width: 1920, height: 1200),
+            destination: CGSize(width: 2064, height: 1290)), CGSize(width: 2064, height: 1290))
+        XCTAssertEqual(NativeStreamVideoEffectsPolicy.upscaleSize(source: CGSize(width: 2560, height: 1080),
+            destination: CGSize(width: 2868, height: 1320)), CGSize(width: 2868, height: 1320))
         XCTAssertEqual(NativeStreamVideoEffectsPolicy.upscaleSize(source: CGSize(width: 1920, height: 1080),
             destination: CGSize(width: 2560, height: 1440)), CGSize(width: 2560, height: 1440))
     }
 
     func testMetalFXEnabledButIneligibleUsesSinglePassHDRRenderer() {
         let source = CGSize(width: 2560, height: 1080)
-        let destination = CGSize(width: 2868, height: 1320)
-        let eligible = NativeStreamVideoEffectsPolicy.upscaleSize(source: source, destination: destination) != nil
-        XCTAssertFalse(eligible)
-        XCTAssertTrue(NativeStreamVideoEffectsPolicy.canUseDirectHDRPath(
-            upscalingEnabled: true, upscaleEligible: eligible, sharpeningAmount: 0))
-        XCTAssertFalse(NativeStreamVideoEffectsPolicy.canUseDirectHDRPath(
-            upscalingEnabled: true, upscaleEligible: true, sharpeningAmount: 0))
-        XCTAssertFalse(NativeStreamVideoEffectsPolicy.canUseDirectHDRPath(
-            upscalingEnabled: true, upscaleEligible: eligible, sharpeningAmount: 0.1))
+        for destination in [source, CGSize(width: 2580, height: 1088),
+                            CGSize(width: 1920, height: 810), CGSize(width: 11000, height: 4640)] {
+            let eligible = NativeStreamVideoEffectsPolicy.upscaleSize(source: source, destination: destination) != nil
+            XCTAssertFalse(eligible)
+            XCTAssertTrue(NativeStreamVideoEffectsPolicy.canUseDirectHDRPath(
+                upscalingEnabled: true, upscaleEligible: eligible, sharpeningAmount: 0))
+            XCTAssertFalse(NativeStreamVideoEffectsPolicy.canUseDirectHDRPath(
+                upscalingEnabled: true, upscaleEligible: eligible, sharpeningAmount: 0.1))
+        }
+    }
+
+    func testMetalFXQualityUpscalesNearNativeResolutionToDisplay() throws {
+        let display = CGSize(width: 2868, height: 1320)
+        for stretch in [false, true] {
+            let resolution = try XCTUnwrap(StreamSettingsResolver.metalFXResolution(preset: .quality,
+                aspectRatio: "21:9", displaySize: display, stretch: stretch, membershipTier: "ULTIMATE"))
+            XCTAssertEqual(resolution.value, "2560x1080")
+            let source = StreamSettingsResolver.pixelSize(resolution.value)
+            let target = NativeStreamVideoEffectsPolicy.presentationSize(
+                source: source, display: display, stretch: stretch)
+            let output = try XCTUnwrap(NativeStreamVideoEffectsPolicy.upscaleSize(source: source, destination: target))
+            XCTAssertEqual(output, CGSize(width: 2868, height: stretch ? 1320 : 1210))
+            if !stretch {
+                XCTAssertEqual(target.width / target.height, source.width / source.height, accuracy: 0.0001)
+            }
+            XCTAssertFalse(NativeStreamVideoEffectsPolicy.canUseDirectHDRPath(
+                upscalingEnabled: true, upscaleEligible: true, sharpeningAmount: 0))
+            XCTAssertTrue(NativeStreamVideoEffectsPolicy.canUseDirectHDRPath(
+                upscalingEnabled: false, upscaleEligible: true, sharpeningAmount: 0))
+        }
+    }
+
+    func testMetal4FrameSlotPolicyMatchesTripleBufferedRenderers() {
+        XCTAssertEqual(NativeStreamMetal4FrameSlotPolicy.inFlightCount, 3)
+        XCTAssertEqual(NativeStreamMetal4FrameSlotPolicy.indices, [0, 1, 2])
+        XCTAssertTrue(NativeStreamMetal4FrameSlotPolicy.isComplete(3))
+        XCTAssertFalse(NativeStreamMetal4FrameSlotPolicy.isComplete(2))
+    }
+
+    func testGPUQueueDependencyWaitsOnlyWhenRendererQueueChanges() {
+        XCTAssertFalse(NativeStreamSubmissionQueue.metal4HDR.requiresWait(from: .metal4HDR))
+        XCTAssertFalse(NativeStreamSubmissionQueue.metal3.requiresWait(from: .metal3))
+        XCTAssertTrue(NativeStreamSubmissionQueue.metal4HDR.requiresWait(from: .metal3))
+        XCTAssertTrue(NativeStreamSubmissionQueue.metal3.requiresWait(from: .metal4HDR))
+        XCTAssertTrue(NativeStreamSubmissionQueue.metal4Effects.requiresWait(from: .metal4HDR))
+        XCTAssertTrue(NativeStreamSubmissionQueue.metal4HDR.requiresWait(from: nil))
     }
 
     func testVideoEffectsSettingsMigrateOffAndRoundTripWithoutChangingStream() throws {
@@ -1008,20 +1189,53 @@ final class OpenNOWiOSParityTests: XCTestCase {
     }
 
     @MainActor
-    func testStreamPresentationOwnsPointerLockAndReleasesOnTeardown() async throws {
+    func testStreamPresentationOwnsPointerLockAndStatusBarAndReleasesOnTeardown() async throws {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
-        let priorWindow = scene.windows.first(where: \.isKeyWindow)
-        let window = UIWindow(windowScene: scene)
+        // Check the scene's actual status bar, in the app's main window.
+        let window = try XCTUnwrap(scene.windows.first(where: \.isKeyWindow))
+        let priorController = window.rootViewController
+        func waitForStatusBar(hidden: Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
+            // UIKit updates the scene asynchronously, including its visibility animation.
+            for _ in 0..<40 {
+                if scene.statusBarManager?.isStatusBarHidden == hidden { return }
+                try await Task.sleep(nanoseconds: 50_000_000)
+            }
+            XCTAssertEqual(scene.statusBarManager?.isStatusBarHidden, hidden, file: file, line: line)
+        }
         let presenter = NativeStreamPresentationController(content: AnyView(
-            Color.black.background(NativeStreamPointerLockPreference(requested: true))))
+            Color.black.background(NativeStreamPresentationPreferences(
+                pointerCaptureRequested: true))))
         window.rootViewController = presenter
         window.makeKeyAndVisible()
-        defer { presenter.tearDown(); window.isHidden = true; priorWindow?.makeKeyAndVisible() }
+        defer { presenter.tearDown(); window.rootViewController = priorController }
         try await Task.sleep(nanoseconds: 300_000_000)
         XCTAssertTrue(presenter.presentedViewController === presenter.host)
         XCTAssertTrue(presenter.host.prefersPointerLocked)
+        XCTAssertTrue(presenter.host.prefersStatusBarHidden)
+        try await waitForStatusBar(hidden: true)
+
+        // Revealing controls releases pointer lock but keeps the system bar hidden.
+        presenter.host.rootView = AnyView(Color.black.background(NativeStreamPresentationPreferences(
+            pointerCaptureRequested: false)))
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertTrue(presenter.presentedViewController === presenter.host)
+        XCTAssertFalse(presenter.host.prefersPointerLocked)
+        XCTAssertTrue(presenter.host.prefersStatusBarHidden)
+        try await waitForStatusBar(hidden: true)
+
+        presenter.host.rootView = AnyView(Color.black.background(NativeStreamPresentationPreferences(
+            pointerCaptureRequested: true)))
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertTrue(presenter.host.prefersStatusBarHidden)
+        try await waitForStatusBar(hidden: true)
+        presenter.host.rootView = AnyView(Color.black)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertTrue(presenter.host.prefersStatusBarHidden)
+        try await waitForStatusBar(hidden: true)
         presenter.tearDown()
         XCTAssertFalse(presenter.host.prefersPointerLocked)
+        XCTAssertFalse(presenter.host.prefersStatusBarHidden)
+        try await waitForStatusBar(hidden: false)
     }
 
     func testPiPSamplesUseHostClockAndBoundedAspectCorrectSurfaces() {
@@ -1255,7 +1469,6 @@ final class OpenNOWiOSParityTests: XCTestCase {
         settings.preferredFPS = 120
         settings.preferredCodec = "AV1"
         settings.preferredColorQuality = StreamColorQuality.tenBit420.rawValue
-        settings.enableCloudGsync = false
         for hdr in [false, true] {
             settings.hdrEnabled = hdr
             let features = CloudMatchStreamingFeatureRequest.build(
@@ -1265,7 +1478,7 @@ final class OpenNOWiOSParityTests: XCTestCase {
             XCTAssertEqual(features["bitDepth"] as? Int, 1)
             XCTAssertEqual(features["chromaFormat"] as? Int, 0)
             XCTAssertEqual(features["reflex"] as? Bool, true)
-            XCTAssertEqual(features["cloudGsync"] as? Bool, false)
+            XCTAssertNil(features["cloudGsync"])
             XCTAssertEqual(features["trueHdr"] as? Bool, hdr)
             for field in ["mouseMovementFlags", "hidDevices", "sdrColorSpace", "hdrColorSpace"] {
                 XCTAssertNil(features[field], "\(field) is absent from the desktop request")
@@ -1274,9 +1487,8 @@ final class OpenNOWiOSParityTests: XCTestCase {
         }
     }
 
-    func testCloudMatchReflexUsesDesktopThresholdWithoutCloudGsync() {
+    func testCloudMatchReflexUsesDesktopThreshold() {
         var settings = AppSettings.default
-        settings.enableCloudGsync = false
         for fps in [30, 60, 90, 120] {
             settings.preferredFPS = fps
             let features = CloudMatchStreamingFeatureRequest.build(
@@ -1285,13 +1497,6 @@ final class OpenNOWiOSParityTests: XCTestCase {
             )
             XCTAssertEqual(features["reflex"] as? Bool, fps >= 120)
         }
-        settings.enableCloudGsync = true
-        settings.preferredFPS = 60
-        let features = CloudMatchStreamingFeatureRequest.build(
-            settings: settings, profile: StreamSettingsResolver.profile(for: settings),
-            bitDepth: 0, chromaFormat: 0
-        )
-        XCTAssertEqual(features["reflex"] as? Bool, true)
     }
 
     func testCloudMatchInternalRejectionExplainsThatDecoderHasNotStarted() {
@@ -1853,6 +2058,23 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertEqual(cappedProfile.fps, 120)
     }
 
+    func testStreamerViewEffectiveProfileHonorsMembershipTierAndProMotionFPS() {
+        let game = Self.makeGame(title: "Cyberpunk 2077", controls: [])
+        let session = Self.makeActiveSession(game: game, status: 3)
+        var settings = AppSettings.default
+        settings.preferredFPS = 120
+        settings.preferredResolution = "2560x1080"
+        settings.preferredAspectRatio = "21:9"
+
+        let ultimateProfile = NativeStreamCoordinator.effectiveProfile(for: session, settings: settings, membershipTier: "ULTIMATE")
+        XCTAssertEqual(ultimateProfile.fps, 120)
+        XCTAssertEqual(ultimateProfile.width, 2560)
+        XCTAssertEqual(ultimateProfile.height, 1080)
+
+        let freeProfile = NativeStreamCoordinator.effectiveProfile(for: session, settings: settings, membershipTier: "FREE")
+        XCTAssertEqual(freeProfile.fps, 60)
+    }
+
     func testTwentyByNineResolutionCatalogIncludesEveryAndroidChoice() {
         let choices = StreamSettingsResolver.choices(forAspectRatio: "20:9")
         XCTAssertEqual(
@@ -1907,7 +2129,7 @@ final class OpenNOWiOSParityTests: XCTestCase {
               "keyboardLayout": "en-US",
               "gameLanguage": "en_US",
               "enableL4S": false,
-              "enableCloudGsync": false,
+              "enableCloudGsync": true,
               "keepMicEnabled": false,
               "showStatsOverlay": true,
               "hideServerSelector": false,
@@ -1954,6 +2176,10 @@ final class OpenNOWiOSParityTests: XCTestCase {
             from: JSONEncoder().encode(settings)
         )
         XCTAssertEqual(roundTrip, settings)
+        let migratedJSON = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(settings)) as? [String: Any]
+        )
+        XCTAssertNil(migratedJSON["enableCloudGsync"])
     }
 
     func testSafeVideoFallbackCapsExpensiveAndUnsupportedSettings() {
@@ -1965,7 +2191,6 @@ final class OpenNOWiOSParityTests: XCTestCase {
         settings.preferredCodec = "AV1"
         settings.preferredColorQuality = StreamColorQuality.tenBit444.rawValue
         settings.hdrEnabled = true
-        settings.enableCloudGsync = true
 
         let fallback = settings.safeVideoFallback()
 
@@ -1976,7 +2201,6 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertEqual(fallback.preferredCodec, "H264")
         XCTAssertEqual(fallback.preferredColorQuality, StreamColorQuality.eightBit420.rawValue)
         XCTAssertFalse(fallback.hdrEnabled)
-        XCTAssertFalse(fallback.enableCloudGsync)
     }
 
     func testExplicitUnsupportedCodecDoesNotRewriteSelectedProfile() {
@@ -2997,6 +3221,234 @@ final class OpenNOWiOSParityTests: XCTestCase {
         result = TouchStickMath.applyDeadZone(x: 0.03, y: -0.04, deadZone: 0)
         XCTAssertEqual(result.0, 0.03, accuracy: 0.0001)
         XCTAssertEqual(result.1, -0.04, accuracy: 0.0001)
+    }
+
+    @MainActor
+    func testSplitTouchControlsCanHideAndRestoreWithoutOpeningHUD() async throws {
+        var settings = AppSettings.default
+        settings.touch.controlMode = .splitTouchpad
+        settings.hideStreamButtons = true
+        settings.streamTutorialCompleted = true
+        settings.streamerPreferences.touchControllerVisible = true
+        var saved: [Bool] = []
+        let coordinator = makeTouchControlsCoordinator(settings: settings) {
+            saved.append($0.touchControllerVisible)
+        }
+        XCTAssertTrue(coordinator.shouldShowVirtualController)
+        XCTAssertTrue(coordinator.shouldShowTouchControlsVisibilityButton)
+        for _ in 0..<3 {
+            coordinator.setTouchControllerVisible(false)
+            XCTAssertFalse(coordinator.shouldShowVirtualController)
+            XCTAssertFalse(coordinator.virtualControllerInputEnabled)
+            XCTAssertTrue(coordinator.shouldShowTouchControlsVisibilityButton, "Hiding must leave a Show controls button")
+            coordinator.setTouchControllerVisible(false)
+            XCTAssertTrue(coordinator.shouldShowTouchControlsVisibilityButton, "Repeated hide requests must retain the restore path")
+            coordinator.setTouchControllerVisible(true)
+            XCTAssertTrue(coordinator.shouldShowVirtualController)
+            XCTAssertTrue(coordinator.virtualControllerInputEnabled)
+            XCTAssertTrue(coordinator.shouldShowTouchControlsVisibilityButton)
+            XCTAssertFalse(coordinator.controlsPanelVisible, "Restoring must not require opening the stream HUD")
+        }
+        XCTAssertEqual(saved, [false, false, true, false, false, true, false, false, true])
+        settings.streamerPreferences.touchControllerVisible = false
+        let initiallyHidden = makeTouchControlsCoordinator(settings: settings)
+        XCTAssertFalse(initiallyHidden.shouldShowTouchControlsVisibilityButton, "Do not add a button when the controller was disabled before the stream")
+    }
+
+    @MainActor
+    private func makeTouchControlsCoordinator(settings: AppSettings,
+        onPreferencesChange: @escaping (StreamerPreferences) -> Void = { _ in }) -> NativeStreamCoordinator {
+        NativeStreamCoordinator(
+            session: Self.makeActiveSession(game: Self.makeGame(title: "Touch controls", controls: []), status: 3),
+            settings: settings, membershipTier: "ULTIMATE", sessionHistory: nil,
+            onTouchLayoutChange: { _, _ in }, onStreamerPreferencesChange: onPreferencesChange,
+            onStreamSharpeningChange: { _, _ in }, onFingerMouseEnabledChange: { _ in },
+            onPhoneRumbleFallbackChange: { _ in }, onStreamTutorialCompleted: {},
+            onControllerTouchPromptDismissed: {}, onStatsOverlayChange: { _ in },
+            onTransportStable: {}, onSelectedVideoProfileRetry: { _ in }, onRuntimeSample: { _ in },
+            onSettingsChange: { _ in }, onBuildBugReportDeck: { BugReportPreflightDeck() },
+            onSubmitBugReport: { _, _ in .failure(BugReportError.invalid("Test")) }, onClose: {}, onRetry: nil)
+    }
+
+    func testSplitTouchpadUsesLandingPointAndClampsAtFullTravel() {
+        var result = TouchpadStickMath.vector(dx: 30, dy: 0, travel: 60, sensitivity: 1, deadZone: 0)
+        XCTAssertEqual(result.0, 0.5, accuracy: 0.0001)
+        XCTAssertEqual(result.1, 0, accuracy: 0.0001)
+
+        // Upward finger travel maps to positive stick Y, and travel beyond the radius clamps.
+        result = TouchpadStickMath.vector(dx: 0, dy: -120, travel: 60, sensitivity: 1, deadZone: 0)
+        XCTAssertEqual(result.0, 0, accuracy: 0.0001)
+        XCTAssertEqual(result.1, 1, accuracy: 0.0001)
+
+        // Sensitivity can reach full deflection earlier, but never exceed the wire range.
+        result = TouchpadStickMath.vector(dx: 30, dy: 0, travel: 60, sensitivity: 2, deadZone: 0)
+        XCTAssertEqual(result.0, 1, accuracy: 0.0001)
+
+        result = TouchpadStickMath.vector(dx: 2, dy: 0, travel: 60, sensitivity: 1, deadZone: 0.1)
+        XCTAssertEqual(result.0, 0, accuracy: 0.0001)
+    }
+
+    func testRetiredMobileGamePresetMigratesWithoutResettingSavedSettings() throws {
+        let saved = Data(#"{"controllerRumbleStrength":8,"metal4Enabled":true,"preferredResolution":"2560x1080","preferredAspectRatio":"21:9","touch":{"controllerPreset":"mobileGame","controlMode":"splitTouchpad","joystickDeadZone":0.17,"touchpadSensitivity":1.3,"leftOffsetX":24}}"#.utf8)
+        let settings = try JSONDecoder().decode(AppSettings.self, from: saved)
+        XCTAssertEqual(settings.touch.controllerPreset, .standard)
+        XCTAssertEqual(settings.touch.controlMode, .splitTouchpad)
+        XCTAssertEqual(settings.touch.joystickDeadZone, 0.17, accuracy: 0.0001)
+        XCTAssertEqual(settings.touch.touchpadSensitivity, 1.3, accuracy: 0.0001)
+        XCTAssertEqual(settings.touch.leftOffsetX, 24)
+        XCTAssertEqual(settings.controllerRumbleStrength, 8)
+        XCTAssertTrue(settings.metal4Enabled)
+        XCTAssertEqual(settings.preferredResolution, "2560x1080")
+        let encoded = try JSONEncoder().encode(settings)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        let touch = try XCTUnwrap(json["touch"] as? [String: Any])
+        XCTAssertEqual(touch["controllerPreset"] as? String, "standard")
+        XCTAssertEqual(try JSONDecoder().decode(AppSettings.self, from: encoded), settings)
+        XCTAssertEqual(TouchControllerPreset.allCases, [.standard, .geForceNOW])
+    }
+
+    func testGeForceNOWPresetKeepsSeparateControlsAndPersistsCustomPositions() throws {
+        var settings = TouchSettings()
+        settings.controllerPreset = .geForceNOW
+        XCTAssertEqual(try JSONDecoder().decode(TouchSettings.self, from: JSONEncoder().encode(settings)), settings)
+        XCTAssertTrue(settings.controllerPreset.usesIndependentControls)
+        XCTAssertFalse(settings.controllerPreset.supportsControlModeSelection)
+        XCTAssertEqual(TouchControllerPreset.standard.next, .geForceNOW)
+        XCTAssertEqual(TouchControllerPreset.geForceNOW.next, .standard)
+        XCTAssertEqual(GeForceNOWTouchControl.allCases.count, 19)
+        XCTAssertEqual(Set(GeForceNOWTouchControl.allCases.map(\.id)).count, 19)
+        XCTAssertEqual(GeForceNOWTouchControl.back.button, .options)
+        XCTAssertEqual(GeForceNOWTouchControl.start.button, .menu)
+        XCTAssertEqual(GeForceNOWTouchControl.lb.button, .leftShoulder)
+        XCTAssertEqual(GeForceNOWTouchControl.rb.button, .rightShoulder)
+        XCTAssertEqual(GeForceNOWTouchControl.l3.button, .leftStick)
+        XCTAssertEqual(GeForceNOWTouchControl.r3.button, .rightStick)
+        XCTAssertNil(GeForceNOWTouchControl.hub.button) // Opens local controls, without sending a host button.
+        var layout = TouchControlLayout.standard
+        layout.independentPositions[GeForceNOWTouchControl.hub.id] = .init(x: 0.6, y: 0.1)
+        layout.independentPositions["faceA"] = .init(x: 0.7, y: 0.8)
+        XCTAssertEqual(try JSONDecoder().decode(TouchControlLayout.self, from: JSONEncoder().encode(layout)), layout)
+    }
+
+    func testSessionBatteryIgnoresUnknownReadingsAndUsesFirstAvailableLevel() {
+        var battery = StreamSessionBattery()
+        battery.record(percent: nil, charging: false)
+        battery.record(percent: -1, charging: false)
+        battery.record(percent: 101, charging: false)
+        XCTAssertNil(battery.change)
+        battery.record(percent: 82, charging: false)
+        battery.record(percent: 76, charging: false)
+        XCTAssertEqual(battery.startPercent, 82)
+        XCTAssertEqual(battery.change, -6)
+        XCTAssertEqual(battery.changeText, "6% used")
+        battery.record(percent: nil, charging: false)
+        XCTAssertEqual(battery.currentPercent, 76)
+    }
+
+    func testSessionBatteryLabelsChargingAsNetChange() {
+        var battery = StreamSessionBattery()
+        battery.record(percent: 70, charging: false)
+        battery.record(percent: 65, charging: false)
+        battery.record(percent: 74, charging: true)
+        XCTAssertEqual(battery.changeText, "+4% net")
+        XCTAssertTrue(battery.summary.contains("Charging"))
+        battery.record(percent: 69, charging: false)
+        XCTAssertEqual(battery.changeText, "-1% net")
+        XCTAssertTrue(battery.includedCharging)
+        XCTAssertFalse(battery.charging)
+    }
+
+    @MainActor
+    func testSessionHistoryPersistsCompletedMetadataBatteryAndDeletion() throws {
+        let suite = "OpenNOW.tests.history.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let history = StreamSessionHistoryStore(defaults: defaults)
+        let start = Date(timeIntervalSince1970: 1000)
+        var record = StreamSessionRecord(gameTitle: "Control", resolution: "2560×1080",
+            targetFPS: 120, codec: "H.265", hdr: true, transport: "Native NVST", at: start)
+        record.battery.record(percent: 90, charging: false)
+        history.update(record, force: true)
+        record.updatedAt = start.addingTimeInterval(3661)
+        record.endedAt = record.updatedAt
+        record.battery.record(percent: 80, charging: false)
+        history.update(record, force: true)
+        let restored = StreamSessionHistoryStore(defaults: defaults)
+        XCTAssertEqual(restored.records, [record])
+        XCTAssertEqual(restored.records[0].durationText, "1h 1m")
+        XCTAssertEqual(restored.records[0].battery.changeText, "10% used")
+        restored.delete(at: IndexSet(integer: 0))
+        XCTAssertTrue(StreamSessionHistoryStore(defaults: defaults).records.isEmpty)
+    }
+
+    @MainActor
+    func testSessionHistoryRecoversInterruptedSessionAtLastCheckpointAndBoundsStorage() throws {
+        let suite = "OpenNOW.tests.history.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let history = StreamSessionHistoryStore(defaults: defaults)
+        let start = Date(timeIntervalSince1970: 1000)
+        var record = StreamSessionRecord(gameTitle: "Game", resolution: "1920×1080",
+            targetFPS: 60, codec: "H.265", hdr: false, transport: "WebRTC", at: start)
+        record.updatedAt = start.addingTimeInterval(125)
+        history.update(record, force: true)
+        let recovered = StreamSessionHistoryStore(defaults: defaults)
+        XCTAssertEqual(recovered.records.first?.endedAt, record.updatedAt)
+        XCTAssertEqual(recovered.records.first?.duration, 125)
+        XCTAssertEqual(recovered.records.first?.interrupted, true)
+        for index in 0...StreamSessionHistoryStore.maximumRecords {
+            var completed = StreamSessionRecord(gameTitle: "Game \(index)", resolution: "1920×1080",
+                targetFPS: 60, codec: "H.265", hdr: false, transport: "WebRTC",
+                at: start.addingTimeInterval(Double(index + 1)))
+            completed.endedAt = completed.updatedAt
+            recovered.update(completed, force: true)
+        }
+        XCTAssertEqual(recovered.records.count, StreamSessionHistoryStore.maximumRecords)
+        XCTAssertEqual(recovered.records.first?.gameTitle, "Game 100")
+        XCTAssertEqual(StreamSessionHistoryStore(defaults: defaults).records, recovered.records)
+    }
+
+    func testSessionBatteryHUDMetricDefaultsOffAndPersistsWhenEnabled() throws {
+        var metrics = try JSONDecoder().decode(StreamStatsMetrics.self, from: Data("{}".utf8))
+        XCTAssertFalse(metrics.sessionBattery)
+        let originalCount = metrics.enabledCount
+        metrics.sessionBattery = true
+        XCTAssertEqual(metrics.enabledCount, originalCount + 1)
+        XCTAssertEqual(try JSONDecoder().decode(StreamStatsMetrics.self, from: JSONEncoder().encode(metrics)), metrics)
+    }
+
+    func testOlderSingleMetricHUDSettingsDoNotEnableRenderingReadouts() throws {
+        let saved = Data(#"{"fps":true,"ping":false,"battery":false,"connection":false}"#.utf8)
+        let metrics = try JSONDecoder().decode(StreamStatsMetrics.self, from: saved)
+        XCTAssertTrue(metrics.fps)
+        XCTAssertFalse(metrics.displayedFPS)
+        XCTAssertFalse(metrics.renderer)
+        XCTAssertFalse(metrics.gpu)
+        XCTAssertEqual(metrics.enabledCount, 1)
+    }
+
+    func testRenderingHUDMetricsPersistAsIndependentSelections() throws {
+        let selections: [WritableKeyPath<StreamStatsMetrics, Bool>] = [\.displayedFPS, \.renderer, \.gpu]
+        for selected in selections {
+            var metrics = StreamStatsMetrics()
+            metrics.fps = false
+            metrics.ping = false
+            metrics.battery = false
+            metrics.connection = false
+            metrics[keyPath: selected] = true
+            XCTAssertTrue(metrics.isMinimallyPopulated)
+            XCTAssertEqual(metrics.enabledCount, 1)
+            let restored = try JSONDecoder().decode(StreamStatsMetrics.self, from: JSONEncoder().encode(metrics))
+            XCTAssertEqual(restored, metrics)
+        }
+    }
+
+    func testOlderTouchSettingsDefaultToVirtualSticks() throws {
+        let data = Data("{}".utf8)
+        let settings = try JSONDecoder().decode(TouchSettings.self, from: data)
+        XCTAssertEqual(settings.controlMode, .virtualSticks)
+        XCTAssertEqual(settings.controllerPreset, .standard)
+        XCTAssertEqual(settings.touchpadSensitivity, 1, accuracy: 0.0001)
     }
 
     func testControllerCursorCurveKeepsPrecisionNearCentre() {

@@ -99,6 +99,43 @@ enum TouchJoystickMode: String, Codable, CaseIterable, Identifiable {
     var label: String { self == .fixed ? "Fixed" : "Follow finger" }
 }
 
+enum TouchControlMode: String, Codable, CaseIterable, Identifiable {
+    case virtualSticks
+    case splitTouchpad
+
+    var id: String { rawValue }
+    var label: String { self == .virtualSticks ? "Virtual sticks" : "Split touchpad" }
+}
+
+enum TouchControllerPreset: String, Codable, CaseIterable, Identifiable {
+    case standard
+    case geForceNOW
+
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .standard: return "Standard"
+        case .geForceNOW: return "GeForce NOW"
+        }
+    }
+    var next: Self { Self.allCases[(Self.allCases.firstIndex(of: self)! + 1) % Self.allCases.count] }
+    var usesIndependentControls: Bool { self != .standard }
+    var supportsControlModeSelection: Bool { self == .standard }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let value = try container.decode(String.self)
+        // Retired preset selections must not invalidate the user's saved app settings.
+        if value == "mobileGame" {
+            self = .standard
+        } else if let preset = Self(rawValue: value) {
+            self = preset
+        } else {
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unknown touch controller preset: \(value)")
+        }
+    }
+}
+
 enum TouchAimMode: String, Codable, CaseIterable, Identifiable {
     case lockJoystick
     case lockZone
@@ -135,13 +172,17 @@ enum CatalogWallpaperPreset: String, Codable, CaseIterable, Identifiable {
 
 // MARK: - Stats HUD
 
-/// The ten metrics the in-stream HUD can show. Defaults match Android so a user moving between
+/// Optional metrics the in-stream HUD can show. Defaults match Android so a user moving between
 /// platforms sees the same four readouts.
 struct StreamStatsMetrics: Codable, Equatable {
     var fps: Bool = true
+    var displayedFPS: Bool = false
+    var renderer: Bool = false
+    var gpu: Bool = false
     var ping: Bool = true
     var bitrate: Bool = false
     var battery: Bool = true
+    var sessionBattery: Bool = false
     var connection: Bool = true
     var resolution: Bool = false
     var codec: Bool = false
@@ -150,7 +191,7 @@ struct StreamStatsMetrics: Codable, Equatable {
     var packetLoss: Bool = false
 
     var enabledCount: Int {
-        [fps, ping, bitrate, battery, connection, resolution, codec, location, latency, packetLoss]
+        [fps, displayedFPS, renderer, gpu, ping, bitrate, battery, sessionBattery, connection, resolution, codec, location, latency, packetLoss]
             .filter { $0 }
             .count
     }
@@ -166,9 +207,13 @@ struct StreamStatsMetrics: Codable, Equatable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         fps = try c.decodeIfPresent(Bool.self, forKey: .fps) ?? true
+        displayedFPS = try c.decodeIfPresent(Bool.self, forKey: .displayedFPS) ?? false
+        renderer = try c.decodeIfPresent(Bool.self, forKey: .renderer) ?? false
+        gpu = try c.decodeIfPresent(Bool.self, forKey: .gpu) ?? false
         ping = try c.decodeIfPresent(Bool.self, forKey: .ping) ?? true
         bitrate = try c.decodeIfPresent(Bool.self, forKey: .bitrate) ?? false
         battery = try c.decodeIfPresent(Bool.self, forKey: .battery) ?? true
+        sessionBattery = try c.decodeIfPresent(Bool.self, forKey: .sessionBattery) ?? false
         connection = try c.decodeIfPresent(Bool.self, forKey: .connection) ?? true
         resolution = try c.decodeIfPresent(Bool.self, forKey: .resolution) ?? false
         codec = try c.decodeIfPresent(Bool.self, forKey: .codec) ?? false
@@ -221,8 +266,11 @@ struct TouchSettings: Codable, Equatable {
     var nativeTouchJitterThreshold: Double = 8
 
     var joystickMode: TouchJoystickMode = .fixed
+    var controlMode: TouchControlMode = .virtualSticks
+    var controllerPreset: TouchControllerPreset = .standard
     var aimMode: TouchAimMode = .lockJoystick
     var joystickDeadZone: Double = 0
+    var touchpadSensitivity: Double = 1
     var style: TouchControllerStyle = .solid
 
     /// Finger-mouse taps click where the finger lands rather than moving a cursor first.
@@ -235,6 +283,14 @@ struct TouchSettings: Codable, Equatable {
     var rightOffsetX: Double = 0
     var rightOffsetY: Double = 0
 
+    func sideOffset(for point: TouchControlPoint) -> CGSize {
+        switch point.x {
+        case ..<0.4: return CGSize(width: leftOffsetX, height: leftOffsetY)
+        case 0.6...: return CGSize(width: rightOffsetX, height: rightOffsetY)
+        default: return .zero
+        }
+    }
+
     static let `default` = TouchSettings()
 
     init() {}
@@ -245,8 +301,11 @@ struct TouchSettings: Codable, Equatable {
         nativeTouchScrollScale = try c.decodeIfPresent(Double.self, forKey: .nativeTouchScrollScale) ?? 1.0
         nativeTouchJitterThreshold = try c.decodeIfPresent(Double.self, forKey: .nativeTouchJitterThreshold) ?? 8
         joystickMode = try c.decodeIfPresent(TouchJoystickMode.self, forKey: .joystickMode) ?? .fixed
+        controlMode = try c.decodeIfPresent(TouchControlMode.self, forKey: .controlMode) ?? .virtualSticks
+        controllerPreset = try c.decodeIfPresent(TouchControllerPreset.self, forKey: .controllerPreset) ?? .standard
         aimMode = try c.decodeIfPresent(TouchAimMode.self, forKey: .aimMode) ?? .lockJoystick
         joystickDeadZone = try c.decodeIfPresent(Double.self, forKey: .joystickDeadZone) ?? 0
+        touchpadSensitivity = try c.decodeIfPresent(Double.self, forKey: .touchpadSensitivity) ?? 1
         style = try c.decodeIfPresent(TouchControllerStyle.self, forKey: .style) ?? .solid
         mouseDirectClick = try c.decodeIfPresent(Bool.self, forKey: .mouseDirectClick) ?? false
         edgePadding = try c.decodeIfPresent(Double.self, forKey: .edgePadding) ?? 14
@@ -262,6 +321,7 @@ struct TouchSettings: Codable, Equatable {
         nativeTouchScrollScale = min(max(nativeTouchScrollScale, 0.25), 2.0)
         nativeTouchJitterThreshold = min(max(nativeTouchJitterThreshold, 0), 24)
         joystickDeadZone = min(max(joystickDeadZone, 0), 0.3)
+        touchpadSensitivity = min(max(touchpadSensitivity, 0.5), 2.0)
         edgePadding = min(max(edgePadding, 0), 72)
         bottomPadding = min(max(bottomPadding, 0), 120)
         leftOffsetX = min(max(leftOffsetX, -220), 220)
@@ -301,6 +361,23 @@ enum TouchStickMath {
         let factor = scaled / magnitude
         return (x * factor, y * factor)
     }
+}
+
+enum TouchpadStickMath {
+    /// Converts finger travel from its landing point into an analog stick vector. A fixed travel
+    /// distance keeps the control predictable regardless of where in each half the finger lands.
+    static func vector(dx: CGFloat, dy: CGFloat, travel: CGFloat, sensitivity: Double, deadZone: Double) -> (CGFloat, CGFloat) {
+        let radius = max(travel, 1)
+        let gain = CGFloat(min(max(sensitivity, 0.5), 2.0))
+        let length = hypot(dx, dy)
+        let scale = length > radius ? radius / length : 1
+        return TouchStickMath.applyDeadZone(
+            x: dx * scale / radius * gain,
+            y: -dy * scale / radius * gain,
+            deadZone: deadZone
+        )
+    }
+
 }
 
 // MARK: - Session timer

@@ -3,7 +3,7 @@
 from pathlib import Path
 import os,subprocess,tempfile
 root=Path(__file__).resolve().parents[3]
-source="\n".join((root/"ios/OpenNOWiOS/OpenNOWiOS"/name).read_text() for name in ["NativeStreamVideoEffects.swift","NativeStreamHDRMetal.swift","NativeStreamMetal4Effects.swift"])
+source="\n".join((root/"ios/OpenNOWiOS/OpenNOWiOS"/name).read_text() for name in ["NativeStreamVideoEffects.swift","NativeStreamHDRMetal.swift","NativeStreamMetal4Effects.swift","NativeStreamMetal4Presentation.swift"])
 CHECK = r"""
 import QuartzCore
 @main struct EffectsCheck {
@@ -14,10 +14,9 @@ import QuartzCore
   let renderer = NativeStreamMetal4EffectsRenderer(device: device)!
   let layer=CAMetalLayer();layer.device=device;layer.pixelFormat = .bgr10a2Unorm
   layer.drawableSize=CGSize(width:128,height:64);layer.framebufferOnly=false
-  renderer.setDrawableResidency(layer.residencySet)
-  func fixture(format:OSType,transfer:CFString,phase:Int = 0) -> CVPixelBuffer {
+  func fixture(format:OSType,transfer:CFString,phase:Int = 0, width:Int = 64, height:Int = 32) -> CVPixelBuffer {
    var allocation: CVPixelBuffer?
-   precondition(CVPixelBufferCreate(nil,64,32,format,
+   precondition(CVPixelBufferCreate(nil,width,height,format,
     [kCVPixelBufferIOSurfacePropertiesKey:[:],kCVPixelBufferMetalCompatibilityKey:true] as CFDictionary,&allocation) == kCVReturnSuccess)
    let result = allocation!
    CVPixelBufferLockBaseAddress(result,[])
@@ -36,8 +35,8 @@ import QuartzCore
    CVBufferSetAttachment(result,kCVImageBufferColorPrimariesKey,kCVImageBufferColorPrimaries_ITU_R_2020,.shouldPropagate)
    return result
   }
-  func target() -> any MTLTexture {
-   let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat:.bgr10a2Unorm,width:128,height:64,mipmapped:false)
+  func target(width:Int = 128, height:Int = 64) -> any MTLTexture {
+   let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat:.bgr10a2Unorm,width:width,height:height,mipmapped:false)
    descriptor.storageMode = .shared; descriptor.usage = [.renderTarget,.shaderRead]
    return device.makeTexture(descriptor:descriptor)!
   }
@@ -110,10 +109,9 @@ import QuartzCore
   } } } }
 
 
-  // Recycle two IOSurfaces, changing their planes on another GPU queue. Static
+  // Change the contents of each recycled IOSurface on every reuse, on another GPU queue. Static
   // CPU fixtures cannot exercise decoder-like aliasing and frame-to-frame reuse.
   let direct = NativeStreamMetal4HDRRenderer(device:device)!
-  direct.setDrawableResidency(layer.residencySet)
   let compatible = NativeStreamHDRMetalRenderer(device:device)!
   var cache:CVMetalTextureCache?
   precondition(CVMetalTextureCacheCreate(nil,nil,device,nil,&cache)==kCVReturnSuccess)
@@ -130,7 +128,7 @@ import QuartzCore
   for frame in 0..<120 {
    let surface=pool[frame%pool.count]
    let donor=fixture(format:kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange,
-     transfer:kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ,phase:frame.isMultiple(of:2) ? 0 : 180)
+     transfer:kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ,phase:(frame / pool.count).isMultiple(of:2) ? 0 : 180)
    let producer=queue.makeCommandBuffer()!,blit=producer.makeBlitCommandEncoder()!
    var retained:[CVMetalTexture]=[]
    for index in 0..<2 {
@@ -142,11 +140,6 @@ import QuartzCore
    }
    blit.endEncoding();producer.commit();await producer.completed();precondition(producer.status == .completed)
    _=retained
-   let reference=queue.makeCommandBuffer()!,pass=MTLRenderPassDescriptor()
-   pass.colorAttachments[0].texture=goldTarget;pass.colorAttachments[0].loadAction = .clear
-   pass.colorAttachments[0].storeAction = .store;pass.colorAttachments[0].clearColor=MTLClearColorMake(0,0,0,1)
-   precondition(compatible.encode(buffer:surface,commandBuffer:reference,descriptor:pass,destination:fit))
-   reference.commit();await reference.completed();precondition(reference.status == .completed)
    var accepted=false
    for _ in 0..<500 {
     let pair=AsyncStream<Bool>.makeStream()
@@ -154,12 +147,18 @@ import QuartzCore
      if let error { print(error) };pair.continuation.yield(error == nil);pair.continuation.finish()
     }
     accepted=frame%3 == 0
-     ? direct.submit(buffer:surface,target:recycledTarget,destination:fit,completion:done)
-     : renderer.submit(buffer:surface,destination:fit,upscale:false,target:recycledTarget,completion:done)
+     ? direct.submit(buffer:surface,target:recycledTarget,destination:fit,waitForPrevious:false,completion:done)
+     : renderer.submit(buffer:surface,destination:fit,upscale:false,target:recycledTarget,waitForPrevious:false,completion:done)
     if accepted { for await ok in pair.stream { precondition(ok) };break }
     try await Task.sleep(nanoseconds:10_000_000)
    }
    precondition(accepted)
+   // Render the compatible reference afterward so it cannot mask stale Metal 4 reads.
+   let reference=queue.makeCommandBuffer()!,pass=MTLRenderPassDescriptor()
+   pass.colorAttachments[0].texture=goldTarget;pass.colorAttachments[0].loadAction = .clear
+   pass.colorAttachments[0].storeAction = .store;pass.colorAttachments[0].clearColor=MTLClearColorMake(0,0,0,1)
+   precondition(compatible.encode(buffer:surface,commandBuffer:reference,descriptor:pass,destination:fit))
+   reference.commit();await reference.completed();precondition(reference.status == .completed)
    let actual=pixels(recycledTarget),expected=pixels(goldTarget)
    for y in 18..<46 { for x in 34..<94 { for shift in [0,10,20] {
     let index=y*128+x
@@ -170,30 +169,89 @@ import QuartzCore
   print("PASS: 120 alternating GPU-written pooled 4:4:4 HDR frames, direct/effects Metal 4 match compatible pixels")
 
 
-  // Exercise actual CAMetalLayer drawables with the layer-owned residency set,
-  // not only shared offscreen textures. Headless layers may exhaust drawables.
+  // Exercise the production private-texture → compatible drawable handoff.
+  // Headless layers may exhaust drawables; MTKView coverage lives in its own harness.
   layer.frame=CGRect(x:0,y:0,width:128,height:64)
   layer.colorspace=CGColorSpace(name:CGColorSpace.itur_2100_PQ)
   layer.wantsExtendedDynamicRangeContent=true
+  let presentation=NativeStreamMetal4Presentation(queue:queue)
+  let presentationTimeline=NativeStreamMetalFrameTimeline(device:device)!
   var drawableFrames=0
   for phase in 0..<12 {
    guard let drawable=layer.nextDrawable() else { break }
+   let ticket=presentationTimeline.next()
+   guard let frame=presentation.prepare(target:drawable.texture,ticket:ticket) else {fatalError("No copy slot")}
    let pair=AsyncStream<Bool>.makeStream()
-   let done:@Sendable(Double,NSError?)->Void={ _,error in
-    if let error { print(error) };pair.continuation.yield(error == nil);pair.continuation.finish()
-   }
+   let done:@Sendable(Double,NSError?)->Void={ _,error in precondition(error == nil) }
    let input=fixture(format:kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange,
      transfer:kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ,phase:phase.isMultiple(of:2) ? 0 : 180)
    let accepted=phase.isMultiple(of:2)
-    ? direct.submit(buffer:input,target:drawable.texture,destination:fit,drawable:drawable,completion:done)
+    ? direct.submit(buffer:input,target:frame.texture,destination:fit,ticket:ticket,completion:done)
     : renderer.submit(buffer:input,destination:CGRect(x:16,y:8,width:96,height:48),upscale:true,
-        target:drawable.texture,drawable:drawable,completion:done)
+        target:frame.texture,ticket:ticket,completion:done)
    precondition(accepted)
+   presentationTimeline.accept(ticket)
+   presentation.present(frame,drawable:drawable,presented:{ _ in }) { error in
+    pair.continuation.yield(error == nil);pair.continuation.finish()
+   }
    for await ok in pair.stream { precondition(ok) }
    drawableFrames+=1
   }
   precondition(drawableFrames>0,"No drawable available for Metal 4 presentation validation")
-  print("PASS: layer-resident direct Metal 4 HDR/MetalFX drawable presentation",drawableFrames,"frames")
+  print("PASS: private Metal 4 HDR/MetalFX frames use compatible drawable presentation",drawableFrames,"frames")
+
+  // The reported phone geometry must really execute MetalFX, including its
+  // private-output → compatible-copy handoff, rather than passing via HDR alone.
+  let phone = CGSize(width:2868,height:1320), fullSource = CGSize(width:2560,height:1080)
+  let phoneTimeline = NativeStreamMetalFrameTimeline(device:device)!
+  for stretch in [false,true] {
+   let fitted = NativeStreamVideoEffectsPolicy.presentationSize(source:fullSource,display:phone,stretch:stretch)
+   let expectedSize = NativeStreamVideoEffectsPolicy.upscaleSize(source:fullSource,destination:fitted)!
+   precondition(expectedSize == CGSize(width:2868,height:stretch ? 1320 : 1210))
+   let destination = CGRect(x:0,y:(phone.height-fitted.height)/2,width:fitted.width,height:fitted.height)
+   let done = AsyncStream<Bool>.makeStream()
+   var captures:[(any MTLTexture,any MTLTexture)] = []
+   for phase in 0..<3 {
+    let surface = fixture(format:kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange,
+        transfer:kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ,phase:phase*20,width:2560,height:1080)
+    let output = target(width:2868,height:1320), reference = target(width:2868,height:1320)
+    let ticket = phoneTimeline.next()
+    var accepted = false
+    for _ in 0..<500 {
+     guard let frame = presentation.prepare(target:output,ticket:ticket) else {fatalError("No phone copy slot")}
+     let readback = frame.command.makeBlitCommandEncoder()!
+     readback.copy(from:frame.texture,sourceSlice:0,sourceLevel:0,sourceOrigin:MTLOrigin(),
+         sourceSize:MTLSize(width:2868,height:1320,depth:1),to:reference,
+         destinationSlice:0,destinationLevel:0,destinationOrigin:MTLOrigin())
+     readback.endEncoding()
+     accepted = renderer.submit(buffer:surface,destination:destination,upscale:true,target:frame.texture,
+         ticket:ticket,waitForPrevious:false) { _,error in precondition(error == nil) }
+     if accepted {
+      phoneTimeline.accept(ticket)
+      precondition(renderer.status == "Metal 4 · 2560×1080 → 2868×\(Int(expectedSize.height))",
+          "Near-native geometry skipped MetalFX")
+      presentation.present(frame,drawable:nil,presented:{ _ in }) { error in done.continuation.yield(error == nil) }
+      captures.append((output,reference)); break
+     }
+     presentation.discard(frame)
+     try await Task.sleep(nanoseconds:10_000_000)
+    }
+    precondition(accepted,renderer.status)
+   }
+   var finished = 0
+   for await success in done.stream { precondition(success); finished += 1; if finished == 3 { break } }
+   done.continuation.finish()
+   for (output,reference) in captures {
+    let actual = pixels(output)
+    precondition(actual == pixels(reference),"Display copy changed the upscaled frame")
+    let top = Int(destination.minY+destination.height*0.25)*2868+1434
+    let bottom = Int(destination.minY+destination.height*0.75)*2868+1434
+    precondition((actual[top]&1023) < (actual[bottom]&1023),"Upscaled image is blank or upside down")
+    if !stretch { precondition((actual[1434]&0x3fffffff)==0,"Fitted HDR border was not cleared") }
+   }
+   print("PASS: 2560×1080 native PQ MetalFX →",Int(expectedSize.width),Int(expectedSize.height),
+       "three private frames copied exactly; stretch",stretch)
+  }
 
   let nativeDestination = CGRect(x:16,y:8,width:96,height:48)
   let timeline = NativeStreamMetalFrameTimeline(device:device)!
@@ -238,12 +296,14 @@ import QuartzCore
     ticket:NativeStreamMetalFrameTimeline.Ticket(event:gate,previous:1,value:2),completion:done))
   precondition(renderer.submit(buffer:warm,destination:nativeDestination,upscale:true,target:switched,
     ticket:NativeStreamMetalFrameTimeline.Ticket(event:gate,previous:2,value:3),completion:done))
+  precondition(renderer.submit(buffer:warm,destination:nativeDestination,upscale:true,target:switched,
+    ticket:NativeStreamMetalFrameTimeline.Ticket(event:gate,previous:3,value:4),completion:done))
   precondition(!renderer.submit(buffer:warm,destination:nativeDestination,upscale:true,target:switched,completion:done),
-    "Native effects exceeded two slots")
+    "Native effects exceeded three slots")
   gate.signaledValue=1;var finished=0
-  for await success in pending.stream { precondition(success);finished+=1;if finished==2 { break } }
+  for await success in pending.stream { precondition(success);finished+=1;if finished==3 { break } }
   pending.continuation.finish()
-  print("PASS: native PQ effects bound GPU work to two retained slots")
+  print("PASS: native PQ effects bound GPU work to three retained slots")
   for transfer in ["UnknownTransfer" as CFString] {
    let invalid=fixture(format:kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange,transfer:transfer)
    precondition(!renderer.submit(buffer:invalid,destination:nativeDestination,upscale:true,target:switched) { _,_ in fatalError("Invalid transfer submitted") })

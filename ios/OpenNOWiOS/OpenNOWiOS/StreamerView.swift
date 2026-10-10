@@ -562,10 +562,16 @@ struct StreamerView: View {
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var coordinator: NativeStreamCoordinator
     @State private var controlsPanelExpanded = false
+    @State private var streamControlsRevealed = false
+
+    private var streamChromeHidden: Bool {
+        coordinator.liveSettings.hideStreamButtons && !streamControlsRevealed
+    }
 
     init(
         session: ActiveSession,
         settings: AppSettings,
+        sessionHistory: StreamSessionHistoryStore? = nil,
         membershipTier: String? = nil,
         onTouchLayoutChange: @escaping (String, TouchControlLayout) -> Void,
         onStreamerPreferencesChange: @escaping (StreamerPreferences) -> Void,
@@ -592,6 +598,7 @@ struct StreamerView: View {
                 session: session,
                 settings: settings,
                 membershipTier: membershipTier,
+                sessionHistory: sessionHistory,
                 onTouchLayoutChange: onTouchLayoutChange,
                 onStreamerPreferencesChange: onStreamerPreferencesChange,
                 onStreamSharpeningChange: onStreamSharpeningChange,
@@ -633,22 +640,19 @@ struct StreamerView: View {
                 )
                     .ignoresSafeArea()
 
-                if coordinator.shouldShowVirtualController {
-                    NativeStreamVirtualControllerOverlay(
-                        inputBridge: coordinator.inputBridge,
-                        layout: coordinator.touchLayout,
-                        touchSettings: coordinator.liveSettings.touch,
-                        editing: coordinator.touchLayoutEditing,
-                        inputEnabled: coordinator.virtualControllerInputEnabled,
-                        onPositionChange: coordinator.setTouchLayoutPosition,
-                        onHide: { coordinator.setTouchControllerVisible(false) },
-                        onReset: coordinator.resetTouchLayout,
-                        onDoneEditing: coordinator.endTouchLayoutEditing
-                    )
-                    .padding(.horizontal, max(12, proxy.safeAreaInsets.leading + 12))
-                    .padding(.bottom, max(10, proxy.safeAreaInsets.bottom + 8))
-                    .transition(.opacity)
+                if streamChromeHidden {
+                    Color.clear
+                        .frame(maxWidth: .infinity)
+                        .frame(height: max(62, proxy.safeAreaInsets.top + 48))
+                        .contentShape(Rectangle())
+                        .accessibilityLabel("Show stream controls")
+                        .accessibilityAddTraits(.isButton)
+                        .accessibilityAction { streamControlsRevealed = true }
+                        .frame(maxHeight: .infinity, alignment: .top)
+                        .allowsHitTesting(true)
                 }
+
+                NativeStreamTouchControlsLayer(coordinator: coordinator)
 
                 VStack {
                     // Three stats positions, so the HUD can be moved off whichever corner the
@@ -656,27 +660,29 @@ struct StreamerView: View {
                     HStack(alignment: .top, spacing: 10) {
                         let statsPosition = coordinator.streamerPreferences.statsPosition
 
-                        if coordinator.showStatsOverlay, statsPosition == .left {
-                            streamStatsPill
-                        }
+                        if !streamChromeHidden {
+                            if coordinator.showStatsOverlay, statsPosition == .left {
+                                streamStatsPill
+                            }
 
-                        if statsPosition != .left {
-                            streamOverlayButtons
-                        }
+                            if statsPosition != .left {
+                                streamOverlayButtons
+                            }
 
-                        Spacer(minLength: 10)
-
-                        if coordinator.showStatsOverlay, statsPosition == .center {
-                            streamStatsPill
                             Spacer(minLength: 10)
-                        }
 
-                        if statsPosition == .left {
-                            streamOverlayButtons
-                        }
+                            if coordinator.showStatsOverlay, statsPosition == .center {
+                                streamStatsPill
+                                Spacer(minLength: 10)
+                            }
 
-                        if coordinator.showStatsOverlay, statsPosition == .right {
-                            streamStatsPill
+                            if statsPosition == .left {
+                                streamOverlayButtons
+                            }
+
+                            if coordinator.showStatsOverlay, statsPosition == .right {
+                                streamStatsPill
+                            }
                         }
                     }
                     .padding(.top, max(22, proxy.safeAreaInsets.top + 8))
@@ -702,6 +708,8 @@ struct StreamerView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .top)
                 .animation(.easeInOut(duration: 0.22), value: coordinator.modeChangeNotice)
+
+
 
                 if coordinator.showStatusOverlay {
                     NativeStreamStatusOverlay(
@@ -740,6 +748,15 @@ struct StreamerView: View {
                     .zIndex(50)
                 }
             }
+            .simultaneousGesture(
+                SpatialTapGesture(count: 2).onEnded { tap in
+                    guard coordinator.liveSettings.hideStreamButtons,
+                          !coordinator.controlsPanelVisible,
+                          tap.location.y <= max(62, proxy.safeAreaInsets.top + 48) else { return }
+                    streamControlsRevealed.toggle()
+                },
+                including: coordinator.liveSettings.hideStreamButtons ? .all : .none
+            )
             .animation(.easeInOut(duration: 0.18), value: coordinator.controlsPanelVisible)
             .animation(.easeInOut(duration: 0.18), value: coordinator.showStatsOverlay)
             .animation(.easeInOut(duration: 0.18), value: coordinator.shouldShowVirtualController)
@@ -758,13 +775,15 @@ struct StreamerView: View {
             .onChangeCompat(of: coordinator.controlsPanelVisible) { visible in
                 if !visible { controlsPanelExpanded = false }
             }
+            .onChangeCompat(of: coordinator.liveSettings.hideStreamButtons) { _ in
+                streamControlsRevealed = false
+            }
             .onDisappear {
                 coordinator.handleViewDisappear(scenePhase: scenePhase)
                 StreamOrientation.setStreaming(false)
             }
-            .statusBarHidden(false)
         }
-        .background(NativeStreamPointerLockPreference(requested:
+        .background(NativeStreamPresentationPreferences(pointerCaptureRequested:
             NativeStreamPointerCapturePolicy.shouldCapture(videoActive: coordinator.videoActive && !coordinator.showStatusOverlay,
                 sceneActive: scenePhase == .active, controlsVisible: coordinator.controlsPanelVisible,
                 editing: coordinator.touchLayoutEditing, guidanceVisible: coordinator.presentedGuidanceSheet != nil
@@ -836,6 +855,7 @@ struct StreamerView: View {
     init(
         session: ActiveSession,
         settings: AppSettings,
+        sessionHistory: StreamSessionHistoryStore? = nil,
         membershipTier: String? = nil,
         onTouchLayoutChange: @escaping (String, TouchControlLayout) -> Void,
         onStreamerPreferencesChange: @escaping (StreamerPreferences) -> Void,
@@ -967,12 +987,12 @@ private struct NativeStreamDeviceStatus: Equatable {
     var timeText: String = "--:--"
     var batteryPercent: Int?
     var batteryState: UIDevice.BatteryState = .unknown
+    var sessionBattery = StreamSessionBattery()
     var networkTransport: NativeStreamNetworkTransport = .offline
 
     static func current(
         networkTransport: NativeStreamNetworkTransport = .offline
     ) -> NativeStreamDeviceStatus {
-        UIDevice.current.isBatteryMonitoringEnabled = true
         let level = UIDevice.current.batteryLevel
         let percent = level >= 0 ? Int((level * 100).rounded()) : nil
         return NativeStreamDeviceStatus(
@@ -1168,12 +1188,12 @@ private struct NativeStreamStatsPill: View {
                     detailedPanel
                 }
             }
-            if let rates = snapshot.presentationRates {
+            if metrics.displayedFPS, let rates = snapshot.presentationRates {
                 Text(rates.label).font(.caption2.monospacedDigit()).foregroundStyle(.white)
                     .padding(.horizontal, 10).padding(.vertical, 4)
                     .background(.black.opacity(0.50), in: Capsule())
             }
-            if !snapshot.effects.isEmpty {
+            if metrics.renderer, !snapshot.effects.isEmpty {
                 Text(snapshot.effects).font(.caption2.monospacedDigit()).foregroundStyle(.white)
                     .padding(.horizontal, 10).padding(.vertical, 4)
                     .background(.black.opacity(0.50), in: Capsule())
@@ -1262,6 +1282,11 @@ private struct NativeStreamStatsPill: View {
     /// is a readout nobody can glance at.
     private var readouts: [Readout] {
         var items: [Readout] = []
+        if metrics.sessionBattery {
+            items.append(Readout(id: "sessionBattery", label: "Session battery",
+                compact: deviceStatus.sessionBattery.changeText, detailed: deviceStatus.sessionBattery.summary,
+                symbol: deviceStatus.batterySymbol))
+        }
 
         if metrics.fps {
             let level = snapshot.fps.map {
@@ -1342,7 +1367,7 @@ private struct NativeStreamStatsPill: View {
                 detailed: server
             ))
         }
-        if let gpu = snapshot.gpuLabel, !gpu.isEmpty {
+        if metrics.gpu, let gpu = snapshot.gpuLabel, !gpu.isEmpty {
             items.append(Readout(id: "gpu", label: "GPU", compact: gpu, detailed: gpu))
         }
         if metrics.connection {
@@ -1538,6 +1563,8 @@ private struct NativeStreamControlsPanel: View {
     @State private var keyboardText = ""
     @State private var keyboardPresented = false
     @State private var bugReportDeck: BugReportPreflightDeck?
+    @State private var controllerMappingsPresented = false
+    @StateObject private var controllerNavigator = NativeStreamControllerHUDNavigator()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private enum Page: Hashable {
@@ -1580,6 +1607,7 @@ private struct NativeStreamControlsPanel: View {
         VStack(alignment: .leading, spacing: 0) {
             header
 
+            ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     switch page {
@@ -1601,6 +1629,31 @@ private struct NativeStreamControlsPanel: View {
             }
             .scrollIndicators(.visible)
             .clipped()
+            .onChange(of: controllerNavigator.selected) { selected in
+                if let selected { withAnimation { proxy.scrollTo(selected, anchor: .center) } }
+            }
+            }
+        }
+        .environment(\.controllerHUDNavigator, controllerNavigator)
+        .onPreferenceChange(NativeStreamHUDPositions.self) { controllerNavigator.updatePositions($0) }
+        .onChange(of: coordinator.controllerHUDInput) { input in
+            guard let input else { return }
+            if input.command == .back {
+                if keyboardPresented { keyboardPresented = false }
+                else if controllerMappingsPresented { controllerMappingsPresented = false }
+                else if bugReportDeck != nil { bugReportDeck = nil }
+                else if page != .main { page = .main }
+                else { coordinator.finishControlsPanel() }
+            } else if !keyboardPresented && !controllerMappingsPresented && bugReportDeck == nil {
+                controllerNavigator.handle(input.command)
+            }
+        }
+        .sheet(isPresented: $controllerMappingsPresented) {
+            NavigationStack {
+                NativeStreamControllerShortcutsView(settings: Binding(get: { coordinator.liveSettings },
+                    set: { next in coordinator.updateLiveSettings { $0.controllerShortcuts = next.controllerShortcuts } }))
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { controllerMappingsPresented = false } } }
+            }
         }
         // Fixed dark: this sits on live video, where the system's light grouped colour would put
         // a near-white slab over the game for anyone not in dark mode.
@@ -1736,7 +1789,28 @@ private struct NativeStreamControlsPanel: View {
                 }
             }
 
+            NativeStreamPanelSection(title: "Controller") {
+                NativeStreamActionRow(title: "Back button shortcuts", value: "Learn buttons and choose HUD actions", actionLabel: "Configure") {
+                    controllerMappingsPresented = true
+                }
+                NativeStreamSliderRow(title: "Controller rumble strength",
+                    value: Binding(get: { coordinator.liveSettings.controllerRumbleStrength },
+                        set: { value in coordinator.updateLiveSettings { $0.controllerRumbleStrength = value } }),
+                    range: NativeStreamControllerRumbleGain.range, step: 0.64, format: NativeStreamControllerRumbleGain.label)
+                Text("Changes apply immediately and are saved. Set to 0% to turn controller vibration off.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
             NativeStreamPanelSection(title: "More") {
+                NativeStreamToggleRow(
+                    title: "Immersive mode",
+                    value: coordinator.liveSettings.hideStreamButtons ? "On · double tap top to show or hide" : "Off",
+                    isOn: Binding(
+                        get: { coordinator.liveSettings.hideStreamButtons },
+                        set: { value in coordinator.updateLiveSettings { $0.hideStreamButtons = value } }
+                    )
+                )
                 NativeStreamActionRow(title: "Stats & HUD", value: "\(coordinator.statsMetrics.enabledCount) metrics", actionLabel: "Open") {
                     page = .statsHUD
                 }
@@ -1818,6 +1892,7 @@ private struct NativeStreamControlsPanel: View {
 
             NativeStreamPanelSection(title: "Connection metrics") {
                 metricToggle("Frame rate", \.fps)
+                metricToggle("Displayed FPS", \.displayedFPS)
                 metricToggle("Ping", \.ping)
                 metricToggle("Decode", \.latency)
                 metricToggle("Bitrate", \.bitrate)
@@ -1825,10 +1900,16 @@ private struct NativeStreamControlsPanel: View {
             }
 
             NativeStreamPanelSection(title: "Session metrics") {
+                metricToggle("Renderer status", \.renderer)
+                metricToggle("GPU", \.gpu)
                 metricToggle("Resolution", \.resolution)
                 metricToggle("Codec", \.codec)
                 metricToggle("Server", \.location)
                 metricToggle("Battery", \.battery)
+                metricToggle("Session battery", \.sessionBattery)
+                if coordinator.statsMetrics.sessionBattery {
+                    NativeStreamInfoRow(title: "Battery this session", value: coordinator.deviceStatus.sessionBattery.summary)
+                }
                 metricToggle("Network", \.connection)
                 NativeStreamToggleRow(
                     title: "Clock",
@@ -1878,12 +1959,49 @@ private struct NativeStreamControlsPanel: View {
                     )
                 )
                 NativeStreamActionRow(
-                    title: "Style",
-                    value: coordinator.liveSettings.touch.style.label,
+                    title: "Preset",
+                    value: coordinator.liveSettings.touch.controllerPreset.label,
                     actionLabel: "Change"
                 ) {
                     coordinator.updateLiveSettings {
-                        $0.touch.style = $0.touch.style == .solid ? .outline : .solid
+                        $0.touch.controllerPreset = $0.touch.controllerPreset.next
+                    }
+                }
+                if !coordinator.liveSettings.touch.controllerPreset.supportsControlModeSelection {
+                    NativeStreamInfoRow(title: "Control layout", value: "Virtual sticks")
+                } else {
+                    NativeStreamActionRow(
+                        title: "Control layout",
+                        value: coordinator.liveSettings.touch.controlMode.label,
+                        actionLabel: "Change"
+                    ) {
+                        coordinator.updateLiveSettings {
+                            $0.touch.controlMode = $0.touch.controlMode == .virtualSticks ? .splitTouchpad : .virtualSticks
+                        }
+                    }
+                }
+                if coordinator.liveSettings.touch.controllerPreset.supportsControlModeSelection && coordinator.liveSettings.touch.controlMode == .splitTouchpad {
+                    NativeStreamInfoRow(title: "How to use", value: "Drag the left half to move and the right half to look.")
+                    NativeStreamSliderRow(
+                        title: "Touchpad sensitivity",
+                        value: Binding(
+                            get: { coordinator.liveSettings.touch.touchpadSensitivity },
+                            set: { value in coordinator.updateLiveSettings { $0.touch.touchpadSensitivity = value } }
+                        ),
+                        range: 0.5...2
+                    )
+                }
+                if coordinator.liveSettings.touch.controllerPreset == .geForceNOW {
+                    NativeStreamInfoRow(title: "Style", value: "Outlined")
+                } else {
+                    NativeStreamActionRow(
+                        title: "Style",
+                        value: coordinator.liveSettings.touch.style.label,
+                        actionLabel: "Change"
+                    ) {
+                        coordinator.updateLiveSettings {
+                            $0.touch.style = $0.touch.style == .solid ? .outline : .solid
+                        }
                     }
                 }
                 NativeStreamActionRow(
@@ -1921,7 +2039,7 @@ private struct NativeStreamControlsPanel: View {
                     )
                 )
                 NativeStreamToggleRow(
-                    title: "Rumble",
+                    title: "Phone vibration fallback",
                     value: coordinator.phoneRumbleFallbackEnabled ? "On" : "Off",
                     isOn: Binding(
                         get: { coordinator.phoneRumbleFallbackEnabled },
@@ -1933,7 +2051,7 @@ private struct NativeStreamControlsPanel: View {
             NativeStreamPanelSection(title: "Layout") {
                 NativeStreamActionRow(
                     title: "Edit layout",
-                    value: "Drag control groups",
+                    value: coordinator.liveSettings.touch.controllerPreset.usesIndependentControls ? "Drag individual controls" : "Drag control groups",
                     actionLabel: coordinator.touchLayoutEditing ? "Resume" : "Edit"
                 ) {
                     coordinator.beginTouchLayoutEditing()
@@ -2273,6 +2391,7 @@ private struct NativeStreamPanelPillButton<Content: View>: View {
             )
         )
         .contentShape(Capsule())
+        .controllerHUDControl(activate: action)
     }
 }
 
@@ -2316,6 +2435,7 @@ private struct NativeStreamToggleRow: View {
                 .fixedSize()
         }
         .streamPanelRow()
+        .controllerHUDControl(activate: { isOn.toggle() })
         .accessibilityElement(children: .combine)
         .accessibilityLabel(title)
         .accessibilityValue(value)
@@ -2327,17 +2447,20 @@ private struct NativeStreamSliderRow: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
     let step: Double
+    let format: ((Double) -> String)?
 
     init(
         title: String,
         value: Binding<Double>,
         range: ClosedRange<Double>,
-        step: Double = 0.05
+        step: Double = 0.05,
+        format: ((Double) -> String)? = nil
     ) {
         self.title = title
         self._value = value
         self.range = range
         self.step = step
+        self.format = format
     }
 
     var body: some View {
@@ -2353,13 +2476,16 @@ private struct NativeStreamSliderRow: View {
             Slider(value: $value, in: range, step: step)
         }
         .streamPanelRow()
+        .controllerHUDControl(activate: {}, adjust: { direction in
+            value = min(max(value + direction * step, range.lowerBound), range.upperBound)
+        })
         .accessibilityElement(children: .combine)
         .accessibilityLabel(title)
         .accessibilityValue(percentText)
     }
 
     private var percentText: String {
-        "\(Int((value * 100).rounded()))%"
+        format?(value) ?? "\(Int((value * 100).rounded()))%"
     }
 }
 
@@ -2400,6 +2526,7 @@ private struct NativeStreamActionRow: View {
             .streamPanelRow()
         }
         .buttonStyle(.plain)
+        .controllerHUDControl(activate: action)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(title)
         .accessibilityValue(value)
@@ -2462,6 +2589,7 @@ private struct NativeStreamKeyButton: View {
                 .padding(.vertical, 10)
         }
         .buttonStyle(.bordered)
+        .controllerHUDControl(activate: action)
     }
 }
 
@@ -2491,8 +2619,12 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     @Published var showStatusOverlay = true
     @Published var retryAvailable = false
     @Published var showStatsOverlay = false
-    @Published var controlsPanelVisible = false
+    @Published var controlsPanelVisible = false {
+        didSet { inputBridge.setControllerHUDActive(controlsPanelVisible) }
+    }
+    @Published var controllerHUDInput: NativeStreamControllerHUDInput?
     @Published fileprivate var touchLayoutEditing = false
+    @Published private var touchControlsRestoreAvailable = false
     @Published fileprivate var statsDisplayStyle: StreamStatsStyle = .compact
     @Published fileprivate var statsMetrics: StreamStatsMetrics = .default
     /// A live copy of app settings the panel can edit mid-session. Persisted through
@@ -2539,6 +2671,9 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     /// Fired roughly once a second with the numbers behind the HUD, so the store can accumulate
     /// them into a session report. Deliberately a plain closure rather than a Combine publisher —
     /// nothing in the view hierarchy should observe it.
+    private let sessionHistory: StreamSessionHistoryStore?
+    private var historyRecord: StreamSessionRecord?
+    private var batteryMonitoringWasEnabled: Bool?
     private let onRuntimeSample: (StreamRuntimeSample) -> Void
     private let onSettingsChange: (AppSettings) -> Void
     private let onBuildBugReportDeck: () -> BugReportPreflightDeck
@@ -2651,6 +2786,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         session: ActiveSession,
         settings: AppSettings,
         membershipTier: String?,
+        sessionHistory: StreamSessionHistoryStore?,
         onTouchLayoutChange: @escaping (String, TouchControlLayout) -> Void,
         onStreamerPreferencesChange: @escaping (StreamerPreferences) -> Void,
         onStreamSharpeningChange: @escaping (Bool, Double) -> Void,
@@ -2678,6 +2814,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
             startedAt: session.startedAt
         )
         self.session = session
+        self.sessionHistory = sessionHistory
         self.settings = settings
         self.sessionLimit = resolvedSessionLimit
         self.touchLayoutProfile = resolvedTouchLayoutProfile
@@ -2718,7 +2855,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         self.liveSettings = settings
         self.onClose = onClose
         self.onRetry = onRetry
-        self.streamProfile = Self.effectiveProfile(for: session, settings: settings)
+        self.streamProfile = Self.effectiveProfile(for: session, settings: settings, membershipTier: membershipTier)
         self.requestedProfile = StreamSettingsResolver.profile(for: settings, membershipTier: membershipTier)
         self.showStatsOverlay = settings.showStatsOverlay
         self.statsDisplayStyle = settings.streamerPreferences.statsStyle
@@ -2738,8 +2875,26 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
             phoneRumbleFallback: settings.phoneRumbleFallback,
             physicalControllerPassthrough: settings.streamerPreferences.physicalControllerPassthrough,
             controllerMouseEmulation: settings.controllerMouseEmulation,
-            mouseScrollSensitivity: settings.mouseScrollSensitivity
+            mouseScrollSensitivity: settings.mouseScrollSensitivity,
+            controllerRumbleStrength: settings.controllerRumbleStrength
         )
+        inputBridge.setControllerShortcuts(settings.controllerShortcuts)
+        inputBridge.onControllerShortcut = { [weak self] action in
+            Task { @MainActor in
+                guard let self else { return }
+                switch action {
+                case .controls: self.toggleControlsPanel()
+                case .stats: self.setStatsOverlayVisible(!self.showStatsOverlay)
+                case .none: break
+                }
+            }
+        }
+        inputBridge.onControllerHUDCommand = { [weak self] command in
+            Task { @MainActor in
+                guard let self, self.controlsPanelVisible else { return }
+                self.controllerHUDInput = NativeStreamControllerHUDInput(command: command)
+            }
+        }
         inputBridge.onPhysicalControllerAvailabilityChanged = { [weak self] connected in
             Task { @MainActor in
                 guard let self else { return }
@@ -2781,7 +2936,14 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         started = true
         stopped = false
         self.viewportSize = viewportSize
+        batteryMonitoringWasEnabled = UIDevice.current.isBatteryMonitoringEnabled
+        UIDevice.current.isBatteryMonitoringEnabled = true
+        historyRecord = StreamSessionRecord(gameTitle: session.game.title,
+            resolution: "\(streamProfile.width)×\(streamProfile.height)", targetFPS: streamProfile.fps,
+            codec: settings.preferredCodec.uppercased(), hdr: settings.hdrEnabled,
+            transport: settings.experimentalNativeNVSTEnabled ? "Native NVST" : "WebRTC")
         refreshDeviceStatus()
+        if let historyRecord { sessionHistory?.update(historyRecord, force: true) }
         retryAvailable = onRetry != nil
         updateStatus("Checking codecs", detail: codecReport.summary)
 
@@ -2836,8 +2998,12 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     private func startNativeNVST() {
         updateStatus("Connecting native NVST", detail: "Negotiating the dedicated video connection")
         let sink = videoSink
+        let maxDisplayFPS = max(
+            streamProfile.fps,
+            max(renderer?.window?.screen.maximumFramesPerSecond ?? 0, UIScreen.main.maximumFramesPerSecond)
+        )
         let transport = NativeStreamNVST(allocation: session, settings: settings, profile: streamProfile,
-            codec: selectedCodec, displayFPS: renderer?.window?.screen.maximumFramesPerSecond ?? UIScreen.main.maximumFramesPerSecond,
+            codec: selectedCodec, displayFPS: maxDisplayFPS,
             onFrame: { frame in sink.renderFrame(frame) },
             onSample: { [weak self] sample in Task { @MainActor in
                 guard let self, !self.stopped else { return }
@@ -2924,6 +3090,10 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
 
     func handleScenePhase(_ phase: ScenePhase) {
         latestScenePhase = phase
+        if phase != .active, started, !stopped {
+            refreshDeviceStatus()
+            if let historyRecord { sessionHistory?.update(historyRecord, force: true) }
+        }
         switch phase {
         case .active:
             backgroundPictureInPictureStartPending = false
@@ -2963,6 +3133,12 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     var shouldShowVirtualController: Bool {
         streamerPreferences.touchControllerVisible &&
             (!physicalControllerConnected || showTouchControlsWithPhysicalController || touchLayoutEditing)
+    }
+
+    var shouldShowTouchControlsVisibilityButton: Bool {
+        guard !touchLayoutEditing else { return false }
+        return (shouldShowVirtualController && liveSettings.touch.controllerPreset == .standard)
+            || (touchControlsRestoreAvailable && !streamerPreferences.touchControllerVisible)
     }
 
     var virtualControllerInputEnabled: Bool {
@@ -3157,8 +3333,10 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
             phoneRumbleFallback: phoneRumbleFallbackEnabled,
             physicalControllerPassthrough: streamerPreferences.physicalControllerPassthrough,
             controllerMouseEmulation: next.controllerMouseEmulation,
-            mouseScrollSensitivity: next.mouseScrollSensitivity
+            mouseScrollSensitivity: next.mouseScrollSensitivity,
+            controllerRumbleStrength: next.controllerRumbleStrength
         )
+        inputBridge.setControllerShortcuts(next.controllerShortcuts)
         onSettingsChange(next)
     }
 
@@ -3283,7 +3461,10 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     }
 
     func setTouchControllerVisible(_ visible: Bool) {
-        if !visible {
+        if visible {
+            touchControlsRestoreAvailable = false
+        } else {
+            if streamerPreferences.touchControllerVisible { touchControlsRestoreAvailable = true }
             touchLayoutEditing = false
         }
         var preferences = streamerPreferences
@@ -3340,7 +3521,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     }
 
     fileprivate func setTouchLayoutPosition(
-        _ group: NativeStreamTouchControlGroup,
+        _ group: String,
         _ point: TouchControlPoint
     ) {
         let normalized = TouchControlPoint(
@@ -3349,12 +3530,13 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         )
         updateTouchLayout { layout in
             switch group {
-            case .topLeft: layout.topLeft = normalized
-            case .topCenter: layout.topCenter = normalized
-            case .topRight: layout.topRight = normalized
-            case .leftStick: layout.leftStick = normalized
-            case .rightCluster: layout.rightCluster = normalized
-            case .bottomCenter: layout.bottomCenter = normalized
+            case "topLeft": layout.topLeft = normalized
+            case "topCenter": layout.topCenter = normalized
+            case "topRight": layout.topRight = normalized
+            case "leftStick": layout.leftStick = normalized
+            case "rightCluster": layout.rightCluster = normalized
+            case "bottomCenter": layout.bottomCenter = normalized
+            default: layout.independentPositions[group] = normalized
             }
         }
     }
@@ -3396,9 +3578,18 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     }
 
     private func refreshDeviceStatus() {
-        deviceStatus = NativeStreamDeviceStatus.current(
-            networkTransport: deviceStatus.networkTransport
-        )
+        var current = NativeStreamDeviceStatus.current(networkTransport: deviceStatus.networkTransport)
+        if var record = historyRecord, record.endedAt == nil {
+            record.updatedAt = Date()
+            record.battery.record(percent: current.batteryPercent,
+                charging: current.batteryState == .charging || current.batteryState == .full)
+            historyRecord = record
+            current.sessionBattery = record.battery
+            sessionHistory?.update(record)
+        } else if let historyRecord {
+            current.sessionBattery = historyRecord.battery
+        }
+        deviceStatus = current
     }
 
     private func startNetworkMonitoring() {
@@ -3552,6 +3743,16 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
 
     func stop() {
         guard !stopped else { return }
+        refreshDeviceStatus()
+        if var record = historyRecord {
+            record.endedAt = record.updatedAt
+            historyRecord = record
+            sessionHistory?.update(record, force: true)
+        }
+        if let batteryMonitoringWasEnabled {
+            UIDevice.current.isBatteryMonitoringEnabled = batteryMonitoringWasEnabled
+            self.batteryMonitoringWasEnabled = nil
+        }
         stopped = true
         nativeNVSTStart?.cancel(); nativeNVSTStart = nil
         let nativeTransport = nativeNVST; nativeNVST = nil
@@ -5041,8 +5242,8 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
             || ProcessInfo.processInfo.environment["OPENNOW_ALLOW_UNSAFE_CODECS"] == "1"
     }
 
-    private static func effectiveProfile(for session: ActiveSession, settings: AppSettings) -> StreamVideoProfile {
-        var profile = StreamSettingsResolver.profile(for: settings)
+    nonisolated static func effectiveProfile(for session: ActiveSession, settings: AppSettings, membershipTier: String? = nil) -> StreamVideoProfile {
+        var profile = StreamSettingsResolver.profile(for: settings, membershipTier: membershipTier)
         if let resolution = session.negotiatedStreamProfile?.resolution,
            let parsed = parseResolution(resolution) {
             profile = StreamVideoProfile(
@@ -5055,7 +5256,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         return profile
     }
 
-    private static func parseResolution(_ value: String) -> (width: Int, height: Int)? {
+    private nonisolated static func parseResolution(_ value: String) -> (width: Int, height: Int)? {
         let parts = value.split(separator: "x", maxSplits: 1).map(String.init)
         guard parts.count == 2,
               let width = Int(parts[0]),
@@ -6123,6 +6324,7 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
     var sharpeningAmount = 0.0
 
     private let commandQueue: MTLCommandQueue
+    private let metal4Presentation: NativeStreamMetal4Presentation
     private let ciContext: CIContext
     private let directHDR: NativeStreamHDRMetalRenderer?
     private var metal4HDRStorage: AnyObject?
@@ -6136,6 +6338,7 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
     private var upscalingEnabled = false
     private var suspendUpscalingUntil: CFTimeInterval = 0
     private var effectsGeneration: UInt64 = 0
+    private var lastSubmissionQueue: NativeStreamSubmissionQueue?
     var presentationRates: NativeStreamPresentationRates? {
         presentations.rates(now:CACurrentMediaTime())
     }
@@ -6162,11 +6365,10 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
     private var hdrTransfer = NativeStreamHDRTransfer.sdr
     private let mtkView: MTKView
     private let frameBridge = NativeStreamFramePixelBufferBridge()
-    private let frames = NativeStreamLatestFrameMailbox<RTCVideoFrame>()
-    private let gpuAdmission = DispatchSemaphore(value: 2)
+    private let frames = NativeStreamLatestFrameMailbox<RTCVideoFrame>(maximumInFlight: 3)
+    private let gpuAdmission = DispatchSemaphore(value: 3)
     private let presentations = NativeStreamPresentationTracker()
     private var displayLink: CADisplayLink?
-    private var displayTargetTimestamp: CFTimeInterval?
     private lazy var displayClock = DisplayClock(owner: self)
 
     private final class DisplayClock: NSObject {
@@ -6187,6 +6389,7 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
 
     private init(device: MTLDevice, commandQueue: MTLCommandQueue) {
         self.commandQueue = commandQueue
+        metal4Presentation = NativeStreamMetal4Presentation(queue: commandQueue)
         directHDR = NativeStreamHDRMetalRenderer(device: device)
         if #available(iOS 26.0, *), NativeStreamMetal4HDRRenderer.isSupported(device:device) {
             submissionTimeline = NativeStreamMetalFrameTimeline(device:device)
@@ -6194,6 +6397,10 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
         spatialUpscaler = NativeStreamSpatialUpscaler(device: device)
         ciContext = CIContext(mtlDevice: device, options: [.cacheIntermediates: false])
         mtkView = MTKView(frame: .zero, device: device)
+        if let layer = mtkView.layer as? CAMetalLayer {
+            layer.maximumDrawableCount = 3
+        }
+        mtkView.preferredFramesPerSecond = 120
         super.init(frame: .zero)
         isOpaque = true
         backgroundColor = .black
@@ -6216,10 +6423,6 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
                 let effects = NativeStreamMetal4EffectsRenderer(device:device)
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
-                    if let layer = self.mtkView.layer as? CAMetalLayer {
-                        renderer?.setDrawableResidency(layer.residencySet)
-                        effects?.setDrawableResidency(layer.residencySet)
-                    }
                     self.metal4HDRStorage = renderer; self.metal4EffectsStorage = effects
                 }
             }
@@ -6240,19 +6443,20 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
         displayLink?.invalidate()
         displayLink = nil
         // Use one explicit display clock. MTKView's own timer remains paused.
-        // A fixed range asks ProMotion to keep video cadence instead of choosing
-        // an intermediate refresh rate during otherwise static game scenes.
         mtkView.isPaused = true
         guard let window else { return }
-        let refresh = Float(window.screen.maximumFramesPerSecond)
+        let screenMax = Float(max(window.screen.maximumFramesPerSecond, UIScreen.main.maximumFramesPerSecond))
         let link = CADisplayLink(target: displayClock, selector: #selector(DisplayClock.tick(_:)))
-        link.preferredFrameRateRange = CAFrameRateRange(minimum: refresh, maximum: refresh, preferred: refresh)
+        if screenMax > 60.0 {
+            link.preferredFrameRateRange = CAFrameRateRange(minimum: 60.0, maximum: screenMax, preferred: screenMax)
+        } else {
+            link.preferredFrameRateRange = CAFrameRateRange(minimum: 30.0, maximum: 60.0, preferred: 60.0)
+        }
         link.add(to: .main, forMode: .common)
         displayLink = link
     }
 
     private func displayTick(_ link: CADisplayLink) {
-        displayTargetTimestamp = link.targetTimestamp
         mtkView.draw()
     }
 
@@ -6266,8 +6470,6 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
     func draw(in view: MTKView) {
         guard !isHidden, window != nil else { return }
         let drawStarted = CACurrentMediaTime()
-        let presentAt = displayTargetTimestamp
-        displayTargetTimestamp = nil
         guard gpuAdmission.wait(timeout: .now()) == .success else { return }
         var submitted = false
         defer { if !submitted { gpuAdmission.signal() } }
@@ -6290,29 +6492,56 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
         let upscaleSize = shouldUpscale
             ? NativeStreamVideoEffectsPolicy.upscaleSize(source: frameSize, destination: destination.size)
             : nil
-        let ticket = metal4Enabled ? submissionTimeline?.next() : nil
+        let ticket = submissionTimeline?.next()
         let presentationTracker = presentations
         let mailbox = frames
+        let presentationFrame = metal4Enabled && !metal4Disabled
+            && (metal4HDRStorage != nil || metal4EffectsStorage != nil)
+            ? ticket.flatMap { metal4Presentation.prepare(target: drawable.texture, ticket: $0) } : nil
+        var queuedMetal4Presentation = false
+        defer {
+            if !queuedMetal4Presentation, let presentationFrame {
+                metal4Presentation.discard(presentationFrame)
+            }
+        }
+        let effectsToken = effectsGeneration
+        func presentMetal4(_ frame: NativeStreamMetal4Presentation.Frame) {
+            let admission = gpuAdmission
+            metal4Presentation.present(frame, drawable: drawable, presented: { time in
+                presentationTracker.recordPresentation(at: time)
+            }, completion: { [weak self] error in
+                admission.signal()
+                mailbox.complete()
+                if let error {
+                    NSLog("[OpenNOW] Metal 4 presentation failed code=%ld", error.code)
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self else { return }
+                        self.metal4Disabled = true
+                        if self.effectsGeneration == effectsToken { self.finishEffects(failed: true) }
+                    }
+                }
+            })
+            queuedMetal4Presentation = true
+        }
         let useDirectHDRPath = NativeStreamVideoEffectsPolicy.canUseDirectHDRPath(
             upscalingEnabled: shouldUpscale, upscaleEligible: upscaleSize != nil,
             sharpeningAmount: sharpeningAmount
         )
         if #available(iOS 26.0, *), metal4Enabled && !metal4Disabled, hdrTransfer == .pq,
            useDirectHDRPath,
-           let metal4 = metal4HDRStorage as? NativeStreamMetal4HDRRenderer {
-            let admission = gpuAdmission
-            if metal4.submit(buffer:pixelBuffer,target:drawable.texture,destination:destination,drawable:drawable,ticket:ticket,
-                presented: { time in
-                    presentationTracker.recordPresentation(at:time)
-                }, presentAt: presentAt, completion: { [weak self] duration,error in
-                    admission.signal()
-                    mailbox.complete()
+           let metal4 = metal4HDRStorage as? NativeStreamMetal4HDRRenderer,
+           let presentationFrame {
+            let waitForPrevious = NativeStreamSubmissionQueue.metal4HDR.requiresWait(from: lastSubmissionQueue)
+            if metal4.submit(buffer:pixelBuffer,target:presentationFrame.texture,destination:destination,ticket:ticket,
+                waitForPrevious: waitForPrevious, completion: { [weak self] _,error in
                     if let error {
                         NSLog("[OpenNOW] Metal 4 HDR failed code=%ld", error.code)
                         DispatchQueue.main.async { [weak self] in self?.metal4Disabled = true }
                     }
                 }) {
                 if let ticket { submissionTimeline?.accept(ticket) }
+                lastSubmissionQueue = .metal4HDR
+                presentMetal4(presentationFrame)
                 rendererBackend = "Metal 4 · direct 10-bit HDR"
                 if upscalingEnabled {
                     metal4UpscalingStatus = shouldUpscale
@@ -6324,12 +6553,15 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
                 return
             }
         }
-        // Cross-queue ordering also covers live switching to effects/legacy.
-        if let ticket, ticket.previous > 0 { commandBuffer.encodeWaitForEvent(ticket.event,value:ticket.previous) }
-        let effectsToken = effectsGeneration
+        // The event orders renderer-queue switches. Same-queue submissions are
+        // already ordered and must remain free to overlap across frames.
+        let legacyWaitForPrevious = NativeStreamSubmissionQueue.metal3.requiresWait(from: lastSubmissionQueue)
+        if legacyWaitForPrevious, let ticket, ticket.previous > 0 {
+            commandBuffer.encodeWaitForEvent(ticket.event,value:ticket.previous)
+        }
         let preferMetal4Effects: Bool
         if #available(iOS 26.0, *) {
-            preferMetal4Effects = metal4Enabled && !metal4Disabled && metal4EffectsStorage != nil
+            preferMetal4Effects = presentationFrame != nil && metal4EffectsStorage != nil
         } else { preferMetal4Effects = false }
         let direct = !preferMetal4Effects && hdrTransfer != .hlg && !shouldUpscale && sharpeningAmount <= 0.001 && view.currentRenderPassDescriptor.map {
             directHDR?.encode(buffer: pixelBuffer, commandBuffer: commandBuffer,
@@ -6338,14 +6570,8 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
         rendererBackend = direct ? "Metal · direct 10-bit HDR" : "Metal / Core Image"
         if !direct {
             #if !targetEnvironment(simulator)
-            let admission = gpuAdmission
-            let presentedMetal4: @Sendable (Double) -> Void = { time in
-                presentationTracker.recordPresentation(at: time)
-            }
-            let completeMetal4: @Sendable (Double, NSError?) -> Void = { [weak self, pixelBuffer] duration, error in
+            let completeMetal4: @Sendable (Double, NSError?) -> Void = { [weak self, pixelBuffer] _, error in
                 _ = pixelBuffer
-                admission.signal()
-                mailbox.complete()
                 if let error { NSLog("[OpenNOW] Metal 4 effects failed code=%ld", error.code) }
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.effectsGeneration == effectsToken else { return }
@@ -6355,11 +6581,14 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
             }
             if #available(iOS 26.0, *), metal4Enabled && !metal4Disabled,
                let effects = metal4EffectsStorage as? NativeStreamMetal4EffectsRenderer,
+               let presentationFrame,
                effects.submit(buffer: pixelBuffer, destination: destination, upscale: shouldUpscale,
-                    target: drawable.texture, sharpening:Float(sharpeningAmount),
-                    drawable: drawable, ticket: ticket,
-                    presented: presentedMetal4, presentAt: presentAt, completion: completeMetal4) {
+                    target: presentationFrame.texture, sharpening:Float(sharpeningAmount), ticket: ticket,
+                    waitForPrevious: NativeStreamSubmissionQueue.metal4Effects.requiresWait(from: lastSubmissionQueue),
+                    completion: completeMetal4) {
                 if let ticket { submissionTimeline?.accept(ticket) }
+                lastSubmissionQueue = .metal4Effects
+                presentMetal4(presentationFrame)
                 rendererBackend = (hdrTransfer == .pq ? "Metal 4 · native PQ conversion"
                     : hdrTransfer == .hlg ? "Metal 4 · native HLG conversion" : "Metal 4 · native SDR conversion")
                 metal4UpscalingStatus = shouldUpscale ? effects.status : nil
@@ -6394,13 +6623,17 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
                 )
             #if !targetEnvironment(simulator)
             if #available(iOS 26.0, *), metal4Enabled && !metal4Disabled,
-               let effects = metal4EffectsStorage as? NativeStreamMetal4EffectsRenderer {
+               let effects = metal4EffectsStorage as? NativeStreamMetal4EffectsRenderer,
+               let presentationFrame {
                 if effects.submit(image: filteredImage, destination: destination,
                     transfer: hdrTransfer == .pq ? 1 : hdrTransfer == .hlg ? 2 : 0,
                     upscale: shouldUpscale, context: ciContext, producer: commandBuffer,
-                    target: drawable.texture, drawable: drawable, ticket: ticket,
-                    presented: presentedMetal4, presentAt: presentAt, completion: completeMetal4) {
+                    target: presentationFrame.texture, ticket: ticket,
+                    waitForPrevious: NativeStreamSubmissionQueue.metal4Effects.requiresWait(from: lastSubmissionQueue),
+                    completion: completeMetal4) {
                     if let ticket { submissionTimeline?.accept(ticket) }
+                    lastSubmissionQueue = .metal4Effects
+                    presentMetal4(presentationFrame)
                     rendererBackend = "Metal 4 · effects"
                     if shouldUpscale { metal4UpscalingStatus = effects.status } else { metal4UpscalingStatus = nil }
 
@@ -6456,10 +6689,11 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
         }
 
         if let ticket { commandBuffer.encodeSignalEvent(ticket.event,value:ticket.value) }
-        if let presentAt { commandBuffer.present(drawable, atTime: presentAt) } else { commandBuffer.present(drawable) }
+        commandBuffer.present(drawable)
         submitted = true
         commandBuffer.commit()
         if let ticket { submissionTimeline?.accept(ticket) }
+        lastSubmissionQueue = .metal3
     }
 
     private func finishEffects(failed: Bool) {
@@ -6502,13 +6736,60 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
     }
 }
 
-private enum NativeStreamTouchControlGroup: CaseIterable {
+/// Keeps the visibility button outside the controller overlay so hiding the gamepad
+/// never removes the control needed to show it again, including in immersive mode.
+struct NativeStreamTouchControlsLayer: View {
+    @ObservedObject var coordinator: NativeStreamCoordinator
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                if coordinator.shouldShowVirtualController {
+                    NativeStreamVirtualControllerOverlay(
+                        inputBridge: coordinator.inputBridge,
+                        layout: coordinator.touchLayout,
+                        touchSettings: coordinator.liveSettings.touch,
+                        editing: coordinator.touchLayoutEditing,
+                        inputEnabled: coordinator.virtualControllerInputEnabled,
+                        onPositionChange: coordinator.setTouchLayoutPosition,
+                        onOpenHub: coordinator.toggleControlsPanel,
+                        onReset: coordinator.resetTouchLayout,
+                        onDoneEditing: coordinator.endTouchLayoutEditing
+                    )
+                    .padding(.horizontal, max(12, proxy.safeAreaInsets.leading + 12))
+                    .padding(.bottom, max(10, proxy.safeAreaInsets.bottom + 8))
+                    .transition(.opacity)
+                }
+
+                if coordinator.shouldShowTouchControlsVisibilityButton {
+                    Button {
+                        coordinator.setTouchControllerVisible(!coordinator.streamerPreferences.touchControllerVisible)
+                    } label: {
+                        Label(coordinator.streamerPreferences.touchControllerVisible ? "Hide controls" : "Show controls",
+                            systemImage: coordinator.streamerPreferences.touchControllerVisible ? "eye.slash" : "eye")
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 12)
+                            .frame(minHeight: 44)
+                            .background(.ultraThinMaterial, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.white)
+                    .accessibilityIdentifier("touch-controls-visibility")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    .padding(.bottom, max(8, proxy.safeAreaInsets.bottom + 4))
+                }
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+        }
+    }
+}
+
+private enum NativeStreamTouchControlGroup: String, CaseIterable {
     case topLeft
     case topCenter
     case topRight
     case leftStick
     case rightCluster
-    case bottomCenter
 
     var label: String {
         switch self {
@@ -6517,7 +6798,6 @@ private enum NativeStreamTouchControlGroup: CaseIterable {
         case .topRight: return "Right shoulder buttons"
         case .leftStick: return "Left stick and directional pad"
         case .rightCluster: return "Right stick and face buttons"
-        case .bottomCenter: return "Hide controls button"
         }
     }
 }
@@ -6529,8 +6809,8 @@ private struct NativeStreamVirtualControllerOverlay: View {
     var touchSettings: TouchSettings = .default
     let editing: Bool
     let inputEnabled: Bool
-    let onPositionChange: (NativeStreamTouchControlGroup, TouchControlPoint) -> Void
-    let onHide: () -> Void
+    let onPositionChange: (String, TouchControlPoint) -> Void
+    let onOpenHub: () -> Void
     let onReset: () -> Void
     let onDoneEditing: () -> Void
 
@@ -6541,132 +6821,142 @@ private struct NativeStreamVirtualControllerOverlay: View {
             let stickSize = (compact ? 68.0 : 84.0) * layout.stickScale
 
             ZStack {
-                controlGroup(
-                    .topLeft,
-                    point: layout.topLeft,
-                    containerSize: proxy.size,
-                    safeAreaInsets: proxy.safeAreaInsets
-                ) {
-                    HStack(spacing: 8) {
-                        NativeStreamVirtualHoldButton(
-                            label: "L1",
-                            size: buttonSize,
-                            pressed: { inputBridge.setVirtualButton(.leftShoulder, pressed: $0) }
-                        )
-                        NativeStreamVirtualHoldButton(
-                            label: "L2",
-                            size: buttonSize,
-                            pressed: { inputBridge.setVirtualTrigger(.left, value: $0 ? 1 : 0) }
-                        )
-                    }
-                }
-
-                controlGroup(
-                    .topCenter,
-                    point: layout.topCenter,
-                    containerSize: proxy.size,
-                    safeAreaInsets: proxy.safeAreaInsets
-                ) {
-                    HStack(spacing: 8) {
-                        NativeStreamVirtualHoldButton(
-                            label: "View",
-                            systemImage: "rectangle.on.rectangle",
-                            size: buttonSize,
-                            pressed: { inputBridge.setVirtualButton(.options, pressed: $0) }
-                        )
-                        NativeStreamVirtualHoldButton(
-                            label: "Menu",
-                            systemImage: "line.3.horizontal",
-                            size: buttonSize,
-                            pressed: { inputBridge.setVirtualButton(.menu, pressed: $0) }
-                        )
-                    }
-                }
-
-                controlGroup(
-                    .topRight,
-                    point: layout.topRight,
-                    containerSize: proxy.size,
-                    safeAreaInsets: proxy.safeAreaInsets
-                ) {
-                    HStack(spacing: 8) {
-                        NativeStreamVirtualHoldButton(
-                            label: "R2",
-                            size: buttonSize,
-                            pressed: { inputBridge.setVirtualTrigger(.right, value: $0 ? 1 : 0) }
-                        )
-                        NativeStreamVirtualHoldButton(
-                            label: "R1",
-                            size: buttonSize,
-                            pressed: { inputBridge.setVirtualButton(.rightShoulder, pressed: $0) }
-                        )
-                    }
-                }
-
-                controlGroup(
-                    .leftStick,
-                    point: layout.leftStick,
-                    containerSize: proxy.size,
-                    safeAreaInsets: proxy.safeAreaInsets
-                ) {
-                    HStack(alignment: .bottom, spacing: compact ? 5 : 10) {
-                        NativeStreamVirtualStickView(
-                            label: "L",
-                            size: stickSize,
-                            deadZone: touchSettings.joystickDeadZone,
-                            followsFinger: touchSettings.joystickMode == .dynamic,
-                            outlineStyle: touchSettings.style == .outline,
-                            changed: { x, y in inputBridge.setVirtualStick(.left, x: x, y: y) },
-                            pressed: { inputBridge.setVirtualButton(.leftStick, pressed: $0) }
-                        )
-                        NativeStreamVirtualDPad(size: buttonSize * 0.72, inputBridge: inputBridge)
-                    }
-                }
-
-                controlGroup(
-                    .rightCluster,
-                    point: layout.rightCluster,
-                    containerSize: proxy.size,
-                    safeAreaInsets: proxy.safeAreaInsets
-                ) {
-                    HStack(alignment: .bottom, spacing: compact ? 5 : 10) {
-                        NativeStreamVirtualStickView(
-                            label: "R",
-                            size: stickSize,
-                            deadZone: touchSettings.joystickDeadZone,
-                            followsFinger: touchSettings.joystickMode == .dynamic,
-                            outlineStyle: touchSettings.style == .outline,
-                            changed: { x, y in inputBridge.setVirtualStick(.right, x: x, y: y) },
-                            pressed: { inputBridge.setVirtualButton(.rightStick, pressed: $0) }
-                        )
-                        NativeStreamVirtualFaceButtons(size: buttonSize, inputBridge: inputBridge)
-                    }
-                }
-
-                controlGroup(
-                    .bottomCenter,
-                    point: layout.bottomCenter,
-                    containerSize: proxy.size,
-                    safeAreaInsets: proxy.safeAreaInsets
-                ) {
-                    Button(action: onHide) {
-                        Label("Hide controls", systemImage: "eye.slash")
-                            .font(.caption.weight(.semibold))
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.white)
-                }
-
-                if editing {
-                    NativeStreamTouchLayoutEditorToolbar(
-                        onReset: onReset,
-                        onDone: onDoneEditing
+                if touchSettings.controllerPreset.supportsControlModeSelection && touchSettings.controlMode == .splitTouchpad, !editing {
+                    NativeStreamSplitTouchpadSurface(
+                        inputBridge: inputBridge,
+                        sensitivity: touchSettings.touchpadSensitivity,
+                        deadZone: touchSettings.joystickDeadZone
                     )
-                    .frame(maxWidth: min(max(proxy.size.width - 24, 1), 430))
-                    .position(x: proxy.size.width / 2, y: proxy.size.height * 0.48)
-                    .zIndex(100)
+                    .ignoresSafeArea()
+                    .accessibilityLabel("Split touchpad: left side moves, right side looks")
+                }
+
+                if touchSettings.controllerPreset == .geForceNOW {
+                    NativeStreamGeForceNOWControls(inputBridge: inputBridge, layout: layout,
+                        settings: touchSettings, editing: editing, onPositionChange: onPositionChange,
+                        onOpenHub: onOpenHub)
+                    if editing {
+                        NativeStreamTouchLayoutEditorToolbar(onReset: onReset, onDone: onDoneEditing)
+                            .frame(maxWidth: min(max(proxy.size.width - 24, 1), 430))
+                            .position(x: proxy.size.width / 2, y: proxy.size.height * 0.48)
+                            .zIndex(100)
+                    }
+                } else {
+                    controlGroup(
+                        .topLeft,
+                        point: layout.topLeft,
+                        containerSize: proxy.size,
+                        safeAreaInsets: proxy.safeAreaInsets
+                    ) {
+                        HStack(spacing: 8) {
+                            NativeStreamVirtualHoldButton(
+                                label: "L1",
+                                size: buttonSize,
+                                pressed: { inputBridge.setVirtualButton(.leftShoulder, pressed: $0) }
+                            )
+                            NativeStreamVirtualHoldButton(
+                                label: "L2",
+                                size: buttonSize,
+                                pressed: { inputBridge.setVirtualTrigger(.left, value: $0 ? 1 : 0) }
+                            )
+                        }
+                    }
+
+                    controlGroup(
+                        .topCenter,
+                        point: layout.topCenter,
+                        containerSize: proxy.size,
+                        safeAreaInsets: proxy.safeAreaInsets
+                    ) {
+                        HStack(spacing: 8) {
+                            NativeStreamVirtualHoldButton(
+                                label: "View",
+                                systemImage: "rectangle.on.rectangle",
+                                size: buttonSize,
+                                pressed: { inputBridge.setVirtualButton(.options, pressed: $0) }
+                            )
+                            NativeStreamVirtualHoldButton(
+                                label: "Menu",
+                                systemImage: "line.3.horizontal",
+                                size: buttonSize,
+                                pressed: { inputBridge.setVirtualButton(.menu, pressed: $0) }
+                            )
+                        }
+                    }
+
+                    controlGroup(
+                        .topRight,
+                        point: layout.topRight,
+                        containerSize: proxy.size,
+                        safeAreaInsets: proxy.safeAreaInsets
+                    ) {
+                        HStack(spacing: 8) {
+                            NativeStreamVirtualHoldButton(
+                                label: "R2",
+                                size: buttonSize,
+                                pressed: { inputBridge.setVirtualTrigger(.right, value: $0 ? 1 : 0) }
+                            )
+                            NativeStreamVirtualHoldButton(
+                                label: "R1",
+                                size: buttonSize,
+                                pressed: { inputBridge.setVirtualButton(.rightShoulder, pressed: $0) }
+                            )
+                        }
+                    }
+
+                    controlGroup(
+                        .leftStick,
+                        point: layout.leftStick,
+                        containerSize: proxy.size,
+                        safeAreaInsets: proxy.safeAreaInsets
+                    ) {
+                        HStack(alignment: .bottom, spacing: compact ? 5 : 10) {
+                            if touchSettings.controlMode == .virtualSticks {
+                                NativeStreamVirtualStickView(
+                                    label: "L",
+                                    size: stickSize,
+                                    deadZone: touchSettings.joystickDeadZone,
+                                    followsFinger: touchSettings.joystickMode == .dynamic,
+                                    outlineStyle: touchSettings.style == .outline,
+                                    changed: { x, y in inputBridge.setVirtualStick(.left, x: x, y: y) },
+                                    pressed: { inputBridge.setVirtualButton(.leftStick, pressed: $0) }
+                                )
+                            }
+                            NativeStreamVirtualDPad(size: buttonSize * 0.72, inputBridge: inputBridge)
+                        }
+                    }
+
+                    controlGroup(
+                        .rightCluster,
+                        point: layout.rightCluster,
+                        containerSize: proxy.size,
+                        safeAreaInsets: proxy.safeAreaInsets
+                    ) {
+                        HStack(alignment: .bottom, spacing: compact ? 5 : 10) {
+                            if touchSettings.controlMode == .virtualSticks {
+                                NativeStreamVirtualStickView(
+                                    label: "R",
+                                    size: stickSize,
+                                    deadZone: touchSettings.joystickDeadZone,
+                                    followsFinger: touchSettings.joystickMode == .dynamic,
+                                    outlineStyle: touchSettings.style == .outline,
+                                    changed: { x, y in inputBridge.setVirtualStick(.right, x: x, y: y) },
+                                    pressed: { inputBridge.setVirtualButton(.rightStick, pressed: $0) }
+                                )
+                            }
+                            NativeStreamVirtualFaceButtons(size: buttonSize, inputBridge: inputBridge)
+                        }
+                    }
+
+                    if editing {
+                        NativeStreamTouchLayoutEditorToolbar(
+                            onReset: onReset,
+                            onDone: onDoneEditing
+                        )
+                        .frame(maxWidth: min(max(proxy.size.width - 24, 1), 430))
+                        .position(x: proxy.size.width / 2, y: proxy.size.height * 0.48)
+                        .zIndex(100)
+                    }
                 }
             }
         }
@@ -6685,7 +6975,7 @@ private struct NativeStreamVirtualControllerOverlay: View {
         @ViewBuilder content: @escaping () -> Content
     ) -> some View {
         NativeStreamPositionedControlGroup(
-            group: group,
+            label: group.label,
             point: point,
             containerSize: containerSize,
             safeAreaInsets: safeAreaInsets,
@@ -6693,25 +6983,13 @@ private struct NativeStreamVirtualControllerOverlay: View {
             opacity: layout.opacity,
             edgePadding: touchSettings.edgePadding,
             bottomPadding: touchSettings.bottomPadding,
-            sideOffset: sideOffset(for: group, point: point),
+            sideOffset: touchSettings.sideOffset(for: point),
             editing: editing,
-            onPositionChange: { onPositionChange(group, $0) },
+            onPositionChange: { onPositionChange(group.rawValue, $0) },
             content: content
         )
     }
 
-    /// Which half of the screen a group lives on decides which nudge applies. Groups pinned near
-    /// the middle get neither — nudging them by a "left" offset would be surprising.
-    private func sideOffset(for group: NativeStreamTouchControlGroup, point: TouchControlPoint) -> CGSize {
-        switch point.x {
-        case ..<0.4:
-            return CGSize(width: touchSettings.leftOffsetX, height: touchSettings.leftOffsetY)
-        case 0.6...:
-            return CGSize(width: touchSettings.rightOffsetX, height: touchSettings.rightOffsetY)
-        default:
-            return .zero
-        }
-    }
 }
 
 private struct NativeStreamTouchLayoutEditorToolbar: View {
@@ -6720,7 +6998,7 @@ private struct NativeStreamTouchLayoutEditorToolbar: View {
 
     var body: some View {
         VStack(spacing: 10) {
-            Label("Drag the highlighted control groups", systemImage: "hand.draw")
+            Label("Drag the highlighted controls", systemImage: "hand.draw")
                 .font(.subheadline.weight(.semibold))
                 .multilineTextAlignment(.center)
 
@@ -6751,8 +7029,8 @@ private struct NativeStreamTouchLayoutEditorToolbar: View {
     }
 }
 
-private struct NativeStreamPositionedControlGroup<Content: View>: View {
-    let group: NativeStreamTouchControlGroup
+struct NativeStreamPositionedControlGroup<Content: View>: View {
+    let label: String
     let point: TouchControlPoint
     let containerSize: CGSize
     let safeAreaInsets: EdgeInsets
@@ -6821,7 +7099,7 @@ private struct NativeStreamPositionedControlGroup<Content: View>: View {
             }
             .overlay(alignment: .topLeading) {
                 if editing {
-                    Text(group.label)
+                    Text(label)
                         .font(.caption2.weight(.bold))
                         .lineLimit(1)
                         .padding(.horizontal, 6)
@@ -6835,7 +7113,7 @@ private struct NativeStreamPositionedControlGroup<Content: View>: View {
             .position(basePosition)
             .offset(dragTranslation)
             .zIndex(editing ? 20 : 1)
-            .accessibilityLabel(group.label)
+            .accessibilityLabel(label)
     }
 
     private var safeRect: CGRect {
@@ -6922,7 +7200,7 @@ private struct NativeStreamVirtualDPad: View {
             }
             GridRow {
                 directionButton("chevron.left", .dpadLeft)
-                Color.white.opacity(0.13).frame(width: size, height: size)
+                Color.clear.frame(width: size, height: size)
                 directionButton("chevron.right", .dpadRight)
             }
             GridRow {
@@ -6931,7 +7209,6 @@ private struct NativeStreamVirtualDPad: View {
                 Color.clear.frame(width: size, height: size)
             }
         }
-        .background(.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Directional pad")
     }
@@ -6981,11 +7258,14 @@ private struct NativeStreamVirtualFaceButtons: View {
     }
 }
 
-private struct NativeStreamVirtualHoldButton: View {
+struct NativeStreamVirtualHoldButton: View {
     let label: String
     var systemImage: String? = nil
     let size: CGFloat
     var tint: Color = .white
+    var width: CGFloat? = nil
+    var height: CGFloat? = nil
+    var outlineStyle = false
     let pressed: (Bool) -> Void
 
     @State private var isPressed = false
@@ -6998,13 +7278,15 @@ private struct NativeStreamVirtualHoldButton: View {
                 Text(label)
             }
         }
-        .font(.caption.weight(.bold))
+        .font(outlineStyle ? .system(size: size * 0.25, weight: .medium) : .caption.weight(.bold))
         .foregroundStyle(tint)
-        .frame(width: size, height: size)
-        .background(.ultraThinMaterial, in: Circle())
-        .overlay(Circle().stroke(tint.opacity(isPressed ? 0.8 : 0.28), lineWidth: isPressed ? 2 : 1))
+        .frame(width: width ?? size, height: height ?? size)
+        .background {
+            Capsule().fill(outlineStyle ? AnyShapeStyle(Color.black.opacity(isPressed ? 0.35 : 0.12)) : AnyShapeStyle(.ultraThinMaterial))
+        }
+        .overlay(Capsule().stroke(tint.opacity(isPressed ? 0.9 : outlineStyle ? 0.65 : 0.28), lineWidth: isPressed ? 2 : 1))
         .scaleEffect(isPressed ? 0.91 : 1)
-        .contentShape(Circle())
+        .contentShape(Capsule())
         .overlay {
             NativeStreamVirtualButtonTouchSurface(pressed: setPressed)
                 .accessibilityHidden(true)
@@ -7106,7 +7388,102 @@ private struct NativeStreamVirtualButtonTouchSurface: UIViewRepresentable {
     }
 }
 
-private struct NativeStreamVirtualStickView: View {
+private struct NativeStreamSplitTouchpadSurface: UIViewRepresentable {
+    let inputBridge: NativeStreamInputBridge
+    let sensitivity: Double
+    let deadZone: Double
+
+    func makeUIView(context: Context) -> NativeStreamSplitTouchpadView {
+        let view = NativeStreamSplitTouchpadView(frame: .zero)
+        view.inputBridge = inputBridge
+        view.sensitivity = sensitivity
+        view.deadZone = deadZone
+        return view
+    }
+
+    func updateUIView(_ view: NativeStreamSplitTouchpadView, context: Context) {
+        view.inputBridge = inputBridge
+        view.sensitivity = sensitivity
+        view.deadZone = deadZone
+    }
+
+    static func dismantleUIView(_ view: NativeStreamSplitTouchpadView, coordinator: ()) {
+        view.cancelTouches()
+    }
+}
+
+/// Independent per-finger left/right zones allow movement and camera look at the same time.
+/// Touches begin wherever the thumb lands, so users do not need to find a small stick graphic.
+private final class NativeStreamSplitTouchpadView: UIView {
+    weak var inputBridge: NativeStreamInputBridge?
+    var sensitivity = 1.0
+    var deadZone = 0.0
+    private var activeTouches: [ObjectIdentifier: (stick: NativeStreamVirtualGamepadStick, origin: CGPoint)] = [:]
+    private var occupiedSticks: Set<NativeStreamVirtualGamepadStick> = []
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isMultipleTouchEnabled = true
+        backgroundColor = .clear
+        isOpaque = false
+        isAccessibilityElement = false
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        for touch in touches {
+            let point = touch.location(in: self)
+            let stick: NativeStreamVirtualGamepadStick = point.x < bounds.midX ? .left : .right
+            guard !occupiedSticks.contains(stick) else { continue }
+            let id = ObjectIdentifier(touch)
+            activeTouches[id] = (stick, point)
+            occupiedSticks.insert(stick)
+            inputBridge?.setVirtualStick(stick, x: 0, y: 0)
+        }
+    }
+
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        for touch in touches {
+            guard let active = activeTouches[ObjectIdentifier(touch)] else { continue }
+            let point = touch.location(in: self)
+            let vector = TouchpadStickMath.vector(
+                dx: point.x - active.origin.x,
+                dy: point.y - active.origin.y,
+                travel: min(max(bounds.width * 0.085, 54), 96),
+                sensitivity: sensitivity,
+                deadZone: deadZone
+            )
+            inputBridge?.setVirtualStick(active.stick, x: vector.0, y: vector.1)
+        }
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) { finish(touches) }
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) { finish(touches) }
+
+    func cancelTouches() {
+        for active in activeTouches.values {
+            inputBridge?.setVirtualStick(active.stick, x: 0, y: 0)
+        }
+        activeTouches.removeAll()
+        occupiedSticks.removeAll()
+    }
+
+    private func finish(_ touches: Set<UITouch>) {
+        for touch in touches {
+            guard let active = activeTouches.removeValue(forKey: ObjectIdentifier(touch)) else { continue }
+            occupiedSticks.remove(active.stick)
+            inputBridge?.setVirtualStick(active.stick, x: 0, y: 0)
+        }
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil { cancelTouches() }
+    }
+}
+
+struct NativeStreamVirtualStickView: View {
     let label: String
     let size: CGFloat
     /// Fraction of travel ignored around centre. Rests at 0 — a resting thumb on a stick with no
@@ -7116,6 +7493,8 @@ private struct NativeStreamVirtualStickView: View {
     /// the drawn circle, which is what most touch shooters expect.
     var followsFinger: Bool = false
     var outlineStyle: Bool = false
+    var gripDots = false
+    var concentricRings = false
     let changed: (CGFloat, CGFloat) -> Void
     let pressed: (Bool) -> Void
 
@@ -7128,11 +7507,36 @@ private struct NativeStreamVirtualStickView: View {
             Circle()
                 .fill(outlineStyle ? AnyShapeStyle(Color.black.opacity(0.18)) : AnyShapeStyle(.ultraThinMaterial))
                 .overlay(Circle().stroke(Color.white.opacity(outlineStyle ? 0.42 : 0.22), lineWidth: outlineStyle ? 1.5 : 1))
+            if concentricRings {
+                Circle()
+                    .stroke(Color(white: 0.25).opacity(0.70), lineWidth: 1.5)
+                    .frame(width: size * 0.68, height: size * 0.68)
+            }
             Circle()
-                .fill(Color.white.opacity(outlineStyle ? 0.14 : 0.30))
-                .overlay(Circle().strokeBorder(Color.white.opacity(outlineStyle ? 0.55 : 0), lineWidth: 1.5))
-                .frame(width: size * 0.48, height: size * 0.48)
-                .overlay(Text(label).font(.caption2.bold()).foregroundStyle(.white))
+                .fill(Color.white.opacity(gripDots ? 0.70 : outlineStyle ? 0.14 : 0.30))
+                .overlay(Circle().strokeBorder(Color.white.opacity(outlineStyle && !gripDots ? 0.55 : 0), lineWidth: 1.5))
+                .frame(width: size * (concentricRings ? 0.41 : 0.48), height: size * (concentricRings ? 0.41 : 0.48))
+                .overlay {
+                    if gripDots {
+                        Canvas { context, bounds in
+                            let step = bounds.width / 5
+                            let diameter = step * 0.30
+                            for row in 0..<5 {
+                                for column in 0..<5 {
+                                    // Round off the pattern by leaving the four corners empty.
+                                    guard !((row == 0 || row == 4) && (column == 0 || column == 4)) else { continue }
+                                    let dot = CGRect(x: (CGFloat(column) + 0.5) * step - diameter / 2,
+                                        y: (CGFloat(row) + 0.5) * step - diameter / 2,
+                                        width: diameter, height: diameter)
+                                    context.fill(Path(ellipseIn: dot), with: .color(.black.opacity(0.40)))
+                                }
+                            }
+                        }
+                        .frame(width: size * 0.18, height: size * 0.18)
+                    } else {
+                        Text(label).font(.caption2.bold()).foregroundStyle(.white)
+                    }
+                }
                 .offset(knobOffset)
         }
         .frame(width: size, height: size)

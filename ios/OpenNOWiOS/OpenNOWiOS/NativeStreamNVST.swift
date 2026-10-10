@@ -303,7 +303,8 @@ actor NativeStreamNVST: NativeStreamNVSTTransport {
         _ = bundle.sendControl(NvstInputActivation.enableInput(counter: UInt32(clamping: (pipeline?.snapshot.frameAcksSent ?? 0) + 1)))
         let haptics = NvstRemoteInput.framed(NvstRemoteInput.hapticsState(enabled: true),
             framing: .enveloped, sequence: inputSequence, timestampMicroseconds: clock.elapsedMicroseconds())
-        _ = bundle.sendControl(NvstControlCommand(code: .remoteInput, payload: haptics))
+        let hapticsSent = bundle.sendControl(NvstControlCommand(code: .remoteInput, payload: haptics))
+        NativeStreamRumbleDiagnostics.shared.record("nvstEnableSent", details: ["enableSendAccepted": String(hapticsSent)])
     }
 
     func send(_ data: Data) -> Bool {

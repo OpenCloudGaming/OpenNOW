@@ -13,6 +13,52 @@ import CoreHaptics
 import UIKit
 #endif
 
+enum NativeStreamControllerRumbleGain {
+    static let range: ClosedRange<Double> = 0...64
+    static func normalize(_ multiplier: Double) -> Double {
+        multiplier.isFinite ? min(max(multiplier, range.lowerBound), range.upperBound) : 1
+    }
+    static func label(_ multiplier: Double) -> String {
+        let gain = normalize(multiplier)
+        guard gain > 0 else { return "Off" }
+        return String(format: "%.0f%%", gain / range.upperBound * 100)
+    }
+    static func apply(_ intensity: Float, multiplier: Double) -> Float {
+        guard intensity.isFinite else { return 0 }
+        return min(max(intensity, 0) * Float(normalize(multiplier)), 1)
+    }
+}
+
+/// Bounded, account-free status snapshot for isolating controller rumble failures.
+final class NativeStreamRumbleDiagnostics {
+    static let shared = NativeStreamRumbleDiagnostics()
+    private let lock = NSLock()
+    private let writer = DispatchQueue(label: "OpenNOW.rumbleStatus")
+    private var fields: [String: String] = [:]
+    private var counts: [String: Int] = [:]
+    private var lastWrite = Date.distantPast
+
+    func record(_ event: String, details: [String: String] = [:]) {
+        lock.lock()
+        counts[event, default: 0] += 1
+        fields.merge(details) { _, new in new }
+        fields["lastEvent"] = event
+        let now = Date()
+        let shouldWrite = now.timeIntervalSince(lastWrite) >= 1
+        if shouldWrite { fields["updatedAt"] = ISO8601DateFormatter().string(from: now) }
+        let snapshot: [String: Any] = ["fields": fields, "counts": counts]
+        if shouldWrite { lastWrite = now }
+        lock.unlock()
+        guard shouldWrite else { return }
+        writer.async {
+            guard let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
+                  let data = try? JSONSerialization.data(withJSONObject: snapshot, options: [.sortedKeys]) else { return }
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try? data.write(to: directory.appendingPathComponent("controller-rumble-status.json"), options: .atomic)
+        }
+    }
+}
+
 protocol NativeStreamInputSink: AnyObject {
     func sendReliableInput(_ data: Data)
     func sendPartiallyReliableInput(_ data: Data)
@@ -99,7 +145,7 @@ enum NativeStreamVirtualGamepadButton: UInt16 {
     case y = 0x8000
 }
 
-enum NativeStreamVirtualGamepadStick {
+enum NativeStreamVirtualGamepadStick: Hashable {
     case left
     case right
 }
@@ -626,6 +672,16 @@ final class NativeStreamInputBridge {
     weak var sink: NativeStreamInputSink?
     var onPhysicalControllerAvailabilityChanged: ((Bool) -> Void)?
     var onPhysicalKeyboardMouseAvailabilityChanged: ((Bool) -> Void)?
+    var onControllerShortcut: ((NativeStreamControllerShortcutAction) -> Void)?
+    var onControllerHUDCommand: ((NativeStreamControllerHUDCommand) -> Void)?
+    private var controllerShortcuts = NativeStreamControllerShortcuts()
+    private var controllerHUDActive = false
+    private var blockedButtons: Set<ObjectIdentifier> = []
+    private var blockedAxesSlots: Set<Int> = []
+    private var shortcutButtonIDsBySlot: [Int: Set<ObjectIdentifier>] = [:]
+    private var hudDirection: NativeStreamControllerHUDCommand?
+    private var hudRepeatAt: TimeInterval = 0
+    private var hudRepeatTimer: Timer?
 
     private let encoder = NativeStreamInputEncoder()
     private var keyboard: GCKeyboard?
@@ -647,6 +703,11 @@ final class NativeStreamInputBridge {
     private var mouseScrollSensitivity: CGFloat = 30
     private var mouseAccelerationLevel = 1
     private var phoneRumbleFallbackEnabled = true
+    #if os(iOS)
+    private let gameSirRumbler = NativeStreamGameSirRumbler()
+    private var gameSirLastRumble: (slot: Int, weak: Int, strong: Int)?
+    #endif
+    private var controllerRumbleStrength: Double = 1
     private var physicalControllerPassthroughEnabled = true
     private var virtualControllerEnabled = false
     private var virtualButtons: UInt16 = 0
@@ -679,8 +740,10 @@ final class NativeStreamInputBridge {
         phoneRumbleFallback: Bool,
         physicalControllerPassthrough: Bool,
         controllerMouseEmulation: Bool = false,
-        mouseScrollSensitivity: Int = 30
+        mouseScrollSensitivity: Int = 30,
+        controllerRumbleStrength: Double = 1
     ) {
+        setControllerRumbleStrength(controllerRumbleStrength)
         self.mouseSensitivity = CGFloat(min(max(mouseSensitivity, 0.25), 3))
         mouseAccelerationLevel = min(max(mouseAcceleration, 0), 2)
         self.mouseScrollSensitivity = CGFloat(min(max(mouseScrollSensitivity, 10), 100))
@@ -691,6 +754,27 @@ final class NativeStreamInputBridge {
         phoneRumbleFallbackEnabled = phoneRumbleFallback
         setPhysicalControllerPassthrough(physicalControllerPassthrough)
         advertiseHaptics(force: true)
+    }
+
+    private func setControllerRumbleStrength(_ multiplier: Double) {
+        let next = NativeStreamControllerRumbleGain.normalize(multiplier)
+        guard controllerRumbleStrength != next else { return }
+        controllerRumbleStrength = next
+        #if os(iOS)
+        if let last = gameSirLastRumble {
+            _ = gameSirRumbler.setLowFrequencyMotor(
+                NativeStreamGameSirMotorPacket.amplitude(last.strong, gain: next),
+                highFrequencyMotor: NativeStreamGameSirMotorPacket.amplitude(last.weak, gain: next))
+        }
+        #endif
+        #if canImport(CoreHaptics)
+        for playback in controllerHapticsBySlot.values {
+            guard playback.isPlaying, let profile = playback.lastProfile else { continue }
+            playback.lastUpdateAt = 0
+            do { try updateHapticPlayback(playback, profile: profile) }
+            catch { logHapticsFailure("Controller strength update failed: \(error.localizedDescription)") }
+        }
+        #endif
     }
 
     func setPhysicalControllerPassthrough(_ enabled: Bool) {
@@ -712,6 +796,62 @@ final class NativeStreamInputBridge {
         #endif
         phoneRumbleFallbackEnabled = enabled
         advertiseHaptics(force: true)
+    }
+
+    func setControllerShortcuts(_ shortcuts: NativeStreamControllerShortcuts) {
+        guard controllerShortcuts != shortcuts else { return }
+        controllerShortcuts = shortcuts
+        refreshShortcutButtonIDs()
+        sendCurrentGamepads(force: true)
+    }
+
+    func setControllerHUDActive(_ active: Bool) {
+        guard controllerHUDActive != active else { return }
+        controllerHUDActive = active
+        hudDirection = nil
+        if active {
+            updateEmulatedMouseButton(0, pressed: false)
+            updateEmulatedMouseButton(1, pressed: false)
+            mouseAccumulator = .zero
+            mouseEmulationScrollRemainder = 0
+        }
+        if !active {
+            for (slot, controller) in controllersBySlot {
+                for (_, button) in NativeStreamControllerButtonNames.buttons(controller) where button.value >= 0.1 {
+                    blockedButtons.insert(ObjectIdentifier(button))
+                }
+                blockedAxesSlots.insert(slot)
+            }
+        }
+        // Preserve the connected gamepad but release all controls while the HUD owns input.
+        sendCurrentGamepads(force: true)
+    }
+
+    private func controllerButton(_ button: GCControllerButtonInput, name: String, pressed: Bool, slot: Int) {
+        if !pressed { blockedButtons.remove(ObjectIdentifier(button)); return }
+        guard !NativeStreamControllerShortcutCapture.learning, let controller = controllersBySlot[slot],
+              let gamepad = controller.extendedGamepad else { return }
+        if controllerHUDActive {
+            if button === gamepad.buttonA { onControllerHUDCommand?(.activate); return }
+            if button === gamepad.buttonB { onControllerHUDCommand?(.back); return }
+        }
+        let action = controllerShortcuts.action(for: name)
+        guard action != .none else { return }
+        if action == .controls { setControllerHUDActive(!controllerHUDActive) }
+        NativeStreamRumbleDiagnostics.shared.record("controllerShortcut", details: [
+            "shortcutInput": name, "shortcutAction": action.rawValue])
+        onControllerShortcut?(action)
+    }
+
+    private func updateHUDDirection(slot: Int) {
+        guard controllerHUDActive, !NativeStreamControllerShortcutCapture.learning,
+              let gamepad = controllersBySlot[slot]?.extendedGamepad else { return }
+        let dpad = NativeStreamControllerHUDRouting.direction(x: gamepad.dpad.xAxis.value, y: gamepad.dpad.yAxis.value)
+        let next = dpad ?? NativeStreamControllerHUDRouting.direction(x: gamepad.leftThumbstick.xAxis.value, y: gamepad.leftThumbstick.yAxis.value)
+        guard next != hudDirection else { return }
+        hudDirection = next
+        hudRepeatAt = ProcessInfo.processInfo.systemUptime + 0.35
+        if let next { onControllerHUDCommand?(next) }
     }
 
     func attach() {
@@ -766,7 +906,10 @@ final class NativeStreamInputBridge {
             input.middleButton?.pressedChangedHandler = nil
             input.scroll.valueChangedHandler = nil
         }
-        controllersBySlot.values.forEach { $0.extendedGamepad?.valueChangedHandler = nil }
+        controllersBySlot.values.forEach {
+            $0.extendedGamepad?.valueChangedHandler = nil
+            NativeStreamControllerButtonNames.buttons($0).forEach { $0.1.pressedChangedHandler = nil }
+        }
         keyboard = nil
         mice = []
         controllersBySlot.removeAll(keepingCapacity: true)
@@ -783,6 +926,13 @@ final class NativeStreamInputBridge {
         mouseEmulationEnabled = false
         mouseEmulationHeldButtons.removeAll()
         stopAllRumble()
+        hudRepeatTimer?.invalidate()
+        hudRepeatTimer = nil
+        controllerHUDActive = false
+        hudDirection = nil
+        blockedButtons.removeAll()
+        blockedAxesSlots.removeAll()
+        shortcutButtonIDsBySlot.removeAll()
         lastHapticsAdvertisementAt = -.infinity
     }
 
@@ -841,12 +991,20 @@ final class NativeStreamInputBridge {
         now: TimeInterval = ProcessInfo.processInfo.systemUptime
     ) {
         guard force || now - lastHapticsAdvertisementAt >= 5 else { return }
-        let controllerAvailable = physicalControllerPassthroughEnabled && controllersBySlot.values.contains { $0.haptics != nil }
+        let controllerAvailable = physicalControllerPassthroughEnabled && controllersBySlot.values.contains {
+            #if os(iOS)
+            if NativeStreamGameSirRumbler.isTargetController($0) { return gameSirRumbler.canHandleController($0) }
+            #endif
+            return $0.haptics != nil
+        }
         #if canImport(CoreHaptics)
         let phoneAvailable = phoneRumbleFallbackEnabled && Self.phoneHapticsSupported
         #else
         let phoneAvailable = false
         #endif
+        NativeStreamRumbleDiagnostics.shared.record("enableRequested", details: [
+            "controllerAvailable": String(controllerAvailable), "phoneFallbackAvailable": String(phoneAvailable),
+            "registeredSlots": controllersBySlot.keys.sorted().map(String.init).joined(separator: ",")])
         sink?.sendReliableInput(encoder.encodeHapticsEnabled(controllerAvailable || phoneAvailable))
         if force {
             sink?.logInputEvent(
@@ -900,25 +1058,60 @@ final class NativeStreamInputBridge {
             return
         }
 
+        NativeStreamRumbleDiagnostics.shared.record("motorEvent", details: [
+            "requestedSlot": String(controllerId), "weakMagnitude": String(weakMagnitude),
+            "strongMagnitude": String(strongMagnitude), "passthrough": String(physicalControllerPassthroughEnabled),
+            "matchedController": controllersBySlot[controllerId]?.vendorName ?? "none",
+            "registeredSlots": controllersBySlot.keys.sorted().map(String.init).joined(separator: ",")])
         let profile = NativeStreamRumbleProfile(
             weakMagnitude: weakMagnitude,
             strongMagnitude: strongMagnitude
         )
+        if !profile.isStopped {
+            NativeStreamRumbleDiagnostics.shared.record("activeMotorEvent", details: [
+                "lastActiveWeakMagnitude": String(weakMagnitude), "lastActiveStrongMagnitude": String(strongMagnitude),
+                "lastActiveIntensity": String(profile.intensity), "controllerStartup": "unmuted-preconfigured"])
+        }
         if profile.isStopped {
             stopControllerRumble(slot: controllerId, shutdown: false)
             stopPhoneRumble(shutdown: false)
             return
         }
 
+        #if os(iOS)
+        if physicalControllerPassthroughEnabled,
+           let controller = controllersBySlot[controllerId],
+           NativeStreamGameSirRumbler.isTargetController(controller) {
+            gameSirLastRumble = (controllerId, weakMagnitude, strongMagnitude)
+            let low = NativeStreamGameSirMotorPacket.amplitude(strongMagnitude, gain: controllerRumbleStrength)
+            let high = NativeStreamGameSirMotorPacket.amplitude(weakMagnitude, gain: controllerRumbleStrength)
+            if gameSirRumbler.canHandleController(controller),
+               gameSirRumbler.setLowFrequencyMotor(low, highFrequencyMotor: high) {
+                NativeStreamRumbleDiagnostics.shared.record("gameSirRumbleQueued", details: [
+                    "controllerTransport": "external-accessory", "controllerMultiplier": String(controllerRumbleStrength),
+                    "gameSirRequestedLow": String(low), "gameSirRequestedHigh": String(high)])
+                stopPhoneRumble(shutdown: true)
+                return
+            }
+            // This model's Core Haptics outputs were observed to vibrate the phone.
+            // Use only the explicit accessory transport or the user's phone fallback.
+            if phoneRumbleFallbackEnabled, playPhoneRumble(profile) { return }
+            logHapticsFailure("GameSir motor accessory session unavailable; phone fallback is off.")
+            return
+        }
+        #endif
+
         if physicalControllerPassthroughEnabled,
            let controller = controllersBySlot[controllerId],
            controller.haptics != nil,
            playControllerRumble(profile, controller: controller, slot: controllerId) {
+            NativeStreamRumbleDiagnostics.shared.record("controllerPlaybackAccepted")
             stopPhoneRumble(shutdown: false)
             return
         }
 
         if phoneRumbleFallbackEnabled, playPhoneRumble(profile) {
+            NativeStreamRumbleDiagnostics.shared.record("phoneFallbackPlaybackAccepted")
             return
         }
         logHapticsFailure("No haptic output available for controller slot \(controllerId)")
@@ -1000,6 +1193,15 @@ final class NativeStreamInputBridge {
     }
 
     private func startTimers() {
+        hudRepeatTimer?.invalidate()
+        hudRepeatTimer = Timer.scheduledTimer(withTimeInterval: 0.10, repeats: true) { [weak self] _ in
+            guard let self, self.controllerHUDActive, !NativeStreamControllerShortcutCapture.learning,
+                  let direction = self.hudDirection else { return }
+            let now = ProcessInfo.processInfo.systemUptime
+            guard now >= self.hudRepeatAt else { return }
+            self.hudRepeatAt = now + 0.12
+            self.onControllerHUDCommand?(direction)
+        }
         heartbeatTimer?.invalidate()
         heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             guard let self else { return }
@@ -1109,8 +1311,8 @@ final class NativeStreamInputBridge {
     var isControllerMouseEmulationEnabled: Bool { mouseEmulationEnabled }
 
     private func stepControllerMouseEmulation() {
-        guard mouseEmulationEnabled,
-              let slot = controllersBySlot.keys.min(),
+        guard mouseEmulationEnabled, !controllerHUDActive,
+              let slot = controllersBySlot.keys.min(), !blockedAxesSlots.contains(slot),
               let gamepad = controllersBySlot[slot]?.extendedGamepad else { return }
 
         // A resting stick is never exactly zero, and at 60 Hz even a tiny bias walks the cursor
@@ -1138,8 +1340,13 @@ final class NativeStreamInputBridge {
             mouseEmulationScrollRemainder = 0
         }
 
-        updateEmulatedMouseButton(0, pressed: gamepad.buttonA.isPressed)
-        updateEmulatedMouseButton(1, pressed: gamepad.buttonB.isPressed)
+        let mapped = shortcutButtonIDsBySlot[slot] ?? []
+        func mousePressed(_ button: GCControllerButtonInput) -> Bool {
+            let id = ObjectIdentifier(button)
+            return button.isPressed && !blockedButtons.contains(id) && !mapped.contains(id)
+        }
+        updateEmulatedMouseButton(0, pressed: mousePressed(gamepad.buttonA))
+        updateEmulatedMouseButton(1, pressed: mousePressed(gamepad.buttonB))
     }
 
     private func updateEmulatedMouseButton(_ button: Int, pressed: Bool) {
@@ -1194,8 +1401,19 @@ final class NativeStreamInputBridge {
         return CGPoint(x: adjustedX, y: adjustedY)
     }
 
+    private func refreshShortcutButtonIDs() {
+        shortcutButtonIDsBySlot = controllersBySlot.mapValues { controller in
+            Set(NativeStreamControllerButtonNames.buttons(controller).filter {
+                controllerShortcuts.action(for: $0.0) != .none
+            }.map { ObjectIdentifier($0.1) })
+        }
+    }
+
     private func attachControllers() {
-        controllersBySlot.values.forEach { $0.extendedGamepad?.valueChangedHandler = nil }
+        controllersBySlot.values.forEach {
+            $0.extendedGamepad?.valueChangedHandler = nil
+            NativeStreamControllerButtonNames.buttons($0).forEach { $0.1.pressedChangedHandler = nil }
+        }
 
         let connectedControllers = GCController.controllers().filter { $0.extendedGamepad != nil }
         let connectedIdentifiers = Set(connectedControllers.map { ObjectIdentifier($0) })
@@ -1221,13 +1439,24 @@ final class NativeStreamInputBridge {
             controllersBySlot[slot] = controller
         }
 
+        refreshShortcutButtonIDs()
+        blockedAxesSlots.formIntersection(Set(controllersBySlot.keys))
         let hasActivePhysicalController = physicalControllerPassthroughEnabled && !controllersBySlot.isEmpty
         onPhysicalControllerAvailabilityChanged?(hasActivePhysicalController)
-        if physicalControllerPassthroughEnabled {
-            for (slot, controller) in controllersBySlot {
-                controller.extendedGamepad?.valueChangedHandler = { [weak self] _, _ in
-                    self?.sendGamepad(slot: slot, force: false)
+        for (slot, controller) in controllersBySlot {
+            controller.handlerQueue = .main
+            let buttons = NativeStreamControllerButtonNames.buttons(controller)
+            NativeStreamRumbleDiagnostics.shared.record("controllerButtonsAvailable", details: [
+                "controllerButtons": buttons.map { $0.0 }.joined(separator: ", ")])
+            for (name, button) in buttons {
+                button.pressedChangedHandler = { [weak self] button, _, pressed in
+                    self?.controllerButton(button, name: name, pressed: pressed, slot: slot)
                 }
+            }
+            controller.extendedGamepad?.valueChangedHandler = { [weak self] _, _ in
+                guard let self else { return }
+                self.updateHUDDirection(slot: slot)
+                if self.physicalControllerPassthroughEnabled { self.sendGamepad(slot: slot, force: false) }
             }
         }
         sendCurrentGamepads(force: true)
@@ -1259,34 +1488,50 @@ final class NativeStreamInputBridge {
 
     private func sendGamepad(slot: Int, force: Bool) {
         guard let gamepad = controllersBySlot[slot]?.extendedGamepad else { return }
+        let mapped = shortcutButtonIDsBySlot[slot] ?? []
+        func allowed(_ button: GCControllerButtonInput) -> Bool {
+            let id = ObjectIdentifier(button)
+            if button.value < 0.1 { blockedButtons.remove(id) }
+            return !blockedButtons.contains(id) && !mapped.contains(id)
+        }
+        func pressed(_ button: GCControllerButtonInput?) -> Bool {
+            guard let button else { return false }
+            return button.isPressed && allowed(button)
+        }
+        if blockedAxesSlots.contains(slot),
+           max(max(abs(gamepad.leftThumbstick.xAxis.value), abs(gamepad.leftThumbstick.yAxis.value)),
+               max(abs(gamepad.rightThumbstick.xAxis.value), abs(gamepad.rightThumbstick.yAxis.value))) < 0.2 {
+            blockedAxesSlots.remove(slot)
+        }
+        let axesBlocked = controllerHUDActive || blockedAxesSlots.contains(slot)
         // While the sticks are driving a cursor, the host must not also see them as sticks.
         let emulatingMouse = mouseEmulationEnabled && slot == controllersBySlot.keys.min()
         var buttons: UInt16 = 0
-        if gamepad.dpad.up.isPressed { buttons |= 0x0001 }
-        if gamepad.dpad.down.isPressed { buttons |= 0x0002 }
-        if gamepad.dpad.left.isPressed { buttons |= 0x0004 }
-        if gamepad.dpad.right.isPressed { buttons |= 0x0008 }
-        if gamepad.buttonMenu.isPressed { buttons |= 0x0010 }
-        if gamepad.buttonOptions?.isPressed == true { buttons |= 0x0020 }
-        if gamepad.leftThumbstickButton?.isPressed == true { buttons |= 0x0040 }
-        if gamepad.rightThumbstickButton?.isPressed == true { buttons |= 0x0080 }
-        if gamepad.leftShoulder.isPressed { buttons |= 0x0100 }
-        if gamepad.rightShoulder.isPressed { buttons |= 0x0200 }
-        if gamepad.buttonHome?.isPressed == true { buttons |= 0x0400 }
-        if gamepad.buttonA.isPressed && !emulatingMouse { buttons |= 0x1000 }
-        if gamepad.buttonB.isPressed && !emulatingMouse { buttons |= 0x2000 }
-        if gamepad.buttonX.isPressed { buttons |= 0x4000 }
-        if gamepad.buttonY.isPressed { buttons |= 0x8000 }
+        if pressed(gamepad.dpad.up) { buttons |= 0x0001 }
+        if pressed(gamepad.dpad.down) { buttons |= 0x0002 }
+        if pressed(gamepad.dpad.left) { buttons |= 0x0004 }
+        if pressed(gamepad.dpad.right) { buttons |= 0x0008 }
+        if pressed(gamepad.buttonMenu) { buttons |= 0x0010 }
+        if pressed(gamepad.buttonOptions) { buttons |= 0x0020 }
+        if pressed(gamepad.leftThumbstickButton) { buttons |= 0x0040 }
+        if pressed(gamepad.rightThumbstickButton) { buttons |= 0x0080 }
+        if pressed(gamepad.leftShoulder) { buttons |= 0x0100 }
+        if pressed(gamepad.rightShoulder) { buttons |= 0x0200 }
+        if pressed(gamepad.buttonHome) { buttons |= 0x0400 }
+        if pressed(gamepad.buttonA) && !emulatingMouse { buttons |= 0x1000 }
+        if pressed(gamepad.buttonB) && !emulatingMouse { buttons |= 0x2000 }
+        if pressed(gamepad.buttonX) { buttons |= 0x4000 }
+        if pressed(gamepad.buttonY) { buttons |= 0x8000 }
 
         let physicalState = NativeStreamGamepadState(
             controllerId: slot,
             buttons: buttons,
-            leftTrigger: uint8(gamepad.leftTrigger.value),
-            rightTrigger: uint8(gamepad.rightTrigger.value),
-            leftStickX: emulatingMouse ? 0 : int16Axis(gamepad.leftThumbstick.xAxis.value),
-            leftStickY: emulatingMouse ? 0 : int16Axis(gamepad.leftThumbstick.yAxis.value),
-            rightStickX: emulatingMouse ? 0 : int16Axis(gamepad.rightThumbstick.xAxis.value),
-            rightStickY: emulatingMouse ? 0 : int16Axis(gamepad.rightThumbstick.yAxis.value),
+            leftTrigger: allowed(gamepad.leftTrigger) ? uint8(gamepad.leftTrigger.value) : 0,
+            rightTrigger: allowed(gamepad.rightTrigger) ? uint8(gamepad.rightTrigger.value) : 0,
+            leftStickX: (emulatingMouse || axesBlocked) ? 0 : int16Axis(gamepad.leftThumbstick.xAxis.value),
+            leftStickY: (emulatingMouse || axesBlocked) ? 0 : int16Axis(gamepad.leftThumbstick.yAxis.value),
+            rightStickX: (emulatingMouse || axesBlocked) ? 0 : int16Axis(gamepad.rightThumbstick.xAxis.value),
+            rightStickY: (emulatingMouse || axesBlocked) ? 0 : int16Axis(gamepad.rightThumbstick.yAxis.value),
             connected: true
         )
         let state = virtualControllerEnabled && slot == primaryPhysicalControllerSlot
@@ -1329,7 +1574,8 @@ final class NativeStreamInputBridge {
         lastGamepadStates.removeValue(forKey: slot)
     }
 
-    private func sendGamepadState(_ state: NativeStreamGamepadState, force: Bool) {
+    private func sendGamepadState(_ incoming: NativeStreamGamepadState, force: Bool) {
+        let state = NativeStreamControllerHUDRouting.gameState(incoming, captured: controllerHUDActive)
         guard force || lastGamepadStates[state.controllerId] != state else { return }
         lastGamepadStates[state.controllerId] = state
         var bitmap: UInt16 = 0
@@ -1425,6 +1671,9 @@ final class NativeStreamInputBridge {
                 installControllerHapticCallbacks(playback, slot: slot)
                 controllerHapticsBySlot[slot] = playback
             }
+            NativeStreamRumbleDiagnostics.shared.record("controllerGainApplied", details: [
+                "controllerMultiplier": String(controllerRumbleStrength),
+                "controllerOutputIntensity": String(NativeStreamControllerRumbleGain.apply(profile.intensity, multiplier: controllerRumbleStrength))])
             try updateHapticPlayback(playback, profile: profile)
             phoneHapticsRetryAfter = 0
             return true
@@ -1476,7 +1725,8 @@ final class NativeStreamInputBridge {
         let parameters = [
             CHHapticDynamicParameter(
                 parameterID: .hapticIntensityControl,
-                value: profile.intensity,
+                value: playback.controllerIdentifier == nil ? profile.intensity
+                    : NativeStreamControllerRumbleGain.apply(profile.intensity, multiplier: controllerRumbleStrength),
                 relativeTime: 0
             ),
             CHHapticDynamicParameter(
@@ -1489,10 +1739,16 @@ final class NativeStreamInputBridge {
             try playback.player.sendParameters(parameters, atTime: CHHapticTimeImmediate)
         } else {
             try playback.engine.start()
-            playback.player.isMuted = true
-            try playback.player.start(atTime: CHHapticTimeImmediate)
-            try playback.player.sendParameters(parameters, atTime: CHHapticTimeImmediate)
-            playback.player.isMuted = false
+            if playback.controllerIdentifier != nil {
+                // Configure gain before starting; avoid a muted startup on controller engines.
+                try playback.player.sendParameters(parameters, atTime: CHHapticTimeImmediate)
+                try playback.player.start(atTime: CHHapticTimeImmediate)
+            } else {
+                playback.player.isMuted = true
+                try playback.player.start(atTime: CHHapticTimeImmediate)
+                try playback.player.sendParameters(parameters, atTime: CHHapticTimeImmediate)
+                playback.player.isMuted = false
+            }
             playback.isPlaying = true
         }
         playback.lastProfile = profile
@@ -1526,6 +1782,13 @@ final class NativeStreamInputBridge {
     #endif
 
     private func stopControllerRumble(slot: Int, shutdown: Bool) {
+        #if os(iOS)
+        if gameSirLastRumble?.slot == slot {
+            gameSirLastRumble = nil
+            if shutdown { gameSirRumbler.stopAndClose() }
+            else { _ = gameSirRumbler.setLowFrequencyMotor(0, highFrequencyMotor: 0) }
+        }
+        #endif
         #if canImport(CoreHaptics)
         guard let playback = controllerHapticsBySlot[slot] else { return }
         if shutdown {
@@ -1538,6 +1801,10 @@ final class NativeStreamInputBridge {
     }
 
     private func stopAllControllerRumble(shutdown: Bool) {
+        #if os(iOS)
+        gameSirLastRumble = nil
+        gameSirRumbler.stopAndClose()
+        #endif
         #if canImport(CoreHaptics)
         if shutdown {
             let playbacks = Array(controllerHapticsBySlot.values)
@@ -1568,6 +1835,7 @@ final class NativeStreamInputBridge {
 
     #if canImport(CoreHaptics)
     private func logHapticsFailure(_ message: String) {
+        NativeStreamRumbleDiagnostics.shared.record("playbackError", details: ["error": message])
         let now = ProcessInfo.processInfo.systemUptime
         guard now - lastHapticsFailureLogAt >= 5 else { return }
         lastHapticsFailureLogAt = now
@@ -1593,7 +1861,7 @@ final class NativeStreamInputBridge {
     var onPhysicalControllerAvailabilityChanged: ((Bool) -> Void)?
     var onPhysicalKeyboardMouseAvailabilityChanged: ((Bool) -> Void)?
     func configure(protocolVersion: Int, partiallyReliableGamepadMask: Int) {}
-    func configureUserPreferences(mouseSensitivity: Double, mouseAcceleration: Int, phoneRumbleFallback: Bool, physicalControllerPassthrough: Bool, controllerMouseEmulation: Bool = false, mouseScrollSensitivity: Int = 30) {}
+    func configureUserPreferences(mouseSensitivity: Double, mouseAcceleration: Int, phoneRumbleFallback: Bool, physicalControllerPassthrough: Bool, controllerMouseEmulation: Bool = false, mouseScrollSensitivity: Int = 30, controllerRumbleStrength: Double = 1) {}
     func setControllerMouseEmulation(_ enabled: Bool) {}
     var isControllerMouseEmulationEnabled: Bool { false }
     func setPhysicalControllerPassthrough(_ enabled: Bool) {}

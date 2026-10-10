@@ -92,20 +92,56 @@ CHECK = r'''
   } }
   let input = fixture(format:kCVPixelFormatType_444YpCbCr10BiPlanarFullRange,transfer:kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ)
   let output = target()
-  // Block the GPU with an event so two submissions remain genuinely in flight.
+  // Block the GPU with an event so all three slots remain in flight.
   let event = device.makeSharedEvent()!
   let pair = AsyncStream<Bool>.makeStream()
   let first = NativeStreamMetalFrameTimeline.Ticket(event:event,previous:1,value:2)
   let second = NativeStreamMetalFrameTimeline.Ticket(event:event,previous:2,value:3)
+  let third = NativeStreamMetalFrameTimeline.Ticket(event:event,previous:3,value:4)
   let completion: @Sendable (Double,NSError?) -> Void = { _,error in pair.continuation.yield(error == nil) }
   precondition(metal4.submit(buffer:input,target:output,destination:destination,ticket:first,completion:completion))
   precondition(metal4.submit(buffer:input,target:output,destination:destination,ticket:second,completion:completion))
+  precondition(metal4.submit(buffer:input,target:output,destination:destination,ticket:third,completion:completion))
   precondition(!metal4.submit(buffer:input,target:output,destination:destination,completion:completion),"Unbounded Metal 4 admission")
   event.signaledValue = 1
   var count = 0
-  for await success in pair.stream { precondition(success); count += 1; if count == 2 { break } }
+  for await success in pair.stream { precondition(success); count += 1; if count == 3 { break } }
   pair.continuation.finish()
-  print("PASS: two slots bound GPU work; a third is rejected; completion frees slots")
+  print("PASS: three slots bound GPU work; a fourth is rejected; completion frees slots")
+
+  // Submit independent frames without timeline waits, then reuse their surfaces
+  // only after GPU completion. Each surface changes on every reuse.
+  let surfaces = (0..<3).map { _ in fixture(format:kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange,
+    transfer:kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ) }
+  let outputs = (0..<3).map { _ in target() }
+  for batch in 0..<40 {
+   let finished = AsyncStream<Bool>.makeStream()
+   for index in surfaces.indices {
+    let surface = surfaces[index]
+    precondition(CVPixelBufferLockBaseAddress(surface,[]) == kCVReturnSuccess)
+    let y = CVPixelBufferGetBaseAddressOfPlane(surface,0)!.assumingMemoryBound(to:UInt16.self)
+    let stride = CVPixelBufferGetBytesPerRowOfPlane(surface,0)/2
+    for row in 0..<32 { for column in 0..<64 {
+     y[row*stride+column] = UInt16(((column+batch*7)%64 < 32 ? 240 : 720)+index*30) << 6
+    } }
+    CVPixelBufferUnlockBaseAddress(surface,[])
+    precondition(metal4.submit(buffer:surface,target:outputs[index],destination:destination,
+      waitForPrevious:false) { _,error in finished.continuation.yield(error == nil) })
+   }
+   var completions = 0
+   for await success in finished.stream {
+    precondition(success); completions += 1
+    if completions == surfaces.count { break }
+   }
+   finished.continuation.finish()
+   for index in surfaces.indices {
+    let reference = target(), command = legacyCommand(surfaces[index],reference)
+    command.commit(); await command.completed(); precondition(command.status == .completed)
+    precondition(pixels(outputs[index]) == pixels(reference),
+      "Unserialized pooled HDR frames contain stale or mixed pixels")
+   }
+  }
+  print("PASS: 120 changing pooled HDR frames without timeline waits match compatible pixels")
 
   let timeline = NativeStreamMetalFrameTimeline(device:device)!
   for i in 0..<40 {

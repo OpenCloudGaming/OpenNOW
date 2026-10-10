@@ -55,15 +55,17 @@ enum NativeStreamVideoEffectsPolicy {
         return CGSize(width: source.width * scale, height: source.height * scale)
     }
 
+    /// Share the supported enlargement range between presets and runtime MetalFX.
+    static func canSelectUpscaleResolution(source: CGSize, destination: CGSize) -> Bool {
+        source.width > 0 && source.height > 0
+            && destination.width > source.width * 1.02
+            && destination.height > source.height * 1.02
+            && destination.width <= source.width * 4
+            && destination.height <= source.height * 4
+    }
+
     static func upscaleSize(source: CGSize, destination: CGSize) -> CGSize? {
-        guard source.width > 0, source.height > 0,
-              // Avoid an extra conversion/scaling pass when the drawable is only
-              // marginally larger than the source. This preserves the native
-              // Metal 4 HDR path while saving frame time on near-native streams.
-              destination.width >= source.width * 1.18,
-              destination.height >= source.height * 1.18,
-              destination.width <= source.width * 4,
-              destination.height <= source.height * 4 else { return nil }
+        guard canSelectUpscaleResolution(source: source, destination: destination) else { return nil }
         return CGSize(width: destination.width.rounded(), height: destination.height.rounded())
     }
 
