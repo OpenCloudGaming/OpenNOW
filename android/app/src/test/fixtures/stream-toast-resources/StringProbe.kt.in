@@ -1,0 +1,68 @@
+import androidx.compose.runtime.*
+import androidx.compose.ui.platform.LocalResources
+import androidx.compose.ui.res.stringResource
+import android.content.res.Resources
+import kotlin.coroutines.EmptyCoroutineContext
+
+object R { object string {
+    const val settings_microphone_permission_denied = 1
+    const val stream_record_failed = 2
+    const val stream_record_unavailable = 3
+} }
+class Context(val resources: Resources) { fun getString(id: Int) = resources.getString(id) }
+class CallbackHolder {
+    lateinit var permission: () -> String
+    lateinit var recordingFailure: () -> String
+    lateinit var recordingUnavailable: () -> String
+    var registrations = 0
+}
+@Composable
+fun SurfaceFixture(holder: CallbackHolder, configuration: Resources) {
+    check(configuration === LocalResources.current)
+    val context = Context(LocalResources.current)
+    __DECLARATIONS__
+    remember {
+        holder.registrations++
+        holder.permission = { __PERMISSION__ }
+        holder.recordingFailure = { __FAILED__ }
+        holder.recordingUnavailable = { __UNAVAILABLE__ }
+        holder
+    }
+}
+class EmptyApplier : AbstractApplier<Unit>(Unit) {
+    override fun insertTopDown(index: Int, instance: Unit) {}
+    override fun insertBottomUp(index: Int, instance: Unit) {}
+    override fun remove(index: Int, count: Int) {}
+    override fun move(from: Int, to: Int, count: Int) {}
+    override fun onClear() {}
+}
+fun main() {
+    val holder = CallbackHolder()
+    val composition = ControlledComposition(EmptyApplier(), Recomposer(EmptyCoroutineContext))
+    fun render(language: String) {
+        composition.composeContent {
+            val resources = Resources(language)
+            CompositionLocalProvider(LocalResources provides resources) { SurfaceFixture(holder, resources) }
+        }
+        composition.applyChanges()
+        composition.applyLateChanges()
+        composition.changesApplied()
+        composition.invalidateAll()
+        if (composition.recompose()) {
+            composition.applyChanges()
+            composition.applyLateChanges()
+            composition.changesApplied()
+        }
+    }
+    render("en")
+    val callbacks = listOf(holder.permission, holder.recordingFailure, holder.recordingUnavailable)
+    check(callbacks.map { it() } == listOf("en:1", "en:2", "en:3"))
+    for (language in listOf("sv", "ja", "en")) {
+        render(language)
+        check(holder.registrations == 1)
+        check(callbacks[0] === holder.permission && callbacks[1] === holder.recordingFailure && callbacks[2] === holder.recordingUnavailable)
+        check(callbacks.map { it() } == (1..3).map { "$language:$it" }) { "Retained callbacks used stale resources after configuration change to $language" }
+    }
+    composition.dispose()
+    println("PASS: real Compose LocalResources/stringResource and unchanged retained callbacks use current strings across four configurations")
+}

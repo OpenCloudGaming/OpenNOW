@@ -244,6 +244,9 @@ internal fun StreamScreen(
         mutableStateOf(!microphoneRequested || initialMicrophonePermissionGranted)
     }
     var microphoneEnabled by remember(session?.sessionId) { mutableStateOf(false) }
+    val microphonePermissionDeniedMessage by rememberUpdatedState(
+        stringResource(R.string.settings_microphone_permission_denied),
+    )
     val microphonePermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
@@ -252,7 +255,7 @@ internal fun StreamScreen(
         if (!granted) {
             Toast.makeText(
                 context,
-                context.getString(R.string.settings_microphone_permission_denied),
+                microphonePermissionDeniedMessage,
                 Toast.LENGTH_LONG,
             ).show()
         }
@@ -429,10 +432,12 @@ internal fun StreamScreen(
             }
         }
     }
+    val recordingFailedMessage by rememberUpdatedState(stringResource(R.string.stream_record_failed))
+    val recordingUnavailableMessage by rememberUpdatedState(stringResource(R.string.stream_record_unavailable))
     LaunchedEffect(client) {
         client.recordingError.collect { error ->
             if (!error.isNullOrBlank()) {
-                Toast.makeText(context, context.getString(R.string.stream_record_failed), Toast.LENGTH_LONG).show()
+                Toast.makeText(context, recordingFailedMessage, Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -1230,7 +1235,7 @@ internal fun StreamScreen(
                                         }
                                     }
                                 } else {
-                                    Toast.makeText(context, context.getString(R.string.stream_record_unavailable), Toast.LENGTH_LONG).show()
+                                    Toast.makeText(context, recordingUnavailableMessage, Toast.LENGTH_LONG).show()
                                 }
                             }
                         }
