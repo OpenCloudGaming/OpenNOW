@@ -311,6 +311,12 @@ QtObject {
                 end(qsTr("This session is no longer available."))
                 return true
             }
+            if (code === "outcome_unknown") {
+                pollTimer.stop()
+                phase = "failed"
+                message = qsTr("The service could not confirm the session state.")
+                return true
+            }
             schedulePoll(queuePollMs)
             return true
         }

@@ -4102,6 +4102,7 @@
     "theGameStreamStopped": "The game stream stopped.",
     "theServiceCanTStartThis": "The service can't start this game right now.",
     "theServiceCouldNotStartA": "The service could not start a session.",
+    "theServiceCouldNotConfirmTheSessionState": "The service could not confirm the session state.",
     "theServiceCouldNotStartThis": "The service could not start this game.",
     "theServiceHasNotConfirmedThat": "The service has not confirmed that the session closed.",
     "theServiceReturnedAnInvalidSession": "The service returned an invalid session.",

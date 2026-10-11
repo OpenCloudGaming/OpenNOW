@@ -285,6 +285,32 @@ QtObject {
         }
     }
 
+    function checkUnknownSessionOutcome() {
+        const component = Qt.createQmlObject("import QtQuick; import OpenNOW; Component { SourceSessionState {} }", root, "unknownSessionStub")
+        const owner = component.createObject(root, {coreClient: CoreClient, playback: null, sources: store, ready: false})
+        try {
+            owner.sourceId = providerId
+            owner.session = {key: {account: null, remoteId: "unknown-seat"}, target: null, state: {state: "allocating"}}
+            owner.sessionHandle = "original-operation"
+            owner.phase = "queued"
+            owner.pollRequestId = "unknown-poll"
+            check(owner.acceptFailure("unknown-poll", "outcome_unknown", "The allocation outcome is unknown."),
+                "an unknown allocation poll is handled")
+            check(owner.phase === "failed" && owner.message === "The service could not confirm the session state.",
+                "an unknown allocation explains the failure instead of waiting forever")
+            check(owner.active && owner.session.key.remoteId === "unknown-seat" && owner.sessionHandle === "original-operation",
+                "an unknown allocation retains its original session ownership")
+            check(!owner.resume() && !owner.retryStream(), "an unknown allocation cannot restart media")
+            owner.phase = "queued"
+            owner.pollRequestId = "transient-poll"
+            check(owner.acceptFailure("transient-poll", "service_unavailable", "Temporarily unavailable.") && owner.phase === "queued",
+                "a transient polling failure does not replace the current session state")
+        } finally {
+            owner.destroy()
+            component.destroy()
+        }
+    }
+
     function checkSourceStreamOverlays() {
         const owner = ShellStore.sourceSessionOwnerState
         check(!ShellStore.sourceStreamActive && ShellStore.sourceStreamGame === null, "no source stream is active yet")
@@ -427,6 +453,7 @@ QtObject {
             checkReinstallWithLowerGeneration()
             checkAnonymousLibraryOnly()
             checkSourceDetailsLaunch()
+            checkUnknownSessionOutcome()
             if (sourcesOnly)
                 check(CoreClient.capabilities.indexOf("queue.servers.v1") < 0, "a sources-only core connects without GeForce NOW capabilities")
             check(store.sources.length === 3 && store.selectedIsGfn, "three services are listed and GeForce NOW is selected")
