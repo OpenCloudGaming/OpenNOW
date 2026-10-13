@@ -380,8 +380,21 @@ private fun buildVideoDevicePreflightCard(
 }
 
 private fun buildInputPreflightCard(inputDiagnostics: String): BugReportPreflightCard {
+    // Pointer capture is requested when a stream window gains focus, even if no mouse exists.
+    // Only input-path events may identify a mouse in the report preview.
+    val mouseInputObserved = listOf(
+        "external mouse event",
+        "external mouse captured move sent",
+        "external mouse move sent",
+        "external mouse secondary key",
+        "external mouse button consumed",
+        "external mouse absolute delta rebased",
+        "external mouse gesture cancelled",
+        "external mouse axis conflict",
+        "external mouse input dropped",
+    ).any { inputDiagnostics.contains(it, ignoreCase = true) }
     val paths = buildList {
-        if (inputDiagnostics.contains("external mouse", ignoreCase = true)) add("External mouse")
+        if (mouseInputObserved) add("Mouse input")
         if (inputDiagnostics.contains("hardware keyboard", ignoreCase = true)) add("Hardware keyboard")
         if (
             inputDiagnostics.contains("physical gamepad connected=true", ignoreCase = true) ||
@@ -400,6 +413,7 @@ private fun buildInputPreflightCard(inputDiagnostics: String): BugReportPrefligh
     val reliableOpen = inputDiagnostics.contains("input channel open label=input_channel_v1", ignoreCase = true)
     val partialOpen = inputDiagnostics.contains("input channel open label=input_channel_partially_reliable", ignoreCase = true)
     val successfulMouseSend = inputDiagnostics.contains("external mouse move sent", ignoreCase = true) ||
+        inputDiagnostics.contains("external mouse captured move sent", ignoreCase = true) ||
         inputDiagnostics.contains("controller mouse move sent", ignoreCase = true)
     val droppedWithoutChannel = inputDiagnostics.contains("input dropped noOpenChannel", ignoreCase = true)
     val facts = buildList {

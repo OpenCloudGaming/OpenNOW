@@ -132,6 +132,14 @@ private const val LOGIN_PHASE_GETTING_TOKENS = "Getting sign-in tokens"
 private const val ACTIVE_DIAGNOSTIC_SNAPSHOT_INTERVAL_MS = 30_000L
 private const val IDLE_DIAGNOSTIC_SNAPSHOT_INTERVAL_MS = 300_000L
 
+enum class StreamStopOrigin {
+    StreamExitConfirmation,
+    NoActiveStream,
+    QueueCancel,
+    MinimizedQueueCancel,
+    TvRemote,
+}
+
 internal class StreamSessionRecoveryTracker {
     private var sessionId: String? = null
     private var attempts: Int = 0
@@ -1519,7 +1527,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             "toggle_stream_stats" -> _state.update {
                 it.copy(remoteStatsToggleRequestToken = it.remoteStatsToggleRequestToken + 1)
             }
-            "stop_stream" -> stopStream()
+            "stop_stream" -> stopStream(StreamStopOrigin.TvRemote)
             "apply_recommended" -> applyStreamPreset(StreamPreset.Recommended)
             "set_codec" -> request.value
                 ?.let { value -> runCatching { VideoCodec.valueOf(value) }.getOrNull() }
@@ -2517,6 +2525,10 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun updateVideoOutput(output: StreamVideoOutput) {
+        settingsStore.update { current -> current.copy(stream = current.stream.copy(videoOutput = output)) }
+    }
+
     fun updateDynamicNetworkAdjustment(enabled: Boolean) {
         settingsStore.update { current ->
             current.copy(stream = current.stream.copy(experimentalDynamicNetworkAdjustment = enabled))
@@ -3115,14 +3127,14 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun stopStream() {
+    fun stopStream(origin: StreamStopOrigin) {
         val beforeStop = state.value
         streamSessionRecoveryTracker.reset()
         val completedSessionReport = finishSessionReport()
         val shouldShowCompletedSessionReport = beforeStop.settings.showSessionReportAfterStream
         recordDebugEvent(
             "stream",
-            "Stop requested status=${beforeStop.streamStatus} session=${beforeStop.streamSession?.shortDebugId().orEmpty()} game=${beforeStop.streamGame?.title.orEmpty()}",
+            "Stop requested origin=$origin status=${beforeStop.streamStatus} session=${beforeStop.streamSession?.shortDebugId().orEmpty()} game=${beforeStop.streamGame?.title.orEmpty()} recoveryJobActive=${launchJob?.isActive == true}",
         )
         launchJob?.cancel()
         launchJob = null
@@ -3134,6 +3146,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             val session = snapshot.streamSession
             val streamSettings = snapshot.activeStreamSettings ?: effectiveStreamSettings()
             if (auth != null && session != null) {
+                recordDebugEvent("stream", "Cloud stop request started origin=$origin session=${session.shortDebugId()}")
                 runCatching { sessionRepository.stopSession(auth.tokens.idToken ?: auth.tokens.accessToken, session, streamSettings) }
                     .onSuccess {
                         sessionTimerAnchorStore.clear(session.sessionId)
@@ -3148,6 +3161,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                             .firstOrNull { it.status in setOf(1, 2, 3) }
                     }.getOrNull()
                 if (active != null) {
+                    recordDebugEvent("stream", "Cloud stop request started origin=$origin activeSession=${active.shortDebugId()}")
                     runCatching { sessionRepository.stopActiveSession(token, active, streamSettings) }
                         .onSuccess {
                             sessionTimerAnchorStore.clear(active.sessionId)
@@ -3399,9 +3413,12 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 recordDebugEvent("queue", "Resume failed error=${error.debugMessage()}")
                 val failureReturnPage = state.value.streamReturnPage ?: AppPage.Home
                 val normalizedError = normalizeLaunchError(error, state.value.streamGame?.title)
+                val forgetActiveSession = shouldForgetActiveSessionAfterResumeFailure(error)
                 _state.update {
                     it.copy(
                         error = normalizedError,
+                        activeSession = if (forgetActiveSession) null else it.activeSession,
+                        streamSession = if (forgetActiveSession) null else it.streamSession,
                         pendingGfnMembershipActivation = isMissingGfnPlanError(error),
                         streamStatus = "idle",
                         activeStreamSettings = null,
@@ -3465,9 +3482,12 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 if (error is CancellationException) return@onFailure
                 recordDebugEvent("queue", "Pending resume failed error=${error.debugMessage()}")
                 val normalizedError = normalizeLaunchError(error, pending.game.title)
+                val forgetActiveSession = shouldForgetActiveSessionAfterResumeFailure(error)
                 _state.update {
                     it.copy(
                         error = normalizedError,
+                        activeSession = if (forgetActiveSession) null else it.activeSession,
+                        streamSession = if (forgetActiveSession) null else it.streamSession,
                         pendingGfnMembershipActivation = isMissingGfnPlanError(error),
                         streamStatus = "idle",
                         activeStreamSettings = null,
@@ -4179,7 +4199,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 put("category", event.category)
                 put("message", event.message)
             } }))
-            put("api", JsonArray(api.map(DiagnosticApiEntry::toJson)))
         }
         val human = buildString {
             appendLine("OpenNOW Android diagnostics | format=2")
@@ -4252,7 +4271,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             appendLine()
             appendLine("[Machine-readable JSON — schema 2]")
         }
-        return renderDiagnosticReport(human, parser)
+        return renderDiagnosticReport(human, parser, api)
     }
 
     fun debugLogText(): String = appendPreviousDiagnosticSnapshot(
@@ -4978,6 +4997,11 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         val mode = chooseStreamInputModeAtStart(
             nativeTouchAvailable = nativeTouchAvailable,
             keyboardMouseConnected = connection.connected,
+            promptForChoice = shouldPromptForLaunchInputMode(
+                nativeTouchAvailable = nativeTouchAvailable,
+                catalogTouchSupported = game?.let(::catalogClaimsTouchSupport) == true,
+                keyboardMouseConnected = connection.connected,
+            ),
         ) {
             val choice = CompletableDeferred<StreamInputMode>()
             launchInputModeChoice = choice

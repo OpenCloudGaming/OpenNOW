@@ -1424,6 +1424,14 @@
                 "streamSharpeningEnabled": {
                     "type": "boolean"
                 },
+                "videoOutput": {
+                    "type": "string",
+                    "enum": [
+                        "Default",
+                        "MediaCodecSurface",
+                        "WebRtcTexture"
+                    ]
+                },
                 "streamSharpeningAmount": {
                     "type": "number"
                 },

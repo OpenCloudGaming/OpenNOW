@@ -5,6 +5,28 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class DiagnosticReportTest {
+    @Test fun periodicExportPreservesPayloadAndRedactionWithCachedApiEntries() {
+        val entry = DiagnosticApiEntry(
+            timestampMs = 1000, method = "GET", url = "https://example.com/session",
+            statusCode = 200, elapsedMs = 10, requestBytes = null, responseChars = 100,
+            request = DiagnosticApiBody("""{"accessToken":"private-token"}"""),
+            response = DiagnosticApiBody("""{"userId":"private-user","stream":{"fps":60,"secret":"private-key"}}"""),
+            error = "account=private-account",
+        )
+        val data = buildJsonObject {
+            put("stream", buildJsonObject { put("sessionId", "private-session"); put("fps", 60) })
+            put("api", JsonArray(listOf(entry.toJson())))
+        }
+        val normal = renderDiagnosticReport("diagnostics", data)
+        repeat(2) {
+            val cached = renderDiagnosticReport("diagnostics", data, listOf(entry))
+            val parse: (String) -> JsonElement = { OpenNowJson.parseToJsonElement(it.substringAfter("<parser>\n").substringBefore("\n</parser>")) }
+            assertEquals(parse(normal), parse(cached))
+            assertFalse(cached.contains("private-"))
+            assertEquals(60, parse(cached).jsonObject["api"]!!.jsonArray[0].jsonObject["response"]!!.jsonObject["stream"]!!.jsonObject["fps"]!!.jsonPrimitive.int)
+        }
+    }
+
     @Test
     fun readableFailureReportAndMachineDataSurviveExportAndPreviousRunAppend() {
         val now = 1_789_289_837_123L

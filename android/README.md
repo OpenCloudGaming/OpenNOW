@@ -12,6 +12,12 @@ Open it from Android Studio with **File > Open > `OpenNOW/android`**. Android St
 
 Release and debug builds include `arm64-v8a`, `armeabi-v7a`, and `x86_64`. The `armeabi-v7a` slice supports 32-bit ARM phones and 32-bit Android TV firmware. OpenNOW recommends 720p/30 FPS/12 Mbps for 32-bit processes and memory-constrained TVs, and warns when a custom profile exceeds that recommendation without overriding the user's selection.
 
+## Release Notes and First-Install Defaults
+
+- Edit `changelogs.json` in this folder for each version code. See `docs/changelogs.md` for the note format.
+- Edit `app/src/main/java/com/opencloudgaming/opennow/FirstInstallDefaults.kt` for settings on a new installation. Its shared values and separate APK/Play profiles include comments with available options. Saved settings are not replaced on update.
+- Video output defaults in that file select direct MediaCodec SurfaceView for APK builds and WebRTC MediaCodec/EGL textures for Play Store builds. Settings → Stream → Video → Video output allows an explicit override, preserved across presets and updates. Missing choices in older settings follow the build default; HDR and texture-only features retain their compatibility paths.
+
 ## APK Update Manifest
 
 APK and debug builds check `https://api.printedwaste.com/releases/opennow/latest` and can download the returned APK. App Bundle builds installed from Google Play detect `com.android.vending` as the install source and do not check, download, or install APK updates. The manifest should look like this:

@@ -20,7 +20,7 @@ class DisplayRefreshRateTest {
     }
 
     @Test
-    fun keepsCurrentHighRefreshModeWhenItAlreadyCoversStreamFps() {
+    fun selectsOneRefreshPerFrameInsteadOfRetainingCurrentDoubleRate() {
         val selected = selectStreamDisplayMode(
             supportedModes = listOf(
                 mode(id = 1, refreshRate = 60f),
@@ -28,6 +28,20 @@ class DisplayRefreshRateTest {
             ),
             currentMode = mode(id = 2, refreshRate = 120f),
             requestedFps = 60,
+        )
+
+        assertEquals(1, selected?.id)
+    }
+
+    @Test
+    fun keepsHighRefreshRateForHighFpsStream() {
+        val selected = selectStreamDisplayMode(
+            supportedModes = listOf(
+                mode(id = 1, refreshRate = 60f),
+                mode(id = 2, refreshRate = 120f),
+            ),
+            currentMode = mode(id = 2, refreshRate = 120f),
+            requestedFps = 120,
         )
 
         assertEquals(2, selected?.id)
@@ -91,6 +105,35 @@ class DisplayRefreshRateTest {
 
         assertEquals(3, selected?.id)
         assertEquals(360f, normalizedStreamDisplayFps(360))
+    }
+
+    @Test
+    fun matchesHighFpsStreamOnDisplayWithHigherRefreshModes() {
+        val modes = listOf(mode(1, 60f), mode(2, 120f), mode(3, 240f), mode(4, 360f))
+        assertEquals(2, selectStreamDisplayMode(modes, modes.last(), 120)?.id)
+        assertEquals(3, selectStreamDisplayMode(modes, modes.last(), 240)?.id)
+        assertEquals(4, selectStreamDisplayMode(modes, modes.first(), 360)?.id)
+    }
+
+    @Test
+    fun usesIntegerMultipleWhenExactHighFpsRefreshIsUnavailable() {
+        val modes = listOf(mode(1, 60f), mode(2, 144f), mode(3, 240f), mode(4, 360f))
+        assertEquals(3, selectStreamDisplayMode(modes, modes.last(), 120)?.id)
+    }
+
+    @Test
+    fun usesDisplayMaximumWithoutReducingRequestedHighStreamFps() {
+        val modes = listOf(mode(1, 60f), mode(2, 120f))
+        assertEquals(2, selectStreamDisplayMode(modes, modes.first(), 360)?.id)
+        assertEquals(360f, normalizedStreamDisplayFps(360))
+    }
+
+    @Test
+    fun toleratesFractionalHighRefreshModes() {
+        val modes = listOf(mode(1, 119.88f), mode(2, 239.76f), mode(3, 359.64f))
+        assertEquals(1, selectStreamDisplayMode(modes, modes.last(), 120)?.id)
+        assertEquals(2, selectStreamDisplayMode(modes, modes.last(), 240)?.id)
+        assertEquals(3, selectStreamDisplayMode(modes, modes.first(), 360)?.id)
     }
 
     @Test

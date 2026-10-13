@@ -74,8 +74,12 @@ is bounded separately from unsent input backpressure.
 
 SDR and HDR share a Qualcomm latency profile policy. Configuration tries full
 vendor hints, then core hints, then real-time scheduling without vendor hints.
-Each rejected HDR attempt releases its codec; SDR retries reset the codec and
-construct a fresh format. Maximum operating-rate forcing remains disabled.
+Each rejected HDR attempt releases its codec; SDR retries construct a fresh
+format. With the upstream typed WebRTC wrapper, SDR retries
+release and recreate the rejected codec instead of reflecting into its private
+MediaCodec field. Startup tuning follows the profile that actually configured
+successfully. Buffer operations retain the upstream typed forwarding path.
+Maximum operating-rate forcing remains disabled.
 The vendor hints and asynchronous strategy were compared against
 [Moonlight V+ MediaCodecHelper at the inspected revision](https://github.com/qiin2333/moonlight-vplus/blob/78b3493a48a47f68518ce3826f1add63c2d2871b/app/src/main/java/com/limelight/binding/video/MediaCodecHelper.kt)
 and the [Android MediaCodec callback API](https://developer.android.com/reference/android/media/MediaCodec#setCallback(android.media.MediaCodec.Callback,%20android.os.Handler)).
@@ -89,6 +93,14 @@ extend that horizon. Once a network gap exhausts the old schedule, the first
 recovered picture targets one refresh period earlier; subsequent output restores
 normal headroom. Missing or stale display clocks fall back to immediate output.
 NVST and SDR presentation retain their existing paths.
+
+The upstream SDR direct-Surface path and its one-way EGL texture fallback remain
+available for recording, shader processing, and unsupported configurations. HDR
+keeps the codec-specific decoder above, including AV1, borrowed-payload ownership,
+bounded metadata, latency retries and the Android 11+ callback strategy. Both paths
+share `MediaCodecSurfaceBuffer` and `DecoderSurfaceTarget`; the HDR names are aliases,
+so there is one owner for exactly-once output release and Surface identity. The HDR
+presentation clock attaches only to HDR surfaces and remains disabled for NVST.
 
 Signed RTP loss corrections are retained when late/duplicate packets reduce
 `packetsLost`; only invalid/reset counters reset the window. Rolling display
@@ -143,6 +155,20 @@ fixtures are locally generated synthetic frames; see
 These tests validate codec lifecycle, not cloud AV1 end-to-end performance.
 All five ran successfully on the Android 16 Snapdragon tablet with this branch
 installed under the original application ID, with no skipped tests.
+
+On 2026-10-13, the PR was merged with upstream Android commit `e80587f` and the
+decoder/Surface conflicts were resolved while preserving the upstream SDR direct
+output and typed WebRTC bridge. Revalidation passed 1,271 app unit tests, 6
+build-logic tests and 147 Rust tests, with no failures or skips. Both APKs assembled;
+the app manifest retains `com.opencloudgaming.opennow` and enabled APK update
+support. The first build hit an internal Kotlin parallel-codegen exception and
+recovered through Gradle's compiler fallback. Its unit tests then caught an
+upstream missing `StreamSettings.videoOutput` schema entry; the published schema
+was regenerated, inspected (one additive optional property), and the full suite
+passed again with schema generation disabled. New regressions cover typed codec
+recreation, accepted-profile startup tuning, recreation failure and shared timed
+buffer release. No ADB device was connected for this revalidation, so the five
+device tests above were not rerun. Full lint remains unrun.
 
 Earlier device acceptance verified V3 Pro game rumble on WebRTC and NVST and
 the already-authorized USB startup path. A real ungranted automatic permission

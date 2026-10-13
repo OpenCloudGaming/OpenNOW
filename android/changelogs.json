@@ -1,0 +1,21 @@
+{
+  "161": {
+    "version": "2.0.5",
+    "notes": [
+      "Added **Changelogs** to Settings so release notes are easy to find.",
+      "After a Google Play update, the new notes appear once when you open the app.",
+      "**On screen Controller deadzoneing is now fixed**.",
+      "**Rare queue failures are now fixed**",
+      "A new, experimental option that may potentially reduce lag is avaliable. You can find it under **Settings > Stream > Video Output > __MediaCodec (Direct)__**.",
+      "The status bar can now be moved around. While in stream, **Back/swipe to go back > Status bar > Status bar drag mode**.",
+      "You can now display your current playtime in the status bar. While in stream, **Back/swipe to go back > Status bar > Show playtime**.",
+      "Reduced the amount of lag that was being caused from debug logging",
+      "Free tier bugs can now be overidden",
+      "Cursor is a little bit more smoother now",
+      "Fix mouse & kb detection for certain devices",
+      "Premium games will now be marked",
+      "Game details are parsed a little better",
+      "On screen Controller are more responsive now"
+    ]
+  }
+}

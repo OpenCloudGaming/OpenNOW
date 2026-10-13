@@ -136,8 +136,6 @@ internal fun StreamScreen(
     var streamGuideOpen by remember(session?.sessionId) { mutableStateOf(false) }
     var streamGuideStep by remember(session?.sessionId) { mutableStateOf(StreamGuideStep.OpenControls) }
     var statsVisible by remember(state.settings.showStatsOnLaunch) { mutableStateOf(state.settings.showStatsOnLaunch) }
-    // Bitrate ceiling (kbps) the live session is currently capped at; mirrors client.liveBitrateLimitKbps.
-    var liveBitrateLimitKbps by remember(session?.sessionId) { mutableStateOf<Int?>(null) }
     var streamStats by remember { mutableStateOf(StreamRuntimeStats()) }
     var networkNotice by remember(session?.sessionId) { mutableStateOf<StreamNetworkWarning?>(null) }
     var networkNoticeSequence by remember(session?.sessionId) { mutableIntStateOf(0) }
@@ -260,6 +258,7 @@ internal fun StreamScreen(
         }
     }
     val streamSettings = launchStreamSettings.copy(
+        videoOutput = state.settings.stream.videoOutput,
         mouseSensitivity = state.settings.stream.mouseSensitivity,
         mouseAcceleration = state.settings.stream.mouseAcceleration,
         streamSharpeningEnabled = launchStreamSettings.streamSharpeningEnabled && state.settings.stream.streamSharpeningEnabled,
@@ -509,13 +508,6 @@ internal fun StreamScreen(
         NativeStreamInputRouter.setTouchControllerVisible(touchControlsVisible)
     }
 
-    LaunchedEffect(streamReady, session?.sessionId, controlsOpen) {
-        while (streamReady && controlsOpen) {
-            liveBitrateLimitKbps = client.liveBitrateLimitKbps
-            delay(1000L)
-        }
-    }
-
     LaunchedEffect(streamReady, state.settings.androidStreamGuideDismissed, session?.sessionId) {
         val shouldOpenGuide = streamReady && !state.settings.androidStreamGuideDismissed
         streamGuideOpen = shouldOpenGuide
@@ -622,23 +614,25 @@ internal fun StreamScreen(
         }
     }
 
-    LaunchedEffect(streamReady, state.settings.sessionCounterEnabled, session?.sessionId, sessionStartedAtMs, smartSessionLimit) {
+    LaunchedEffect(streamReady, state.settings.sessionCounterEnabled, state.settings.streamStatsMetrics.playtime, statsVisible, session?.sessionId, sessionStartedAtMs, smartSessionLimit) {
         var previousRemainingSeconds: Int? = null
         val sentSessionWarnings = mutableSetOf<Int>()
-        while (streamReady && state.settings.sessionCounterEnabled) {
+        while (streamReady && (state.settings.sessionCounterEnabled || (statsVisible && state.settings.streamStatsMetrics.playtime))) {
             val nowMs = System.currentTimeMillis()
             timerNowMs = nowMs
-            val remainingSeconds = sessionRemainingSeconds(smartSessionLimit, sessionStartedAtMs, nowMs)
-            sessionWarningThresholdCrossed(previousRemainingSeconds, remainingSeconds)?.let { thresholdSeconds ->
-                if (sentSessionWarnings.add(thresholdSeconds)) {
-                    Toast.makeText(
-                        context,
-                        "${formatSessionWarningThreshold(thresholdSeconds)} left in this session",
-                        Toast.LENGTH_SHORT,
-                    ).show()
+            if (state.settings.sessionCounterEnabled) {
+                val remainingSeconds = sessionRemainingSeconds(smartSessionLimit, sessionStartedAtMs, nowMs)
+                sessionWarningThresholdCrossed(previousRemainingSeconds, remainingSeconds)?.let { thresholdSeconds ->
+                    if (sentSessionWarnings.add(thresholdSeconds)) {
+                        Toast.makeText(
+                            context,
+                            "${formatSessionWarningThreshold(thresholdSeconds)} left in this session",
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    }
                 }
+                previousRemainingSeconds = remainingSeconds
             }
-            previousRemainingSeconds = remainingSeconds
             delay(1000L)
         }
     }
@@ -793,7 +787,7 @@ internal fun StreamScreen(
                 canEndSession = state.authSession != null,
                 onBack = { viewModel.setPage(AppPage.Home) },
                 onResumeSession = viewModel::resumeActiveSession,
-                onEndSession = viewModel::stopStream,
+                onEndSession = { viewModel.stopStream(StreamStopOrigin.NoActiveStream) },
             )
         } else if (!streamReady) {
             QueueLoadingScreen(state, viewModel)
@@ -831,6 +825,8 @@ internal fun StreamScreen(
                     style = state.settings.streamStatsStyle,
                     metrics = state.settings.streamStatsMetrics,
                     sessionStartBatteryPercent = sessionStartBatteryPercent,
+                    sessionStartedAtMs = sessionStartedAtMs,
+                    sessionNowMs = timerNowMs,
                     backgroundAlpha = state.settings.streamStatsBackgroundAlpha(),
                     serverLocation = session.reportedServerZone(),
                     keyboardButtonEnabled = !state.settings.hideStreamButtons,
@@ -1125,7 +1121,7 @@ internal fun StreamScreen(
                     microphoneEnabled = microphoneEnabled,
                     statsVisible = statsVisible,
                     statusBarDragging = statusBarDragging,
-                    liveBitrateLimitKbps = liveBitrateLimitKbps,
+                    receivedBitrateKbps = streamStats.bitrateKbps,
                     recordingPhase = recordingPhase,
                     touchLayoutEditing = touchLayoutEditing,
                     bugReportSubmission = state.bugReportSubmission,
@@ -1436,8 +1432,6 @@ internal fun StreamScreen(
                         // the next legitimate offer because replacing a healthy transport here can
                         // strand the allocated cloud session on a stale signaling endpoint.
                         client.updateBitrateLimit(value * 1000)
-                        // Optimistic indicator for the requested next-offer ceiling.
-                        liveBitrateLimitKbps = value * 1000
                     },
                     onTouchScaleChange = { value ->
                         viewModel.updateSettings(state.settings.copy(androidTouch = state.settings.androidTouch.copy(scale = value)))
@@ -1560,7 +1554,7 @@ internal fun StreamScreen(
                         onKeepPlaying = { exitConfirmOpen = false },
                         onExit = {
                             exitConfirmOpen = false
-                            viewModel.stopStream()
+                            viewModel.stopStream(StreamStopOrigin.StreamExitConfirmation)
                         },
                     )
                 }
@@ -1851,8 +1845,8 @@ private fun StreamVideoSurface(
             contentAlignment = Alignment.Center,
         ) {
             // The sharpness drawer is always attached (Streaming.kt createRenderer), so toggling
-            // sharpening mid-session is handled entirely by the update lambda below via
-            // applyLiveSettings → drawer.amount. Re-keying this AndroidView on that flag used to
+            // sharpening mid-session uses applyLiveSettings to request texture output and update
+            // drawer.amount. Re-keying this AndroidView on that flag used to
             // tear down and recreate the SurfaceViewRenderer on every toggle, causing a visible
             // restart/flicker of the video surface.
             AndroidView(

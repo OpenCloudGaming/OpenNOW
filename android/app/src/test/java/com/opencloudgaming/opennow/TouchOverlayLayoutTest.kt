@@ -1,5 +1,6 @@
 package com.opencloudgaming.opennow
 
+import androidx.compose.ui.geometry.Offset
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -50,6 +51,22 @@ class TouchOverlayLayoutTest {
         assertTrue(virtualStickAxis(smallMove.x) > 0f)
         assertEquals(smallMove.x, virtualStickAxis(smallMove.x), 0.0001f)
         assertEquals(0f, virtualStickAxis(Float.NaN), 0.0001f)
+    }
+
+    @Test
+    fun fixedStickCalibratesNearCenterPressForOneGesture() {
+        val center = Offset(56f, 56f)
+        val down = Offset(70f, 52f)
+        val gestureCenter = touchStickGestureCenter(center, down, 38f, TouchJoystickMode.Fixed)
+
+        assertEquals(down, gestureCenter)
+        assertEquals(Offset.Zero, touchStickValue(0f, 0f, 38f, 0.05f))
+        assertEquals(Offset.Zero, touchStickValue(1f, 0f, 38f, 0.05f))
+        assertTrue(touchStickValue(4f, 0f, 38f, 0.05f).x > 0f)
+        assertEquals(Offset(78.8f, 56f), touchStickGestureCenter(center, Offset(90f, 56f), 38f, TouchJoystickMode.Fixed))
+        val justPastLimit = touchStickGestureCenter(center, Offset(79f, 56f), 38f, TouchJoystickMode.Fixed)
+        assertTrue(touchStickValue(79f - justPastLimit.x, 0f, 38f, 0.05f).x < 0.01f)
+        assertEquals(Offset(90f, 56f), touchStickGestureCenter(center, Offset(90f, 56f), 38f, TouchJoystickMode.Dynamic))
     }
 
     @Test

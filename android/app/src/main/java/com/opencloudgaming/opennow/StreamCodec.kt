@@ -357,8 +357,10 @@ internal class OpenNowVideoDecoderFactory(
     private val nativeLowLatencyDecoderEnabled: Boolean = false,
     private val requestedFps: () -> Int = { 60 },
     private val hdrEnabled: () -> Boolean = { false },
-    private val hdrSurface: () -> HdrSurfaceTarget? = { null },
+    private val decoderSurface: () -> DecoderSurfaceTarget? = { null },
     private val directJavaDecode: Boolean = false,
+    private val directSdrEnabled: () -> Boolean = { false },
+    private val requestTextureOutput: (String) -> Unit = {},
 ) : VideoDecoderFactory {
     private val defaultFactory = DefaultVideoDecoderFactory(sharedContext)
     private val hardwareFactory = openNowHardwareVideoDecoderFactory(sharedContext)
@@ -369,7 +371,7 @@ internal class OpenNowVideoDecoderFactory(
         if (hdrEnabled()) {
             // Never let an HDR session fall through an 8-bit texture or software decoder.
             return if (codec in setOf(VideoCodec.H265, VideoCodec.AV1)) {
-                HdrSurfaceVideoDecoder(requireNotNull(codec), requestedFps(), hdrSurface, nativeLowLatencyDecoderEnabled)
+                hdrSurfaceDecoder(requestedFps(), decoderSurface, requireNotNull(codec), nativeLowLatencyDecoderEnabled)
             } else null
         }
         val hardwareDecoder = if (codec != null) hardwareFactory.createDecoder(info) else null
@@ -432,7 +434,7 @@ internal class OpenNowVideoDecoderFactory(
                     "reason=non-approved-hardware-decoder",
             )
         }
-        return if (decoder != null && tuneSelectedDecoder) {
+        val textureDecoder = if (decoder != null && tuneSelectedDecoder) {
             LowLatencyVideoDecoder(
                 delegate = decoder,
                 requestedFps = exactRequestedFps,
@@ -442,6 +444,17 @@ internal class OpenNowVideoDecoderFactory(
         } else {
             decoder
         }
+        if (!directSdrEnabled()) return textureDecoder
+        if (codec == null || hardwareDecoder == null || textureDecoder == null || hardwareDecoderImplementation == null) {
+            requestTextureOutput("no approved hardware surface decoder")
+            return textureDecoder
+        }
+        val surfaceDecoder = MediaCodecSurfaceVideoDecoder(exactRequestedFps, decoderSurface, hdr = false) { width, height, rate ->
+            sdrSurfaceDecoderConfiguration(codec, hardwareDecoderImplementation, width, height, rate,
+                tuneSelectedDecoder, nativeLowLatencyDecoderEnabled, standardLowLatencyEnabled)
+        }
+        return SurfaceOrTextureVideoDecoder(surfaceDecoder, textureDecoder, directSdrEnabled,
+            surfaceFailure = { surfaceDecoder.failureReason }, requestTexture = requestTextureOutput)
     }
 
     override fun getSupportedCodecs(): Array<VideoCodecInfo> {

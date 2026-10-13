@@ -11,6 +11,14 @@ import org.webrtc.VideoDecoder
 
 class VideoDecoderPerformanceTest {
     @Test
+    fun qualcommLowLatencyOperatingRateDoesNotUnderRequestHighFps() {
+        assertEquals(120, vendorLowLatencyOperatingRate("c2.qti.avc.decoder", 60))
+        assertEquals(120, vendorLowLatencyOperatingRate("OMX.qcom.video.decoder.avc", 120))
+        assertEquals(240, vendorLowLatencyOperatingRate("c2.qti.hevc.decoder", 240))
+        assertEquals(360, vendorLowLatencyOperatingRate("c2.qti.av1.decoder", 360))
+    }
+
+    @Test
     fun highFpsDecoderTuningPreservesExactUserSelection() {
         assertEquals(120, mediaCodecPerformanceTargetFps(120))
         assertEquals(240, mediaCodecPerformanceTargetFps(240))

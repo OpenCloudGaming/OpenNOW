@@ -364,7 +364,14 @@ internal fun AppSettings.normalizedForAndroid(): AppSettings {
                 )
             }
             .filter { it.id.isNotBlank() && it.name.isNotBlank() },
-        androidTouch = androidTouch.normalizedTouchControls(),
+        androidTouch = androidTouch.copy(
+            joystickDeadZone = if (touchJoystickDefaultVersion == 0 && androidTouch.joystickDeadZone == 0f) {
+                DEFAULT_TOUCH_JOYSTICK_DEAD_ZONE
+            } else {
+                androidTouch.joystickDeadZone
+            },
+        ).normalizedTouchControls(),
+        touchJoystickDefaultVersion = 1,
         streamIntroMusic = streamIntroMusic,
         queueReadyMusic = queueReadyMusic,
         legacyCropStreamToFill = false,
@@ -393,13 +400,26 @@ internal fun AppSettings.normalizedForAndroid(): AppSettings {
     )
 }
 
+internal fun loadAndroidSettings(
+    raw: String?,
+    playStoreRelease: Boolean,
+    persistInitialOrMigration: (AppSettings) -> Unit = {},
+): AppSettings {
+    if (raw == null) {
+        val initial = firstInstallSettings(playStoreRelease)
+            .withCurrentStreamPresentationDefaults()
+            .normalizedForAndroid()
+        persistInitialOrMigration(initial)
+        return initial
+    }
+    return loadSettingsWithNvstDefault(raw, persistInitialOrMigration)
+        .withCurrentStreamPresentationDefaults()
+        .normalizedForAndroid()
+}
+
 class SettingsStore(context: Context) {
     private val prefs = ExternalPrefs.get(context, STORE_NAME)
-    private val _settings = MutableStateFlow(
-        load()
-            .withCurrentStreamPresentationDefaults()
-            .normalizedForAndroid(),
-    )
+    private val _settings = MutableStateFlow(load())
     val settings: StateFlow<AppSettings> = _settings
 
     /**
@@ -428,10 +448,10 @@ class SettingsStore(context: Context) {
 
     private fun load(): AppSettings {
         val raw = prefs.getString(KEY_SETTINGS, null)
-        // Persist the migration even if no setting is changed this launch. The regular writer
-        // deliberately skips the initial StateFlow value, so it cannot save this reset for us.
-        return loadSettingsWithNvstDefault(raw) { migrated ->
-            prefs.edit().putString(KEY_SETTINGS, OpenNowJson.encodeToString(migrated)).apply()
+        // Persist the selected first-install profile or an existing-settings migration. The
+        // regular writer skips the initial StateFlow value, so it cannot save these for us.
+        return loadAndroidSettings(raw, BuildConfig.PLAY_STORE_RELEASE) { initialOrMigrated ->
+            prefs.edit().putString(KEY_SETTINGS, OpenNowJson.encodeToString(initialOrMigrated)).apply()
         }
     }
 
@@ -456,7 +476,7 @@ class SettingsStore(context: Context) {
     }
 
     fun reset() {
-        replace(loadSettingsWithNvstDefault(null))
+        replace(firstInstallSettings(BuildConfig.PLAY_STORE_RELEASE))
     }
 }
 

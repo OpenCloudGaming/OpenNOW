@@ -11,6 +11,15 @@ class DiagnosticApiTest {
     )
 
     @Test
+    fun summaryShowsRequestStartBeforeCompletion() {
+        val completedAt = 1_789_289_837_123L
+        val request = entry(completedAt).copy(elapsedMs = 2_717)
+        val summary = request.summary()
+        assertTrue(summary.contains("started=${diagnosticTimestamp(completedAt - 2_717)}"))
+        assertTrue(summary.contains("${diagnosticTimestamp(completedAt)} GET"))
+    }
+
+    @Test
     fun pollsRemainIndividualAndChangedSuccessPayloadsSurvive() {
         val buffer = DiagnosticApiBuffer()
         repeat(3) { i -> buffer.record(entry(i.toLong()).copy(response = DiagnosticApiBody("{\"state\":$i}"), elapsedMs = 10L + i)) }

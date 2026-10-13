@@ -56,11 +56,9 @@ internal fun selectStreamDisplayMode(
         mode.refreshRate + STREAM_REFRESH_TOLERANCE_FPS >= target &&
             streamCadenceError(mode.refreshRate, target) <= STREAM_CADENCE_TOLERANCE
     }
-    val currentCandidate = currentMode?.takeIf { current ->
-        cadenceMatched.any { mode -> mode.id == current.id }
-    }
-    if (currentCandidate != null) return currentCandidate
-
+    // Prefer one display refresh per stream frame when available. Retaining 120 Hz for a
+    // 60 FPS texture stream lets small arrival-time variations alternate between 8/25 ms
+    // presentations instead of a steady 16.7 ms cadence, and keeps the display running faster.
     return cadenceMatched.minByOrNull { it.refreshRate }
         ?: candidates
             .filter { it.refreshRate + STREAM_REFRESH_TOLERANCE_FPS >= target }

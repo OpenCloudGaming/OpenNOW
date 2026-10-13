@@ -20,12 +20,12 @@ class StreamInputModeChoiceTest {
     }
 
     @Test
-    fun attachedMouseWaitsForEitherExplicitChoiceBeforeProvisioning() = runBlocking {
+    fun touchCapableGameWaitsForEitherExplicitChoiceBeforeProvisioning() = runBlocking {
         for (choice in StreamInputMode.entries) {
             val answer = CompletableDeferred<StreamInputMode>()
             var provisioned: StreamInputMode? = null
             val launch = async(start = CoroutineStart.UNDISPATCHED) {
-                chooseStreamInputModeAtStart(true, true) { answer.await() }
+                chooseStreamInputModeAtStart(true, false, promptForChoice = true) { answer.await() }
                     .also { provisioned = it }
             }
             assertFalse(launch.isCompleted)
@@ -41,7 +41,7 @@ class StreamInputModeChoiceTest {
         val answer = CompletableDeferred<StreamInputMode>()
         var provisioned = false
         val launch = async(start = CoroutineStart.UNDISPATCHED) {
-            chooseStreamInputModeAtStart(true, true) { answer.await() }
+            chooseStreamInputModeAtStart(true, false, promptForChoice = true) { answer.await() }
             provisioned = true
         }
         launch.cancelAndJoin()
@@ -51,16 +51,32 @@ class StreamInputModeChoiceTest {
     }
 
     @Test
-    fun disconnectedMouseAndUnavailableTouchDoNotPrompt() = runBlocking {
+    fun unavailableTouchDoesNotPrompt() = runBlocking {
         for (touch in listOf(false, true)) {
             for (mouse in listOf(false, true)) {
-                if (touch && mouse) continue
+                val prompt = shouldPromptForLaunchInputMode(
+                    nativeTouchAvailable = touch,
+                    catalogTouchSupported = false,
+                    keyboardMouseConnected = mouse,
+                )
+                if (prompt) continue
                 assertEquals(
                     if (touch) StreamInputMode.NativeTouch else StreamInputMode.KeyboardMouse,
-                    chooseStreamInputModeAtStart(touch, mouse) { error("Unexpected prompt") },
+                    chooseStreamInputModeAtStart(touch, mouse, promptForChoice = prompt) {
+                        error("Unexpected prompt")
+                    },
                 )
             }
         }
+    }
+
+    @Test
+    fun catalogTouchGamePromptsWithoutPhysicalInput() {
+        assertTrue(shouldPromptForLaunchInputMode(true, true, false))
+        assertTrue(shouldPromptForLaunchInputMode(true, true, true))
+        assertTrue(shouldPromptForLaunchInputMode(true, false, true))
+        assertFalse(shouldPromptForLaunchInputMode(true, false, false))
+        assertFalse(shouldPromptForLaunchInputMode(false, true, true))
     }
 
     @Test

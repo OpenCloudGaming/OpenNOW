@@ -4,6 +4,9 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -29,7 +32,9 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.opencloudgaming.opennow.ui.controls.ControlRow
@@ -200,20 +205,24 @@ internal fun ChoiceMenuRow(
     description: String? = null,
     activeOutlineColor: Color? = null,
     activeOutlineSecondaryColor: Color? = null,
+    selectedValue: String? = null,
     onSelect: (String) -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
     var descriptionExpanded by remember(label) { mutableStateOf(false) }
     BackHandler(enabled = expanded) { expanded = false }
     val autoLabel = stringResource(R.string.option_auto)
-    // Outer chrome comes from the shared row; the dropdown body below is specific to this control.
-    ControlRow(onClick = { expanded = true }) {
+    val style = com.opencloudgaming.opennow.ui.controls.controlRowStyle()
+    val textMeasurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    val displayLabel = selectedLabel.ifBlank { autoLabel }
+    val labels: @Composable RowScope.() -> Unit = {
         ControlRowLabels(
             label = label,
             value = null,
             expandedDescription = description?.takeIf { descriptionExpanded },
             enabled = true,
-            style = com.opencloudgaming.opennow.ui.controls.controlRowStyle(),
+            style = style,
         )
         if (!description.isNullOrBlank()) {
             IconButton(
@@ -230,8 +239,10 @@ internal fun ChoiceMenuRow(
                 )
             }
         }
+    }
+    val selector: @Composable () -> Unit = {
         Box {
-            OutlinedButton(onClick = { expanded = true }) { Text(selectedLabel.ifBlank { autoLabel }, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+            OutlinedButton(onClick = { expanded = true }) { Text(displayLabel, maxLines = 1, overflow = TextOverflow.Ellipsis) }
             ControllerFocusFrame(
                 visible = activeOutlineColor != null,
                 cornerRadius = 20.dp,
@@ -285,7 +296,8 @@ internal fun ChoiceMenuRow(
                             cinemaEffectEnabled = LocalAbsoluteCinemaEverywhere.current,
                         )
                         ControllerFocusFrame(
-                            visible = !optionFocused && option.label == selectedLabel && activeOutlineColor != null,
+                            visible = !optionFocused && activeOutlineColor != null &&
+                                (if (selectedValue == null) option.label == selectedLabel else option.value == selectedValue),
                             cornerRadius = 4.dp,
                             tint = activeOutlineColor,
                             secondaryTint = activeOutlineSecondaryColor,
@@ -295,6 +307,34 @@ internal fun ChoiceMenuRow(
             }
         }
     }
+    ControlRow(onClick = { expanded = true }) {
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            // Compare natural text widths before the button can squeeze the weighted label.
+            // Include the button's horizontal padding and the optional help touch target.
+            val labelWidth = textMeasurer.measure(
+                label, style.labelStyle.copy(fontWeight = style.labelWeight), softWrap = false,
+            ).size.width
+            val valueWidth = textMeasurer.measure(
+                displayLabel, MaterialTheme.typography.labelLarge, softWrap = false,
+            ).size.width
+            val chromeWidth = with(density) {
+                (48.dp + if (description.isNullOrBlank()) 0.dp else 52.dp).roundToPx()
+            }
+            val stacked = labelWidth + valueWidth + chromeWidth > constraints.maxWidth
+            Column(verticalArrangement = Arrangement.spacedBy(style.contentGap)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    labels()
+                    if (!stacked) selector()
+                }
+                if (stacked) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        selector()
+                    }
+                }
+            }
+        }
+    }
+
 }
 
 @Composable
@@ -303,10 +343,10 @@ internal fun ChoiceOptionRow(
     options: List<SettingsChoiceOption>,
     selectedValue: String,
     description: String? = null,
+    selectedDisplayLabel: String? = null,
     onSelect: (String) -> Unit,
 ) {
-    val selectedLabel = options.firstOrNull { it.value == selectedValue }?.label ?: selectedValue
-    ChoiceRow(label, options.map { it.label }, selectedLabel, description = description) { selected ->
-        options.firstOrNull { it.label == selected }?.value?.let(onSelect)
-    }
+    val selectedLabel = selectedDisplayLabel ?: options.firstOrNull { it.value == selectedValue }?.label ?: selectedValue
+    ChoiceMenuRow(label, options.map { ChoiceMenuOption(value = it.value, label = it.label) },
+        selectedLabel, description = description, selectedValue = selectedValue, onSelect = onSelect)
 }

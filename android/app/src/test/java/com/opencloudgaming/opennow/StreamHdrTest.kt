@@ -64,7 +64,7 @@ class StreamHdrTest {
 
     @Test fun presentedFramesReturnTheirCodecSlotExactlyOnce() {
         val releases = mutableListOf<Boolean>()
-        val buffer = HdrSurfaceBuffer(1920, 1080) { releases += it; it }
+        val buffer = MediaCodecSurfaceBuffer(1920, 1080) { releases += it; it }
         buffer.retain()
         assertTrue(buffer.present())
         assertFalse(buffer.present())
@@ -76,7 +76,7 @@ class StreamHdrTest {
 
     @Test fun droppedFramesReturnTheirCodecSlotWithoutDisplayingStalePixels() {
         val releases = mutableListOf<Boolean>()
-        val buffer = HdrSurfaceBuffer(3840, 2160) { releases += it; it }
+        val buffer = MediaCodecSurfaceBuffer(3840, 2160) { releases += it; it }
         buffer.retain()
         buffer.release()
         assertTrue(releases.isEmpty())
@@ -87,7 +87,7 @@ class StreamHdrTest {
 
     @Test fun obsoleteSurfaceFramesCannotBePresented() {
         var attempted = 0
-        val buffer = HdrSurfaceBuffer(1920, 1080) { attempted++; false }
+        val buffer = MediaCodecSurfaceBuffer(1920, 1080) { attempted++; false }
         assertFalse(buffer.present())
         buffer.release()
         assertEquals(1, attempted)

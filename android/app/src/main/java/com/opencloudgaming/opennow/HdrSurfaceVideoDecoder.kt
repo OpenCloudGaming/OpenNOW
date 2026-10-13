@@ -7,51 +7,16 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.Process
 import android.os.SystemClock
-import android.view.Surface
 import org.webrtc.EncodedImage
 import org.webrtc.VideoCodecStatus
 import org.webrtc.VideoDecoder
 import org.webrtc.VideoFrame
 import java.nio.ByteBuffer
 import java.util.Locale
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
 
-/**
- * A receive-only opaque frame. WebRTC schedules its presentation and records decoder statistics;
- * pixels remain in the MediaCodec output buffer until the sink presents it. Dropped frames release
- * the buffer without displaying it. There is deliberately no lossy 8-bit I420 readback of HDR.
- */
-internal class HdrSurfaceBuffer(
-    private val width: Int,
-    private val height: Int,
-    private val timedFinish: ((Long) -> Boolean)? = null,
-    internal val flow: HdrFrameFlow.Frame? = null,
-    private val finish: (Boolean) -> Boolean,
-) : VideoFrame.Buffer {
-    private val references = AtomicInteger(1)
-    private val finished = AtomicBoolean(false)
-    override fun getWidth() = width
-    override fun getHeight() = height
-    override fun toI420(): VideoFrame.I420Buffer? = null
-    override fun retain() { check(references.incrementAndGet() > 1) }
-    override fun release() {
-        if (references.decrementAndGet() == 0 && finished.compareAndSet(false, true)) finish(false)
-    }
-    fun present(): Boolean = finished.compareAndSet(false, true) && finish(true)
-    fun presentAt(timestampNs: Long): Boolean = finished.compareAndSet(false, true) &&
-        (timedFinish?.invoke(timestampNs) ?: finish(true))
-    override fun cropAndScale(cropX: Int, cropY: Int, cropWidth: Int, cropHeight: Int,
-        scaleWidth: Int, scaleHeight: Int): VideoFrame.Buffer {
-        // Receive sinks must render the complete HDR frame; view layout owns aspect fitting.
-        require(cropX == 0 && cropY == 0 && cropWidth == width && cropHeight == height &&
-            scaleWidth == width && scaleHeight == height)
-        retain()
-        return this
-    }
-}
-
-internal class HdrSurfaceTarget(val surface: Surface)
+// SDR and HDR share opaque buffer ownership and the same Surface identity contract.
+internal typealias HdrSurfaceBuffer = MediaCodecSurfaceBuffer
+internal typealias HdrSurfaceTarget = DecoderSurfaceTarget
 
 internal class HdrSurfaceVideoDecoder(
     private val videoCodec: VideoCodec,

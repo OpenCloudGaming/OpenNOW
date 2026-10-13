@@ -215,6 +215,7 @@ class AndroidSetupFlowTest {
                 StreamStatusItem.Bitrate,
                 StreamStatusItem.Battery,
                 StreamStatusItem.SessionBattery,
+                StreamStatusItem.Playtime,
                 StreamStatusItem.Connection,
                 StreamStatusItem.Resolution,
                 StreamStatusItem.Codec,
