@@ -9,6 +9,7 @@
 #include <QQuickGraphicsConfiguration>
 #include <QGuiApplication>
 #include <QTest>
+#include <QSignalSpy>
 #include <QVector3D>
 #include <qfloat16.h>
 #include <rhi/qrhi.h>
@@ -118,6 +119,57 @@ private slots:
     }
 
     void cleanupTestCase() { m_rhi.reset(); }
+
+    void missingTargetLuminanceEnablesHdrWithoutDisplayMetadata()
+    {
+#if defined(Q_OS_LINUX)
+        HdrOutput output;
+        WaylandHdrOutput::State wayland;
+        wayland.supported = true;
+        wayland.targetMinimumNits = 0.005f;
+        wayland.targetMaximumNits = 10000.0f;
+        output.publishDisplayState({HdrOutput::LinearDisplayReferred, 203.0f, true,
+                                   HdrOutput::LinearDisplayReferred}, wayland);
+        QVERIFY(output.supported());
+        QCOMPARE(output.displayData(), HdrOutput::DisplayData{});
+#else
+        QSKIP("Wayland output metadata is applied on Linux");
+#endif
+    }
+
+    void removingTargetLuminanceClearsPreviouslyPublishedDisplayMetadata()
+    {
+#if defined(Q_OS_LINUX)
+        HdrOutput output;
+        QSignalSpy changes(&output, &HdrOutput::changed);
+        WaylandHdrOutput::State wayland;
+        wayland.supported = wayland.targetLuminanceProvided = true;
+        wayland.targetMinimumNits = 0.005f;
+        wayland.targetMaximumNits = 620.0f;
+        const HdrOutput::State rendering{HdrOutput::LinearDisplayReferred, 203.0f, true,
+                                         HdrOutput::LinearDisplayReferred};
+        output.publishDisplayState(rendering, wayland);
+        QVERIFY(output.displayData().available);
+        QCOMPARE(output.displayData().maximumNits, 620.0);
+        QCOMPARE(changes.count(), 1);
+
+        // The provenance change matters even when the effective range is unchanged.
+        wayland.targetLuminanceProvided = false;
+        output.publishDisplayState(rendering, wayland);
+        QVERIFY(output.supported());
+        QCOMPARE(output.displayData(), HdrOutput::DisplayData{});
+        QCOMPARE(changes.count(), 2);
+        output.publishDisplayState(rendering, wayland);
+        QCOMPARE(changes.count(), 2);
+
+        wayland.targetLuminanceProvided = true;
+        output.publishDisplayState(rendering, wayland);
+        QVERIFY(output.displayData().available);
+        QCOMPARE(changes.count(), 3);
+#else
+        QSKIP("Wayland output metadata is applied on Linux");
+#endif
+    }
 
     void outputFormatTracksCurrentDisplaySupport()
     {
