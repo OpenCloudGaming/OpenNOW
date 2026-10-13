@@ -26,6 +26,7 @@ class OpenNowApplication : Application(), SingletonImageLoader.Factory {
     private val startupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val startupDataReady = CompletableDeferred<Unit>()
     @Volatile private var artworkImageLoader: ImageLoader? = null
+    internal val kishiHaptics by lazy { KishiHapticsManager(this) }
     internal val httpClient by lazy(::defaultHttpClient)
     internal val authStore by lazy { AuthStore(this) }
     internal val authRepository by lazy { GfnAuthRepository(this, authStore, httpClient) }

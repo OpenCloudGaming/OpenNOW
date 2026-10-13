@@ -66,6 +66,21 @@ class SessionReportTest {
     }
 
     @Test
+    fun accumulatorIncludesSignedLossCorrectionsAndClampsBelowZero() {
+        fun report(correction: Long): SessionReport {
+            val settings = StreamSettings()
+            val accumulator = StreamSessionReportAccumulator(
+                StreamReportLaunchProfile("test", settings, settings, settings), 1000L,
+            )
+            accumulator.record(StreamRuntimeStats(fps = 120, packetsLostDelta = 3, packetsReceivedDelta = 100))
+            accumulator.record(StreamRuntimeStats(fps = 120, packetsLostDelta = correction, packetsReceivedDelta = 100))
+            return accumulator.finish(3000L)!!
+        }
+        assertEquals(100.0 / 201.0, report(-2).packetLossPct!!, 0.0001)
+        assertEquals(0.0, report(-10).packetLossPct!!, 0.0)
+    }
+
+    @Test
     fun accumulatorUsesPacketDeltasAndAddsContextualWifiAdvice() {
         val settings = StreamSettings(
             resolution = "1920x1080",

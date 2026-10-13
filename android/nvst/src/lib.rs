@@ -253,6 +253,12 @@ fn run(
     let mut last_stats = Instant::now();
     let mut round_trip_ms = None;
     let mut duplicate_stun_responses = 0;
+    // Interval counters only: no packet payloads or session identifiers in diagnostics.
+    let mut packet_gaps = 0u64;
+    let mut discontinuities = 0u64;
+    let mut consumer_drops = 0u64;
+    let mut rejected_video = 0u64;
+    let mut video_dispatch_max_us = 0u128;
     while !state.stopped.load(Ordering::Acquire) {
         for notification in events.try_iter().take(128) {
             match notification {
@@ -286,12 +292,22 @@ fn run(
                 NvstReceiveEvent::RecoveryNeeded(nvst::NvstRecovery::Timeout { .. }) => {
                     return Err("NVST media timed out; cloud session retained".into());
                 }
-                NvstReceiveEvent::RecoveryNeeded(_) => feedback.request_keyframe(),
+                NvstReceiveEvent::RecoveryNeeded(_) => {
+                    packet_gaps += 1;
+                    feedback.request_keyframe();
+                }
+                NvstReceiveEvent::Dropped(NvstDropReason::FrameDiscontinuity) => {
+                    discontinuities += 1;
+                }
+                NvstReceiveEvent::Dropped(NvstDropReason::MediaConsumerBackpressured) => {
+                    consumer_drops += 1;
+                }
                 _ => {}
             }
         }
         match media.recv_timeout(Duration::from_millis(10)) {
             Ok(frame) => {
+                let dispatch_started = Instant::now();
                 let accepted = env
                     .with_local_frame(8, |env| -> jni::errors::Result<bool> {
                         let codec = env.new_string(&frame.codec)?;
@@ -323,6 +339,7 @@ fn run(
                     })
                     .map_err(|e| e.to_string())?;
                 if let Some(index) = frame.frame_index {
+                    video_dispatch_max_us = video_dispatch_max_us.max(dispatch_started.elapsed().as_micros());
                     if accepted {
                         feedback.publish_accepted_frame(
                             index,
@@ -330,6 +347,7 @@ fn run(
                             Instant::now(),
                         );
                     } else {
+                        rejected_video += 1;
                         feedback.request_keyframe();
                     }
                 }
@@ -349,6 +367,15 @@ fn run(
                 round_trip_ms.map(|rtt| rtt.to_string()).unwrap_or_default()
             );
             event(env, callback, "network", &detail).map_err(|e| e.to_string())?;
+            let video_detail = format!(
+                "packetGaps={packet_gaps} discontinuities={discontinuities} consumerDrops={consumer_drops} rejectedVideo={rejected_video} dispatchMaxUs={video_dispatch_max_us}"
+            );
+            event(env, callback, "video-diagnostics", &video_detail).map_err(|e| e.to_string())?;
+            packet_gaps = 0;
+            discontinuities = 0;
+            consumer_drops = 0;
+            rejected_video = 0;
+            video_dispatch_max_us = 0;
             last_stats = Instant::now();
         }
     }

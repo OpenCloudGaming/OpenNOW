@@ -916,7 +916,7 @@ class GfnApiTest {
     }
 
     @Test
-    fun claimRequestSuppressesHdrColorMetadataWhileKillSwitchIsActive() {
+    fun claimRequestCarriesHdrColorAndMeasuredDisplayMetadata() {
         val settings = StreamSettings(
             resolution = "1920x1080",
             codec = VideoCodec.H265,
@@ -931,14 +931,14 @@ class GfnApiTest {
             .getValue("clientRequestMonitorSettings").jsonArray.single().jsonObject
         val features = sessionRequestData.getValue("requestedStreamingFeatures").jsonObject
 
-        assertEquals(0, monitor.getValue("sdrHdrMode").jsonPrimitive.int)
-        assertEquals(JsonNull, monitor.getValue("displayData"))
-        assertEquals(false, features.getValue("trueHdr").jsonPrimitive.boolean)
-        assertEquals(10, features.getValue("bitDepth").jsonPrimitive.int)
+        assertEquals(1, monitor.getValue("sdrHdrMode").jsonPrimitive.int)
+        assertEquals(650f, monitor.getValue("displayData").jsonObject.getValue("desiredContentMaxLuminance").jsonPrimitive.float)
+        assertEquals(true, features.getValue("trueHdr").jsonPrimitive.boolean)
+        assertEquals(0, features.getValue("bitDepth").jsonPrimitive.int)
         assertEquals(2, features.getValue("sdrColorSpace").jsonPrimitive.int)
-        assertEquals(0, features.getValue("hdrColorSpace").jsonPrimitive.int)
-        assertEquals(0, sessionRequestData.getValue("sdrHdrMode").jsonPrimitive.int)
-        assertEquals(JsonNull, sessionRequestData.getValue("clientDisplayHdrCapabilities"))
+        assertEquals(4, features.getValue("hdrColorSpace").jsonPrimitive.int)
+        assertEquals(1, sessionRequestData.getValue("sdrHdrMode").jsonPrimitive.int)
+        assertEquals(1, sessionRequestData.getValue("clientDisplayHdrCapabilities").jsonObject.getValue("hdrEdrSupportedFlagsInUint32").jsonPrimitive.int)
     }
 
     @Test
@@ -1011,12 +1011,13 @@ class GfnApiTest {
     }
 
     @Test
-    fun claimRequestDoesNotAdvertiseAv1TenBitOrHdr() {
+    fun claimRequestAdvertisesAv1Main10Hdr() {
         val settings = StreamSettings(
             resolution = "1920x1080",
             codec = VideoCodec.AV1,
             colorQuality = ColorQuality.TenBit420,
             hdrEnabled = true,
+            hdrDisplay = HdrDisplayProfile(650f, 0.005f, 280f),
         )
 
         val sessionRequestData = buildMinimalClaimRequestBody("123", "device", settings)
@@ -1030,13 +1031,13 @@ class GfnApiTest {
             }?.get("value")?.jsonPrimitive?.contentOrNull
         }
 
-        assertEquals(0, monitor.getValue("sdrHdrMode").jsonPrimitive.int)
-        assertEquals(JsonNull, monitor.getValue("displayData"))
+        assertEquals(1, monitor.getValue("sdrHdrMode").jsonPrimitive.int)
+        assertEquals(650f, monitor.getValue("displayData").jsonObject.getValue("desiredContentMaxLuminance").jsonPrimitive.float)
         assertEquals(0, features.getValue("bitDepth").jsonPrimitive.int)
-        assertEquals(false, features.getValue("trueHdr").jsonPrimitive.boolean)
-        assertEquals(0, features.getValue("hdrColorSpace").jsonPrimitive.int)
-        assertEquals(JsonNull, sessionRequestData.getValue("clientDisplayHdrCapabilities"))
-        assertTrue(signature?.contains("codec=AV1;color=EightBit420;hdr=0") == true)
+        assertEquals(true, features.getValue("trueHdr").jsonPrimitive.boolean)
+        assertEquals(4, features.getValue("hdrColorSpace").jsonPrimitive.int)
+        assertEquals(1, sessionRequestData.getValue("clientDisplayHdrCapabilities").jsonObject.getValue("hdrEdrSupportedFlagsInUint32").jsonPrimitive.int)
+        assertTrue(signature?.contains("codec=AV1;color=TenBit420;hdr=1") == true)
     }
 
     @Test
@@ -1258,7 +1259,7 @@ class GfnApiTest {
     }
 
     @Test
-    fun shieldFourKHdrClaimUsesDesktopAllocationButSuppressesHdr() {
+    fun shieldFourKHdrClaimUsesDesktopAllocationAndHdr() {
         val settings = StreamSettings(
             resolution = "3840x2160",
             aspectRatio = "16:9",
@@ -1266,6 +1267,7 @@ class GfnApiTest {
             codec = VideoCodec.H265,
             colorQuality = ColorQuality.TenBit420,
             hdrEnabled = true,
+            hdrDisplay = HdrDisplayProfile(650f, 0.005f, 280f),
         )
         val body = buildMinimalClaimRequestBody(
             appId = "123",
@@ -1286,12 +1288,12 @@ class GfnApiTest {
         assertEquals(3840, monitor.getValue("widthInPixels").jsonPrimitive.int)
         assertEquals(2160, monitor.getValue("heightInPixels").jsonPrimitive.int)
         assertEquals(60, monitor.getValue("framesPerSecond").jsonPrimitive.int)
-        assertEquals(0, monitor.getValue("sdrHdrMode").jsonPrimitive.int)
+        assertEquals(1, monitor.getValue("sdrHdrMode").jsonPrimitive.int)
         assertEquals(0, monitor.getValue("monitorId").jsonPrimitive.int)
         assertEquals(100, monitor.getValue("dpi").jsonPrimitive.int)
-        assertEquals(10, features.getValue("bitDepth").jsonPrimitive.int)
-        assertEquals(false, features.getValue("trueHdr").jsonPrimitive.boolean)
-        assertEquals(0, features.getValue("hdrColorSpace").jsonPrimitive.int)
+        assertEquals(0, features.getValue("bitDepth").jsonPrimitive.int)
+        assertEquals(true, features.getValue("trueHdr").jsonPrimitive.boolean)
+        assertEquals(4, features.getValue("hdrColorSpace").jsonPrimitive.int)
     }
 
     @Test

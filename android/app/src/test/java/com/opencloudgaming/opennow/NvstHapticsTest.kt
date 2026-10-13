@@ -12,6 +12,22 @@ class NvstHapticsTest {
         assertEquals(listOf(GamepadRumbleCommand(2, 0, 0)), NvstHaptics.parse(hex("0b010a0000000000020000000000")))
     }
 
+    @Test fun observedGfnEnvelopePreservesStrongAndWeakMotorOrder() {
+        val observed = hex("0b010a0001000600000000190026")
+        assertEquals(listOf(GamepadRumbleCommand(0, 0x1900, 0x2600)), NvstHaptics.parse(observed))
+        assertEquals(listOf(GamepadRumbleCommand(0, 0, 0)), NvstHaptics.parse(hex("0b010a0001000600000000000000")))
+        val classic = hex("0b010a0000000000000000260019")
+        assertEquals(NvstHaptics.parse(classic), NvstHaptics.parse(observed))
+    }
+
+    @Test fun unsupportedGfnKindsLengthsAndSlotsRejectTheWholeBatch() {
+        val observed = hex("0b010a0001000600000000190026")
+        for ((offset, value) in listOf(4 to 2, 6 to 7, 8 to 4)) {
+            val invalid = observed.copyOf().also { it[offset] = value.toByte() }
+            assertTrue(NvstHaptics.parse(observed + invalid).isEmpty())
+        }
+    }
+
     @Test fun completeBatchesSkipUnknownCommandsWithoutScanningTheirPayload() {
         val unknown = hex("ee010e00") + rumble
         assertTrue(NvstHaptics.parse(unknown).isEmpty())

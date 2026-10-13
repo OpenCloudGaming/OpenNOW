@@ -798,7 +798,7 @@ fn build_announce(context: &SessionContext, params: AnnounceParams<'_>) -> Strin
         // Match the native Geronimo/NVST profile. CloudMatch wire values are
         // 0/1, while ANNOUNCE carries the real 8/10-bit depth and 0/1 chroma.
         "a=x-nv-video[0].maxNumReferenceFrames:0".to_owned(),
-        "a=x-nv-video[0].dynamicRangeMode:0".to_owned(),
+        format!("a=x-nv-video[0].dynamicRangeMode:{}", u8::from(hdr_requested(context, &codec))),
         format!("a=x-nv-video[0].bitDepth:{bit_depth}"),
         format!("a=x-nv-video[0].chromaFormat:{chroma_format}"),
         "a=x-nv-video[0].prefilterParams.prefilterMode:0".to_owned(),
@@ -896,6 +896,11 @@ fn build_announce(context: &SessionContext, params: AnnounceParams<'_>) -> Strin
     lines.join("\r\n")
 }
 
+fn hdr_requested(context: &SessionContext, codec: &str) -> bool {
+    !codec.eq_ignore_ascii_case("H264")
+        && context.settings.get("hdrEnabled").and_then(Value::as_bool).unwrap_or(false)
+}
+
 fn negotiated_color_format(context: &SessionContext, codec: &str) -> (u8, u8) {
     if codec.eq_ignore_ascii_case("H264") {
         return (8, 0);
@@ -909,8 +914,8 @@ fn negotiated_color_format(context: &SessionContext, codec: &str) -> (u8, u8) {
         .or_else(|| context.settings.get("colorQuality").and_then(Value::as_str))
         .unwrap_or("8bit_420")
         .to_ascii_lowercase();
-    let bit_depth = if quality.starts_with("10bit") { 10 } else { 8 };
-    let chroma_format = if codec.eq_ignore_ascii_case("AV1") {
+    let bit_depth = if hdr_requested(context, codec) || quality.starts_with("10bit") { 10 } else { 8 };
+    let chroma_format = if hdr_requested(context, codec) || codec.eq_ignore_ascii_case("AV1") {
         0
     } else if quality.ends_with("444") {
         1
@@ -1434,6 +1439,32 @@ mod tests {
     fn installs_a_process_level_tls_crypto_provider() {
         ensure_tls_crypto_provider().expect("TLS provider");
         assert!(rustls::crypto::CryptoProvider::get_default().is_some());
+    }
+
+    #[test]
+    fn hdr_announce_sets_dynamic_range_and_main10_for_both_codecs() {
+        for codec in ["H265", "AV1"] {
+            let mut value = context();
+            value.settings["hdrEnabled"] = json!(true);
+            value.session.extra.insert("negotiatedStreamProfile".into(), json!({
+                "codec": codec, "fps": 120, "colorQuality": "8bit_420"
+            }));
+            let sdp = build_announce(&value, AnnounceParams {
+                key: "test-key", key_id: 7, port: 49006, address: "192.0.2.10",
+                ufrag: "abcd", password: "test-password", fingerprint: "AA:BB",
+                video_port: 5004, rtcp_on_sctp: true,
+            });
+            assert!(sdp.contains("a=x-nv-video[0].dynamicRangeMode:1"));
+            assert!(sdp.contains("a=x-nv-video[0].bitDepth:10"));
+            assert!(sdp.contains("a=x-nv-video[0].chromaFormat:0"));
+            value.settings["hdrEnabled"] = json!(false);
+            assert!(!hdr_requested(&value, codec));
+            assert_eq!(negotiated_color_format(&value, codec), (8, 0));
+        }
+        let mut value = context();
+        value.settings["hdrEnabled"] = json!(true);
+        assert!(!hdr_requested(&value, "H264"));
+        assert_eq!(negotiated_color_format(&value, "H264"), (8, 0));
     }
 
     #[test]

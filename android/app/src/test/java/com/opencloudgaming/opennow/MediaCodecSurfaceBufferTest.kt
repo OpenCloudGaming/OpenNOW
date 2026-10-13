@@ -8,6 +8,20 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 class MediaCodecSurfaceBufferTest {
+    @Test
+    fun hdrTimedPresentationSharesExactlyOnceOwnershipWithSdrBuffers() {
+        val releases = mutableListOf<Boolean>()
+        val timestamps = mutableListOf<Long>()
+        val buffer: HdrSurfaceBuffer = MediaCodecSurfaceBuffer(3840, 2160,
+            timedFinish = { timestamps += it; true }) { releases += it; it }
+        assertTrue(buffer.presentAt(123L))
+        assertFalse(buffer.present())
+        assertFalse(buffer.presentAt(456L))
+        buffer.release()
+        assertEquals(listOf(123L), timestamps)
+        assertTrue(releases.isEmpty())
+    }
+
     @Test fun presentationRacingWithFrameDropReturnsOneCodecSlot() {
         val releases = AtomicInteger()
         val buffer = MediaCodecSurfaceBuffer(1920, 1080) { releases.incrementAndGet(); it }

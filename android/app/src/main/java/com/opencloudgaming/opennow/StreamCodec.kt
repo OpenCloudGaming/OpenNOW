@@ -370,7 +370,9 @@ internal class OpenNowVideoDecoderFactory(
         val codec = info.name.toOpenNowVideoCodec()
         if (hdrEnabled()) {
             // Never let an HDR session fall through an 8-bit texture or software decoder.
-            return if (codec == VideoCodec.H265) hdrSurfaceDecoder(requestedFps(), decoderSurface) else null
+            return if (codec in setOf(VideoCodec.H265, VideoCodec.AV1)) {
+                hdrSurfaceDecoder(requestedFps(), decoderSurface, requireNotNull(codec), nativeLowLatencyDecoderEnabled)
+            } else null
         }
         val hardwareDecoder = if (codec != null) hardwareFactory.createDecoder(info) else null
         // DefaultVideoDecoderFactory can return VideoDecoderFallback, a native-only wrapper whose
@@ -565,8 +567,7 @@ internal fun RtpCapabilities.CodecCapability.preferenceKey(): String =
     "${openNowCodecName().orEmpty()}:${parameters.orEmpty().toSortedMap()}"
 
 internal fun StreamSettings.prefersTenBitVideo(): Boolean =
-    !hdrEnabled &&
-        (colorQuality == ColorQuality.TenBit420 || colorQuality == ColorQuality.TenBit444)
+    usesTenBitStreamProfile()
 
 internal val WEBRTC_AUXILIARY_VIDEO_CODECS = setOf("RTX", "RED", "ULPFEC", "FLEXFEC-03")
 

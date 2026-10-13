@@ -29,7 +29,9 @@ internal fun aspectFitStreamSurfaceSize(
 }
 
 /** Owns separate surface producers so MediaCodec and EGL never connect to the same Surface. */
-class StreamVideoSurface(context: Context, private val hdr: Boolean, preferDirectSdr: Boolean = false) : FrameLayout(context), VideoSink {
+class StreamVideoSurface(context: Context, private val hdr: Boolean, preferDirectSdr: Boolean = false,
+    requestedFps: Int = 60, hdrFramePacing: Boolean = false) : FrameLayout(context), VideoSink {
+    private val hdrPresenter = if (hdr && hdrFramePacing) HdrFramePresenter(requestedFps) else null
     private val sdr = if (hdr) null else SurfaceViewRenderer(context)
     private val direct = if (hdr || preferDirectSdr) SurfaceView(context) else null
     private val surfaces = listOfNotNull(direct, sdr)
@@ -88,9 +90,13 @@ class StreamVideoSurface(context: Context, private val hdr: Boolean, preferDirec
                     hdr && StreamHdr.displayProfile(context) == null -> null
                     else -> DecoderSurfaceTarget(holder.surface)
                 }
+                if (hdr && decoderTarget != null) hdrPresenter?.start { display?.refreshRate ?: 60f }
                 if (hdr && decoderTarget == null) NativeInputDiagnostics.add("HDR surface unavailable: display no longer supports HDR10")
             }
-            override fun surfaceDestroyed(holder: SurfaceHolder) { decoderTarget = null }
+            override fun surfaceDestroyed(holder: SurfaceHolder) {
+                decoderTarget = null
+                hdrPresenter?.stop()
+            }
             override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) = Unit
         })
     }
@@ -121,7 +127,9 @@ class StreamVideoSurface(context: Context, private val hdr: Boolean, preferDirec
         if (released) return
         val opaque = frame.buffer as? MediaCodecSurfaceBuffer
         if (opaque != null) {
-            if ((!hdr && !prefersDirectSdr) || !opaque.present()) return
+            if (!hdr && !prefersDirectSdr) return
+            opaque.flow?.sink(System.nanoTime())
+            if (!(hdrPresenter?.present(opaque) ?: opaque.present())) return
             if (publishSize(frame.rotatedWidth, frame.rotatedHeight)) {
                 events?.onFrameResolutionChanged(frame.rotatedWidth, frame.rotatedHeight, 0)
             }
@@ -167,6 +175,7 @@ class StreamVideoSurface(context: Context, private val hdr: Boolean, preferDirec
         released = true
         recordingSink = null
         decoderTarget = null
+        hdrPresenter?.stop()
         sdr?.release()
     }
 }

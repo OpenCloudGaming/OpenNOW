@@ -22,6 +22,8 @@ import java.util.concurrent.atomic.AtomicInteger
 internal class MediaCodecSurfaceBuffer(
     private val width: Int,
     private val height: Int,
+    private val timedFinish: ((Long) -> Boolean)? = null,
+    internal val flow: HdrFrameFlow.Frame? = null,
     private val finish: (Boolean) -> Boolean,
 ) : VideoFrame.Buffer {
     private val references = AtomicInteger(1)
@@ -34,6 +36,8 @@ internal class MediaCodecSurfaceBuffer(
         if (references.decrementAndGet() == 0 && finished.compareAndSet(false, true)) finish(false)
     }
     fun present(): Boolean = finished.compareAndSet(false, true) && finish(true)
+    fun presentAt(timestampNs: Long): Boolean = finished.compareAndSet(false, true) &&
+        (timedFinish?.invoke(timestampNs) ?: finish(true))
     override fun cropAndScale(cropX: Int, cropY: Int, cropWidth: Int, cropHeight: Int,
         scaleWidth: Int, scaleHeight: Int): VideoFrame.Buffer {
         // Receive sinks must render the complete decoded frame; view layout owns aspect fitting.

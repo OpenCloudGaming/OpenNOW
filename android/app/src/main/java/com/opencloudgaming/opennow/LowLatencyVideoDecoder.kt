@@ -85,6 +85,36 @@ class LowLatencyVideoDecoder(
                         NativeInputDiagnostics.add("MediaCodecVideoDecoder: configured format=$format")
                     }
 
+                    override fun configureCodec(
+                        codecName: String,
+                        format: MediaFormat,
+                        attempt: OpenNowMediaCodecTuning.ConfigurationAttempt,
+                    ): OpenNowMediaCodecTuning.StartupTuning {
+                        if (lowLatencyEnabled && isQualcommDecoder(codecName) && Build.VERSION.SDK_INT >= 29) {
+                            var first = true
+                            return tryDecoderLatencyProfiles(
+                                decoderLatencyProfiles(true),
+                                { profile, error -> NativeInputDiagnostics.addRetained("decoder.configureFallback",
+                                    "SDR rejected profile=$profile error=${error.javaClass.simpleName}") },
+                            ) { profile ->
+                                if (!first) attempt.recreate()
+                                first = false
+                                val candidate = MediaFormat(format)
+                                applyDecoderPerformanceFormat(candidate, requestedFps, false, standardLowLatencyEnabled)
+                                applyDecoderLatencyProfile(candidate, codecName, requestedFps, profile)
+                                attempt.configure(candidate)
+                                NativeInputDiagnostics.add("SDR decoder codec=$codecName profile=$profile format=$candidate")
+                                val effectiveLowLatency = profile != DecoderLatencyProfile.REALTIME
+                                OpenNowMediaCodecTuning.StartupTuning { parameters ->
+                                    applyStreamParameters(parameters, effectiveLowLatency, standardLowLatencyEnabled)
+                                }
+                            }
+                        }
+                        configure(codecName, format)
+                        attempt.configure(format)
+                        return OpenNowMediaCodecTuning.StartupTuning { started(codecName, it) }
+                    }
+
                     override fun started(codecName: String, parameters: OpenNowMediaCodecTuning.ParameterSetter) {
                         applyStreamParameters(parameters, lowLatencyEnabled, standardLowLatencyEnabled)
                     }
@@ -159,6 +189,10 @@ class LowLatencyVideoDecoder(
         }
 
         private fun applyLowLatencyFormat(format: MediaFormat, codecName: String, requestedFps: Int) {
+            if (isQualcommDecoder(codecName)) {
+                applyDecoderLatencyProfile(format, codecName, requestedFps, DecoderLatencyProfile.CORE)
+                return
+            }
             putInt(format, "low-latency", 1)
 
             val normalizedCodecName = codecName.lowercase(Locale.US)

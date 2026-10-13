@@ -11,6 +11,70 @@ import org.junit.Test;
 
 public class OpenNowMediaCodecTuningTest {
   @Test
+  public void configurationRetryRecreatesCodecAndUsesAcceptedStartupTuning() throws Exception {
+    List<String> events = new ArrayList<>();
+    final int[] created = {0};
+    MediaCodecWrapperFactory factory = name -> {
+      int instance = ++created[0];
+      events.add("create" + instance);
+      return (MediaCodecWrapper) Proxy.newProxyInstance(
+          MediaCodecWrapper.class.getClassLoader(), new Class<?>[] {MediaCodecWrapper.class},
+          (proxy, method, args) -> {
+            events.add(method.getName() + instance);
+            if (method.getName().equals("configure") && instance == 1) {
+              throw new IllegalArgumentException("vendor format rejected");
+            }
+            if (method.getName().equals("dequeueInputBuffer")) return instance;
+            return null;
+          });
+    };
+    MediaCodecWrapperFactory tuned = (MediaCodecWrapperFactory) OpenNowMediaCodecTuning.wrapFactory(
+        factory, new OpenNowMediaCodecTuning.Tuning() {
+          @Override public String selectCodecName(String name) { return name; }
+          @Override public void configure(String name, android.media.MediaFormat format) { fail("retry hook owns configuration"); }
+          @Override public void started(String name, OpenNowMediaCodecTuning.ParameterSetter setter) { fail("accepted profile owns startup"); }
+          @Override public OpenNowMediaCodecTuning.StartupTuning configureCodec(String name,
+              android.media.MediaFormat format, OpenNowMediaCodecTuning.ConfigurationAttempt attempt) {
+            assertThrows(IllegalArgumentException.class, () -> attempt.configure(format));
+            attempt.recreate();
+            attempt.configure(format);
+            return setter -> { events.add("acceptedProfile"); setter.setParameters(null); };
+          }
+        });
+    MediaCodecWrapper codec = tuned.createByCodecName("decoder");
+    codec.configure(null, null, null, 0);
+    codec.start();
+    assertEquals(2, codec.dequeueInputBuffer(0));
+    codec.release();
+    assertEquals(Arrays.asList("create1", "configure1", "release1", "create2", "configure2", "start2",
+        "acceptedProfile", "setParameters2", "dequeueInputBuffer2", "release2"), events);
+  }
+
+  @Test
+  public void recreationFailureStopsConfigurationAndKeepsCause() throws Exception {
+    java.io.IOException failure = new java.io.IOException("replacement unavailable");
+    final int[] created = {0};
+    MediaCodecWrapper initial = (MediaCodecWrapper) Proxy.newProxyInstance(
+        MediaCodecWrapper.class.getClassLoader(), new Class<?>[] {MediaCodecWrapper.class},
+        (proxy, method, args) -> null);
+    MediaCodecWrapperFactory factory = name -> { if (++created[0] > 1) throw failure; return initial; };
+    MediaCodecWrapperFactory tuned = (MediaCodecWrapperFactory) OpenNowMediaCodecTuning.wrapFactory(
+        factory, new OpenNowMediaCodecTuning.Tuning() {
+          @Override public String selectCodecName(String name) { return name; }
+          @Override public void configure(String name, android.media.MediaFormat format) {}
+          @Override public void started(String name, OpenNowMediaCodecTuning.ParameterSetter setter) {}
+          @Override public OpenNowMediaCodecTuning.StartupTuning configureCodec(String name,
+              android.media.MediaFormat format, OpenNowMediaCodecTuning.ConfigurationAttempt attempt) {
+            attempt.recreate();
+            fail("unavailable codec must not continue");
+            return null;
+          }
+        });
+    MediaCodecWrapper codec = tuned.createByCodecName("decoder");
+    assertSame(failure, assertThrows(IllegalStateException.class, () -> codec.configure(null, null, null, 0)).getCause());
+  }
+
+  @Test
   public void tunesCreationAndStartupBeforeForwardingBufferOperations() throws Exception {
     List<String> events = new ArrayList<>();
     ByteBuffer input = ByteBuffer.allocate(16);

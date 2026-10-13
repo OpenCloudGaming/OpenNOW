@@ -431,16 +431,26 @@ class SdpToolsTest {
         val nvst = buildNvstSdp(StreamSettings(hdrEnabled = false))
 
         assertTrue(nvst.contains("a=video.dx9EnableHdr:0"))
+        assertTrue(nvst.contains("a=video.dynamicRangeMode:0"))
         assertFalse(nvst.contains("a=video.dx9EnableHdr:1"))
     }
 
     @Test
-    fun nvstSdpDisablesHdrWhileAndroidKillSwitchIsActive() {
+    fun nvstSdpRequestsHdrAndTenBitTogether() {
         val nvst = buildNvstSdp(StreamSettings(codec = VideoCodec.H265, hdrEnabled = true))
 
-        assertFalse(nvst.contains("a=video.dx9EnableHdr:1"))
-        assertTrue(nvst.contains("a=video.dx9EnableHdr:0"))
+        assertTrue(nvst.contains("a=video.dx9EnableHdr:1"))
+        assertTrue(nvst.contains("a=video.dynamicRangeMode:1"))
+        assertFalse(nvst.contains("a=video.dx9EnableHdr:0"))
         assertTrue(nvst.contains("a=video.bitDepth:10"))
+    }
+
+    @Test
+    fun av1HdrSdpCarriesTenBitAndHdrTogether() {
+        val sdp = buildNvstSdp(StreamSettings(codec = VideoCodec.AV1, hdrEnabled = true).withCodecColorCompatibility())
+        assertTrue(sdp.contains("a=video.dx9EnableHdr:1"))
+        assertTrue(sdp.contains("a=video.dynamicRangeMode:1"))
+        assertTrue(sdp.contains("a=video.bitDepth:10"))
     }
 
     @Test

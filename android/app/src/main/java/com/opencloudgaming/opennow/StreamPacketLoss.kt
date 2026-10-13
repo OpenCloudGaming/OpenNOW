@@ -13,8 +13,9 @@ internal fun isNewerStreamStatsSample(currentTimestampMs: Double, previousTimest
         (previousTimestampMs == null || currentTimestampMs > previousTimestampMs)
 
 /**
- * Returns a usable delta only while WebRTC is reporting the same monotonically increasing packet
- * counters. Counter resets happen during SSRC/transport changes and must not be presented as loss.
+ * Received packets must increase within the same RTP stream (identity is checked by the caller).
+ * RFC3550 cumulative loss is signed: late/duplicate packets can reduce it without a stream reset.
+ * Preserve that correction so the rolling loss window reports net loss, rather than resetting.
  */
 internal fun streamPacketDelta(
     currentLost: Long,
@@ -22,7 +23,7 @@ internal fun streamPacketDelta(
     previousLost: Long,
     previousReceived: Long,
 ): StreamPacketDelta? {
-    if (currentLost < previousLost || currentReceived < previousReceived) return null
+    if (currentReceived < previousReceived) return null
     return StreamPacketDelta(
         lost = currentLost - previousLost,
         received = currentReceived - previousReceived,
@@ -101,7 +102,9 @@ internal class StreamPacketLossRecoveryGate(
             return false
         }
 
-        val lost = stats.packetsLostDelta?.takeIf { it >= 0L } ?: return false
+        // A negative signed-loss delta corrects earlier missing packets; it is a healthy sample,
+        // not an invalid sample or a new burst. The displayed window keeps the signed correction.
+        val lost = stats.packetsLostDelta?.coerceAtLeast(0L) ?: return false
         val received = stats.packetsReceivedDelta?.takeIf { it >= 0L } ?: return false
         val total = lost + received
         if (total < minimumPacketSample) return false

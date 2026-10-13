@@ -606,6 +606,10 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             settingsStore.settings.collect { next ->
                 _state.update { it.copy(settings = next) }
+                openNowApplication.kishiHaptics.configure(
+                    next.kishiUsbHaptics && next.vibrationEnabled && next.hapticsOutput != HapticsOutputPreference.Device,
+                    next.kishiHapticsStrength,
+                )
             }
         }
         if (androidTvProfile) {
@@ -2173,6 +2177,11 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             }
         }
     }
+
+    internal val kishiHapticsStatus get() = openNowApplication.kishiHaptics.status
+    fun authorizeKishiHaptics() = openNowApplication.kishiHaptics.authorize()
+    fun testKishiHaptics(left: Boolean) = openNowApplication.kishiHaptics.test(left)
+    fun cancelKishiHapticsTest() = openNowApplication.kishiHaptics.closeStandaloneTest()
 
     fun updateSettings(next: AppSettings) {
         settingsStore.replace(next)

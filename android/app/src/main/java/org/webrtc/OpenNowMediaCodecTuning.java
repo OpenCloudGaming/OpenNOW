@@ -22,6 +22,21 @@ public final class OpenNowMediaCodecTuning {
     String selectCodecName(String originalName);
     void configure(String codecName, MediaFormat format);
     void started(String codecName, ParameterSetter parameters);
+
+    default StartupTuning configureCodec(String codecName, MediaFormat format, ConfigurationAttempt attempt) {
+      configure(codecName, format);
+      attempt.configure(format);
+      return parameters -> started(codecName, parameters);
+    }
+  }
+
+  public interface ConfigurationAttempt {
+    void configure(MediaFormat format);
+    void recreate();
+  }
+
+  public interface StartupTuning {
+    void started(ParameterSetter parameters);
   }
 
   private OpenNowMediaCodecTuning() {}
@@ -33,28 +48,44 @@ public final class OpenNowMediaCodecTuning {
     MediaCodecWrapperFactory delegate = (MediaCodecWrapperFactory) factory;
     return (MediaCodecWrapperFactory) originalName -> {
       String name = tuning.selectCodecName(originalName);
-      return new TunedCodec(delegate.createByCodecName(name), name, tuning);
+      return new TunedCodec(delegate.createByCodecName(name), delegate, name, tuning);
     };
   }
 
   private static final class TunedCodec implements MediaCodecWrapper {
-    private final MediaCodecWrapper delegate;
+    private MediaCodecWrapper delegate;
+    private final MediaCodecWrapperFactory factory;
     private final String name;
     private final Tuning tuning;
+    private StartupTuning startupTuning;
 
-    TunedCodec(MediaCodecWrapper delegate, String name, Tuning tuning) {
+    TunedCodec(MediaCodecWrapper delegate, MediaCodecWrapperFactory factory, String name, Tuning tuning) {
       this.delegate = delegate;
+      this.factory = factory;
       this.name = name;
       this.tuning = tuning;
     }
 
     @Override public void configure(MediaFormat format, Surface surface, MediaCrypto crypto, int flags) {
-      tuning.configure(name, format);
-      delegate.configure(format, surface, crypto, flags);
+      startupTuning = null;
+      startupTuning = tuning.configureCodec(name, format, new ConfigurationAttempt() {
+        @Override public void configure(MediaFormat candidate) {
+          delegate.configure(candidate, surface, crypto, flags);
+        }
+        @Override public void recreate() {
+          delegate.release();
+          try {
+            delegate = factory.createByCodecName(name);
+          } catch (java.io.IOException error) {
+            throw new IllegalStateException("Could not recreate MediaCodec", error);
+          }
+        }
+      });
     }
     @Override public void start() {
       delegate.start();
-      tuning.started(name, delegate::setParameters);
+      if (startupTuning != null) startupTuning.started(delegate::setParameters);
+      else tuning.started(name, delegate::setParameters);
     }
     @Override public void flush() { delegate.flush(); }
     @Override public void stop() { delegate.stop(); }

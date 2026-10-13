@@ -23,11 +23,18 @@ internal object NvstHaptics {
             val start = offset + 4
             if (length > bytes.size - start) return emptyList()
             if (type == 0x010b) {
-                // Native rumble payload: reserved u32, controller u16, low/high frequency u16.
                 if (length != 10) return emptyList()
                 val controller = word(start + 4)
                 if (controller !in 0..3) return emptyList()
-                commands += GamepadRumbleCommand(controller, word(start + 8), word(start + 6))
+                commands += when {
+                    // Observed GFN NVST: kind=1, bodyLength=6, controller, weak, strong.
+                    word(start) == 1 && word(start + 2) == 6 ->
+                        GamepadRumbleCommand(controller, word(start + 6), word(start + 8))
+                    // Classic native rumble: reserved u32=0, controller, low/strong, high/weak.
+                    view.getInt(start) == 0 ->
+                        GamepadRumbleCommand(controller, word(start + 8), word(start + 6))
+                    else -> return emptyList()
+                }
             }
             offset = start + length
         }

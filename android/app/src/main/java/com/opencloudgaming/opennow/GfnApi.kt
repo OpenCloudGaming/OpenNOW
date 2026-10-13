@@ -442,7 +442,10 @@ private fun StreamSettings.requestProfile(): StreamRequestProfile {
         height = height,
         hdrEnabled = hdrEnabled,
         hdrDisplay = compatible.hdrDisplay,
-        bitDepth = if (compatible.usesTenBitStreamProfile()) 10 else 0,
+        // CloudMatch's color-precision override is separate from HDR10. Requesting the
+        // SDR 10-bit override alongside HDR is rejected; HDR selects Main10 through
+        // sdrHdrMode while the local decoder/SDP still requires ten-bit video.
+        bitDepth = if (!hdrEnabled && compatible.usesTenBitStreamProfile()) 10 else 0,
         chroma = if (compatible.colorQuality == ColorQuality.EightBit444 || compatible.colorQuality == ColorQuality.TenBit444) 2 else 0,
     )
 }
