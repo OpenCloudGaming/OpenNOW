@@ -2,6 +2,11 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::generic::{
+    GENERIC_LANE_CAPACITY, GENERIC_OUTPUT_MAILBOX, GenericAdmission, GenericCounters,
+    GenericHidDevice, GenericOutputReport, GenericReport, MAX_GENERIC_DEVICES,
+    generic_request_index,
+};
 use crate::{
     InventoryOutcome, InventoryView, MAX_QUEUED_STATE_BYTES, MAX_QUEUED_STATES, MAX_SOURCES,
     SdlDeviceClaim, SnapshotAdmission, SonySnapshot,
@@ -99,6 +104,50 @@ impl SourceLane {
     }
 }
 
+/// Bounded ingress/egress buffers for one forwarded generic HID device.
+///
+/// Unlike [`SourceLane`], overflow never faults the lane: raw reports are
+/// absolute device state, so dropping the oldest buffered report is always
+/// safe and the newest one wins.
+#[derive(Debug)]
+struct GenericLane {
+    device: GenericHidDevice,
+    forwarding: bool,
+    /// Published but not yet opened by the reader thread: absent from the
+    /// snapshot so no attach can be sent until `mark_generic_live`.
+    dormant: bool,
+    removed: bool,
+    removal_pending: bool,
+    reports: VecDeque<GenericReport>,
+    outputs: VecDeque<GenericOutputReport>,
+    counters: GenericCounters,
+}
+
+impl GenericLane {
+    fn new(device: GenericHidDevice) -> Self {
+        Self {
+            device,
+            forwarding: false,
+            dormant: false,
+            removed: false,
+            removal_pending: false,
+            reports: VecDeque::with_capacity(GENERIC_LANE_CAPACITY),
+            outputs: VecDeque::with_capacity(GENERIC_OUTPUT_MAILBOX),
+            counters: GenericCounters::default(),
+        }
+    }
+
+    fn drop_buffered(&mut self) {
+        self.reports.clear();
+        self.outputs.clear();
+    }
+
+    fn detach(&mut self) {
+        self.forwarding = false;
+        self.drop_buffered();
+    }
+}
+
 #[derive(Debug, Default)]
 struct RuntimeState {
     binding: Option<u64>,
@@ -109,6 +158,20 @@ struct RuntimeState {
     lanes: [SourceLane; MAX_SOURCES],
     session_evaluated_epoch: Option<u64>,
     session_admitted: u16,
+    generic: [Option<GenericLane>; MAX_GENERIC_DEVICES],
+    generic_epoch: u64,
+}
+
+impl RuntimeState {
+    fn generic_lane(&mut self, request_id: u8) -> Option<&mut GenericLane> {
+        self.generic.get_mut(generic_request_index(request_id)?)?.as_mut()
+    }
+
+    fn detach_generic(&mut self) {
+        for lane in self.generic.iter_mut().flatten() {
+            lane.detach();
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,6 +274,7 @@ impl HidRuntime {
         state.session_evaluated_epoch = None;
         state.session_admitted = 0;
         state.binding = None;
+        state.detach_generic();
     }
 
     pub fn bind_session(&self, generation: u64) -> Option<SessionBinding> {
@@ -236,6 +300,7 @@ impl HidRuntime {
         state.session_evaluated_epoch = None;
         state.session_admitted = 0;
         state.binding = None;
+        state.detach_generic();
     }
 
     pub fn session_generation(&self) -> Option<u64> {
@@ -284,6 +349,13 @@ impl HidRuntime {
             let lane = &mut state.lanes[usize::from(slot)];
             lane.drop_buffered();
             lane.arm_release(slot, incarnation);
+        }
+        // Generic lanes have no descriptor knowledge, so no neutral report can
+        // be synthesized on focus loss; buffered reports are simply dropped.
+        for lane in state.generic.iter_mut().flatten() {
+            let dropped = lane.reports.len() as u64;
+            lane.reports.clear();
+            lane.counters.dropped_inactive = lane.counters.dropped_inactive.saturating_add(dropped);
         }
     }
 
@@ -410,6 +482,266 @@ impl HidRuntime {
             }
         }
         mask
+    }
+
+    // ---- generic raw-HID lanes -------------------------------------------
+
+    /// Replace the generic device inventory. Every accepted device receives a
+    /// fresh incarnation; existing lanes (and their buffers) are discarded.
+    /// Returns the devices as stored (with incarnations) and the new epoch.
+    pub fn replace_generic_inventory(
+        &self,
+        devices: &[GenericHidDevice],
+    ) -> (Vec<GenericHidDevice>, u64) {
+        self.replace_generic_inventory_with(devices, false)
+    }
+
+    /// [`replace_generic_inventory`](Self::replace_generic_inventory) whose
+    /// lanes start *dormant* (absent from the snapshot, so no attach can be
+    /// sent) until the reader thread has actually opened the node and calls
+    /// [`mark_generic_live`](Self::mark_generic_live). A node that fails to
+    /// open simply stays dormant; nothing is ever announced for it.
+    pub fn replace_generic_inventory_dormant(
+        &self,
+        devices: &[GenericHidDevice],
+    ) -> (Vec<GenericHidDevice>, u64) {
+        self.replace_generic_inventory_with(devices, true)
+    }
+
+    fn replace_generic_inventory_with(
+        &self,
+        devices: &[GenericHidDevice],
+        dormant: bool,
+    ) -> (Vec<GenericHidDevice>, u64) {
+        let mut state = self.lock();
+        let mut next: [Option<GenericLane>; MAX_GENERIC_DEVICES] = Default::default();
+        let mut stored = Vec::with_capacity(MAX_GENERIC_DEVICES);
+        for device in devices {
+            let Some(index) = generic_request_index(device.request_id) else {
+                continue;
+            };
+            if next[index].is_some() {
+                continue;
+            }
+            let mut device = device.clone();
+            device.incarnation = self.next_incarnation();
+            stored.push(device.clone());
+            let mut lane = GenericLane::new(device);
+            lane.dormant = dormant;
+            next[index] = Some(lane);
+        }
+        state.generic = next;
+        state.generic_epoch = state.generic_epoch.wrapping_add(1);
+        (stored, state.generic_epoch)
+    }
+
+    /// Flip a dormant lane live once its node is open: it enters the
+    /// snapshot and the epoch moves so the bundle pump sends the attach.
+    /// Returns `false` for unknown lanes, lanes that are already live, or a
+    /// stale incarnation.
+    pub fn mark_generic_live(&self, request_id: u8, incarnation: u64) -> bool {
+        let mut state = self.lock();
+        let Some(lane) = state.generic_lane(request_id) else {
+            return false;
+        };
+        if !lane.dormant || lane.removed || lane.device.incarnation != incarnation {
+            return false;
+        }
+        lane.dormant = false;
+        state.generic_epoch = state.generic_epoch.wrapping_add(1);
+        true
+    }
+
+    pub fn generic_inventory_snapshot(&self) -> (Vec<GenericHidDevice>, u64) {
+        let state = self.lock();
+        let devices = state
+            .generic
+            .iter()
+            .flatten()
+            .filter(|lane| !lane.removed && !lane.dormant)
+            .map(|lane| lane.device.clone())
+            .collect();
+        (devices, state.generic_epoch)
+    }
+
+    pub fn generic_inventory_epoch(&self) -> u64 {
+        self.lock().generic_epoch
+    }
+
+    /// Submit one raw input report from the reader thread. Overflow evicts
+    /// the oldest buffered report and admits the new one; it never faults.
+    pub fn submit_generic_report(
+        &self,
+        request_id: u8,
+        incarnation: u64,
+        observed_at_us: u64,
+        report: &[u8],
+    ) -> GenericAdmission {
+        let mut state = self.lock();
+        let capture_active = state.capture_active;
+        let Some(lane) = state.generic_lane(request_id) else {
+            return GenericAdmission::UnknownDevice;
+        };
+        if lane.device.incarnation != incarnation {
+            return GenericAdmission::StaleIncarnation;
+        }
+        lane.counters.reports_in = lane.counters.reports_in.saturating_add(1);
+        let Some(report) = GenericReport::new(request_id, incarnation, observed_at_us, report)
+        else {
+            return GenericAdmission::Oversize;
+        };
+        if !lane.forwarding {
+            lane.counters.dropped_not_forwarding =
+                lane.counters.dropped_not_forwarding.saturating_add(1);
+            return GenericAdmission::NotForwarding;
+        }
+        if !capture_active {
+            lane.counters.dropped_inactive = lane.counters.dropped_inactive.saturating_add(1);
+            return GenericAdmission::Inactive;
+        }
+        let mut admission = GenericAdmission::Admitted;
+        if lane.reports.len() >= GENERIC_LANE_CAPACITY {
+            lane.reports.pop_front();
+            lane.counters.dropped_overflow = lane.counters.dropped_overflow.saturating_add(1);
+            admission = GenericAdmission::DroppedOldest;
+        }
+        lane.reports.push_back(report);
+        admission
+    }
+
+    pub fn set_generic_forwarding(&self, request_id: u8, forwarding: bool) -> bool {
+        let mut state = self.lock();
+        let Some(lane) = state.generic_lane(request_id) else {
+            return false;
+        };
+        lane.forwarding = forwarding;
+        if !forwarding {
+            lane.reports.clear();
+        }
+        true
+    }
+
+    pub fn generic_forwarding(&self, request_id: u8) -> bool {
+        self.lock()
+            .generic_lane(request_id)
+            .is_some_and(|lane| lane.forwarding)
+    }
+
+    /// Drain up to `per_device_budget` reports from every lane, oldest first.
+    pub fn drain_generic(&self, per_device_budget: usize) -> Vec<GenericReport> {
+        let mut state = self.lock();
+        let mut drained = Vec::new();
+        for lane in state.generic.iter_mut().flatten() {
+            for _ in 0..per_device_budget {
+                let Some(report) = lane.reports.pop_front() else {
+                    break;
+                };
+                drained.push(report);
+            }
+        }
+        drained
+    }
+
+    /// Queue an output report for the reader thread. The mailbox is four
+    /// deep and latest-wins: a full mailbox evicts the oldest entry.
+    pub fn push_generic_output(&self, output: GenericOutputReport) -> bool {
+        let mut state = self.lock();
+        let Some(lane) = state.generic_lane(output.request_id) else {
+            return false;
+        };
+        if lane.removed || lane.dormant {
+            return false;
+        }
+        lane.counters.outputs_in = lane.counters.outputs_in.saturating_add(1);
+        if lane.outputs.len() >= GENERIC_OUTPUT_MAILBOX {
+            lane.outputs.pop_front();
+            lane.counters.outputs_coalesced = lane.counters.outputs_coalesced.saturating_add(1);
+        }
+        lane.outputs.push_back(output);
+        true
+    }
+
+    pub fn take_generic_outputs(&self) -> Vec<GenericOutputReport> {
+        let mut state = self.lock();
+        let mut outputs = Vec::new();
+        for lane in state.generic.iter_mut().flatten() {
+            outputs.extend(lane.outputs.drain(..));
+        }
+        outputs
+    }
+
+    pub fn pending_generic_outputs(&self) -> usize {
+        self.lock()
+            .generic
+            .iter()
+            .flatten()
+            .map(|lane| lane.outputs.len())
+            .sum()
+    }
+
+    pub fn mark_generic_removed(&self, request_id: u8) -> bool {
+        let mut state = self.lock();
+        let Some(lane) = state.generic_lane(request_id) else {
+            return false;
+        };
+        if lane.removed {
+            return false;
+        }
+        lane.removed = true;
+        // A dormant lane was never in the snapshot, so nothing was announced
+        // and there is no removal to send.
+        lane.removal_pending = !lane.dormant;
+        lane.detach();
+        true
+    }
+
+    /// Request ids whose device vanished since the last call.
+    pub fn take_generic_removals(&self) -> Vec<u8> {
+        let mut state = self.lock();
+        let mut removals = Vec::new();
+        for lane in state.generic.iter_mut().flatten() {
+            if lane.removal_pending {
+                lane.removal_pending = false;
+                removals.push(lane.device.request_id);
+            }
+        }
+        removals
+    }
+
+    pub fn generic_counters(&self, request_id: u8) -> Option<GenericCounters> {
+        self.lock().generic_lane(request_id).map(|lane| lane.counters)
+    }
+
+    pub fn record_generic_forwarded(&self, request_id: u8) {
+        if let Some(lane) = self.lock().generic_lane(request_id) {
+            lane.counters.reports_forwarded = lane.counters.reports_forwarded.saturating_add(1);
+        }
+    }
+
+    pub fn record_generic_send_refused(&self, request_id: u8) {
+        if let Some(lane) = self.lock().generic_lane(request_id) {
+            lane.counters.dropped_send_refused =
+                lane.counters.dropped_send_refused.saturating_add(1);
+        }
+    }
+
+    pub fn record_generic_write(&self, request_id: u8, ok: bool) {
+        if let Some(lane) = self.lock().generic_lane(request_id) {
+            if ok {
+                lane.counters.outputs_written = lane.counters.outputs_written.saturating_add(1);
+            } else {
+                lane.counters.write_errors = lane.counters.write_errors.saturating_add(1);
+            }
+        }
+    }
+
+    pub fn pending_generic_reports(&self) -> usize {
+        self.lock()
+            .generic
+            .iter()
+            .flatten()
+            .map(|lane| lane.reports.len())
+            .sum()
     }
 }
 
@@ -723,5 +1055,255 @@ mod tests {
             SnapshotAdmission::AdmittedInactive
         );
         assert_eq!(runtime.drain(8).len(), 1);
+    }
+
+    // ---- generic raw-HID lanes -------------------------------------------
+
+    fn generic_device(request_id: u8) -> GenericHidDevice {
+        GenericHidDevice {
+            request_id,
+            incarnation: 0,
+            identity: crate::generic::GenericHidIdentity {
+                vendor: 0x0738,
+                product: 0x2221,
+                revision: 0x0100,
+                interface: 0,
+            },
+            hidraw_path: "/dev/hidraw8".to_owned(),
+            sysfs_hid_id: "0003:00000738:00002221".to_owned(),
+            name: "X-56 stick".to_owned(),
+        }
+    }
+
+    fn generic_runtime() -> (HidRuntime, Vec<GenericHidDevice>) {
+        let runtime = HidRuntime::new();
+        runtime.open_endpoint();
+        assert!(runtime.bind_session(1).is_some());
+        let (devices, epoch) = runtime.replace_generic_inventory(&[generic_device(0)]);
+        assert_eq!(epoch, 1);
+        assert_eq!(devices.len(), 1);
+        assert_ne!(devices[0].incarnation, 0);
+        runtime.set_active(true);
+        (runtime, devices)
+    }
+
+    #[test]
+    fn generic_inventory_assigns_incarnations_and_ignores_bad_request_ids() {
+        let runtime = HidRuntime::new();
+        let mut bad = generic_device(7);
+        bad.incarnation = 99;
+        let (devices, epoch) = runtime.replace_generic_inventory(&[
+            generic_device(0),
+            generic_device(2),
+            bad,
+            generic_device(0),
+        ]);
+        assert_eq!(epoch, 1);
+        assert_eq!(
+            devices.iter().map(|d| d.request_id).collect::<Vec<_>>(),
+            vec![0, 2]
+        );
+        assert_ne!(devices[0].incarnation, devices[1].incarnation);
+        let (snapshot, snapshot_epoch) = runtime.generic_inventory_snapshot();
+        assert_eq!(snapshot, devices);
+        assert_eq!(snapshot_epoch, 1);
+        let (empty, epoch) = runtime.replace_generic_inventory(&[]);
+        assert!(empty.is_empty());
+        assert_eq!(epoch, 2);
+        assert_eq!(runtime.generic_inventory_epoch(), 2);
+    }
+
+    #[test]
+    fn generic_reports_require_forwarding_capture_and_a_live_incarnation() {
+        let (runtime, devices) = generic_runtime();
+        let incarnation = devices[0].incarnation;
+        let report = [1_u8; 11];
+        assert_eq!(
+            runtime.submit_generic_report(0, incarnation, 1, &report),
+            GenericAdmission::NotForwarding
+        );
+        assert!(runtime.set_generic_forwarding(0, true));
+        assert!(runtime.generic_forwarding(0));
+        assert_eq!(
+            runtime.submit_generic_report(0, incarnation + 1, 1, &report),
+            GenericAdmission::StaleIncarnation
+        );
+        assert_eq!(
+            runtime.submit_generic_report(1, incarnation, 1, &report),
+            GenericAdmission::UnknownDevice
+        );
+        assert_eq!(
+            runtime.submit_generic_report(0, incarnation, 1, &[0; 248]),
+            GenericAdmission::Oversize
+        );
+        assert_eq!(
+            runtime.submit_generic_report(0, incarnation, 2, &report),
+            GenericAdmission::Admitted
+        );
+        runtime.set_active(false);
+        assert_eq!(runtime.pending_generic_reports(), 0, "focus loss drops buffered reports");
+        assert_eq!(
+            runtime.submit_generic_report(0, incarnation, 3, &report),
+            GenericAdmission::Inactive
+        );
+        let counters = runtime.generic_counters(0).unwrap();
+        // Stale-incarnation and unknown-device rejections are not reports from
+        // this device, so they do not count as ingress.
+        assert_eq!(counters.reports_in, 4);
+        assert_eq!(counters.dropped_not_forwarding, 1);
+        assert_eq!(counters.dropped_inactive, 2);
+        assert_eq!(counters.dropped_overflow, 0);
+    }
+
+    #[test]
+    fn generic_lane_overflow_drops_the_oldest_without_a_fault() {
+        let (runtime, devices) = generic_runtime();
+        let incarnation = devices[0].incarnation;
+        assert!(runtime.set_generic_forwarding(0, true));
+        for index in 0..GENERIC_LANE_CAPACITY {
+            assert_eq!(
+                runtime.submit_generic_report(0, incarnation, index as u64, &[index as u8; 11]),
+                GenericAdmission::Admitted
+            );
+        }
+        assert_eq!(
+            runtime.submit_generic_report(0, incarnation, 99, &[0xee; 11]),
+            GenericAdmission::DroppedOldest
+        );
+        assert_eq!(runtime.pending_generic_reports(), GENERIC_LANE_CAPACITY);
+        assert_eq!(runtime.generic_counters(0).unwrap().dropped_overflow, 1);
+        assert_eq!(runtime.faulted_sources(), 0);
+        let first = runtime.drain_generic(16);
+        assert_eq!(first.len(), 16);
+        assert_eq!(first[0].observed_at_us, 1, "oldest report was evicted");
+        let second = runtime.drain_generic(16);
+        assert_eq!(second.len(), 16);
+        assert_eq!(second[15].as_slice(), &[0xee; 11]);
+        assert!(runtime.drain_generic(16).is_empty());
+        assert!(runtime.generic_forwarding(0), "overflow never detaches the lane");
+    }
+
+    #[test]
+    fn unbinding_or_closing_clears_generic_forwarding_and_buffers() {
+        let (runtime, devices) = generic_runtime();
+        let incarnation = devices[0].incarnation;
+        assert!(runtime.set_generic_forwarding(0, true));
+        let _ = runtime.submit_generic_report(0, incarnation, 1, &[1; 11]);
+        runtime.unbind_session(1);
+        assert!(!runtime.generic_forwarding(0));
+        assert_eq!(runtime.pending_generic_reports(), 0);
+        assert_eq!(
+            runtime.submit_generic_report(0, incarnation, 2, &[1; 11]),
+            GenericAdmission::NotForwarding
+        );
+        let (snapshot, _) = runtime.generic_inventory_snapshot();
+        assert_eq!(snapshot.len(), 1, "inventory survives unbind; the engine clears it");
+        let token = runtime.open_endpoint();
+        assert!(runtime.bind_session(2).is_some());
+        assert!(runtime.set_generic_forwarding(0, true));
+        runtime.close_endpoint(token);
+        assert!(!runtime.generic_forwarding(0));
+    }
+
+    #[test]
+    fn generic_output_mailbox_is_four_deep_and_latest_wins() {
+        let (runtime, _) = generic_runtime();
+        let output = |third: u8| GenericOutputReport {
+            request_id: 0,
+            interface: 0,
+            third,
+            bytes: vec![third, 1, 2],
+        };
+        for third in 0..GENERIC_OUTPUT_MAILBOX as u8 {
+            assert!(runtime.push_generic_output(output(third)));
+        }
+        assert!(runtime.push_generic_output(output(9)));
+        assert_eq!(runtime.pending_generic_outputs(), GENERIC_OUTPUT_MAILBOX);
+        let counters = runtime.generic_counters(0).unwrap();
+        assert_eq!(counters.outputs_in, 5);
+        assert_eq!(counters.outputs_coalesced, 1);
+        let outputs = runtime.take_generic_outputs();
+        assert_eq!(
+            outputs.iter().map(|o| o.third).collect::<Vec<_>>(),
+            vec![1, 2, 3, 9]
+        );
+        assert!(runtime.take_generic_outputs().is_empty());
+        assert!(!runtime.push_generic_output(GenericOutputReport {
+            request_id: 2,
+            interface: 0,
+            third: 0,
+            bytes: vec![]
+        }));
+        runtime.record_generic_write(0, true);
+        runtime.record_generic_write(0, false);
+        runtime.record_generic_forwarded(0);
+        runtime.record_generic_send_refused(0);
+        let counters = runtime.generic_counters(0).unwrap();
+        assert_eq!(counters.outputs_written, 1);
+        assert_eq!(counters.write_errors, 1);
+        assert_eq!(counters.reports_forwarded, 1);
+        assert_eq!(counters.dropped_send_refused, 1);
+    }
+
+    #[test]
+    fn dormant_generic_lanes_stay_out_of_the_snapshot_until_marked_live() {
+        let runtime = HidRuntime::new();
+        let devices = [generic_device(0), generic_device(1)];
+        let (stored, epoch) = runtime.replace_generic_inventory_dormant(&devices);
+        assert_eq!(stored.len(), 2);
+        assert_eq!(epoch, 1);
+        let (snapshot, _) = runtime.generic_inventory_snapshot();
+        assert!(snapshot.is_empty(), "nothing is announced before the node is open");
+        assert!(runtime.take_generic_removals().is_empty());
+        // An open failure removes the dormant lane without reporting an
+        // unplug: nothing was ever announced for it.
+        assert!(runtime.mark_generic_removed(1));
+        assert!(runtime.take_generic_removals().is_empty());
+        assert!(!runtime.mark_generic_live(1, stored[1].incarnation), "removed stays removed");
+        // A stale incarnation or unknown lane cannot go live.
+        assert!(!runtime.mark_generic_live(0, stored[0].incarnation + 99));
+        assert!(!runtime.mark_generic_live(2, 1));
+        assert!(runtime.mark_generic_live(0, stored[0].incarnation));
+        assert!(!runtime.mark_generic_live(0, stored[0].incarnation), "already live");
+        let (snapshot, epoch) = runtime.generic_inventory_snapshot();
+        assert_eq!(epoch, 2, "going live moves the epoch so the pump snapshots");
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].request_id, 0);
+        assert!(runtime.set_generic_forwarding(0, true));
+        assert_eq!(
+            runtime.submit_generic_report(0, stored[0].incarnation, 1, &[1; 11]),
+            GenericAdmission::Inactive,
+            "live lane admits reports (capture is simply not active yet)"
+        );
+        // A live lane that then vanishes reports the unplug normally.
+        assert!(runtime.mark_generic_removed(0));
+        assert_eq!(runtime.take_generic_removals(), vec![0]);
+        assert!(!runtime.mark_generic_live(0, stored[0].incarnation), "removed lanes stay removed");
+    }
+
+    #[test]
+    fn generic_removal_is_reported_once_and_detaches_the_lane() {
+        let (runtime, devices) = generic_runtime();
+        let incarnation = devices[0].incarnation;
+        assert!(runtime.set_generic_forwarding(0, true));
+        assert!(runtime.take_generic_removals().is_empty());
+        assert!(runtime.mark_generic_removed(0));
+        assert!(!runtime.mark_generic_removed(0));
+        assert_eq!(runtime.take_generic_removals(), vec![0]);
+        assert!(runtime.take_generic_removals().is_empty());
+        assert!(!runtime.generic_forwarding(0));
+        assert_eq!(
+            runtime.submit_generic_report(0, incarnation, 1, &[1; 11]),
+            GenericAdmission::NotForwarding
+        );
+        assert!(!runtime.push_generic_output(GenericOutputReport {
+            request_id: 0,
+            interface: 0,
+            third: 0,
+            bytes: vec![1]
+        }));
+        let (snapshot, _) = runtime.generic_inventory_snapshot();
+        assert!(snapshot.is_empty(), "removed devices leave the snapshot");
+        assert!(!runtime.mark_generic_removed(1));
     }
 }

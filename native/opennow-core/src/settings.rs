@@ -825,6 +825,51 @@ fn clamp_number(
     );
 }
 
+const MAX_GENERIC_HID_DEVICES: usize = 8;
+
+/// `genericHidDevices`: lowercase `vvvv:pppp` or `vvvv:pppp:ii` strings (an
+/// optional explicit USB interface), deduplicated, at most eight.
+fn normalize_generic_hid_devices(values: &mut Map<String, Value>) {
+    let mut normalized: Vec<Value> = Vec::new();
+    for value in values["genericHidDevices"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        let candidate = value.trim().to_ascii_lowercase();
+        if !generic_hid_device_is_valid(&candidate) {
+            continue;
+        }
+        if normalized.iter().any(|existing| existing == &candidate) {
+            continue;
+        }
+        normalized.push(Value::String(candidate));
+        if normalized.len() >= MAX_GENERIC_HID_DEVICES {
+            break;
+        }
+    }
+    values.insert("genericHidDevices".to_owned(), Value::Array(normalized));
+}
+
+fn generic_hid_device_is_valid(value: &str) -> bool {
+    let mut parts = value.split(':');
+    let hex4 = |part: Option<&str>| {
+        part.is_some_and(|part| part.len() == 4 && part.chars().all(|c| c.is_ascii_hexdigit()))
+    };
+    if !hex4(parts.next()) || !hex4(parts.next()) {
+        return false;
+    }
+    match parts.next() {
+        None => parts.next().is_none(),
+        Some(interface) => {
+            (1..=2).contains(&interface.len())
+                && interface.chars().all(|c| c.is_ascii_digit())
+                && parts.next().is_none()
+        }
+    }
+}
+
 fn normalize_types(values: &mut Map<String, Value>) {
     let expected = defaults();
     for (key, default) in expected {
@@ -932,6 +977,7 @@ fn normalize_bounded_strings(values: &mut Map<String, Value>) {
         .map(Value::String)
         .collect();
     values.insert("hiddenGameIds".to_owned(), Value::Array(hidden_games));
+    normalize_generic_hid_devices(values);
 
     let tile_sizes = values["homeTileSizes"]
         .as_object()
@@ -1062,6 +1108,7 @@ fn defaults() -> Map<String, Value> {
         "suppressTenBitWarning":false,
         "sessionProxyEnabled":false, "sessionProxyUrl":"", "clipboardPaste":false, "networkTest":false,
         "enableGyroscopeControls":false, "steamControllerCompatibilityMode":false,
+        "genericHidEnabled":false, "genericHidDevices":["0738:2221","0738:a221"],
         "nativeCursorOverlay":true, "mouseSensitivity":1, "mouseAcceleration":1,
         "shortcutToggleStats":"Ctrl+N", "shortcutTogglePointerLock":"F8",
         "shortcutToggleFullscreen":"F11", "shortcutStopStream":"Ctrl+Shift+Q",
@@ -1470,6 +1517,50 @@ mod tests {
             );
         }
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn generic_hid_preferences_default_off_with_the_x56_allowlist() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = SettingsStore::load(Some(directory.path().to_owned())).unwrap();
+        assert_eq!(store.all()["genericHidEnabled"], false);
+        assert_eq!(
+            store.all()["genericHidDevices"],
+            json!(["0738:2221", "0738:a221"])
+        );
+        store.set("genericHidEnabled", json!(true)).unwrap();
+        let mut store = SettingsStore::load(Some(directory.path().to_owned())).unwrap();
+        assert_eq!(store.all()["genericHidEnabled"], true);
+        for invalid in [json!("true"), json!(1), json!(null), json!([])] {
+            assert_eq!(store.set("genericHidEnabled", invalid).unwrap(), false);
+        }
+        assert_eq!(store.reset().unwrap()["genericHidEnabled"], false);
+    }
+
+    #[test]
+    fn generic_hid_device_list_is_lowercased_validated_deduplicated_and_capped() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = SettingsStore::load(Some(directory.path().to_owned())).unwrap();
+        let stored = store
+            .set(
+                "genericHidDevices",
+                json!([
+                    " 0738:2221 ", "0738:A221:00", "0738:2221", "044F:0402:1", "0738:a221:00",
+                    "garbage", "0738:22211", "0738:2221:x", "0738:2221:123", 7, null,
+                    "046d:c24f", "046d:c262", "046d:c266", "046d:c26e", "046d:c268", "046d:c272"
+                ]),
+            )
+            .unwrap();
+        assert_eq!(
+            stored,
+            json!([
+                "0738:2221", "0738:a221:00", "044f:0402:1", "046d:c24f", "046d:c262",
+                "046d:c266", "046d:c26e", "046d:c268"
+            ])
+        );
+        assert_eq!(store.set("genericHidDevices", json!("0738:2221")).unwrap(), json!(["0738:2221", "0738:a221"]));
+        let store = SettingsStore::load(Some(directory.path().to_owned())).unwrap();
+        assert_eq!(store.all()["genericHidDevices"], json!(["0738:2221", "0738:a221"]));
     }
 
     #[test]

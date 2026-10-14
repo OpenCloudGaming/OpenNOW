@@ -11,6 +11,7 @@ mod device_identity;
 mod diagnostics;
 mod discord;
 mod frame_rate;
+mod generic_hid;
 mod gfn;
 mod language;
 mod media;

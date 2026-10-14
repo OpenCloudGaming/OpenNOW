@@ -933,6 +933,21 @@ if(BUILD_TESTING)
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
         TIMEOUT 8
     )
+    qt_add_executable(opennow-controllerhidforwarding-tests
+        tests/tst_controllerhidforwarding.cpp
+        src/input/ControllerInput.cpp
+        src/input/ControllerInput.h
+        src/input/SdlDeviceClaim.h
+    )
+    target_include_directories(opennow-controllerhidforwarding-tests PRIVATE src)
+    target_link_libraries(opennow-controllerhidforwarding-tests PRIVATE
+        Qt6::Test Qt6::Core Qt6::Gui SDL3::SDL3)
+    add_test(NAME opennow-controllerhidforwarding-tests
+             COMMAND opennow-controllerhidforwarding-tests -o -,txt)
+    set_tests_properties(opennow-controllerhidforwarding-tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        TIMEOUT 8
+    )
     qt_add_executable(opennow-controllernavigation-tests
         tests/tst_controllernavigation.cpp
         src/input/ControllerInput.cpp

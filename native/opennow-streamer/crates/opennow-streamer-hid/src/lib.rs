@@ -1,10 +1,20 @@
 use std::fmt;
 
 pub mod ds4;
+pub mod generic;
 pub mod runtime;
 pub mod session;
 
 pub use ds4::{DS4_INTERFACE, DS4_LOW_ID_BASE, DS4_REPORT_BYTES, Ds4ReportState};
+pub use generic::{
+    DEVICE_ID_MASK_BITS, GENERIC_ATTACH_TIMEOUT, GENERIC_DEVICE_CHANGE_FLAGS,
+    GENERIC_DEVICE_ID_DISABLED, GENERIC_DEVICE_ID_SILENT, GENERIC_DRAIN_PER_DEVICE,
+    GENERIC_LANE_CAPACITY, GENERIC_OUTPUT_MAILBOX, GENERIC_REQUEST_ID_BASE,
+    GENERIC_RESPONSE_STATUS_ACCEPTED, GenericAdmission, GenericAttachState, GenericCounters,
+    GenericHidDevice, GenericHidIdentity, GenericHidSession, GenericOutbound, GenericOutputReport,
+    GenericReport, MAX_GENERIC_DEVICES, MAX_GENERIC_REPORT_BYTES, ResponseOutcome,
+    device_id_mask_bit, generic_request_id, generic_request_index,
+};
 pub use runtime::{
     EndpointToken, HidRuntime, IngressItem, InventoryUpdate, LaneFault, ReleaseRequest,
     SessionBinding, SourceMode,

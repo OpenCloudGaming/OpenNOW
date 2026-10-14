@@ -336,6 +336,17 @@ void ControllerInput::poll()
 void ControllerInput::openController(SDL_JoystickID id)
 {
     if (m_gamepadSlots.contains(id)) return;
+    if (hidForwardingActive()) {
+        const auto vendor = SDL_GetGamepadVendorForID(id);
+        const auto product = SDL_GetGamepadProductForID(id);
+        if (isForwardedHidDevice(vendor, product)) {
+            if (!m_skippedForwarded.contains(id))
+                qInfo("Skipping SDL gamepad for forwarded HID device %04x:%04x (instance %u)",
+                      vendor, product, id);
+            m_skippedForwarded.insert(id);
+            return;
+        }
+    }
     const auto freeSlot = std::find_if(m_slots.begin(), m_slots.end(),
                                       [](const GamepadSlot &slot) { return !slot.gamepad; });
     if (freeSlot == m_slots.end()) return;
@@ -366,6 +377,7 @@ void ControllerInput::openController(SDL_JoystickID id)
 
 void ControllerInput::closeController(SDL_JoystickID id)
 {
+    m_skippedForwarded.remove(id);
     if (!m_gamepadSlots.contains(id)) return;
     const auto slotIndex = m_gamepadSlots.take(id);
     if (slotIndex < 0 || slotIndex >= static_cast<int>(m_slots.size())) return;
@@ -621,6 +633,108 @@ void ControllerInput::handleTouchpad(const SDL_GamepadTouchpadEvent &event)
     if (event.type == SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN && (m_shellCaptureEnabled || m_inputSuspended))
         return;
     publishSonySnapshot(slotIndex);
+}
+
+bool ControllerInput::hidForwardingEnabled() const
+{
+    return m_hidForwardingEnabled;
+}
+
+QStringList ControllerInput::forwardedHidDevices() const
+{
+    return m_forwardedHidDevices;
+}
+
+int ControllerInput::skippedForwardedCount() const
+{
+    return static_cast<int>(m_skippedForwarded.size());
+}
+
+bool ControllerInput::hidForwardingActive() const
+{
+    // OPENNOW_GENERIC_HID=1 is the bootstrap switch shared with the Rust core.
+    return m_hidForwardingEnabled || qEnvironmentVariableIntValue("OPENNOW_GENERIC_HID") == 1;
+}
+
+bool ControllerInput::isForwardedHidDevice(quint16 vendor, quint16 product) const
+{
+    return (vendor != 0 || product != 0)
+        && m_forwardedVidPid.contains((quint32(vendor) << 16) | product);
+}
+
+bool ControllerInput::parseVidPid(const QString &text, quint16 &vendor, quint16 &product)
+{
+    const auto parts = text.trimmed().split(u':');
+    if (parts.size() < 2 || parts.size() > 3) return false;
+    if (parts[0].size() != 4 || parts[1].size() != 4) return false;
+    bool vendorOk = false;
+    bool productOk = false;
+    const auto parsedVendor = parts[0].toUInt(&vendorOk, 16);
+    const auto parsedProduct = parts[1].toUInt(&productOk, 16);
+    if (!vendorOk || !productOk || parsedVendor > 0xffff || parsedProduct > 0xffff) return false;
+    if (parts.size() == 3) {
+        bool interfaceOk = false;
+        const auto interfaceNumber = parts[2].toUInt(&interfaceOk, 10);
+        if (!interfaceOk || parts[2].isEmpty() || parts[2].size() > 2 || interfaceNumber > 255)
+            return false;
+    }
+    vendor = static_cast<quint16>(parsedVendor);
+    product = static_cast<quint16>(parsedProduct);
+    return true;
+}
+
+void ControllerInput::setHidForwardingEnabled(bool enabled)
+{
+    if (m_hidForwardingEnabled == enabled) return;
+    m_hidForwardingEnabled = enabled;
+    applyHidForwardingPolicy();
+    emit hidForwardingEnabledChanged();
+}
+
+void ControllerInput::setForwardedHidDevices(const QStringList &devices)
+{
+    QSet<quint32> parsed;
+    QStringList accepted;
+    for (const auto &entry : devices) {
+        quint16 vendor = 0;
+        quint16 product = 0;
+        if (!parseVidPid(entry, vendor, product)) continue;
+        parsed.insert((quint32(vendor) << 16) | product);
+        accepted.append(entry.trimmed().toLower());
+    }
+    if (parsed == m_forwardedVidPid && accepted == m_forwardedHidDevices) return;
+    m_forwardedVidPid = std::move(parsed);
+    m_forwardedHidDevices = std::move(accepted);
+    applyHidForwardingPolicy();
+    emit forwardedHidDevicesChanged();
+}
+
+void ControllerInput::applyHidForwardingPolicy()
+{
+    const auto active = hidForwardingActive();
+    qInfo("Generic HID forwarding %s; forwarded devices: %s", active ? "enabled" : "disabled",
+          qPrintable(m_forwardedHidDevices.isEmpty() ? QStringLiteral("(none)")
+                                                      : m_forwardedHidDevices.join(u", ")));
+    if (!m_sdlReady) return;
+    // Hand newly forwarded devices to the HID lane: close their SDL slot (which
+    // publishes a neutral snapshot so no remote button stays held).
+    for (const auto &slot : m_slots) {
+        if (!slot.gamepad) continue;
+        if (active && isForwardedHidDevice(slot.vendor, slot.product)) {
+            const auto id = slot.instanceId;
+            closeController(id);
+            m_skippedForwarded.insert(id);
+        }
+    }
+    // Give devices back to SDL when they are no longer forwarded.
+    const auto skipped = m_skippedForwarded;
+    for (const auto id : skipped) {
+        const auto vendor = SDL_GetGamepadVendorForID(id);
+        const auto product = SDL_GetGamepadProductForID(id);
+        if (active && isForwardedHidDevice(vendor, product)) continue;
+        m_skippedForwarded.remove(id);
+        if (SDL_IsGamepad(id)) openController(id);
+    }
 }
 
 QList<SdlDeviceClaim> ControllerInput::deviceClaims() const

@@ -1034,10 +1034,24 @@ fn prepare_on_endpoint(
         ));
     }
     let rtcp_on_sctp = sdp_attribute(&describe.body, "general.rtcpOnSctp").as_deref() == Some("1");
-    let hid_device_mask = sdp_attribute(&describe.body, "ri.hidDeviceMask")
+    let hid_device_mask_raw = sdp_attribute(&describe.body, "ri.hidDeviceMask");
+    let hid_device_mask = hid_device_mask_raw
         .as_deref()
         .map(parse_hid_device_mask)
         .unwrap_or(0);
+    let hid_partially_reliable_raw =
+        sdp_attribute(&describe.body, "ri.enablePartiallyReliableTransferHid");
+    let hid_partially_reliable_mask = hid_partially_reliable_raw
+        .as_deref()
+        .map(parse_hid_partially_reliable_mask)
+        .unwrap_or(0);
+    opennow_streamer_protocol::log::log_line(
+        "INFO",
+        "hid",
+        &format!(
+            "NVST hid describe: ri.hidDeviceMask={hid_device_mask_raw:?} (0x{hid_device_mask:x}) ri.enablePartiallyReliableTransferHid={hid_partially_reliable_raw:?} ({hid_partially_reliable_mask})"
+        ),
+    );
     let microphone_available = negotiate_microphone(context, &describe.body);
 
     let mut setup_headers = common_headers.clone();
@@ -1169,6 +1183,7 @@ fn prepare_on_endpoint(
         "remoteDtlsFingerprint":remote_fingerprint,
         "rtcpOnSctp":rtcp_on_sctp,
         "hidDeviceMask":hid_device_mask,
+        "hidPartiallyReliableMask":hid_partially_reliable_mask,
         "microphoneOnBundle":microphone_available,
         "codec":codec,
         "audioTrack":{"payloadType":111,"codec":"opus","clockRateHz":48000,"channels":2,"mid":"0"},
@@ -1977,6 +1992,12 @@ fn video_qos_offers(sdp: &str) -> VideoQosOffers {
     offers
 }
 
+/// `x-nv-ri.enablePartiallyReliableTransferHid`: `-1` means every HID device
+/// id, otherwise a per-id bitmask. Unparseable values fall back to `0`.
+fn parse_hid_partially_reliable_mask(value: &str) -> i64 {
+    value.trim().parse::<i64>().unwrap_or(0)
+}
+
 fn parse_hid_device_mask(value: &str) -> u32 {
     let trimmed = value.trim();
     let (radix, digits) = if let Some(hex) = trimmed
@@ -2260,6 +2281,27 @@ mod tests {
 
     fn stream_config(context: &SessionContext) -> MediaStreamConfig {
         super::super::media_stream_config(context)
+    }
+
+    #[test]
+    fn partially_reliable_hid_attribute_parses_as_a_signed_mask() {
+        assert_eq!(parse_hid_partially_reliable_mask("-1"), -1);
+        assert_eq!(parse_hid_partially_reliable_mask(" 255 "), 255);
+        assert_eq!(parse_hid_partially_reliable_mask("0"), 0);
+        assert_eq!(parse_hid_partially_reliable_mask("garbage"), 0);
+        let sdp = "a=x-nv-ri.enablePartiallyReliableTransferHid:-1\r\na=x-nv-ri.hidDeviceMask:4\r\n";
+        assert_eq!(
+            sdp_attribute(sdp, "ri.enablePartiallyReliableTransferHid")
+                .as_deref()
+                .map(parse_hid_partially_reliable_mask),
+            Some(-1)
+        );
+        assert_eq!(
+            sdp_attribute(sdp, "ri.hidDeviceMask")
+                .as_deref()
+                .map(parse_hid_device_mask),
+            Some(4)
+        );
     }
 
     fn announce_color_format(context: &SessionContext) -> (u8, u8) {

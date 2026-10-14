@@ -1737,8 +1737,15 @@ fn streamer_context(mut session: Value, settings: &Value) -> Value {
     if session["negotiatedStreamProfile"].is_null() {
         session["negotiatedStreamProfile"] = json!({"codec":codec.to_ascii_uppercase()});
     }
+    // Generic raw-HID devices the core enumerated at session creation; the
+    // streamer opens the listed hidraw nodes after re-verifying their HID_ID.
+    let generic_hid_devices = match session.get("genericHidDevices") {
+        Some(Value::Array(devices)) => Value::Array(devices.clone()),
+        _ => Value::Array(Vec::new()),
+    };
     json!({
         "session":session,
+        "genericHidDevices":generic_hid_devices,
         "settings":normalized,
         "shortcuts":{
             "toggleStats":settings["shortcutToggleStats"],
@@ -2080,6 +2087,26 @@ fn internal(message: impl Into<String>) -> StreamerError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn streamer_context_copies_the_sessions_generic_hid_devices() {
+        let devices = json!([{
+            "requestId": 0, "vendorId": 1848, "productId": 8737, "revision": 256,
+            "interface": 0, "hidrawPath": "/dev/hidraw8",
+            "sysfsHidId": "0003:00000738:00002221", "name": "X-56"
+        }]);
+        let session = json!({"sessionId":"A","status":3,"genericHidDevices":devices});
+        let context = streamer_context(session, &json!({"genericHidEnabled": true}));
+        assert_eq!(context["genericHidDevices"], devices);
+        assert_eq!(context["settings"]["genericHidEnabled"], true);
+        let without = streamer_context(json!({"sessionId":"A","status":3}), &json!({}));
+        assert_eq!(without["genericHidDevices"], json!([]));
+        let malformed = streamer_context(
+            json!({"sessionId":"A","status":3,"genericHidDevices":"nope"}),
+            &json!({}),
+        );
+        assert_eq!(malformed["genericHidDevices"], json!([]));
+    }
 
     #[test]
     fn external_stream_window_is_the_native_input_owner() {

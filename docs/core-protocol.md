@@ -576,6 +576,37 @@ through the standard settings API and boolean normalization. It does not change
 the separate region-selector preference. The public queue RPC is unauthenticated
 and does not itself authorize gameplay or infer membership.
 
+### Generic raw-HID forwarding (Linux)
+
+`genericHidEnabled` (boolean, default `false`) asks the core to forward
+allowlisted raw-HID devices (HOTAS sticks, throttles, wheels) to the session
+through the same generic HID lane NVIDIA's native client uses, instead of
+letting SDL present them as an XInput gamepad. `genericHidDevices` is the
+allowlist: an array of lowercase `vvvv:pppp` USB identifiers, optionally
+suffixed with `:ii` to pin one USB interface number. Normalization trims,
+lowercases, drops malformed entries, deduplicates and caps the list at eight;
+the default is `["0738:2221", "0738:a221"]` (Saitek/Logitech X-56 Rhino stick
+and throttle). The environment variable `OPENNOW_GENERIC_HID=1` forces the
+feature on regardless of the stored preference.
+
+When enabled, `session.create` scans `/sys/class/hidraw` (never the device
+nodes), keeps the lowest HID interface of each allowlisted device unless the
+entry pins one, assigns request ids `0..2` (at most three devices) and sends
+`requestedStreamingFeatures.hidDevices` as
+`[{vendorId, productId, revision, customId: 0, flags: 15}]`, the flat entry
+shape the official Linux client sends (`OPENNOW_GENERIC_HID_ENTRY_SHAPE=nested`
+emits the experimental
+`{id, flags, simplifiedHidDeviceData: {vendorId, productId, revision, customId}}`
+instead);
+`supportedHidDevices` stays `0` unless `OPENNOW_GENERIC_HID_SUPPORTED_MASK`
+overrides it. The resulting session carries a top-level `genericHidDevices`
+array of `{requestId, vendorId, productId, revision, interface, hidrawPath,
+sysfsHidId, name}`, which `streamer.prepare` copies verbatim into the streamer
+context as a top-level `genericHidDevices` field. The list is empty when the
+feature is off, when nothing matched, or on non-Linux hosts. The protocol
+version is unchanged: both fields are additive and the streamer treats a
+missing field as an empty list.
+
 For a fresh NVIDIA launch, the shell may pass a selected location's exact `zone`
 and `streamingBaseUrl` to `session.create`. The core accepts a strict zone and
 its exact derived URL for the NVIDIA IDP and NVIDIA provider code even when that

@@ -4,6 +4,8 @@
 #include <QElapsedTimer>
 #include <QHash>
 #include <QPointer>
+#include <QSet>
+#include <QStringList>
 #include <QTimer>
 #include <QVariantList>
 
@@ -25,6 +27,8 @@ class ControllerInput final : public QObject
     Q_PROPERTY(int leftStickDeadzone READ leftStickDeadzone WRITE setLeftStickDeadzone NOTIFY leftStickDeadzoneChanged)
     Q_PROPERTY(int rightStickDeadzone READ rightStickDeadzone WRITE setRightStickDeadzone NOTIFY rightStickDeadzoneChanged)
     Q_PROPERTY(int vibrationIntensity READ vibrationIntensity WRITE setVibrationIntensity NOTIFY vibrationIntensityChanged)
+    Q_PROPERTY(bool hidForwardingEnabled READ hidForwardingEnabled WRITE setHidForwardingEnabled NOTIFY hidForwardingEnabledChanged)
+    Q_PROPERTY(QStringList forwardedHidDevices READ forwardedHidDevices WRITE setForwardedHidDevices NOTIFY forwardedHidDevicesChanged)
 
 public:
     static constexpr quint32 syntheticControllerScanCode = 0x4f504e57;
@@ -76,7 +80,21 @@ public:
     void stopRumble();
     [[nodiscard]] QList<SdlDeviceClaim> deviceClaims() const;
 
+    // Generic raw-HID forwarding: devices on this allowlist are handed to the
+    // native streamer's hidraw lane, so SDL must not also present them as an
+    // XInput gamepad (mirrors Geronimo's "Skipping SDL gamepad for device").
+    [[nodiscard]] bool hidForwardingEnabled() const;
+    void setHidForwardingEnabled(bool enabled);
+    [[nodiscard]] QStringList forwardedHidDevices() const;
+    void setForwardedHidDevices(const QStringList &devices);
+    [[nodiscard]] bool isForwardedHidDevice(quint16 vendor, quint16 product) const;
+    [[nodiscard]] int skippedForwardedCount() const;
+    /// Parses "vvvv:pppp" or "vvvv:pppp:ii" (hex vendor/product, optional interface).
+    static bool parseVidPid(const QString &text, quint16 &vendor, quint16 &product);
+
 signals:
+    void hidForwardingEnabledChanged();
+    void forwardedHidDevicesChanged();
     void controllerCountChanged(int count);
     void controllersChanged();
     void availableControllersChanged();
@@ -158,6 +176,8 @@ private:
     void updatePollInterval();
     [[nodiscard]] bool isSonySlot(int slotIndex) const;
     void refreshControllerMetadata();
+    [[nodiscard]] bool hidForwardingActive() const;
+    void applyHidForwardingPolicy();
     static quint16 buttonMask(Uint8 button);
     static QPair<qint16, qint16> radialDeadzone(qint16 x, qint16 y, int percent);
     static quint8 triggerValue(qint16 value);
@@ -178,6 +198,10 @@ private:
     qint64 m_lastControllerMetadataAt = 0;
     qint64 m_lastGamepadSnapshotAt = 0;
     quint64 m_nextIncarnation = 1;
+    bool m_hidForwardingEnabled = false;
+    QStringList m_forwardedHidDevices;
+    QSet<quint32> m_forwardedVidPid;
+    QSet<SDL_JoystickID> m_skippedForwarded;
 };
 
 Q_DECLARE_METATYPE(ControllerInput::SonySnapshot)

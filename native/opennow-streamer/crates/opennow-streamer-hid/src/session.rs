@@ -104,24 +104,55 @@ impl HidSession {
     }
 
     pub fn reconcile(&mut self, inventory: &InventoryView) -> Vec<HidOutbound> {
+        self.reconcile_excluding(inventory, 0)
+    }
+
+    /// [`reconcile`](Self::reconcile) that refuses to admit a slot whose
+    /// synthesized low id (bit `n` of `foreign_low_ids` = id `n`) is already
+    /// owned by another HID lane, such as a generic device the seat accepted
+    /// under that id. The refused slot stays unadmitted and is retried on a
+    /// later call once the id is free; an already admitted slot is left alone.
+    pub fn reconcile_excluding(
+        &mut self,
+        inventory: &InventoryView,
+        foreign_low_ids: u16,
+    ) -> Vec<HidOutbound> {
         let mut outbound = Vec::with_capacity(crate::MAX_SOURCES * 2);
         for slot in 0..crate::MAX_SOURCES as u8 {
             let wanted = inventory.claim(slot);
+            let foreign = low_id_for_slot(slot)
+                .is_some_and(|low_id| foreign_low_ids & (1_u16 << low_id) != 0);
             match (self.sources[usize::from(slot)], wanted) {
                 (Some(current), Some(claim)) if current.incarnation == claim.incarnation => {}
                 (Some(_), _) => {
                     self.retire_slot(slot, &mut outbound);
-                    if let Some(claim) = wanted {
+                    if let Some(claim) = wanted
+                        && !foreign
+                    {
                         self.admit(claim, &mut outbound);
                     }
                 }
                 (None, Some(claim)) => {
-                    self.admit(claim, &mut outbound);
+                    if !foreign {
+                        self.admit(claim, &mut outbound);
+                    }
                 }
                 (None, None) => {}
             }
         }
         outbound
+    }
+
+    /// Slots in `inventory` that [`reconcile_excluding`](Self::reconcile_excluding)
+    /// would refuse (or did refuse) because their low id is in `foreign_low_ids`.
+    pub fn slots_refused_by(inventory: &InventoryView, foreign_low_ids: u16) -> u16 {
+        (0..crate::MAX_SOURCES as u8)
+            .filter(|slot| inventory.claim(*slot).is_some())
+            .filter(|slot| {
+                low_id_for_slot(*slot)
+                    .is_some_and(|low_id| foreign_low_ids & (1_u16 << low_id) != 0)
+            })
+            .fold(0_u16, |mask, slot| mask | (1 << slot))
     }
 
     fn admit(&mut self, claim: SdlDeviceClaim, outbound: &mut Vec<HidOutbound>) -> HidAttachment {
@@ -313,6 +344,33 @@ mod tests {
         assert_eq!(session.attached(0), Some(1));
         assert_eq!(session.attached(1), None);
         assert_eq!(session.rich_slot_mask(), 0b0001);
+    }
+
+    #[test]
+    fn reconcile_refuses_slots_whose_low_id_a_generic_device_owns() {
+        let mut session = session_with_server_mask(0x5);
+        let view = inventory([
+            Some(ds4(0, 1).unwrap()),
+            Some(ds4(1, 2).unwrap()),
+            None,
+            None,
+        ]);
+        // The seat accepted a generic device as id 6 (= DS4 slot 0's low id).
+        let generic_ids = 1_u16 << 6;
+        assert_eq!(HidSession::slots_refused_by(&view, generic_ids), 0b0001);
+        let outbound = session.reconcile_excluding(&view, generic_ids);
+        assert_eq!(outbound, vec![HidOutbound::Attach { low_id: 7 }]);
+        assert_eq!(session.attached(0), None, "slot 0 is refused, not attached");
+        assert_eq!(session.attached(1), Some(2));
+        // Once the id is free again the refused slot attaches on the next pass.
+        let outbound = session.reconcile_excluding(&view, 0);
+        assert_eq!(outbound, vec![HidOutbound::Attach { low_id: 6 }]);
+        assert_eq!(session.attached(0), Some(1));
+        // An already admitted slot is never retired by the mask alone.
+        let outbound = session.reconcile_excluding(&view, generic_ids);
+        assert!(outbound.is_empty());
+        assert_eq!(session.attached(0), Some(1));
+        assert_eq!(HidSession::slots_refused_by(&view, 0), 0);
     }
 
     #[test]

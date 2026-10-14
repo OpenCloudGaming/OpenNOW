@@ -200,6 +200,17 @@ ApplicationWindow {
         property: "vibrationIntensity"
         value: Number(ShellStore.settings.controllerVibrationIntensity ?? 100)
     }
+    Binding {
+        target: ControllerInput
+        property: "hidForwardingEnabled"
+        value: ShellStore.settings.genericHidEnabled === true
+    }
+    Binding {
+        target: ControllerInput
+        property: "forwardedHidDevices"
+        value: Array.isArray(ShellStore.settings.genericHidDevices)
+            ? ShellStore.settings.genericHidDevices : []
+    }
 
     Shortcut {
         objectName: "configuredStreamStatsShortcut"

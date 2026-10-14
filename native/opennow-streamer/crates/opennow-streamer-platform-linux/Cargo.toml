@@ -31,6 +31,7 @@ ffmpeg-next = { version = "9.0.0", default-features = false, features = ["format
 ffmpeg-sys-next = { version = "9.0.0", default-features = false, optional = true }
 libc = "0.2"
 libloading = "0.8"
+opennow-streamer-hid = { path = "../opennow-streamer-hid" }
 serde_json.workspace = true
 raw-window-handle = { version = "0.6", optional = true }
 thiserror = "2"

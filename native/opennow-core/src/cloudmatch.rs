@@ -252,6 +252,7 @@ impl CloudMatchService {
         }
         crate::requests::check()?;
         session_params["networkTestSessionId"] = json!(network_test["sessionId"].as_str());
+        session_params["genericHidDevices"] = crate::generic_hid::resolve_for_session(settings);
         let body = build_create_body(&app_id, &session_params, settings, device_id);
         let mut url = base
             .join("v2/session")
@@ -284,6 +285,7 @@ impl CloudMatchService {
             info["networkTestSessionId"] = json!(session_id);
         }
         info["networkTest"] = network_test;
+        info["genericHidDevices"] = session_params["genericHidDevices"].clone();
         let control_base = info["streamingBaseUrl"]
             .as_str()
             .and_then(|raw| trusted_cloudmatch_base(raw).ok())
@@ -970,6 +972,7 @@ impl CloudMatchService {
             let zone = zone_base.host_str().unwrap_or_default();
             let mut info = session_info(&initial_payload, &control_base, zone, &app_id, device_id)?;
             check()?;
+            self.ensure_generic_hid_devices(&mut info, settings);
             self.store_active(&mut info, &control_base, zone, &app_id, client)?;
             return Ok(json!({"session":info}));
         }
@@ -1004,8 +1007,37 @@ impl CloudMatchService {
         }
         info["resumePending"] = json!(true);
         info["phase"] = json!("resuming");
+        self.ensure_generic_hid_devices(&mut info, settings);
         self.store_active(&mut info, &control_base, zone, &app_id, client)?;
         Ok(json!({"session":info}))
+    }
+
+    /// Give a claimed/resumed session its `genericHidDevices` list. The list
+    /// is normally computed by `session.create` and carried by
+    /// [`store_active`]; a session attached without a create in this process
+    /// (restart, reconcile) re-enumerates from settings so the streamer
+    /// context is never silently empty.
+    ///
+    /// [`store_active`]: Self::store_active
+    fn ensure_generic_hid_devices(&self, info: &mut Value, settings: &Value) {
+        if !info["genericHidDevices"].is_null() {
+            return;
+        }
+        let carried = {
+            let active = self.active.lock().expect("CloudMatch state poisoned");
+            active
+                .as_ref()
+                .filter(|state| info["sessionId"] == state.session_id.as_str())
+                .map(|state| state.info["genericHidDevices"].clone())
+                .filter(|value| !value.is_null())
+        };
+        info["genericHidDevices"] = match carried {
+            Some(value) => value,
+            None => {
+                eprintln!("Generic HID: session attached without a create; re-enumerating");
+                crate::generic_hid::resolve_for_session(settings)
+            }
+        };
     }
 
     pub fn report_ad(
@@ -1108,8 +1140,16 @@ impl CloudMatchService {
         }
         if let Some(previous) = active.as_ref() {
             preserve_session_profile(info, &previous.info);
-            if previous.session_id == session_id && info["keyboardLayout"].is_null() {
-                info["keyboardLayout"] = previous.info["keyboardLayout"].clone();
+            if previous.session_id == session_id {
+                if info["keyboardLayout"].is_null() {
+                    info["keyboardLayout"] = previous.info["keyboardLayout"].clone();
+                }
+                // `genericHidDevices` is computed once by `session.create`;
+                // every later poll rebuilds `info` from the CloudMatch payload
+                // and must not drop the list the streamer context reads.
+                if info["genericHidDevices"].is_null() {
+                    info["genericHidDevices"] = previous.info["genericHidDevices"].clone();
+                }
             }
         }
         *active = Some(ActiveSession {
@@ -1455,12 +1495,25 @@ fn build_create_body(app_id: &str, params: &Value, settings: &Value, device_id: 
     // Codec, bitrate ceiling, vsync, channel count, QoS policy, touch support, and the
     // dynamic quality policy are deliberately absent: the official client resolves the
     // codec locally and carries bitrate/policy purely in the RTSP ANNOUNCE.
+    // Generic raw-HID (HOTAS/wheel) devices the core enumerated for this session.
+    // Nothing is advertised unless the caller resolved a non-empty list; the
+    // supportedHidDevices bitmask stays 0 because no generic bit is documented.
+    let generic_hid_shape = crate::generic_hid::entry_shape();
+    let supported_hid_devices = crate::generic_hid::supported_mask();
+    let hid_devices =
+        crate::generic_hid::cloudmatch_hid_devices(&params["genericHidDevices"], generic_hid_shape);
+    if !hid_devices.is_null() || supported_hid_devices != 0 {
+        eprintln!(
+            "Generic HID: CloudMatch supportedHidDevices={supported_hid_devices} shape={} hidDevices={hid_devices}",
+            generic_hid_shape.label()
+        );
+    }
     let mut features = json!({
         "reflex":reflex,
         "bitDepth":bit_depth,
         "cloudGsync":cloud_gsync,
         "enabledL4S":setting_bool(settings, "enableL4S", false),
-        "supportedHidDevices":0,
+        "supportedHidDevices":supported_hid_devices,
         "profile":0,
         "fallbackToLogicalResolution":false,
         "chromaFormat":chroma,
@@ -1471,7 +1524,7 @@ fn build_create_body(app_id: &str, params: &Value, settings: &Value, device_id: 
     });
     features["mouseMovementFlags"] = json!(0);
     features["trueHdr"] = json!(false);
-    features["hidDevices"] = Value::Null;
+    features["hidDevices"] = hid_devices;
     json!({"sessionRequestData":{
         "appId":app_id.parse::<i64>().unwrap_or_default(),
         "internalTitle":params["title"].as_str(),
@@ -1610,11 +1663,27 @@ fn session_info(
             (port > 0).then(|| json!({"ip":ip,"port":port,"usage":connection["usage"]}))
         });
     let monitor = &session["sessionRequestData"]["clientRequestMonitorSettings"][0];
-    let mut features = session["sessionRequestData"]["requestedStreamingFeatures"]
+    let requested_features = &session["sessionRequestData"]["requestedStreamingFeatures"];
+    let finalized_features = &session["finalizedStreamingFeatures"];
+    if !requested_features["hidDevices"].is_null()
+        || !finalized_features["hidDevices"].is_null()
+        || finalized_features["supportedHidDevices"]
+            .as_i64()
+            .is_some_and(|mask| mask != 0)
+    {
+        eprintln!(
+            "Generic HID: CloudMatch echoed requested.hidDevices={} requested.supportedHidDevices={} finalized.supportedHidDevices={} finalized.hidDevices={}",
+            requested_features["hidDevices"],
+            requested_features["supportedHidDevices"],
+            finalized_features["supportedHidDevices"],
+            finalized_features["hidDevices"],
+        );
+    }
+    let mut features = requested_features
         .as_object()
         .cloned()
         .unwrap_or_default();
-    if let Some(finalized) = session["finalizedStreamingFeatures"].as_object() {
+    if let Some(finalized) = finalized_features.as_object() {
         features.extend(finalized.clone());
     }
     let codec_reported =
@@ -4756,6 +4825,87 @@ mod tests {
         assert_eq!(client_timezone_offset_ms(hours(1)), 3_600_000);
         let kathmandu = chrono::FixedOffset::east_opt(5 * 3600 + 45 * 60).unwrap();
         assert_eq!(client_timezone_offset_ms(kathmandu), 20_700_000);
+    }
+
+    #[test]
+    fn generic_hid_devices_are_null_unless_the_session_params_list_them() {
+        if std::env::var("OPENNOW_GENERIC_HID_SUPPORTED_MASK").is_ok()
+            || std::env::var("OPENNOW_GENERIC_HID_ENTRY_SHAPE").is_ok()
+        {
+            return;
+        }
+        let body = build_create_body("123", &json!({}), &json!({}), "device");
+        let features = &body["sessionRequestData"]["requestedStreamingFeatures"];
+        assert_eq!(features["supportedHidDevices"], 0);
+        assert_eq!(features["hidDevices"], Value::Null);
+        let empty = build_create_body("123", &json!({"genericHidDevices": []}), &json!({}), "device");
+        assert_eq!(
+            empty["sessionRequestData"]["requestedStreamingFeatures"]["hidDevices"],
+            Value::Null
+        );
+
+        let params = json!({"genericHidDevices": [{
+            "requestId": 0, "vendorId": 1848, "productId": 8737, "revision": 256,
+            "interface": 0, "hidrawPath": "/dev/hidraw8",
+            "sysfsHidId": "0003:00000738:00002221", "name": "X-56"
+        }]});
+        let body = build_create_body("123", &params, &json!({}), "device");
+        let features = &body["sessionRequestData"]["requestedStreamingFeatures"];
+        assert_eq!(features["supportedHidDevices"], 0);
+        assert_eq!(
+            features["hidDevices"],
+            json!([{"vendorId":1848,"productId":8737,"revision":256,"customId":0,"flags":15}]),
+            "the documented flat entry shape is the default"
+        );
+        // The resume body carries no requestedStreamingFeatures and is untouched.
+        let resumed = build_resume_body("123", &params, &json!({}), "device");
+        assert!(resumed["sessionRequestData"]["requestedStreamingFeatures"].is_null());
+    }
+
+    #[test]
+    fn generic_hid_devices_survive_session_polls_and_resumes() {
+        let client = Client::new();
+        let service = CloudMatchService::new(client.clone());
+        let base = trusted_cloudmatch_base(DEFAULT_STREAMING_BASE).unwrap();
+        let devices = json!([{
+            "requestId": 0, "vendorId": 1848, "productId": 8737, "revision": 256,
+            "interface": 0, "hidrawPath": "/dev/hidraw8",
+            "sysfsHidId": "0003:00000738:00002221", "name": "X-56"
+        }]);
+        // session.create stores the queued session with the enumerated list.
+        let mut created = json!({"sessionId":"A","status":1,"genericHidDevices":devices});
+        service
+            .store_active(&mut created, &base, "", "123", client.clone())
+            .unwrap();
+        // session.poll rebuilds info from the CloudMatch payload (no list).
+        let mut polled = json!({"sessionId":"A","status":2});
+        service
+            .store_active(&mut polled, &base, "", "123", client.clone())
+            .unwrap();
+        assert_eq!(polled["genericHidDevices"], devices);
+        assert_eq!(service.active()["session"]["genericHidDevices"], devices);
+        // A later poll still carries it, and streamer.prepare reads the active info.
+        let mut ready = json!({"sessionId":"A","status":3});
+        service
+            .store_active(&mut ready, &base, "", "123", client.clone())
+            .unwrap();
+        assert_eq!(service.active()["session"]["genericHidDevices"], devices);
+        // A claim/resume of the same seat carries the list without re-enumerating.
+        let mut resumed = json!({"sessionId":"A","status":2});
+        service.ensure_generic_hid_devices(&mut resumed, &json!({}));
+        assert_eq!(resumed["genericHidDevices"], devices);
+        // A different session never inherits another seat's list; with the
+        // feature off the re-enumeration resolves to an empty list.
+        if std::env::var("OPENNOW_GENERIC_HID").ok().as_deref() != Some("1") {
+            let mut other = json!({"sessionId":"B","status":2});
+            service.ensure_generic_hid_devices(&mut other, &json!({"genericHidEnabled": false}));
+            assert_eq!(other["genericHidDevices"], json!([]));
+        }
+        let mut other = json!({"sessionId":"B","status":2});
+        service
+            .store_active(&mut other, &base, "", "123", client)
+            .unwrap();
+        assert!(other["genericHidDevices"].is_null());
     }
 
     #[test]

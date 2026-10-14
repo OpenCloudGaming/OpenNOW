@@ -1,5 +1,6 @@
 mod audio_playout;
 mod embedded_input;
+mod generic_hid;
 mod graphics;
 mod h264;
 #[cfg(target_os = "linux")]
@@ -25,6 +26,7 @@ mod windows_graphics;
 mod windows_raw_input;
 
 pub use embedded_input::{EmbeddedInputCapture, EmbeddedLocalAction};
+pub use generic_hid::GenericHidForwarder;
 pub use graphics::{
     GraphicsApi, GraphicsColorSpace, GraphicsContext, GraphicsContextLease, GraphicsFrame,
     GraphicsFrameError, GraphicsFrameInfo, GraphicsFramePublisher, GraphicsFrameToken,

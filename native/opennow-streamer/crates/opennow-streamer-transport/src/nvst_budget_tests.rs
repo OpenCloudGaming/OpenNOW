@@ -247,6 +247,55 @@ fn sony_review_runtime(incarnation: u64, server_mask: u32) -> (HidRuntime, HidSe
 }
 
 #[test]
+fn ds4_attach_is_skipped_while_a_generic_device_owns_its_low_id() {
+    let (mut rtc, _peer, channels, _peer_channels) = connect_bundle_pair();
+    let (runtime, mut session, mut codec) = sony_review_runtime(11, 5);
+    runtime.set_active(true);
+    let mut mask = 0;
+    let mut logged = 0;
+    // The seat accepted a generic device as id 6 (DS4 slot 0's low id).
+    assert!(pump_hid_pending(
+        &runtime,
+        &mut session,
+        &mut codec,
+        channels,
+        &mut rtc,
+        &mut mask,
+        1 << 6,
+        &mut logged,
+        1
+    ));
+    assert_eq!(session.attached(0), None, "slot 0 must not clobber generic id 6");
+    assert_eq!(logged, 0b0001, "the refusal is logged once per occurrence");
+    assert!(pump_hid_pending(
+        &runtime,
+        &mut session,
+        &mut codec,
+        channels,
+        &mut rtc,
+        &mut mask,
+        1 << 6,
+        &mut logged,
+        2
+    ));
+    assert_eq!(session.attached(0), None);
+    // Once the generic device releases id 6 the DS4 attaches normally.
+    assert!(pump_hid_pending(
+        &runtime,
+        &mut session,
+        &mut codec,
+        channels,
+        &mut rtc,
+        &mut mask,
+        0,
+        &mut logged,
+        3
+    ));
+    assert_eq!(session.attached(0), Some(11));
+    assert_eq!(logged, 0);
+}
+
+#[test]
 fn parent_review_capture_pause_retains_sony_attachment() {
     let (mut rtc, _peer, channels, _peer_channels) = connect_bundle_pair();
     let (runtime, mut session, mut codec) = sony_review_runtime(11, 5);
@@ -259,6 +308,8 @@ fn parent_review_capture_pause_retains_sony_attachment() {
         channels,
         &mut rtc,
         &mut mask,
+        0,
+        &mut 0,
         1
     ));
     assert_eq!(session.attached(0), Some(11));
@@ -270,6 +321,8 @@ fn parent_review_capture_pause_retains_sony_attachment() {
         channels,
         &mut rtc,
         &mut mask,
+        0,
+        &mut 0,
         2
     ));
     assert_eq!(
@@ -319,6 +372,8 @@ fn unbound_capture_leaves_the_bundle_endpoint_inactive() {
         channels,
         &mut rtc,
         &mut mask,
+        0,
+        &mut 0,
         1
     ));
     assert_eq!(session.attached(0), None);
@@ -345,6 +400,8 @@ fn repeated_capture_pause_cycles_send_one_neutral_report_per_source() {
         channels,
         &mut rtc,
         &mut mask,
+        0,
+        &mut 0,
         1
     ));
     assert_eq!(mask, 0b0001);
@@ -361,6 +418,8 @@ fn repeated_capture_pause_cycles_send_one_neutral_report_per_source() {
             channels,
             &mut rtc,
             &mut mask,
+            0,
+            &mut 0,
             100 + cycle
         ));
         let after = channels.buffered_total(&mut rtc);
@@ -377,6 +436,8 @@ fn repeated_capture_pause_cycles_send_one_neutral_report_per_source() {
             channels,
             &mut rtc,
             &mut mask,
+            0,
+            &mut 0,
             200 + cycle
         ));
         assert_eq!(
@@ -480,6 +541,8 @@ fn sony_rich_reports_reach_the_receiving_peer_after_admission() {
         channels,
         &mut local,
         &mut mask,
+        0,
+        &mut 0,
         1
     ));
     assert_eq!(mask, 0b0001);
@@ -497,6 +560,8 @@ fn sony_rich_reports_reach_the_receiving_peer_after_admission() {
         channels,
         &mut local,
         &mut mask,
+        0,
+        &mut 0,
         2
     ));
     forward_rtc_outputs(

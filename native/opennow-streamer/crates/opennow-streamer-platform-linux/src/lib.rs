@@ -16,6 +16,8 @@ mod error;
 mod format;
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
 mod frame_producer;
+#[cfg(target_os = "linux")]
+mod hidraw;
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
 mod presentation;
 #[cfg(target_os = "linux")]
@@ -57,6 +59,8 @@ pub use frame_producer::{
     LinuxGpuFrameProducer, LinuxGpuRenderResources, LinuxTextureColorSpace, PreparedLinuxFrame,
     PreparedVulkanFrame, PreparedVulkanImage, RecordedGpuFrame, VulkanRenderDevice,
 };
+#[cfg(target_os = "linux")]
+pub use hidraw::{HidrawForwarder, HidrawTarget, sysfs_hid_id};
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
 pub use presentation::{NativeSurface, VulkanPresenter};
 #[cfg(target_os = "linux")]

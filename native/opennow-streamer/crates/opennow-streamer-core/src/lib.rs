@@ -10,13 +10,14 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use decode_progress::{
     DecodeProgressEvent, DecodeProgressPolicy, DecodeProgressStage, DecodeProgressWatchdog,
 };
-use opennow_streamer_hid::HidRuntime;
+use opennow_streamer_hid::{GenericHidDevice, GenericHidIdentity, HidRuntime};
 use opennow_streamer_platform::{
     CapturedInput, CapturedInputQueue, CapturedInputSample, DecodeStageTimings,
-    DecodeTimingsReport, EncodedFrame, MediaCodec, MediaColorQuality, MediaControl, MediaFeedback,
-    MediaRuntime, MediaRuntimeControl, MediaSession, MediaSink, MediaStreamConfig, MediaVideoCodec,
-    PushOutcome, RecordingSummary, StreamShortcutAction, StreamShortcutBindings, record_matroska,
-    record_replay_matroska, supports_audio_decode, supports_audio_output, video_backends,
+    DecodeTimingsReport, EncodedFrame, GenericHidForwarder, MediaCodec, MediaColorQuality,
+    MediaControl, MediaFeedback, MediaRuntime, MediaRuntimeControl, MediaSession, MediaSink,
+    MediaStreamConfig, MediaVideoCodec, PushOutcome, RecordingSummary, StreamShortcutAction,
+    StreamShortcutBindings, record_matroska, record_replay_matroska, supports_audio_decode,
+    supports_audio_output, video_backends,
 };
 use opennow_streamer_protocol::{
     Capabilities, Command, PROTOCOL_VERSION, ReplayBufferConfig, SessionContext, error, event,
@@ -224,6 +225,9 @@ pub struct Engine {
     replay_budget: Arc<AtomicUsize>,
     microphone: Option<MicrophoneController>,
     hid_runtime: Arc<HidRuntime>,
+    /// hidraw reader thread for allowlisted generic HID devices; lives from a
+    /// successful `start` until `stop` and is joined on drop.
+    generic_hid: Option<GenericHidForwarder>,
 }
 
 struct RecordingWorker {
@@ -268,6 +272,7 @@ impl Engine {
             replay_budget: Arc::new(AtomicUsize::new(0)),
             microphone: None,
             hid_runtime: Arc::new(HidRuntime::new()),
+            generic_hid: None,
         }
     }
 
@@ -307,6 +312,7 @@ impl Engine {
             replay_budget: Arc::new(AtomicUsize::new(0)),
             microphone: None,
             hid_runtime: Arc::new(HidRuntime::new()),
+            generic_hid: None,
         }
     }
 
@@ -342,6 +348,7 @@ impl Engine {
             replay_budget: Arc::new(AtomicUsize::new(0)),
             microphone: None,
             hid_runtime: Arc::new(HidRuntime::new()),
+            generic_hid: None,
         }
     }
 
@@ -645,6 +652,7 @@ impl Engine {
     fn start(&mut self, command: Command) -> Result<Vec<Value>, Value> {
         let mut context = parse_context(command.context, &command.id)?;
         validate_context(&context, &command.id)?;
+        let generic_hid_devices = parse_generic_hid_devices(&context);
         let audio_device =
             opennow_streamer_protocol::AudioOutputDevice::from_settings(&context.settings)
                 .map_err(|message| error(Some(&command.id), "invalid-context", message))?;
@@ -978,6 +986,7 @@ impl Engine {
                 "NVST association exited before the session start was accepted",
             ));
         }
+        self.start_generic_hid(generic_hid_devices);
         if let Some(nvst_events) = nvst_events {
             let output = self.events.clone();
             let lifecycle = self.lifecycle.clone();
@@ -1021,6 +1030,7 @@ impl Engine {
                     lifecycle.state = State::Idle;
                 }
                 drop(lifecycle);
+                self.stop_generic_hid();
                 self.hid_runtime.unbind_session(generation);
                 return Err(error(
                     Some(&command.id),
@@ -1226,6 +1236,7 @@ impl Engine {
 
     fn stop(&mut self, reason: &str) {
         self.clip_cancelled.store(true, Ordering::Release);
+        self.stop_generic_hid();
         if let Some(generation) = self.hid_runtime.session_generation() {
             self.hid_runtime.unbind_session(generation);
         }
@@ -1258,6 +1269,91 @@ impl Engine {
                 "status",
                 json!({ "status": "stopped", "message": reason }),
             ));
+        }
+    }
+
+    /// Enter the context's generic HID devices into the HID runtime and start
+    /// the hidraw reader. Failure is logged and never fatal for the session.
+    fn start_generic_hid(&mut self, devices: Vec<GenericHidDevice>) {
+        self.stop_generic_hid();
+        if devices.is_empty() {
+            let requested = std::env::var("OPENNOW_GENERIC_HID")
+                .ok()
+                .is_some_and(|value| value.trim() == "1")
+                || lock_lifecycle(&self.lifecycle)
+                    .context
+                    .as_ref()
+                    .is_some_and(|context| {
+                        context.settings["genericHidEnabled"].as_bool() == Some(true)
+                    });
+            if requested {
+                opennow_streamer_protocol::log::log_line(
+                    "WARN",
+                    "hid",
+                    "generic hid: forwarding is enabled but the session context lists no devices; nothing will be attached (check the core's 'Generic HID:' enumeration and CloudMatch lines)",
+                );
+            }
+            return;
+        }
+        // Lanes are published dormant: the bundle pump cannot send an attach
+        // for a node until the hidraw thread has opened it and flipped it live.
+        let (stored, epoch) = self
+            .hid_runtime
+            .replace_generic_inventory_dormant(&devices);
+        for device in &stored {
+            opennow_streamer_protocol::log::log_line(
+                "INFO",
+                "hid",
+                &format!(
+                    "generic hid: requestId={} {:04x}:{:04x} rev={:04x} iface={} node={} name={:?} incarnation={}",
+                    device.request_id,
+                    device.identity.vendor,
+                    device.identity.product,
+                    device.identity.revision,
+                    device.identity.interface,
+                    device.hidraw_path,
+                    device.name,
+                    device.incarnation,
+                ),
+            );
+        }
+        match GenericHidForwarder::start(&stored, Arc::clone(&self.hid_runtime)) {
+            Ok(forwarder) => {
+                opennow_streamer_protocol::log::log_line(
+                    "INFO",
+                    "hid",
+                    &format!(
+                        "generic hid: context lists {} device(s) (epoch {epoch}); forwarder started, {} node(s) open",
+                        stored.len(),
+                        forwarder.open_count(),
+                    ),
+                );
+                self.generic_hid = Some(forwarder);
+            }
+            Err(reason) => {
+                opennow_streamer_protocol::log::log_line(
+                    "WARN",
+                    "hid",
+                    &format!(
+                        "generic hid: context lists {} device(s); forwarder unavailable: {reason}",
+                        stored.len()
+                    ),
+                );
+                let _ = self.hid_runtime.replace_generic_inventory(&[]);
+            }
+        }
+    }
+
+    /// Join the hidraw reader and clear the generic inventory. Safe to call
+    /// repeatedly and when nothing was started.
+    fn stop_generic_hid(&mut self) {
+        if self.generic_hid.take().is_some() {
+            opennow_streamer_protocol::log::log_line("INFO", "hid", "generic hid: forwarder stopped");
+        }
+        if !self.hid_runtime.generic_inventory_snapshot().0.is_empty()
+            || self.hid_runtime.generic_inventory_epoch() != 0
+        {
+            let _ = self.hid_runtime.replace_generic_inventory(&[]);
         }
     }
 
@@ -1551,6 +1647,54 @@ impl Drop for Engine {
             let _ = worker.join();
         }
     }
+}
+
+/// Read the core-prepared `genericHidDevices` array from the session context:
+/// `[{requestId, vendorId, productId, revision, interface, hidrawPath,
+/// sysfsHidId, name}]`. Malformed entries are skipped; incarnations are
+/// assigned later by the HID runtime.
+fn parse_generic_hid_devices(context: &SessionContext) -> Vec<GenericHidDevice> {
+    let Some(entries) = context
+        .extra
+        .get("genericHidDevices")
+        .and_then(Value::as_array)
+    else {
+        return Vec::new();
+    };
+    let u16_field = |entry: &Value, key: &str| -> Option<u16> {
+        entry.get(key)?.as_u64().and_then(|value| u16::try_from(value).ok())
+    };
+    let u8_field = |entry: &Value, key: &str| -> Option<u8> {
+        entry.get(key)?.as_u64().and_then(|value| u8::try_from(value).ok())
+    };
+    let string_field = |entry: &Value, key: &str| -> Option<String> {
+        entry.get(key)?.as_str().map(ToOwned::to_owned)
+    };
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let request_id = u8_field(entry, "requestId")?;
+            opennow_streamer_hid::generic_request_index(request_id)?;
+            let hidraw_path = string_field(entry, "hidrawPath")?;
+            if hidraw_path.is_empty() {
+                return None;
+            }
+            Some(GenericHidDevice {
+                request_id,
+                incarnation: 0,
+                identity: GenericHidIdentity {
+                    vendor: u16_field(entry, "vendorId")?,
+                    product: u16_field(entry, "productId")?,
+                    revision: u16_field(entry, "revision").unwrap_or(0),
+                    interface: u8_field(entry, "interface").unwrap_or(0),
+                },
+                hidraw_path,
+                sysfs_hid_id: string_field(entry, "sysfsHidId").unwrap_or_default(),
+                name: string_field(entry, "name").unwrap_or_default(),
+            })
+        })
+        .take(opennow_streamer_hid::MAX_GENERIC_DEVICES)
+        .collect()
 }
 
 fn parse_context(context: Option<Value>, id: &str) -> Result<SessionContext, Value> {
@@ -2193,6 +2337,30 @@ fn forward_nvst_event<R: NvstSessionResources>(
         }
         NvstReceiveEvent::InputUnavailable(reason) => {
             let _ = output.send(event("input-unavailable", json!({ "reason": reason })));
+            false
+        }
+        NvstReceiveEvent::HidForwardState {
+            request_id,
+            vendor,
+            product,
+            state,
+            device_id,
+            status,
+            flags,
+        } => {
+            let _ = output.send(event(
+                "hid-forward-state",
+                json!({
+                    "startId": pending_cursor_capture.start_id,
+                    "requestId": request_id,
+                    "vendorId": vendor,
+                    "productId": product,
+                    "state": state,
+                    "deviceId": device_id,
+                    "status": status,
+                    "flags": flags,
+                }),
+            ));
             false
         }
         NvstReceiveEvent::Cursor(bytes) => {
@@ -6146,6 +6314,85 @@ mod tests {
         assert_eq!(responses[0]["type"], "ok");
         assert_eq!(lifecycle_state(&engine), State::Idle);
         assert!(engine.hid_runtime.bind_session(10_000).is_none());
+    }
+
+    #[test]
+    fn generic_hid_devices_survive_context_parsing_and_map_to_the_hid_crate() {
+        let mut context = synthetic_context("generic-hid-context", json!([]));
+        context["genericHidDevices"] = json!([
+            {
+                "requestId": 0, "vendorId": 0x0738, "productId": 0x2221, "revision": 0x0100,
+                "interface": 0, "hidrawPath": "/dev/hidraw8",
+                "sysfsHidId": "0003:00000738:00002221",
+                "name": "Mad Catz Saitek Pro Flight X-56 Rhino Stick"
+            },
+            { "requestId": 1, "vendorId": 0x0738, "productId": 0xa221, "hidrawPath": "/dev/hidraw10" },
+            { "requestId": 7, "vendorId": 1, "productId": 2, "hidrawPath": "/dev/hidraw0" },
+            { "requestId": 2, "vendorId": 1, "productId": 2, "hidrawPath": "" },
+            { "requestId": 2, "vendorId": 1 }
+        ]);
+        let parsed = parse_context(Some(context), "ctx").expect("context parses");
+        assert!(
+            parsed.extra.contains_key("genericHidDevices"),
+            "top-level genericHidDevices is kept in SessionContext.extra"
+        );
+        let devices = parse_generic_hid_devices(&parsed);
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[0].request_id, 0);
+        assert_eq!(devices[0].identity.vendor, 0x0738);
+        assert_eq!(devices[0].identity.product, 0x2221);
+        assert_eq!(devices[0].identity.revision, 0x0100);
+        assert_eq!(devices[0].identity.interface, 0);
+        assert_eq!(devices[0].hidraw_path, "/dev/hidraw8");
+        assert_eq!(devices[0].sysfs_hid_id, "0003:00000738:00002221");
+        assert_eq!(devices[0].incarnation, 0, "incarnations come from the runtime");
+        assert_eq!(devices[1].request_id, 1);
+        assert_eq!(devices[1].identity.product, 0xa221);
+        assert_eq!(devices[1].identity.revision, 0);
+        let without = parse_context(Some(synthetic_context("no-hid", json!([]))), "ctx").unwrap();
+        assert!(parse_generic_hid_devices(&without).is_empty());
+    }
+
+    #[test]
+    fn generic_hid_forwarder_is_owned_from_start_until_stop() {
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        let mut engine = Engine::new(sender);
+        engine.start_generic_hid(Vec::new());
+        assert!(engine.generic_hid.is_none());
+        assert_eq!(engine.hid_runtime.generic_inventory_epoch(), 0);
+        let device = GenericHidDevice {
+            request_id: 0,
+            incarnation: 0,
+            identity: GenericHidIdentity {
+                vendor: 0x0738,
+                product: 0x2221,
+                revision: 0x0100,
+                interface: 0,
+            },
+            hidraw_path: "/dev/hidraw-opennow-missing".to_owned(),
+            sysfs_hid_id: "0003:00000738:00002221".to_owned(),
+            name: "missing stick".to_owned(),
+        };
+        engine.start_generic_hid(vec![device]);
+        #[cfg(target_os = "linux")]
+        {
+            assert!(engine.generic_hid.is_some(), "a missing node is skipped, not fatal");
+            let (stored, epoch) = engine.hid_runtime.generic_inventory_snapshot();
+            assert_eq!(epoch, 1);
+            assert!(
+                stored.is_empty(),
+                "an unopenable node is marked removed so no attach is ever sent"
+            );
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            assert!(engine.generic_hid.is_none());
+            assert_eq!(engine.hid_runtime.generic_inventory_epoch(), 2);
+        }
+        engine.stop("test complete");
+        assert!(engine.generic_hid.is_none());
+        let (stored, _) = engine.hid_runtime.generic_inventory_snapshot();
+        assert!(stored.is_empty());
     }
 
     #[test]

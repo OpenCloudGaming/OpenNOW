@@ -19,6 +19,7 @@ linux-ffmpeg-bundled = ["opennow-streamer-platform-linux/ffmpeg-bundled"]
 base64.workspace = true
 image.workspace = true
 openh264.workspace = true
+opennow-streamer-hid = { path = "../opennow-streamer-hid" }
 opennow-streamer-protocol = { path = "../opennow-streamer-protocol" }
 opennow-streamer-platform-windows = { path = "../opennow-streamer-platform-windows" }
 oxideav-core.workspace = true

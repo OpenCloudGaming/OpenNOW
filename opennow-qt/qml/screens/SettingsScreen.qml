@@ -419,6 +419,7 @@ FocusScope {
                 toggle("L4S", "Request low-latency scalable throughput when available", "enableL4S"),
                 toggle("Network test", "Measure this zone's UDP payload reachability before streaming · selected zones only", "networkTest"),
                 toggle("Steam Deck identity", "Unlock Deck resolutions and 90 FPS · refreshes entitlements", "identifyAsSteamDeck"),
+                toggle("Forward flight controllers (generic HID)", "Raw HID passthrough for HOTAS · Linux only", "genericHidEnabled"),
                 {t:"Refresh regions", d:ShellStore.regionsVpcId ? qsTr("Service region %1").arg(ShellStore.regionsVpcId) : "Query the authenticated NVIDIA region service", v:ShellStore.regionsRequestId === "" ? "Run" : "Running…", action:"refresh-regions"}
             ]
         }

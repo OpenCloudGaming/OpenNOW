@@ -96,7 +96,31 @@ DesktopSettingsPanel {
             onCommitted: value => controlsRoot.settingsScreen.setSetting("controllerVibrationIntensity", value)
         }
     }
-    DesktopSettingsRow { width: parent.width; paperStyle: true; glyph: "globe"; title: qsTr("Gyroscope"); description: qsTr("Motion aiming on supported pads"); showDivider: false
+    DesktopSettingsRow { width: parent.width; paperStyle: true; glyph: "globe"; title: qsTr("Gyroscope"); description: qsTr("Motion aiming on supported pads")
         DesktopSettingsToggle { checked: controlsRoot.settingsScreen.boolSetting("enableGyroscopeControls",false); onValueChangedByUser: value => controlsRoot.settingsScreen.setSetting("enableGyroscopeControls",value) }
+    }
+    DesktopSettingsRow {
+        objectName: "genericHidEnabledRow"
+        width: parent.width; paperStyle: true; glyph: "controller"
+        title: qsTr("Forward flight controllers (generic HID)")
+        description: qsTr("Send allowlisted HOTAS/wheel devices to the cloud as raw HID instead of a gamepad. Linux only. Applies to the next stream.")
+        DesktopSettingsToggle {
+            objectName: "genericHidEnabledToggle"
+            checked: controlsRoot.settingsScreen.boolSetting("genericHidEnabled", false)
+            onValueChangedByUser: value => controlsRoot.settingsScreen.setSetting("genericHidEnabled", value)
+        }
+    }
+    DesktopSettingsRow {
+        objectName: "genericHidDevicesRow"
+        width: parent.width; paperStyle: true; glyph: "controller"; showDivider: false
+        title: qsTr("Forwarded HID devices")
+        description: qsTr("USB vendor:product pairs in hex, separated by commas or spaces. Add :N to pin a USB interface.")
+        DesktopSettingsField {
+            objectName: "genericHidDevicesField"
+            text: (controlsRoot.settingsScreen.valueSetting("genericHidDevices", []) || []).join(", ")
+            placeholderText: "0738:2221, 0738:a221"
+            onEditingFinished: controlsRoot.settingsScreen.setSetting("genericHidDevices",
+                text.split(/[\s,]+/).filter(Boolean))
+        }
     }
 }

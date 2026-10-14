@@ -48,17 +48,20 @@ use super::nvst_control::{
 use super::nvst_cursor::{CursorCommand, NvstCursorCapture, valid_cursor_channel_message};
 use super::nvst_haptics::NvstHaptics;
 use super::nvst_input::{
-    NvstEncodedInput, NvstInputChannelState, NvstInputChannels, NvstInputCodec, SonyDeviceControl,
-    for_each_sony_output, native_input_type_is_motion, native_input_type_name, native_input_types,
+    GenericHidReportFraming, HidDeviceControl, HidInbound, NvstEncodedInput, NvstInputChannelState,
+    NvstInputChannels, NvstInputCodec, SonyDeviceControl, for_each_hid_inbound,
+    generic_device_change_command, generic_report_command, generic_report_command_partial,
+    native_input_type_is_motion, native_input_type_name, native_input_types,
     next_control_keepalive, server_cursor_messages, sony_device_change_command,
-    sony_report_command,
+    sony_low_id_in_range, sony_report_command,
 };
 use super::{
     EncodedMediaFrame, MediaConsumer, TransportError, deliver_media_frame, install_crypto,
 };
 use opennow_streamer_hid::{
-    DRAIN_PER_ITERATION, EndpointToken, HidOutbound, HidRuntime, HidSession, IngressItem,
-    SonyCapability,
+    DRAIN_PER_ITERATION, EndpointToken, GENERIC_DRAIN_PER_DEVICE, GenericHidIdentity,
+    GenericHidSession, GenericOutbound, GenericOutputReport, HidOutbound, HidRuntime, HidSession,
+    IngressItem, MAX_GENERIC_DEVICES, ResponseOutcome, SonyCapability,
 };
 
 const RTP_FIXED_HEADER_LEN: usize = 12;
@@ -1302,6 +1305,9 @@ pub struct NvstVideoConfig {
     frame_pacing_feedback: bool,
     max_control_report_bytes: usize,
     hid_device_mask: u32,
+    /// `x-nv-ri.enablePartiallyReliableTransferHid` from the DESCRIBE answer
+    /// (`-1` = every device, else a per-device-id bitmask; semantics inferred).
+    hid_partially_reliable_mask: i64,
     /// Dedicated NATT-only video (Mjolnir) socket port in the official two-socket
     /// cloud model. When set, video RTP/SRTP arrives on this socket while the
     /// ICE/DTLS bundle socket only carries control/audio keepalive traffic.
@@ -1350,6 +1356,10 @@ impl fmt::Debug for NvstVideoConfig {
             .field("frame_pacing_feedback", &self.frame_pacing_feedback)
             .field("max_control_report_bytes", &self.max_control_report_bytes)
             .field("hid_device_mask", &self.hid_device_mask)
+            .field(
+                "hid_partially_reliable_mask",
+                &self.hid_partially_reliable_mask,
+            )
             .field("mjolnir_udp_port", &self.mjolnir_udp_port)
             .field("codec", &self.codec)
             .field("audio_track", &self.audio_track)
@@ -1659,6 +1669,8 @@ impl NvstVideoConfig {
             });
         }
         let hid_device_mask = optional_u32(object, "hidDeviceMask")?.unwrap_or(0);
+        let hid_partially_reliable_mask =
+            optional_i64(object, "hidPartiallyReliableMask")?.unwrap_or(0);
         let stun_credentials = if ping_version == Some(6) || remote_dtls_fingerprint.is_some() {
             Some(NvstStunCredentials {
                 local_username_fragment: required_ice_credential(
@@ -1736,6 +1748,7 @@ impl NvstVideoConfig {
             max_control_report_bytes,
             mjolnir_udp_port,
             hid_device_mask,
+            hid_partially_reliable_mask,
             codec,
             audio_track,
             microphone_available,
@@ -1806,6 +1819,10 @@ impl NvstVideoConfig {
 
     pub fn hid_device_mask(&self) -> u32 {
         self.hid_device_mask
+    }
+
+    pub fn hid_partially_reliable_mask(&self) -> i64 {
+        self.hid_partially_reliable_mask
     }
 
     pub fn mjolnir_udp_port(&self) -> Option<u16> {
@@ -1951,6 +1968,22 @@ fn optional_u64(
             .ok_or(NvstConfigError::InvalidFieldType {
                 field,
                 expected: "unsigned integer",
+            }),
+    }
+}
+
+fn optional_i64(
+    object: &serde_json::Map<String, Value>,
+    field: &'static str,
+) -> Result<Option<i64>, NvstConfigError> {
+    match object.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_i64()
+            .map(Some)
+            .ok_or(NvstConfigError::InvalidFieldType {
+                field,
+                expected: "integer",
             }),
     }
 }
@@ -2161,6 +2194,21 @@ pub enum NvstReceiveEvent {
     },
     FrameProgressResumed,
     Lifecycle(NvstReceiverState),
+    /// Generic raw-HID admission progress for one forwarded device. `state` is
+    /// one of `attach-sent`, `accepted`, `accepted-silent`, `denied`,
+    /// `disabled`, `timeout`, `unknown-request`, `device-id-conflict`,
+    /// `removed`. `device_id` is the server-assigned id from the `0x1a`
+    /// response (the id every report and the detach carry); `status` and
+    /// `flags` echo that response.
+    HidForwardState {
+        request_id: u8,
+        vendor: u16,
+        product: u16,
+        state: &'static str,
+        device_id: Option<u8>,
+        status: Option<u8>,
+        flags: Option<u32>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -6215,14 +6263,30 @@ fn pump_hid_pending(
     channels: NvstInputChannels,
     rtc: &mut Rtc,
     published_mask: &mut u16,
+    generic_device_ids: u16,
+    collision_logged: &mut u16,
     timestamp_us: u64,
 ) -> bool {
     if hid_runtime.session_generation().is_none() {
         return true;
     }
     let (inventory, inventory_epoch) = hid_runtime.inventory_snapshot();
+    // A synthesized DS4 id the seat already handed to a generic device must
+    // not be attached again: the server state for that id would be clobbered
+    // and its output reports would be written to the generic hidraw node.
+    let refused = HidSession::slots_refused_by(&inventory, generic_device_ids);
+    for slot in 0..opennow_streamer_hid::MAX_SOURCES as u8 {
+        let bit = 1_u16 << slot;
+        if refused & bit != 0 && *collision_logged & bit == 0 {
+            eprintln!(
+                "NVST hid attach skipped: DS4 slot {slot} low id {} is owned by a generic device (mask={generic_device_ids:#06x})",
+                opennow_streamer_hid::ds4::low_id_for_slot(slot).unwrap_or(0)
+            );
+        }
+    }
+    *collision_logged = refused;
     let mut attaches = Vec::new();
-    for item in hid_session.reconcile(&inventory) {
+    for item in hid_session.reconcile_excluding(&inventory, generic_device_ids) {
         match item {
             HidOutbound::Release { low_id, bytes } => {
                 if let Some(command) = sony_report_command(low_id, &bytes)
@@ -6322,6 +6386,540 @@ fn store_sony_output(
     haptics.store_sony(rumble);
 }
 
+// ---- generic raw-HID forwarding (allowlisted HOTAS / wheels) ---------------
+
+const GENERIC_HID_COUNTERS_LOG_INTERVAL: Duration = Duration::from_secs(5);
+const GENERIC_HID_UNKNOWN_TYPES_LOG_CAP: usize = 32;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GenericReportRoute {
+    /// Reliable control channel (sid 0), the proven DS4 `0x11` route.
+    Reliable,
+    /// Partially reliable input channel with the `[0x26][4+id][seq]` prefix.
+    Partial,
+}
+
+impl GenericReportRoute {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Reliable => "reliable",
+            Self::Partial => "pr",
+        }
+    }
+}
+
+/// Bundle-thread state for the generic HID lane: admission session, report
+/// sequencing and log throttling. Owned by the bundle loop next to the DS4
+/// `HidSession`; it never touches a device node.
+struct GenericHidPump {
+    session: GenericHidSession,
+    inventory_epoch: Option<u64>,
+    /// Partial-route sequence per server-assigned device id (any `u8`).
+    sequences: [u16; u8::MAX as usize + 1],
+    route_preference: GenericReportRoute,
+    /// `0x11` record framing, read once from the environment at construction.
+    report_framing: GenericHidReportFraming,
+    partially_reliable_mask: i64,
+    first_report_logged: [bool; MAX_GENERIC_DEVICES],
+    last_counters_log: Instant,
+    unknown_ri_types_logged: Vec<u32>,
+}
+
+impl GenericHidPump {
+    fn new(partially_reliable_mask: i64, now: Instant) -> Self {
+        // The only place OPENNOW_GENERIC_HID_REPORT_ROUTE is read.
+        let route_preference = match std::env::var("OPENNOW_GENERIC_HID_REPORT_ROUTE")
+            .ok()
+            .as_deref()
+            .map(str::trim)
+        {
+            Some(value) if value.eq_ignore_ascii_case("pr") => GenericReportRoute::Partial,
+            _ => GenericReportRoute::Reliable,
+        };
+        Self {
+            session: GenericHidSession::default(),
+            inventory_epoch: None,
+            sequences: [0; u8::MAX as usize + 1],
+            route_preference,
+            report_framing: GenericHidReportFraming::from_env(),
+            partially_reliable_mask,
+            first_report_logged: [false; MAX_GENERIC_DEVICES],
+            last_counters_log: now,
+            unknown_ri_types_logged: Vec::new(),
+        }
+    }
+
+    /// The partial route needs the env switch and the negotiated bit for the
+    /// server-assigned id; ids beyond the 64-bit mask stay reliable.
+    fn route_for(&self, device_id: u8) -> GenericReportRoute {
+        let negotiated =
+            device_id < i64::BITS as u8 && self.partially_reliable_mask & (1_i64 << device_id) != 0;
+        if self.route_preference == GenericReportRoute::Partial && negotiated {
+            GenericReportRoute::Partial
+        } else {
+            GenericReportRoute::Reliable
+        }
+    }
+
+    fn emit_state(
+        &self,
+        event_sender: &Sender<NvstReceiveEvent>,
+        request_id: u8,
+        state: &'static str,
+        device_id: Option<u8>,
+        status: Option<u8>,
+        flags: Option<u32>,
+    ) {
+        let identity = self.session.identity(request_id).unwrap_or_default();
+        let _ = event_sender.send(NvstReceiveEvent::HidForwardState {
+            request_id,
+            vendor: identity.vendor,
+            product: identity.product,
+            state,
+            device_id,
+            status,
+            flags,
+        });
+    }
+}
+
+/// Bit `n` set when synthesized DS4 id `n` is currently attached, so a generic
+/// response that hands out the same id is refused instead of hijacking it.
+fn ds4_low_id_mask(hid_session: &HidSession) -> u16 {
+    let slots = hid_session.rich_slot_mask();
+    (0..opennow_streamer_hid::MAX_SOURCES as u8)
+        .filter(|slot| slots & (1 << slot) != 0)
+        .filter_map(opennow_streamer_hid::ds4::low_id_for_slot)
+        .fold(0_u16, |mask, low_id| mask | (1 << low_id))
+}
+
+/// `id` is the byte the `0x12` carries: the request id for an attach, the
+/// server-assigned device id (or the request id when never answered) for a
+/// removal.
+fn log_generic_change(
+    control: HidDeviceControl,
+    request_id: u8,
+    id: u8,
+    identity: &GenericHidIdentity,
+    command: &[u8],
+) {
+    eprintln!(
+        "NVST hid change tx: control={} requestId={} id={} {:04X}:{:04X}:{:04X}:{:03} flags={:08x} raw={}",
+        control.code(),
+        request_id,
+        id,
+        identity.vendor,
+        identity.product,
+        identity.revision,
+        identity.interface,
+        opennow_streamer_hid::GENERIC_DEVICE_CHANGE_FLAGS,
+        diagnostic_hex(command, 64),
+    );
+}
+
+/// Send a removal for one device, naming it by `wire_id` (the server-assigned
+/// device id once accepted, the request id before). Removals use the teardown
+/// write class so a saturated normal budget cannot strand the server with a
+/// phantom device.
+fn send_generic_removal(
+    pump: &mut GenericHidPump,
+    channels: NvstInputChannels,
+    rtc: &mut Rtc,
+    event_sender: &Sender<NvstReceiveEvent>,
+    request_id: u8,
+    wire_id: u8,
+    identity: &GenericHidIdentity,
+    reason: &str,
+) -> bool {
+    let Some(command) = generic_device_change_command(wire_id, HidDeviceControl::Removal, identity)
+    else {
+        return true;
+    };
+    log_generic_change(
+        HidDeviceControl::Removal,
+        request_id,
+        wire_id,
+        identity,
+        &command,
+    );
+    eprintln!("NVST hid removal tx: requestId={request_id} wireId={wire_id} reason={reason}");
+    let sent = channels.send_control_teardown(rtc, &command);
+    pump.emit_state(
+        event_sender,
+        request_id,
+        "removed",
+        Some(wire_id),
+        None,
+        None,
+    );
+    sent
+}
+
+/// Withdraw every announced generic device at session end.
+fn queue_generic_hid_shutdown(
+    pump: &mut GenericHidPump,
+    channels: NvstInputChannels,
+    rtc: &mut Rtc,
+    event_sender: &Sender<NvstReceiveEvent>,
+    reason: &str,
+) {
+    for outbound in pump.session.retire_all() {
+        if let GenericOutbound::Removal {
+            request_id,
+            wire_id,
+            identity,
+        } = outbound
+        {
+            let _ = send_generic_removal(
+                pump,
+                channels,
+                rtc,
+                event_sender,
+                request_id,
+                wire_id,
+                &identity,
+                reason,
+            );
+        }
+    }
+}
+
+/// One bundle-loop iteration of the generic HID lane. Returns `false` only
+/// when an attach or removal could not be queued (the same fatal policy as
+/// the DS4 lane); refused reports are counted and dropped.
+fn pump_generic_hid(
+    pump: &mut GenericHidPump,
+    hid_runtime: &HidRuntime,
+    channels: NvstInputChannels,
+    rtc: &mut Rtc,
+    event_sender: &Sender<NvstReceiveEvent>,
+    now: Instant,
+    now_us: u64,
+) -> bool {
+    // (1) Devices the reader thread lost (unplug / read error).
+    for request_id in hid_runtime.take_generic_removals() {
+        match pump.session.mark_removed(request_id) {
+            Some(GenericOutbound::Removal {
+                wire_id, identity, ..
+            }) => {
+                if !send_generic_removal(
+                    pump,
+                    channels,
+                    rtc,
+                    event_sender,
+                    request_id,
+                    wire_id,
+                    &identity,
+                    "unplug",
+                ) {
+                    return false;
+                }
+            }
+            _ => {
+                eprintln!(
+                    "NVST hid removal tx: requestId={request_id} reason=unplug (not held by the server, nothing sent)"
+                );
+                pump.emit_state(event_sender, request_id, "removed", None, None, None);
+            }
+        }
+    }
+    // (2) Attaches the seat never answered. The official client has no timeout,
+    // so the session keeps listening for a late response.
+    for request_id in pump.session.on_timeout(now_us) {
+        eprintln!(
+            "NVST hid attach timeout: requestId={request_id} no response after {}s (still listening)",
+            opennow_streamer_hid::GENERIC_ATTACH_TIMEOUT.as_secs()
+        );
+        pump.emit_state(event_sender, request_id, "timeout", None, None, None);
+    }
+    // (3) Inventory changes from the engine (snapshot only when the epoch moved).
+    if pump.inventory_epoch != Some(hid_runtime.generic_inventory_epoch()) {
+        let (devices, epoch) = hid_runtime.generic_inventory_snapshot();
+        pump.inventory_epoch = Some(epoch);
+        for outbound in pump.session.replace(&devices) {
+            if let GenericOutbound::Removal {
+                request_id,
+                wire_id,
+                identity,
+            } = outbound
+                && !send_generic_removal(
+                    pump,
+                    channels,
+                    rtc,
+                    event_sender,
+                    request_id,
+                    wire_id,
+                    &identity,
+                    "inventory",
+                )
+            {
+                return false;
+            }
+        }
+    }
+    // (4) Attaches not yet sent.
+    for (request_id, identity) in pump.session.pending_attaches() {
+        let Some(command) =
+            generic_device_change_command(request_id, HidDeviceControl::Attach, &identity)
+        else {
+            continue;
+        };
+        log_generic_change(
+            HidDeviceControl::Attach,
+            request_id,
+            request_id,
+            &identity,
+            &command,
+        );
+        if !channels.send_control(rtc, &command) {
+            return false;
+        }
+        pump.session.mark_attach_sent(request_id, now_us);
+        eprintln!(
+            "NVST hid attach tx: requestId={request_id} reportFraming={} routePreference={} (reports wait for the server-assigned id)",
+            pump.report_framing.label(),
+            pump.route_preference.label(),
+        );
+        pump.emit_state(event_sender, request_id, "attach-sent", None, None, None);
+    }
+    // (5) Raw reports for accepted devices, keyed by the server-assigned id.
+    for report in hid_runtime.drain_generic(GENERIC_DRAIN_PER_DEVICE) {
+        let Some(device_id) = pump.session.accepted_device_id(report.request_id) else {
+            continue;
+        };
+        let Some(identity) = pump.session.identity(report.request_id) else {
+            continue;
+        };
+        let route = pump.route_for(device_id);
+        let framing = pump.report_framing;
+        let encoded = match route {
+            GenericReportRoute::Reliable => {
+                generic_report_command(framing, device_id, identity.interface, report.as_slice())
+                    .map(|bytes| NvstEncodedInput {
+                        route: super::nvst_input::NvstInputRoute::ControlReliable,
+                        bytes,
+                    })
+            }
+            GenericReportRoute::Partial => {
+                let slot = &mut pump.sequences[usize::from(device_id)];
+                let sequence = *slot;
+                *slot = slot.wrapping_add(1);
+                generic_report_command_partial(
+                    framing,
+                    device_id,
+                    identity.interface,
+                    report.as_slice(),
+                    sequence,
+                )
+            }
+        };
+        let Some(encoded) = encoded else {
+            // The runtime already caps report length; treat anything else as refused.
+            hid_runtime.record_generic_send_refused(report.request_id);
+            continue;
+        };
+        if channels.send_encoded(rtc, &encoded) {
+            hid_runtime.record_generic_forwarded(report.request_id);
+            let index = usize::from(report.request_id);
+            if let Some(logged) = pump.first_report_logged.get_mut(index)
+                && !*logged
+            {
+                *logged = true;
+                eprintln!(
+                    "NVST hid report tx: first report requestId={} deviceId={} route={} framing={} bytes={} raw={}",
+                    report.request_id,
+                    device_id,
+                    route.label(),
+                    framing.label(),
+                    report.as_slice().len(),
+                    diagnostic_hex(&encoded.bytes, 64),
+                );
+            }
+        } else {
+            hid_runtime.record_generic_send_refused(report.request_id);
+        }
+    }
+    // (6) Periodic counters while anything is attached.
+    if now.duration_since(pump.last_counters_log) >= GENERIC_HID_COUNTERS_LOG_INTERVAL {
+        pump.last_counters_log = now;
+        for request_id in 0..MAX_GENERIC_DEVICES as u8 {
+            let Some(state) = pump.session.state(request_id) else {
+                continue;
+            };
+            let Some(counters) = hid_runtime.generic_counters(request_id) else {
+                continue;
+            };
+            let server_id = pump
+                .session
+                .accepted_device_id(request_id)
+                .map_or_else(|| "-".to_owned(), |id| id.to_string());
+            eprintln!(
+                "NVST hid counters: requestId={request_id} state={} serverId={server_id} in={} tx={} dropOverflow={} dropInactive={} dropNotForwarding={} dropSendRefused={} outputs={} outputsWritten={} writeErr={}",
+                state.label(),
+                counters.reports_in,
+                counters.reports_forwarded,
+                counters.dropped_overflow,
+                counters.dropped_inactive,
+                counters.dropped_not_forwarding,
+                counters.dropped_send_refused,
+                counters.outputs_in,
+                counters.outputs_written,
+                counters.write_errors,
+            );
+        }
+    }
+    true
+}
+
+/// Log (never act on) cmd `0x0206` HID messages that arrive on a control
+/// channel other than the reliable one, so a response on the partial or
+/// unreliable channel is visible in one session's log.
+fn log_hid_inbound_other_channel(bytes: &[u8], label: &str) {
+    for_each_hid_inbound(bytes, |inbound| match inbound {
+        HidInbound::DeviceResponse {
+            request_id,
+            status,
+            flags,
+            device_id,
+        } => eprintln!(
+            "NVST hid inbound on {label} (log-only, ignored): 0x1a response requestId={request_id} status={status} flags={flags:08x} deviceId={device_id}"
+        ),
+        HidInbound::OutputReport {
+            device_id,
+            interface,
+            third,
+            bytes,
+        } => eprintln!(
+            "NVST hid inbound on {label} (log-only, ignored): 0x11 output deviceId={device_id} iface={interface} third={third:#04x} bytes={} raw={}",
+            bytes.len(),
+            diagnostic_hex(bytes, 64)
+        ),
+        HidInbound::Unknown { ri_type, bytes } => eprintln!(
+            "NVST hid inbound on {label} (log-only, ignored): RI type {ri_type:#x} bytes={} raw={}",
+            bytes.len(),
+            diagnostic_hex(bytes, 64)
+        ),
+    });
+}
+
+/// Decode every HID message the server sent on the reliable control channel.
+/// Generic device ids are matched first (only accepted ones), then the DS4
+/// `6..=9` domain keeps its existing rumble path.
+fn receive_hid_inbound(
+    bytes: &[u8],
+    hid_session: &mut HidSession,
+    hid_runtime: &HidRuntime,
+    haptics: &NvstHaptics,
+    mut generic: Option<&mut GenericHidPump>,
+    event_sender: &Sender<NvstReceiveEvent>,
+) {
+    for_each_hid_inbound(bytes, |inbound| match inbound {
+        HidInbound::DeviceResponse {
+            request_id,
+            status,
+            flags,
+            device_id,
+        } => {
+            let Some(pump) = generic.as_deref_mut() else {
+                return;
+            };
+            // Wire order: [requestId][status][u32 BE flags][server deviceId].
+            let outcome = pump.session.on_response(
+                request_id,
+                status,
+                flags,
+                device_id,
+                ds4_low_id_mask(hid_session),
+            );
+            let prefix = format!(
+                "NVST hid response rx: requestId={request_id} status={status} flags={flags:08x} deviceId={device_id}"
+            );
+            let state = match outcome {
+                ResponseOutcome::Accepted { device_id } => {
+                    hid_runtime.set_generic_forwarding(request_id, true);
+                    eprintln!("{prefix} -> ACCEPTED (server id {device_id})");
+                    "accepted"
+                }
+                ResponseOutcome::AcceptedSilent => {
+                    // Mirrors the official client: id 0 is stored but no
+                    // reading loop starts, so nothing is forwarded.
+                    hid_runtime.set_generic_forwarding(request_id, false);
+                    eprintln!(
+                        "{prefix} -> ACCEPTED-SILENT (server id 0: stored, no reports forwarded)"
+                    );
+                    "accepted-silent"
+                }
+                ResponseOutcome::Denied { status } => {
+                    hid_runtime.set_generic_forwarding(request_id, false);
+                    eprintln!("{prefix} -> DENIED (status {status} != 1; device disabled)");
+                    "denied"
+                }
+                ResponseOutcome::Disabled => {
+                    hid_runtime.set_generic_forwarding(request_id, false);
+                    eprintln!("{prefix} -> DISABLED (server id 0xff)");
+                    "disabled"
+                }
+                ResponseOutcome::UnknownRequest => {
+                    eprintln!("{prefix} -> unknown requestId");
+                    "unknown-request"
+                }
+                ResponseOutcome::DeviceIdConflict { device_id } => {
+                    hid_runtime.set_generic_forwarding(request_id, false);
+                    eprintln!(
+                        "{prefix} -> deviceId conflict (server id {device_id} is owned by another HID lane); forwarding refused"
+                    );
+                    "device-id-conflict"
+                }
+            };
+            pump.emit_state(
+                event_sender,
+                request_id,
+                state,
+                Some(device_id),
+                Some(status),
+                Some(flags),
+            );
+        }
+        HidInbound::OutputReport {
+            device_id,
+            interface,
+            third,
+            bytes,
+        } => {
+            if let Some(pump) = generic.as_deref_mut()
+                && let Some(request_id) = pump.session.request_for_device_id(device_id)
+            {
+                eprintln!(
+                    "NVST hid output rx: deviceId={device_id} requestId={request_id} iface={interface} third={third} bytes={} raw={}",
+                    bytes.len(),
+                    diagnostic_hex(bytes, 64),
+                );
+                hid_runtime.push_generic_output(GenericOutputReport {
+                    request_id,
+                    interface,
+                    third,
+                    bytes: bytes.to_vec(),
+                });
+            } else if sony_low_id_in_range(device_id).is_some() && bytes.len() >= 6 {
+                store_sony_output(hid_session, hid_runtime, device_id, bytes, haptics);
+            }
+        }
+        HidInbound::Unknown { ri_type, bytes } => {
+            if let Some(pump) = generic.as_deref_mut()
+                && !pump.unknown_ri_types_logged.contains(&ri_type)
+                && pump.unknown_ri_types_logged.len() < GENERIC_HID_UNKNOWN_TYPES_LOG_CAP
+            {
+                pump.unknown_ri_types_logged.push(ri_type);
+                eprintln!(
+                    "NVST hid inbound unknown RI type=0x{ri_type:x} bytes={} raw={}",
+                    bytes.len(),
+                    diagnostic_hex(bytes, 64),
+                );
+            }
+        }
+    });
+}
+
 fn run_nvst_webrtc_bundle(
     socket: UdpSocket,
     config: NvstVideoConfig,
@@ -6367,6 +6965,10 @@ fn run_nvst_webrtc_bundle(
     let mjolnir = config.mjolnir_udp_port.is_some();
     let owns_media_timeout = !mjolnir;
     let hid_device_mask = config.hid_device_mask();
+    let hid_partially_reliable_mask = config.hid_partially_reliable_mask();
+    eprintln!(
+        "NVST hid describe: hidDeviceMask=0x{hid_device_mask:x} partiallyReliableHid={hid_partially_reliable_mask}"
+    );
     let physical_local = socket.local_addr().ok().map_or_else(
         || bundle_peer,
         |local| routed_host_addr(Some(bundle_peer), local),
@@ -6415,6 +7017,10 @@ fn run_nvst_webrtc_bundle(
         })
     });
     let mut hid_published_mask = 0_u16;
+    let mut hid_collision_logged = 0_u16;
+    let mut generic_hid = hid_runtime
+        .as_ref()
+        .map(|_| GenericHidPump::new(hid_partially_reliable_mask, Instant::now()));
     let mut input_state = NvstInputChannelState::default();
     let mut input_codec = NvstInputCodec::default();
     let mut last_input_types = Vec::new();
@@ -6571,6 +7177,15 @@ fn run_nvst_webrtc_bundle(
                         (hid_runtime.as_ref(), hid_session.as_mut(), input_channels)
                     {
                         queue_hid_shutdown(hid_session, channels, &mut rtc);
+                        if let Some(pump) = generic_hid.as_mut() {
+                            queue_generic_hid_shutdown(
+                                pump,
+                                channels,
+                                &mut rtc,
+                                &event_sender,
+                                "shutdown",
+                            );
+                        }
                         forward_rtc_outputs(
                             &mut rtc,
                             |output| {
@@ -6625,6 +7240,9 @@ fn run_nvst_webrtc_bundle(
                 .as_micros()
                 .try_into()
                 .unwrap_or(u64::MAX);
+            let generic_device_ids = generic_hid
+                .as_ref()
+                .map_or(0, |pump| pump.session.accepted_device_id_mask());
             if !pump_hid_pending(
                 hid_runtime,
                 hid_session,
@@ -6632,11 +7250,42 @@ fn run_nvst_webrtc_bundle(
                 channels,
                 &mut rtc,
                 &mut hid_published_mask,
+                generic_device_ids,
+                &mut hid_collision_logged,
                 timestamp_us,
             ) {
                 input_ready.store(false, Ordering::Release);
                 let _ = event_sender.send(NvstReceiveEvent::InputUnavailable(
                     "sony hid output could not be queued; stopping to prevent stuck input"
+                        .to_owned(),
+                ));
+                rtc.disconnect();
+                forward_optional(&event_sender, receiver.stop());
+                break 'bundle;
+            }
+        }
+        if upstream_allowed
+            && input_state.is_ready()
+            && let (Some(hid_runtime), Some(pump), Some(channels)) =
+                (hid_runtime.as_ref(), generic_hid.as_mut(), input_channels)
+        {
+            let timestamp_us = now
+                .duration_since(transport_origin)
+                .as_micros()
+                .try_into()
+                .unwrap_or(u64::MAX);
+            if !pump_generic_hid(
+                pump,
+                hid_runtime,
+                channels,
+                &mut rtc,
+                &event_sender,
+                now,
+                timestamp_us,
+            ) {
+                input_ready.store(false, Ordering::Release);
+                let _ = event_sender.send(NvstReceiveEvent::InputUnavailable(
+                    "hid attach/removal could not be queued; stopping to prevent a phantom device"
                         .to_owned(),
                 ));
                 rtc.disconnect();
@@ -7032,15 +7681,22 @@ fn run_nvst_webrtc_bundle(
                                 && let (Some(hid_session), Some(hid_runtime)) =
                                     (hid_session.as_mut(), hid_runtime.as_ref())
                             {
-                                for_each_sony_output(&data.data, |low_id, operation| {
-                                    store_sony_output(
-                                        hid_session,
-                                        hid_runtime,
-                                        low_id,
-                                        operation,
-                                        &feedback.haptics,
-                                    );
-                                });
+                                receive_hid_inbound(
+                                    &data.data,
+                                    hid_session,
+                                    hid_runtime,
+                                    &feedback.haptics,
+                                    generic_hid.as_mut(),
+                                    &event_sender,
+                                );
+                            } else if generic_hid.is_some()
+                                && (data.id == channels.control_partial
+                                    || data.id == channels.control_unreliable)
+                            {
+                                // Log-only: a seat answering the generic
+                                // attach on another control channel must be
+                                // distinguishable from no answer at all.
+                                log_hid_inbound_other_channel(&data.data, label);
                             }
                             let cursor_messages = if Some(data.id) == channels.cursor {
                                 Vec::new()
@@ -7356,6 +8012,9 @@ fn run_nvst_webrtc_bundle(
                     let _ = channels.send_control_teardown(&mut rtc, &command);
                 }
             }
+        }
+        if let (Some(pump), Some(channels)) = (generic_hid.as_mut(), input_channels) {
+            queue_generic_hid_shutdown(pump, channels, &mut rtc, &event_sender, "bundle-exit");
         }
         if let Some(generation) = hid_runtime.session_generation() {
             hid_runtime.unbind_session(generation);
@@ -8870,6 +9529,79 @@ mod tests {
         assert!(NvstVideoConfig::from_legacy_handoff(&handoff, None).is_err());
         handoff["hidDeviceMask"] = json!("5");
         assert!(NvstVideoConfig::from_legacy_handoff(&handoff, None).is_err());
+    }
+
+    #[test]
+    fn handoff_carries_the_partially_reliable_hid_mask_as_a_signed_integer() {
+        let mut handoff = legacy_handoff();
+        assert_eq!(config().hid_partially_reliable_mask(), 0);
+        for value in [-1_i64, 0, 255] {
+            handoff["hidPartiallyReliableMask"] = json!(value);
+            let config = NvstVideoConfig::from_legacy_handoff(&handoff, None).expect("valid config");
+            assert_eq!(config.hid_partially_reliable_mask(), value);
+        }
+        handoff["hidPartiallyReliableMask"] = Value::Null;
+        let config = NvstVideoConfig::from_legacy_handoff(&handoff, None).expect("valid config");
+        assert_eq!(config.hid_partially_reliable_mask(), 0);
+        handoff["hidPartiallyReliableMask"] = json!("-1");
+        assert!(NvstVideoConfig::from_legacy_handoff(&handoff, None).is_err());
+    }
+
+    #[test]
+    fn generic_report_route_requires_both_the_env_switch_and_the_negotiated_bit() {
+        let now = Instant::now();
+        let reliable = GenericHidPump {
+            route_preference: GenericReportRoute::Reliable,
+            ..GenericHidPump::new(-1, now)
+        };
+        assert_eq!(reliable.route_for(0), GenericReportRoute::Reliable);
+        let partial_all = GenericHidPump {
+            route_preference: GenericReportRoute::Partial,
+            ..GenericHidPump::new(-1, now)
+        };
+        assert_eq!(partial_all.route_for(0), GenericReportRoute::Partial);
+        assert_eq!(partial_all.route_for(9), GenericReportRoute::Partial);
+        assert_eq!(
+            partial_all.route_for(25),
+            GenericReportRoute::Partial,
+            "server-assigned ids above 9 are negotiated like any other bit"
+        );
+        assert_eq!(partial_all.route_for(63), GenericReportRoute::Partial);
+        assert_eq!(
+            partial_all.route_for(64),
+            GenericReportRoute::Reliable,
+            "ids beyond the 64-bit mask can never be negotiated partial"
+        );
+        assert_eq!(partial_all.route_for(255), GenericReportRoute::Reliable);
+        let partial_some = GenericHidPump {
+            route_preference: GenericReportRoute::Partial,
+            ..GenericHidPump::new(0b10, now)
+        };
+        assert_eq!(partial_some.route_for(1), GenericReportRoute::Partial);
+        assert_eq!(partial_some.route_for(0), GenericReportRoute::Reliable);
+        let partial_none = GenericHidPump {
+            route_preference: GenericReportRoute::Partial,
+            ..GenericHidPump::new(0, now)
+        };
+        assert_eq!(partial_none.route_for(0), GenericReportRoute::Reliable);
+    }
+
+    #[test]
+    fn ds4_low_id_mask_marks_attached_synthesized_ids() {
+        let mut session = HidSession::new(SonyCapability {
+            server_mask: 0x5,
+            ..SonyCapability::default()
+        });
+        assert_eq!(ds4_low_id_mask(&session), 0);
+        let claim = opennow_streamer_hid::SdlDeviceClaim::new(
+            1,
+            7,
+            opennow_streamer_hid::SONY_VENDOR,
+            0x05c4,
+        )
+        .unwrap();
+        let _ = session.adopt(claim);
+        assert_eq!(ds4_low_id_mask(&session), 1 << 7);
     }
 
     #[test]

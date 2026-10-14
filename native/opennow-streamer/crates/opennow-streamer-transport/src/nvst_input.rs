@@ -993,17 +993,79 @@ fn gamepad_command(packet: &[u8], timestamp_us: u64, sequence: u16) -> Vec<u8> {
 
 pub(crate) const RI_TYPE_DEVICE_CHANGE: u32 = 0x12;
 pub(crate) const RI_TYPE_HID_REPORT: u32 = 0x11;
+/// Server -> client generic device response (`STREAMER_SERVER_GENERIC_DEVICE_RESPONSE_EVENT`).
+pub(crate) const RI_TYPE_DEVICE_RESPONSE: u32 = 0x1a;
 pub(crate) const HID_REPORT_MARKER: u8 = 0x22;
+/// Record marker of the alternative `0x11` framing: `[0x21][u16 BE size]`.
+const HID_REPORT_LEN_MARKER: u8 = 0x21;
+/// Bytes the `0x21` size word counts besides the report: RI type (4), device
+/// id, interface and kind.
+const HID_REPORT_RECORD_HEADER_BYTES: u16 = 7;
 pub(crate) const SONY_DEVICE_CHANGE_FLAGS: u32 = 1;
+/// Partially reliable input packets carry `[0x26][4 + id][u16 BE sequence]`
+/// ahead of the typed payload (see `gamepad_command`).
+const PR_SEQUENCE_MARKER: u8 = 0x26;
+const PR_SEQUENCE_ID_BASE: u8 = 4;
+/// Bytes of framing that wrap a raw HID report on the wire with the default
+/// `marker22` framing: 4 (frame header) + 4 (optional PR prefix) + 1 (marker)
+/// + 4 (RI type) + 3 (id, interface, 0). `len21` adds the two-byte size word.
+const HID_REPORT_FRAMING_BYTES: usize = 16;
+const _: () = assert!(
+    opennow_streamer_hid::MAX_GENERIC_REPORT_BYTES + HID_REPORT_FRAMING_BYTES == 263,
+    "generic report cap must match the 263-byte HID packet limit"
+);
 
+/// Framing of the `0x11` record inside a cmd `0x020d` payload for generic
+/// devices. `Marker22` is the envelope the proven DS4 path uses. `Len21` is
+/// what a second Bifrost writer (`0x475afe..0x475b94`) suggests: the record
+/// preceded by `0x21` and a `u16 BE` size of `report_len + 7`. Neither has
+/// been verified against a working generic session, so the alternative is an
+/// env knob (`OPENNOW_GENERIC_HID_REPORT_FRAMING=len21`), not the default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum GenericHidReportFraming {
+    /// `[0x22][u32 LE 0x11][u8 deviceId][u8 interface][0x00][report]`
+    #[default]
+    Marker22,
+    /// `[0x21][u16 BE report_len + 7][u32 LE 0x11][u8 deviceId][u8 interface][0x00][report]`
+    Len21,
+}
+
+impl GenericHidReportFraming {
+    pub(crate) const ENV: &'static str = "OPENNOW_GENERIC_HID_REPORT_FRAMING";
+
+    /// Decode an `OPENNOW_GENERIC_HID_REPORT_FRAMING` value; anything but
+    /// `len21` (case-insensitive) keeps the default.
+    pub(crate) fn parse(value: Option<&str>) -> Self {
+        match value.map(str::trim) {
+            Some(value) if value.eq_ignore_ascii_case("len21") => Self::Len21,
+            _ => Self::Marker22,
+        }
+    }
+
+    /// Read once at pump construction; the only reader of the variable.
+    pub(crate) fn from_env() -> Self {
+        Self::parse(std::env::var(Self::ENV).ok().as_deref())
+    }
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Marker22 => "marker22",
+            Self::Len21 => "len21",
+        }
+    }
+}
+
+/// `NvstHidControl_t` values as OpenNOW sends them (1 attach, 3 removal).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SonyDeviceControl {
+pub(crate) enum HidDeviceControl {
     Attach,
     Removal,
 }
 
-impl SonyDeviceControl {
-    const fn code(self) -> u8 {
+pub(crate) type SonyDeviceControl = HidDeviceControl;
+
+impl HidDeviceControl {
+    pub(crate) const fn code(self) -> u8 {
         match self {
             Self::Attach => 1,
             Self::Removal => 3,
@@ -1011,9 +1073,44 @@ impl SonyDeviceControl {
     }
 }
 
+/// The four trailing `u16 BE` identity words of the `0x12` change event.
+/// The official client logs them as `%04X:%04X:%04X:%03d`: VID, PID, then
+/// (by inference) `bcdDevice` and the USB interface number. Sending the
+/// interface here keeps the attach consistent with the `0x11` report
+/// envelope, which carries the same interface byte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct HidChangeIdentity {
+    pub(crate) vendor: u16,
+    pub(crate) product: u16,
+    pub(crate) revision: u16,
+    pub(crate) interface: u16,
+}
+
 pub(crate) fn sony_low_id_in_range(low_id: u8) -> Option<()> {
     let offset = low_id.checked_sub(opennow_streamer_hid::ds4::DS4_LOW_ID_BASE)?;
     (usize::from(offset) < opennow_streamer_hid::MAX_SOURCES).then_some(())
+}
+
+/// HID change event: cmd `0x0206`, `[u32 BE len][u32 LE 0x12][u8 id][u8 control]
+/// [u32 BE flags][4 x u16 BE]`. No id gating; callers pick the domain.
+pub(crate) fn hid_device_change_command(
+    device_id: u8,
+    control: HidDeviceControl,
+    flags: u32,
+    identity: HidChangeIdentity,
+) -> Vec<u8> {
+    let mut body = Vec::with_capacity(14);
+    body.push(device_id);
+    body.push(control.code());
+    body.extend_from_slice(&flags.to_be_bytes());
+    body.extend_from_slice(&identity.vendor.to_be_bytes());
+    body.extend_from_slice(&identity.product.to_be_bytes());
+    body.extend_from_slice(&identity.revision.to_be_bytes());
+    body.extend_from_slice(&identity.interface.to_be_bytes());
+    control_command(
+        COMMAND_REMOTE_INPUT,
+        &remote_input_packet(RI_TYPE_DEVICE_CHANGE, &body),
+    )
 }
 
 pub(crate) fn sony_device_change_command(
@@ -1021,18 +1118,67 @@ pub(crate) fn sony_device_change_command(
     low_id: u8,
 ) -> Option<Vec<u8>> {
     sony_low_id_in_range(low_id)?;
-    let mut body = Vec::with_capacity(14);
-    body.push(low_id);
-    body.push(control.code());
-    body.extend_from_slice(&SONY_DEVICE_CHANGE_FLAGS.to_be_bytes());
-    body.extend_from_slice(&0_u16.to_be_bytes());
-    body.extend_from_slice(&0_u16.to_be_bytes());
-    body.extend_from_slice(&0_u16.to_be_bytes());
-    body.extend_from_slice(&0_u16.to_be_bytes());
-    Some(control_command(
-        COMMAND_REMOTE_INPUT,
-        &remote_input_packet(RI_TYPE_DEVICE_CHANGE, &body),
+    Some(hid_device_change_command(
+        low_id,
+        control,
+        SONY_DEVICE_CHANGE_FLAGS,
+        HidChangeIdentity::default(),
     ))
+}
+
+/// Attach/removal for a generic (allowlisted raw-HID) device. `id` is the
+/// client-chosen request id for an attach, gated to the generic domain so it
+/// can never alias a DS4 lane. For a removal it is the id the server knows
+/// the device by (`GenericAttachState::wire_id`): the server-assigned device
+/// id once the attach was accepted, otherwise the request id.
+pub(crate) fn generic_device_change_command(
+    id: u8,
+    control: HidDeviceControl,
+    identity: &opennow_streamer_hid::GenericHidIdentity,
+) -> Option<Vec<u8>> {
+    if control == HidDeviceControl::Attach {
+        opennow_streamer_hid::generic_request_index(id)?;
+    }
+    Some(hid_device_change_command(
+        id,
+        control,
+        opennow_streamer_hid::GENERIC_DEVICE_CHANGE_FLAGS,
+        HidChangeIdentity {
+            vendor: identity.vendor,
+            product: identity.product,
+            revision: identity.revision,
+            interface: u16::from(identity.interface),
+        },
+    ))
+}
+
+/// The `0x11` record the official client emits under cmd `0x020d` for every
+/// HID report, in the requested [`GenericHidReportFraming`]: with `Marker22`
+/// it is `[0x22][u32 LE 0x11][u8 id][u8 interface][0x00][report]`.
+fn hid_report_payload(
+    framing: GenericHidReportFraming,
+    device_id: u8,
+    interface: u8,
+    report: &[u8],
+) -> Option<Vec<u8>> {
+    if report.is_empty() || report.len() > opennow_streamer_hid::MAX_GENERIC_REPORT_BYTES {
+        return None;
+    }
+    let mut payload = Vec::with_capacity(10 + report.len());
+    match framing {
+        GenericHidReportFraming::Marker22 => payload.push(HID_REPORT_MARKER),
+        GenericHidReportFraming::Len21 => {
+            payload.push(HID_REPORT_LEN_MARKER);
+            let size = report.len() as u16 + HID_REPORT_RECORD_HEADER_BYTES;
+            payload.extend_from_slice(&size.to_be_bytes());
+        }
+    }
+    payload.extend_from_slice(&RI_TYPE_HID_REPORT.to_le_bytes());
+    payload.push(device_id);
+    payload.push(interface);
+    payload.push(0);
+    payload.extend_from_slice(report);
+    Some(payload)
 }
 
 pub(crate) fn sony_report_command(
@@ -1040,29 +1186,108 @@ pub(crate) fn sony_report_command(
     report: &[u8; opennow_streamer_hid::ds4::DS4_REPORT_BYTES],
 ) -> Option<Vec<u8>> {
     sony_low_id_in_range(low_id)?;
-    let mut payload = Vec::with_capacity(72);
-    payload.push(HID_REPORT_MARKER);
-    payload.extend_from_slice(&RI_TYPE_HID_REPORT.to_le_bytes());
-    payload.push(low_id);
-    payload.push(opennow_streamer_hid::ds4::DS4_INTERFACE);
-    payload.push(0);
-    payload.extend_from_slice(report);
+    let payload = hid_report_payload(
+        GenericHidReportFraming::Marker22,
+        low_id,
+        opennow_streamer_hid::ds4::DS4_INTERFACE,
+        report,
+    )?;
     Some(control_command(COMMAND_GAMEPAD, &payload))
 }
 
-pub(crate) fn parse_sony_output(payload: &[u8]) -> Option<(u8, &[u8])> {
-    if payload.len() < 13 {
-        return None;
-    }
-    if u32::from_le_bytes(payload[0..4].try_into().ok()?) != RI_TYPE_HID_REPORT {
-        return None;
-    }
-    let low_id = payload[4];
-    sony_low_id_in_range(low_id)?;
-    Some((low_id, &payload[7..]))
+/// Raw HID report for a server-assigned generic device id on the reliable
+/// control channel (the proven DS4 route). `device_id` is whatever the `0x1a`
+/// response assigned (any `u8`); the admission session already refused ids
+/// that collide with another HID lane.
+pub(crate) fn generic_report_command(
+    framing: GenericHidReportFraming,
+    device_id: u8,
+    interface: u8,
+    report: &[u8],
+) -> Option<Vec<u8>> {
+    let payload = hid_report_payload(framing, device_id, interface, report)?;
+    Some(control_command(COMMAND_GAMEPAD, &payload))
 }
 
-pub(crate) fn for_each_sony_output(mut bytes: &[u8], mut handle: impl FnMut(u8, &[u8])) {
+/// Raw HID report on the partially reliable input channel, prefixed with the
+/// `[0x26][4 + id][u16 BE sequence]` marker the gamepad path uses. Whether a
+/// `0x23` timestamp envelope is also required there is unknown; this variant
+/// is an experiment switch, not the default route. Server-assigned ids whose
+/// `4 + id` sequence slot does not fit a byte are refused.
+pub(crate) fn generic_report_command_partial(
+    framing: GenericHidReportFraming,
+    device_id: u8,
+    interface: u8,
+    report: &[u8],
+    sequence: u16,
+) -> Option<NvstEncodedInput> {
+    let sequence_id = PR_SEQUENCE_ID_BASE.checked_add(device_id)?;
+    let typed = hid_report_payload(framing, device_id, interface, report)?;
+    let mut payload = Vec::with_capacity(4 + typed.len());
+    payload.push(PR_SEQUENCE_MARKER);
+    payload.push(sequence_id);
+    payload.extend_from_slice(&sequence.to_be_bytes());
+    payload.extend_from_slice(&typed);
+    Some(NvstEncodedInput {
+        route: NvstInputRoute::InputPartial,
+        bytes: control_command(COMMAND_GAMEPAD, &payload),
+    })
+}
+
+/// One decoded server -> client HID message under cmd `0x0206`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HidInbound<'a> {
+    /// RI `0x11`: `[u32 LE 0x11][u8 deviceId][u8 interface][u8 third][payload]`.
+    OutputReport {
+        device_id: u8,
+        interface: u8,
+        third: u8,
+        bytes: &'a [u8],
+    },
+    /// RI `0x1a`: `[u32 LE 0x1a][u8 requestId][u8 status][u32 BE flags][u8 deviceId]`,
+    /// 11 bytes, as NVIDIA's own client reads it (`libBifrost2`
+    /// `ServerControl::handleServerCommand`, `libGeronimo`
+    /// `HIDDevicesController::handleGenericResponse`): `requestId` echoes
+    /// the id of the client's `0x12` attach, `status == 1` is the only
+    /// acceptance, `flags` echoes the attach flags (never consumed), and
+    /// `deviceId` is the server-assigned id that keys every report and the
+    /// detach from then on. Observed live: `1a000000 00 01 00000002 19`.
+    DeviceResponse {
+        request_id: u8,
+        status: u8,
+        flags: u32,
+        device_id: u8,
+    },
+    /// Anything else (including truncated `0x11`/`0x1a` payloads), surfaced
+    /// so unknown RI types get logged instead of silently dropped.
+    Unknown { ri_type: u32, bytes: &'a [u8] },
+}
+
+fn parse_hid_inbound(payload: &[u8]) -> Option<HidInbound<'_>> {
+    let ri_type = u32::from_le_bytes(payload.get(0..4)?.try_into().ok()?);
+    match ri_type {
+        RI_TYPE_HID_REPORT if payload.len() >= 7 => Some(HidInbound::OutputReport {
+            device_id: payload[4],
+            interface: payload[5],
+            third: payload[6],
+            bytes: &payload[7..],
+        }),
+        RI_TYPE_DEVICE_RESPONSE if payload.len() >= 11 => Some(HidInbound::DeviceResponse {
+            request_id: payload[4],
+            status: payload[5],
+            flags: u32::from_be_bytes([payload[6], payload[7], payload[8], payload[9]]),
+            device_id: payload[10],
+        }),
+        _ => Some(HidInbound::Unknown {
+            ri_type,
+            bytes: payload,
+        }),
+    }
+}
+
+/// Walk `[u16 LE code][u16 LE len][payload]` frames and decode every cmd
+/// `0x0206` payload as a [`HidInbound`].
+pub(crate) fn for_each_hid_inbound<'a>(mut bytes: &'a [u8], mut handle: impl FnMut(HidInbound<'a>)) {
     while bytes.len() >= 4 {
         let code = u16::from_le_bytes([bytes[0], bytes[1]]);
         let length = usize::from(u16::from_le_bytes([bytes[2], bytes[3]]));
@@ -1073,10 +1298,40 @@ pub(crate) fn for_each_sony_output(mut bytes: &[u8], mut handle: impl FnMut(u8, 
         if code != COMMAND_REMOTE_INPUT {
             continue;
         }
-        if let Some((low_id, operation)) = parse_sony_output(payload) {
-            handle(low_id, operation);
+        if let Some(inbound) = parse_hid_inbound(payload) {
+            handle(inbound);
         }
     }
+}
+
+/// Legacy DS4 view of an inbound `0x11` payload; the bundle loop now routes
+/// through [`for_each_hid_inbound`], so these stay as the byte-exact contract
+/// the Sony tests pin down.
+#[cfg(test)]
+pub(crate) fn parse_sony_output(payload: &[u8]) -> Option<(u8, &[u8])> {
+    match parse_hid_inbound(payload)? {
+        HidInbound::OutputReport {
+            device_id, bytes, ..
+        } if bytes.len() >= 6 => {
+            sony_low_id_in_range(device_id)?;
+            Some((device_id, bytes))
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn for_each_sony_output(bytes: &[u8], mut handle: impl FnMut(u8, &[u8])) {
+    for_each_hid_inbound(bytes, |inbound| {
+        if let HidInbound::OutputReport {
+            device_id, bytes, ..
+        } = inbound
+            && bytes.len() >= 6
+            && sony_low_id_in_range(device_id).is_some()
+        {
+            handle(device_id, bytes);
+        }
+    });
 }
 
 fn text_messages(event: &NativeEvent<'_>) -> Result<Vec<NvstEncodedInput>, NvstInputCodecError> {
@@ -2126,5 +2381,407 @@ mod tests {
         };
         assert_eq!(encoded.route, NvstInputRoute::ControlReliable);
         assert_ne!(encoded.route, NvstInputRoute::InputPartial);
+    }
+
+    // ---- generic raw-HID (X-56) ------------------------------------------
+
+    fn x56_identity() -> opennow_streamer_hid::GenericHidIdentity {
+        opennow_streamer_hid::GenericHidIdentity {
+            vendor: 0x0738,
+            product: 0x2221,
+            revision: 0x0100,
+            interface: 0,
+        }
+    }
+
+    const X56_REPORT: [u8; 11] = [
+        0x00, 0x80, 0x00, 0x80, 0x00, 0x08, 0x80, 0x80, 0x00, 0x00, 0x00,
+    ];
+
+    #[test]
+    fn generic_attach_for_the_x56_stick_is_the_exact_26_byte_change_event() {
+        let attach =
+            generic_device_change_command(0, HidDeviceControl::Attach, &x56_identity()).unwrap();
+        let expected: [u8; 26] = [
+            0x06, 0x02, 0x16, 0x00, // cmd 0x0206, len 22
+            0x00, 0x00, 0x00, 0x12, // u32 BE inner len 18
+            0x12, 0x00, 0x00, 0x00, // u32 LE RI type 0x12
+            0x00, // requestId 0
+            0x01, // control attach
+            0x00, 0x00, 0x00, 0x0f, // u32 BE flags 0xF
+            0x07, 0x38, // vid
+            0x22, 0x21, // pid
+            0x01, 0x00, // bcdDevice
+            0x00, 0x00, // reserved
+        ];
+        assert_eq!(attach, expected);
+
+        let removal =
+            generic_device_change_command(2, HidDeviceControl::Removal, &x56_identity()).unwrap();
+        assert_eq!(removal.len(), 26);
+        assert_eq!(removal[12], 2);
+        assert_eq!(removal[13], 3);
+        assert_eq!(&removal[14..26], &expected[14..26]);
+    }
+
+    #[test]
+    fn generic_change_events_stay_inside_the_generic_id_domain() {
+        for request_id in [3, 5, 6, 9, 10, 255] {
+            assert!(
+                generic_device_change_command(request_id, HidDeviceControl::Attach, &x56_identity())
+                    .is_none(),
+                "request id {request_id} must be refused"
+            );
+        }
+        for request_id in [0, 1, 2] {
+            assert!(
+                generic_device_change_command(request_id, HidDeviceControl::Attach, &x56_identity())
+                    .is_some()
+            );
+        }
+        // A removal names the id the server assigned, which is any u8.
+        for wire_id in [0, 2, 25, 200, 255] {
+            let removal =
+                generic_device_change_command(wire_id, HidDeviceControl::Removal, &x56_identity())
+                    .unwrap_or_else(|| panic!("removal with server id {wire_id} must encode"));
+            assert_eq!(&removal[12..14], &[wire_id, 3]);
+        }
+        // The Sony wrapper still produces the byte-exact legacy envelope.
+        let sony = sony_device_change_command(SonyDeviceControl::Attach, 6).unwrap();
+        assert_eq!(sony[12], 6);
+        assert_eq!(&sony[14..18], &1_u32.to_be_bytes());
+        assert_eq!(&sony[18..26], &[0; 8]);
+    }
+
+    #[test]
+    fn generic_report_on_the_reliable_route_wraps_the_raw_report() {
+        let framing = GenericHidReportFraming::Marker22;
+        let command = generic_report_command(framing, 4, 0, &X56_REPORT).unwrap();
+        assert_eq!(command.len(), 4 + 8 + X56_REPORT.len());
+        assert_eq!(&command[0..2], &0x020d_u16.to_le_bytes());
+        assert_eq!(&command[2..4], &19_u16.to_le_bytes());
+        assert_eq!(command[4], 0x22);
+        assert_eq!(&command[5..9], &0x11_u32.to_le_bytes());
+        assert_eq!(command[9], 4, "server-assigned device id");
+        assert_eq!(command[10], 0, "interface");
+        assert_eq!(command[11], 0);
+        assert_eq!(&command[12..], &X56_REPORT);
+        assert_eq!(
+            generic_report_command(framing, 9, 1, &X56_REPORT).unwrap()[9..11],
+            [9, 1]
+        );
+    }
+
+    #[test]
+    fn generic_report_framings_emit_exact_bytes_for_server_id_25() {
+        // Default framing (what the DS4 path proves): [0x22][u32 LE 0x11][25][iface][0][report].
+        let marker22 =
+            generic_report_command(GenericHidReportFraming::Marker22, 25, 0, &X56_REPORT).unwrap();
+        let mut expected = vec![
+            0x0d, 0x02, 0x13, 0x00, // cmd 0x020d, len 19
+            0x22, // marker
+            0x11, 0x00, 0x00, 0x00, // u32 LE RI type 0x11
+            0x19, // server-assigned device id 25
+            0x00, // interface
+            0x00, // kind
+        ];
+        expected.extend_from_slice(&X56_REPORT);
+        assert_eq!(marker22, expected);
+        // Alternative framing: [0x21][u16 BE 11 + 7][u32 LE 0x11][25][iface][0][report].
+        let len21 =
+            generic_report_command(GenericHidReportFraming::Len21, 25, 0, &X56_REPORT).unwrap();
+        let mut expected = vec![
+            0x0d, 0x02, 0x15, 0x00, // cmd 0x020d, len 21
+            0x21, // length-prefixed record marker
+            0x00, 0x12, // u16 BE size 18 = 11 + 7
+            0x11, 0x00, 0x00, 0x00, // u32 LE RI type 0x11
+            0x19, // server-assigned device id 25
+            0x00, // interface
+            0x00, // kind
+        ];
+        expected.extend_from_slice(&X56_REPORT);
+        assert_eq!(len21, expected);
+        // Interface byte is carried in both framings.
+        assert_eq!(
+            generic_report_command(GenericHidReportFraming::Len21, 25, 2, &X56_REPORT).unwrap()
+                [11..14],
+            [25, 2, 0]
+        );
+    }
+
+    #[test]
+    fn report_framing_env_values_parse_case_insensitively_with_a_safe_default() {
+        assert_eq!(
+            GenericHidReportFraming::parse(None),
+            GenericHidReportFraming::Marker22
+        );
+        assert_eq!(
+            GenericHidReportFraming::parse(Some("")),
+            GenericHidReportFraming::Marker22
+        );
+        assert_eq!(
+            GenericHidReportFraming::parse(Some("marker22")),
+            GenericHidReportFraming::Marker22
+        );
+        assert_eq!(
+            GenericHidReportFraming::parse(Some("bogus")),
+            GenericHidReportFraming::Marker22
+        );
+        assert_eq!(
+            GenericHidReportFraming::parse(Some("len21")),
+            GenericHidReportFraming::Len21
+        );
+        assert_eq!(
+            GenericHidReportFraming::parse(Some(" LEN21 ")),
+            GenericHidReportFraming::Len21
+        );
+        assert_eq!(GenericHidReportFraming::default().label(), "marker22");
+        assert_eq!(GenericHidReportFraming::Len21.label(), "len21");
+        assert_eq!(
+            GenericHidReportFraming::ENV,
+            "OPENNOW_GENERIC_HID_REPORT_FRAMING"
+        );
+    }
+
+    #[test]
+    fn generic_report_on_the_partial_route_carries_the_sequence_prefix() {
+        let encoded = generic_report_command_partial(
+            GenericHidReportFraming::Marker22,
+            4,
+            0,
+            &X56_REPORT,
+            0x0102,
+        )
+        .unwrap();
+        assert_eq!(encoded.route, NvstInputRoute::InputPartial);
+        let bytes = &encoded.bytes;
+        assert_eq!(bytes.len(), 4 + 4 + 8 + X56_REPORT.len());
+        assert_eq!(&bytes[0..2], &0x020d_u16.to_le_bytes());
+        assert_eq!(&bytes[2..4], &23_u16.to_le_bytes());
+        assert_eq!(&bytes[4..8], &[0x26, 4 + 4, 0x01, 0x02]);
+        assert_eq!(bytes[8], 0x22);
+        assert_eq!(&bytes[9..13], &0x11_u32.to_le_bytes());
+        assert_eq!(&bytes[13..16], &[4, 0, 0]);
+        assert_eq!(&bytes[16..], &X56_REPORT);
+        // Server id 25 lands in the sequence slot 4 + 25 and the record.
+        let encoded = generic_report_command_partial(
+            GenericHidReportFraming::Len21,
+            25,
+            0,
+            &X56_REPORT,
+            0x0001,
+        )
+        .unwrap();
+        let bytes = &encoded.bytes;
+        assert_eq!(&bytes[4..8], &[0x26, 4 + 25, 0x00, 0x01]);
+        assert_eq!(&bytes[8..11], &[0x21, 0x00, 0x12]);
+        assert_eq!(&bytes[11..15], &0x11_u32.to_le_bytes());
+        assert_eq!(&bytes[15..18], &[25, 0, 0]);
+        assert_eq!(&bytes[18..], &X56_REPORT);
+    }
+
+    #[test]
+    fn generic_reports_enforce_the_packet_cap_and_accept_any_server_id() {
+        let framing = GenericHidReportFraming::Marker22;
+        let max = vec![0x5a_u8; opennow_streamer_hid::MAX_GENERIC_REPORT_BYTES];
+        let command = generic_report_command(framing, 0, 0, &max).unwrap();
+        assert_eq!(command.len(), 4 + 8 + 247);
+        assert!(
+            generic_report_command_partial(framing, 0, 0, &max, 0)
+                .unwrap()
+                .bytes
+                .len()
+                <= 263
+        );
+        let over = vec![0_u8; opennow_streamer_hid::MAX_GENERIC_REPORT_BYTES + 1];
+        assert!(generic_report_command(framing, 0, 0, &over).is_none());
+        assert!(generic_report_command_partial(framing, 0, 0, &over, 0).is_none());
+        assert!(generic_report_command(framing, 0, 0, &[]).is_none());
+        // The server-assigned id is an arbitrary u8: nothing caps it at 9.
+        for device_id in [9, 10, 25, 255] {
+            assert_eq!(
+                generic_report_command(framing, device_id, 0, &X56_REPORT).unwrap()[9],
+                device_id
+            );
+        }
+        assert!(generic_report_command_partial(framing, 251, 0, &X56_REPORT, 0).is_some());
+        assert!(
+            generic_report_command_partial(framing, 252, 0, &X56_REPORT, 0).is_none(),
+            "4 + id must still fit the sequence byte"
+        );
+    }
+
+    fn frame(code: u16, payload: &[u8]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&code.to_le_bytes());
+        bytes.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+
+    #[test]
+    fn device_response_layout_is_request_status_flags_then_server_device_id() {
+        // The live seat reply to the X-56 attach (requestId 0, flags 2):
+        // [1a 00 00 00][00 requestId][01 status][00 00 00 02 flags BE][19 deviceId].
+        let observed = frame(
+            COMMAND_REMOTE_INPUT,
+            &[
+                0x1a, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x19,
+            ],
+        );
+        let mut seen = Vec::new();
+        for_each_hid_inbound(&observed, |inbound| seen.push(inbound));
+        assert_eq!(
+            seen,
+            [HidInbound::DeviceResponse {
+                request_id: 0,
+                status: opennow_streamer_hid::GENERIC_RESPONSE_STATUS_ACCEPTED,
+                flags: 2,
+                device_id: 25
+            }],
+            "status 1 at +5 and the server-assigned id 25 at +10 is an acceptance"
+        );
+        // Status 0 at +5 is a denial even when a device id trails it.
+        let denied = frame(
+            COMMAND_REMOTE_INPUT,
+            &[0x1a, 0, 0, 0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x19],
+        );
+        seen.clear();
+        for_each_hid_inbound(&denied, |inbound| seen.push(inbound));
+        assert_eq!(
+            seen,
+            [HidInbound::DeviceResponse {
+                request_id: 0,
+                status: 0,
+                flags: 2,
+                device_id: 25
+            }]
+        );
+        // Trailing 0xff / 0x00 device ids are carried verbatim; the
+        // admission session decides they mean disabled / silent.
+        for (device_id, request_id) in [(0xff_u8, 1_u8), (0x00, 2)] {
+            let payload = [0x1a, 0, 0, 0, request_id, 0x01, 0, 0, 0, 0, device_id];
+            let framed = frame(COMMAND_REMOTE_INPUT, &payload);
+            let mut seen = Vec::new();
+            for_each_hid_inbound(&framed, |inbound| seen.push(inbound));
+            assert_eq!(
+                seen,
+                [HidInbound::DeviceResponse {
+                    request_id,
+                    status: 1,
+                    flags: 0,
+                    device_id
+                }]
+            );
+        }
+    }
+
+    #[test]
+    fn generic_change_event_carries_vid_pid_revision_and_interface() {
+        let identity = opennow_streamer_hid::GenericHidIdentity {
+            vendor: 0x0738,
+            product: 0x2221,
+            revision: 0x0100,
+            interface: 2,
+        };
+        let command =
+            generic_device_change_command(0, HidDeviceControl::Attach, &identity).unwrap();
+        // [u16 LE 0x0206][u16 LE len][u32 BE len][u32 LE 0x12][id][control][u32 BE flags][4 x u16 BE]
+        assert_eq!(&command[0..2], &0x0206_u16.to_le_bytes());
+        assert_eq!(&command[2..4], &(4 + 4 + 14_u16).to_le_bytes());
+        assert_eq!(&command[8..12], &0x12_u32.to_le_bytes());
+        assert_eq!(&command[12..14], &[0, 1]);
+        assert_eq!(
+            &command[14..18],
+            &opennow_streamer_hid::GENERIC_DEVICE_CHANGE_FLAGS.to_be_bytes()
+        );
+        assert_eq!(&command[18..26], &[0x07, 0x38, 0x22, 0x21, 0x01, 0x00, 0x00, 0x02]);
+        let removal =
+            generic_device_change_command(2, HidDeviceControl::Removal, &identity).unwrap();
+        assert_eq!(&removal[12..14], &[2, 3]);
+        assert_eq!(&removal[24..26], &[0x00, 0x02], "removal names the same interface");
+        assert!(generic_device_change_command(3, HidDeviceControl::Attach, &identity).is_none());
+        assert!(generic_device_change_command(6, HidDeviceControl::Attach, &identity).is_none());
+    }
+
+    #[test]
+    fn hid_inbound_walker_decodes_responses_outputs_and_unknown_types() {
+        let mut stream = Vec::new();
+        // 0x1a response: requestId 0, status 1, flags BE 0x00000003, server
+        // device id 4 (verified order: the device id byte is last).
+        stream.extend(frame(
+            COMMAND_REMOTE_INPUT,
+            &[0x1a, 0, 0, 0, 0x00, 0x01, 0x00, 0x00, 0x00, 0x03, 0x04],
+        ));
+        // Short 0x1a (10 bytes) -> Unknown.
+        stream.extend(frame(
+            COMMAND_REMOTE_INPUT,
+            &[0x1a, 0, 0, 0, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00],
+        ));
+        // 0x11 output for device id 0, interface 0, third 0x07, payload.
+        stream.extend(frame(
+            COMMAND_REMOTE_INPUT,
+            &[0x11, 0, 0, 0, 0x00, 0x00, 0x07, 0xaa, 0xbb],
+        ));
+        // Other command codes are skipped entirely.
+        stream.extend(frame(0x0200, &[0x1a, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0]));
+        // Unknown RI type.
+        stream.extend(frame(COMMAND_REMOTE_INPUT, &[0x33, 0, 0, 0, 0xde, 0xad]));
+        // Too short for an RI type -> ignored.
+        stream.extend(frame(COMMAND_REMOTE_INPUT, &[0x11, 0]));
+        let mut seen = Vec::new();
+        for_each_hid_inbound(&stream, |inbound| seen.push(inbound));
+        assert_eq!(seen.len(), 4);
+        assert_eq!(
+            seen[0],
+            HidInbound::DeviceResponse {
+                request_id: 0,
+                status: 1,
+                flags: 3,
+                device_id: 4
+            }
+        );
+        assert!(matches!(
+            seen[1],
+            HidInbound::Unknown { ri_type: 0x1a, bytes } if bytes.len() == 10
+        ));
+        assert_eq!(
+            seen[2],
+            HidInbound::OutputReport {
+                device_id: 0,
+                interface: 0,
+                third: 0x07,
+                bytes: &[0xaa, 0xbb]
+            }
+        );
+        assert_eq!(
+            seen[3],
+            HidInbound::Unknown {
+                ri_type: 0x33,
+                bytes: &[0x33, 0, 0, 0, 0xde, 0xad]
+            }
+        );
+    }
+
+    #[test]
+    fn sony_output_filter_only_yields_ds4_ids_with_a_full_operation() {
+        let mut stream = Vec::new();
+        stream.extend(frame(
+            COMMAND_REMOTE_INPUT,
+            &[0x11, 0, 0, 0, 0x07, 0x04, 0x00, 5, 0x01, 0, 0, 0x40, 0x80],
+        ));
+        stream.extend(frame(
+            COMMAND_REMOTE_INPUT,
+            &[0x11, 0, 0, 0, 0x02, 0x00, 0x00, 5, 0x01, 0, 0, 0x40, 0x80],
+        ));
+        stream.extend(frame(
+            COMMAND_REMOTE_INPUT,
+            &[0x11, 0, 0, 0, 0x08, 0x04, 0x00, 5, 0x01, 0, 0, 0x40],
+        ));
+        let mut seen = Vec::new();
+        for_each_sony_output(&stream, |low_id, operation| {
+            seen.push((low_id, operation.to_vec()));
+        });
+        assert_eq!(seen, vec![(7, vec![5, 0x01, 0, 0, 0x40, 0x80])]);
     }
 }
