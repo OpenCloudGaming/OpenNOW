@@ -1,0 +1,149 @@
+name: Windows build (personal fork)
+
+# Builds an unsigned Windows x64 installer on GitHub-hosted runners, so this fork
+# can produce its own copy without the upstream Blacksmith runners. Download the
+# result from the run's "Artifacts" section.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - "claude/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-personal-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-x64:
+    runs-on: windows-2025
+    timeout-minutes: 360
+    env:
+      CARGO_TERM_COLOR: always
+      SDL_VERSION: release-3.2.20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enable Windows Media Foundation
+        shell: pwsh
+        run: .github/scripts/ensure-windows-media-foundation.ps1
+
+      - name: Map stable Windows workspace
+        shell: pwsh
+        run: .github/scripts/map-windows-workspace.ps1
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Windows build tools
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Bound Windows Rust compilation
+        shell: pwsh
+        run: |
+          "CARGO_BUILD_JOBS=4" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $linker = Join-Path $env:VCToolsInstallDir "bin\Hostx64\x64\link.exe"
+          if (-not (Test-Path $linker)) { throw "The MSVC x64 linker is unavailable." }
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$linker" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install Windows LLVM
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          choco install llvm -y --no-progress
+          $llvmBin = Join-Path $env:ProgramFiles "LLVM\bin"
+          if (-not (Test-Path (Join-Path $llvmBin "clang.exe")) -or
+              -not (Test-Path (Join-Path $llvmBin "libclang.dll"))) {
+            throw "LLVM installation is missing libclang.dll"
+          }
+          $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "LIBCLANG_PATH=$llvmBin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.3"
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          modules: qtmultimedia qtshadertools
+          cache: true
+          cache-key-prefix: qt-target-windows-x64
+
+      - name: Cache Rust dependencies and build artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          shared-key: personal-windows-x64
+          cache-bin: false
+          cache-on-failure: true
+          workspaces: |
+            native/opennow-core -> ../../build/opennow-qt-release/rust-target
+            native/opennow-core -> ../../build/opennow-qt-release/update-helper-rust-target
+            native/opennow-streamer -> ../../build/opennow-qt-release/streamer-rust-target
+
+      - name: Cache Qt C++ compilation
+        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639
+        with:
+          key: personal-windows-x64
+          restore-keys: personal-windows-x64
+          max-size: 1G
+
+      - name: Build and cache SDL3
+        uses: ./.github/actions/sdl3
+        with:
+          version: ${{ env.SDL_VERSION }}
+          target-arch: x64
+          parallel: 4
+
+      - name: Configure Qt release
+        shell: bash
+        run: |
+          cd /o
+          cmake -S opennow-qt -B build/opennow-qt-release \
+            -G "Ninja Multi-Config" -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/SDL-install"
+
+      - name: Build Qt release
+        shell: bash
+        run: |
+          cd /o
+          cmake --build build/opennow-qt-release --config Release --parallel 4
+
+      - name: Create portable ZIP
+        shell: bash
+        run: |
+          cd /o
+          mkdir -p build/qt-packages
+          cpack --config build/opennow-qt-release/CPackConfig.cmake \
+            -C Release -G ZIP -B build/qt-packages
+
+      - name: Build setup.exe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $zip = @(Get-ChildItem build/qt-packages -Filter *.zip)
+          if ($zip.Count -ne 1) { throw "Expected one portable ZIP" }
+          $payload = Join-Path $env:RUNNER_TEMP "setup-payload"
+          if (Test-Path $payload) { Remove-Item $payload -Recurse -Force }
+          Expand-Archive $zip[0].FullName $payload
+          $setup = Join-Path (Resolve-Path build/qt-packages) ([IO.Path]::GetFileNameWithoutExtension($zip[0].Name) + "-setup.exe")
+          $version = (Select-String -Path opennow-qt/CMakeLists.txt -Pattern 'project\(OpenNOWQt VERSION ([0-9.]+)').Matches[0].Groups[1].Value
+          ./opennow-qt/packaging/windows/build-setup.ps1 -Payload $payload -Version $version -Arch x64 -OutputFile $setup
+
+      - name: Upload Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenNOW-Windows-x64
+          path: |
+            build/qt-packages/*.zip
+            build/qt-packages/*-setup.exe
+          if-no-files-found: error

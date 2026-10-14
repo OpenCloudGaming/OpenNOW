@@ -254,29 +254,6 @@ FocusScope {
     }
 
     GlassPanel {
-        visible: root.streaming && AppController.overlay === ""
-        layer.enabled: HdrOutput.chromeRequired
-        layer.effect: HdrChromeEffect {}
-        z: 12
-        anchors.horizontalCenter: parent.horizontalCenter
-        anchors.bottom: parent.bottom
-        anchors.bottomMargin: 34
-        width: streamHints.implicitWidth + 34
-        height: 52
-        panelRadius: 26
-        strong: true
-
-        Row {
-            id: streamHints
-            anchors.centerIn: parent
-            spacing: 22
-            ControllerGlyph { glyph: "GUIDE"; label: qsTr("Session") }
-            ControllerGlyph { visible: ShellStore.settings.shortcutToggleStats !== ""; glyph: String(ShellStore.settings.shortcutToggleStats ?? "Ctrl+N"); keyboard: true; label: qsTr("Stats") }
-            ControllerGlyph { glyph: "F11"; keyboard: true; label: qsTr("Fullscreen") }
-        }
-    }
-
-    GlassPanel {
         MotionProgress {
             id: afkMotion
             shown: root.streaming && ShellStore.antiAfkEnabled

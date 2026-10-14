@@ -1,9 +1,12 @@
 //! Bounded stereo playout with gentle recovery from a persistent burst backlog.
 //!
-//! Ordinary packets are copied unchanged. Only a backlog above 60 ms sustained
-//! for 200 ms enables a temporary, at-most-2% catch-up resample. Hysteresis stops
-//! recovery at 40 ms. The callback neither allocates nor drops whole chunks of
-//! audible PCM; both channels always use the same fractional source position.
+//! Ordinary packets are copied unchanged. The burst that follows a network stall
+//! is trimmed to 40 ms when playback resumes after the underrun, so the skip lands
+//! in the gap the listener already heard as silence instead of becoming an audible
+//! speed-up later. Only a backlog above 60 ms sustained for 200 ms enables a
+//! temporary, at-most-0.5% catch-up resample, which stays below an audible pitch
+//! change. Hysteresis stops recovery at 40 ms. The callback never allocates, and
+//! both channels always use the same fractional source position.
 
 use std::collections::VecDeque;
 
@@ -19,6 +22,7 @@ pub(crate) struct AudioPlayoutBuffer {
     capacity: usize,
     high_frames: usize,
     recovering: bool,
+    underrun: bool,
 }
 
 impl AudioPlayoutBuffer {
@@ -34,6 +38,7 @@ impl AudioPlayoutBuffer {
             capacity,
             high_frames: 0,
             recovering: false,
+            underrun: false,
         }
     }
 
@@ -58,11 +63,24 @@ impl AudioPlayoutBuffer {
         self.samples.clear();
         self.high_frames = 0;
         self.recovering = false;
+        self.underrun = false;
     }
 
     pub(crate) fn fill(&mut self, destination: &mut [f32]) {
         let output_frames = destination.len() / CHANNELS;
-        let available = self.samples.len() / CHANNELS;
+        let mut available = self.samples.len() / CHANNELS;
+        if available < output_frames {
+            self.underrun = true;
+        } else if self.underrun {
+            // Audio delayed by a stall arrives as one burst. Skip its oldest part
+            // now, right after the silence, rather than resampling it away later.
+            let skipped = (available - output_frames).saturating_sub(TARGET_FRAMES);
+            self.samples.drain(..skipped * CHANNELS);
+            available -= skipped;
+            self.underrun = false;
+            self.high_frames = 0;
+            self.recovering = false;
+        }
         let backlog = available.saturating_sub(output_frames);
         if backlog > HIGH_FRAMES {
             self.high_frames = self.high_frames.saturating_add(output_frames);
@@ -74,7 +92,7 @@ impl AudioPlayoutBuffer {
             self.recovering = false;
         }
         let extra = if self.recovering {
-            (output_frames / 50).min(backlog.saturating_sub(TARGET_FRAMES))
+            (output_frames / 200).min(backlog.saturating_sub(TARGET_FRAMES))
         } else {
             0
         };
@@ -133,13 +151,38 @@ mod tests {
             audio.push(&packet);
         }
         let mut output = [0.0; 960];
-        for _ in 0..600 {
+        for _ in 0..2_000 {
             audio.push(&packet);
             audio.fill(&mut output);
             assert!(output.chunks_exact(2).all(|v| v == [0.25, -0.5]));
         }
         assert_eq!(audio.samples.len() / CHANNELS, TARGET_FRAMES);
         assert!(!audio.recovering);
+    }
+
+    #[test]
+    fn burst_after_underrun_is_trimmed_without_resampling() {
+        let mut audio = AudioPlayoutBuffer::new(11_520);
+        let mut output = [1.0; 960];
+        audio.fill(&mut output);
+        assert!(output.iter().all(|&sample| sample == 0.0));
+
+        // 100 ms of delayed audio lands at once; each frame is tagged by index.
+        let burst: Vec<_> = (0..4_800).flat_map(|i| [i as f32, -(i as f32)]).collect();
+        audio.push(&burst);
+        audio.fill(&mut output);
+        let first = 4_800 - 480 - TARGET_FRAMES;
+        for (offset, frame) in output.chunks_exact(2).enumerate() {
+            let expected = (first + offset) as f32;
+            assert_eq!(frame, [expected, -expected]);
+        }
+        assert_eq!(audio.samples.len() / CHANNELS, TARGET_FRAMES);
+        assert!(!audio.underrun && !audio.recovering);
+
+        // Without another underrun, a later backlog is left to gentle recovery.
+        audio.push(&burst[..1_920]);
+        audio.fill(&mut output);
+        assert_eq!(audio.samples.len() / CHANNELS, TARGET_FRAMES + 960 - 480);
     }
 
     #[test]
@@ -153,8 +196,10 @@ mod tests {
         assert!(!audio.recovering);
         audio.high_frames = PERSISTENT_FRAMES;
         audio.recovering = true;
+        audio.underrun = true;
         audio.clear();
         assert_eq!(audio.high_frames, 0);
         assert!(!audio.recovering);
+        assert!(!audio.underrun);
     }
 }
