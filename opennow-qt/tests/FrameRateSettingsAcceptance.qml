@@ -39,9 +39,9 @@ QtObject {
     function capability(hardware) {
         ShellStore.nativeRuntimeReady = true
         ShellStore.nativeRuntimeCapabilities = hardware
-            ? {protocolVersion:7, videoBackends:[{backend:"vaapi", available:true,
+            ? {protocolVersion: 8, videoBackends:[{backend:"vaapi", available:true,
                 codecs:[{codec:"h265", available:true, colorQualities:["8bit_420"]}]}]}
-            : {protocolVersion:7, videoBackends:[{backend:"software", available:true,
+            : {protocolVersion: 8, videoBackends:[{backend:"software", available:true,
                 codecs:[{codec:"h265", available:true, colorQualities:["8bit_420"]}]}]}
     }
     function request(hardware, reason) {

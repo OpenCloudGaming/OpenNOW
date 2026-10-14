@@ -13,11 +13,19 @@ Item {
     property date now: new Date()
     readonly property var profile: ShellStore.authSession && ShellStore.authSession.user
         ? ShellStore.authSession.user : null
-    readonly property string displayName: profile && profile.displayName
-        ? String(profile.displayName) : qsTr("Guest")
+    readonly property var sourceAuth: ShellStore.browsingExternalSource
+        ? ShellStore.sourceOwnerState.authState(ShellStore.selectedSourceId) : null
+    readonly property bool sourceSignedIn: sourceAuth !== null
+        && (sourceAuth.state === "signed-in" || sourceAuth.state === "not-required")
+    readonly property string displayName: ShellStore.browsingExternalSource
+        ? (sourceAuth && sourceAuth.state === "signed-in" ? String(sourceAuth.account && sourceAuth.account.name || "")
+            : qsTr("Guest"))
+        : profile && profile.displayName ? String(profile.displayName) : qsTr("Guest")
     readonly property string profileInitial: displayName.length > 0
         ? displayName.slice(0, 1).toUpperCase() : "O"
     readonly property string membershipTier: {
+        if (ShellStore.browsingExternalSource)
+            return ""
         const subscription = ShellStore.subscription || ({})
         const tier = subscription.membershipTier || (profile && profile.membershipTier) || ""
         return String(tier).toUpperCase()
@@ -93,6 +101,7 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 width: Math.min(200, implicitWidth)
                 text: root.displayName
+                textFormat: Text.PlainText
                 color: Theme.label
                 font.family: Theme.bodyFont
                 font.pixelSize: 19
@@ -102,7 +111,7 @@ Item {
             Rectangle {
                 anchors.verticalCenter: parent.verticalCenter
                 readonly property string badge: root.membershipTier !== "" ? root.membershipTier
-                    : ShellStore.signedIn ? "" : qsTr("SIGNED OUT")
+                    : (ShellStore.browsingExternalSource ? root.sourceSignedIn : ShellStore.signedIn) ? "" : qsTr("SIGNED OUT")
                 visible: badge !== ""
                 width: tierText.implicitWidth + 20; height: 24; radius: 12
                 color: Qt.rgba(Theme.violet.r, Theme.violet.g, Theme.violet.b, 0.18)
@@ -157,6 +166,7 @@ Item {
             anchors.alignWhenCentered: false
             spacing: 18
             Row {
+                visible: !ShellStore.browsingExternalSource
                 spacing: 8; anchors.verticalCenter: parent.verticalCenter
                 Rectangle {
                     anchors.verticalCenter: parent.verticalCenter
@@ -168,7 +178,7 @@ Item {
                     color: Theme.label; font.family: Theme.monoFont; font.pixelSize: 15; font.weight: Font.DemiBold
                 }
             }
-            Rectangle { anchors.verticalCenter: parent.verticalCenter; width: 1; height: 22; color: Theme.seam }
+            Rectangle { visible: !ShellStore.browsingExternalSource; anchors.verticalCenter: parent.verticalCenter; width: 1; height: 22; color: Theme.seam }
             Text {
                 objectName: "consoleClock"
                 anchors.verticalCenter: parent.verticalCenter

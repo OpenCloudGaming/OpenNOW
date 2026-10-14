@@ -66,6 +66,11 @@ fn av1_availability() -> &'static AtomicBool {
 }
 
 pub(crate) struct MacOutput {
+    decoded_sender: std::sync::mpsc::SyncSender<opennow_media_protocol::FrameProvenance>,
+    decoded_receiver: std::sync::mpsc::Receiver<opennow_media_protocol::FrameProvenance>,
+    decoded_dropped: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    color: Option<opennow_media_protocol::ColorDescription>,
+    audio_enabled: bool,
     audio_muted: std::sync::Arc<std::sync::atomic::AtomicBool>,
     backend: Option<MacOsBackend>,
     audio_output_device: Option<String>,
@@ -84,7 +89,9 @@ impl MacOutput {
         audio_device: &opennow_streamer_protocol::AudioOutputDevice,
         audio_muted: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<Self, String> {
-        if let Some(id) = audio_device.device_name() {
+        if stream.audio_enabled
+            && let Some(id) = audio_device.device_name()
+        {
             let devices = opennow_streamer_platform_macos::audio_output_devices()
                 .map_err(|error| error.to_string())?;
             if devices.iter().filter(|device| device.id == id).count() != 1 {
@@ -94,7 +101,13 @@ impl MacOutput {
         let external_surface = external_renderer_enabled()
             .then(|| MacExternalSurface::initialize(stream))
             .transpose()?;
+        let (decoded_sender, decoded_receiver) = std::sync::mpsc::sync_channel(64);
         Ok(Self {
+            decoded_sender,
+            decoded_receiver,
+            decoded_dropped: Default::default(),
+            color: stream.color,
+            audio_enabled: stream.audio_enabled,
             backend: None,
             audio_muted,
             audio_output_device: audio_device.device_name().map(str::to_owned),
@@ -130,14 +143,20 @@ impl MacOutput {
                 self.visible && !self.paused,
             )),
         };
-        let mut backend = MacOsBackend::start(BackendConfig {
-            audio_muted: self.audio_muted.clone(),
-            surface,
-            video: H264Format::new(parameter_sets, VideoColorSpace::Bt709).into(),
-            audio: AudioFormat::OPUS_STEREO_48KHZ,
-            audio_output_device: self.audio_output_device.clone(),
-            queues: QueueLimits::default(),
-        })
+        let mut backend = MacOsBackend::start_with_decoded_callback(
+            BackendConfig {
+                audio_enabled: self.audio_enabled,
+                audio_muted: self.audio_muted.clone(),
+                surface,
+                video: H264Format::new(parameter_sets, VideoColorSpace::Bt709)
+                    .with_color(self.color)
+                    .into(),
+                audio: AudioFormat::OPUS_STEREO_48KHZ,
+                audio_output_device: self.audio_output_device.clone(),
+                queues: QueueLimits::default(),
+            },
+            self.decoded_callback(),
+        )
         .map_err(|error| format!("VideoToolbox backend initialization failed: {error}"))?;
         backend
             .set_paused(self.paused)
@@ -161,14 +180,20 @@ impl MacOutput {
                 self.visible && !self.paused,
             )),
         };
-        let mut backend = MacOsBackend::start(BackendConfig {
-            surface,
-            video: H265Format::new(parameter_sets, VideoColorSpace::Bt709).into(),
-            audio_muted: self.audio_muted.clone(),
-            audio: AudioFormat::OPUS_STEREO_48KHZ,
-            audio_output_device: self.audio_output_device.clone(),
-            queues: QueueLimits::default(),
-        })
+        let mut backend = MacOsBackend::start_with_decoded_callback(
+            BackendConfig {
+                audio_enabled: self.audio_enabled,
+                surface,
+                video: H265Format::new(parameter_sets, VideoColorSpace::Bt709)
+                    .with_color(self.color)
+                    .into(),
+                audio_muted: self.audio_muted.clone(),
+                audio: AudioFormat::OPUS_STEREO_48KHZ,
+                audio_output_device: self.audio_output_device.clone(),
+                queues: QueueLimits::default(),
+            },
+            self.decoded_callback(),
+        )
         .map_err(|error| format!("VideoToolbox HEVC backend initialization failed: {error}"))?;
         backend
             .set_paused(self.paused)
@@ -189,14 +214,18 @@ impl MacOutput {
                 self.visible && !self.paused,
             )),
         };
-        let mut backend = MacOsBackend::start(BackendConfig {
-            surface,
-            video: format.into(),
-            audio_muted: self.audio_muted.clone(),
-            audio: AudioFormat::OPUS_STEREO_48KHZ,
-            audio_output_device: self.audio_output_device.clone(),
-            queues: QueueLimits::default(),
-        })
+        let mut backend = MacOsBackend::start_with_decoded_callback(
+            BackendConfig {
+                audio_enabled: self.audio_enabled,
+                surface,
+                video: format.with_color(self.color).into(),
+                audio_muted: self.audio_muted.clone(),
+                audio: AudioFormat::OPUS_STEREO_48KHZ,
+                audio_output_device: self.audio_output_device.clone(),
+                queues: QueueLimits::default(),
+            },
+            self.decoded_callback(),
+        )
         .map_err(|error| format!("VideoToolbox AV1 backend initialization failed: {error}"))?;
         backend
             .set_paused(self.paused)
@@ -231,6 +260,8 @@ impl MacOutput {
         if let Some(mut backend) = self.backend.take() {
             backend.stop();
         }
+        while self.decoded_receiver.try_recv().is_ok() {}
+        self.decoded_dropped.store(0, Ordering::Release);
         if let Some(surface) = self.external_surface.as_mut() {
             surface.hide();
         }
@@ -260,7 +291,22 @@ impl MacOutput {
         Ok(())
     }
 
-    pub(crate) fn pump(&mut self) -> Result<(), String> {
+    fn decoded_callback(
+        &self,
+    ) -> impl Fn(opennow_media_protocol::FrameProvenance) + Send + Sync + 'static + use<> {
+        let sender = self.decoded_sender.clone();
+        let dropped = std::sync::Arc::clone(&self.decoded_dropped);
+        move |provenance| {
+            if matches!(
+                sender.try_send(provenance),
+                Err(std::sync::mpsc::TrySendError::Full(_))
+            ) {
+                dropped.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    pub(crate) fn pump(&mut self) -> Result<crate::output::OutputEvent, String> {
         if let Some(surface) = self.external_surface.as_mut() {
             surface.pump();
         }
@@ -274,10 +320,22 @@ impl MacOutput {
                 failure.message
             ));
         }
+        let dropped = self.decoded_dropped.swap(0, Ordering::AcqRel);
+        let event = if dropped > 0 {
+            crate::output::OutputEvent::QueueDropped {
+                media: "videotoolbox-decoded-feedback",
+                count: dropped,
+            }
+        } else {
+            self.decoded_receiver.try_recv().map_or(
+                crate::output::OutputEvent::None,
+                crate::output::OutputEvent::VideoFrameDecoded,
+            )
+        };
         if self.external_surface.is_some()
             || self.last_ordering_check.elapsed() < ORDERING_POLL_INTERVAL
         {
-            return Ok(());
+            return Ok(event);
         }
         self.last_ordering_check = Instant::now();
         if let Some(backend) = self.backend.as_mut() {
@@ -285,7 +343,7 @@ impl MacOutput {
                 .refresh_overlay_ordering()
                 .map_err(|error| format!("macOS overlay ordering refresh failed: {error}"))?;
         }
-        Ok(())
+        Ok(event)
     }
 
     pub(crate) fn take_captured_input(&mut self) -> Vec<CapturedInput> {

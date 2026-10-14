@@ -386,7 +386,7 @@ QtObject {
             desktopUiScale:Qt.application.arguments.indexOf("--smoke-light-theme") >= 0 ? 1.25 : 1,
             sessionProxyUrl:"", appTheme:Qt.application.arguments.indexOf("--smoke-light-theme") >= 0 ? "light" : "dark"})
         ShellStore.nativeRuntimeReady = true
-        ShellStore.nativeRuntimeCapabilities = {protocolVersion:7,
+        ShellStore.nativeRuntimeCapabilities = {protocolVersion: 8,
             videoBackends:[{backend:"vaapi",available:true,codecs:[{codec:"h265",available:true,
                 colorQualities:["8bit_420","10bit_420"]}]}]}
         if (Qt.application.arguments.indexOf("--language-hdr-invalidation") >= 0) {

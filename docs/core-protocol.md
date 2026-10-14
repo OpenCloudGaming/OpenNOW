@@ -8,6 +8,13 @@ ambiguous state.
 
 ## Handshake
 
+Plugin-capable cores advertise `plugins.v1` and `sources.catalog.v1` for
+[management and catalog previews](plugins.md). Full provider integration adds
+`sources.v2`, documented in [Provider plugin API v2](provider-plugins.md).
+A `sources.v2` shell can initialize without NVIDIA-specific capabilities.
+Existing GeForce NOW account and session envelopes remain compatible. Raw GFN
+stream contexts are not part of the external provider API.
+
 The first shell request is always:
 
 ```json
@@ -18,7 +25,8 @@ Protocol 5 requires an exact selected catalog variant and account scope for fres
 session allocation. It retains the bounded library-page contract introduced in
 protocol 4. Older shells are rejected with `incompatible_protocol` during
 `core.hello`, and protocol-5 shells reject older cores. The native streamer
-protocol remains 7.
+protocol is 8, with C ABI 16. These versions are independent of core protocol 5
+and provider control protocol 2.
 
 The core must return the same protocol version and its capabilities. The shell
 does not send product requests before this succeeds. Version mismatches, a
@@ -891,7 +899,7 @@ Rates snap to 30, 60, 90, 120, 144, 165, 240, or 360 FPS before allocation.
 Embedded codec limits below can reduce the request further.
 
 For the embedded Qt client, `session.create` and `streamer.prepare` accept an optional
-`runtimeCapabilities` object copied from the in-process streamer's protocol-7 `hello` response.
+`runtimeCapabilities` object copied from the in-process streamer's protocol-8 `hello` response.
 The core filters its available `videoBackends` by the persisted `nativeVideoBackend` preference
 and resolves codec `auto` to AV1, HEVC, then H.264 for both SDR and HDR (subject to requested color mode) before
 CloudMatch allocation. This resolution is session-local: the saved preference stays `auto`.
@@ -954,7 +962,7 @@ GeForce MX110 beside Intel HD Graphics 620, therefore uses the integrated GPU
 instead of failing the session. An explicit saved GPU is still used even when
 its index is empty. Each settings choice lists the codecs that index found.
 
-The embedded streamer's protocol-7 `hello` may include `graphicsAdapters`. The
+The embedded streamer's protocol-8 `hello` may include `graphicsAdapters`. The
 field is omitted when no adapters were indexed. Each entry has `name`, `active`,
 `codecs` (`h264`, `h265`, `av1`), `h265Main10`, and an optional `reason`. It does
 not include the adapter LUID. `active` marks the adapter selected for that
@@ -977,7 +985,7 @@ frame rate and bitrate follow the stream; the retained legacy `recordingResoluti
 apply to the next native session. Disabling it sends `replay-stop` immediately,
 clears buffered media and cancels an in-progress clip export.
 
-These commands use the embedded streamer's protocol-7 JSON payload without
+These commands use the embedded streamer's protocol-8 JSON payload without
 changing the C ABI:
 
 - Manual `recording-start` uses its command `id` as the recording identity. A
@@ -1718,7 +1726,7 @@ resolution fails or when the launch would fall back to a lower bit depth or a
 different chroma format; the reason names the delivered profile. Codec descriptors
 are disabled only when the codec itself cannot decode 8-bit 4:2:0 SDR on the selected
 backend. Missing or incompatible capabilities do not imply support. This read does not persist or coerce any setting. Protocol 5 and native
-streamer protocol 7 are unchanged.
+streamer protocol 8 are unchanged.
 
 CoreClient injects the current native window's `nativeHdrSupported` into
 `runtimeCapabilities`, overriding any caller-supplied flag, just as it does for

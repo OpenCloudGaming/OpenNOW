@@ -26,9 +26,10 @@ FocusScope {
     property string pendingAction: ""
     property bool closing: false
     property double nowMs: Date.now()
-    readonly property var game: ShellStore.selectedGame || ({})
+    readonly property var game: ShellStore.sourceStreamGame || ShellStore.selectedGame || ({})
     readonly property var session: ShellStore.activeSession || ({})
-    readonly property var profile: session.negotiatedStreamProfile || session.streamProfile || ({})
+    readonly property var profile: ShellStore.sourceStreamActive ? ShellStore.activeStreamProfile
+        : session.negotiatedStreamProfile || session.streamProfile || ({})
     readonly property var live: ShellStore.streamer || ({})
     readonly property bool liveTelemetryAvailable: ["starting", "negotiating", "connecting", "streaming", "error"]
         .indexOf(String(live.status || "")) >= 0
@@ -405,9 +406,11 @@ FocusScope {
                             fallbackColor: "#1A2030"
                         }
                         Text {
+                            objectName: "streamMenuGameTitle"
                             x: 62; y: 2
                             width: parent.width - x - closeChip.width - 12
                             text: String(root.game.title || qsTr("GeForce NOW"))
+                            textFormat: Text.PlainText
                             color: DesktopTokens.text
                             font.family: DesktopTokens.displayFont
                             font.pixelSize: 20
@@ -608,11 +611,14 @@ FocusScope {
                         QuickTile {
                             id: antiAfkTile
                             objectName: "streamAntiAfkControl"
+                            enabled: !ShellStore.sourceStreamActive
                             checked: ShellStore.antiAfkEnabled
                             glyph: "desktop-clock.svg"
                             title: qsTr("Anti-AFK")
                             stateText: ShellStore.antiAfkEnabled ? qsTr("On") : qsTr("Off")
-                            description: qsTr("Sends a short keypress every 4 minutes so GeForce NOW doesn't end the session while you're idle.")
+                            description: ShellStore.sourceStreamActive
+                                ? qsTr("Anti-AFK isn't available for this service")
+                                : qsTr("Sends a short keypress every 4 minutes so GeForce NOW doesn't end the session while you're idle.")
                             shortcutText: root.shortcut("shortcutToggleAntiAfk", "Ctrl+Shift+K")
                             onActivated: root.runAction("antiAfk")
                         }
@@ -742,7 +748,7 @@ FocusScope {
         }
     }
 
-    Timer { interval: 1000; repeat: true; running: root.visible; onTriggered: root.nowMs = Date.now() }
+    Timer { interval: 1000; repeat: true; running: root.visible; triggeredOnStart: true; onTriggered: root.nowMs = Date.now() }
     onOpenedChanged: if (opened) {
         closing = false
         pendingAction = ""

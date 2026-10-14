@@ -497,6 +497,8 @@ impl MediaCodecDecoder {
                 return Err(protocol("duplicate or unmatched output PTS"));
             }
             frames.push(DecodedVideoFrame {
+                provenance: Default::default(),
+                correlation_timestamp_us: Some(timestamp_us),
                 format: self.format,
                 planes: vec![
                     FramePlane {
@@ -742,6 +744,87 @@ mod tests {
 
     fn input(pts: u64) -> EncodedVideoFrame {
         EncodedVideoFrame::new(vec![0, 0, 0, 1, 0x65], pts, true).unwrap()
+    }
+
+    #[test]
+    fn mediacodec_correlates_reordered_output_to_original_sender_provenance() {
+        use opennow_media_protocol::{FrameProvenance, SourceStamp};
+        server(
+            |mut stream| {
+                opened(&mut stream);
+                let mut tokens = Vec::new();
+                for _ in 0..3 {
+                    let (kind, payload) = request(&mut stream);
+                    assert_eq!(kind, SUBMIT);
+                    tokens.push(u64::from_be_bytes(payload[..8].try_into().unwrap()));
+                    response(&mut stream, RESULT, &results(0, &[]));
+                }
+                assert_eq!(request(&mut stream).0, POLL);
+                response(&mut stream, RESULT, &results(0, &[tokens[2], tokens[0]]));
+                assert_eq!(request(&mut stream).0, POLL);
+                response(&mut stream, RESULT, &results(0, &[tokens[1]]));
+                closed(&mut stream);
+            },
+            |path| {
+                let mut decoder = crate::video::correlate_decoder(Box::new(decoder(path)));
+                let provenance = |sender_frame_id| FrameProvenance {
+                    attempt_generation: 9,
+                    track_id: 2,
+                    source: Some(SourceStamp {
+                        sender_frame_id,
+                        timestamp: u64::MAX - 2,
+                        clock_rate_hz: 90_000,
+                        ssrc: Some(u32::MAX),
+                    }),
+                };
+                let stamps = [
+                    provenance(Some(u64::MAX)),
+                    provenance(Some(0)),
+                    FrameProvenance::default(),
+                ];
+                for stamp in stamps {
+                    assert!(
+                        decoder
+                            .decode(&input(42).with_provenance(stamp))
+                            .unwrap()
+                            .is_empty()
+                    );
+                }
+                let mut output = decoder.poll().unwrap();
+                output.extend(decoder.poll().unwrap());
+                assert_eq!(
+                    output
+                        .iter()
+                        .map(|frame| frame.provenance)
+                        .collect::<Vec<_>>(),
+                    [stamps[2], stamps[0], stamps[1]]
+                );
+                assert!(
+                    output.iter().all(|frame| frame.timestamp_us == 42
+                        && frame.correlation_timestamp_us.is_none())
+                );
+                decoder.close().unwrap();
+            },
+        );
+    }
+
+    #[test]
+    fn mediacodec_correlating_wrapper_propagates_close_acknowledgement() {
+        for acknowledged in [false, true] {
+            server(
+                move |mut stream| {
+                    opened(&mut stream);
+                    assert_eq!(request(&mut stream).0, CLOSE);
+                    response(&mut stream, if acknowledged { CLOSED } else { RESULT }, &[]);
+                },
+                |path| {
+                    let mut decoder = crate::video::correlate_decoder(Box::new(decoder(path)));
+                    assert_eq!(decoder.close().is_ok(), acknowledged);
+                    assert!(matches!(decoder.poll(), Err(Error::QueueClosed)));
+                    decoder.close().unwrap();
+                },
+            );
+        }
     }
 
     #[test]

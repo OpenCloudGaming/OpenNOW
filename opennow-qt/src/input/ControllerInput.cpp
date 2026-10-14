@@ -123,6 +123,11 @@ void ControllerInput::setForwardFlightControls(bool enabled)
     emit forwardFlightControlsChanged();
 }
 
+void ControllerInput::setGenericHidCaptureActive(bool active)
+{
+    if (m_genericHid) m_genericHid->setCaptureActive(active);
+}
+
 void ControllerInput::setGenericHidAdmission(quint8 slot, quint64 incarnation, GenericHidAdmission admission)
 {
     const auto claims = genericHidClaims();

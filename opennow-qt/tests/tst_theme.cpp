@@ -44,6 +44,8 @@ public slots:
         for (const auto &entry : {std::pair{"DesktopSessionStarting", "desktop/stream/DesktopSessionStarting.qml"},
                                  {"DesktopBrandLockup", "desktop/components/DesktopBrandLockup.qml"},
                                  {"SessionSetupProgress", "state/SessionSetupProgress.qml"},
+                                 {"DesktopGameDetailsDialog", "desktop/components/DesktopGameDetailsDialog.qml"},
+                                 {"DesktopGameDetailsSummaryCard", "desktop/components/DesktopGameDetailsSummaryCard.qml"},
                                  {"DesktopGameModal", "desktop/components/DesktopGameModal.qml"},
                                  {"MotionProgress", "components/MotionProgress.qml"},
                                  {"CloudLibraryActions", "components/CloudLibraryActions.qml"},

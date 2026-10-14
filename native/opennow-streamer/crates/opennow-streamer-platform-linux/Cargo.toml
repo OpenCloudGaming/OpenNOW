@@ -22,6 +22,7 @@ ffmpeg-bundled = [
 ]
 
 [dependencies]
+opennow-media-protocol.workspace = true
 ash = { version = "0.38", optional = true }
 ash-window = { version = "0.13", optional = true }
 # This maintained fork zero-initializes libva extension fields, so it remains

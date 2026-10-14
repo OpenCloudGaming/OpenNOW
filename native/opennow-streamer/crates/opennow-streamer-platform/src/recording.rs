@@ -1023,6 +1023,7 @@ mod tests {
     fn frame(codec: MediaCodec, data: Vec<u8>, timestamp: u64, keyframe: bool) -> EncodedFrame {
         let is_audio = matches!(codec, MediaCodec::Opus { .. });
         EncodedFrame {
+            provenance: Default::default(),
             mid: if is_audio { "audio" } else { "video" }.to_owned(),
             codec,
             data: Arc::from(data),

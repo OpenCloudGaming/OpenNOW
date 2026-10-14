@@ -1,0 +1,12 @@
+[package]
+name = "opennow-example-catalog"
+version = "1.0.0"
+edition = "2024"
+publish = false
+license = "MIT"
+
+[dependencies]
+opennow-plugin-api = { path = "../../native/opennow-plugin-api" }
+serde_json = "1"
+sha2 = "0.10"
+zip = { version = "2.4", default-features = false, features = ["deflate"] }

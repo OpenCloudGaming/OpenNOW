@@ -5,6 +5,7 @@
 #include <QElapsedTimer>
 #include <QSemaphore>
 #include <QSignalSpy>
+#include <QScopeGuard>
 #include <QTest>
 
 #include <cstring>
@@ -42,6 +43,9 @@ public:
     bool stopped = false;
     bool onGuiThread = false;
     bool blockOutput = false;
+    bool blockRead = false;
+    QSemaphore readEntered;
+    QSemaphore readRelease;
     QSemaphore outputEntered;
     QSemaphore outputRelease;
 
@@ -85,6 +89,12 @@ public:
         if (queue.empty()) return 0;
         auto report = std::move(queue.front());
         queue.pop_front();
+        const bool block = blockRead;
+        lock.unlock();
+        if (block) {
+            readEntered.release();
+            readRelease.tryAcquire(1, 2000);
+        }
         if (report.size() > capacity) return report.size();
         std::memcpy(bytes, report.constData(), report.size());
         return report.size();
@@ -140,6 +150,90 @@ class GenericHidInputTest final : public QObject
 {
     Q_OBJECT
 private slots:
+    void captureTransitionsDiscardBufferedAndInflightReports_data()
+    {
+        QTest::addColumn<bool>("buffered");
+        QTest::newRow("buffered") << true;
+        QTest::newRow("inflight") << false;
+    }
+
+    void captureTransitionsDiscardBufferedAndInflightReports()
+    {
+        QFETCH(bool, buffered);
+        auto backend = std::make_shared<FakeBackend>();
+        backend->devices = {device("a", "parent")};
+        backend->blockRead = true;
+        GenericHidInput input(backend);
+        const auto unblock = qScopeGuard([&] {
+            QMutexLocker lock(&backend->mutex);
+            backend->blockRead = false;
+            backend->readRelease.release();
+        });
+        input.setCaptureActive(true);
+        QTRY_COMPARE(input.claims().size(), 1);
+        const auto claim = input.claims().first();
+        backend->push("a", 1, QByteArray::fromHex("11"));
+        QVERIFY(backend->readEntered.tryAcquire(1, 1000));
+        if (buffered) {
+            backend->push("a", 1, QByteArray::fromHex("22"));
+            backend->readRelease.release();
+            QVERIFY(backend->readEntered.tryAcquire(1, 1000));
+        }
+        input.setCaptureActive(false);
+        input.setCaptureActive(true);
+        if (!buffered) {
+            backend->push("a", 1, QByteArray::fromHex("22"));
+            backend->readRelease.release();
+            QVERIFY(backend->readEntered.tryAcquire(1, 1000));
+        }
+        QVERIFY(input.drain().reports.isEmpty());
+        QCOMPARE(input.claims().size(), 1);
+        QCOMPARE(input.claims().first().incarnation, claim.incarnation);
+        {
+            QMutexLocker lock(&backend->mutex);
+            backend->blockRead = false;
+        }
+        backend->readRelease.release();
+        if (buffered) backend->push("a", 1, QByteArray::fromHex("33"));
+        const auto reports = receive(input, 1);
+        QCOMPARE(reports.size(), 1);
+        QCOMPARE(reports.first().bytes, QByteArray::fromHex(buffered ? "33" : "22"));
+        QCOMPARE(reports.first().incarnation, claim.incarnation);
+    }
+
+    void closedCaptureKeepsInventoryAndDiscardsPhysicalReads()
+    {
+        auto backend = std::make_shared<FakeBackend>();
+        backend->devices = {device("a", "parent")};
+        backend->blockRead = true;
+        GenericHidInput input(backend);
+        const auto unblock = qScopeGuard([&] {
+            QMutexLocker lock(&backend->mutex);
+            backend->blockRead = false;
+            backend->readRelease.release();
+        });
+        QTRY_COMPARE(input.claims().size(), 1);
+        const auto claim = input.claims().first();
+        backend->push("a", 2, QByteArray::fromHex("11"));
+        QVERIFY(backend->readEntered.tryAcquire(1, 1000));
+        backend->readRelease.release();
+        QVERIFY(backend->readEntered.tryAcquire(1, 1000));
+        QVERIFY(input.drain().reports.isEmpty());
+        QCOMPARE(input.claims().size(), 1);
+        QCOMPARE(input.claims().first().incarnation, claim.incarnation);
+        input.setCaptureActive(true);
+        {
+            QMutexLocker lock(&backend->mutex);
+            backend->blockRead = false;
+        }
+        backend->readRelease.release();
+        backend->push("a", 1, QByteArray::fromHex("22"));
+        const auto reports = receive(input, 1);
+        QCOMPARE(reports.size(), 1);
+        QCOMPARE(reports.first().bytes, QByteArray::fromHex("22"));
+        QCOMPARE(reports.first().incarnation, claim.incarnation);
+    }
+
     void supportedDeviceMetadataMatchesAllowlist()
     {
         ControllerInput input;
@@ -177,6 +271,7 @@ private slots:
         backend->devices = {device("a", "parent-a"), device("b", "parent-a", 1),
             device("unresolved", "")};
         GenericHidInput input(backend);
+        input.setCaptureActive(true);
         QTRY_COMPARE(input.claims().size(), 1);
         QTRY_COMPARE(input.devices().size(), 2);
         const auto previous = input.claims().first();
@@ -377,6 +472,7 @@ private slots:
     {
         auto backend = std::make_shared<FakeBackend>();
         GenericHidInput input(backend);
+        input.setCaptureActive(true);
         QTRY_COMPARE(backend->scanCount(), 1);
         QTest::qWait(100);
         QCOMPARE(backend->scanCount(), 1);
@@ -411,6 +507,7 @@ private slots:
         backend->descriptors["a"] = descriptor(1);
         backend->descriptors["b"] = descriptor(2);
         GenericHidInput input(backend);
+        input.setCaptureActive(true);
         QTRY_COMPARE(input.claims().size(), 1);
         const auto claim = input.claims().first();
         QCOMPARE(claim.interfaces.size(), 1);
@@ -497,6 +594,7 @@ private slots:
         backend->devices = {device("a", "parent", 2)};
         backend->descriptors["a"] = descriptor(7);
         GenericHidInput input(backend);
+        input.setCaptureActive(true);
         QTRY_COMPARE(input.claims().size(), 1);
         auto request = output(input.claims().first(), 3, QByteArray::fromHex("070300"));
         request.interfaceNumber = 2;
@@ -516,6 +614,7 @@ private slots:
         auto backend = std::make_shared<FakeBackend>();
         backend->devices = {device("a", "parent")};
         GenericHidInput input(backend);
+        input.setCaptureActive(true);
         QTRY_COMPARE(input.claims().size(), 1);
         const auto claim = input.claims().first();
         input.submitOutput(output(claim, 0, QByteArray::fromHex("1234")));
@@ -552,6 +651,7 @@ private slots:
         backend->devices = {device("a", "parent")};
         backend->descriptors["a"] = {};
         GenericHidInput input(backend);
+        input.setCaptureActive(true);
         QTRY_COMPARE(input.claims().size(), 1);
         QVERIFY(input.claims().first().interfaces.first().descriptor.isEmpty());
         backend->push("a", 1);
@@ -571,6 +671,7 @@ private slots:
         backend->devices = {device("a", "parent", 2)};
         backend->descriptors["a"] = QByteArray::fromHex("85");
         GenericHidInput input(backend);
+        input.setCaptureActive(true);
         QTRY_COMPARE(input.claims().size(), 1);
         const auto claim = input.claims().first();
         QVERIFY(claim.interfaces.first().descriptor.isEmpty());
@@ -594,6 +695,7 @@ private slots:
         auto backend = std::make_shared<FakeBackend>();
         backend->devices = {device("a", "parent")};
         GenericHidInput input(backend);
+        input.setCaptureActive(true);
         QTRY_COMPARE(input.claims().size(), 1);
         backend->push("a", 40);
         QTest::qWait(40);
@@ -637,6 +739,7 @@ private slots:
         auto backend = std::make_shared<FakeBackend>();
         backend->devices = {device("a", "parent")};
         GenericHidInput input(backend);
+        input.setCaptureActive(true);
         QTRY_COMPARE(input.claims().size(), 1);
         backend->push("a", 1, QByteArray(257, char(1)));
         QTRY_VERIFY(input.claims().isEmpty());
@@ -690,6 +793,7 @@ private slots:
         auto backend = std::make_shared<FakeBackend>();
         backend->devices = {device("a", "parent")};
         GenericHidInput input(backend);
+        input.setCaptureActive(true);
         QTRY_COMPARE(input.claims().size(), 1);
         const auto old = input.claims().first();
         {
@@ -743,6 +847,7 @@ private slots:
         backend->devices = {device("a", "parent")};
         backend->blockOutput = true;
         GenericHidInput input(backend);
+        input.setCaptureActive(true);
         QTRY_COMPARE(input.claims().size(), 1);
         const auto claim = input.claims().first();
         input.submitOutput(output(claim, 0, QByteArray(1, char(1))));

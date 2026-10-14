@@ -5,7 +5,10 @@ mod aperture;
 #[cfg(any(windows, test))]
 mod decoder_color;
 mod decoder_order;
+mod event_queue;
 mod format;
+#[cfg(any(windows, test))]
+mod provenance;
 mod queue;
 #[cfg(any(windows, test))]
 mod y410_color;
@@ -30,6 +33,7 @@ use std::thread::JoinHandle;
 
 use opennow_streamer_protocol::log;
 
+use crate::event_queue::EventQueue;
 use crate::queue::BoundedQueue;
 
 pub use format::{
@@ -131,6 +135,9 @@ pub enum BackendEvent {
     FirstFramePresented,
     QueueOverflow(Subsystem),
     VideoFormatChanged(VideoFormat),
+    VideoFrameDecoded {
+        provenance: opennow_media_protocol::FrameProvenance,
+    },
     DeviceLost {
         subsystem: Subsystem,
         message: String,
@@ -239,6 +246,7 @@ impl DefaultEndpointTracker {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackendError {
     UnsupportedPlatform,
+    AudioDisabled,
     InvalidConfig(String),
     InvalidFrame(String),
     NotRunning(LifecycleState),
@@ -257,6 +265,7 @@ impl std::fmt::Display for BackendError {
             Self::UnsupportedPlatform => {
                 formatter.write_str("the Windows media backend is unavailable on this platform")
             }
+            Self::AudioDisabled => formatter.write_str("audio is disabled for this stream"),
             Self::InvalidConfig(message) => {
                 write!(formatter, "invalid backend configuration: {message}")
             }
@@ -288,6 +297,7 @@ enum Control {
 
 #[derive(Debug)]
 struct Shared {
+    audio_enabled: bool,
     #[cfg(windows)]
     audio_muted: Arc<std::sync::atomic::AtomicBool>,
     video: BoundedQueue<EncodedVideoFrame>,
@@ -297,7 +307,7 @@ struct Shared {
     surface: Mutex<SurfaceTarget>,
     state: AtomicU8,
     paused: std::sync::atomic::AtomicBool,
-    events: BoundedQueue<BackendEvent>,
+    events: EventQueue,
     presented_frames: AtomicU64,
 }
 
@@ -411,6 +421,7 @@ impl WindowsBackend {
         {
             log::log_line("INFO", "decode", &describe());
             let shared = Arc::new(Shared {
+                audio_enabled: config.audio_enabled,
                 audio_muted,
                 video: BoundedQueue::new(config.video_queue_capacity),
                 audio: BoundedQueue::new(config.audio_queue_capacity),
@@ -419,7 +430,7 @@ impl WindowsBackend {
                 surface: Mutex::new(config.surface),
                 state: AtomicU8::new(LifecycleState::Starting as u8),
                 paused: std::sync::atomic::AtomicBool::new(false),
-                events: BoundedQueue::new(64),
+                events: EventQueue::new(64),
                 presented_frames: AtomicU64::new(0),
             });
             let (control_sender, control_receiver) = mpsc::channel();
@@ -494,6 +505,9 @@ impl WindowsBackend {
     pub fn submit_audio(&self, frame: PcmFrame) -> Result<PushOutcome, BackendError> {
         frame.validate()?;
         self.ensure_media_accepting()?;
+        if !self.shared.audio_enabled {
+            return Err(BackendError::AudioDisabled);
+        }
         if self.shared.paused.load(Ordering::Acquire) {
             return Ok(PushOutcome::Paused);
         }
@@ -540,6 +554,9 @@ impl WindowsBackend {
     pub fn reconfigure_audio(&self, format: AudioFormat) -> Result<(), BackendError> {
         format.validate()?;
         self.ensure_controllable()?;
+        if !self.shared.audio_enabled {
+            return Err(BackendError::AudioDisabled);
+        }
         self.shared.audio.clear();
         *self
             .shared
@@ -650,8 +667,16 @@ mod tests {
     }
 
     fn test_backend(state: LifecycleState) -> (WindowsBackend, Arc<Shared>) {
+        test_backend_with_audio(state, true)
+    }
+
+    fn test_backend_with_audio(
+        state: LifecycleState,
+        audio_enabled: bool,
+    ) -> (WindowsBackend, Arc<Shared>) {
         let (control_sender, _control_receiver) = mpsc::channel();
         let shared = Arc::new(Shared {
+            audio_enabled,
             video: BoundedQueue::new(2),
             audio: BoundedQueue::new(2),
             video_format: Mutex::new(VideoFormat {
@@ -687,7 +712,7 @@ mod tests {
             #[cfg(windows)]
             audio_muted: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             paused: std::sync::atomic::AtomicBool::new(false),
-            events: BoundedQueue::new(8),
+            events: EventQueue::new(8),
             presented_frames: AtomicU64::new(0),
         });
         let backend = WindowsBackend {
@@ -893,6 +918,7 @@ mod tests {
     fn surface_reconfiguration_keeps_accepting_media_frames() {
         let (backend, shared) = test_backend(LifecycleState::Reconfiguring);
         let video_outcome = backend.submit_video(EncodedVideoFrame {
+            provenance: Default::default(),
             codec: VideoCodec::H264,
             data: vec![0, 0, 0, 1, 0x67],
             timestamp_100ns: 0,
@@ -912,5 +938,40 @@ mod tests {
         assert_eq!(audio_outcome, Ok(PushOutcome::Queued));
         assert!(shared.video.try_pop().is_some());
         assert!(shared.audio.try_pop().is_some());
+    }
+
+    #[test]
+    fn disabled_audio_rejects_submission_and_reconfiguration_without_disturbing_video() {
+        let (backend, shared) = test_backend_with_audio(LifecycleState::Running, false);
+        let format = AudioFormat {
+            sample_rate: 48_000,
+            channels: 2,
+        };
+        assert_eq!(
+            backend.submit_audio(PcmFrame {
+                samples: vec![0.0, 0.0],
+                format
+            }),
+            Err(BackendError::AudioDisabled)
+        );
+        assert_eq!(
+            backend.reconfigure_audio(format),
+            Err(BackendError::AudioDisabled)
+        );
+        assert!(shared.audio.try_pop().is_none());
+        assert_eq!(backend.state(), LifecycleState::Running);
+        assert_eq!(
+            backend.submit_video(EncodedVideoFrame {
+                provenance: Default::default(),
+                codec: VideoCodec::H264,
+                data: vec![0, 0, 0, 1, 0x67],
+                timestamp_100ns: 0,
+                duration_100ns: 166_667,
+                key_frame: true,
+                reset_decoder: false,
+            }),
+            Ok(PushOutcome::Queued)
+        );
+        assert!(shared.video.try_pop().is_some());
     }
 }

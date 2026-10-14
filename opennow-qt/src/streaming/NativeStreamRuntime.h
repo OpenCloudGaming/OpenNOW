@@ -12,6 +12,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 
 class NativeStreamRuntime final : public QObject
@@ -61,6 +62,8 @@ public:
             const OpenNowStreamer *, const OpenNowSdlDeviceClaim *, std::size_t);
         using SubmitSonySnapshot = OpenNowStreamerStatus (*)(
             const OpenNowStreamer *, const OpenNowSonySnapshot *);
+        using NotifyPresented = OpenNowStreamerStatus (*)(
+            const OpenNowStreamer *, const OpenNowStreamerFrameProvenance *);
         using ReplaceGenericHidInventory = OpenNowStreamerStatus (*)(
             const OpenNowStreamer *, const OpenNowGenericHidInterface *, std::size_t);
         using SubmitGenericHidReport = OpenNowStreamerStatus (*)(
@@ -90,6 +93,7 @@ public:
         SubmitSonySnapshot submitSonySnapshot = nullptr;
         SetLogFile setLogFile = nullptr;
         Send submitText = nullptr;
+        NotifyPresented notifyPresented = nullptr;
         ReplaceGenericHidInventory replaceGenericHidInventory = nullptr;
         SubmitGenericHidReport submitGenericHidReport = nullptr;
         TakeGenericHidOutput takeGenericHidOutput = nullptr;
@@ -116,6 +120,8 @@ public:
     [[nodiscard]] quint64 presentationGeneration() const;
     [[nodiscard]] bool presentationAllowed() const;
     [[nodiscard]] QSize decodedDisplaySize() const;
+    [[nodiscard]] bool startPending() const;
+    [[nodiscard]] quint64 startEpoch() const;
     struct UpstreamProgress
     {
         bool stalled = false;
@@ -138,6 +144,8 @@ public:
     Q_INVOKABLE bool start();
     Q_INVOKABLE bool send(const QJsonObject &command);
     bool sendBytes(const QByteArray &command);
+    using PrivateResponse = std::function<void(const QJsonObject &response)>;
+    bool sendPrivate(const QJsonObject &command, PrivateResponse handler);
     Q_INVOKABLE bool shutdown(int timeoutMs = DefaultShutdownTimeoutMs);
 
     OpenNowStreamerStatus setGraphicsContext(
@@ -148,6 +156,7 @@ public:
         OpenNowStreamerRecordedFrame *recorded,
         OpenNowStreamerFrame **frame);
     OpenNowStreamerStatus releaseFrame(OpenNowStreamerFrame *frame);
+    OpenNowStreamerStatus notifyPresented(const OpenNowStreamerFrameProvenance &provenance);
     OpenNowStreamerStatus sceneGraphShutdown();
     OpenNowStreamerStatus submitKey(std::uint16_t virtualKey, std::uint16_t modifiers,
                                     bool pressed);
@@ -192,6 +201,7 @@ signals:
     void controllerRumbleStopped();
     void genericHidOutputRequested(const GenericHidReport &report);
     void genericHidOutputStopped();
+    void genericHidCaptureChanged(bool active);
     void genericHidAdmissionChanged(quint8 slot, quint64 incarnation, GenericHidAdmission admission);
     void genericHidAdmissionsReset();
     void callbacksDropped(int count);

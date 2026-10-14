@@ -1,6 +1,6 @@
 # Qt native streamer lifecycle events
 
-ABI version 13 delivers these events through the generic JSON event callback
+ABI version 16 delivers these events through the generic JSON event callback
 without a new C ABI layout.
 The native streamer owns wire parsing and termination classification. Qt does not
 infer resumability from a wire code or reason.

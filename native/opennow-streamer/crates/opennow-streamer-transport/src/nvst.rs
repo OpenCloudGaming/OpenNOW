@@ -6117,6 +6117,7 @@ pub fn spawn_nvst_udp_receiver_with_socket(
         NvstWorkerSetup {
             rtc,
             hid_runtime: Some(hid_runtime),
+            hid_endpoint: None,
             upstream_ready,
         },
     )
@@ -6155,6 +6156,7 @@ pub fn spawn_nvst_mjolnir_receiver(
         NvstWorkerSetup {
             rtc: None,
             hid_runtime: None,
+            hid_endpoint: None,
             upstream_ready: None,
         },
     )
@@ -6170,6 +6172,7 @@ struct NvstReceiverOutputs {
 struct NvstWorkerSetup {
     rtc: Option<Rtc>,
     hid_runtime: Option<Arc<HidRuntime>>,
+    hid_endpoint: Option<EndpointToken>,
     upstream_ready: Option<Receiver<()>>,
 }
 
@@ -6179,7 +6182,7 @@ fn spawn_receiver_thread(
     config: NvstVideoConfig,
     media_consumer: MediaConsumer,
     event_sender: Sender<NvstReceiveEvent>,
-    setup: NvstWorkerSetup,
+    mut setup: NvstWorkerSetup,
 ) -> Result<NvstUdpReceiverSession, NvstUdpReceiverError> {
     if setup.rtc.is_some() && setup.upstream_ready.is_some() {
         config.feedback.wait_for_play();
@@ -6200,6 +6203,7 @@ fn spawn_receiver_thread(
         .as_ref()
         .map(|runtime| (Arc::clone(runtime), runtime.open_endpoint()));
     let worker_endpoint = endpoint.clone();
+    setup.hid_endpoint = endpoint.as_ref().map(|(_, token)| *token);
     let join = thread::Builder::new()
         .name(name.to_owned())
         .spawn(move || {
@@ -6714,6 +6718,12 @@ fn send_generic_hid_actions(
     true
 }
 
+fn generic_hid_session(runtime: &HidRuntime, endpoint: EndpointToken) -> Option<GenericSession> {
+    runtime
+        .session_generation_for_endpoint(endpoint)
+        .map(GenericSession::new)
+}
+
 fn pump_generic_hid_pending(
     runtime: &GenericRuntime,
     session: &mut GenericSession,
@@ -6842,6 +6852,37 @@ mod generic_hid_tests {
         ));
         session.handle_response(10, 1, 0, 42);
         assert!(session.output(42, 2, 0, &[1]).is_some());
+    }
+
+    #[test]
+    fn generic_session_waits_for_the_accepted_endpoint_binding() {
+        use opennow_streamer_hid::generic::GenericAdmission;
+        let runtime = HidRuntime::new();
+        runtime.generic.replace_inventory(vec![device(1)]).unwrap();
+        let endpoint = runtime.open_endpoint();
+        assert!(generic_hid_session(&runtime, endpoint).is_none());
+        runtime.bind_session(7).unwrap();
+        runtime.set_active(true);
+        let mut session = generic_hid_session(&runtime, endpoint).unwrap();
+        assert_eq!(session.generation(), 7);
+        admit(&runtime.generic, &mut session);
+        runtime.generic.publish_admissions(&session);
+        assert_eq!(
+            runtime.generic.admissions_snapshot()[0].admission,
+            GenericAdmission::Admitted
+        );
+        let replacement = runtime.open_endpoint();
+        assert!(generic_hid_session(&runtime, replacement).is_none());
+        runtime.bind_session(9).unwrap();
+        assert!(generic_hid_session(&runtime, endpoint).is_none());
+        assert_eq!(
+            generic_hid_session(&runtime, replacement)
+                .unwrap()
+                .generation(),
+            9
+        );
+        runtime.close_endpoint(endpoint);
+        assert_eq!(runtime.session_generation(), Some(9));
     }
 
     #[test]
@@ -7382,6 +7423,7 @@ fn run_nvst_webrtc_bundle(
     let NvstWorkerSetup {
         rtc: Some(mut rtc),
         hid_runtime,
+        hid_endpoint,
         upstream_ready,
     } = setup
     else {
@@ -7466,9 +7508,9 @@ fn run_nvst_webrtc_bundle(
         })
     });
     let mut hid_published_mask = 0_u16;
-    let mut generic_session = hid_runtime
-        .as_ref()
-        .map(|runtime| GenericSession::new(runtime.session_generation().unwrap_or(0)));
+    let mut generic_session = hid_runtime.as_ref().and_then(|runtime| {
+        hid_endpoint.and_then(|endpoint| generic_hid_session(runtime, endpoint))
+    });
     let mut generic_release_epoch = 0;
     let mut input_state = NvstInputChannelState::default();
     let mut input_codec = NvstInputCodec::default();
@@ -7491,6 +7533,11 @@ fn run_nvst_webrtc_bundle(
     let mut liveness = BundleLiveness::default();
     'bundle: loop {
         let now = Instant::now();
+        if generic_session.is_none()
+            && let (Some(runtime), Some(endpoint)) = (hid_runtime.as_ref(), hid_endpoint)
+        {
+            generic_session = generic_hid_session(runtime, endpoint);
+        }
         if let Some(ready) = upstream_ready.as_ref() {
             match ready.try_recv() {
                 Ok(()) => {

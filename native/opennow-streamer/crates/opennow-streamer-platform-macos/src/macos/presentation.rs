@@ -14,6 +14,7 @@ use objc2_core_video::{
     CVDisplayLink, CVMetalTexture, CVMetalTextureCache, CVMetalTextureGetTexture, CVOptionFlags,
     CVPixelBufferGetHeightOfPlane, CVPixelBufferGetIOSurface, CVPixelBufferGetPixelFormatType,
     CVPixelBufferGetPlaneCount, CVPixelBufferGetWidthOfPlane, CVTimeStamp,
+    kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
     kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
 };
 use objc2_foundation::NSString;
@@ -25,10 +26,12 @@ use objc2_metal::{
 };
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
 
+use crate::color::ConversionParameters;
 use crate::failure::{BackendSubsystem, FailureReporter};
-use crate::format::VideoColorSpace;
+use crate::format::{VideoBitDepth, VideoColorSpace, VideoTransfer};
 use crate::queue::{BoundedQueue, TryPopResult};
 
+use super::embedded::{frame_chroma_location, frame_color_space, validate_frame_color};
 use super::video::DecodedFrame;
 use super::{BackendError, Counters};
 
@@ -39,6 +42,19 @@ using namespace metal;
 struct VertexOut {
     float4 position [[position]];
     float2 texcoord;
+};
+
+struct ConversionParameters {
+    float sample_scale;
+    float luma_offset;
+    float luma_scale;
+    float chroma_offset;
+    float chroma_scale;
+    float red_cr;
+    float green_cb;
+    float green_cr;
+    float blue_cb;
+    float chroma_sample_offset;
 };
 
 vertex VertexOut video_vertex(uint vertex_id [[vertex_id]]) {
@@ -54,22 +70,16 @@ fragment float4 video_fragment(
     VertexOut in [[stage_in]],
     texture2d<float> luma [[texture(0)]],
     texture2d<float> chroma [[texture(1)]],
-    constant uint &color_space [[buffer(0)]]) {
+    constant ConversionParameters &parameters [[buffer(0)]]) {
     constexpr sampler linear_sampler(coord::normalized, address::clamp_to_edge, filter::linear);
-    float y = (luma.sample(linear_sampler, in.texcoord).r - (16.0 / 255.0)) * (255.0 / 219.0);
-    float2 cbcr = chroma.sample(linear_sampler, in.texcoord).rg - float2(0.5);
-    float3 rgb;
-    if (color_space == 0) {
-        rgb = float3(
-            y + 1.596027 * cbcr.y,
-            y - 0.391762 * cbcr.x - 0.812968 * cbcr.y,
-            y + 2.017232 * cbcr.x);
-    } else {
-        rgb = float3(
-            y + 1.792741 * cbcr.y,
-            y - 0.213249 * cbcr.x - 0.532909 * cbcr.y,
-            y + 2.112402 * cbcr.x);
-    }
+    float y = luma.sample(linear_sampler, in.texcoord).r * parameters.sample_scale;
+    float2 cbcr = chroma.sample(linear_sampler, in.texcoord + float2(parameters.chroma_sample_offset, 0.0)).rg * parameters.sample_scale;
+    y = (y - parameters.luma_offset) * parameters.luma_scale;
+    cbcr = (cbcr - parameters.chroma_offset) * parameters.chroma_scale;
+    float3 rgb = float3(
+        y + parameters.red_cr * cbcr.y,
+        y + parameters.green_cb * cbcr.x + parameters.green_cr * cbcr.y,
+        y + parameters.blue_cb * cbcr.x);
     return float4(saturate(rgb), 1.0);
 }
 "#;
@@ -550,8 +560,9 @@ impl MetalPresenter {
         if self.pending.len() >= 3 {
             self.wait_for_oldest()?;
         }
-        if CVPixelBufferGetPixelFormatType(&frame.image)
-            != kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        let pixel_format = CVPixelBufferGetPixelFormatType(&frame.image);
+        if (pixel_format != kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+            && pixel_format != kCVPixelFormatType_420YpCbCr8BiPlanarFullRange)
             || CVPixelBufferGetPlaneCount(&frame.image) != 2
         {
             return Err(BackendError::Metal(
@@ -574,6 +585,28 @@ impl MetalPresenter {
         let height = CVPixelBufferGetHeightOfPlane(&frame.image, 0);
         let chroma_width = CVPixelBufferGetWidthOfPlane(&frame.image, 1);
         let chroma_height = CVPixelBufferGetHeightOfPlane(&frame.image, 1);
+        if width == 0
+            || height == 0
+            || chroma_width != width.div_ceil(2)
+            || chroma_height != height.div_ceil(2)
+        {
+            return Err(BackendError::Metal(
+                "VideoToolbox returned invalid chroma plane geometry".into(),
+            ));
+        }
+        let matrix = frame_color_space(&frame)?;
+        let transfer = validate_frame_color(&frame, matrix)?;
+        if matrix == VideoColorSpace::Bt2020 || transfer != VideoTransfer::Sdr {
+            return Err(BackendError::Metal(
+                "BT.2020 HDR requires embedded Metal presentation".into(),
+            ));
+        }
+        let parameters = ConversionParameters::new(
+            VideoBitDepth::Eight,
+            pixel_format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+            matrix,
+        )
+        .with_chroma_location(frame_chroma_location(&frame)?, width, true);
         let luma_cv_texture =
             self.make_texture(&frame, MTLPixelFormat::R8Unorm, width, height, 0)?;
         let chroma_cv_texture = self.make_texture(
@@ -618,19 +651,10 @@ impl MetalPresenter {
             encoder.setFragmentTexture_atIndex(Some(&luma_texture), 0);
             encoder.setFragmentTexture_atIndex(Some(&chroma_texture), 1);
         }
-        let color_space = match frame.color_space {
-            VideoColorSpace::Bt601 => 0u32,
-            VideoColorSpace::Bt709 => 1u32,
-            VideoColorSpace::Bt2020 => {
-                return Err(BackendError::Metal(
-                    "BT.2020 HDR requires embedded Metal presentation".into(),
-                ));
-            }
-        };
         unsafe {
             encoder.setFragmentBytes_length_atIndex(
-                NonNull::from(&color_space).cast::<c_void>(),
-                std::mem::size_of_val(&color_space),
+                NonNull::from(&parameters).cast::<c_void>(),
+                std::mem::size_of_val(&parameters),
                 0,
             )
         };

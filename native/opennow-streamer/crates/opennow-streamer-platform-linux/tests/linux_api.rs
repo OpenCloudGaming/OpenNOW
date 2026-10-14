@@ -54,6 +54,8 @@ fn embedded_gpu_frames_keep_sequence_and_presentation_time() {
 
     let producer = LinuxGpuFrameProducer::new(3).unwrap();
     let decoded = DecodedVideoFrame {
+        provenance: Default::default(),
+        correlation_timestamp_us: None,
         format: StreamFormat {
             width: 4,
             height: 4,

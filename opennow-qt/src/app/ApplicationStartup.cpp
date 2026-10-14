@@ -3,6 +3,7 @@
 #include "app/platform/WindowTheme.h"
 #include "acceptance/AcceptanceSession.h"
 #include "app/ApplicationStartup.h"
+#include "app/QmlNetworkAccessManagerFactory.h"
 #include "app/platform/MacAwdlController.h"
 #include "input/ControllerInput.h"
 #include "core/CoreClient.h"
@@ -14,6 +15,7 @@
 #include "streaming/rendering/HdrChromeEffect.h"
 #ifdef OPENNOW_EMBEDDED_STREAMER
 #include "streaming/NativeStreamRuntime.h"
+#include "app/SourceBridge.h"
 #endif
 #include "app/SingleInstance.h"
 #include "streaming/StreamVideoItem.h"
@@ -173,6 +175,7 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
         qWarning("Could not start the embedded streamer runtime: %s",
                  qUtf8Printable(nativeStreamRuntime.lastError()));
     StreamVideoItem::setNativeStreamRuntime(&nativeStreamRuntime);
+    SourceBridge sourceBridge(coreClient, nativeStreamRuntime);
     QObject::connect(&nativeStreamRuntime, &NativeStreamRuntime::controllerRumbleRequested,
                      &controllerInput, &ControllerInput::playRumble);
     QObject::connect(&nativeStreamRuntime, &NativeStreamRuntime::controllerRumbleStopped,
@@ -213,6 +216,8 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
                      &controllerInput, &ControllerInput::handleGenericHidOutput);
     QObject::connect(&nativeStreamRuntime, &NativeStreamRuntime::genericHidOutputStopped,
                      &controllerInput, &ControllerInput::stopGenericHidOutput);
+    QObject::connect(&nativeStreamRuntime, &NativeStreamRuntime::genericHidCaptureChanged,
+                     &controllerInput, &ControllerInput::setGenericHidCaptureActive);
     QObject::connect(&nativeStreamRuntime, &NativeStreamRuntime::genericHidAdmissionChanged,
                      &controllerInput, &ControllerInput::setGenericHidAdmission);
     QObject::connect(&nativeStreamRuntime, &NativeStreamRuntime::genericHidAdmissionsReset,
@@ -269,7 +274,9 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
                      &macAwdl, [&] { macAwdl.setStreaming(nativeStreamRuntime.streaming()); });
     macAwdl.setStreaming(nativeStreamRuntime.streaming());
 #endif
+    QmlNetworkAccessManagerFactory networkFactory;
     QQmlApplicationEngine engine;
+    engine.setNetworkAccessManagerFactory(&networkFactory);
     engine.setInitialProperties({{u"visible"_s, false}, {u"visibility"_s, QWindow::Hidden}});
     AcceptanceSession acceptance(application, engine, controller, coreClient, arguments);
     engine.rootContext()->setContextProperty(u"AppController"_s, &controller);
@@ -283,6 +290,7 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
 #ifdef OPENNOW_EMBEDDED_STREAMER
     engine.rootContext()->setContextProperty(u"NativeStreamRuntime"_s,
                                              &nativeStreamRuntime);
+    engine.rootContext()->setContextProperty(u"SourceBridge"_s, &sourceBridge);
 #endif
     engine.rootContext()->setContextProperty(
         u"LaunchModeOverride"_s,

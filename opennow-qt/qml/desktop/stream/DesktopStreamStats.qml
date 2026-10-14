@@ -16,10 +16,12 @@ Item {
     signal closeRequested()
     readonly property var live: ShellStore.streamer || ({})
     readonly property var session: ShellStore.activeSession || ({})
-    readonly property var profile: session.negotiatedStreamProfile || session.streamProfile || ShellStore.runtimeStreamProfile || ({})
+    readonly property var profile: ShellStore.sourceStreamActive ? ShellStore.activeStreamProfile
+        : session.negotiatedStreamProfile || session.streamProfile || ShellStore.runtimeStreamProfile || ({})
     readonly property var flightDevices: ControllerInput.flightDevices || []
     readonly property var activeFlightDevices: flightDevices.filter(device => device.status === "active")
-    readonly property bool flightVisible: ControllerInput.forwardFlightControls && flightDevices.length > 0
+    readonly property bool flightVisible: !ShellStore.sourceStreamActive
+        && ControllerInput.forwardFlightControls && flightDevices.length > 0
     readonly property color flightColor: activeFlightDevices.length === flightDevices.length ? DesktopTokens.flightMint : DesktopTokens.ledAmber
     readonly property real overlayScale: Math.max(0.85, Math.min(1.5, Number(ShellStore.settings.statsOverlayScale || 1)))
     readonly property real inset: 24
@@ -45,7 +47,10 @@ Item {
         ? Math.max(0, Math.min(1, read("bitrateMbps") / allocatedBitrateMbps)) : 0
     readonly property string toggleShortcut: String(ShellStore.settings.shortcutToggleStats ?? "Ctrl+N")
     readonly property var heroCards: ["Fps", "Ping", "Latency"].map(key => cards.find(card => card.key === key)).filter(card => card !== undefined)
-    readonly property var unmeasuredKeys: ["Decode", "Residence", "Latency", "Swap"]
+    readonly property bool sourcePlayback: ShellStore.sourceStreamActive
+    readonly property var unmeasuredKeys: sourcePlayback
+        ? ["Decode", "Residence", "Latency", "Swap", "Ping", "Jitter", "PacketLoss", "Receive"]
+        : ["Decode", "Residence", "Latency", "Swap"]
     readonly property var ledgerCards: cards.filter(card => ["Receive", "Jitter", "Drops", "PacketLoss", "Decode", "Residence", "Swap", "LocalOutputFps", "Flight", "FlightDevice"].includes(card.key)
         && (card.key !== "Drops" || card.field === "videoDropCount" || card.value > 0))
     readonly property var featureBadges: {
@@ -63,7 +68,11 @@ Item {
     readonly property var compactMetrics: compactItems()
     property var history: ({})
     property double nowMs: Date.now()
-    function shown(key) { return ShellStore.settings["statsShow" + key] !== false }
+    function shown(key) {
+        if (sourcePlayback && key === "Region")
+            return false
+        return ShellStore.settings["statsShow" + key] !== false
+    }
     function numeric(value) {
         return value === undefined || value === null || value === "" || !Number.isFinite(Number(value)) ? null : Number(value)
     }
@@ -290,10 +299,14 @@ Item {
                 model: {
                     const metrics = []
                     if (root.shown("Fps")) metrics.push({value:root.format(root.read("framesPerSecond")), unit:"fps"})
-                    if (root.shown("Ping")) metrics.push({value:root.format(root.read("pingMs")), unit:"ms"})
-                    if (root.shown("Bitrate")) metrics.push({value:qsTr("UDP RX") + " " + root.format(root.read("receiveBitrateMbps"), 1), unit:"Mbps", socketReceive:true})
+                    if (root.shown("Ping") && (!root.sourcePlayback || root.numeric(root.read("pingMs")) !== null))
+                        metrics.push({value:root.format(root.read("pingMs")), unit:"ms"})
+                    if (root.shown("Bitrate") && root.sourcePlayback)
+                        metrics.push({value:root.format(root.read("bitrateMbps"), 1), unit:"Mbps"})
+                    else if (root.shown("Bitrate"))
+                        metrics.push({value:qsTr("UDP RX") + " " + root.format(root.read("receiveBitrateMbps"), 1), unit:"Mbps", socketReceive:true})
                     if (root.shown("Region")) metrics.push({value:root.region, unit:"", region:true})
-                    if (root.shown("Video")) {
+                    if (root.shown("Video") && !(root.sourcePlayback && !root.live.codec && !root.profile.codec)) {
                         const h = Number(root.profile.height || String(root.profile.resolution || "").split("x")[1] || root.live.outputHeight || 0)
                         metrics.push({value:String(root.live.codec || root.profile.codec || root.format(null)).toUpperCase(), unit:h ? h + "p" : ""})
                     }

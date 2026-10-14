@@ -434,6 +434,18 @@ void GenericHidInput::setForwardingEnabled(bool enabled)
     markInventoryChangedLocked();
 }
 
+void GenericHidInput::setCaptureActive(bool active)
+{
+    QMutexLocker lock(&m_mutex);
+    if (m_captureActive == active) return;
+    m_captureActive = active;
+    ++m_captureEpoch;
+    for (auto &lane : m_lanes) {
+        lane.reports.clear();
+        lane.bytes = 0;
+    }
+}
+
 QByteArray GenericHidInput::groupKey(const GenericHidBackend::Device &device)
 {
     if (!allowed(device.vendor, device.product) || device.physicalKey.isEmpty()) return {};
@@ -504,11 +516,12 @@ void GenericHidInput::markInventoryChangedLocked()
     emit inventoryChanged();
 }
 
-bool GenericHidInput::append(const GenericHidReport &report)
+bool GenericHidInput::append(const GenericHidReport &report, quint64 captureEpoch)
 {
     QMutexLocker lock(&m_mutex);
     auto &lane = m_lanes[report.slot];
     if (!m_forwardingEnabled || lane.claim.incarnation != report.incarnation) return false;
+    if (!m_captureActive || m_captureEpoch != captureEpoch) return true;
     if (lane.reports.size() >= 64 || lane.bytes + report.bytes.size() > 16 * 1024) {
         qWarning("Generic HID input overflow; removing source %u", report.slot);
         removeLocked(report.slot, report.incarnation);
@@ -726,6 +739,7 @@ void GenericHidInput::run()
             if (isInterruptionRequested()) break;
             GenericHidReport request;
             quint64 outputEpoch = 0;
+            quint64 captureEpoch = 0;
             {
                 QMutexLocker lock(&m_mutex);
                 if (m_outputs.empty()) break;
@@ -733,6 +747,7 @@ void GenericHidInput::run()
                 m_outputs.pop_front();
                 m_outputBytes -= request.bytes.size();
                 outputEpoch = m_outputEpoch;
+                captureEpoch = m_captureEpoch;
             }
             Source *source = nullptr;
             for (auto &entry : sources) if (entry.claim.slot == request.slot && entry.claim.incarnation == request.incarnation) source = &entry;
@@ -751,16 +766,16 @@ void GenericHidInput::run()
                 selected = &collection;
             }
             if (!selected) {
-                append(reply);
+                append(reply, captureEpoch);
                 continue;
             }
             QByteArray bytes = request.bytes;
             int prefix = 0;
             if (get) {
-                if (bytes.size() != 3) { append(reply); continue; }
+                if (bytes.size() != 3) { append(reply, captureEpoch); continue; }
                 const auto length = quint8(bytes[1]) | (quint16(quint8(bytes[2])) << 8);
                 if (!length || length > maxReportBytes || (selected->reportIds.isEmpty() && bytes[0] != 0)) {
-                    append(reply);
+                    append(reply, captureEpoch);
                     continue;
                 }
                 const auto id = bytes[0];
@@ -779,11 +794,11 @@ void GenericHidInput::run()
                 if (m_outputEpoch != outputEpoch) continue;
             }
             if (count < 0 || count > bytes.size() || (get && count <= prefix) || (!get && count != bytes.size())) {
-                append(reply);
+                append(reply, captureEpoch);
             } else if (get) {
                 reply.error = false;
                 reply.bytes = bytes.mid(prefix, count - prefix);
-                append(reply);
+                append(reply, captureEpoch);
             }
         }
         for (const auto &key : sources.keys()) {
@@ -792,13 +807,18 @@ void GenericHidInput::run()
             for (const auto &collection : std::as_const(source.collections)) {
                 for (int i = 0; i < 8 && healthy; ++i) {
                     std::array<unsigned char, maxReportBytes + 1> bytes{};
+                    quint64 captureEpoch;
+                    {
+                        QMutexLocker lock(&m_mutex);
+                        captureEpoch = m_captureEpoch;
+                    }
                     const auto length = m_backend->read(collection.handle, bytes.data(), bytes.size());
                     if (length == 0) break;
                     if (length < 0 || length > maxReportBytes) { healthy = false; break; }
                     GenericHidReport report{source.claim.slot, source.claim.incarnation,
                         quint8(collection.device.interfaceNumber), 0, false,
                         QByteArray(reinterpret_cast<const char *>(bytes.data()), length)};
-                    healthy = append(report);
+                    healthy = append(report, captureEpoch);
                 }
                 if (!healthy) break;
             }

@@ -1,14 +1,16 @@
 use super::decoder::DecodedVideoFrame;
 use super::embedded::MAX_FRAME_SLOTS;
-use crate::VideoFormat;
 use crate::y410_color::Y410Constants;
+use crate::{VideoFormat, VideoPixelFormat};
 use ::windows::Win32::Graphics::Direct3D::Fxc::D3DCompile;
 use ::windows::Win32::Graphics::Direct3D::{
     D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST, D3D_SRV_DIMENSION_TEXTURE2D, ID3DBlob,
 };
 use ::windows::Win32::Graphics::Direct3D11::*;
 use ::windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_FORMAT_R10G10B10A2_UINT, DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_Y410, DXGI_SAMPLE_DESC,
+    DXGI_FORMAT_NV12, DXGI_FORMAT_P010, DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8G8_UNORM,
+    DXGI_FORMAT_R10G10B10A2_UINT, DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_R16_UNORM,
+    DXGI_FORMAT_R16G16_UNORM, DXGI_FORMAT_Y410, DXGI_SAMPLE_DESC,
 };
 use ::windows::core::PCSTR;
 struct OutputSlot {
@@ -21,6 +23,7 @@ pub(super) struct Y410Converter {
     deferred: ID3D11DeviceContext,
     input: ID3D11Texture2D,
     input_view: ID3D11ShaderResourceView,
+    chroma_view: Option<ID3D11ShaderResourceView>,
     vertex: ID3D11VertexShader,
     pixel: ID3D11PixelShader,
     quantization: ID3D11Buffer,
@@ -35,8 +38,28 @@ impl Y410Converter {
         format: VideoFormat,
     ) -> Result<Self, String> {
         let constants = Y410Constants::new(format)?;
+        let (input_format, view_format, chroma_format) = match format.pixel_format {
+            VideoPixelFormat::Nv12 => (
+                DXGI_FORMAT_NV12,
+                DXGI_FORMAT_R8_UNORM,
+                Some(DXGI_FORMAT_R8G8_UNORM),
+            ),
+            VideoPixelFormat::P010 => (
+                DXGI_FORMAT_P010,
+                DXGI_FORMAT_R16_UNORM,
+                Some(DXGI_FORMAT_R16G16_UNORM),
+            ),
+            VideoPixelFormat::Y410 => (DXGI_FORMAT_Y410, DXGI_FORMAT_R10G10B10A2_UINT, None),
+            VideoPixelFormat::Ayuv => {
+                return Err("AYUV does not require shader conversion".to_owned());
+            }
+        };
+        if chroma_format.is_some() && (format.width % 2 != 0 || format.height % 2 != 0) {
+            return Err("centered planar conversion requires even dimensions".to_owned());
+        }
         let mut input = None;
         let mut input_view = None;
+        let mut chroma_view = None;
         let mut deferred = None;
         unsafe {
             device
@@ -46,7 +69,7 @@ impl Y410Converter {
                         Height: format.height,
                         MipLevels: 1,
                         ArraySize: 1,
-                        Format: DXGI_FORMAT_Y410,
+                        Format: input_format,
                         SampleDesc: DXGI_SAMPLE_DESC {
                             Count: 1,
                             Quality: 0,
@@ -66,7 +89,7 @@ impl Y410Converter {
                 .CreateShaderResourceView(
                     &input,
                     Some(&D3D11_SHADER_RESOURCE_VIEW_DESC {
-                        Format: DXGI_FORMAT_R10G10B10A2_UINT,
+                        Format: view_format,
                         ViewDimension: D3D_SRV_DIMENSION_TEXTURE2D,
                         Anonymous: D3D11_SHADER_RESOURCE_VIEW_DESC_0 {
                             Texture2D: D3D11_TEX2D_SRV {
@@ -78,12 +101,40 @@ impl Y410Converter {
                     Some(&mut input_view),
                 )
                 .map_err(|error| format!("create exact Y410 UINT view: {error}"))?;
+            if let Some(chroma_format) = chroma_format {
+                device
+                    .CreateShaderResourceView(
+                        &input,
+                        Some(&D3D11_SHADER_RESOURCE_VIEW_DESC {
+                            Format: chroma_format,
+                            ViewDimension: D3D_SRV_DIMENSION_TEXTURE2D,
+                            Anonymous: D3D11_SHADER_RESOURCE_VIEW_DESC_0 {
+                                Texture2D: D3D11_TEX2D_SRV {
+                                    MostDetailedMip: 0,
+                                    MipLevels: 1,
+                                },
+                            },
+                        }),
+                        Some(&mut chroma_view),
+                    )
+                    .map_err(|error| format!("create centered chroma plane view: {error}"))?;
+                if chroma_view.is_none() {
+                    return Err("no centered chroma plane view".to_owned());
+                }
+            }
             device
                 .CreateDeferredContext(0, Some(&mut deferred))
                 .map_err(|error| format!("create Y410 deferred context: {error}"))?;
         }
         let vertex_code = compile(c"vertex_main", c"vs_5_0")?;
-        let pixel_code = compile(c"pixel_main", c"ps_5_0")?;
+        let pixel_code = compile(
+            if chroma_format.is_some() {
+                c"centered_main"
+            } else {
+                c"pixel_main"
+            },
+            c"ps_5_0",
+        )?;
         let mut vertex = None;
         let mut pixel = None;
         unsafe {
@@ -144,6 +195,7 @@ impl Y410Converter {
             deferred: deferred.ok_or("no Y410 deferred context")?,
             input,
             input_view: input_view.ok_or("no Y410 shader view")?,
+            chroma_view,
             vertex: vertex.ok_or("no Y410 vertex shader")?,
             pixel: pixel.ok_or("no Y410 pixel shader")?,
             quantization: quantization.ok_or("no Y410 quantization buffer")?,
@@ -159,6 +211,9 @@ impl Y410Converter {
     ) -> Result<&ID3D11Texture2D, String> {
         if slot >= MAX_FRAME_SLOTS || frame.format != self.format {
             return Err("Y410 converter frame or slot mismatch".to_owned());
+        }
+        if self.chroma_view.is_some() && (frame.aperture.x % 2 != 0 || frame.aperture.y % 2 != 0) {
+            return Err("centered planar conversion requires an even aperture origin".to_owned());
         }
         if self.slots[slot].is_none() {
             let mut texture = None;
@@ -221,8 +276,19 @@ impl Y410Converter {
                 .IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             self.deferred.VSSetShader(&self.vertex, None);
             self.deferred.PSSetShader(&self.pixel, None);
-            self.deferred
-                .PSSetShaderResources(0, Some(&[Some(self.input_view.clone())]));
+            if let Some(chroma_view) = &self.chroma_view {
+                self.deferred.PSSetShaderResources(
+                    0,
+                    Some(&[
+                        None,
+                        Some(self.input_view.clone()),
+                        Some(chroma_view.clone()),
+                    ]),
+                );
+            } else {
+                self.deferred
+                    .PSSetShaderResources(0, Some(&[Some(self.input_view.clone()), None, None]));
+            }
             self.deferred
                 .PSSetConstantBuffers(0, Some(&[Some(self.quantization.clone())]));
             self.deferred.RSSetState(&self.rasterizer);
@@ -280,4 +346,14 @@ fn compile(entry: &std::ffi::CStr, target: &std::ffi::CStr) -> Result<ID3DBlob, 
         return Err(format!("compile Y410 shader: {error}: {detail}"));
     }
     code.ok_or_else(|| "no Y410 shader bytecode".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn packed_and_centered_shader_entries_compile() {
+        super::compile(c"vertex_main", c"vs_5_0").unwrap();
+        super::compile(c"pixel_main", c"ps_5_0").unwrap();
+        super::compile(c"centered_main", c"ps_5_0").unwrap();
+    }
 }

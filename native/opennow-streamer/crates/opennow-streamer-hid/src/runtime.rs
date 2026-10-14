@@ -191,7 +191,7 @@ impl HidRuntime {
 
     pub fn open_endpoint(&self) -> EndpointToken {
         let mut state = self.lock();
-        if let Some(generation) = state.binding {
+        if let Some(generation) = state.binding.take() {
             self.generic.unbind_session(generation);
         }
         let token = self.endpoint_source.fetch_add(1, Ordering::AcqRel);
@@ -250,6 +250,15 @@ impl HidRuntime {
 
     pub fn session_generation(&self) -> Option<u64> {
         self.lock().binding
+    }
+
+    pub fn session_generation_for_endpoint(&self, endpoint: EndpointToken) -> Option<u64> {
+        let state = self.lock();
+        if state.endpoint == Some(endpoint.0) {
+            state.binding
+        } else {
+            None
+        }
     }
 
     pub fn set_session_admission(&self, admitted: u16, epoch: u64) -> bool {
@@ -657,6 +666,20 @@ mod tests {
             runtime.submit_snapshot(snapshot(0, 1)),
             SnapshotAdmission::Unbound
         );
+    }
+
+    #[test]
+    fn replacing_an_endpoint_waits_for_a_new_accepted_generation() {
+        let runtime = HidRuntime::new();
+        let old = runtime.open_endpoint();
+        runtime.bind_session(7).unwrap();
+        let replacement = runtime.open_endpoint();
+        assert_eq!(runtime.session_generation(), None);
+        runtime.bind_session(9).unwrap();
+        runtime.close_endpoint(old);
+        assert_eq!(runtime.session_generation(), Some(9));
+        runtime.close_endpoint(replacement);
+        assert_eq!(runtime.session_generation(), None);
     }
 
     #[test]

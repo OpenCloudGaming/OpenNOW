@@ -697,6 +697,7 @@ fn unified_bundle_reports_the_same_frame_stall_events_as_dedicated_video() {
         NvstWorkerSetup {
             rtc: Some(Rtc::new(Instant::now())),
             hid_runtime: None,
+            hid_endpoint: None,
             upstream_ready: None,
         },
     )
@@ -858,6 +859,7 @@ fn bundle_play_completion_arms_the_shared_dedicated_video_clock() {
         NvstWorkerSetup {
             rtc: Some(Rtc::new(Instant::now())),
             hid_runtime: None,
+            hid_endpoint: None,
             upstream_ready: Some(play_receiver),
         },
     )

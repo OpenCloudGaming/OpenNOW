@@ -73,6 +73,7 @@ public:
     QList<GenericHidDeviceClaim> claims() const;
     QList<DetectedDevice> devices() const;
     void setForwardingEnabled(bool enabled);
+    void setCaptureActive(bool active);
     void submitOutput(const GenericHidReport &report);
     void clearOutputs();
     void stop();
@@ -91,7 +92,7 @@ private:
     };
     void removeLocked(quint8 slot, quint64 incarnation);
     void markInventoryChangedLocked();
-    bool append(const GenericHidReport &report);
+    bool append(const GenericHidReport &report, quint64 captureEpoch);
 
     std::shared_ptr<GenericHidBackend> m_backend;
     mutable QMutex m_mutex;
@@ -105,4 +106,6 @@ private:
     QList<DetectedDevice> m_devices;
     bool m_forwardingEnabled = true;
     quint64 m_forwardingEpoch = 0;
+    bool m_captureActive = false;
+    quint64 m_captureEpoch = 0;
 };

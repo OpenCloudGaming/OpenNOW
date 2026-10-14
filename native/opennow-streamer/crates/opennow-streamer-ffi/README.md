@@ -15,7 +15,7 @@ This crate exposes `opennow-streamer-core::Engine` as a C-compatible in-process 
 
 ### Generic flight controls and wheels (ABI 15)
 
-Rebuild Qt and the native library together with ABI 15. The generic-HID exports are
+Rebuild Qt and the native library together with ABI 16. The generic-HID exports are
 `opennow_streamer_replace_generic_hid_inventory`,
 `opennow_streamer_submit_generic_hid_report`,
 `opennow_streamer_take_generic_hid_output`, and
@@ -53,8 +53,8 @@ the physical checks still required.
 
 ### Server timers and termination (ABI 13)
 
-Rebuild Qt and the native library together with the current ABI 15. Structure layouts and callback
-ownership are unchanged. `event_callback` now delivers generation-scoped
+Rebuild Qt and the native library together with ABI 16. Callback ownership is unchanged;
+the recording-frame layout includes the provenance fields described below. `event_callback` now delivers generation-scoped
 `session-timer` events with `startId`, `timerType`, `secondsLeft` and `active`.
 Timer type 4 warns of idle expiry; type 5 clears the warning. Successful gameplay
 input also clears an active warning with a type-4 event whose `active` is false.
@@ -71,6 +71,17 @@ authoritative and must prevent automatic native restarts and seat-resume attempt
 Lifecycle timers coalesce to their latest state when the callback queue is full;
 terminal delivery waits on that bounded queue from the stopped session's event worker,
 never from the network or render thread.
+
+### Recorded frame provenance (ABI 14)
+
+ABI 14 appends `OpenNowStreamerFrameProvenance` to `OpenNowStreamerRecordedFrame` and adds
+`opennow_streamer_notify_presented`. It preserves sender timestamps, frame IDs, and SSRCs through
+recording and presentation feedback. Rebuild Qt and the native library together so both use the
+same recording-frame layout. The runtime rejects older ABI configurations before creation.
+
+ABI 16 combines this recording layout with the generic-HID contract introduced upstream
+in ABI 15. Upstream ABI 15 lacks the recording provenance fields, so configurations
+using ABI 12, 13, 14, or 15 are rejected before runtime creation.
 
 ### Deterministic presentation incompatibility (ABI 12)
 

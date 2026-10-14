@@ -61,6 +61,7 @@ impl LinuxTextureColorSpace {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecordedGpuFrame {
+    pub provenance: opennow_media_protocol::FrameProvenance,
     pub slot: u32,
     pub generation: u64,
     pub image: u64,
@@ -621,6 +622,7 @@ impl LinuxFrameProducer {
         let width = frame.format.width;
         let height = frame.format.height;
         let timestamp_us = frame.timestamp_us;
+        let provenance = frame.provenance;
         let color_matrix = frame.format.color_matrix;
         let full_range = frame.format.color_range == crate::ColorRange::Full;
         let chroma_location = frame.format.chroma_location;
@@ -667,6 +669,7 @@ impl LinuxFrameProducer {
             .expect("frame slot initialized");
         slot_resources.frame = Some(prepared);
         Ok(RecordedGpuFrame {
+            provenance,
             slot,
             generation,
             image: slot_resources.output.image.as_raw(),
@@ -2599,6 +2602,8 @@ mod tests {
             for attempt in 0..2 {
                 let frame = producer
                     .frame(DecodedVideoFrame {
+                        provenance: Default::default(),
+                        correlation_timestamp_us: None,
                         format: crate::StreamFormat::video_default(64, 64).unwrap(),
                         planes: Vec::new(),
                         dmabuf: Some(Arc::new(DmaBufFrame::new(
@@ -2695,6 +2700,8 @@ mod tests {
             let producer = LinuxGpuFrameProducer::new(3).unwrap();
             let frame = producer
                 .frame(DecodedVideoFrame {
+                    provenance: Default::default(),
+                    correlation_timestamp_us: None,
                     format: crate::StreamFormat::video_default(2, 2).unwrap(),
                     planes: vec![
                         FramePlane {
@@ -2776,6 +2783,8 @@ mod tests {
         producer.render_resources.state.lock().unwrap().render = Some(previous);
         let frame = LinuxGpuFrame {
             frame: DecodedVideoFrame {
+                provenance: Default::default(),
+                correlation_timestamp_us: None,
                 format: crate::StreamFormat::video_default(2, 2).unwrap(),
                 planes: Vec::new(),
                 dmabuf: None,
@@ -3093,6 +3102,8 @@ mod tests {
                 let producer = LinuxGpuFrameProducer::new(2).unwrap();
                 let frame = producer
                     .frame(DecodedVideoFrame {
+                        provenance: Default::default(),
+                        correlation_timestamp_us: None,
                         format: crate::StreamFormat {
                             pixel_format,
                             ..crate::StreamFormat::video_default(4, 4).unwrap()
@@ -3339,6 +3350,8 @@ mod tests {
             ],
         };
         let frame = |dmabuf_layer: Option<crate::DmaBufLayer>| DecodedVideoFrame {
+            provenance: Default::default(),
+            correlation_timestamp_us: None,
             format: crate::StreamFormat::video_default(64, 64).unwrap(),
             planes: Vec::new(),
             dmabuf: dmabuf_layer.map(|layer| {

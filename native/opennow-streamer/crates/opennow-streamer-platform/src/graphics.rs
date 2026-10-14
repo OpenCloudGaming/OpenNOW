@@ -89,6 +89,7 @@ impl GraphicsRecordCommand {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GraphicsRecordedFrame {
+    pub provenance: opennow_media_protocol::FrameProvenance,
     pub resource: u64,
     pub resource_view: u64,
     pub texture_format: GraphicsTextureFormat,
@@ -198,6 +199,7 @@ impl GraphicsFrame for opennow_streamer_platform_linux::LinuxGpuFrame {
             error => GraphicsFrameError::from(error.to_string()),
         })?;
         Ok(GraphicsRecordedFrame {
+            provenance: frame.provenance,
             resource: frame.image,
             resource_view: frame.image_view,
             texture_format: match frame.texture_format {
@@ -270,6 +272,7 @@ impl GraphicsFrame for opennow_streamer_platform_macos::MetalFrame {
         .map_err(|error| error.to_string())?;
         let color_space = macos_frame_color_space(frame.color_space, frame.transfer, frame.format)?;
         Ok(GraphicsRecordedFrame {
+            provenance: frame.provenance,
             resource: frame.texture as usize as u64,
             resource_view: 0,
             color_space,
@@ -841,6 +844,7 @@ mod tests {
                 .expect("record calls")
                 .push((context, command));
             Ok(GraphicsRecordedFrame {
+                provenance: Default::default(),
                 resource: 10,
                 resource_view: 11,
                 texture_format: GraphicsTextureFormat::Rgba8,
@@ -954,6 +958,7 @@ mod tests {
                 command: GraphicsRecordCommand,
             ) -> Result<GraphicsRecordedFrame, GraphicsFrameError> {
                 Ok(GraphicsRecordedFrame {
+                    provenance: Default::default(),
                     resource: 10,
                     resource_view: 11,
                     texture_format: GraphicsTextureFormat::Rgba8,

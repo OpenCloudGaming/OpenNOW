@@ -56,7 +56,9 @@ QString AcceptanceSession::coreProgram(const QStringList &arguments)
     if (performanceIndex >= 0 && performanceIndex + 1 < arguments.size()) return {};
     const bool smoke = arguments.contains(u"--smoke-test"_s);
     const bool explicitAllowed = !smoke || arguments.contains(u"--smoke-console-persistence-rollback"_s)
-        || arguments.contains(u"--smoke-streamer-event"_s);
+        || arguments.contains(u"--smoke-streamer-event"_s)
+        || arguments.contains(u"--smoke-plugins"_s)
+        || arguments.contains(u"--smoke-sources"_s);
     const auto coreIndex = arguments.indexOf(u"--core"_s);
     if (explicitAllowed && coreIndex >= 0 && coreIndex + 1 < arguments.size())
         return arguments.at(coreIndex + 1);

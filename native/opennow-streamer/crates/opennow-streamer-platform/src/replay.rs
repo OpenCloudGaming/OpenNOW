@@ -167,6 +167,7 @@ mod tests {
 
     fn frame(timestamp: u64, keyframe: bool) -> EncodedFrame {
         EncodedFrame {
+            provenance: Default::default(),
             mid: "video".to_owned(),
             codec: MediaCodec::H264,
             data: Arc::from([0_u8; 16]),

@@ -4,7 +4,7 @@ use serde_json::{Map, Value};
 pub mod log;
 pub mod text_input;
 
-pub const PROTOCOL_VERSION: u64 = 7;
+pub const PROTOCOL_VERSION: u64 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -91,6 +91,8 @@ pub struct Command {
     pub protocol_version: Option<u64>,
     #[serde(default)]
     pub context: Option<Value>,
+    #[serde(default)]
+    pub offer_id: Option<String>,
     #[serde(default)]
     pub paused: Option<bool>,
     #[serde(default)]

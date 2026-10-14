@@ -4,7 +4,7 @@ import OpenNOW
 FocusScope {
     id: root
     objectName: "consoleLaunchScreen"
-    readonly property var game: ShellStore.selectedGame
+    readonly property var game: ShellStore.sourceStreamGame || ShellStore.selectedGame
         || ({ title: ShellStore.pendingLaunchParams && ShellStore.pendingLaunchParams.title || qsTr("GeForce NOW") })
     readonly property var session: ShellStore.activeSession
     readonly property var progress: ShellStore.sessionSetupProgress

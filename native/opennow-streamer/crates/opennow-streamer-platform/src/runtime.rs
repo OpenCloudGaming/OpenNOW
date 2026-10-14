@@ -308,16 +308,16 @@ impl MediaRuntime {
         } = &self.mode
         {
             #[cfg(target_os = "macos")]
-            if let Some(id) = audio_device.device_name() {
-                if self
+            if stream.audio_enabled
+                && let Some(id) = audio_device.device_name()
+                && self
                     .audio_devices()?
                     .iter()
                     .filter(|device| device.id == id)
                     .count()
                     != 1
-                {
-                    return Err("The selected audio output device is unavailable or ambiguous. Select another device or System default.".to_owned());
-                }
+            {
+                return Err("The selected audio output device is unavailable or ambiguous. Select another device or System default.".to_owned());
             }
             #[cfg(target_os = "windows")]
             {
@@ -924,6 +924,12 @@ impl MainThreadHost {
                     captured_input.push(input);
                 }
                 match output_event {
+                    #[cfg(any(target_os = "windows", target_os = "macos"))]
+                    Ok(OutputEvent::VideoFrameDecoded(provenance)) => {
+                        if let Some(feedback) = feedback.as_ref() {
+                            let _ = feedback.send(MediaFeedback::VideoFrameDecoded { provenance });
+                        }
+                    }
                     Ok(OutputEvent::Presented(backend)) if !software_playback_started => {
                         software_playback_started = true;
                         if let Some(feedback) = feedback.as_ref() {
@@ -957,10 +963,10 @@ impl MainThreadHost {
                             });
                         }
                     }
-                    #[cfg(target_os = "windows")]
-                    Ok(OutputEvent::QueueDropped(media)) => {
+                    #[cfg(any(target_os = "windows", target_os = "macos"))]
+                    Ok(OutputEvent::QueueDropped { media, count }) => {
                         if let Some(feedback) = feedback.as_ref() {
-                            let _ = feedback.send(MediaFeedback::QueueDropped { media, count: 1 });
+                            let _ = feedback.send(MediaFeedback::QueueDropped { media, count });
                         }
                     }
                     #[cfg(target_os = "windows")]
@@ -1282,18 +1288,23 @@ pub fn create_embedded_runtime_with_config(
                         HostCommand::Start {
                             reply,
                             audio_device,
+                            stream,
                             ..
                         } => {
                             host_output.stop_microphone();
                             microphone = None;
                             audio = None;
-                            let result = crate::output::HeadlessAudioOutput::start(
-                                Arc::clone(&host_output),
-                                &audio_device,
-                            )
-                            .map(|started| {
-                                audio = Some(started);
-                            });
+                            let result = if stream.audio_enabled {
+                                crate::output::HeadlessAudioOutput::start(
+                                    Arc::clone(&host_output),
+                                    &audio_device,
+                                )
+                                .map(|started| {
+                                    audio = Some(started);
+                                })
+                            } else {
+                                Ok(())
+                            };
                             if reply.send(result).is_err() {
                                 audio = None;
                             }
@@ -2079,6 +2090,7 @@ mod tests {
             .expect("headless media session starts without a RenderSurface");
         assert_eq!(
             session.sink().push(EncodedFrame {
+                provenance: Default::default(),
                 mid: "video".to_owned(),
                 codec: MediaCodec::H264,
                 data: Arc::from([0_u8, 0, 0, 1, 0x65]),

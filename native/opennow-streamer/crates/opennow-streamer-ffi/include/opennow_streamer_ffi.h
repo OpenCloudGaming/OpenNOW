@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define OPENNOW_STREAMER_FFI_ABI_VERSION 15u
+#define OPENNOW_STREAMER_FFI_ABI_VERSION 16u
 #define OPENNOW_STREAMER_GENERIC_HID_VERSION 1u
 #define OPENNOW_STREAMER_EVENT_SESSION_TIMER "session-timer"
 #define OPENNOW_STREAMER_EVENT_TEXT_INPUT_ERROR "text-input-error"
@@ -194,6 +194,20 @@ typedef struct OpenNowStreamerFrameInfo {
  * On Vulkan, resource is VkImage and resource_view is VkImageView. The producer owns both handles;
  * the frame token retains their backing slot until release.
  */
+#define OPENNOW_STREAMER_SOURCE_TIMESTAMP_KNOWN 1u
+#define OPENNOW_STREAMER_SOURCE_FRAME_ID_PRESENT 2u
+#define OPENNOW_STREAMER_SOURCE_SSRC_PRESENT 4u
+
+typedef struct OpenNowStreamerFrameProvenance {
+    uint32_t flags;
+    uint32_t track_id;
+    uint64_t attempt_generation;
+    uint64_t sender_timestamp;
+    uint32_t clock_rate_hz;
+    uint32_t ssrc;
+    uint64_t sender_frame_id;
+} OpenNowStreamerFrameProvenance;
+
 typedef struct OpenNowStreamerRecordedFrame {
     uint64_t resource;
     uint64_t resource_view;
@@ -205,6 +219,7 @@ typedef struct OpenNowStreamerRecordedFrame {
     uint32_t frame_slot;
     uint64_t generation;
     uint64_t presentation_time_ns;
+    OpenNowStreamerFrameProvenance provenance;
 } OpenNowStreamerRecordedFrame;
 
 #define OPENNOW_STREAMER_SDL_MAX_SOURCES 4u
@@ -396,6 +411,10 @@ OpenNowStreamerStatus opennow_streamer_record_frame(
     OpenNowStreamerRecordedFrame *output);
 
 OpenNowStreamerStatus opennow_streamer_release_frame(OpenNowStreamerFrame *frame);
+
+OpenNowStreamerStatus opennow_streamer_notify_presented(
+    const OpenNowStreamer *handle,
+    const OpenNowStreamerFrameProvenance *source);
 
 /*
  * Call from the render thread on session-generation changes and sceneGraphInvalidated/

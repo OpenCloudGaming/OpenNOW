@@ -15,8 +15,8 @@ use ffi::*;
 
 use super::VideoDecoder;
 use crate::{
-    ChromaLocation, ColorMatrix, ColorRange, DecodedVideoFrame, EncodedVideoFrame, Error,
-    FramePlane, PixelFormat, Result, StreamFormat, Subsystem,
+    ColorMatrix, ColorRange, DecodedVideoFrame, EncodedVideoFrame, Error, FramePlane, PixelFormat,
+    Result, StreamFormat, Subsystem,
 };
 
 const OUTPUT_BUFFER_COUNT: u32 = 6;
@@ -244,8 +244,12 @@ impl V4l2Decoder {
                 )));
             }
         };
-        self.format.color_matrix = negotiated.color_matrix;
-        self.format.color_range = negotiated.color_range;
+        if let Some(matrix) = negotiated.color_matrix {
+            self.format.color_matrix = matrix;
+        }
+        if let Some(range) = negotiated.color_range {
+            self.format.color_range = range;
+        }
         self.format.validate()?;
         self.capture_format = Some(negotiated.clone());
         if self.format != previous {
@@ -712,8 +716,8 @@ pub(super) struct NegotiatedFormat {
     visible_height: u32,
     fourcc: u32,
     planes: Vec<PlaneGeometry>,
-    color_matrix: ColorMatrix,
-    color_range: ColorRange,
+    color_matrix: Option<ColorMatrix>,
+    color_range: Option<ColorRange>,
 }
 
 pub(super) fn set_format(
@@ -826,19 +830,23 @@ fn negotiated_format(format: &v4l2_format) -> Result<NegotiatedFormat> {
         visible_height: height,
         fourcc,
         planes,
-        color_matrix: if colorspace == v4l2_colorspace_V4L2_COLORSPACE_BT2020 {
-            ColorMatrix::Bt2020
-        } else if colorspace == v4l2_colorspace_V4L2_COLORSPACE_REC709
-            || colorspace == v4l2_colorspace_V4L2_COLORSPACE_DEFAULT
-        {
-            ColorMatrix::Bt709
+        color_matrix: if colorspace == v4l2_colorspace_V4L2_COLORSPACE_DEFAULT {
+            None
+        } else if colorspace == v4l2_colorspace_V4L2_COLORSPACE_BT2020 {
+            Some(ColorMatrix::Bt2020)
+        } else if colorspace == v4l2_colorspace_V4L2_COLORSPACE_REC709 {
+            Some(ColorMatrix::Bt709)
         } else {
-            ColorMatrix::Bt601
+            Some(ColorMatrix::Bt601)
         },
-        color_range: if quantization == v4l2_quantization_V4L2_QUANTIZATION_FULL_RANGE {
-            ColorRange::Full
+        color_range: if quantization == v4l2_quantization_V4L2_QUANTIZATION_DEFAULT
+            && colorspace == v4l2_colorspace_V4L2_COLORSPACE_DEFAULT
+        {
+            None
+        } else if quantization == v4l2_quantization_V4L2_QUANTIZATION_FULL_RANGE {
+            Some(ColorRange::Full)
         } else {
-            ColorRange::Limited
+            Some(ColorRange::Limited)
         },
     })
 }
@@ -1181,10 +1189,9 @@ fn copy_capture_frame(
         }
     }
     let frame = DecodedVideoFrame {
-        format: StreamFormat {
-            chroma_location: ChromaLocation::Left,
-            ..format
-        },
+        provenance: Default::default(),
+        correlation_timestamp_us: Some(dequeued.timestamp_us),
+        format,
         planes,
         dmabuf: None,
         vulkan: None,
@@ -1339,18 +1346,58 @@ mod tests {
             pixel.pixelformat = NV12;
             pixel.colorspace = v4l2_colorspace_V4L2_COLORSPACE_DEFAULT;
             raw.fmt.pix = pixel;
-            assert_eq!(
-                negotiated_format(&raw).unwrap().color_matrix,
-                ColorMatrix::Bt709
-            );
+            let mut decoder = decoder_without_device(false);
+            decoder
+                .apply_negotiated_format(&negotiated_format(&raw).unwrap())
+                .unwrap();
+            assert_eq!(decoder.format.color_matrix, ColorMatrix::Bt709);
 
             pixel.colorspace = v4l2_colorspace_V4L2_COLORSPACE_SMPTE170M;
             raw.fmt.pix = pixel;
-            assert_eq!(
-                negotiated_format(&raw).unwrap().color_matrix,
-                ColorMatrix::Bt601
-            );
+            decoder
+                .apply_negotiated_format(&negotiated_format(&raw).unwrap())
+                .unwrap();
+            assert_eq!(decoder.format.color_matrix, ColorMatrix::Bt601);
         }
+    }
+
+    #[test]
+    fn unspecified_capture_metadata_preserves_explicit_source_color_defaults() {
+        let mut decoder = decoder_without_device(false);
+        decoder.format =
+            decoder
+                .format
+                .with_color(Some(opennow_media_protocol::ColorDescription {
+                    range: opennow_media_protocol::ColorRange::Full,
+                    primaries: opennow_media_protocol::Primaries::Bt709,
+                    transfer: opennow_media_protocol::Transfer::Bt709,
+                    matrix: opennow_media_protocol::Matrix::Bt601,
+                    chroma_location: opennow_media_protocol::ChromaLocation::Center,
+                }));
+        let mut raw: v4l2_format = zeroed();
+        raw.type_ = v4l2_buf_type_V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        let mut pixel = unsafe { raw.fmt.pix };
+        pixel.width = 1920;
+        pixel.height = 1080;
+        pixel.pixelformat = NV12;
+        raw.fmt.pix = pixel;
+        decoder
+            .apply_negotiated_format(&negotiated_format(&raw).unwrap())
+            .unwrap();
+        assert_eq!(decoder.format.color_matrix, ColorMatrix::Bt601);
+        assert_eq!(decoder.format.color_range, ColorRange::Full);
+        assert_eq!(
+            decoder.format.chroma_location,
+            crate::ChromaLocation::Center
+        );
+        pixel.colorspace = v4l2_colorspace_V4L2_COLORSPACE_REC709;
+        pixel.quantization = v4l2_quantization_V4L2_QUANTIZATION_LIM_RANGE;
+        raw.fmt.pix = pixel;
+        decoder
+            .apply_negotiated_format(&negotiated_format(&raw).unwrap())
+            .unwrap();
+        assert_eq!(decoder.format.color_matrix, ColorMatrix::Bt709);
+        assert_eq!(decoder.format.color_range, ColorRange::Limited);
     }
 
     fn decoder_without_device(drained: bool) -> V4l2Decoder {

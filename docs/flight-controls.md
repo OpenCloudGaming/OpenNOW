@@ -49,6 +49,13 @@ HID polling continues when gameplay capture is disabled. Forwarding stops on foc
 
 A missing, malformed, or unsupported descriptor causes detach on capture loss and a fresh attach on resume instead of an invented neutral report. The next polled report can be forwarded after admission. Device removal and session end detach the device. Incarnations and platform arrival identities distinguish rapid reconnects from the old device, even when its path and physical port are reused. Ambiguous composite routing, oversized descriptors, and missing physical or arrival identity fail closed.
 
+The Qt mailbox starts with capture closed, clears pending input on capture transitions, and
+checks the capture epoch recorded before each physical read. A read from an old capture
+interval cannot enter the next interval's queue. Discovery and polling remain active.
+NVST admission waits for the accepted generation belonging to that transport endpoint;
+an old endpoint cannot adopt a replacement session's binding. External provider workers
+do not receive generic HID reports.
+
 There are at most eight logical sources and 16 interfaces per source. Descriptors are limited to 4,096 bytes and reports to 256 bytes. Each native source queue holds at most 64 reports and 16 KiB. The output queue holds at most 32 commands and 8 KiB. Overflow retires the affected source instead of discarding a release. Physical-device discovery and blocking output operations stay off the GUI and render threads.
 
 ## Protocol evidence

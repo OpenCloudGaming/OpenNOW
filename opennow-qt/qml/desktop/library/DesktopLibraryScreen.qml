@@ -104,12 +104,6 @@ FocusScope {
         return result
     }
     readonly property var games: filteredGames()
-    readonly property real tileScale: Math.max(0.75, Math.min(1.5, Number(ShellStore.settings.posterSizeScale || 1.05))) / 1.05
-    readonly property int libraryColumns: Math.max(1, Math.floor((grid.width + 10) / (156 * tileScale)))
-    readonly property int libraryCellW: Math.max(1, Math.floor(grid.width / libraryColumns))
-    // The delegate's artwork keeps a 2:3 aspect inside a 6px gutter; derive the
-    // cell from that geometry so the outline and overlay never clip at scale.
-    readonly property int libraryCellH: Math.round((libraryCellW - 12) * 198 / 132) + 12
 
     function editCollection(mode, game) {
         collectionDialog.mode = mode
@@ -297,7 +291,7 @@ FocusScope {
         font.letterSpacing: 0.7
     }
 
-    GridView {
+    DesktopPosterGrid {
         id: grid
         // The delegate keeps a six-pixel focus/scale gutter. Offset the view by
         // that gutter so the artwork remains on Paper's 24/64 alignment lane.
@@ -305,32 +299,21 @@ FocusScope {
         y: filterRow.y + filterRow.height + 14
         width: parent.width - 36
         height: parent.height - y
-        clip: true
-        cellWidth: root.libraryCellW
-        cellHeight: root.libraryCellH
         model: root.games
         focus: true
-        boundsBehavior: Flickable.StopAtBounds
-        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-        delegate: DesktopPoster {
-            required property var modelData
-            game: modelData
-            tileWidth: root.libraryCellW
-            tileHeight: root.libraryCellH
-            onClicked: {
-                ShellStore.selectedGame = modelData
-                root.detailsRequested(modelData)
-            }
-            onDoubleClicked: {
-                ShellStore.selectedGame = modelData
-                root.playRequested(modelData)
-            }
-            onContextRequested: (sceneX, sceneY) => {
-                root.contextGame = modelData
-                const local = root.mapFromItem(null, sceneX, sceneY)
-                root.contextPoint = Qt.point(Math.min(root.width - 470, Math.max(16, local.x)), Math.min(root.height - 300, Math.max(16, local.y)))
-                root.collectionOpen = false
-            }
+        onGameActivated: game => {
+            ShellStore.selectedGame = game
+            root.detailsRequested(game)
+        }
+        onGamePlayRequested: game => {
+            ShellStore.selectedGame = game
+            root.playRequested(game)
+        }
+        onGameContextRequested: (game, sceneX, sceneY) => {
+            root.contextGame = game
+            const local = root.mapFromItem(null, sceneX, sceneY)
+            root.contextPoint = Qt.point(Math.min(root.width - 470, Math.max(16, local.x)), Math.min(root.height - 300, Math.max(16, local.y)))
+            root.collectionOpen = false
         }
     }
 

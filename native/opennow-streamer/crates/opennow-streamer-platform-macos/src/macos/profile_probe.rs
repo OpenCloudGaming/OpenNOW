@@ -95,7 +95,7 @@ fn probe(chroma: VideoChroma, transfer: VideoTransfer) -> Result<bool, super::Ba
         &format.into(),
         DecodedFrameOutput::EmbeddedMailbox {
             mailbox: Arc::clone(&mailbox),
-            frame_available: None,
+            publish: None,
         },
         Arc::new(Counters::default()),
         Arc::clone(&failures),

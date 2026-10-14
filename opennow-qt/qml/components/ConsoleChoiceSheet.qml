@@ -8,6 +8,7 @@ FocusScope {
     property string eyebrow: ""
     property string title: ""
     property string description: ""
+    property int textFormat: Text.AutoText
     property var options: []
     property int currentIndex: -1
     property int focusedIndex: 0
@@ -157,6 +158,7 @@ FocusScope {
                 height: 44
                 verticalAlignment: Text.AlignVCenter
                 text: root.title !== "" ? root.title : qsTr("Choose a value")
+                textFormat: root.textFormat
                 color: Theme.label
                 elide: Text.ElideRight
                 font.family: Theme.displayFont
@@ -173,6 +175,7 @@ FocusScope {
                     y: -1
                     width: parent.width
                     text: root.description
+                    textFormat: root.textFormat
                     color: Theme.textMuted
                     wrapMode: Text.WordWrap
                     maximumLineCount: 3
@@ -305,6 +308,7 @@ FocusScope {
                             height: 24
                             verticalAlignment: Text.AlignVCenter
                             text: String(optionItem.modelData.label || "")
+                            textFormat: root.textFormat
                             color: optionItem.unavailable ? Theme.textMuted : Theme.label
                             elide: Text.ElideRight
                             font.family: Theme.displayFont
@@ -315,6 +319,7 @@ FocusScope {
                             visible: text !== "" && !optionItem.detailTag
                             width: parent.width
                             text: optionItem.detail
+                            textFormat: root.textFormat
                             color: Theme.textMuted
                             wrapMode: Text.WordWrap
                             maximumLineCount: 2
@@ -339,6 +344,7 @@ FocusScope {
                         horizontalAlignment: Text.AlignRight
                         elide: Text.ElideRight
                         text: tagMetrics.text
+                        textFormat: root.textFormat
                         color: optionItem.current ? Theme.mint : Theme.textMuted
                         font: currentTagMetrics.font
                     }

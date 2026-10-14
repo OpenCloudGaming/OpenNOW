@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 description = "Native VideoToolbox, Metal, and CoreAudio backend for OpenNOW"
 [dependencies]
+opennow-media-protocol.workspace = true
 thiserror.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]

@@ -150,6 +150,13 @@ FocusScope {
                 onClicked: ShellStore.refreshProviders(true)
             }
             ConsoleActionButton {
+                objectName: "consoleSignInManagePlugins"
+                width: parent.width
+                visible: !root.connected && ShellStore.pluginsAvailable && !root.challenge
+                text: qsTr("Manage plugins")
+                onClicked: AppController.navigate("settings-plugins")
+            }
+            ConsoleActionButton {
                 id: signOutButton
                 width: parent.width
                 visible: root.connected

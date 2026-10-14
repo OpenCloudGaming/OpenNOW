@@ -181,6 +181,13 @@ For code changes, read the [contributing guide](.github/CONTRIBUTING.md) and
 [repository guidance](AGENTS.md). Keep pull requests focused on one change.
 For translations, edit only `locales/en.json`. Crowdin manages the other locale files.
 
+Community developers can build trusted catalog plugins with the
+[plugin API](docs/plugins.md) and the
+[standalone example](examples/catalog-plugin/README.md). Manage local packages
+in **Settings → Plugins**. Plugin version 1 provides catalog previews, not new
+streaming services. Read the [execution and trust model](docs/provider-modules.md#community-execution-and-trust)
+before installing a native plugin.
+
 Found a bug? Open a [GitHub issue](https://github.com/OpenCloudGaming/OpenNOW/issues)
 with your build, OS, GPU, and steps to reproduce it. For streaming bugs, include a
 diagnostic export. Check attachments for personal information before posting them.

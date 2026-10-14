@@ -23,8 +23,12 @@ pub(super) fn input_color_space(format: VideoFormat) -> Result<DXGI_COLOR_SPACE_
     } else {
         format.chroma_siting
     };
+    let transfer = match format.transfer_function {
+        VideoTransferFunction::Srgb => VideoTransferFunction::Sdr,
+        transfer => transfer,
+    };
     match (
-        format.transfer_function,
+        transfer,
         chroma_siting,
         format.color_matrix,
         format.full_range,

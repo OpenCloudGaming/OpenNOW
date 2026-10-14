@@ -9,6 +9,12 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github/workflows"
+PROVIDER_WORKSPACES = (
+    "native/opennow-plugin-package",
+    "native/opennow-media-protocol",
+    "examples/provider-plugin",
+    "examples/provider-media-worker",
+)
 
 
 def jobs(workflow):
@@ -17,6 +23,55 @@ def jobs(workflow):
 
 
 class CIWorkflowTest(unittest.TestCase):
+    def test_provider_workspaces_trigger_pull_request_and_push_checks(self):
+        workflow = (WORKFLOWS / "qt-ci.yml").read_text()
+        pull = workflow.split("  pull_request:\n", 1)[1].split("  push:\n", 1)[0]
+        push = workflow.split("  push:\n", 1)[1].split("\nconcurrency:", 1)[0]
+        for name, trigger in (("pull_request", pull), ("push", push)):
+            for workspace in PROVIDER_WORKSPACES:
+                with self.subTest(workspace=workspace, trigger=name):
+                    self.assertIn(f'      - "{workspace}/**"\n', trigger)
+
+    def test_provider_workspaces_get_cached_format_lint_and_tests_on_every_platform(self):
+        action = (ROOT / ".github/actions/qt-unit-tests/action.yml").read_text()
+        for name, command in (
+            ("Check Rust formatting", "cargo fmt --manifest-path {manifest} -- --check"),
+            ("Lint Rust", "cargo clippy --locked --manifest-path {manifest} --all-targets -- -D warnings"),
+            ("Test Rust", "cargo test --locked --manifest-path {manifest}"),
+        ):
+            step = action.split(f"    - name: {name}\n", 1)[1].split("    - name:", 1)[0]
+            self.assertNotIn("      if:", step)
+            self.assertNotIn("continue-on-error", step)
+            for workspace in PROVIDER_WORKSPACES:
+                with self.subTest(step=name, workspace=workspace):
+                    self.assertIn(command.format(manifest=f"{workspace}/Cargo.toml") + "\n", step)
+        cache = action.split("uses: Swatinem/rust-cache@", 1)[1].split("    - name:", 1)[0]
+        for workspace in (*PROVIDER_WORKSPACES, "native/opennow-plugin-api", "examples/catalog-plugin"):
+            self.assertIn(f"          {workspace} -> target\n", cache)
+
+    def test_provider_codec_tools_are_prepared_and_verified_before_rust_builds(self):
+        action = (ROOT / ".github/actions/qt-unit-tests/action.yml").read_text()
+        windows = action.split("    - name: Install Windows native test dependencies\n", 1)[1].split("    - uses:", 1)[0]
+        self.assertIn("Get-Command cmake", windows)
+        self.assertIn("choco install cmake", windows)
+        self.assertIn("Get-Command ninja", windows)
+        self.assertIn("choco install ninja", windows)
+        linux = action.split("    - name: Install Linux test dependencies\n", 1)[1].split("    - name:", 1)[0]
+        self.assertIn("build-essential cmake", linux)
+        mac = action.split("    - name: Install macOS test dependencies\n", 1)[1].split("    - name:", 1)[0]
+        self.assertIn("if: runner.os == 'macOS'", mac)
+        self.assertIn("brew install", mac)
+        self.assertIn("cmake ninja pkg-config", mac)
+        tools = action.split("    - name: Verify native codec build tools\n", 1)[1].split("    - uses:", 1)[0]
+        self.assertNotIn("      if:", tools)
+        for command in ("cmake --version", "ninja --version", "c++ --version", "make --version",
+                        "nasm -v", "xcrun --find clang++", "xcrun --show-sdk-path",
+                        "command -v cl.exe nmake.exe"):
+            self.assertIn(command, tools)
+        for step in ("Install Windows native test dependencies", "Install Linux test dependencies", "Install macOS test dependencies"):
+            self.assertLess(action.index(step), action.index("Verify native codec build tools"))
+        self.assertLess(action.index("Verify native codec build tools"), action.index("    - name: Lint Rust"))
+
     def test_stack_base_branches_run_pr_checks_without_new_push_or_publication_triggers(self):
         ci = (WORKFLOWS / "qt-ci.yml").read_text()
         pull = ci.split("  pull_request:\n", 1)[1].split("  push:\n", 1)[0]

@@ -60,8 +60,9 @@ impl ColorDescriptors {
             ..fallback
         };
         if matches!(self.matrix, Descriptor::Unspecified)
-            && format.transfer_function == VideoTransferFunction::Sdr
+            && format.transfer_function.is_sdr()
             && format.color_primaries == VideoColorPrimaries::Bt709
+            && fallback.color_matrix == VideoColorMatrix::Bt2020
         {
             format.color_matrix = VideoColorMatrix::Bt709;
         }
@@ -221,6 +222,28 @@ mod tests {
             };
             assert_eq!(descriptors.resolve(sdr), format);
             assert_eq!(descriptors.resolve(hdr), format);
+        }
+    }
+
+    #[test]
+    fn negotiated_sdr_matrix_is_preserved_and_hdr_transitions_include_srgb() {
+        for transfer in [VideoTransferFunction::Sdr, VideoTransferFunction::Srgb] {
+            let sdr = VideoFormat {
+                transfer_function: transfer,
+                color_primaries: VideoColorPrimaries::Bt709,
+                color_matrix: VideoColorMatrix::Bt601,
+                ..hdr_format()
+            };
+            assert_eq!(ColorDescriptors::default().resolve(sdr), sdr);
+            let descriptors = ColorDescriptors {
+                transfer: Descriptor::Recognized(transfer),
+                primaries: Descriptor::Recognized(VideoColorPrimaries::Bt709),
+                ..Default::default()
+            };
+            let output = descriptors.resolve(hdr_format());
+            assert_eq!(output.transfer_function, transfer);
+            assert_eq!(output.color_matrix, VideoColorMatrix::Bt709);
+            assert!(output.validate_color().is_ok());
         }
     }
 }

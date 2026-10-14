@@ -31,6 +31,7 @@ fn recording_cut_preserves_a_prefix_and_emits_one_completion() {
     })));
     assert_eq!(started[0]["type"], "recording-started");
     let first_frame = EncodedFrame {
+        provenance: Default::default(),
         mid: "video".to_owned(),
         codec: MediaCodec::H264,
         data: Arc::from([
@@ -46,6 +47,7 @@ fn recording_cut_preserves_a_prefix_and_emits_one_completion() {
     };
     sink.push(first_frame.clone());
     sink.push(EncodedFrame {
+        provenance: Default::default(),
         mid: "video".to_owned(),
         codec: MediaCodec::H264,
         data: Arc::from([0, 0, 0, 1, 0x41]),
@@ -122,6 +124,7 @@ fn recording_can_restart_after_finished_worker_failure() {
     })));
     assert_eq!(busy[0]["code"], "recording-already-active");
     sink.push(EncodedFrame {
+        provenance: Default::default(),
         mid: "video".to_owned(),
         codec: MediaCodec::H264,
         data: Arc::from([0, 0, 0, 1, 0x41]),
@@ -164,6 +167,7 @@ fn recording_can_restart_after_finished_worker_failure() {
     })));
     assert_eq!(retried[0]["type"], "recording-started");
     sink.push(EncodedFrame {
+        provenance: Default::default(),
         mid: "video".to_owned(),
         codec: MediaCodec::H264,
         data: Arc::from([

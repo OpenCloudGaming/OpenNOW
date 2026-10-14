@@ -15,13 +15,14 @@ FocusScope {
     Rectangle { anchors.fill: parent; color: "black"; z: -1 }
 
     readonly property var session: ShellStore.activeSession || ({})
-    readonly property string sessionId: String(session.sessionId || "")
+    readonly property string sessionId: ShellStore.activeStreamId
     property string clipboardPasteMessage: ""
     onSessionIdChanged: {
         clipboardPasteMessage = ""
         if (clipboardPasteNotice) clipboardPasteNotice.stop()
     }
-    readonly property var profile: session.negotiatedStreamProfile || session.streamProfile || ({})
+    readonly property var profile: ShellStore.sourceStreamActive ? ShellStore.activeStreamProfile
+        : session.negotiatedStreamProfile || session.streamProfile || ({})
     readonly property var streamer: ShellStore.streamer || ({})
     readonly property string status: {
         if (ShellStore.streamState === "error")

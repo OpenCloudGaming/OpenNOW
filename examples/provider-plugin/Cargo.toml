@@ -1,0 +1,21 @@
+[package]
+name = "opennow-sdk-demo"
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+license = "MIT"
+
+[workspace]
+
+[dependencies]
+opennow-plugin-api = { path = "../../native/opennow-plugin-api" }
+opennow-plugin-package = { path = "../../native/opennow-plugin-package" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
+fs2 = "0.4"
+getrandom = "0.3"
+subtle = "2"
+tempfile = "3"

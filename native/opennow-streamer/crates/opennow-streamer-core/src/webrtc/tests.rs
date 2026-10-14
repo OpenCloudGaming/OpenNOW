@@ -8,6 +8,7 @@ fn accepted_frames_emit_webrtc_telemetry_with_optional_transport_stats() {
     let mut telemetry = Telemetry::new(now);
     for index in 0..60 {
         telemetry.observe(&MediaFeedback::VideoFrameAccepted {
+            provenance: Default::default(),
             frame_index: Some(index),
             timestamp: u64::from(index) * 1_500,
             bytes: 100_000,
@@ -178,6 +179,7 @@ fn accepted_compressed_frames_do_not_refresh_observable_decoded_health() {
         let at = now + Duration::from_secs(second);
         progress.observe_feedback(
             &MediaFeedback::VideoFrameAccepted {
+                provenance: Default::default(),
                 frame_index: None,
                 timestamp: second * 90_000,
                 bytes: 1000,
@@ -836,6 +838,7 @@ fn engine_webrtc_session_emits_frame_and_network_telemetry() {
             if frame.codec == "H265" {
                 feedback
                     .send(MediaFeedback::VideoFrameAccepted {
+                        provenance: Default::default(),
                         frame_index: frame.frame_index,
                         timestamp: frame.rtp_timestamp,
                         bytes: frame.payload.len().try_into().unwrap(),

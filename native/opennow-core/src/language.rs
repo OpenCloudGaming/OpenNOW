@@ -72,16 +72,6 @@ pub fn session_keyboard_layout(settings: &Value) -> &'static str {
         .unwrap_or("en-US")
 }
 
-pub fn append_session_preferences(url: &mut url::Url, settings: &Value) {
-    let language = settings["gameLanguage"]
-        .as_str()
-        .filter(|value| valid_game_language(value))
-        .unwrap_or("en_US");
-    url.query_pairs_mut()
-        .append_pair("keyboardLayout", session_keyboard_layout(settings))
-        .append_pair("languageCode", language);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,7 +140,7 @@ mod tests {
             ),
         ] {
             let mut url = url::Url::parse("https://fixture.invalid/session?existing=1").unwrap();
-            append_session_preferences(&mut url, &settings);
+            crate::sources::gfn::session_language::append_session_preferences(&mut url, &settings);
             let pairs: std::collections::HashMap<_, _> = url.query_pairs().collect();
             assert_eq!(pairs["languageCode"], language);
             assert_eq!(pairs["keyboardLayout"], keyboard);

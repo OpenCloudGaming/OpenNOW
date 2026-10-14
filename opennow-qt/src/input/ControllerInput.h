@@ -104,6 +104,7 @@ public:
     [[nodiscard]] QList<GenericHidDeviceClaim> genericHidClaims() const;
 
 public slots:
+    void setGenericHidCaptureActive(bool active);
     void setGenericHidAdmission(quint8 slot, quint64 incarnation, GenericHidAdmission admission);
     void resetGenericHidAdmissions();
     void handleGenericHidOutput(const GenericHidReport &report);

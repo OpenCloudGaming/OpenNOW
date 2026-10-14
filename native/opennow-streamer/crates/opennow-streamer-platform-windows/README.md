@@ -145,6 +145,7 @@ use opennow_streamer_platform_windows::{
 };
 
 let backend = WindowsBackend::start(BackendConfig {
+    audio_enabled: true,
     video: VideoFormat {
         codec: VideoCodec::H264,
         width: 1920,
