@@ -25,7 +25,7 @@ syntax checks, and the headless-compatible `ci-unit` Qt tests. The Qt check comp
 bundled FFmpeg. Rust test binaries and the SDL3 test dependency still need compiling;
 Rust, Qt, and SDL caches reduce repeated work.
 General-purpose check and package jobs use Blacksmith runners. The isolated
-release-signing job remains on `opennow-release-signer`.
+release-signing jobs run on `blacksmith-2vcpu-ubuntu-2404`.
 
 The upstream Rust cache action automatically uses Blacksmith's colocated cache.
 Platform-specific shared keys survive job renames, and dependency caches are saved

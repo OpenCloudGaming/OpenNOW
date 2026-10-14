@@ -4,8 +4,9 @@ The `qt-ci` and `qt-release-candidate` workflows use upstream cache actions.
 [Blacksmith automatically routes these actions to its colocated cache](https://docs.blacksmith.sh/blacksmith-caching/dependencies-actions);
 its old `useblacksmith/cache` and language-specific cache forks are archived.
 
-Actions currently builds Windows and Linux only, each on x64 and ARM64. The macOS
-CI matrix entries and release-candidate job are removed for now.
+`qt-ci` checks Linux x64, Windows x64, and macOS ARM64. Manual package builds
+also cover Linux ARM64 and Windows ARM64. The release-candidate workflow still
+builds macOS ARM64.
 
 ## Cached build inputs
 
@@ -14,17 +15,17 @@ CI matrix entries and release-candidate job are removed for now.
 - **Rust:** `Swatinem/rust-cache` caches Cargo downloads and compiled dependencies
   for both native workspaces. CI includes their normal `target` directories for
   Clippy/tests and the separate `rust-target` and `streamer-rust-target` directories
-  that CMake actually builds. Release candidates cache only the CMake Cargo
+  that CMake actually builds. Linux and Windows release candidates cache those
+  CMake directories only. The macOS candidate also caches the normal `target`
   directories. The action keys dependencies by Rust toolchain, Cargo manifests,
   lockfiles, and compiler environment, and removes workspace and incremental
   artifacts before saving. Application code is rebuilt, including release-version
   and update-public-key changes; final executables and signing material are not
   cache inputs.
-- **Qt C++:** `ccache-action` persists a compressed compiler cache capped at 500 MB
-  per Linux matrix entry. CMake explicitly uses `ccache` as its C/C++ compiler
-  launcher. Windows keeps its existing Visual Studio generator: CMake compiler
-  launchers do not support that generator, so enabling one would not cache MSVC
-  compilation. Windows still benefits from Rust and SDL caching.
+- **Qt C++:** `ccache-action` persists a compressed compiler cache. Check and
+  package jobs cap it at 1 GB. Linux release candidates stay at 500 MB; Windows
+  and macOS candidates use 1 GB. CMake uses `ccache` as its C/C++ compiler
+  launcher, including Windows Ninja Multi-Config builds.
 - **SDL3:** `actions/cache` persists only the Release installation. An exact hit
   skips cloning, configuring, compiling, and installing SDL. The key includes the
   target architecture, runner image family, SDL version, and workflow hash; changes

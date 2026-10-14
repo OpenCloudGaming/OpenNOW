@@ -8,15 +8,20 @@ independent.
 
 ## Build runners
 
-Windows x64 and ARM64 compilation uses 8-vCPU Blacksmith Windows 2025 runners,
-MSVC, and Ninja Multi-Config. CMake is limited to eight build jobs and each Cargo
-invocation to four jobs, since the native core and streamer can build together.
-Linux ARM64 validation and release builds use
-`blacksmith-8vcpu-ubuntu-2404-arm`. Linux x64 uses the corresponding 8-vCPU x64
-runner. The macOS runner size is unchanged.
+`qt-ci` validation uses `blacksmith-16vcpu-ubuntu-2404` for Linux x64 and
+`blacksmith-16vcpu-windows-2025` for Windows x64. CMake and Cargo on those jobs
+are limited to eight jobs. macOS ARM64 validation uses `blacksmith-6vcpu-macos-15`
+and three jobs. Linux ARM64 and Windows ARM64 are not in that matrix.
 
-Windows desktop tests are not run by GitHub Actions. Windows x64 and ARM64
-builds and packaging remain enabled, but neither architecture is runtime-tested.
+Package builds and release candidates use 8-vCPU runners for Linux x64, Linux
+ARM64 (`blacksmith-8vcpu-ubuntu-2404-arm`), and both Windows architectures.
+Windows package and candidate jobs use Ninja Multi-Config and limit each Cargo
+invocation to four jobs. macOS package and candidate builds use
+`blacksmith-6vcpu-macos-15`.
+
+Windows desktop-application tests are not run by GitHub Actions. Windows x64
+checks run Cargo tests, `ctest -L ci-unit`, and the signed update-helper
+integration. Windows ARM64 is cross-built and packaged, not runtime-tested.
 The desktop-test workflow and its test-bundle uploads have been removed.
 
 The x64 build is a separate job using the same anchored build steps as the
