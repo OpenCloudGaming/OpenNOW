@@ -1,0 +1,109 @@
+use std::collections::HashMap;
+use std::primitive::i64 as jlong;
+use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+#[derive(Clone, Copy)]
+enum Outcome { Ok, Error, Panic }
+struct Feedback { state: Weak<State>, requests: Arc<AtomicUsize> }
+impl Feedback {
+    fn request_keyframe(&self) {
+        assert!(self.state.upgrade().unwrap().feedback.try_lock().is_err());
+        self.requests.fetch_add(1, Ordering::Relaxed);
+    }
+}
+struct State { stopped: AtomicBool, feedback: Mutex<Option<Feedback>>, outcome: Outcome }
+fn state(stopped: bool, outcome: Outcome, feedback: bool, requests: Arc<AtomicUsize>) -> Arc<State> {
+    Arc::new_cyclic(|weak| State {
+        stopped: AtomicBool::new(stopped),
+        outcome,
+        feedback: Mutex::new(feedback.then(|| Feedback { state: weak.clone(), requests })),
+    })
+}
+static ATTACHMENTS: OnceLock<Mutex<HashMap<jlong, Arc<State>>>> = OnceLock::new();
+fn attachments() -> &'static Mutex<HashMap<jlong, Arc<State>>> { ATTACHMENTS.get_or_init(Mutex::default) }
+fn attachment(id: jlong) -> Option<Arc<State>> { attachments().lock().unwrap().get(&id).cloned() }
+
+#[derive(Default)]
+struct Trace { strings: usize, exception_checks: usize, runs: usize, events: Vec<String> }
+pub struct JNIEnv {
+    trace: Arc<Mutex<Trace>>,
+    exception: Result<bool, String>,
+    context_error: bool,
+    event_error: bool,
+}
+pub struct JObject;
+pub struct JString;
+impl JNIEnv {
+    fn get_string(&mut self, _: &JString) -> Result<&str, String> {
+        self.trace.lock().unwrap().strings += 1;
+        if self.context_error { Err("fixture-context-error".into()) } else { Ok("fixture-context") }
+    }
+    fn exception_check(&mut self) -> Result<bool, String> {
+        self.trace.lock().unwrap().exception_checks += 1;
+        self.exception.clone()
+    }
+}
+fn run(env: &mut JNIEnv, _: &JObject, _: &str, state: &State) -> Result<(), String> {
+    env.trace.lock().unwrap().runs += 1;
+    match state.outcome {
+        Outcome::Ok => Ok(()),
+        Outcome::Error => Err("fixture-run-error".into()),
+        Outcome::Panic => panic!("fixture panic"),
+    }
+}
+fn event(env: &mut JNIEnv, _: &JObject, name: &str, detail: &str) -> Result<(), String> {
+    assert_eq!(name, "error");
+    env.trace.lock().unwrap().events.push(detail.into());
+    if env.event_error { Err("fixture-event-error".into()) } else { Ok(()) }
+}
+
+__PRODUCTION_FUNCTIONS__
+
+fn main() {
+    std::panic::set_hook(Box::new(|_| {}));
+    let mut cases = 0;
+    for present in [false, true] {
+        for feedback in [false, true] {
+            attachments().lock().unwrap().clear();
+            let requests = Arc::new(AtomicUsize::new(0));
+            let target = state(false, Outcome::Ok, feedback, requests.clone());
+            if present { attachments().lock().unwrap().insert(1, target.clone()); }
+            Java_com_opencloudgaming_opennow_NvstBridge_keyframe(JNIEnv { trace: Arc::default(), exception: Ok(false), context_error: false, event_error: false }, JObject, 1);
+            assert_eq!(requests.load(Ordering::Relaxed), usize::from(present && feedback));
+            assert!(target.feedback.try_lock().is_ok());
+            assert_eq!(attachments().lock().unwrap().contains_key(&1), present);
+            cases += 1;
+        }
+    }
+    for present in [false, true] {
+        for stopped in [false, true] {
+            for exception in [Ok(false), Ok(true), Err("fixture-exception-query-error".to_string())] {
+                for outcome in [Outcome::Ok, Outcome::Error, Outcome::Panic] {
+                    for context_error in [false, true] {
+                        for event_error in [false, true] {
+                            attachments().lock().unwrap().clear();
+                            let requests = Arc::new(AtomicUsize::new(0));
+                            if present { attachments().lock().unwrap().insert(1, state(stopped, outcome, false, requests.clone())); }
+                            attachments().lock().unwrap().insert(2, state(false, Outcome::Ok, false, requests));
+                            let trace = Arc::new(Mutex::new(Trace::default()));
+                            Java_com_opencloudgaming_opennow_NvstBridge_run(JNIEnv { trace: trace.clone(), exception: exception.clone(), context_error, event_error }, JObject, 1, JString, JObject);
+                            let trace = trace.lock().unwrap();
+                            assert_eq!(trace.strings, usize::from(present));
+                            assert_eq!(trace.runs, usize::from(present && !context_error));
+                            assert_eq!(trace.exception_checks, usize::from(present && !stopped));
+                            let error = if context_error { Some("fixture-context-error") } else { match outcome { Outcome::Ok => None, Outcome::Error => Some("fixture-run-error"), Outcome::Panic => Some("NVST transport panic; cloud session retained") } };
+                            let should_emit = present && !stopped && exception == Ok(false) && error.is_some();
+                            assert_eq!(trace.events.len(), usize::from(should_emit));
+                            if should_emit { assert_eq!(trace.events[0], error.unwrap()); }
+                            assert!(!attachments().lock().unwrap().contains_key(&1));
+                            assert!(attachments().lock().unwrap().contains_key(&2));
+                            cases += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    println!("PASS: {cases} extracted JNI guard cases preserve lock scope, exception short-circuit, error/panic notification and mandatory registry cleanup");
+}
