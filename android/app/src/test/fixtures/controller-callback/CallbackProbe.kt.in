@@ -1,0 +1,126 @@
+import androidx.compose.runtime.*
+import kotlinx.coroutines.*
+import kotlin.coroutines.EmptyCoroutineContext
+
+data class FakeSession(val sessionId: String)
+data class FakeSettings(val controllerMouseAutoArmOnTv: Boolean = true)
+data class FakeState(var settings: FakeSettings = FakeSettings())
+class FakeViewModel(val state: FakeState) {
+    fun updateSettings(settings: FakeSettings) { state.settings = settings }
+}
+
+class NativeStreamClient(val onControllerMouseAssistChanged: (Boolean) -> Unit) {
+    private val scope = CoroutineScope(Dispatchers.Unconfined + SupervisorJob())
+    private var controllerMouseAutoArmOnStart = true
+    private var controllerMouseAssistActive = false
+    private var controllerMouseAssistAutoArmed = false
+    private var controllerMouseEmulationActive = false
+    private var controllerMouseMoveLogged = false
+    private var controllerMouseLeftButtonDown = false
+    private var controllerMouseRightButtonDown = false
+    private var controllerMouseLoopJob: Job? = null
+    private var physicalLeftStickX = 0f
+    private var physicalLeftStickY = 0f
+    private var physicalRightStickX = 0f
+    private var physicalRightStickY = 0f
+    val buttonEdges = mutableListOf<Pair<Int, Boolean>>()
+    val active get() = controllerMouseAssistActive
+    val loopRunning get() = controllerMouseLoopJob?.isActive == true
+    val neutral get() = !controllerMouseLeftButtonDown && !controllerMouseRightButtonDown && physicalRightStickX == 0f && physicalRightStickY == 0f
+    __RUNTIME_METHODS__
+    private fun setControllerMouseEmulationActive(enabled: Boolean) { controllerMouseEmulationActive = enabled }
+    private fun sendCurrentGamepadState() {}
+    private fun sendMouseButton(button: Int, pressed: Boolean, source: String): Boolean {
+        check(source == "controller mouse")
+        buttonEdges += button to pressed
+        return true
+    }
+    private fun sendControllerMouseMove(x: Float, y: Float) { check(x.isFinite() && y.isFinite()) }
+    private fun sendControllerMouseScroll(y: Float) { check(y.isFinite()) }
+    fun beginSession() {
+        armControllerMouseAssistForSession()
+        updateControllerMouseLoop()
+    }
+    fun holdButtonsAndStick() {
+        setControllerMouseButton(1, true)
+        setControllerMouseButton(3, true)
+        physicalRightStickX = 1f
+        physicalRightStickY = 1f
+    }
+    fun dispose() { scope.cancel() }
+}
+
+object NativeInputDiagnostics { fun add(message: String) { check(message.isNotEmpty()) } }
+__LOOP_RULE__
+
+class Panel {
+    lateinit var client: NativeStreamClient
+    lateinit var visible: () -> Boolean
+    lateinit var toggle: () -> Unit
+    val state = FakeState()
+    val viewModel = FakeViewModel(state)
+}
+
+@Composable
+fun StreamFixture(session: FakeSession?, panel: Panel) {
+    val state = panel.state
+    val viewModel = panel.viewModel
+    var controllerMouseEmulationEnabled by remember(session?.sessionId) { mutableStateOf(false) }
+    __STATE__
+    __UPDATED__
+    val client = remember {
+        NativeStreamClient(onControllerMouseAssistChanged = __CALLBACK__)
+    }
+    SideEffect {
+        panel.client = client
+        panel.visible = { controllerMouseAssistEnabled }
+        panel.toggle = __TOGGLE__
+    }
+}
+
+class EmptyApplier : AbstractApplier<Unit>(Unit) {
+    override fun insertTopDown(index: Int, instance: Unit) {}
+    override fun insertBottomUp(index: Int, instance: Unit) {}
+    override fun remove(index: Int, count: Int) {}
+    override fun move(from: Int, to: Int, count: Int) {}
+    override fun onClear() {}
+}
+
+fun main() {
+    val panel = Panel()
+    val composition = ControlledComposition(EmptyApplier(), Recomposer(EmptyCoroutineContext))
+    fun render(session: String?) {
+        composition.composeContent { StreamFixture(session?.let(::FakeSession), panel) }
+        composition.applyChanges()
+        composition.applyLateChanges()
+        composition.changesApplied()
+    }
+    render(null)
+    val original = panel.client
+    render("first-session")
+    check(original === panel.client)
+    panel.client.beginSession()
+    check(panel.visible()) { "Production callback updates the stale pre-session cell; visible toggle is Off while runtime is On" }
+    check(panel.client.loopRunning)
+    panel.client.holdButtonsAndStick()
+    panel.toggle()
+    check(!panel.client.active && !panel.visible()) { "Controller mouse could not be disabled from the visible toggle" }
+    check(!panel.client.loopRunning && panel.client.neutral)
+    check(panel.client.buttonEdges.takeLast(2) == listOf(1 to false, 3 to false))
+    check(!panel.state.settings.controllerMouseAutoArmOnTv)
+    panel.client.updateControllerMouseAssistAutoArm(panel.state.settings.controllerMouseAutoArmOnTv)
+    render("replacement-session")
+    check(original === panel.client)
+    panel.client.beginSession()
+    check(!panel.visible() && !panel.client.active)
+    panel.toggle()
+    check(panel.visible() && panel.client.active)
+    panel.client.holdButtonsAndStick()
+    panel.toggle()
+    check(!panel.client.active && !panel.visible())
+    check(!panel.client.loopRunning && panel.client.neutral)
+    check(panel.client.buttonEdges.takeLast(2) == listOf(1 to false, 3 to false))
+    composition.dispose()
+    panel.client.dispose()
+    println("PASS: real Compose callback lifetime, production mode/loop/button release and persisted toggle across null-to-session and replacement")
+}
