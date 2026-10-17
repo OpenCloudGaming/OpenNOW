@@ -1254,15 +1254,14 @@ reducing chroma; an explicit incompatible codec remains an error.
 The native context preserves the resolved profile and codec provenance. Its accepted
 `enableHdr` initializes the native HDR mode (missing means false). Invalid accepted HDR
 profiles are rejected before stream startup. NVST ANNOUNCE states color explicitly on
-every session using literal bit depth `8` or `10` with `chroma_format_idc`
-(`chromaFormat=1` for 4:2:0, `3` for 4:4:4); `dynamicRangeMode=1` is sent for HDR
-only, and SDR omits the line. This matches the vendor capture of a `10bit_420`
-session (`bitDepth:10 chromaFormat:1`) and the working third-party reference
-clients: a lone `bitDepth` line is never sent, because seats cannot initialize
-an encoder from an incomplete color spec. The internal 0/1 chroma value from the
-client's app-to-NVST conversion is mapped back to idc at SDP emission and never
-reaches the wire. CloudMatch keeps its own bit-depth enum (`0` or `1`) with
-chroma `0`/`1`.
+every session using literal bit depth `8` or `10` with the Bifrost 4:4:4 flag
+(`chromaFormat=0` for 4:2:0, `1` for 4:4:4); `dynamicRangeMode=1` is sent for HDR
+only, and SDR omits the line. Bifrost serializes these config bytes unchanged and
+rejects chroma values above `1`; an official 10-bit 4:4:4 session carries
+`bitDepth:10 chromaFormat:1`. `chroma_format_idc` values (`1`/`3`) are not the
+wire enum: seats terminate 10-bit sessions announced with them (0x800e8605) before
+the first video frame. A lone `bitDepth` line is never sent. CloudMatch keeps its
+own bit-depth enum (`0` or `1`) with chroma `0`/`1`.
 
 The ANNOUNCE also carries the encoder identity the seat reads before
 initializing (`maxCodecProfile`/`maxCodecLevel` and the `maxH264` pair, profile

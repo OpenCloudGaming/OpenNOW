@@ -2413,7 +2413,7 @@ mod tests {
         let stream = stream_config(context);
         (
             stream.color_quality.bit_depth(),
-            if stream.color_quality.is_444() { 3 } else { 1 },
+            u8::from(stream.color_quality.is_444()),
         )
     }
 
@@ -2942,7 +2942,7 @@ mod tests {
         );
         assert!(sdp.contains("a=x-nv-video[0].maxFPS:120"));
         assert!(sdp.contains("a=x-nv-video[0].bitDepth:10"));
-        assert!(sdp.contains("a=x-nv-video[0].chromaFormat:1"));
+        assert!(sdp.contains("a=x-nv-video[0].chromaFormat:0"));
         assert!(sdp.contains("a=x-nv-video[0].maxCodecProfile:3"));
         assert!(sdp.contains("a=x-nv-video[0].maxCodecLevel:51"));
         assert!(sdp.contains("a=x-nv-video[0].maxH264Level:51"));
@@ -3123,7 +3123,7 @@ mod tests {
             assert_eq!(sdp.contains("a=x-nv-video[0].dynamicRangeMode:1\r\n"), hdr);
             assert!(!sdp.contains("a=x-nv-video[0].dynamicRangeMode:0"));
             assert!(sdp.contains("a=x-nv-video[0].bitDepth:10\r\n"));
-            assert!(sdp.contains("a=x-nv-video[0].chromaFormat:1\r\n"));
+            assert!(sdp.contains("a=x-nv-video[0].chromaFormat:0\r\n"));
         }
     }
 
@@ -3238,23 +3238,23 @@ mod tests {
         let mut value = context();
         value.session.extra["negotiatedStreamProfile"]["codec"] = json!("H264");
         value.session.extra["negotiatedStreamProfile"]["colorQuality"] = json!("10bit_444");
-        assert_eq!(announce_color_format(&value), (8, 1));
+        assert_eq!(announce_color_format(&value), (8, 0));
     }
 
     #[test]
     fn av1_announce_stays_420_but_preserves_ten_bit_depth() {
         let mut value = context();
         value.session.extra["negotiatedStreamProfile"]["colorQuality"] = json!("10bit_444");
-        assert_eq!(announce_color_format(&value), (10, 1));
+        assert_eq!(announce_color_format(&value), (10, 0));
     }
 
     #[test]
     fn accepted_hevc_color_preserves_nvst_depth_and_chroma_enum_space() {
         for (color, format) in [
-            ("8bit_420", (8, 1)),
-            ("8bit_444", (8, 3)),
-            ("10bit_420", (10, 1)),
-            ("10bit_444", (10, 3)),
+            ("8bit_420", (8, 0)),
+            ("8bit_444", (8, 1)),
+            ("10bit_420", (10, 0)),
+            ("10bit_444", (10, 1)),
         ] {
             let mut value = context();
             value.settings["colorQuality"] = json!("8bit_420");
@@ -3269,15 +3269,15 @@ mod tests {
         let mut value = context();
         value.session.extra["negotiatedStreamProfile"]["codec"] = json!("H265");
         value.session.extra["negotiatedStreamProfile"]["colorQuality"] = json!("10bit_444");
-        assert_eq!(announce_color_format(&value), (10, 3));
+        assert_eq!(announce_color_format(&value), (10, 1));
     }
 
     #[test]
     fn full_announce_always_states_depth_chroma_and_hdr_explicitly() {
         for (codec, color, hdr, depth, chroma) in [
-            ("H265", "10bit_444", false, "10", "3"),
-            ("H265", "10bit_420", false, "10", "1"),
-            ("H264", "8bit_420", false, "8", "1"),
+            ("H265", "10bit_444", false, "10", "1"),
+            ("H265", "10bit_420", false, "10", "0"),
+            ("H264", "8bit_420", false, "8", "0"),
         ] {
             let mut value = context();
             value.session.extra["negotiatedStreamProfile"]["codec"] = json!(codec);
@@ -3398,7 +3398,7 @@ mod tests {
             );
             assert_eq!(
                 sdp_attribute(&announce, "video[0].chromaFormat"),
-                Some("1".to_owned())
+                Some("0".to_owned())
             );
             assert_eq!(
                 sdp_attribute(&announce, "vqos[0].bw.maximumBitrateKbps"),
