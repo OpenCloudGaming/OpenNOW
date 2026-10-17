@@ -12,6 +12,7 @@ class WaylandHdrOutput final : public QObject
 public:
     struct State {
         bool supported = false;
+        bool targetLuminanceProvided = false;
         float whiteNits = 203.0f;
         float minimumNits = 0.0f;
         float maximumNits = 0.0f;

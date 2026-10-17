@@ -6,11 +6,11 @@
 #include <atomic>
 #include <memory>
 #include <optional>
+#include "streaming/rendering/WaylandHdrOutput.h"
 #include "streaming/rendering/WindowsHdrDisplay.h"
 
 class QQuickWindow;
 class HdrOutputPass;
-class WaylandHdrOutput;
 
 class HdrOutput final : public QObject
 {
@@ -59,8 +59,10 @@ signals:
     void changed();
 
 private:
+    friend class HdrColorTest;
     void updateOutput();
     void publish(State state);
+    void publishDisplayState(State state, const WaylandHdrOutput::State &wayland);
     void requestChrome(bool required);
     void invalidateDisplay();
     QPointer<QQuickWindow> m_window;
