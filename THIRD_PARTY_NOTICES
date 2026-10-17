@@ -1,3 +1,13 @@
+Noto Sans KR
+============
+
+The bundled Noto Sans KR variable font is used for Hangul fallback on Windows.
+It is distributed under the SIL Open Font License, Version 1.1. The complete
+copyright and license text is embedded with the font in the application resources
+at :/qt/qml/OpenNOW/res/fonts/NotoSansKR-OFL.txt and retained in the source tree.
+
+https://github.com/google/fonts/tree/main/ofl/notosanskr
+
 Kenney Input Prompts
 ===================
 

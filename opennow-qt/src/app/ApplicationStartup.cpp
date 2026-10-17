@@ -112,6 +112,20 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
         if (QFontDatabase::addApplicationFont(fontPath) == -1)
             qWarning("Could not load bundled font %s", qUtf8Printable(fontPath));
     }
+#ifdef Q_OS_WIN
+    // Nunito has no Hangul glyphs. Prefer the bundled Korean face over the
+    // Windows system fallback, including when the shell language is not Korean.
+    const int koreanFontId = QFontDatabase::addApplicationFont(
+        u":/qt/qml/OpenNOW/res/fonts/NotoSansKR-Variable.ttf"_s);
+    if (koreanFontId == -1) {
+        qWarning("Could not load bundled Noto Sans KR font");
+    } else {
+        // The variable font also exposes named weight families (Thin, Black,
+        // etc.). Use the main family so Qt can match each requested weight.
+        QFontDatabase::addApplicationFallbackFontFamily(QChar::Script_Hangul,
+                                                       QStringLiteral("Noto Sans KR"));
+    }
+#endif
     QFont applicationFont(QStringLiteral("Nunito"));
     applicationFont.setHintingPreference(QFont::PreferNoHinting);
     applicationFont.setStyleStrategy(QFont::PreferAntialias);
