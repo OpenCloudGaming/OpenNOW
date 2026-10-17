@@ -58,9 +58,19 @@ QtObject {
         dismissed()
     }
 
+    // A location's own zone id, or one of the other zones listed in its zones.
+    function zone(zoneId) {
+        for (const location of locations) {
+            if (location.zoneId === zoneId) return location
+            const match = (location.zones || []).find(item => item.zoneId === zoneId)
+            if (match) return match
+        }
+        return null
+    }
+
     function choose(zoneId) {
         if (!opened || !eligible || !freeTier || !launchValid) return
-        const location = zoneId === "" ? null : locations.find(item => item.zoneId === zoneId)
+        const location = zoneId === "" ? null : zone(zoneId)
         if (zoneId !== "" && (!location || loading)) return
         opened = false
         cancelRequest()
