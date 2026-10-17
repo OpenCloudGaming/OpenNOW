@@ -440,6 +440,8 @@ qt_add_qml_module(opennow-qt
         res/onboarding/desktop-preview.png
         res/onboarding/console-preview.png
         res/fonts/Nunito-Variable.ttf
+        res/fonts/NotoSansKR-Variable.ttf
+        res/fonts/NotoSansKR-OFL.txt
         res/fonts/IBMPlexMono-Regular.ttf
         res/fonts/IBMPlexMono-Medium.ttf
         res/fonts/IBMPlexMono-Bold.ttf
