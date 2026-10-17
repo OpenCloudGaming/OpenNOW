@@ -1675,6 +1675,8 @@ fn build_create_body(app_id: &str, params: &Value, settings: &Value, device_id: 
         json!({"key":"wssignaling","value":"1"}),
         json!({"key":"SubSessionId","value":random_uuid()}),
         json!({"key":"surroundAudioInfo","value":"2"}),
+        json!({"key":"clientPhysicalResolution",
+            "value":json!({"horizontalPixels":width,"verticalPixels":height}).to_string()}),
     ];
     // requestedStreamingFeatures, field-for-field with the official Bifrost request
     // builder: reflex, bitDepth, cloudGsync, enabledL4S, mouseMovementFlags, trueHdr,
@@ -5957,16 +5959,45 @@ mod tests {
             "device-id",
         );
         let metadata = body["sessionRequestData"]["metaData"].as_array().unwrap();
-        assert_eq!(metadata.len(), 3);
+        assert_eq!(metadata.len(), 4);
         assert_eq!(metadata[0], json!({"key":"wssignaling","value":"1"}));
         assert_eq!(metadata[1]["key"], "SubSessionId");
         assert_eq!(metadata[2]["key"], "surroundAudioInfo");
+        assert_eq!(metadata[3]["key"], "clientPhysicalResolution");
         assert!(metadata.iter().all(|entry| {
             !matches!(
                 entry["key"].as_str(),
-                Some("networkType" | "ClientImeSupport" | "clientPhysicalResolution")
+                Some("networkType" | "ClientImeSupport")
             ) && !entry["key"].as_str().unwrap().starts_with("latency@")
         }));
+    }
+
+    #[test]
+    fn physical_resolution_matches_the_requested_stream_size() {
+        for (resolution, width, height) in [("1920x1080", 1920, 1080), ("2560x1440", 2560, 1440)] {
+            let body = build_create_body(
+                "12345",
+                &json!({}),
+                &json!({"resolution":resolution}),
+                "device-id",
+            );
+            let request = &body["sessionRequestData"];
+            let physical = request["metaData"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["key"] == "clientPhysicalResolution")
+                .and_then(|entry| entry["value"].as_str())
+                .map(|value| serde_json::from_str::<Value>(value).unwrap())
+                .unwrap();
+            assert_eq!(
+                physical,
+                json!({"horizontalPixels":width,"verticalPixels":height})
+            );
+            let monitor = &request["clientRequestMonitorSettings"][0];
+            assert_eq!(monitor["widthInPixels"], width);
+            assert_eq!(monitor["heightInPixels"], height);
+        }
     }
 
     #[test]
