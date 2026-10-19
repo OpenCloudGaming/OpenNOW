@@ -13,6 +13,7 @@ Rectangle {
     readonly property var activity: DesktopFriendsFormat.activity(friend, nowMs)
     readonly property var game: DesktopFriendsFormat.presence(friend).game || null
     signal activated()
+    signal contextMenuRequested(point position)
     width: parent ? parent.width : 0
     height: DesktopTokens.px(54)
     radius: DesktopTokens.px(12)
@@ -24,6 +25,10 @@ Rectangle {
 
     HoverHandler { id: hover }
     TapHandler { onTapped: row.activated() }
+    TapHandler {
+        acceptedButtons: Qt.RightButton
+        onTapped: eventPoint => row.contextMenuRequested(eventPoint.position)
+    }
 
     DesktopFriendsAvatar {
         id: avatar

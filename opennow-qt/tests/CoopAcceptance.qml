@@ -12,6 +12,8 @@ QtObject {
     property int key: 0
     property int modifiers: 0
     property point click: Qt.point(-1, -1)
+    property int clickButton: Qt.LeftButton
+    property int activations: 0
     property point hover: Qt.point(-1, -1)
     property string captureName: ""
     property bool startFocusedByDefault: false
@@ -35,6 +37,7 @@ QtObject {
         "c2-02a-link-browser": "BUP-1",
         "c2-02b-link-success": "C17-1",
         "c2-03-friends-list": "C6Y-1",
+        "c2-03b-friends-context-menu": "",
         "c2-04-lobby-invite-picker": "E6X-1",
         "c2-05a-invite-toast": "GLT-1",
         "c2-05c-invite-connecting": "H2M-1",
@@ -79,6 +82,8 @@ QtObject {
         "c-06-waiting-room": "5LZ-0",
         "c-06b-waiting-approval": "",
         "c-07-guest-overlay": "5ON-0",
+        "c-07e-guest-peek": "",
+        "c-07f-guest-pinned": "",
         "c-07b-guest-input": "",
         "c-07c-guest-panel-input": "",
         "c-07d-guest-controllers": "",
@@ -105,6 +110,7 @@ QtObject {
         "c2-02a-link-browser": ["friendsLinking"],
         "c2-02b-link-success": ["friendsLinked"],
         "c2-03-friends-list": ["friendsList", "friendsLobbyBanner", "friendsHoverCard"],
+        "c2-03b-friends-context-menu": ["friendsList"],
         "c2-04-lobby-invite-picker": ["coopLobby", "coopLobbyInviteStrip"],
         "c2-05a-invite-toast": ["coopInviteToast", "coopInvitesInbox"],
         "c2-05c-invite-connecting": ["coopConnecting"],
@@ -149,6 +155,8 @@ QtObject {
         "c-06-waiting-room": ["coopWaitingRoom"],
         "c-06b-waiting-approval": ["coopWaitingRoom", "coopWaitingTitle"],
         "c-07-guest-overlay": ["coopGuestOverlay"],
+        "c-07e-guest-peek": ["streamSurfaceHost"],
+        "c-07f-guest-pinned": ["coopGuestOverlay", "streamSurfaceHost"],
         "c-07b-guest-input": ["coopGuestOverlay", "streamSurfaceHost"],
         "c-07c-guest-panel-input": ["streamSurfaceHost"],
         "c-07d-guest-controllers": ["coopGuestOverlay", "coopGuestOverlayControllers", "coopGuestControllers"],
@@ -459,6 +467,8 @@ QtObject {
         startFocusedByDefault = false
         steps = ({})
         modifiers = 0
+        clickButton = Qt.LeftButton
+        activations = 0
         client.calls = []
         runtime.sent = []
         ShellStore.friends.link = null
@@ -720,6 +730,85 @@ QtObject {
             }))
         } else if (name === "c-06-waiting-room") {
             guestConnected(false)
+        } else if (name === "c2-03b-friends-context-menu") {
+            linkAs(mara)
+            seedFriends(true)
+            AppController.navigate("friends")
+            const center = item => item.mapToItem(null, item.width / 2, item.height / 2)
+            const menu = () => find(window.contentItem.parent, "friendsContextMenu")
+            const rightClick = objectName => {
+                const target = find(window.contentItem, objectName)
+                check(target !== null, objectName + " is listed")
+                if (objectName.indexOf("friendsRow-") === 0)
+                    target.activated.connect(() => activations += 1)
+                clickButton = Qt.RightButton
+                click = center(target)
+            }
+            steps = !checkScreens ? ({}) : ({
+                2: () => rightClick("friendsRow-" + jonas.id),
+                3: () => captureName = "c2-03b-right-click-row",
+                4: () => {
+                    check(menu() && menu().visible && menu().friend.user.id === jonas.id && activations === 0,
+                        "right-click on a row opens its friend's menu without activating the row")
+                    check(menu().activeFocus, "the context menu takes keyboard focus")
+                    key = Qt.Key_Escape
+                },
+                6: () => {
+                    check(!menu() || !menu().visible, "Esc closes the context menu")
+                    rightClick("friendsChip-" + pieter.id)
+                },
+                7: () => captureName = "c2-03b-right-click-chip",
+                8: () => {
+                    check(menu() && menu().visible && menu().friend.user.id === pieter.id, "right-click on an offline chip opens its menu")
+                    clickButton = Qt.LeftButton
+                    click = Qt.point(window.width / 2, 8)
+                },
+                10: () => {
+                    check(!menu() || !menu().visible, "a click outside closes the context menu")
+                    find(window.contentItem, "friendsList").forceActiveFocus()
+                    find(window.contentItem, "desktopFriendsScreen").selectedUserId = jonas.id
+                    key = Qt.Key_Menu
+                }
+            })
+        } else if (name === "c-07e-guest-peek" || name === "c-07f-guest-pinned") {
+            guestConnected(true)
+            const overlay = () => find(window.contentItem, "coopGuestOverlay")
+            const peekTimer = () => overlay().parent.data.find(item => item.objectName === "coopGuestPeekTimer")
+            const roster = extra => client.emit("coop.lobby.updated", {lobby: lobby("streaming",
+                [member(mara, 0), member(jonas, 1), member(lieke, 2)].concat(extra))})
+            if (name === "c-07e-guest-peek") {
+                steps = ({
+                    3: () => {
+                        check(overlay().revealed && peekTimer().running, "the panel peeks when the guest's stream starts")
+                        checkGuestInput(true, "a peeking panel")
+                        peekTimer().triggered()
+                    },
+                    4: () => {
+                        check(!overlay().revealed, "the peek hides after its 5 s timer")
+                        roster([member(sam, 3)])
+                    },
+                    5: () => {
+                        check(overlay().revealed && peekTimer().running, "a member joining brings the panel back for a peek")
+                        peekTimer().triggered()
+                    },
+                    6: () => {
+                        check(!overlay().revealed, "the join peek hides by itself")
+                        roster([])
+                    },
+                    7: () => check(overlay().revealed, "a member leaving brings the panel back for a peek")
+                })
+            } else {
+                steps = ({
+                    3: () => {
+                        modifiers = Qt.ControlModifier
+                        key = Qt.Key_G
+                    },
+                    7: () => {
+                        check(overlay().revealed && overlay().activeFocus, "Ctrl+G pins the panel with focus")
+                        peekTimer().triggered()
+                    }
+                })
+            }
         } else if (name === "c-07-guest-overlay" || name === "c-07b-guest-input") {
             guestConnected(true)
         } else if (name === "c-07c-guest-panel-input" || name === "c-07d-guest-controllers") {
@@ -918,6 +1007,20 @@ QtObject {
             check(coop.guestPhase === "waiting" && coop.guestPath === "relay", "connected guests wait for the host")
         if (name === "c-07-guest-overlay")
             check(coop.guestPhase === "playing" && AppController.route === "stream", "the host's start puts guests in the stream")
+        if (name === "c2-03b-friends-context-menu" && checkScreens) {
+            const menu = find(window.contentItem.parent, "friendsContextMenu")
+            check(menu && shown(menu) && menu.friend.user.id === jonas.id && menu.activeFocus,
+                "the Menu key opens the selected friend's menu with focus")
+            const ask = find(menu, "friendsManage_ask")
+            check(ask && shown(ask), "a friend in a joinable lobby offers Ask to join")
+            check(activations === 0, "no right-click activated a row")
+        }
+        if (name === "c-07e-guest-peek")
+            checkGuestInput(true, "a peek after a roster change")
+        if (name === "c-07f-guest-pinned") {
+            check(find(window.contentItem, "coopGuestOverlay").revealed, "a pinned panel is not auto-hidden")
+            checkGuestInput(false, "a pinned panel")
+        }
         if (name === "c-07b-guest-input" || name === "c-07c-guest-panel-input")
             checkGuestInput(true, name === "c-07b-guest-input" ? "a playing guest" : "a closed guest panel")
         if (name === "c-07d-guest-controllers") {

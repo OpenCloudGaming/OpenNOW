@@ -11,6 +11,8 @@ FocusScope {
     readonly property var coop: ShellStore.coop
     readonly property var stats: coop.guestStats
     readonly property bool relay: coop.guestPath === "relay"
+    property bool revealed: false
+    readonly property bool hovered: pingHover.hovered || barHover.hovered
     readonly property var pads: ControllerInput.availableControllers || []
     signal closeRequested()
     signal controllersRequested()
@@ -48,6 +50,7 @@ FocusScope {
         border.color: "#24FFFFFF"
         Accessible.role: Accessible.StaticText
         Accessible.name: qsTr("Ping %1 ms").arg(root.coop.msText(root.stats ? root.stats.totalMs : null))
+        HoverHandler { id: pingHover }
 
         Column {
             id: pingColumn
@@ -131,6 +134,7 @@ FocusScope {
         color: "#F00E1018"
         border.width: 1
         border.color: "#24FFFFFF"
+        HoverHandler { id: barHover }
 
         RowLayout {
             anchors.fill: parent

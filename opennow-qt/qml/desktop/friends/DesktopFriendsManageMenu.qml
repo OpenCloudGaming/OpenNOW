@@ -9,19 +9,44 @@ FocusScope {
     readonly property string name: ShellStore.friends.displayName(user)
     readonly property bool offline: ShellStore.friends.activity(friend) === "offline"
     readonly property bool canInvite: ShellStore.coop.isHost
+    readonly property var lobby: DesktopFriendsFormat.presence(friend).lobby || null
+    readonly property bool canAsk: lobby !== null && lobby.joinable !== false && !ShellStore.coop.isHost
+        && !DesktopFriendsFormat.inMyLobby(friend) && !ShellStore.coop.myAsks.some(item => item.lobbyId === lobby.id)
+    readonly property var entries: (canAsk ? [{key: "ask", glyph: "play", tone: "text", title: qsTr("Ask to join"),
+            body: qsTr("%1 gets a request to let you in").arg(name)}] : []).concat([
+        {key: "invite", glyph: "send", tone: "text", title: qsTr("Invite by Discord DM"),
+            body: !canInvite ? qsTr("Host a co-op lobby first")
+                : offline ? qsTr("%1 is offline").arg(name) : qsTr("The OpenNOW bot sends your invite")},
+        {key: "remove", glyph: "userX", tone: "text", title: qsTr("Remove friend"),
+            body: armed === "remove" ? qsTr("Select again to remove %1").arg(name)
+                : qsTr("You both disappear from each other’s list")},
+        {key: "block", glyph: "ban", tone: "red", title: qsTr("Block"),
+            body: armed === "block" ? qsTr("Select again to block %1").arg(name)
+                : qsTr("They can’t see you, invite you or send requests. They aren’t told.")}
+    ])
     signal closeRequested()
-    width: DesktopTokens.px(290)
-    height: frame.height
+    implicitWidth: DesktopTokens.px(290)
+    implicitHeight: frame.height
     onVisibleChanged: armed = ""
     Accessible.role: Accessible.PopupMenu
     Accessible.name: qsTr("Manage %1").arg(name)
 
     function focusFirst() {
-        Qt.callLater(() => items.itemAt(canInvite ? 0 : 1) && items.itemAt(canInvite ? 0 : 1).forceItemFocus())
+        Qt.callLater(() => {
+            const first = entries.findIndex(entry => entry.key !== "invite" || canInvite)
+            if (items.itemAt(first))
+                items.itemAt(first).forceItemFocus()
+        })
     }
     function activate(key) {
         if (!user)
             return
+        if (key === "ask") {
+            if (canAsk)
+                ShellStore.coop.askToJoin(friend)
+            closeRequested()
+            return
+        }
         if (key === "invite") {
             if (!canInvite)
                 return
@@ -55,17 +80,7 @@ FocusScope {
             spacing: DesktopTokens.px(2)
             Repeater {
                 id: items
-                model: [
-                    {key: "invite", glyph: "send", tone: "text", title: qsTr("Invite by Discord DM"),
-                        body: !menu.canInvite ? qsTr("Host a co-op lobby first")
-                            : menu.offline ? qsTr("%1 is offline").arg(menu.name) : qsTr("The OpenNOW bot sends your invite")},
-                    {key: "remove", glyph: "userX", tone: "text", title: qsTr("Remove friend"),
-                        body: menu.armed === "remove" ? qsTr("Select again to remove %1").arg(menu.name)
-                            : qsTr("You both disappear from each other’s list")},
-                    {key: "block", glyph: "ban", tone: "red", title: qsTr("Block"),
-                        body: menu.armed === "block" ? qsTr("Select again to block %1").arg(menu.name)
-                            : qsTr("They can’t see you, invite you or send requests. They aren’t told.")}
-                ]
+                model: menu.entries
                 delegate: Column {
                     id: entry
                     required property var modelData
@@ -100,8 +115,8 @@ FocusScope {
                         Keys.onReturnPressed: menu.activate(entry.modelData.key)
                         Keys.onEnterPressed: menu.activate(entry.modelData.key)
                         Keys.onSpacePressed: menu.activate(entry.modelData.key)
-                        Keys.onUpPressed: items.itemAt((entry.index + 2) % 3).forceItemFocus()
-                        Keys.onDownPressed: items.itemAt((entry.index + 1) % 3).forceItemFocus()
+                        Keys.onUpPressed: items.itemAt((entry.index + items.count - 1) % items.count).forceItemFocus()
+                        Keys.onDownPressed: items.itemAt((entry.index + 1) % items.count).forceItemFocus()
                         DesktopFriendsIcon {
                             x: DesktopTokens.px(10); y: DesktopTokens.px(9) + DesktopTokens.px(1)
                             width: DesktopTokens.px(16); height: width

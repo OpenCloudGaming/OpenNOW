@@ -18,6 +18,26 @@ FocusScope {
     readonly property var ordered: sections.inCoop.concat(sections.playing, sections.online, sections.offline)
     readonly property var cardFriend: friends.friendById(screen.selectedUserId)
     property real cardRowY: 0
+    property string contextUserId: ""
+    readonly property var contextFriend: friends.friendById(contextUserId)
+
+    // Right-click, the Menu key or Shift+F10: the manage menu for that friend, at the pointer or the row.
+    function openContextMenu(userId, item, position) {
+        screen.selectedUserId = userId
+        const point = item.mapToItem(page, position.x, position.y)
+        contextUserId = userId
+        Qt.callLater(() => {
+            const margin = DesktopTokens.px(12)
+            contextPopup.x = Math.max(margin, Math.min(page.width - contextPopup.width - margin, point.x))
+            contextPopup.y = point.y + contextPopup.height <= page.height - margin ? point.y
+                : Math.max(margin, point.y - contextPopup.height)
+        })
+        contextMenu.focusFirst()
+    }
+    function closeContextMenu() {
+        contextUserId = ""
+        page.forceActiveFocus()
+    }
     Accessible.role: Accessible.List
     Accessible.name: qsTr("Friends")
 
@@ -27,6 +47,14 @@ FocusScope {
         const index = ordered.findIndex(friend => friend.user.id === screen.selectedUserId)
         const next = index < 0 ? (step > 0 ? 0 : ordered.length - 1) : Math.max(0, Math.min(ordered.length - 1, index + step))
         screen.selectedUserId = ordered[next].user.id
+    }
+    Keys.onPressed: event => {
+        if ((event.key === Qt.Key_Menu || (event.key === Qt.Key_F10 && (event.modifiers & Qt.ShiftModifier)))
+                && page.cardFriend) {
+            page.openContextMenu(page.cardFriend.user.id, page, Qt.point(column.x + DesktopTokens.px(64),
+                page.cardRowY + DesktopTokens.px(48)))
+            event.accepted = true
+        }
     }
     Keys.onUpPressed: move(-1)
     Keys.onDownPressed: move(1)
@@ -153,6 +181,7 @@ FocusScope {
                         delegate: DesktopFriendsRow {
                             id: row
                             required property var modelData
+                            objectName: "friendsRow-" + modelData.user.id
                             friend: modelData
                             nowMs: page.screen.nowMs
                             selected: page.screen.selectedUserId === modelData.user.id
@@ -161,6 +190,7 @@ FocusScope {
                                 page.screen.selectedUserId = modelData.user.id
                                 page.forceActiveFocus()
                             }
+                            onContextMenuRequested: position => page.openContextMenu(modelData.user.id, row, position)
                             Binding {
                                 when: row.selected
                                 target: page
@@ -192,6 +222,7 @@ FocusScope {
                         delegate: Rectangle {
                             id: chip
                             required property var modelData
+                            objectName: "friendsChip-" + modelData.user.id
                             readonly property bool selected: page.screen.selectedUserId === modelData.user.id
                             width: chipRow.implicitWidth + DesktopTokens.px(8 + 14)
                             height: DesktopTokens.px(44)
@@ -208,6 +239,10 @@ FocusScope {
                                     page.screen.selectedUserId = chip.modelData.user.id
                                     page.forceActiveFocus()
                                 }
+                            }
+                            TapHandler {
+                                acceptedButtons: Qt.RightButton
+                                onTapped: eventPoint => page.openContextMenu(chip.modelData.user.id, chip, eventPoint.position)
                             }
                             Binding {
                                 when: chip.selected
@@ -300,5 +335,23 @@ FocusScope {
         y: Math.max(DesktopTokens.px(12), Math.min(page.height - height - DesktopTokens.px(12),
             docked ? page.cardRowY - DesktopTokens.px(14) : floatingY))
         onManageRequested: userId => page.screen.openManage(userId)
+    }
+
+    Popup {
+        id: contextPopup
+        visible: page.contextFriend !== null
+        padding: 0
+        margins: DesktopTokens.px(12)
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        background: null
+        onClosed: if (page.contextUserId !== "") page.closeContextMenu()
+        contentItem: DesktopFriendsManageMenu {
+            id: contextMenu
+            objectName: "friendsContextMenu"
+            friend: page.contextFriend
+            focus: true
+            onCloseRequested: page.closeContextMenu()
+        }
     }
 }

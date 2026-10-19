@@ -20,9 +20,10 @@ Item {
         onTriggered: root.now = Date.now()
     }
     Timer {
-        id: joiningTimeout
+        id: hostNoticeTimeout
+        objectName: "coopHostNoticeTimeout"
         interval: 8000
-        running: root.coop.hostNotice !== null && root.coop.hostNotice.kind === "joining"
+        running: root.coop.hostNotice !== null
         onTriggered: root.coop.dismissHostNotice()
     }
 

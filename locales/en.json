@@ -4920,6 +4920,7 @@
     "noController": "No controller",
     "1Controller": "1 controller",
     "nControllers": "%1 controllers",
-    "deadZonesAndVibration": "Dead zones and vibration"
+    "deadZonesAndVibration": "Dead zones and vibration",
+    "nGetsARequestToLetYou": "%1 gets a request to let you in"
   }
 }

@@ -72,14 +72,16 @@ int AcceptanceSession::startCoopWorkload()
                     && clickValue.toPointF().x() >= 0) {
                 const auto click = clickValue.toPointF();
                 fixture->setProperty("click", QPointF(-1, -1));
+                const auto button = fixture->property("clickButton").toInt() == Qt::RightButton
+                    ? Qt::RightButton : Qt::LeftButton;
                 const auto global = window->mapToGlobal(click);
                 using Delivery = QWindowSystemInterface::SynchronousDelivery;
                 QWindowSystemInterface::handleMouseEvent<Delivery>(window, click, global,
                     Qt::NoButton, Qt::NoButton, QEvent::MouseMove);
                 QWindowSystemInterface::handleMouseEvent<Delivery>(window, click, global,
-                    Qt::LeftButton, Qt::LeftButton, QEvent::MouseButtonPress);
+                    button, button, QEvent::MouseButtonPress);
                 QWindowSystemInterface::handleMouseEvent<Delivery>(window, click, global,
-                    Qt::NoButton, Qt::LeftButton, QEvent::MouseButtonRelease);
+                    Qt::NoButton, button, QEvent::MouseButtonRelease);
             }
             if (const auto hoverValue = fixture->property("hover"); hoverValue.isValid()
                     && hoverValue.toPointF().x() >= 0) {

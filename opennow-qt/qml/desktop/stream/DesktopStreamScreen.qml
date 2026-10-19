@@ -34,8 +34,14 @@ FocusScope {
     readonly property bool streaming: root.status === "streaming"
     readonly property bool coopGuest: ShellStore.coop.role === "guest"
         && (ShellStore.coop.guestPhase === "playing" || ShellStore.coop.guestPhase === "reconnecting")
-    property bool coopPanelDismissed: false
+    // Guest co-op panel: a brief peek (no focus, gameplay keeps input) or pinned by Ctrl+G (focus, shell input).
+    property bool coopPanelPinned: false
+    property bool coopPanelPeeking: false
     property bool coopControllersOpen: false
+    readonly property bool coopPanelShown: ShellStore.coop.guestStreaming
+        && (coopPanelPinned || coopPanelPeeking || coopControllersOpen)
+    readonly property string coopRoster: ShellStore.coop.guestStreaming
+        ? ShellStore.coop.members.map(member => member.userId + ":" + member.slot).join(",") : ""
     readonly property bool coopPanelFocused: coopGuestOverlay.activeFocus || coopControllers.activeFocus
     // A guest has no GFN session; its presentation runs on the co-op pipeline instead.
     readonly property bool presentationRunning: root.streaming || root.coopGuest
@@ -163,8 +169,9 @@ FocusScope {
     function toggleCoopPanel() {
         if (!ShellStore.coop.guestStreaming)
             return
-        if (root.coopPanelDismissed || !coopGuestOverlay.activeFocus) {
-            root.coopPanelDismissed = false
+        if (!root.coopPanelPinned || !root.coopPanelFocused) {
+            root.coopPanelPinned = true
+            root.coopPanelPeeking = false
             Qt.callLater(coopGuestOverlay.focusPanel)
         } else {
             root.closeCoopPanel()
@@ -172,8 +179,27 @@ FocusScope {
     }
     function closeCoopPanel() {
         root.coopControllersOpen = false
-        root.coopPanelDismissed = true
+        root.coopPanelPinned = false
+        root.coopPanelPeeking = false
         Qt.callLater(root.restoreStreamFocus)
+    }
+    function peekCoopPanel() {
+        if (!ShellStore.coop.guestStreaming || root.coopPanelPinned)
+            return
+        root.coopPanelPeeking = true
+        coopPeekTimer.restart()
+    }
+    onCoopRosterChanged: peekCoopPanel()
+    Timer {
+        id: coopPeekTimer
+        objectName: "coopGuestPeekTimer"
+        interval: 5000
+        onTriggered: {
+            if (coopGuestOverlay.hovered || root.coopPanelFocused || root.coopControllersOpen)
+                restart()
+            else
+                root.coopPanelPeeking = false
+        }
     }
     function openCoopControllers() {
         root.coopControllersOpen = true
@@ -185,8 +211,10 @@ FocusScope {
     Connections {
         target: ShellStore.coop
         function onGuestStreamingChanged() {
-            root.coopPanelDismissed = false
+            root.coopPanelPinned = false
+            root.coopPanelPeeking = false
             root.coopControllersOpen = false
+            root.peekCoopPanel()
         }
     }
     Binding {
@@ -208,7 +236,10 @@ FocusScope {
         anchors.fill: parent
         layer.enabled: HdrOutput.chromeRequired
         layer.effect: HdrChromeEffect {}
-        visible: root.visible && ShellStore.coop.guestStreaming && !root.coopPanelDismissed
+        revealed: root.coopPanelShown
+        opacity: revealed ? 1 : 0
+        visible: root.visible && opacity > 0
+        Behavior on opacity { NumberAnimation { duration: DesktopTokens.motionDuration; easing.type: Easing.OutCubic } }
         z: 6
         onCloseRequested: root.closeCoopPanel()
         onControllersRequested: root.openCoopControllers()
