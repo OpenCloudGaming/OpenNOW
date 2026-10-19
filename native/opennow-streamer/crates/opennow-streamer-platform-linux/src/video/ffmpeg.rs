@@ -338,13 +338,37 @@ impl FfmpegDecoder {
         mode: FfmpegMode,
     ) -> std::result::Result<String, String> {
         let format = StreamFormat::video_default(1920, 1080).map_err(|error| error.to_string())?;
-        let decoder = Self::open(codec, format, mode).map_err(|error| error.to_string())?;
+        let mut decoder = Self::open(codec, format, mode).map_err(|error| error.to_string())?;
+        if mode == FfmpegMode::Cuda {
+            decoder.probe_decode().map_err(|error| error.to_string())?;
+        }
         Ok(format!(
             "{} {} via libavcodec {}",
             decoder.mode.label(),
             decoder.codec.label(),
             ffmpeg::codec::version()
         ))
+    }
+
+    fn probe_decode(&mut self) -> Result<()> {
+        let packet = EncodedVideoFrame::new(super::probe_samples::keyframe(self.codec), 1, true)?;
+        let mut frames = self.decode(&packet)?;
+        frames.extend(self.flush()?);
+        if frames.len() != 1
+            || frames[0].format.width != 1920
+            || frames[0].format.height != 1080
+            || frames[0].format.pixel_format != PixelFormat::Nv12
+        {
+            return Err(Error::unavailable(
+                Subsystem::Ffmpeg,
+                format!(
+                    "{} {} probe did not decode one 1920x1080 NV12 frame",
+                    self.mode.label(),
+                    self.codec.label()
+                ),
+            ));
+        }
+        Ok(())
     }
 
     fn drain(&mut self, draining: bool) -> Result<Vec<DecodedVideoFrame>> {
@@ -1553,6 +1577,45 @@ mod tests {
     use std::process::Command;
 
     use super::*;
+
+    #[test]
+    fn codec_probe_rejects_a_decoder_that_only_opens() {
+        initialize_ffmpeg().unwrap();
+        let native_av1 = ffmpeg::decoder::find_by_name("av1").unwrap();
+        let opened = codec::Context::new_with_codec(native_av1)
+            .decoder()
+            .open_as(native_av1)
+            .unwrap()
+            .video()
+            .unwrap();
+        let format = StreamFormat::video_default(1920, 1080).unwrap();
+        let mut decoder =
+            FfmpegDecoder::open(VideoCodec::H264, format, FfmpegMode::Software).unwrap();
+        decoder.decoder = opened;
+        decoder.codec = VideoCodec::Av1;
+        let error = decoder.probe_decode().unwrap_err().to_string();
+        assert!(
+            error.contains("packet submission") || error.contains("frame receive"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn codec_probe_samples_decode_with_available_software_decoders() {
+        initialize_ffmpeg().unwrap();
+        for codec in [VideoCodec::H264, VideoCodec::H265, VideoCodec::Av1] {
+            if codec == VideoCodec::Av1
+                && !["libdav1d", "libaom-av1"]
+                    .into_iter()
+                    .any(|name| ffmpeg::decoder::find_by_name(name).is_some())
+            {
+                continue;
+            }
+            let format = StreamFormat::video_default(1920, 1080).unwrap();
+            let mut decoder = FfmpegDecoder::open(codec, format, FfmpegMode::Software).unwrap();
+            decoder.probe_decode().unwrap();
+        }
+    }
 
     #[test]
     fn ffmpeg_log_lines_reach_decoder_errors_and_are_bounded() {
