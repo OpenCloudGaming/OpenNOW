@@ -185,6 +185,10 @@ FocusScope {
                                 color: DesktopFriendsFormat.avatarInk
                                 font.weight: Font.Black
                             }
+                            DesktopAvatarPhoto {
+                                anchors.fill: parent
+                                url: page.account ? String(page.account.avatarUrl || "") : ""
+                            }
                         }
                     }
                     DesktopFriendsLabel {

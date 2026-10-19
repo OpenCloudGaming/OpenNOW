@@ -26,6 +26,11 @@ Item {
             color: DesktopFriendsFormat.avatarInk
             font.weight: Font.Black
         }
+        DesktopAvatarPhoto {
+            anchors.fill: parent
+            url: avatar.user ? String(avatar.user.avatarUrl || "") : ""
+            opacity: avatar.dimmed ? 0.5 : 1
+        }
     }
     Rectangle {
         visible: avatar.showPresence

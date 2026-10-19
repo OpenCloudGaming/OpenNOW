@@ -18,6 +18,8 @@ QtObject {
     property string captureName: ""
     property bool startFocusedByDefault: false
     property int launches: 0
+    // userId -> avatarUrl for the avatar scenes; people not listed have no picture.
+    property var avatarUrls: ({})
     property var applied: []
     property string invitedFromStream: ""
     // Scene steps keyed by settle tick, for input that has to land after the screen has focus.
@@ -41,7 +43,10 @@ QtObject {
         "c2-02b-link-success": "C17-1",
         "c2-03-friends-list": "C6Y-1",
         "c2-03b-friends-context-menu": "",
+        "c2-03c-friends-avatars": "",
         "c2-04-lobby-invite-picker": "E6X-1",
+        "c-03h-lobby-avatars": "",
+        "c2-08c-settings-discord-avatar": "",
         "c2-05a-invite-toast": "GLT-1",
         "c2-05c-invite-connecting": "H2M-1",
         "c2-06-ask-to-join": "H3H-1",
@@ -127,6 +132,9 @@ QtObject {
         "c2-02a-link-browser": ["friendsLinking"],
         "c2-02b-link-success": ["friendsLinked"],
         "c2-03-friends-list": ["friendsList", "friendsLobbyBanner", "friendsHoverCard"],
+        "c2-03c-friends-avatars": ["friendsList"],
+        "c-03h-lobby-avatars": ["coopLobby"],
+        "c2-08c-settings-discord-avatar": [],
         "c2-03b-friends-context-menu": ["friendsList"],
         "c2-04-lobby-invite-picker": ["coopLobby", "coopLobbyInviteStrip"],
         "c2-05a-invite-toast": ["coopInviteToast", "coopInvitesInbox"],
@@ -295,8 +303,11 @@ QtObject {
         return {status: "offline", activity: null, game: null, since: null, queuePosition: null, lobby: null,
             lastSeenAt: iso(-agoMs)}
     }
+    function pictured(person) {
+        return avatarUrls[person.id] !== undefined ? Object.assign({}, person, {avatarUrl: avatarUrls[person.id]}) : person
+    }
     function friendsSnapshot(withRequests) {
-        const friend = (person, presenceValue, sinceDays) => ({user: person, presence: presenceValue, since: iso(-sinceDays * 86400000)})
+        const friend = (person, presenceValue, sinceDays) => ({user: pictured(person), presence: presenceValue, since: iso(-sinceDays * 86400000)})
         return {
             friends: [
                 friend(noor, presence("in_lobby", {game: stardew, since: iso(-1800000), lobby: {id: "lob_noor", size: 2, max: 4, joinable: true}}), 300),
@@ -320,7 +331,7 @@ QtObject {
         }
     }
     function member(person, slotNumber, anonymous) {
-        return {userId: person.id, displayName: person.displayName, avatarUrl: null, slot: slotNumber,
+        return {userId: person.id, displayName: person.displayName, avatarUrl: pictured(person).avatarUrl, slot: slotNumber,
             anonymous: Boolean(anonymous), joinedAt: iso(-600000 + slotNumber * 1000)}
     }
     function lobby(state, members, maxGuests) {
@@ -328,7 +339,7 @@ QtObject {
             codeExpiresAt: iso(1800000), game: bg3, maxGuests: maxGuests || 3, members: members, state: state || "open"}
     }
     function invite(id, from, to, state, ageMs, dm) {
-        return {id: id, lobbyId: from.id === mara.id ? "lob_mara" : "lob_" + from.username, from: from, to: to,
+        return {id: id, lobbyId: from.id === mara.id ? "lob_mara" : "lob_" + from.username, from: pictured(from), to: pictured(to),
             game: from.id === noor.id ? stardew : bg3, state: state, createdAt: iso(-ageMs), expiresAt: iso(600000 - ageMs),
             dm: dm || "skipped_disabled"}
     }
@@ -396,7 +407,7 @@ QtObject {
 
     function linkAs(person) {
         client.emit("social.account.changed", {connection: "connected", guest: null,
-            account: {linked: true, user: person, settings: settingsDefaults}})
+            account: {linked: true, user: pictured(person), settings: settingsDefaults}})
     }
     function seedFriends(withRequests) {
         client.emit("social.friends.changed", friendsSnapshot(withRequests))
@@ -512,12 +523,15 @@ QtObject {
         startFocusedByDefault = false
         launches = 0
         applied = []
+        avatarUrls = ({})
+        settleTicks = 14
         invitedFromStream = ""
         coop.localDecoders = null
         coop.codecRestart = null
         coop.codecPromptsDismissed = []
         coop.setPreference("preset", "same")
         ShellStore.streamStopRequestId = ""
+        ShellStore.artworkUrls = ({})
         steps = ({})
         modifiers = 0
         clickButton = Qt.LeftButton
@@ -573,6 +587,34 @@ QtObject {
             client.emit("social.account.changed", {connection: "connected", guest: null,
                 account: {linked: true, user: mara, settings: settingsDefaults}, link: {loginId: "login_fixture", status: "complete"}})
             client.emit("social.friends.changed", {friends: [], incoming: [], outgoing: [], blocked: []})
+        } else if (name === "c2-03c-friends-avatars" || name === "c-03h-lobby-avatars" || name === "c2-08c-settings-discord-avatar") {
+            const cdn = index => "https://cdn.discordapp.com/avatars/10000" + index + "/a1b2c3d4e5f6" + index + ".png?size=4096"
+            avatarUrls = ({[mara.id]: cdn(0), [jonas.id]: cdn(1), [noor.id]: cdn(2), [ravi.id]: cdn(3), [tess.id]: cdn(4),
+                [mika.id]: cdn(5), [elif.id]: cdn(0), [pieter.id]: cdn(1), [anouk.id]: cdn(2), [joris.id]: cdn(3),
+                [sam.id]: "https://example.com/avatars/sam.png", [lieke.id]: "https://cdn.discordapp.com/avatars/0/unreachable.png", [daan.id]: null})
+            settleTicks = 40
+            // The core's artwork cache resolves a Discord picture to a local file; lieke's never resolves.
+            const resolve = () => {
+                const urls = Object.assign({}, ShellStore.artworkUrls)
+                for (const photo of avatarPhotos(window.contentItem)) {
+                    const index = /^https:\/\/cdn\.discordapp\.com\/avatars\/10000(\d)\//.exec(photo.source)
+                    if (index)
+                        urls[photo.source] = "qrc:/acceptance/avatars/avatar" + index[1] + ".jpg"
+                }
+                ShellStore.artworkUrls = urls
+            }
+            steps = ({4: resolve, 8: resolve, 14: resolve, 20: resolve})
+            linkAs(mara)
+            seedFriends(false)
+            if (name === "c2-08c-settings-discord-avatar") {
+                AppController.navigate("settings-account")
+            } else if (name === "c2-03c-friends-avatars") {
+                Qt.callLater(() => AppController.navigate("friends"))
+            } else {
+                fakeStream()
+                host([member(mara, 0), member(jonas, 1), member(lieke, 2)], [invite("inv_tess", mara, tess, "pending", 24000, "sent")])
+                Qt.callLater(() => AppController.showOverlay("coop-lobby"))
+            }
         } else if (name === "c2-03-friends-list") {
             linkAs(mara)
             seedFriends(true)
@@ -1092,6 +1134,17 @@ QtObject {
     }
 
     // Scene-specific state assertions on top of the visible screens.
+    // Every avatar picture on screen: the DesktopAvatarPhoto items under item.
+    function avatarPhotos(item, found) {
+        const result = found || []
+        if (!item)
+            return result
+        if (item.objectName === "avatarPhoto" && item.parent && item.parent.parent && item.parent.parent.url !== undefined)
+            result.push(item.parent.parent)
+        for (const child of item.children || [])
+            avatarPhotos(child, result)
+        return result
+    }
     function reports(event) {
         return client.calls.filter(call => call.method === "coop.report" && call.params.event === event).map(call => call.params)
     }
@@ -1326,6 +1379,26 @@ QtObject {
             check(creates.length === 1 && creates[0].params.maxGuests === 3 && JSON.stringify(invites) === JSON.stringify([jonas.id, lieke.id].sort()),
                 "the relaunch re-creates the lobby and invites its players: " + JSON.stringify(invites))
             check(coop.codecRestart === null && coop.restoreCodec === "auto", "the restart is spent and the host's codec comes back after co-op")
+        }
+        if ((name === "c2-03c-friends-avatars" || name === "c-03h-lobby-avatars" || name === "c2-08c-settings-discord-avatar") && checkScreens) {
+            const photos = avatarPhotos(window.contentItem).filter(photo => shown(photo.parent))
+            const of = person => photos.filter(photo => photo.url === avatarUrls[person.id])
+            const initialShown = photo => (photo.parent.children || []).some(child => child !== photo && child.visible && /^[A-Z]$/.test(String(child.text || "")))
+            const own = of(mara)
+            check(own.length > 0 && own.every(photo => photo.loaded && photo.source === "https://cdn.discordapp.com/avatars/100000/a1b2c3d4e5f60.png?size="
+                + photo.requestSize && photo.requestSize >= photo.pixels && photo.requestSize < 2 * photo.pixels
+                && (photo.requestSize & (photo.requestSize - 1)) === 0 && photo.pixels >= Math.ceil(photo.width)),
+                name + ": your Discord picture shows, requested at the next power of two: " + own.map(photo => photo.source + " " + photo.pixels + " " + photo.loaded))
+            if (name !== "c2-08c-settings-discord-avatar") {
+                const unreachable = of(lieke)
+                check(unreachable.length > 0 && unreachable.every(photo => photo.source !== "" && !photo.loaded && initialShown(photo)),
+                    name + ": an unreachable picture keeps the initial")
+            }
+            if (name === "c2-03c-friends-avatars") {
+                const foreign = of(sam)
+                check(foreign.length > 0 && foreign.every(photo => photo.source === "" && !photo.loaded && initialShown(photo)),
+                    "a picture outside cdn.discordapp.com is never loaded")
+            }
         }
         if (name === "c-08k-codec-not-now")
             check(coop.codecPrompt === null && launches === 0 && !client.calls.some(call => call.method === "coop.lobby.close"),

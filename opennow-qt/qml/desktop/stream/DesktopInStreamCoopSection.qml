@@ -390,6 +390,10 @@ FocusScope {
                                 font.pixelSize: 9
                                 font.weight: Font.Black
                             }
+                            DesktopAvatarPhoto {
+                                anchors.fill: parent
+                                url: row.invite && row.invite.to ? String(row.invite.to.avatarUrl || "") : ""
+                            }
                         }
                         Text {
                             anchors.verticalCenter: parent.verticalCenter

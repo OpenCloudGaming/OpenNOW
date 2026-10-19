@@ -279,6 +279,7 @@ qt_add_qml_module(opennow-qt
         qml/desktop/auth/DesktopAccountPicker.qml
         qml/desktop/auth/DesktopAccountTile.qml
         qml/desktop/auth/DesktopSignInScreen.qml
+        qml/desktop/components/DesktopAvatarPhoto.qml
         qml/desktop/components/DesktopBackdrop.qml
         qml/desktop/components/DesktopBrandLockup.qml
         qml/desktop/components/DesktopButton.qml

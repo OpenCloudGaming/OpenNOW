@@ -354,7 +354,8 @@ if(BUILD_TESTING)
     endforeach()
     # Co-op sessions and Friends (Variation C2): every C2 scene through a mock core and streamer.
     qt_add_resources(opennow-qt "coop-acceptance"
-        PREFIX "/acceptance" BASE tests FILES tests/CoopAcceptance.qml)
+        PREFIX "/acceptance" BASE tests FILES tests/CoopAcceptance.qml tests/avatars/avatar0.jpg tests/avatars/avatar1.jpg
+            tests/avatars/avatar2.jpg tests/avatars/avatar3.jpg tests/avatars/avatar4.jpg tests/avatars/avatar5.jpg)
     foreach(mode windowed fullscreen)
         set(coop_mode_args)
         if(mode STREQUAL "fullscreen")

@@ -449,6 +449,13 @@ FocusScope {
                     font.pixelSize: 18
                     font.weight: Font.Black
                 }
+                DesktopAvatarPhoto {
+                    objectName: "coopLobbyAvatar-" + card.slotNumber
+                    anchors.fill: parent
+                    url: card.closedLook ? "" : card.kind === "invited" ? String(card.invite.to.avatarUrl || "")
+                        : card.member ? String(card.member.avatarUrl || "")
+                        : card.kind === "host" && root.coop.hostMember ? String(root.coop.hostMember.avatarUrl || "") : ""
+                }
                 DesktopCoopHostIcon {
                     visible: card.closedLook
                     anchors.centerIn: parent

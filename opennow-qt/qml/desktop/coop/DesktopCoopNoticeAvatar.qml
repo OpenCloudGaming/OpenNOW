@@ -20,6 +20,10 @@ Rectangle {
         font.pixelSize: Math.round(root.width * 0.42)
         font.weight: Font.Black
     }
+    DesktopAvatarPhoto {
+        anchors.fill: parent
+        url: root.user ? String(root.user.avatarUrl || "") : ""
+    }
     Rectangle {
         visible: root.online
         readonly property int ring: root.width >= 40 ? 3 : 2

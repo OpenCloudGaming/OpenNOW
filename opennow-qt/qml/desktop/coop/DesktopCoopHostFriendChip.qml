@@ -101,6 +101,10 @@ AbstractButton {
                     font.pixelSize: 15
                     font.weight: Font.Black
                 }
+                DesktopAvatarPhoto {
+                    anchors.fill: parent
+                    url: root.user ? String(root.user.avatarUrl || "") : ""
+                }
             }
             Rectangle {
                 x: parent.width - 10
