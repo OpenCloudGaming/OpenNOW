@@ -201,15 +201,15 @@ struct Run {
     frames: usize,
 }
 
-fn run(coturn: &Coturn, url: &str, secret: &str) -> Run {
+fn run(host_ice: IceConfig, guest_ice: IceConfig, net: NetConfig) -> Run {
     let backend = Arc::new(Backend::default());
     let (tap, tap_receiver) = sync_channel::<CoopRtpPacket>(4_096);
     let (host_events, host_receiver) = sink();
     let host = CoopHost::start(
         HostConfig {
-            ice: ice(url, SECRET),
+            ice: host_ice,
             max_guests: 3,
-            net: relay_net(coturn),
+            net: net.clone(),
             stream: description(),
         },
         tap_receiver,
@@ -222,8 +222,8 @@ fn run(coturn: &Coturn, url: &str, secret: &str) -> Run {
     let (guest_events, guest_receiver) = sink();
     let mut guest = CoopGuest::start(
         GuestConfig {
-            ice: ice(url, secret),
-            net: relay_net(coturn),
+            ice: guest_ice,
+            net,
             host_peer_id: "host".to_owned(),
             slot: 1,
         },
@@ -326,7 +326,7 @@ fn relay_carries_media_over_udp_tcp_and_tls_turn() {
         format!("turn:127.0.0.1:{PORT}?transport=tcp"),
         format!("turns:127.0.0.1:{TLS_PORT}?transport=tcp"),
     ] {
-        let result = run(&coturn, &url, SECRET);
+        let result = run(ice(&url, SECRET), ice(&url, SECRET), relay_net(&coturn));
         let states: Vec<&str> = result
             .guest_states
             .iter()
@@ -376,10 +376,11 @@ fn relay_carries_media_over_udp_tcp_and_tls_turn() {
 #[ignore = "needs Docker and the coturn image"]
 fn rejected_turn_credentials_end_the_guest_with_a_refresh_reason() {
     let coturn = Coturn::start();
+    let url = format!("turn:127.0.0.1:{PORT}?transport=udp");
     let result = run(
-        &coturn,
-        &format!("turn:127.0.0.1:{PORT}?transport=udp"),
-        "wrong-secret",
+        ice(&url, SECRET),
+        ice(&url, "wrong-secret"),
+        relay_net(&coturn),
     );
     let ended = result
         .guest_states
@@ -389,4 +390,71 @@ fn rejected_turn_credentials_end_the_guest_with_a_refresh_reason() {
     println!("ended: {ended}");
     assert_eq!(ended["reason"], "relay-credentials-rejected");
     assert_eq!(result.frames, 0);
+}
+
+/// The live relay: 'OPENNOW_COOP_LIVE_ICE' names a file holding a GET /v1/ice-servers
+/// response. Both sides run without host or server-reflexive candidates, so the only pairs
+/// are relayed and media must cross the live TURN server over UDP, then TCP, then TLS.
+#[test]
+#[ignore = "needs a live relay and fresh TURN credentials in OPENNOW_COOP_LIVE_ICE"]
+fn live_relay_carries_media_over_udp_tcp_and_tls_turn() {
+    let path = std::env::var("OPENNOW_COOP_LIVE_ICE").expect("OPENNOW_COOP_LIVE_ICE");
+    let response: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let relays = &response["relays"];
+    let turn = response["iceServers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|server| server["credential"].is_string())
+        .expect("a TURN entry");
+    let net = NetConfig {
+        allow_direct: false,
+        ..NetConfig::default()
+    };
+    for url in turn["urls"].as_array().unwrap() {
+        let url = url.as_str().unwrap();
+        let ice = IceConfig::from_json(
+            &json!([{"urls":[url],"username":turn["username"],"credential":turn["credential"]}]),
+            Some(relays),
+        )
+        .unwrap();
+        let started = Instant::now();
+        let result = run(ice.clone(), ice, net.clone());
+        let states: Vec<&str> = result
+            .guest_states
+            .iter()
+            .map(|value| value["state"].as_str().unwrap())
+            .collect();
+        let ended = result
+            .guest_states
+            .iter()
+            .find(|value| value["state"] == "ended");
+        println!(
+            "{url}: guest states {states:?}, frames {}, {:?}, end {}",
+            result.frames,
+            started.elapsed(),
+            ended.map_or(Value::Null, |value| value["reason"].clone())
+        );
+        assert_eq!(result.frames, 20, "{url}: frames over the relay");
+        let connected = result
+            .guest_states
+            .iter()
+            .rev()
+            .find(|value| value["state"] == "connected")
+            .unwrap();
+        assert_eq!(connected["path"], "relay", "{url}: guest path");
+        let stats = result
+            .host_events
+            .iter()
+            .rev()
+            .find(|value| {
+                value["type"] == "coop-host-stats" && !value["peers"].as_array().unwrap().is_empty()
+            })
+            .expect("host stats");
+        assert_eq!(stats["peers"][0]["path"], "relay", "{url}: host path");
+        println!(
+            "{url}: guest relayId {}, host relayId {}",
+            connected["relayId"], stats["peers"][0]["relayId"]
+        );
+    }
 }

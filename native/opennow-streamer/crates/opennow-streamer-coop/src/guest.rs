@@ -365,7 +365,12 @@ impl GuestWorker {
                     .accept_offer(&sdp)
                     .map_err(|error| format!("invalid offer: {error}"))?;
                 self.signal_out(&Signal::Answer(answer));
-                self.set_state(GuestState::TryingDirect, Instant::now());
+                let trying = if self.link.relay_started() {
+                    GuestState::TryingRelay
+                } else {
+                    GuestState::TryingDirect
+                };
+                self.set_state(trying, Instant::now());
             }
             Signal::Candidate(candidate) => {
                 let _ = self.link.add_remote_candidate(&candidate);
