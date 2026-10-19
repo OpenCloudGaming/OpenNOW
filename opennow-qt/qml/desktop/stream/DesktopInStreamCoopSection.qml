@@ -15,7 +15,7 @@ FocusScope {
     readonly property bool inviteVisible: candidates.length > 0
         && cards.some(card => card.kind === "open" || coop.uploadHolds(card))
     readonly property var slotColors: ["#7FD4FF", "#6EE7B7", "#FFD166", "#A78BFA"]
-    readonly property int hostPing: coop.hostStats ? Number(coop.hostStats.hostToGfnPingMs || 0) : 0
+    readonly property real hostPing: coop.hostStats ? Number(coop.hostStats.hostToGfnPingMs || 0) : 0
     readonly property real capacityMbps: coop.uploadCapacityKbps / 1000
     readonly property real streamMbps: coop.hostStats ? Number(coop.hostStats.streamKbps || 0) / 1000 : 0
     property Item hint: null
@@ -274,8 +274,9 @@ FocusScope {
                         Text {
                             anchors.verticalCenter: parent.verticalCenter
                             visible: row.kind === "host" || row.kind === "guest"
-                            text: row.kind === "host" ? (root.hostPing > 0 ? qsTr("%1 ms").arg(root.hostPing) : "—")
-                                : row.peer ? qsTr("%1 ms").arg(root.hostPing + Number(row.peer.peerToHostPingMs || 0)) : "—"
+                            objectName: row.kind === "guest" ? "coopPeerPing-" + row.member.userId : ""
+                            text: row.kind === "host" ? (root.hostPing > 0 ? qsTr("%1 ms").arg(root.coop.msText(root.hostPing)) : "—")
+                                : row.peer ? qsTr("%1 ms").arg(root.coop.msText(root.hostPing + Number(row.peer.peerToHostPingMs || 0))) : "—"
                             color: row.relayed ? "#FFD166" : "#FFFFFF"
                             font.family: DesktopTokens.monoFont
                             font.pixelSize: 12
@@ -379,6 +380,31 @@ FocusScope {
             }
         }
 
+        Item { visible: startButton.visible; width: 1; height: 10 }
+        DesktopCoopHostButton {
+            id: startButton
+            objectName: "streamCoopStart"
+            visible: root.coop.lobby !== null && root.coop.lobby.state !== "streaming"
+            enabled: root.coop.guestConnected
+            width: parent.width
+            text: qsTr("Start playing together"); glyph: "play"; glyphSize: 12; keyText: "Enter"; fontSize: 15
+            fill: "#FFFFFF"; hoverFill: "#14000000"; edge: "#7FD4FF"; edgeWidth: 2; ink: "#0A0D14"
+            Accessible.description: enabled ? "" : startCaption.text
+            onClicked: root.coop.startPlayingTogether()
+        }
+        Text {
+            id: startCaption
+            objectName: "streamCoopStartCaption"
+            visible: startButton.visible && !startButton.enabled
+            width: parent.width
+            topPadding: 6
+            horizontalAlignment: Text.AlignHCenter
+            text: qsTr("Waits for a guest to connect")
+            color: "#A3FFFFFF"
+            font.family: DesktopTokens.bodyFont
+            font.pixelSize: 12
+            font.weight: Font.Medium
+        }
         Item { visible: sectionUsage.visible; width: 1; height: 10 }
         DesktopCoopUploadUsage { id: sectionUsage }
         Item { visible: root.coop.uploadShort; width: 1; height: 10 }

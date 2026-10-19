@@ -15,9 +15,6 @@ FocusScope {
     Accessible.role: Accessible.Pane
     Accessible.name: titleText.text
 
-    function msText(value) {
-        return value === undefined || value === null || !isFinite(Number(value)) ? "–" : String(Math.round(Number(value)))
-    }
     function testRumble() {
         const pads = ControllerInput.availableControllers || []
         const chosen = Number(ControllerInput.inputControllerId || 0)
@@ -238,7 +235,7 @@ FocusScope {
                             spacing: 4
                             DesktopCoopGuestText {
                                 id: statValue
-                                text: root.msText(stat.modelData.value)
+                                text: root.coop.msText(stat.modelData.value)
                                 color: stat.total ? (root.stats && root.stats.quality === "poor" ? "#FF8A80" : "#FFD166") : "#FFFFFF"
                                 mono: true
                                 size: 34
@@ -286,8 +283,8 @@ FocusScope {
                 lineHeightPx: 21
             }
             DesktopCoopGuestText {
-                text: root.stats && root.stats.quality === "poor" ? qsTr("%1 ms may feel slow.").arg(root.msText(root.stats.totalMs))
-                    : qsTr("%1 ms is fine for co-op.").arg(root.msText(root.stats ? root.stats.totalMs : null))
+                text: root.stats && root.stats.quality === "poor" ? qsTr("%1 ms may feel slow.").arg(root.coop.msText(root.stats.totalMs))
+                    : qsTr("%1 ms is fine for co-op.").arg(root.coop.msText(root.stats ? root.stats.totalMs : null))
                 color: "#A3FFFFFF"
                 size: 14
                 lineHeightPx: 21

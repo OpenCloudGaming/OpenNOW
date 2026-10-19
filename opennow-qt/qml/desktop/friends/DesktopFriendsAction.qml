@@ -40,7 +40,7 @@ Item {
         id: memberTag
         visible: action.shown === memberTag
         readonly property var peer: action.user && action.member ? action.coop.peer(action.user.id) : null
-        readonly property int ping: peer ? Number(peer.peerToHostPingMs || 0) : 0
+        readonly property int ping: peer ? Math.round(Number(peer.peerToHostPingMs || 0)) : 0
         readonly property int slotNumber: action.member ? action.member.slot + 1 : 0
         implicitWidth: width
         text: ping > 0 ? qsTr("P%1 · %2 ms").arg(slotNumber).arg(ping) : qsTr("P%1").arg(slotNumber)

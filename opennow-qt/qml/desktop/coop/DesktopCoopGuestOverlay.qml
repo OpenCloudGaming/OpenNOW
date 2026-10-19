@@ -15,9 +15,6 @@ FocusScope {
     Accessible.role: Accessible.Pane
     Accessible.name: qsTr("Co-op")
 
-    function msText(value) {
-        return value === undefined || value === null || !isFinite(Number(value)) ? "–" : String(Math.round(Number(value)))
-    }
     function focusPanel() {
         leaveButton.forceActiveFocus()
     }
@@ -48,7 +45,7 @@ FocusScope {
         border.width: 1
         border.color: "#24FFFFFF"
         Accessible.role: Accessible.StaticText
-        Accessible.name: qsTr("Ping %1 ms").arg(root.msText(root.stats ? root.stats.totalMs : null))
+        Accessible.name: qsTr("Ping %1 ms").arg(root.coop.msText(root.stats ? root.stats.totalMs : null))
 
         Column {
             id: pingColumn
@@ -70,7 +67,7 @@ FocusScope {
                     spacing: 4
                     DesktopCoopGuestText {
                         id: pingValue
-                        text: root.msText(root.stats ? root.stats.totalMs : null)
+                        text: root.coop.msText(root.stats ? root.stats.totalMs : null)
                         color: root.stats && root.stats.quality === "poor" ? "#FF8A80" : "#FFD166"
                         mono: true
                         size: 20
@@ -89,9 +86,9 @@ FocusScope {
             }
             Repeater {
                 model: [
-                    {label: qsTr("Host → GeForce NOW"), value: qsTr("%1 ms").arg(root.msText(root.stats ? root.stats.hostToGfnPingMs : null))},
+                    {label: qsTr("Host → GeForce NOW"), value: qsTr("%1 ms").arg(root.coop.msText(root.stats ? root.stats.hostToGfnPingMs : null))},
                     {label: root.relay ? qsTr("You → host (relay)") : qsTr("You → host (direct)"),
-                        value: qsTr("%1 ms").arg(root.msText(root.stats ? root.stats.guestToHostPingMs : null))},
+                        value: qsTr("%1 ms").arg(root.coop.msText(root.stats ? root.stats.guestToHostPingMs : null))},
                     {label: qsTr("Connection"), value: root.stats
                         ? qsTr("%1 · %2% loss").arg(root.qualityLabel(root.stats.quality)).arg(Number(root.stats.lossPct || 0).toFixed(1))
                         : root.qualityLabel("")}

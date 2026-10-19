@@ -96,6 +96,7 @@ QtObject {
     readonly property bool lobbyOpen: lobby !== null && lobby.state !== "ended"
     readonly property var members: lobby ? (lobby.members || []).slice().sort((a, b) => a.slot - b.slot) : []
     readonly property var guests: members.filter(member => member.slot > 0)
+    readonly property bool guestConnected: guests.some(member => ["direct", "relay"].indexOf(peerLink(member.userId).kind) >= 0)
     readonly property int playerCount: members.length
     readonly property int maxPlayers: lobby ? Number(lobby.maxGuests || 0) + 1 : 0
     readonly property var hostMember: members.find(member => member.slot === 0) || null
@@ -168,6 +169,10 @@ QtObject {
     }
     function peer(userId) {
         return peers[userId] || null
+    }
+    // Whole milliseconds for every co-op ping; "–" while there is no measurement.
+    function msText(value) {
+        return value === undefined || value === null || !isFinite(Number(value)) ? "–" : String(Math.round(Number(value)))
     }
     // Host badge for a guest's link: the streamer's peer state wins, then the path once connected.
     function peerLink(userId) {

@@ -263,8 +263,8 @@ FocusScope {
         readonly property bool dashed: kind === "invited" || kind === "open" || kind === "closed"
         readonly property color tone: kind === "invited" ? "#7FD4FF" : closedLook ? "#F5A623" : root.slotColors[slotNumber]
         readonly property var peer: member ? root.coop.peer(member.userId) : null
-        readonly property int hostPing: root.coop.hostStats ? Number(root.coop.hostStats.hostToGfnPingMs || 0) : 0
-        readonly property int peerPing: peer ? Number(peer.peerToHostPingMs || 0) : 0
+        readonly property real hostPing: root.coop.hostStats ? Number(root.coop.hostStats.hostToGfnPingMs || 0) : 0
+        readonly property real peerPing: peer ? Number(peer.peerToHostPingMs || 0) : 0
         readonly property string path: peer && peer.path ? String(peer.path) : ""
         readonly property bool relayed: path === "relay"
         readonly property var link: member ? root.coop.peerLink(member.userId) : null
@@ -321,7 +321,7 @@ FocusScope {
             anchors.rightMargin: 18
             y: 22
             text: card.kind === "invited" ? root.clock(root.since(card.invite.createdAt))
-                : card.peer ? qsTr("%1 ms").arg(card.hostPing + card.peerPing) : "—"
+                : card.peer ? qsTr("%1 ms").arg(root.coop.msText(card.hostPing + card.peerPing)) : "—"
             color: card.kind === "invited" ? "#A3FFFFFF" : card.relayed ? "#FFD166" : "#FFFFFF"
             font.family: DesktopTokens.monoFont
             font.pixelSize: 14
@@ -376,7 +376,7 @@ FocusScope {
                 visible: card.kind === "host" || card.kind === "guest"
                 anchors.bottom: parent.bottom
                 text: card.kind === "host"
-                    ? (card.hostPing > 0 ? qsTr("%1 MS TO GEFORCE NOW").arg(card.hostPing) : qsTr("MEASURING PING"))
+                    ? (card.hostPing > 0 ? qsTr("%1 MS TO GEFORCE NOW").arg(root.coop.msText(card.hostPing)) : qsTr("MEASURING PING"))
                     : card.acceptedInvite ? qsTr("JOINED FROM AN INVITE") : qsTr("JOINED WITH THE CODE")
                 color: card.kind === "host" ? "#A3FFFFFF" : "#66FFFFFF"
                 font.family: DesktopTokens.monoFont

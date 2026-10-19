@@ -14,6 +14,7 @@ QtObject {
     property point click: Qt.point(-1, -1)
     property point hover: Qt.point(-1, -1)
     property string captureName: ""
+    property bool startFocusedByDefault: false
     property string failure: ""
     property Item root: null
     property var window: null
@@ -78,6 +79,9 @@ QtObject {
         "c-07-guest-overlay": "5ON-0",
         "c-08-host-panel": "5Q0-0",
         "c-08b-peer-failed": "",
+        "c-08c-start-ready": "",
+        "c-08d-start-waiting": "",
+        "c-08e-start-streaming": "",
         "c-09-settings-coop": "5UT-0",
         "c-10-reconnecting": "62P-0",
         "c-10-host-ended": "62P-0",
@@ -142,6 +146,9 @@ QtObject {
         "c-07-guest-overlay": ["coopGuestOverlay"],
         "c-08-host-panel": ["streamCoopSection"],
         "c-08b-peer-failed": ["streamCoopSection", "coopPeerLink-usr_lieke", "coopPeerLink-usr_jonas"],
+        "c-08c-start-ready": ["streamCoopSection", "streamCoopStart", "coopPeerPing-usr_jonas"],
+        "c-08d-start-waiting": ["streamCoopSection", "streamCoopStart", "streamCoopStartCaption"],
+        "c-08e-start-streaming": ["streamCoopSection"],
         "c-09-settings-coop": ["settingsCoop"],
         "c-10-reconnecting": ["coopReconnectingToast"],
         "c-10-host-ended": ["coopEnded"],
@@ -441,6 +448,7 @@ QtObject {
         client.failures = ({})
         coop.setPreference("allowRelay", true)
         coop.setPreference("requireApproval", false)
+        startFocusedByDefault = false
         client.calls = []
         runtime.sent = []
         ShellStore.friends.link = null
@@ -663,6 +671,31 @@ QtObject {
                 runtime.coopEventReceived({type: "coop-peer-state", peerId: jonas.id, state: "reconnecting", path: "direct", relayId: null})
                 AppController.showOverlay(name === "c-03g-peer-failed" ? "coop-lobby" : "desktop-stream-menu")
             }))
+        } else if (name === "c-08c-start-ready" || name === "c-08d-start-waiting" || name === "c-08e-start-streaming") {
+            linkAs(mara)
+            seedFriends(false)
+            fakeStream()
+            host([member(mara, 0), member(jonas, 1)], [])
+            Qt.callLater(() => Qt.callLater(() => {
+                runtime.coopEventReceived({type: "coop-host-stats", uploadKbps: 30000, capacityKbps: 40000, streamKbps: 15000,
+                    hostToGfnPingMs: 18.4129, peers: [{peerId: jonas.id, slot: 1, path: "direct", relayId: null,
+                        peerToHostPingMs: 43.4800, lossPct: 0.1, sendKbps: 15000, inputMuted: false}]})
+                if (name === "c-08d-start-waiting")
+                    runtime.coopEventReceived({type: "coop-peer-state", peerId: jonas.id, state: "connecting", path: null, relayId: null})
+                if (name === "c-08e-start-streaming")
+                    client.emit("coop.lobby.updated", {lobby: lobby("streaming", [member(mara, 0), member(jonas, 1)])})
+                AppController.showOverlay("desktop-stream-menu")
+                if (name === "c-08c-start-ready")
+                    Qt.callLater(() => Qt.callLater(() => {
+                        const start = find(window.contentItem, "streamCoopStart")
+                        startFocusedByDefault = Boolean(start && start.activeFocus)
+                        if (start) {
+                            start.forceActiveFocus()
+                            start.forceActiveFocus()
+                        }
+                        key = Qt.Key_Return
+                    }))
+            }))
         } else if (name === "c-06b-waiting-approval" || name === "c-10-declined") {
             const pending = {lobbyId: "lob_mara", from: mara.id, payload: {type: "opennow-admission", state: "pending"}}
             joinAsGuest("code", "")
@@ -748,6 +781,23 @@ QtObject {
         }
         if (name.indexOf("c-05b-error") === 0 && name !== "c-05b-error-cant-connect")
             check(!client.calls.some(call => call.method === "coop.lobby.leave"), name + ": a join that never landed has nothing to leave")
+        if (name === "c-08c-start-ready" || name === "c-08d-start-waiting" || name === "c-08e-start-streaming") {
+            check(coop.msText(61.8929) === "62" && coop.msText(203.417) === "203" && coop.msText(null) === "–", "co-op pings are whole milliseconds")
+            check(coop.guestConnected === (name !== "c-08d-start-waiting"), name + ": a guest counts as connected only on a direct or relay link")
+            if (checkScreens) {
+                const start = find(window.contentItem, "streamCoopStart")
+                if (name === "c-08e-start-streaming")
+                    check(!start || !shown(start), "the start button goes away once co-op is streaming")
+                else
+                    check(start.enabled === (name === "c-08c-start-ready"), name + ": Start is enabled only with a connected guest")
+                if (name === "c-08c-start-ready") {
+                    check(find(window.contentItem, "coopPeerPing-" + jonas.id).text === "62 ms", "the in-stream ping is rounded")
+                    check(!startFocusedByDefault, "Start does not take the panel's default focus")
+                    check(client.calls.some(call => call.method === "coop.lobby.update" && call.params.state === "streaming"),
+                        "Enter on Start playing together starts the lobby streaming")
+                }
+            }
+        }
         if (name === "c-03g-peer-failed" || name === "c-08b-peer-failed") {
             check(coop.peerLink(lieke.id).kind === "failed" && coop.peerLink(jonas.id).kind === "reconnecting",
                 "the streamer's peer state drives the host badge")

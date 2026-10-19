@@ -4915,6 +4915,7 @@
     "waitingForTheHostToLetYou": "Waiting for the host to let you in",
     "yourSlotIsHeldTheStreamStarts": "Your slot is held. The stream starts once you're let in.",
     "cantConnectKickToFreeTheSlot": "Can't connect · kick to free the slot",
-    "reconnecting": "Reconnecting…"
+    "reconnecting": "Reconnecting…",
+    "waitsForAGuestToConnect": "Waits for a guest to connect"
   }
 }
