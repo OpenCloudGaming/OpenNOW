@@ -34,8 +34,15 @@ const FIRST_CHANNEL: u16 = 0x4000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TurnEvent {
-    Allocated(SocketAddr),
-    Data { peer: SocketAddr, data: Vec<u8> },
+    /// The relayed address, and this client's address as the server saw it.
+    Allocated {
+        relayed: SocketAddr,
+        mapped: Option<SocketAddr>,
+    },
+    Data {
+        peer: SocketAddr,
+        data: Vec<u8>,
+    },
     Failed(String),
 }
 
@@ -578,7 +585,10 @@ impl TurnClient {
                     relayed,
                     refresh_at: now + refresh_delay(lifetime),
                 };
-                events.push(TurnEvent::Allocated(relayed));
+                events.push(TurnEvent::Allocated {
+                    relayed,
+                    mapped: message.mapped_address(),
+                });
             }
             RequestKind::Refresh { lifetime } => {
                 if let State::Allocated { relayed, .. } = self.state {

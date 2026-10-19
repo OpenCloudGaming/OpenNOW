@@ -362,6 +362,9 @@ the existing `controller-rumble` for the guest's own slot, mapped to the local c
 ### Peer media and data
 
 - Transport: ICE (STUN, then TURN UDP, TURN TCP, TURNS) with DTLS-SRTP via `str0m`. The P2P link uses its own keys; GFN's SRTP keys never leave the host.
+- A client never allocates on a relay whose address equals one of its own public addresses (from STUN or from a TURN
+  allocation's mapped address): coturn refuses peers on its own address, so that relay cannot carry this client's
+  traffic. The skip is logged under `coop` with the relay id only; loopback relays are kept for tests.
 - Media: the host taps NVST RTP after SRTP decryption and forwards video and audio packets verbatim (sequence numbers, timestamps,
   NV extension) on two RTP streams. FEC repair packets are not forwarded while OpenNOW cannot use them.
 - The host keeps a bounded 256-packet (about 200 ms) retransmission ring per guest and answers guest NACKs locally. Guest keyframe

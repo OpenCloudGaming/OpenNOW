@@ -17,6 +17,7 @@ use str0m::rtp::{RtpPacket, RtpWrite, SeqNo, Ssrc};
 use str0m::{Candidate, CandidateKind, Event, IceConnectionState, Input, Output, Rtc, RtcConfig};
 
 use crate::config::{IceConfig, RelaySite, TurnServer, resolve};
+use crate::log;
 use crate::ring::RingEntry;
 use crate::stun::{self, BINDING, CLASS_REQUEST, CLASS_SUCCESS, Message, MessageBuilder};
 use crate::turn::{TurnClient, TurnEvent};
@@ -32,6 +33,7 @@ const MAX_PENDING_REMOTE_CANDIDATES: usize = 32;
 const MAX_EVENTS: usize = 1_024;
 const SRFLX_RETRY: Duration = Duration::from_millis(500);
 const SRFLX_ATTEMPTS: u32 = 4;
+const MAX_OWN_IPS: usize = 4;
 
 /// Network policy for a link. Production uses the routed host address and platform TLS roots.
 #[derive(Clone)]
@@ -180,6 +182,8 @@ pub struct PeerLink {
     pending_remote: Vec<Candidate>,
     remote_relays: Vec<SocketAddr>,
     selected_pair: Option<(SocketAddr, SocketAddr)>,
+    /// This client's public addresses, from STUN and TURN mapped addresses.
+    own_ips: Vec<IpAddr>,
     events: VecDeque<LinkEvent>,
     next_timeout: Instant,
     path: Option<Path>,
@@ -252,6 +256,7 @@ impl PeerLink {
             pending_remote: Vec::new(),
             remote_relays: Vec::new(),
             selected_pair: None,
+            own_ips: Vec::new(),
             events: VecDeque::new(),
             next_timeout: now,
             path: None,
@@ -306,6 +311,10 @@ impl PeerLink {
         }
         self.relay_started = true;
         for (server, address) in &self.ice.turn {
+            if self.own_ips.contains(&address.ip()) {
+                self.log_own_relay(&server.host, address.ip());
+                continue;
+            }
             if let Ok(client) = TurnClient::start(server, *address, self.net.tls.clone(), now) {
                 self.turns.push(client);
             }
@@ -319,6 +328,44 @@ impl PeerLink {
 
     pub fn is_connected(&self) -> bool {
         self.dtls_connected
+    }
+
+    /// Records one of this client's public addresses and drops relays that sit on it: a
+    /// TURN server refuses peers on its own public address, so a relay on this client's
+    /// network cannot reach a peer that uses it too. Loopback relays are kept for tests.
+    fn note_own_ip(&mut self, ip: IpAddr) {
+        if ip.is_loopback() || self.own_ips.contains(&ip) || self.own_ips.len() >= MAX_OWN_IPS {
+            return;
+        }
+        self.own_ips.push(ip);
+        if self.dtls_connected {
+            return;
+        }
+        let before = self.turns.len();
+        let mut kept = Vec::with_capacity(before);
+        for mut turn in std::mem::take(&mut self.turns) {
+            if turn.server.ip() == ip {
+                self.log_own_relay(&turn.server_host, ip);
+                turn.close();
+            } else {
+                kept.push(turn);
+            }
+        }
+        self.turns = kept;
+        if before > 0 && self.turns.is_empty() {
+            self.push(LinkEvent::RelayUnavailable {
+                credentials_rejected: false,
+            });
+        }
+    }
+
+    fn log_own_relay(&self, host: &str, ip: IpAddr) {
+        log(&format!(
+            "relay {} skipped: it resolves to this client's own public address, and the relay refuses peers on its own address",
+            self.ice
+                .relay_id(Some(host), ip)
+                .unwrap_or_else(|| host.chars().take(64).collect())
+        ));
     }
 
     pub fn relay_started(&self) -> bool {
@@ -497,6 +544,7 @@ impl PeerLink {
             turn_events.push((turn.relayed(), turn.local_addr(), events));
         }
         for (mapped, base) in reflexive {
+            self.note_own_ip(mapped.ip());
             if let Ok(candidate) = Candidate::server_reflexive(mapped, base, "udp") {
                 self.announce_local(candidate);
             }
@@ -507,8 +555,16 @@ impl PeerLink {
         for (relayed, local, events) in turn_events {
             for event in events {
                 match event {
-                    TurnEvent::Allocated(relayed) => {
-                        if let Ok(candidate) = Candidate::relayed(relayed, local, "udp") {
+                    TurnEvent::Allocated { relayed, mapped } => {
+                        if let Some(mapped) = mapped {
+                            self.note_own_ip(mapped.ip());
+                        }
+                        if self
+                            .turns
+                            .iter()
+                            .any(|turn| turn.relayed() == Some(relayed))
+                            && let Ok(candidate) = Candidate::relayed(relayed, local, "udp")
+                        {
                             self.announce_local(candidate);
                         }
                     }
@@ -696,5 +752,67 @@ impl PeerLink {
         for turn in &mut self.turns {
             turn.close();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::TurnTransport;
+
+    fn relay_link(allow_direct: bool) -> PeerLink {
+        let server = TurnServer {
+            host: "relay.example.test".to_owned(),
+            port: 3478,
+            transport: TurnTransport::Udp,
+            username: "user".to_owned(),
+            credential: "secret".to_owned(),
+        };
+        let ice = ResolvedIce {
+            turn: vec![(server, "203.0.113.7:3478".parse().unwrap())],
+            ..ResolvedIce::default()
+        };
+        let net = NetConfig {
+            host_ips: Some(vec![IpAddr::from([127, 0, 0, 1])]),
+            allow_direct,
+            ..NetConfig::default()
+        };
+        PeerLink::new(Arc::new(ice), net, Instant::now()).unwrap()
+    }
+
+    fn relay_unavailable(link: &mut PeerLink) -> bool {
+        link.take_events()
+            .any(|event| matches!(event, LinkEvent::RelayUnavailable { .. }))
+    }
+
+    #[test]
+    fn a_relay_on_this_clients_public_address_is_never_started() {
+        let mut link = relay_link(true);
+        link.note_own_ip("203.0.113.7".parse().unwrap());
+        link.start_relays(Instant::now());
+        assert!(link.turns.is_empty());
+        assert!(relay_unavailable(&mut link));
+    }
+
+    #[test]
+    fn a_relay_found_on_this_clients_public_address_later_is_dropped() {
+        let mut link = relay_link(false);
+        assert_eq!(link.turns.len(), 1);
+        link.note_own_ip("198.51.100.9".parse().unwrap());
+        assert_eq!(
+            link.turns.len(),
+            1,
+            "another public address keeps the relay"
+        );
+        link.note_own_ip("203.0.113.7".parse().unwrap());
+        assert!(link.turns.is_empty());
+        assert!(relay_unavailable(&mut link));
+    }
+
+    #[test]
+    fn loopback_relays_are_kept() {
+        let mut link = relay_link(false);
+        link.note_own_ip(IpAddr::from([127, 0, 0, 1]));
+        assert_eq!(link.turns.len(), 1);
     }
 }
