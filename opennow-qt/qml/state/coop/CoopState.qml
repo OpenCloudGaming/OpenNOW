@@ -1289,6 +1289,9 @@ QtObject {
                 if (root.restoreBitrateMbps > 0)
                     root.applySetting("maxBitrateMbps", root.restoreBitrateMbps)
                 root.restoreBitrateMbps = 0
+                if (root.restoreCodec !== "")
+                    root.applySetting("codec", root.restoreCodec)
+                root.restoreCodec = ""
                 root.announceFailure(code)
             } else if (entry.method === "coop.signal.send" || entry.method === "coop.report") {
                 return

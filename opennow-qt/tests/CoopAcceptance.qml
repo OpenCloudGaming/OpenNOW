@@ -112,6 +112,7 @@ QtObject {
         "c-08j-codec-restart": "",
         "c-08k-codec-not-now": "",
         "c-02b-setup-h265": "",
+        "c-02c-setup-create-failed": "",
         "c-09-settings-coop": "5UT-0",
         "c-10-reconnecting": "62P-0",
         "c-10-host-ended": "62P-0",
@@ -202,6 +203,7 @@ QtObject {
         "c-08j-codec-restart": [],
         "c-08k-codec-not-now": ["streamSurfaceHost"],
         "c-02b-setup-h265": [],
+        "c-02c-setup-create-failed": [],
         "c-09-settings-coop": ["settingsCoop"],
         "c-10-reconnecting": ["coopReconnectingToast"],
         "c-10-host-ended": ["coopEnded"],
@@ -868,6 +870,11 @@ QtObject {
                     check(coop.codecRestart === null && coop.codecPrompt !== null, "Keep playing drops the restart and keeps the prompt")
                     click("coopCodecNotNow")
                 }})
+        } else if (name === "c-02c-setup-create-failed") {
+            linkAs(mara)
+            client.failures = ({"coop.lobby.create": "social_offline"})
+            coop.setPreference("preset", "1080p60-h265")
+            coop.startHosting({id: bg3.appId, title: bg3.title, launchAppId: bg3.appId, imageUrl: art()}, 0, 0)
         } else if (name === "c-02b-setup-h265") {
             linkAs(mara)
             AppController.navigate("home")
@@ -1403,6 +1410,9 @@ QtObject {
         if (name === "c-08k-codec-not-now")
             check(coop.codecPrompt === null && launches === 0 && !client.calls.some(call => call.method === "coop.lobby.close"),
                 "Not now keeps the session and hides the prompt")
+        if (name === "c-02c-setup-create-failed")
+            check(JSON.stringify(applied) === JSON.stringify([{key: "codec", value: "h265"}, {key: "codec", value: "auto"}])
+                && coop.restoreCodec === "" && coop.role === "none", "a failed lobby create gives the host their codec back: " + JSON.stringify(applied))
         if (name === "c-02b-setup-h265")
             check(launches === 1 && applied.some(item => item.key === "codec" && item.value === "h265")
                 && client.calls.some(call => call.method === "coop.lobby.create"), "the H.265 preset launches with H.265: " + JSON.stringify(applied))
