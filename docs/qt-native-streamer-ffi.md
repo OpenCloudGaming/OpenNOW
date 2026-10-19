@@ -142,8 +142,10 @@ Keyboard and mouse input are not forwarded.
   connect within 30 s fails. The event is sent again when the selected path
   changes.
 - `coop-guest-state {state, path, relayId, reason}`. The guest moves through
-  `negotiating`, `trying_direct`, then `direct_blocked` and `relay` when no
-  direct pair connects within 4 s, then `connected`, then `streaming` once the
+  `negotiating`, `trying_direct`, then `trying_relay` when no direct pair
+  connects within 4 s and TURN allocations start. `direct_blocked` and `relay` follow
+  only when ICE nominates a relayed pair, so a direct pair that wins late goes straight to
+  `connected`. Then `connected`, then `streaming` once the
   first decoded frame is presented. After that it can move to `reconnecting`
   (back to `connected` or `streaming`) or `ended`. `connected` is sent again when
   the path is first known. These are the `ended` reasons:
@@ -159,8 +161,10 @@ Keyboard and mouse input are not forwarded.
   | `media-unavailable: ...` | The guest cannot present the host's stream: an unsupported codec, or the local media runtime could not start a decoder for the described codec, size, depth and chroma. The text after the prefix is the platform's reason. The guest also sends the host a `bye` with this reason. |
   | `media-closed: ...` | The local media pipeline closed. The guest also sends the host a `bye` with this reason. |
 
-- `path` is `direct`, `relay`, or null. `relayId` is the configured relay site
-  of the TURN server that carries the selected pair, whichever side allocated it.
+- `path` is `direct`, `relay`, or null, taken from the ICE pair media is sent on:
+  `relay` when either end of that pair is a TURN relay address. `relayId` is the
+  configured relay site of the TURN server that carries the selected pair, whichever side
+  allocated it. The host's `coop-peer-state` and `coop-host-stats` use the same rule.
 - `coop-host-stats` and `coop-guest-stats` are sent at 1 Hz with the contract
   fields, including the cumulative input counters and the guest's `connectMs`,
   `firstFrameMs`, `codec` and `decoder` described in `docs/coop-sessions.md`. A

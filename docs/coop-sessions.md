@@ -346,7 +346,7 @@ has not accepted a registration for; `NvstRefused` means the NVST input path was
 | `coop-signal-in` | `peerId, payload` | The host's offer and candidates. |
 | `coop-guest-stop` | | Leaves. |
 
-Guest events: `coop-signal-out`; `coop-guest-state {state:"negotiating"|"trying_direct"|"direct_blocked"|"relay"|"connected"|"streaming"|"reconnecting"|"ended", path, relayId, reason}`;
+Guest events: `coop-signal-out`; `coop-guest-state {state:"negotiating"|"trying_direct"|"trying_relay"|"direct_blocked"|"relay"|"connected"|"streaming"|"reconnecting"|"ended", path, relayId, reason}`;
 `coop-guest-stats {hostToGfnPingMs, guestToHostPingMs, totalMs, quality:"great"|"good"|"poor", lossPct, slot, inputMuted,
 inputSamplesPlain, inputSamplesSony, inputStatesSent, connectMs, firstFrameMs, codec, decoder:"hardware"|"software"|null}` at 1 Hz.
 The input counters are cumulative integers: local controller samples

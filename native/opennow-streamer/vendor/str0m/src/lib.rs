@@ -1395,6 +1395,13 @@ impl Rtc {
         self.ice.state().is_connected() && self.dtls_connected && self.session.is_connected()
     }
 
+    /// The local and remote address of the nominated ICE pair media is sent on, if any.
+    pub fn selected_pair(&self) -> Option<(SocketAddr, SocketAddr)> {
+        self.send_addr
+            .as_ref()
+            .map(|send| (send.source, send.destination))
+    }
+
     /// Make changes to the Rtc session via SDP.
     ///
     /// ```no_run

@@ -179,6 +179,7 @@ pub struct PeerLink {
     remote_described: bool,
     pending_remote: Vec<Candidate>,
     remote_relays: Vec<SocketAddr>,
+    selected_pair: Option<(SocketAddr, SocketAddr)>,
     events: VecDeque<LinkEvent>,
     next_timeout: Instant,
     path: Option<Path>,
@@ -250,6 +251,7 @@ impl PeerLink {
             remote_described: false,
             pending_remote: Vec::new(),
             remote_relays: Vec::new(),
+            selected_pair: None,
             events: VecDeque::new(),
             next_timeout: now,
             path: None,
@@ -398,6 +400,7 @@ impl PeerLink {
         let candidate = Candidate::from_sdp_string(text).map_err(|error| error.to_string())?;
         if candidate.kind() == CandidateKind::Relayed && self.remote_relays.len() < 16 {
             self.remote_relays.push(candidate.addr());
+            self.selected_pair = None;
         }
         if self.remote_described {
             self.rtc.add_remote_candidate(candidate);
@@ -606,6 +609,32 @@ impl PeerLink {
                 }
             }
         }
+        self.update_path();
+    }
+
+    /// Labels the path from the nominated pair: relayed when either end is a TURN relay
+    /// address, so a peer-reflexive remote is relabelled once its relay candidate arrives.
+    fn update_path(&mut self) {
+        let selected = self.rtc.selected_pair();
+        if selected.is_none() || selected == self.selected_pair {
+            return;
+        }
+        self.selected_pair = selected;
+        let Some((local, remote)) = selected else {
+            return;
+        };
+        let path = if let Some(turn) = self.turns.iter().find(|turn| turn.relayed() == Some(local))
+        {
+            Path::Relay(self.ice.relay_id(Some(&turn.server_host), turn.server.ip()))
+        } else if self.remote_relays.contains(&remote) {
+            Path::Relay(self.ice.relay_id(None, remote.ip()))
+        } else {
+            Path::Direct
+        };
+        if self.path.as_ref() != Some(&path) {
+            self.path = Some(path.clone());
+            self.push(LinkEvent::Path(path));
+        }
     }
 
     pub fn next_timeout(&self) -> Instant {
@@ -649,24 +678,8 @@ impl PeerLink {
             },
             Event::PeerStats(stats) => {
                 self.egress_loss = stats.egress_loss_fraction.or(self.egress_loss);
-                let Some(pair) = stats.selected_candidate_pair else {
-                    return;
-                };
-                self.rtt = pair.current_round_trip_time.or(self.rtt);
-                let local = pair.local.addr;
-                let remote = pair.remote.addr;
-                let path = if let Some(turn) =
-                    self.turns.iter().find(|turn| turn.relayed() == Some(local))
-                {
-                    Path::Relay(self.ice.relay_id(Some(&turn.server_host), turn.server.ip()))
-                } else if self.remote_relays.contains(&remote) {
-                    Path::Relay(self.ice.relay_id(None, remote.ip()))
-                } else {
-                    Path::Direct
-                };
-                if self.path.as_ref() != Some(&path) {
-                    self.path = Some(path.clone());
-                    self.push(LinkEvent::Path(path));
+                if let Some(pair) = stats.selected_candidate_pair {
+                    self.rtt = pair.current_round_trip_time.or(self.rtt);
                 }
             }
             Event::Closed => self.push(LinkEvent::Closed),

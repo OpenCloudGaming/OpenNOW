@@ -340,10 +340,11 @@ fn relay_carries_media_over_udp_tcp_and_tls_turn() {
             coturn.logs()
         );
         assert_eq!(
-            states[..5],
+            states[..6],
             [
                 "negotiating",
                 "trying_direct",
+                "trying_relay",
                 "direct_blocked",
                 "relay",
                 "connected"

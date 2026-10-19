@@ -137,6 +137,9 @@ impl Drop for CoopGuest {
 enum GuestState {
     Negotiating,
     TryingDirect,
+    /// No direct pair connected in time; TURN allocations are being tried.
+    TryingRelay,
+    /// The nominated pair is relayed.
     DirectBlocked,
     Relay,
     Connected,
@@ -151,6 +154,7 @@ impl GuestState {
         match self {
             Self::Negotiating => "negotiating",
             Self::TryingDirect => "trying_direct",
+            Self::TryingRelay => "trying_relay",
             Self::DirectBlocked => "direct_blocked",
             Self::Relay => "relay",
             Self::Connected => "connected",
@@ -381,10 +385,7 @@ impl GuestWorker {
     fn handle_link_event(&mut self, event: LinkEvent, now: Instant) -> Result<(), String> {
         match event {
             LinkEvent::LocalCandidate(candidate) => self.signal_out(&Signal::Candidate(candidate)),
-            LinkEvent::DirectBlocked => {
-                self.set_state(GuestState::DirectBlocked, now);
-                self.set_state(GuestState::Relay, now);
-            }
+            LinkEvent::DirectBlocked => self.set_state(GuestState::TryingRelay, now),
             LinkEvent::RelayUnavailable {
                 credentials_rejected,
             } if !self.link.is_connected() => {
@@ -416,6 +417,15 @@ impl GuestWorker {
                     }
                     _ => {}
                 }
+            }
+            LinkEvent::Path(Path::Relay(_))
+                if matches!(
+                    self.state,
+                    GuestState::Negotiating | GuestState::TryingDirect | GuestState::TryingRelay
+                ) =>
+            {
+                self.set_state(GuestState::DirectBlocked, now);
+                self.set_state(GuestState::Relay, now);
             }
             LinkEvent::Path(_) if self.is_up() => self.emit_state(None),
             LinkEvent::ChannelData(id, data) if self.link.control == Some(id) => {
