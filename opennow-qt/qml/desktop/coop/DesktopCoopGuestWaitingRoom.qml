@@ -102,6 +102,8 @@ FocusScope {
             objectName: "coopWaitingTitle"
             text: root.coop.admissionPending
                 ? (root.host !== "" ? qsTr("Waiting for %1 to let you in").arg(root.host) : qsTr("Waiting for the host to let you in"))
+                : root.coop.guestPhase === "starting"
+                ? (root.host !== "" ? qsTr("Waiting for %1's stream…").arg(root.host) : qsTr("Waiting for the host's stream…"))
                 : root.host !== "" ? qsTr("Waiting for %1 to start").arg(root.host) : qsTr("Waiting for the host to start")
             size: 40
             lineHeightPx: 46
@@ -128,7 +130,9 @@ FocusScope {
             DesktopCoopGuestSpinner { anchors.verticalCenter: parent.verticalCenter; size: 16 }
             DesktopCoopGuestText {
                 anchors.verticalCenter: parent.verticalCenter
-                text: root.coop.guestPhase === "reconnecting" ? qsTr("Reconnecting to the host…")
+                text: root.coop.connectStage === "trying_relay" ? qsTr("Trying a relay…")
+                    : root.coop.guestPhase === "reconnecting" ? qsTr("Reconnecting to the host…")
+                    : root.coop.guestPhase === "starting" ? qsTr("Connected. The video starts in a moment.")
                     : root.coop.admissionPending ? qsTr("Your slot is held. The stream starts once you're let in.")
                     : root.host !== "" ? qsTr("You join the moment %1 presses Start").arg(root.host)
                     : qsTr("You join the moment the host presses Start")

@@ -15,7 +15,7 @@ FocusScope {
     Accessible.description: bodyText.text
 
     function stepState(index) {
-        const order = ["negotiating", "trying_direct", "direct_blocked", "relay", "connected"]
+        const order = ["negotiating", "trying_direct", "direct_blocked", "trying_relay", "relay", "connected"]
         const reached = Math.max(0, order.indexOf(stage))
         if (index === 2 && blocked)
             return "blocked"
@@ -24,9 +24,9 @@ FocusScope {
         if (index === 1)
             return reached >= 1 ? "done" : "pending"
         if (index === 2)
-            return stage === "trying_direct" ? "current" : stage === "connected" ? "done" : "pending"
+            return stage === "trying_direct" || stage === "trying_relay" ? "current" : stage === "connected" ? "done" : "pending"
         if (index === 3)
-            return stage === "relay" ? "current" : stage === "connected" && blocked ? "done" : "pending"
+            return stage === "relay" || stage === "trying_relay" ? "current" : stage === "connected" && blocked ? "done" : "pending"
         return stage === "connected" ? "done" : "pending"
     }
     readonly property var steps: [qsTr("HOST"), qsTr("STUN"), blocked ? qsTr("BLOCKED") : qsTr("DIRECT"), qsTr("RELAY"), qsTr("IN")]
@@ -84,6 +84,7 @@ FocusScope {
                 anchors.verticalCenter: parent.verticalCenter
                 text: root.stage === "trying_direct" ? qsTr("Trying a direct link")
                     : root.stage === "direct_blocked" ? qsTr("Direct link blocked")
+                    : root.stage === "trying_relay" ? qsTr("Trying a relay…")
                     : root.stage === "relay" ? qsTr("Connecting through relay")
                     : root.stage === "connected" ? qsTr("Connected")
                     : root.host !== "" ? qsTr("Reaching %1").arg(root.host) : qsTr("Reaching the host")
@@ -98,6 +99,7 @@ FocusScope {
             wrapMode: Text.WordWrap
             text: root.stage === "trying_direct" ? qsTr("A direct link to the host has the least delay.")
                 : root.stage === "direct_blocked" ? qsTr("Your network blocked a direct link. Switching to a relay.")
+                : root.stage === "trying_relay" ? qsTr("The direct link is slow to answer, so OpenNOW is also trying a relay.")
                 : root.stage === "relay" ? qsTr("Your network blocked a direct link, so OpenNOW is using a relay. It adds a little delay.")
                 : root.stage === "connected" ? qsTr("You're in. Waiting for the host to start.")
                 : qsTr("Setting up a link to the host's PC.")

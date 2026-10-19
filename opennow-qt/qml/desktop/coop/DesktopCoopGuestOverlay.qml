@@ -22,6 +22,12 @@ FocusScope {
     function focusPanel() {
         leaveButton.forceActiveFocus()
     }
+    function videoLabel(stats) {
+        const codec = {h264: qsTr("H.264"), h265: qsTr("H.265"), hevc: qsTr("H.265"), av1: qsTr("AV1")}[String(stats.codec || "").toLowerCase()]
+            || String(stats.codec || "").toUpperCase()
+        const decoder = stats.decoder === "software" ? qsTr("software decode") : stats.decoder === "hardware" ? qsTr("hardware decode") : ""
+        return decoder !== "" ? qsTr("%1 · %2").arg(codec).arg(decoder) : codec
+    }
     function qualityLabel(value) {
         return value === "great" ? qsTr("Great") : value === "poor" ? qsTr("Poor") : value === "good" ? qsTr("Good") : qsTr("Checking")
     }
@@ -97,7 +103,8 @@ FocusScope {
                     {label: qsTr("Connection"), value: root.stats
                         ? qsTr("%1 · %2% loss").arg(root.qualityLabel(root.stats.quality)).arg(Number(root.stats.lossPct || 0).toFixed(1))
                         : root.qualityLabel("")}
-                ]
+                ].concat(root.stats && root.stats.codec ? [{label: qsTr("Video"), value: root.videoLabel(root.stats),
+                    warn: root.stats.decoder === "software"}] : [])
                 delegate: Item {
                     required property var modelData
                     width: pingColumn.width
@@ -113,7 +120,9 @@ FocusScope {
                     DesktopCoopGuestText {
                         y: 9
                         anchors.right: parent.right
+                        objectName: parent.modelData.warn !== undefined ? "coopGuestVideoValue" : ""
                         text: parent.modelData.value
+                        color: parent.modelData.warn ? "#FFD166" : "#FFFFFF"
                         mono: true
                         size: 12
                         lineHeightPx: 16

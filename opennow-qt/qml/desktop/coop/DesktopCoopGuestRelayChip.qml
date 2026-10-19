@@ -3,6 +3,7 @@ import OpenNOW
 
 Rectangle {
     id: root
+    objectName: "coopGuestRelayChip"
     width: content.implicitWidth + 26
     height: 28
     radius: 14

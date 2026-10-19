@@ -12,7 +12,7 @@ FocusScope {
     readonly property Component view: phase === "joining" || phase === "connecting" ? connectingView
         : phase === "error" ? errorView
         : phase === "ended" ? endedView
-        : phase === "waiting" || phase === "reconnecting" || phase === "playing" ? waitingView
+        : phase === "waiting" || phase === "starting" || phase === "reconnecting" || phase === "playing" ? waitingView
         : joinCodeView
 
     function restoreFocus() {

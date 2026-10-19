@@ -4929,6 +4929,18 @@
     "thisDeviceCantPlayNsStream": "This device can't play %1's stream",
     "thisDeviceCantPlayTheHostsStream": "This device can't play the host's stream",
     "yourDeviceCouldntDecodeTheVideoSo": "Your device couldn't decode the video, so you left the lobby. %1 keeps playing.",
-    "yourDeviceCouldntDecodeTheVideoSo2": "Your device couldn't decode the video, so you left the lobby. The host keeps playing."
+    "yourDeviceCouldntDecodeTheVideoSo2": "Your device couldn't decode the video, so you left the lobby. The host keeps playing.",
+    "tryingARelay": "Trying a relay…",
+    "theDirectLinkIsSlowToAnswer": "The direct link is slow to answer, so OpenNOW is also trying a relay.",
+    "noVideo": "NO VIDEO",
+    "nsStreamDidntStart": "%1's stream didn't start",
+    "theHostsStreamDidntStart": "The host's stream didn't start",
+    "youConnectedButNoVideoArrivedWithin": "You connected, but no video arrived within %1 seconds, so you left the lobby. Try joining again.",
+    "softwareDecode": "software decode",
+    "hardwareDecode": "hardware decode",
+    "video": "Video",
+    "waitingForNsStream": "Waiting for %1's stream…",
+    "waitingForTheHostsStream": "Waiting for the host's stream…",
+    "connectedTheVideoStartsInAMoment": "Connected. The video starts in a moment."
   }
 }

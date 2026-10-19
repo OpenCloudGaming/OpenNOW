@@ -81,6 +81,10 @@ QtObject {
         "c-05e-join-cancelled": "",
         "c-06-waiting-room": "5LZ-0",
         "c-06b-waiting-approval": "",
+        "c-06c-waiting-stream": "",
+        "c-06d-waiting-stream-timeout": "",
+        "c-05f-trying-relay": "",
+        "c-07h-guest-direct": "",
         "c-07-guest-overlay": "5ON-0",
         "c-07e-guest-peek": "",
         "c-07g-guest-shared-account": "",
@@ -157,6 +161,10 @@ QtObject {
         "c-05e-join-cancelled": [],
         "c-06-waiting-room": ["coopWaitingRoom"],
         "c-06b-waiting-approval": ["coopWaitingRoom", "coopWaitingTitle"],
+        "c-06c-waiting-stream": ["coopWaitingRoom", "coopWaitingTitle"],
+        "c-06d-waiting-stream-timeout": ["coopEnded"],
+        "c-05f-trying-relay": ["coopConnecting"],
+        "c-07h-guest-direct": ["coopGuestOverlay", "coopGuestVideoValue"],
         "c-07-guest-overlay": ["coopGuestOverlay"],
         "c-07e-guest-peek": ["streamSurfaceHost"],
         "c-07g-guest-shared-account": ["coopGuestOverlay"],
@@ -444,9 +452,12 @@ QtObject {
             runtime.coopEventReceived({type: "coop-guest-state", state: "relay", path: "relay", relayId: "nl", reason: null})
             runtime.coopEventReceived({type: "coop-guest-state", state: "connected", path: "relay", relayId: "nl", reason: null})
             runtime.coopEventReceived({type: "coop-guest-stats", hostToGfnPingMs: 18, guestToHostPingMs: 41, totalMs: 59,
-                quality: "good", lossPct: 0.1, slot: 2, inputMuted: false})
-            if (streaming)
+                quality: "good", lossPct: 0.1, slot: 2, inputMuted: false, connectMs: 840, firstFrameMs: null,
+                codec: "h265", decoder: "software"})
+            if (streaming) {
                 client.emit("coop.lobby.updated", {lobby: lobby("streaming", [member(mara, 0), member(jonas, 1), member(lieke, 2)])})
+                runtime.coopEventReceived({type: "coop-guest-state", state: "streaming", path: "relay", relayId: "nl", reason: null})
+            }
         })
     }
 
@@ -461,6 +472,12 @@ QtObject {
         coop.enteredCode = ""
         coop.joinContext = null
         coop.guestStartRequestId = ""
+        coop.guestFramePresented = false
+        coop.guestPath = ""
+        coop.guestRelayId = ""
+        coop.guestStats = null
+        coop.connectStage = ""
+        coop.streamStartTimer.interval = coop.streamStartTimeoutMs
         coop.incomingInvites = []
         coop.inviteHistory = []
         coop.inviteToastId = ""
@@ -742,6 +759,28 @@ QtObject {
             }))
         } else if (name === "c-06-waiting-room") {
             guestConnected(false)
+        } else if (name === "c-06c-waiting-stream" || name === "c-06d-waiting-stream-timeout") {
+            guestConnected(false)
+            if (name === "c-06d-waiting-stream-timeout")
+                coop.streamStartTimer.interval = 100
+            const started = () => client.emit("coop.lobby.updated", {lobby: lobby("streaming", [member(mara, 0), member(jonas, 1), member(lieke, 2)])})
+            steps = name === "c-06c-waiting-stream" ? ({3: started, 6: () => {
+                modifiers = Qt.ControlModifier
+                key = Qt.Key_G
+            }}) : ({3: started})
+        } else if (name === "c-05f-trying-relay") {
+            joinAsGuest("code", "trying_relay")
+        } else if (name === "c-07h-guest-direct") {
+            joinAsGuest("code", "")
+            Qt.callLater(() => {
+                runtime.coopEventReceived({type: "coop-guest-state", state: "trying_relay", path: null, relayId: null, reason: null})
+                runtime.coopEventReceived({type: "coop-guest-state", state: "connected", path: "direct", relayId: null, reason: null})
+                runtime.coopEventReceived({type: "coop-guest-stats", hostToGfnPingMs: 18, guestToHostPingMs: 24, totalMs: 42,
+                    quality: "great", lossPct: 0, slot: 2, inputMuted: false, connectMs: 610, firstFrameMs: 380,
+                    codec: "h264", decoder: "hardware"})
+                client.emit("coop.lobby.updated", {lobby: lobby("streaming", [member(mara, 0), member(jonas, 1), member(lieke, 2)])})
+                runtime.coopEventReceived({type: "coop-guest-state", state: "streaming", path: "direct", relayId: null, reason: null})
+            })
         } else if (name === "c2-03b-friends-context-menu") {
             linkAs(mara)
             seedFriends(true)
@@ -1065,8 +1104,40 @@ QtObject {
                 "a 4010 sign-out unlinks and clears friends")
         if (name === "c-06-waiting-room")
             check(coop.guestPhase === "waiting" && coop.guestPath === "relay", "connected guests wait for the host")
-        if (name === "c-07-guest-overlay")
+        if (name === "c-06c-waiting-stream") {
+            check(coop.guestPhase === "starting" && AppController.route === "coop-guest" && !coop.guestStreaming
+                && coop.streamStartTimer.running, "a connected guest waits for the first frame before the stream screen")
+            check(AppController.overlay === "quick-settings", "Ctrl+G still opens quick settings while waiting for the stream")
+            const title = find(window.contentItem, "coopWaitingTitle")
+            check(!checkScreens || (title && title.text === "Waiting for Mara's stream…"), "the waiting room names the host's stream")
+            coop.requestLeave()
+            check(AppController.overlay === "coop-leave-confirm", "Leave still works while waiting for the stream")
+        }
+        if (name === "c-06d-waiting-stream-timeout") {
+            check(coop.guestPhase === "ended" && coop.endReason === "no_stream"
+                && client.calls.some(call => call.method === "coop.lobby.leave" && call.params.lobbyId === "lob_mara")
+                && runtime.sent.some(item => item.type === "coop-guest-stop"), "no first frame in time ends co-op and leaves the lobby")
+            const ended = find(window.contentItem, "coopEnded")
+            check(!checkScreens || ended.Accessible.name === "Mara's stream didn't start", "the ended screen says the stream didn't start")
+        }
+        if (name === "c-05f-trying-relay") {
+            check(coop.guestPhase === "connecting" && coop.connectStage === "trying_relay" && coop.guestPath === "", "trying a relay is not a relay path")
+            const connecting = find(window.contentItem, "coopConnecting")
+            check(!checkScreens || connecting.Accessible.name === "Trying a relay…", "trying a relay is a small status")
+        }
+        if (name === "c-07h-guest-direct") {
+            check(coop.guestPhase === "playing" && coop.guestPath === "direct" && coop.guestRelayId === "", "the selected direct pair is the path")
+            const chip = find(window.contentItem, "coopGuestRelayChip")
+            check(!chip || !shown(chip), "a direct guest sees no relay banner")
+            const video = find(window.contentItem, "coopGuestVideoValue")
+            check(!checkScreens || (video.text === "H.264 · hardware decode" && Qt.colorEqual(video.color, "#FFFFFF")), "the ping card shows the codec and decoder")
+        }
+        if (name === "c-07-guest-overlay") {
             check(coop.guestPhase === "playing" && AppController.route === "stream", "the host's start puts guests in the stream")
+            const video = find(window.contentItem, "coopGuestVideoValue")
+            check(!checkScreens || (video && video.text === "H.265 · software decode" && Qt.colorEqual(video.color, "#FFD166")),
+                "software decode is flagged on the ping card")
+        }
         if (name === "c2-03b-friends-context-menu" && checkScreens) {
             const menu = find(window.contentItem.parent, "friendsContextMenu")
             check(menu && shown(menu) && menu.friend.user.id === jonas.id && menu.activeFocus,

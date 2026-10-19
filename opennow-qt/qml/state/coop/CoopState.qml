@@ -73,11 +73,20 @@ QtObject {
     property var askNotice: null
     property var roomWatch: []
 
-    // Guest flow: "idle" | "entering" | "joining" | "connecting" | "waiting" | "playing" |
-    // "reconnecting" | "ended" | "error"
+    // Guest flow: "idle" | "entering" | "joining" | "connecting" | "waiting" | "starting" | "playing" |
+    // "reconnecting" | "ended" | "error". "starting": connected and the host is streaming, but no
+    // frame has been presented yet.
     property string guestPhase: "idle"
     // Streamer coop-guest-state while connecting
     property string connectStage: ""
+    // The streamer presented this pipeline's first frame (coop-guest-state "streaming").
+    property bool guestFramePresented: false
+    readonly property int streamStartTimeoutMs: 15000
+    property Timer streamStartTimer: Timer {
+        interval: root.streamStartTimeoutMs
+        running: root.guestPhase === "starting"
+        onTriggered: root.endAsGuest("no_stream")
+    }
     property string guestPath: ""
     property string guestRelayId: ""
     property var guestStats: null
@@ -114,7 +123,7 @@ QtObject {
     // Joining, connected or playing as a guest. The account may be the host's own, so a guest never
     // resumes, claims, recovers or stops a GFN session: any session it can see may be the host's stream.
     readonly property bool guestActive: role === "guest"
-        || ["joining", "connecting", "waiting", "playing", "reconnecting"].indexOf(guestPhase) >= 0
+        || ["joining", "connecting", "waiting", "starting", "playing", "reconnecting"].indexOf(guestPhase) >= 0
     // The C5b join-error card for joinError: {kind: "invalid" | "full" | "ended" | "cant_connect" |
     // "unavailable", eyebrow, title, body}. kind picks the actions: invalid and ended offer a new code,
     // full and cant_connect retry, unavailable only goes back.
@@ -712,6 +721,7 @@ QtObject {
         guestStartRequestId = ""
         guestStats = null
         connectStage = ""
+        guestFramePresented = false
         guestPath = ""
         guestRelayId = ""
     }
@@ -770,8 +780,12 @@ QtObject {
             const me = (next.members || []).find(member => member.userId === selfId)
             if (me)
                 slot = me.slot
-            if (next.state === "streaming" && guestPhase === "waiting" && !admissionPending)
-                enterGuestStream()
+            if (next.state === "streaming" && guestPhase === "waiting" && !admissionPending) {
+                if (guestFramePresented)
+                    enterGuestStream()
+                else
+                    guestPhase = "starting"
+            }
         }
     }
     function syncPeers(previous, next) {
@@ -953,8 +967,8 @@ QtObject {
             peers = next
         } else if (type === "coop-guest-state" && role === "guest") {
             const state = String(event.state || "")
-            guestPath = String(event.path || guestPath || "")
-            guestRelayId = String(event.relayId || "")
+            guestPath = String(event.path || "")
+            guestRelayId = guestPath === "relay" ? String(event.relayId || "") : ""
             if (state === "ended") {
                 if (String(event.reason || "") === "relay-credentials-rejected" && !relayRetried) {
                     relayRetried = true
@@ -974,12 +988,18 @@ QtObject {
                     endAsGuest(reason === "host_stream_lost" ? "stream_lost" : "host_lost")
                 return
             }
+            if (state === "streaming") {
+                guestFramePresented = true
+                if (["connecting", "waiting", "starting", "reconnecting"].indexOf(guestPhase) >= 0 && !admissionPending)
+                    enterGuestStream()
+                return
+            }
             connectStage = state
             if (state === "reconnecting") {
                 guestPhase = "reconnecting"
             } else if (state === "connected") {
                 if (guestPhase === "connecting" || guestPhase === "reconnecting")
-                    guestPhase = lobby && lobby.state === "streaming" ? "playing" : "waiting"
+                    guestPhase = guestFramePresented ? "playing" : lobby && lobby.state === "streaming" ? "starting" : "waiting"
                 if (guestPhase === "playing" && appController && appController.route !== "stream")
                     appController.navigate("stream")
             }
