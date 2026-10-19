@@ -518,6 +518,56 @@ mod tests {
     }
 
     #[test]
+    fn a_guest_controller_reaches_the_guest_worker_only_while_capture_is_active() {
+        let (_host, runtime) = opennow_streamer_platform::create_test_runtime();
+        let (sender, _events) = mpsc::channel();
+        let captured = Arc::new(CapturedInputQueue::default());
+        let capture = opennow_streamer_platform::EmbeddedInputCapture::new(captured.clone());
+        let mut media = EngineGuestMedia {
+            runtime,
+            events: EventSender::unbounded(sender),
+            session: None,
+            worker: None,
+            feedback: None,
+            captured: Some(captured),
+            gamepads: GamepadSelector::default(),
+            hid: Arc::new(HidRuntime::new()),
+            samples: InputSamples::default(),
+        };
+        let pad = |buttons| CapturedInput::Gamepad {
+            controller_id: 0,
+            bitmap: 0x0001,
+            buttons,
+            left_trigger: 0,
+            right_trigger: 0,
+            left_stick_x: 0,
+            left_stick_y: 0,
+            right_stick_x: 0,
+            right_stick_y: 0,
+        };
+        capture.submit(pad(0x1000));
+        assert_eq!(
+            media.take_gamepad().map(|state| state.buttons),
+            None,
+            "without capture a pressed button never reaches the guest worker"
+        );
+        capture.set_active(true, false, 0);
+        capture.submit(pad(0x1000));
+        assert_eq!(
+            media.take_gamepad().map(|state| state.buttons),
+            Some(0x1000),
+            "an active capture forwards the guest's own controller"
+        );
+        capture.set_active(false, false, 0);
+        assert_eq!(
+            media.take_gamepad().map(|state| state.buttons),
+            Some(0),
+            "releasing capture sends the pad back to neutral"
+        );
+        assert_eq!(media.input_samples(), InputSamples { plain: 2, sony: 0 });
+    }
+
+    #[test]
     fn a_coop_guest_admits_sony_controllers_as_ordinary_input_until_it_leaves() {
         use opennow_streamer_hid::{SdlDeviceClaim, SnapshotAdmission, SonySnapshot};
         let (_host, runtime) = opennow_streamer_platform::create_test_runtime();

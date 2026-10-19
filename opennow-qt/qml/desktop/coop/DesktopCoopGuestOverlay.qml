@@ -11,7 +11,9 @@ FocusScope {
     readonly property var coop: ShellStore.coop
     readonly property var stats: coop.guestStats
     readonly property bool relay: coop.guestPath === "relay"
+    readonly property var pads: ControllerInput.availableControllers || []
     signal closeRequested()
+    signal controllersRequested()
     Accessible.role: Accessible.Pane
     Accessible.name: qsTr("Co-op")
 
@@ -190,6 +192,17 @@ FocusScope {
                 color: "#0FFFFFFF"
             }
             DesktopCoopGuestButton {
+                id: controllersButton
+                objectName: "coopGuestOverlayControllers"
+                Layout.preferredHeight: 40
+                Layout.preferredWidth: implicitWidth
+                text: root.pads.length === 0 ? qsTr("No controller") : root.pads.length === 1 ? qsTr("1 controller")
+                    : qsTr("%1 controllers").arg(root.pads.length)
+                Accessible.description: qsTr("Dead zones and vibration")
+                KeyNavigation.right: leaveButton
+                onClicked: root.controllersRequested()
+            }
+            DesktopCoopGuestButton {
                 id: leaveButton
                 objectName: "coopGuestOverlayLeave"
                 Layout.preferredHeight: 40
@@ -198,6 +211,7 @@ FocusScope {
                 glyph: "A"
                 glyphSize: 18
                 text: qsTr("Leave")
+                KeyNavigation.left: controllersButton
                 KeyNavigation.right: closeHint
                 onClicked: root.coop.requestLeave()
             }

@@ -2666,8 +2666,13 @@ private slots:
             QVERIFY2(liveItem.match(qml).hasMatch(), qPrintable(path));
             QVERIFY(qml.contains(QStringLiteral("visible: root.visible && root.videoSurfaceActive")));
             QVERIFY(qml.contains(path.startsWith(QStringLiteral("qml/desktop/"))
-                ? QStringLiteral("inputEnabled: root.streaming && visible")
+                ? QStringLiteral("inputEnabled: root.gameplayInputReady")
                 : QStringLiteral("inputEnabled: root.videoReady && visible")));
+            if (path.startsWith(QStringLiteral("qml/desktop/"))) {
+                QVERIFY(qml.contains(QStringLiteral("readonly property bool presentationRunning: root.streaming || root.coopGuest")));
+                QVERIFY(qml.contains(QStringLiteral(
+                    "readonly property bool gameplayInputReady: root.presentationRunning && root.visible")));
+            }
             QVERIFY(qml.contains(QStringLiteral(
                 "!ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)")));
             QVERIFY(qml.contains(QStringLiteral(

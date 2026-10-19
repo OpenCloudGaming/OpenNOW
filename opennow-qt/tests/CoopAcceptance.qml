@@ -15,6 +15,8 @@ QtObject {
     property point hover: Qt.point(-1, -1)
     property string captureName: ""
     property bool startFocusedByDefault: false
+    // Scene steps keyed by settle tick, for input that has to land after the screen has focus.
+    property var steps: ({})
     property string failure: ""
     property Item root: null
     property var window: null
@@ -77,6 +79,9 @@ QtObject {
         "c-06-waiting-room": "5LZ-0",
         "c-06b-waiting-approval": "",
         "c-07-guest-overlay": "5ON-0",
+        "c-07b-guest-input": "",
+        "c-07c-guest-panel-input": "",
+        "c-07d-guest-controllers": "",
         "c-08-host-panel": "5Q0-0",
         "c-08b-peer-failed": "",
         "c-08c-start-ready": "",
@@ -144,6 +149,9 @@ QtObject {
         "c-06-waiting-room": ["coopWaitingRoom"],
         "c-06b-waiting-approval": ["coopWaitingRoom", "coopWaitingTitle"],
         "c-07-guest-overlay": ["coopGuestOverlay"],
+        "c-07b-guest-input": ["coopGuestOverlay", "streamSurfaceHost"],
+        "c-07c-guest-panel-input": ["streamSurfaceHost"],
+        "c-07d-guest-controllers": ["coopGuestOverlay", "coopGuestOverlayControllers", "coopGuestControllers"],
         "c-08-host-panel": ["streamCoopSection"],
         "c-08b-peer-failed": ["streamCoopSection", "coopPeerLink-usr_lieke", "coopPeerLink-usr_jonas"],
         "c-08c-start-ready": ["streamCoopSection", "streamCoopStart", "coopPeerPing-usr_jonas"],
@@ -449,6 +457,8 @@ QtObject {
         coop.setPreference("allowRelay", true)
         coop.setPreference("requireApproval", false)
         startFocusedByDefault = false
+        steps = ({})
+        modifiers = 0
         client.calls = []
         runtime.sent = []
         ShellStore.friends.link = null
@@ -710,8 +720,27 @@ QtObject {
             }))
         } else if (name === "c-06-waiting-room") {
             guestConnected(false)
-        } else if (name === "c-07-guest-overlay") {
+        } else if (name === "c-07-guest-overlay" || name === "c-07b-guest-input") {
             guestConnected(true)
+        } else if (name === "c-07c-guest-panel-input" || name === "c-07d-guest-controllers") {
+            guestConnected(true)
+            const ctrlG = () => {
+                modifiers = Qt.ControlModifier
+                key = Qt.Key_G
+            }
+            if (name === "c-07c-guest-panel-input") {
+                steps = ({4: ctrlG, 8: () => {
+                    checkGuestInput(false, "an open guest panel")
+                    modifiers = 0
+                    key = Qt.Key_Escape
+                }})
+            } else {
+                steps = ({4: ctrlG, 8: () => {
+                    const button = find(window.contentItem, "coopGuestOverlayControllers")
+                    if (button)
+                        button.clicked()
+                }})
+            }
         } else if (name === "c-09-settings-coop") {
             linkAs(mara)
             AppController.navigate("settings-coop")
@@ -737,6 +766,19 @@ QtObject {
             guestConnected(true)
             Qt.callLater(() => coop.requestLeave())
         }
+    }
+
+    // A guest's gameplay input: the video item takes it while the stream runs and gives it to the shell
+    // (controller navigation included) while the guest's own co-op panel has focus.
+    function checkGuestInput(gameplay, what) {
+        if (!checkScreens)
+            return
+        const video = find(window.contentItem, "streamSurfaceHost")
+        check(video && video.inputEnabled === gameplay && video.activeFocus === gameplay,
+            what + ": the guest's video item " + (gameplay ? "takes" : "releases") + " gameplay input")
+        check(ShellStore.coop.guestPanelOpen === !gameplay, what + ": the co-op panel " + (gameplay ? "is passive" : "owns input"))
+        check(ControllerInput.shellCaptureEnabled === (!gameplay && ShellStore.settings.controllerMode !== false),
+            what + ": the shell " + (gameplay ? "leaves the controller to the stream" : "navigates with the controller"))
     }
 
     // Scene-specific state assertions on top of the visible screens.
@@ -876,6 +918,12 @@ QtObject {
             check(coop.guestPhase === "waiting" && coop.guestPath === "relay", "connected guests wait for the host")
         if (name === "c-07-guest-overlay")
             check(coop.guestPhase === "playing" && AppController.route === "stream", "the host's start puts guests in the stream")
+        if (name === "c-07b-guest-input" || name === "c-07c-guest-panel-input")
+            checkGuestInput(true, name === "c-07b-guest-input" ? "a playing guest" : "a closed guest panel")
+        if (name === "c-07d-guest-controllers") {
+            check(coop.guestPhase === "playing", "the guest is still playing")
+            checkGuestInput(false, "the guest's controllers page")
+        }
         if (name === "c-10-kicked")
             check(coop.guestPhase === "ended" && coop.endReason === "kicked" && runtime.sent.some(item => item.type === "coop-guest-stop"),
                 "kicked guests stop their pipeline")
@@ -930,6 +978,8 @@ QtObject {
                 return 0
             }
             tick += 1
+            if (steps[tick])
+                steps[tick]()
             return 0
         } catch (error) {
             failure = String(error && error.message || error)

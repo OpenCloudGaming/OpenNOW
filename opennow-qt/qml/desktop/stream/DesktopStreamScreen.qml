@@ -35,7 +35,14 @@ FocusScope {
     readonly property bool coopGuest: ShellStore.coop.role === "guest"
         && (ShellStore.coop.guestPhase === "playing" || ShellStore.coop.guestPhase === "reconnecting")
     property bool coopPanelDismissed: false
-    readonly property bool videoSurfaceActive: root.streaming || root.coopGuest
+    property bool coopControllersOpen: false
+    readonly property bool coopPanelFocused: coopGuestOverlay.activeFocus || coopControllers.activeFocus
+    // A guest has no GFN session; its presentation runs on the co-op pipeline instead.
+    readonly property bool presentationRunning: root.streaming || root.coopGuest
+    // The one gate for gameplay input: this client's presentation runs and no local chrome owns input.
+    readonly property bool gameplayInputReady: root.presentationRunning && root.visible
+        && !ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay) && !root.coopPanelFocused
+    readonly property bool videoSurfaceActive: root.presentationRunning
         || (root.streamer.status === "connecting" && root.status !== "error")
     readonly property bool videoReady: streaming
         && root.streamer.firstFrameLatencyMs !== undefined
@@ -98,8 +105,8 @@ FocusScope {
     }
     function resynchronizeStreamInput() {
         root.publishCaptureRect()
-        if (!root.visible || !root.streaming || root.launchCovered
-                || ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay))
+        if (!root.visible || !root.presentationRunning || root.launchCovered
+                || ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay) || root.coopPanelFocused)
             return
         streamVideo.forceActiveFocus()
         streamVideo.resynchronizeInput()
@@ -127,9 +134,8 @@ FocusScope {
         anchors.fill: parent
         visible: root.visible && root.videoSurfaceActive
         enabled: !root.launchCovered
-        focus: root.streaming && visible && !root.launchCovered
-        inputEnabled: root.streaming && visible
-            && !ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)
+        focus: root.presentationRunning && visible && !root.launchCovered
+        inputEnabled: root.gameplayInputReady
         shortcutBindings: ShellStore.streamShortcutBindings()
         clipboardPaste: ShellStore.settings.clipboardPaste === true
         keyboardLayout: String((ShellStore.activeSession || {}).keyboardLayout || "en-US")
@@ -165,12 +171,29 @@ FocusScope {
         }
     }
     function closeCoopPanel() {
+        root.coopControllersOpen = false
         root.coopPanelDismissed = true
         Qt.callLater(root.restoreStreamFocus)
     }
+    function openCoopControllers() {
+        root.coopControllersOpen = true
+        Qt.callLater(() => {
+            if (coopControllers.item)
+                coopControllers.item.focusFirst()
+        })
+    }
     Connections {
         target: ShellStore.coop
-        function onGuestStreamingChanged() { root.coopPanelDismissed = false }
+        function onGuestStreamingChanged() {
+            root.coopPanelDismissed = false
+            root.coopControllersOpen = false
+        }
+    }
+    Binding {
+        target: ShellStore.coop
+        property: "guestPanelOpen"
+        value: root.coopGuest && root.coopPanelFocused
+        when: root.visible
     }
     Connections {
         target: streamVideo
@@ -188,7 +211,43 @@ FocusScope {
         visible: root.visible && ShellStore.coop.guestStreaming && !root.coopPanelDismissed
         z: 6
         onCloseRequested: root.closeCoopPanel()
+        onControllersRequested: root.openCoopControllers()
         onVisibleChanged: if (!visible && activeFocus) Qt.callLater(root.restoreStreamFocus)
+    }
+
+    Rectangle {
+        id: coopControllersDrawer
+        objectName: "coopGuestControllersDrawer"
+        visible: root.visible && root.coopControllersOpen && ShellStore.coop.guestStreaming
+        x: parent.width - width - 24
+        y: 24
+        width: 456
+        height: parent.height - 172
+        radius: 20
+        color: Theme.lightMode ? Theme.shell : "#FC0A0E15"
+        border.width: 1
+        border.color: "#24FFFFFF"
+        clip: true
+        z: 7
+        layer.enabled: HdrOutput.chromeRequired
+        layer.effect: HdrChromeEffect {}
+        MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons }
+        Loader {
+            id: coopControllers
+            anchors.fill: parent
+            active: coopControllersDrawer.visible
+            focus: active
+            sourceComponent: DesktopStreamControllersPage {
+                objectName: "coopGuestControllers"
+                active: true
+                controllerHints: AppController.inputMode === "controller"
+                onBackRequested: {
+                    root.coopControllersOpen = false
+                    Qt.callLater(coopGuestOverlay.focusPanel)
+                }
+                onResumeRequested: root.closeCoopPanel()
+            }
+        }
     }
 
     DesktopCoopGuestReconnectToast {

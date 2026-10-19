@@ -4916,6 +4916,10 @@
     "yourSlotIsHeldTheStreamStarts": "Your slot is held. The stream starts once you're let in.",
     "cantConnectKickToFreeTheSlot": "Can't connect · kick to free the slot",
     "reconnecting": "Reconnecting…",
-    "waitsForAGuestToConnect": "Waits for a guest to connect"
+    "waitsForAGuestToConnect": "Waits for a guest to connect",
+    "noController": "No controller",
+    "1Controller": "1 controller",
+    "nControllers": "%1 controllers",
+    "deadZonesAndVibration": "Dead zones and vibration"
   }
 }

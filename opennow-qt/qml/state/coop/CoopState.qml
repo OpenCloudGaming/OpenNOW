@@ -61,6 +61,8 @@ QtObject {
     // Host: guests who get a streamer peer: invited, approved asks, let in after a code join, or joined
     // while approval was off.
     property var admittedIds: []
+    // Guest: the in-stream co-op panel or its controllers page has focus, so the shell owns input.
+    property bool guestPanelOpen: false
     // Guest: the host has not let this code join in yet.
     property bool admissionPending: false
     // Host notice: {kind: "joining", user, slot} after approving an ask, or {kind: "expired"} when the

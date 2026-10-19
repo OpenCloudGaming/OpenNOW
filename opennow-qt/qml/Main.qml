@@ -316,13 +316,16 @@ ApplicationWindow {
     }
 
     readonly property bool coopGuest: Boolean(ShellStore.coop && ShellStore.coop.role === "guest")
+    readonly property bool coopGuestPanelOpen: Boolean(window.coopGuest && ShellStore.coop.guestPanelOpen)
     onCoopGuestChanged: syncInputOwnership()
+    onCoopGuestPanelOpenChanged: syncInputOwnership()
     function syncInputOwnership() {
         const shellOwnsInput = !window.active || AppController.route !== "stream"
             || (!window.desktopSurfaceActive && !window.consoleStreamReady)
             || (window.desktopSurfaceActive && !ShellStore.authRestorePending && !ShellStore.signedIn
                 && !window.coopGuest)
             || ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)
+            || window.coopGuestPanelOpen
         ControllerInput.inputSuspended = !window.active
             || (shellOwnsInput && ShellStore.settings.controllerMode === false)
         ControllerInput.shellCaptureEnabled = shellOwnsInput
