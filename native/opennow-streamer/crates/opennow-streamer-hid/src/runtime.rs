@@ -109,6 +109,7 @@ struct RuntimeState {
     lanes: [SourceLane; MAX_SOURCES],
     session_evaluated_epoch: Option<u64>,
     session_admitted: u16,
+    ordinary_without_session: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -302,6 +303,23 @@ impl HidRuntime {
         self.lock().capture_active
     }
 
+    /// While set and no GFN session is bound, Sony snapshots are admitted as ordinary gamepad
+    /// reports. A co-op guest has no NVST session for rich Sony input, but its controller must
+    /// still reach the host.
+    pub fn set_ordinary_without_session(&self, enabled: bool) {
+        self.lock().ordinary_without_session = enabled;
+    }
+
+    fn ordinary_bitmap(state: &RuntimeState) -> u16 {
+        let mut bitmap = 0_u16;
+        for slot in 0..MAX_SOURCES as u8 {
+            if state.inventory.incarnation(slot).is_some() {
+                bitmap |= (1_u16 << slot) | (1_u16 << (slot + 8));
+            }
+        }
+        bitmap
+    }
+
     pub fn output_admitted(&self, slot: u8) -> bool {
         let state = self.lock();
         if !state.capture_active || state.binding.is_none() {
@@ -329,7 +347,7 @@ impl HidRuntime {
             Err(_) => return SnapshotAdmission::StaleSource,
         };
         let mut state = self.lock();
-        if state.binding.is_none() {
+        if state.binding.is_none() && !state.ordinary_without_session {
             return SnapshotAdmission::Unbound;
         }
         let Some(incarnation) = state.inventory.incarnation(snapshot.slot) else {
@@ -338,17 +356,15 @@ impl HidRuntime {
         if incarnation != snapshot.incarnation {
             return SnapshotAdmission::StaleSource;
         }
+        if state.binding.is_none() {
+            admit_ordinary(&snapshot, Self::ordinary_bitmap(&state));
+            return SnapshotAdmission::Admitted;
+        }
         let Some(mode) = Self::mode_for_epoch(&state, snapshot.slot) else {
             return SnapshotAdmission::StaleSource;
         };
         if mode == SourceMode::OrdinaryFallback {
-            let mut bitmap = 0_u16;
-            for slot in 0..MAX_SOURCES as u8 {
-                if state.inventory.incarnation(slot).is_some() {
-                    bitmap |= (1_u16 << slot) | (1_u16 << (slot + 8));
-                }
-            }
-            admit_ordinary(&snapshot, bitmap);
+            admit_ordinary(&snapshot, Self::ordinary_bitmap(&state));
             return SnapshotAdmission::Admitted;
         }
         let active = state.capture_active;
@@ -456,6 +472,40 @@ mod tests {
 
     fn snapshot(slot: u8, incarnation: u64) -> SonySnapshot {
         SonySnapshot::neutral(slot, incarnation, 0)
+    }
+
+    #[test]
+    fn unbound_sony_snapshots_become_ordinary_reports_only_for_a_coop_guest() {
+        let runtime = HidRuntime::new();
+        runtime.replace_inventory(&[None, ds4(1, 7), None, None]);
+        let mut pressed = snapshot(1, 7);
+        pressed.buttons = 0x1000;
+        let mut admitted = Vec::new();
+        assert_eq!(
+            runtime.submit_snapshot_with(pressed, |snapshot, bitmap| admitted
+                .push((*snapshot, bitmap))),
+            SnapshotAdmission::Unbound
+        );
+        assert!(admitted.is_empty());
+
+        runtime.set_ordinary_without_session(true);
+        assert_eq!(
+            runtime.submit_snapshot_with(pressed, |snapshot, bitmap| admitted
+                .push((*snapshot, bitmap))),
+            SnapshotAdmission::Admitted
+        );
+        assert_eq!(admitted, [(pressed, 0x0202)]);
+        assert_eq!(runtime.pending_states(), 0, "no rich Sony state is queued");
+        assert_eq!(
+            runtime.submit_snapshot_with(snapshot(1, 8), |_, _| panic!("stale source admitted")),
+            SnapshotAdmission::StaleSource
+        );
+
+        runtime.set_ordinary_without_session(false);
+        assert_eq!(
+            runtime.submit_snapshot_with(pressed, |_, _| panic!("admitted after the guest left")),
+            SnapshotAdmission::Unbound
+        );
     }
 
     #[test]

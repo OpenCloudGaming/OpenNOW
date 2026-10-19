@@ -178,6 +178,7 @@ fn run_loopback(pre_join_wire: &[u16], first_seq: u16, lost_frame: u32) {
             frames: frames_sender,
             gamepad: gamepad.clone(),
             stopped: stopped.clone(),
+            taken: 0,
         }),
         guest_events,
     )
@@ -390,15 +391,48 @@ fn run_loopback(pre_join_wire: &[u16], first_seq: u16, lost_frame: u32) {
         &guest_receiver,
         &mut guest_seen,
         Duration::from_secs(3),
-        |value| value["type"] == "coop-guest-stats" && value["hostToGfnPingMs"] == 11.0,
+        |value| {
+            value["type"] == "coop-guest-stats"
+                && value["hostToGfnPingMs"] == 11.0
+                && value["inputStatesSent"].as_u64() > Some(0)
+        },
     );
     assert_eq!(stats["slot"], 2);
+    assert_eq!(
+        (&stats["inputSamplesPlain"], &stats["inputSamplesSony"]),
+        (&json!(1), &json!(0))
+    );
     let host_stats = wait_for(
         &host_receiver,
         &mut host_seen,
         Duration::from_secs(3),
-        |value| value["type"] == "coop-host-stats" && value["peers"][0]["path"] == "direct",
+        |value| {
+            value["type"] == "coop-host-stats"
+                && value["peers"][0]["path"] == "direct"
+                && value["peers"][0]["inputInjected"].as_u64() > Some(0)
+        },
     );
+    let peer = &host_stats["peers"][0];
+    assert!(peer["inputReceived"].as_u64() >= peer["inputInjected"].as_u64());
+    for dropped in [
+        "inputDroppedMuted",
+        "inputDroppedSlotNotOwned",
+        "inputDroppedMalformed",
+        "inputDroppedNvstRefused",
+    ] {
+        assert_eq!(peer[dropped], 0, "{dropped}: {peer}");
+    }
+    host.set_muted("guest-1", true).unwrap();
+    wait_for(
+        &host_receiver,
+        &mut host_seen,
+        Duration::from_secs(3),
+        |value| {
+            value["type"] == "coop-host-stats"
+                && value["peers"][0]["inputDroppedMuted"].as_u64() > Some(0)
+        },
+    );
+    host.set_muted("guest-1", false).unwrap();
     println!("host stats: {host_stats}");
     println!("guest stats: {stats}");
     assert!(backend.keyframes.load(Ordering::Relaxed) <= 1 + started.elapsed().as_secs() as usize);

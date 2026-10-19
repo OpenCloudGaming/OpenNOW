@@ -21,6 +21,16 @@ pub enum SlotAction {
     Neutral(u8),
 }
 
+/// Why a guest's input record did not become a slot action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputDrop {
+    /// The peer is not a member with a connected slot.
+    SlotNotOwned,
+    Muted,
+    /// The sequence number is not newer than the last accepted one.
+    Stale,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlotError {
     InvalidSlot,
@@ -151,26 +161,33 @@ impl SlotTable {
         Ok(vec![SlotAction::Neutral(guest.slot)])
     }
 
-    pub fn input(&mut self, peer: &str, record: InputRecord, now: Instant) -> Vec<SlotAction> {
-        let Ok(guest) = self.find_mut(peer) else {
-            return Vec::new();
-        };
-        if !guest.connected || guest.muted {
-            return Vec::new();
+    pub fn input(
+        &mut self,
+        peer: &str,
+        record: InputRecord,
+        now: Instant,
+    ) -> Result<SlotAction, InputDrop> {
+        let guest = self
+            .find_mut(peer)
+            .ok()
+            .filter(|guest| guest.connected)
+            .ok_or(InputDrop::SlotNotOwned)?;
+        if guest.muted {
+            return Err(InputDrop::Muted);
         }
         if guest
             .last_seq
             .is_some_and(|latest| !is_newer_seq(record.seq, latest))
         {
-            return Vec::new();
+            return Err(InputDrop::Stale);
         }
         guest.last_seq = Some(record.seq);
         guest.last_input_at = Some(now);
         guest.held = !record.state.is_neutral();
-        vec![SlotAction::Gamepad {
+        Ok(SlotAction::Gamepad {
             slot: guest.slot,
             state: record.state,
-        }]
+        })
     }
 
     pub fn set_muted(&mut self, peer: &str, muted: bool) -> Result<Vec<SlotAction>, SlotError> {
@@ -281,12 +298,15 @@ mod tests {
         let mut table = SlotTable::default();
         assert_eq!(table.add("a", 1).unwrap(), []);
         assert_eq!(table.mask(), 0);
-        assert!(table.input("a", record(1, 1), now).is_empty());
+        assert_eq!(
+            table.input("a", record(1, 1), now),
+            Err(InputDrop::SlotNotOwned)
+        );
         assert_eq!(
             table.connected("a", now).unwrap(),
             [SlotAction::Slots(0b0010)]
         );
-        assert_eq!(table.input("a", record(1, 1), now), [pressed(1, 1)]);
+        assert_eq!(table.input("a", record(1, 1), now), Ok(pressed(1, 1)));
         assert_eq!(table.owner_of(1), Some("a"));
         assert_eq!(table.add("a", 2), Err(SlotError::DuplicatePeer));
         assert_eq!(table.add("b", 0), Err(SlotError::InvalidSlot));
@@ -298,10 +318,13 @@ mod tests {
         let mut table = SlotTable::default();
         table.add("a", 2).unwrap();
         table.connected("a", now).unwrap();
-        assert_eq!(table.input("a", record(u32::MAX, 4), now).len(), 1);
-        assert_eq!(table.input("a", record(0, 5), now), [pressed(2, 5)]);
-        assert!(table.input("a", record(0, 6), now).is_empty());
-        assert!(table.input("a", record(u32::MAX - 3, 7), now).is_empty());
+        assert!(table.input("a", record(u32::MAX, 4), now).is_ok());
+        assert_eq!(table.input("a", record(0, 5), now), Ok(pressed(2, 5)));
+        assert_eq!(table.input("a", record(0, 6), now), Err(InputDrop::Stale));
+        assert_eq!(
+            table.input("a", record(u32::MAX - 3, 7), now),
+            Err(InputDrop::Stale)
+        );
     }
 
     #[test]
@@ -310,19 +333,19 @@ mod tests {
         let mut table = SlotTable::default();
         table.add("a", 3).unwrap();
         table.connected("a", now).unwrap();
-        table.input("a", record(1, 8), now);
+        table.input("a", record(1, 8), now).unwrap();
         assert_eq!(
             table.set_muted("a", true).unwrap(),
             [SlotAction::Neutral(3)]
         );
-        assert!(table.input("a", record(2, 8), now).is_empty());
+        assert_eq!(table.input("a", record(2, 8), now), Err(InputDrop::Muted));
         assert_eq!(
             table.mask(),
             0b1000,
             "a muted guest keeps its controller registered"
         );
         assert_eq!(table.set_muted("a", false).unwrap(), []);
-        assert_eq!(table.input("a", record(3, 8), now), [pressed(3, 8)]);
+        assert_eq!(table.input("a", record(3, 8), now), Ok(pressed(3, 8)));
     }
 
     #[test]
@@ -346,7 +369,7 @@ mod tests {
             ]
         );
         assert_eq!((table.slot_of("a"), table.slot_of("b")), (Some(2), Some(3)));
-        assert_eq!(table.input("b", record(1, 1), now), [pressed(3, 1)]);
+        assert_eq!(table.input("b", record(1, 1), now), Ok(pressed(3, 1)));
     }
 
     #[test]
@@ -358,6 +381,10 @@ mod tests {
         table.connected("a", now).unwrap();
         table.connected("b", now).unwrap();
         assert_eq!(table.disconnected("b").unwrap(), [SlotAction::Neutral(2)]);
+        assert_eq!(
+            table.input("z", record(1, 1), now),
+            Err(InputDrop::SlotNotOwned)
+        );
         assert_eq!(table.mask(), 0b0110);
         assert_eq!(
             table.remove("a").unwrap(),
@@ -373,11 +400,13 @@ mod tests {
         let mut table = SlotTable::default();
         table.add("a", 1).unwrap();
         table.connected("a", start).unwrap();
-        table.input("a", record(1, 0x10), start);
+        table.input("a", record(1, 0x10), start).unwrap();
         assert!(table.poll(start + Duration::from_millis(499)).is_empty());
         assert_eq!(table.poll(start + INPUT_TIMEOUT), [SlotAction::Neutral(1)]);
         assert!(table.poll(start + Duration::from_secs(2)).is_empty());
-        table.input("a", record(2, 0), start + Duration::from_secs(2));
+        table
+            .input("a", record(2, 0), start + Duration::from_secs(2))
+            .unwrap();
         assert!(
             table.poll(start + Duration::from_secs(5)).is_empty(),
             "neutral input is not held"

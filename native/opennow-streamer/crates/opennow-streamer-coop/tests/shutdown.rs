@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use opennow_streamer_coop::{
     CoopGuest, CoopHost, GamepadState, GuestConfig, GuestMedia, HostConfig, IceConfig,
-    RumbleRouter, StreamDescription,
+    InputSamples, RumbleRouter, StreamDescription,
 };
 use opennow_streamer_transport::MediaConsumer;
 use serde_json::Value;
@@ -37,6 +37,10 @@ impl GuestMedia for JoiningMedia {
 
     fn take_gamepad(&mut self) -> Option<GamepadState> {
         None
+    }
+
+    fn input_samples(&self) -> InputSamples {
+        InputSamples::default()
     }
 
     fn take_keyframe_request(&mut self) -> bool {

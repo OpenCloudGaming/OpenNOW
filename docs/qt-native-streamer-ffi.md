@@ -121,8 +121,15 @@ client streams GFN, and with `coop-guest-active` while a guest session runs. A
 sends the stream description, the guest starts the normal embedded media
 runtime. Surface, presentation, decode, and audio commands therefore work as
 they do in a GFN session. Gamepad input uses `opennow_streamer_submit_gamepad`
-with controller 0. The guest sends a snapshot when the state changes and resends
-the latest one every 50 ms. The Guide button emits `overlay-request` as usual.
+with any controller id, and `opennow_streamer_submit_sony_snapshot` for Sony
+controllers. While a guest session runs, a Sony snapshot is admitted as an
+ordinary gamepad report with the same button layout and returns `Ok` (without a
+guest session and without a GFN session it returns `Closed`). A guest never
+sends rich Sony input. The guest forwards one controller: the first one to leave
+neutral keeps the guest's slot until it returns to neutral or disconnects. Only
+then can another controller take over, and the old controller's neutral state is
+sent first. The guest sends a snapshot when the state changes and resends the
+latest one every 50 ms. The Guide button emits `overlay-request` as usual.
 Keyboard and mouse input are not forwarded.
 
 ### Events
@@ -153,7 +160,10 @@ Keyboard and mouse input are not forwarded.
 - `path` is `direct`, `relay`, or null. `relayId` is the configured relay site
   of the TURN server that carries the selected pair, whichever side allocated it.
 - `coop-host-stats` and `coop-guest-stats` are sent at 1 Hz with the contract
-  fields. The native file log includes them at most every 10 s. `capacityKbps`
+  fields, including the cumulative input counters described in
+  `docs/coop-sessions.md`. The native file log includes them at most every 10 s,
+  and each co-op worker also logs its input counters (and nothing else) under the
+  `coop` area every 10 s. `capacityKbps`
   is null because the peer link runs without bandwidth estimation. `lossPct` on
   the host comes from the guest's RTCP receiver reports. On the guest, it is the
   share of forwarded video packets still missing after NACK repair.

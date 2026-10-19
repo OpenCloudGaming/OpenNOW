@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use str0m::rtp::Ssrc;
 
 use crate::config::IceConfig;
-use crate::input::{GamepadState, InputRecord};
+use crate::input::{GamepadState, InputRecord, InputSamples};
 use crate::link::{AUDIO_PT, LinkEvent, NetConfig, Path, PeerLink, ResolvedIce, VIDEO_PT};
 use crate::protocol::{ControlMessage, Signal, StreamDescription};
 use crate::ring::{KEYFRAME_INTERVAL, LossCounters, NackTracker, encode_nack};
@@ -24,6 +24,7 @@ const COMMAND_CAPACITY: usize = 32;
 const LOOP_WAIT: Duration = Duration::from_millis(1);
 const STATS_INTERVAL: Duration = Duration::from_secs(1);
 const INPUT_RESEND_INTERVAL: Duration = Duration::from_millis(50);
+const INPUT_LOG_INTERVAL: Duration = Duration::from_secs(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const RECONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -34,6 +35,8 @@ pub trait GuestMedia: Send + 'static {
     fn start(&mut self, description: &StreamDescription) -> Result<MediaConsumer, String>;
     /// The latest local controller snapshot submitted since the previous call.
     fn take_gamepad(&mut self) -> Option<GamepadState>;
+    /// Totals of the local controller samples 'take_gamepad' has consumed, by source.
+    fn input_samples(&self) -> InputSamples;
     /// True when the decoder asked for a reference frame since the previous call.
     fn take_keyframe_request(&mut self) -> bool;
     fn stop(&mut self);
@@ -171,6 +174,8 @@ struct GuestWorker {
     input_seq: u32,
     input_state: GamepadState,
     input_sent: Option<Instant>,
+    input_states_sent: u64,
+    input_log_at: Instant,
     loss_at_stats: LossCounters,
     stats_at: Instant,
 }
@@ -211,6 +216,8 @@ fn run(
         input_seq: 0,
         input_state: GamepadState::default(),
         input_sent: None,
+        input_states_sent: 0,
+        input_log_at: now,
         loss_at_stats: LossCounters::default(),
         stats_at: now,
     };
@@ -512,6 +519,7 @@ impl GuestWorker {
         };
         if self.link.send_channel(input, true, &record.encode()) {
             self.input_sent = Some(now);
+            self.input_states_sent += 1;
         }
     }
 
@@ -532,6 +540,7 @@ impl GuestWorker {
         let total = guest_to_host
             .zip(self.host_to_gfn_ping_ms)
             .map(|(a, b)| a + b);
+        let samples = self.media.input_samples();
         self.emit(json!({
             "type":"coop-guest-stats",
             "hostToGfnPingMs":self.host_to_gfn_ping_ms,
@@ -541,7 +550,25 @@ impl GuestWorker {
             "lossPct":loss_pct,
             "slot":self.slot,
             "inputMuted":self.input_muted,
+            "inputSamplesPlain":samples.plain,
+            "inputSamplesSony":samples.sony,
+            "inputStatesSent":self.input_states_sent,
         }));
+        if now.saturating_duration_since(self.input_log_at) >= INPUT_LOG_INTERVAL {
+            self.input_log_at = now;
+            opennow_streamer_protocol::log::log_line(
+                "INFO",
+                "coop",
+                &format!(
+                    "guest input slot={} samples plain={} sony={} statesSent={} muted={}",
+                    self.slot,
+                    samples.plain,
+                    samples.sony,
+                    self.input_states_sent,
+                    self.input_muted
+                ),
+            );
+        }
     }
 }
 

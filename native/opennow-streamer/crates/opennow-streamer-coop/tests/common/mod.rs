@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use opennow_streamer_coop::{
-    EventSink, GamepadState, GuestMedia, HostBackend, NetConfig, StreamDescription,
+    EventSink, GamepadState, GuestMedia, HostBackend, InputSamples, NetConfig, StreamDescription,
 };
 use opennow_streamer_transport::{EncodedMediaFrame, MediaConsumer};
 use serde_json::{Value, json};
@@ -41,6 +41,7 @@ pub struct Media {
     pub frames: SyncSender<Receiver<EncodedMediaFrame>>,
     pub gamepad: Arc<Mutex<Option<GamepadState>>>,
     pub stopped: Arc<AtomicBool>,
+    pub taken: u64,
 }
 
 impl GuestMedia for Media {
@@ -52,7 +53,16 @@ impl GuestMedia for Media {
     }
 
     fn take_gamepad(&mut self) -> Option<GamepadState> {
-        self.gamepad.lock().unwrap().take()
+        let state = self.gamepad.lock().unwrap().take();
+        self.taken += u64::from(state.is_some());
+        state
+    }
+
+    fn input_samples(&self) -> InputSamples {
+        InputSamples {
+            plain: self.taken,
+            sony: 0,
+        }
     }
 
     fn take_keyframe_request(&mut self) -> bool {

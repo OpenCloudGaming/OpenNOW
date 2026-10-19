@@ -18,7 +18,7 @@ use crate::input::InputRecord;
 use crate::link::{AUDIO_PT, LinkEvent, NetConfig, Path, PeerLink, ResolvedIce, VIDEO_PT};
 use crate::protocol::{ControlMessage, Signal, StreamDescription};
 use crate::ring::{KeyframeLimiter, RetransmitRing, RingEntry, decode_nack};
-use crate::slots::{MAX_GUESTS, SlotAction, SlotError, SlotTable};
+use crate::slots::{InputDrop, MAX_GUESTS, SlotAction, SlotError, SlotTable};
 use crate::{CoopError, EventSink};
 
 const COMMAND_CAPACITY: usize = 64;
@@ -28,6 +28,7 @@ const LOOP_WAIT: Duration = Duration::from_millis(1);
 const STATS_INTERVAL: Duration = Duration::from_secs(1);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_PEER_ID_LEN: usize = 128;
+const INPUT_LOG_INTERVAL: Duration = Duration::from_secs(10);
 
 /// What the co-op host needs from the running NVST session.
 pub trait HostBackend: Send + Sync + 'static {
@@ -146,6 +147,7 @@ impl CoopHost {
                     audio_seq: None,
                     stream_bytes: 0,
                     stats_at: Instant::now(),
+                    input_log_at: Instant::now(),
                     registered: None,
                 }
                 .run(&receiver, &tap);
@@ -264,6 +266,19 @@ struct HostPeer {
     /// in while the low 16 bits stay the sender's wire sequence.
     video_base: Option<u64>,
     audio_base: Option<u64>,
+    input: PeerInput,
+}
+
+/// What became of the input records one guest sent, from receipt to the NVST input path.
+#[derive(Debug, Default, Clone, Copy)]
+struct PeerInput {
+    received: u64,
+    injected: u64,
+    muted: u64,
+    slot_not_owned: u64,
+    malformed: u64,
+    stale: u64,
+    nvst_refused: u64,
 }
 
 fn path_fields(path: Option<&Path>) -> (Value, Value) {
@@ -306,6 +321,7 @@ struct HostWorker {
     audio_seq: Option<u64>,
     stream_bytes: u64,
     stats_at: Instant,
+    input_log_at: Instant,
     /// Guest slot mask the NVST input path last accepted; re-sent until it matches.
     registered: Option<u8>,
 }
@@ -431,6 +447,7 @@ impl HostWorker {
                     send_kbps: 0.0,
                     video_base: None,
                     audio_base: None,
+                    input: PeerInput::default(),
                 });
                 self.emit_state(self.peers.len() - 1);
                 Ok(())
@@ -508,29 +525,61 @@ impl HostWorker {
     }
 
     fn apply(&mut self, actions: &[SlotAction]) {
-        let timestamp = u64::try_from(self.origin.elapsed().as_micros()).unwrap_or(u64::MAX);
         for action in actions {
-            let record = match *action {
-                SlotAction::Slots(mask) => {
-                    self.rumble.set_mask(mask);
-                    self.registered = self
-                        .backend
-                        .send_input(coop_slots_record(mask, timestamp))
-                        .then_some(mask);
-                    continue;
-                }
-                SlotAction::Gamepad { slot, state } => coop_gamepad_record(
-                    slot,
-                    state.buttons,
-                    state.left_trigger,
-                    state.right_trigger,
-                    (state.left_stick_x, state.left_stick_y),
-                    (state.right_stick_x, state.right_stick_y),
-                    timestamp,
-                ),
-                SlotAction::Neutral(slot) => coop_neutral_record(slot, timestamp),
-            };
-            self.backend.send_input(record);
+            self.apply_action(*action);
+        }
+    }
+
+    /// Queues one action on the NVST input path; false when that path refused it.
+    fn apply_action(&mut self, action: SlotAction) -> bool {
+        let timestamp = u64::try_from(self.origin.elapsed().as_micros()).unwrap_or(u64::MAX);
+        let record = match action {
+            SlotAction::Slots(mask) => {
+                self.rumble.set_mask(mask);
+                self.registered = self
+                    .backend
+                    .send_input(coop_slots_record(mask, timestamp))
+                    .then_some(mask);
+                return self.registered.is_some();
+            }
+            SlotAction::Gamepad { slot, state } => coop_gamepad_record(
+                slot,
+                state.buttons,
+                state.left_trigger,
+                state.right_trigger,
+                (state.left_stick_x, state.left_stick_y),
+                (state.right_stick_x, state.right_stick_y),
+                timestamp,
+            ),
+            SlotAction::Neutral(slot) => coop_neutral_record(slot, timestamp),
+        };
+        self.backend.send_input(record)
+    }
+
+    /// One record from a guest's input channel, counted at the stage that consumed it.
+    fn guest_input(&mut self, index: usize, data: &[u8], now: Instant) {
+        self.peers[index].input.received += 1;
+        let Some(record) = InputRecord::decode(data) else {
+            self.peers[index].input.malformed += 1;
+            return;
+        };
+        let peer_id = self.peers[index].id.clone();
+        let action = match self.slots.input(&peer_id, record, now) {
+            Ok(SlotAction::Gamepad { slot, .. })
+                if self.registered.is_none_or(|mask| mask & (1 << slot) == 0) =>
+            {
+                Err(InputDrop::SlotNotOwned)
+            }
+            outcome => outcome,
+        };
+        let injected = action.map(|action| self.apply_action(action));
+        let input = &mut self.peers[index].input;
+        match injected {
+            Ok(true) => input.injected += 1,
+            Ok(false) => input.nvst_refused += 1,
+            Err(InputDrop::SlotNotOwned) => input.slot_not_owned += 1,
+            Err(InputDrop::Muted) => input.muted += 1,
+            Err(InputDrop::Stale) => input.stale += 1,
         }
     }
 
@@ -649,12 +698,7 @@ impl HostWorker {
             LinkEvent::ChannelData(id, data) => {
                 let peer = &self.peers[index];
                 if peer.link.input == Some(id) {
-                    let Some(record) = InputRecord::decode(&data) else {
-                        return;
-                    };
-                    let peer_id = peer.id.clone();
-                    let actions = self.slots.input(&peer_id, record, now);
-                    self.apply(&actions);
+                    self.guest_input(index, &data, now);
                 } else if peer.link.control == Some(id)
                     && ControlMessage::decode(&data) == Some(ControlMessage::KeyframeRequest)
                     && self.keyframes.request(now)
@@ -723,6 +767,10 @@ impl HostWorker {
         let ping = self.backend.host_to_gfn_ping_ms();
         let mut peers = Vec::with_capacity(self.peers.len());
         let mut upload_kbps = 0.0;
+        let log_input = now.saturating_duration_since(self.input_log_at) >= INPUT_LOG_INTERVAL;
+        if log_input {
+            self.input_log_at = now;
+        }
         for index in 0..self.peers.len() {
             let peer = &mut self.peers[index];
             let sent = peer.link.bytes_sent();
@@ -739,7 +787,32 @@ impl HostWorker {
                 "lossPct":peer.link.egress_loss().map(|loss| f64::from(loss) * 100.0),
                 "sendKbps":peer.send_kbps,
                 "inputMuted":self.slots.is_muted(&peer.id),
+                "inputReceived":peer.input.received,
+                "inputInjected":peer.input.injected,
+                "inputDroppedMuted":peer.input.muted,
+                "inputDroppedSlotNotOwned":peer.input.slot_not_owned,
+                "inputDroppedMalformed":peer.input.malformed,
+                "inputDroppedStale":peer.input.stale,
+                "inputDroppedNvstRefused":peer.input.nvst_refused,
             }));
+            if log_input {
+                let input = peer.input;
+                opennow_streamer_protocol::log::log_line(
+                    "INFO",
+                    "coop",
+                    &format!(
+                        "host input peer={index} slot={:?} received={} injected={} dropped muted={} slotNotOwned={} malformed={} stale={} nvstRefused={}",
+                        self.slots.slot_of(&peer.id),
+                        input.received,
+                        input.injected,
+                        input.muted,
+                        input.slot_not_owned,
+                        input.malformed,
+                        input.stale,
+                        input.nvst_refused
+                    ),
+                );
+            }
             if peer.state == PeerState::Connected {
                 self.send_control(
                     index,

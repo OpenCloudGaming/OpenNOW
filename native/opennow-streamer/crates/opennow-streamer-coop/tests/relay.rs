@@ -231,6 +231,7 @@ fn run(coturn: &Coturn, url: &str, secret: &str) -> Run {
             frames: frames_sender,
             gamepad: Arc::new(Mutex::new(None)),
             stopped: Arc::new(AtomicBool::new(false)),
+            taken: 0,
         }),
         guest_events,
     )

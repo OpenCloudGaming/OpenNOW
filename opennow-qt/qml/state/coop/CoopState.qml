@@ -39,7 +39,8 @@ QtObject {
     property var lobby: null
     property int slot: 0
     property string selfId: ""
-    // Host: peerId -> {peerId, slot, state, path, relayId, peerToHostPingMs, lossPct, sendKbps, inputMuted}
+    // Host: peerId -> {peerId, slot, state, path, relayId, peerToHostPingMs, lossPct, sendKbps, inputMuted,
+    //   inputReceived, inputInjected, inputDropped* counters}
     property var peers: ({})
     // Host: {uploadKbps, capacityKbps, streamKbps, hostToGfnPingMs}
     property var hostStats: null

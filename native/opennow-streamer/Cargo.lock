@@ -1679,6 +1679,7 @@ dependencies = [
  "getrandom 0.3.4",
  "hmac",
  "md-5",
+ "opennow-streamer-protocol",
  "opennow-streamer-transport",
  "rcgen",
  "rustls",

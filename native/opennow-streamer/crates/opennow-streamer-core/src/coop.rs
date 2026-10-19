@@ -7,9 +7,11 @@ use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
 use opennow_streamer_coop::{
-    AudioDescription, CoopError, CoopGuest, CoopHost, EventSink, GamepadState, GuestConfig,
-    GuestMedia, HostBackend, HostConfig, IceConfig, NetConfig, StreamDescription,
+    AudioDescription, CoopError, CoopGuest, CoopHost, EventSink, GamepadSelector, GamepadState,
+    GuestConfig, GuestMedia, HostBackend, HostConfig, IceConfig, InputSamples, NetConfig,
+    StreamDescription,
 };
+use opennow_streamer_hid::HidRuntime;
 use opennow_streamer_platform::{
     CapturedInput, CapturedInputQueue, MediaColorQuality, MediaFeedback, MediaRuntime,
     MediaSession, MediaStreamConfig, MediaVideoCodec,
@@ -118,6 +120,11 @@ struct EngineGuestMedia {
     worker: Option<JoinHandle<()>>,
     feedback: Option<Receiver<MediaFeedback>>,
     captured: Option<Arc<CapturedInputQueue>>,
+    gamepads: GamepadSelector,
+    /// Tells Sony controllers, whose snapshots arrive as ordinary reports on their claimed
+    /// slot, apart from plain gamepads.
+    hid: Arc<HidRuntime>,
+    samples: InputSamples,
 }
 
 impl GuestMedia for EngineGuestMedia {
@@ -153,14 +160,14 @@ impl GuestMedia for EngineGuestMedia {
 
     fn take_gamepad(&mut self) -> Option<GamepadState> {
         let captured = self.captured.as_ref()?;
-        let mut latest = None;
+        let mut inventory = None;
         for _ in 0..MAX_INPUT_SAMPLES_PER_POLL {
             let Some(sample) = captured.take_sample() else {
                 break;
             };
             match sample.input {
                 CapturedInput::Gamepad {
-                    controller_id: 0,
+                    controller_id,
                     bitmap,
                     buttons,
                     left_trigger,
@@ -170,16 +177,28 @@ impl GuestMedia for EngineGuestMedia {
                     right_stick_x,
                     right_stick_y,
                 } => {
-                    latest = Some(GamepadState {
-                        bitmap,
-                        buttons,
-                        left_trigger,
-                        right_trigger,
-                        left_stick_x,
-                        left_stick_y,
-                        right_stick_x,
-                        right_stick_y,
-                    });
+                    if inventory
+                        .get_or_insert_with(|| self.hid.inventory())
+                        .claim(controller_id)
+                        .is_some()
+                    {
+                        self.samples.sony += 1;
+                    } else {
+                        self.samples.plain += 1;
+                    }
+                    self.gamepads.observe(
+                        controller_id,
+                        GamepadState {
+                            bitmap,
+                            buttons,
+                            left_trigger,
+                            right_trigger,
+                            left_stick_x,
+                            left_stick_y,
+                            right_stick_x,
+                            right_stick_y,
+                        },
+                    )
                 }
                 CapturedInput::Guide => {
                     let _ = self
@@ -192,7 +211,11 @@ impl GuestMedia for EngineGuestMedia {
         if captured.take_overflowed() {
             captured.clear();
         }
-        latest
+        self.gamepads.take()
+    }
+
+    fn input_samples(&self) -> InputSamples {
+        self.samples
     }
 
     fn take_keyframe_request(&mut self) -> bool {
@@ -415,6 +438,9 @@ impl Engine {
             worker: None,
             feedback: None,
             captured: None,
+            gamepads: GamepadSelector::default(),
+            hid: self.hid_runtime.clone(),
+            samples: InputSamples::default(),
         });
         let start_id = id.clone();
         let sink: EventSink = Arc::new(move |mut value: Value| {
@@ -425,12 +451,14 @@ impl Engine {
         });
         self.coop_guest =
             Some(CoopGuest::start(config, media, sink).map_err(|failure| coop_error(id, failure))?);
+        self.hid_runtime.set_ordinary_without_session(true);
         Ok(())
     }
 
     pub(super) fn stop_coop_guest(&mut self) {
         if let Some(mut guest) = self.coop_guest.take() {
             guest.stop();
+            self.hid_runtime.set_ordinary_without_session(false);
         }
     }
 }
@@ -438,6 +466,95 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn guest_media_forwards_one_controller_from_any_slot_and_counts_sony_samples_apart() {
+        let (_host, runtime) = opennow_streamer_platform::create_test_runtime();
+        let (sender, _events) = mpsc::channel();
+        let hid = Arc::new(HidRuntime::new());
+        hid.replace_inventory(&[
+            None,
+            None,
+            opennow_streamer_hid::SdlDeviceClaim::new(2, 5, 0x054c, 0x0ce6),
+            None,
+        ]);
+        let captured = Arc::new(CapturedInputQueue::default());
+        let mut media = EngineGuestMedia {
+            runtime,
+            events: EventSender::unbounded(sender),
+            session: None,
+            worker: None,
+            feedback: None,
+            captured: Some(captured.clone()),
+            gamepads: GamepadSelector::default(),
+            hid,
+            samples: InputSamples::default(),
+        };
+        let pad = |controller_id, buttons| CapturedInput::Gamepad {
+            controller_id,
+            bitmap: 0x0606,
+            buttons,
+            left_trigger: 0,
+            right_trigger: 0,
+            left_stick_x: 0,
+            left_stick_y: 0,
+            right_stick_x: 0,
+            right_stick_y: 0,
+        };
+        let mut buttons = || media.take_gamepad().map(|state| state.buttons);
+        captured.push(pad(1, 0x1000));
+        assert_eq!(
+            buttons(),
+            Some(0x1000),
+            "a plain pad on slot 1 is forwarded"
+        );
+        captured.push(pad(2, 0x2000));
+        assert_eq!(buttons(), None, "the Sony pad waits while slot 1 is held");
+        captured.push(pad(1, 0));
+        captured.push(pad(2, 0x2000));
+        assert_eq!(buttons(), Some(0), "the old owner's neutral goes first");
+        assert_eq!(buttons(), Some(0x2000));
+        assert_eq!(media.input_samples(), InputSamples { plain: 2, sony: 2 });
+    }
+
+    #[test]
+    fn a_coop_guest_admits_sony_controllers_as_ordinary_input_until_it_leaves() {
+        use opennow_streamer_hid::{SdlDeviceClaim, SnapshotAdmission, SonySnapshot};
+        let (_host, runtime) = opennow_streamer_platform::create_test_runtime();
+        let (events, _received) = mpsc::channel();
+        let mut engine = Engine::with_media_runtime(events, runtime);
+        engine.hid_runtime.replace_inventory(&[
+            None,
+            SdlDeviceClaim::new(1, 3, 0x054c, 0x0ce6),
+            None,
+            None,
+        ]);
+        let mut snapshot = SonySnapshot::neutral(1, 3, 0);
+        snapshot.buttons = 0x1000;
+        let admitted = |engine: &Engine| {
+            let mut forwarded = None;
+            let admission = engine
+                .hid_runtime
+                .submit_snapshot_with(snapshot, |snapshot, _| forwarded = Some(snapshot.buttons));
+            (admission, forwarded)
+        };
+        assert_eq!(admitted(&engine), (SnapshotAdmission::Unbound, None));
+        let start: Command = serde_json::from_value(json!({
+            "id":"guest-1","type":"coop-guest-start","iceServers":[],"relays":[],
+            "hostPeerId":"usr_host","slot":2
+        }))
+        .unwrap();
+        let (responses, _) = engine.handle(start);
+        assert_eq!(responses[0]["type"], "ok", "{responses:?}");
+        assert_eq!(
+            admitted(&engine),
+            (SnapshotAdmission::Admitted, Some(0x1000))
+        );
+        let stop: Command =
+            serde_json::from_value(json!({"id":"guest-2","type":"coop-guest-stop"})).unwrap();
+        engine.handle(stop);
+        assert_eq!(admitted(&engine), (SnapshotAdmission::Unbound, None));
+    }
 
     #[test]
     fn description_round_trips_into_the_guest_stream_config() {

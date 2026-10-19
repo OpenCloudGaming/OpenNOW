@@ -2711,6 +2711,41 @@ mod tests {
     }
 
     #[test]
+    fn coop_guests_on_slots_one_and_two_are_encoded_while_the_host_pad_is_rich() {
+        let mut codec = NvstInputCodec::default();
+        assert!(codec.set_rich_slot_mask(0b0001, 1).is_empty());
+        assert_eq!(
+            classify(&codec.encode(&coop_slots_record(0b0110, 2), 2).unwrap()),
+            [Coop::Register(0x0606)]
+        );
+        let sequence =
+            |message: &NvstEncodedInput| u16::from_be_bytes([message.bytes[15], message.bytes[16]]);
+        for (round, bitmap) in [(1, 0x0606), (2, 0x0706)] {
+            if round == 2 {
+                assert_eq!(
+                    classify(&codec.encode(&host_gamepad(0, 0x0101, 0x0040), 3).unwrap()),
+                    [Coop::Register(0x0706)],
+                    "the host's rich slot never carries ordinary state"
+                );
+            }
+            for slot in [1_u8, 2] {
+                let buttons = 0x1000 | u16::from(slot);
+                let encoded = codec.encode(&guest(slot, buttons), 4).unwrap();
+                assert_eq!(
+                    classify(&encoded),
+                    [Coop::State {
+                        id: slot,
+                        bitmap,
+                        buttons
+                    }]
+                );
+                assert_eq!(sequence(&encoded[0]), round);
+                assert!(encoded[0].is_meaningful());
+            }
+        }
+    }
+
+    #[test]
     fn coop_neutral_releases_reliably_and_supersedes_older_partial_state() {
         let mut codec = NvstInputCodec::default();
         codec.encode(&coop_slots_record(0b0100, 1), 1).unwrap();

@@ -37,6 +37,51 @@ impl GamepadState {
     }
 }
 
+/// Picks the one local controller a guest forwards. The first controller to leave neutral
+/// owns the guest's slot until it returns to neutral (which is also how a disconnect is
+/// reported); only then can another controller take over. Two controllers' states never
+/// mix, and the old owner's neutral state always goes out before the new owner's first one.
+#[derive(Debug, Default)]
+pub struct GamepadSelector {
+    owner: Option<u8>,
+    release: Option<GamepadState>,
+    latest: Option<GamepadState>,
+}
+
+impl GamepadSelector {
+    pub fn observe(&mut self, controller: u8, state: GamepadState) {
+        match self.owner {
+            Some(owner) if owner == controller => {
+                if state.is_neutral() {
+                    self.owner = None;
+                    self.latest = None;
+                    self.release = Some(state);
+                } else {
+                    self.latest = Some(state);
+                }
+            }
+            None if !state.is_neutral() => {
+                self.owner = Some(controller);
+                self.latest = Some(state);
+            }
+            _ => {}
+        }
+    }
+
+    /// The next state to forward, if one is new since the previous call.
+    pub fn take(&mut self) -> Option<GamepadState> {
+        self.release.take().or_else(|| self.latest.take())
+    }
+}
+
+/// Totals of local controller samples a guest took, by source: plain SDL gamepads, and
+/// Sony controllers whose snapshots were admitted as ordinary gamepad reports.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct InputSamples {
+    pub plain: u64,
+    pub sony: u64,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct InputRecord {
     pub seq: u32,
@@ -91,6 +136,64 @@ pub fn is_newer_seq(candidate: u32, latest: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pressed(buttons: u16) -> GamepadState {
+        GamepadState {
+            bitmap: 0x0303,
+            buttons,
+            ..GamepadState::default()
+        }
+    }
+
+    fn released() -> GamepadState {
+        GamepadState {
+            bitmap: 0x0303,
+            ..GamepadState::default()
+        }
+    }
+
+    #[test]
+    fn selector_forwards_a_controller_on_any_slot() {
+        let mut selector = GamepadSelector::default();
+        selector.observe(1, released());
+        assert_eq!(selector.take(), None);
+        selector.observe(1, pressed(0x1000));
+        assert_eq!(selector.take(), Some(pressed(0x1000)));
+        assert_eq!(selector.take(), None);
+        selector.observe(1, released());
+        assert_eq!(selector.take(), Some(released()));
+    }
+
+    #[test]
+    fn selector_never_interleaves_two_controllers() {
+        let mut selector = GamepadSelector::default();
+        selector.observe(0, pressed(0x1000));
+        selector.observe(2, pressed(0x2000));
+        selector.observe(0, pressed(0x1001));
+        selector.observe(2, pressed(0x2001));
+        assert_eq!(selector.take(), Some(pressed(0x1001)));
+        selector.observe(2, pressed(0x2002));
+        assert_eq!(
+            selector.take(),
+            None,
+            "the second pad cannot take over while the first is held"
+        );
+    }
+
+    #[test]
+    fn selector_sends_the_old_owners_neutral_before_switching() {
+        let mut selector = GamepadSelector::default();
+        selector.observe(0, pressed(0x1000));
+        assert_eq!(selector.take(), Some(pressed(0x1000)));
+        selector.observe(0, pressed(0x1001));
+        selector.observe(0, released());
+        selector.observe(3, pressed(0x2000));
+        selector.observe(3, pressed(0x2001));
+        assert_eq!(selector.take(), Some(released()), "neutral goes out first");
+        assert_eq!(selector.take(), Some(pressed(0x2001)));
+        selector.observe(0, pressed(0x1000));
+        assert_eq!(selector.take(), None, "the new owner keeps the slot");
+    }
 
     #[test]
     fn record_is_exact_little_endian_layout() {

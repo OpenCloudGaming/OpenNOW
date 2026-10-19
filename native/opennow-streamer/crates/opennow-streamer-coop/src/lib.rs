@@ -20,7 +20,7 @@ pub mod turn;
 pub use config::{ConfigError, IceConfig, RelaySite, TurnTransport};
 pub use guest::{CoopGuest, GuestConfig, GuestMedia};
 pub use host::{CoopHost, HostBackend, HostConfig, Rumble, RumbleRouter};
-pub use input::{GamepadState, InputRecord};
+pub use input::{GamepadSelector, GamepadState, InputRecord, InputSamples};
 pub use link::NetConfig;
 pub use protocol::{AudioDescription, StreamDescription};
 

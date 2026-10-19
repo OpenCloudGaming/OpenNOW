@@ -9,6 +9,7 @@ rust-version.workspace = true
 getrandom.workspace = true
 hmac.workspace = true
 md-5 = "0.10"
+opennow-streamer-protocol = { path = "../opennow-streamer-protocol" }
 opennow-streamer-transport = { path = "../opennow-streamer-transport" }
 rustls.workspace = true
 rustls-native-certs = "0.8"

@@ -328,7 +328,11 @@ is bumped to 16 so Qt can require it. Guest gamepad input uses the existing `ope
 | `coop-host-stop` | | Removes every peer; the host's own stream continues. |
 
 Host events: `coop-signal-out {peerId, payload}`; `coop-peer-state {peerId, state:"connecting"|"connected"|"reconnecting"|"disconnected"|"failed", path:"direct"|"relay"|null, relayId}`;
-`coop-host-stats {uploadKbps, capacityKbps, streamKbps, hostToGfnPingMs, peers:[{peerId, slot, path, relayId, peerToHostPingMs, lossPct, sendKbps, inputMuted}]}` at 1 Hz.
+`coop-host-stats {uploadKbps, capacityKbps, streamKbps, hostToGfnPingMs, peers:[{peerId, slot, path, relayId, peerToHostPingMs, lossPct, sendKbps, inputMuted,
+inputReceived, inputInjected, inputDroppedMuted, inputDroppedSlotNotOwned, inputDroppedMalformed, inputDroppedStale, inputDroppedNvstRefused}]}` at 1 Hz.
+The input counters are cumulative integers per peer: every record received on `coop-input` is counted once as injected (accepted by
+the NVST input path) or under one drop reason. `SlotNotOwned` covers a peer without a connected slot and a slot the NVST input path
+has not accepted a registration for; `NvstRefused` means the NVST input path was not ready.
 
 ### Guest (no GFN session on this client)
 
@@ -339,7 +343,9 @@ Host events: `coop-signal-out {peerId, payload}`; `coop-peer-state {peerId, stat
 | `coop-guest-stop` | | Leaves. |
 
 Guest events: `coop-signal-out`; `coop-guest-state {state:"negotiating"|"trying_direct"|"direct_blocked"|"relay"|"connected"|"reconnecting"|"ended", path, relayId, reason}`;
-`coop-guest-stats {hostToGfnPingMs, guestToHostPingMs, totalMs, quality:"great"|"good"|"poor", lossPct, slot, inputMuted}` at 1 Hz;
+`coop-guest-stats {hostToGfnPingMs, guestToHostPingMs, totalMs, quality:"great"|"good"|"poor", lossPct, slot, inputMuted,
+inputSamplesPlain, inputSamplesSony, inputStatesSent}` at 1 Hz. The input counters are cumulative integers: local controller samples
+taken from plain gamepads and from Sony controllers, and snapshots sent on `coop-input`;
 the existing `controller-rumble` for the guest's own slot, mapped to the local controller.
 
 ### Signal payloads (opaque to core and backend)
@@ -359,7 +365,7 @@ the existing `controller-rumble` for the guest's own slot, mapped to the local c
   `{type:"rumble"}`, `{type:"keyframe-request"}`.
 - Data channel `coop-input` (unordered, maxRetransmits 0): guest gamepad snapshots `{seq:u32, bitmap, buttons, lt, rt, lx, ly, rx, ry, ts}`
   as a fixed 24-byte little-endian binary record; the guest resends the latest snapshot every 50 ms while idle. The host maps
-  the guest's controller 0 to its assigned GFN slot, drops stale sequence numbers and sends neutral state on disconnect,
+  the guest's forwarded controller to its assigned GFN slot, drops stale sequence numbers and sends neutral state on disconnect,
   mute, slot move and 500 ms without input.
 
 ## 8. Shell activity to presence
