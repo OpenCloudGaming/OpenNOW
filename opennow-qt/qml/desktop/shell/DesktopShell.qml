@@ -59,6 +59,8 @@ FocusScope {
     }
 
     function activeSessionPrompt() {
+        if (ShellStore.coop.guestStreaming)
+            return ShellStore.coop.hostName !== "" ? qsTr("Back to %1's game").arg(ShellStore.coop.hostName) : qsTr("Back to the co-op game")
         const session = ShellStore.resumableSession
         if (!session)
             return ""
@@ -130,7 +132,7 @@ FocusScope {
             DesktopButton {
                 id: activeSessionButton
                 objectName: "desktopHeaderResume"
-                visible: ShellStore.resumableSession !== null && root.route !== "stream" && root.headerActions === null
+                visible: ShellStore.backToGameAvailable && root.route !== "stream" && root.headerActions === null
                 anchors.right: parent.right
                 anchors.rightMargin: DesktopTokens.px(24)
                 anchors.verticalCenter: parent.verticalCenter

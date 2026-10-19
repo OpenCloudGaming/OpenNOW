@@ -156,7 +156,7 @@ FocusScope {
                         objectName: "friendsBackToGame"
                         text: qsTr("Back to game")
                         controlHeight: 38; cornerRadius: 10; sidePadding: 16; fontSize: 14
-                        visible: ShellStore.resumableSession !== null
+                        visible: ShellStore.backToGameAvailable
                         onClicked: ShellStore.resumeActiveSession()
                     }
                 }

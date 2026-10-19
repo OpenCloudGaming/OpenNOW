@@ -83,6 +83,7 @@ QtObject {
         "c-06b-waiting-approval": "",
         "c-07-guest-overlay": "5ON-0",
         "c-07e-guest-peek": "",
+        "c-07g-guest-shared-account": "",
         "c-07f-guest-pinned": "",
         "c-07b-guest-input": "",
         "c-07c-guest-panel-input": "",
@@ -96,6 +97,8 @@ QtObject {
         "c-10-reconnecting": "62P-0",
         "c-10-host-ended": "62P-0",
         "c-10-kicked": "62P-0",
+        "c-10-media-unavailable": "",
+        "c-10-media-unavailable-connecting": "",
         "c-10-declined": "",
         "c-10-stream-lost": "62P-0",
         "c-11-end-confirm": "",
@@ -156,6 +159,7 @@ QtObject {
         "c-06b-waiting-approval": ["coopWaitingRoom", "coopWaitingTitle"],
         "c-07-guest-overlay": ["coopGuestOverlay"],
         "c-07e-guest-peek": ["streamSurfaceHost"],
+        "c-07g-guest-shared-account": ["coopGuestOverlay"],
         "c-07f-guest-pinned": ["coopGuestOverlay", "streamSurfaceHost"],
         "c-07b-guest-input": ["coopGuestOverlay", "streamSurfaceHost"],
         "c-07c-guest-panel-input": ["streamSurfaceHost"],
@@ -169,6 +173,8 @@ QtObject {
         "c-10-reconnecting": ["coopReconnectingToast"],
         "c-10-host-ended": ["coopEnded"],
         "c-10-kicked": ["coopEnded"],
+        "c-10-media-unavailable": ["coopEnded", "coopEndedDetail"],
+        "c-10-media-unavailable-connecting": ["coopEnded", "coopEndedDetail"],
         "c-10-declined": ["coopEnded"],
         "c-10-stream-lost": ["coopEnded"],
         "c-11-end-confirm": ["coopEndConfirm"],
@@ -223,6 +229,8 @@ QtObject {
     }
 
     function iso(offsetMs) { return new Date(now + offsetMs).toISOString() }
+    readonly property var hostSession: ({sessionId: "gfn-host-session", status: 2, appId: "100001",
+        streamingBaseUrl: "https://host.example.invalid", serverIp: "10.0.0.1"})
     function art() { return "qrc:/qt/qml/OpenNOW/res/brand/desktop-renew.jpg" }
     function user(id, name, username) {
         return {id: "usr_" + id, discordId: "1000" + id.length, username: username, displayName: name, avatarUrl: null}
@@ -477,6 +485,10 @@ QtObject {
         ShellStore.friends.requestResults = ({})
         client.emit("social.account.changed", {connection: "unlinked", account: null, guest: null})
         ShellStore.activeSession = null
+        ShellStore.remoteSessions = []
+        ShellStore.conflictSession = null
+        ShellStore.sessionRecoveryPending = false
+        ShellStore.recoverySessionId = ""
         ShellStore.streamState = "idle"
         ShellStore.streamer = null
         ShellStore.streamerStartRequestId = ""
@@ -770,6 +782,44 @@ QtObject {
                     key = Qt.Key_Menu
                 }
             })
+        } else if (name === "c-07g-guest-shared-account") {
+            guestConnected(true)
+            Qt.callLater(() => Qt.callLater(() => {
+                ShellStore.remoteSessions = [hostSession]
+                AppController.navigate("library")
+            }))
+            steps = ({
+                6: () => {
+                    check(ShellStore.resumableSession === null, "a guest sees no resumable session, even the host's on a shared account")
+                    if (checkScreens) {
+                        const resume = find(window.contentItem, "desktopHeaderResume")
+                        check(resume && shown(resume) && resume.text === "Back to Mara's game",
+                            "the guest's Back to game returns to the co-op stream")
+                    }
+                    ShellStore.resumeActiveSession()
+                    check(AppController.route === "stream" && ShellStore.sessionClaimRequestId === "",
+                        "Back to game puts the guest back in the co-op stream without claiming a session")
+                    ShellStore.conflictSession = hostSession
+                    ShellStore.resolveSessionConflict("resume")
+                    check(ShellStore.sessionClaimRequestId === "" && ShellStore.conflictSession === null,
+                        "a guest cannot resume a conflicting session")
+                    ShellStore.activeSession = hostSession
+                    ShellStore.recoverySessionId = hostSession.sessionId
+                    ShellStore.sessionRecoveryPending = true
+                    ShellStore.acceptRecoverySessions({session: hostSession, termination: null})
+                    check(ShellStore.sessionClaimRequestId === "" && !ShellStore.sessionRecoveryPending,
+                        "session recovery never claims while the user is a guest")
+                    ShellStore.stopStreamingSession()
+                    check(ShellStore.streamStopRequestId === "", "a guest never sends session.stop")
+                    ShellStore.activeSession = null
+                    AppController.navigate("stream")
+                    ShellStore.requestStreamExitConfirmation()
+                    check(AppController.overlay === "coop-leave-confirm", "ending the stream as a guest asks to leave co-op")
+                    ShellStore.launchSelectedGame(false)
+                    check(ShellStore.streamCreateRequestId === "" && ShellStore.remoteSessionsRequestId === "",
+                        "a guest cannot start a game")
+                }
+            })
         } else if (name === "c-07e-guest-peek" || name === "c-07f-guest-pinned") {
             guestConnected(true)
             const overlay = () => find(window.contentItem, "coopGuestOverlay")
@@ -836,6 +886,16 @@ QtObject {
         } else if (name === "c-10-reconnecting") {
             guestConnected(true)
             Qt.callLater(() => runtime.coopEventReceived({type: "coop-guest-state", state: "reconnecting", path: "relay", relayId: "nl", reason: null}))
+        } else if (name === "c-10-media-unavailable" || name === "c-10-media-unavailable-connecting") {
+            const ended = {type: "coop-guest-state", state: "ended", path: null, relayId: null,
+                reason: "media-unavailable: H.264 decoder unavailable (VA-API: no hardware profile)\u0007"}
+            if (name === "c-10-media-unavailable") {
+                guestConnected(true)
+                Qt.callLater(() => Qt.callLater(() => runtime.coopEventReceived(ended)))
+            } else {
+                joinAsGuest("code", "")
+                Qt.callLater(() => Qt.callLater(() => runtime.coopEventReceived(ended)))
+            }
         } else if (name === "c-10-host-ended" || name === "c-10-kicked" || name === "c-10-stream-lost") {
             guestConnected(true)
             Qt.callLater(() => {
@@ -1017,6 +1077,9 @@ QtObject {
         }
         if (name === "c-07e-guest-peek")
             checkGuestInput(true, "a peek after a roster change")
+        if (name === "c-07g-guest-shared-account")
+            check(coop.guestStreaming && ShellStore.sessionClaimRequestId === "" && ShellStore.streamStopRequestId === "",
+                "the guest stays in co-op and never touched the host's session")
         if (name === "c-07f-guest-pinned") {
             check(find(window.contentItem, "coopGuestOverlay").revealed, "a pinned panel is not auto-hidden")
             checkGuestInput(false, "a pinned panel")
@@ -1026,6 +1089,24 @@ QtObject {
         if (name === "c-07d-guest-controllers") {
             check(coop.guestPhase === "playing", "the guest is still playing")
             checkGuestInput(false, "the guest's controllers page")
+        }
+        if (name === "c-10-media-unavailable" || name === "c-10-media-unavailable-connecting") {
+            check(coop.guestPhase === "ended" && coop.endReason === "media_unavailable"
+                && coop.endDetail === "H.264 decoder unavailable (VA-API: no hardware profile)",
+                name + ": a decode failure ends with its own reason and a plain-text detail")
+            check(client.calls.some(call => call.method === "coop.lobby.leave" && call.params.lobbyId === "lob_mara")
+                && runtime.sent.some(item => item.type === "coop-guest-stop"), name + ": the guest leaves the lobby and stops")
+        }
+        if (name === "c-10-stream-lost")
+            check(client.calls.some(call => call.method === "coop.lobby.leave" && call.params.lobbyId === "lob_mara"),
+                "a guest whose stream drops leaves the lobby instead of staying a member")
+        if (name === "c-10-kicked" || name === "c-10-host-ended")
+            check(!client.calls.some(call => call.method === "coop.lobby.leave"), name + ": a guest the server already removed sends no leave")
+        if (name === "c-10-media-unavailable" || name === "c-10-media-unavailable-connecting") {
+            if (checkScreens) {
+                const ended = find(window.contentItem, "coopEnded")
+                check(ended.Accessible.name === "This device can't play Mara's stream", name + ": the ended screen says the device can't play it")
+            }
         }
         if (name === "c-10-kicked")
             check(coop.guestPhase === "ended" && coop.endReason === "kicked" && runtime.sent.some(item => item.type === "coop-guest-stop"),

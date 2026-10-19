@@ -10,6 +10,7 @@ FocusScope {
     readonly property string hostId: coop.joinContext ? String(coop.joinContext.hostId || "") : ""
     readonly property bool streamLost: reason === "stream_lost" || reason === "host_lost"
     readonly property bool removed: reason === "kicked" || reason === "declined"
+    readonly property bool mediaUnavailable: reason === "media_unavailable"
     readonly property int waitSeconds: 120
     property double waitStartedMs: 0
     property double nowMs: Date.now()
@@ -63,8 +64,9 @@ FocusScope {
 
         DesktopCoopGuestText {
             text: root.reason === "declined" ? qsTr("NOT LET IN") : root.reason === "kicked" ? qsTr("REMOVED")
+                : root.mediaUnavailable ? qsTr("CAN'T PLAY HERE")
                 : root.streamLost ? qsTr("STREAM LOST") : qsTr("CO-OP ENDED")
-            color: root.removed ? "#FFD166" : root.streamLost ? "#FF8A80" : "#7FD4FF"
+            color: root.removed || root.mediaUnavailable ? "#FFD166" : root.streamLost ? "#FF8A80" : "#7FD4FF"
             mono: true
             size: 11
             lineHeightPx: 14
@@ -76,6 +78,8 @@ FocusScope {
             wrapMode: Text.WordWrap
             text: root.reason === "declined"
                 ? (root.host !== "" ? qsTr("%1 didn't let you in").arg(root.host) : qsTr("The host didn't let you in"))
+                : root.mediaUnavailable
+                ? (root.host !== "" ? qsTr("This device can't play %1's stream").arg(root.host) : qsTr("This device can't play the host's stream"))
                 : root.reason === "kicked"
                 ? (root.host !== "" ? qsTr("You left %1's game").arg(root.host) : qsTr("You left the game"))
                 : root.streamLost
@@ -95,6 +99,9 @@ FocusScope {
                 if (root.waitStartedMs > 0)
                     return root.host !== "" ? qsTr("Waiting for %1 to come back. You'll see a notice when there's room.").arg(root.host)
                         : qsTr("Waiting for the host to come back. You'll see a notice when there's room.")
+                if (root.mediaUnavailable)
+                    return root.host !== "" ? qsTr("Your device couldn't decode the video, so you left the lobby. %1 keeps playing.").arg(root.host)
+                        : qsTr("Your device couldn't decode the video, so you left the lobby. The host keeps playing.")
                 if (root.reason === "declined")
                     return root.host !== "" ? qsTr("%1 approves everyone who joins with a code. Ask them for an invite instead.").arg(root.host)
                         : qsTr("This host approves everyone who joins with a code. Ask them for an invite instead.")
@@ -114,6 +121,18 @@ FocusScope {
             size: 14
             lineHeightPx: 21
             font.weight: Font.Medium
+        }
+        DesktopCoopGuestText {
+            objectName: "coopEndedDetail"
+            visible: root.mediaUnavailable && text !== ""
+            width: parent.width
+            wrapMode: Text.WrapAnywhere
+            textFormat: Text.PlainText
+            text: String(root.coop.endDetail || "")
+            color: "#66FFFFFF"
+            mono: true
+            size: 11
+            lineHeightPx: 15
         }
         Item { width: 1; height: 2 }
         Row {

@@ -622,7 +622,17 @@ QtObject {
         storeLaunchFailed = false
         storeLaunchRequestId = CoreClient.request("catalog.launch.store.inspect", {}, 30000)
     }
+    // Starting a game as a guest could replace the host's session when both share one account.
+    function refuseLaunchAsCoopGuest() {
+        if (!coopOwner.guestActive)
+            return false
+        lastError = qsTr("Leave co-op before you start your own game.")
+        accessibilityMessage = lastError
+        return true
+    }
     function launchStoreGame() {
+        if (refuseLaunchAsCoopGuest())
+            return
         const target = storeLaunchTarget
         if (!target || storeLaunchDecision.status !== "ready" || !target.game)
             return
@@ -725,6 +735,10 @@ QtObject {
             if (stage === "discover") {
                 root.continueInspectedLaunch()
             } else if (stage === "stop") {
+                if (coopOwner.guestActive) {
+                    root.resolveSessionConflict("cancel")
+                    return
+                }
                 if (!root.conflictSession || String(root.conflictSession.sessionId) !== seatId) {
                     root.streamState = "error"
                     root.streamMessage = qsTr("The running session changed. Check your sessions again before replacing a game.")
@@ -966,6 +980,8 @@ QtObject {
     signal textInputErrorAnnounced(string message)
     signal consoleScreenshotRequested()
     readonly property var resumableSession: {
+        if (coopOwner.guestActive)
+            return null
         if (root.activeSession) {
             const localStatus = Number(root.activeSession.status || 0)
             const localPhase = String(root.activeSession.phase || "").toLowerCase()
@@ -1166,7 +1182,14 @@ QtObject {
         selectedGame = {title:sessionGameTitle(session) || qsTr("Your running game"), launchAppId:appId, variants:[], selectedVariantIndex:-1}
     }
 
+    // Back to game: a co-op guest goes back to the guest stream; nobody else's session is resumed.
+    readonly property bool backToGameAvailable: resumableSession !== null || coopOwner.guestStreaming
     function resumeActiveSession() {
+        if (coopOwner.guestActive) {
+            if (coopOwner.guestStreaming && AppController.route !== "stream")
+                AppController.navigate("stream")
+            return
+        }
         const session = resumableSession
         if (!session || sessionClaimRequestId !== "")
             return
@@ -2032,6 +2055,8 @@ QtObject {
     }
 
     function launchSelectedGame(directConsoleMode) {
+        if (refuseLaunchAsCoopGuest())
+            return
         if (!signedIn) {
             AppController.navigate("sign-in")
             return
@@ -2155,6 +2180,10 @@ QtObject {
             streamState = "idle"
             streamMessage = qsTr("")
             AppController.navigateFromLastPrimary("game-detail")
+            return
+        }
+        if (coopOwner.guestActive) {
+            resolveSessionConflict("cancel")
             return
         }
         if (choice === "resume") {
@@ -2558,6 +2587,10 @@ QtObject {
     function discoverRecoverySession() {
         if (!sessionRecoveryPending || !activeSession
                 || String(activeSession.sessionId) !== recoverySessionId) return
+        if (coopOwner.guestActive) {
+            cancelSessionRecovery()
+            return
+        }
         if (!sessionOwnerSignedIn()) {
             sessionRecoveryPending = false
             sessionRecoveryAwaitingAuth = true
@@ -2585,6 +2618,10 @@ QtObject {
         }
         if (!existing || String(existing.sessionId) !== recoverySessionId) {
             scheduleSessionRecovery(qsTr("The previous session is not available yet. Retrying…"))
+            return
+        }
+        if (coopOwner.guestActive) {
+            cancelSessionRecovery()
             return
         }
         sessionClaimIsRecovery = true
@@ -2871,6 +2908,10 @@ QtObject {
     function requestStreamExitConfirmation() {
         if (AppController.route !== "stream" && AppController.route !== "inserting")
             return
+        if (coopOwner.role === "guest") {
+            coopOwner.requestLeave()
+            return
+        }
         if (AppController.route === "inserting" && (streamState === "error" || streamState === "checking")
                 && !activeSession && streamCreateRequestId === "" && sessionClaimRequestId === ""
                 && streamStopRequestId === "") {
@@ -3254,7 +3295,7 @@ QtObject {
             AppController.navigateFromLastPrimary("game-detail")
             return
         }
-        if (!ready || streamStopRequestId !== "")
+        if (!ready || streamStopRequestId !== "" || coopOwner.guestActive)
             return
         if (coreSessionRestoreId !== "") {
             pollStreamingSession()

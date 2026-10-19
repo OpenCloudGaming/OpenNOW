@@ -83,6 +83,8 @@ QtObject {
     property var guestStats: null
     property string joinError: ""
     property string endReason: ""
+    // Plain-text platform detail for endReason "media_unavailable" (the guest could not decode the stream).
+    property string endDetail: ""
     property string enteredCode: ""
     // {source: "code" | "invite" | "ask", hostName, game, maxPlayers}
     property var joinContext: null
@@ -109,6 +111,10 @@ QtObject {
     readonly property var pendingOutgoing: outgoingInvites.filter(invite => invite.state === "pending")
     readonly property var inviteToast: incomingInvites.find(invite => invite.id === inviteToastId) || null
     readonly property bool guestStreaming: role === "guest" && guestPhase === "playing"
+    // Joining, connected or playing as a guest. The account may be the host's own, so a guest never
+    // resumes, claims, recovers or stops a GFN session: any session it can see may be the host's stream.
+    readonly property bool guestActive: role === "guest"
+        || ["joining", "connecting", "waiting", "playing", "reconnecting"].indexOf(guestPhase) >= 0
     // The C5b join-error card for joinError: {kind: "invalid" | "full" | "ended" | "cant_connect" |
     // "unavailable", eyebrow, title, body}. kind picks the actions: invalid and ended offer a new code,
     // full and cant_connect retry, unavailable only goes back.
@@ -709,11 +715,15 @@ QtObject {
         guestPath = ""
         guestRelayId = ""
     }
-    function endAsGuest(reason) {
+    // stillMember: the server still lists this guest (not kicked, lobby not closed), so it leaves the lobby.
+    function endAsGuest(reason, detail, stillMember) {
         if (joinContext && lobby)
             joinContext = Object.assign({}, joinContext, {hostName: hostName, hostId: String(lobby.hostId || "")})
+        if (role === "guest" && lobby && stillMember !== false)
+            call("coop.lobby.leave", {lobbyId: lobby.id}, {})
         stopGuestPipeline()
         endReason = reason
+        endDetail = String(detail || "")
         guestPhase = "ended"
         resetLobby()
         if (appController) {
@@ -809,7 +819,7 @@ QtObject {
             }
             return
         }
-        endAsGuest(reason === "host_lost" ? "host_lost" : "host_ended")
+        endAsGuest(reason === "host_lost" ? "host_lost" : "host_ended", "", false)
     }
     function recordInvite(invite, received) {
         if (!invite)
@@ -954,10 +964,14 @@ QtObject {
                         failJoin("cant_connect")
                     return
                 }
-                if (guestPhase === "connecting")
+                const reason = String(event.reason || "")
+                const media = /^media-(unavailable|closed):/.exec(reason)
+                if (media)
+                    endAsGuest("media_unavailable", reason.slice(media[0].length).replace(/[\u0000-\u001f\u007f<>]/g, " ").trim().slice(0, 256))
+                else if (guestPhase === "connecting")
                     failJoin("cant_connect")
                 else
-                    endAsGuest(String(event.reason || "") === "host_stream_lost" ? "stream_lost" : "host_lost")
+                    endAsGuest(reason === "host_stream_lost" ? "stream_lost" : "host_lost")
                 return
             }
             connectStage = state
@@ -1015,7 +1029,7 @@ QtObject {
                 root.acceptLobbyEnded(payload)
             else if (name === "coop.lobby.kicked") {
                 if (root.lobby && payload.lobbyId === root.lobby.id && root.role === "guest")
-                    root.endAsGuest(root.admissionPending ? "declined" : "kicked")
+                    root.endAsGuest(root.admissionPending ? "declined" : "kicked", "", false)
             } else if (name === "coop.signal")
                 root.acceptSignal(payload)
             else if (name === "social.presence.changed")

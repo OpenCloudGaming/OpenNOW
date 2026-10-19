@@ -4921,6 +4921,14 @@
     "1Controller": "1 controller",
     "nControllers": "%1 controllers",
     "deadZonesAndVibration": "Dead zones and vibration",
-    "nGetsARequestToLetYou": "%1 gets a request to let you in"
+    "nGetsARequestToLetYou": "%1 gets a request to let you in",
+    "backToNsGame": "Back to %1's game",
+    "backToTheCoOpGame": "Back to the co-op game",
+    "leaveCoOpBeforeYouStartYour": "Leave co-op before you start your own game.",
+    "cantPlayHere": "CAN'T PLAY HERE",
+    "thisDeviceCantPlayNsStream": "This device can't play %1's stream",
+    "thisDeviceCantPlayTheHostsStream": "This device can't play the host's stream",
+    "yourDeviceCouldntDecodeTheVideoSo": "Your device couldn't decode the video, so you left the lobby. %1 keeps playing.",
+    "yourDeviceCouldntDecodeTheVideoSo2": "Your device couldn't decode the video, so you left the lobby. The host keeps playing."
   }
 }

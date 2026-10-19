@@ -25,12 +25,13 @@ bool prepareLaunchGuards(QJSEngine &engine)
         var queueSelector={opened:false,begin:function(title){return false}};
         var bugReports={observeTelemetry:function(){},observeFrameDrops:function(){},reportStreamError:function(){}};
         var launchRequestedAtMs=0;
+        var coopOwner={role:'none',guestActive:false,guestStreaming:false};
         function reportSessionStart() {}
         function reportSessionEnd() {}
     )JS")).isError()) return false;
     const auto shell = source(QStringLiteral("qml/state/ShellStore.qml"));
     for (const auto &name : {"launchIntentCurrent", "inspectLaunch", "invalidateLaunchInspection",
-             "continueInspectedLaunch", "discoverPendingLaunch"}) {
+             "continueInspectedLaunch", "discoverPendingLaunch", "refuseLaunchAsCoopGuest"}) {
         const auto match = QRegularExpression(QStringLiteral(
             "    function %1\\([^\\n]*\\) \\{.*?\\n    \\}").arg(QString::fromLatin1(name)),
             QRegularExpression::DotMatchesEverythingOption).match(shell);
@@ -643,6 +644,7 @@ private slots:
             function inspectStreamerOverlayRequest() {} function inspectStreamerScreenshotRequest() {}
             function inspectStreamerRecordingRequest() {} function inspectStreamerShortcutAction() {}
             function qsTr(text) {return text;}
+            var coopOwner = {role:'none', guestActive:false, guestStreaming:false};
         )JS")).isError());
         for (const auto &name : {"acceptStreamerSnapshot", "isRemoteSessionTermination", "cancelSessionRecovery",
                  "scheduleSessionRecovery", "retryNativeStreamer", "recoverStreamingSession", "discoverRecoverySession",
@@ -1007,6 +1009,7 @@ private slots:
             var activeSession = {sessionId:'seat'}, streamStartedAtMs = 0, streamState = 'starting';
             var streamer = {status:'starting'}, nativeCommands = [], snapshots = 0;
             var negotiatedStreamProfile = {};
+            var coopOwner = {role:'none', guestActive:false, guestStreaming:false};
             var streamPollTimer = {stop:function(){}}, streamerRestartTimer = {stop:function(){}};
             function invalidateLaunchInspection() {}
             function cancelSessionRecovery() {}
@@ -1160,6 +1163,7 @@ private slots:
         QJSEngine engine;
         QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
             var root = this, stops = 0;
+            var coopOwner = {role:'none', guestActive:false, guestStreaming:false};
             var AppController = {route:'stream', overlay:'guide-session', showOverlay:function(value){this.overlay=value;}};
             function stopStreamingSession() {stops++;}
             function qsTr(value) {return value;}
