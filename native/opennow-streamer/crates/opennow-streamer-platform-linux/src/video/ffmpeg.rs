@@ -338,13 +338,53 @@ impl FfmpegDecoder {
         mode: FfmpegMode,
     ) -> std::result::Result<String, String> {
         let format = StreamFormat::video_default(1920, 1080).map_err(|error| error.to_string())?;
-        let decoder = Self::open(codec, format, mode).map_err(|error| error.to_string())?;
+        let mut decoder = Self::open(codec, format, mode).map_err(|error| error.to_string())?;
+        if mode == FfmpegMode::Cuda {
+            decoder.probe_frame().map_err(|error| error.to_string())?;
+        }
         Ok(format!(
             "{} {} via libavcodec {}",
             decoder.mode.label(),
             decoder.codec.label(),
             ffmpeg::codec::version()
         ))
+    }
+
+    fn probe_frame(&mut self) -> Result<()> {
+        let data: &[u8] = match self.codec {
+            VideoCodec::H264 => include_bytes!("fixtures/cuda_probe.h264"),
+            VideoCodec::H265 => include_bytes!("fixtures/cuda_probe.hevc"),
+            VideoCodec::Av1 => include_bytes!("fixtures/cuda_probe.obu"),
+        };
+        let packet = ffmpeg::Packet::copy(data);
+        self.decoder
+            .send_packet(&packet)
+            .map_err(|error| self.decode_error("probe packet submission", error))?;
+        self.decoder
+            .send_eof()
+            .map_err(|error| self.decode_error("probe drain", error))?;
+        let mut decoded = frame::Video::empty();
+        self.decoder
+            .receive_frame(&mut decoded)
+            .map_err(|error| self.decode_error("probe frame receive", error))?;
+        if let Some(wanted) = self.wanted_hw_format.as_ref() {
+            if decoded.format() != Pixel::from(wanted.pixel_format) {
+                return Err(Error::backend(
+                    Subsystem::Ffmpeg,
+                    format!(
+                        "{} probe did not produce a hardware frame",
+                        self.mode.label()
+                    ),
+                ));
+            }
+        }
+        if decoded.width() != 1920 || decoded.height() != 1080 {
+            return Err(Error::backend(
+                Subsystem::Ffmpeg,
+                "decoder probe did not produce the expected 1920x1080 frame",
+            ));
+        }
+        Ok(())
     }
 
     fn drain(&mut self, draining: bool) -> Result<Vec<DecodedVideoFrame>> {
@@ -1553,6 +1593,91 @@ mod tests {
     use std::process::Command;
 
     use super::*;
+
+    unsafe extern "C" fn reject_probe_format(
+        _context: *mut ffi::AVCodecContext,
+        _formats: *const ffi::AVPixelFormat,
+    ) -> ffi::AVPixelFormat {
+        ffi::AVPixelFormat::AV_PIX_FMT_NONE
+    }
+
+    #[test]
+    fn opening_a_decoder_does_not_validate_first_packet_support() {
+        let format = StreamFormat::video_default(1920, 1080).unwrap();
+        let mut decoder =
+            FfmpegDecoder::open(VideoCodec::H264, format, FfmpegMode::Software).unwrap();
+        unsafe { (*decoder.decoder.as_mut_ptr()).get_format = Some(reject_probe_format) };
+        let packet = ffmpeg::Packet::copy(include_bytes!("fixtures/cuda_probe.h264"));
+        assert!(decoder.decoder.send_packet(&packet).is_err());
+    }
+
+    #[test]
+    fn decode_probe_rejects_first_packet_format_failure() {
+        let format = StreamFormat::video_default(1920, 1080).unwrap();
+        let mut decoder =
+            FfmpegDecoder::open(VideoCodec::H264, format, FfmpegMode::Software).unwrap();
+        unsafe { (*decoder.decoder.as_mut_ptr()).get_format = Some(reject_probe_format) };
+        let error = decoder.probe_frame().unwrap_err().to_string();
+        assert!(error.contains("probe packet submission failed"), "{error}");
+    }
+
+    #[test]
+    fn decode_probe_requires_a_frame_with_the_requested_hardware_format() {
+        let format = StreamFormat::video_default(1920, 1080).unwrap();
+        let mut decoder =
+            FfmpegDecoder::open(VideoCodec::H264, format, FfmpegMode::Software).unwrap();
+        decoder.wanted_hw_format = Some(Box::new(HardwareFormatSelection {
+            pixel_format: ffi::AVPixelFormat::AV_PIX_FMT_CUDA,
+            exportable_vulkan_frames: false,
+        }));
+        let error = decoder.probe_frame().unwrap_err().to_string();
+        assert!(
+            error.contains("did not produce a hardware frame"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn decode_probe_fixtures_produce_a_full_hd_frame() {
+        let format = StreamFormat::video_default(1920, 1080).unwrap();
+        for codec in [VideoCodec::H264, VideoCodec::H265] {
+            let mut decoder = FfmpegDecoder::open(codec, format, FfmpegMode::Software).unwrap();
+            decoder.probe_frame().unwrap();
+        }
+    }
+
+    #[test]
+    #[ignore = "opt-in: requires CUDA/NVDEC hardware supporting at least one codec"]
+    fn cuda_probe_decodes_each_advertised_codec() {
+        let mut available = 0;
+        for codec in [VideoCodec::H264, VideoCodec::H265, VideoCodec::Av1] {
+            match FfmpegDecoder::probe(codec, FfmpegMode::Cuda) {
+                Ok(detail) => {
+                    available += 1;
+                    assert!(detail.contains("CUDA/NVDEC"), "{detail}");
+                }
+                Err(reason) => eprintln!("{} unavailable: {reason}", codec.label()),
+            }
+        }
+        assert!(available > 0, "no CUDA codec produced a hardware frame");
+    }
+
+    #[test]
+    #[ignore = "opt-in: requires CUDA/NVDEC hardware with H.264 support but no AV1 support"]
+    fn cuda_probe_rejects_av1_on_h264_only_hardware() {
+        FfmpegDecoder::probe(VideoCodec::H264, FfmpegMode::Cuda)
+            .expect("this test requires working H.264 CUDA decode");
+        let reason = FfmpegDecoder::probe(VideoCodec::Av1, FfmpegMode::Cuda)
+            .expect_err("AV1 must not be advertised on hardware without AV1 decode");
+        assert!(
+            reason.contains("probe packet submission failed"),
+            "{reason}"
+        );
+        assert!(
+            reason.contains("Hardware is lacking required capabilities"),
+            "{reason}"
+        );
+    }
 
     #[test]
     fn ffmpeg_log_lines_reach_decoder_errors_and_are_bounded() {
