@@ -1167,6 +1167,18 @@ process. When no hardware backend is available and another indexed adapter can
 decode, the session error names that GPU and points to Settings → Stream →
 Graphics processor. Diagnostics copy the same allowlisted fields.
 
+The protocol-7 `hello` also carries `decoders: {h264, h265, av1}`. Each value is
+`hardware`, `software` or `none` for 8-bit 4:2:0 SDR in the embedded stream view on
+this machine, from the same probe as `videoBackends` (including the VA-API H.264
+path through FFmpeg). `software` means only the bounded FFmpeg CPU decoder can
+present that codec. When the backend setting is Auto and no hardware decoder can
+open the negotiated codec, the embedded Linux view uses that software decoder as
+the last resort instead of refusing the stream. It logs the fallback under `media`,
+emits a `backend-fallback` log event, and reports `decoder:"software"` in the
+`first-frame` status and in `telemetry` (`decoder` is `hardware` or `software`
+once a frame was presented, null before). 10-bit, 4:4:4 and HDR streams have no
+software path. An explicit backend choice never falls back.
+
 ### Recording and replay capture
 
 The Qt/native recorder and replay exporter preserve the negotiated source video and

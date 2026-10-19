@@ -846,6 +846,8 @@ pub enum MediaFeedback {
     },
     PlaybackStarted {
         backend: &'static str,
+        /// The frame came from the CPU software decoder rather than a hardware decoder.
+        software: bool,
     },
     BackendFallback {
         from: &'static str,
@@ -1370,6 +1372,23 @@ impl MediaSession {
                 "embedded Linux output requires a native NV12 decoder".to_owned()
             }));
         };
+        if let Some(reason) = linux_selection.fallback_reason {
+            opennow_streamer_protocol::log::log_line(
+                "WARN",
+                "media",
+                &format!(
+                    "embedded video fallback codec={} {}x{}: {reason}",
+                    stream.codec.label(),
+                    stream.width,
+                    stream.height
+                ),
+            );
+            let _ = feedback.send(MediaFeedback::BackendFallback {
+                from: "embedded hardware decode",
+                to: linux_decoder_name(opennow_streamer_platform_linux::DecoderBackend::Ffmpeg),
+                reason,
+            });
+        }
         if decoder_preference == opennow_streamer_platform_linux::DecoderPreference::SoftwareOnly
             && (stream.hdr || stream.color_quality != crate::MediaColorQuality::EightBit420)
         {
@@ -1478,10 +1497,18 @@ impl MediaSession {
         let embedded_frames = frames.clone();
         let monitor_shared = Arc::clone(&shared);
         let monitor_label = linux_embedded_backend_label(decoder_preference);
+        let software =
+            decoder_preference == opennow_streamer_platform_linux::DecoderPreference::SoftwareOnly;
         let linux_monitor = match thread::Builder::new()
             .name("opennow-embedded-linux-frame-publisher".to_owned())
             .spawn(move || {
-                run_embedded_linux_monitor(monitor_shared, frames, producer, monitor_label)
+                run_embedded_linux_monitor(
+                    monitor_shared,
+                    frames,
+                    producer,
+                    monitor_label,
+                    software,
+                )
             }) {
             Ok(worker) => worker,
             Err(error) => {
@@ -2584,6 +2611,7 @@ impl crate::GraphicsFrame for PendingD3d11Frame {
         if first_frame {
             let _ = self.shared.feedback.send(MediaFeedback::PlaybackStarted {
                 backend: "D3D11/Qt",
+                software: false,
             });
         }
         if let Some(change) = color_change {
@@ -3382,6 +3410,7 @@ fn run_embedded_linux_monitor(
     publisher: crate::GraphicsFramePublisher,
     producer: crate::LinuxGpuFrameProducer,
     backend_label: &'static str,
+    software: bool,
 ) {
     use std::time::Duration;
 
@@ -3458,6 +3487,7 @@ fn run_embedded_linux_monitor(
                             playback_started = true;
                             let _ = shared.feedback.send(MediaFeedback::PlaybackStarted {
                                 backend: backend_label,
+                                software,
                             });
                         }
                         Ok(_) => {}
@@ -4079,6 +4109,7 @@ fn run_macos_h264_video(
             playback_started = true;
             let _ = shared.feedback.send(MediaFeedback::PlaybackStarted {
                 backend: "VideoToolbox/Metal",
+                software: false,
             });
         }
     }
@@ -4259,6 +4290,7 @@ fn run_macos_h265_video(
             playback_started = true;
             let _ = shared.feedback.send(MediaFeedback::PlaybackStarted {
                 backend: "VideoToolbox HEVC/Metal",
+                software: false,
             });
         }
     }
@@ -4457,6 +4489,7 @@ fn run_macos_av1_video(
             playback_started = true;
             let _ = shared.feedback.send(MediaFeedback::PlaybackStarted {
                 backend: "VideoToolbox AV1/Metal",
+                software: false,
             });
         }
     }

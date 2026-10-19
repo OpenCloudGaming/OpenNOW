@@ -635,8 +635,8 @@ impl Worker {
         telemetry.observe(&feedback);
         match feedback {
             MediaFeedback::VideoFrameAccepted { .. } | MediaFeedback::DecodeTimings(_) => {}
-            MediaFeedback::PlaybackStarted { backend } => {
-                self.emit("status", json!({"event":"first-frame","backend":backend,"status":"streaming","message":"WebRTC presented the first video frame"}));
+            MediaFeedback::PlaybackStarted { backend, software } => {
+                self.emit("status", json!({"event":"first-frame","backend":backend,"decoder":if software { "software" } else { "hardware" },"status":"streaming","message":"WebRTC presented the first video frame"}));
             }
             MediaFeedback::RequestKeyframe { mid, .. } => control.request_keyframe(mid).map_err(Failure::transport)?,
             MediaFeedback::DecoderError { message, .. } => {

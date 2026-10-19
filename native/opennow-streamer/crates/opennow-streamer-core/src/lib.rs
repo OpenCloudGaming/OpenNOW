@@ -17,8 +17,8 @@ use opennow_streamer_platform::{
     DecodeTimingsReport, EncodedFrame, ManualRecordingSummary, MediaCodec, MediaColorQuality,
     MediaControl, MediaFeedback, MediaRuntime, MediaRuntimeControl, MediaSession, MediaSink,
     MediaStreamConfig, MediaVideoCodec, PushOutcome, StreamShortcutAction, StreamShortcutBindings,
-    record_matroska, record_replay_matroska, supports_audio_decode, supports_audio_output,
-    video_backends,
+    decoder_tiers, record_matroska, record_replay_matroska, supports_audio_decode,
+    supports_audio_output, video_backends,
 };
 use opennow_streamer_protocol::{
     Capabilities, Command, PROTOCOL_VERSION, RecordingCutReason, ReplayBufferConfig,
@@ -550,6 +550,7 @@ impl Engine {
             supports_audio_output: media_ready && supports_audio_output(),
             supports_microphone: media_ready,
             supports_owned_nvst_negotiation: media_ready,
+            decoders: decoder_tiers(&backends),
             video_backends: backends,
             graphics_adapters,
         };
@@ -2677,6 +2678,8 @@ struct NvstMediaFeedbackState {
     transport_frame_progress_stalled: bool,
     last_video_decoder_error: Option<String>,
     start_id: String,
+    /// "hardware" or "software" once the first frame was presented.
+    decoder: Option<&'static str>,
 }
 
 impl NvstMediaFeedbackState {
@@ -2698,6 +2701,7 @@ impl NvstMediaFeedbackState {
             transport_frame_progress_stalled: false,
             last_video_decoder_error: None,
             start_id: String::new(),
+            decoder: None,
         }
     }
 }
@@ -2733,6 +2737,7 @@ fn flush_nvst_telemetry<R: NvstSessionResources>(
             "decodeTimings": decode_timings_event(state.decode_timings),
             "decodeProgressStage": decode_progress_stage_name(state.decode_progress.stage()),
             "transportFrameProgressStalled": state.transport_frame_progress_stalled,
+            "decoder": state.decoder,
             "startId": state.start_id,
         })
         .as_object()
@@ -2779,12 +2784,20 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
             state.telemetry_started = true;
             flush_nvst_telemetry(output, resources, state);
         }
-        MediaFeedback::PlaybackStarted { backend } => {
+        MediaFeedback::PlaybackStarted { backend, software } => {
+            let decoder = if software { "software" } else { "hardware" };
+            state.decoder = Some(decoder);
+            opennow_streamer_protocol::log::log_line(
+                if software { "WARN" } else { "INFO" },
+                "media",
+                &format!("first frame presented backend={backend} decoder={decoder}"),
+            );
             let _ = output.send(event(
                 "status",
                 json!({
                     "event": "first-frame",
                     "backend": backend,
+                    "decoder": decoder,
                     "status": "streaming",
                     "message": format!("{backend} presented the first NVST video frame")
                 }),
@@ -6386,6 +6399,16 @@ mod tests {
                 .is_none()
         );
         assert_eq!(responses[0]["capabilities"]["supportsVideoPresent"], false);
+        for codec in ["h264", "h265", "av1"] {
+            assert!(
+                matches!(
+                    responses[0]["capabilities"]["decoders"][codec].as_str(),
+                    Some("hardware" | "software" | "none")
+                ),
+                "{codec}: {}",
+                responses[0]["capabilities"]
+            );
+        }
     }
 
     #[test]

@@ -305,13 +305,23 @@ fn select_embedded_fallback(
             }
         }
     }
+    let refused = format!(
+        "No compatible embedded {requested} decoder supports the negotiated {} color profile",
+        stream.codec.label(),
+    );
+    if requested == "auto" {
+        let software = select_embedded_software(stream, backends);
+        if matches!(software.path, LinuxVideoPath::Hardware(_)) {
+            return LinuxVideoSelection {
+                fallback_reason: Some(format!("{refused}; using FFmpeg software decode")),
+                ..software
+            };
+        }
+    }
     LinuxVideoSelection {
         path: LinuxVideoPath::Software,
         use_vulkan_output: false,
-        fallback_reason: Some(format!(
-            "No compatible embedded {requested} decoder supports the negotiated {} color profile",
-            stream.codec.label(),
-        )),
+        fallback_reason: Some(refused),
     }
 }
 
@@ -953,7 +963,7 @@ mod tests {
     }
 
     #[test]
-    fn embedded_fallback_never_reselects_standalone_vulkan_or_software() {
+    fn embedded_fallback_never_reselects_standalone_vulkan_and_uses_software_last() {
         let capabilities = snapshot(true, false, true, true, vec!["x11"]);
         let mut backends = vec![
             multi_codec_capability("vulkan", "vulkan-video", &capabilities, "x11", false),
@@ -961,7 +971,18 @@ mod tests {
             h264_capability("vaapi", "vaapi-h264", &capabilities, "x11"),
         ];
         let stream = crate::MediaStreamConfig::default();
-        let unavailable = select_embedded_fallback("auto", stream, &backends);
+        let software = select_embedded_fallback("auto", stream, &backends);
+        assert_eq!(
+            software.path,
+            LinuxVideoPath::Hardware(DecoderPreference::SoftwareOnly)
+        );
+        assert!(
+            software
+                .fallback_reason
+                .unwrap()
+                .ends_with("; using FFmpeg software decode")
+        );
+        let unavailable = select_embedded_fallback("hardware", stream, &backends);
         assert_eq!(unavailable.path, LinuxVideoPath::Software);
         assert!(
             unavailable
@@ -1096,19 +1117,66 @@ mod tests {
     }
 
     #[test]
-    fn automatic_selection_never_substitutes_software_for_hardware() {
+    fn only_auto_falls_back_to_software_and_only_without_a_hardware_decoder() {
         let backends = [software_backend("h264", vec!["8bit_420"])];
-        for requested in ["auto", "hardware"] {
-            let selected =
-                select_embedded_fallback(requested, crate::MediaStreamConfig::default(), &backends);
-            assert_eq!(selected.path, LinuxVideoPath::Software, "{requested}");
-            assert!(
-                selected
-                    .fallback_reason
-                    .unwrap()
-                    .contains("No compatible embedded")
+        let stream = crate::MediaStreamConfig::default();
+        let selected = select_embedded_fallback("hardware", stream, &backends);
+        assert_eq!(selected.path, LinuxVideoPath::Software);
+        assert!(
+            selected
+                .fallback_reason
+                .unwrap()
+                .contains("No compatible embedded")
+        );
+        let selected = select_embedded_fallback("auto", stream, &backends);
+        assert_eq!(
+            selected.path,
+            LinuxVideoPath::Hardware(DecoderPreference::SoftwareOnly)
+        );
+        assert!(
+            selected.fallback_reason.is_some(),
+            "the fallback is reported"
+        );
+        for (codec, color_quality, hdr) in [
+            (
+                crate::MediaVideoCodec::H265,
+                crate::MediaColorQuality::EightBit420,
+                false,
+            ),
+            (
+                crate::MediaVideoCodec::H264,
+                crate::MediaColorQuality::TenBit420,
+                false,
+            ),
+            (
+                crate::MediaVideoCodec::H264,
+                crate::MediaColorQuality::EightBit420,
+                true,
+            ),
+        ] {
+            let stream = crate::MediaStreamConfig {
+                codec,
+                color_quality,
+                hdr,
+                ..stream
+            };
+            assert_eq!(
+                select_embedded_fallback("auto", stream, &backends).path,
+                LinuxVideoPath::Software,
+                "{codec:?} {color_quality:?} hdr={hdr} has no software path"
             );
         }
+        let mut with_hardware = backends.to_vec();
+        with_hardware.push(VideoBackendCapability {
+            backend: "vaapi",
+            ..software_backend("h264", vec!["8bit_420"])
+        });
+        let selected = select_embedded_fallback("auto", stream, &with_hardware);
+        assert_eq!(
+            selected.path,
+            LinuxVideoPath::Hardware(DecoderPreference::HardwareOnly)
+        );
+        assert!(selected.fallback_reason.is_none());
     }
 
     fn capability(name: &'static str, available: bool) -> BackendCapability {

@@ -126,6 +126,42 @@ pub fn video_backends() -> Vec<VideoBackendCapability> {
     backends
 }
 
+/// The decoder tier per codec for 8-bit 4:2:0 SDR, from the embedded backends: hardware
+/// when any hardware backend decodes it, software when only the FFmpeg CPU decoder does.
+pub fn decoder_tiers(
+    backends: &[VideoBackendCapability],
+) -> opennow_streamer_protocol::DecoderTiers {
+    use opennow_streamer_protocol::DecoderTier;
+    let tier = |codec: &str| {
+        let decodes = |backend: &&VideoBackendCapability| {
+            backend.available
+                && backend.codecs.iter().any(|capability| {
+                    capability.codec == codec
+                        && capability.available
+                        && capability
+                            .color_qualities
+                            .as_ref()
+                            .is_none_or(|qualities| qualities.contains(&"8bit_420"))
+                })
+        };
+        let software =
+            |backend: &&VideoBackendCapability| matches!(backend.backend, "ffmpeg" | "software");
+        let decoding: Vec<_> = backends.iter().filter(decodes).collect();
+        if decoding.iter().any(|backend| !software(backend)) {
+            DecoderTier::Hardware
+        } else if decoding.iter().any(software) {
+            DecoderTier::Software
+        } else {
+            DecoderTier::None
+        }
+    };
+    opennow_streamer_protocol::DecoderTiers {
+        h264: tier("h264"),
+        h265: tier("h265"),
+        av1: tier("av1"),
+    }
+}
+
 pub fn embedded_video_backends() -> Vec<VideoBackendCapability> {
     embedded_video_backends_with_config(None, None)
 }
@@ -1043,6 +1079,57 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn decoder_tiers_prefer_hardware_then_the_software_fallback() {
+        use opennow_streamer_protocol::{CodecCapability, DecoderTier, DecoderTiers};
+        let backend =
+            |backend, codecs: &[(&'static str, Vec<&'static str>)]| VideoBackendCapability {
+                backend,
+                platform: "linux",
+                codecs: codecs
+                    .iter()
+                    .map(|(codec, qualities)| CodecCapability {
+                        max_decode_dimensions: None,
+                        codec,
+                        available: !qualities.is_empty(),
+                        hdr_color_qualities: None,
+                        color_qualities: Some(qualities.clone()),
+                        hdr_supported: None,
+                        reason: None,
+                    })
+                    .collect(),
+                zero_copy_modes: Vec::new(),
+                available: true,
+                reason: None,
+            };
+        let backends = [
+            backend(
+                "vaapi",
+                &[
+                    ("h264", vec!["8bit_420"]),
+                    ("h265", vec![]),
+                    ("av1", vec!["10bit_420"]),
+                ],
+            ),
+            backend(
+                "ffmpeg",
+                &[("h264", vec!["8bit_420"]), ("h265", vec!["8bit_420"])],
+            ),
+        ];
+        assert_eq!(
+            decoder_tiers(&backends),
+            DecoderTiers {
+                h264: DecoderTier::Hardware,
+                h265: DecoderTier::Software,
+                av1: DecoderTier::None,
+            }
+        );
+        let mut unavailable = backends.clone();
+        unavailable[0].available = false;
+        unavailable[1].available = false;
+        assert_eq!(decoder_tiers(&unavailable).h264, DecoderTier::None);
     }
 
     #[cfg(target_os = "linux")]
