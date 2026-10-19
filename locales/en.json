@@ -4948,6 +4948,23 @@
     "eachGuestGetsYourNMbpsStream": "Each guest gets your %1 Mbps stream, so %2 guests need %3 Mbps of upload.",
     "creatingCoOpSession": "Creating co-op session…",
     "createCoOpSession": "Create co-op session",
-    "oneClickStartsCoOp": "ONE CLICK · STARTS CO-OP"
+    "oneClickStartsCoOp": "ONE CLICK · STARTS CO-OP",
+    "nsDeviceCantPlay2": "%1's device can't play %2",
+    "restartTheGameWithNEveryoneIn": "Restart the game with %1? Everyone in the lobby can play it, and the game restarts.",
+    "noVideoFormatWorksForEveryoneIn": "No video format works for everyone in the lobby, so %1 can't see the game.",
+    "restartWithN": "Restart with %1",
+    "sameAsMine": "Same as mine",
+    "coOpAtYourStreamSettings": "Co-op at your stream settings",
+    "yourCodecSameStreamToEveryGuest": "YOUR CODEC · SAME STREAM TO EVERY GUEST",
+    "videoFormat": "Video format",
+    "everyGuestsDeviceMustBeAbleTo": "Every guest's device must be able to play it.",
+    "sameAsMyStreamSettings": "Same as my stream settings",
+    "1080p60H2651215Mbps": "1080p60 · H.265 · 12–15 Mbps",
+    "theVideoFormatGuestsGetEveryGuests": "The video format guests get. Every guest's device must be able to play it.",
+    "softwareDecode2": "SOFTWARE DECODE",
+    "restartWithNConfirmation": "Restart with %1 confirmation",
+    "restartForCoOp": "RESTART FOR CO-OP",
+    "restartWithN2": "Restart with %1?",
+    "thisSessionEndsAndTheGameStarts": "This session ends and the game starts again with %1. Your lobby closes, and its players get a new invite."
   }
 }

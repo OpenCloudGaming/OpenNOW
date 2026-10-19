@@ -21,6 +21,14 @@ QtObject {
     property var launchGame: function(game) {}
     // The game the host's running stream plays, for a lobby made from Ctrl+G.
     property var streamGame: null
+    // This client's decoder tiers from the streamer hello: {h264, h265, av1}, each "hardware" | "software" | "none".
+    property var localDecoders: null
+    // The host's running stream codec: "h264" | "h265" | "av1", or "" before it is known.
+    property string streamCodec: ""
+    // The host's normal codec setting ("auto" or a codec), which a codec preset or restart overrides.
+    property string settingsCodec: "auto"
+    // The host's session stop is in flight (ShellStore streamStopRequestId).
+    property bool hostStopping: false
     property bool hostStreaming: false
     // The host's GFN session exists (it may be restarting); losing it ends co-op.
     property bool hostSessionActive: false
@@ -51,6 +59,14 @@ QtObject {
     property var relays: []
     property var setupGame: null
     property real restoreBitrateMbps: 0
+    property string restoreCodec: ""
+    // Host: userId -> decoder tiers from the guest's opennow-capabilities signal.
+    property var guestDecoders: ({})
+    // Host: "userId:codec" codec prompts answered Not now.
+    property var codecPromptsDismissed: []
+    // Host: a restart for a codec every member can play, {codec, confirmed}; confirmed once the
+    // host ends the session from the confirmation. The relaunch re-creates the lobby and invites its guests.
+    property var codecRestart: null
     // Ctrl+G: a lobby for the running stream is being created; friends invited meanwhile wait here.
     property bool creatingLobby: false
     property var queuedInvites: []
@@ -142,6 +158,15 @@ QtObject {
     readonly property int uploadCapacityKbps: hostStats ? Number(hostStats.capacityKbps || 0) : 0
     readonly property bool uploadShort: uploadCapacityKbps > 0 && uploadNeededKbps > uploadCapacityKbps
     readonly property bool promptPending: joinRequests.length > 0 || inviteToast !== null
+    // Host: a let-in guest can't decode the running codec: {member, codec, best}; best is "" when no
+    // codec works for everyone.
+    readonly property var codecPrompt: {
+        if (!isHost || streamCodec === "" || codecRestart !== null)
+            return null
+        const blocked = guests.find(member => isAdmitted(member) && decoderTier(member.userId, streamCodec) === "none"
+            && codecPromptsDismissed.indexOf(member.userId + ":" + streamCodec) < 0)
+        return blocked ? {member: blocked, codec: streamCodec, best: bestCodec()} : null
+    }
     // Host lobby: an open slot whose guest would push upload past the known capacity stays held closed
     // until the host opens it.
     property bool heldSlotOpened: false
@@ -151,7 +176,7 @@ QtObject {
             && !members.some(member => member.userId === friend.user.id)).length : 0
 
     // Local co-op preferences (C9 Co-op settings). Persisted with QSettings outside smoke tests.
-    property var preferences: ({maxGuests: 3, preset: "1080p60-av1", matchBitrate: true, allowRelay: true,
+    property var preferences: ({maxGuests: 3, preset: "same", matchBitrate: true, allowRelay: true,
         requireApproval: false, showLatency: true, guestDisplayName: ""})
     property Settings preferenceStore: Settings {
         category: "coop"
@@ -184,6 +209,52 @@ QtObject {
         preferences = next
         if (persistPreferences)
             preferenceStore.values = JSON.stringify(next)
+    }
+    function codecName(codec) {
+        return {h264: qsTr("H.264"), h265: qsTr("H.265"), av1: qsTr("AV1")}[codec] || String(codec || "").toUpperCase()
+    }
+    function decoderTiers(value) {
+        const tiers = {}
+        for (const codec of ["h264", "h265", "av1"]) {
+            const tier = value ? String(value[codec] || "") : ""
+            tiers[codec] = tier === "hardware" || tier === "software" ? tier : "none"
+        }
+        return tiers
+    }
+    // A guest's tier for codec, or "" while its capabilities are unknown.
+    function decoderTier(userId, codec) {
+        const tiers = guestDecoders[userId]
+        return tiers ? tiers[codec] : ""
+    }
+    // The best codec every let-in guest and this client decode in hardware, else in software; "" when none.
+    function bestCodec(userIds) {
+        const ids = userIds || guests.filter(isAdmitted).map(member => member.userId)
+        const sets = ids.map(userId => guestDecoders[userId]).filter(Boolean)
+        if (localDecoders)
+            sets.push(decoderTiers(localDecoders))
+        for (const tier of ["hardware", "software"]) {
+            const codec = ["av1", "h265", "h264"].find(name => sets.every(tiers => tiers[name] === "hardware" || tiers[name] === tier))
+            if (codec)
+                return codec
+        }
+        return ""
+    }
+    // Known guests (userIds) that can't decode codec; "auto" and "" check nothing.
+    function codecBlockers(codec, userIds) {
+        if (["h264", "h265", "av1"].indexOf(codec) < 0)
+            return []
+        return (userIds || []).filter(userId => decoderTier(userId, codec) === "none")
+    }
+    function dismissCodecPrompt() {
+        if (codecPrompt)
+            codecPromptsDismissed = codecPromptsDismissed.concat([codecPrompt.member.userId + ":" + codecPrompt.codec]).slice(-maxInvites)
+    }
+    // Restart with codec: the normal end-session confirmation; ending relaunches the game with it.
+    function requestCodecRestart(codec) {
+        if (!isHost || ["h264", "h265", "av1"].indexOf(codec) < 0 || !appController)
+            return
+        codecRestart = {codec: codec, confirmed: false}
+        appController.showOverlay("desktop-stream-exit-confirm")
     }
     function relayName(relayId) {
         const relay = relays.find(item => item.id === relayId)
@@ -291,13 +362,23 @@ QtObject {
         if (appController)
             appController.showOverlay("coop-setup")
     }
-    function startHosting(selectedGame, maxGuests, bitrateMbps) {
+    // codec: "h264" | "h265" | "av1" for a restart every member can play; otherwise the co-op preset's
+    // codec, and "Same as my stream settings" keeps the host's own. The codec is fixed when the
+    // session is created.
+    function startHosting(selectedGame, maxGuests, bitrateMbps, codec) {
         const guestsAllowed = Math.max(1, Math.min(maxGuestsLimit, Number(maxGuests || preferences.maxGuests)))
         setupGame = selectedGame
         restoreBitrateMbps = 0
         if (Number(bitrateMbps) > 0 && Number(bitrateMbps) !== Number(currentBitrateMbps())) {
             restoreBitrateMbps = Number(currentBitrateMbps())
             applySetting("maxBitrateMbps", Number(bitrateMbps))
+        }
+        const presetCodec = String(preferences.preset || "same").split("-")[1] || ""
+        const chosen = codec || (["h264", "h265", "av1"].indexOf(presetCodec) >= 0 ? presetCodec : "")
+        restoreCodec = ""
+        if (chosen !== "" && chosen !== settingsCodec) {
+            restoreCodec = settingsCodec
+            applySetting("codec", chosen)
         }
         call("coop.lobby.create", {game: gamePayload(selectedGame), maxGuests: guestsAllowed}, {})
         fetchIceServers()
@@ -386,6 +467,11 @@ QtObject {
         if (restoreBitrateMbps > 0)
             applySetting("maxBitrateMbps", restoreBitrateMbps)
         restoreBitrateMbps = 0
+        if (restoreCodec !== "")
+            applySetting("codec", restoreCodec)
+        restoreCodec = ""
+        guestDecoders = ({})
+        codecPromptsDismissed = []
         fanoutStarted = false
         peers = ({})
         hostStats = null
@@ -608,6 +694,9 @@ QtObject {
             iceServers = result.iceServers
         if (joinContext)
             joinContext = Object.assign({}, joinContext, {game: lobby.game})
+        if (localDecoders)
+            call("coop.signal.send", {lobbyId: lobby.id, to: String(lobby.hostId || ""),
+                payload: {type: "opennow-capabilities", decoders: decoderTiers(localDecoders)}}, {})
         guestPhase = "connecting"
         startGuestPipeline()
     }
@@ -959,6 +1048,17 @@ QtObject {
         }
         if (!lobby || payload.lobbyId !== lobby.id)
             return
+        if (payload.payload && payload.payload.type === "opennow-capabilities") {
+            const from = String(payload.from || "")
+            if (role === "host" && from !== "" && from !== selfId) {
+                const next = {}
+                for (const userId of Object.keys(guestDecoders).filter(id => id !== from).slice(-(maxGuestsLimit * 4 - 1)))
+                    next[userId] = guestDecoders[userId]
+                next[from] = decoderTiers(payload.payload.decoders)
+                guestDecoders = next
+            }
+            return
+        }
         if (payload.payload && payload.payload.type === "opennow-admission") {
             if (role === "guest" && String(payload.from || "") === String(lobby.hostId || ""))
                 acceptAdmission(String(payload.payload.state || ""))
@@ -1077,9 +1177,30 @@ QtObject {
     onHostSessionActiveChanged: {
         if (hostSessionActive || !isHost)
             return
+        const restart = codecRestart && codecRestart.confirmed ? {codec: codecRestart.codec, game: setupGame || streamGame,
+            maxGuests: Number(lobby.maxGuests), bitrateMbps: Number(currentBitrateMbps()),
+            invitees: guests.map(member => member.userId)} : null
+        codecRestart = null
         call("coop.lobby.close", {lobbyId: lobby.id}, {})
         finishHosting()
-        accessibilityAnnounced(qsTr("Your stream ended, so co-op closed for everyone."))
+        if (!restart) {
+            accessibilityAnnounced(qsTr("Your stream ended, so co-op closed for everyone."))
+            return
+        }
+        Qt.callLater(() => {
+            queuedInvites = restart.invitees.slice(0, maxGuestsLimit)
+            startHosting(restart.game, restart.maxGuests, restart.bitrateMbps, restart.codec)
+        })
+    }
+    // The end-session confirmation closed: ending the session confirms a codec restart, Keep playing drops it.
+    property Connections overlayEvents: Connections {
+        target: root.appController
+        ignoreUnknownSignals: true
+        function onOverlayChanged() {
+            if (!root.codecRestart || root.codecRestart.confirmed || root.appController.overlay === "desktop-stream-exit-confirm")
+                return
+            root.codecRestart = root.hostStopping ? Object.assign({}, root.codecRestart, {confirmed: true}) : null
+        }
     }
 
     property Connections streamerEvents: Connections {

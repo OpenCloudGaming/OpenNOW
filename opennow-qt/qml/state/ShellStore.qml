@@ -123,6 +123,11 @@ QtObject {
             root.launchSelectedGame(false)
         }
         streamGame: root.selectedGame
+        localDecoders: root.nativeRuntimeCapabilities.decoders || null
+        streamCodec: ({h264: "h264", avc: "h264", h265: "h265", hevc: "h265", av1: "av1"})[String(root.streamer && root.streamer.codec
+            || root.runtimeStreamProfile.codec || "").toLowerCase().replace(".", "")] || ""
+        settingsCodec: String(root.settings.codec || "auto")
+        hostStopping: root.streamStopRequestId !== ""
         hostStreaming: root.activeSession !== null && root.streamerStatus === "streaming"
         hostSessionActive: root.activeSession !== null
         persistPreferences: !SmokeTestMode

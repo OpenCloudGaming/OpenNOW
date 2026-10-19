@@ -342,6 +342,7 @@ qt_add_qml_module(opennow-qt
         qml/desktop/coop/DesktopCoopUploadUsage.qml
         qml/desktop/stream/DesktopInStreamCoopSection.qml
         qml/desktop/coop/DesktopCoopAskNotice.qml
+        qml/desktop/coop/DesktopCoopCodecPrompt.qml
         qml/desktop/coop/DesktopCoopAskToast.qml
         qml/desktop/coop/DesktopCoopInviteToast.qml
         qml/desktop/coop/DesktopCoopNoticeAvatar.qml

@@ -13,7 +13,9 @@ Column {
     readonly property var preferences: coop.preferences
     readonly property int maxGuests: Number(preferences.maxGuests || 3)
     readonly property var presets: [
+        {label: qsTr("Same as my stream settings"), value: "same"},
         {label: qsTr("720p60 · H.264 · 8–10 Mbps"), value: "720p60-h264"},
+        {label: qsTr("1080p60 · H.265 · 12–15 Mbps"), value: "1080p60-h265"},
         {label: qsTr("1080p60 · AV1 · 12–15 Mbps"), value: "1080p60-av1"},
         {label: qsTr("1440p60 · AV1 · 20–25 Mbps"), value: "1440p60-av1"}
     ]
@@ -50,7 +52,7 @@ Column {
             objectName: "settingsCoopPreset"
             width: parent.width; glyph: "monitor"
             title: qsTr("Co-op preset")
-            description: qsTr("Used while guests are connected.")
+            description: qsTr("The video format guests get. Every guest's device must be able to play it.")
             items: page.presets
             value: page.preferences.preset
             onSelected: value => page.coop.setPreference("preset", value)

@@ -13,7 +13,14 @@ FocusScope {
     readonly property var game: coop.setupGame
     readonly property string gameTitle: game && game.title ? String(game.title) : qsTr("this game")
     readonly property var pads: ControllerInput.availableControllers || []
-    readonly property var presetParts: String(coop.preferences.preset || "1080p60-av1").split("-")
+    readonly property var presetParts: String(coop.preferences.preset || "same").split("-")
+    readonly property string presetCodec: presetParts[1] || "same"
+    readonly property var codecChoices: [
+        {codec: "same", preset: "same", label: qsTr("Same as mine")},
+        {codec: "h264", preset: "720p60-h264", label: qsTr("H.264")},
+        {codec: "h265", preset: "1080p60-h265", label: qsTr("H.265")},
+        {codec: "av1", preset: "1080p60-av1", label: qsTr("AV1")}
+    ]
     readonly property int mineMbps: Math.round(Number(ShellStore.settings.maxBitrateMbps || 0))
     readonly property var presets: [
         {mbps: 15, guests: 2, label: qsTr("15 Mbps · 2 guests")},
@@ -190,14 +197,15 @@ FocusScope {
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: 3
                     Text {
-                        text: qsTr("Co-op %1").arg(String(root.presetParts[0] || ""))
+                        text: root.presetCodec === "same" ? qsTr("Co-op at your stream settings") : qsTr("Co-op %1").arg(String(root.presetParts[0] || ""))
                         color: "#FFFFFF"
                         font.family: DesktopTokens.bodyFont
                         font.pixelSize: 15
                         font.weight: Font.ExtraBold
                     }
                     Text {
-                        text: qsTr("%1 · SAME STREAM TO EVERY GUEST").arg(String(root.presetParts[1] || "").toUpperCase())
+                        text: root.presetCodec === "same" ? qsTr("YOUR CODEC · SAME STREAM TO EVERY GUEST")
+                            : qsTr("%1 · SAME STREAM TO EVERY GUEST").arg(root.coop.codecName(root.presetCodec).toUpperCase())
                         color: "#52FFFFFF"
                         font.family: DesktopTokens.monoFont
                         font.pixelSize: 9
@@ -248,6 +256,79 @@ FocusScope {
                                     font.family: DesktopTokens.bodyFont
                                     font.pixelSize: 13
                                     font.weight: chip.selected ? Font.ExtraBold : Font.Bold
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Item {
+                width: parent.width
+                height: 56
+                Column {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: parent.width - codecChips.width - 16
+                    spacing: 3
+                    Text {
+                        text: qsTr("Video format")
+                        color: "#FFFFFF"
+                        font.family: DesktopTokens.bodyFont
+                        font.pixelSize: 15
+                        font.weight: Font.ExtraBold
+                    }
+                    Text {
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        text: qsTr("Every guest's device must be able to play it.")
+                        color: "#A3FFFFFF"
+                        font.family: DesktopTokens.bodyFont
+                        font.pixelSize: 12
+                        font.weight: Font.Medium
+                    }
+                }
+                Rectangle {
+                    id: codecChips
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: codecRow.implicitWidth + 10
+                    height: 40
+                    radius: 20
+                    color: "#38000000"
+                    border.width: 1
+                    border.color: "#24FFFFFF"
+                    Row {
+                        id: codecRow
+                        x: 5
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 2
+                        Repeater {
+                            model: root.codecChoices
+                            delegate: AbstractButton {
+                                id: codecChip
+                                required property var modelData
+                                readonly property bool selected: root.presetCodec === modelData.codec
+                                objectName: "coopSetupCodec-" + modelData.codec
+                                width: codecLabel.implicitWidth + 24
+                                height: 32
+                                hoverEnabled: true
+                                focusPolicy: Qt.NoFocus
+                                Accessible.role: Accessible.RadioButton
+                                Accessible.name: modelData.label
+                                Accessible.checked: selected
+                                onClicked: if (!selected) root.coop.setPreference("preset", modelData.preset)
+                                background: Rectangle {
+                                    radius: 16
+                                    color: codecChip.selected ? "#7FD4FF" : codecChip.hovered ? "#14FFFFFF" : "transparent"
+                                }
+                                contentItem: Text {
+                                    id: codecLabel
+                                    text: codecChip.modelData.label
+                                    horizontalAlignment: Text.AlignHCenter
+                                    verticalAlignment: Text.AlignVCenter
+                                    color: codecChip.selected ? "#0B0F1A" : "#D1FFFFFF"
+                                    font.family: DesktopTokens.bodyFont
+                                    font.pixelSize: 13
+                                    font.weight: codecChip.selected ? Font.ExtraBold : Font.Bold
                                 }
                             }
                         }

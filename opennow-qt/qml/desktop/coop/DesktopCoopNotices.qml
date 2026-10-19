@@ -76,6 +76,12 @@ Item {
         }
 
         Loader {
+            active: root.coop.codecPrompt !== null
+            visible: active
+            sourceComponent: DesktopCoopCodecPrompt { prompt: root.coop.codecPrompt }
+        }
+
+        Loader {
             active: root.coop.askNotice !== null && (root.coop.askNotice.kind === "full" || root.coop.askNotice.kind === "room")
             visible: active
             sourceComponent: DesktopCoopAskNotice { notice: root.coop.askNotice }

@@ -416,6 +416,17 @@ FocusScope {
                             font.weight: Font.DemiBold
                             font.letterSpacing: 0.72
                         }
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: row.kind === "guest" && root.coop.decoderTier(row.member.userId, root.coop.streamCodec) === "software"
+                            objectName: row.kind === "guest" ? "coopPeerSoftware-" + row.member.userId : ""
+                            text: qsTr("SOFTWARE DECODE")
+                            color: "#A3FFFFFF"
+                            font.family: DesktopTokens.monoFont
+                            font.pixelSize: 9
+                            font.weight: Font.DemiBold
+                            font.letterSpacing: 0.72
+                        }
                     }
                     Row {
                         anchors.right: parent.right

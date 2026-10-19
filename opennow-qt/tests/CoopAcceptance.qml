@@ -18,6 +18,7 @@ QtObject {
     property string captureName: ""
     property bool startFocusedByDefault: false
     property int launches: 0
+    property var applied: []
     property string invitedFromStream: ""
     // Scene steps keyed by settle tick, for input that has to land after the screen has focus.
     property var steps: ({})
@@ -102,6 +103,10 @@ QtObject {
         "c-08f-create-from-stream": "",
         "c-08g-created-from-stream": "",
         "c-08h-invite-from-stream": "",
+        "c-08i-codec-prompt": "",
+        "c-08j-codec-restart": "",
+        "c-08k-codec-not-now": "",
+        "c-02b-setup-h265": "",
         "c-09-settings-coop": "5UT-0",
         "c-10-reconnecting": "62P-0",
         "c-10-host-ended": "62P-0",
@@ -185,6 +190,10 @@ QtObject {
         "c-08f-create-from-stream": ["streamCoopSection", "streamCoopCreateSection", "streamCoopCreate", "streamCoopPlayers-3"],
         "c-08g-created-from-stream": ["streamCoopSection", "streamCoopStart", "streamSurfaceHost"],
         "c-08h-invite-from-stream": ["streamCoopSection", "streamCoopStart"],
+        "c-08i-codec-prompt": ["coopCodecPrompt", "coopCodecRestart", "coopCodecNotNow", "streamSurfaceHost"],
+        "c-08j-codec-restart": [],
+        "c-08k-codec-not-now": ["streamSurfaceHost"],
+        "c-02b-setup-h265": [],
         "c-09-settings-coop": ["settingsCoop"],
         "c-10-reconnecting": ["coopReconnectingToast"],
         "c-10-host-ended": ["coopEnded"],
@@ -502,7 +511,13 @@ QtObject {
         coop.setPreference("requireApproval", false)
         startFocusedByDefault = false
         launches = 0
+        applied = []
         invitedFromStream = ""
+        coop.localDecoders = null
+        coop.codecRestart = null
+        coop.codecPromptsDismissed = []
+        coop.setPreference("preset", "same")
+        ShellStore.streamStopRequestId = ""
         steps = ({})
         modifiers = 0
         clickButton = Qt.LeftButton
@@ -762,6 +777,70 @@ QtObject {
                     press("streamCoopCreateInvite-" + invitedFromStream)()
                 }
             }
+        } else if (name === "c-08i-codec-prompt" || name === "c-08j-codec-restart" || name === "c-08k-codec-not-now") {
+            linkAs(mara)
+            seedFriends(false)
+            fakeStream()
+            coop.localDecoders = {h264: "hardware", h265: "hardware", av1: "hardware"}
+            host([member(mara, 0), member(jonas, 1), member(lieke, 2)], [])
+            launches = 0
+            client.calls = []
+            const capabilities = (person, decoders) => client.emit("coop.signal", {lobbyId: "lob_mara", from: person.id,
+                payload: {type: "opennow-capabilities", decoders: decoders}})
+            Qt.callLater(() => Qt.callLater(() => {
+                capabilities(jonas, {h264: "hardware", h265: "hardware", av1: "software"})
+                capabilities(lieke, {h264: "hardware", h265: "hardware", av1: "none", vp9: "hardware"})
+            }))
+            const click = objectName => {
+                if (consoleSurface) {
+                    if (objectName === "coopCodecRestart")
+                        coop.requestCodecRestart(coop.codecPrompt.best)
+                    else
+                        coop.dismissCodecPrompt()
+                    return
+                }
+                const button = find(window.contentItem, objectName)
+                check(button && shown(button), name + ": " + objectName + " is not on screen")
+                button.clicked()
+            }
+            if (name === "c-08i-codec-prompt")
+                steps = ({4: () => AppController.showOverlay("desktop-stream-menu")})
+            if (name === "c-08j-codec-restart") {
+                steps = ({4: () => click("coopCodecRestart"), 6: () => {
+                    check(AppController.overlay === "desktop-stream-exit-confirm" && coop.codecRestart.codec === "h265",
+                        "Restart opens the end-session confirmation")
+                    const title = find(window.contentItem, "accountSwitchTitle")
+                    check(consoleSurface || (title && shown(title) && title.text === "Restart with H.265?"), "the confirmation names the restart codec")
+                    captureName = name + "-confirm"
+                }, 7: () => {
+                    ShellStore.streamStopRequestId = "coop-fixture-stop"
+                    AppController.showOverlay("")
+                }, 8: () => {
+                    check(coop.codecRestart && coop.codecRestart.confirmed, "ending the session confirms the restart")
+                    ShellStore.streamStopRequestId = ""
+                    ShellStore.activeSession = null
+                }})
+            }
+            if (name === "c-08k-codec-not-now")
+                steps = ({4: () => click("coopCodecRestart"), 6: () => AppController.showOverlay(""), 8: () => {
+                    check(coop.codecRestart === null && coop.codecPrompt !== null, "Keep playing drops the restart and keeps the prompt")
+                    click("coopCodecNotNow")
+                }})
+        } else if (name === "c-02b-setup-h265") {
+            linkAs(mara)
+            AppController.navigate("home")
+            coop.openSetup({id: bg3.appId, title: bg3.title, launchAppId: bg3.appId, imageUrl: art()})
+            steps = consoleSurface ? ({4: () => {
+                coop.setPreference("preset", "1080p60-h265")
+                coop.startHosting(coop.setupGame, 0, 0)
+            }}) : ({4: () => {
+                const chip = find(window.contentItem, "coopSetupCodec-h265")
+                check(chip && shown(chip), "the setup offers H.265")
+                chip.clicked()
+            }, 6: () => {
+                check(coop.preferences.preset === "1080p60-h265", "the H.265 chip picks the H.265 preset")
+                find(window.contentItem, "coopSetupStart").clicked()
+            }})
         } else if (name === "c-08c-start-ready" || name === "c-08d-start-waiting" || name === "c-08e-start-streaming") {
             linkAs(mara)
             seedFriends(false)
@@ -813,6 +892,7 @@ QtObject {
         } else if (name === "c-05f-trying-relay") {
             joinAsGuest("code", "trying_relay")
         } else if (name === "c-07h-guest-direct") {
+            coop.localDecoders = {h264: "hardware", h265: "software", av1: "none", extra: "hardware"}
             joinAsGuest("code", "")
             Qt.callLater(() => {
                 runtime.coopEventReceived({type: "coop-guest-state", state: "trying_relay", path: null, relayId: null, reason: null})
@@ -1222,7 +1302,41 @@ QtObject {
                     "inviting before co-op creates the lobby, then invites: " + JSON.stringify(invites.map(call => call.params)))
             }
         }
+        if (name === "c-08i-codec-prompt") {
+            check(coop.streamCodec === "av1" && coop.guestDecoders[lieke.id].av1 === "none" && coop.guestDecoders[lieke.id].vp9 === undefined,
+                "the host keeps each guest's three decoder tiers")
+            check(coop.codecPrompt && coop.codecPrompt.member.userId === lieke.id && coop.codecPrompt.best === "h265",
+                "a guest who can't play AV1 gets the best codec everyone decodes in hardware: " + JSON.stringify(coop.codecPrompt))
+            check(!client.calls.some(call => call.method === "session.stream.reconfigure"), "a running session never changes codec")
+            if (checkScreens) {
+                const body = find(window.contentItem, "coopCodecPromptBody")
+                check(body.text === "Restart the game with H.265? Everyone in the lobby can play it, and the game restarts.", "the prompt offers the restart")
+                const software = find(window.contentItem, "coopPeerSoftware-" + jonas.id)
+                check(software && shown(software), "a guest decoding the stream in software gets a row note")
+                const none = find(window.contentItem, "coopPeerSoftware-" + lieke.id)
+                check(!none || !shown(none), "only software decode gets the note")
+            }
+            check(coop.bestCodec([lieke.id, jonas.id]) === "h265" && coop.bestCodec([]) === "av1", "the host's own decoders count")
+        }
+        if (name === "c-08j-codec-restart") {
+            check(client.calls.some(call => call.method === "coop.lobby.close" && call.params.lobbyId === "lob_mara"), "the old lobby closes")
+            check(launches === 1 && applied.some(item => item.key === "codec" && item.value === "h265"), "the game relaunches with H.265: " + JSON.stringify(applied))
+            const creates = client.calls.filter(call => call.method === "coop.lobby.create")
+            const invites = client.calls.filter(call => call.method === "coop.lobby.invite").map(call => call.params.userId).sort()
+            check(creates.length === 1 && creates[0].params.maxGuests === 3 && JSON.stringify(invites) === JSON.stringify([jonas.id, lieke.id].sort()),
+                "the relaunch re-creates the lobby and invites its players: " + JSON.stringify(invites))
+            check(coop.codecRestart === null && coop.restoreCodec === "auto", "the restart is spent and the host's codec comes back after co-op")
+        }
+        if (name === "c-08k-codec-not-now")
+            check(coop.codecPrompt === null && launches === 0 && !client.calls.some(call => call.method === "coop.lobby.close"),
+                "Not now keeps the session and hides the prompt")
+        if (name === "c-02b-setup-h265")
+            check(launches === 1 && applied.some(item => item.key === "codec" && item.value === "h265")
+                && client.calls.some(call => call.method === "coop.lobby.create"), "the H.265 preset launches with H.265: " + JSON.stringify(applied))
         if (name === "c-07h-guest-direct") {
+            const signal = client.calls.find(call => call.method === "coop.signal.send" && call.params.payload.type === "opennow-capabilities")
+            check(signal && signal.params.to === mara.id && JSON.stringify(signal.params.payload.decoders) === JSON.stringify({h264: "hardware", h265: "software", av1: "none"}),
+                "a joining guest tells the host its decoders: " + JSON.stringify(signal && signal.params))
             const first = reports("first_frame")
             check(first.length === 1 && first[0].path === "direct" && first[0].relayId === null && first[0].firstFrameMs === 380
                 && first[0].decoder === "hardware", "a direct guest reports its path and timings: " + JSON.stringify(first))
@@ -1285,7 +1399,7 @@ QtObject {
         coop.streamRuntime = runtime
         coop.sendNativeCommand = (type, params) => runtime.command(type, params)
         coop.launchGame = gameValue => { launches += 1 }
-        coop.applySetting = (keyName, value) => {}
+        coop.applySetting = (keyName, value) => { applied = applied.concat([{key: keyName, value: value}]) }
         return true
     }
 
