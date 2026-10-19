@@ -27,6 +27,19 @@ pub use protocol::{AudioDescription, StreamDescription};
 /// Receives every JSON event the co-op workers emit. Implementations must not block.
 pub type EventSink = Arc<dyn Fn(Value) + Send + Sync>;
 
+/// Longest remote- or platform-provided reason text written to the native log.
+const MAX_LOGGED_REASON_CHARS: usize = 256;
+
+/// One line in the native file log under the 'coop' area. Never pass peer ids, SDP,
+/// candidates or credentials.
+fn log(message: &str) {
+    opennow_streamer_protocol::log::log_line("INFO", "coop", message);
+}
+
+fn bounded(reason: &str) -> String {
+    reason.chars().take(MAX_LOGGED_REASON_CHARS).collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CoopError {
     Busy,

@@ -4,6 +4,7 @@ use std::os::fd::AsRawFd;
 
 use crate::{VaapiColorSupport, VideoCodec};
 
+const VA_PROFILE_H264_HIGH: c_int = 7;
 const VA_PROFILE_HEVC_MAIN: c_int = 17;
 const VA_PROFILE_HEVC_MAIN10: c_int = 18;
 const VA_PROFILE_AV1_PROFILE0: c_int = 32;
@@ -210,6 +211,20 @@ pub(crate) fn color_support(codec: VideoCodec) -> VaapiColorSupport {
             .position(|query| *query == (profile, rt_format))
             .is_some_and(|index| answers[index].get())
     })
+}
+
+/// Whether a render node decodes 8-bit 4:2:0 H.264 High through VA-API VLD, the profile
+/// FFmpeg's VA-API H.264 decoder opens.
+pub(crate) fn h264_supported() -> bool {
+    let Some(library) = VaapiLibrary::load() else {
+        return false;
+    };
+    select_device(candidate_paths(), |path| {
+        library
+            .display(path)
+            .map(|display| display.supports(VA_PROFILE_H264_HIGH, VA_RT_FORMAT_YUV420))
+    })
+    .is_some()
 }
 
 pub(crate) fn device_for_profile(codec: VideoCodec, depth: VaapiDepth) -> Option<CString> {

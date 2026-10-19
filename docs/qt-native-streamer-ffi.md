@@ -155,7 +155,8 @@ Keyboard and mouse input are not forwarded.
   | `connect-timeout` | No connection within 30 s, or no reconnect within 15 s. |
   | `relay-unavailable` | No relay allocation succeeded. |
   | `relay-credentials-rejected` | A TURN server answered the allocation with 401 or 437. Fetch fresh `iceServers` once and join again. |
-  | `media-closed: ...` | The local media pipeline closed. |
+  | `media-unavailable: ...` | The guest cannot present the host's stream: an unsupported codec, or the local media runtime could not start a decoder for the described codec, size, depth and chroma. The text after the prefix is the platform's reason. The guest also sends the host a `bye` with this reason. |
+  | `media-closed: ...` | The local media pipeline closed. The guest also sends the host a `bye` with this reason. |
 
 - `path` is `direct`, `relay`, or null. `relayId` is the configured relay site
   of the TURN server that carries the selected pair, whichever side allocated it.
@@ -163,7 +164,10 @@ Keyboard and mouse input are not forwarded.
   fields, including the cumulative input counters described in
   `docs/coop-sessions.md`. The native file log includes them at most every 10 s,
   and each co-op worker also logs its input counters (and nothing else) under the
-  `coop` area every 10 s. `capacityKbps`
+  `coop` area every 10 s. Every `coop-guest-state` and `coop-peer-state` transition is
+  logged under `coop` with its state, path, relay id and (bounded) reason but no peer
+  ids, as are the stream description a guest receives and the result of starting its
+  local media. A host logs the reason of a guest's `bye`. `capacityKbps`
   is null because the peer link runs without bandwidth estimation. `lossPct` on
   the host comes from the guest's RTCP receiver reports. On the guest, it is the
   share of forwarded video packets still missing after NACK repair.

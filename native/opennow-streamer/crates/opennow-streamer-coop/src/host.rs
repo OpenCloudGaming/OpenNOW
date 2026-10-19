@@ -19,7 +19,7 @@ use crate::link::{AUDIO_PT, LinkEvent, NetConfig, Path, PeerLink, ResolvedIce, V
 use crate::protocol::{ControlMessage, Signal, StreamDescription};
 use crate::ring::{KeyframeLimiter, RetransmitRing, RingEntry, decode_nack};
 use crate::slots::{InputDrop, MAX_GUESTS, SlotAction, SlotError, SlotTable};
-use crate::{CoopError, EventSink};
+use crate::{CoopError, EventSink, bounded, log};
 
 const COMMAND_CAPACITY: usize = 64;
 const COMMAND_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
@@ -381,6 +381,10 @@ impl HostWorker {
     fn emit_state(&self, index: usize) {
         let peer = &self.peers[index];
         let (path, relay_id) = path_fields(peer.link.path());
+        log(&format!(
+            "host peer={index} state={} path={path} relayId={relay_id}",
+            peer.state.label()
+        ));
         self.emit(json!({
             "type":"coop-peer-state",
             "peerId":peer.id,
@@ -464,7 +468,11 @@ impl HostWorker {
                     Signal::Offer(_) => {
                         Err(CoopError::Invalid("the host is the offerer".to_owned()))
                     }
-                    Signal::Bye(_) => {
+                    Signal::Bye(reason) => {
+                        log(&format!(
+                            "host peer={index} bye reason={}",
+                            bounded(&reason)
+                        ));
                         self.disconnect(index, PeerState::Disconnected);
                         Ok(())
                     }
@@ -502,6 +510,10 @@ impl HostWorker {
         peer.link.close();
         peer.link.drive(Instant::now());
         if peer.state != PeerState::Disconnected {
+            log(&format!(
+                "host peer={index} state=disconnected path=null relayId=null removed={}",
+                bounded(reason)
+            ));
             self.emit(json!({
                 "type":"coop-peer-state","peerId":peer_id,"state":"disconnected","path":null,"relayId":null,
             }));

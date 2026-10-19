@@ -111,14 +111,56 @@ pub(crate) fn open_vaapi(format: StreamFormat) -> Result<Box<dyn VideoDecoder>> 
     Ok(Box::new(vaapi::VaApiDecoder::open(format)?))
 }
 
-#[cfg(feature = "vaapi")]
+/// VA-API H.264 is available through the native decoder or, when that cannot open on the
+/// driver (radeonsi rejects its 16x16 initial context on some APUs), through FFmpeg's VA-API
+/// decoder. The session opens them in the same order.
 pub(crate) fn probe_vaapi() -> std::result::Result<String, String> {
-    vaapi::VaApiDecoder::probe()
+    #[cfg(feature = "vaapi")]
+    let native = vaapi::VaApiDecoder::probe();
+    #[cfg(not(feature = "vaapi"))]
+    let native = Err("crate was built without the vaapi feature".to_owned());
+    #[cfg(feature = "ffmpeg")]
+    let ffmpeg = FfmpegDecoder::supports_vaapi_h264;
+    #[cfg(not(feature = "ffmpeg"))]
+    let ffmpeg = || false;
+    vaapi_h264_probe(native, ffmpeg)
 }
 
-#[cfg(not(feature = "vaapi"))]
-pub(crate) fn probe_vaapi() -> std::result::Result<String, String> {
-    Err("crate was built without the vaapi feature".to_owned())
+fn vaapi_h264_probe(
+    native: std::result::Result<String, String>,
+    ffmpeg_available: impl FnOnce() -> bool,
+) -> std::result::Result<String, String> {
+    native.or_else(|native| {
+        if ffmpeg_available() {
+            Ok(format!(
+                "FFmpeg VA-API H.264 (native VA-API H.264: {native})"
+            ))
+        } else {
+            Err(native)
+        }
+    })
 }
 #[cfg(all(feature = "ffmpeg", feature = "vulkan"))]
 mod vulkan_copy;
+
+#[cfg(test)]
+mod tests {
+    use super::vaapi_h264_probe;
+
+    #[test]
+    fn vaapi_h264_falls_back_to_ffmpeg_only_when_the_native_decoder_cannot_open() {
+        assert_eq!(
+            vaapi_h264_probe(Ok("native".to_owned()), || panic!("FFmpeg probed")),
+            Ok("native".to_owned())
+        );
+        let rejected = || Err("initial context: resolution not supported".to_owned());
+        assert_eq!(
+            vaapi_h264_probe(rejected(), || true),
+            Ok("FFmpeg VA-API H.264 (native VA-API H.264: initial context: resolution not supported)".to_owned())
+        );
+        assert_eq!(
+            vaapi_h264_probe(rejected(), || false),
+            Err("initial context: resolution not supported".to_owned())
+        );
+    }
+}

@@ -18,7 +18,7 @@ use crate::input::{GamepadState, InputRecord, InputSamples};
 use crate::link::{AUDIO_PT, LinkEvent, NetConfig, Path, PeerLink, ResolvedIce, VIDEO_PT};
 use crate::protocol::{ControlMessage, Signal, StreamDescription};
 use crate::ring::{KEYFRAME_INTERVAL, LossCounters, NackTracker, encode_nack};
-use crate::{CoopError, EventSink};
+use crate::{CoopError, EventSink, bounded, log};
 
 const COMMAND_CAPACITY: usize = 32;
 const LOOP_WAIT: Duration = Duration::from_millis(1);
@@ -237,6 +237,11 @@ impl GuestWorker {
             Some(Path::Direct) => (json!("direct"), Value::Null),
             Some(Path::Relay(id)) => (json!("relay"), json!(id)),
         };
+        log(&format!(
+            "guest state={} path={path} relayId={relay_id} reason={}",
+            self.state.label(),
+            reason.map_or_else(|| "null".to_owned(), bounded),
+        ));
         self.emit(json!({
             "type":"coop-guest-state",
             "state":self.state.label(),
@@ -300,6 +305,9 @@ impl GuestWorker {
     }
 
     fn finish(&mut self, reason: &str) {
+        if reason.starts_with("media-") {
+            self.signal_out(&Signal::Bye(reason.to_owned()));
+        }
         self.link.close();
         self.link.drive(Instant::now());
         self.receiver = None;
@@ -428,8 +436,36 @@ impl GuestWorker {
         let Ok(description) = serde_json::from_slice::<StreamDescription>(data) else {
             return Ok(());
         };
-        let codec = video_codec(&description.codec)
-            .ok_or_else(|| format!("unsupported co-op codec {}", description.codec))?;
+        log(&format!(
+            "guest stream description codec={} size={}x{} fps={} bitDepth={} chroma={} colorSpace={} hdr={} audio={}",
+            bounded(&description.codec),
+            description.width,
+            description.height,
+            description.fps,
+            description.bit_depth,
+            bounded(&description.chroma),
+            description
+                .color_space
+                .as_deref()
+                .map_or("null", |space| space),
+            description.hdr,
+            description.audio.as_ref().map_or_else(
+                || "none".to_owned(),
+                |audio| format!(
+                    "{}/{}ch/{}Hz/pt{}",
+                    bounded(&audio.codec),
+                    audio.channels,
+                    audio.sample_rate,
+                    audio.payload_type
+                )
+            ),
+        ));
+        let codec = video_codec(&description.codec).ok_or_else(|| {
+            format!(
+                "media-unavailable: unsupported co-op codec {}",
+                description.codec
+            )
+        })?;
         let audio_track = description.audio.as_ref().map(|audio| NvstAudioTrack {
             payload_type: audio.payload_type,
             clock_rate_hz: audio.sample_rate,
@@ -437,7 +473,14 @@ impl GuestWorker {
             mid: "coop-audio".to_owned(),
             ssrc: None,
         });
-        let consumer = self.media.start(&description)?;
+        let consumer = match self.media.start(&description) {
+            Ok(consumer) => consumer,
+            Err(error) => {
+                log(&format!("guest media start failed: {}", bounded(&error)));
+                return Err(format!("media-unavailable: {error}"));
+            }
+        };
+        log("guest media start ok");
         self.receiver = Some(NvstCoopGuestReceiver::new(codec, audio_track, consumer));
         Ok(())
     }
