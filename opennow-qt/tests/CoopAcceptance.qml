@@ -457,6 +457,9 @@ QtObject {
             if (streaming) {
                 client.emit("coop.lobby.updated", {lobby: lobby("streaming", [member(mara, 0), member(jonas, 1), member(lieke, 2)])})
                 runtime.coopEventReceived({type: "coop-guest-state", state: "streaming", path: "relay", relayId: "nl", reason: null})
+                runtime.coopEventReceived({type: "coop-guest-stats", hostToGfnPingMs: 18, guestToHostPingMs: 41, totalMs: 59,
+                    quality: "good", lossPct: 0.1, slot: 2, inputMuted: false, connectMs: 840, firstFrameMs: 1310,
+                    codec: "h265", decoder: "software"})
             }
         })
     }
@@ -775,11 +778,11 @@ QtObject {
             Qt.callLater(() => {
                 runtime.coopEventReceived({type: "coop-guest-state", state: "trying_relay", path: null, relayId: null, reason: null})
                 runtime.coopEventReceived({type: "coop-guest-state", state: "connected", path: "direct", relayId: null, reason: null})
+                client.emit("coop.lobby.updated", {lobby: lobby("streaming", [member(mara, 0), member(jonas, 1), member(lieke, 2)])})
+                runtime.coopEventReceived({type: "coop-guest-state", state: "streaming", path: "direct", relayId: null, reason: null})
                 runtime.coopEventReceived({type: "coop-guest-stats", hostToGfnPingMs: 18, guestToHostPingMs: 24, totalMs: 42,
                     quality: "great", lossPct: 0, slot: 2, inputMuted: false, connectMs: 610, firstFrameMs: 380,
                     codec: "h264", decoder: "hardware"})
-                client.emit("coop.lobby.updated", {lobby: lobby("streaming", [member(mara, 0), member(jonas, 1), member(lieke, 2)])})
-                runtime.coopEventReceived({type: "coop-guest-state", state: "streaming", path: "direct", relayId: null, reason: null})
             })
         } else if (name === "c2-03b-friends-context-menu") {
             linkAs(mara)
@@ -970,6 +973,9 @@ QtObject {
     }
 
     // Scene-specific state assertions on top of the visible screens.
+    function reports(event) {
+        return client.calls.filter(call => call.method === "coop.report" && call.params.event === event).map(call => call.params)
+    }
     function verifyScene(name) {
         const coop = ShellStore.coop
         const friends = ShellStore.friends
@@ -1119,6 +1125,8 @@ QtObject {
                 && runtime.sent.some(item => item.type === "coop-guest-stop"), "no first frame in time ends co-op and leaves the lobby")
             const ended = find(window.contentItem, "coopEnded")
             check(!checkScreens || ended.Accessible.name === "Mara's stream didn't start", "the ended screen says the stream didn't start")
+            check(reports("first_frame").length === 0 && reports("ended").length === 1 && reports("ended")[0].reason === "no_stream",
+                "a stream that never starts reports no_stream")
         }
         if (name === "c-05f-trying-relay") {
             check(coop.guestPhase === "connecting" && coop.connectStage === "trying_relay" && coop.guestPath === "", "trying a relay is not a relay path")
@@ -1137,6 +1145,27 @@ QtObject {
             const video = find(window.contentItem, "coopGuestVideoValue")
             check(!checkScreens || (video && video.text === "H.265 · software decode" && Qt.colorEqual(video.color, "#FFD166")),
                 "software decode is flagged on the ping card")
+            const first = reports("first_frame")
+            check(first.length === 1 && reports("ended").length === 0 && JSON.stringify(first[0]) === JSON.stringify({lobbyId: "lob_mara",
+                event: "first_frame", path: "relay", relayId: "nl", codec: "h265", decoder: "software", connectMs: 840,
+                firstFrameMs: 1310, reason: null}), "the first frame sends one co-op report: " + JSON.stringify(first))
+        }
+        if (name === "c-10-reconnecting")
+            check(reports("first_frame").length === 1 && reports("ended").length === 0, "a reconnect sends no co-op report")
+        if (name === "c-10-stream-lost") {
+            const ended = reports("ended")
+            check(reports("first_frame").length === 1 && ended.length === 1 && ended[0].reason === "stream_lost: host_stream_lost"
+                && ended[0].path === "relay" && ended[0].firstFrameMs === 1310, "a dropped stream reports once with its reason: " + JSON.stringify(ended))
+        }
+        if (name === "c-05b-error-cant-connect") {
+            const ended = reports("ended")
+            check(ended.length === 1 && ended[0].reason === "cant_connect: failed" && ended[0].lobbyId === "lob_mara",
+                "a failed connection is reported: " + JSON.stringify(ended))
+        }
+        if (name === "c-07h-guest-direct") {
+            const first = reports("first_frame")
+            check(first.length === 1 && first[0].path === "direct" && first[0].relayId === null && first[0].firstFrameMs === 380
+                && first[0].decoder === "hardware", "a direct guest reports its path and timings: " + JSON.stringify(first))
         }
         if (name === "c2-03b-friends-context-menu" && checkScreens) {
             const menu = find(window.contentItem.parent, "friendsContextMenu")

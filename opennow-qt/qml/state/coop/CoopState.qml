@@ -81,6 +81,8 @@ QtObject {
     property string connectStage: ""
     // The streamer presented this pipeline's first frame (coop-guest-state "streaming").
     property bool guestFramePresented: false
+    // The first_frame report waits for the next coop-guest-stats, which carries firstFrameMs.
+    property bool firstFrameReportPending: false
     readonly property int streamStartTimeoutMs: 15000
     property Timer streamStartTimer: Timer {
         interval: root.streamStartTimeoutMs
@@ -661,12 +663,14 @@ QtObject {
     function announceFailure(code) {
         accessibilityAnnounced(friends ? friends.errorText(code) : qsTr("Something went wrong. Try again in a moment."))
     }
-    function failJoin(code) {
+    // detail: the streamer's reason, for the co-op report only.
+    function failJoin(code, detail) {
         if (joinContext && hostName !== "")
             joinContext = Object.assign({}, joinContext, {hostName: hostName, maxPlayers: maxPlayers || joinContext.maxPlayers})
         joinError = String(code || "cant_connect")
         guestPhase = "error"
         if (role === "guest") {
+            reportGuest("ended", detail ? joinError + ": " + detail : joinError)
             if (lobby)
                 call("coop.lobby.leave", {lobbyId: lobby.id}, {})
             stopGuestPipeline()
@@ -691,6 +695,7 @@ QtObject {
     function confirmLeave() {
         if (role !== "guest")
             return
+        reportGuest("ended", "left")
         if (lobby)
             call("coop.lobby.leave", {lobbyId: lobby.id}, {})
         stopGuestPipeline()
@@ -704,6 +709,7 @@ QtObject {
     }
     function closeGuestFlow() {
         if (role === "guest") {
+            reportGuest("ended", "left")
             if (lobby)
                 call("coop.lobby.leave", {lobbyId: lobby.id}, {})
             stopGuestPipeline()
@@ -715,6 +721,23 @@ QtObject {
         if (appController)
             appController.navigate("home")
     }
+    // Fire-and-forget coop.report: "first_frame" once per pipeline, "ended" once when the guest's co-op ends.
+    function reportGuest(event, reason) {
+        if (role !== "guest" || !lobby)
+            return
+        const stats = guestStats || {}
+        const ms = value => {
+            const number = Math.round(Number(value))
+            return value !== null && value !== undefined && number >= 0 && number < 600000 ? number : null
+        }
+        const text = String(reason || "").replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 256)
+        call("coop.report", {lobbyId: lobby.id, event: event,
+            path: guestPath === "direct" || guestPath === "relay" ? guestPath : null,
+            relayId: guestPath === "relay" && guestRelayId !== "" ? guestRelayId.slice(0, 64) : null,
+            codec: stats.codec ? String(stats.codec).slice(0, 64) : null,
+            decoder: stats.decoder === "hardware" || stats.decoder === "software" ? stats.decoder : null,
+            connectMs: ms(stats.connectMs), firstFrameMs: ms(stats.firstFrameMs), reason: text !== "" ? text : null}, {})
+    }
     function stopGuestPipeline() {
         if (guestStartRequestId !== "")
             sendStreamer("coop-guest-stop", {})
@@ -722,6 +745,7 @@ QtObject {
         guestStats = null
         connectStage = ""
         guestFramePresented = false
+        firstFrameReportPending = false
         guestPath = ""
         guestRelayId = ""
     }
@@ -729,6 +753,7 @@ QtObject {
     function endAsGuest(reason, detail, stillMember) {
         if (joinContext && lobby)
             joinContext = Object.assign({}, joinContext, {hostName: hostName, hostId: String(lobby.hostId || "")})
+        reportGuest("ended", detail ? reason + ": " + detail : reason)
         if (role === "guest" && lobby && stillMember !== false)
             call("coop.lobby.leave", {lobbyId: lobby.id}, {})
         stopGuestPipeline()
@@ -967,8 +992,6 @@ QtObject {
             peers = next
         } else if (type === "coop-guest-state" && role === "guest") {
             const state = String(event.state || "")
-            guestPath = String(event.path || "")
-            guestRelayId = guestPath === "relay" ? String(event.relayId || "") : ""
             if (state === "ended") {
                 if (String(event.reason || "") === "relay-credentials-rejected" && !relayRetried) {
                     relayRetried = true
@@ -983,12 +1006,16 @@ QtObject {
                 if (media)
                     endAsGuest("media_unavailable", reason.slice(media[0].length).replace(/[\u0000-\u001f\u007f<>]/g, " ").trim().slice(0, 256))
                 else if (guestPhase === "connecting")
-                    failJoin("cant_connect")
+                    failJoin("cant_connect", reason)
                 else
-                    endAsGuest(reason === "host_stream_lost" ? "stream_lost" : "host_lost")
+                    endAsGuest(reason === "host_stream_lost" ? "stream_lost" : "host_lost", reason)
                 return
             }
+            guestPath = String(event.path || "")
+            guestRelayId = guestPath === "relay" ? String(event.relayId || "") : ""
             if (state === "streaming") {
+                if (!guestFramePresented)
+                    firstFrameReportPending = true
                 guestFramePresented = true
                 if (["connecting", "waiting", "starting", "reconnecting"].indexOf(guestPhase) >= 0 && !admissionPending)
                     enterGuestStream()
@@ -1005,6 +1032,10 @@ QtObject {
             }
         } else if (type === "coop-guest-stats" && role === "guest") {
             guestStats = event
+            if (firstFrameReportPending) {
+                firstFrameReportPending = false
+                reportGuest("first_frame", "")
+            }
         }
     }
 
@@ -1112,7 +1143,7 @@ QtObject {
                     root.applySetting("maxBitrateMbps", root.restoreBitrateMbps)
                 root.restoreBitrateMbps = 0
                 root.announceFailure(code)
-            } else if (entry.method === "coop.signal.send") {
+            } else if (entry.method === "coop.signal.send" || entry.method === "coop.report") {
                 return
             } else if (entry.relayRetry) {
                 if (root.role === "guest")
