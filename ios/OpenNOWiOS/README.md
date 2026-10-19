@@ -31,6 +31,10 @@ python3 ios/OpenNOWiOS/BuildScripts/build-native-protocol-libs.py --cmake /path/
 
 The unsigned device app is in `DerivedData/Build/Products/Debug-iphoneos/OpenNOWiOS.app`. To run directly from Xcode, open `ios/OpenNOWiOS/OpenNOWiOS.xcodeproj` and select your signing team. The native dependency archives contain arm64 device and arm64 simulator slices.
 
+## TestFlight automation
+
+Xcode Cloud can archive and upload every push to `kief5555/ios`, automatically incrementing the build number. The post-clone script prepares the native libraries on a clean runner. See the [Xcode Cloud workflow configuration](XCODE_CLOUD.md).
+
 ## Native receiver
 
 The native NVST receiver requires an advertised RTSPS endpoint and compatible hardware decoding. HEVC 10-bit 4:4:4 is validated against the actual bitstream and received surface, preserving chroma/depth or reporting an unsupported format. Ordinary WebRTC and compatible rendering remain available on their supported paths.
