@@ -201,7 +201,12 @@ struct Run {
     frames: usize,
 }
 
-fn run(host_ice: IceConfig, guest_ice: IceConfig, net: NetConfig) -> Run {
+fn run(
+    host_ice: IceConfig,
+    guest_ice: IceConfig,
+    host_net: NetConfig,
+    guest_net: NetConfig,
+) -> Run {
     let backend = Arc::new(Backend::default());
     let (tap, tap_receiver) = sync_channel::<CoopRtpPacket>(4_096);
     let (host_events, host_receiver) = sink();
@@ -209,7 +214,7 @@ fn run(host_ice: IceConfig, guest_ice: IceConfig, net: NetConfig) -> Run {
         HostConfig {
             ice: host_ice,
             max_guests: 3,
-            net: net.clone(),
+            net: host_net,
             stream: description(),
         },
         tap_receiver,
@@ -223,7 +228,7 @@ fn run(host_ice: IceConfig, guest_ice: IceConfig, net: NetConfig) -> Run {
     let mut guest = CoopGuest::start(
         GuestConfig {
             ice: guest_ice,
-            net,
+            net: guest_net,
             host_peer_id: "host".to_owned(),
             slot: 1,
         },
@@ -326,7 +331,12 @@ fn relay_carries_media_over_udp_tcp_and_tls_turn() {
         format!("turn:127.0.0.1:{PORT}?transport=tcp"),
         format!("turns:127.0.0.1:{TLS_PORT}?transport=tcp"),
     ] {
-        let result = run(ice(&url, SECRET), ice(&url, SECRET), relay_net(&coturn));
+        let result = run(
+            ice(&url, SECRET),
+            ice(&url, SECRET),
+            relay_net(&coturn),
+            relay_net(&coturn),
+        );
         let states: Vec<&str> = result
             .guest_states
             .iter()
@@ -381,6 +391,7 @@ fn rejected_turn_credentials_end_the_guest_with_a_refresh_reason() {
         ice(&url, SECRET),
         ice(&url, "wrong-secret"),
         relay_net(&coturn),
+        relay_net(&coturn),
     );
     let ended = result
         .guest_states
@@ -393,33 +404,38 @@ fn rejected_turn_credentials_end_the_guest_with_a_refresh_reason() {
 }
 
 /// The live relay: 'OPENNOW_COOP_LIVE_ICE' names a file holding a GET /v1/ice-servers
-/// response. Both sides run without host or server-reflexive candidates, so the only pairs
-/// are relayed and media must cross the live TURN server over UDP, then TCP, then TLS.
+/// response. The guest runs relay-only and the host normally, so every pair joins the
+/// guest's relayed address to the host's own addresses and media crosses the live TURN
+/// server over UDP, then TCP, then TLS. Relaying both sides through one relay is not tested:
+/// a relay behind a home router without hairpin NAT cannot reach its own public address.
 #[test]
 #[ignore = "needs a live relay and fresh TURN credentials in OPENNOW_COOP_LIVE_ICE"]
 fn live_relay_carries_media_over_udp_tcp_and_tls_turn() {
     let path = std::env::var("OPENNOW_COOP_LIVE_ICE").expect("OPENNOW_COOP_LIVE_ICE");
     let response: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
     let relays = &response["relays"];
-    let turn = response["iceServers"]
-        .as_array()
-        .unwrap()
+    let servers = response["iceServers"].as_array().unwrap();
+    let turn = servers
         .iter()
         .find(|server| server["credential"].is_string())
         .expect("a TURN entry");
-    let net = NetConfig {
+    let stun: Vec<&Value> = servers
+        .iter()
+        .filter(|server| !server["credential"].is_string())
+        .collect();
+    let guest_net = NetConfig {
         allow_direct: false,
         ..NetConfig::default()
     };
     for url in turn["urls"].as_array().unwrap() {
         let url = url.as_str().unwrap();
-        let ice = IceConfig::from_json(
-            &json!([{"urls":[url],"username":turn["username"],"credential":turn["credential"]}]),
-            Some(relays),
-        )
-        .unwrap();
+        let mut servers = stun.clone();
+        let turn =
+            json!({"urls":[url],"username":turn["username"],"credential":turn["credential"]});
+        servers.push(&turn);
+        let ice = IceConfig::from_json(&json!(servers), Some(relays)).unwrap();
         let started = Instant::now();
-        let result = run(ice.clone(), ice, net.clone());
+        let result = run(ice.clone(), ice, NetConfig::default(), guest_net.clone());
         let states: Vec<&str> = result
             .guest_states
             .iter()

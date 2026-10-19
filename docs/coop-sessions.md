@@ -364,8 +364,15 @@ the existing `controller-rumble` for the guest's own slot, mapped to the local c
 
 - Transport: ICE (STUN, then TURN UDP, TURN TCP, TURNS) with DTLS-SRTP via `str0m`. The P2P link uses its own keys; GFN's SRTP keys never leave the host.
 - A client never allocates on a relay whose address equals one of its own public addresses (from STUN or from a TURN
-  allocation's mapped address): coturn refuses peers on its own address, so that relay cannot carry this client's
-  traffic. The skip is logged under `coop` with the relay id only; loopback relays are kept for tests.
+  allocation's mapped address): a relay cannot reach peers on its own public address (coturn `denied-peer-ip`, or a
+  router without hairpin NAT), so that relay cannot carry this client's traffic. The skip is logged under `coop` with
+  the relay id only; loopback relays are kept for tests.
+- For the same reason, a pair that relays both sides through one relay site works only if that relay can reach its own
+  public address. `nl` sits behind a home router without hairpin NAT, so two clients that both need `nl` cannot connect
+  through it; at least one side must be reachable by a host or server-reflexive address. ICE already ranks relay-to-relay
+  pairs last, so the client does not filter them: they are tried only when nothing else is left.
+- The ignored `live_relay_carries_media_over_udp_tcp_and_tls_turn` test runs a relay-only guest against a normal host
+  over each TURN URL of a GET /v1/ice-servers response named by `OPENNOW_COOP_LIVE_ICE`.
 - Media: the host taps NVST RTP after SRTP decryption and forwards video and audio packets verbatim (sequence numbers, timestamps,
   NV extension) on two RTP streams. FEC repair packets are not forwarded while OpenNOW cannot use them.
 - The host keeps a bounded 256-packet (about 200 ms) retransmission ring per guest and answers guest NACKs locally. Guest keyframe
