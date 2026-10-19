@@ -18,7 +18,7 @@ pub mod stun;
 pub mod turn;
 
 pub use config::{ConfigError, IceConfig, RelaySite, TurnTransport};
-pub use guest::{CoopGuest, GuestConfig, GuestMedia};
+pub use guest::{CoopGuest, GuestConfig, GuestDecoder, GuestMedia};
 pub use host::{CoopHost, HostBackend, HostConfig, Rumble, RumbleRouter};
 pub use input::{GamepadSelector, GamepadState, InputRecord, InputSamples};
 pub use link::NetConfig;

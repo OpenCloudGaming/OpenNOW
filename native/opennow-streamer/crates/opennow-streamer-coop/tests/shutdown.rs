@@ -8,8 +8,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use opennow_streamer_coop::{
-    CoopGuest, CoopHost, GamepadState, GuestConfig, GuestMedia, HostConfig, IceConfig,
-    InputSamples, RumbleRouter, StreamDescription,
+    CoopGuest, CoopHost, GamepadState, GuestConfig, GuestDecoder, GuestMedia, HostConfig,
+    IceConfig, InputSamples, RumbleRouter, StreamDescription,
 };
 use opennow_streamer_transport::MediaConsumer;
 use serde_json::Value;
@@ -45,6 +45,10 @@ impl GuestMedia for JoiningMedia {
 
     fn take_keyframe_request(&mut self) -> bool {
         false
+    }
+
+    fn take_first_frame(&mut self) -> Option<GuestDecoder> {
+        None
     }
 
     fn stop(&mut self) {

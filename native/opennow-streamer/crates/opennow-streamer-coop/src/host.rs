@@ -267,6 +267,9 @@ struct HostPeer {
     video_base: Option<u64>,
     audio_base: Option<u64>,
     input: PeerInput,
+    /// The guest's first keyframe request after its link connected skips the shared
+    /// limiter once, so a joining guest never waits a limiter interval for its first frame.
+    first_keyframe_request: bool,
 }
 
 /// What became of the input records one guest sent, from receipt to the NVST input path.
@@ -452,6 +455,7 @@ impl HostWorker {
                     video_base: None,
                     audio_base: None,
                     input: PeerInput::default(),
+                    first_keyframe_request: false,
                 });
                 self.emit_state(self.peers.len() - 1);
                 Ok(())
@@ -677,6 +681,11 @@ impl HostWorker {
                 let peer_id = self.peers[index].id.clone();
                 let _ = self.slots.connected(&peer_id, now);
                 self.set_state(index, PeerState::Connected);
+                self.peers[index].first_keyframe_request = true;
+                if self.keyframes.request(now) {
+                    self.backend.request_keyframe();
+                }
+                log(&format!("host peer={index} connected; keyframe requested"));
             }
             LinkEvent::Ice(state) => {
                 use str0m::IceConnectionState::{Checking, Completed, Connected, Disconnected};
@@ -711,9 +720,17 @@ impl HostWorker {
                     self.guest_input(index, &data, now);
                 } else if peer.link.control == Some(id)
                     && ControlMessage::decode(&data) == Some(ControlMessage::KeyframeRequest)
-                    && self.keyframes.request(now)
                 {
-                    self.backend.request_keyframe();
+                    let first = std::mem::take(&mut self.peers[index].first_keyframe_request);
+                    if first {
+                        self.keyframes.force(now);
+                        self.backend.request_keyframe();
+                        log(&format!(
+                            "host peer={index} first guest keyframe request forwarded"
+                        ));
+                    } else if self.keyframes.request(now) {
+                        self.backend.request_keyframe();
+                    }
                 }
             }
             LinkEvent::KeyframeRequest => {

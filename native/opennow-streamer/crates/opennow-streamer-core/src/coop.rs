@@ -8,8 +8,8 @@ use std::time::Instant;
 
 use opennow_streamer_coop::{
     AudioDescription, CoopError, CoopGuest, CoopHost, EventSink, GamepadSelector, GamepadState,
-    GuestConfig, GuestMedia, HostBackend, HostConfig, IceConfig, InputSamples, NetConfig,
-    StreamDescription,
+    GuestConfig, GuestDecoder, GuestMedia, HostBackend, HostConfig, IceConfig, InputSamples,
+    NetConfig, StreamDescription,
 };
 use opennow_streamer_hid::HidRuntime;
 use opennow_streamer_platform::{
@@ -125,6 +125,31 @@ struct EngineGuestMedia {
     /// slot, apart from plain gamepads.
     hid: Arc<HidRuntime>,
     samples: InputSamples,
+    keyframe_requested: bool,
+    first_frame: Option<GuestDecoder>,
+}
+
+impl EngineGuestMedia {
+    fn drain_feedback(&mut self) {
+        let Some(feedback) = self.feedback.as_ref() else {
+            return;
+        };
+        for feedback in feedback.try_iter() {
+            match feedback {
+                MediaFeedback::RequestKeyframe { .. } | MediaFeedback::DecoderError { .. } => {
+                    self.keyframe_requested = true;
+                }
+                MediaFeedback::PlaybackStarted { software, .. } => {
+                    self.first_frame = Some(if software {
+                        GuestDecoder::Software
+                    } else {
+                        GuestDecoder::Hardware
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 impl GuestMedia for EngineGuestMedia {
@@ -219,19 +244,13 @@ impl GuestMedia for EngineGuestMedia {
     }
 
     fn take_keyframe_request(&mut self) -> bool {
-        let Some(feedback) = self.feedback.as_ref() else {
-            return false;
-        };
-        let mut requested = false;
-        for feedback in feedback.try_iter() {
-            if matches!(
-                feedback,
-                MediaFeedback::RequestKeyframe { .. } | MediaFeedback::DecoderError { .. }
-            ) {
-                requested = true;
-            }
-        }
-        requested
+        self.drain_feedback();
+        std::mem::take(&mut self.keyframe_requested)
+    }
+
+    fn take_first_frame(&mut self) -> Option<GuestDecoder> {
+        self.drain_feedback();
+        self.first_frame.take()
     }
 
     fn stop(&mut self) {
@@ -441,6 +460,8 @@ impl Engine {
             gamepads: GamepadSelector::default(),
             hid: self.hid_runtime.clone(),
             samples: InputSamples::default(),
+            keyframe_requested: false,
+            first_frame: None,
         });
         let start_id = id.clone();
         let sink: EventSink = Arc::new(move |mut value: Value| {
@@ -489,6 +510,8 @@ mod tests {
             gamepads: GamepadSelector::default(),
             hid,
             samples: InputSamples::default(),
+            keyframe_requested: false,
+            first_frame: None,
         };
         let pad = |controller_id, buttons| CapturedInput::Gamepad {
             controller_id,
@@ -533,6 +556,8 @@ mod tests {
             gamepads: GamepadSelector::default(),
             hid: Arc::new(HidRuntime::new()),
             samples: InputSamples::default(),
+            keyframe_requested: false,
+            first_frame: None,
         };
         let pad = |buttons| CapturedInput::Gamepad {
             controller_id: 0,

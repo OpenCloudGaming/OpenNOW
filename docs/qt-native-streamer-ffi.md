@@ -143,9 +143,10 @@ Keyboard and mouse input are not forwarded.
   changes.
 - `coop-guest-state {state, path, relayId, reason}`. The guest moves through
   `negotiating`, `trying_direct`, then `direct_blocked` and `relay` when no
-  direct pair connects within 4 s, then `connected`. After that it can move to
-  `reconnecting` or `ended`. `connected` is sent again when the path is first
-  known. These are the `ended` reasons:
+  direct pair connects within 4 s, then `connected`, then `streaming` once the
+  first decoded frame is presented. After that it can move to `reconnecting`
+  (back to `connected` or `streaming`) or `ended`. `connected` is sent again when
+  the path is first known. These are the `ended` reasons:
 
   | Reason | Meaning |
   |---|---|
@@ -161,8 +162,11 @@ Keyboard and mouse input are not forwarded.
 - `path` is `direct`, `relay`, or null. `relayId` is the configured relay site
   of the TURN server that carries the selected pair, whichever side allocated it.
 - `coop-host-stats` and `coop-guest-stats` are sent at 1 Hz with the contract
-  fields, including the cumulative input counters described in
-  `docs/coop-sessions.md`. The native file log includes them at most every 10 s,
+  fields, including the cumulative input counters and the guest's `connectMs`,
+  `firstFrameMs`, `codec` and `decoder` described in `docs/coop-sessions.md`. A
+  guest logs `guest first frame` under `coop` with the times to connect, media
+  start, first assembled keyframe and first presented frame, plus the keyframe
+  requests it sent. The native file log includes them at most every 10 s,
   and each co-op worker also logs its input counters (and nothing else) under the
   `coop` area every 10 s. Every `coop-guest-state` and `coop-peer-state` transition is
   logged under `coop` with its state, path, relay id and (bounded) reason but no peer

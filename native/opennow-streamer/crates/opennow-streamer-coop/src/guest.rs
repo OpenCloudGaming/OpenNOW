@@ -26,6 +26,9 @@ const STATS_INTERVAL: Duration = Duration::from_secs(1);
 const INPUT_RESEND_INTERVAL: Duration = Duration::from_millis(50);
 const INPUT_LOG_INTERVAL: Duration = Duration::from_secs(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+/// Keyframe requests a guest sends while its decoder has not presented a frame; one per
+/// KEYFRAME_INTERVAL, the first as soon as the decoder starts.
+const MAX_FIRST_FRAME_KEYFRAME_REQUESTS: u32 = 5;
 const RECONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// The local media pipeline a guest feeds. Implemented by the engine with the normal
@@ -39,7 +42,24 @@ pub trait GuestMedia: Send + 'static {
     fn input_samples(&self) -> InputSamples;
     /// True when the decoder asked for a reference frame since the previous call.
     fn take_keyframe_request(&mut self) -> bool;
+    /// Some once, after the first decoded video frame was presented: which decoder made it.
+    fn take_first_frame(&mut self) -> Option<GuestDecoder>;
     fn stop(&mut self);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuestDecoder {
+    Hardware,
+    Software,
+}
+
+impl GuestDecoder {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Hardware => "hardware",
+            Self::Software => "software",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -120,6 +140,8 @@ enum GuestState {
     DirectBlocked,
     Relay,
     Connected,
+    /// Connected and the first decoded frame was presented.
+    Streaming,
     Reconnecting,
     Ended,
 }
@@ -132,6 +154,7 @@ impl GuestState {
             Self::DirectBlocked => "direct_blocked",
             Self::Relay => "relay",
             Self::Connected => "connected",
+            Self::Streaming => "streaming",
             Self::Reconnecting => "reconnecting",
             Self::Ended => "ended",
         }
@@ -178,6 +201,13 @@ struct GuestWorker {
     input_log_at: Instant,
     loss_at_stats: LossCounters,
     stats_at: Instant,
+    connected_at: Option<Instant>,
+    media_started_at: Option<Instant>,
+    first_keyframe_at: Option<Instant>,
+    first_frame_at: Option<Instant>,
+    first_frame_keyframe_requests: u32,
+    codec: Option<String>,
+    decoder: Option<GuestDecoder>,
 }
 
 fn run(
@@ -220,6 +250,13 @@ fn run(
         input_log_at: now,
         loss_at_stats: LossCounters::default(),
         stats_at: now,
+        connected_at: None,
+        media_started_at: None,
+        first_keyframe_at: None,
+        first_frame_at: None,
+        first_frame_keyframe_requests: 0,
+        codec: None,
+        decoder: None,
     };
     worker.emit_state(None);
     let reason = worker.run(commands);
@@ -358,20 +395,29 @@ impl GuestWorker {
                 }
                 .to_owned());
             }
-            LinkEvent::Connected => self.set_state(GuestState::Connected, now),
+            LinkEvent::Connected => {
+                if self.connected_at.is_none() {
+                    self.connected_at = Some(now);
+                    log(&format!(
+                        "guest connected connectMs={}",
+                        self.since_start(now)
+                    ));
+                }
+                self.set_state(GuestState::Connected, now);
+            }
             LinkEvent::Ice(state) => {
                 use str0m::IceConnectionState::{Completed, Connected, Disconnected};
                 match state {
-                    Disconnected if self.state == GuestState::Connected => {
+                    Disconnected if self.is_up() => {
                         self.set_state(GuestState::Reconnecting, now);
                     }
                     Connected | Completed if self.state == GuestState::Reconnecting => {
-                        self.set_state(GuestState::Connected, now);
+                        self.set_state(self.up_state(), now);
                     }
                     _ => {}
                 }
             }
-            LinkEvent::Path(_) if self.state == GuestState::Connected => self.emit_state(None),
+            LinkEvent::Path(_) if self.is_up() => self.emit_state(None),
             LinkEvent::ChannelData(id, data) if self.link.control == Some(id) => {
                 self.handle_control(&data)?;
             }
@@ -480,14 +526,78 @@ impl GuestWorker {
                 return Err(format!("media-unavailable: {error}"));
             }
         };
-        log("guest media start ok");
+        let now = Instant::now();
+        log(&format!(
+            "guest media start ok mediaStartMs={}",
+            self.since_start(now)
+        ));
+        self.media_started_at = Some(now);
+        self.codec = Some(description.codec.clone());
         self.receiver = Some(NvstCoopGuestReceiver::new(codec, audio_track, consumer));
         Ok(())
     }
 
+    fn since_start(&self, now: Instant) -> u128 {
+        now.saturating_duration_since(self.origin).as_millis()
+    }
+
+    fn is_up(&self) -> bool {
+        matches!(self.state, GuestState::Connected | GuestState::Streaming)
+    }
+
+    fn up_state(&self) -> GuestState {
+        if self.first_frame_at.is_some() {
+            GuestState::Streaming
+        } else {
+            GuestState::Connected
+        }
+    }
+
+    /// Records the first assembled keyframe and the first presented frame, and moves to
+    /// 'streaming' once a frame is on screen.
+    fn track_first_frame(&mut self, now: Instant) {
+        if self.first_keyframe_at.is_none()
+            && self
+                .receiver
+                .as_ref()
+                .is_some_and(|receiver| receiver.stats().keyframes_delivered > 0)
+        {
+            self.first_keyframe_at = Some(now);
+        }
+        if self.first_frame_at.is_some() {
+            return;
+        }
+        let Some(decoder) = self.media.take_first_frame() else {
+            return;
+        };
+        self.first_frame_at = Some(now);
+        self.decoder = Some(decoder);
+        let stats = self.receiver.as_ref().map(NvstCoopGuestReceiver::stats);
+        let ms = |at: Option<Instant>| {
+            at.map_or_else(|| "null".to_owned(), |at| self.since_start(at).to_string())
+        };
+        log(&format!(
+            "guest first frame firstFrameMs={} connectMs={} mediaStartMs={} firstKeyframeMs={} keyframeRequests={} framesDelivered={} keyframesDelivered={} codec={} decoder={}",
+            self.since_start(now),
+            ms(self.connected_at),
+            ms(self.media_started_at),
+            ms(self.first_keyframe_at),
+            self.first_frame_keyframe_requests,
+            stats.map_or(0, |stats| stats.frames_delivered),
+            stats.map_or(0, |stats| stats.keyframes_delivered),
+            self.codec
+                .as_deref()
+                .map_or_else(|| "null".to_owned(), bounded),
+            decoder.label(),
+        ));
+        if self.is_up() {
+            self.set_state(GuestState::Streaming, now);
+        }
+    }
+
     fn service(&mut self, now: Instant) -> Result<(), String> {
         let timeout = match self.state {
-            GuestState::Connected => None,
+            GuestState::Connected | GuestState::Streaming => None,
             GuestState::Reconnecting => Some(RECONNECT_TIMEOUT),
             _ => Some(CONNECT_TIMEOUT),
         };
@@ -511,7 +621,12 @@ impl GuestWorker {
                 self.link.send_app_feedback(ssrc, payload);
             }
         }
+        self.track_first_frame(now);
+        let awaiting_first_frame = self.media_started_at.is_some()
+            && self.first_frame_at.is_none()
+            && self.first_frame_keyframe_requests < MAX_FIRST_FRAME_KEYFRAME_REQUESTS;
         let keyframe_needed = self.media.take_keyframe_request()
+            || awaiting_first_frame
             || self
                 .receiver
                 .as_ref()
@@ -528,6 +643,9 @@ impl GuestWorker {
                 .send_channel(control, false, &ControlMessage::KeyframeRequest.encode())
             {
                 self.keyframe_sent = Some(now);
+                if awaiting_first_frame {
+                    self.first_frame_keyframe_requests += 1;
+                }
             }
         }
         self.send_input(now);
@@ -596,6 +714,10 @@ impl GuestWorker {
             "inputSamplesPlain":samples.plain,
             "inputSamplesSony":samples.sony,
             "inputStatesSent":self.input_states_sent,
+            "connectMs":self.connected_at.map(|at| self.since_start(at) as u64),
+            "firstFrameMs":self.first_frame_at.map(|at| self.since_start(at) as u64),
+            "codec":self.codec,
+            "decoder":self.decoder.map(GuestDecoder::label),
         }));
         if now.saturating_duration_since(self.input_log_at) >= INPUT_LOG_INTERVAL {
             self.input_log_at = now;

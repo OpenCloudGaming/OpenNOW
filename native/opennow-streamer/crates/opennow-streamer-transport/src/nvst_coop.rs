@@ -139,6 +139,7 @@ pub struct CoopGuestReceiveStats {
     pub video_packets: u64,
     pub audio_packets: u64,
     pub frames_delivered: u64,
+    pub keyframes_delivered: u64,
     pub frames_dropped: u64,
     pub packets_rejected: u64,
 }
@@ -161,8 +162,10 @@ impl NvstCoopGuestReceiver {
         audio_track: Option<NvstAudioTrack>,
         media_consumer: MediaConsumer,
     ) -> Self {
+        let video = NvstVideoReceiver::new(NvstVideoConfig::coop_guest(codec, audio_track.clone()));
+        video.config.feedback.request_keyframe();
         Self {
-            video: NvstVideoReceiver::new(NvstVideoConfig::coop_guest(codec, audio_track.clone())),
+            video,
             audio: NvstAudioReceiver::default(),
             audio_track,
             media_consumer,
@@ -280,6 +283,7 @@ impl NvstCoopGuestReceiver {
     ) -> Result<(), TransportError> {
         let feedback = &self.video.config.feedback;
         let frame_index = frame.frame_index;
+        let keyframe = frame.keyframe;
         let media_frame = EncodedMediaFrame {
             mid: "nvst-video-0".to_owned(),
             codec: frame.codec.label().to_owned(),
@@ -302,6 +306,7 @@ impl NvstCoopGuestReceiver {
             Ok(()) => {
                 self.delivery_gap = false;
                 self.stats.frames_delivered += 1;
+                self.stats.keyframes_delivered += u64::from(keyframe);
                 Ok(())
             }
             Err(TransportError::MediaConsumerBackpressured) => {
@@ -442,6 +447,10 @@ mod tests {
     fn guest_receiver_assembles_forwarded_packets_with_sender_identifiers() {
         let (consumer, frames) = std::sync::mpsc::sync_channel(4);
         let mut receiver = NvstCoopGuestReceiver::new(NvstVideoCodec::H264, None, consumer);
+        assert!(
+            receiver.keyframe_needed(),
+            "a joining guest asks for a keyframe before any frame arrives"
+        );
         let now = Instant::now();
         let first = plaintext(40, FLAG_SOF | FLAG_PIC, 0, &[0, 0, 0, 1, 0x65, 1, 2]);
         let mut last = plaintext(41, FLAG_EOF | FLAG_PIC, 0, &[3, 4]);
@@ -454,6 +463,8 @@ mod tests {
         assert_eq!(frame.frame_index, Some(1));
         assert_eq!(frame.rtp_timestamp, 9_000);
         assert!(frame.keyframe);
+        assert!(!receiver.keyframe_needed());
+        assert_eq!(receiver.stats().keyframes_delivered, 1);
         assert_eq!(receiver.stats().video_packets, 3);
         assert_eq!(
             receiver.stats().packets_rejected,

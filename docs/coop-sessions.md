@@ -346,10 +346,13 @@ has not accepted a registration for; `NvstRefused` means the NVST input path was
 | `coop-signal-in` | `peerId, payload` | The host's offer and candidates. |
 | `coop-guest-stop` | | Leaves. |
 
-Guest events: `coop-signal-out`; `coop-guest-state {state:"negotiating"|"trying_direct"|"direct_blocked"|"relay"|"connected"|"reconnecting"|"ended", path, relayId, reason}`;
+Guest events: `coop-signal-out`; `coop-guest-state {state:"negotiating"|"trying_direct"|"direct_blocked"|"relay"|"connected"|"streaming"|"reconnecting"|"ended", path, relayId, reason}`;
 `coop-guest-stats {hostToGfnPingMs, guestToHostPingMs, totalMs, quality:"great"|"good"|"poor", lossPct, slot, inputMuted,
-inputSamplesPlain, inputSamplesSony, inputStatesSent}` at 1 Hz. The input counters are cumulative integers: local controller samples
-taken from plain gamepads and from Sony controllers, and snapshots sent on `coop-input`;
+inputSamplesPlain, inputSamplesSony, inputStatesSent, connectMs, firstFrameMs, codec, decoder:"hardware"|"software"|null}` at 1 Hz.
+The input counters are cumulative integers: local controller samples
+taken from plain gamepads and from Sony controllers, and snapshots sent on `coop-input`.
+`connectMs` and `firstFrameMs` are milliseconds from `coop-guest-start` to the link connecting and to the first presented
+decoded frame (null until then); `codec` is the described codec and `decoder` the tier that presented the first frame;
 the existing `controller-rumble` for the guest's own slot, mapped to the local controller.
 
 ### Signal payloads (opaque to core and backend)
@@ -362,7 +365,9 @@ the existing `controller-rumble` for the guest's own slot, mapped to the local c
 - Media: the host taps NVST RTP after SRTP decryption and forwards video and audio packets verbatim (sequence numbers, timestamps,
   NV extension) on two RTP streams. FEC repair packets are not forwarded while OpenNOW cannot use them.
 - The host keeps a bounded 256-packet (about 200 ms) retransmission ring per guest and answers guest NACKs locally. Guest keyframe
-  requests are forwarded to GFN at most once per second across all guests.
+  requests are forwarded to GFN at most once per second across all guests, except that the host requests a GFN keyframe when a
+  guest's link connects and forwards that guest's first request after connecting at once. A guest sends a keyframe request when its
+  decoder starts and again every second until it presents a frame, at most 5 times; after that only decoder and loss recovery ask.
 - Data channel `coop-control` (reliable, ordered): first message from the host is the stream description
   `{codec, width, height, fps, bitDepth, chroma, colorRange, colorSpace, hdr, audio:{codec, channels, sampleRate}}`
   taken from the negotiated NVST session; then `{type:"slot"}`, `{type:"input-muted"}`, `{type:"stats", hostToGfnPingMs}` (1 Hz),

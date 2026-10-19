@@ -7,7 +7,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use opennow_streamer_coop::{
-    EventSink, GamepadState, GuestMedia, HostBackend, InputSamples, NetConfig, StreamDescription,
+    EventSink, GamepadState, GuestDecoder, GuestMedia, HostBackend, InputSamples, NetConfig,
+    StreamDescription,
 };
 use opennow_streamer_transport::{EncodedMediaFrame, MediaConsumer};
 use serde_json::{Value, json};
@@ -42,6 +43,8 @@ pub struct Media {
     pub gamepad: Arc<Mutex<Option<GamepadState>>>,
     pub stopped: Arc<AtomicBool>,
     pub taken: u64,
+    /// Reported as presented on the first poll after media starts.
+    pub first_frame: Option<GuestDecoder>,
 }
 
 impl GuestMedia for Media {
@@ -49,6 +52,7 @@ impl GuestMedia for Media {
         assert_eq!(description.codec, "H264");
         let (consumer, receiver) = sync_channel(256);
         self.frames.send(receiver).unwrap();
+        self.first_frame = Some(GuestDecoder::Hardware);
         Ok(consumer)
     }
 
@@ -67,6 +71,10 @@ impl GuestMedia for Media {
 
     fn take_keyframe_request(&mut self) -> bool {
         false
+    }
+
+    fn take_first_frame(&mut self) -> Option<GuestDecoder> {
+        self.first_frame.take()
     }
 
     fn stop(&mut self) {

@@ -179,6 +179,7 @@ fn run_loopback(pre_join_wire: &[u16], first_seq: u16, lost_frame: u32) {
             gamepad: gamepad.clone(),
             stopped: stopped.clone(),
             taken: 0,
+            first_frame: None,
         }),
         guest_events,
     )
@@ -222,6 +223,14 @@ fn run_loopback(pre_join_wire: &[u16], first_seq: u16, lost_frame: u32) {
     }
     let media = media.unwrap();
     println!("connected and described in {:?}", started.elapsed());
+    let joined = Instant::now();
+    while backend.keyframes.load(Ordering::Relaxed) < 2 {
+        assert!(
+            joined.elapsed() < Duration::from_millis(500),
+            "the host's request on connect and the guest's first request both reach GFN at once"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
     let states: Vec<_> = guest_seen
         .iter()
         .filter(|value| value["type"] == "coop-guest-state")
@@ -399,6 +408,26 @@ fn run_loopback(pre_join_wire: &[u16], first_seq: u16, lost_frame: u32) {
     );
     assert_eq!(stats["slot"], 2);
     assert_eq!(
+        (&stats["codec"], &stats["decoder"]),
+        (&json!("H264"), &json!("hardware"))
+    );
+    let connect_ms = stats["connectMs"].as_u64().expect("connectMs");
+    assert!(stats["firstFrameMs"].as_u64().expect("firstFrameMs") >= connect_ms);
+    let states: Vec<&str> = guest_seen
+        .iter()
+        .filter(|value| value["type"] == "coop-guest-state")
+        .filter_map(|value| value["state"].as_str())
+        .collect();
+    let connected = states
+        .iter()
+        .position(|state| *state == "connected")
+        .unwrap();
+    assert_eq!(
+        states.iter().position(|state| *state == "streaming"),
+        Some(connected + 1),
+        "{states:?}"
+    );
+    assert_eq!(
         (&stats["inputSamplesPlain"], &stats["inputSamplesSony"]),
         (&json!(1), &json!(0))
     );
@@ -435,7 +464,7 @@ fn run_loopback(pre_join_wire: &[u16], first_seq: u16, lost_frame: u32) {
     host.set_muted("guest-1", false).unwrap();
     println!("host stats: {host_stats}");
     println!("guest stats: {stats}");
-    assert!(backend.keyframes.load(Ordering::Relaxed) <= 1 + started.elapsed().as_secs() as usize);
+    assert!(backend.keyframes.load(Ordering::Relaxed) <= 2 + started.elapsed().as_secs() as usize);
 
     guest.stop();
     assert!(stopped.load(Ordering::Acquire));

@@ -241,6 +241,12 @@ impl KeyframeLimiter {
         self.poll(now)
     }
 
+    /// Records a request forwarded outside the limit; any pending one is satisfied by it.
+    pub fn force(&mut self, now: Instant) {
+        self.pending = false;
+        self.last_forwarded = Some(now);
+    }
+
     pub fn poll(&mut self, now: Instant) -> bool {
         if !self.pending
             || self
