@@ -53,6 +53,7 @@ pub const METHODS: &[&str] = &[
     "coop.lobby.regenerateCode",
     "coop.lobby.close",
     "coop.lobby.leave",
+    "coop.report",
     "coop.lobby.invite",
     "coop.invite.cancel",
     "coop.invite.accept",
@@ -572,6 +573,13 @@ impl SocialService {
             "coop.lobby.leave" => shared.call(
                 Auth::Lobby,
                 Call::post(&["v1", "lobbies", id("lobbyId")?, "leave"], json!({})),
+            ),
+            "coop.report" => shared.call(
+                Auth::Lobby,
+                Call::post(
+                    &["v1", "lobbies", report_id(params, "lobbyId")?, "reports"],
+                    report_body(params)?,
+                ),
             ),
             "coop.lobby.invite" => shared.call(
                 Auth::Account,
@@ -1290,6 +1298,71 @@ fn log_error_frame(frame: &Value) {
         })
         .unwrap_or("unknown");
     eprintln!("social: the backend rejected a socket frame: {code}");
+}
+
+const MAXIMUM_REPORT_ID_BYTES: usize = 64;
+const MAXIMUM_REPORT_REASON_CHARS: usize = 256;
+const MAXIMUM_REPORT_MILLISECONDS: u64 = 10 * 60 * 1000;
+
+fn report_id<'a>(params: &'a Value, key: &str) -> Result<&'a str, SocialError> {
+    id_param(params, key)
+        .ok()
+        .filter(|id| id.len() <= MAXIMUM_REPORT_ID_BYTES)
+        .ok_or_else(|| {
+            SocialError::invalid(format!(
+                "{key} must be an identifier of at most 64 characters"
+            ))
+        })
+}
+
+/// `coop.report` body: every field is present, nullable fields are null when
+/// absent, and the body never carries more than these bounded values.
+fn report_body(params: &Value) -> Result<Value, SocialError> {
+    let choice = |key: &str, allowed: &[&str], nullable: bool| -> Result<Value, SocialError> {
+        match &params[key] {
+            Value::Null if nullable => Ok(Value::Null),
+            Value::String(value) if allowed.contains(&value.as_str()) => Ok(json!(value)),
+            _ => Err(SocialError::invalid(format!(
+                "{key} must be one of {}{}",
+                allowed.join(", "),
+                if nullable { " or null" } else { "" }
+            ))),
+        }
+    };
+    let optional_id = |key: &str| -> Result<Value, SocialError> {
+        match &params[key] {
+            Value::Null => Ok(Value::Null),
+            _ => report_id(params, key).map(|id| json!(id)),
+        }
+    };
+    let milliseconds = |key: &str| -> Result<Value, SocialError> {
+        match &params[key] {
+            Value::Null => Ok(Value::Null),
+            value => value
+                .as_u64()
+                .filter(|value| *value < MAXIMUM_REPORT_MILLISECONDS)
+                .map(|value| json!(value))
+                .ok_or_else(|| {
+                    SocialError::invalid(format!(
+                        "{key} must be a non-negative integer below 600000"
+                    ))
+                }),
+        }
+    };
+    let reason = match &params["reason"] {
+        Value::Null => Value::Null,
+        value => json!(bounded_text(value, "reason", MAXIMUM_REPORT_REASON_CHARS)?),
+    };
+    Ok(json!({
+        "event": choice("event", &["first_frame", "ended"], false)?,
+        "path": choice("path", &["direct", "relay"], true)?,
+        "relayId": optional_id("relayId")?,
+        "codec": optional_id("codec")?,
+        "decoder": choice("decoder", &["hardware", "software"], true)?,
+        "connectMs": milliseconds("connectMs")?,
+        "firstFrameMs": milliseconds("firstFrameMs")?,
+        "reason": reason,
+    }))
 }
 
 fn valid_id(value: &str) -> bool {

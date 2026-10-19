@@ -533,7 +533,7 @@ and artwork only near the viewport, using the section's local category ID
   `coop.lobby.regenerateCode`, `coop.lobby.close`, `coop.lobby.leave`, `coop.lobby.invite`
 - `coop.invite.cancel`, `coop.invite.accept`, `coop.invite.decline`, `coop.invites.get`
 - `coop.join.code`, `coop.join.ask`, `coop.join.approved`, `coop.joinRequest.respond`
-- `coop.member.kick`, `coop.member.slot`, `coop.signal.send`
+- `coop.member.kick`, `coop.member.slot`, `coop.signal.send`, `coop.report`
 - `discord.activity.sync`, `discord.activity.clear`
 - `feedback.submit`, `bug_report.submit`, `bug_report.incident`, `analytics.track`
 
@@ -612,6 +612,20 @@ first obtains a guest token from `POST /v1/auth/guest` when no account is linked
 and no unexpired guest token exists; `guestDisplayName` defaults to `Guest`
 (1–32 characters). `coop.iceServers.get` is cached per token until 10 minutes
 before `ttlSeconds` elapses.
+
+**Reports.** `coop.report {lobbyId, event, path, relayId, codec, decoder,
+connectMs, firstFrameMs, reason}` sends one connection report for a lobby the
+caller hosts or joined, as `POST /v1/lobbies/{lobbyId}/reports` with every field
+except `lobbyId`, and returns the backend's `{ok:true}`. A guest token is
+accepted. `event` is `first_frame` or `ended`; `path` is `direct`, `relay`, or
+null; `decoder` is `hardware`, `software`, or null. `lobbyId`, `relayId`, and
+`codec` are identifiers of at most 64 characters (`relayId` and `codec` may be
+null). `reason` is null or 1–256 characters without control characters.
+`connectMs` and `firstFrameMs` are null or integers from 0 to 599999. Absent
+nullable fields are sent as null; anything else fails with `invalid_params`
+before a request is made. Like every POST, the call is retried once only when
+the backend answers 502/503 while waking, never after a request that got no
+response.
 
 **Presence.** `social.presence.set {activity, game, since, queuePosition, lobbyId}`
 always returns `{}`. The core keeps only the latest value, sends it on the socket

@@ -1297,5 +1297,109 @@ fn restarts_and_error_frames_keep_the_session() {
     assert!(harness.vault().load(ACCOUNT_KEY).unwrap().is_some());
 }
 
+#[test]
+fn coop_report_posts_a_bounded_lobby_report() {
+    let backend = MockBackend::start(|request| match request.path.as_str() {
+        "/v1/lobbies/lob_gone/reports" => Reply::error(404, "lobby_not_found"),
+        "/v1/lobbies/lob_busy/reports" => Reply::empty(503),
+        _ => Reply::json(200, json!({"ok":true})),
+    });
+    let harness = Harness::new(&backend.url, true);
+    let report = json!({
+        "lobbyId":"lob_1", "event":"first_frame", "path":"relay", "relayId":"nl",
+        "codec":"h264", "decoder":"hardware", "connectMs":1234, "firstFrameMs":2345, "reason":null,
+    });
+    assert_eq!(
+        harness.call("coop.report", report.clone()).unwrap(),
+        json!({"ok":true})
+    );
+    let requests = backend.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        (requests[0].method.as_str(), requests[0].path.as_str()),
+        ("POST", "/v1/lobbies/lob_1/reports")
+    );
+    assert_eq!(
+        requests[0].authorization.as_deref(),
+        Some(&*format!("Bearer {ACCOUNT_TOKEN}"))
+    );
+    let mut body = report.clone();
+    body.as_object_mut().unwrap().remove("lobbyId");
+    assert_eq!(requests[0].body, body);
+
+    backend.clear_requests();
+    harness
+        .call(
+            "coop.report",
+            json!({"lobbyId":"lob_1", "event":"ended", "reason":"host ended"}),
+        )
+        .unwrap();
+    assert_eq!(
+        backend.requests()[0].body,
+        json!({"event":"ended", "path":null, "relayId":null, "codec":null, "decoder":null,
+               "connectMs":null, "firstFrameMs":null, "reason":"host ended"})
+    );
+
+    backend.clear_requests();
+    let with = |key: &str, value: Value| {
+        let mut params = report.clone();
+        params[key] = value;
+        params
+    };
+    for params in [
+        with("event", json!("started")),
+        with("event", Value::Null),
+        with("path", json!("lan")),
+        with("decoder", json!("gpu")),
+        with("relayId", json!("x".repeat(65))),
+        with("codec", json!("h 264")),
+        with("lobbyId", json!("l".repeat(65))),
+        with("connectMs", json!(-1)),
+        with("connectMs", json!(1.5)),
+        with("firstFrameMs", json!(600_000)),
+        with("reason", json!("r".repeat(257))),
+        with("reason", json!("")),
+    ] {
+        assert_eq!(
+            harness
+                .call("coop.report", params.clone())
+                .unwrap_err()
+                .code,
+            "invalid_params",
+            "{params}"
+        );
+    }
+    assert!(backend.requests().is_empty());
+    harness
+        .call("coop.report", with("firstFrameMs", json!(599_999)))
+        .unwrap();
+    harness
+        .call("coop.report", with("reason", json!("r".repeat(256))))
+        .unwrap();
+
+    assert_eq!(
+        harness
+            .call("coop.report", with("lobbyId", json!("lob_gone")))
+            .unwrap_err()
+            .code,
+        "lobby_not_found"
+    );
+    backend.clear_requests();
+    assert_eq!(
+        harness
+            .call("coop.report", with("lobbyId", json!("lob_busy")))
+            .unwrap_err()
+            .code,
+        "social_offline"
+    );
+    assert!(backend.count("POST", "/v1/lobbies/lob_busy/reports") >= 1);
+
+    let unlinked = Harness::new(&backend.url, false);
+    assert_eq!(
+        unlinked.call("coop.report", report).unwrap_err().code,
+        "social_not_linked"
+    );
+}
+
 use std::io::{Read as _, Write as _};
 use std::net::TcpListener;

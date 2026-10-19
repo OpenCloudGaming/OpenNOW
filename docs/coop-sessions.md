@@ -188,6 +188,7 @@ Username lookup normalizes to lowercase and strips a leading `@`. Rate limit: 30
 | POST /v1/lobbies/:id/members/:userId/kick | | 204; member receives `lobby.kicked` |
 | POST /v1/lobbies/:id/members/:userId/slot | `{slot}` | `{lobby}` swaps when the slot is taken |
 | POST /v1/lobbies/:id/leave | | 204 |
+| POST /v1/lobbies/:id/reports | `{event, path, relayId, codec, decoder, connectMs, firstFrameMs, reason}` | `{ok:true}`; a member's (host or guest, anonymous allowed) connection report: `event` `first_frame`\|`ended`, `path` `direct`\|`relay`\|null, `decoder` `hardware`\|`software`\|null, ids ≤ 64 chars, `reason` ≤ 256 chars, times are integer ms below 600000 or null |
 | GET /v1/ice-servers | | `{iceServers:[IceServer], relays:[RelaySite], ttlSeconds}` |
 
 Slots are assigned lowest-free from 1. A lobby with no host WebSocket for 60 seconds ends with
@@ -287,6 +288,7 @@ Methods (request params, result):
 | `coop.member.kick` | `{lobbyId, userId}` | |
 | `coop.member.slot` | `{lobbyId, userId, slot}` | `{lobby}` |
 | `coop.signal.send` | `{lobbyId, to, payload}` | `{}` |
+| `coop.report` | `{lobbyId, event, path, relayId, codec, decoder, connectMs, firstFrameMs, reason}` | `{ok:true}`; POST /v1/lobbies/:id/reports with the same body minus `lobbyId`; absent nullable fields are sent as null |
 
 Errors use the existing error envelope with the backend's stable `code` (for example `user_not_found`) and
 `social_offline` / `social_not_linked` from the core.
