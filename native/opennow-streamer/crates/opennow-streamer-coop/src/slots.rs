@@ -1,7 +1,9 @@
 //! Host-side ownership of GFN controller slots 1..3 by co-op guests.
 //!
 //! Pure state: every transition returns the ordered actions the host applies through the
-//! NVST input codec, which owns the registration bitmap and the wire framing.
+//! NVST input codec, which owns the registration bitmap and the wire framing. A guest's slot
+//! is registered from the moment it joins until it leaves or moves, whether or not its link
+//! is up, so reconnects and join order never re-plug a controller on the VM.
 
 use std::time::{Duration, Instant};
 
@@ -71,11 +73,10 @@ impl SlotTable {
         self.guests.is_empty()
     }
 
-    /// Slots registered with GFN: connected guests only.
+    /// Slots registered with GFN: every lobby guest, connected or not.
     pub fn mask(&self) -> u8 {
         self.guests
             .iter()
-            .filter(|guest| guest.connected)
             .fold(0, |mask, guest| mask | (1 << guest.slot))
     }
 
@@ -105,7 +106,8 @@ impl SlotTable {
             .ok_or(SlotError::UnknownPeer)
     }
 
-    /// Adds a guest that is not yet connected; a taken slot is swapped as in the backend.
+    /// Adds a guest and registers its slot before its link connects; a taken slot is
+    /// swapped as in the backend.
     pub fn add(&mut self, peer: &str, slot: u8) -> Result<Vec<SlotAction>, SlotError> {
         let slot = valid_slot(slot)?;
         if self.find(peer).is_some() {
@@ -125,7 +127,6 @@ impl SlotTable {
             }
             displaced.slot = free;
             displaced.held = false;
-            actions.push(SlotAction::Slots(self.mask()));
         }
         self.guests.push(GuestSlot {
             peer: peer.to_owned(),
@@ -136,19 +137,19 @@ impl SlotTable {
             last_input_at: None,
             held: false,
         });
+        actions.push(SlotAction::Slots(self.mask()));
         Ok(actions)
     }
 
-    /// The guest's link is up: its slot appears to the game.
-    pub fn connected(&mut self, peer: &str, now: Instant) -> Result<Vec<SlotAction>, SlotError> {
+    /// The guest's link is up: its already registered slot accepts its input.
+    pub fn connected(&mut self, peer: &str, now: Instant) -> Result<(), SlotError> {
         let guest = self.find_mut(peer)?;
-        if guest.connected {
-            return Ok(Vec::new());
+        if !guest.connected {
+            guest.connected = true;
+            guest.last_input_at = Some(now);
+            guest.held = false;
         }
-        guest.connected = true;
-        guest.last_input_at = Some(now);
-        guest.held = false;
-        Ok(vec![SlotAction::Slots(self.mask())])
+        Ok(())
     }
 
     /// The link dropped but the guest may reconnect: keep the slot, release its buttons.
@@ -241,14 +242,12 @@ impl SlotTable {
             .position(|guest| guest.peer == peer)
             .ok_or(SlotError::UnknownPeer)?;
         let guest = self.guests.remove(index);
-        Ok(if guest.connected {
-            vec![
-                SlotAction::Neutral(guest.slot),
-                SlotAction::Slots(self.mask()),
-            ]
-        } else {
-            Vec::new()
-        })
+        let mut actions = Vec::new();
+        if guest.connected {
+            actions.push(SlotAction::Neutral(guest.slot));
+        }
+        actions.push(SlotAction::Slots(self.mask()));
+        Ok(actions)
     }
 
     /// Releases slots whose guest stopped sending for 'INPUT_TIMEOUT' while holding input.
@@ -293,23 +292,59 @@ mod tests {
     }
 
     #[test]
-    fn join_registers_only_after_the_link_connects() {
+    fn join_registers_the_slot_before_the_link_connects() {
         let now = Instant::now();
         let mut table = SlotTable::default();
-        assert_eq!(table.add("a", 1).unwrap(), []);
-        assert_eq!(table.mask(), 0);
+        assert_eq!(table.add("a", 1).unwrap(), [SlotAction::Slots(0b0010)]);
         assert_eq!(
             table.input("a", record(1, 1), now),
             Err(InputDrop::SlotNotOwned)
         );
-        assert_eq!(
-            table.connected("a", now).unwrap(),
-            [SlotAction::Slots(0b0010)]
-        );
+        table.connected("a", now).unwrap();
+        assert_eq!(table.mask(), 0b0010);
         assert_eq!(table.input("a", record(1, 1), now), Ok(pressed(1, 1)));
         assert_eq!(table.owner_of(1), Some("a"));
         assert_eq!(table.add("a", 2), Err(SlotError::DuplicatePeer));
         assert_eq!(table.add("b", 0), Err(SlotError::InvalidSlot));
+    }
+
+    #[test]
+    fn join_and_connect_order_do_not_change_the_registration() {
+        let now = Instant::now();
+        let mut p2_first = SlotTable::default();
+        p2_first.add("p2", 1).unwrap();
+        p2_first.add("p3", 2).unwrap();
+        let mut p3_first = SlotTable::default();
+        p3_first.add("p3", 2).unwrap();
+        p3_first.add("p2", 1).unwrap();
+        p3_first.connected("p3", now).unwrap();
+        assert_eq!(p3_first.mask(), 0b0110);
+        assert_eq!(p3_first.mask(), p2_first.mask());
+        p3_first.connected("p2", now).unwrap();
+        assert_eq!(p3_first.slot_of("p2"), Some(1));
+        assert_eq!(p3_first.slot_of("p3"), Some(2));
+    }
+
+    #[test]
+    fn reconnect_keeps_the_slot_registered() {
+        let now = Instant::now();
+        let mut table = SlotTable::default();
+        table.add("a", 2).unwrap();
+        table.connected("a", now).unwrap();
+        table.input("a", record(1, 1), now).unwrap();
+        assert_eq!(table.disconnected("a").unwrap(), [SlotAction::Neutral(2)]);
+        assert_eq!(table.mask(), 0b0100);
+        table.connected("a", now).unwrap();
+        assert_eq!(table.mask(), 0b0100);
+        assert_eq!(table.input("a", record(2, 1), now), Ok(pressed(2, 1)));
+    }
+
+    #[test]
+    fn a_guest_that_never_connected_leaves_without_neutral_state() {
+        let mut table = SlotTable::default();
+        table.add("a", 1).unwrap();
+        table.add("b", 3).unwrap();
+        assert_eq!(table.remove("a").unwrap(), [SlotAction::Slots(0b1000)]);
     }
 
     #[test]

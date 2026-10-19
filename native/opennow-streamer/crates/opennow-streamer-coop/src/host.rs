@@ -675,9 +675,7 @@ impl HostWorker {
             }
             LinkEvent::Connected => {
                 let peer_id = self.peers[index].id.clone();
-                if let Ok(actions) = self.slots.connected(&peer_id, now) {
-                    self.apply(&actions);
-                }
+                let _ = self.slots.connected(&peer_id, now);
                 self.set_state(index, PeerState::Connected);
             }
             LinkEvent::Ice(state) => {

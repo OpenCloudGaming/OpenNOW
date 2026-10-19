@@ -644,16 +644,27 @@ impl NvstInputCodec {
         let Some(previous) = self.gamepad_bitmap else {
             return encoded;
         };
-        let filtered = previous & !mask;
+        let filtered = previous & self.effective_bitmap();
         if filtered != previous {
             self.emit_topology_transition(previous, filtered, timestamp_us, &mut encoded);
         }
         encoded
     }
 
+    /// While co-op guests hold slots, every id from 0 through the highest guest slot stays
+    /// registered so the VM's arrival-ordered XInput user index equals the GFN id. Free ids
+    /// in that range are neutral placeholders unless the host drives them; a guest's id is
+    /// never taken by the host's own pads, rich (HID) ones included.
     fn effective_bitmap(&self) -> u16 {
-        let coop = self.coop_slots | (self.coop_slots << 8);
-        ((self.host_bitmap & !coop) | coop) & !self.rich_slot_mask
+        let host = self.host_bitmap & !self.rich_slot_mask;
+        if self.coop_slots == 0 {
+            return host;
+        }
+        let highest = 15 - self.coop_slots.leading_zeros();
+        let reserved = (1_u16 << (highest + 1)) - 1;
+        let ids = self.coop_slots | (reserved & !self.rich_slot_mask);
+        let guests = self.coop_slots | (self.coop_slots << 8);
+        (host & !guests) | ids | (ids << 8)
     }
 
     fn sync_topology(&mut self, timestamp_us: u64, encoded: &mut Vec<NvstEncodedInput>) -> u16 {
@@ -730,11 +741,27 @@ impl NvstInputCodec {
             }
         }
         self.gamepad_bitmap = Some(filtered);
-        encoded.push(NvstEncodedInput {
-            route: NvstInputRoute::ControlReliable,
-            bytes: device_descriptor(timestamp_us, filtered),
-            meaningful: false,
-        });
+        let added = filtered & !previous;
+        let mut bitmap = previous & filtered;
+        for id in 0..self.gamepad_sequences.len() {
+            let bits = added & (0x0101 << id);
+            if bits == 0 {
+                continue;
+            }
+            bitmap |= bits;
+            encoded.push(NvstEncodedInput {
+                route: NvstInputRoute::ControlReliable,
+                bytes: device_descriptor(timestamp_us, bitmap),
+                meaningful: false,
+            });
+        }
+        if added == 0 {
+            encoded.push(NvstEncodedInput {
+                route: NvstInputRoute::ControlReliable,
+                bytes: device_descriptor(timestamp_us, filtered),
+                meaningful: false,
+            });
+        }
     }
 
     pub(crate) fn encode(
@@ -909,12 +936,15 @@ impl NvstInputCodec {
                     let timestamp = read_u64_le(event.bytes, 8).unwrap_or(event.timestamp_us);
                     let released = self.coop_slots & !mask;
                     self.coop_slots = mask;
-                    let filtered = self.sync_topology(timestamp, &mut encoded);
-                    for slot in 0..self.gamepad_sequences.len() {
-                        if released & (1 << slot) != 0 && filtered & (1 << slot) != 0 {
-                            self.emit_neutral(slot, filtered, timestamp, &mut encoded);
+                    if let Some(registered) = self.gamepad_bitmap {
+                        let kept = registered & self.effective_bitmap();
+                        for slot in 0..self.gamepad_sequences.len() {
+                            if released & kept & (1 << slot) != 0 {
+                                self.emit_neutral(slot, registered, timestamp, &mut encoded);
+                            }
                         }
                     }
+                    self.sync_topology(timestamp, &mut encoded);
                 }
                 INPUT_COOP_NEUTRAL => {
                     require_len(event.bytes, 16, "short co-op neutral record")?;
@@ -2158,9 +2188,13 @@ mod tests {
             let packet = gamepad_fixture(id, 0x0f0f);
             assert_eq!(packet.len(), 38);
             let messages = codec.encode(&packet, 0).unwrap();
-            assert_eq!(messages.len(), if id == 0 { 2 } else { 1 });
+            assert_eq!(messages.len(), if id == 0 { 5 } else { 1 });
             if id == 0 {
-                assert_eq!(&messages[0].bytes[22..24], &0x0f0f_u16.to_le_bytes());
+                let registrations: Vec<_> = messages[..4]
+                    .iter()
+                    .map(|message| read_u16_le(&message.bytes, 22).unwrap())
+                    .collect();
+                assert_eq!(registrations, [0x0101, 0x0303, 0x0707, 0x0f0f]);
             }
             let state = messages.last().unwrap();
             assert_eq!(state.route, NvstInputRoute::InputPartial);
@@ -2691,10 +2725,16 @@ mod tests {
     #[test]
     fn coop_guest_owns_its_slot_and_unassigned_slots_drop_guest_input() {
         let mut codec = NvstInputCodec::default();
-        codec.encode(&coop_slots_record(0b0010, 1), 1).unwrap();
         assert_eq!(
-            classify(&codec.encode(&host_gamepad(1, 0x0303, 9), 2).unwrap()),
-            [Coop::Register(0x0303)],
+            classify(&codec.encode(&coop_slots_record(0b0010, 1), 1).unwrap()),
+            [Coop::Register(0x0101), Coop::Register(0x0303)],
+            "the host's id 0 is held for it while a guest owns id 1"
+        );
+        assert!(
+            codec
+                .encode(&host_gamepad(1, 0x0303, 9), 2)
+                .unwrap()
+                .is_empty(),
             "a second local controller must not drive a guest-owned slot"
         );
         assert!(codec.encode(&guest(2, 1), 3).unwrap().is_empty());
@@ -2716,7 +2756,7 @@ mod tests {
         assert!(codec.set_rich_slot_mask(0b0001, 1).is_empty());
         assert_eq!(
             classify(&codec.encode(&coop_slots_record(0b0110, 2), 2).unwrap()),
-            [Coop::Register(0x0606)]
+            [Coop::Register(0x0202), Coop::Register(0x0606)]
         );
         let sequence =
             |message: &NvstEncodedInput| u16::from_be_bytes([message.bytes[15], message.bytes[16]]);
@@ -2756,11 +2796,11 @@ mod tests {
             [
                 Coop::Release {
                     id: 2,
-                    bitmap: 0x0404
+                    bitmap: 0x0707
                 },
                 Coop::State {
                     id: 2,
-                    bitmap: 0x0404,
+                    bitmap: 0x0707,
                     buttons: 0
                 }
             ]
@@ -2784,19 +2824,164 @@ mod tests {
                     id: 1,
                     bitmap: 0x0303
                 },
-                Coop::Register(0x0505)
-            ]
+                Coop::State {
+                    id: 1,
+                    bitmap: 0x0303,
+                    buttons: 0
+                },
+                Coop::Register(0x0707)
+            ],
+            "the moved guest's old id is neutral before id 2 appears, and id 1 stays registered"
         );
         assert!(codec.encode(&guest(1, 0x0010), 5).unwrap().is_empty());
         assert_eq!(
             classify(&codec.encode(&coop_slots_record(0, 6), 6).unwrap()),
             [
                 Coop::Release {
+                    id: 1,
+                    bitmap: 0x0707
+                },
+                Coop::Release {
                     id: 2,
-                    bitmap: 0x0505
+                    bitmap: 0x0707
                 },
                 Coop::Register(0x0101)
             ]
+        );
+    }
+
+    fn registrations(codec: &mut NvstInputCodec, records: &[Vec<u8>]) -> Vec<u16> {
+        records
+            .iter()
+            .flat_map(|record| classify(&codec.encode(record, 1).unwrap()))
+            .filter_map(|message| match message {
+                Coop::Register(bitmap) => Some(bitmap),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn coop_join_order_does_not_change_the_order_ids_register_in() {
+        let host = host_gamepad(0, 0x0101, 0);
+        let p2_then_p3 = registrations(
+            &mut NvstInputCodec::default(),
+            &[
+                host.clone(),
+                coop_slots_record(0b0010, 1),
+                coop_slots_record(0b0110, 1),
+            ],
+        );
+        let p3_then_p2 = registrations(
+            &mut NvstInputCodec::default(),
+            &[
+                host.clone(),
+                coop_slots_record(0b0100, 1),
+                coop_slots_record(0b0110, 1),
+            ],
+        );
+        assert_eq!(p2_then_p3, [0x0101, 0x0303, 0x0707]);
+        assert_eq!(p3_then_p2, p2_then_p3);
+        let p4_alone = registrations(
+            &mut NvstInputCodec::default(),
+            &[coop_slots_record(0b1000, 1), host],
+        );
+        assert_eq!(
+            p4_alone,
+            [0x0101, 0x0303, 0x0707, 0x0f0f],
+            "a lone P4 guest still registers after ids 0..2, one id at a time"
+        );
+    }
+
+    #[test]
+    fn coop_lower_guest_leaving_keeps_higher_ids_registered() {
+        let mut codec = NvstInputCodec::default();
+        registrations(
+            &mut codec,
+            &[host_gamepad(0, 0x0101, 0), coop_slots_record(0b0110, 1)],
+        );
+        codec.encode(&guest(1, 0x0010), 2).unwrap();
+        assert_eq!(
+            classify(&codec.encode(&coop_slots_record(0b0100, 3), 3).unwrap()),
+            [
+                Coop::Release {
+                    id: 1,
+                    bitmap: 0x0707
+                },
+                Coop::State {
+                    id: 1,
+                    bitmap: 0x0707,
+                    buttons: 0
+                }
+            ],
+            "P2 leaving releases its buttons but must not shift P3"
+        );
+        assert!(
+            codec
+                .encode(&coop_slots_record(0b0110, 4), 4)
+                .unwrap()
+                .is_empty(),
+            "P2 rejoining reuses its still-registered id"
+        );
+    }
+
+    #[test]
+    fn coop_host_extra_pads_never_take_a_guest_id() {
+        let mut codec = NvstInputCodec::default();
+        registrations(&mut codec, &[host_gamepad(0, 0x0303, 0)]);
+        assert!(
+            codec
+                .encode(&coop_slots_record(0b0010, 1), 1)
+                .unwrap()
+                .is_empty(),
+            "a guest taking the id of the host's second pad keeps its registration"
+        );
+        assert!(
+            codec
+                .encode(&host_gamepad(1, 0x0303, 4), 2)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            classify(&codec.encode(&guest(1, 8), 3).unwrap()),
+            [Coop::State {
+                id: 1,
+                bitmap: 0x0303,
+                buttons: 8
+            }]
+        );
+        assert!(
+            codec.set_rich_slot_mask(0b0010, 4).is_empty(),
+            "a rich host pad on the guest's id does not unregister the guest"
+        );
+        assert_eq!(
+            classify(&codec.encode(&host_gamepad(0, 0x0101, 0), 5).unwrap()),
+            [Coop::State {
+                id: 0,
+                bitmap: 0x0303,
+                buttons: 0
+            }]
+        );
+
+        let mut codec = NvstInputCodec::default();
+        registrations(&mut codec, &[coop_slots_record(0b0100, 1)]);
+        assert_eq!(
+            classify(&codec.encode(&host_gamepad(1, 0x0303, 4), 2).unwrap()),
+            [Coop::State {
+                id: 1,
+                bitmap: 0x0707,
+                buttons: 4
+            }],
+            "the host may drive a free placeholder id below a guest"
+        );
+        assert_eq!(
+            classify(&codec.encode(&host_gamepad(0, 0x0101, 0), 3).unwrap()),
+            [Coop::State {
+                id: 0,
+                bitmap: 0x0707,
+                buttons: 0
+            }],
+            "unplugging that pad keeps id 1 registered so P3 does not shift"
         );
     }
 

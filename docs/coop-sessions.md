@@ -24,6 +24,8 @@ User-facing copy never says the relays are self-hosted. Relays are named by regi
   streamer forwards the already-encoded media peer-to-peer to at most 3 guests.
 - GFN has controller slots 0..3. The host owns slot 0. Guests own slots 1..3 and are
   gamepad only. Keyboard and mouse stay with the host. Per-slot rumble goes to the slot owner.
+  Lobby P1..P4 is GFN controller id 0..3, and the game's player number must match it. See
+  [Slot to player number](#slot-to-player-number).
 - Connection order per guest: direct ICE using our STUN servers, then TURN relay.
   A relayed guest sees a persistent "You're using relay" banner; the host sees "Relay" on that guest.
 - Guests see three latency figures: host to GFN, guest to host, and their sum.
@@ -322,7 +324,7 @@ is bumped to 16 so Qt can require it. Guest gamepad input uses the existing `ope
 | Command | Fields | Effect |
 |---|---|---|
 | `coop-host-start` | `iceServers, maxGuests, relays` | Starts the fan-out. Idempotent. |
-| `coop-peer-add` | `peerId, slot, displayName` | Creates a peer; the host is the offerer and emits `coop-signal-out`. |
+| `coop-peer-add` | `peerId, slot, displayName` | Creates a peer and registers its slot at once; the host is the offerer and emits `coop-signal-out`. |
 | `coop-signal-in` | `peerId, payload` | Delivers an answer or ICE candidate from the guest. |
 | `coop-peer-slot` | `peerId, slot` | Moves a guest; releases the old slot with a neutral state first. |
 | `coop-peer-input-muted` | `peerId, muted` | Muted guests' input is dropped and their slot gets a neutral state. |
@@ -369,6 +371,34 @@ the existing `controller-rumble` for the guest's own slot, mapped to the local c
   as a fixed 24-byte little-endian binary record; the guest resends the latest snapshot every 50 ms while idle. The host maps
   the guest's forwarded controller to its assigned GFN slot, drops stale sequence numbers and sends neutral state on disconnect,
   mute, slot move and 500 ms without input.
+
+### Slot to player number
+
+Windows on the GFN VM gives each virtual XInput pad the lowest free user index when the pad
+appears. The pad appears when its bit first shows up in the `0x020d` registration bitmap. The
+player number a game shows therefore depends on the order and gaps of registration, not on the
+GFN controller id. The host keeps registration in the shape that makes the two equal:
+
+- A guest's id is registered when `coop-peer-add` arrives, before its link connects. It stays
+  registered through link drops and reconnects, mute, and `coop-peer-slot` swaps. Only
+  `coop-peer-remove` and `coop-host-stop` release it, and only after a neutral state.
+- While any guest holds a slot, every id from 0 through the highest guest slot is registered.
+  An id with no guest is a neutral placeholder, so a lone P3 guest is still the third pad.
+  When P2 leaves while P3 stays, id 1 stays registered as a placeholder.
+- New ids are registered one per `0x020d` registration message in ascending order. Join order,
+  connect order and rejoins therefore cannot reorder pads.
+- Id 0 belongs to the host. A host pad that SDL places on id 1..3 drives that id only while no
+  guest owns it; a guest always wins its id, and the host pad's input on that id is dropped.
+  Unplugging such a host pad does not unregister an id inside the co-op range.
+- A Sony pad that the host forwards through the rich HID path is a DualShock/DualSense device on
+  the VM, not an XInput pad, so its id gets no XInput placeholder and the host is not shown
+  twice. The host's Sony device is normally attached when the stream starts, before any guest, so games that
+  read Sony and XInput pads together (Steam Input, native DualSense support) see the host first
+  and the guests after it in slot order. XInput-only games cannot see a rich host pad at all and
+  number the guests from player 1.
+
+Games that ask each player to press a button to join, or that let players pick a controller,
+assign players themselves. The lobby number cannot override that.
 
 ## 8. Shell activity to presence
 
