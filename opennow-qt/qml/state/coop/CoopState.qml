@@ -239,12 +239,6 @@ QtObject {
         }
         return ""
     }
-    // Known guests (userIds) that can't decode codec; "auto" and "" check nothing.
-    function codecBlockers(codec, userIds) {
-        if (["h264", "h265", "av1"].indexOf(codec) < 0)
-            return []
-        return (userIds || []).filter(userId => decoderTier(userId, codec) === "none")
-    }
     function dismissCodecPrompt() {
         if (codecPrompt)
             codecPromptsDismissed = codecPromptsDismissed.concat([codecPrompt.member.userId + ":" + codecPrompt.codec]).slice(-maxInvites)
