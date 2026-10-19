@@ -2,6 +2,8 @@
 
 Use the existing OpenNOW Xcode Cloud product connected to `OpenCloudGaming/OpenNOW`. Apple manages signing and uploads, so GitHub signing secrets and an App Store Connect API key are unnecessary.
 
+The saved [iOS TestFlight workflow](https://appstoreconnect.apple.com/teams/c9ecfcd5-9418-4a12-885a-9f216259b422/apps/6762100531/ci/workflows/7A4D4AEB-6187-4137-B023-AA4B93A04EB0) uses the configuration below. The first validation run is build 191 on commit `729ba2691`.
+
 Workflow configuration:
 
 | Setting | Value |
