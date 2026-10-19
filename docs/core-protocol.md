@@ -508,6 +508,7 @@ and artwork only near the viewport, using the section's local category ID
 - `session.ended`
 - `session.active.get`
 - `session.remote.list`, `session.claim`, `session.ad.report`
+- `session.stream.reconfigure` (always `unsupported`; see Session resume and reconnect)
 - `streamer.detect`
 - `streamer.prepare`
 - `streamer.start`
@@ -825,6 +826,28 @@ failure reasons, even before a stream starts. It does not copy arbitrary runtime
 fields or treat an empty process-streamer snapshot as the embedded capabilities.
 
 ### Session resume and reconnect
+
+`session.stream.reconfigure {codec:"h264"|"h265"|"av1"}` asks to change the codec of the
+running session's stream, for example when a co-op guest cannot decode it. It always fails
+with `unsupported` (an unknown codec fails with `invalid_params`) and changes nothing: the
+session, its streamer context, and the running stream continue with the codec they started
+with. A codec change is not offered because no supported path is known to work:
+
+- `session.claim` sends PUT RESUME, which carries no codec, and this core does not
+  renegotiate codec on resume. `streamer.prepare` validates the session's negotiated codec
+  and never changes the codec of an allocated stream.
+- The codec reaches the seat only in the RTSPS ANNOUNCE (`x-nv-vqos[0].bitStreamFormat`).
+  Reverse engineering of the official client (OpenNOW drive, `reverse-engineering/notes/parity/resume-codec.md`)
+  shows that on resume it replays the original session's codec and has no mid-session codec
+  change. Its server-control reconfigure messages cover bitrate, frame rate, HDR, and
+  resolution, never codec.
+- Nobody has observed a seat accepting a different codec on resume. The likeliest refusal is
+  `NVST_DISCONN_SERVER_VIDEO_ENCODER_INIT_UNSUPPORTED_FORMAT` (0x800e8406), a disconnect that
+  could end the host's session for every co-op member. That breaks the requirement that a
+  failed reconfigure leaves the old stream running.
+
+Co-op hosts should instead choose a codec every guest can decode before creating the
+session. Revisit this method if a captured resume shows a seat accepting a new codec.
 
 `session.active.get` without hints remains a local-only lookup. After a core
 restart, Qt can reconcile an existing native stream by supplying

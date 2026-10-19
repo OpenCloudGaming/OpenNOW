@@ -1298,6 +1298,18 @@ fn dispatch(
                 .map_err(|message| ("invalid_params".to_owned(), message))?;
             Ok((submit_automatic_report(core, output, incident), None))
         }
+        "session.stream.reconfigure" => {
+            if !matches!(params["codec"].as_str(), Some("h264" | "h265" | "av1")) {
+                return Err((
+                    "invalid_params".to_owned(),
+                    "codec must be h264, h265 or av1".to_owned(),
+                ));
+            }
+            Err((
+                "unsupported".to_owned(),
+                "A running GeForce NOW session keeps the codec it started with. Changing it needs a new session.".to_owned(),
+            ))
+        }
         _ if social::METHODS.contains(&method) => core
             .social
             .handle(method, params)

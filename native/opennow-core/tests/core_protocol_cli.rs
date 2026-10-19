@@ -478,3 +478,62 @@ fn social_v1_answers_through_the_protocol_without_a_linked_account() {
     reader.join().unwrap();
     let _ = std::fs::remove_dir_all(directory);
 }
+
+#[test]
+fn session_stream_reconfigure_is_refused_without_touching_the_session() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let directory = std::env::temp_dir().join(format!("opennow-reconfigure-{unique}"));
+    let mut child = Command::new(env!("CARGO_BIN_EXE_opennow-core"))
+        .arg("--data-dir")
+        .arg(&directory)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let (sender, lines) = mpsc::channel::<Value>();
+    let reader = std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            if sender.send(serde_json::from_str(&line).unwrap()).is_err() {
+                break;
+            }
+        }
+    });
+    let mut stdin = child.stdin.take().unwrap();
+    let mut request = |id: &str, method: &str, params: Value| {
+        writeln!(
+            stdin,
+            "{}",
+            json!({"type":"request", "id":id, "method":method, "params":params})
+        )
+        .unwrap();
+        loop {
+            let message = lines.recv_timeout(Duration::from_secs(10)).unwrap();
+            if message["type"] == "response" && message["id"] == id {
+                return message;
+            }
+        }
+    };
+    request(
+        "1",
+        "core.hello",
+        json!({"protocolVersion":5, "shell":"qt"}),
+    );
+    for codec in ["h264", "h265", "av1"] {
+        let response = request(codec, "session.stream.reconfigure", json!({"codec":codec}));
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["error"]["code"], "unsupported");
+    }
+    let invalid = request("bad", "session.stream.reconfigure", json!({"codec":"vp9"}));
+    assert_eq!(invalid["error"]["code"], "invalid_params");
+    drop(stdin);
+    let _ = child.kill();
+    child.wait().unwrap();
+    reader.join().unwrap();
+    let _ = std::fs::remove_dir_all(directory);
+}

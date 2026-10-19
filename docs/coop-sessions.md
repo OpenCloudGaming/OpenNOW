@@ -291,6 +291,7 @@ Methods (request params, result):
 | `coop.member.slot` | `{lobbyId, userId, slot}` | `{lobby}` |
 | `coop.signal.send` | `{lobbyId, to, payload}` | `{}` |
 | `coop.report` | `{lobbyId, event, path, relayId, codec, decoder, connectMs, firstFrameMs, reason}` | `{ok:true}`; POST /v1/lobbies/:id/reports with the same body minus `lobbyId`; absent nullable fields are sent as null |
+| `session.stream.reconfigure` | `{codec:"h264"\|"h265"\|"av1"}` | always fails with `unsupported`: a running GFN session keeps its codec (see `core-protocol.md`, "Session resume and reconnect"); the host picks a codec every guest can decode before the session starts |
 
 Errors use the existing error envelope with the backend's stable `code` (for example `user_not_found`) and
 `social_offline` / `social_not_linked` from the core.
