@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use crate::{DecodedVideoFrame, EncodedVideoFrame, Result, StreamFormat, VideoCodec};
 
 #[cfg(feature = "ffmpeg")]
+mod cuda_probe;
+#[cfg(feature = "ffmpeg")]
 mod ffmpeg;
 mod mediacodec;
 mod v4l2;

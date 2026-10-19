@@ -300,6 +300,16 @@ impl FfmpegDecoder {
             wanted_hw_format = Some(selected);
         }
 
+        if mode == FfmpegMode::Cuda {
+            let cuda = unsafe {
+                let device = (*context.as_ptr()).hw_device_ctx;
+                let hardware = (*device).data.cast::<ffi::AVHWDeviceContext>();
+                &*(*hardware).hwctx.cast::<ffi::AVCUDADeviceContext>()
+            };
+            super::cuda_probe::validate(cuda.cuda_ctx, codec, format)
+                .map_err(|reason| Error::unavailable(Subsystem::Ffmpeg, reason))?;
+        }
+
         let decoder = context
             .decoder()
             .open_as(decoder_definition)
