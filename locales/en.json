@@ -4941,6 +4941,13 @@
     "video": "Video",
     "waitingForNsStream": "Waiting for %1's stream…",
     "waitingForTheHostsStream": "Waiting for the host's stream…",
-    "connectedTheVideoStartsInAMoment": "Connected. The video starts in a moment."
+    "connectedTheVideoStartsInAMoment": "Connected. The video starts in a moment.",
+    "coOpPlayThisGameTogether": "CO-OP · PLAY THIS GAME TOGETHER",
+    "friendsJoinThisStreamWithACode": "Friends join this stream with a code or an invite. The game keeps running.",
+    "nPlayers": "%1 players",
+    "eachGuestGetsYourNMbpsStream": "Each guest gets your %1 Mbps stream, so %2 guests need %3 Mbps of upload.",
+    "creatingCoOpSession": "Creating co-op session…",
+    "createCoOpSession": "Create co-op session",
+    "oneClickStartsCoOp": "ONE CLICK · STARTS CO-OP"
   }
 }

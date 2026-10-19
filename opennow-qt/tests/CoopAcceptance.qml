@@ -17,6 +17,8 @@ QtObject {
     property point hover: Qt.point(-1, -1)
     property string captureName: ""
     property bool startFocusedByDefault: false
+    property int launches: 0
+    property string invitedFromStream: ""
     // Scene steps keyed by settle tick, for input that has to land after the screen has focus.
     property var steps: ({})
     property string failure: ""
@@ -97,6 +99,9 @@ QtObject {
         "c-08c-start-ready": "",
         "c-08d-start-waiting": "",
         "c-08e-start-streaming": "",
+        "c-08f-create-from-stream": "",
+        "c-08g-created-from-stream": "",
+        "c-08h-invite-from-stream": "",
         "c-09-settings-coop": "5UT-0",
         "c-10-reconnecting": "62P-0",
         "c-10-host-ended": "62P-0",
@@ -177,6 +182,9 @@ QtObject {
         "c-08c-start-ready": ["streamCoopSection", "streamCoopStart", "coopPeerPing-usr_jonas"],
         "c-08d-start-waiting": ["streamCoopSection", "streamCoopStart", "streamCoopStartCaption"],
         "c-08e-start-streaming": ["streamCoopSection"],
+        "c-08f-create-from-stream": ["streamCoopSection", "streamCoopCreateSection", "streamCoopCreate", "streamCoopPlayers-3"],
+        "c-08g-created-from-stream": ["streamCoopSection", "streamCoopStart", "streamSurfaceHost"],
+        "c-08h-invite-from-stream": ["streamCoopSection", "streamCoopStart"],
         "c-09-settings-coop": ["settingsCoop"],
         "c-10-reconnecting": ["coopReconnectingToast"],
         "c-10-host-ended": ["coopEnded"],
@@ -493,6 +501,8 @@ QtObject {
         coop.setPreference("allowRelay", true)
         coop.setPreference("requireApproval", false)
         startFocusedByDefault = false
+        launches = 0
+        invitedFromStream = ""
         steps = ({})
         modifiers = 0
         clickButton = Qt.LeftButton
@@ -723,6 +733,35 @@ QtObject {
                 runtime.coopEventReceived({type: "coop-peer-state", peerId: jonas.id, state: "reconnecting", path: "direct", relayId: null})
                 AppController.showOverlay(name === "c-03g-peer-failed" ? "coop-lobby" : "desktop-stream-menu")
             }))
+        } else if (name === "c-08f-create-from-stream" || name === "c-08g-created-from-stream" || name === "c-08h-invite-from-stream") {
+            linkAs(mara)
+            seedFriends(false)
+            fakeStream()
+            const press = objectName => () => {
+                if (consoleSurface) {
+                    if (objectName === "streamCoopCreate")
+                        coop.hostRunningStream(0, "")
+                    else if (objectName.indexOf("streamCoopCreateInvite-") === 0)
+                        coop.hostRunningStream(1, objectName.slice("streamCoopCreateInvite-".length))
+                    return
+                }
+                const button = find(window.contentItem, objectName)
+                check(button && shown(button), name + ": " + objectName + " is not on screen")
+                button.clicked()
+            }
+            steps = ({4: () => {
+                modifiers = Qt.ControlModifier
+                key = Qt.Key_G
+            }})
+            if (name === "c-08g-created-from-stream")
+                steps[8] = press("streamCoopCreate")
+            if (name === "c-08h-invite-from-stream") {
+                steps[7] = press("streamCoopPlayers-2")
+                steps[8] = () => {
+                    invitedFromStream = coop.inviteCandidates()[0].user.id
+                    press("streamCoopCreateInvite-" + invitedFromStream)()
+                }
+            }
         } else if (name === "c-08c-start-ready" || name === "c-08d-start-waiting" || name === "c-08e-start-streaming") {
             linkAs(mara)
             seedFriends(false)
@@ -1162,6 +1201,27 @@ QtObject {
             check(ended.length === 1 && ended[0].reason === "cant_connect: failed" && ended[0].lobbyId === "lob_mara",
                 "a failed connection is reported: " + JSON.stringify(ended))
         }
+        if (name === "c-08f-create-from-stream" || name === "c-08g-created-from-stream" || name === "c-08h-invite-from-stream") {
+            const creates = client.calls.filter(call => call.method === "coop.lobby.create")
+            check(AppController.overlay === (consoleSurface ? "guide-session" : "desktop-stream-menu") && AppController.route === "stream"
+                && ShellStore.activeSession && ShellStore.activeSession.sessionId === "coop-fixture", name + ": Ctrl+G stays over the same stream")
+            check(launches === 0, name + ": co-op from a running stream never relaunches the game")
+            if (name === "c-08f-create-from-stream") {
+                check(creates.length === 0 && coop.role === "none", "opening Ctrl+G creates nothing by itself")
+            } else {
+                check(creates.length === 1 && creates[0].params.game.title === bg3.title && creates[0].params.game.appId === bg3.appId
+                    && creates[0].params.maxGuests === (name === "c-08h-invite-from-stream" ? 1 : 3),
+                    name + ": one lobby for the running game: " + JSON.stringify(creates.map(call => call.params)))
+                check(coop.isHost && !coop.creatingLobby && runtime.sent.some(item => item.type === "coop-host-start"),
+                    name + ": the live stream fans out to the lobby")
+            }
+            if (name === "c-08h-invite-from-stream") {
+                const invites = client.calls.filter(call => call.method === "coop.lobby.invite")
+                check(invitedFromStream !== "" && invites.length === 1 && invites[0].params.userId === invitedFromStream
+                    && invites[0].params.lobbyId === coop.lobby.id && coop.queuedInvites.length === 0,
+                    "inviting before co-op creates the lobby, then invites: " + JSON.stringify(invites.map(call => call.params)))
+            }
+        }
         if (name === "c-07h-guest-direct") {
             const first = reports("first_frame")
             check(first.length === 1 && first[0].path === "direct" && first[0].relayId === null && first[0].firstFrameMs === 380
@@ -1224,7 +1284,7 @@ QtObject {
         coop.ready = true
         coop.streamRuntime = runtime
         coop.sendNativeCommand = (type, params) => runtime.command(type, params)
-        coop.launchGame = gameValue => {}
+        coop.launchGame = gameValue => { launches += 1 }
         coop.applySetting = (keyName, value) => {}
         return true
     }

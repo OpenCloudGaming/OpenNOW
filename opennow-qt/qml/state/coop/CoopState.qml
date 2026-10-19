@@ -19,6 +19,8 @@ QtObject {
     property var currentBitrateMbps: function() { return 0 }
     // ShellStore launch hook: launchGame(game) starts the host's own GFN session.
     property var launchGame: function(game) {}
+    // The game the host's running stream plays, for a lobby made from Ctrl+G.
+    property var streamGame: null
     property bool hostStreaming: false
     // The host's GFN session exists (it may be restarting); losing it ends co-op.
     property bool hostSessionActive: false
@@ -49,6 +51,9 @@ QtObject {
     property var relays: []
     property var setupGame: null
     property real restoreBitrateMbps: 0
+    // Ctrl+G: a lobby for the running stream is being created; friends invited meanwhile wait here.
+    property bool creatingLobby: false
+    property var queuedInvites: []
 
     property var incomingInvites: []
     property var inviteHistory: []
@@ -214,7 +219,7 @@ QtObject {
     }
     // One-click invite targets, most likely to join first; friends with an open invite are shown by it instead.
     function inviteCandidates() {
-        if (!friends || !isHost)
+        if (!friends || role === "guest")
             return []
         const rank = {browsing_store: 0, browsing_library: 0, in_settings: 0, playing: 1, idle: 2, online: 3, in_queue: 4}
         const invited = outgoingInvites.filter(invite => invite.to && ["pending", "declined", "expired"].indexOf(invite.state) >= 0)
@@ -299,6 +304,26 @@ QtObject {
         if (appController)
             appController.showOverlay("")
         launchGame(selectedGame)
+    }
+    // Ctrl+G on a running stream: the stream becomes the lobby's game, with no relaunch. A friend
+    // invited before the lobby exists is invited as soon as it does.
+    function hostRunningStream(maxGuests, inviteUserId) {
+        if (role !== "none" || !hostStreaming)
+            return
+        if (inviteUserId && queuedInvites.indexOf(inviteUserId) < 0)
+            queuedInvites = queuedInvites.concat([inviteUserId]).slice(0, maxGuestsLimit)
+        if (creatingLobby)
+            return
+        const guestsAllowed = Math.max(1, Math.min(maxGuestsLimit, Number(maxGuests || preferences.maxGuests)))
+        setupGame = streamGame
+        restoreBitrateMbps = 0
+        creatingLobby = call("coop.lobby.create", {game: gamePayload(streamGame), maxGuests: guestsAllowed}, {}) !== ""
+        if (!creatingLobby) {
+            queuedInvites = []
+            announceFailure("social_offline")
+            return
+        }
+        fetchIceServers()
     }
     function gamePayload(value) {
         if (!value)
@@ -1104,11 +1129,16 @@ QtObject {
                     root.startGuestPipeline()
                 root.startFanout()
             } else if (method === "coop.lobby.create") {
+                root.creatingLobby = false
                 root.role = "host"
                 root.lobby = result.lobby
                 root.selfId = String(result.lobby && result.lobby.hostId || "")
                 root.slot = 0
                 root.startFanout()
+                const queued = root.queuedInvites
+                root.queuedInvites = []
+                for (const userId of queued)
+                    root.invite(userId)
             } else if (method === "coop.lobby.update" || method === "coop.lobby.regenerateCode"
                        || method === "coop.member.slot") {
                 if (result && result.lobby)
@@ -1139,6 +1169,8 @@ QtObject {
                 if (root.guestPhase === "joining")
                     root.failJoin(code)
             } else if (entry.method === "coop.lobby.create") {
+                root.creatingLobby = false
+                root.queuedInvites = []
                 if (root.restoreBitrateMbps > 0)
                     root.applySetting("maxBitrateMbps", root.restoreBitrateMbps)
                 root.restoreBitrateMbps = 0

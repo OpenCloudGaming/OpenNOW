@@ -201,6 +201,10 @@ QtObject {
             press(Qt.Key_Down)
         },
         function() {
+            check(need("streamCoopCreate").activeFocus, "Down from Back to game reaches Create co-op session")
+            press(Qt.Key_Down)
+        },
+        function() {
             check(!need("streamMicrophoneControl").enabled, "the fixture has no microphone")
             check(need("streamAntiAfkControl").activeFocus, "Down skips the disabled microphone to Anti-AFK")
             press(Qt.Key_Return)

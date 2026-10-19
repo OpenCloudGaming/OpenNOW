@@ -5,13 +5,24 @@ import QtQuick.Controls
 import OpenNOW
 
 // Host co-op block of the Ctrl+G menu (artboards HAF-1 and 5Q0-0): code, players, one-click invites and End co-op.
+// Before co-op it offers Create co-op session for the running stream, with the setup's player count inline.
 FocusScope {
     id: root
     objectName: "streamCoopSection"
     readonly property var coop: ShellStore.coop
     readonly property var friends: ShellStore.friends
     readonly property var cards: coop.isHost ? coop.slotCards() : []
-    readonly property var candidates: coop.isHost && friends.linked ? coop.inviteCandidates() : []
+    readonly property bool canCreate: coop.role === "none" && coop.coopSupported && coop.hostStreaming
+    readonly property var candidates: (coop.isHost || canCreate) && friends.linked ? coop.inviteCandidates() : []
+    property int createGuests: Math.max(1, Math.min(coop.maxGuestsLimit, Number(coop.preferences.maxGuests || coop.maxGuestsLimit)))
+    property bool focusLobbyWhenReady: false
+    readonly property bool hosting: coop.isHost
+    onHostingChanged: {
+        if (hosting && focusLobbyWhenReady) {
+            focusLobbyWhenReady = false
+            Qt.callLater(focusFirst)
+        }
+    }
     readonly property bool inviteVisible: candidates.length > 0
         && cards.some(card => card.kind === "open" || coop.uploadHolds(card))
     readonly property var slotColors: ["#7FD4FF", "#6EE7B7", "#FFD166", "#A78BFA"]
@@ -20,8 +31,8 @@ FocusScope {
     readonly property real streamMbps: coop.hostStats ? Number(coop.hostStats.streamKbps || 0) / 1000 : 0
     property Item hint: null
     signal revealRequested(Item item)
-    visible: coop.isHost
-    height: visible ? column.implicitHeight : 0
+    visible: coop.isHost || canCreate
+    height: coop.isHost ? column.implicitHeight : canCreate ? createColumn.implicitHeight : 0
     Accessible.role: Accessible.Grouping
     Accessible.name: qsTr("Co-op")
 
@@ -47,12 +58,18 @@ FocusScope {
         return true
     }
     function focusFirst() {
-        copyButton.forceActiveFocus()
-        revealRequested(copyButton)
+        const first = coop.isHost ? copyButton : createButton
+        first.forceActiveFocus()
+        revealRequested(first)
     }
     function focusLast() {
-        endRow.forceActiveFocus()
-        revealRequested(endRow)
+        const last = coop.isHost ? endRow : createInviteRepeater.count > 0 ? createInviteRepeater.itemAt(createInviteRepeater.count - 1) : createButton
+        last.forceActiveFocus()
+        revealRequested(last)
+    }
+    function create(userId) {
+        focusLobbyWhenReady = true
+        coop.hostRunningStream(createGuests, userId || "")
     }
     onActiveFocusChanged: if (activeFocus && !inside(Window.window ? Window.window.activeFocusItem : null)) focusFirst()
     onFocusChanged: if (focus && activeFocus) focusFirst()
@@ -118,7 +135,141 @@ FocusScope {
     DesktopCoopHostFriendChip { id: paletteChip; visible: false; enabled: false }
 
     Column {
+        id: createColumn
+        objectName: "streamCoopCreateSection"
+        visible: !root.coop.isHost && root.canCreate
+        width: parent.width
+        spacing: 0
+
+        Item { width: 1; height: 4 }
+        Text {
+            text: qsTr("CO-OP · PLAY THIS GAME TOGETHER")
+            color: "#7FD4FF"
+            font.family: DesktopTokens.monoFont
+            font.pixelSize: 10
+            font.weight: Font.DemiBold
+            font.letterSpacing: 1.4
+        }
+        Item { width: 1; height: 8 }
+        Text {
+            width: parent.width
+            wrapMode: Text.WordWrap
+            text: qsTr("Friends join this stream with a code or an invite. The game keeps running.")
+            color: "#A3FFFFFF"
+            font.family: DesktopTokens.bodyFont
+            font.pixelSize: 12
+            font.weight: Font.Medium
+        }
+        Item { width: 1; height: 12 }
+        Item {
+            width: parent.width
+            height: 28
+            Text {
+                anchors.verticalCenter: parent.verticalCenter
+                text: qsTr("Players")
+                color: "#FFFFFF"
+                font.family: DesktopTokens.bodyFont
+                font.pixelSize: 13
+                font.weight: Font.ExtraBold
+            }
+            Row {
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 6
+                Repeater {
+                    model: root.coop.maxGuestsLimit
+                    delegate: DesktopCoopHostButton {
+                        id: countButton
+                        required property int index
+                        readonly property bool chosen: root.createGuests === index + 1
+                        objectName: "streamCoopPlayers-" + (index + 2)
+                        height: 28
+                        fontSize: 12
+                        sidePadding: 12
+                        text: String(index + 2)
+                        fill: chosen ? "#FFFFFF" : "#1FFFFFFF"
+                        ink: chosen ? "#0A0D14" : "#FFFFFF"
+                        Accessible.name: qsTr("%1 players").arg(index + 2)
+                        Accessible.checked: chosen
+                        onClicked: root.createGuests = index + 1
+                    }
+                }
+            }
+        }
+        Item { width: 1; height: 6 }
+        Text {
+            width: parent.width
+            wrapMode: Text.WordWrap
+            visible: root.coop.currentBitrateMbps() > 0
+            text: qsTr("Each guest gets your %1 Mbps stream, so %2 guests need %3 Mbps of upload.")
+                .arg(root.mbps(root.coop.currentBitrateMbps())).arg(root.createGuests)
+                .arg(root.mbps(root.coop.currentBitrateMbps() * root.createGuests))
+            color: "#66FFFFFF"
+            font.family: DesktopTokens.bodyFont
+            font.pixelSize: 11
+            font.weight: Font.Medium
+        }
+        Item { width: 1; height: 12 }
+        DesktopCoopHostButton {
+            id: createButton
+            objectName: "streamCoopCreate"
+            width: parent.width
+            enabled: !root.coop.creatingLobby
+            text: root.coop.creatingLobby ? qsTr("Creating co-op session…") : qsTr("Create co-op session")
+            glyph: "play"; glyphSize: 12; keyText: "Enter"; fontSize: 15
+            fill: "#FFFFFF"; hoverFill: "#14000000"; edge: "#7FD4FF"; edgeWidth: 2; ink: "#0A0D14"
+            onClicked: root.create("")
+        }
+        Item { visible: createInviteGrid.visible; width: 1; height: 14 }
+        Row {
+            visible: createInviteGrid.visible
+            spacing: 8
+            Text {
+                text: qsTr("INVITE FRIENDS")
+                color: "#7FD4FF"
+                font.family: DesktopTokens.monoFont
+                font.pixelSize: 10
+                font.weight: Font.DemiBold
+                font.letterSpacing: 1.4
+            }
+            Text {
+                text: qsTr("ONE CLICK · STARTS CO-OP")
+                color: "#66FFFFFF"
+                font.family: DesktopTokens.monoFont
+                font.pixelSize: 10
+                font.weight: Font.DemiBold
+                font.letterSpacing: 1
+            }
+        }
+        Item { visible: createInviteGrid.visible; width: 1; height: 8 }
+        Grid {
+            id: createInviteGrid
+            visible: root.candidates.length > 0
+            width: parent.width
+            columns: 2
+            columnSpacing: 8
+            rowSpacing: 8
+            Repeater {
+                id: createInviteRepeater
+                model: root.canCreate ? root.candidates.slice(0, 4) : []
+                delegate: DesktopCoopHostFriendChip {
+                    required property var modelData
+                    objectName: "streamCoopCreateInvite-" + modelData.user.id
+                    width: (createInviteGrid.width - createInviteGrid.columnSpacing) / 2
+                    height: 44
+                    user: modelData.user
+                    presence: modelData.presence
+                    inviteState: root.coop.queuedInvites.indexOf(modelData.user.id) >= 0 ? "pending" : "idle"
+                    onClicked: root.create(modelData.user.id)
+                }
+            }
+        }
+        Item { width: 1; height: 14 }
+    }
+
+    Column {
         id: column
+        visible: root.coop.isHost
         width: parent.width
         spacing: 0
 

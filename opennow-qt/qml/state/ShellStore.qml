@@ -122,6 +122,7 @@ QtObject {
             root.selectedGame = game
             root.launchSelectedGame(false)
         }
+        streamGame: root.selectedGame
         hostStreaming: root.activeSession !== null && root.streamerStatus === "streaming"
         hostSessionActive: root.activeSession !== null
         persistPreferences: !SmokeTestMode
