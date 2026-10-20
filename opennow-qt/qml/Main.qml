@@ -321,9 +321,15 @@ ApplicationWindow {
     onCoopGuestChanged: syncInputOwnership()
     onCoopGuestPanelOpenChanged: syncInputOwnership()
     onCoopGuestStartingChanged: syncInputOwnership()
+    // A playing guest's pad keeps reaching the host while OpenNOW is in the background (guests
+    // alt-tab to voice chat). The pad sends its real state, so nothing sticks; keyboard and mouse
+    // still stop with focus.
+    readonly property bool coopGuestPlaying: Boolean(window.coopGuest && ShellStore.coop.guestPhase === "playing")
+    onCoopGuestPlayingChanged: syncInputOwnership()
     function syncInputOwnership() {
+        const background = !window.active && window.coopGuestPlaying
         // Why the shell owns controller input, or "" when gameplay owns it.
-        const reason = !window.active ? "window-inactive"
+        const reason = !window.active && !background ? "window-inactive"
             : AppController.route !== "stream" ? "route-" + AppController.route
             : !window.desktopSurfaceActive && !window.consoleStreamReady ? "console-stream-not-ready"
             : window.desktopSurfaceActive && !ShellStore.authRestorePending && !ShellStore.signedIn && !window.coopGuest
@@ -333,13 +339,13 @@ ApplicationWindow {
             : window.coopGuestStarting ? "coop-starting"
             : ""
         const shellOwnsInput = reason !== ""
-        ControllerInput.inputSuspended = !window.active
+        ControllerInput.inputSuspended = (!window.active && !background)
             || (shellOwnsInput && ShellStore.settings.controllerMode === false)
         ControllerInput.shellCaptureEnabled = shellOwnsInput
             && ShellStore.settings.controllerMode !== false
         if (window.coopGuest)
-            ShellStore.coop.noteGuestInputOwner(shellOwnsInput ? "shell" : "stream", reason || "gameplay",
-                ControllerInput.inputSuspended)
+            ShellStore.coop.noteGuestInputOwner(shellOwnsInput ? "shell" : "stream",
+                reason || (background ? "gameplay-background" : "gameplay"), ControllerInput.inputSuspended)
     }
 
     Binding {

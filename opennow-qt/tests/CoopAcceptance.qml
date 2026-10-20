@@ -24,6 +24,7 @@ QtObject {
     property var applied: []
     property string invitedFromStream: ""
     property var onlyFriends: null
+    property var elsewhere: null
     // Scene steps keyed by settle tick, for input that has to land after the screen has focus.
     property var steps: ({})
     property string failure: ""
@@ -1243,7 +1244,7 @@ QtObject {
             }
         } else if (name === "c-07i-guest-pad-ownership") {
             guestConnected(true)
-            settleTicks = 22
+            settleTicks = 30
             const owner = () => runtime.inputLog[runtime.inputLog.length - 1]
             const gameplay = what => {
                 check(!ControllerInput.shellCaptureEnabled && !ControllerInput.inputSuspended && coop.guestPhase === "playing",
@@ -1294,7 +1295,28 @@ QtObject {
                     modifiers = 0
                     key = Qt.Key_Escape
                 },
-                19: () => gameplay("after the panel closes")
+                19: () => {
+                    gameplay("after the panel closes")
+                    elsewhere = Qt.createQmlObject("import QtQuick; Window { width: 200; height: 120; visible: true }", fixture)
+                    elsewhere.requestActivate()
+                },
+                22: () => {
+                    check(!window.active, "another window took focus")
+                    check(!ControllerInput.shellCaptureEnabled && !ControllerInput.inputSuspended
+                        && owner() === "stream gameplay-background false",
+                        "a playing guest's pad keeps forwarding in the background: " + owner())
+                    coop.requestLeave()
+                },
+                24: () => {
+                    check(ControllerInput.shellCaptureEnabled === (ShellStore.settings.controllerMode !== false)
+                        && owner() === "shell overlay-coop-leave-confirm false",
+                        "a modal still takes the pad in the background: " + owner())
+                    AppController.showOverlay("")
+                    elsewhere.destroy()
+                    elsewhere = null
+                    window.requestActivate()
+                },
+                27: () => gameplay("back in the foreground")
             })
         } else if (name === "c-07-guest-overlay" || name === "c-07b-guest-input") {
             guestConnected(true)
