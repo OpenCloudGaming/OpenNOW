@@ -18,7 +18,7 @@ fn socket_pair() -> (RtspClient, WebSocket<TcpStream>) {
     stream.set_nodelay(true).unwrap();
     let (socket, _) = tungstenite::client(
         format!("ws://{address}/rtsp"),
-        MaybeTlsStream::Plain(stream),
+        MaybeTlsStream::Plain(TimedTcpStream::new(stream).unwrap()),
     )
     .unwrap();
     (

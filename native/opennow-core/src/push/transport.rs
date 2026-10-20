@@ -5,6 +5,8 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use opennow_socket_wait::TimedTcpStream;
+
 pub trait PushTransport: Send {
     fn send(&mut self, frame: &[u8], timeout: Duration) -> Result<(), PushError>;
     fn recv(&mut self, timeout: Duration) -> Result<Vec<u8>, PushError>;
@@ -22,7 +24,7 @@ pub trait PushTransportFactory: Send + Sync {
 
 pub struct TlsPushTransport {
     connection: rustls::ClientConnection,
-    socket: TcpStream,
+    socket: TimedTcpStream,
 }
 
 enum Resolution {
@@ -168,6 +170,9 @@ impl TlsPushTransport {
             PushError::new("push_transport_failed", "The push service is unreachable")
         })?;
         let _ = socket.set_nodelay(true);
+        let socket = TimedTcpStream::new(socket).map_err(|_| {
+            PushError::new("push_transport_failed", "The push service is unreachable")
+        })?;
         Ok(Self { connection, socket })
     }
 
@@ -287,7 +292,7 @@ impl PushTransport for TlsPushTransport {
                 break;
             }
         }
-        let _ = self.socket.shutdown(std::net::Shutdown::Both);
+        let _ = self.socket.get_ref().shutdown(std::net::Shutdown::Both);
     }
 }
 

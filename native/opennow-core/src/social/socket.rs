@@ -1,5 +1,6 @@
 use super::{Config, Connection, Shared, Timing, Token};
 use base64::Engine as _;
+use opennow_socket_wait::TimedTcpStream;
 use serde_json::{Value, json};
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
@@ -137,7 +138,10 @@ pub(super) fn session(
     if socket.send(Message::text(auth)).is_err() {
         return Ended::failed(false);
     }
-    let _ = socket.get_ref().tcp().set_read_timeout(Some(timing.tick));
+    let _ = socket
+        .get_mut()
+        .tcp_mut()
+        .set_read_timeout(Some(timing.tick));
     let deadline = Instant::now() + timing.auth;
     let ready = loop {
         if let Some(ended) = superseded(shared, generation) {
@@ -239,15 +243,15 @@ fn close(socket: &mut WebSocket<Transport>) {
 }
 
 pub(super) enum Transport {
-    Plain(TcpStream),
-    Tls(Box<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>),
+    Plain(TimedTcpStream),
+    Tls(Box<rustls::StreamOwned<rustls::ClientConnection, TimedTcpStream>>),
 }
 
 impl Transport {
-    fn tcp(&self) -> &TcpStream {
+    fn tcp_mut(&mut self) -> &mut TimedTcpStream {
         match self {
             Self::Plain(stream) => stream,
-            Self::Tls(stream) => stream.get_ref(),
+            Self::Tls(stream) => stream.get_mut(),
         }
     }
 }
@@ -313,9 +317,7 @@ pub(super) fn connect(config: &Config, timeout: Duration) -> io::Result<WebSocke
         Some(proxy) => tunnel(&proxy.normalized_url, authority, host, port, timeout)?,
         None => tcp_connect(host, port, timeout)?,
     };
-    stream.set_read_timeout(Some(timeout))?;
-    stream.set_write_timeout(Some(timeout))?;
-    let _ = stream.set_nodelay(true);
+    let _ = stream.get_ref().set_nodelay(true);
     let transport = if secure {
         let name = rustls::pki_types::ServerName::try_from(host.to_owned())
             .map_err(|_| other("invalid host"))?;
@@ -338,7 +340,7 @@ pub(super) fn connect(config: &Config, timeout: Duration) -> io::Result<WebSocke
     Ok(socket)
 }
 
-fn tcp_connect(host: &str, port: u16, timeout: Duration) -> io::Result<TcpStream> {
+fn tcp_connect(host: &str, port: u16, timeout: Duration) -> io::Result<TimedTcpStream> {
     let addresses = (host, port)
         .to_socket_addrs()?
         .take(4)
@@ -346,7 +348,12 @@ fn tcp_connect(host: &str, port: u16, timeout: Duration) -> io::Result<TcpStream
     let mut last = other("host did not resolve");
     for address in addresses {
         match TcpStream::connect_timeout(&address, timeout) {
-            Ok(stream) => return Ok(stream),
+            Ok(stream) => {
+                let mut stream = TimedTcpStream::new(stream)?;
+                stream.set_read_timeout(Some(timeout))?;
+                stream.set_write_timeout(Some(timeout))?;
+                return Ok(stream);
+            }
             Err(error) => last = error,
         }
     }
@@ -359,7 +366,7 @@ fn tunnel(
     host: &str,
     port: u16,
     timeout: Duration,
-) -> io::Result<TcpStream> {
+) -> io::Result<TimedTcpStream> {
     let proxy = Url::parse(proxy_url).map_err(|_| other("invalid proxy"))?;
     let proxy_host = proxy
         .host_str()
@@ -368,8 +375,6 @@ fn tunnel(
         .trim_end_matches(']');
     let proxy_port = proxy.port().ok_or_else(|| other("invalid proxy"))?;
     let mut stream = tcp_connect(proxy_host, proxy_port, timeout)?;
-    stream.set_read_timeout(Some(timeout))?;
-    stream.set_write_timeout(Some(timeout))?;
     let username = percent_decode(proxy.username());
     let password = percent_decode(proxy.password().unwrap_or(""));
     match proxy.scheme() {
@@ -405,7 +410,7 @@ fn percent_decode(text: &str) -> Vec<u8> {
 }
 
 fn http_connect(
-    stream: &mut TcpStream,
+    stream: &mut TimedTcpStream,
     authority: &str,
     port: u16,
     username: &[u8],
@@ -442,7 +447,7 @@ fn http_connect(
 }
 
 fn socks5_connect(
-    stream: &mut TcpStream,
+    stream: &mut TimedTcpStream,
     host: &str,
     port: u16,
     username: &[u8],
@@ -501,7 +506,7 @@ fn socks5_connect(
 }
 
 fn socks4a_connect(
-    stream: &mut TcpStream,
+    stream: &mut TimedTcpStream,
     host: &str,
     port: u16,
     username: &[u8],

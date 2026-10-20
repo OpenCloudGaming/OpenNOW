@@ -20,7 +20,6 @@ mod nvst_microphone;
 mod nvst_network;
 mod nvst_recovery_policy;
 mod nvst_server_control;
-mod udp_receive;
 pub mod webrtc;
 
 pub use frame_stage_timing::{FrameStageTimings, StageSummary};

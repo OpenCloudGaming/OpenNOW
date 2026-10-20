@@ -6173,7 +6173,7 @@ pub fn spawn_nvst_udp_receiver_with_socket(
             bind_nvst_udp(bind_ip, config.client_udp_port).map_err(NvstUdpReceiverError::Bind)?
         }
     };
-    crate::udp_receive::prepare(&socket, UDP_RECEIVE_POLL_INTERVAL)
+    opennow_socket_wait::prepare(&socket, UDP_RECEIVE_POLL_INTERVAL)
         .map_err(NvstUdpReceiverError::Configure)?;
     let rtc = if config.remote_dtls_fingerprint().is_some() {
         let rtc = match reserved_rtc {
@@ -6260,7 +6260,7 @@ fn spawn_receiver_thread(
     if setup.rtc.is_some() && setup.upstream_ready.is_some() {
         config.feedback.wait_for_play();
     }
-    crate::udp_receive::prepare(&socket, UDP_RECEIVE_POLL_INTERVAL)
+    opennow_socket_wait::prepare(&socket, UDP_RECEIVE_POLL_INTERVAL)
         .map_err(NvstUdpReceiverError::Configure)?;
     let (commands, receiver) = mpsc::channel();
     let input_ready = Arc::new(AtomicBool::new(false));
@@ -8615,7 +8615,7 @@ fn run_nvst_webrtc_bundle(
                 break 'bundle;
             }
         } else {
-            if let Err(error) = crate::udp_receive::prepare(&socket, wait) {
+            if let Err(error) = opennow_socket_wait::prepare(&socket, wait) {
                 eprintln!("NVST UDP timeout configuration failed: {error}");
                 forward_optional(
                     &event_sender,
@@ -8623,7 +8623,7 @@ fn run_nvst_webrtc_bundle(
                 );
                 break 'bundle;
             }
-            match crate::udp_receive::recv_from(&socket, &mut datagram, wait) {
+            match opennow_socket_wait::recv_from(&socket, &mut datagram, wait) {
                 Ok((length, source)) => {
                     inbound_datagrams += 1;
                     liveness.last_inbound = Some(Instant::now());
@@ -8990,7 +8990,7 @@ fn run_nvst_video_receiver(
         }
 
         let inbound_before = inbound_datagrams;
-        match crate::udp_receive::recv_from(&socket, &mut datagram, UDP_RECEIVE_POLL_INTERVAL) {
+        match opennow_socket_wait::recv_from(&socket, &mut datagram, UDP_RECEIVE_POLL_INTERVAL) {
             Ok((length, source)) => 'datagram: {
                 inbound_datagrams += 1;
                 if inbound_datagrams == 1 {

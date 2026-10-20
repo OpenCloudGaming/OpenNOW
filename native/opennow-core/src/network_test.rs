@@ -668,10 +668,11 @@ fn confirm_datagram(
     let mut buffer = vec![0_u8; MAX_MESSAGE_BYTES];
     while std::time::Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        if remaining.is_zero() || socket.set_read_timeout(Some(remaining)).is_err() {
+        if remaining.is_zero() || opennow_socket_wait::prepare(socket, remaining).is_err() {
             return false;
         }
-        let Ok((length, source)) = socket.recv_from(&mut buffer) else {
+        let Ok((length, source)) = opennow_socket_wait::recv_from(socket, &mut buffer, remaining)
+        else {
             return false;
         };
         if std::time::Instant::now() >= deadline {

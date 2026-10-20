@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 use std::io::ErrorKind;
-use std::net::{IpAddr, TcpStream};
+use std::net::{IpAddr, TcpStream, ToSocketAddrs};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use opennow_socket_wait::TimedTcpStream;
 use opennow_streamer_platform::MediaStreamConfig;
 use opennow_streamer_protocol::SessionContext;
 use opennow_streamer_transport::nvst::{
@@ -14,9 +15,14 @@ use opennow_streamer_transport::nvst::{
 use opennow_streamer_transport::{ReservedNvstBundle, nvst_video_packet_size};
 use serde_json::{Value, json};
 use tungstenite::client::IntoClientRequest;
+use tungstenite::client::uri_mode;
+use tungstenite::error::UrlError;
+use tungstenite::handshake::HandshakeError;
+use tungstenite::handshake::client::{Request, Response};
 use tungstenite::http::{HeaderValue, Uri};
 use tungstenite::stream::MaybeTlsStream;
-use tungstenite::{Message, WebSocket, connect};
+use tungstenite::stream::Mode;
+use tungstenite::{Message, WebSocket};
 
 #[path = "nvst_rtsp_color.rs"]
 mod color;
@@ -100,7 +106,7 @@ struct SweepFailure {
 }
 
 struct RtspClient {
-    socket: WebSocket<MaybeTlsStream<TcpStream>>,
+    socket: WebSocket<MaybeTlsStream<TimedTcpStream>>,
     cseq: u64,
     buffer: String,
 }
@@ -523,7 +529,7 @@ impl RtspClient {
         request
             .headers_mut()
             .insert("content-length", HeaderValue::from_static("0"));
-        let (mut socket, _) = connect_with_retry(|| connect(request.clone()))?;
+        let (mut socket, _) = connect_with_retry(|| open_websocket(request.clone()))?;
         set_io_timeout(&mut socket, REQUEST_TIMEOUT);
         Ok((
             Self {
@@ -696,6 +702,31 @@ fn connect_with_retry<T>(
         "nvst-connect-failed",
         "RTSPS connection attempts exhausted",
     ))
+}
+
+fn open_websocket(
+    request: Request,
+) -> Result<(WebSocket<MaybeTlsStream<TimedTcpStream>>, Response), tungstenite::Error> {
+    let uri = request.uri();
+    let host = uri
+        .host()
+        .ok_or(tungstenite::Error::Url(UrlError::NoHostName))?
+        .trim_start_matches('[')
+        .trim_end_matches(']');
+    let port = uri.port_u16().unwrap_or(match uri_mode(uri)? {
+        Mode::Plain => 80,
+        Mode::Tls => 443,
+    });
+    let addresses = (host, port).to_socket_addrs()?.collect::<Vec<_>>();
+    let stream = TcpStream::connect(&addresses[..])
+        .map_err(|_| tungstenite::Error::Url(UrlError::UnableToConnect(uri.to_string())))?;
+    stream.set_nodelay(true)?;
+    tungstenite::client_tls_with_config(request, TimedTcpStream::new(stream)?, None, None).map_err(
+        |error| match error {
+            HandshakeError::Failure(error) => error,
+            HandshakeError::Interrupted(_) => tungstenite::Error::Io(ErrorKind::TimedOut.into()),
+        },
+    )
 }
 
 fn rtsp_connect_error(error: &tungstenite::Error) -> NvstRtspError {
@@ -2374,18 +2405,14 @@ fn random_runtime_key() -> Result<(String, u32), NvstRtspError> {
     ))
 }
 
-fn set_io_timeout(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>, timeout: Duration) {
-    match socket.get_mut() {
-        MaybeTlsStream::Plain(stream) => {
-            let _ = stream.set_read_timeout(Some(timeout));
-            let _ = stream.set_write_timeout(Some(timeout));
-        }
-        MaybeTlsStream::Rustls(stream) => {
-            let _ = stream.get_mut().set_read_timeout(Some(timeout));
-            let _ = stream.get_mut().set_write_timeout(Some(timeout));
-        }
-        _ => {}
-    }
+fn set_io_timeout(socket: &mut WebSocket<MaybeTlsStream<TimedTcpStream>>, timeout: Duration) {
+    let stream = match socket.get_mut() {
+        MaybeTlsStream::Plain(stream) => stream,
+        MaybeTlsStream::Rustls(stream) => stream.get_mut(),
+        _ => return,
+    };
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(timeout));
 }
 
 #[cfg(test)]

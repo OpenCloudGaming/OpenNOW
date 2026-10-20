@@ -10,6 +10,7 @@ use str0m::{Candidate, Event, IceCreds, Input, Output, RtcConfig};
 const CONTROL_RELIABLE_LABEL: &str = "control_channel_reliable";
 const MAX_STDIN_LINE_BYTES: u64 = 4 * 1024;
 const MAX_PENDING_COMMANDS: usize = 32;
+const PROBE_RECEIVE_WAIT: Duration = Duration::from_millis(1);
 const MAX_COMMANDS_PER_ITERATION: usize = 8;
 const INPUT_PROTOCOL_VERSION: u16 = 3;
 const INPUT_VERSION_COMMAND_CODE: u16 = 0x020e;
@@ -190,9 +191,7 @@ fn run() -> Result<(), String> {
     let options = parse_options()?;
     let socket = UdpSocket::bind(SocketAddr::new(options.bind_ip, options.port))
         .map_err(|error| error.to_string())?;
-    socket
-        .set_read_timeout(Some(Duration::from_millis(1)))
-        .map_err(|error| error.to_string())?;
+    opennow_socket_wait::prepare(&socket, PROBE_RECEIVE_WAIT).map_err(|error| error.to_string())?;
     let physical_local = socket.local_addr().map_err(|error| error.to_string())?;
     if physical_local.ip().is_unspecified() {
         return Err("--bind-ip must name the physical local address".to_owned());
@@ -315,7 +314,9 @@ fn run() -> Result<(), String> {
                 }
             }
         }
-        if let Ok((length, source)) = socket.recv_from(&mut buffer) {
+        if let Ok((length, source)) =
+            opennow_socket_wait::recv_from(&socket, &mut buffer, PROBE_RECEIVE_WAIT)
+        {
             if source != physical_remote {
                 continue;
             }

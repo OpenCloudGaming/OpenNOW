@@ -1408,6 +1408,7 @@ dependencies = [
  "keyring",
  "libc",
  "md5",
+ "opennow-socket-wait",
  "p256",
  "qrcode",
  "rand 0.9.5",
@@ -1426,6 +1427,13 @@ dependencies = [
  "webpki-roots",
  "windows-sys 0.59.0",
  "zip",
+]
+
+[[package]]
+name = "opennow-socket-wait"
+version = "0.2.0"
+dependencies = [
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

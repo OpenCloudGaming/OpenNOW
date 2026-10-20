@@ -13,6 +13,7 @@ opennow-streamer-hid = { path = "../opennow-streamer-hid" }
 opennow-streamer-protocol = { path = "../opennow-streamer-protocol" }
 opennow-streamer-coop = { path = "../opennow-streamer-coop" }
 opennow-streamer-transport = { path = "../opennow-streamer-transport" }
+opennow-socket-wait = { path = "../opennow-socket-wait" }
 rustls.workspace = true
 serde_json.workspace = true
 tungstenite.workspace = true
