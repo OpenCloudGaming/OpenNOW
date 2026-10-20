@@ -171,8 +171,12 @@ Keyboard and mouse input are not forwarded.
   guest logs `guest first frame` under `coop` with the times to connect, media
   start, first assembled keyframe and first presented frame, plus the keyframe
   requests it sent. The native file log includes them at most every 10 s,
-  and each co-op worker also logs its input counters (and nothing else) under the
-  `coop` area every 10 s. Every `coop-guest-state` and `coop-peer-state` transition is
+  and each co-op worker also logs its input counters under the `coop` area. The host
+  logs each guest's add and removal, and every 5 s per guest its state, slot, forwarded
+  video packets, completed video frames, audio packets, NACK repairs, send rate and the
+  GFN keyframe requests made for guests; the guest logs its input counters every 10 s.
+  The file sink reopens `native-streamer.log` within 1 s after the Qt shell rotates it by
+  renaming, so these lines keep landing in the current file. Every `coop-guest-state` and `coop-peer-state` transition is
   logged under `coop` with its state, path, relay id and (bounded) reason but no peer
   ids, as are the stream description a guest receives and the result of starting its
   local media. A host logs the reason of a guest's `bye`. `capacityKbps`

@@ -28,7 +28,7 @@ const LOOP_WAIT: Duration = Duration::from_millis(1);
 const STATS_INTERVAL: Duration = Duration::from_secs(1);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_PEER_ID_LEN: usize = 128;
-const INPUT_LOG_INTERVAL: Duration = Duration::from_secs(10);
+const PEER_LOG_INTERVAL: Duration = Duration::from_secs(5);
 
 /// What the co-op host needs from the running NVST session.
 pub trait HostBackend: Send + Sync + 'static {
@@ -147,7 +147,8 @@ impl CoopHost {
                     audio_seq: None,
                     stream_bytes: 0,
                     stats_at: Instant::now(),
-                    input_log_at: Instant::now(),
+                    peer_log_at: Instant::now(),
+                    keyframes_to_gfn: 0,
                     registered: None,
                 }
                 .run(&receiver, &tap);
@@ -267,9 +268,20 @@ struct HostPeer {
     video_base: Option<u64>,
     audio_base: Option<u64>,
     input: PeerInput,
+    forwarded: PeerForwarded,
     /// The guest's first keyframe request after its link connected skips the shared
     /// limiter once, so a joining guest never waits a limiter interval for its first frame.
     first_keyframe_request: bool,
+}
+
+/// Media written to one guest's link: forwarded packets, completed video frames, and
+/// packets resent from the ring for its NACKs.
+#[derive(Debug, Default, Clone, Copy)]
+struct PeerForwarded {
+    video: u64,
+    audio: u64,
+    frames: u64,
+    repaired: u64,
 }
 
 /// What became of the input records one guest sent, from receipt to the NVST input path.
@@ -282,6 +294,13 @@ struct PeerInput {
     malformed: u64,
     stale: u64,
     nvst_refused: u64,
+}
+
+fn forwarded_summary(forwarded: &PeerForwarded) -> String {
+    format!(
+        "forwarded video={} frames={} audio={} repaired={}",
+        forwarded.video, forwarded.frames, forwarded.audio, forwarded.repaired
+    )
 }
 
 fn path_fields(path: Option<&Path>) -> (Value, Value) {
@@ -324,7 +343,9 @@ struct HostWorker {
     audio_seq: Option<u64>,
     stream_bytes: u64,
     stats_at: Instant,
-    input_log_at: Instant,
+    peer_log_at: Instant,
+    /// GFN keyframe requests this host made on behalf of its guests.
+    keyframes_to_gfn: u64,
     /// Guest slot mask the NVST input path last accepted; re-sent until it matches.
     registered: Option<u8>,
 }
@@ -364,7 +385,7 @@ impl HostWorker {
                 self.apply(&[SlotAction::Slots(mask)]);
             }
             if self.keyframes.poll(now) {
-                self.backend.request_keyframe();
+                self.request_gfn_keyframe();
             }
             self.route_rumble();
             if now.saturating_duration_since(self.stats_at) >= STATS_INTERVAL {
@@ -455,8 +476,14 @@ impl HostWorker {
                     video_base: None,
                     audio_base: None,
                     input: PeerInput::default(),
+                    forwarded: PeerForwarded::default(),
                     first_keyframe_request: false,
                 });
+                log(&format!(
+                    "host peer={} added slot={slot} peers={}",
+                    self.peers.len() - 1,
+                    self.peers.len()
+                ));
                 self.emit_state(self.peers.len() - 1);
                 Ok(())
             }
@@ -511,6 +538,11 @@ impl HostWorker {
         }
         self.signal_out(&peer_id, &Signal::Bye(reason.to_owned()));
         let mut peer = self.peers.remove(index);
+        log(&format!(
+            "host peer={index} removed reason={} {}",
+            bounded(reason),
+            forwarded_summary(&peer.forwarded)
+        ));
         peer.link.close();
         peer.link.drive(Instant::now());
         if peer.state != PeerState::Disconnected {
@@ -599,6 +631,11 @@ impl HostWorker {
         }
     }
 
+    fn request_gfn_keyframe(&mut self) {
+        self.keyframes_to_gfn += 1;
+        self.backend.request_keyframe();
+    }
+
     fn send_control(&mut self, index: usize, message: &ControlMessage) {
         let link = &mut self.peers[index].link;
         let control = link.control;
@@ -639,7 +676,15 @@ impl HostWorker {
                 rtp_time,
                 marker,
             };
-            peer.link.write_rtp(mid, pt, &entry, now);
+            if peer.link.write_rtp(mid, pt, &entry, now) {
+                match packet.kind {
+                    CoopMediaKind::Video => {
+                        peer.forwarded.video += 1;
+                        peer.forwarded.frames += u64::from(marker);
+                    }
+                    CoopMediaKind::Audio => peer.forwarded.audio += 1,
+                }
+            }
             if packet.kind == CoopMediaKind::Video {
                 peer.ring.push(entry);
             }
@@ -683,7 +728,7 @@ impl HostWorker {
                 self.set_state(index, PeerState::Connected);
                 self.peers[index].first_keyframe_request = true;
                 if self.keyframes.request(now) {
-                    self.backend.request_keyframe();
+                    self.request_gfn_keyframe();
                 }
                 log(&format!("host peer={index} connected; keyframe requested"));
             }
@@ -724,18 +769,18 @@ impl HostWorker {
                     let first = std::mem::take(&mut self.peers[index].first_keyframe_request);
                     if first {
                         self.keyframes.force(now);
-                        self.backend.request_keyframe();
+                        self.request_gfn_keyframe();
                         log(&format!(
                             "host peer={index} first guest keyframe request forwarded"
                         ));
                     } else if self.keyframes.request(now) {
-                        self.backend.request_keyframe();
+                        self.request_gfn_keyframe();
                     }
                 }
             }
             LinkEvent::KeyframeRequest => {
                 if self.keyframes.request(now) {
-                    self.backend.request_keyframe();
+                    self.request_gfn_keyframe();
                 }
             }
             LinkEvent::AppFeedback { payload, .. } => {
@@ -751,7 +796,9 @@ impl HostWorker {
                     else {
                         continue;
                     };
-                    peer.link.write_rtp(mid, VIDEO_PT, entry, now);
+                    if peer.link.write_rtp(mid, VIDEO_PT, entry, now) {
+                        peer.forwarded.repaired += 1;
+                    }
                 }
             }
             LinkEvent::Closed => self.disconnect(index, PeerState::Disconnected),
@@ -794,9 +841,9 @@ impl HostWorker {
         let ping = self.backend.host_to_gfn_ping_ms();
         let mut peers = Vec::with_capacity(self.peers.len());
         let mut upload_kbps = 0.0;
-        let log_input = now.saturating_duration_since(self.input_log_at) >= INPUT_LOG_INTERVAL;
-        if log_input {
-            self.input_log_at = now;
+        let log_peers = now.saturating_duration_since(self.peer_log_at) >= PEER_LOG_INTERVAL;
+        if log_peers {
+            self.peer_log_at = now;
         }
         for index in 0..self.peers.len() {
             let peer = &mut self.peers[index];
@@ -822,8 +869,16 @@ impl HostWorker {
                 "inputDroppedStale":peer.input.stale,
                 "inputDroppedNvstRefused":peer.input.nvst_refused,
             }));
-            if log_input {
+            if log_peers {
                 let input = peer.input;
+                log(&format!(
+                    "host peer={index} state={} slot={:?} {} sendKbps={:.0} keyframesToGfn={}",
+                    peer.state.label(),
+                    self.slots.slot_of(&peer.id),
+                    forwarded_summary(&peer.forwarded),
+                    peer.send_kbps,
+                    self.keyframes_to_gfn
+                ));
                 opennow_streamer_protocol::log::log_line(
                     "INFO",
                     "coop",

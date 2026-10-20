@@ -21,11 +21,16 @@ const MAX_LOG_BYTES: u64 = 2 * 1024 * 1024;
 /// Hot-path failures (per-frame acquire/record) log the first hit and then
 /// every Nth repeat so a wedged pipeline cannot flood the disk.
 const THROTTLE_EVERY: u64 = 600;
+/// How often the sink checks that its handle is still the file at its path. The Qt shell
+/// appends to the same file and rotates it by renaming; without the check every later line
+/// would land in the renamed file.
+const REOPEN_CHECK_MS: u64 = 1_000;
 
 struct LogState {
     file: File,
     path: String,
     bytes: u64,
+    checked_at_ms: u64,
 }
 
 fn state() -> &'static Mutex<Option<LogState>> {
@@ -83,8 +88,30 @@ pub fn set_log_file(path: &str) -> Result<(), String> {
         bytes: file.metadata().map(|metadata| metadata.len()).unwrap_or(0),
         file,
         path: trimmed.to_owned(),
+        checked_at_ms: now_ms(),
     });
     Ok(())
+}
+
+/// Reopens the path when another writer renamed the file away: the path is gone or no
+/// longer has this handle's length (both writers append to one file while it is shared).
+fn reopen_if_rotated(state: &mut LogState) {
+    let rotated = match (std::fs::metadata(&state.path), state.file.metadata()) {
+        (Ok(path), Ok(handle)) => path.len() != handle.len(),
+        (Err(_), _) => true,
+        (Ok(_), Err(_)) => false,
+    };
+    if !rotated {
+        return;
+    }
+    if let Ok(file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&state.path)
+    {
+        state.bytes = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+        state.file = file;
+    }
 }
 
 /// Returns the currently configured log path, if any.
@@ -110,11 +137,22 @@ fn write_line(level: &str, area: &str, message: &str) {
         .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
         .take(2048)
         .collect();
-    let line = format!("{} {level} {area} {flat}\n", now_ms());
+    let now = now_ms();
+    if now.saturating_sub(state.checked_at_ms) >= REOPEN_CHECK_MS {
+        state.checked_at_ms = now;
+        reopen_if_rotated(state);
+    }
+    let line = format!("{now} {level} {area} {flat}\n");
     if state.bytes + line.len() as u64 > MAX_LOG_BYTES {
-        // Keep the append handle valid on Windows, including other existing writers.
+        // Keep the append handle valid on Windows, including other existing writers. The
+        // truncation needs its own handle: on Windows an append handle has no
+        // FILE_WRITE_DATA, so 'set_len' on it fails and every later line would be lost.
         if std::fs::copy(&state.path, format!("{}.previous", state.path)).is_ok()
-            && state.file.set_len(0).is_ok()
+            && OpenOptions::new()
+                .write(true)
+                .open(&state.path)
+                .and_then(|file| file.set_len(0))
+                .is_ok()
         {
             state.bytes = 0;
         } else {
@@ -677,6 +715,29 @@ mod tests {
         assert!(body.contains("INFO engine hello"), "body was: {body}");
         reset_for_tests();
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn lines_follow_the_path_after_another_writer_renames_the_log() {
+        let _guard = TEST_LOG.lock().unwrap_or_else(|error| error.into_inner());
+        reset_for_tests();
+        let path = temp_path("renamed.log");
+        let renamed = temp_path("renamed.previous.log");
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&renamed);
+        set_log_file(&path).unwrap();
+        log_line("INFO", "coop", "before");
+        std::fs::rename(&path, &renamed).unwrap();
+        std::fs::write(&path, "shell line\n").unwrap();
+        state().lock().unwrap().as_mut().unwrap().checked_at_ms = 0;
+        log_line("INFO", "coop", "after");
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.starts_with("shell line\n"), "body was: {body}");
+        assert!(body.contains("INFO coop after"), "body was: {body}");
+        assert!(!std::fs::read_to_string(&renamed).unwrap().contains("after"));
+        reset_for_tests();
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&renamed);
     }
 
     #[test]
