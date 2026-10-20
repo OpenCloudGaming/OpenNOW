@@ -444,6 +444,38 @@ mod tests {
     }
 
     #[test]
+    fn guest_receiver_delivers_h265_and_av1_keyframes() {
+        let mut h265 = vec![0x01, 0, 0, 2, 0, 0, 0, 0];
+        h265.extend_from_slice(&[0, 0, 0, 1, 19 << 1, 1, 0xaa]);
+        let cases = [
+            (
+                NvstVideoCodec::H265,
+                h265,
+                vec![0, 0, 0, 1, 19 << 1, 1, 0xaa],
+            ),
+            (
+                NvstVideoCodec::Av1,
+                vec![0x01, 0, 0, 2, 11, 0, 0, 0, 0x12, 0x34, 0x56],
+                vec![0x12, 0x34, 0x56],
+            ),
+        ];
+        for (codec, media, expected) in cases {
+            let (consumer, frames) = std::sync::mpsc::sync_channel(4);
+            let mut receiver = NvstCoopGuestReceiver::new(codec, None, consumer);
+            assert!(receiver.keyframe_needed());
+            let mut only = plaintext(40, FLAG_SOF | FLAG_EOF | FLAG_PIC, 0, &media);
+            only[1] |= 0x80;
+            receiver.process_video(&only, Instant::now()).unwrap();
+            let frame = frames.try_recv().expect("a delivered frame");
+            assert_eq!(frame.codec, codec.label(), "{codec:?}");
+            assert_eq!(&frame.payload[..], &expected[..], "{codec:?}");
+            assert!(frame.keyframe, "{codec:?}");
+            assert!(!receiver.keyframe_needed(), "{codec:?}");
+            assert_eq!(receiver.stats().keyframes_delivered, 1, "{codec:?}");
+        }
+    }
+
+    #[test]
     fn guest_receiver_assembles_forwarded_packets_with_sender_identifiers() {
         let (consumer, frames) = std::sync::mpsc::sync_channel(4);
         let mut receiver = NvstCoopGuestReceiver::new(NvstVideoCodec::H264, None, consumer);
