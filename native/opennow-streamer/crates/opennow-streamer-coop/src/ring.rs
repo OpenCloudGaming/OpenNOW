@@ -41,7 +41,7 @@ pub struct RingEntry {
     pub marker: bool,
 }
 
-/// Fixed 256-entry retransmission ring indexed by peer-link sequence.
+/// Fixed-size retransmission ring (RING_PACKETS entries) indexed by peer-link sequence.
 #[derive(Debug)]
 pub struct RetransmitRing {
     entries: Vec<Option<RingEntry>>,
