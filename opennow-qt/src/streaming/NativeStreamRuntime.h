@@ -143,6 +143,9 @@ public:
     Q_INVOKABLE bool send(const QJsonObject &command);
     bool sendBytes(const QByteArray &command);
     Q_INVOKABLE bool shutdown(int timeoutMs = DefaultShutdownTimeoutMs);
+    // One qt-native line per co-op guest input ownership change: owner "stream" | "shell", a
+    // reason token, and whether controller input is suspended. Tokens outside [a-z0-9._-] are dropped.
+    Q_INVOKABLE void logCoopGuestInput(const QString &owner, const QString &reason, bool suspended);
 
     OpenNowStreamerStatus setGraphicsContext(
         const OpenNowStreamerGraphicsContext &context);

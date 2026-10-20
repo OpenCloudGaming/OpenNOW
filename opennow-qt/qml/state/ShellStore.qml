@@ -2837,7 +2837,10 @@ QtObject {
         if (generation <= overlayRequestGeneration)
             return
         overlayRequestGeneration = generation
-        openSessionGuide()
+        if (coopOwner.guestStreaming)
+            coopOwner.guestGuideRequested()
+        else
+            openSessionGuide()
     }
 
     function inspectStreamerScreenshotRequest(value) {

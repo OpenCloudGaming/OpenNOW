@@ -197,6 +197,9 @@ struct NativeStreamRuntime::Private {
     QString lastError;
     bool streaming = false;
     bool streamSessionActive = false;
+    // Last controller submission results, logged once per change so refused pad input is visible.
+    OpenNowStreamerStatus gamepadStatus = OPENNOW_STREAMER_OK;
+    OpenNowStreamerStatus sonyStatus = OPENNOW_STREAMER_OK;
     bool graphicsActive = false;
     bool firstNotification = false;
     std::atomic<quint64> presentationGeneration{0};
@@ -851,11 +854,14 @@ OpenNowStreamerStatus NativeStreamRuntime::submitGamepad(
     std::int16_t leftStickY, std::int16_t rightStickX, std::int16_t rightStickY)
 {
     const std::shared_lock lock(d->handleMutex);
-    return d->handle && d->api.submitGamepad
+    const auto status = d->handle && d->api.submitGamepad
         ? d->api.submitGamepad(d->handle, controllerId, bitmap, buttons,
                                leftTrigger, rightTrigger, leftStickX, leftStickY,
                                rightStickX, rightStickY)
         : OPENNOW_STREAMER_CLOSED;
+    if (std::exchange(d->gamepadStatus, status) != status)
+        handshakeLog(u"input gamepad submit status=%1 controller=%2"_s.arg(static_cast<int>(status)).arg(controllerId));
+    return status;
 }
 
 OpenNowStreamerStatus NativeStreamRuntime::submitLocalAction(std::uint32_t action)
@@ -904,8 +910,22 @@ OpenNowStreamerStatus NativeStreamRuntime::submitSonySnapshot(
     const OpenNowSonySnapshot &snapshot)
 {
     const std::shared_lock lock(d->handleMutex);
-    if (!d->handle || !d->api.submitSonySnapshot) return OPENNOW_STREAMER_CLOSED;
-    return d->api.submitSonySnapshot(d->handle, &snapshot);
+    const auto status = d->handle && d->api.submitSonySnapshot
+        ? d->api.submitSonySnapshot(d->handle, &snapshot) : OPENNOW_STREAMER_CLOSED;
+    if (std::exchange(d->sonyStatus, status) != status)
+        handshakeLog(u"input sony submit status=%1 slot=%2"_s.arg(static_cast<int>(status)).arg(snapshot.slot));
+    return status;
+}
+
+void NativeStreamRuntime::logCoopGuestInput(const QString &owner, const QString &reason, bool suspended)
+{
+    const auto token = [](const QString &value) {
+        return value.size() <= 64 && std::all_of(value.begin(), value.end(), [](QChar c) {
+            return (c.unicode() < 128 && c.isLower()) || c.isDigit() || c == u'-' || c == u'_' || c == u'.';
+        }) ? value : u"invalid"_s;
+    };
+    handshakeLog(u"coop-guest input owner=%1 reason=%2 suspended=%3"_s
+                     .arg(token(owner), token(reason), suspended ? u"true"_s : u"false"_s));
 }
 
 OpenNowStreamerStatus NativeStreamRuntime::replaceGenericHidInventory(

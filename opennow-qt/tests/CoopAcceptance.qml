@@ -110,6 +110,7 @@ QtObject {
         "c-07b-guest-input": "",
         "c-07c-guest-panel-input": "",
         "c-07d-guest-controllers": "",
+        "c-07i-guest-pad-ownership": "",
         "c-08-host-panel": "5Q0-0",
         "c-08b-peer-failed": "",
         "c-08c-start-ready": "",
@@ -211,6 +212,7 @@ QtObject {
         "c-07b-guest-input": ["coopGuestOverlay", "streamSurfaceHost"],
         "c-07c-guest-panel-input": ["streamSurfaceHost"],
         "c-07d-guest-controllers": ["coopGuestOverlay", "coopGuestOverlayControllers", "coopGuestControllers"],
+        "c-07i-guest-pad-ownership": ["streamSurfaceHost"],
         "c-08-host-panel": ["streamCoopSection"],
         "c-08b-peer-failed": ["streamCoopSection", "coopPeerLink-usr_lieke", "coopPeerLink-usr_jonas"],
         "c-08c-start-ready": ["streamCoopSection", "streamCoopStart", "coopPeerPing-usr_jonas"],
@@ -277,7 +279,11 @@ QtObject {
         property bool coopSupported: true
         property int serial: 0
         property var sent: []
+        property var inputLog: []
         signal coopEventReceived(var event)
+        function logCoopGuestInput(owner, reason, suspended) {
+            inputLog = inputLog.concat([owner + " " + reason + " " + suspended]).slice(-50)
+        }
         function command(type, params) {
             serial += 1
             sent = sent.concat([Object.assign({id: "coop-native-" + serial, type: type}, params || {})]).slice(-200)
@@ -566,6 +572,7 @@ QtObject {
         activations = 0
         client.calls = []
         runtime.sent = []
+        runtime.inputLog = []
         ShellStore.friends.link = null
         ShellStore.friends.welcomePending = false
         ShellStore.friends.lookup = null
@@ -1234,6 +1241,61 @@ QtObject {
                     }
                 })
             }
+        } else if (name === "c-07i-guest-pad-ownership") {
+            guestConnected(true)
+            settleTicks = 22
+            const owner = () => runtime.inputLog[runtime.inputLog.length - 1]
+            const gameplay = what => {
+                check(!ControllerInput.shellCaptureEnabled && !ControllerInput.inputSuspended && coop.guestPhase === "playing",
+                    what + ": the pad keeps playing (shell capture " + ControllerInput.shellCaptureEnabled
+                    + ", suspended " + ControllerInput.inputSuspended + ")")
+                check(owner() === "stream gameplay false", what + ": the log says the stream owns the pad: " + owner())
+            }
+            const modal = (what, reason) => {
+                check(ControllerInput.shellCaptureEnabled === (ShellStore.settings.controllerMode !== false),
+                    what + ": a modal takes the pad (its ownership switch sends a neutral state first)")
+                check(owner() === "shell " + reason + " false", what + ": the log names the reason: " + owner())
+            }
+            steps = ({
+                3: () => {
+                    gameplay("a playing guest")
+                    AppController.showOverlay(consoleSurface ? "stream-stats" : "desktop-stream-stats")
+                    client.emit("coop.lobby.updated", {lobby: lobby("streaming", [member(mara, 0), member(jonas, 1), member(lieke, 2),
+                        member(sam, 3)])})
+                },
+                5: () => {
+                    check(find(window.contentItem, "coopGuestOverlay").revealed && AppController.overlay.indexOf("stream-stats") >= 0,
+                        "the roster peek and the stats overlay are both up")
+                    gameplay("a peeking co-op bar and the stats overlay")
+                    AppController.showOverlay("")
+                    runtime.coopEventReceived({type: "coop-guest-state", state: "reconnecting", path: "relay", relayId: "nl", reason: null})
+                },
+                6: () => {
+                    check(coop.guestPhase === "reconnecting" && !ControllerInput.shellCaptureEnabled && !ControllerInput.inputSuspended,
+                        "the reconnect toast leaves the pad with the stream")
+                    runtime.coopEventReceived({type: "coop-guest-state", state: "connected", path: "relay", relayId: "nl", reason: null})
+                },
+                8: () => {
+                    gameplay("after a reconnect")
+                    coop.requestLeave()
+                },
+                10: () => {
+                    modal("the leave confirmation", "overlay-coop-leave-confirm")
+                    AppController.showOverlay("")
+                },
+                12: () => {
+                    gameplay("after Stay in co-op")
+                    ShellStore.inspectStreamerOverlayRequest({overlayRequestGeneration: ShellStore.overlayRequestGeneration + 1})
+                },
+                16: () => {
+                    check(find(window.contentItem, "coopGuestOverlay").revealed && AppController.overlay === "",
+                        "the controller's Guide button pins the co-op panel, not the host's session menu")
+                    modal("a pinned co-op panel", "coop-panel")
+                    modifiers = 0
+                    key = Qt.Key_Escape
+                },
+                19: () => gameplay("after the panel closes")
+            })
         } else if (name === "c-07-guest-overlay" || name === "c-07b-guest-input") {
             guestConnected(true)
         } else if (name === "c-07c-guest-panel-input" || name === "c-07d-guest-controllers") {

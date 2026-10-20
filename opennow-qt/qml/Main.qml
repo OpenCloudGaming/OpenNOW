@@ -322,16 +322,24 @@ ApplicationWindow {
     onCoopGuestPanelOpenChanged: syncInputOwnership()
     onCoopGuestStartingChanged: syncInputOwnership()
     function syncInputOwnership() {
-        const shellOwnsInput = !window.active || AppController.route !== "stream"
-            || (!window.desktopSurfaceActive && !window.consoleStreamReady)
-            || (window.desktopSurfaceActive && !ShellStore.authRestorePending && !ShellStore.signedIn
-                && !window.coopGuest)
-            || ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)
-            || window.coopGuestPanelOpen || window.coopGuestStarting
+        // Why the shell owns controller input, or "" when gameplay owns it.
+        const reason = !window.active ? "window-inactive"
+            : AppController.route !== "stream" ? "route-" + AppController.route
+            : !window.desktopSurfaceActive && !window.consoleStreamReady ? "console-stream-not-ready"
+            : window.desktopSurfaceActive && !ShellStore.authRestorePending && !ShellStore.signedIn && !window.coopGuest
+                ? "signed-out"
+            : ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay) ? "overlay-" + AppController.overlay
+            : window.coopGuestPanelOpen ? "coop-panel"
+            : window.coopGuestStarting ? "coop-starting"
+            : ""
+        const shellOwnsInput = reason !== ""
         ControllerInput.inputSuspended = !window.active
             || (shellOwnsInput && ShellStore.settings.controllerMode === false)
         ControllerInput.shellCaptureEnabled = shellOwnsInput
             && ShellStore.settings.controllerMode !== false
+        if (window.coopGuest)
+            ShellStore.coop.noteGuestInputOwner(shellOwnsInput ? "shell" : "stream", reason || "gameplay",
+                ControllerInput.inputSuspended)
     }
 
     Binding {

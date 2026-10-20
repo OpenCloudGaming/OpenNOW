@@ -1197,6 +1197,7 @@ private slots:
             var selectedGame = {title:'Fortnite'}, overlayRequestGeneration = 0;
             var AppController = {route:'home',overlay:'',calls:0,
                 showOverlay:function(value){this.overlay=value;this.calls++;return true;}};
+            var coopOwner = {guestStreaming:false,guides:0,guestGuideRequested:function(){this.guides++;}};
         )JS")).isError());
         QVERIFY(loadShellFunction(engine, QStringLiteral("canOpenSessionGuide")));
         QVERIFY(loadShellFunction(engine, QStringLiteral("openSessionGuide")));
@@ -1213,6 +1214,10 @@ private slots:
         QVERIFY(engine.evaluate(QStringLiteral("streamState='streaming'; desktopUiActive=true; openSessionGuide()")).toBool());
         QCOMPARE(engine.evaluate(QStringLiteral("AppController.overlay")).toString(), QStringLiteral("desktop-stream-menu"));
         QCOMPARE(engine.evaluate(QStringLiteral("selectedGame.title")).toString(), QStringLiteral("Fortnite"));
+        QVERIFY(!engine.evaluate(QStringLiteral(
+            "AppController.overlay=''; coopOwner.guestStreaming=true; inspectStreamerOverlayRequest({overlayRequestGeneration:2})")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("coopOwner.guides")).toInt(), 1);
+        QCOMPARE(engine.evaluate(QStringLiteral("AppController.overlay")).toString(), QString());
     }
 
     void dismissingSessionConflictPreservesTheRunningGame()

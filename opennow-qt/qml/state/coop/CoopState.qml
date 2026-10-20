@@ -203,6 +203,8 @@ QtObject {
 
     signal accessibilityAnnounced(string message)
     signal lobbyOverlayRequested()
+    // A playing guest pressed the controller's Guide button (or the View+Menu chord).
+    signal guestGuideRequested()
 
     Component.onCompleted: {
         if (!persistPreferences || preferenceStore.values === "")
@@ -969,6 +971,17 @@ QtObject {
                 peers = next
             }
         }
+    }
+    // Logs each guest controller ownership change (qt-native.log) with the shell's reason.
+    property string guestInputOwner: ""
+    onRoleChanged: if (role !== "guest") guestInputOwner = ""
+    function noteGuestInputOwner(owner, reason, suspended) {
+        const line = owner + " " + reason + " " + suspended
+        if (line === guestInputOwner)
+            return
+        guestInputOwner = line
+        if (streamRuntime && typeof streamRuntime.logCoopGuestInput === "function")
+            streamRuntime.logCoopGuestInput(owner, reason, suspended)
     }
     function enterGuestStream() {
         guestPhase = "playing"

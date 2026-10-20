@@ -214,6 +214,10 @@ FocusScope {
     }
     Connections {
         target: ShellStore.coop
+        function onGuestGuideRequested() {
+            if (root.visible)
+                root.toggleCoopPanel()
+        }
         function onGuestStreamingChanged() {
             root.coopPanelPinned = false
             root.coopPanelPeeking = false
