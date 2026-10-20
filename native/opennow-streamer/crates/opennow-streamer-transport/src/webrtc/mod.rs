@@ -1123,10 +1123,8 @@ impl TransportWorker {
                     .map_err(|error| error.to_string())?;
                 continue;
             }
-            self.socket
-                .set_read_timeout(Some(wait))
-                .map_err(|error| error.to_string())?;
-            match self.socket.recv_from(&mut bytes) {
+            crate::udp_receive::prepare(&self.socket, wait).map_err(|error| error.to_string())?;
+            match crate::udp_receive::recv_from(&self.socket, &mut bytes, wait) {
                 Ok((length, source)) => {
                     self.traffic.received.record(&bytes[..length]);
                     self.traffic.last_rx_port = Some(source.port());
