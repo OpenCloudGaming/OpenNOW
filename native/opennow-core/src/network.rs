@@ -170,7 +170,25 @@ fn measure_region(region_url: &str) -> Value {
         Ok(endpoint) => endpoint,
         Err(error) => return json!({"url":region_url,"pingMs":null,"error":error}),
     };
+    // Local VPN tunnels and transparent proxies complete TCP handshakes on
+    // the spot, so a TCP connect measures the tunnel, not the region. An
+    // HTTPS response must be produced by the real server, so the round trip
+    // is measured with a reused HTTPS connection instead: after the warm-up
+    // request each timed sample is one request/response round trip.
     let _ = tcp_ping(&endpoint);
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(CONNECT_TIMEOUT)
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => {
+            return json!({"url":region_url,"pingMs":null,"error":"HTTPS client unavailable"})
+        }
+    };
+    let warm = client.head(region_url).send();
+    if warm.is_err() {
+        return json!({"url":region_url,"pingMs":null,"error":"HTTPS warm-up request failed"});
+    }
     let mut samples = Vec::with_capacity(3);
     for attempt in 0..3 {
         if crate::requests::check().is_err() {
@@ -179,12 +197,15 @@ fn measure_region(region_url: &str) -> Value {
         if attempt > 0 {
             thread::sleep(Duration::from_millis(100));
         }
-        if let Some(sample) = tcp_ping(&endpoint) {
-            samples.push(sample);
+        let started = Instant::now();
+        // Any response, including HTTP errors, proves the round trip; only
+        // transport failure counts as a failed sample.
+        if client.head(region_url).send().is_ok() {
+            samples.push(started.elapsed().as_millis());
         }
     }
     if samples.is_empty() {
-        return json!({"url":region_url,"pingMs":null,"error":"All TCP measurements failed"});
+        return json!({"url":region_url,"pingMs":null,"error":"All HTTPS measurements failed"});
     }
     let total = samples.iter().copied().sum::<u128>();
     let average = total.div_ceil(samples.len() as u128);
@@ -316,6 +337,6 @@ mod tests {
         }))
         .expect("offline measurements remain serializable");
         assert_eq!(result["results"][0]["pingMs"], Value::Null);
-        assert_eq!(result["results"][0]["error"], "All TCP measurements failed");
+        assert_eq!(result["results"][0]["error"], "HTTPS warm-up request failed");
     }
 }
