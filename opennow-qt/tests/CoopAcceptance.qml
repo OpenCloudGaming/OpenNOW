@@ -18,6 +18,7 @@ QtObject {
     property string captureName: ""
     property bool startFocusedByDefault: false
     property int launches: 0
+    property bool reachedLastStep: false
     // userId -> avatarUrl for the avatar scenes; people not listed have no picture.
     property var avatarUrls: ({})
     property var applied: []
@@ -538,6 +539,7 @@ QtObject {
         ShellStore.friends.earlyAccessSeen = [mara.id, lieke.id, jonas.id]
         startFocusedByDefault = false
         launches = 0
+        reachedLastStep = false
         applied = []
         avatarUrls = ({})
         settleTicks = 14
@@ -637,6 +639,7 @@ QtObject {
             friends.earlyAccessSeen = [lieke.id]
             AppController.navigate("friends")
             if (name === "c2-11b-early-access-dismissed") {
+                settleTicks = 20
                 steps = ({6: () => {
                     if (consoleSurface) {
                         friends.dismissEarlyAccess()
@@ -658,6 +661,7 @@ QtObject {
                 }, 17: () => {
                     check(consoleSurface || !find(window.contentItem, "friendsEarlyAccess").opened, "Esc closes the reopened card")
                     check(friends.earlyAccessSeen.filter(id => id === mara.id).length === 1, "the dismissal is stored once")
+                    reachedLastStep = true
                 }})
             }
         } else if (name === "c-08l-menu-signed-out" || name === "c-08m-menu-setting-off" || name === "c-08n-menu-setting-off-coop") {
@@ -1489,6 +1493,8 @@ QtObject {
                 check(card.opened && find(window.contentItem, "friendsEarlyAccessGotIt").activeFocus, "the card takes focus on Got it")
             }
         }
+        if (name === "c2-11b-early-access-dismissed")
+            check(reachedLastStep, "the scene ran its last step")
         if (name === "c2-11b-early-access-dismissed" && checkScreens) {
             const pill = find(window.contentItem, "friendsEarlyAccessPill")
             check(pill && shown(pill), "the header keeps the Early access pill")
