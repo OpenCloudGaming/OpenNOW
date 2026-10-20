@@ -210,6 +210,8 @@ struct GuestWorker {
     first_keyframe_at: Option<Instant>,
     first_frame_at: Option<Instant>,
     first_frame_keyframe_requests: u32,
+    decoder_keyframe_requests: u64,
+    loss_keyframe_requests: u64,
     codec: Option<String>,
     decoder: Option<GuestDecoder>,
 }
@@ -259,6 +261,8 @@ fn run(
         first_keyframe_at: None,
         first_frame_at: None,
         first_frame_keyframe_requests: 0,
+        decoder_keyframe_requests: 0,
+        loss_keyframe_requests: 0,
         codec: None,
         decoder: None,
     };
@@ -640,7 +644,8 @@ impl GuestWorker {
         let awaiting_first_frame = self.media_started_at.is_some()
             && self.first_frame_at.is_none()
             && self.first_frame_keyframe_requests < MAX_FIRST_FRAME_KEYFRAME_REQUESTS;
-        let keyframe_needed = self.media.take_keyframe_request()
+        let decoder_request = self.media.take_keyframe_request();
+        let keyframe_needed = decoder_request
             || awaiting_first_frame
             || self
                 .receiver
@@ -660,6 +665,10 @@ impl GuestWorker {
                 self.keyframe_sent = Some(now);
                 if awaiting_first_frame {
                     self.first_frame_keyframe_requests += 1;
+                } else if decoder_request {
+                    self.decoder_keyframe_requests += 1;
+                } else {
+                    self.loss_keyframe_requests += 1;
                 }
             }
         }
@@ -740,12 +749,15 @@ impl GuestWorker {
                 "INFO",
                 "coop",
                 &format!(
-                    "guest input slot={} samples plain={} sony={} statesSent={} muted={}",
+                    "guest input slot={} samples plain={} sony={} statesSent={} muted={} keyframeRequests firstFrame={} decoder={} loss={}",
                     self.slot,
                     samples.plain,
                     samples.sony,
                     self.input_states_sent,
-                    self.input_muted
+                    self.input_muted,
+                    self.first_frame_keyframe_requests,
+                    self.decoder_keyframe_requests,
+                    self.loss_keyframe_requests
                 ),
             );
         }

@@ -282,6 +282,11 @@ struct PeerForwarded {
     audio: u64,
     frames: u64,
     repaired: u64,
+    /// RTP timestamp of the last video packet written; a new one starts a frame.
+    video_rtp_time: Option<u32>,
+    /// Keyframe requests the guest sent on 'coop-control', and RTCP PLIs.
+    keyframe_requests: u64,
+    plis: u64,
 }
 
 /// What became of the input records one guest sent, from receipt to the NVST input path.
@@ -298,8 +303,13 @@ struct PeerInput {
 
 fn forwarded_summary(forwarded: &PeerForwarded) -> String {
     format!(
-        "forwarded video={} frames={} audio={} repaired={}",
-        forwarded.video, forwarded.frames, forwarded.audio, forwarded.repaired
+        "forwarded video={} frames={} audio={} repaired={} guestKeyframeRequests={} guestPlis={}",
+        forwarded.video,
+        forwarded.frames,
+        forwarded.audio,
+        forwarded.repaired,
+        forwarded.keyframe_requests,
+        forwarded.plis
     )
 }
 
@@ -680,7 +690,9 @@ impl HostWorker {
                 match packet.kind {
                     CoopMediaKind::Video => {
                         peer.forwarded.video += 1;
-                        peer.forwarded.frames += u64::from(marker);
+                        if peer.forwarded.video_rtp_time.replace(rtp_time) != Some(rtp_time) {
+                            peer.forwarded.frames += 1;
+                        }
                     }
                     CoopMediaKind::Audio => peer.forwarded.audio += 1,
                 }
@@ -766,6 +778,7 @@ impl HostWorker {
                 } else if peer.link.control == Some(id)
                     && ControlMessage::decode(&data) == Some(ControlMessage::KeyframeRequest)
                 {
+                    self.peers[index].forwarded.keyframe_requests += 1;
                     let first = std::mem::take(&mut self.peers[index].first_keyframe_request);
                     if first {
                         self.keyframes.force(now);
@@ -779,6 +792,7 @@ impl HostWorker {
                 }
             }
             LinkEvent::KeyframeRequest => {
+                self.peers[index].forwarded.plis += 1;
                 if self.keyframes.request(now) {
                     self.request_gfn_keyframe();
                 }
