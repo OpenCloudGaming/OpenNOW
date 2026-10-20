@@ -177,7 +177,7 @@ QtObject {
 
     // Local co-op preferences (C9 Co-op settings). Persisted with QSettings outside smoke tests.
     property var preferences: ({maxGuests: 3, preset: "same", matchBitrate: true, allowRelay: true,
-        requireApproval: false, showLatency: true, guestDisplayName: ""})
+        requireApproval: false, showLatency: true, guestDisplayName: "", showInStreamMenu: true})
     property Settings preferenceStore: Settings {
         category: "coop"
         property string values: ""

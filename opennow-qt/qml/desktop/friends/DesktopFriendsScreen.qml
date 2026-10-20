@@ -16,6 +16,9 @@ FocusScope {
     property string addText: ""
     property real nowMs: Date.now()
     property Item searchField: null
+    // The early-access card: opens by itself until the linked user dismisses it, or from the header pill.
+    property bool earlyAccessReopened: false
+    readonly property bool earlyAccessOpen: friends.linked && (friends.earlyAccessPending || earlyAccessReopened)
     readonly property Item screenItem: screen
     readonly property string page: !friends.linked ? (friends.link ? "linking" : "notLinked")
         : route === "friends-add" ? "add"
@@ -53,6 +56,12 @@ FocusScope {
         manageUserId = userId
         manageMenuOpen = true
         AppController.navigate("friends-requests")
+    }
+    function closeEarlyAccess() {
+        friends.dismissEarlyAccess()
+        earlyAccessReopened = false
+        if (pageLoader.item)
+            pageLoader.item.forceActiveFocus()
     }
     function setFilter(value) {
         filter = value
@@ -92,7 +101,13 @@ FocusScope {
             }
             return listPage
         }
-        onLoaded: item.forceActiveFocus()
+        onLoaded: if (!screen.earlyAccessOpen) item.forceActiveFocus()
+    }
+    DesktopFriendsEarlyAccess {
+        anchors.fill: parent
+        z: 10
+        opened: screen.visible && screen.earlyAccessOpen
+        onCloseRequested: screen.closeEarlyAccess()
     }
     Component { id: notLinkedPage; DesktopFriendsNotLinked {} }
     Component { id: linkingPage; DesktopFriendsLinking {} }
@@ -106,7 +121,7 @@ FocusScope {
         id: headerComponent
         Item {
             id: headerBar
-            readonly property real fixedWidth: requestsButton.implicitWidth + addButton.implicitWidth + DesktopTokens.px(10)
+            readonly property real fixedWidth: earlyAccessPill.implicitWidth + requestsButton.implicitWidth + addButton.implicitWidth + DesktopTokens.px(20)
             readonly property real searchRoom: width - fixedWidth - DesktopTokens.px(10)
             readonly property bool chipsFit: searchRoom - chipBox.width - DesktopTokens.px(10) >= DesktopTokens.px(200)
             implicitWidth: headerRow.implicitWidth
@@ -116,6 +131,31 @@ FocusScope {
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: DesktopTokens.px(10)
+                DesktopFriendsButton {
+                    id: earlyAccessPill
+                    objectName: "friendsEarlyAccessPill"
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: qsTr("Early access")
+                    kind: "outline"
+                    controlHeight: 28; cornerRadius: 14; sidePadding: 12; fontSize: 12
+                    Accessible.name: qsTr("Early access. What to expect")
+                    background: Rectangle {
+                        radius: height / 2
+                        color: DesktopFriendsFormat.tint(DesktopFriendsFormat.amber, earlyAccessPill.hovered ? 0.18 : 0.10)
+                        border.width: earlyAccessPill.visualFocus ? 2 : 1
+                        border.color: earlyAccessPill.visualFocus ? DesktopTokens.focus : DesktopFriendsFormat.tint(DesktopFriendsFormat.amber, 0.4)
+                    }
+                    contentItem: DesktopFriendsLabel {
+                        text: earlyAccessPill.text
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                        mono: true; size: 10; line: 12; tracking: 0.08
+                        color: DesktopFriendsFormat.amber
+                        font.weight: Font.Bold
+                        font.capitalization: Font.AllUppercase
+                    }
+                    onClicked: screen.earlyAccessReopened = true
+                }
                 Rectangle {
                     id: chipBox
                     visible: headerBar.chipsFit

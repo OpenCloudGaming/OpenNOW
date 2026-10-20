@@ -4965,6 +4965,15 @@
     "restartWithNConfirmation": "Restart with %1 confirmation",
     "restartForCoOp": "RESTART FOR CO-OP",
     "restartWithN2": "Restart with %1?",
-    "thisSessionEndsAndTheGameStarts": "This session ends and the game starts again with %1. Your lobby closes, and its players get a new invite."
+    "thisSessionEndsAndTheGameStarts": "This session ends and the game starts again with %1. Your lobby closes, and its players get a new invite.",
+    "earlyAccess": "Early access",
+    "friendsAndCoOpAreBrandNew": "Friends and co-op are brand new",
+    "thisIsAVeryEarlyVersionExpect": "This is a very early version. Expect bugs, dropped connections and things that change between updates. When something breaks, tell us on Discord.",
+    "bugsAndRoughEdges": "Bugs and rough edges",
+    "coOpLinksThatDropNowAnd": "Co-op links that drop now and then",
+    "featuresThatChangeBetweenUpdates": "Features that change between updates",
+    "earlyAccessWhatToExpect": "Early access. What to expect",
+    "showFriendsCoOpInTheStream": "Show Friends & co-op in the stream menu",
+    "createCoOpAndInviteFriendsFrom": "Create co-op and invite friends from Ctrl+G. A running co-op session always stays in the menu."
   }
 }

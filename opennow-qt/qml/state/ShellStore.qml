@@ -106,6 +106,7 @@ QtObject {
         appController: AppController
         ready: root.ready
         presence: root.socialPresence
+        persistNotices: !SmokeTestMode
         onAccessibilityAnnounced: message => root.accessibilityMessage = message
     }
     property CoopState coopOwnerState: CoopState {

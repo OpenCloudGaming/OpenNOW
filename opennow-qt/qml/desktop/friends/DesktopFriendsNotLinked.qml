@@ -27,9 +27,14 @@ FocusScope {
                 glyph: "users"
             }
         }
+        DesktopFriendsTag {
+            objectName: "friendsNotLinkedEarlyAccess"
+            anchors.horizontalCenter: parent.horizontalCenter
+            text: qsTr("Early access")
+            tone: DesktopFriendsFormat.amber
+        }
         DesktopFriendsLabel {
             width: parent.width
-            topPadding: DesktopTokens.px(8)
             text: qsTr("Play with your friends")
             horizontalAlignment: Text.AlignHCenter
             size: 32; line: 40

@@ -1,4 +1,5 @@
 import QtQuick
+import QtCore
 
 // OpenNOW Friends: Discord-linked account, friends list, requests, presence, and the
 // social core-protocol methods/events of docs/coop-sessions.md section 6.
@@ -27,6 +28,13 @@ QtObject {
     property var link: null
     // The linked-success screen (C2 2b) stays until the user adds a friend or dismisses it.
     property bool welcomePending: false
+    // Discord user ids that dismissed the early-access card, persisted with QSettings outside smoke tests.
+    property var earlyAccessSeen: []
+    property bool persistNotices: true
+    property Settings noticeStore: Settings {
+        category: "friends"
+        property string earlyAccessSeen: ""
+    }
     property bool loaded: false
     property var friends: []
     property var incoming: []
@@ -51,8 +59,27 @@ QtObject {
     readonly property bool linking: linkStatus === "starting" || linkStatus === "pending"
     readonly property int requestCount: incoming.length
     readonly property int onlineCount: friends.filter(friend => isOnline(friend)).length
+    readonly property bool earlyAccessPending: linked && earlyAccessSeen.indexOf(String(user.id || "")) < 0
 
     signal accessibilityAnnounced(string message)
+
+    Component.onCompleted: {
+        if (!persistNotices || noticeStore.earlyAccessSeen === "")
+            return
+        try {
+            const seen = JSON.parse(noticeStore.earlyAccessSeen)
+            earlyAccessSeen = Array.isArray(seen) ? seen.map(String).slice(-16) : []
+        } catch (error) {
+            noticeStore.earlyAccessSeen = ""
+        }
+    }
+    function dismissEarlyAccess() {
+        if (!earlyAccessPending)
+            return
+        earlyAccessSeen = earlyAccessSeen.concat([String(user.id)]).slice(-16)
+        if (persistNotices)
+            noticeStore.earlyAccessSeen = JSON.stringify(earlyAccessSeen)
+    }
 
     onReadyChanged: if (ready) refresh()
     onPresenceChanged: publishPresence(presence)

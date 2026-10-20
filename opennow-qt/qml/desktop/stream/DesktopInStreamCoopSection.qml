@@ -12,8 +12,11 @@ FocusScope {
     readonly property var coop: ShellStore.coop
     readonly property var friends: ShellStore.friends
     readonly property var cards: coop.isHost ? coop.slotCards() : []
-    readonly property bool canCreate: coop.role === "none" && coop.coopSupported && coop.hostStreaming
-    readonly property var candidates: (coop.isHost || canCreate) && friends.linked ? coop.inviteCandidates() : []
+    // Friends and co-op appear only for a linked account with the stream-menu setting on; a running
+    // co-op session keeps its controls either way.
+    readonly property bool socialShown: friends.linked && coop.preferences.showInStreamMenu !== false
+    readonly property bool canCreate: socialShown && coop.role === "none" && coop.coopSupported && coop.hostStreaming
+    readonly property var candidates: (coop.isHost || canCreate) && socialShown ? coop.inviteCandidates() : []
     property int createGuests: Math.max(1, Math.min(coop.maxGuestsLimit, Number(coop.preferences.maxGuests || coop.maxGuestsLimit)))
     property bool focusLobbyWhenReady: false
     readonly property bool hosting: coop.isHost

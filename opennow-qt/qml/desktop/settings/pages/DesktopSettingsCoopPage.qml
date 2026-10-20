@@ -91,6 +91,18 @@ Column {
             }
         }
         DesktopSettingsRow {
+            objectName: "settingsCoopStreamMenuRow"
+            width: parent.width; paperStyle: true; glyph: "monitor"
+            title: qsTr("Show Friends & co-op in the stream menu")
+            description: qsTr("Create co-op and invite friends from Ctrl+G. A running co-op session always stays in the menu.")
+            DesktopSettingsToggle {
+                objectName: "settingsCoopStreamMenu"
+                checked: page.preferences.showInStreamMenu !== false
+                Accessible.name: qsTr("Show Friends & co-op in the stream menu")
+                onValueChangedByUser: value => page.coop.setPreference("showInStreamMenu", value)
+            }
+        }
+        DesktopSettingsRow {
             width: parent.width; paperStyle: true; glyph: "clock"
             title: qsTr("Show guest latency")
             description: qsTr("Ping per guest in the drawer and lobby.")

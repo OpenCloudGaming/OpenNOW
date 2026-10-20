@@ -45,6 +45,12 @@ QtObject {
         "c2-03b-friends-context-menu": "",
         "c2-03c-friends-avatars": "",
         "c2-04-lobby-invite-picker": "E6X-1",
+        "c2-11a-early-access": "",
+        "c2-11b-early-access-dismissed": "",
+        "c-08l-menu-signed-out": "",
+        "c-08m-menu-setting-off": "",
+        "c-08n-menu-setting-off-coop": "",
+        "c-09b-settings-coop-stream-menu": "",
         "c-03h-lobby-avatars": "",
         "c2-08c-settings-discord-avatar": "",
         "c2-05a-invite-toast": "GLT-1",
@@ -128,7 +134,13 @@ QtObject {
 
     // Each scene's screens must be visible once it settles. Screen owners add their objectNames.
     readonly property var expectations: ({
-        "c2-01-friends-not-linked": ["friendsNotLinked"],
+        "c2-01-friends-not-linked": ["friendsNotLinked", "friendsNotLinkedEarlyAccess"],
+        "c2-11a-early-access": ["friendsEarlyAccess", "friendsEarlyAccessTag", "friendsEarlyAccessBody", "friendsEarlyAccessGotIt", "friendsEarlyAccessDiscord"],
+        "c2-11b-early-access-dismissed": ["friendsList", "friendsEarlyAccessPill"],
+        "c-08l-menu-signed-out": ["streamSurfaceHost"],
+        "c-08m-menu-setting-off": ["streamSurfaceHost"],
+        "c-08n-menu-setting-off-coop": ["streamCoopSection", "streamCoopEndRow", "streamCoopStart"],
+        "c-09b-settings-coop-stream-menu": ["settingsCoop"],
         "c2-01b-signed-out": ["friendsNotLinked"],
         "c2-02a-link-browser": ["friendsLinking"],
         "c2-02b-link-success": ["friendsLinked"],
@@ -522,6 +534,8 @@ QtObject {
         client.failures = ({})
         coop.setPreference("allowRelay", true)
         coop.setPreference("requireApproval", false)
+        coop.setPreference("showInStreamMenu", true)
+        ShellStore.friends.earlyAccessSeen = [mara.id, lieke.id, jonas.id]
         startFocusedByDefault = false
         launches = 0
         applied = []
@@ -617,6 +631,64 @@ QtObject {
                 host([member(mara, 0), member(jonas, 1), member(lieke, 2)], [invite("inv_tess", mara, tess, "pending", 24000, "sent")])
                 Qt.callLater(() => AppController.showOverlay("coop-lobby"))
             }
+        } else if (name === "c2-11a-early-access" || name === "c2-11b-early-access-dismissed") {
+            linkAs(mara)
+            seedFriends(false)
+            friends.earlyAccessSeen = [lieke.id]
+            AppController.navigate("friends")
+            if (name === "c2-11b-early-access-dismissed") {
+                steps = ({6: () => {
+                    if (consoleSurface) {
+                        friends.dismissEarlyAccess()
+                        return
+                    }
+                    check(find(window.contentItem, "friendsEarlyAccessGotIt").activeFocus, "Got it has focus when the card opens")
+                    key = Qt.Key_Return
+                }, 9: () => {
+                    check(friends.earlyAccessSeen.indexOf(mara.id) >= 0 && !friends.earlyAccessPending, "Got it stores the dismissal for this user")
+                    if (consoleSurface)
+                        return
+                    find(window.contentItem, "friendsEarlyAccessPill").clicked()
+                }, 13: () => {
+                    if (consoleSurface)
+                        return
+                    const card = find(window.contentItem, "friendsEarlyAccess")
+                    check(card.opened && find(window.contentItem, "friendsEarlyAccessGotIt").activeFocus, "the header pill reopens the card with focus")
+                    key = Qt.Key_Escape
+                }, 17: () => {
+                    check(consoleSurface || !find(window.contentItem, "friendsEarlyAccess").opened, "Esc closes the reopened card")
+                    check(friends.earlyAccessSeen.filter(id => id === mara.id).length === 1, "the dismissal is stored once")
+                }})
+            }
+        } else if (name === "c-08l-menu-signed-out" || name === "c-08m-menu-setting-off" || name === "c-08n-menu-setting-off-coop") {
+            if (name !== "c-08l-menu-signed-out") {
+                linkAs(mara)
+                seedFriends(false)
+                coop.setPreference("showInStreamMenu", false)
+            }
+            fakeStream()
+            if (name === "c-08n-menu-setting-off-coop")
+                host([member(mara, 0), member(jonas, 1)], [])
+            steps = ({4: () => {
+                modifiers = Qt.ControlModifier
+                key = Qt.Key_G
+            }})
+        } else if (name === "c-09b-settings-coop-stream-menu") {
+            linkAs(mara)
+            AppController.navigate("settings-coop")
+            steps = ({5: () => {
+                const row = find(window.contentItem, "settingsCoopStreamMenuRow")
+                check(row !== null, "Settings → Co-op has the stream-menu row")
+                let flick = row.parent
+                while (flick && flick.contentY === undefined)
+                    flick = flick.parent
+                if (flick)
+                    flick.contentY = Math.max(0, Math.min(flick.contentHeight - flick.height, row.mapToItem(flick.contentItem, 0, 0).y - 160))
+            }, 8: () => {
+                const toggle = find(window.contentItem, "settingsCoopStreamMenu")
+                check(toggle.checked, "the stream-menu setting is on by default")
+                captureName = name
+            }})
         } else if (name === "c2-03-friends-list") {
             linkAs(mara)
             seedFriends(true)
@@ -1410,6 +1482,38 @@ QtObject {
         if (name === "c-08k-codec-not-now")
             check(coop.codecPrompt === null && launches === 0 && !client.calls.some(call => call.method === "coop.lobby.close"),
                 "Not now keeps the session and hides the prompt")
+        if (name === "c2-11a-early-access") {
+            check(friends.earlyAccessPending && friends.earlyAccessSeen.indexOf(mara.id) < 0, "a first visit shows the early-access card")
+            if (checkScreens) {
+                const card = find(window.contentItem, "friendsEarlyAccess")
+                check(card.opened && find(window.contentItem, "friendsEarlyAccessGotIt").activeFocus, "the card takes focus on Got it")
+            }
+        }
+        if (name === "c2-11b-early-access-dismissed" && checkScreens) {
+            const pill = find(window.contentItem, "friendsEarlyAccessPill")
+            check(pill && shown(pill), "the header keeps the Early access pill")
+        }
+        if (name === "c-08l-menu-signed-out" || name === "c-08m-menu-setting-off" || name === "c-08n-menu-setting-off-coop") {
+            check(AppController.overlay === (consoleSurface ? "guide-session" : "desktop-stream-menu"), name + ": Ctrl+G opens the stream menu")
+            if (!consoleSurface) {
+                const section = find(window.contentItem, "streamCoopSection")
+                const create = find(window.contentItem, "streamCoopCreate")
+                if (name === "c-08n-menu-setting-off-coop") {
+                    check(section && shown(section) && !section.inviteVisible && section.candidates.length === 0,
+                        "an active co-op session keeps its controls but hides the friends list")
+                } else {
+                    check(!section || !shown(section), name + ": no co-op section in the stream menu")
+                    check(!create || !shown(create), name + ": no Create co-op session")
+                    const invite = find(window.contentItem, "streamInviteRow")
+                    check(!invite || !shown(invite), name + ": no Invite a friend row")
+                }
+            }
+        }
+        if (name === "c-09b-settings-coop-stream-menu") {
+            const toggle = find(window.contentItem, "settingsCoopStreamMenu")
+            toggle.valueChangedByUser(false)
+            check(coop.preferences.showInStreamMenu === false, "turning the setting off stores it")
+        }
         if (name === "c-02c-setup-create-failed")
             check(JSON.stringify(applied) === JSON.stringify([{key: "codec", value: "h265"}, {key: "codec", value: "auto"}])
                 && coop.restoreCodec === "" && coop.role === "none", "a failed lobby create gives the host their codec back: " + JSON.stringify(applied))

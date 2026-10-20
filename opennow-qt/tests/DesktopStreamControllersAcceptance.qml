@@ -136,8 +136,10 @@ QtObject {
             check(need("streamMenuEdgeShadow").x >= drawer.x + drawer.width - 8, "the shadow falls onto the game")
             for (const name of ["streamMenuConnection", "streamMicrophoneControl", "streamAntiAfkControl",
                                 "streamStatsControl", "streamFullscreenControl", "streamControllersRow",
-                                "streamInviteRow", "streamConsoleModeRow", "streamEndSessionRow"])
+                                "streamConsoleModeRow", "streamEndSessionRow"])
                 check(need(name).visible, name + " is shown")
+            check(!need("streamInviteRow").visible && !find(parent, "streamCoopCreate").visible,
+                "a session without a linked Friends account shows no invite or co-op entries")
             check(need("streamMenuBackToGame").activeFocus, "Back to game starts focused")
             check(input.shellCaptureEnabled, "the open drawer keeps controller input away from the game")
             check(streamAlive(), "opening the drawer keeps the stream and the video item")
@@ -198,10 +200,6 @@ QtObject {
             window.width = 1600
             window.height = 900
             need("streamMenuBackToGame").forceActiveFocus()
-            press(Qt.Key_Down)
-        },
-        function() {
-            check(need("streamCoopCreate").activeFocus, "Down from Back to game reaches Create co-op session")
             press(Qt.Key_Down)
         },
         function() {

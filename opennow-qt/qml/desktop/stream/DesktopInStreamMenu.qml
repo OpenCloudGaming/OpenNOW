@@ -674,6 +674,8 @@ FocusScope {
                     MenuRow {
                         id: inviteRow
                         objectName: "streamInviteRow"
+                        visible: root.invitesAvailable && ShellStore.friends.linked
+                            && ShellStore.coop.preferences.showInStreamMenu !== false
                         enabled: root.invitesAvailable
                         glyph: "desktop-user-plus.svg"
                         title: qsTr("Invite a friend")

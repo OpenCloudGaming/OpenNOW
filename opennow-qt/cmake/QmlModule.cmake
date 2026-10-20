@@ -304,6 +304,7 @@ qt_add_qml_module(opennow-qt
         qml/desktop/friends/DesktopFriendsAvatar.qml
         qml/desktop/friends/DesktopFriendsButton.qml
         qml/desktop/friends/DesktopFriendsCard.qml
+        qml/desktop/friends/DesktopFriendsEarlyAccess.qml
         qml/desktop/friends/DesktopFriendsCardRow.qml
         qml/desktop/friends/DesktopFriendsFormat.qml
         qml/desktop/friends/DesktopFriendsIcon.qml
