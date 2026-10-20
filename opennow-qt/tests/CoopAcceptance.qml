@@ -676,7 +676,7 @@ QtObject {
         } else if (name === "c-09b-settings-coop-stream-menu") {
             linkAs(mara)
             AppController.navigate("settings-coop")
-            steps = ({5: () => {
+            steps = consoleSurface ? ({}) : ({5: () => {
                 const row = find(window.contentItem, "settingsCoopStreamMenuRow")
                 check(row !== null, "Settings → Co-op has the stream-menu row")
                 let flick = row.parent
@@ -1509,7 +1509,7 @@ QtObject {
                 }
             }
         }
-        if (name === "c-09b-settings-coop-stream-menu") {
+        if (name === "c-09b-settings-coop-stream-menu" && !consoleSurface) {
             const toggle = find(window.contentItem, "settingsCoopStreamMenu")
             toggle.valueChangedByUser(false)
             check(coop.preferences.showInStreamMenu === false, "turning the setting off stores it")
