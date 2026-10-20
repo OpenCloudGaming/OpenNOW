@@ -16,7 +16,7 @@ FocusScope {
     // co-op session keeps its controls either way.
     readonly property bool socialShown: friends.linked && coop.preferences.showInStreamMenu !== false
     readonly property bool canCreate: socialShown && coop.role === "none" && coop.coopSupported && coop.hostStreaming
-    readonly property var candidates: (coop.isHost || canCreate) && socialShown ? coop.inviteCandidates() : []
+    readonly property var candidates: (coop.isHost || canCreate) && socialShown ? coop.invitableFriends : []
     property int createGuests: Math.max(1, Math.min(coop.maxGuestsLimit, Number(coop.preferences.maxGuests || coop.maxGuestsLimit)))
     property bool focusLobbyWhenReady: false
     readonly property bool hosting: coop.isHost
@@ -620,7 +620,7 @@ FocusScope {
             TextAction {
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                text: qsTr("All %1").arg(root.coop.invitableOnlineCount)
+                text: qsTr("All %1 friends").arg(root.coop.invitableCount)
                 contentItem: Text {
                     text: parent.text
                     color: "#7FD4FF"
@@ -643,6 +643,7 @@ FocusScope {
                 model: root.candidates.slice(0, 4)
                 delegate: DesktopCoopHostFriendChip {
                     required property var modelData
+                    objectName: "streamCoopInvite-" + modelData.user.id
                     width: (inviteGrid.width - inviteGrid.columnSpacing) / 2
                     height: 44
                     user: modelData.user

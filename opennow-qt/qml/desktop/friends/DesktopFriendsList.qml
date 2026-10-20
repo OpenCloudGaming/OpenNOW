@@ -211,7 +211,7 @@ FocusScope {
                 DesktopFriendsSection {
                     label: qsTr("Offline")
                     count: page.sections.offline.length
-                    note: page.coop.isHost ? qsTr("Invites reach them as a Discord DM") : ""
+                    note: page.coop.canInviteFriends ? qsTr("Invites reach them as a Discord DM") : ""
                 }
                 Flow {
                     x: DesktopTokens.px(14)

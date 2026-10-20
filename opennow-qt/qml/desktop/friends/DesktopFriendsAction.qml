@@ -12,21 +12,21 @@ Item {
     readonly property var invite: user && coop.isHost ? coop.outgoingInviteFor(user.id) : null
     readonly property var ask: lobby ? coop.myAsks.find(item => item.lobbyId === lobby.id) || null : null
     readonly property string kind: {
-        if (!friend)
+        if (!user)
             return ""
         if (member && coop.isHost)
             return "member"
         if (lobby && !DesktopFriendsFormat.inMyLobby(friend))
             return ask ? (ask.state === "full" ? "full" : ask.state === "declined" ? "declined" : "asked") : lobby.joinable === false ? "" : "ask"
-        if (!coop.isHost)
+        if (!coop.canInviteFriends)
             return ""
-        return invite && invite.state === "pending" ? "invited" : "invite"
+        return invite && invite.state === "pending" || coop.queuedInvites.indexOf(user.id) >= 0 ? "invited" : "invite"
     }
     function trigger() {
         if (kind === "ask")
             coop.askToJoin(friend)
         else if (kind === "invite")
-            coop.invite(user.id)
+            coop.inviteFriend(user.id)
     }
     readonly property Item shown: kind === "member" ? memberTag
         : ["invited", "asked", "full", "declined"].indexOf(kind) >= 0 ? waitingChip
@@ -57,7 +57,7 @@ Item {
         controlHeight: action.large ? 36 : 32
         cornerRadius: action.large ? 10 : 8
         Accessible.description: action.kind === "invited" ? qsTr("Cancel the invite") : ""
-        onClicked: if (action.kind === "invited") action.coop.cancelInvite(action.invite.id)
+        onClicked: if (action.kind === "invited" && action.invite) action.coop.cancelInvite(action.invite.id)
     }
     DesktopFriendsButton {
         id: button
@@ -65,7 +65,7 @@ Item {
         visible: action.shown === button
         kind: action.kind === "ask" ? "accent" : action.large ? "primary" : "secondary"
         glyph: action.kind === "ask" ? "hand" : "userPlus"
-        text: action.kind === "ask" ? qsTr("Ask to join") : action.large ? qsTr("Invite to your lobby") : qsTr("Invite")
+        text: action.kind === "ask" ? qsTr("Ask to join") : !action.large ? qsTr("Invite") : action.coop.isHost ? qsTr("Invite to your lobby") : qsTr("Invite to co-op")
         controlHeight: action.large ? 36 : 32
         cornerRadius: action.large ? 10 : 8
         sidePadding: action.large ? 16 : 12

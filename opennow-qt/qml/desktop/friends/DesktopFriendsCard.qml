@@ -28,7 +28,7 @@ Rectangle {
         const sinceStamp = Date.parse(String(friend && friend.since || ""))
         const since = isNaN(sinceStamp) ? "" : Qt.locale().standaloneMonthName(new Date(sinceStamp).getMonth(), Locale.LongFormat)
         const offline = ShellStore.friends.activity(friend) === "offline"
-        if (!ShellStore.coop.isHost)
+        if (!ShellStore.coop.canInviteFriends)
             return since === "" ? "" : qsTr("Friends since %1").arg(since)
         if (since === "")
             return offline ? qsTr("An invite reaches them as a Discord DM") : qsTr("An invite pops up in their OpenNOW")

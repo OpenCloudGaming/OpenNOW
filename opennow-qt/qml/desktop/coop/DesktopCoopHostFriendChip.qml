@@ -3,7 +3,7 @@ import QtQuick.Controls
 import OpenNOW
 
 // One-click invite chip (C2 lobby strip and the Ctrl+G co-op block). inviteState: "idle" | "pending" | "declined" |
-// "expired" | "dm".
+// "expired" | "dm" | "waits" (an offline friend the bot couldn't DM). An offline friend is dimmed but invitable.
 AbstractButton {
     id: root
     property var user: null
@@ -43,17 +43,19 @@ AbstractButton {
             return qsTr("In settings")
         if (activity === "idle")
             return qsTr("Idle · %1 min").arg(minutesSince(presence.since))
-        return activity === "offline" ? qsTr("Offline") : qsTr("Online")
+        return activity === "offline" ? qsTr("Offline · gets a Discord DM") : qsTr("Online")
     }
     readonly property string subtitle: inviteState === "pending" ? (detail !== "" ? detail : qsTr("Invited · waiting"))
         : inviteState === "declined" ? qsTr("Declined")
         : inviteState === "expired" ? qsTr("Expired · resend")
-        : inviteState === "dm" ? qsTr("Sent as DM")
+        : inviteState === "dm" ? qsTr("DM sent")
+        : inviteState === "waits" ? qsTr("Invite waits until they're online")
         : presenceText
     readonly property color subtitleColor: inviteState === "pending" ? "#7FD4FF"
         : inviteState === "declined" ? "#66FFFFFF"
         : inviteState === "expired" ? "#F5A623"
         : inviteState === "dm" ? "#C7CBFF"
+        : inviteState === "waits" ? "#F5A623"
         : activity === "playing" ? "#7FD4FF" : "#A3FFFFFF"
     readonly property color avatarColor: colorFor(name, online)
     function colorFor(personName, isOnline) {
@@ -83,6 +85,7 @@ AbstractButton {
         }
     }
     contentItem: Item {
+        opacity: root.online || root.inviteState !== "idle" ? 1 : 0.62
         Item {
             id: avatar
             x: 10

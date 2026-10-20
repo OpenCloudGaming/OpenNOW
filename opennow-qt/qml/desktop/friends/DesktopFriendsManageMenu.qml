@@ -8,15 +8,17 @@ FocusScope {
     readonly property var user: friend ? friend.user : null
     readonly property string name: ShellStore.friends.displayName(user)
     readonly property bool offline: ShellStore.friends.activity(friend) === "offline"
-    readonly property bool canInvite: ShellStore.coop.isHost
+    readonly property bool canInvite: ShellStore.coop.canInviteFriends
     readonly property var lobby: DesktopFriendsFormat.presence(friend).lobby || null
     readonly property bool canAsk: lobby !== null && lobby.joinable !== false && !ShellStore.coop.isHost
         && !DesktopFriendsFormat.inMyLobby(friend) && !ShellStore.coop.myAsks.some(item => item.lobbyId === lobby.id)
     readonly property var entries: (canAsk ? [{key: "ask", glyph: "play", tone: "text", title: qsTr("Ask to join"),
             body: qsTr("%1 gets a request to let you in").arg(name)}] : []).concat([
-        {key: "invite", glyph: "send", tone: "text", title: qsTr("Invite by Discord DM"),
+        {key: "invite", glyph: "send", tone: "text", title: qsTr("Invite to co-op"),
             body: !canInvite ? qsTr("Host a co-op lobby first")
-                : offline ? qsTr("%1 is offline").arg(name) : qsTr("The OpenNOW bot sends your invite")},
+                : offline ? qsTr("%1 is offline, so the OpenNOW bot DMs the invite").arg(name)
+                : ShellStore.coop.isHost ? qsTr("The invite pops up in their OpenNOW")
+                : qsTr("Opens co-op on this stream and invites %1").arg(name)},
         {key: "remove", glyph: "userX", tone: "text", title: qsTr("Remove friend"),
             body: armed === "remove" ? qsTr("Select again to remove %1").arg(name)
                 : qsTr("You both disappear from each other’s list")},
@@ -50,7 +52,7 @@ FocusScope {
         if (key === "invite") {
             if (!canInvite)
                 return
-            ShellStore.coop.invite(user.id)
+            ShellStore.coop.inviteFriend(user.id)
             closeRequested()
             return
         }

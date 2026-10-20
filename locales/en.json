@@ -4974,6 +4974,16 @@
     "featuresThatChangeBetweenUpdates": "Features that change between updates",
     "earlyAccessWhatToExpect": "Early access. What to expect",
     "showFriendsCoOpInTheStream": "Show Friends & co-op in the stream menu",
-    "createCoOpAndInviteFriendsFrom": "Create co-op and invite friends from Ctrl+G. A running co-op session always stays in the menu."
+    "createCoOpAndInviteFriendsFrom": "Create co-op and invite friends from Ctrl+G. A running co-op session always stays in the menu.",
+    "offlineGetsADiscordDm": "Offline · gets a Discord DM",
+    "dmSent": "DM sent",
+    "inviteWaitsUntilTheyreOnline": "Invite waits until they're online",
+    "nDoesntTakeDmsFromTheBot": "%1 doesn't take DMs from the bot. The invite waits until they're online",
+    "offlineTheInviteArrivesAsADiscord": "Offline. The invite arrives as a Discord DM",
+    "oneClickEachOfflineFriendsGetA": "ONE CLICK EACH · OFFLINE FRIENDS GET A DM",
+    "allNFriends": "All %1 friends",
+    "nIsOfflineSoTheOpennowBot": "%1 is offline, so the OpenNOW bot DMs the invite",
+    "theInvitePopsUpInTheirOpennow": "The invite pops up in their OpenNOW",
+    "opensCoOpOnThisStreamAnd": "Opens co-op on this stream and invites %1"
   }
 }

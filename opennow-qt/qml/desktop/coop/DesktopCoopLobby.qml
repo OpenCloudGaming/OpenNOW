@@ -21,13 +21,13 @@ FocusScope {
     readonly property var stripInvites: coop.outgoingInvites.filter(invite => invite.to
         && ["pending", "declined", "expired"].indexOf(invite.state) >= 0
         && !coop.members.some(member => member.userId === invite.to.id)).slice().reverse()
-    readonly property var candidates: lobby && friends.linked ? coop.inviteCandidates() : []
+    readonly property var candidates: lobby && friends.linked ? coop.invitableFriends : []
     readonly property bool showStrip: friends.linked && (stripInvites.length > 0 || candidates.length > 0)
     readonly property var stripEntries: stripInvites.map(invite => ({invite: invite, user: invite.to,
-            friend: friends.friendById(invite.to.id), inviteState: inviteChipState(invite)}))
+            friend: friends.friendById(invite.to.id), inviteState: coop.inviteChipState(invite)}))
         .concat(candidates.map(friend => ({invite: null, user: friend.user, friend: friend, inviteState: "idle"})))
         .slice(0, showAllFriends ? 15 : 5)
-    readonly property bool notesVisible: stripEntries.some(entry => ["declined", "expired", "dm"].indexOf(entry.inviteState) >= 0)
+    readonly property bool notesVisible: stripEntries.some(entry => ["declined", "expired", "dm", "waits"].indexOf(entry.inviteState) >= 0)
     readonly property bool lookupVisible: showStrip && (lookupOpen || friends.lookup !== null)
     readonly property var heldCard: cards.find(card => coop.uploadHolds(card)) || null
     readonly property bool uploadBarVisible: coop.uploadShort
@@ -43,12 +43,6 @@ FocusScope {
     Accessible.role: Accessible.Dialog
     Accessible.name: qsTr("Co-op lobby")
 
-    function inviteChipState(invite) {
-        if (invite.state !== "pending")
-            return invite.state
-        const friend = friends.friendById(invite.to.id)
-        return invite.dm === "sent" && !friends.isOnline(friend) ? "dm" : "pending"
-    }
     function clock(totalSeconds) {
         const seconds = Math.max(0, Math.floor(totalSeconds))
         return Math.floor(seconds / 60) + ":" + String(seconds % 60).padStart(2, "0")
@@ -75,7 +69,7 @@ FocusScope {
     function activateChip(entry) {
         if (entry.inviteState === "idle")
             coop.invite(entry.user.id)
-        else if (entry.inviteState === "pending" || entry.inviteState === "dm")
+        else if (entry.inviteState === "pending" || entry.inviteState === "dm" || entry.inviteState === "waits")
             coop.cancelInvite(entry.invite.id)
         else
             coop.resendInvite(entry.user.id)
@@ -90,6 +84,10 @@ FocusScope {
             return qsTr("No answer in 10 min. One click resends")
         if (entry.inviteState === "dm")
             return qsTr("%1 is offline, so the bot DMed them").arg(name)
+        if (entry.inviteState === "waits")
+            return qsTr("%1 doesn't take DMs from the bot. The invite waits until they're online").arg(name)
+        if (entry.friend && !friends.isOnline(entry.friend))
+            return qsTr("Offline. The invite arrives as a Discord DM")
         return qsTr("Ready to invite")
     }
     function close() {
@@ -609,18 +607,19 @@ FocusScope {
                 SectionLabel {
                     anchors.verticalCenter: parent.verticalCenter
                     title: qsTr("INVITE FRIENDS")
-                    detail: qsTr("ONLINE NOW · ONE CLICK EACH")
+                    detail: qsTr("ONE CLICK EACH · OFFLINE FRIENDS GET A DM")
                 }
                 AbstractButton {
                     id: allFriends
-                    visible: root.coop.invitableOnlineCount > 5
+                    objectName: "coopLobbyAllFriends"
+                    visible: root.stripInvites.length + root.candidates.length > 5
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
                     width: allRow.implicitWidth
                     height: 20
                     hoverEnabled: true
                     focusPolicy: Qt.StrongFocus
-                    text: root.showAllFriends ? qsTr("Show fewer") : qsTr("All %1 online").arg(root.coop.invitableOnlineCount)
+                    text: root.showAllFriends ? qsTr("Show fewer") : qsTr("All %1 friends").arg(root.coop.invitableCount)
                     Accessible.role: Accessible.Button
                     Accessible.name: text
                     onClicked: root.showAllFriends = !root.showAllFriends
@@ -669,6 +668,7 @@ FocusScope {
                         width: (strip.width - 4 * strip.spacing) / 5
                         spacing: 8
                         DesktopCoopHostFriendChip {
+                            objectName: "coopLobbyInvite-" + stripCell.modelData.user.id
                             width: parent.width
                             user: stripCell.modelData.user
                             presence: stripCell.modelData.friend ? stripCell.modelData.friend.presence : null

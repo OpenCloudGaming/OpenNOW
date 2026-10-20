@@ -171,9 +171,26 @@ QtObject {
     // until the host opens it.
     property bool heldSlotOpened: false
     // Online friends who could join: not in this lobby and not in another one.
-    readonly property int invitableOnlineCount: friends && isHost
-        ? friends.friends.filter(friend => friends.isOnline(friend) && friend.user && friends.activity(friend) !== "in_lobby"
-            && !members.some(member => member.userId === friend.user.id)).length : 0
+    // Every friend the host can invite: not in this lobby and not already invited, online first (idle after
+    // online), then offline by last seen. Offline friends get the invite as a Discord DM.
+    readonly property var invitableFriends: {
+        if (!friends || role === "guest")
+            return []
+        const rank = {browsing_store: 0, browsing_library: 0, in_settings: 0, online: 0, playing: 1, in_queue: 2, in_lobby: 2, idle: 3}
+        const invited = outgoingInvites.filter(invite => invite.to && ["pending", "declined", "expired"].indexOf(invite.state) >= 0)
+            .map(invite => invite.to.id)
+        const seen = friend => Date.parse(String(friend.presence && friend.presence.lastSeenAt || "")) || 0
+        return friends.friends.map((friend, order) => ({friend: friend, order: order,
+                rank: friends.isOnline(friend) ? (rank[friends.activity(friend)] ?? 0) : 4}))
+            .filter(entry => entry.friend.user && invited.indexOf(entry.friend.user.id) < 0
+                && !members.some(member => member.userId === entry.friend.user.id))
+            .sort((a, b) => a.rank - b.rank || (a.rank === 4 ? seen(b.friend) - seen(a.friend) : 0) || a.order - b.order)
+            .slice(0, maxInvites).map(entry => entry.friend)
+    }
+    readonly property int invitableCount: invitableFriends.length
+    // A friend can be invited from anywhere while hosting, or while streaming outside co-op (the
+    // invite creates the lobby for the running stream first).
+    readonly property bool canInviteFriends: isHost || (role === "none" && coopSupported && hostStreaming)
 
     // Local co-op preferences (C9 Co-op settings). Persisted with QSettings outside smoke tests.
     property var preferences: ({maxGuests: 3, preset: "same", matchBitrate: true, allowRelay: true,
@@ -283,17 +300,20 @@ QtObject {
         return card.kind === "open" && !heldSlotOpened && uploadCapacityKbps > 0 && streamKbps * card.slot > uploadCapacityKbps
     }
     // One-click invite targets, most likely to join first; friends with an open invite are shown by it instead.
-    function inviteCandidates() {
-        if (!friends || role === "guest")
-            return []
-        const rank = {browsing_store: 0, browsing_library: 0, in_settings: 0, playing: 1, idle: 2, online: 3, in_queue: 4}
-        const invited = outgoingInvites.filter(invite => invite.to && ["pending", "declined", "expired"].indexOf(invite.state) >= 0)
-            .map(invite => invite.to.id)
-        return friends.friends.map((friend, order) => ({friend: friend, order: order, rank: rank[friends.activity(friend)]}))
-            .filter(entry => entry.rank !== undefined && entry.friend.user && invited.indexOf(entry.friend.user.id) < 0
-                && !members.some(member => member.userId === entry.friend.user.id))
-            .sort((a, b) => a.rank - b.rank || a.order - b.order)
-            .slice(0, maxInvites).map(entry => entry.friend)
+    function inviteFriend(userId) {
+        if (isHost)
+            invite(userId)
+        else if (canInviteFriends)
+            hostRunningStream(0, userId)
+    }
+    // A pending invite's chip state: "dm" when the bot DMed an offline friend, "waits" when it couldn't
+    // (DMs off, not in the guild) so the invite waits until they come online, else "pending".
+    function inviteChipState(invite) {
+        if (invite.state !== "pending")
+            return invite.state
+        if (friends && friends.isOnline(friends.friendById(invite.to.id)))
+            return "pending"
+        return invite.dm === "sent" ? "dm" : ["skipped_not_member", "skipped_disabled", "failed"].indexOf(invite.dm) >= 0 ? "waits" : "pending"
     }
     function outgoingInviteFor(userId) {
         return outgoingInvites.find(invite => invite.to && invite.to.id === userId) || null

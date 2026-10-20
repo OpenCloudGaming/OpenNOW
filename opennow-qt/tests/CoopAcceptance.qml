@@ -23,6 +23,7 @@ QtObject {
     property var avatarUrls: ({})
     property var applied: []
     property string invitedFromStream: ""
+    property var onlyFriends: null
     // Scene steps keyed by settle tick, for input that has to land after the screen has focus.
     property var steps: ({})
     property string failure: ""
@@ -46,6 +47,8 @@ QtObject {
         "c2-03b-friends-context-menu": "",
         "c2-03c-friends-avatars": "",
         "c2-04-lobby-invite-picker": "E6X-1",
+        "c2-04b-lobby-invite-offline": "",
+        "c2-03d-friends-invite-offline": "",
         "c2-11a-early-access": "",
         "c2-11b-early-access-dismissed": "",
         "c-08l-menu-signed-out": "",
@@ -115,6 +118,8 @@ QtObject {
         "c-08f-create-from-stream": "",
         "c-08g-created-from-stream": "",
         "c-08h-invite-from-stream": "",
+        "c-08o-invite-offline-from-stream": "",
+        "c-08p-invite-offline-hosting": "",
         "c-08i-codec-prompt": "",
         "c-08j-codec-restart": "",
         "c-08k-codec-not-now": "",
@@ -151,6 +156,8 @@ QtObject {
         "c2-08c-settings-discord-avatar": [],
         "c2-03b-friends-context-menu": ["friendsList"],
         "c2-04-lobby-invite-picker": ["coopLobby", "coopLobbyInviteStrip"],
+        "c2-04b-lobby-invite-offline": ["coopLobby", "coopLobbyInviteStrip", "coopLobbyInvite-usr_joris", "coopLobbyInvite-usr_anouk"],
+        "c2-03d-friends-invite-offline": ["friendsList", "friendsChip-usr_pieter"],
         "c2-05a-invite-toast": ["coopInviteToast", "coopInvitesInbox"],
         "c2-05c-invite-connecting": ["coopConnecting"],
         "c2-06-ask-to-join": ["coopAskToast"],
@@ -212,6 +219,8 @@ QtObject {
         "c-08f-create-from-stream": ["streamCoopSection", "streamCoopCreateSection", "streamCoopCreate", "streamCoopPlayers-3"],
         "c-08g-created-from-stream": ["streamCoopSection", "streamCoopStart", "streamSurfaceHost"],
         "c-08h-invite-from-stream": ["streamCoopSection", "streamCoopStart"],
+        "c-08o-invite-offline-from-stream": ["streamCoopSection", "streamCoopStart"],
+        "c-08p-invite-offline-hosting": ["streamCoopSection", "streamCoopStart", "streamCoopInvite-usr_pieter"],
         "c-08i-codec-prompt": ["coopCodecPrompt", "coopCodecRestart", "coopCodecNotNow", "streamSurfaceHost"],
         "c-08j-codec-restart": [],
         "c-08k-codec-not-now": ["streamSurfaceHost"],
@@ -337,7 +346,7 @@ QtObject {
                 friend(pieter, offline(7200000), 20),
                 friend(anouk, offline(86400000 + 3600000), 15),
                 friend(joris, offline(3 * 86400000), 10)
-            ],
+            ].filter(item => !onlyFriends || onlyFriends.indexOf(item.user.id) >= 0),
             incoming: withRequests ? [{id: "frq_femke", user: femke, createdAt: iso(-300000)},
                 {id: "frq_bas", user: bas, createdAt: iso(-86400000)}] : [],
             outgoing: withRequests ? [{id: "frq_nina", user: nina, createdAt: iso(-120000)},
@@ -544,6 +553,7 @@ QtObject {
         avatarUrls = ({})
         settleTicks = 14
         invitedFromStream = ""
+        onlyFriends = null
         coop.localDecoders = null
         coop.codecRestart = null
         coop.codecPromptsDismissed = []
@@ -893,7 +903,7 @@ QtObject {
             if (name === "c-08h-invite-from-stream") {
                 steps[7] = press("streamCoopPlayers-2")
                 steps[8] = () => {
-                    invitedFromStream = coop.inviteCandidates()[0].user.id
+                    invitedFromStream = coop.invitableFriends[0].user.id
                     press("streamCoopCreateInvite-" + invitedFromStream)()
                 }
             }
@@ -1027,6 +1037,85 @@ QtObject {
                 runtime.coopEventReceived({type: "coop-guest-stats", hostToGfnPingMs: 18, guestToHostPingMs: 24, totalMs: 42,
                     quality: "great", lossPct: 0, slot: 2, inputMuted: false, connectMs: 610, firstFrameMs: 380,
                     codec: "h264", decoder: "hardware"})
+            })
+        } else if (name === "c2-04b-lobby-invite-offline") {
+            linkAs(mara)
+            seedFriends(false)
+            fakeStream()
+            host(lobbyMembers, [invite("inv_pieter", mara, pieter, "pending", 30000, "sent"),
+                invite("inv_anouk", mara, anouk, "pending", 20000, "skipped_not_member")])
+            Qt.callLater(() => AppController.showOverlay("coop-lobby"))
+            const chip = userId => find(window.contentItem, "coopLobbyInvite-" + userId)
+            steps = ({
+                4: () => {
+                    const ids = coop.invitableFriends.map(friend => friend.user.id)
+                    check(ids.length === 9 && ids[ids.length - 1] === joris.id && ids.indexOf(jonas.id) < 0 && ids.indexOf(pieter.id) < 0
+                        && ids.slice(0, 8).every(id => ShellStore.friends.isOnline(ShellStore.friends.friendById(id))),
+                        "everyone not in the lobby or invited is invitable, online first, offline last: " + JSON.stringify(ids))
+                    if (!checkScreens || consoleSurface)
+                        return
+                    check(!chip(joris.id), "the compact strip keeps online friends first")
+                    const all = find(window.contentItem, "coopLobbyAllFriends")
+                    check(all && shown(all) && all.text === "All 9 friends", "the strip offers All 9 friends")
+                    all.clicked()
+                },
+                6: () => {
+                    if (checkScreens && !consoleSurface) {
+                        check(chip(joris.id) && shown(chip(joris.id)) && chip(joris.id).subtitle === "Offline · gets a Discord DM",
+                            "All friends shows an offline friend with the DM note")
+                        chip(joris.id).clicked()
+                    } else {
+                        coop.inviteFriend(joris.id)
+                    }
+                },
+                8: () => client.emit("coop.invite.updated", {invite: invite("inv_" + joris.id, mara, joris, "pending", 0, "sent")})
+            })
+        } else if (name === "c-08o-invite-offline-from-stream" || name === "c-08p-invite-offline-hosting") {
+            linkAs(mara)
+            onlyFriends = [lieke.id, pieter.id, joris.id]
+            seedFriends(false)
+            fakeStream()
+            if (name === "c-08p-invite-offline-hosting")
+                host([member(mara, 0), member(jonas, 1)], [])
+            const target = name === "c-08p-invite-offline-hosting" ? joris : pieter
+            const chipName = (name === "c-08p-invite-offline-hosting" ? "streamCoopInvite-" : "streamCoopCreateInvite-") + target.id
+            steps = ({4: () => {
+                modifiers = Qt.ControlModifier
+                key = Qt.Key_G
+            }, 8: () => {
+                if (consoleSurface || !checkScreens) {
+                    coop.inviteFriend(target.id)
+                    return
+                }
+                const chip = find(window.contentItem, chipName)
+                check(chip && shown(chip) && chip.subtitle === "Offline · gets a Discord DM", name + ": Ctrl+G lists the offline friend: "
+                    + (chip ? [shown(chip), chip.subtitle] : coop.invitableFriends.map(friend => friend.user.id)))
+                chip.clicked()
+            }})
+        } else if (name === "c2-03d-friends-invite-offline") {
+            linkAs(mara)
+            seedFriends(false)
+            fakeStream()
+            Qt.callLater(() => AppController.navigate("friends"))
+            const center = item => item.mapToItem(null, item.width / 2, item.height / 2)
+            const menu = () => find(window.contentItem.parent, "friendsContextMenu")
+            steps = !checkScreens || consoleSurface ? ({4: () => coop.inviteFriend(pieter.id)}) : ({
+                4: () => {
+                    const target = find(window.contentItem, "friendsChip-" + pieter.id)
+                    check(target !== null, "the offline friend is listed")
+                    clickButton = Qt.RightButton
+                    click = center(target)
+                },
+                6: () => {
+                    const entry = menu() ? find(menu(), "friendsManage_invite") : null
+                    check(menu() && menu().visible && menu().friend.user.id === pieter.id && menu().canInvite && entry && shown(entry),
+                        "an offline friend's menu offers Invite to co-op while streaming")
+                    captureName = "c2-03d-friends-invite-offline-menu"
+                },
+                7: () => {
+                    clickButton = Qt.LeftButton
+                    click = center(find(menu(), "friendsManage_invite"))
+                }
             })
         } else if (name === "c2-03b-friends-context-menu") {
             linkAs(mara)
@@ -1533,6 +1622,28 @@ QtObject {
             const first = reports("first_frame")
             check(first.length === 1 && first[0].path === "direct" && first[0].relayId === null && first[0].firstFrameMs === 380
                 && first[0].decoder === "hardware", "a direct guest reports its path and timings: " + JSON.stringify(first))
+        }
+        if (name === "c2-04b-lobby-invite-offline") {
+            const invites = client.calls.filter(call => call.method === "coop.lobby.invite")
+            check(invites.length === 1 && invites[0].params.userId === joris.id, "an offline friend is invited from the lobby: "
+                + JSON.stringify(invites.map(call => call.params)))
+            const state = userId => coop.inviteChipState(coop.outgoingInviteFor(userId))
+            check(state(joris.id) === "dm" && state(pieter.id) === "dm" && state(anouk.id) === "waits",
+                "a DMed offline friend shows DM sent, an undeliverable DM waits: " + [state(joris.id), state(pieter.id), state(anouk.id)])
+            if (checkScreens && !consoleSurface) {
+                const chip = userId => find(window.contentItem, "coopLobbyInvite-" + userId)
+                check(chip(joris.id).subtitle === "DM sent" && chip(anouk.id).subtitle === "Invite waits until they're online",
+                    "the chips say DM sent and that the invite waits")
+            }
+        }
+        if (name === "c-08o-invite-offline-from-stream" || name === "c-08p-invite-offline-hosting" || name === "c2-03d-friends-invite-offline") {
+            const target = name === "c-08p-invite-offline-hosting" ? joris : pieter
+            const creates = client.calls.filter(call => call.method === "coop.lobby.create")
+            const invites = client.calls.filter(call => call.method === "coop.lobby.invite")
+            check((name === "c-08p-invite-offline-hosting" || launches === 0) && creates.length === 1 && coop.isHost,
+                name + ": one lobby for the running stream: " + JSON.stringify(creates.map(call => call.params)))
+            check(invites.length === 1 && invites[0].params.userId === target.id && invites[0].params.lobbyId === coop.lobby.id
+                && coop.queuedInvites.length === 0, name + ": the offline friend is invited: " + JSON.stringify(invites.map(call => call.params)))
         }
         if (name === "c2-03b-friends-context-menu" && checkScreens) {
             const menu = find(window.contentItem.parent, "friendsContextMenu")
