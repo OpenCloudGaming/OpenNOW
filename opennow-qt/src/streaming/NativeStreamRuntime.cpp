@@ -1,3 +1,4 @@
+#include "streaming/AwdlSuppressionLease.h"
 #include "streaming/NativeStreamRuntime.h"
 
 #include "diagnostics/DiagnosticsPaths.h"
@@ -185,6 +186,9 @@ struct NativeStreamRuntime::Private {
     }
 
     Api api;
+    // Local patch: holds the privileged AWDL suppression lease while a
+    // stream session is active (see AwdlSuppressionLease.h).
+    AwdlSuppressionLease awdlLease;
     const OpenNowStreamerVulkanDevice *vulkanDevice = nullptr;
     quint64 windowsAdapterLuid = 0;
     // FFI input queues and render-thread graphics state are independent and thread-safe. An
@@ -621,6 +625,10 @@ bool NativeStreamRuntime::sendBytes(const QByteArray &command)
         invalidatePresentation();
         d->defaultRelativeMouse = false;
         d->sessionStartId = type == u"start"_s ? object.value(u"id"_s).toString() : QString{};
+        // Local patch: hold the AWDL suppression lease for the session
+        // duration; releasing restores the interface (and the daemon also
+        // restores on connection close, so crashes recover automatically).
+        d->awdlLease.setActive(type == u"start"_s);
         if (type == u"start"_s) {
             d->serverCursorComposited = true;
             d->firstNotification = false;
@@ -643,6 +651,8 @@ bool NativeStreamRuntime::shutdown(int timeoutMs)
 {
     d->defaultRelativeMouse = false;
     d->streamSessionActive = false;
+    // Local patch: release the AWDL suppression lease on shutdown.
+    d->awdlLease.setActive(false);
     setStreaming(false);
     resetInputCapture();
     invalidatePresentation();

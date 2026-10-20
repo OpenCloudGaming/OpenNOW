@@ -11,6 +11,8 @@ elseif(WIN32)
 endif()
 
 set(OPENNOW_STREAM_RUNTIME_SOURCES
+    src/streaming/AwdlSuppressionLease.cpp
+    src/streaming/AwdlSuppressionLease.h
     src/streaming/NativeStreamRuntime.cpp
     src/streaming/NativeStreamRuntime.h
 )
