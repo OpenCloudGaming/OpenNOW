@@ -34,6 +34,9 @@ const MAX_EVENTS: usize = 1_024;
 const SRFLX_RETRY: Duration = Duration::from_millis(500);
 const SRFLX_ATTEMPTS: u32 = 4;
 const MAX_OWN_IPS: usize = 4;
+/// Longest gap between ICE checks on the nominated pair. Each side checks the pair at least
+/// this often, so a live link always carries inbound traffic in both directions.
+const MAX_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Network policy for a link. Production uses the routed host address and platform TLS roots.
 #[derive(Clone)]
@@ -195,6 +198,7 @@ pub struct PeerLink {
     pub input: Option<ChannelId>,
     bytes_sent: u64,
     bytes_received: u64,
+    last_inbound: Instant,
 }
 
 fn routed_host_ips() -> Vec<IpAddr> {
@@ -210,6 +214,7 @@ impl PeerLink {
             .set_rtp_mode(true)
             .set_stats_interval(Some(Duration::from_secs(1)))
             .clear_codecs();
+        config.set_max_stun_rto(MAX_CHECK_INTERVAL);
         config.codec_config().add_config(
             Pt::from(VIDEO_PT),
             None,
@@ -268,6 +273,7 @@ impl PeerLink {
             input: None,
             bytes_sent: 0,
             bytes_received: 0,
+            last_inbound: now,
         };
         link.start_srflx(now);
         if !link.net.allow_direct {
@@ -370,6 +376,20 @@ impl PeerLink {
 
     pub fn relay_started(&self) -> bool {
         self.relay_started
+    }
+
+    /// Allocates TURN relays now instead of after the direct timeout. A replacement link uses
+    /// it so a dead direct path falls back to a relay without another wait.
+    pub fn start_relays_now(&mut self, now: Instant) {
+        if !self.ice.turn.is_empty() {
+            self.start_relays(now);
+        }
+    }
+
+    /// Time since the peer last sent anything this link accepted: media, RTCP, data channel
+    /// traffic or ICE checks.
+    pub fn inbound_silence(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.last_inbound)
     }
 
     pub fn rtt(&self) -> Option<Duration> {
@@ -597,6 +617,7 @@ impl PeerLink {
         self.bytes_received += data.len() as u64;
         let input = Input::Receive(now, receive);
         if self.rtc.accepts(&input) && self.rtc.handle_input(input).is_ok() {
+            self.last_inbound = self.last_inbound.max(now);
             self.pump(now);
         }
     }
@@ -749,6 +770,12 @@ impl PeerLink {
 
     pub fn close(&mut self) {
         self.rtc.disconnect();
+        self.abandon();
+    }
+
+    /// Releases the relays of a link being replaced without closing DTLS: a close alert that
+    /// still reaches the peer would end its session instead of letting it switch links.
+    pub fn abandon(&mut self) {
         for turn in &mut self.turns {
             turn.close();
         }

@@ -3585,6 +3585,7 @@ struct RtpReorderBuffer {
     packets: BTreeMap<u64, RtpPacket>,
     max_packets: usize,
     gap_wait: Option<(u64, Instant)>,
+    gap_timeout: Duration,
 }
 
 struct ReorderResult {
@@ -3602,6 +3603,7 @@ impl RtpReorderBuffer {
             packets: BTreeMap::new(),
             max_packets,
             gap_wait: None,
+            gap_timeout: MJOLNIR_REORDER_DEQUEUE_TIMEOUT,
         }
     }
 
@@ -3685,8 +3687,7 @@ impl RtpReorderBuffer {
             let gap_exceeded_window = first_available.saturating_sub(expected)
                 >= self.max_packets as u64
                 || self.packets.len() >= self.max_packets;
-            let gap_timed_out =
-                now.saturating_duration_since(gap_started) >= MJOLNIR_REORDER_DEQUEUE_TIMEOUT;
+            let gap_timed_out = now.saturating_duration_since(gap_started) >= self.gap_timeout;
             if !gap_exceeded_window && !gap_timed_out {
                 break;
             }
@@ -4168,6 +4169,7 @@ struct FecReorderBuffer {
     completed_through: Option<u64>,
     gap_wait: Option<(u64, Instant)>,
     shard_len: usize,
+    gap_timeout: Duration,
 }
 
 impl FecReorderBuffer {
@@ -4177,6 +4179,7 @@ impl FecReorderBuffer {
             completed_through: None,
             gap_wait: None,
             shard_len: video_packet_size + NVST_FEC_RTP_HEADER_ALLOWANCE,
+            gap_timeout: MJOLNIR_REORDER_DEQUEUE_TIMEOUT,
         }
     }
 
@@ -4254,7 +4257,7 @@ impl FecReorderBuffer {
                         now
                     }
                 };
-                if now.saturating_duration_since(started) < MJOLNIR_REORDER_DEQUEUE_TIMEOUT
+                if now.saturating_duration_since(started) < self.gap_timeout
                     && base.saturating_sub(expected) < MAX_REORDER_WINDOW as u64
                     && self.blocks.len() < MAX_PENDING_FEC_BLOCKS
                 {
@@ -4334,7 +4337,7 @@ impl FecReorderBuffer {
                 .blocks
                 .last_key_value()
                 .map_or(0, |(&last_base, _)| last_base.saturating_sub(base));
-            if now.saturating_duration_since(started) < MJOLNIR_REORDER_DEQUEUE_TIMEOUT
+            if now.saturating_duration_since(started) < self.gap_timeout
                 && block_span < MAX_REORDER_WINDOW as u64
                 && self.blocks.len() < MAX_PENDING_FEC_BLOCKS
             {
@@ -4800,6 +4803,14 @@ impl NvstVideoReceiver {
             self.reorder.push(packet, now)
         };
         self.consume_reorder_result(result, now)
+    }
+
+    /// How long a sequence gap may wait for a retransmission before the receiver gives the
+    /// missing packets up. GFN's own NACK budget fits 52 ms; a co-op guest's repairs cross
+    /// one more hop and need the window sized from that hop's RTT.
+    pub fn set_repair_window(&mut self, window: Duration) {
+        self.reorder.gap_timeout = window;
+        self.fec_reorder.gap_timeout = window;
     }
 
     pub fn poll_recovery(&mut self, now: Instant) -> Vec<NvstReceiveEvent> {
@@ -13719,6 +13730,46 @@ mod tests {
             [3, 4, 5]
         );
         assert_eq!(recovered.nack, None);
+    }
+
+    /// A co-op guest's repair window keeps a gap open past GFN's 52 ms, so a repair that
+    /// crosses the extra hop still fills it instead of costing a keyframe.
+    #[test]
+    fn a_wider_repair_window_waits_for_a_late_repair() {
+        fn packet(index: u64) -> RtpPacket {
+            RtpPacket {
+                index,
+                header: RtpHeader {
+                    payload_type: 96,
+                    sequence_number: index as u16,
+                    timestamp: 90_000,
+                    ssrc: 1,
+                    payload_offset: RTP_FIXED_HEADER_LEN,
+                    has_padding: false,
+                    gs_video_header: None,
+                },
+                plaintext: vec![0; RTP_FIXED_HEADER_LEN],
+                origin: RtpPacketOrigin::Authenticated,
+            }
+        }
+
+        let started = Instant::now();
+        let mut reorder = RtpReorderBuffer::new(DEFAULT_REORDER_WINDOW);
+        reorder.gap_timeout = Duration::from_millis(150);
+        assert_eq!(reorder.push(packet(1), started).ready.len(), 1);
+        assert!(reorder.push(packet(3), started).ready.is_empty());
+        let waiting = reorder.poll_deadline(started + Duration::from_millis(100));
+        assert!(waiting.recovery.is_none(), "still inside the repair window");
+        let repaired = reorder.push(packet(2), started + Duration::from_millis(120));
+        assert!(repaired.recovery.is_none());
+        assert_eq!(
+            repaired
+                .ready
+                .iter()
+                .map(|packet| packet.index)
+                .collect::<Vec<_>>(),
+            [2, 3]
+        );
     }
 
     #[test]

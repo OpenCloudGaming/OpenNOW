@@ -8,15 +8,30 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-pub const RING_PACKETS: usize = 256;
+/// Holds the longest repair window at about 4,000 packets per second.
+pub const RING_PACKETS: usize = 1_024;
 pub const NACK_IDENTIFIER: &[u8; 4] = b"ONAK";
 pub const MAX_NACK_PAIRS: usize = 32;
-/// Matches the guest's NVST reorder wait: a repair later than this cannot be assembled.
-pub const NACK_TRACKING_TIMEOUT: Duration = Duration::from_millis(52);
+/// GFN's own reorder wait, the shortest window a guest uses.
+const MIN_REPAIR_WINDOW: Duration = Duration::from_millis(52);
+const MAX_REPAIR_WINDOW: Duration = Duration::from_millis(250);
+const REPAIR_WINDOW_SLACK: Duration = Duration::from_millis(30);
+const DEFAULT_RTT: Duration = Duration::from_millis(30);
 const NACK_EXTRA_WAIT: Duration = Duration::from_millis(4);
 const MAX_NACK_SENDS: u32 = 3;
 const MAX_TRACKED_MISSING: usize = RING_PACKETS;
 pub const KEYFRAME_INTERVAL: Duration = Duration::from_secs(1);
+/// Unanswered keyframe requests space the next one out, up to this interval.
+const MAX_KEYFRAME_INTERVAL: Duration = Duration::from_secs(4);
+
+/// How long a guest waits for a repaired packet before it gives the frame up: three NACK
+/// round trips to the host plus slack, within 52..=250 ms. The guest's NVST reorder wait and
+/// its NACK tracking use the same window, so a gap is never declared lost while a repair can
+/// still arrive.
+pub fn repair_window(rtt: Option<Duration>) -> Duration {
+    (rtt.unwrap_or(DEFAULT_RTT) * 3 + REPAIR_WINDOW_SLACK)
+        .clamp(MIN_REPAIR_WINDOW, MAX_REPAIR_WINDOW)
+}
 
 #[derive(Debug, Clone)]
 pub struct RingEntry {
@@ -183,20 +198,21 @@ impl NackTracker {
     }
 
     /// Sequences due for a (re)send now. Retries follow RTT + 4 ms with at most
-    /// clamp(52 ms / RTT, 1, 3) sends, the same budget as GFN's Mjolnir NACK policy.
+    /// clamp(window / RTT, 1, 3) sends inside the repair window.
     pub fn poll(&mut self, now: Instant, rtt: Option<Duration>) -> Vec<u64> {
-        let rtt = rtt.unwrap_or(Duration::from_millis(30));
+        let window = repair_window(rtt);
+        let rtt = rtt.unwrap_or(DEFAULT_RTT);
         let cap = if rtt.is_zero() {
             MAX_NACK_SENDS
         } else {
-            u32::try_from(NACK_TRACKING_TIMEOUT.as_nanos() / rtt.as_nanos())
+            u32::try_from(window.as_nanos() / rtt.as_nanos())
                 .unwrap_or(MAX_NACK_SENDS)
                 .clamp(1, MAX_NACK_SENDS)
         };
         let interval = rtt + NACK_EXTRA_WAIT;
         let mut expired = 0;
         self.missing.retain(|_, missing| {
-            let keep = now.saturating_duration_since(missing.first_seen) < NACK_TRACKING_TIMEOUT;
+            let keep = now.saturating_duration_since(missing.first_seen) < window;
             if !keep {
                 expired += 1;
             }
@@ -224,6 +240,46 @@ impl NackTracker {
 
     pub fn counters(&self) -> LossCounters {
         self.counters
+    }
+}
+
+/// Spacing of one guest's keyframe requests: one per KEYFRAME_INTERVAL while each request
+/// is answered with a keyframe, doubling up to MAX_KEYFRAME_INTERVAL while they are not, so
+/// a link that keeps losing IDRs stops asking GFN for one every second.
+#[derive(Debug)]
+pub struct KeyframeBackoff {
+    interval: Duration,
+    sent_at: Option<Instant>,
+    keyframes_at_request: u64,
+}
+
+impl Default for KeyframeBackoff {
+    fn default() -> Self {
+        Self {
+            interval: KEYFRAME_INTERVAL,
+            sent_at: None,
+            keyframes_at_request: 0,
+        }
+    }
+}
+
+impl KeyframeBackoff {
+    pub fn due(&self, now: Instant) -> bool {
+        self.sent_at
+            .is_none_or(|sent| now.saturating_duration_since(sent) >= self.interval)
+    }
+
+    /// Records a request sent with 'keyframes_delivered' keyframes assembled so far. With
+    /// 'backoff' false the next request stays one interval away.
+    pub fn sent(&mut self, now: Instant, keyframes_delivered: u64, backoff: bool) {
+        let unanswered = self.sent_at.is_some() && keyframes_delivered == self.keyframes_at_request;
+        self.interval = if backoff && unanswered {
+            (self.interval * 2).min(MAX_KEYFRAME_INTERVAL)
+        } else {
+            KEYFRAME_INTERVAL
+        };
+        self.keyframes_at_request = keyframes_delivered;
+        self.sent_at = Some(now);
     }
 }
 
@@ -275,17 +331,54 @@ mod tests {
     }
 
     #[test]
-    fn ring_answers_only_the_last_256_packets() {
+    fn ring_answers_only_the_last_ring_packets() {
         let mut ring = RetransmitRing::default();
-        for seq in 0..300 {
+        let last = RING_PACKETS as u64 + 43;
+        for seq in 0..=last {
             ring.push(entry(seq));
         }
-        assert!(ring.get(43).is_none(), "evicted by 299");
+        assert!(ring.get(43).is_none(), "evicted by {last}");
         assert_eq!(ring.get(44).unwrap().seq, 44);
-        assert_eq!(ring.get(299).unwrap().seq, 299);
-        assert!(ring.get(300).is_none());
-        assert_eq!(ring.extend(299), Some(299));
+        assert_eq!(ring.get(last).unwrap().seq, last);
+        assert!(ring.get(last + 1).is_none());
+        assert_eq!(ring.extend(last as u16), Some(last));
         assert_eq!(ring.extend(44), Some(44));
+    }
+
+    #[test]
+    fn the_repair_window_covers_three_round_trips_within_bounds() {
+        assert_eq!(
+            repair_window(Some(Duration::from_millis(5))),
+            Duration::from_millis(52)
+        );
+        assert_eq!(
+            repair_window(Some(Duration::from_millis(40))),
+            Duration::from_millis(150)
+        );
+        assert_eq!(
+            repair_window(Some(Duration::from_millis(200))),
+            Duration::from_millis(250)
+        );
+        assert_eq!(repair_window(None), Duration::from_millis(120));
+    }
+
+    /// At 40 ms RTT GFN's 52 ms budget allowed one NACK that could not return in time; the
+    /// co-op window keeps the gap open for three.
+    #[test]
+    fn a_slow_hop_still_gets_three_nacks_before_the_gap_is_lost() {
+        let start = Instant::now();
+        let rtt = Some(Duration::from_millis(40));
+        let mut tracker = NackTracker::default();
+        tracker.observe(1, start);
+        tracker.observe(3, start);
+        let mut sends = 0;
+        for ms in 0..150 {
+            sends += tracker.poll(start + Duration::from_millis(ms), rtt).len();
+        }
+        assert_eq!(sends, 3);
+        assert_eq!(tracker.counters().lost, 0, "still inside the window");
+        tracker.observe(2, start + Duration::from_millis(140));
+        assert_eq!(tracker.counters().repaired, 1);
     }
 
     #[test]
@@ -357,6 +450,31 @@ mod tests {
         assert!(due.len() <= RING_PACKETS);
         assert_eq!(*due.first().unwrap(), 10_000 - RING_PACKETS as u64);
         assert_eq!(tracker.counters().lost, 10_000 - 1 - RING_PACKETS as u64);
+    }
+
+    #[test]
+    fn unanswered_keyframe_requests_back_off_and_an_answer_resets_them() {
+        let start = Instant::now();
+        let at = |seconds: u64| start + Duration::from_secs(seconds);
+        let mut backoff = KeyframeBackoff::default();
+        assert!(backoff.due(start));
+        backoff.sent(start, 0, true);
+        assert!(!backoff.due(at(1) - Duration::from_millis(1)));
+        assert!(backoff.due(at(1)));
+        backoff.sent(at(1), 0, true);
+        assert!(!backoff.due(at(2)), "unanswered: two seconds");
+        assert!(backoff.due(at(3)));
+        backoff.sent(at(3), 0, true);
+        backoff.sent(at(7), 0, true);
+        assert!(!backoff.due(at(10)), "capped at four seconds");
+        assert!(backoff.due(at(11)));
+        backoff.sent(at(11), 1, true);
+        assert!(
+            backoff.due(at(12)),
+            "a keyframe arrived: back to one second"
+        );
+        backoff.sent(at(12), 1, false);
+        assert!(backoff.due(at(13)), "first-frame requests never back off");
     }
 
     #[test]

@@ -16,8 +16,8 @@ use str0m::rtp::Ssrc;
 use crate::config::IceConfig;
 use crate::input::{GamepadState, InputRecord, InputSamples};
 use crate::link::{AUDIO_PT, LinkEvent, NetConfig, Path, PeerLink, ResolvedIce, VIDEO_PT};
-use crate::protocol::{ControlMessage, Signal, StreamDescription};
-use crate::ring::{KEYFRAME_INTERVAL, LossCounters, NackTracker, encode_nack};
+use crate::protocol::{ControlMessage, Signal, StreamDescription, generation};
+use crate::ring::{KeyframeBackoff, LossCounters, NackTracker, encode_nack, repair_window};
 use crate::{CoopError, EventSink, bounded, log};
 
 const COMMAND_CAPACITY: usize = 32;
@@ -29,7 +29,15 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Keyframe requests a guest sends while its decoder has not presented a frame; one per
 /// KEYFRAME_INTERVAL, the first as soon as the decoder starts.
 const MAX_FIRST_FRAME_KEYFRAME_REQUESTS: u32 = 5;
-const RECONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// The host holds a reconnecting guest's slot for 60 s, which the reconnect toast counts down.
+const RECONNECT_TIMEOUT: Duration = Duration::from_secs(60);
+/// Inbound silence after which the guest shows 'reconnecting'. A live host sends media,
+/// 1 Hz stats and ICE checks at least every second.
+const LIVENESS_TIMEOUT: Duration = Duration::from_millis(2_500);
+/// Inbound silence after which the guest asks the host for a new link.
+const RESTART_AFTER: Duration = Duration::from_secs(4);
+/// Interval between repeated restart requests while no new link connects.
+const RESTART_REQUEST_INTERVAL: Duration = Duration::from_secs(8);
 
 /// The local media pipeline a guest feeds. Implemented by the engine with the normal
 /// embedded decode, presentation and audio path.
@@ -72,7 +80,7 @@ pub struct GuestConfig {
 
 pub struct CoopGuest {
     host_peer_id: String,
-    commands: Option<SyncSender<Signal>>,
+    commands: Option<SyncSender<(Signal, u32)>>,
     worker: Option<JoinHandle<()>>,
 }
 
@@ -112,10 +120,12 @@ impl CoopGuest {
         let signal = Signal::parse(payload)
             .ok_or_else(|| CoopError::Invalid("payload is not a co-op signal".to_owned()))?;
         let commands = self.commands.as_ref().ok_or(CoopError::Closed)?;
-        commands.try_send(signal).map_err(|error| match error {
-            TrySendError::Full(_) => CoopError::Busy,
-            TrySendError::Disconnected(_) => CoopError::Closed,
-        })
+        commands
+            .try_send((signal, generation(payload)))
+            .map_err(|error| match error {
+                TrySendError::Full(_) => CoopError::Busy,
+                TrySendError::Disconnected(_) => CoopError::Closed,
+            })
     }
 
     /// Leaves the host and stops local media; joins the worker.
@@ -185,6 +195,12 @@ fn quality(total_ms: Option<f64>, loss_pct: f64) -> &'static str {
 
 struct GuestWorker {
     link: PeerLink,
+    ice: Arc<ResolvedIce>,
+    net: NetConfig,
+    /// Generation of the host offer the current link answered.
+    generation: u32,
+    offered: bool,
+    restart_requested_at: Option<Instant>,
     media: Box<dyn GuestMedia>,
     events: EventSink,
     host_peer_id: String,
@@ -194,7 +210,7 @@ struct GuestWorker {
     receiver: Option<NvstCoopGuestReceiver>,
     nack: NackTracker,
     video_ssrc: Option<Ssrc>,
-    keyframe_sent: Option<Instant>,
+    keyframes: KeyframeBackoff,
     slot: u8,
     input_muted: bool,
     host_to_gfn_ping_ms: Option<f64>,
@@ -220,11 +236,11 @@ fn run(
     config: GuestConfig,
     media: Box<dyn GuestMedia>,
     events: EventSink,
-    commands: &Receiver<Signal>,
+    commands: &Receiver<(Signal, u32)>,
 ) {
     let now = Instant::now();
     let ice = Arc::new(ResolvedIce::resolve(&config.ice));
-    let link = match PeerLink::new(ice, config.net, now) {
+    let link = match PeerLink::new(Arc::clone(&ice), config.net.clone(), now) {
         Ok(link) => link,
         Err(error) => {
             events(json!({
@@ -236,6 +252,11 @@ fn run(
     };
     let mut worker = GuestWorker {
         link,
+        ice,
+        net: config.net,
+        generation: 0,
+        offered: false,
+        restart_requested_at: None,
         media,
         events,
         host_peer_id: config.host_peer_id,
@@ -245,7 +266,7 @@ fn run(
         receiver: None,
         nack: NackTracker::default(),
         video_ssrc: None,
-        keyframe_sent: None,
+        keyframes: KeyframeBackoff::default(),
         slot: config.slot,
         input_muted: false,
         host_to_gfn_ping_ms: None,
@@ -306,17 +327,17 @@ impl GuestWorker {
 
     fn signal_out(&self, signal: &Signal) {
         self.emit(json!({
-            "type":"coop-signal-out","peerId":self.host_peer_id,"payload":signal.to_json(),
+            "type":"coop-signal-out","peerId":self.host_peer_id,"payload":signal.to_json(self.generation),
         }));
     }
 
     /// Runs until the guest leaves or the link ends; returns the end reason.
-    fn run(&mut self, commands: &Receiver<Signal>) -> String {
+    fn run(&mut self, commands: &Receiver<(Signal, u32)>) -> String {
         loop {
             loop {
                 match commands.try_recv() {
-                    Ok(signal) => {
-                        if let Err(reason) = self.handle_signal(signal) {
+                    Ok((signal, generation)) => {
+                        if let Err(reason) = self.handle_signal(signal, generation) {
                             return reason;
                         }
                     }
@@ -361,25 +382,40 @@ impl GuestWorker {
         self.emit_state(Some(reason));
     }
 
-    fn handle_signal(&mut self, signal: Signal) -> Result<(), String> {
+    fn handle_signal(&mut self, signal: Signal, generation: u32) -> Result<(), String> {
         match signal {
+            Signal::Offer(_) if generation < self.generation => {}
             Signal::Offer(sdp) => {
+                let now = Instant::now();
+                if self.offered {
+                    self.replace_link(now)?;
+                }
+                self.generation = generation;
                 let answer = self
                     .link
                     .accept_offer(&sdp)
                     .map_err(|error| format!("invalid offer: {error}"))?;
                 self.signal_out(&Signal::Answer(answer));
-                let trying = if self.link.relay_started() {
-                    GuestState::TryingRelay
+                if self.offered {
+                    log(&format!("guest new link generation={generation}"));
+                    self.set_state(GuestState::Reconnecting, now);
                 } else {
-                    GuestState::TryingDirect
-                };
-                self.set_state(trying, Instant::now());
+                    let trying = if self.link.relay_started() {
+                        GuestState::TryingRelay
+                    } else {
+                        GuestState::TryingDirect
+                    };
+                    self.set_state(trying, now);
+                }
+                self.offered = true;
             }
-            Signal::Candidate(candidate) => {
+            Signal::Candidate(candidate) if generation == self.generation => {
                 let _ = self.link.add_remote_candidate(&candidate);
             }
-            Signal::Answer(_) | Signal::EndOfCandidates => {}
+            Signal::Candidate(_)
+            | Signal::Answer(_)
+            | Signal::EndOfCandidates
+            | Signal::Restart => {}
             Signal::Bye(reason) => {
                 return Err(if reason.is_empty() {
                     "host-left".to_owned()
@@ -391,13 +427,65 @@ impl GuestWorker {
         Ok(())
     }
 
+    /// Swaps in a fresh link for the host's replacement offer. Media, the stream receiver and
+    /// the input state stay; loss tracking restarts with the new link's sequence numbers.
+    fn replace_link(&mut self, now: Instant) -> Result<(), String> {
+        let mut link = PeerLink::new(Arc::clone(&self.ice), self.net.clone(), now)
+            .map_err(|error| format!("co-op sockets: {error}"))?;
+        link.start_relays_now(now);
+        std::mem::replace(&mut self.link, link).abandon();
+        self.nack = NackTracker::default();
+        self.video_ssrc = None;
+        self.keyframes = KeyframeBackoff::default();
+        self.restart_requested_at = None;
+        Ok(())
+    }
+
+    /// Asks the host for a new link through the signal path, which does not depend on the
+    /// silent one.
+    fn request_restart(&mut self, now: Instant, reason: &str) {
+        log(&format!(
+            "guest requests a new link generation={} reason={reason} silenceMs={}",
+            self.generation,
+            self.link.inbound_silence(now).as_millis()
+        ));
+        self.restart_requested_at = Some(now);
+        self.signal_out(&Signal::Restart);
+    }
+
+    fn check_liveness(&mut self, now: Instant) {
+        let silence = self.link.inbound_silence(now);
+        if self.is_up() && silence >= LIVENESS_TIMEOUT {
+            log(&format!("guest silent silenceMs={}", silence.as_millis()));
+            self.set_state(GuestState::Reconnecting, now);
+            return;
+        }
+        if self.state != GuestState::Reconnecting {
+            return;
+        }
+        if self.link.is_connected() && silence < LIVENESS_TIMEOUT {
+            self.restart_requested_at = None;
+            self.set_state(self.up_state(), now);
+            return;
+        }
+        let due = match self.restart_requested_at {
+            None => silence >= RESTART_AFTER,
+            Some(at) => now.saturating_duration_since(at) >= RESTART_REQUEST_INTERVAL,
+        };
+        if due {
+            self.request_restart(now, "silence");
+        }
+    }
+
     fn handle_link_event(&mut self, event: LinkEvent, now: Instant) -> Result<(), String> {
         match event {
             LinkEvent::LocalCandidate(candidate) => self.signal_out(&Signal::Candidate(candidate)),
-            LinkEvent::DirectBlocked => self.set_state(GuestState::TryingRelay, now),
+            LinkEvent::DirectBlocked if self.state != GuestState::Reconnecting => {
+                self.set_state(GuestState::TryingRelay, now);
+            }
             LinkEvent::RelayUnavailable {
                 credentials_rejected,
-            } if !self.link.is_connected() => {
+            } if !self.link.is_connected() && self.state != GuestState::Reconnecting => {
                 return Err(if credentials_rejected {
                     "relay-credentials-rejected"
                 } else {
@@ -413,19 +501,21 @@ impl GuestWorker {
                         self.since_start(now)
                     ));
                 }
-                self.set_state(GuestState::Connected, now);
-            }
-            LinkEvent::Ice(state) => {
-                use str0m::IceConnectionState::{Completed, Connected, Disconnected};
-                match state {
-                    Disconnected if self.is_up() => {
-                        self.set_state(GuestState::Reconnecting, now);
-                    }
-                    Connected | Completed if self.state == GuestState::Reconnecting => {
-                        self.set_state(self.up_state(), now);
-                    }
-                    _ => {}
+                if self.state == GuestState::Reconnecting {
+                    log(&format!(
+                        "guest reconnected generation={} reconnectMs={}",
+                        self.generation,
+                        now.saturating_duration_since(self.state_since).as_millis()
+                    ));
                 }
+                self.restart_requested_at = None;
+                self.set_state(self.up_state(), now);
+            }
+            LinkEvent::Ice(str0m::IceConnectionState::Disconnected)
+                if self.link.is_connected() && self.restart_requested_at.is_none() =>
+            {
+                self.set_state(GuestState::Reconnecting, now);
+                self.request_restart(now, "ice-disconnected");
             }
             LinkEvent::Path(Path::Relay(_))
                 if matches!(
@@ -462,7 +552,9 @@ impl GuestWorker {
                     _ => {}
                 }
             }
-            LinkEvent::Closed => return Err("host-disconnected".to_owned()),
+            LinkEvent::Closed if self.state != GuestState::Reconnecting => {
+                return Err("host-disconnected".to_owned());
+            }
             _ => {}
         }
         Ok(())
@@ -629,7 +721,9 @@ impl GuestWorker {
         }) {
             return Err("connect-timeout".to_owned());
         }
+        self.check_liveness(now);
         if let Some(receiver) = self.receiver.as_mut() {
+            receiver.set_repair_window(repair_window(self.link.rtt()));
             receiver
                 .poll(now)
                 .map_err(|error| format!("media-closed: {error}"))?;
@@ -651,18 +745,17 @@ impl GuestWorker {
                 .receiver
                 .as_ref()
                 .is_some_and(NvstCoopGuestReceiver::keyframe_needed);
-        if keyframe_needed
-            && self.link.is_connected()
-            && self
-                .keyframe_sent
-                .is_none_or(|sent| now.saturating_duration_since(sent) >= KEYFRAME_INTERVAL)
-        {
+        if keyframe_needed && self.is_up() && self.keyframes.due(now) {
             let control = self.link.control;
             if self
                 .link
                 .send_channel(control, false, &ControlMessage::KeyframeRequest.encode())
             {
-                self.keyframe_sent = Some(now);
+                let delivered = self
+                    .receiver
+                    .as_ref()
+                    .map_or(0, |receiver| receiver.stats().keyframes_delivered);
+                self.keyframes.sent(now, delivered, !awaiting_first_frame);
                 if awaiting_first_frame {
                     self.first_frame_keyframe_requests += 1;
                 } else if decoder_request {

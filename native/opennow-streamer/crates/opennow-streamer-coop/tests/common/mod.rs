@@ -136,7 +136,12 @@ pub fn nvst_packet(
 
 /// Frame 'index' as three packets; frame 0 is an IDR.
 pub fn frame_packets(index: u32, first_seq: u16) -> (Vec<Vec<u8>>, Vec<u8>) {
-    let nal = if index == 0 { 0x65 } else { 0x41 };
+    keyed_frame_packets(index, first_seq, index == 0)
+}
+
+/// Frame 'index' as three packets, an IDR when 'keyframe'.
+pub fn keyed_frame_packets(index: u32, first_seq: u16, keyframe: bool) -> (Vec<Vec<u8>>, Vec<u8>) {
+    let nal = if keyframe { 0x65 } else { 0x41 };
     let mut parts = vec![vec![0, 0, 0, 1, nal]];
     parts[0].extend((0..1_000).map(|byte| (byte as u32 + index) as u8));
     parts.push(

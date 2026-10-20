@@ -2,6 +2,7 @@
 //! guest NACKs from a per-guest ring, rate-limits keyframe requests to GFN, and injects
 //! guest gamepad input into GFN controller slots 1..3.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -16,7 +17,7 @@ use serde_json::{Value, json};
 use crate::config::IceConfig;
 use crate::input::InputRecord;
 use crate::link::{AUDIO_PT, LinkEvent, NetConfig, Path, PeerLink, ResolvedIce, VIDEO_PT};
-use crate::protocol::{ControlMessage, Signal, StreamDescription};
+use crate::protocol::{ControlMessage, Signal, StreamDescription, generation};
 use crate::ring::{KeyframeLimiter, RetransmitRing, RingEntry, decode_nack};
 use crate::slots::{InputDrop, MAX_GUESTS, SlotAction, SlotError, SlotTable};
 use crate::{CoopError, EventSink, bounded, log};
@@ -29,6 +30,22 @@ const STATS_INTERVAL: Duration = Duration::from_secs(1);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_PEER_ID_LEN: usize = 128;
 const PEER_LOG_INTERVAL: Duration = Duration::from_secs(5);
+/// Inbound silence after which a connected guest is shown as reconnecting. A live guest
+/// sends input every 50 ms and ICE checks at least every second.
+const LIVENESS_TIMEOUT: Duration = Duration::from_millis(2_500);
+/// Inbound silence after which the host replaces the guest's link.
+const RESTART_AFTER: Duration = Duration::from_secs(4);
+/// Time a replacement link gets to connect before the host tries another.
+const RESTART_TIMEOUT: Duration = Duration::from_secs(8);
+/// Replacement links tried before the guest is failed; with RESTART_TIMEOUT this stays
+/// inside the 60 s the guest's reconnect toast counts down.
+const MAX_RESTARTS: u32 = 6;
+/// Pacing toward each guest: at least 20 Mbps and 2.5x the forwarded stream rate, with a
+/// 16 KB burst so ordinary frames leave at once and only large frames are spread out.
+const PACE_FLOOR_BPS: f64 = 20_000_000.0;
+const PACE_FACTOR: f64 = 2.5;
+const PACE_BURST_BYTES: f64 = 16_384.0;
+const MAX_PACED_PACKETS: usize = 2_048;
 
 /// What the co-op host needs from the running NVST session.
 pub trait HostBackend: Send + Sync + 'static {
@@ -83,11 +100,27 @@ pub struct HostConfig {
 }
 
 enum HostCommand {
-    AddPeer { peer_id: String, slot: u8 },
-    Signal { peer_id: String, signal: Signal },
-    Slot { peer_id: String, slot: u8 },
-    Muted { peer_id: String, muted: bool },
-    Remove { peer_id: String, reason: String },
+    AddPeer {
+        peer_id: String,
+        slot: u8,
+    },
+    Signal {
+        peer_id: String,
+        signal: Signal,
+        generation: u32,
+    },
+    Slot {
+        peer_id: String,
+        slot: u8,
+    },
+    Muted {
+        peer_id: String,
+        muted: bool,
+    },
+    Remove {
+        peer_id: String,
+        reason: String,
+    },
     MaxGuests(u8),
 }
 
@@ -150,6 +183,7 @@ impl CoopHost {
                     peer_log_at: Instant::now(),
                     keyframes_to_gfn: 0,
                     registered: None,
+                    stream_bps: 0.0,
                 }
                 .run(&receiver, &tap);
             })
@@ -194,6 +228,7 @@ impl CoopHost {
         self.request(HostCommand::Signal {
             peer_id: valid_peer_id(peer_id)?,
             signal,
+            generation: generation(payload),
         })
     }
 
@@ -272,6 +307,71 @@ struct HostPeer {
     /// The guest's first keyframe request after its link connected skips the shared
     /// limiter once, so a joining guest never waits a limiter interval for its first frame.
     first_keyframe_request: bool,
+    /// Link generation: 0 for the first offer, one more for every replacement link.
+    generation: u32,
+    /// Replacement links tried since the guest was last connected.
+    restarts: u32,
+    /// When the current replacement link was offered.
+    restart_at: Option<Instant>,
+    pacer: Pacer,
+}
+
+/// Releases one guest's video at a bounded rate. The tap hands the host each frame as a
+/// burst (a 50-70 KB IDR arrives as one); written straight out, that burst overflows the
+/// host's uplink queue and the IDR is the frame that gets lost. Repairs jump the queue.
+#[derive(Debug)]
+struct Pacer {
+    queue: VecDeque<(RingEntry, bool)>,
+    budget: f64,
+    refilled_at: Option<Instant>,
+    dropped: u64,
+}
+
+impl Default for Pacer {
+    fn default() -> Self {
+        Self {
+            queue: VecDeque::new(),
+            budget: PACE_BURST_BYTES,
+            refilled_at: None,
+            dropped: 0,
+        }
+    }
+}
+
+impl Pacer {
+    fn push(&mut self, entry: RingEntry) {
+        if self.queue.len() == MAX_PACED_PACKETS {
+            self.queue.pop_front();
+            self.dropped += 1;
+        }
+        self.queue.push_back((entry, false));
+    }
+
+    fn push_repair(&mut self, entry: RingEntry) {
+        if self.queue.len() == MAX_PACED_PACKETS {
+            self.queue.pop_back();
+            self.dropped += 1;
+        }
+        self.queue.push_front((entry, true));
+    }
+
+    /// Packets the budget allows now, oldest first; each is flagged when it is a repair.
+    fn release(&mut self, now: Instant, rate_bps: f64) -> Vec<(RingEntry, bool)> {
+        let elapsed = self
+            .refilled_at
+            .map_or(0.0, |at| now.saturating_duration_since(at).as_secs_f64());
+        self.refilled_at = Some(now);
+        self.budget = (self.budget + elapsed * rate_bps / 8.0).min(PACE_BURST_BYTES);
+        let mut released = Vec::new();
+        while self.budget > 0.0 {
+            let Some(item) = self.queue.pop_front() else {
+                break;
+            };
+            self.budget -= item.0.packet.len() as f64;
+            released.push(item);
+        }
+        released
+    }
 }
 
 /// Media written to one guest's link: forwarded packets, completed video frames, and
@@ -358,6 +458,8 @@ struct HostWorker {
     keyframes_to_gfn: u64,
     /// Guest slot mask the NVST input path last accepted; re-sent until it matches.
     registered: Option<u8>,
+    /// Forwarded stream rate: rises with the last second at once and decays slowly.
+    stream_bps: f64,
 }
 
 impl HostWorker {
@@ -408,8 +510,10 @@ impl HostWorker {
         (self.events)(value);
     }
 
-    fn signal_out(&self, peer_id: &str, signal: &Signal) {
-        self.emit(json!({"type":"coop-signal-out","peerId":peer_id,"payload":signal.to_json()}));
+    fn signal_out(&self, peer_id: &str, signal: &Signal, generation: u32) {
+        self.emit(
+            json!({"type":"coop-signal-out","peerId":peer_id,"payload":signal.to_json(generation)}),
+        );
     }
 
     fn emit_state(&self, index: usize) {
@@ -474,7 +578,7 @@ impl HostWorker {
                     ));
                 };
                 self.apply(&actions);
-                self.signal_out(&peer_id, &Signal::Offer(offer));
+                self.signal_out(&peer_id, &Signal::Offer(offer), 0);
                 self.peers.push(HostPeer {
                     id: peer_id,
                     link,
@@ -488,6 +592,10 @@ impl HostWorker {
                     input: PeerInput::default(),
                     forwarded: PeerForwarded::default(),
                     first_keyframe_request: false,
+                    generation: 0,
+                    restarts: 0,
+                    restart_at: None,
+                    pacer: Pacer::default(),
                 });
                 log(&format!(
                     "host peer={} added slot={slot} peers={}",
@@ -497,8 +605,15 @@ impl HostWorker {
                 self.emit_state(self.peers.len() - 1);
                 Ok(())
             }
-            HostCommand::Signal { peer_id, signal } => {
+            HostCommand::Signal {
+                peer_id,
+                signal,
+                generation,
+            } => {
                 let index = self.peer_index(&peer_id)?;
+                if generation != self.peers[index].generation && !matches!(signal, Signal::Bye(_)) {
+                    return Ok(());
+                }
                 let link = &mut self.peers[index].link;
                 match signal {
                     Signal::Answer(sdp) => link.accept_answer(&sdp).map_err(CoopError::Invalid),
@@ -515,6 +630,15 @@ impl HostWorker {
                             bounded(&reason)
                         ));
                         self.disconnect(index, PeerState::Disconnected);
+                        Ok(())
+                    }
+                    Signal::Restart => {
+                        if !matches!(
+                            self.peers[index].state,
+                            PeerState::Disconnected | PeerState::Failed
+                        ) {
+                            self.restart(index, Instant::now(), "guest-request");
+                        }
                         Ok(())
                     }
                 }
@@ -546,7 +670,8 @@ impl HostWorker {
         if let Ok(actions) = self.slots.remove(&peer_id) {
             self.apply(&actions);
         }
-        self.signal_out(&peer_id, &Signal::Bye(reason.to_owned()));
+        let generation = self.peers[index].generation;
+        self.signal_out(&peer_id, &Signal::Bye(reason.to_owned()), generation);
         let mut peer = self.peers.remove(index);
         log(&format!(
             "host peer={index} removed reason={} {}",
@@ -580,6 +705,106 @@ impl HostWorker {
         }
         self.peers[index].link.close();
         self.set_state(index, state);
+    }
+
+    /// The guest stopped reaching the host: show it as reconnecting and release its buttons.
+    fn link_down(&mut self, index: usize) {
+        if let Ok(actions) = self.slots.disconnected(&self.peers[index].id) {
+            self.apply(&actions);
+        }
+        self.set_state(index, PeerState::Reconnecting);
+    }
+
+    /// Replaces the guest's link with a fresh one (new sockets, candidates, relays and DTLS)
+    /// and offers it through the signal path, which does not depend on the dead link.
+    fn restart(&mut self, index: usize, now: Instant, reason: &str) {
+        if self.peers[index].restarts >= MAX_RESTARTS {
+            log(&format!(
+                "host peer={index} restart gave up after {} attempts",
+                self.peers[index].restarts
+            ));
+            self.disconnect(index, PeerState::Failed);
+            return;
+        }
+        let link = PeerLink::new(Arc::clone(&self.ice), self.net.clone(), now);
+        let Some((mut link, offer)) = link
+            .ok()
+            .and_then(|mut link| link.create_offer().map(|offer| (link, offer)))
+        else {
+            log(&format!("host peer={index} restart could not open a link"));
+            self.disconnect(index, PeerState::Failed);
+            return;
+        };
+        link.start_relays_now(now);
+        if self.peers[index].state == PeerState::Connected {
+            self.link_down(index);
+        }
+        let peer = &mut self.peers[index];
+        std::mem::replace(&mut peer.link, link).abandon();
+        peer.generation += 1;
+        peer.restarts += 1;
+        peer.restart_at = Some(now);
+        peer.video_base = None;
+        peer.audio_base = None;
+        peer.ring = RetransmitRing::default();
+        peer.pacer = Pacer::default();
+        peer.sent_bytes_at_stats = 0;
+        peer.first_keyframe_request = false;
+        peer.forwarded.video_rtp_time = None;
+        let (id, generation, attempt) = (peer.id.clone(), peer.generation, peer.restarts);
+        log(&format!(
+            "host peer={index} restart generation={generation} attempt={attempt} reason={reason}"
+        ));
+        self.set_state(index, PeerState::Reconnecting);
+        self.signal_out(&id, &Signal::Offer(offer), generation);
+    }
+
+    fn check_liveness(&mut self, index: usize, now: Instant) {
+        let peer = &self.peers[index];
+        let silence = peer.link.inbound_silence(now);
+        match (peer.state, peer.restart_at) {
+            (PeerState::Connected, _) if silence >= LIVENESS_TIMEOUT => {
+                log(&format!(
+                    "host peer={index} silent silenceMs={}",
+                    silence.as_millis()
+                ));
+                self.link_down(index);
+            }
+            (PeerState::Reconnecting, None) if silence >= RESTART_AFTER => {
+                self.restart(index, now, "silence");
+            }
+            (PeerState::Reconnecting, None) if silence < LIVENESS_TIMEOUT => {
+                let _ = self.slots.connected(&self.peers[index].id, now);
+                self.set_state(index, PeerState::Connected);
+            }
+            (PeerState::Reconnecting, Some(at))
+                if now.saturating_duration_since(at) >= RESTART_TIMEOUT =>
+            {
+                self.restart(index, now, "timeout");
+            }
+            _ => {}
+        }
+    }
+
+    fn pace_bps(&self) -> f64 {
+        (self.stream_bps * PACE_FACTOR).max(PACE_FLOOR_BPS)
+    }
+
+    fn release_paced(&mut self, index: usize, now: Instant) {
+        let rate = self.pace_bps();
+        let peer = &mut self.peers[index];
+        let Some(mid) = peer.link.video_mid else {
+            return;
+        };
+        for (entry, repair) in peer.pacer.release(now, rate) {
+            if !peer.link.write_rtp(mid, VIDEO_PT, &entry, now) || repair {
+                continue;
+            }
+            peer.forwarded.video += 1;
+            if peer.forwarded.video_rtp_time.replace(entry.rtp_time) != Some(entry.rtp_time) {
+                peer.forwarded.frames += 1;
+            }
+        }
     }
 
     fn apply(&mut self, actions: &[SlotAction]) {
@@ -667,7 +892,7 @@ impl HostWorker {
         };
         let now = Instant::now();
         for peer in &mut self.peers {
-            if !peer.link.is_connected() {
+            if peer.state != PeerState::Connected || !peer.link.is_connected() {
                 continue;
             }
             let (mid, base) = match packet.kind {
@@ -686,19 +911,16 @@ impl HostWorker {
                 rtp_time,
                 marker,
             };
-            if peer.link.write_rtp(mid, pt, &entry, now) {
-                match packet.kind {
-                    CoopMediaKind::Video => {
-                        peer.forwarded.video += 1;
-                        if peer.forwarded.video_rtp_time.replace(rtp_time) != Some(rtp_time) {
-                            peer.forwarded.frames += 1;
-                        }
-                    }
-                    CoopMediaKind::Audio => peer.forwarded.audio += 1,
+            match packet.kind {
+                CoopMediaKind::Video => {
+                    peer.ring.push(entry.clone());
+                    peer.pacer.push(entry);
                 }
-            }
-            if packet.kind == CoopMediaKind::Video {
-                peer.ring.push(entry);
+                CoopMediaKind::Audio => {
+                    if peer.link.write_rtp(mid, pt, &entry, now) {
+                        peer.forwarded.audio += 1;
+                    }
+                }
             }
         }
     }
@@ -711,6 +933,11 @@ impl HostWorker {
             let events: Vec<LinkEvent> = self.peers[index].link.take_events().collect();
             for event in events {
                 self.handle_link_event(index, event, now);
+            }
+            self.check_liveness(index, now);
+            if self.peers[index].state == PeerState::Connected {
+                self.release_paced(index, now);
+                self.peers[index].link.drive(now);
             }
             let peer = &self.peers[index];
             if peer.state == PeerState::Connecting
@@ -732,31 +959,29 @@ impl HostWorker {
         match event {
             LinkEvent::LocalCandidate(candidate) => {
                 let peer_id = self.peers[index].id.clone();
-                self.signal_out(&peer_id, &Signal::Candidate(candidate));
+                let generation = self.peers[index].generation;
+                self.signal_out(&peer_id, &Signal::Candidate(candidate), generation);
             }
             LinkEvent::Connected => {
                 let peer_id = self.peers[index].id.clone();
                 let _ = self.slots.connected(&peer_id, now);
                 self.set_state(index, PeerState::Connected);
-                self.peers[index].first_keyframe_request = true;
+                let peer = &mut self.peers[index];
+                peer.restarts = 0;
+                peer.restart_at = None;
+                peer.first_keyframe_request = true;
                 if self.keyframes.request(now) {
                     self.request_gfn_keyframe();
                 }
                 log(&format!("host peer={index} connected; keyframe requested"));
             }
-            LinkEvent::Ice(state) => {
-                use str0m::IceConnectionState::{Checking, Completed, Connected, Disconnected};
-                match state {
-                    Disconnected if self.peers[index].state == PeerState::Connected => {
-                        self.set_state(index, PeerState::Reconnecting);
-                    }
-                    Connected | Completed if self.peers[index].state == PeerState::Reconnecting => {
-                        self.set_state(index, PeerState::Connected);
-                    }
-                    Checking | Connected | Completed | Disconnected => {}
-                    _ => {}
-                }
+            LinkEvent::Ice(str0m::IceConnectionState::Disconnected)
+                if self.peers[index].link.is_connected()
+                    && self.peers[index].restart_at.is_none() =>
+            {
+                self.restart(index, now, "ice-disconnected");
             }
+            LinkEvent::Ice(_) => {}
             LinkEvent::Path(_) => self.emit_state(index),
             LinkEvent::ChannelOpen(id, _) => {
                 if self.peers[index].link.control == Some(id) {
@@ -802,17 +1027,16 @@ impl HostWorker {
                     return;
                 };
                 let peer = &mut self.peers[index];
-                let Some(mid) = peer.link.video_mid else {
+                if peer.link.video_mid.is_none() {
                     return;
-                };
-                for wire in sequences {
+                }
+                for wire in sequences.into_iter().rev() {
                     let Some(entry) = peer.ring.extend(wire).and_then(|seq| peer.ring.get(seq))
                     else {
                         continue;
                     };
-                    if peer.link.write_rtp(mid, VIDEO_PT, entry, now) {
-                        peer.forwarded.repaired += 1;
-                    }
+                    peer.pacer.push_repair(entry.clone());
+                    peer.forwarded.repaired += 1;
                 }
             }
             LinkEvent::Closed => self.disconnect(index, PeerState::Disconnected),
@@ -852,6 +1076,7 @@ impl HostWorker {
         self.stats_at = now;
         let kbps = |bytes: u64| bytes as f64 * 8.0 / 1_000.0 / seconds;
         let stream_kbps = kbps(std::mem::take(&mut self.stream_bytes));
+        self.stream_bps = (stream_kbps * 1_000.0).max(self.stream_bps * 0.8);
         let ping = self.backend.host_to_gfn_ping_ms();
         let mut peers = Vec::with_capacity(self.peers.len());
         let mut upload_kbps = 0.0;
@@ -886,12 +1111,17 @@ impl HostWorker {
             if log_peers {
                 let input = peer.input;
                 log(&format!(
-                    "host peer={index} state={} slot={:?} {} sendKbps={:.0} keyframesToGfn={}",
+                    "host peer={index} state={} slot={:?} {} sendKbps={:.0} keyframesToGfn={} paceKbps={:.0} pacedQueue={} pacedDropped={} silenceMs={} generation={}",
                     peer.state.label(),
                     self.slots.slot_of(&peer.id),
                     forwarded_summary(&peer.forwarded),
                     peer.send_kbps,
-                    self.keyframes_to_gfn
+                    self.keyframes_to_gfn,
+                    (self.stream_bps * PACE_FACTOR).max(PACE_FLOOR_BPS) / 1_000.0,
+                    peer.pacer.queue.len(),
+                    peer.pacer.dropped,
+                    peer.link.inbound_silence(now).as_millis(),
+                    peer.generation
                 ));
                 opennow_streamer_protocol::log::log_line(
                     "INFO",
@@ -932,6 +1162,66 @@ impl HostWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn entry(seq: u64, bytes: usize) -> RingEntry {
+        RingEntry {
+            seq,
+            packet: Arc::from(vec![0_u8; bytes]),
+            rtp_time: 0,
+            marker: false,
+        }
+    }
+
+    /// A 60 KB IDR handed over in one burst leaves at the pacing rate after a 16 KB burst,
+    /// and a repair goes out before the queued video.
+    #[test]
+    fn the_pacer_spreads_an_idr_burst_and_sends_repairs_first() {
+        let start = Instant::now();
+        let mut pacer = Pacer::default();
+        for seq in 0..50 {
+            pacer.push(entry(seq, 1_200));
+        }
+        let first = pacer.release(start, PACE_FLOOR_BPS);
+        assert_eq!(
+            first.len(),
+            14,
+            "the burst allowance plus the packet that crosses it"
+        );
+        pacer.push_repair(entry(7, 1_200));
+        let after_1ms = pacer.release(start + Duration::from_millis(1), PACE_FLOOR_BPS);
+        assert!(
+            after_1ms[0].1 && after_1ms[0].0.seq == 7,
+            "the repair leads"
+        );
+        assert_eq!(after_1ms.len(), 2, "20 Mbps is 2,500 bytes per ms");
+        let mut sent = first.len() + after_1ms.len() - 1;
+        let mut elapsed = 1;
+        while sent < 50 {
+            elapsed += 1;
+            sent += pacer
+                .release(start + Duration::from_millis(elapsed), PACE_FLOOR_BPS)
+                .len();
+        }
+        assert_eq!(
+            elapsed, 18,
+            "the 61 KB after the first 16 KB leave at 2.5 KB per ms"
+        );
+    }
+
+    #[test]
+    fn the_pacer_bounds_its_queue() {
+        let mut pacer = Pacer::default();
+        for seq in 0..MAX_PACED_PACKETS as u64 + 5 {
+            pacer.push(entry(seq, 1_200));
+        }
+        assert_eq!(pacer.queue.len(), MAX_PACED_PACKETS);
+        assert_eq!(pacer.dropped, 5);
+        assert_eq!(
+            pacer.queue.front().unwrap().0.seq,
+            5,
+            "the oldest packets go first"
+        );
+    }
 
     #[test]
     fn sequence_extension_follows_wrap_and_reordering() {

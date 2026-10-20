@@ -358,7 +358,10 @@ the existing `controller-rumble` for the guest's own slot, mapped to the local c
 
 ### Signal payloads (opaque to core and backend)
 
-`{"kind":"offer"|"answer","sdp":string}`, `{"kind":"candidate","candidate":string,"mid":string|null}`, `{"kind":"end-of-candidates"}`, `{"kind":"bye","reason":string}`.
+`{"kind":"offer"|"answer","sdp":string}`, `{"kind":"candidate","candidate":string,"mid":string|null}`, `{"kind":"end-of-candidates"}`, `{"kind":"bye","reason":string}`, `{"kind":"restart"}`.
+Every payload carries `"gen":u32`, the link generation it belongs to (0 for the first offer, absent means 0). The host
+starts a new generation with a fresh offer when a link has been silent for 4 s, when ICE reports it disconnected, or
+when the guest sends `restart`; each side ignores offers, answers and candidates from an older generation.
 
 ### Peer media and data
 
@@ -375,10 +378,24 @@ the existing `controller-rumble` for the guest's own slot, mapped to the local c
   over each TURN URL of a GET /v1/ice-servers response named by `OPENNOW_COOP_LIVE_ICE`.
 - Media: the host taps NVST RTP after SRTP decryption and forwards video and audio packets verbatim (sequence numbers, timestamps,
   NV extension) on two RTP streams. FEC repair packets are not forwarded while OpenNOW cannot use them.
-- The host keeps a bounded 256-packet (about 200 ms) retransmission ring per guest and answers guest NACKs locally. Guest keyframe
-  requests are forwarded to GFN at most once per second across all guests, except that the host requests a GFN keyframe when a
-  guest's link connects and forwards that guest's first request after connecting at once. A guest sends a keyframe request when its
-  decoder starts and again every second until it presents a frame, at most 5 times; after that only decoder and loss recovery ask.
+- The host keeps a bounded 1024-packet (about 500 ms at 20 Mbps) retransmission ring per guest and answers guest NACKs locally.
+  Each guest's video leaves through its own pacer at max(20 Mbps, 2.5 x the stream rate) with a 16 KB burst and at most
+  2048 queued packets, so an IDR is spread out instead of overflowing the uplink queue; NACK repairs jump the queue.
+- A guest waits for a missing packet for its repair window, 3 x RTT + 30 ms clamped to 52-250 ms, NACKing within it,
+  before it declares the frame lost. Guest keyframe requests are forwarded to GFN at most once per second across all
+  guests, except that the host requests a GFN keyframe when a guest's link connects (including a replacement link) and
+  forwards that guest's first request after connecting at once. A guest sends a keyframe request when its decoder starts
+  and again every second until it presents a frame, at most 5 times; after that only decoder and loss recovery ask, at
+  most once a second while answered and backing off to once every 4 s while no keyframe arrives.
+- Liveness: either side that receives nothing on the link for 2.5 s reports `reconnecting`. At 4 s of silence the host
+  offers a replacement link (generation + 1), which allocates its TURN relays at once so a dead direct path falls back to a
+  relay; the guest asks with `restart` at 4 s and every 8 s after. The host retries an unanswered replacement after 8 s, at
+  most 6 times; the guest's slot is held for 60 s. ICE checks back off to at most 1 s, so a dead pair is noticed in seconds.
+- TURN: the allocation is refreshed before its granted lifetime ends and fails the relay if it expires, permissions are
+  refreshed every 240 s (300 s lifetime) and channel bindings every 480 s (600 s lifetime); a refused permission or
+  channel refresh is retried after 10 s and a refused allocation refresh fails the relay so the link recovers. Over
+  TCP/TLS, frames are split as they are read so a burst larger than the 128 KB buffer never closes the relay, and TURN
+  requests have 16 KB of headroom past queued media.
 - Data channel `coop-control` (reliable, ordered): first message from the host is the stream description
   `{codec, width, height, fps, bitDepth, chroma, colorRange, colorSpace, hdr, audio:{codec, channels, sampleRate}}`
   taken from the negotiated NVST session; then `{type:"slot"}`, `{type:"input-muted"}`, `{type:"stats", hostToGfnPingMs}` (1 Hz),

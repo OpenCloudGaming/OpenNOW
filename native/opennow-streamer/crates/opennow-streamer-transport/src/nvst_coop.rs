@@ -5,7 +5,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use str0m::media::Pt;
 use str0m::rtp::{ExtensionValues, RtpHeader as BundleRtpHeader, Ssrc};
@@ -177,6 +177,11 @@ impl NvstCoopGuestReceiver {
 
     pub fn stats(&self) -> CoopGuestReceiveStats {
         self.stats
+    }
+
+    /// How long a packet gap waits for a host repair before the frame is given up.
+    pub fn set_repair_window(&mut self, window: Duration) {
+        self.video.set_repair_window(window);
     }
 
     /// Set while the decoder needs a reference frame; cleared once a keyframe assembles.

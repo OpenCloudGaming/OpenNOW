@@ -25,6 +25,11 @@ const MAX_UDP_ATTEMPTS: u32 = 6;
 const STREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const PERMISSION_REFRESH: Duration = Duration::from_secs(240);
 const CHANNEL_REFRESH: Duration = Duration::from_secs(480);
+/// Wait before retrying a permission or channel refresh the server refused.
+const REFRESH_RETRY: Duration = Duration::from_secs(10);
+/// Room past MAX_STREAM_BUFFER kept for TURN requests, so refreshes are never dropped
+/// behind queued media.
+const CONTROL_RESERVE: usize = 16 * 1024;
 const MAX_PENDING_REQUESTS: usize = 16;
 const MAX_PEERS: usize = 8;
 const MAX_QUEUED_SENDS: usize = 32;
@@ -66,6 +71,7 @@ struct Pending {
 enum PeerBinding {
     None,
     Requested,
+    /// Installed on the server; refreshed at the instant held.
     Installed(Instant),
 }
 
@@ -93,6 +99,7 @@ enum State {
     Allocated {
         relayed: SocketAddr,
         refresh_at: Instant,
+        expires_at: Instant,
     },
     Failed,
 }
@@ -267,7 +274,7 @@ impl TurnClient {
         }
         let transaction = stun::new_transaction_id();
         let bytes = self.build_request(kind, &transaction);
-        self.write(&bytes);
+        self.write_limited(&bytes, MAX_STREAM_BUFFER + CONTROL_RESERVE);
         self.pending.push(Pending {
             transaction,
             kind,
@@ -278,13 +285,18 @@ impl TurnClient {
     }
 
     fn write(&mut self, bytes: &[u8]) {
+        self.write_limited(bytes, MAX_STREAM_BUFFER);
+    }
+
+    /// Writes one frame; on a stream it is queued only while the backlog stays under 'limit'.
+    fn write_limited(&mut self, bytes: &[u8], limit: usize) {
         self.bytes_sent += bytes.len() as u64;
         match &mut self.link {
             Link::Udp(socket) => {
                 let _ = socket.send(bytes);
             }
             Link::Connecting { .. } | Link::Tcp(_) | Link::Tls(_) => {
-                admit_frame(&mut self.write_backlog, bytes);
+                admit_frame(&mut self.write_backlog, bytes, limit);
                 self.flush_stream();
             }
             Link::Closed => {}
@@ -446,37 +458,16 @@ impl TurnClient {
                     }
                 }
             }
-            Link::Tcp(stream) => closed = read_stream(stream, &mut self.read_buffer),
+            Link::Tcp(stream) => {
+                closed = read_frames(stream, &mut self.read_buffer, &mut datagrams);
+            }
             Link::Tls(stream) => {
-                let mut chunk = [0_u8; 16 * 1024];
-                loop {
-                    match stream.read(&mut chunk) {
-                        Ok(0) => {
-                            closed = true;
-                            break;
-                        }
-                        Ok(length) => {
-                            if self.read_buffer.len() + length > MAX_STREAM_BUFFER {
-                                closed = true;
-                                break;
-                            }
-                            self.read_buffer.extend_from_slice(&chunk[..length]);
-                        }
-                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
-                        Err(_) => {
-                            closed = true;
-                            break;
-                        }
-                    }
-                }
+                closed = read_frames(&mut **stream, &mut self.read_buffer, &mut datagrams);
             }
             Link::Connecting { .. } | Link::Closed => {}
         }
         if matches!(self.link, Link::Tls(_)) {
             self.flush_stream();
-        }
-        if !matches!(self.link, Link::Udp(_)) {
-            datagrams.extend(take_stream_frames(&mut self.read_buffer));
         }
         for datagram in datagrams {
             self.handle(&datagram, now, events);
@@ -559,13 +550,32 @@ impl TurnClient {
                     self.fail(format!("TURN allocation rejected with {code}"), events)
                 }
                 RequestKind::Permission(ip) => {
-                    self.peers.retain(|peer| peer.ip != ip);
-                    self.queued.retain(|(peer, _)| peer.ip() != ip);
-                }
-                RequestKind::ChannelBind(peer, _) => {
-                    for entry in &mut self.peers {
-                        entry.channels.retain(|(addr, _, _)| *addr != peer);
+                    let Some(peer) = self.peers.iter_mut().find(|peer| peer.ip == ip) else {
+                        return;
+                    };
+                    if let PeerBinding::Installed(_) = peer.permission {
+                        peer.permission = PeerBinding::Installed(now + REFRESH_RETRY);
+                    } else {
+                        self.peers.retain(|peer| peer.ip != ip);
+                        self.queued.retain(|(peer, _)| peer.ip() != ip);
                     }
+                }
+                RequestKind::ChannelBind(addr, number) => {
+                    for entry in &mut self.peers {
+                        entry.channels.retain_mut(|channel| {
+                            if channel.0 != addr || channel.1 != number {
+                                return true;
+                            }
+                            if let PeerBinding::Installed(_) = channel.2 {
+                                channel.2 = PeerBinding::Installed(now + REFRESH_RETRY);
+                                return true;
+                            }
+                            false
+                        });
+                    }
+                }
+                RequestKind::Refresh { lifetime } if lifetime > 0 => {
+                    self.fail(format!("TURN refresh rejected with {code}"), events);
                 }
                 RequestKind::Refresh { .. } => {}
             }
@@ -584,6 +594,7 @@ impl TurnClient {
                 self.state = State::Allocated {
                     relayed,
                     refresh_at: now + refresh_delay(lifetime),
+                    expires_at: now + Duration::from_secs(lifetime.into()),
                 };
                 events.push(TurnEvent::Allocated {
                     relayed,
@@ -596,12 +607,13 @@ impl TurnClient {
                     self.state = State::Allocated {
                         relayed,
                         refresh_at: now + refresh_delay(granted),
+                        expires_at: now + Duration::from_secs(granted.into()),
                     };
                 }
             }
             RequestKind::Permission(ip) => {
                 if let Some(peer) = self.peers.iter_mut().find(|peer| peer.ip == ip) {
-                    peer.permission = PeerBinding::Installed(now);
+                    peer.permission = PeerBinding::Installed(now + PERMISSION_REFRESH);
                 }
                 let (ready, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.queued)
                     .into_iter()
@@ -615,7 +627,7 @@ impl TurnClient {
                 for peer in &mut self.peers {
                     for channel in &mut peer.channels {
                         if channel.0 == addr && channel.1 == number {
-                            channel.2 = PeerBinding::Installed(now);
+                            channel.2 = PeerBinding::Installed(now + CHANNEL_REFRESH);
                         }
                     }
                 }
@@ -651,7 +663,7 @@ impl TurnClient {
             }
         }
         for bytes in resend {
-            self.write(&bytes);
+            self.write_limited(&bytes, MAX_STREAM_BUFFER + CONTROL_RESERVE);
         }
         if let Some(kind) = expired {
             if kind == RequestKind::Allocate {
@@ -663,9 +675,18 @@ impl TurnClient {
         if stream {
             self.flush_stream();
         }
-        let State::Allocated { refresh_at, .. } = self.state else {
+        let State::Allocated {
+            refresh_at,
+            expires_at,
+            ..
+        } = self.state
+        else {
             return;
         };
+        if now >= expires_at {
+            self.fail("TURN allocation expired".to_owned(), events);
+            return;
+        }
         let pending_kinds: Vec<RequestKind> =
             self.pending.iter().map(|pending| pending.kind).collect();
         if now >= refresh_at
@@ -677,15 +698,15 @@ impl TurnClient {
         }
         let mut renewals = Vec::new();
         for peer in &self.peers {
-            if let PeerBinding::Installed(at) = peer.permission
-                && now.saturating_duration_since(at) >= PERMISSION_REFRESH
+            if let PeerBinding::Installed(due) = peer.permission
+                && now >= due
                 && !pending_kinds.contains(&RequestKind::Permission(peer.ip))
             {
                 renewals.push(RequestKind::Permission(peer.ip));
             }
             for (addr, number, binding) in &peer.channels {
-                if let PeerBinding::Installed(at) = binding
-                    && now.saturating_duration_since(*at) >= CHANNEL_REFRESH
+                if let PeerBinding::Installed(due) = binding
+                    && now >= *due
                     && !pending_kinds.contains(&RequestKind::ChannelBind(*addr, *number))
                 {
                     renewals.push(RequestKind::ChannelBind(*addr, *number));
@@ -714,14 +735,14 @@ fn refresh_delay(lifetime: u32) -> Duration {
 }
 
 /// Queues one whole STUN message or ChannelData frame, padded to 4 bytes as streams require.
-/// A frame that does not fit the bound is dropped whole, so the stream framing never breaks.
-fn admit_frame(backlog: &mut Vec<u8>, frame: &[u8]) -> bool {
+/// A frame that does not fit 'limit' is dropped whole, so the stream framing never breaks.
+fn admit_frame(backlog: &mut Vec<u8>, frame: &[u8], limit: usize) -> bool {
     let padding = if stun::is_channel_data(frame) {
         (4 - frame.len() % 4) % 4
     } else {
         0
     };
-    if backlog.len() + frame.len() + padding > MAX_STREAM_BUFFER {
+    if backlog.len() + frame.len() + padding > limit {
         return false;
     }
     backlog.extend_from_slice(frame);
@@ -773,21 +794,26 @@ fn write_some(stream: &mut TcpStream, backlog: &mut Vec<u8>) -> io::Result<()> {
     Ok(())
 }
 
-fn read_stream(stream: &mut TcpStream, buffer: &mut Vec<u8>) -> bool {
+/// Reads what the stream holds and splits frames after every chunk, so a burst larger than
+/// the buffer only ever leaves one partial frame behind. True when the stream ended or a
+/// frame cannot fit the buffer.
+fn read_frames(stream: &mut impl Read, buffer: &mut Vec<u8>, frames: &mut Vec<Vec<u8>>) -> bool {
     let mut chunk = [0_u8; 16 * 1024];
-    loop {
+    for _ in 0..MAX_READS_PER_POLL {
         match stream.read(&mut chunk) {
             Ok(0) => return true,
             Ok(length) => {
-                if buffer.len() + length > MAX_STREAM_BUFFER {
+                buffer.extend_from_slice(&chunk[..length]);
+                frames.extend(take_stream_frames(buffer));
+                if buffer.len() > MAX_STREAM_BUFFER {
                     return true;
                 }
-                buffer.extend_from_slice(&chunk[..length]);
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => return false,
             Err(_) => return true,
         }
     }
+    false
 }
 
 /// Splits STUN messages and padded ChannelData frames out of a TCP/TLS byte stream.
@@ -834,6 +860,300 @@ pub fn tls_config_with_roots(roots: rustls::RootCertStore) -> Arc<ClientConfig> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A UDP TURN server on loopback that grants the standard lifetimes against the test's
+    /// fake clock and records every relayed datagram that arrived after a grant lapsed.
+    struct FakeTurn {
+        socket: UdpSocket,
+        relayed: SocketAddr,
+        allocation_until: Option<Instant>,
+        permissions: Vec<(IpAddr, Instant)>,
+        channels: Vec<(u16, SocketAddr, Instant)>,
+        stale_nonce_on_refresh: bool,
+        refreshes: usize,
+        permission_requests: usize,
+        channel_requests: usize,
+        delivered: usize,
+        lapsed: Vec<String>,
+    }
+
+    impl FakeTurn {
+        fn start() -> Self {
+            let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+            socket.set_nonblocking(true).unwrap();
+            Self {
+                socket,
+                relayed: "127.0.0.1:50000".parse().unwrap(),
+                allocation_until: None,
+                permissions: Vec::new(),
+                channels: Vec::new(),
+                stale_nonce_on_refresh: true,
+                refreshes: 0,
+                permission_requests: 0,
+                channel_requests: 0,
+                delivered: 0,
+                lapsed: Vec::new(),
+            }
+        }
+
+        fn permitted(&self, ip: IpAddr, now: Instant) -> bool {
+            self.allocation_until.is_some_and(|until| now < until)
+                && self
+                    .permissions
+                    .iter()
+                    .any(|(granted, until)| *granted == ip && now < *until)
+        }
+
+        fn reply(
+            &self,
+            to: SocketAddr,
+            message: &Message,
+            build: impl FnOnce(MessageBuilder) -> MessageBuilder,
+        ) {
+            let builder = MessageBuilder::new(message.method, CLASS_SUCCESS, &message.transaction);
+            self.socket.send_to(&build(builder).build(), to).unwrap();
+        }
+
+        /// Answers everything the client has sent so far, as of 'now'.
+        fn serve(&mut self, now: Instant) {
+            let mut buffer = [0_u8; 2048];
+            let mut idle = 0;
+            while idle < 3 {
+                let Ok((length, from)) = self.socket.recv_from(&mut buffer) else {
+                    idle += 1;
+                    std::thread::sleep(Duration::from_micros(300));
+                    continue;
+                };
+                idle = 0;
+                let bytes = buffer[..length].to_vec();
+                if stun::is_channel_data(&bytes) {
+                    let number = u16::from_be_bytes([bytes[0], bytes[1]]);
+                    match self.channels.iter().find(|(bound, _, _)| *bound == number) {
+                        Some((_, peer, until))
+                            if now < *until && self.permitted(peer.ip(), now) =>
+                        {
+                            self.delivered += 1;
+                        }
+                        _ => self.lapsed.push(format!("channel data at {:?}", now)),
+                    }
+                    continue;
+                }
+                let message = Message::parse(&bytes).unwrap();
+                if message.class == CLASS_INDICATION {
+                    let peer = message.xor_address(ATTR_XOR_PEER_ADDRESS).unwrap();
+                    if self.permitted(peer.ip(), now) {
+                        self.delivered += 1;
+                    } else {
+                        self.lapsed.push(format!("send indication at {:?}", now));
+                    }
+                    continue;
+                }
+                match message.method {
+                    ALLOCATE => {
+                        self.allocation_until = Some(now + Duration::from_secs(600));
+                        let relayed = self.relayed;
+                        self.reply(from, &message, |builder| {
+                            builder
+                                .xor_address(ATTR_XOR_RELAYED_ADDRESS, relayed)
+                                .attribute(ATTR_LIFETIME, &600_u32.to_be_bytes())
+                        });
+                    }
+                    REFRESH => {
+                        if self.stale_nonce_on_refresh {
+                            self.stale_nonce_on_refresh = false;
+                            let error =
+                                MessageBuilder::new(REFRESH, CLASS_ERROR, &message.transaction)
+                                    .attribute(stun::ATTR_ERROR_CODE, &[0, 0, 4, 38])
+                                    .attribute(ATTR_REALM, b"opennow.test")
+                                    .attribute(ATTR_NONCE, b"fresh-nonce")
+                                    .build();
+                            self.socket.send_to(&error, from).unwrap();
+                            continue;
+                        }
+                        self.refreshes += 1;
+                        let lifetime = message.u32_attribute(ATTR_LIFETIME).unwrap();
+                        assert!(
+                            self.allocation_until.is_some_and(|until| now < until),
+                            "refreshed after the allocation expired"
+                        );
+                        self.allocation_until = Some(now + Duration::from_secs(lifetime.into()));
+                        self.reply(from, &message, |builder| {
+                            builder.attribute(ATTR_LIFETIME, &lifetime.to_be_bytes())
+                        });
+                    }
+                    CREATE_PERMISSION => {
+                        self.permission_requests += 1;
+                        let ip = message.xor_address(ATTR_XOR_PEER_ADDRESS).unwrap().ip();
+                        self.permissions.retain(|(granted, _)| *granted != ip);
+                        self.permissions.push((ip, now + Duration::from_secs(300)));
+                        self.reply(from, &message, |builder| builder);
+                    }
+                    CHANNEL_BIND => {
+                        self.channel_requests += 1;
+                        let peer = message.xor_address(ATTR_XOR_PEER_ADDRESS).unwrap();
+                        let number = u16::from_be_bytes(
+                            message.attribute(ATTR_CHANNEL_NUMBER).unwrap()[..2]
+                                .try_into()
+                                .unwrap(),
+                        );
+                        self.channels.retain(|(bound, _, _)| *bound != number);
+                        self.channels
+                            .push((number, peer, now + Duration::from_secs(600)));
+                        self.permissions
+                            .retain(|(granted, _)| *granted != peer.ip());
+                        self.permissions
+                            .push((peer.ip(), now + Duration::from_secs(300)));
+                        self.reply(from, &message, |builder| builder);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn udp_server(address: SocketAddr) -> TurnServer {
+        TurnServer {
+            host: address.ip().to_string(),
+            port: address.port(),
+            transport: TurnTransport::Udp,
+            username: "user".to_owned(),
+            credential: "secret".to_owned(),
+        }
+    }
+
+    /// One simulated hour of relayed media on a fake clock: the allocation, permission and
+    /// channel are each refreshed before the server's 600 s, 300 s and 600 s lifetimes end,
+    /// a stale nonce on a refresh is answered with the new nonce, and no datagram reaches
+    /// the server after its grant lapsed.
+    #[test]
+    fn a_long_relayed_session_refreshes_every_grant_before_it_lapses() {
+        let mut server = FakeTurn::start();
+        let start = Instant::now();
+        let mut now = start;
+        let mut client = TurnClient::start(
+            &udp_server(server.socket.local_addr().unwrap()),
+            server.socket.local_addr().unwrap(),
+            None,
+            now,
+        )
+        .unwrap();
+        let peer: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+        let mut events = Vec::new();
+        let mut sent = 0;
+        for _ in 0..3_600 {
+            server.serve(now);
+            std::thread::sleep(Duration::from_micros(200));
+            client.poll_read(now, &mut events);
+            client.tick(now, &mut events);
+            if client.relayed().is_some() {
+                client.send_to(peer, b"media", now);
+                sent += 1;
+            }
+            now += Duration::from_secs(1);
+        }
+        server.serve(now);
+        assert!(!client.is_failed(), "{events:?}");
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, TurnEvent::Failed(_))),
+            "{events:?}"
+        );
+        assert!(server.lapsed.is_empty(), "{:?}", server.lapsed);
+        assert!(
+            server.delivered + 2 >= sent,
+            "delivered {} of {sent}",
+            server.delivered
+        );
+        assert!(
+            server.refreshes >= 3_600 / 600,
+            "refreshes {}",
+            server.refreshes
+        );
+        assert!(
+            server.permission_requests + server.channel_requests >= 3_600 / 300,
+            "permissions {} channels {}",
+            server.permission_requests,
+            server.channel_requests
+        );
+    }
+
+    /// A refused refresh means the allocation is gone: the client fails at once, which lets
+    /// the link recover, instead of re-sending the refresh on every tick.
+    #[test]
+    fn a_refused_refresh_fails_the_allocation() {
+        let server = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let address = server.local_addr().unwrap();
+        let mut now = Instant::now();
+        let mut client = TurnClient::start(&udp_server(address), address, None, now).unwrap();
+        let mut buffer = [0_u8; 2048];
+        server
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let (length, from) = server.recv_from(&mut buffer).unwrap();
+        let allocate = Message::parse(&buffer[..length]).unwrap();
+        let reply = MessageBuilder::new(ALLOCATE, CLASS_SUCCESS, &allocate.transaction)
+            .xor_address(ATTR_XOR_RELAYED_ADDRESS, "127.0.0.1:50000".parse().unwrap())
+            .attribute(ATTR_LIFETIME, &600_u32.to_be_bytes())
+            .build();
+        server.send_to(&reply, from).unwrap();
+        let mut events = Vec::new();
+        while client.relayed().is_none() {
+            client.poll_read(now, &mut events);
+        }
+        now += Duration::from_secs(541);
+        client.tick(now, &mut events);
+        let (length, from) = server.recv_from(&mut buffer).unwrap();
+        let refresh = Message::parse(&buffer[..length]).unwrap();
+        assert_eq!(refresh.method, REFRESH);
+        let error = MessageBuilder::new(REFRESH, CLASS_ERROR, &refresh.transaction)
+            .attribute(stun::ATTR_ERROR_CODE, &[0, 0, 4, 37])
+            .build();
+        server.send_to(&error, from).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !client.is_failed() {
+            assert!(Instant::now() < deadline, "{events:?}");
+            client.poll_read(now, &mut events);
+        }
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, TurnEvent::Failed(reason) if reason.contains("437")))
+        );
+    }
+
+    /// A TCP relay delivering more than the frame buffer in one burst stays open and every
+    /// frame arrives intact.
+    #[test]
+    fn a_stream_burst_larger_than_the_buffer_is_framed_without_closing() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut writer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut reader, _) = listener.accept().unwrap();
+        reader.set_nonblocking(true).unwrap();
+        let count = 400_usize;
+        let mut burst = Vec::new();
+        for index in 0..count {
+            burst.extend_from_slice(&[0x40, 0x00]);
+            burst.extend_from_slice(&1_201_u16.to_be_bytes());
+            burst.extend(std::iter::repeat_n(index as u8, 1_201));
+            burst.resize(burst.len().div_ceil(4) * 4, 0);
+        }
+        assert!(burst.len() > 3 * MAX_STREAM_BUFFER);
+        writer.write_all(&burst).unwrap();
+        let mut buffer = Vec::new();
+        let mut frames = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while frames.len() < count {
+            assert!(Instant::now() < deadline, "{} frames", frames.len());
+            assert!(
+                !read_frames(&mut reader, &mut buffer, &mut frames),
+                "the burst closed the relay"
+            );
+        }
+        for (index, frame) in frames.iter().enumerate() {
+            assert!(frame[4..4 + 1_201].iter().all(|byte| *byte == index as u8));
+        }
+    }
 
     #[test]
     fn stream_framing_splits_stun_and_padded_channel_data() {
@@ -915,7 +1235,7 @@ mod tests {
             frame.extend_from_slice(&1_001_u16.to_be_bytes());
             frame.extend(std::iter::repeat_n(index as u8, 1_001));
             let before = backlog.len();
-            if admit_frame(&mut backlog, &frame) {
+            if admit_frame(&mut backlog, &frame, MAX_STREAM_BUFFER) {
                 admitted += 1;
                 expected.extend_from_slice(&backlog[before..]);
             } else {

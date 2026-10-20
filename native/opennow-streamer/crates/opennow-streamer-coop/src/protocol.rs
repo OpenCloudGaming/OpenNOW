@@ -42,6 +42,19 @@ pub enum Signal {
     Candidate(String),
     EndOfCandidates,
     Bye(String),
+    /// From the guest: the link of this generation went silent; the host answers with a
+    /// new offer on a fresh link.
+    Restart,
+}
+
+/// Link generation a payload belongs to. The host starts at 0 and counts up with every
+/// restart offer; answers, candidates and restart requests carry the generation of the
+/// offer they belong to, so signals for a replaced link are dropped. Absent means 0.
+pub fn generation(payload: &Value) -> u32 {
+    payload["gen"]
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(0)
 }
 
 impl Signal {
@@ -58,12 +71,13 @@ impl Signal {
             "candidate" => text("candidate", 1024).map(Self::Candidate),
             "end-of-candidates" => Some(Self::EndOfCandidates),
             "bye" => Some(Self::Bye(text("reason", 256).unwrap_or_default())),
+            "restart" => Some(Self::Restart),
             _ => None,
         }
     }
 
-    pub fn to_json(&self) -> Value {
-        match self {
+    pub fn to_json(&self, generation: u32) -> Value {
+        let mut payload = match self {
             Self::Offer(sdp) => json!({"kind":"offer","sdp":sdp}),
             Self::Answer(sdp) => json!({"kind":"answer","sdp":sdp}),
             Self::Candidate(candidate) => {
@@ -71,7 +85,10 @@ impl Signal {
             }
             Self::EndOfCandidates => json!({"kind":"end-of-candidates"}),
             Self::Bye(reason) => json!({"kind":"bye","reason":reason}),
-        }
+            Self::Restart => json!({"kind":"restart"}),
+        };
+        payload["gen"] = json!(generation);
+        payload
     }
 }
 
@@ -146,14 +163,21 @@ mod tests {
     #[test]
     fn signal_payloads_match_the_contract() {
         for payload in [
-            json!({"kind":"offer","sdp":"v=0"}),
-            json!({"kind":"answer","sdp":"v=0"}),
-            json!({"kind":"candidate","candidate":"candidate:1 1 udp 1 127.0.0.1 9 typ host","mid":null}),
-            json!({"kind":"end-of-candidates"}),
-            json!({"kind":"bye","reason":"left"}),
+            json!({"kind":"offer","sdp":"v=0","gen":0}),
+            json!({"kind":"answer","sdp":"v=0","gen":2}),
+            json!({"kind":"candidate","candidate":"candidate:1 1 udp 1 127.0.0.1 9 typ host","mid":null,"gen":1}),
+            json!({"kind":"end-of-candidates","gen":0}),
+            json!({"kind":"bye","reason":"left","gen":0}),
+            json!({"kind":"restart","gen":3}),
         ] {
-            assert_eq!(Signal::parse(&payload).unwrap().to_json(), payload);
+            assert_eq!(
+                Signal::parse(&payload)
+                    .unwrap()
+                    .to_json(generation(&payload)),
+                payload
+            );
         }
+        assert_eq!(generation(&json!({"kind":"answer","sdp":"v=0"})), 0);
         assert!(
             Signal::parse(&json!({"kind":"offer","sdp":"x".repeat(MAX_SDP_BYTES + 1)})).is_none()
         );
