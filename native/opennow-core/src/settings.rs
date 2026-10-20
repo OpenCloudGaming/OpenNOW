@@ -242,6 +242,12 @@ impl SettingsStore {
                 Value::String(normalize_proxy_url(raw)?.normalized_url)
             };
         }
+        if key == "socialBackendUrl" {
+            let raw = value
+                .as_str()
+                .ok_or_else(|| "socialBackendUrl must be a string".to_owned())?;
+            value = Value::String(crate::social::normalize_backend_url(raw)?);
+        }
         if key == "sessionProxyEnabled" && value.as_bool() == Some(true) {
             let raw = self.values["sessionProxyUrl"].as_str().unwrap_or("");
             normalize_proxy_url(raw)?;
@@ -406,6 +412,11 @@ impl SettingsStore {
                 .insert(WINDOWS_GPU_DEVICE_ID.to_owned(), json!(""));
         }
         normalize_resolution(&mut self.values);
+        let social_backend = self.values["socialBackendUrl"].as_str().unwrap_or("");
+        let social_backend =
+            crate::social::normalize_backend_url(social_backend).unwrap_or_default();
+        self.values
+            .insert("socialBackendUrl".to_owned(), json!(social_backend));
         normalize_choice(
             &mut self.values,
             "desktopBackground",
@@ -1213,6 +1224,7 @@ fn defaults() -> Map<String, Value> {
         "encoderPreference":"auto", "colorQuality":"8bit_420", "enableHdr":false, "region":"", "regionProviderIdpId":"", "providerRegions":{},
         "suppressTenBitWarning":false,
         "sessionProxyEnabled":false, "sessionProxyUrl":"", "clipboardPaste":false, "networkTest":false,
+        "socialBackendUrl":"",
         "suppressAwdlWhileStreaming":false,
         "enableGyroscopeControls":false, "steamControllerCompatibilityMode":false,
         "nativeCursorOverlay":true, "mouseSensitivity":1, "mouseAcceleration":1,

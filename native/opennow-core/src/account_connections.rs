@@ -549,7 +549,10 @@ fn wait_for_callback(
     let deadline = Instant::now() + Duration::from_secs(300);
     while Instant::now() < deadline && !cancelled.load(Ordering::Acquire) {
         match listener.accept() {
-            Ok((mut stream, _)) => {
+            Ok((stream, _)) => {
+                let Ok(mut stream) = opennow_socket_wait::TimedTcpStream::new(stream) else {
+                    continue;
+                };
                 stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
                 let mut buffer = [0_u8; 8192];
                 let count = stream

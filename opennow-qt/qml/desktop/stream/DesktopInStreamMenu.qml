@@ -23,6 +23,7 @@ FocusScope {
     signal statsRequested()
 
     property string page: "main"
+    property var coopHint: null
     property string pendingAction: ""
     property bool closing: false
     property double nowMs: Date.now()
@@ -128,12 +129,12 @@ FocusScope {
         return (hours > 0 ? hours + ":" : "") + String(minutes).padStart(2, "0") + ":" + String(seconds).padStart(2, "0")
     }
 
-    readonly property var mainItems: [backButton, microphoneTile, antiAfkTile, statsTile, fullscreenTile,
+    readonly property var mainItems: [backButton, coopSection, microphoneTile, antiAfkTile, statsTile, fullscreenTile,
         controllersRow, inviteRow, consoleRow, endRow]
     // Index tables for the 2×2 quick-toggle grid: [up, down, left, right]; -1 keeps focus.
     readonly property var gridMoves: [
-        [-1, 1, -1, -1], [0, 3, -1, 2], [0, 4, 1, -1], [1, 5, -1, 4], [2, 5, 3, -1],
-        [3, 6, -1, -1], [5, 7, -1, -1], [6, 8, -1, -1], [7, -1, -1, -1]
+        [-1, 1, -1, -1], [0, 2, -1, -1], [1, 4, -1, 3], [1, 5, 2, -1], [2, 6, -1, 5], [3, 6, 4, -1],
+        [4, 7, -1, -1], [6, 8, -1, -1], [7, 9, -1, -1], [8, -1, -1, -1]
     ]
     function usable(item) { return item && item.visible && item.enabled }
     function focusMain(index) {
@@ -161,7 +162,10 @@ FocusScope {
             const sibling = gridMoves[index][3] >= 0 ? gridMoves[index][3] : gridMoves[index][2]
             index = direction < 2 && sibling >= 0 && usable(mainItems[sibling]) ? sibling : gridMoves[index][direction]
         }
-        if (index >= 0) focusMain(index)
+        if (index === 1 && direction === 0)
+            coopSection.focusLast()
+        else if (index >= 0)
+            focusMain(index)
     }
 
     component QuickTile: DesktopStreamDrawerButton {
@@ -419,7 +423,7 @@ FocusScope {
                             spacing: 7
                             Rectangle { width: 6; height: 6; radius: 3; anchors.verticalCenter: parent.verticalCenter; color: DesktopTokens.green }
                             Text {
-                                text: qsTr("LIVE · %1").arg(root.clockText())
+                                text: ShellStore.coop.isHost ? qsTr("LIVE · %1 · CO-OP").arg(root.clockText()) : qsTr("LIVE · %1").arg(root.clockText())
                                 color: DesktopTokens.textMuted
                                 font.family: DesktopTokens.monoFont
                                 font.pixelSize: 10
@@ -528,7 +532,8 @@ FocusScope {
                             x: 16
                             y: 46
                             width: parent.width - 32
-                            text: [root.transportText, root.codecText, root.backendText].join(" · ")
+                            text: ShellStore.coop.isHost ? qsTr("%1 · %2 · CO-OP PRESET").arg(root.transportText).arg(root.codecText)
+                                : [root.transportText, root.codecText, root.backendText].join(" · ")
                             color: DesktopTokens.textMuted
                             font.family: DesktopTokens.monoFont
                             font.pixelSize: 9
@@ -539,7 +544,8 @@ FocusScope {
                         Text {
                             x: 16; y: 62
                             width: parent.width - 32
-                            text: qsTr("Quality, bitrate and codec change from the next session.")
+                            text: ShellStore.coop.isHost ? qsTr("Each guest receives this same stream.")
+                                : qsTr("Quality, bitrate and codec change from the next session.")
                             color: DesktopTokens.textFaint
                             font.family: DesktopTokens.bodyFont
                             font.pixelSize: 10
@@ -575,6 +581,13 @@ FocusScope {
                             anchors.right: parent.right; anchors.rightMargin: 14; anchors.verticalCenter: parent.verticalCenter
                             glyph: "B"; label: ""; glyphSize: 18; spacing: 0; glyphColor: "#0B0F1A"
                         }
+                    }
+
+                    DesktopInStreamCoopSection {
+                        id: coopSection
+                        width: parent.width
+                        onRevealRequested: item => mainScroll.reveal(item)
+                        onHintChanged: root.coopHint = hint
                     }
 
                     Text {
@@ -661,6 +674,8 @@ FocusScope {
                     MenuRow {
                         id: inviteRow
                         objectName: "streamInviteRow"
+                        visible: root.invitesAvailable && ShellStore.friends.linked
+                            && ShellStore.coop.preferences.showInStreamMenu !== false
                         enabled: root.invitesAvailable
                         glyph: "desktop-user-plus.svg"
                         title: qsTr("Invite a friend")
@@ -739,6 +754,27 @@ FocusScope {
             controllerHints: root.controllerHints
             onBackRequested: root.openPage("main")
             onResumeRequested: root.runAction("resume")
+        }
+    }
+
+    Rectangle {
+        objectName: "streamCoopActionHint"
+        readonly property point anchor: root.coopHint ? root.coopHint.mapToItem(root, 0, root.coopHint.height / 2) : Qt.point(0, 0)
+        visible: root.coopHint !== null && root.coopHint.visible && root.opened
+        x: drawer.x + drawer.width + 8
+        y: Math.round(anchor.y - height / 2)
+        width: coopHintText.implicitWidth + 20
+        height: 26
+        radius: 8
+        color: "#F4F5F7"
+        Text {
+            id: coopHintText
+            anchors.centerIn: parent
+            text: qsTr("Mute input · Move slot · Kick")
+            color: "#0A0D14"
+            font.family: DesktopTokens.bodyFont
+            font.pixelSize: 12
+            font.weight: Font.ExtraBold
         }
     }
 

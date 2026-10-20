@@ -352,6 +352,26 @@ if(BUILD_TESTING)
                 ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
         endforeach()
     endforeach()
+    # Co-op sessions and Friends (Variation C2): every C2 scene through a mock core and streamer.
+    qt_add_resources(opennow-qt "coop-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/CoopAcceptance.qml tests/avatars/avatar0.jpg tests/avatars/avatar1.jpg
+            tests/avatars/avatar2.jpg tests/avatars/avatar3.jpg tests/avatars/avatar4.jpg tests/avatars/avatar5.jpg)
+    foreach(mode windowed fullscreen)
+        set(coop_mode_args)
+        if(mode STREQUAL "fullscreen")
+            list(APPEND coop_mode_args --smoke-coop-fullscreen)
+        endif()
+        add_test(NAME "qml-coop-c2-${mode}"
+            COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+                --route home --smoke-coop --reduced-motion ${coop_mode_args})
+        set_tests_properties("qml-coop-c2-${mode}" PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
+    endforeach()
+    add_test(NAME qml-coop-c2-console-states
+        COMMAND opennow-qt --smoke-test --allow-multiple-instances --console
+            --route home --smoke-coop --coop-states-only --reduced-motion)
+    set_tests_properties(qml-coop-c2-console-states PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
     qt_add_resources(opennow-qt "upscaling-acceptance"
         PREFIX "/acceptance" BASE tests FILES tests/UpscalingAcceptance.qml)
     add_test(NAME qml-upscaling
@@ -1545,7 +1565,7 @@ if(BUILD_TESTING)
             --smoke-height 900 --smoke-resolution-open --reduced-motion)
     set_tests_properties(qml-renew-resolution-picker PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT ${OPENNOW_QT_SMOKE_TIMEOUT})
-    foreach(page stream network audio controls recording appearance console account about)
+    foreach(page stream network audio controls coop recording appearance console account about)
         foreach(size desktop compact scaled)
             set(settings_width 1440)
             set(settings_scale 1)

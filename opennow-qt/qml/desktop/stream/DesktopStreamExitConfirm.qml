@@ -8,6 +8,9 @@ FocusScope {
     property bool quittingApplication: false
     property string switchTargetName: ""
     readonly property bool switchingAccount: switchTargetName !== ""
+    // Co-op codec restart: ending the session relaunches the game with this codec.
+    readonly property string restartCodec: !quittingApplication && !switchingAccount && ShellStore.coop.codecRestart
+        ? ShellStore.coop.codecName(ShellStore.coop.codecRestart.codec) : ""
     readonly property color onDarkTitle: Theme.lightMode ? "#F6F3EE" : DesktopTokens.text
     readonly property color onDarkBody: Theme.lightMode ? "#C5CDD6" : DesktopTokens.textBody
     readonly property string sessionTitle: {
@@ -21,7 +24,8 @@ FocusScope {
     MotionProgress { id: reveal; shown: root.opened }
     Accessible.role: Accessible.Dialog
     Accessible.name: root.quittingApplication ? qsTr("Quit OpenNOW confirmation")
-        : root.switchingAccount ? qsTr("Switch account confirmation") : qsTr("End cloud session confirmation")
+        : root.switchingAccount ? qsTr("Switch account confirmation")
+        : root.restartCodec !== "" ? qsTr("Restart with %1 confirmation").arg(root.restartCodec) : qsTr("End cloud session confirmation")
 
     signal cancelRequested()
     signal confirmRequested()
@@ -60,7 +64,8 @@ FocusScope {
 
             Text {
                 text: root.quittingApplication ? qsTr("QUIT OPENNOW")
-                    : root.switchingAccount ? qsTr("END SESSION TO SWITCH") : qsTr("END SESSION")
+                    : root.switchingAccount ? qsTr("END SESSION TO SWITCH")
+                    : root.restartCodec !== "" ? qsTr("RESTART FOR CO-OP") : qsTr("END SESSION")
                 color: DesktopTokens.danger
                 font.family: DesktopTokens.monoFont
                 font.pixelSize: 10
@@ -74,6 +79,7 @@ FocusScope {
                 elide: Text.ElideRight
                 text: root.quittingApplication ? qsTr("Quit OpenNOW?")
                     : root.switchingAccount ? qsTr("Switch to %1?").arg(root.switchTargetName)
+                    : root.restartCodec !== "" ? qsTr("Restart with %1?").arg(root.restartCodec)
                     : qsTr("End this cloud session?")
                 color: root.onDarkTitle
                 font.family: DesktopTokens.displayFont
@@ -92,6 +98,8 @@ FocusScope {
                     ? (root.sessionTitle !== ""
                         ? qsTr("%1 will close on the remote rig. This session cannot be resumed after it ends.").arg(root.sessionTitle)
                         : qsTr("Your game will close on the remote rig. This session cannot be resumed after it ends."))
+                    : root.restartCodec !== ""
+                    ? qsTr("This session ends and the game starts again with %1. Your lobby closes, and its players get a new invite.").arg(root.restartCodec)
                     : AppController.route === "inserting"
                     ? qsTr("Your session request will be cancelled and you will leave the queue.")
                     : qsTr("Your game will close on the remote rig. This session cannot be resumed after it ends.")
@@ -123,7 +131,8 @@ FocusScope {
                     objectName: root.quittingApplication ? "quitConfirmQuit"
                         : root.switchingAccount ? "accountSwitchEndSession" : "streamExitEndSession"
                     text: root.quittingApplication ? qsTr("Quit OpenNOW")
-                        : root.switchingAccount ? qsTr("End and switch") : qsTr("End session")
+                        : root.switchingAccount ? qsTr("End and switch")
+                        : root.restartCodec !== "" ? qsTr("Restart with %1").arg(root.restartCodec) : qsTr("End session")
                     shortcutText: qsTr("Enter")
                     danger: true
                     onClicked: root.confirmRequested()

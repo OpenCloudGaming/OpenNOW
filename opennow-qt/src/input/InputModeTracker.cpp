@@ -26,6 +26,16 @@ void InputModeTracker::updateLaunchDrain()
 
 bool InputModeTracker::eventFilter(QObject *watched, QEvent *event)
 {
+    switch (event->type()) {
+    case QEvent::KeyPress:
+    case QEvent::MouseButtonPress:
+    case QEvent::Wheel:
+    case QEvent::TouchBegin:
+        m_controller->noteUserActivity();
+        break;
+    default:
+        break;
+    }
     if (event->type() == QEvent::ShortcutOverride || event->type() == QEvent::KeyPress) {
         const auto *key = static_cast<QKeyEvent *>(event);
         if ((key->key() == Qt::Key_F4 && key->modifiers() == Qt::AltModifier)

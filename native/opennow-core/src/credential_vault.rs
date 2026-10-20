@@ -723,6 +723,82 @@ impl CredentialVault {
     }
 }
 
+const MAXIMUM_TOKEN_ENTRY_BYTES: usize = 2_048;
+
+/// Small non-GFN credentials (for example the social account token) under the
+/// same persistence rules as GFN sessions: the OS credential store is preferred
+/// and verified, an unavailable store falls back to a private per-key JSON file,
+/// and Steam Deck always uses that device file. Entries stay below the Windows
+/// Credential Manager blob limit, so Windows uses the OS store directly.
+pub struct TokenVault {
+    store: Box<dyn SecretStore>,
+}
+
+impl TokenVault {
+    pub fn new(data_dir: &Path, service: &'static str, fallback_dir: &str) -> Self {
+        let secure: Box<dyn SecretStore> = if crate::settings::on_steam_deck() {
+            Box::new(LocalOnlyStore)
+        } else {
+            Box::new(OsSecretStore { service })
+        };
+        Self::with_store(data_dir.join(fallback_dir), secure)
+    }
+
+    fn with_store(root: PathBuf, secure: Box<dyn SecretStore>) -> Self {
+        let store = json_secret_store::JsonFallbackStore::with_validator(
+            root,
+            secure,
+            validate_token_entry,
+        );
+        let _ = store.cleanup_temporary_files();
+        Self {
+            store: Box::new(store),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn memory(root: PathBuf, os_store_available: bool) -> Self {
+        Self::with_store(
+            root,
+            Box::new(MemorySecretStore {
+                unavailable: !os_store_available,
+                ..Default::default()
+            }),
+        )
+    }
+
+    pub fn load(&self, key: &str) -> Result<Option<String>, String> {
+        self.store.get(key)
+    }
+
+    /// Returns `secure-store` or `local-file`, matching session persistence states.
+    pub fn save(&self, key: &str, encoded: &str) -> Result<&'static str, String> {
+        self.store.set(key, encoded)?;
+        if self.store.get(key)?.as_deref() != Some(encoded) {
+            return Err("Credential store verification failed".into());
+        }
+        Ok(if self.store.is_plaintext(key) {
+            "local-file"
+        } else {
+            "secure-store"
+        })
+    }
+
+    pub fn delete(&self, key: &str) -> Result<(), String> {
+        self.store.delete(key)
+    }
+}
+
+fn validate_token_entry(encoded: &str, key: &str) -> Result<(), String> {
+    if encoded.len() > MAXIMUM_TOKEN_ENTRY_BYTES || key.trim().is_empty() {
+        return Err("Saved credential exceeds size or identity limits".into());
+    }
+    match serde_json::from_str::<Value>(encoded) {
+        Ok(Value::Object(_)) => Ok(()),
+        _ => Err("Saved credential is invalid".into()),
+    }
+}
+
 #[cfg(test)]
 #[derive(Default)]
 struct MemorySecretStore {

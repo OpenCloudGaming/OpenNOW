@@ -501,6 +501,14 @@ bool AppController::handleArguments(const QStringList &arguments)
         const auto argument = arguments.at(index);
         const QUrl directLaunchUrl(argument);
         if (directLaunchUrl.isValid() && directLaunchUrl.scheme() == u"opennow"_s
+                && directLaunchUrl.host() == u"join"_s) {
+            const auto code = normalizeCoopCode(directLaunchUrl.path().section(u'/', 1, 1));
+            if (code.isEmpty()) continue;
+            m_coopJoinCode = code;
+            emit coopJoinCodeChanged();
+            return true;
+        }
+        if (directLaunchUrl.isValid() && directLaunchUrl.scheme() == u"opennow"_s
                 && directLaunchUrl.host() == u"launch"_s) {
             const QUrlQuery query(directLaunchUrl);
             auto urlAppId = query.queryItemValue(u"appId"_s).trimmed();
@@ -542,6 +550,34 @@ bool AppController::handleArguments(const QStringList &arguments)
     return true;
 }
 
+QString AppController::normalizeCoopCode(const QString &code)
+{
+    static const QString alphabet = u"23456789ABCDEFGHJKLMNPQRSTUVWXYZ"_s;
+    QString compact = code.trimmed().toUpper();
+    compact.remove(u'-');
+    if (compact.size() != 6) return {};
+    for (const auto character : std::as_const(compact)) {
+        if (!alphabet.contains(character)) return {};
+    }
+    return compact.first(3) + u'-' + compact.sliced(3);
+}
+
+QString AppController::takeCoopJoinCode()
+{
+    if (m_coopJoinCode.isEmpty()) return {};
+    const auto code = std::exchange(m_coopJoinCode, {});
+    emit coopJoinCodeChanged();
+    return code;
+}
+
+void AppController::noteUserActivity()
+{
+    const auto now = QDateTime::currentMSecsSinceEpoch();
+    if (m_lastActivityMs >= 0 && now - m_lastActivityMs < 5000) return;
+    m_lastActivityMs = now;
+    emit userActivity();
+}
+
 void AppController::setReducedMotion(bool reducedMotion)
 {
     if (m_reducedMotion == reducedMotion) {
@@ -576,6 +612,10 @@ const QStringList &AppController::routes()
         u"library"_s,
         u"store"_s,
         u"friends"_s,
+        u"friends-add"_s,
+        u"friends-requests"_s,
+        u"friends-invites"_s,
+        u"coop-guest"_s,
         u"theme-store"_s,
         u"controllers"_s,
         u"settings"_s,
@@ -592,6 +632,7 @@ const QStringList &AppController::routes()
         u"settings-advanced"_s,
         u"settings-advanced-dropdown"_s,
         u"settings-updates"_s,
+        u"settings-coop"_s,
         u"game-detail"_s,
         u"game-detail-platform-dropdown"_s,
         u"sign-in"_s,
@@ -636,6 +677,11 @@ const QStringList &AppController::overlays()
         u"queue-ad"_s,
         u"desktop-stream-menu"_s,
         u"desktop-stream-exit-confirm"_s,
+        u"coop-setup"_s,
+        u"coop-lobby"_s,
+        u"coop-end-confirm"_s,
+        u"coop-leave-confirm"_s,
+        u"discord-unlink-confirm"_s,
         u"desktop-stream-stats"_s,
         u"desktop-stream-stats-expanded"_s,
         u"stream-stats"_s,

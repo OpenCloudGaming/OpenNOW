@@ -15,6 +15,7 @@ FocusScope {
     property bool connectionNotificationsEnabled: true
     focus: visible && inputBlocking
     readonly property bool present: menuView.present || exitView.present || statsVisible || notificationsEnabled
+        || coopLobbyView.present || coopEndView.present || coopLeaveView.present
 
     readonly property bool menuVisible: overlay === "desktop-stream-menu"
     readonly property bool exitVisible: overlay === "desktop-stream-exit-confirm"
@@ -69,6 +70,25 @@ FocusScope {
         opened: root.exitVisible
         onCancelRequested: root.closeOverlay()
         onConfirmRequested: ShellStore.confirmStreamExit()
+    }
+
+    DesktopCoopLobby {
+        id: coopLobbyView
+        anchors.fill: parent
+        opened: root.overlay === "coop-lobby"
+    }
+
+    DesktopCoopConfirm {
+        id: coopEndView
+        anchors.fill: parent
+        opened: root.overlay === "coop-end-confirm"
+    }
+
+    DesktopCoopConfirm {
+        id: coopLeaveView
+        anchors.fill: parent
+        leaving: true
+        opened: root.overlay === "coop-leave-confirm"
     }
 
     DesktopStreamStats {

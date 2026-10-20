@@ -69,7 +69,7 @@ fn scripted_setup_with_retry(
     });
     let (socket, _) = tungstenite::client(
         format!("ws://{address}/rtsp"),
-        MaybeTlsStream::Plain(stream),
+        MaybeTlsStream::Plain(TimedTcpStream::new(stream).unwrap()),
     )
     .unwrap();
     let mut client = RtspClient {
@@ -288,7 +288,7 @@ fn rtsp_request_deadline_bounds_a_partial_response() {
     });
     let (socket, _) = tungstenite::client(
         format!("ws://{address}/rtsp"),
-        MaybeTlsStream::Plain(stream),
+        MaybeTlsStream::Plain(TimedTcpStream::new(stream).unwrap()),
     )
     .unwrap();
     let mut client = RtspClient {

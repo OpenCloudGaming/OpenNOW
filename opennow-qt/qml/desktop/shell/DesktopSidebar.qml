@@ -14,7 +14,8 @@ FocusScope {
     readonly property real reveal: Math.max(0, Math.min(1, (width - DesktopTokens.railCollapsedWidth) / (DesktopTokens.railWidth - DesktopTokens.railCollapsedWidth)))
     readonly property bool consoleModeOn: DesktopTokens.consoleModeOn(Window.window)
     readonly property bool consoleModePending: DesktopTokens.consoleModePending(Window.window)
-    readonly property bool friendsAvailable: Boolean(ShellStore.socialCapabilities && ShellStore.socialCapabilities.friendsAvailable)
+    readonly property bool friendsAvailable: (ShellStore.friends.linked && ShellStore.friends.connection === "connected")
+        || Boolean(ShellStore.socialCapabilities && ShellStore.socialCapabilities.friendsAvailable)
     signal routeRequested(string route)
     signal consoleModeRequested()
     signal collapseRequested(bool collapsed)
@@ -58,6 +59,8 @@ FocusScope {
             return root.currentRoute.indexOf("settings") === 0
         if (route === "library")
             return root.currentRoute === "library" || root.currentRoute === "game-detail"
+        if (route === "friends")
+            return root.currentRoute.indexOf("friends") === 0
         return root.currentRoute === route
     }
 
@@ -232,6 +235,7 @@ FocusScope {
                     }
                     contentItem: Item {
                         DesktopGlyph {
+                            id: navGlyph
                             objectName: "sidebarIcon-" + navButton.modelData.route
                             x: 13
                             anchors.verticalCenter: parent.verticalCenter
@@ -239,6 +243,30 @@ FocusScope {
                             height: 18
                             icon: navButton.modelData.icon
                             active: navButton.selected
+                        }
+                        Rectangle {
+                            objectName: "sidebarInviteBadge"
+                            readonly property int count: ShellStore.coop.incomingInvites.length
+                            visible: navButton.modelData.route === "friends" && count > 0
+                            x: navGlyph.x + 13
+                            y: navGlyph.y - 10
+                            width: Math.max(18, badgeLabel.implicitWidth + 14)
+                            height: 18
+                            radius: 9
+                            color: "#7FD4FF"
+                            border.width: 2
+                            border.color: "#0B0F1A"
+                            Accessible.role: Accessible.StaticText
+                            Accessible.name: qsTr("%1 co-op invites").arg(count)
+                            Text {
+                                id: badgeLabel
+                                anchors.centerIn: parent
+                                text: parent.count > 9 ? "9+" : String(parent.count)
+                                color: "#0B0F1A"
+                                font.family: DesktopTokens.bodyFont
+                                font.pixelSize: 10
+                                font.weight: Font.Black
+                            }
                         }
                         Text {
                             x: 48

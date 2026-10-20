@@ -197,6 +197,9 @@ struct NativeStreamRuntime::Private {
     QString lastError;
     bool streaming = false;
     bool streamSessionActive = false;
+    // Last controller submission results, logged once per change so refused pad input is visible.
+    OpenNowStreamerStatus gamepadStatus = OPENNOW_STREAMER_OK;
+    OpenNowStreamerStatus sonyStatus = OPENNOW_STREAMER_OK;
     bool graphicsActive = false;
     bool firstNotification = false;
     std::atomic<quint64> presentationGeneration{0};
@@ -589,7 +592,11 @@ bool NativeStreamRuntime::sendBytes(const QByteArray &command)
     }
     const auto object = QJsonDocument::fromJson(command).object();
     const auto type = object.value(u"type"_s).toString();
-    const bool changesSession = type == u"start"_s || type == u"stop"_s;
+    // A co-op guest has no GFN session: coop-guest-start/stop own the same presentation,
+    // input-authorization and rumble generation as start/stop on the normal embedded path.
+    const bool startsSession = type == u"start"_s || type == u"coop-guest-start"_s;
+    const bool stopsSession = type == u"stop"_s || type == u"coop-guest-stop"_s;
+    const bool changesSession = startsSession || stopsSession;
     const bool previousInputAllowed = inputAllowed();
     const bool previousInputPending = d->inputAuthorizationPending;
     if (changesSession) resetInputCapture();
@@ -615,13 +622,13 @@ bool NativeStreamRuntime::sendBytes(const QByteArray &command)
         setLastError(statusText(status));
         return false;
     }
-    if (type == u"start"_s || type == u"stop"_s) {
+    if (changesSession) {
         setStreaming(false);
-        d->streamSessionActive = type == u"start"_s;
+        d->streamSessionActive = startsSession;
         invalidatePresentation();
         d->defaultRelativeMouse = false;
-        d->sessionStartId = type == u"start"_s ? object.value(u"id"_s).toString() : QString{};
-        if (type == u"start"_s) {
+        d->sessionStartId = startsSession ? object.value(u"id"_s).toString() : QString{};
+        if (startsSession) {
             d->serverCursorComposited = true;
             d->firstNotification = false;
             d->presentationStartId = object.value(u"id"_s).toString();
@@ -847,11 +854,14 @@ OpenNowStreamerStatus NativeStreamRuntime::submitGamepad(
     std::int16_t leftStickY, std::int16_t rightStickX, std::int16_t rightStickY)
 {
     const std::shared_lock lock(d->handleMutex);
-    return d->handle && d->api.submitGamepad
+    const auto status = d->handle && d->api.submitGamepad
         ? d->api.submitGamepad(d->handle, controllerId, bitmap, buttons,
                                leftTrigger, rightTrigger, leftStickX, leftStickY,
                                rightStickX, rightStickY)
         : OPENNOW_STREAMER_CLOSED;
+    if (std::exchange(d->gamepadStatus, status) != status)
+        handshakeLog(u"input gamepad submit status=%1 controller=%2"_s.arg(static_cast<int>(status)).arg(controllerId));
+    return status;
 }
 
 OpenNowStreamerStatus NativeStreamRuntime::submitLocalAction(std::uint32_t action)
@@ -900,8 +910,22 @@ OpenNowStreamerStatus NativeStreamRuntime::submitSonySnapshot(
     const OpenNowSonySnapshot &snapshot)
 {
     const std::shared_lock lock(d->handleMutex);
-    if (!d->handle || !d->api.submitSonySnapshot) return OPENNOW_STREAMER_CLOSED;
-    return d->api.submitSonySnapshot(d->handle, &snapshot);
+    const auto status = d->handle && d->api.submitSonySnapshot
+        ? d->api.submitSonySnapshot(d->handle, &snapshot) : OPENNOW_STREAMER_CLOSED;
+    if (std::exchange(d->sonyStatus, status) != status)
+        handshakeLog(u"input sony submit status=%1 slot=%2"_s.arg(static_cast<int>(status)).arg(snapshot.slot));
+    return status;
+}
+
+void NativeStreamRuntime::logCoopGuestInput(const QString &owner, const QString &reason, bool suspended)
+{
+    const auto token = [](const QString &value) {
+        return value.size() <= 64 && std::all_of(value.begin(), value.end(), [](QChar c) {
+            return (c.unicode() < 128 && c.isLower()) || c.isDigit() || c == u'-' || c == u'_' || c == u'.';
+        }) ? value : u"invalid"_s;
+    };
+    handshakeLog(u"coop-guest input owner=%1 reason=%2 suspended=%3"_s
+                     .arg(token(owner), token(reason), suspended ? u"true"_s : u"false"_s));
 }
 
 OpenNowStreamerStatus NativeStreamRuntime::replaceGenericHidInventory(
@@ -1210,7 +1234,14 @@ void NativeStreamRuntime::drainCallbacks(const std::shared_ptr<CallbackState> &s
             }
             continue;
         }
-        if (message.event && (kind == u"error"_s
+        if (message.event && kind == u"coop-guest-state"_s && d->streamSessionActive
+                && document.object().value(u"state"_s).toString() == u"connected"_s) {
+            setStreaming(true);
+            if (!current()) return;
+        }
+        const bool coopGuestEnded = message.event && kind == u"coop-guest-state"_s
+            && document.object().value(u"state"_s).toString() == u"ended"_s;
+        if (message.event && (kind == u"error"_s || coopGuestEnded
                 || (kind == u"status"_s && (status == u"stopped"_s || status == u"error"_s)))) {
             const auto startId = document.object().value(u"startId"_s).toString();
             if (!startId.isEmpty() && startId != d->sessionStartId) continue;
@@ -1248,7 +1279,9 @@ void NativeStreamRuntime::drainCallbacks(const std::shared_ptr<CallbackState> &s
         if (kind != u"telemetry"_s && kind != u"stats"_s && kind != u"log"_s)
             handshakeLog(u"delivered %1 bytes=%2"_s.arg(handshakeSummary(document.object()))
                          .arg(message.bytes.size()));
-        if (message.event)
+        if (message.event && kind.startsWith(u"coop-"_s))
+            emit coopEventReceived(document.object());
+        else if (message.event)
             emit eventReceived(document.object());
         else
             emit responseReceived(document.object());

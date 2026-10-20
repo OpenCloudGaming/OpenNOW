@@ -9,7 +9,15 @@
 extern "C" {
 #endif
 
-#define OPENNOW_STREAMER_FFI_ABI_VERSION 15u
+/*
+ * ABI 16 adds co-op sessions on the existing JSON command and event channel; no C symbol or
+ * struct layout changed. Hosts send coop-host-start, coop-peer-add, coop-signal-in,
+ * coop-peer-slot, coop-peer-input-muted, coop-peer-remove and coop-host-stop during a GFN
+ * session; guests send coop-guest-start, coop-signal-in and coop-guest-stop instead of start.
+ * Guest gamepad input uses opennow_streamer_submit_gamepad with controller 0. See
+ * docs/coop-sessions.md section 7 and docs/qt-native-streamer-ffi.md.
+ */
+#define OPENNOW_STREAMER_FFI_ABI_VERSION 16u
 #define OPENNOW_STREAMER_GENERIC_HID_VERSION 1u
 #define OPENNOW_STREAMER_EVENT_SESSION_TIMER "session-timer"
 #define OPENNOW_STREAMER_EVENT_TEXT_INPUT_ERROR "text-input-error"

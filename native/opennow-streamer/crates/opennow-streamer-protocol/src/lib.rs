@@ -115,6 +115,20 @@ pub struct Command {
     pub payload_base64: Option<String>,
     #[serde(default)]
     pub output_path: Option<String>,
+    #[serde(default)]
+    pub ice_servers: Option<Value>,
+    #[serde(default)]
+    pub relays: Option<Value>,
+    #[serde(default)]
+    pub max_guests: Option<u8>,
+    #[serde(default)]
+    pub peer_id: Option<String>,
+    #[serde(default)]
+    pub host_peer_id: Option<String>,
+    #[serde(default)]
+    pub slot: Option<u8>,
+    #[serde(default)]
+    pub payload: Option<Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -229,6 +243,25 @@ pub struct Capabilities {
     /// platforms that do not enumerate adapters. LUIDs are not included.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub graphics_adapters: Vec<GraphicsAdapterCapability>,
+    /// How the embedded stream view on this machine decodes each codec.
+    pub decoders: DecoderTiers,
+}
+
+/// What decodes a codec in the embedded stream view: a hardware decoder, the bounded FFmpeg
+/// software fallback, or nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DecoderTier {
+    Hardware,
+    Software,
+    None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct DecoderTiers {
+    pub h264: DecoderTier,
+    pub h265: DecoderTier,
+    pub av1: DecoderTier,
 }
 
 /// One physical GPU and the hardware decode profiles its video device exposed.

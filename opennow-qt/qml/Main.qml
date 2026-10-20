@@ -132,7 +132,10 @@ ApplicationWindow {
         "diagnostics", "feedback", "theme-store"].indexOf(activeRoute) < 0
     readonly property bool targetDesktopSurface: streamSurfaceLocked
         ? lockedStreamDesktopSurface : onboardingVisible || (desktopRequested && desktopEligibleRoute)
-    readonly property bool streamQmlOverlayActive: (activeRoute === "stream" || activeRoute === "inserting")
+    // Co-op lobby and confirmations compose above the stream and, without one, above the shell or the guest route.
+    readonly property bool streamQmlOverlayActive: (window.desktopSurfaceActive
+            && ["coop-lobby", "coop-end-confirm", "coop-leave-confirm"].indexOf(AppController.overlay) >= 0)
+        || (activeRoute === "stream" || activeRoute === "inserting")
         && ((window.desktopSurfaceActive && AppController.overlay.startsWith("desktop-stream-"))
             || ShellStore.isStreamStatsOverlay(AppController.overlay))
     property bool desktopSurfaceActive: targetDesktopSurface
@@ -165,7 +168,8 @@ ApplicationWindow {
     readonly property var streamerSnapshotForSmokeTest: ShellStore.streamer
     readonly property bool shellCaptureEnabledForSmokeTest: ControllerInput.shellCaptureEnabled
     readonly property bool consoleStreamReady: window.activeRoute === "stream"
-        && !window.desktopSurfaceActive && routeLoader.item && routeLoader.item.videoReady === true
+        && !window.desktopSurfaceActive && routeLoader.item
+        && (routeLoader.item.videoReady === true || routeLoader.item.coopGuest === true)
     onConsoleStreamReadyChanged: {
         if (!consoleStreamReady)
             pendingConsoleScreenshotSession = ""
@@ -311,15 +315,37 @@ ApplicationWindow {
         function onActiveFocusItemChanged() { Qt.callLater(window.restoreConsoleModalFocus) }
     }
 
+    readonly property bool coopGuest: Boolean(ShellStore.coop && ShellStore.coop.role === "guest")
+    readonly property bool coopGuestPanelOpen: Boolean(window.coopGuest && ShellStore.coop.guestPanelOpen)
+    readonly property bool coopGuestStarting: Boolean(window.coopGuest && ShellStore.coop.guestPhase === "starting")
+    onCoopGuestChanged: syncInputOwnership()
+    onCoopGuestPanelOpenChanged: syncInputOwnership()
+    onCoopGuestStartingChanged: syncInputOwnership()
+    // A playing guest's pad keeps reaching the host while OpenNOW is in the background (guests
+    // alt-tab to voice chat). The pad sends its real state, so nothing sticks; keyboard and mouse
+    // still stop with focus.
+    readonly property bool coopGuestPlaying: Boolean(window.coopGuest && ShellStore.coop.guestPhase === "playing")
+    onCoopGuestPlayingChanged: syncInputOwnership()
     function syncInputOwnership() {
-        const shellOwnsInput = !window.active || AppController.route !== "stream"
-            || (!window.desktopSurfaceActive && !window.consoleStreamReady)
-            || (window.desktopSurfaceActive && !ShellStore.authRestorePending && !ShellStore.signedIn)
-            || ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)
-        ControllerInput.inputSuspended = !window.active
+        const background = !window.active && window.coopGuestPlaying
+        // Why the shell owns controller input, or "" when gameplay owns it.
+        const reason = !window.active && !background ? "window-inactive"
+            : AppController.route !== "stream" ? "route-" + AppController.route
+            : !window.desktopSurfaceActive && !window.consoleStreamReady ? "console-stream-not-ready"
+            : window.desktopSurfaceActive && !ShellStore.authRestorePending && !ShellStore.signedIn && !window.coopGuest
+                ? "signed-out"
+            : ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay) ? "overlay-" + AppController.overlay
+            : window.coopGuestPanelOpen ? "coop-panel"
+            : window.coopGuestStarting ? "coop-starting"
+            : ""
+        const shellOwnsInput = reason !== ""
+        ControllerInput.inputSuspended = (!window.active && !background)
             || (shellOwnsInput && ShellStore.settings.controllerMode === false)
         ControllerInput.shellCaptureEnabled = shellOwnsInput
             && ShellStore.settings.controllerMode !== false
+        if (window.coopGuest)
+            ShellStore.coop.noteGuestInputOwner(shellOwnsInput ? "shell" : "stream",
+                reason || (background ? "gameplay-background" : "gameplay"), ControllerInput.inputSuspended)
     }
 
     Binding {
@@ -372,6 +398,22 @@ ApplicationWindow {
         enabled: window.activeRoute === "stream" && ShellStore.microphoneToggleAvailable
             && sequence !== ""
         onActivated: ShellStore.toggleMicrophone()
+    }
+    Shortcut {
+        objectName: "coopAcceptShortcut"
+        sequence: "Ctrl+Shift+Y"
+        context: Qt.ApplicationShortcut
+        autoRepeat: false
+        enabled: window.desktopSurfaceActive && ShellStore.coop.promptPending
+        onActivated: ShellStore.applyStreamShortcutAction("coop-accept")
+    }
+    Shortcut {
+        objectName: "coopDeclineShortcut"
+        sequence: "Ctrl+Shift+N"
+        context: Qt.ApplicationShortcut
+        autoRepeat: false
+        enabled: window.desktopSurfaceActive && ShellStore.coop.promptPending
+        onActivated: ShellStore.applyStreamShortcutAction("coop-decline")
     }
     Shortcut {
         objectName: "consoleGuideExitShortcut"
@@ -714,7 +756,7 @@ ApplicationWindow {
         if (route === "inserting")
             return insertingScreen
         if (route === "stream")
-            return streamScreen
+            return window.coopGuest ? coopGuestStreamScreen : streamScreen
         if (route === "accounts")
             return accountsScreen
         if (route === "profile-pin")
@@ -731,6 +773,8 @@ ApplicationWindow {
             return updateScreen
         if (route === "feedback")
             return feedbackScreen
+        if (route === "coop-guest")
+            return coopGuestScreen
         return homeScreen
     }
 
@@ -1309,6 +1353,8 @@ ApplicationWindow {
     Component { id: joiningScreen; JoiningScreen {} }
     Component { id: insertingScreen; InsertingScreen {} }
     Component { id: streamScreen; StreamScreen {} }
+    // Guests present the host's media through the guest-aware stream screen on both surfaces.
+    Component { id: coopGuestStreamScreen; DesktopStreamScreen {} }
     Component { id: accountsScreen; DesktopAccountPicker { consoleMode: true } }
     Component { id: profilePinScreen; ProfilePinScreen {} }
     Component { id: gameAccountsScreen; GameAccountsScreen {} }
@@ -1317,4 +1363,5 @@ ApplicationWindow {
     Component { id: diagnosticsScreen; DiagnosticsScreen {} }
     Component { id: updateScreen; UpdateScreen {} }
     Component { id: feedbackScreen; FeedbackScreen {} }
+    Component { id: coopGuestScreen; DesktopCoopGuestScreen {} }
 }

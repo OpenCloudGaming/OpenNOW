@@ -26,7 +26,7 @@ use serde_json::Value;
 
 static FIRST_FRAME_LOGGED: AtomicBool = AtomicBool::new(false);
 
-pub const OPENNOW_STREAMER_FFI_ABI_VERSION: u32 = 15;
+pub const OPENNOW_STREAMER_FFI_ABI_VERSION: u32 = 16;
 pub const OPENNOW_STREAMER_MAX_TEXT_BYTES: usize =
     opennow_streamer_protocol::text_input::MAX_TEXT_BYTES;
 pub const OPENNOW_STREAMER_VULKAN_DEVICE_INFO_VERSION: u32 = 1;
@@ -662,7 +662,10 @@ fn should_log_event(
     if kind == "controller-rumble" {
         return false;
     }
-    if !matches!(kind, "telemetry" | "stats") {
+    if !matches!(
+        kind,
+        "telemetry" | "stats" | "coop-host-stats" | "coop-guest-stats"
+    ) {
         return true;
     }
     if now.duration_since(*last_telemetry) < std::time::Duration::from_secs(10) {
@@ -2093,7 +2096,7 @@ mod tests {
 
     #[test]
     fn abi_twelve_adds_the_deterministic_graphics_unsupported_status() {
-        assert_eq!(OPENNOW_STREAMER_FFI_ABI_VERSION, 15);
+        assert_eq!(OPENNOW_STREAMER_FFI_ABI_VERSION, 16);
         assert_eq!(OpenNowStreamerStatus::GraphicsUnsupported as i32, 15);
         let header = include_str!("../include/opennow_streamer_ffi.h");
         assert!(header.contains("OPENNOW_STREAMER_GRAPHICS_UNSUPPORTED = 15,"));
@@ -3040,7 +3043,7 @@ mod tests {
     #[test]
     fn generic_output_contract_is_versioned_bounded_and_matches_header() {
         let header = include_str!("../include/opennow_streamer_ffi.h");
-        assert!(header.contains("#define OPENNOW_STREAMER_FFI_ABI_VERSION 15u"));
+        assert!(header.contains("#define OPENNOW_STREAMER_FFI_ABI_VERSION 16u"));
         assert!(header.contains("#define OPENNOW_STREAMER_GENERIC_HID_VERSION 1u"));
         for name in [
             "OpenNowGenericHidInterface",
@@ -3756,6 +3759,82 @@ mod tests {
         );
         assert_eq!(handle.hid.pending_states(), 1);
         assert!(handle.input.queue().take().is_none());
+    }
+
+    #[test]
+    fn coop_guest_sony_snapshots_reach_the_input_queue_without_a_session() {
+        let messages = Box::new(CallbackMessages::default());
+        let handle = graphics_test_handle(&messages);
+        handle.input.set_active(true, false, 0);
+        let claim = OpenNowSdlDeviceClaim {
+            slot: 2,
+            reserved: [0; 7],
+            incarnation: 9,
+            vendor: 0x054c,
+            product: 0x0ce6,
+        };
+        assert_eq!(
+            unsafe { opennow_streamer_replace_sdl_device_claims(&handle, [claim].as_ptr(), 1) },
+            OpenNowStreamerStatus::Ok
+        );
+        let snapshot = OpenNowSonySnapshot {
+            version: OPENNOW_STREAMER_SONY_SNAPSHOT_VERSION,
+            struct_size: size_of::<OpenNowSonySnapshot>(),
+            slot: 2,
+            touchpad_click: 0,
+            reserved: [0; 2],
+            incarnation: 9,
+            buttons: 0x2000,
+            left_trigger: 0,
+            right_trigger: 200,
+            left_stick_x: 300,
+            left_stick_y: 9_000,
+            right_stick_x: 0,
+            right_stick_y: 0,
+            contact_active: [0; 2],
+            reserved2: [0; 2],
+            contact_x: [0.0; 2],
+            contact_y: [0.0; 2],
+            reserved3: 0,
+            observed_at_us: 5,
+        };
+        assert_eq!(
+            unsafe { opennow_streamer_submit_sony_snapshot(&handle, &snapshot) },
+            OpenNowStreamerStatus::Closed,
+            "without a session or co-op guest the snapshot has no consumer"
+        );
+        assert!(handle.input.queue().take().is_none());
+        handle.hid.set_ordinary_without_session(true);
+        assert_eq!(
+            unsafe { opennow_streamer_submit_sony_snapshot(&handle, &snapshot) },
+            OpenNowStreamerStatus::Ok
+        );
+        let Some(CapturedInput::Gamepad {
+            controller_id,
+            buttons,
+            right_trigger,
+            left_stick_x,
+            left_stick_y,
+            ..
+        }) = handle.input.queue().take()
+        else {
+            panic!("missing guest gamepad report")
+        };
+        assert_eq!(
+            (
+                controller_id,
+                buttons,
+                right_trigger,
+                left_stick_x,
+                left_stick_y
+            ),
+            (2, 0x2000, 200, 300, -9_000)
+        );
+        assert_eq!(
+            handle.hid.pending_states(),
+            0,
+            "no rich Sony state without a session"
+        );
     }
 
     #[test]

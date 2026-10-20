@@ -1,6 +1,7 @@
 set_source_files_properties(qml/theme/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 set_source_files_properties(qml/state/ShellStore.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 set_source_files_properties(qml/desktop/components/DesktopTokens.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
+set_source_files_properties(qml/desktop/friends/DesktopFriendsFormat.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 set_source_files_properties(qml/components/InputPromptIcons.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 set_source_files_properties(qml/components/ConsoleStores.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 
@@ -278,6 +279,7 @@ qt_add_qml_module(opennow-qt
         qml/desktop/auth/DesktopAccountPicker.qml
         qml/desktop/auth/DesktopAccountTile.qml
         qml/desktop/auth/DesktopSignInScreen.qml
+        qml/desktop/components/DesktopAvatarPhoto.qml
         qml/desktop/components/DesktopBackdrop.qml
         qml/desktop/components/DesktopBrandLockup.qml
         qml/desktop/components/DesktopButton.qml
@@ -296,7 +298,61 @@ qt_add_qml_module(opennow-qt
         qml/desktop/components/DesktopPoster.qml
         qml/desktop/components/DesktopPosterOverlay.qml
         qml/desktop/components/DesktopTokens.qml
+        qml/desktop/friends/DesktopFriendsAction.qml
+        qml/desktop/friends/DesktopFriendsAdd.qml
+        qml/desktop/friends/DesktopFriendsAnswer.qml
+        qml/desktop/friends/DesktopFriendsAvatar.qml
+        qml/desktop/friends/DesktopFriendsButton.qml
+        qml/desktop/friends/DesktopFriendsCard.qml
+        qml/desktop/friends/DesktopFriendsEarlyAccess.qml
+        qml/desktop/friends/DesktopFriendsCardRow.qml
+        qml/desktop/friends/DesktopFriendsFormat.qml
+        qml/desktop/friends/DesktopFriendsIcon.qml
+        qml/desktop/friends/DesktopFriendsInvites.qml
+        qml/desktop/friends/DesktopFriendsLabel.qml
+        qml/desktop/friends/DesktopFriendsLinking.qml
+        qml/desktop/friends/DesktopFriendsList.qml
+        qml/desktop/friends/DesktopFriendsManageMenu.qml
+        qml/desktop/friends/DesktopFriendsNotLinked.qml
+        qml/desktop/friends/DesktopFriendsRequests.qml
+        qml/desktop/friends/DesktopFriendsRow.qml
+        qml/desktop/friends/DesktopFriendsSection.qml
+        qml/desktop/friends/DesktopFriendsTag.qml
+        qml/desktop/friends/DesktopFriendsUsernameField.qml
+        qml/desktop/friends/DesktopFriendsWelcome.qml
         qml/desktop/friends/DesktopFriendsScreen.qml
+        qml/desktop/coop/DesktopCoopGuestScreen.qml
+        qml/desktop/coop/DesktopCoopGuestButton.qml
+        qml/desktop/coop/DesktopCoopGuestConnecting.qml
+        qml/desktop/coop/DesktopCoopGuestEnded.qml
+        qml/desktop/coop/DesktopCoopGuestError.qml
+        qml/desktop/coop/DesktopCoopGuestHints.qml
+        qml/desktop/coop/DesktopCoopGuestIcon.qml
+        qml/desktop/coop/DesktopCoopGuestJoinCode.qml
+        qml/desktop/coop/DesktopCoopGuestOverlay.qml
+        qml/desktop/coop/DesktopCoopGuestReconnectToast.qml
+        qml/desktop/coop/DesktopCoopGuestRelayChip.qml
+        qml/desktop/coop/DesktopCoopGuestSlotChip.qml
+        qml/desktop/coop/DesktopCoopGuestSpinner.qml
+        qml/desktop/coop/DesktopCoopGuestText.qml
+        qml/desktop/coop/DesktopCoopGuestWaitingRoom.qml
+        qml/desktop/coop/DesktopCoopLobby.qml
+        qml/desktop/coop/DesktopCoopConfirm.qml
+        qml/desktop/coop/DesktopCoopHostButton.qml
+        qml/desktop/coop/DesktopCoopHostIcon.qml
+        qml/desktop/coop/DesktopCoopHostFriendChip.qml
+        qml/desktop/coop/DesktopCoopUploadUsage.qml
+        qml/desktop/stream/DesktopInStreamCoopSection.qml
+        qml/desktop/coop/DesktopCoopAskNotice.qml
+        qml/desktop/coop/DesktopCoopCodecPrompt.qml
+        qml/desktop/coop/DesktopCoopAskToast.qml
+        qml/desktop/coop/DesktopCoopInviteToast.qml
+        qml/desktop/coop/DesktopCoopNoticeAvatar.qml
+        qml/desktop/coop/DesktopCoopNoticeCard.qml
+        qml/desktop/coop/DesktopCoopNotices.qml
+        qml/desktop/coop/DesktopCoopToastButton.qml
+        qml/desktop/coop/DesktopCoopSetup.qml
+        qml/desktop/settings/DesktopDiscordUnlinkConfirm.qml
         qml/desktop/home/DesktopHomePoster.qml
         qml/desktop/home/DesktopHomeScreen.qml
         qml/desktop/library/DesktopLibraryScreen.qml
@@ -332,6 +388,7 @@ qt_add_qml_module(opennow-qt
         qml/desktop/settings/pages/DesktopSettingsAboutPage.qml
         qml/desktop/settings/pages/DesktopSettingsAccountPage.qml
         qml/desktop/settings/pages/DesktopSettingsAudioPage.qml
+        qml/desktop/settings/pages/DesktopSettingsCoopPage.qml
         qml/desktop/settings/pages/DesktopSettingsConsolePage.qml
         qml/desktop/settings/pages/DesktopSettingsControllersPage.qml
         qml/desktop/settings/pages/DesktopSettingsControlsPage.qml
@@ -407,6 +464,8 @@ qt_add_qml_module(opennow-qt
         qml/state/BackgroundStreamState.qml
         qml/state/ConnectionHealthState.qml
         qml/state/settings/OnboardingState.qml
+        qml/state/social/FriendsState.qml
+        qml/state/coop/CoopState.qml
         qml/theme/Theme.qml
     RESOURCES
         ${OPENNOW_CONTROLLER_ICON_FILES}
@@ -508,6 +567,19 @@ qt_add_qml_module(opennow-qt
         res/icons/desktop-user-plus.svg
         res/icons/desktop-user-plus-on-light.svg
         res/icons/desktop-users.svg
+        res/icons/desktop-discord.svg
+        res/icons/desktop-discord-wordmark.svg
+        res/icons/desktop-discord-wordmark-on-light.svg
+        res/icons/desktop-eye.svg
+        res/icons/desktop-eye-on-light.svg
+        res/icons/desktop-hand.svg
+        res/icons/desktop-hand-on-light.svg
+        res/icons/desktop-hash-green.svg
+        res/icons/desktop-inbox.svg
+        res/icons/desktop-unlink.svg
+        res/icons/desktop-unlink-ink.svg
+        res/icons/desktop-user-x-amber.svg
+        res/icons/desktop-users-violet.svg
         res/icons/desktop-users-on-light.svg
         res/icons/desktop-pencil.svg
         res/icons/desktop-pencil-on-light.svg

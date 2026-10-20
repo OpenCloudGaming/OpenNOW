@@ -927,7 +927,11 @@ impl MainThreadHost {
                     Ok(OutputEvent::Presented(backend)) if !software_playback_started => {
                         software_playback_started = true;
                         if let Some(feedback) = feedback.as_ref() {
-                            let _ = feedback.send(MediaFeedback::PlaybackStarted { backend });
+                            let _ = feedback.send(MediaFeedback::PlaybackStarted {
+                                backend,
+                                software: backend.starts_with("OpenH264")
+                                    || backend.contains(" software/"),
+                            });
                         }
                     }
                     #[cfg(target_os = "windows")]

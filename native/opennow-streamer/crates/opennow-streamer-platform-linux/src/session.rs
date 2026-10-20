@@ -1366,19 +1366,39 @@ fn open_decoder(
                     ),
                 ));
             }
-            #[cfg(feature = "vaapi")]
-            {
-                crate::video::open_vaapi(format)
-            }
-            #[cfg(not(feature = "vaapi"))]
-            {
-                let _ = format;
-                Err(Error::unavailable(
-                    Subsystem::VaApi,
-                    "crate was built without the vaapi feature",
-                ))
-            }
+            let native = open_native_vaapi_h264(format);
+            #[cfg(feature = "ffmpeg")]
+            let native = native.or_else(|native| {
+                crate::video::FfmpegDecoder::open(
+                    VideoCodec::H264,
+                    format,
+                    crate::video::FfmpegMode::Vaapi,
+                )
+                .map(|decoder| Box::new(decoder) as Box<dyn VideoDecoder>)
+                .map_err(|ffmpeg| {
+                    Error::unavailable(
+                        Subsystem::VaApi,
+                        format!("native VA-API H.264: {native}; FFmpeg VA-API H.264: {ffmpeg}"),
+                    )
+                })
+            });
+            native
         }
+    }
+}
+
+fn open_native_vaapi_h264(format: StreamFormat) -> Result<Box<dyn VideoDecoder>> {
+    #[cfg(feature = "vaapi")]
+    {
+        crate::video::open_vaapi(format)
+    }
+    #[cfg(not(feature = "vaapi"))]
+    {
+        let _ = format;
+        Err(Error::unavailable(
+            Subsystem::VaApi,
+            "crate was built without the vaapi feature",
+        ))
     }
 }
 

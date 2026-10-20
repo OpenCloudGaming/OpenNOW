@@ -11,6 +11,7 @@ FocusScope {
 
     property int selectedSection: 3
     readonly property int updatesSection: 13
+    readonly property int coopSection: 14
     property string searchQuery: ""
     property bool advancedOpen: false
     // Isolated visual acceptance only; never selects alternate production UI.
@@ -31,6 +32,7 @@ FocusScope {
         {label: qsTr("Network"), detail: qsTr("Region, ping, proxy"), icon: "globe", page: 6, keywords: "server region ping proxy l4s"},
         {label: qsTr("Audio"), detail: qsTr("Output and stream audio"), icon: "wave", page: 4, keywords: "sound audio volume output microphone mute focus"},
         {label: qsTr("Controls"), detail: qsTr("Pads, mouse, shortcuts"), icon: "controller", page: 5, keywords: "controller gyroscope steam sensitivity keyboard language shortcuts"},
+        {label: qsTr("Co-op"), detail: qsTr("Guests, relay, preset"), icon: "person", page: coopSection, keywords: "co-op coop guests players relay preset bitrate approval latency display name upload"},
         {label: qsTr("Recording"), detail: qsTr("Capture, replay, shortcuts"), icon: "image", page: 12, keywords: "recording capture clip replay buffer memory duration folder resolution fps quality shortcuts F12"},
         {label: qsTr("Appearance"), detail: qsTr("Theme, accent, layout"), icon: "palette", page: 8, keywords: "theme accent interface language scale motion console sidebar tiles quit exit close confirm"},
         {label: qsTr("Console mode"), detail: qsTr("Gamepad-first interface"), icon: "controller", page: 9, keywords: "console fullscreen gamepad startup"},
@@ -38,8 +40,8 @@ FocusScope {
         {label: qsTr("Updates"), detail: qsTr("Version, channel, notes"), icon: "reset", page: updatesSection, keywords: "update updates version release notes changelog channel stable nightly download install restart"},
         {label: qsTr("About & support"), detail: qsTr("Diagnostics, legal"), icon: "info", page: 11, keywords: "version diagnostics legal onboarding introduction replay setup restart reset"}
     ]
-    readonly property var pageTitles: [qsTr("Account"), qsTr("Account"), qsTr("Account"), qsTr("Stream"), qsTr("Audio"), qsTr("Controls"), qsTr("Network"), qsTr("Appearance"), qsTr("Appearance"), qsTr("Console mode"), qsTr("Controls"), qsTr("About & support"), qsTr("Recording"), qsTr("Updates")]
-    readonly property var pageComponents: [accountGroup, accountGroup, accountGroup, streamPage, audioPage, controlsGroup, networkPage, lookGroup, lookGroup, consolePage, controlsGroup, aboutPage, recordingPage, updatesPage]
+    readonly property var pageTitles: [qsTr("Account"), qsTr("Account"), qsTr("Account"), qsTr("Stream"), qsTr("Audio"), qsTr("Controls"), qsTr("Network"), qsTr("Appearance"), qsTr("Appearance"), qsTr("Console mode"), qsTr("Controls"), qsTr("About & support"), qsTr("Recording"), qsTr("Updates"), qsTr("Co-op")]
+    readonly property var pageComponents: [accountGroup, accountGroup, accountGroup, streamPage, audioPage, controlsGroup, networkPage, lookGroup, lookGroup, consolePage, controlsGroup, aboutPage, recordingPage, updatesPage, coopPage]
 
     function matchesSection(section) {
         const query = searchQuery.trim().toLowerCase()
@@ -680,6 +682,14 @@ FocusScope {
     Component {
         id: aboutPage
         DesktopSettingsAboutPage {
+            availableWidth: contentFlick.width
+            settingsScreen: root
+        }
+    }
+
+    Component {
+        id: coopPage
+        DesktopSettingsCoopPage {
             availableWidth: contentFlick.width
             settingsScreen: root
         }

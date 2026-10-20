@@ -400,6 +400,8 @@ int AcceptanceSession::startSmokeWorkload()
     }
     if (m_smokeTest && m_arguments.contains(u"--smoke-gpu-count"_s))
         return startGpuSettingsWorkload();
+    if (m_smokeTest && m_arguments.contains(u"--smoke-coop"_s))
+        return startCoopWorkload();
     if (m_smokeTest && m_arguments.contains(u"--smoke-theme-settings"_s))
         return startThemeSettingsWorkload();
     if (m_smokeTest && m_arguments.contains(u"--smoke-session-launch"_s))

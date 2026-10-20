@@ -25,12 +25,13 @@ bool prepareLaunchGuards(QJSEngine &engine)
         var queueSelector={opened:false,begin:function(title){return false}};
         var bugReports={observeTelemetry:function(){},observeFrameDrops:function(){},reportStreamError:function(){}};
         var launchRequestedAtMs=0;
+        var coopOwner={role:'none',guestActive:false,guestStreaming:false};
         function reportSessionStart() {}
         function reportSessionEnd() {}
     )JS")).isError()) return false;
     const auto shell = source(QStringLiteral("qml/state/ShellStore.qml"));
     for (const auto &name : {"launchIntentCurrent", "inspectLaunch", "invalidateLaunchInspection",
-             "continueInspectedLaunch", "discoverPendingLaunch"}) {
+             "continueInspectedLaunch", "discoverPendingLaunch", "refuseLaunchAsCoopGuest"}) {
         const auto match = QRegularExpression(QStringLiteral(
             "    function %1\\([^\\n]*\\) \\{.*?\\n    \\}").arg(QString::fromLatin1(name)),
             QRegularExpression::DotMatchesEverythingOption).match(shell);
@@ -643,6 +644,7 @@ private slots:
             function inspectStreamerOverlayRequest() {} function inspectStreamerScreenshotRequest() {}
             function inspectStreamerRecordingRequest() {} function inspectStreamerShortcutAction() {}
             function qsTr(text) {return text;}
+            var coopOwner = {role:'none', guestActive:false, guestStreaming:false};
         )JS")).isError());
         for (const auto &name : {"acceptStreamerSnapshot", "isRemoteSessionTermination", "cancelSessionRecovery",
                  "scheduleSessionRecovery", "retryNativeStreamer", "recoverStreamingSession", "discoverRecoverySession",
@@ -1007,6 +1009,7 @@ private slots:
             var activeSession = {sessionId:'seat'}, streamStartedAtMs = 0, streamState = 'starting';
             var streamer = {status:'starting'}, nativeCommands = [], snapshots = 0;
             var negotiatedStreamProfile = {};
+            var coopOwner = {role:'none', guestActive:false, guestStreaming:false};
             var streamPollTimer = {stop:function(){}}, streamerRestartTimer = {stop:function(){}};
             function invalidateLaunchInspection() {}
             function cancelSessionRecovery() {}
@@ -1160,6 +1163,7 @@ private slots:
         QJSEngine engine;
         QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
             var root = this, stops = 0;
+            var coopOwner = {role:'none', guestActive:false, guestStreaming:false};
             var AppController = {route:'stream', overlay:'guide-session', showOverlay:function(value){this.overlay=value;}};
             function stopStreamingSession() {stops++;}
             function qsTr(value) {return value;}
@@ -1193,6 +1197,7 @@ private slots:
             var selectedGame = {title:'Fortnite'}, overlayRequestGeneration = 0;
             var AppController = {route:'home',overlay:'',calls:0,
                 showOverlay:function(value){this.overlay=value;this.calls++;return true;}};
+            var coopOwner = {guestStreaming:false,guides:0,guestGuideRequested:function(){this.guides++;}};
         )JS")).isError());
         QVERIFY(loadShellFunction(engine, QStringLiteral("canOpenSessionGuide")));
         QVERIFY(loadShellFunction(engine, QStringLiteral("openSessionGuide")));
@@ -1209,6 +1214,10 @@ private slots:
         QVERIFY(engine.evaluate(QStringLiteral("streamState='streaming'; desktopUiActive=true; openSessionGuide()")).toBool());
         QCOMPARE(engine.evaluate(QStringLiteral("AppController.overlay")).toString(), QStringLiteral("desktop-stream-menu"));
         QCOMPARE(engine.evaluate(QStringLiteral("selectedGame.title")).toString(), QStringLiteral("Fortnite"));
+        QVERIFY(!engine.evaluate(QStringLiteral(
+            "AppController.overlay=''; coopOwner.guestStreaming=true; inspectStreamerOverlayRequest({overlayRequestGeneration:2})")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("coopOwner.guides")).toInt(), 1);
+        QCOMPARE(engine.evaluate(QStringLiteral("AppController.overlay")).toString(), QString());
     }
 
     void dismissingSessionConflictPreservesTheRunningGame()
@@ -2666,8 +2675,13 @@ private slots:
             QVERIFY2(liveItem.match(qml).hasMatch(), qPrintable(path));
             QVERIFY(qml.contains(QStringLiteral("visible: root.visible && root.videoSurfaceActive")));
             QVERIFY(qml.contains(path.startsWith(QStringLiteral("qml/desktop/"))
-                ? QStringLiteral("inputEnabled: root.streaming && visible")
+                ? QStringLiteral("inputEnabled: root.gameplayInputReady")
                 : QStringLiteral("inputEnabled: root.videoReady && visible")));
+            if (path.startsWith(QStringLiteral("qml/desktop/"))) {
+                QVERIFY(qml.contains(QStringLiteral("readonly property bool presentationRunning: root.streaming || root.coopGuest")));
+                QVERIFY(qml.contains(QStringLiteral(
+                    "readonly property bool gameplayInputReady: root.presentationRunning && root.visible")));
+            }
             QVERIFY(qml.contains(QStringLiteral(
                 "!ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)")));
             QVERIFY(qml.contains(QStringLiteral(

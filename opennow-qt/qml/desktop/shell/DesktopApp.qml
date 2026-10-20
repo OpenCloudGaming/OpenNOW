@@ -25,27 +25,33 @@ FocusScope {
             contentRoute = requestedContentRoute
     }
     readonly property bool profileRouteVisible: route === "accounts" || route === "profile-pin"
-    readonly property bool signInVisible: !profileRouteVisible && !ShellStore.authRestorePending
+    // Joining a friend's co-op needs no GeForce NOW account, so the guest flow and a guest's stream
+    // never sit behind sign-in.
+    readonly property bool coopGuestActive: route === "coop-guest" || ShellStore.coop.role === "guest"
+    readonly property bool signInVisible: !profileRouteVisible && !ShellStore.authRestorePending && !coopGuestActive
         && (!ShellStore.signedIn || route === "sign-in")
     readonly property bool sessionStartingVisible: !signInVisible
-        && (route === "inserting" || (streamVisible && !desktopStream.videoReady))
+        && (route === "inserting" || (streamVisible && !desktopStream.videoReady && !desktopStream.coopGuest && !desktopStream.coopGuestStarting))
     readonly property bool streamVisible: !signInVisible && route === "stream"
     readonly property bool streamPointerLocked: streamVisible && desktopStream.streamPointerLocked
     readonly property var frameGenerationStats: streamVisible ? desktopStream.frameGenerationStats : ({})
     readonly property var swapStats: streamVisible ? desktopStream.swapStats : ({})
+    readonly property bool coopGuestVisible: !signInVisible && !profileRouteVisible && route === "coop-guest"
     readonly property bool shellVisible: !profileRouteVisible && !signInVisible && !sessionStartingVisible && !streamVisible
+        && !coopGuestVisible
 
     function titleForRoute(value) {
         if (value === "library" || value === "game-detail") return qsTr("Library")
         if (value === "store") return qsTr("Store")
-        if (value === "friends") return qsTr("Friends")
+        if (value.indexOf("friends") === 0) return qsTr("Friends")
         if (value.indexOf("settings") === 0 || value === "controllers") return qsTr("Settings")
         return qsTr("Home")
     }
     function subtitleForRoute(value) {
         if (value === "library" || value === "game-detail") return qsTr("%1 games").arg(ShellStore.catalogTotalCount || ShellStore.catalogGames.length)
         if (value === "store") return qsTr("%1 in catalog").arg(ShellStore.storeTotalCount || ShellStore.storeGames.length)
-        if (value === "friends") return qsTr("Coming soon")
+        if (value.indexOf("friends") === 0)
+            return pageLoader.item && pageLoader.item.friendsSubtitle !== undefined ? pageLoader.item.friendsSubtitle : ""
         if (value.indexOf("settings") === 0 || value === "controllers") return settingsSubtitle
         return ShellStore.catalogTotalCount
             ? qsTr("%1 games").arg(ShellStore.catalogTotalCount)
@@ -64,6 +70,7 @@ FocusScope {
         if (value === "settings-advanced" || value === "settings-advanced-dropdown") return 11
         if (value === "settings-account") return 0
         if (value === "settings-updates") return 13
+        if (value === "settings-coop") return 14
         return 3
     }
     // Selecting a category inside Settings does not change the route, so a
@@ -81,7 +88,7 @@ FocusScope {
     }
     function contentForRoute(value) {
         if (value === "store") return storeComponent
-        if (value === "friends") return friendsComponent
+        if (value.indexOf("friends") === 0) return friendsComponent
         if (value.indexOf("settings") === 0 || value === "controllers") return settingsComponent
         if (value === "library" || value === "game-detail") return libraryComponent
         return homeComponent
@@ -163,6 +170,7 @@ FocusScope {
         route: root.contentRoute
         title: root.titleForRoute(root.contentRoute)
         subtitle: root.subtitleForRoute(root.contentRoute)
+        headerActions: pageLoader.item && pageLoader.item.headerActions !== undefined ? pageLoader.item.headerActions : null
         searchText: root.searchText
         onSearchTextChanged: root.searchText = searchText
         onRouteRequested: route => root.openRoute(route)
@@ -220,6 +228,30 @@ FocusScope {
         focus: visible && !launchCovered
         z: 85
         onStopRequested: ShellStore.requestStreamExitConfirmation()
+    }
+
+    DesktopCoopGuestScreen {
+        anchors.fill: parent
+        visible: root.coopGuestVisible
+        focus: visible
+        z: 88
+    }
+    DesktopCoopSetup {
+        anchors.fill: parent
+        opened: root.shellVisible && AppController.overlay === "coop-setup"
+        z: 112
+        onOpenedChanged: if (!opened) Qt.callLater(root.restoreShellFocus)
+    }
+    DesktopDiscordUnlinkConfirm {
+        anchors.fill: parent
+        opened: root.shellVisible && AppController.overlay === "discord-unlink-confirm"
+        z: 113
+        onOpenedChanged: if (!opened) Qt.callLater(root.restoreShellFocus)
+    }
+    DesktopCoopNotices {
+        anchors.fill: parent
+        visible: !root.signInVisible && !root.profileRouteVisible
+        z: 126
     }
 
     DesktopGameModal {

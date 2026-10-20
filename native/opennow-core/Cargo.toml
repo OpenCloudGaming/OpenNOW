@@ -29,11 +29,13 @@ icu_normalizer = { version = "2.1", default-features = false, features = ["compi
 scrypt = "0.11"
 semver = "1"
 subtle = "2"
+tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }
 url = "2"
 webpki-roots = "1"
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
 fs2 = "0.4"
 libc = "0.2"
+opennow-socket-wait = { path = "../opennow-streamer/crates/opennow-socket-wait" }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_ProcessStatus", "Win32_System_ApplicationInstallationAndServicing", "Win32_System_SystemServices", "Win32_System_IO", "Win32_Storage_FileSystem", "Wdk_System_Threading"] }

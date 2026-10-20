@@ -22,6 +22,7 @@ class AppController final : public QObject
     Q_PROPERTY(QString inputMode READ inputMode WRITE setInputMode NOTIFY inputModeChanged)
     Q_PROPERTY(bool consoleLaunchInputBlocked READ consoleLaunchInputBlocked WRITE setConsoleLaunchInputBlocked NOTIFY consoleLaunchInputBlockedChanged)
     Q_PROPERTY(bool consoleLaunchInputDraining READ consoleLaunchInputDraining NOTIFY consoleLaunchInputDrainingChanged)
+    Q_PROPERTY(QString coopJoinCode READ coopJoinCode NOTIFY coopJoinCodeChanged)
 
 public:
     explicit AppController(QObject *parent = nullptr);
@@ -36,6 +37,12 @@ public:
     [[nodiscard]] bool consoleLaunchInputDraining() const { return m_consoleLaunchInputDraining; }
     void setConsoleLaunchInputBlocked(bool blocked);
     void setConsoleLaunchInputDraining(bool draining);
+    [[nodiscard]] QString coopJoinCode() const { return m_coopJoinCode; }
+    // Normalizes a co-op code ("k7q4mx", "K7Q-4MX") to "K7Q-4MX"; empty when invalid.
+    [[nodiscard]] static QString normalizeCoopCode(const QString &code);
+    Q_INVOKABLE QString takeCoopJoinCode();
+    // Throttled: emits userActivity at most once every five seconds.
+    void noteUserActivity();
 
     Q_INVOKABLE bool navigate(const QString &route);
     Q_INVOKABLE bool navigateFromLastPrimary(const QString &route);
@@ -91,6 +98,8 @@ signals:
     void applicationExitCommitted();
     void restartRequested();
     void directLaunchRequested(const QString &appId, const QString &title);
+    void coopJoinCodeChanged();
+    void userActivity();
 
 private:
     bool applyOverlay(const QString &overlay);
@@ -105,6 +114,8 @@ private:
     bool m_consoleLaunchInputDraining = false;
     int m_controllerCount = 0;
     QString m_inputMode = QStringLiteral("keyboard");
+    QString m_coopJoinCode;
+    qint64 m_lastActivityMs = -1;
     QVector<QString> m_routeHistory;
     std::function<bool(bool)> m_overlayTransitionGuard;
 };

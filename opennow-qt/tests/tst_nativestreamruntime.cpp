@@ -210,6 +210,64 @@ private slots:
         QVERIFY(!runtime.running());
     }
 
+    void coopGuestSessionsUseTheEmbeddedLifecycleAndRouteCoopEvents()
+    {
+        static OpenNowStreamerConfig callbacks;
+        auto api = fakeApi();
+        api.create = [](const OpenNowStreamerConfig *config, OpenNowStreamer **output) {
+            callbacks = *config;
+            return fakeCreate(config, output);
+        };
+        NativeStreamRuntime runtime(api);
+        QSignalSpy generic(&runtime, &NativeStreamRuntime::eventReceived);
+        QSignalSpy coop(&runtime, &NativeStreamRuntime::coopEventReceived);
+        QVERIFY(runtime.start());
+        const auto deliver = [&](const QByteArray &bytes) {
+            callbacks.event_callback(reinterpret_cast<const std::uint8_t *>(bytes.constData()),
+                static_cast<std::size_t>(bytes.size()), callbacks.user_data);
+            QCoreApplication::processEvents();
+        };
+        QVERIFY(!runtime.inputAllowed());
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("coop-guest-start")},
+                              {QStringLiteral("id"), QStringLiteral("guest-1")},
+                              {QStringLiteral("hostPeerId"), QStringLiteral("usr_host")},
+                              {QStringLiteral("slot"), 2}}));
+        QTRY_VERIFY(runtime.inputAllowed());
+        QVERIFY(runtime.presentationAllowed());
+        QVERIFY(!runtime.streaming());
+        deliver(R"({"type":"coop-guest-state","state":"relay","path":"relay","relayId":"nl","reason":null})");
+        QVERIFY(!runtime.streaming());
+        deliver(R"({"type":"coop-guest-state","state":"connected","path":"relay","relayId":"nl","reason":null})");
+        QVERIFY(runtime.streaming());
+        deliver(R"({"type":"coop-signal-out","peerId":"usr_host","payload":{"kind":"answer","sdp":"v=0"}})");
+        deliver(R"({"type":"coop-guest-stats","hostToGfnPingMs":18,"guestToHostPingMs":41,"totalMs":59,"quality":"good","lossPct":0.1,"slot":2,"inputMuted":false})");
+        QCOMPARE(coop.size(), 4);
+        QCOMPARE(generic.size(), 0);
+        QCOMPARE(coop[1][0].toJsonObject().value(QStringLiteral("state")).toString(), QStringLiteral("connected"));
+        QCOMPARE(coop[2][0].toJsonObject().value(QStringLiteral("peerId")).toString(), QStringLiteral("usr_host"));
+        deliver(R"({"type":"status","status":"streaming","startId":"guest-1"})");
+        QCOMPARE(generic.size(), 1);
+        QSignalSpy inputReset(&runtime, &NativeStreamRuntime::inputCaptureReset);
+        deliver(R"({"type":"coop-guest-state","state":"ended","path":null,"relayId":null,"reason":"host_ended"})");
+        QVERIFY(!runtime.streaming());
+        QVERIFY(!runtime.presentationAllowed());
+        QCOMPARE(inputReset.size(), 1);
+        QCOMPARE(coop.size(), 5);
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("coop-guest-start")},
+                              {QStringLiteral("id"), QStringLiteral("guest-2")}}));
+        QTRY_VERIFY(runtime.inputAllowed());
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("coop-guest-stop")}}));
+        QVERIFY(!runtime.inputAllowed());
+        QVERIFY(!runtime.presentationAllowed());
+        deliver(R"({"type":"coop-guest-state","state":"connected","path":"direct","relayId":null,"reason":null})");
+        QVERIFY(!runtime.streaming());
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("coop-host-start")},
+                              {QStringLiteral("maxGuests"), 3}}));
+        QVERIFY(!runtime.inputAllowed());
+        QCOMPARE(runtime.coopSupported(), OPENNOW_STREAMER_FFI_ABI_VERSION >= 16u);
+        QVERIFY(runtime.shutdown());
+    }
+
     void textInputErrorsAreNonterminalAndScopedToSessionGeneration()
     {
         static OpenNowStreamerConfig callbackConfig;

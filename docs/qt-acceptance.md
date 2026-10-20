@@ -423,6 +423,23 @@ covers the expanded Stream page. Each image has a matching runtime log. On Linux
 the script uses Xvfb when `DISPLAY` is unset. These fixtures never start the core
 or persist account preferences.
 
+## Co-op sessions and Friends (Variation C2)
+
+`ctest --test-dir build/opennow-qt -R qml-coop-c2 --output-on-failure` walks every C2 and
+Variation C scene in `opennow-qt/tests/CoopAcceptance.qml`, windowed and fullscreen, through a mock
+core and a mock streamer. Each scene must show its expected objects and pass its state checks
+without QML warnings. To capture the scenes for comparison with the Paper exports:
+
+```sh
+QT_QPA_PLATFORM=offscreen build/opennow-qt/opennow-qt --smoke-test --allow-multiple-instances --desktop \
+  --route home --smoke-coop --reduced-motion --screenshot-dir /absolute/path/coop-captures
+```
+
+`--coop-scene <name>` settles one scene (use `--screenshot <png>` to capture it),
+`--coop-states-only` runs only the state checks, `--smoke-coop-fullscreen` uses a fullscreen window,
+and `--console` uses the console surface. Live co-op still needs two machines, a linked Discord
+account on the host, and a real GeForce NOW session.
+
 ## Desktop settings motion
 
 `qml-idle-mode` verifies that expiry of the mouse grace period cannot change the

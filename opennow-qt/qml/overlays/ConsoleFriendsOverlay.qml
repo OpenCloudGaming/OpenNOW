@@ -90,25 +90,116 @@ FocusScope {
     }
 
     Column {
+        id: onlineColumn
+        objectName: "consoleCoopInvites"
         x: 120
         y: Math.max(600, heroColumn.y + heroColumn.height + 48)
         width: 880
-        spacing: 10
-        visible: y + height <= root.height - 156
+        spacing: 12
+        readonly property var invites: ShellStore.coop.incomingInvites.slice(0, 3)
+        Text {
+            text: qsTr("ONLINE CO-OP")
+            color: Theme.lightMode ? Qt.darker(Theme.focus, 1.6) : Theme.focus
+            font.family: Theme.monoFont
+            font.pixelSize: 14
+            font.weight: Font.Bold
+            font.letterSpacing: 1.96
+        }
         Repeater {
-            model: [[180, 120], [150, 140], [120, 160]]
-            Rectangle {
+            id: inviteRows
+            model: onlineColumn.invites
+            delegate: Rectangle {
+                id: inviteRow
                 required property var modelData
+                required property int index
                 width: 880
-                height: 72
+                height: 88
                 radius: 24
-                color: "transparent"
-                border.color: Qt.rgba(Theme.label.r, Theme.label.g, Theme.label.b, 0.06)
+                color: Qt.rgba(Theme.face.r, Theme.face.g, Theme.face.b, 0.06)
+                border.color: Theme.seam
                 border.width: 1
-                Accessible.ignored: true
-                Rectangle { x: 21; anchors.verticalCenter: parent.verticalCenter; width: 44; height: 44; radius: 22; color: Qt.rgba(Theme.label.r, Theme.label.g, Theme.label.b, 0.06) }
-                Rectangle { x: 81; y: 21; width: parent.modelData[0]; height: 12; radius: 6; color: Qt.rgba(Theme.label.r, Theme.label.g, Theme.label.b, 0.08) }
-                Rectangle { x: 81; y: 41; width: parent.modelData[1]; height: 10; radius: 5; color: Qt.rgba(Theme.label.r, Theme.label.g, Theme.label.b, 0.05) }
+                Accessible.role: Accessible.Grouping
+                Accessible.name: inviteText.text
+                Column {
+                    x: 24
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: parent.width - 24 - inviteActions.width - 40
+                    spacing: 4
+                    Text {
+                        id: inviteText
+                        width: parent.width
+                        elide: Text.ElideRight
+                        text: qsTr("%1 invited you").arg(ShellStore.friends.displayName(inviteRow.modelData.from))
+                        color: Theme.label
+                        font.family: Theme.displayFont
+                        font.pixelSize: 20
+                        font.weight: Font.ExtraBold
+                    }
+                    Text {
+                        width: parent.width
+                        elide: Text.ElideRight
+                        text: String(inviteRow.modelData.game && inviteRow.modelData.game.title || "")
+                        color: Theme.textMuted
+                        font.family: Theme.bodyFont
+                        font.pixelSize: 16
+                        font.weight: Font.DemiBold
+                    }
+                }
+                Row {
+                    id: inviteActions
+                    anchors.right: parent.right
+                    anchors.rightMargin: 16
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 12
+                    ConsoleActionButton {
+                        id: acceptButton
+                        objectName: "consoleCoopInviteAccept"
+                        height: 56
+                        primary: true
+                        glyph: "A"
+                        glyphSize: 26
+                        labelSize: 18
+                        text: qsTr("Join")
+                        KeyNavigation.right: declineButton
+                        KeyNavigation.up: inviteRow.index > 0 ? inviteRows.itemAt(inviteRow.index - 1).firstButton : null
+                        KeyNavigation.down: inviteRow.index + 1 < inviteRows.count ? inviteRows.itemAt(inviteRow.index + 1).firstButton : joinCodeButton
+                        onClicked: {
+                            const inviteId = inviteRow.modelData.id
+                            AppController.showOverlay("")
+                            ShellStore.coop.acceptInvite(inviteId)
+                        }
+                    }
+                    ConsoleActionButton {
+                        id: declineButton
+                        height: 56
+                        labelSize: 18
+                        labelWeight: Font.ExtraBold
+                        text: qsTr("Decline")
+                        KeyNavigation.left: acceptButton
+                        KeyNavigation.right: localJoin
+                        onClicked: {
+                            ShellStore.coop.declineInvite(inviteRow.modelData.id)
+                            Qt.callLater(() => joinCodeButton.forceActiveFocus())
+                        }
+                    }
+                }
+                readonly property Item firstButton: acceptButton
+            }
+        }
+        ConsoleActionButton {
+            id: joinCodeButton
+            objectName: "consoleCoopJoinCode"
+            height: 64
+            cornerRadius: 24
+            leftPadding: 25
+            labelSize: 19
+            labelWeight: Font.ExtraBold
+            text: qsTr("Join with a code ›")
+            KeyNavigation.up: inviteRows.count > 0 ? inviteRows.itemAt(inviteRows.count - 1).firstButton : null
+            KeyNavigation.right: localJoin
+            onClicked: {
+                AppController.showOverlay("")
+                ShellStore.coop.openJoin("")
             }
         }
     }
@@ -234,6 +325,7 @@ FocusScope {
                 rightPadding: 26
                 labelSize: 21
                 KeyNavigation.down: controllerSettings
+                KeyNavigation.left: inviteRows.count > 0 ? inviteRows.itemAt(0).firstButton : joinCodeButton
                 onClicked: {
                     AppController.showOverlay("")
                     AppController.navigate("joining")
@@ -250,6 +342,7 @@ FocusScope {
                 labelWeight: Font.ExtraBold
                 text: qsTr("Controller settings ›")
                 KeyNavigation.up: localJoin
+                KeyNavigation.left: joinCodeButton
                 onClicked: {
                     AppController.showOverlay("")
                     AppController.navigate("controllers")
@@ -263,7 +356,8 @@ FocusScope {
         title: qsTr("Friends")
         currentRoute: "friends"
         leftHints: [{glyph: "B", label: qsTr("Back")}]
-        rightHints: [{glyph: "A", label: localJoin.activeFocus ? localJoin.text : controllerSettings.text}]
+        rightHints: [{glyph: "A", label: localJoin.activeFocus ? localJoin.text : controllerSettings.activeFocus ? controllerSettings.text
+            : joinCodeButton.activeFocus ? joinCodeButton.text : qsTr("Select")}]
         onRouteRequested: route => {
             AppController.showOverlay("")
             AppController.navigate(route)

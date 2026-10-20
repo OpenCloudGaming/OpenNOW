@@ -27,6 +27,7 @@ mod reports;
 mod requests;
 mod server_vpc_cache;
 mod settings;
+mod social;
 mod store_cache;
 mod store_catalog_page;
 mod store_index;
@@ -72,6 +73,7 @@ struct AppCore {
     analytics: Arc<analytics::AnalyticsService>,
     pending_reports_retried: AtomicBool,
     bug_reports: bug_reports::BugReporter,
+    social: social::SocialService,
 }
 
 fn main() {
@@ -125,6 +127,10 @@ fn run() -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     let reports_api = reports::api_base_from_env();
     let gfn = Arc::new(GfnService::new(data_dir.clone())?);
+    let settings_store =
+        SettingsStore::load(Some(data_dir.clone())).map_err(|error| error.to_string())?;
+    let social = social::SocialService::new(&data_dir, output_tx.clone(), &settings_store.all())
+        .map_err(|error| format!("Could not initialize social services: {error}"))?;
     let push = Mutex::new(push_registry::PushRegistry::new(
         Arc::clone(&gfn),
         output_tx.clone(),
@@ -133,9 +139,7 @@ fn run() -> Result<(), String> {
     let core = Arc::new(AppCore {
         session_update_gate: Mutex::new(()),
         artwork: artwork_cache::ArtworkCache::new(&data_dir, output_tx.clone()),
-        settings: Mutex::new(
-            SettingsStore::load(Some(data_dir.clone())).map_err(|error| error.to_string())?,
-        ),
+        settings: Mutex::new(settings_store),
         gfn,
         streamer: StreamerService::new(),
         diagnostics: diagnostics::DiagnosticsService::new(&data_dir)
@@ -158,6 +162,7 @@ fn run() -> Result<(), String> {
         ),
         pending_reports_retried: AtomicBool::new(false),
         bug_reports: bug_reports::BugReporter::default(),
+        social,
     });
     if !reporting_enabled(&core) {
         core.analytics.wipe();
@@ -274,6 +279,10 @@ fn run() -> Result<(), String> {
                     | "settings.set"
             ) {
                 reconcile_push(&worker_core);
+            }
+            if matches!(method.as_str(), "settings.set" | "settings.reset") && result.is_ok() {
+                let settings = worker_core.settings.lock().expect("settings poisoned").all();
+                worker_core.social.configure(&settings);
             }
             if !was_cancelled {
                 match result {
@@ -432,7 +441,7 @@ fn dispatch(
                 ));
             }
             Ok((
-                json!({"protocolVersion":PROTOCOL_VERSION, "coreVersion":version::APPLICATION_VERSION, "capabilities":["settings", "gfn.deviceAuth", "gfn.providers", "gfn.publicCatalog", "catalog.storePages.v1", "catalog.libraryPages.v1", "catalog.metadata.v1", "account.syncObservation.v1", "account.pushInvalidation.v1", "catalog.languages.v1", "queue.servers.v1", "auth.accountPicker.v1", "catalog.storeLocal.v1", "gfn.accountLibrary", "gfn.regions", "gfn.subscription", "gfn.cloudmatch", "sessionProxy", "session.terminalCleanup.v1", "catalogArtworkCache.v1", "nativeStreamer.v7", "nativeStreamer.ownedNvstNegotiation", "nativeStreamer.dynamicSurface", "nativeStreamer.acceptanceEvidence", "liveAcceptance.v1", "osCredentialStore", "electronAccountMigration", "redactedDiagnostics", "mediaLibrary", "githubUpdateDiscovery", "discordRpc", "feedback", "bugReports", "automaticBugReports.v2", "social.capabilitySurface"]}),
+                json!({"protocolVersion":PROTOCOL_VERSION, "coreVersion":version::APPLICATION_VERSION, "capabilities":["settings", "gfn.deviceAuth", "gfn.providers", "gfn.publicCatalog", "catalog.storePages.v1", "catalog.libraryPages.v1", "catalog.metadata.v1", "account.syncObservation.v1", "account.pushInvalidation.v1", "catalog.languages.v1", "queue.servers.v1", "auth.accountPicker.v1", "catalog.storeLocal.v1", "gfn.accountLibrary", "gfn.regions", "gfn.subscription", "gfn.cloudmatch", "sessionProxy", "session.terminalCleanup.v1", "catalogArtworkCache.v1", "nativeStreamer.v7", "nativeStreamer.ownedNvstNegotiation", "nativeStreamer.dynamicSurface", "nativeStreamer.acceptanceEvidence", "liveAcceptance.v1", "osCredentialStore", "electronAccountMigration", "redactedDiagnostics", "mediaLibrary", "githubUpdateDiscovery", "discordRpc", "feedback", "bugReports", "automaticBugReports.v2", "social.capabilitySurface", "social.v1"]}),
                 None,
             ))
         }
@@ -1289,6 +1298,23 @@ fn dispatch(
                 .map_err(|message| ("invalid_params".to_owned(), message))?;
             Ok((submit_automatic_report(core, output, incident), None))
         }
+        "session.stream.reconfigure" => {
+            if !matches!(params["codec"].as_str(), Some("h264" | "h265" | "av1")) {
+                return Err((
+                    "invalid_params".to_owned(),
+                    "codec must be h264, h265 or av1".to_owned(),
+                ));
+            }
+            Err((
+                "unsupported".to_owned(),
+                "A running GeForce NOW session keeps the codec it started with. Changing it needs a new session.".to_owned(),
+            ))
+        }
+        _ if social::METHODS.contains(&method) => core
+            .social
+            .handle(method, params)
+            .map(|value| (value, None))
+            .map_err(|error| (error.code, error.message)),
         _ => Err((
             "method_not_found".to_owned(),
             format!("Unknown core method: {method}"),

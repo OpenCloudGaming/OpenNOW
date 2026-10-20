@@ -26,6 +26,7 @@ private:
     [[nodiscard]] int startSmokeWorkload();
     [[nodiscard]] int startThemeSettingsWorkload();
     [[nodiscard]] int startGpuSettingsWorkload();
+    [[nodiscard]] int startCoopWorkload();
     [[nodiscard]] int startFrameGenerationStatsWorkload();
     [[nodiscard]] int startStreamExitWorkload();
     [[nodiscard]] int startSessionFullscreenWorkload();

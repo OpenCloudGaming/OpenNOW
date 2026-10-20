@@ -45,6 +45,13 @@ use str0m::{
     Candidate, Event, IceConnectionState, IceCreds, Input, Output, Rtc, RtcConfig, RtcError,
 };
 
+#[path = "nvst_coop.rs"]
+mod coop;
+pub use coop::{
+    CoopGuestReceiveStats, CoopMediaKind, CoopRtpPacket, MAX_COOP_TAP_CAPACITY,
+    NvstCoopGuestReceiver, NvstCoopTap,
+};
+
 use super::frame_stage_timing::FrameStageTimingsAccumulator;
 use super::nvst_bandwidth::{BandwidthEstimator, PacketBandwidthSample};
 use super::nvst_control::{
@@ -653,6 +660,8 @@ pub struct NvstFeedbackState {
     frame_packet_timings: Mutex<VecDeque<FramePacketTiming>>,
     frame_stage_timings: Mutex<FrameStageTimingsAccumulator>,
     video_startup: Mutex<VideoStartup>,
+    /// Co-op media fan-out hook; detached unless a co-op host is running.
+    pub coop_tap: NvstCoopTap,
 }
 
 impl Default for NvstFeedbackState {
@@ -684,6 +693,7 @@ impl Default for NvstFeedbackState {
             frame_packet_timings: Mutex::new(VecDeque::new()),
             frame_stage_timings: Mutex::new(FrameStageTimingsAccumulator::default()),
             video_startup: Mutex::new(VideoStartup::Immediate),
+            coop_tap: NvstCoopTap::default(),
         }
     }
 }
@@ -939,6 +949,11 @@ impl NvstFeedbackState {
 
     pub fn request_keyframe(&self) {
         self.keyframe_needed.store(true, Ordering::Release);
+    }
+
+    /// Whether assembly is still waiting for a keyframe after a loss or an explicit request.
+    pub fn keyframe_needed(&self) -> bool {
+        self.keyframe_needed.load(Ordering::Acquire)
     }
 
     fn request_nack(&self, first_missing_index: u64, last_missing_index: u64, now: Instant) {
@@ -1386,6 +1401,9 @@ pub struct NvstVideoConfig {
     video_packet_size: usize,
     /// Feedback plane shared with the ICE/DTLS bundle (cloned configs share it).
     feedback: SharedNvstFeedback,
+    /// Co-op guest receive: plaintext RTP forwarded by a host, no GFN feedback plane, so
+    /// every loss requests a keyframe instead of reference-frame invalidation.
+    coop_guest: bool,
 }
 
 impl fmt::Debug for NvstVideoConfig {
@@ -1822,7 +1840,50 @@ impl NvstVideoConfig {
             frame_time_us: DEFAULT_FRAME_TIME_US,
             video_packet_size,
             feedback: Arc::new(NvstFeedbackState::default()),
+            coop_guest: false,
         })
+    }
+
+    /// Receive configuration for a co-op guest. Media arrives as already-decrypted NVST RTP
+    /// over the peer link, so the SRTP material is unused and only replay tracking applies.
+    pub fn coop_guest(codec: NvstVideoCodec, audio_track: Option<NvstAudioTrack>) -> Self {
+        Self {
+            recovery_policy: crate::NvstRecoveryPolicy::default(),
+            client_udp_port: 0,
+            video_peer: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+            video_peer_port_end: None,
+            bundle_peer: None,
+            srtp: NvstSrtpMaterial::AeadAes128Gcm {
+                master_key: [0; 16],
+                master_salt: [0; 12],
+                authentication_tag_len: SRTP_AEAD_AES_GCM_TAG_LEN,
+            },
+            ping_payload: Vec::new(),
+            ping_version: None,
+            bundle_natt_remote_username: None,
+            stun_credentials: None,
+            remote_dtls_fingerprint: None,
+            rtcp_on_sctp: true,
+            qos_timings_v5: false,
+            frame_pacing_feedback: false,
+            max_control_report_bytes: MAX_CONTROL_REPORT_BYTES,
+            hid_device_mask: 0,
+            mjolnir_udp_port: None,
+            unified_socket: false,
+            codec,
+            audio_track,
+            microphone_available: false,
+            expected_payload_type: None,
+            expected_ssrc: None,
+            reorder_window_packets: DEFAULT_REORDER_WINDOW,
+            max_access_unit_bytes: DEFAULT_MAX_ACCESS_UNIT_BYTES,
+            timeout: DEFAULT_TIMEOUT,
+            startup_timeout: MAX_TIMEOUT,
+            frame_time_us: DEFAULT_FRAME_TIME_US,
+            video_packet_size: DEFAULT_NVST_VIDEO_PACKET_SIZE,
+            feedback: Arc::new(NvstFeedbackState::default()),
+            coop_guest: true,
+        }
     }
 
     pub fn client_udp_port(&self) -> u16 {
@@ -2599,6 +2660,22 @@ impl SrtpReceiver {
             cipher,
             replay: ReplayWindow::default(),
         }
+    }
+
+    fn admit_plaintext(&mut self, datagram: &[u8]) -> Result<RtpPacket, NvstDropReason> {
+        let header = RtpHeader::parse(datagram).map_err(NvstDropReason::MalformedRtp)?;
+        let packet_index = self.replay.guess_packet_index(header.sequence_number)?;
+        self.replay.check(packet_index)?;
+        header
+            .payload(datagram)
+            .map_err(NvstDropReason::MalformedRtp)?;
+        self.replay.commit(packet_index);
+        Ok(RtpPacket {
+            index: packet_index,
+            header,
+            plaintext: datagram.to_vec(),
+            origin: RtpPacketOrigin::Authenticated,
+        })
     }
 
     fn unprotect(&mut self, datagram: &[u8]) -> Result<RtpPacket, NvstDropReason> {
@@ -3508,6 +3585,7 @@ struct RtpReorderBuffer {
     packets: BTreeMap<u64, RtpPacket>,
     max_packets: usize,
     gap_wait: Option<(u64, Instant)>,
+    gap_timeout: Duration,
 }
 
 struct ReorderResult {
@@ -3525,6 +3603,7 @@ impl RtpReorderBuffer {
             packets: BTreeMap::new(),
             max_packets,
             gap_wait: None,
+            gap_timeout: MJOLNIR_REORDER_DEQUEUE_TIMEOUT,
         }
     }
 
@@ -3608,8 +3687,7 @@ impl RtpReorderBuffer {
             let gap_exceeded_window = first_available.saturating_sub(expected)
                 >= self.max_packets as u64
                 || self.packets.len() >= self.max_packets;
-            let gap_timed_out =
-                now.saturating_duration_since(gap_started) >= MJOLNIR_REORDER_DEQUEUE_TIMEOUT;
+            let gap_timed_out = now.saturating_duration_since(gap_started) >= self.gap_timeout;
             if !gap_exceeded_window && !gap_timed_out {
                 break;
             }
@@ -4091,6 +4169,7 @@ struct FecReorderBuffer {
     completed_through: Option<u64>,
     gap_wait: Option<(u64, Instant)>,
     shard_len: usize,
+    gap_timeout: Duration,
 }
 
 impl FecReorderBuffer {
@@ -4100,6 +4179,7 @@ impl FecReorderBuffer {
             completed_through: None,
             gap_wait: None,
             shard_len: video_packet_size + NVST_FEC_RTP_HEADER_ALLOWANCE,
+            gap_timeout: MJOLNIR_REORDER_DEQUEUE_TIMEOUT,
         }
     }
 
@@ -4177,7 +4257,7 @@ impl FecReorderBuffer {
                         now
                     }
                 };
-                if now.saturating_duration_since(started) < MJOLNIR_REORDER_DEQUEUE_TIMEOUT
+                if now.saturating_duration_since(started) < self.gap_timeout
                     && base.saturating_sub(expected) < MAX_REORDER_WINDOW as u64
                     && self.blocks.len() < MAX_PENDING_FEC_BLOCKS
                 {
@@ -4257,7 +4337,7 @@ impl FecReorderBuffer {
                 .blocks
                 .last_key_value()
                 .map_or(0, |(&last_base, _)| last_base.saturating_sub(base));
-            if now.saturating_duration_since(started) < MJOLNIR_REORDER_DEQUEUE_TIMEOUT
+            if now.saturating_duration_since(started) < self.gap_timeout
                 && block_span < MAX_REORDER_WINDOW as u64
                 && self.blocks.len() < MAX_PENDING_FEC_BLOCKS
             {
@@ -4613,6 +4693,36 @@ impl NvstVideoReceiver {
                 return vec![NvstReceiveEvent::Dropped(reason)];
             }
         };
+        self.process_authenticated(packet, now)
+    }
+
+    /// Feeds one already-decrypted NVST RTP packet, as forwarded by a co-op host.
+    pub fn process_plain_rtp(&mut self, datagram: &[u8], now: Instant) -> Vec<NvstReceiveEvent> {
+        match self.state {
+            NvstReceiverState::Paused => {
+                return vec![NvstReceiveEvent::Dropped(NvstDropReason::Paused)];
+            }
+            NvstReceiverState::Stopped(_) => {
+                return vec![NvstReceiveEvent::Dropped(NvstDropReason::Stopped)];
+            }
+            NvstReceiverState::RecoveryRequired => {
+                return vec![NvstReceiveEvent::Dropped(NvstDropReason::RecoveryRequired)];
+            }
+            NvstReceiverState::Running => {}
+        }
+        let packet = match self.srtp.admit_plaintext(datagram) {
+            Ok(packet) => packet,
+            Err(reason) => {
+                if reason == NvstDropReason::ReplayRejected {
+                    self.replay_rejections += 1;
+                }
+                return vec![NvstReceiveEvent::Dropped(reason)];
+            }
+        };
+        self.process_authenticated(packet, now)
+    }
+
+    fn process_authenticated(&mut self, packet: RtpPacket, now: Instant) -> Vec<NvstReceiveEvent> {
         if let Some(expected) = self.config.expected_payload_type
             && packet.header.payload_type != expected
         {
@@ -4632,6 +4742,7 @@ impl NvstVideoReceiver {
                 actual: packet.header.ssrc,
             })];
         }
+        self.config.feedback.coop_tap.offer_video(&packet, now);
         if let Some(extension) = packet.header.gs_video_header {
             let frame_number =
                 u32::from_le_bytes(extension[4..8].try_into().expect("GS header length"));
@@ -4692,6 +4803,14 @@ impl NvstVideoReceiver {
             self.reorder.push(packet, now)
         };
         self.consume_reorder_result(result, now)
+    }
+
+    /// How long a sequence gap may wait for a retransmission before the receiver gives the
+    /// missing packets up. GFN's own NACK budget fits 52 ms; a co-op guest's repairs cross
+    /// one more hop and need the window sized from that hop's RTT.
+    pub fn set_repair_window(&mut self, window: Duration) {
+        self.reorder.gap_timeout = window;
+        self.fec_reorder.gap_timeout = window;
     }
 
     pub fn poll_recovery(&mut self, now: Instant) -> Vec<NvstReceiveEvent> {
@@ -4837,7 +4956,7 @@ impl NvstVideoReceiver {
         self.assembler.reset();
         self.last_stream_packet_index = None;
         self.next_frame_contiguous = false;
-        if !self.frame_invalidation.lose(now) {
+        if self.config.coop_guest || !self.frame_invalidation.lose(now) {
             self.config.feedback.request_keyframe();
         }
     }
@@ -6065,8 +6184,7 @@ pub fn spawn_nvst_udp_receiver_with_socket(
             bind_nvst_udp(bind_ip, config.client_udp_port).map_err(NvstUdpReceiverError::Bind)?
         }
     };
-    socket
-        .set_read_timeout(Some(UDP_RECEIVE_POLL_INTERVAL))
+    opennow_socket_wait::prepare(&socket, UDP_RECEIVE_POLL_INTERVAL)
         .map_err(NvstUdpReceiverError::Configure)?;
     let rtc = if config.remote_dtls_fingerprint().is_some() {
         let rtc = match reserved_rtc {
@@ -6153,8 +6271,7 @@ fn spawn_receiver_thread(
     if setup.rtc.is_some() && setup.upstream_ready.is_some() {
         config.feedback.wait_for_play();
     }
-    socket
-        .set_read_timeout(Some(UDP_RECEIVE_POLL_INTERVAL))
+    opennow_socket_wait::prepare(&socket, UDP_RECEIVE_POLL_INTERVAL)
         .map_err(NvstUdpReceiverError::Configure)?;
     let (commands, receiver) = mpsc::channel();
     let input_ready = Arc::new(AtomicBool::new(false));
@@ -8391,6 +8508,11 @@ fn run_nvst_webrtc_bundle(
                         });
                         if is_audio {
                             audio_streams.authenticated(&mut rtc, *packet.header.ssrc);
+                            feedback.coop_tap.offer_audio(
+                                &packet.header,
+                                &packet.payload,
+                                packet.timestamp,
+                            );
                             let received_at_us = packet
                                 .timestamp
                                 .saturating_duration_since(transport_origin)
@@ -8504,7 +8626,7 @@ fn run_nvst_webrtc_bundle(
                 break 'bundle;
             }
         } else {
-            if let Err(error) = socket.set_read_timeout(Some(wait)) {
+            if let Err(error) = opennow_socket_wait::prepare(&socket, wait) {
                 eprintln!("NVST UDP timeout configuration failed: {error}");
                 forward_optional(
                     &event_sender,
@@ -8512,7 +8634,7 @@ fn run_nvst_webrtc_bundle(
                 );
                 break 'bundle;
             }
-            match socket.recv_from(&mut datagram) {
+            match opennow_socket_wait::recv_from(&socket, &mut datagram, wait) {
                 Ok((length, source)) => {
                     inbound_datagrams += 1;
                     liveness.last_inbound = Some(Instant::now());
@@ -8879,7 +9001,7 @@ fn run_nvst_video_receiver(
         }
 
         let inbound_before = inbound_datagrams;
-        match socket.recv_from(&mut datagram) {
+        match opennow_socket_wait::recv_from(&socket, &mut datagram, UDP_RECEIVE_POLL_INTERVAL) {
             Ok((length, source)) => 'datagram: {
                 inbound_datagrams += 1;
                 if inbound_datagrams == 1 {
@@ -13608,6 +13730,46 @@ mod tests {
             [3, 4, 5]
         );
         assert_eq!(recovered.nack, None);
+    }
+
+    /// A co-op guest's repair window keeps a gap open past GFN's 52 ms, so a repair that
+    /// crosses the extra hop still fills it instead of costing a keyframe.
+    #[test]
+    fn a_wider_repair_window_waits_for_a_late_repair() {
+        fn packet(index: u64) -> RtpPacket {
+            RtpPacket {
+                index,
+                header: RtpHeader {
+                    payload_type: 96,
+                    sequence_number: index as u16,
+                    timestamp: 90_000,
+                    ssrc: 1,
+                    payload_offset: RTP_FIXED_HEADER_LEN,
+                    has_padding: false,
+                    gs_video_header: None,
+                },
+                plaintext: vec![0; RTP_FIXED_HEADER_LEN],
+                origin: RtpPacketOrigin::Authenticated,
+            }
+        }
+
+        let started = Instant::now();
+        let mut reorder = RtpReorderBuffer::new(DEFAULT_REORDER_WINDOW);
+        reorder.gap_timeout = Duration::from_millis(150);
+        assert_eq!(reorder.push(packet(1), started).ready.len(), 1);
+        assert!(reorder.push(packet(3), started).ready.is_empty());
+        let waiting = reorder.poll_deadline(started + Duration::from_millis(100));
+        assert!(waiting.recovery.is_none(), "still inside the repair window");
+        let repaired = reorder.push(packet(2), started + Duration::from_millis(120));
+        assert!(repaired.recovery.is_none());
+        assert_eq!(
+            repaired
+                .ready
+                .iter()
+                .map(|packet| packet.index)
+                .collect::<Vec<_>>(),
+            [2, 3]
+        );
     }
 
     #[test]

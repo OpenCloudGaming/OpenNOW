@@ -121,6 +121,7 @@ private slots:
     void cyclesPrimaryRoutesDeterministically();
     void cyclesGuidePagesDeterministically();
     void parsesDirectLaunchArguments();
+    void routesCoopJoinLinks();
     void clipboardReadIsBounded();
     void clipboardWriteIsBounded();
     void screenshotExportIsScoped();
@@ -291,6 +292,30 @@ void AppControllerTest::parsesDirectLaunchArguments()
         QStringLiteral("opennow"),
         QStringLiteral("https://example.com/launch/123"),
     }));
+}
+
+void AppControllerTest::routesCoopJoinLinks()
+{
+    AppController controller;
+    QSignalSpy launches(&controller, &AppController::directLaunchRequested);
+    QSignalSpy codes(&controller, &AppController::coopJoinCodeChanged);
+    QCOMPARE(AppController::normalizeCoopCode(QStringLiteral("k7q4mx")), QStringLiteral("K7Q-4MX"));
+    QCOMPARE(AppController::normalizeCoopCode(QStringLiteral(" K7Q-4MX ")), QStringLiteral("K7Q-4MX"));
+    QCOMPARE(AppController::normalizeCoopCode(QStringLiteral("K7Q-4M0")), QString());
+    QCOMPARE(AppController::normalizeCoopCode(QStringLiteral("K7Q4MXX")), QString());
+    QVERIFY(controller.handleArguments({QStringLiteral("opennow"), QStringLiteral("opennow://join/k7q4mx")}));
+    QCOMPARE(controller.coopJoinCode(), QStringLiteral("K7Q-4MX"));
+    QCOMPARE(codes.count(), 1);
+    QCOMPARE(launches.count(), 0);
+    QCOMPARE(controller.takeCoopJoinCode(), QStringLiteral("K7Q-4MX"));
+    QCOMPARE(controller.coopJoinCode(), QString());
+    QCOMPARE(controller.takeCoopJoinCode(), QString());
+    QVERIFY(!controller.handleArguments({QStringLiteral("opennow"), QStringLiteral("opennow://join/not-a-code")}));
+    QVERIFY(!controller.handleArguments({QStringLiteral("opennow"), QStringLiteral("https://example.com/join/K7Q4MX")}));
+    QCOMPARE(controller.coopJoinCode(), QString());
+    QVERIFY(controller.supportedRoutes().contains(QStringLiteral("coop-guest")));
+    QVERIFY(controller.showOverlay(QStringLiteral("coop-lobby")));
+    QVERIFY(controller.showOverlay(QStringLiteral("discord-unlink-confirm")));
 }
 
 void AppControllerTest::clipboardReadIsBounded()

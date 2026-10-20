@@ -1,0 +1,32 @@
+[package]
+name = "opennow-streamer-coop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+getrandom.workspace = true
+hmac.workspace = true
+md-5 = "0.10"
+opennow-streamer-protocol = { path = "../opennow-streamer-protocol" }
+opennow-streamer-transport = { path = "../opennow-streamer-transport" }
+rustls.workspace = true
+rustls-native-certs = "0.8"
+serde.workspace = true
+serde_json.workspace = true
+sha1.workspace = true
+crc32fast.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+str0m = { workspace = true, features = ["wincrypto-dimpl"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+str0m = { workspace = true, features = ["rust-crypto"] }
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+str0m = { workspace = true, features = ["rust-crypto"] }
+
+[dev-dependencies]
+base64.workspace = true
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }

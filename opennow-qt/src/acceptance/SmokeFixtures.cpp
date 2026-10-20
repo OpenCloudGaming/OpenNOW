@@ -343,7 +343,7 @@ int AcceptanceSession::prepareWindow()
             const QHash<QString, int> pages{{u"account"_s, 0}, {u"stream"_s, 3},
                 {u"audio"_s, 4}, {u"controls"_s, 5}, {u"network"_s, 6},
                 {u"appearance"_s, 8}, {u"console"_s, 9}, {u"shortcuts"_s, 10},
-                {u"about"_s, 11}, {u"recording"_s, 12}};
+                {u"about"_s, 11}, {u"recording"_s, 12}, {u"coop"_s, 14}};
             auto *settings = window ? window->findChild<QObject *>(u"desktopSettingsScreen"_s) : nullptr;
             const auto page = pages.constFind(m_arguments.at(settingsPageIndex + 1));
             if (!settings || page == pages.cend()) return EXIT_FAILURE;

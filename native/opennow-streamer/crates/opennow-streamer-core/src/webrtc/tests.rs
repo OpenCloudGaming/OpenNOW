@@ -136,7 +136,13 @@ fn stalled_decoder_gets_one_keyframe_then_terminal_error() {
 fn published_decoded_output_remains_healthy_for_ninety_seconds() {
     let now = Instant::now();
     let mut progress = Progress::new(now, Some(1000));
-    progress.observe_feedback(&MediaFeedback::PlaybackStarted { backend: "fixture" }, now);
+    progress.observe_feedback(
+        &MediaFeedback::PlaybackStarted {
+            backend: "fixture",
+            software: false,
+        },
+        now,
+    );
     for second in 1..=90 {
         let at = now + Duration::from_secs(second);
         progress.observe_published(Some(1000 + second * 60), at);
@@ -172,7 +178,13 @@ fn published_output_does_not_replace_first_presentation_or_count_prior_sessions(
 fn accepted_compressed_frames_do_not_refresh_observable_decoded_health() {
     let now = Instant::now();
     let mut progress = Progress::new(now, Some(100));
-    progress.observe_feedback(&MediaFeedback::PlaybackStarted { backend: "fixture" }, now);
+    progress.observe_feedback(
+        &MediaFeedback::PlaybackStarted {
+            backend: "fixture",
+            software: false,
+        },
+        now,
+    );
     let mut requests = 0;
     for second in 1..=12 {
         let at = now + Duration::from_secs(second);
@@ -201,7 +213,13 @@ fn accepted_compressed_frames_do_not_refresh_observable_decoded_health() {
 fn missing_output_observer_does_not_invent_a_decode_stall_after_presentation() {
     let now = Instant::now();
     let mut progress = Progress::new(now, None);
-    progress.observe_feedback(&MediaFeedback::PlaybackStarted { backend: "fixture" }, now);
+    progress.observe_feedback(
+        &MediaFeedback::PlaybackStarted {
+            backend: "fixture",
+            software: false,
+        },
+        now,
+    );
     for second in 1..=90 {
         let at = now + Duration::from_secs(second);
         progress.observe_published(None, at);
@@ -213,7 +231,13 @@ fn missing_output_observer_does_not_invent_a_decode_stall_after_presentation() {
 fn explicit_decode_timings_drive_health_without_a_graphics_publisher() {
     let now = Instant::now();
     let mut progress = Progress::new(now, None);
-    progress.observe_feedback(&MediaFeedback::PlaybackStarted { backend: "fixture" }, now);
+    progress.observe_feedback(
+        &MediaFeedback::PlaybackStarted {
+            backend: "fixture",
+            software: false,
+        },
+        now,
+    );
     for second in 1..=90 {
         let at = now + Duration::from_secs(second);
         let timings = DecodeTimingsReport {
@@ -981,6 +1005,7 @@ fn engine_signaling_to_real_h264_opus_decode_input_stop_and_restart() {
         feedback
             .send(MediaFeedback::PlaybackStarted {
                 backend: "fixture-decoder",
+                software: false,
             })
             .unwrap();
         let deadline = Instant::now() + Duration::from_secs(2);

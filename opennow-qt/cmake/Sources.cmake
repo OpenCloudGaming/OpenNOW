@@ -52,6 +52,7 @@ qt_add_executable(opennow-qt
     src/acceptance/SmokeFixtures.cpp
     src/acceptance/FrameGenerationStatsAcceptance.cpp
     src/acceptance/GpuSettingsAcceptance.cpp
+    src/acceptance/CoopAcceptance.cpp
     src/acceptance/StreamExitAcceptance.cpp
     src/acceptance/SessionFullscreenAcceptance.cpp
     src/acceptance/SteamLaunchAcceptance.cpp

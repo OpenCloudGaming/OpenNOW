@@ -7,11 +7,26 @@ use std::path::{Path, PathBuf};
 pub(super) struct JsonFallbackStore {
     root: PathBuf,
     secure: Box<dyn SecretStore>,
+    validate: fn(&str, &str) -> Result<(), String>,
 }
 
 impl JsonFallbackStore {
     pub(super) fn new(root: PathBuf, secure: Box<dyn SecretStore>) -> Self {
-        Self { root, secure }
+        Self::with_validator(root, secure, |encoded, user_id| {
+            decode_session(encoded, user_id).map(|_| ())
+        })
+    }
+
+    pub(super) fn with_validator(
+        root: PathBuf,
+        secure: Box<dyn SecretStore>,
+        validate: fn(&str, &str) -> Result<(), String>,
+    ) -> Self {
+        Self {
+            root,
+            secure,
+            validate,
+        }
     }
 
     fn path(&self, user_id: &str) -> PathBuf {
@@ -92,7 +107,7 @@ impl SecretStore for JsonFallbackStore {
         match read_bounded(&self.path(user_id)) {
             Ok(bytes) => {
                 let encoded = String::from_utf8(bytes).map_err(|_| "Local session is invalid")?;
-                decode_session(&encoded, user_id)?;
+                (self.validate)(&encoded, user_id)?;
                 Ok(Some(encoded))
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => self.secure.get(user_id),
@@ -101,7 +116,7 @@ impl SecretStore for JsonFallbackStore {
     }
 
     fn set(&self, user_id: &str, encoded: &str) -> Result<(), String> {
-        decode_session(encoded, user_id)?;
+        (self.validate)(encoded, user_id)?;
         let local = self
             .path(user_id)
             .try_exists()

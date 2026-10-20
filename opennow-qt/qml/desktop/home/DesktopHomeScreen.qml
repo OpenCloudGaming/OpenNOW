@@ -41,6 +41,8 @@ FocusScope {
         return list
     }
     readonly property var heroGame: root.sortedRecent.length ? root.sortedRecent[0] : null
+    readonly property bool coopAvailable: root.heroGame !== null && ShellStore.coop.coopSupported && !ShellStore.coop.active
+    readonly property var heroActions: root.coopAvailable ? ["start", "coop", "details"] : ["start", "details"]
     readonly property string heroArtwork: DesktopTokens.decodeArtworkUrl(
         DesktopTokens.artworkUrl(root.heroGame, true))
     readonly property var jumpGames: root.takeGames(root.sortedRecent, 1, 12)
@@ -114,7 +116,7 @@ FocusScope {
 
     function setSelection(zone, index) {
         root.focusZone = Math.max(0, Math.min(3, zone))
-        const count = root.focusZone === 0 ? 2 : root.zoneGames(root.focusZone).length
+        const count = root.focusZone === 0 ? root.heroActions.length : root.zoneGames(root.focusZone).length
         root.focusIndex = Math.max(0, Math.min(Math.max(0, count - 1), index))
         root.ensureSelectionVisible()
     }
@@ -137,7 +139,7 @@ FocusScope {
     }
 
     function moveHorizontal(delta) {
-        const count = root.focusZone === 0 ? 2 : root.zoneGames(root.focusZone).length
+        const count = root.focusZone === 0 ? root.heroActions.length : root.zoneGames(root.focusZone).length
         if (count <= 0)
             return
         root.setSelection(root.focusZone, Math.max(0, Math.min(count - 1, root.focusIndex + delta)))
@@ -149,7 +151,7 @@ FocusScope {
             return
         let nextIndex = root.focusIndex
         if (nextZone === 0)
-            nextIndex = Math.min(1, Math.round(root.focusIndex / 4))
+            nextIndex = Math.min(root.heroActions.length - 1, Math.round(root.focusIndex / 4))
         else if (root.focusZone === 0)
             nextIndex = Math.min(8, root.focusIndex * 2)
         root.setSelection(nextZone, nextIndex)
@@ -171,15 +173,23 @@ FocusScope {
             AppController.navigate("sign-in")
     }
 
+    function startCoop() {
+        if (root.coopAvailable)
+            ShellStore.coop.openSetup(root.heroGame)
+    }
+
     function openFriends() {
         AppController.showOverlay("friends")
     }
 
     function activateSelection() {
         if (root.focusZone === 0) {
-            if (root.focusIndex === 0)
+            const action = root.heroActions[root.focusIndex]
+            if (action === "start")
                 root.startHero()
-            else if (root.focusIndex === 1)
+            else if (action === "coop")
+                root.startCoop()
+            else if (action === "details")
                 root.openGame(root.heroGame)
             return
         }
@@ -197,6 +207,9 @@ FocusScope {
             root.moveVertical(-1)
         } else if (event.key === Qt.Key_Down) {
             root.moveVertical(1)
+        } else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && (event.modifiers & Qt.ControlModifier)
+                   && root.coopAvailable) {
+            root.startCoop()
         } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
             root.activateSelection()
         } else {
@@ -360,15 +373,44 @@ FocusScope {
                             }
 
                             Rectangle {
+                                id: coopButton
+                                objectName: "homePlayCoop"
+                                readonly property bool selected: root.focusZone === 0 && root.heroActions[root.focusIndex] === "coop"
+                                    && AppController.inputMode !== "pointer"
+                                visible: root.coopAvailable
+                                width: coopRow.implicitWidth + 32
+                                height: 38
+                                radius: 10
+                                color: coopTap.pressed ? "#6CC3EE" : coopHover.hovered ? "#99DEFF" : "#7FD4FF"
+                                border.width: selected ? 2 : 1
+                                border.color: selected ? "#FFFFFF" : "#7FD4FF"
+                                Accessible.role: Accessible.Button
+                                Accessible.name: qsTr("Play co-op")
+                                Row {
+                                    id: coopRow
+                                    anchors.centerIn: parent
+                                    spacing: 8
+                                    DesktopCoopHostIcon { anchors.verticalCenter: parent.verticalCenter; width: 14; height: 14; glyph: "users"; ink: "#0B0F1A" }
+                                    Text { anchors.verticalCenter: parent.verticalCenter; text: qsTr("Play co-op"); color: "#0B0F1A"; font.family: Theme.bodyFont; font.pixelSize: 15; font.weight: Font.ExtraBold }
+                                    KeyboardGlyph { anchors.verticalCenter: parent.verticalCenter; shortcut: "Ctrl+Enter"; keySize: 20; ink: "#B8FFFFFF"; Accessible.name: qsTr("Ctrl+Enter") }
+                                }
+                                HoverHandler { id: coopHover; cursorShape: Qt.PointingHandCursor; onHoveredChanged: if (hovered) root.setSelection(0, root.heroActions.indexOf("coop")) }
+                                TapHandler { id: coopTap; onTapped: root.startCoop() }
+                                Behavior on color { ColorAnimation { duration: AppController.reducedMotion ? 0 : 90 } }
+                            }
+
+                            Rectangle {
                                 id: detailsButton
+                                readonly property bool selected: root.focusZone === 0 && root.heroActions[root.focusIndex] === "details"
+                                    && AppController.inputMode !== "pointer"
                                 width: 81
                                 height: 38
                                 radius: 10
                                 color: detailsHover.hovered ? "#2EFFFFFF" : "#1FFFFFFF"
-                                border.width: root.focusZone === 0 && root.focusIndex === 1 && AppController.inputMode !== "pointer" ? 2 : 1
-                                border.color: root.focusZone === 0 && root.focusIndex === 1 && AppController.inputMode !== "pointer" ? "#FFFFFF" : "#33FFFFFF"
+                                border.width: selected ? 2 : 1
+                                border.color: selected ? "#FFFFFF" : "#33FFFFFF"
                                 Text { anchors.centerIn: parent; text: qsTr("Details"); color: "#FFFFFF"; font.family: Theme.bodyFont; font.pixelSize: 14; font.weight: Font.Bold }
-                                HoverHandler { id: detailsHover; cursorShape: Qt.PointingHandCursor; onHoveredChanged: if (hovered) root.setSelection(0, 1) }
+                                HoverHandler { id: detailsHover; cursorShape: Qt.PointingHandCursor; onHoveredChanged: if (hovered) root.setSelection(0, root.heroActions.indexOf("details")) }
                                 TapHandler { onTapped: root.openGame(root.heroGame) }
                                 Behavior on color { ColorAnimation { duration: AppController.reducedMotion ? 0 : 90 } }
                             }

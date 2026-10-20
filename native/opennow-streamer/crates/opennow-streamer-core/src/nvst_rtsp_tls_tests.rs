@@ -58,7 +58,7 @@ fn exchange_over_tls(
     });
     let (socket, _) = tungstenite::client_tls_with_config(
         format!("wss://localhost:{}/rtsp", address.port()),
-        stream,
+        TimedTcpStream::new(stream).unwrap(),
         None,
         Some(tungstenite::Connector::Rustls(Arc::new(client_config))),
     )

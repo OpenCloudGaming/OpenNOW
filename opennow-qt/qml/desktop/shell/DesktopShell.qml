@@ -11,7 +11,8 @@ FocusScope {
     readonly property int footerHeight: DesktopTokens.px(40)
     property string title: qsTr("Home")
     property string subtitle: qsTr("Your library")
-    property bool searchVisible: route !== "settings" && route.indexOf("settings-") !== 0 && route !== "friends"
+    property bool searchVisible: route !== "settings" && route.indexOf("settings-") !== 0 && route.indexOf("friends") !== 0
+    property Component headerActions: null
     property string searchText: ""
     readonly property bool railCollapsed: ShellStore.settings.desktopRailCollapsed !== false
     // A pinned sidebar reserves space; only transient hover expansion overlays.
@@ -58,6 +59,8 @@ FocusScope {
     }
 
     function activeSessionPrompt() {
+        if (ShellStore.coop.guestStreaming)
+            return ShellStore.coop.hostName !== "" ? qsTr("Back to %1's game").arg(ShellStore.coop.hostName) : qsTr("Back to the co-op game")
         const session = ShellStore.resumableSession
         if (!session)
             return ""
@@ -85,7 +88,7 @@ FocusScope {
                 id: heading
                 objectName: "desktopHeaderHeading"
                 x: DesktopTokens.px(24); anchors.verticalCenter: parent.verticalCenter
-                width: Math.max(0, (search.visible ? search.x : activeSessionButton.visible ? activeSessionButton.x : parent.width - DesktopTokens.px(14)) - x - DesktopTokens.px(10))
+                width: Math.max(0, (headerActionsLoader.item ? parent.width - DesktopTokens.px(24) - headerActionsLoader.item.implicitWidth : search.visible ? search.x : activeSessionButton.visible ? activeSessionButton.x : parent.width - DesktopTokens.px(14)) - x - DesktopTokens.px(10))
                 height: headerTitle.implicitHeight
                 Text {
                     id: headerTitle
@@ -129,7 +132,7 @@ FocusScope {
             DesktopButton {
                 id: activeSessionButton
                 objectName: "desktopHeaderResume"
-                visible: ShellStore.resumableSession !== null && root.route !== "stream"
+                visible: ShellStore.backToGameAvailable && root.route !== "stream" && root.headerActions === null
                 anchors.right: parent.right
                 anchors.rightMargin: DesktopTokens.px(24)
                 anchors.verticalCenter: parent.verticalCenter
@@ -160,6 +163,16 @@ FocusScope {
                     }
                 }
                 onClicked: ShellStore.resumeActiveSession()
+            }
+            Loader {
+                id: headerActionsLoader
+                objectName: "desktopHeaderActions"
+                active: root.headerActions !== null
+                sourceComponent: root.headerActions
+                width: Math.max(0, header.availableWidth - headerTitle.implicitWidth - DesktopTokens.px(130))
+                anchors.right: parent.right
+                anchors.rightMargin: DesktopTokens.px(24)
+                anchors.verticalCenter: parent.verticalCenter
             }
         }
 

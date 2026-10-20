@@ -356,8 +356,21 @@ jobs:
         if: runner.os != 'macOS'
         shell: bash
         run: |
-          if [[ "$RUNNER_OS" == Windows ]]; then cd /o; fi
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            cd /o
+            # Keep line tables in a separate PDB so crash dumps of the shipped DLL symbolicate.
+            export CARGO_PROFILE_RELEASE_DEBUG=line-tables-only CARGO_PROFILE_RELEASE_STRIP=none
+          fi
           cmake --build build/opennow-qt-release --config Release --parallel "${{ matrix.build-parallel }}"
+
+      - name: Upload Windows streamer symbols
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: opennow-qt-${{ matrix.label }}-symbols
+          path: build/opennow-qt-release/streamer-rust-target/**/release/opennow_streamer_ffi.pdb
+          if-no-files-found: error
+          retention-days: 90
 
       - name: Test Qt shell
         id: qt-tests

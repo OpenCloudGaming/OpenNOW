@@ -118,6 +118,19 @@ impl FfmpegDecoder {
         super::vaapi_probe::color_support(codec)
     }
 
+    /// FFmpeg's VA-API H.264 decoder can open: the build has the hwaccel and a render node
+    /// decodes H.264 High.
+    pub(crate) fn supports_vaapi_h264() -> bool {
+        initialize_ffmpeg()
+            .ok()
+            .and_then(|()| ffmpeg::decoder::find_by_name(native_decoder_name(VideoCodec::H264)))
+            .is_some_and(|decoder| {
+                hardware_pixel_format(decoder, ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI)
+                    .is_some()
+            })
+            && super::vaapi_probe::h264_supported()
+    }
+
     pub(crate) fn open(codec: VideoCodec, format: StreamFormat, mode: FfmpegMode) -> Result<Self> {
         Self::open_internal(codec, format, mode, None)
     }

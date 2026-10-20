@@ -1,7 +1,9 @@
 [workspace]
 members = [
     "crates/opennow-awdl-helper",
+    "crates/opennow-socket-wait",
     "crates/opennow-streamer",
+    "crates/opennow-streamer-coop",
     "crates/opennow-streamer-core",
     "crates/opennow-streamer-ffi",
     "crates/opennow-streamer-hid",

@@ -27,13 +27,20 @@ pub use nvst_haptics::{NvstControllerRumble, NvstHaptics};
 pub use nvst_recovery_policy::NvstRecoveryPolicy;
 pub use nvst_server_control::{NvstServerTermination, NvstSessionTimer};
 
+pub use nvst_input::{
+    INPUT_COOP_GAMEPAD, INPUT_COOP_NEUTRAL, INPUT_COOP_SLOTS, coop_gamepad_record,
+    coop_neutral_record, coop_slots_record,
+};
+
 pub use nvst::{
-    BoundedFrameQueue, EncodedVideoAccessUnit, NvstBundleIdentity, NvstConfigError, NvstDropReason,
-    NvstFrameProgress, NvstFrameProgressEvent, NvstFrameProgressPolicy, NvstFrameProgressStage,
-    NvstFrameType, NvstReceiveEvent, NvstReceiverState, NvstRecovery, NvstSrtpProfile,
-    NvstStopCause, NvstUdpReceiverControl, NvstUdpReceiverError, NvstUdpReceiverSession,
-    NvstUnsupportedFeature, NvstVideoCodec, NvstVideoConfig, NvstVideoReceiver, ReservedNvstBundle,
-    SharedNvstFeedback, advertised_nvst_ipv4, measured_video_packet_size, nvst_video_packet_size,
+    BoundedFrameQueue, CoopGuestReceiveStats, CoopMediaKind, CoopRtpPacket, EncodedVideoAccessUnit,
+    MAX_COOP_TAP_CAPACITY, NvstAudioTrack, NvstBundleIdentity, NvstConfigError,
+    NvstCoopGuestReceiver, NvstCoopTap, NvstDropReason, NvstFrameProgress, NvstFrameProgressEvent,
+    NvstFrameProgressPolicy, NvstFrameProgressStage, NvstFrameType, NvstReceiveEvent,
+    NvstReceiverState, NvstRecovery, NvstSrtpProfile, NvstStopCause, NvstUdpReceiverControl,
+    NvstUdpReceiverError, NvstUdpReceiverSession, NvstUnsupportedFeature, NvstVideoCodec,
+    NvstVideoConfig, NvstVideoReceiver, ReservedNvstBundle, SharedNvstFeedback,
+    advertised_nvst_ipv4, measured_video_packet_size, nvst_video_packet_size,
     parse_nvst_video_handoff, reserve_nvst_mjolnir_udp_socket, reserve_nvst_udp_socket,
     spawn_nvst_mjolnir_receiver, spawn_nvst_udp_receiver, spawn_nvst_udp_receiver_with_socket,
 };

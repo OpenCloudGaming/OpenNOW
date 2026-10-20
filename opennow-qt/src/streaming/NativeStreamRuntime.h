@@ -20,6 +20,7 @@ class NativeStreamRuntime final : public QObject
     Q_PROPERTY(bool running READ running NOTIFY runningChanged)
     Q_PROPERTY(bool streaming READ streaming NOTIFY streamingChanged)
     Q_PROPERTY(QString lastError READ lastError NOTIFY lastErrorChanged)
+    Q_PROPERTY(bool coopSupported READ coopSupported CONSTANT)
 
 public:
     struct Api {
@@ -113,6 +114,9 @@ public:
     [[nodiscard]] bool running() const;
     [[nodiscard]] bool streaming() const;
     [[nodiscard]] QString lastError() const;
+    // Co-op commands need streamer ABI 16 (docs/coop-sessions.md section 7).
+    static constexpr bool CoopAbiVersion = OPENNOW_STREAMER_FFI_ABI_VERSION >= 16u;
+    [[nodiscard]] bool coopSupported() const { return CoopAbiVersion; }
     [[nodiscard]] quint64 presentationGeneration() const;
     [[nodiscard]] bool presentationAllowed() const;
     [[nodiscard]] QSize decodedDisplaySize() const;
@@ -139,6 +143,9 @@ public:
     Q_INVOKABLE bool send(const QJsonObject &command);
     bool sendBytes(const QByteArray &command);
     Q_INVOKABLE bool shutdown(int timeoutMs = DefaultShutdownTimeoutMs);
+    // One qt-native line per co-op guest input ownership change: owner "stream" | "shell", a
+    // reason token, and whether controller input is suspended. Tokens outside [a-z0-9._-] are dropped.
+    Q_INVOKABLE void logCoopGuestInput(const QString &owner, const QString &reason, bool suspended);
 
     OpenNowStreamerStatus setGraphicsContext(
         const OpenNowStreamerGraphicsContext &context);
@@ -180,6 +187,9 @@ signals:
     void lastErrorChanged();
     void responseReceived(const QJsonObject &response);
     void eventReceived(const QJsonObject &event);
+    // Co-op host/guest events (type "coop-*", docs/coop-sessions.md section 7) bypass the
+    // GFN telemetry path so the shell routes them only to CoopState.
+    void coopEventReceived(const QJsonObject &event);
     void sessionTimerReceived(quint8 timerType, quint32 secondsLeft, bool active);
     void frameAvailable();
     void decodedDisplaySizeChanged(const QSize &size, quint64 generation);

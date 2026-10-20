@@ -388,3 +388,152 @@ mod pending_profile_owner {
             .expect("terminated core retained profile ownership");
     }
 }
+
+#[test]
+fn social_v1_answers_through_the_protocol_without_a_linked_account() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let directory = std::env::temp_dir().join(format!("opennow-social-{unique}"));
+    let mut child = Command::new(env!("CARGO_BIN_EXE_opennow-core"))
+        .arg("--data-dir")
+        .arg(&directory)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let (sender, lines) = mpsc::channel::<Value>();
+    let reader = std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            if sender.send(serde_json::from_str(&line).unwrap()).is_err() {
+                break;
+            }
+        }
+    });
+    let mut stdin = child.stdin.take().unwrap();
+    let mut request = |id: &str, method: &str, params: Value| {
+        writeln!(
+            stdin,
+            "{}",
+            json!({"type":"request", "id":id, "method":method, "params":params})
+        )
+        .unwrap();
+        loop {
+            let message = lines.recv_timeout(Duration::from_secs(10)).unwrap();
+            if message["type"] == "response" && message["id"] == id {
+                return message;
+            }
+        }
+    };
+    let hello = request(
+        "1",
+        "core.hello",
+        json!({"protocolVersion":5, "shell":"qt"}),
+    );
+    assert!(
+        hello["result"]["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("social.v1"))
+    );
+    let state = request("2", "social.state.get", json!({}));
+    assert_eq!(
+        state["result"],
+        json!({"connection":"unlinked", "account":null, "guest":null})
+    );
+    let friends = request("3", "social.friends.get", json!({}));
+    assert_eq!(friends["error"]["code"], "social_not_linked");
+    let presence = request(
+        "4",
+        "social.presence.set",
+        json!({"activity":"browsing_store", "game":null, "since":null, "queuePosition":null, "lobbyId":null}),
+    );
+    assert_eq!(presence["result"], json!({}));
+    let insecure = request(
+        "5",
+        "settings.set",
+        json!({"key":"socialBackendUrl", "value":"http://social.example.com"}),
+    );
+    assert_eq!(insecure["error"]["code"], "invalid_setting");
+    let local = request(
+        "6",
+        "settings.set",
+        json!({"key":"socialBackendUrl", "value":"http://LOCALHOST:8787/"}),
+    );
+    assert_eq!(local["result"]["value"], "http://localhost:8787");
+    let settings = request("7", "settings.get", json!({}));
+    assert_eq!(
+        settings["result"]["settings"]["socialBackendUrl"],
+        "http://localhost:8787"
+    );
+    let reset = request("8", "settings.reset", json!({}));
+    assert_eq!(reset["result"]["settings"]["socialBackendUrl"], "");
+    drop(stdin);
+    let _ = child.kill();
+    child.wait().unwrap();
+    reader.join().unwrap();
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn session_stream_reconfigure_is_refused_without_touching_the_session() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let directory = std::env::temp_dir().join(format!("opennow-reconfigure-{unique}"));
+    let mut child = Command::new(env!("CARGO_BIN_EXE_opennow-core"))
+        .arg("--data-dir")
+        .arg(&directory)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let (sender, lines) = mpsc::channel::<Value>();
+    let reader = std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            if sender.send(serde_json::from_str(&line).unwrap()).is_err() {
+                break;
+            }
+        }
+    });
+    let mut stdin = child.stdin.take().unwrap();
+    let mut request = |id: &str, method: &str, params: Value| {
+        writeln!(
+            stdin,
+            "{}",
+            json!({"type":"request", "id":id, "method":method, "params":params})
+        )
+        .unwrap();
+        loop {
+            let message = lines.recv_timeout(Duration::from_secs(10)).unwrap();
+            if message["type"] == "response" && message["id"] == id {
+                return message;
+            }
+        }
+    };
+    request(
+        "1",
+        "core.hello",
+        json!({"protocolVersion":5, "shell":"qt"}),
+    );
+    for codec in ["h264", "h265", "av1"] {
+        let response = request(codec, "session.stream.reconfigure", json!({"codec":codec}));
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["error"]["code"], "unsupported");
+    }
+    let invalid = request("bad", "session.stream.reconfigure", json!({"codec":"vp9"}));
+    assert_eq!(invalid["error"]["code"], "invalid_params");
+    drop(stdin);
+    let _ = child.kill();
+    child.wait().unwrap();
+    reader.join().unwrap();
+    let _ = std::fs::remove_dir_all(directory);
+}

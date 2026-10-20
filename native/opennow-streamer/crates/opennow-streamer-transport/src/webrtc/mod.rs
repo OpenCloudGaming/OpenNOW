@@ -318,7 +318,7 @@ pub fn negotiate(
         "webrtc-remote-sdp",
         &diagnostics::sdp_summary(offer_sdp).to_string(),
     );
-    socket.set_write_timeout(Some(POLL_INTERVAL))?;
+    opennow_socket_wait::prepare_send(&socket, POLL_INTERVAL)?;
     let local = Candidate::host(socket.local_addr()?, "udp")
         .map_err(|error| TransportError::Endpoint(error.to_string()))?;
     let mut builder = RtcConfig::new()
@@ -1098,9 +1098,12 @@ impl TransportWorker {
                         if packet.destination.ip() == self.peer {
                             self.traffic.tx_to_known_peer += 1;
                         }
-                        if let Err(error) =
-                            self.socket.send_to(&packet.contents, packet.destination)
-                        {
+                        if let Err(error) = opennow_socket_wait::send_to(
+                            &self.socket,
+                            &packet.contents,
+                            packet.destination,
+                            POLL_INTERVAL,
+                        ) {
                             self.traffic.send_errors += 1;
                             if !transient_udp_error(&error) {
                                 return Err(error.to_string());
@@ -1123,10 +1126,8 @@ impl TransportWorker {
                     .map_err(|error| error.to_string())?;
                 continue;
             }
-            self.socket
-                .set_read_timeout(Some(wait))
-                .map_err(|error| error.to_string())?;
-            match self.socket.recv_from(&mut bytes) {
+            opennow_socket_wait::prepare(&self.socket, wait).map_err(|error| error.to_string())?;
+            match opennow_socket_wait::recv_from(&self.socket, &mut bytes, wait) {
                 Ok((length, source)) => {
                     self.traffic.received.record(&bytes[..length]);
                     self.traffic.last_rx_port = Some(source.port());

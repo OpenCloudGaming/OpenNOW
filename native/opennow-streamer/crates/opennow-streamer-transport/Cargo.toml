@@ -13,6 +13,7 @@ getrandom.workspace = true
 ghash.workspace = true
 hmac.workspace = true
 mtu.workspace = true
+opennow-socket-wait = { path = "../opennow-socket-wait" }
 opennow-streamer-hid = { path = "../opennow-streamer-hid" }
 opennow-streamer-protocol = { path = "../opennow-streamer-protocol" }
 serde.workspace = true
