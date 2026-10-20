@@ -96,7 +96,8 @@ QtObject {
 
     // Guest flow: "idle" | "entering" | "joining" | "connecting" | "waiting" | "starting" | "playing" |
     // "reconnecting" | "ended" | "error". "starting": connected and the host is streaming, but no
-    // frame has been presented yet.
+    // frame has been presented yet. The guest is already on the stream route then: the embedded decoder
+    // runs on the video item's render path, so the item must render under the waiting overlay.
     property string guestPhase: "idle"
     // Streamer coop-guest-state while connecting
     property string connectStage: ""
@@ -937,7 +938,7 @@ QtObject {
                 if (guestFramePresented)
                     enterGuestStream()
                 else
-                    guestPhase = "starting"
+                    awaitGuestStream()
             }
         }
     }
@@ -971,6 +972,11 @@ QtObject {
     }
     function enterGuestStream() {
         guestPhase = "playing"
+        if (appController)
+            appController.navigate("stream")
+    }
+    function awaitGuestStream() {
+        guestPhase = "starting"
         if (appController)
             appController.navigate("stream")
     }
@@ -1166,8 +1172,9 @@ QtObject {
             } else if (state === "connected") {
                 if (guestPhase === "connecting" || guestPhase === "reconnecting")
                     guestPhase = guestFramePresented ? "playing" : lobby && lobby.state === "streaming" ? "starting" : "waiting"
-                if (guestPhase === "playing" && appController && appController.route !== "stream")
-                    appController.navigate("stream")
+                const route = guestPhase === "waiting" ? "coop-guest" : "stream"
+                if (appController && appController.route !== route)
+                    appController.navigate(route)
             }
         } else if (type === "coop-guest-stats" && role === "guest") {
             guestStats = event

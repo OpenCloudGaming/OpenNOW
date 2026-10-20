@@ -1455,10 +1455,15 @@ QtObject {
         if (name === "c-06-waiting-room")
             check(coop.guestPhase === "waiting" && coop.guestPath === "relay", "connected guests wait for the host")
         if (name === "c-06c-waiting-stream") {
-            check(coop.guestPhase === "starting" && AppController.route === "coop-guest" && !coop.guestStreaming
-                && coop.streamStartTimer.running, "a connected guest waits for the first frame before the stream screen")
+            check(coop.guestPhase === "starting" && AppController.route === "stream" && !coop.guestStreaming
+                && coop.streamStartTimer.running, "a connected guest waits for the first frame on the stream route")
             check(AppController.overlay === "quick-settings", "Ctrl+G still opens quick settings while waiting for the stream")
-            const title = find(window.contentItem, "coopWaitingTitle")
+            const overlay = find(window.contentItem, "coopGuestStartingOverlay")
+            const video = find(window.contentItem, "streamSurfaceHost")
+            check(!checkScreens || (video && shown(video) && !video.inputEnabled && overlay && shown(overlay)
+                && overlay.z > video.z && overlay.parent === video.parent),
+                "the video item renders (it drives the decoder) under the waiting overlay, without gameplay input")
+            const title = find(overlay, "coopWaitingTitle")
             check(!checkScreens || (title && title.text === "Waiting for Mara's stream…"), "the waiting room names the host's stream")
             coop.requestLeave()
             check(AppController.overlay === "coop-leave-confirm", "Leave still works while waiting for the stream")

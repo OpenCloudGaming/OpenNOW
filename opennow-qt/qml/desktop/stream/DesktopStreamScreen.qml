@@ -34,6 +34,10 @@ FocusScope {
     readonly property bool streaming: root.status === "streaming"
     readonly property bool coopGuest: ShellStore.coop.role === "guest"
         && (ShellStore.coop.guestPhase === "playing" || ShellStore.coop.guestPhase === "reconnecting")
+    // A connected guest before the first frame: the video item renders (it drives the decoder) under the
+    // waiting overlay, and gameplay input stays with the shell until the frame is presented.
+    readonly property bool coopGuestStarting: ShellStore.coop.role === "guest" && ShellStore.coop.guestPhase === "starting"
+    onCoopGuestStartingChanged: if (!coopGuestStarting) Qt.callLater(root.resynchronizeStreamInput)
     // Guest co-op panel: a brief peek (no focus, gameplay keeps input) or pinned by Ctrl+G (focus, shell input).
     property bool coopPanelPinned: false
     property bool coopPanelPeeking: false
@@ -48,7 +52,7 @@ FocusScope {
     // The one gate for gameplay input: this client's presentation runs and no local chrome owns input.
     readonly property bool gameplayInputReady: root.presentationRunning && root.visible
         && !ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay) && !root.coopPanelFocused
-    readonly property bool videoSurfaceActive: root.presentationRunning
+    readonly property bool videoSurfaceActive: root.presentationRunning || root.coopGuestStarting
         || (root.streamer.status === "connecting" && root.status !== "error")
     readonly property bool videoReady: streaming
         && root.streamer.firstFrameLatencyMs !== undefined
@@ -278,6 +282,20 @@ FocusScope {
                 }
                 onResumeRequested: root.closeCoopPanel()
             }
+        }
+    }
+
+    Loader {
+        objectName: "coopGuestStartingOverlay"
+        anchors.fill: parent
+        active: root.coopGuestStarting
+        visible: root.visible && active
+        focus: visible
+        z: 7
+        sourceComponent: DesktopCoopGuestScreen {
+            layer.enabled: HdrOutput.chromeRequired
+            layer.effect: HdrChromeEffect {}
+            focus: true
         }
     }
 

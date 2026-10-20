@@ -31,7 +31,7 @@ FocusScope {
     readonly property bool signInVisible: !profileRouteVisible && !ShellStore.authRestorePending && !coopGuestActive
         && (!ShellStore.signedIn || route === "sign-in")
     readonly property bool sessionStartingVisible: !signInVisible
-        && (route === "inserting" || (streamVisible && !desktopStream.videoReady && !desktopStream.coopGuest))
+        && (route === "inserting" || (streamVisible && !desktopStream.videoReady && !desktopStream.coopGuest && !desktopStream.coopGuestStarting))
     readonly property bool streamVisible: !signInVisible && route === "stream"
     readonly property bool streamPointerLocked: streamVisible && desktopStream.streamPointerLocked
     readonly property var frameGenerationStats: streamVisible ? desktopStream.frameGenerationStats : ({})
