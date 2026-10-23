@@ -48,7 +48,13 @@ TestCase {
     property var dialog
     readonly property var sampleLocations: [
         {zoneId:"NP-LAX-03", title:"Southern California", region:"US Southwest", queuePosition:12,
-            etaMs:192000, pingMs:24, lastUpdated:1789623725, streamingBaseUrl:"https://np-lax-03.cloudmatchbeta.nvidiagrid.net/", alternateCount:1},
+            etaMs:192000, pingMs:24, lastUpdated:1789623725, streamingBaseUrl:"https://np-lax-03.cloudmatchbeta.nvidiagrid.net/", alternateCount:1,
+            zones:[
+                {zoneId:"NP-LAX-03", title:"Southern California", region:"US Southwest", queuePosition:12,
+                    etaMs:192000, pingMs:24, lastUpdated:1789623725, streamingBaseUrl:"https://np-lax-03.cloudmatchbeta.nvidiagrid.net/", alternateCount:0},
+                {zoneId:"NP-LAX-04", title:"Southern California", region:"US Southwest", queuePosition:40,
+                    etaMs:360000, pingMs:25, lastUpdated:1789623725, streamingBaseUrl:"https://np-lax-04.cloudmatchbeta.nvidiagrid.net/", alternateCount:0}
+            ]},
         {zoneId:"NP-DAL-04", title:"Dallas", region:"US Central", queuePosition:3,
             etaMs:138000, pingMs:62, lastUpdated:1789623725, streamingBaseUrl:"https://np-dal-04.cloudmatchbeta.nvidiagrid.net/", alternateCount:0},
         {zoneId:"NP-PAR-01", title:"Paris", region:"EU Southwest", queuePosition:0,
@@ -178,6 +184,26 @@ TestCase {
         compare(settings.writes[0].key, "hideQueueSelector")
         compare(settings.writes[0].value, true)
         tryCompare(dialog, "visible", false)
+    }
+    function test_chooseZoneWithinLocation() {
+        load()
+        const list = findChild(dialog, "queueSelectorLocations")
+        tryVerify(() => list.itemAtIndex(0) !== null && list.itemAtIndex(1) !== null)
+        const row = list.itemAtIndex(0)
+        compare(row.objectName, "queueLocation_NP-LAX-03")
+        const zones = findChild(row, "queueLocationZones_NP-LAX-03")
+        verify(zones.visible)
+        verify(!findChild(list.itemAtIndex(1), "queueLocationZones_NP-DAL-04").visible)
+        const alternate = findChild(row, "queueZone_NP-LAX-04")
+        tryVerify(() => alternate.width > 0 && alternate.height > 0)
+        mouseClick(alternate)
+        compare(dialog.selectedZoneId, "NP-LAX-04")
+        verify(row.highlighted)
+        verify(zones.visible)
+        mouseClick(findChild(dialog, "queueSelectorPlay"))
+        compare(selections.count, 1)
+        compare(selections.signalArguments[0][0].zoneId, "NP-LAX-04")
+        compare(selections.signalArguments[0][0].streamingBaseUrl, "https://np-lax-04.cloudmatchbeta.nvidiagrid.net/")
     }
     function test_escapeCancels() {
         load()
