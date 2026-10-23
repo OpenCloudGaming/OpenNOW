@@ -1330,6 +1330,8 @@ if(BUILD_TESTING)
         opennow-theme-tests
         opennow-framepacer-tests
         opennow-streampresenttimings-tests
+        opennow-streampresentation-tests
+        opennow-streampresentationfeedback-tests
         opennow-frameinterpolator-tests
         opennow-fsrupscaler-tests
         opennow-streamcolor-tests
