@@ -35,7 +35,7 @@ pub use media::{
     CapturedInput, CapturedInputQueue, CapturedInputSample, DecodeStageTimings,
     DecodeTimingsReport, EncodedFrame, EncodedRecordingReceiver, MediaCodec, MediaColorQuality,
     MediaControl, MediaFeedback, MediaSession, MediaSink, MediaStreamConfig, MediaVideoCodec,
-    PushOutcome, ShortcutChord, StreamShortcutAction, StreamShortcutBindings,
+    MouseSettings, PushOutcome, ShortcutChord, StreamShortcutAction, StreamShortcutBindings,
 };
 pub use microphone::{
     EncodedMicrophoneFrame, MICROPHONE_FRAME_SAMPLES, MICROPHONE_SAMPLE_RATE, MicrophoneReceiver,

@@ -656,6 +656,19 @@ pub enum CapturedInput {
 
 const CAPTURED_INPUT_CAPACITY: usize = 256;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MouseSettings {
+    pub acceleration: bool,
+    pub speed: u32,
+}
+
+impl MouseSettings {
+    pub const UNACCELERATED: Self = Self {
+        acceleration: false,
+        speed: 10,
+    };
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapturedInputSample {
     pub input: CapturedInput,
@@ -669,9 +682,24 @@ pub struct CapturedInputQueue {
     text_ready: AtomicBool,
     text_generation: AtomicU64,
     text_slot: opennow_streamer_protocol::text_input::TextInputSlot,
+    mouse_settings: Mutex<Option<MouseSettings>>,
 }
 
 impl CapturedInputQueue {
+    pub fn set_mouse_settings(&self, settings: MouseSettings) {
+        *self
+            .mouse_settings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(settings);
+    }
+
+    pub fn mouse_settings(&self) -> Option<MouseSettings> {
+        *self
+            .mouse_settings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     pub fn set_text_ready(&self, generation: u64, ready: bool) {
         let mut pending = self
             .pending

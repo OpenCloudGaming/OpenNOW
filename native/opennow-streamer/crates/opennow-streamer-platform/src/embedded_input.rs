@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::{CapturedInput, CapturedInputQueue};
+use crate::{CapturedInput, CapturedInputQueue, MouseSettings};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmbeddedLocalAction {
@@ -119,6 +119,20 @@ impl EmbeddedInputCapture {
             self.active.store(true, Ordering::Release);
         }
 
+        let raw_relative = self.set_raw_capture(active, relative_mouse, window_handle);
+        #[cfg(target_os = "windows")]
+        let settings = if raw_relative {
+            crate::windows_raw_input::local_mouse_settings()
+        } else {
+            MouseSettings::UNACCELERATED
+        };
+        #[cfg(not(target_os = "windows"))]
+        let settings = MouseSettings::UNACCELERATED;
+        self.queue.set_mouse_settings(settings);
+        raw_relative
+    }
+
+    fn set_raw_capture(&self, active: bool, relative_mouse: bool, window_handle: usize) -> bool {
         #[cfg(target_os = "linux")]
         {
             let raw_enabled = x11_raw_capture_enabled(active, relative_mouse, window_handle);
@@ -173,7 +187,7 @@ impl EmbeddedInputCapture {
 
         #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         {
-            let _ = (relative_mouse, window_handle);
+            let _ = (active, relative_mouse, window_handle);
             false
         }
     }
