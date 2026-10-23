@@ -373,6 +373,13 @@ public:
             && info.sender_scene_epoch == presentation.scene_epoch
             && bool(info.sender_timing_flags & OPENNOW_STREAMER_FRAME_TIMING_PACED)
             && info.sender_paced != 0;
+        auto *source = m_textures.importedTexture();
+        if (m_frameGeneration && !senderPaced && (m_historySize != source->pixelSize()
+                                  || m_historyFormat != source->format())) {
+            resetFrameGeneration();
+            m_historySize = source->pixelSize();
+            m_historyFormat = source->format();
+        }
         m_outputDirty = true;
         m_outputKind = 1;
         if (senderPaced) {
@@ -408,13 +415,6 @@ public:
             case StreamFramePacer::Result::Discontinuity: m_frameGenerationStatus.store(FrameGenerationState::Discontinuity); break;
             default: m_frameGenerationStatus.store(FrameGenerationState::WarmingUp); break;
             }
-        }
-        auto *source = m_textures.importedTexture();
-        if (m_historySize != source->pixelSize() || m_historyFormat != source->format()) {
-            m_textures.clearExternalTextures();
-            m_interpolator.release();
-            m_historySize = source->pixelSize();
-            m_historyFormat = source->format();
         }
         if (!m_interpolator.initialize(m_rhi) || !m_interpolator.ingest(commandBuffer, source)) {
             disableFrameGeneration();

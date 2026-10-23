@@ -460,6 +460,13 @@ presentation is not capped or renegotiated by this guard.
 
 The Qt render-thread helper samples native GPU textures into two retained histories, estimates
 bidirectional motion through three reduced-resolution pyramids, and synthesizes one midpoint.
+The pyramids filter the source footprint before downsampling. Motion refinement considers distinct
+neighboring coarse vectors rather than blending vectors across object boundaries, and avoids
+counting overlapping search candidates twice. The motion search samples explicit mip level zero,
+matching its non-mipmapped textures. This avoids implicit texture derivatives in divergent search
+loops, which can make the Windows shader compiler unroll the search and stall. Midpoint synthesis
+checks each direction against the full-resolution source pair, so a reliable direction can supply
+a region when the other fails.
 Unreliable regions and detected scene cuts use the actual current image. OpenNOW's overlays
 are composed afterward on the existing video surface. There is no CPU image readback, separate
 presenter, neural model, or additional runtime dependency. The Off path allocates no interpolation
@@ -476,7 +483,9 @@ when per-frame timestamps are unusable. Zero-duration arrivals remain in that bo
 bursts without a usable cadence fall back rather than inventing a rate. Raw source timestamps and
 IDs are never rewritten. An undrained original frame triggers a two-second cooldown
 instead of growing a queue. Device/surface changes and toggling the mode clear interpolation
-history. Unsupported GPU resources leave normal streaming active.
+history. Unsupported GPU resources leave normal streaming active. A failed resource configuration
+does not retry allocations every frame. Changing the source size or format resets that failure
+and rebuilds history, so returning to a supported configuration can recover without toggling 2×.
 
 The statistics overlay keeps **STREAM FPS** as the source measurement and adds **LOCAL OUTPUT
 FPS** when 2× is selected. The latter counts newly selected video outputs at Qt's `frameSwapped`
@@ -502,13 +511,15 @@ ctest --test-dir build/opennow-qt --output-on-failure \
 On Linux, installing `xvfb` and Mesa Vulkan drivers lets CTest run the actual shader tests through
 Xvfb. Without Xvfb, the offscreen platform can skip Vulkan coverage. Set
 `OPENNOW_FRAMEGEN_VALIDATION=1` with the Khronos validation layer installed to check Vulkan
-resource use. The tests cover translated images versus a crossfade, cut fallback, 10-bit values,
-resource recreation, pacing, and the settings-to-surface bindings. Software Vulkan correctness
+resource use. The tests cover translated images versus a crossfade, independently moving objects,
+stationary HUD regions over camera motion, cut fallback, 10-bit values, resource recreation,
+pacing, and the settings-to-surface bindings. Software Vulkan correctness
 does not establish a physical GPU's 8.33 ms presentation budget.
 The Linux/Windows `opennow-nativeframegeneration-tests` target drives the production native render
 callback with injected FFI frames and real adopted-device Vulkan/D3D11 textures. It checks absent,
 repeated, and grouped PTS, generated/original scheduling across `frameSwapped`, pixel readback,
-Off, discontinuity diagnostics, metadata preservation, and resource release. Windows uses a
+Off, discontinuity diagnostics, metadata preservation, resource release, and automatic recovery
+after an unsupported source size changes to a supported one. Windows uses a
 D3D11 software device for deterministic CI coverage. It is not a network session, hardware
 swapchain test, or sustained output-FPS benchmark.
 Moving-image rows also require the presented midpoint to differ from the current source and

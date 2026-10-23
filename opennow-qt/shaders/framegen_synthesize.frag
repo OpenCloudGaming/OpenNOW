@@ -33,11 +33,20 @@ void main()
     vec4 a = texture(previousTexture, p);
     vec4 b = texture(currentTexture, q);
     float error = dot(abs(a.rgb - b.rgb), vec3(0.25, 0.5, 0.25));
-    bool reliable = inside(p) && inside(q) && inside(p + forward.xy) && inside(q + backward.xy)
-        && length(disagreement) < 1.5 && length(reverseDisagreement) < 1.5
-        && forward.z < 0.10 && backward.z < 0.10 && error < 0.12;
-    bool textured = min(forward.w, backward.w) > 0.015;
-    bool stationary = length(forward.xy / geometry.xy) < 0.25
-                   && length(backward.xy / geometry.xy) < 0.25;
-    fragColor = reliable && (textured || stationary) ? (a + b) * 0.5 : actual;
+    float forwardError = dot(abs(a.rgb - texture(currentTexture, p + forward.xy).rgb), vec3(0.25, 0.5, 0.25));
+    float backwardError = dot(abs(b.rgb - texture(previousTexture, q + backward.xy).rgb), vec3(0.25, 0.5, 0.25));
+    bool forwardReliable = inside(p) && inside(p + forward.xy)
+        && length(disagreement) < 1.5 && forward.z < 0.10 && forwardError < 0.12
+        && (forward.w > 0.015 || length(forward.xy / geometry.xy) < 0.25);
+    bool backwardReliable = inside(q) && inside(q + backward.xy)
+        && length(reverseDisagreement) < 1.5 && backward.z < 0.10 && backwardError < 0.12
+        && (backward.w > 0.015 || length(backward.xy / geometry.xy) < 0.25);
+    if (forwardReliable && backwardReliable)
+        fragColor = error < 0.12 ? (a + b) * 0.5 : actual;
+    else if (forwardReliable)
+        fragColor = a;
+    else if (backwardReliable)
+        fragColor = b;
+    else
+        fragColor = actual;
 }
