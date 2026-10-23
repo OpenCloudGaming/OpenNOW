@@ -380,6 +380,19 @@ if(BUILD_TESTING)
     target_include_directories(opennow-streampresenttimings-tests PRIVATE src)
     target_link_libraries(opennow-streampresenttimings-tests PRIVATE Qt6::Test)
     add_test(NAME opennow-streampresenttimings-tests COMMAND opennow-streampresenttimings-tests -o -,txt)
+    qt_add_executable(opennow-streampresentation-tests tests/tst_streampresentation.cpp)
+    target_include_directories(opennow-streampresentation-tests PRIVATE src)
+    target_link_libraries(opennow-streampresentation-tests PRIVATE Qt6::Test)
+    add_test(NAME opennow-streampresentation-tests COMMAND opennow-streampresentation-tests -o -,txt)
+    qt_add_executable(opennow-streampresentationfeedback-tests tests/tst_streampresentationfeedback.cpp)
+    target_include_directories(opennow-streampresentationfeedback-tests PRIVATE src)
+    target_link_libraries(opennow-streampresentationfeedback-tests PRIVATE Qt6::Test)
+    add_test(NAME opennow-streampresentationfeedback-tests
+        COMMAND opennow-streampresentationfeedback-tests -o -,txt)
+    qt_add_executable(opennow-senderpacing-tests tests/tst_senderpacing.cpp)
+    target_include_directories(opennow-senderpacing-tests PRIVATE src)
+    target_link_libraries(opennow-senderpacing-tests PRIVATE Qt6::Test)
+    add_test(NAME opennow-senderpacing-tests COMMAND opennow-senderpacing-tests -o -,txt)
     qt_add_executable(opennow-fsrupscaler-tests tests/tst_fsrupscaler.cpp)
     target_include_directories(opennow-fsrupscaler-tests PRIVATE src)
     target_link_libraries(opennow-fsrupscaler-tests PRIVATE Qt6::Test Qt6::Gui Qt6::GuiPrivate)
@@ -1107,6 +1120,14 @@ if(BUILD_TESTING)
     add_test(NAME opennow-nativestreamruntime-tests
              COMMAND opennow-nativestreamruntime-tests -o -,txt)
     set_tests_properties(opennow-nativestreamruntime-tests PROPERTIES TIMEOUT 8)
+    qt_add_executable(opennow-nativepresentation-tests
+        tests/tst_nativepresentation.cpp ${OPENNOW_STREAM_RUNTIME_SOURCES})
+    target_include_directories(opennow-nativepresentation-tests PRIVATE src)
+    target_link_libraries(opennow-nativepresentation-tests PRIVATE
+        Qt6::Test Qt6::Core opennow-streamer-ffi)
+    add_dependencies(opennow-nativepresentation-tests opennow-streamer-ffi-build)
+    add_test(NAME opennow-nativepresentation-tests COMMAND opennow-nativepresentation-tests -o -,txt)
+    set_tests_properties(opennow-nativepresentation-tests PROPERTIES TIMEOUT 8)
 
     if(UNIX AND NOT APPLE)
         qt_add_executable(opennow-sonychain-tests
@@ -1152,11 +1173,17 @@ if(BUILD_TESTING)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${OPENNOW_STREAMER_FFI_RUNTIME}"
                 "$<TARGET_FILE_DIR:opennow-nativestreamruntime-tests>/"
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:opennow-nativepresentation-tests>"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${OPENNOW_STREAMER_FFI_RUNTIME}"
+                "$<TARGET_FILE_DIR:opennow-nativepresentation-tests>/"
             DEPENDS opennow-streamer-ffi-build
             COMMENT "Deploying the embedded streamer runtime for CTest")
         foreach(test_target IN ITEMS
                 opennow-streamvideo-tests
-                opennow-nativestreamruntime-tests)
+                opennow-nativestreamruntime-tests
+                opennow-nativepresentation-tests)
             add_dependencies(${test_target} opennow-streamer-ffi-test-runtime)
             set_property(TARGET ${test_target} APPEND PROPERTY BUILD_RPATH "@loader_path")
         endforeach()
@@ -1307,6 +1334,9 @@ if(BUILD_TESTING)
         opennow-theme-tests
         opennow-framepacer-tests
         opennow-streampresenttimings-tests
+        opennow-streampresentation-tests
+        opennow-streampresentationfeedback-tests
+        opennow-senderpacing-tests
         opennow-frameinterpolator-tests
         opennow-fsrupscaler-tests
         opennow-streamcolor-tests
@@ -1362,6 +1392,10 @@ if(BUILD_TESTING)
             opennow-streamvideo-tests
             opennow-waylandpointer-tests
             opennow-nativestreamruntime-tests
+            opennow-nativepresentation-tests
+            opennow-streampresentation-tests
+            opennow-streampresentationfeedback-tests
+            opennow-senderpacing-tests
             opennow-nativeframegeneration-tests
             opennow-embedded-orchestration-tests
             opennow-singleinstance-tests
@@ -1424,6 +1458,10 @@ if(BUILD_TESTING)
                 opennow-streamvideo-tests
                 opennow-waylandpointer-tests
                 opennow-nativestreamruntime-tests
+                opennow-nativepresentation-tests
+                opennow-streampresentation-tests
+                opennow-streampresentationfeedback-tests
+                opennow-senderpacing-tests
                 opennow-nativeframegeneration-tests
                 opennow-embedded-orchestration-tests
                 opennow-singleinstance-tests

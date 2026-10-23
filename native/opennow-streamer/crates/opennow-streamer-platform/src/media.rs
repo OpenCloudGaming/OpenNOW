@@ -869,6 +869,8 @@ pub enum MediaFeedback {
     VideoFrameAccepted {
         frame_index: Option<u32>,
         timestamp: u64,
+        clock_rate_hz: u32,
+        accepted_at: Instant,
         bytes: u32,
         keyframe: bool,
     },
@@ -2113,6 +2115,7 @@ struct EmbeddedD3d11State {
     format: opennow_streamer_platform_windows::VideoFormat,
     submission: Arc<Mutex<EmbeddedD3d11Submission>>,
     producer: Option<(crate::GraphicsContext, crate::D3d11FrameProducer)>,
+    selected: Vec<Weak<Mutex<Option<crate::D3d11Frame>>>>,
     frame_ready: Arc<dyn Fn() + Send + Sync>,
     keyframe_required: bool,
     first_frame_recorded: bool,
@@ -2191,6 +2194,7 @@ impl EmbeddedD3d11State {
             },
             submission,
             producer: None,
+            selected: Vec::new(),
             frame_ready: Arc::new(|| {}),
             keyframe_required: false,
             first_frame_recorded: false,
@@ -2203,6 +2207,12 @@ impl EmbeddedD3d11State {
     }
 
     fn reset(&mut self) {
+        for frame in self.selected.drain(..).filter_map(|frame| frame.upgrade()) {
+            frame
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take();
+        }
         detach_d3d11_producer(&self.submission, &mut self.producer);
         self.keyframe_required = false;
     }
@@ -2215,12 +2225,10 @@ impl EmbeddedD3d11State {
         succeeded && !std::mem::replace(&mut self.first_frame_recorded, true)
     }
 
-    fn record(
+    fn acquire(
         &mut self,
         context: crate::GraphicsContext,
-        command: crate::GraphicsRecordCommand,
-    ) -> Result<(crate::GraphicsRecordedFrame, Option<MediaFeedback>), crate::GraphicsFrameError>
-    {
+    ) -> Result<crate::D3d11Frame, crate::GraphicsFrameError> {
         use opennow_streamer_platform_windows::{
             AdoptedD3d11Context, D3d11FrameProducer, WindowsDecoderMode,
         };
@@ -2239,10 +2247,7 @@ impl EmbeddedD3d11State {
         {
             let replacing_context = self.producer.is_some();
             if replacing_context {
-                // Frames submitted through the old Qt device cannot be replayed on the new one.
-                // Switch the submit path back to its bounded pre-context queue before adopting
-                // the replacement device, then request one clean prediction chain.
-                detach_d3d11_producer(&self.submission, &mut self.producer);
+                self.reset();
                 self.keyframe_required = true;
             }
             let (producer, submitter) = unsafe {
@@ -2278,10 +2283,21 @@ impl EmbeddedD3d11State {
                 _ => {}
             }
         }
-        let frame = producer
+        producer
             .acquire_latest()
             .map_err(|error| error.to_string())?
-            .ok_or(crate::GraphicsFrameError::NotReady)?;
+            .ok_or(crate::GraphicsFrameError::NotReady)
+    }
+
+    fn record(
+        &mut self,
+        frame: &crate::D3d11Frame,
+        context: crate::GraphicsContext,
+        command: crate::GraphicsRecordCommand,
+    ) -> Result<(crate::GraphicsRecordedFrame, Option<MediaFeedback>), crate::GraphicsFrameError>
+    {
+        use opennow_streamer_platform_windows::AdoptedD3d11Context;
+
         let actual_format = frame.format();
         let recorded = unsafe {
             frame.record(
@@ -2568,11 +2584,36 @@ impl EmbeddedD3d11FrameNotifier {
 }
 
 #[cfg(target_os = "windows")]
+#[derive(Clone)]
 struct PendingD3d11Frame {
     state: Arc<Mutex<EmbeddedD3d11State>>,
     shared: Arc<SharedPipeline>,
     mid: String,
     info: crate::GraphicsFrameInfo,
+}
+
+#[cfg(target_os = "windows")]
+struct SelectedD3d11Frame {
+    pending: PendingD3d11Frame,
+    frame: Arc<Mutex<Option<crate::D3d11Frame>>>,
+    info: crate::GraphicsFrameInfo,
+}
+
+#[cfg(target_os = "windows")]
+impl PendingD3d11Frame {
+    fn report_keyframe_required(&self, keyframe_required: bool) {
+        if keyframe_required {
+            invalidate_embedded_video(
+                &self.shared,
+                &self.mid,
+                "embedded D3D11 decoder lost references or graphics device",
+            );
+            let _ = self.shared.feedback.send(MediaFeedback::QueueDropped {
+                media: "d3d11-decode",
+                count: 1,
+            });
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -2595,39 +2636,95 @@ impl crate::GraphicsFrame for PendingD3d11Frame {
         Some(self.state.clone())
     }
 
+    fn acquire(
+        &self,
+        context: crate::GraphicsContext,
+    ) -> Result<Option<Arc<dyn crate::GraphicsFrame>>, crate::GraphicsFrameError> {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let result = state.acquire(context).map(|frame| {
+            let format = frame.format();
+            let info = crate::GraphicsFrameInfo {
+                width: format.width,
+                height: format.height,
+                sequence: self.info.sequence,
+                presentation_time_ns: frame.presentation_time_ns(),
+            };
+            let frame = Arc::new(Mutex::new(Some(frame)));
+            state.selected.retain(|frame| frame.strong_count() > 0);
+            state.selected.push(Arc::downgrade(&frame));
+            Some(Arc::new(SelectedD3d11Frame {
+                pending: self.clone(),
+                frame,
+                info,
+            }) as Arc<dyn crate::GraphicsFrame>)
+        });
+        let keyframe_required = state.take_keyframe_required();
+        drop(state);
+        self.report_keyframe_required(keyframe_required);
+        result
+    }
+
+    fn record(
+        &self,
+        _: crate::GraphicsContext,
+        _: crate::GraphicsRecordCommand,
+    ) -> Result<crate::GraphicsRecordedFrame, crate::GraphicsFrameError> {
+        Err(crate::GraphicsFrameError::NotReady)
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl crate::GraphicsFrame for SelectedD3d11Frame {
+    fn info(&self) -> crate::GraphicsFrameInfo {
+        self.info
+    }
+
+    fn render_resources(&self) -> Option<Arc<dyn crate::GraphicsRenderResources>> {
+        Some(self.pending.state.clone())
+    }
+
     fn record(
         &self,
         context: crate::GraphicsContext,
         command: crate::GraphicsRecordCommand,
     ) -> Result<crate::GraphicsRecordedFrame, crate::GraphicsFrameError> {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let mut state = self
+            .pending
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let frame = self
+            .frame
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+            .ok_or(crate::GraphicsFrameError::NotReady)?;
+        let selected = Arc::downgrade(&self.frame);
+        state.selected.retain(|frame| !frame.ptr_eq(&selected));
         let mut color_change = None;
-        let result = state.record(context, command).map(|(frame, change)| {
-            color_change = change;
-            frame
-        });
+        let result = state
+            .record(&frame, context, command)
+            .map(|(frame, change)| {
+                color_change = change;
+                frame
+            });
+        drop(frame);
         let first_frame = state.take_first_recorded_frame(result.is_ok());
         let keyframe_required = state.take_keyframe_required();
         drop(state);
         if first_frame {
-            let _ = self.shared.feedback.send(MediaFeedback::PlaybackStarted {
-                backend: "D3D11/Qt",
-            });
+            let _ = self
+                .pending
+                .shared
+                .feedback
+                .send(MediaFeedback::PlaybackStarted {
+                    backend: "D3D11/Qt",
+                });
         }
         if let Some(change) = color_change {
-            let _ = self.shared.feedback.send(change);
+            let _ = self.pending.shared.feedback.send(change);
         }
-        if keyframe_required {
-            invalidate_embedded_video(
-                &self.shared,
-                &self.mid,
-                "embedded D3D11 decoder lost references or graphics device",
-            );
-            let _ = self.shared.feedback.send(MediaFeedback::QueueDropped {
-                media: "d3d11-decode",
-                count: 1,
-            });
-        }
+        self.pending.report_keyframe_required(keyframe_required);
         result
     }
 }
@@ -4494,6 +4591,8 @@ fn report_video_frame_accepted(shared: &SharedPipeline, frame: &EncodedFrame) {
     let _ = shared.feedback.send(MediaFeedback::VideoFrameAccepted {
         frame_index: frame.frame_index,
         timestamp: frame.timestamp,
+        clock_rate_hz: frame.clock_rate_hz,
+        accepted_at: Instant::now(),
         bytes: u32::try_from(frame.data.len()).unwrap_or(u32::MAX),
         keyframe: frame.keyframe,
     });

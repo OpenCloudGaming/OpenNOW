@@ -3,6 +3,7 @@
 #include "streaming/rendering/LinuxVulkanGraphics.h"
 #include "streaming/NativeStreamRuntime.h"
 #include "streaming/rendering/StreamVideoTextureRenderer.h"
+#include "streaming/rendering/StreamSenderPacer.h"
 #include "input/platform/WaylandPointerCapture.h"
 #include "input/platform/MacPointerCapture.h"
 
@@ -79,6 +80,8 @@ public:
         ++finishCount;
     }
 
+    std::uint64_t nextFrameDeadlineNs() const override { return deadlineNs.load(); }
+
     void setUpscalingEnhancement(int sharpness, int denoise) override
     {
         upscaleSharpness.store(sharpness);
@@ -113,6 +116,7 @@ public:
     std::atomic_int upscaleHeight = 0;
     std::atomic_int upscaleSharpness = 0;
     std::atomic_int upscaleDenoise = 0;
+    std::atomic_uint64_t deadlineNs = 0;
 };
 
 // Exercise the production import/material with a GPU texture, without a remote
@@ -2930,6 +2934,47 @@ private slots:
         QCOMPARE(denoiseChanges.size(), 2);
         QVERIFY(!item.metalFxUpscaling());
         QCOMPARE(item.renderCallback(), callback);
+    }
+
+    void senderDeadlineWakesWithoutInterpolationAndPreservesTheSurface()
+    {
+        QQuickWindow window;
+        window.resize(640, 480);
+        auto *item = new StreamVideoItem(window.contentItem());
+        const auto callback = std::make_shared<TestRenderCallback>();
+        item->setRenderCallback(callback);
+        QQuickItem overlay(window.contentItem());
+        overlay.setZ(10);
+        QSignalSpy wake(&item->m_senderFrameTimer, &QChronoTimer::timeout);
+        connect(&item->m_senderFrameTimer, &QChronoTimer::timeout, &window,
+                [callback] { callback->deadlineNs.store(0); });
+        for (const bool fullscreen : {false, true}) {
+            if (fullscreen) window.showFullScreen();
+            else window.showNormal();
+            QTRY_VERIFY(window.isVisible());
+            item->setSize(window.size());
+            QTRY_VERIFY(item->m_swapGateSource.isEmpty());
+            for (const bool visible : {false, true}) {
+                overlay.setVisible(visible);
+                wake.clear();
+                callback->deadlineNs.store(StreamSenderPacer::clockNs() + 200'000'000);
+                QVERIFY(QMetaObject::invokeMethod(&window, "frameSwapped", Qt::DirectConnection));
+                QTRY_VERIFY(item->m_senderFrameTimer.isActive());
+                QTRY_VERIFY_WITH_TIMEOUT(wake.size() > 0, 2'000);
+                QVERIFY(!item->frameGeneration());
+                QCOMPARE(item->renderCallback(), callback);
+                QCOMPARE(item->window(), &window);
+                QCOMPARE(callback->deadlineNs.load(), std::uint64_t(0));
+            }
+        }
+        callback->deadlineNs.store(StreamSenderPacer::clockNs() + 2'000'000'000);
+        QVERIFY(QMetaObject::invokeMethod(&window, "frameSwapped", Qt::DirectConnection));
+        QTRY_VERIFY(item->m_senderFrameTimer.isActive());
+        item->setVisible(false);
+        QVERIFY(!item->m_senderFrameTimer.isActive());
+        item->setVisible(true);
+        item->setRenderCallback({});
+        QVERIFY(!item->m_senderFrameTimer.isActive());
     }
 
     void frameGenerationIsOptInAndDoesNotReplaceThePresenter()

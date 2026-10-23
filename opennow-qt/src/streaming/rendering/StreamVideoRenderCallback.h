@@ -3,10 +3,12 @@
 #include <QMatrix4x4>
 #include <QRect>
 #include <QVariantMap>
+#include <cstdint>
 
 class QRhi;
 class QRhiCommandBuffer;
 class QRhiRenderTarget;
+class QQuickWindow;
 
 class StreamVideoRenderCallback
 {
@@ -24,7 +26,10 @@ public:
     virtual void setFsrUpscaling(bool) {}
     virtual void setUpscalingEnhancement(int, int) {}
     virtual bool needsFrame() const { return false; }
+    virtual std::uint64_t nextFrameDeadlineNs() const { return 0; }
     virtual void frameSwapped() {}
+    virtual void beforeFrameBegin(QQuickWindow *) {}
+    virtual void afterRendering() {}
     virtual QVariantMap frameGenerationStats() const { return {}; }
     virtual QVariantMap swapStats() const { return {}; }
     virtual void setSwapGated(bool, const QString &) {}

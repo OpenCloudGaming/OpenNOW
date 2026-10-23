@@ -9,7 +9,20 @@
 extern "C" {
 #endif
 
-#define OPENNOW_STREAMER_FFI_ABI_VERSION 15u
+#define OPENNOW_STREAMER_FFI_ABI_VERSION 17u
+#define OPENNOW_STREAMER_FRAME_TIMING_CAPTURE 1u
+#define OPENNOW_STREAMER_FRAME_TIMING_PACED 2u
+#define OPENNOW_STREAMER_FRAME_TIMING_PRESENTATION 4u
+
+#define OPENNOW_STREAMER_PRESENTATION_VERSION 1u
+#define OPENNOW_STREAMER_PRESENTATION_QT_QUEUED 1u
+#define OPENNOW_STREAMER_PRESENTATION_PRESENT_RETURN 2u
+#define OPENNOW_STREAMER_PRESENTATION_PLATFORM_PRESENTED 3u
+#define OPENNOW_STREAMER_PRESENTATION_RENDER_DURATION 1u
+#define OPENNOW_STREAMER_PRESENTATION_COMPLETION_DURATION 2u
+#define OPENNOW_STREAMER_PRESENTATION_VSYNC_INTERVAL 4u
+#define OPENNOW_STREAMER_PRESENTATION_COMPLETION_AGE 8u
+#define OPENNOW_STREAMER_PRESENTATION_REQUIRED_FIELDS 15u
 #define OPENNOW_STREAMER_GENERIC_HID_VERSION 1u
 #define OPENNOW_STREAMER_EVENT_SESSION_TIMER "session-timer"
 #define OPENNOW_STREAMER_EVENT_TEXT_INPUT_ERROR "text-input-error"
@@ -184,6 +197,13 @@ typedef struct OpenNowStreamerFrameInfo {
     uint32_t height;
     uint64_t sequence;
     uint64_t presentation_time_ns;
+    uint64_t sender_generation;
+    uint64_t sender_scene_epoch;
+    uint32_t sender_frame_index;
+    uint32_t sender_timing_flags;
+    uint32_t sender_capture_time_us;
+    uint32_t sender_paced;
+    uint64_t sender_presentation_time_us;
 } OpenNowStreamerFrameInfo;
 
 /*
@@ -206,6 +226,32 @@ typedef struct OpenNowStreamerRecordedFrame {
     uint64_t generation;
     uint64_t presentation_time_ns;
 } OpenNowStreamerRecordedFrame;
+
+typedef struct OpenNowStreamerPresentationConfig {
+    uint32_t version;
+    size_t struct_size;
+    uint64_t generation;
+    uint64_t scene_epoch;
+    uint32_t active;
+    uint32_t fps;
+    uint32_t cloud_gsync;
+    uint32_t feedback_mode;
+    uint32_t sender_pacing;
+} OpenNowStreamerPresentationConfig;
+
+typedef struct OpenNowStreamerPresentationSample {
+    uint32_t version;
+    size_t struct_size;
+    uint64_t generation;
+    uint64_t scene_epoch;
+    uint64_t presentation_time_ns;
+    uint64_t render_duration_ns;
+    uint64_t render_present_to_complete_ns;
+    uint64_t completion_age_ns;
+    uint64_t vsync_interval_ns;
+    uint32_t completion_kind;
+    uint32_t valid_fields;
+} OpenNowStreamerPresentationSample;
 
 #define OPENNOW_STREAMER_SDL_MAX_SOURCES 4u
 #define OPENNOW_STREAMER_SONY_CONTACTS 2u
@@ -260,6 +306,14 @@ typedef enum OpenNowStreamerStatus {
     OPENNOW_STREAMER_GRAPHICS_UNSUPPORTED = 15,
     OPENNOW_STREAMER_PANIC = 255
 } OpenNowStreamerStatus;
+
+OpenNowStreamerStatus opennow_streamer_get_presentation_config(
+    const OpenNowStreamer *handle,
+    OpenNowStreamerPresentationConfig *output);
+
+OpenNowStreamerStatus opennow_streamer_submit_presentation_sample(
+    const OpenNowStreamer *handle,
+    const OpenNowStreamerPresentationSample *sample);
 
 OpenNowStreamerStatus opennow_streamer_create(
     const OpenNowStreamerConfig *config,

@@ -1,5 +1,6 @@
 #include "streaming/NativeStreamRuntime.h"
 #include "streaming/rendering/NativeStreamRenderCallback.h"
+#include "streaming/rendering/StreamSenderPacer.h"
 #include "streaming/rendering/StreamVideoRenderCallback.h"
 
 #include <QGuiApplication>
@@ -415,6 +416,99 @@ private slots:
         QCOMPARE(errors.count(), 1);
 #else
         QSKIP("Native presentation classification requires D3D11 or Vulkan");
+#endif
+    }
+
+    void senderPacedSourcesReuseFsrResourcesWithoutInterpolation_data()
+    {
+        QTest::addColumn<bool>("frameGeneration");
+        QTest::newRow("interpolation-off") << false;
+        QTest::newRow("interpolation-requested-but-bypassed") << true;
+    }
+
+    void senderPacedSourcesReuseFsrResourcesWithoutInterpolation()
+    {
+#if defined(Q_OS_WIN) || (QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>))
+        QFETCH(bool, frameGeneration);
+        Producer producer;
+#if !defined(Q_OS_WIN)
+        producer.instance = &m_instance;
+#endif
+        producerToCreate = &producer;
+        const auto resetProducer = qScopeGuard([] { producerToCreate = nullptr; });
+        auto api = producerApi();
+        api.getPresentationConfig = [](const OpenNowStreamer *, OpenNowStreamerPresentationConfig *config) {
+            *config = {};
+            config->active = 1;
+            config->generation = 1;
+            config->scene_epoch = 1;
+            config->sender_pacing = 2;
+            return OPENNOW_STREAMER_OK;
+        };
+        NativeStreamRuntime runtime(api);
+        QVERIFY(runtime.start());
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                              {QStringLiteral("id"), QStringLiteral("sender-fsr")}}));
+        QTRY_VERIFY(runtime.presentationAllowed());
+        auto texture = std::unique_ptr<QRhiTexture>(m_rhi->newTexture(
+            QRhiTexture::RGBA8, QSize(128, 128), 1, QRhiTexture::RenderTarget));
+        QVERIFY(texture->create());
+        auto target = std::unique_ptr<QRhiTextureRenderTarget>(m_rhi->newTextureRenderTarget(
+            QRhiTextureRenderTargetDescription(QRhiColorAttachment(texture.get()))));
+        auto pass = std::unique_ptr<QRhiRenderPassDescriptor>(target->newCompatibleRenderPassDescriptor());
+        target->setRenderPassDescriptor(pass.get());
+        QVERIFY(target->create());
+        auto callback = createNativeStreamRenderCallback(&runtime);
+        const auto release = qScopeGuard([&] { callback->releaseResources(); });
+        callback->setFsrUpscaling(true);
+        callback->setUpscalingTarget(QSize(128, 128));
+        callback->setFrameGeneration(frameGeneration, 120);
+        QMatrix4x4 matrix = m_rhi->clipSpaceCorrMatrix();
+        matrix.ortho(0, 128, 128, 0, -1, 1);
+        callback->setComposition(matrix, QRectF(0, 0, 128, 128), QRectF(0, 0, 128, 128), 1);
+        quint64 resources = 0;
+        for (unsigned index = 1; index <= 4; ++index) {
+            OpenNowStreamerFrameInfo frame{};
+            frame.width = 64;
+            frame.height = 64;
+            frame.sequence = index;
+            frame.presentation_time_ns = index * 100'000'000ull;
+            frame.sender_generation = 1;
+            frame.sender_scene_epoch = 1;
+            frame.sender_frame_index = index;
+            frame.sender_timing_flags = OPENNOW_STREAMER_FRAME_TIMING_CAPTURE
+                | OPENNOW_STREAMER_FRAME_TIMING_PACED;
+            frame.sender_capture_time_us = index * 100'000;
+            frame.sender_paced = 1;
+            producer.next = frame;
+            for (unsigned attempt = 0; attempt < 3; ++attempt) {
+                QRhiCommandBuffer *cb = nullptr;
+                QCOMPARE(m_rhi->beginOffscreenFrame(&cb), QRhi::FrameOpSuccess);
+                callback->initialize(m_rhi.get(), cb, target.get());
+                callback->prepareFrame(cb);
+                cb->beginPass(target.get(), Qt::black, {1.0f, 0});
+                cb->setViewport(QRhiViewport(0, 0, 128, 128));
+                callback->recordFrame(cb, QRect(0, 0, 128, 128));
+                cb->endPass();
+                QCOMPARE(m_rhi->endOffscreenFrame(), QRhi::FrameOpSuccess);
+                callback->finishFrame();
+                callback->frameSwapped();
+                const auto generation = callback->swapStats().value(QStringLiteral("fsrResourceGeneration")).toULongLong();
+                QVERIFY(generation > 0);
+                if (resources == 0) resources = generation;
+                QCOMPARE(generation, resources);
+                const auto deadline = callback->nextFrameDeadlineNs();
+                if (!deadline) break;
+                const auto now = StreamSenderPacer::clockNs();
+                QTest::qWait(int((deadline > now ? deadline - now : 0) / 1'000'000) + 1);
+            }
+            QCOMPARE(producer.recorded.sequence, std::uint64_t(index));
+        }
+        QCOMPARE(producer.sourceCount, 4);
+        QCOMPARE(producer.releaseCount, 4);
+        QCOMPARE(callback->swapStats().value(QStringLiteral("senderPacedFrames")).toULongLong(), qulonglong(4));
+#else
+        QSKIP("The native sender/FSR integration test requires D3D11 or Vulkan");
 #endif
     }
 

@@ -892,6 +892,7 @@ impl TransportWorker {
             }
         }
         let frame = EncodedMediaFrame {
+            sender_timing: None,
             mid: data.mid.to_string(),
             codec: if is_video {
                 codec.to_string()
