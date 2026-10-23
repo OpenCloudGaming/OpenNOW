@@ -8,6 +8,7 @@
 #include <QScreen>
 #include <atomic>
 #include <chrono>
+#include <optional>
 
 #if defined(Q_OS_WIN)
 #define OPENNOW_WINDOWS_PRESENTATION
@@ -50,6 +51,7 @@ struct StreamPresentation::State
     bool tearingSupported = false;
     bool vrrPossible = false;
     bool vrrRequested = false;
+    std::optional<unsigned> reportedEligibility;
     Clock::time_point nextProbe{};
     QRhiSwapChain *swapChain = nullptr;
     bool baselineNoVsync = false;
@@ -214,6 +216,7 @@ struct StreamPresentation::State
         latencyFailureReported = false;
         vrrPossible = false;
         vrrRequested = false;
+        reportedEligibility.reset();
         probeRequested.store(true);
     }
 
@@ -330,6 +333,18 @@ void StreamPresentation::updateOutput()
     const auto mode = streamPresentationMode({streaming, bool(config.cloud_gsync),
         bool(snapshot & 1u), bool(snapshot & 2u), bool(snapshot & 4u),
         d->tearingSupported && !d->vrrFailed, d->vrrPossible, d->vrrRequested});
+    if (streaming && config.cloud_gsync) {
+        const unsigned eligibility = (snapshot & 7u) | (unsigned(d->tearingSupported) << 3)
+            | (unsigned(d->vrrPossible) << 4) | (unsigned(d->vrrRequested) << 5);
+        if (d->reportedEligibility != eligibility) {
+            d->reportedEligibility = eligibility;
+            qInfo("Cloud G-Sync eligibility: focused=%d exposed=%d fullscreen=%d tearing=%d possible=%d requested=%d; scanout unverified.",
+                bool(snapshot & 1u), bool(snapshot & 2u), bool(snapshot & 4u),
+                d->tearingSupported, d->vrrPossible, d->vrrRequested);
+        }
+    } else {
+        d->reportedEligibility.reset();
+    }
     bool noVsync = streamPresentationNoVsync(mode, d->baselineNoVsync);
     if (mode == StreamPresentationMode::Vrr && !d->limitDevice()) {
         d->vrrFailed = true;
