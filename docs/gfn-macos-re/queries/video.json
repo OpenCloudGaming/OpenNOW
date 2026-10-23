@@ -1,0 +1,328 @@
+[
+  {
+    "name": "analyze_function",
+    "arguments": {
+      "procedure": "0x9d160"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0xb1c00"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0xb5060"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x14f1c0"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x14f490"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x14d780"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x14e1d0"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x1368d0"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x134730"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x53ac0"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0xb1de0"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x14e0b0"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x14e780"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x14e870"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x14d2a0"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x150120"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x150180"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x1501d0"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x134930"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x13d1d0"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x11df90"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0xb3ce0"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x9d740"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0xea6b0"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0xa1d20"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0xb40e0"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x1502f0"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x14f8c0"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x14f910"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x14f920"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x134c60"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x138b20"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x14fa60"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x14ec70"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x996b0"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0xd7d20"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x4df10"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x4db60"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x9d400"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x9d290"
+    }
+  },
+  {
+    "name": "procedure_callers",
+    "arguments": {
+      "procedure": "0xb1de0"
+    }
+  },
+  {
+    "name": "procedure_callers",
+    "arguments": {
+      "procedure": "0x9d160"
+    }
+  },
+  {
+    "name": "procedure_callers",
+    "arguments": {
+      "procedure": "0x53ac0"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x51d50"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x52280"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x52530"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0xd2ad0"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x139fb0"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0x152130"
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0xea6e0"
+    }
+  },
+  {
+    "name": "procedure_references",
+    "arguments": {
+      "procedure": "0xea6e0",
+      "direction": "outgoing"
+    }
+  },
+  {
+    "name": "xrefs",
+    "arguments": {
+      "address": "0xf25858"
+    }
+  },
+  {
+    "name": "analyze_function",
+    "arguments": {
+      "procedure": "0xd2ad0"
+    }
+  },
+  {
+    "name": "read_bytes",
+    "arguments": {
+      "address": "0xf25858",
+      "length": 112
+    }
+  }
+]
