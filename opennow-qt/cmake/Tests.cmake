@@ -1169,11 +1169,17 @@ if(BUILD_TESTING)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${OPENNOW_STREAMER_FFI_RUNTIME}"
                 "$<TARGET_FILE_DIR:opennow-nativestreamruntime-tests>/"
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:opennow-nativepresentation-tests>"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${OPENNOW_STREAMER_FFI_RUNTIME}"
+                "$<TARGET_FILE_DIR:opennow-nativepresentation-tests>/"
             DEPENDS opennow-streamer-ffi-build
             COMMENT "Deploying the embedded streamer runtime for CTest")
         foreach(test_target IN ITEMS
                 opennow-streamvideo-tests
-                opennow-nativestreamruntime-tests)
+                opennow-nativestreamruntime-tests
+                opennow-nativepresentation-tests)
             add_dependencies(${test_target} opennow-streamer-ffi-test-runtime)
             set_property(TARGET ${test_target} APPEND PROPERTY BUILD_RPATH "@loader_path")
         endforeach()
@@ -1379,6 +1385,9 @@ if(BUILD_TESTING)
             opennow-streamvideo-tests
             opennow-waylandpointer-tests
             opennow-nativestreamruntime-tests
+            opennow-nativepresentation-tests
+            opennow-streampresentation-tests
+            opennow-streampresentationfeedback-tests
             opennow-nativeframegeneration-tests
             opennow-embedded-orchestration-tests
             opennow-singleinstance-tests
@@ -1441,6 +1450,9 @@ if(BUILD_TESTING)
                 opennow-streamvideo-tests
                 opennow-waylandpointer-tests
                 opennow-nativestreamruntime-tests
+                opennow-nativepresentation-tests
+                opennow-streampresentation-tests
+                opennow-streampresentationfeedback-tests
                 opennow-nativeframegeneration-tests
                 opennow-embedded-orchestration-tests
                 opennow-singleinstance-tests
