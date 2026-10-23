@@ -15,9 +15,9 @@ use opennow_streamer_platform::{
     CapturedInput, CapturedInputQueue, CapturedInputSample, DecodeStageTimings,
     DecodeTimingsReport, EncodedFrame, ManualRecordingSummary, MediaCodec, MediaColorQuality,
     MediaControl, MediaFeedback, MediaRuntime, MediaRuntimeControl, MediaSession, MediaSink,
-    MediaStreamConfig, MediaVideoCodec, PushOutcome, StreamShortcutAction, StreamShortcutBindings,
-    record_matroska, record_replay_matroska, supports_audio_decode, supports_audio_output,
-    video_backends,
+    MediaStreamConfig, MediaVideoCodec, MouseSettings, PushOutcome, StreamShortcutAction,
+    StreamShortcutBindings, record_matroska, record_replay_matroska, supports_audio_decode,
+    supports_audio_output, video_backends,
 };
 use opennow_streamer_protocol::{
     Capabilities, Command, PROTOCOL_VERSION, RecordingCutReason, ReplayBufferConfig,
@@ -1876,6 +1876,7 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
     }
     let mut pending_rumble = [None; 4];
     let mut pending_input = None;
+    let mut sent_mouse_settings = None;
     let mut pending_control_output = NvstControlOutput {
         start_id: start_id.clone(),
         pending: None,
@@ -1940,6 +1941,27 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
                 );
                 break;
             } else {
+                if let Some(settings) = captured_input.mouse_settings()
+                    && sent_mouse_settings != Some(settings)
+                {
+                    match resources
+                        .send_captured_input(mouse_settings_packet(settings, &feedback_state))
+                    {
+                        Ok(()) => sent_mouse_settings = Some(settings),
+                        Err(TransportError::InputNotReady) => {}
+                        Err(error) => {
+                            let _ = emit_nvst_terminal(
+                                output,
+                                lifecycle,
+                                generation,
+                                &resources,
+                                "native-input-capture-failed",
+                                format!("Native window input capture failed: {error}"),
+                            );
+                            break 'session;
+                        }
+                    }
+                }
                 // Preserve high-polling-rate RawInput/SDL samples rather than
                 // turning several reports into one uneven movement burst.
                 for _ in 0..32 {
@@ -1994,6 +2016,7 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
                 match &nvst_event {
                     NvstReceiveEvent::InputReady(_) => {
                         feedback_state.input_available = true;
+                        sent_mouse_settings = None;
                         if let Some(queue) = captured_input.as_ref() {
                             queue.set_text_ready(generation, true);
                         }
@@ -2908,6 +2931,16 @@ fn forward_nvst_captured_sample<R: NvstSessionResources>(
         return resources.send_captured_text(text.clone(), timestamp_us);
     }
     resources.send_captured_input(captured_input_packet(sample.input.clone(), timestamp_us))
+}
+
+fn mouse_settings_packet(settings: MouseSettings, state: &NvstMediaFeedbackState) -> Vec<u8> {
+    let timestamp_us = u64::try_from(state.input_origin.elapsed().as_micros()).unwrap_or(u64::MAX);
+    let mut packet = Vec::with_capacity(20);
+    packet.extend_from_slice(&25_u32.to_le_bytes());
+    packet.extend_from_slice(&u32::from(settings.acceleration).to_be_bytes());
+    packet.extend_from_slice(&settings.speed.to_be_bytes());
+    packet.extend_from_slice(&timestamp_us.to_be_bytes());
+    packet
 }
 
 fn captured_input_packet(input: CapturedInput, timestamp_us: u64) -> Vec<u8> {
@@ -4762,6 +4795,71 @@ mod tests {
                 .try_iter()
                 .all(|event| event["type"] != "error" && event["type"] != "status")
         );
+    }
+
+    #[test]
+    fn mouse_settings_send_on_change_and_again_after_input_ready() {
+        let (output, _received) = mpsc::channel();
+        let output = EventSender::unbounded(output);
+        let lifecycle = Arc::new(connected_lifecycle());
+        let worker_lifecycle = lifecycle.clone();
+        let queue = Arc::new(CapturedInputQueue::default());
+        let worker_queue = queue.clone();
+        let (transport, nvst_events) = mpsc::channel();
+        let (input_sent, inputs) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            forward_nvst_session_events(
+                &output,
+                &worker_lifecycle,
+                7,
+                NvstSessionEventResources {
+                    start_id: "mouse-settings".to_owned(),
+                    nvst_events,
+                    media_feedback: None,
+                    captured_input: Some(worker_queue),
+                    shortcut_runtime: None,
+                    transport: TestNvstResources {
+                        input_sent: Some(input_sent),
+                        ..TestNvstResources::default()
+                    },
+                },
+            )
+        });
+        let settings = |packet: &[u8]| {
+            assert_eq!(packet.len(), 20);
+            assert_eq!(u32::from_le_bytes(packet[..4].try_into().unwrap()), 25);
+            (
+                u32::from_be_bytes(packet[4..8].try_into().unwrap()),
+                u32::from_be_bytes(packet[8..12].try_into().unwrap()),
+            )
+        };
+        queue.set_mouse_settings(MouseSettings::UNACCELERATED);
+        transport.send(NvstReceiveEvent::InputReady(2)).unwrap();
+        let first = inputs.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert_eq!(settings(&first), (0, 10));
+
+        queue.set_mouse_settings(MouseSettings::UNACCELERATED);
+        queue.push(CapturedInput::MouseMove {
+            delta_x: 1,
+            delta_y: 0,
+        });
+        let motion = inputs.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert_eq!(u32::from_le_bytes(motion[..4].try_into().unwrap()), 7);
+
+        queue.set_mouse_settings(MouseSettings {
+            acceleration: true,
+            speed: 14,
+        });
+        let changed = inputs.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert_eq!(settings(&changed), (1, 14));
+
+        transport.send(NvstReceiveEvent::InputReady(2)).unwrap();
+        let resent = inputs.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert_eq!(settings(&resent), (1, 14));
+
+        lock_lifecycle(&lifecycle).generation += 1;
+        worker.join().unwrap();
+        assert!(inputs.try_recv().is_err());
     }
 
     #[test]

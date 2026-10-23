@@ -1,6 +1,6 @@
 # NVB features and control binaries
 
-Byte-verifiable control frames only. Official Geronimo logs name feature types and print a heap pointer for `nvbFeatureControl`, not hex. Type 10 has no captured frame on this machine.
+Byte-verifiable control frames only. Official Geronimo logs name feature types and print a heap pointer for `nvbFeatureControl`, not hex. Type 10 has no captured frame; OpenNOW's encoding comes from the decompiled serializers and is marked as such below.
 
 Hex in tests is compact lowercase. The same bytes are also written with spaces so you can count fields.
 
@@ -27,7 +27,7 @@ From `geronimo.log` and `geronimo.log.bak` on this machine. `nvbFeatureControl` 
 | 0 | Enabled / Disabled | Every cursor-info change. Official then hides the remote cursor. | Server-composited cursor in the video | `0x0308` `COMMAND_MOUSE_CURSOR_CAPTURE` | Known. See below. |
 | 6 | Enabled | After `Sending haptics state 1 to server` | Gamepad rumble | `0x0206` remote input, inner type 13 | Little-endian u16 enable flag in the timestamp envelope. See test `transport_control_inputs_do_not_disable_native_input`. |
 | 8 | Enabled | Once when the session is ready, with type 0 | Track remote cursor image | `0x030d` `COMMAND_TRACK_REMOTE_CURSOR_IMAGE` | Known. See below. |
-| 10 | Update | Next to `Sending SDL mouse settings` or `Sending alt mouse settings (accel=0, speed=10)` | Host mouse accel and speed | none captured | **Not dumped. Do not send a guess.** |
+| 10 | Update | Next to `Sending SDL mouse settings` or `Sending alt mouse settings (accel=0, speed=10)` | Host mouse accel and speed | `0x0206` remote input, inner type 25 | Decompiled, not captured. See below. |
 
 No other feature type numbers appear in these logs.
 
@@ -110,7 +110,33 @@ This mapping follows OpenNOW-Mac revision `666bd4a3391e13b074b37eecfd61d568e9231
 `NvstControlCommand.swift` (`mimicCursorStrategy`). Activation and enable/disable
 vectors are checked in `nvst_input.rs`.
 
-### Type 10 mouse settings — no captured frame
+### Type 10 mouse settings — decompiled, not captured
+
+Feature 10 becomes native event 3 and remote-input packet type 25 inside the
+timestamped `0x0e` envelope of `0x0206`, on `control_channel_reliable`
+(Windows Bifrost `0x180820ad0`, `0x180280180`, builder `0x1803f4020`, envelope
+`0x1803f4570`; macOS `0x225830`, `0x225800`, `0x224ad0`). Acceleration comes first,
+speed second, both big-endian u32. The 16-byte inner packet pads to 32 bytes, as
+Bifrost pads every inner packet to `floor((N + 8) / 8) * 8 + 8` before the
+timestamp. Serializer-derived frame for `accel=0, speed=10` at 1 µs:
+
+```
+06 02 30 00  00 00 00 2c  0e 00 00 00
+00 00 00 0c  19 00 00 00  00 00 00 00  00 00 00 0a
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+01 00 00 00 00 00 00 00
+```
+
+`mouse_settings_use_the_bifrost_ri25_frame_on_reliable_control` pins it. Official
+deduplicates by value and resends on upstream ready. On Windows, raw-relative cursor
+mode publishes the local `SPI_GETMOUSE` acceleration flag and `SPI_GETMOUSESPEED`;
+every other mode publishes `(0,10)`. OpenNOW does the same from the embedded capture
+owner and sends `(0,10)` on Linux and macOS (official macOS maps
+`com.apple.mouse.scaling`, which is not reproduced). Full analysis:
+`reverse-engineering/notes/parity/mouse-settings.md`.
+
+Unverified: how the seat applies these values, the server's accepted range, and
+whether they change games that read raw input.
 
 What is actually on disk:
 
@@ -122,7 +148,7 @@ What is actually on disk:
 
 Searched and not present: `.pcap` / `.pcapng` / `.etl` under GFN AppData, Downloads, Documents. No control-frame hex next to type 10 in any `.log` / `.bak`. `snapshot_blob.bin` is V8, not NVST.
 
-There is no byte-exact type 10 frame to copy. OpenNOW currently emits a reconstructed `0x0323` in `nvst_input.rs`. That is not a capture. Leave this section empty until one exists.
+No capture exists yet. If one disagrees with the serializer-derived frame above, the capture wins.
 
 ## Activation chain
 
@@ -258,8 +284,8 @@ exercise these boundaries without a live session.
 
 ## What is missing on purpose
 
-- Feature type 10 on-wire bytes. Logs and DLL names prove it is mouse accel/speed. They do not dump the frame.
+- A captured feature type 10 frame. OpenNOW's encoding is serializer-derived.
 - Official encoding of type 0 and type 8. OpenNOW’s `0x0308` / `0x030d` match the comments and the session behavior. They are not proven equal to Geronimo’s on-wire feature blob until a capture says so.
 - Recovery-mode `0x0312` fields and capture-time offsets in the canonical GS frame header. The mounted audit identifies the message length and the timestamp width, but not the complete layouts needed to implement them safely.
 
-When you have a capture, put the exact type 10 frame in the section above and pin it with a test. Do not fill it from the log English or from reading the DLL.
+When you have a capture, compare it with the type 10 frame above and update the test if they differ.

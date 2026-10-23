@@ -53,6 +53,7 @@ const INPUT_GAMEPAD: u32 = 12;
 const INPUT_HAPTICS_ENABLED: u32 = 13;
 const INPUT_LOCK_KEYS_SYNC: u32 = 19;
 const INPUT_TEXT: u32 = 23;
+const INPUT_MOUSE_SETTINGS: u32 = 25;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NvstChannelReliability {
@@ -551,6 +552,7 @@ pub(crate) fn native_input_type_name(input_type: u32) -> &'static str {
         INPUT_HAPTICS_ENABLED => "haptics-enabled",
         INPUT_LOCK_KEYS_SYNC => "lock-keys-sync",
         INPUT_TEXT => "text",
+        INPUT_MOUSE_SETTINGS => "mouse-settings",
         _ => "unknown",
     }
 }
@@ -838,6 +840,13 @@ impl NvstInputCodec {
                     ));
                 }
                 INPUT_TEXT => encoded.extend(text_messages(&event)?),
+                INPUT_MOUSE_SETTINGS => {
+                    require_len(event.bytes, 20, "short mouse settings packet")?;
+                    encoded.push(remote_input_message(
+                        remote_input_packet(input_type, &event.bytes[4..12]),
+                        read_u64_be(event.bytes, 12).unwrap_or(event.timestamp_us),
+                    ));
+                }
                 other => return Err(NvstInputCodecError::UnsupportedType(other)),
             }
         }
@@ -949,6 +958,7 @@ fn native_event_length(input_type: u32, remaining: usize) -> Result<usize, NvstI
         INPUT_HAPTICS_ENABLED => Ok(6),
         INPUT_LOCK_KEYS_SYNC => Ok(5),
         INPUT_TEXT => Ok(remaining),
+        INPUT_MOUSE_SETTINGS => Ok(20),
         other => Err(NvstInputCodecError::UnsupportedType(other)),
     }
 }
@@ -956,12 +966,13 @@ fn native_event_length(input_type: u32, remaining: usize) -> Result<usize, NvstI
 fn remote_input_message(inner: Vec<u8>, timestamp_us: u64) -> NvstEncodedInput {
     let input_type = read_u32_le(&inner, 4).expect("remote input packet has type");
     let mut body = inner;
-    let padded = 24.max(body.len().div_ceil(8) * 8);
-    body.resize(padded, 0);
     let timestamp_count = usize::from(matches!(
         input_type,
         INPUT_KEY_DOWN | INPUT_KEY_UP | INPUT_MOUSE_ABSOLUTE
     )) + 1;
+    // Bifrost pads the inner packet to floor((N + 8) / 8) * 8 + 8 bytes before its
+    // timestamp. Keys and absolute moves carry a second timestamp in the last padding word.
+    body.resize((body.len() + 8) / 8 * 8 + 8 - 8 * (timestamp_count - 1), 0);
     for _ in 0..timestamp_count {
         body.extend_from_slice(&timestamp_us.to_le_bytes());
     }
@@ -2144,6 +2155,39 @@ mod tests {
         assert_eq!(codec.encode(&wrapped, 999).unwrap(), encoded);
         assert!(codec.encode(&disabled[..5], 12).is_err());
         assert!(codec.encode(&wrapped[..wrapped.len() - 1], 999).is_err());
+    }
+
+    #[test]
+    fn mouse_settings_use_the_bifrost_ri25_frame_on_reliable_control() {
+        let mut codec = NvstInputCodec::default();
+        let mut settings = INPUT_MOUSE_SETTINGS.to_le_bytes().to_vec();
+        settings.extend_from_slice(&0_u32.to_be_bytes());
+        settings.extend_from_slice(&10_u32.to_be_bytes());
+        settings.extend_from_slice(&1_u64.to_be_bytes());
+        let encoded = codec.encode(&settings, 99).unwrap();
+        assert_eq!(encoded.len(), 1);
+        assert_eq!(encoded[0].route, NvstInputRoute::ControlReliable);
+        assert!(!encoded[0].meaningful);
+        assert_eq!(
+            encoded[0].bytes,
+            hex(concat!(
+                "06023000",
+                "0000002c0e000000",
+                "0000000c19000000000000000000000a",
+                "00000000000000000000000000000000",
+                "0100000000000000",
+            ))
+        );
+
+        let mut accelerated = INPUT_MOUSE_SETTINGS.to_le_bytes().to_vec();
+        accelerated.extend_from_slice(&1_u32.to_be_bytes());
+        accelerated.extend_from_slice(&14_u32.to_be_bytes());
+        accelerated.extend_from_slice(&0x0102_u64.to_be_bytes());
+        let accelerated = codec.encode(&accelerated, 0).unwrap();
+        assert_eq!(accelerated[0].bytes.len(), 52);
+        assert_eq!(&accelerated[0].bytes[20..28], &hex("000000010000000e"));
+        assert_eq!(&accelerated[0].bytes[44..52], &0x0102_u64.to_le_bytes());
+        assert!(codec.encode(&settings[..19], 0).is_err());
     }
 
     #[test]
