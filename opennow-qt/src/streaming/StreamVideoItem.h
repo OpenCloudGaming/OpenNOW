@@ -238,6 +238,8 @@ private:
     QString m_swapGateSource;
     QMetaObject::Connection m_frameSwapConnection;
     QMetaObject::Connection m_frameUpdateConnection;
+    QMetaObject::Connection m_frameBeginConnection;
+    QMetaObject::Connection m_afterRenderingConnection;
     QPointer<QQuickWindow> m_inputWindow;
     bool m_captureActive = false;
     bool m_relativeMouse = false;

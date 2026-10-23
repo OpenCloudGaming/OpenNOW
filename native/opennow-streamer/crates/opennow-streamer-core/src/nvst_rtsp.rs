@@ -3439,6 +3439,57 @@ mod tests {
     }
 
     #[test]
+    fn presentation_estimator_handoff_retains_only_explicit_server_measurement_settings() {
+        let value = context();
+        let announce = build_announce(
+            &value,
+            AnnounceParams {
+                stream: stream_config(&value),
+                key: &"01".repeat(32),
+                key_id: 7,
+                port: 49006,
+                address: "192.0.2.10",
+                ufrag: "abcd",
+                password: "abcdefghijklmnopqrstuv",
+                fingerprint: "AA:BB",
+                video_port: 5004,
+                video_packet_size: 1280,
+                rtcp_on_sctp: true,
+                microphone_available: true,
+                qos_timings_v5: false,
+                unified_socket: false,
+            },
+        );
+        let describe = [
+            ("jitterHistory.jitterEstimationMode", 1),
+            ("jitterHistory.n", 8),
+            ("jitterHistory.stddevsX1000", 1500),
+            ("jitterHistory.outlierUs", 20000),
+            ("jitterHistory.minAdvanceUs", 100),
+            ("jitterHistory.maxAdvanceUs", 5000),
+            ("renderHistory.renderEstimationMode", 1),
+            ("renderHistory.n", 16),
+            ("renderHistory.stddevsX1000", 2000),
+            ("renderHistory.minTimeUs", 500),
+            ("renderHistory.maxTimeUs", 10000),
+        ]
+        .iter()
+        .map(|(name, value)| format!("a=x-nv-video[0].framePacing.{name}:{value}\r\n"))
+        .collect::<String>();
+        let mut handoff = json!({});
+        negotiated_announce(&announce, &describe, &mut handoff).unwrap();
+        let settings: opennow_streamer_transport::presentation_timing::PresentationEstimatorConfig =
+            serde_json::from_value(handoff["presentationEstimator"].clone()).unwrap();
+        assert_eq!(settings.jitter_mode, 1);
+        assert_eq!(settings.jitter_stddevs_x1000, 1500);
+        assert_eq!(settings.jitter_min_advance_us, 100);
+        assert_eq!(settings.render_n, 16);
+        assert_eq!(settings.render_max_time_us, 10000);
+        negotiated_announce(&announce, "", &mut handoff).unwrap();
+        assert_eq!(handoff["presentationEstimator"], json!({}));
+    }
+
+    #[test]
     fn rtsp_parser_waits_for_body_and_checks_cseq() {
         let mut buffer = "RTSP/1.0 200 OK\r\nCSeq: 3\r\nContent-Length: 4\r\n\r\ntest".to_owned();
         let response = take_rtsp_response(&mut buffer, 3).unwrap().unwrap();

@@ -12,6 +12,7 @@
 #include "streaming/rendering/LinuxVulkanGraphics.h"
 #include "streaming/rendering/HdrOutput.h"
 #include "streaming/rendering/HdrChromeEffect.h"
+#include "streaming/rendering/StreamPresentation.h"
 #ifdef OPENNOW_EMBEDDED_STREAMER
 #include "streaming/NativeStreamRuntime.h"
 #endif
@@ -99,6 +100,8 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
 #ifdef Q_OS_WIN
     if (!qEnvironmentVariableIsSet("QT_D3D_NO_VBLANK_THREAD"))
         qputenv("QT_D3D_NO_VBLANK_THREAD", "1");
+    if (!qEnvironmentVariableIsSet("QT_QPA_UPDATE_IDLE_TIME"))
+        qputenv("QT_QPA_UPDATE_IDLE_TIME", "0");
 #endif
     qputenv("QT_TLS_BACKEND", "schannel");
     QElapsedTimer startupTimer;
@@ -107,7 +110,11 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     QGuiApplication::setOrganizationName(u"OpenCloudGaming"_s);
     QGuiApplication::setOrganizationDomain(u"opennow.app"_s);
     QGuiApplication::setApplicationVersion(QString::fromLatin1(OPENNOW_VERSION));
+#ifdef Q_OS_WIN
+    QQuickWindow::setDefaultAlphaBuffer(false);
+#else
     QQuickWindow::setDefaultAlphaBuffer(true);
+#endif
     QQuickWindow::setTextRenderType(QQuickWindow::QtTextRendering);
 #if defined(Q_OS_WIN)
     QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
@@ -275,6 +282,9 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     }
 
     HdrOutput hdrOutput;
+#ifdef OPENNOW_EMBEDDED_STREAMER
+    StreamPresentation streamPresentation(&nativeStreamRuntime);
+#endif
     QObject::connect(&localization, &Localization::localeChanged, &hdrOutput, &HdrOutput::changed);
     QObject::connect(&hdrOutput, &HdrOutput::changed, &coreClient, [&] {
         coreClient.setNativeHdrSupported(hdrOutput.supported());
@@ -333,6 +343,9 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
         return EXIT_FAILURE;
     }
     hdrOutput.attach(rootWindow);
+#ifdef OPENNOW_EMBEDDED_STREAMER
+    streamPresentation.attach(rootWindow);
+#endif
 #if defined(Q_OS_LINUX) && QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
     if (vulkanDevice.handle() && !vulkanDevice.adopt(rootWindow)) {
         qWarning("Could not adopt the embedded Vulkan device: %s",

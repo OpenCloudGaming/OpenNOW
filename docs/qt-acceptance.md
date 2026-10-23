@@ -22,6 +22,47 @@ When checking this path, use a native Windows window. The offscreen platform can
 the explicit adapter-selection precondition before any layout workload starts. Set
 `QT_FORCE_STDERR_LOGGING=1` to capture Qt diagnostics from the GUI executable.
 
+## Windows stream pacing and Cloud G-Sync
+
+Rebuild Qt and the embedded streamer together with FFI ABI 16. The Windows main window
+requests an opaque surface so Qt can use an HWND flip swapchain rather than requiring
+alpha composition. Internal QML overlays remain on the same video surface.
+Windows startup defaults `QT_QPA_UPDATE_IDLE_TIME` to `0` before Qt creates the
+application, preserving explicit overrides. This removes Qt's extra update-request idle
+timer delay while retaining coalesced requests. It does not start a polling render loop.
+
+During a stream, fixed-refresh presentation requests a maximum queue latency of one
+through the Qt swapchain's waitable interface. Cloud G-Sync can select tearing-enabled,
+arrival-driven presentation only when the core-resolved feature is enabled, the window
+is active, exposed and fullscreen, and the matching NVIDIA output reports VRR capability
+and a driver request or enabled state. The nonwaitable path limits the DXGI device queue
+to one. Focus loss, windowed mode and unsupported output retain VSync; stream stop restores
+the original swap flags and latency settings. Eligibility is not proof of VRR scanout.
+This does not implement NVIDIA's separate hardware-timed composition presenter or a
+local Reflex Sleep/marker loop. Other platforms retain their existing presentation policy.
+
+Timing-v5 feedback uses exact source-timestamp correlation and coherent DXGI presentation
+statistics. Qt `frameSwapped` remains queued-presentation diagnostics, not scanout proof.
+The rendering estimate uses measured CPU preparation/rendering time, not GPU service time.
+Reports require supported, explicit server estimator settings and sufficient valid samples;
+unsupported or ambiguous timing suppresses feedback instead of sending nominal FPS values.
+See the [FFI timing contract](../native/opennow-streamer/crates/opennow-streamer-ffi/README.md#measured-presentation-feedback-abi-16).
+
+Run the focused checks before hardware acceptance:
+
+```sh
+ctest --test-dir build/opennow-qt --output-on-failure -R 'opennow-(streampresentation.*|nativepresentation|nativestreamruntime|streamvideo)-tests'
+cargo test --manifest-path native/opennow-streamer/Cargo.toml -p opennow-streamer-transport presentation
+```
+
+On a Windows NVIDIA/VRR display, compare the same game, stream FPS, codec and color format
+with frame generation and upscaling off. Check windowed/fullscreen operation, focus loss,
+F3/Ctrl+G overlays, resizing, HDR changes, display migration, reconnect and session restart.
+Inspect PresentMon presentation mode, cadence, repeated/dropped frames and latency, plus
+the driver/display VRR indicator. Confirm that capability logs do not substitute for actual
+VRR engagement. Check unavailable statistics and server feedback-mode changes without
+inventing timing samples. Linux/offscreen smoke tests do not validate this hardware path.
+
 ## FSR 1 upscaling on Windows and Linux
 
 Stream settings and onboarding offer Off or FSR 1 on Windows and Linux. macOS retains

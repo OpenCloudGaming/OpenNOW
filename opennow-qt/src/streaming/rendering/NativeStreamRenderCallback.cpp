@@ -9,6 +9,7 @@
 #include "streaming/rendering/StreamVideoTextureRenderer.h"
 #include "streaming/rendering/StreamFrameInterpolator.h"
 #include "streaming/rendering/StreamFramePacer.h"
+#include "streaming/rendering/WindowsPresentationObserver.h"
 
 #include <rhi/qrhi.h>
 #include <rhi/qrhi_platform.h>
@@ -144,6 +145,7 @@ public:
 
     void prepareFrame(QRhiCommandBuffer *commandBuffer) override
     {
+        m_renderStartNs = WindowsPresentationObserver::clockNs();
         prepareNativeFrame(commandBuffer);
         if (!m_runtime || !m_runtime->presentationAllowed()
             || m_presentationGeneration != m_runtime->presentationGeneration()
@@ -249,6 +251,10 @@ public:
             return;
         }
         m_preparedFrame = frame;
+        const auto presentation = m_runtime->presentationConfig();
+        m_sourceGeneration = presentation.active ? presentation.generation : 0;
+        m_sourceSceneEpoch = presentation.scene_epoch;
+        m_sourceTimestampNs = recorded.presentation_time_ns;
         if (m_sourceColorSpace != int(recorded.color_space)) {
             resetFrameGeneration();
             m_sourceColorSpace = int(recorded.color_space);
@@ -405,8 +411,40 @@ public:
         m_swapTimings.setGated(gated);
     }
 
+    void beforeFrameBegin(QQuickWindow *window) override
+    {
+        m_presentationWindow = window;
+        const auto config = m_runtime ? m_runtime->presentationConfig() : OpenNowStreamerPresentationConfig{};
+        m_observationActive = config.active && config.feedback_mode == 1;
+        if (m_observationActive) m_presentationObserver.beginFrame(window);
+        else m_presentationObserver.reset();
+    }
+
+    void afterRendering() override
+    {
+        if (m_observationActive) m_presentationObserver.beforePresent();
+    }
+
     void frameSwapped() override
     {
+        if (const auto observation = m_observationActive
+                ? m_presentationObserver.frameSwapped(m_presentationWindow) : std::nullopt;
+                observation && m_runtime && m_runtime->presentationAllowed()
+                && m_presentationGeneration == m_runtime->presentationGeneration()) {
+            OpenNowStreamerPresentationSample sample{};
+            sample.version = OPENNOW_STREAMER_PRESENTATION_VERSION;
+            sample.struct_size = sizeof(sample);
+            sample.generation = observation->source.generation;
+            sample.scene_epoch = observation->source.sceneEpoch;
+            sample.presentation_time_ns = observation->source.timestampNs;
+            sample.render_duration_ns = observation->renderDurationNs;
+            sample.render_present_to_complete_ns = observation->presentDurationNs;
+            sample.completion_age_ns = observation->completionAgeNs;
+            sample.vsync_interval_ns = observation->vsyncIntervalNs;
+            sample.completion_kind = OPENNOW_STREAMER_PRESENTATION_PLATFORM_PRESENTED;
+            sample.valid_fields = OPENNOW_STREAMER_PRESENTATION_REQUIRED_FIELDS;
+            m_runtime->submitPresentationSample(sample);
+        }
         const int kind = m_submittedKind.exchange(0);
         if (kind) {
             ++m_outputCount;
@@ -467,7 +505,11 @@ public:
         if (m_outputDirty) {
             m_submittedKind.store(m_outputKind);
             m_outputDirty = false;
-            if (m_outputKind == 1) m_swapTimings.markSubmit(clockNs());
+            if (m_outputKind == 1) {
+                m_swapTimings.markSubmit(clockNs());
+                m_presentationObserver.source(m_sourceGeneration, m_sourceSceneEpoch,
+                                               m_sourceTimestampNs, m_renderStartNs);
+            }
         }
         observeSwapProgress();
     }
@@ -492,6 +534,10 @@ public:
         m_interpolator.release();
         m_pacer.reset();
         m_swapTimings.reset();
+        m_presentationObserver.reset();
+        m_sourceGeneration = 0;
+        m_sourceSceneEpoch = 0;
+        m_sourceTimestampNs = 0;
         updateTimingStats();
         m_needsFrame.store(false);
         m_submittedKind.store(0);
@@ -543,6 +589,13 @@ private:
     int m_reportedOutputBits = 0;
     StreamVideoTextureRenderer m_textures;
     StreamPresentTimings m_swapTimings;
+    WindowsPresentationObserver m_presentationObserver;
+    bool m_observationActive = false;
+    QQuickWindow *m_presentationWindow = nullptr;
+    std::uint64_t m_renderStartNs = 0;
+    std::uint64_t m_sourceGeneration = 0;
+    std::uint64_t m_sourceSceneEpoch = 0;
+    std::uint64_t m_sourceTimestampNs = 0;
     StreamSwapStallWatchdog m_swapStall;
     bool m_resourceRearmPending = false;
     int m_sourceColorSpace = OPENNOW_STREAMER_COLOR_SPACE_SDR709;

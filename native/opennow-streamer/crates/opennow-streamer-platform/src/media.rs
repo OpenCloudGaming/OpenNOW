@@ -841,6 +841,8 @@ pub enum MediaFeedback {
     VideoFrameAccepted {
         frame_index: Option<u32>,
         timestamp: u64,
+        clock_rate_hz: u32,
+        accepted_at: Instant,
         bytes: u32,
         keyframe: bool,
     },
@@ -4466,6 +4468,8 @@ fn report_video_frame_accepted(shared: &SharedPipeline, frame: &EncodedFrame) {
     let _ = shared.feedback.send(MediaFeedback::VideoFrameAccepted {
         frame_index: frame.frame_index,
         timestamp: frame.timestamp,
+        clock_rate_hz: frame.clock_rate_hz,
+        accepted_at: Instant::now(),
         bytes: u32::try_from(frame.data.len()).unwrap_or(u32::MAX),
         keyframe: frame.keyframe,
     });

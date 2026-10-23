@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::thread::{self, JoinHandle};
 
+use opennow_streamer_core::presentation_timing::{PresentationSample, PresentationTimingState};
 use opennow_streamer_core::{Engine, EventSender};
 use opennow_streamer_hid::generic::{
     GenericAdmission, GenericDevice, GenericError, GenericInterface, GenericReport,
@@ -26,7 +27,45 @@ use serde_json::Value;
 
 static FIRST_FRAME_LOGGED: AtomicBool = AtomicBool::new(false);
 
-pub const OPENNOW_STREAMER_FFI_ABI_VERSION: u32 = 15;
+pub const OPENNOW_STREAMER_FFI_ABI_VERSION: u32 = 16;
+pub const OPENNOW_STREAMER_PRESENTATION_VERSION: u32 = 1;
+pub const OPENNOW_STREAMER_PRESENTATION_QT_QUEUED: u32 = 1;
+pub const OPENNOW_STREAMER_PRESENTATION_PRESENT_RETURN: u32 = 2;
+pub const OPENNOW_STREAMER_PRESENTATION_PLATFORM_PRESENTED: u32 = 3;
+pub const OPENNOW_STREAMER_PRESENTATION_RENDER_DURATION: u32 = 1;
+pub const OPENNOW_STREAMER_PRESENTATION_COMPLETION_DURATION: u32 = 2;
+pub const OPENNOW_STREAMER_PRESENTATION_VSYNC_INTERVAL: u32 = 4;
+pub const OPENNOW_STREAMER_PRESENTATION_COMPLETION_AGE: u32 = 8;
+pub const OPENNOW_STREAMER_PRESENTATION_REQUIRED_FIELDS: u32 = 15;
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OpenNowStreamerPresentationConfig {
+    pub version: u32,
+    pub struct_size: usize,
+    pub generation: u64,
+    pub scene_epoch: u64,
+    pub active: u32,
+    pub fps: u32,
+    pub cloud_gsync: u32,
+    pub feedback_mode: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OpenNowStreamerPresentationSample {
+    pub version: u32,
+    pub struct_size: usize,
+    pub generation: u64,
+    pub scene_epoch: u64,
+    pub presentation_time_ns: u64,
+    pub render_duration_ns: u64,
+    pub render_present_to_complete_ns: u64,
+    pub completion_age_ns: u64,
+    pub vsync_interval_ns: u64,
+    pub completion_kind: u32,
+    pub valid_fields: u32,
+}
 pub const OPENNOW_STREAMER_MAX_TEXT_BYTES: usize =
     opennow_streamer_protocol::text_input::MAX_TEXT_BYTES;
 pub const OPENNOW_STREAMER_VULKAN_DEVICE_INFO_VERSION: u32 = 1;
@@ -439,6 +478,7 @@ enum WorkerCommand {
 }
 
 pub struct OpenNowStreamer {
+    presentation: Arc<PresentationTimingState>,
     commands: Option<SyncSender<WorkerCommand>>,
     worker: Option<JoinHandle<()>>,
     response_dispatcher: Option<JoinHandle<()>>,
@@ -475,6 +515,8 @@ impl OpenNowStreamer {
         let (graphics, frame_publisher) =
             RenderThreadGraphics::new(move || frame_available.invoke());
         let engine_frame_publisher = frame_publisher.clone();
+        let presentation = Arc::new(PresentationTimingState::default());
+        let engine_presentation = Arc::clone(&presentation);
         let (commands, command_receiver) = sync_channel(config.command_queue_capacity);
         let (responses, response_receiver) = sync_channel(config.response_queue_capacity);
         let (events, event_receiver) = sync_channel(config.event_queue_capacity);
@@ -517,6 +559,7 @@ impl OpenNowStreamer {
                         EventSender::bounded(events),
                         move |events| {
                             engine_factory(events, engine_frame_publisher, cursor_updates)
+                                .with_presentation_timing(engine_presentation)
                         },
                     );
                 }));
@@ -532,6 +575,7 @@ impl OpenNowStreamer {
             }
         };
         Ok(Self {
+            presentation,
             commands: Some(commands),
             worker: Some(worker),
             response_dispatcher: Some(response_dispatcher),
@@ -1870,6 +1914,9 @@ pub unsafe extern "C" fn opennow_streamer_scene_graph_shutdown(
             .graphics
             .shutdown()
             .map_or_else(graphics_status, |()| OpenNowStreamerStatus::Ok);
+        if status != OpenNowStreamerStatus::WrongThread {
+            unsafe { &*handle }.presentation.invalidate_scene();
+        }
         FIRST_FRAME_LOGGED.store(false, Ordering::Relaxed);
         log::log_line(
             "INFO",
@@ -1877,6 +1924,95 @@ pub unsafe extern "C" fn opennow_streamer_scene_graph_shutdown(
             &format!("scene graph shutdown: {status:?}"),
         );
         status
+    })) {
+        Ok(status) => status,
+        Err(_) => OpenNowStreamerStatus::Panic,
+    }
+}
+
+#[unsafe(no_mangle)]
+/// Reads negotiated session presentation policy without using the engine command queue.
+///
+/// # Safety
+/// `handle` must be live and must not race with destroy. `output` must contain a readable
+/// version/size prefix and a writable allocation of its declared size.
+pub unsafe extern "C" fn opennow_streamer_get_presentation_config(
+    handle: *const OpenNowStreamer,
+    output: *mut OpenNowStreamerPresentationConfig,
+) -> OpenNowStreamerStatus {
+    match catch_unwind(AssertUnwindSafe(|| {
+        if handle.is_null() || output.is_null() {
+            return OpenNowStreamerStatus::NullPointer;
+        }
+        let version = unsafe { ptr::addr_of!((*output).version).read() };
+        let struct_size = unsafe { ptr::addr_of!((*output).struct_size).read() };
+        if version != OPENNOW_STREAMER_PRESENTATION_VERSION
+            || struct_size < size_of::<OpenNowStreamerPresentationConfig>()
+        {
+            return OpenNowStreamerStatus::InvalidConfig;
+        }
+        let config = unsafe { &*handle }.presentation.config();
+        unsafe {
+            output.write(OpenNowStreamerPresentationConfig {
+                version: OPENNOW_STREAMER_PRESENTATION_VERSION,
+                struct_size: size_of::<OpenNowStreamerPresentationConfig>(),
+                generation: config.generation,
+                scene_epoch: config.scene_epoch,
+                active: u32::from(config.active),
+                fps: config.fps,
+                cloud_gsync: u32::from(config.cloud_gsync),
+                feedback_mode: config.feedback_mode,
+            });
+        }
+        OpenNowStreamerStatus::Ok
+    })) {
+        Ok(status) => status,
+        Err(_) => OpenNowStreamerStatus::Panic,
+    }
+}
+
+#[unsafe(no_mangle)]
+/// Admits a bounded, explicitly sourced presentation observation.
+///
+/// # Safety
+/// `handle` must be live and must not race with destroy. `sample` must have a readable
+/// version/size prefix and a readable allocation of its declared size.
+pub unsafe extern "C" fn opennow_streamer_submit_presentation_sample(
+    handle: *const OpenNowStreamer,
+    sample: *const OpenNowStreamerPresentationSample,
+) -> OpenNowStreamerStatus {
+    match catch_unwind(AssertUnwindSafe(|| {
+        if handle.is_null() || sample.is_null() {
+            return OpenNowStreamerStatus::NullPointer;
+        }
+        let version = unsafe { ptr::addr_of!((*sample).version).read() };
+        let struct_size = unsafe { ptr::addr_of!((*sample).struct_size).read() };
+        if version != OPENNOW_STREAMER_PRESENTATION_VERSION
+            || struct_size < size_of::<OpenNowStreamerPresentationSample>()
+        {
+            return OpenNowStreamerStatus::InvalidConfig;
+        }
+        let handle = unsafe { &*handle };
+        let sample = unsafe { sample.read() };
+        let accepted = handle.presentation.submit(
+            PresentationSample {
+                generation: sample.generation,
+                scene_epoch: sample.scene_epoch,
+                presentation_time_ns: sample.presentation_time_ns,
+                render_duration_ns: sample.render_duration_ns,
+                render_present_to_complete_ns: sample.render_present_to_complete_ns,
+                completion_age_ns: sample.completion_age_ns,
+                vsync_interval_ns: sample.vsync_interval_ns,
+                completion_kind: sample.completion_kind,
+                valid_fields: sample.valid_fields,
+            },
+            std::time::Instant::now(),
+        );
+        if accepted {
+            OpenNowStreamerStatus::Ok
+        } else {
+            OpenNowStreamerStatus::StaleFrame
+        }
     })) {
         Ok(status) => status,
         Err(_) => OpenNowStreamerStatus::Panic,
@@ -2093,7 +2229,7 @@ mod tests {
 
     #[test]
     fn abi_twelve_adds_the_deterministic_graphics_unsupported_status() {
-        assert_eq!(OPENNOW_STREAMER_FFI_ABI_VERSION, 15);
+        assert_eq!(OPENNOW_STREAMER_FFI_ABI_VERSION, 16);
         assert_eq!(OpenNowStreamerStatus::GraphicsUnsupported as i32, 15);
         let header = include_str!("../include/opennow_streamer_ffi.h");
         assert!(header.contains("OPENNOW_STREAMER_GRAPHICS_UNSUPPORTED = 15,"));
@@ -2631,6 +2767,128 @@ mod tests {
     }
 
     #[test]
+    fn presentation_config_is_versioned_and_reads_native_policy_without_commands() {
+        let messages = CallbackMessages::default();
+        let handle = graphics_test_handle(&messages);
+        let mut output = OpenNowStreamerPresentationConfig::default();
+        assert_eq!(
+            unsafe { opennow_streamer_get_presentation_config(&handle, &mut output) },
+            OpenNowStreamerStatus::InvalidConfig
+        );
+        output.version = OPENNOW_STREAMER_PRESENTATION_VERSION;
+        output.struct_size = size_of::<OpenNowStreamerPresentationConfig>();
+        assert_eq!(
+            unsafe { opennow_streamer_get_presentation_config(&handle, &mut output) },
+            OpenNowStreamerStatus::Ok
+        );
+        assert_eq!(output.active, 0);
+        handle.presentation.activate(42, 120, false, 1, true);
+        assert_eq!(
+            unsafe { opennow_streamer_get_presentation_config(&handle, &mut output) },
+            OpenNowStreamerStatus::Ok
+        );
+        assert_eq!(
+            (
+                output.generation,
+                output.active,
+                output.fps,
+                output.cloud_gsync,
+                output.feedback_mode
+            ),
+            (42, 1, 120, 0, 1)
+        );
+        assert_eq!(
+            unsafe { opennow_streamer_get_presentation_config(ptr::null(), &mut output) },
+            OpenNowStreamerStatus::NullPointer
+        );
+        assert_eq!(
+            unsafe { opennow_streamer_get_presentation_config(&handle, ptr::null_mut()) },
+            OpenNowStreamerStatus::NullPointer
+        );
+    }
+
+    #[test]
+    fn presentation_samples_validate_provenance_and_scene_epoch() {
+        let messages = CallbackMessages::default();
+        let handle = graphics_test_handle(&messages);
+        handle.presentation.activate(42, 120, true, 1, true);
+        let mut sample = OpenNowStreamerPresentationSample {
+            version: OPENNOW_STREAMER_PRESENTATION_VERSION,
+            struct_size: size_of::<OpenNowStreamerPresentationSample>(),
+            generation: 42,
+            scene_epoch: handle.presentation.config().scene_epoch,
+            presentation_time_ns: 1_000_000,
+            render_duration_ns: 1_000,
+            render_present_to_complete_ns: 2_000,
+            completion_age_ns: 0,
+            vsync_interval_ns: 0,
+            completion_kind: OPENNOW_STREAMER_PRESENTATION_PLATFORM_PRESENTED,
+            valid_fields: OPENNOW_STREAMER_PRESENTATION_REQUIRED_FIELDS,
+        };
+        assert_eq!(
+            unsafe { opennow_streamer_submit_presentation_sample(&handle, &sample) },
+            OpenNowStreamerStatus::Ok
+        );
+        sample.completion_kind = OPENNOW_STREAMER_PRESENTATION_QT_QUEUED;
+        assert_eq!(
+            unsafe { opennow_streamer_submit_presentation_sample(&handle, &sample) },
+            OpenNowStreamerStatus::StaleFrame
+        );
+        sample.completion_kind = OPENNOW_STREAMER_PRESENTATION_PLATFORM_PRESENTED;
+        sample.valid_fields &= !OPENNOW_STREAMER_PRESENTATION_VSYNC_INTERVAL;
+        assert_eq!(
+            unsafe { opennow_streamer_submit_presentation_sample(&handle, &sample) },
+            OpenNowStreamerStatus::StaleFrame
+        );
+        sample.valid_fields = OPENNOW_STREAMER_PRESENTATION_REQUIRED_FIELDS;
+        handle.presentation.invalidate_scene();
+        assert_eq!(
+            unsafe { opennow_streamer_submit_presentation_sample(&handle, &sample) },
+            OpenNowStreamerStatus::StaleFrame
+        );
+        sample.struct_size = 0;
+        assert_eq!(
+            unsafe { opennow_streamer_submit_presentation_sample(&handle, &sample) },
+            OpenNowStreamerStatus::InvalidConfig
+        );
+        assert_eq!(
+            unsafe { opennow_streamer_submit_presentation_sample(&handle, ptr::null()) },
+            OpenNowStreamerStatus::NullPointer
+        );
+    }
+
+    #[test]
+    fn presentation_boundary_checks_only_readable_prefix_before_full_struct() {
+        #[repr(C)]
+        struct Prefix {
+            version: u32,
+            struct_size: usize,
+        }
+        let messages = CallbackMessages::default();
+        let handle = graphics_test_handle(&messages);
+        let mut prefix = Prefix {
+            version: OPENNOW_STREAMER_PRESENTATION_VERSION,
+            struct_size: size_of::<Prefix>(),
+        };
+        assert_eq!(
+            unsafe {
+                opennow_streamer_get_presentation_config(&handle, ptr::from_mut(&mut prefix).cast())
+            },
+            OpenNowStreamerStatus::InvalidConfig
+        );
+        assert_eq!(
+            unsafe {
+                opennow_streamer_submit_presentation_sample(&handle, ptr::from_ref(&prefix).cast())
+            },
+            OpenNowStreamerStatus::InvalidConfig
+        );
+        assert_eq!(
+            std::mem::offset_of!(OpenNowStreamerPresentationConfig, scene_epoch),
+            std::mem::offset_of!(OpenNowStreamerPresentationSample, scene_epoch)
+        );
+    }
+
+    #[test]
     fn typed_submit_api_routes_only_captured_events_to_the_rust_queue() {
         let messages = Box::new(CallbackMessages::default());
         let mut handle = graphics_test_handle(&messages);
@@ -3040,7 +3298,7 @@ mod tests {
     #[test]
     fn generic_output_contract_is_versioned_bounded_and_matches_header() {
         let header = include_str!("../include/opennow_streamer_ffi.h");
-        assert!(header.contains("#define OPENNOW_STREAMER_FFI_ABI_VERSION 15u"));
+        assert!(header.contains("#define OPENNOW_STREAMER_FFI_ABI_VERSION 16u"));
         assert!(header.contains("#define OPENNOW_STREAMER_GENERIC_HID_VERSION 1u"));
         for name in [
             "OpenNowGenericHidInterface",

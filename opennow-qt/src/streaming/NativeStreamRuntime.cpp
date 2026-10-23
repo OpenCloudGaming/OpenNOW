@@ -249,7 +249,9 @@ NativeStreamRuntime::NativeStreamRuntime(QObject *parent,
                               &opennow_streamer_replace_generic_hid_inventory,
                               &opennow_streamer_submit_generic_hid_report,
                               &opennow_streamer_take_generic_hid_output,
-                              &opennow_streamer_get_generic_hid_admissions}, parent, vulkanDevice, windowsAdapterLuid)
+                              &opennow_streamer_get_generic_hid_admissions,
+                              &opennow_streamer_get_presentation_config,
+                              &opennow_streamer_submit_presentation_sample}, parent, vulkanDevice, windowsAdapterLuid)
 {
 }
 
@@ -725,6 +727,26 @@ OpenNowStreamerStatus NativeStreamRuntime::setGraphicsContext(
     const auto status = d->api.setGraphicsContext(d->handle, &context);
     if (status == OPENNOW_STREAMER_OK) d->graphicsActive = true;
     return status;
+}
+
+OpenNowStreamerPresentationConfig NativeStreamRuntime::presentationConfig() const
+{
+    OpenNowStreamerPresentationConfig config{};
+    config.version = OPENNOW_STREAMER_PRESENTATION_VERSION;
+    config.struct_size = sizeof(config);
+    const std::shared_lock lock(d->handleMutex);
+    if (!d->handle || !d->api.getPresentationConfig
+            || d->api.getPresentationConfig(d->handle, &config) != OPENNOW_STREAMER_OK)
+        return {};
+    return config;
+}
+
+OpenNowStreamerStatus NativeStreamRuntime::submitPresentationSample(
+    const OpenNowStreamerPresentationSample &sample)
+{
+    const std::shared_lock lock(d->handleMutex);
+    return d->handle && d->api.submitPresentationSample
+        ? d->api.submitPresentationSample(d->handle, &sample) : OPENNOW_STREAMER_CLOSED;
 }
 
 OpenNowStreamerStatus NativeStreamRuntime::recordLatestFrame(

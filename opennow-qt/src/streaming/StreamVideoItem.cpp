@@ -133,6 +133,8 @@ StreamVideoItem::~StreamVideoItem()
     disconnect(this, nullptr, this, nullptr);
     disconnect(m_frameSwapConnection);
     disconnect(m_frameUpdateConnection);
+    disconnect(m_frameBeginConnection);
+    disconnect(m_afterRenderingConnection);
     releaseInput();
     if (s_nativeRuntime && s_nativeRuntime->running()) {
         bool rawInput = false;
@@ -379,8 +381,17 @@ void StreamVideoItem::connectFrameSwaps()
 {
     disconnect(m_frameSwapConnection);
     disconnect(m_frameUpdateConnection);
+    disconnect(m_frameBeginConnection);
+    disconnect(m_afterRenderingConnection);
     if (!window() || !m_renderCallback) return;
     const std::weak_ptr<StreamVideoRenderCallback> callback = m_renderCallback;
+    m_frameBeginConnection = connect(window(), &QQuickWindow::beforeFrameBegin, this,
+                                     [callback, target = window()] {
+        if (auto renderer = callback.lock()) renderer->beforeFrameBegin(target);
+    }, Qt::DirectConnection);
+    m_afterRenderingConnection = connect(window(), &QQuickWindow::afterRendering, this, [callback] {
+        if (auto renderer = callback.lock()) renderer->afterRendering();
+    }, Qt::DirectConnection);
     m_frameSwapConnection = connect(window(), &QQuickWindow::frameSwapped, this, [callback] {
         if (auto renderer = callback.lock()) renderer->frameSwapped();
     }, Qt::DirectConnection);

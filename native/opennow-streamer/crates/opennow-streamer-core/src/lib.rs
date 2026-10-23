@@ -49,7 +49,9 @@ use nvst_rtsp::{ActiveNvstRtspSession, prepare_owned_nvst};
 use queue_drops::QueueDropReports;
 use telemetry::{TELEMETRY_INTERVAL, media_telemetry};
 
+pub use opennow_streamer_transport::presentation_timing;
 pub use opennow_streamer_transport::{EncodedMediaFrame, MediaConsumer};
+use presentation_timing::PresentationTimingState;
 
 #[derive(Clone)]
 pub struct EventSender {
@@ -154,6 +156,16 @@ trait NvstSessionResources {
     fn request_keyframe(&self);
     fn cut_recording(&self, reason: RecordingCutReason);
     fn acknowledge_video_frame(&self, frame_index: u32, bytes: u32);
+    fn invalidate_presentation(&self) {}
+    fn observe_video_admission(
+        &self,
+        _generation: u64,
+        _frame: u32,
+        _timestamp: u64,
+        _clock_rate_hz: u32,
+        _at: Instant,
+    ) {
+    }
     fn send_captured_input(&self, bytes: Vec<u8>) -> Result<(), TransportError>;
     fn send_captured_text(
         &self,
@@ -204,6 +216,23 @@ impl NvstSessionResources for ActiveNvstResources {
             .publish_accepted_frame(frame_index, bytes, Instant::now());
     }
 
+    fn invalidate_presentation(&self) {
+        self.feedback.presentation().invalidate_scene();
+    }
+
+    fn observe_video_admission(
+        &self,
+        generation: u64,
+        frame: u32,
+        timestamp: u64,
+        clock_rate_hz: u32,
+        at: Instant,
+    ) {
+        self.feedback
+            .presentation()
+            .admit(generation, frame, timestamp, clock_rate_hz, at);
+    }
+
     fn send_captured_input(&self, bytes: Vec<u8>) -> Result<(), TransportError> {
         self.bundle.queue_input(bytes, false)
     }
@@ -223,6 +252,7 @@ impl NvstSessionResources for ActiveNvstResources {
     }
 
     fn recover(&self) -> Result<(), String> {
+        self.feedback.presentation().invalidate_scene();
         self.bundle
             .recover()
             .map_err(|error| format!("bundle recovery failed: {error}"))?;
@@ -235,6 +265,7 @@ impl NvstSessionResources for ActiveNvstResources {
     }
 
     fn stop(&self) {
+        self.feedback.presentation().deactivate();
         let _ = self.bundle.stop();
         if let Some(mjolnir) = self.mjolnir.as_ref() {
             let _ = mjolnir.stop();
@@ -246,6 +277,7 @@ impl NvstSessionResources for ActiveNvstResources {
 }
 
 pub struct Engine {
+    presentation: Arc<PresentationTimingState>,
     lifecycle: Arc<Mutex<Lifecycle>>,
     webrtc_session: Option<webrtc::OwnedSession>,
     nvst_transport: Option<NvstUdpReceiverSession>,
@@ -288,6 +320,7 @@ impl Engine {
 
     pub fn with_event_sender(events: EventSender) -> Self {
         Self {
+            presentation: Arc::new(PresentationTimingState::default()),
             lifecycle: Arc::new(Mutex::new(Lifecycle {
                 state: State::Idle,
                 context: None,
@@ -328,6 +361,7 @@ impl Engine {
         media_consumer: MediaConsumer,
     ) -> Self {
         Self {
+            presentation: Arc::new(PresentationTimingState::default()),
             lifecycle: Arc::new(Mutex::new(Lifecycle {
                 state: State::Idle,
                 context: None,
@@ -364,6 +398,7 @@ impl Engine {
         media_runtime: MediaRuntime,
     ) -> Self {
         Self {
+            presentation: Arc::new(PresentationTimingState::default()),
             lifecycle: Arc::new(Mutex::new(Lifecycle {
                 state: State::Idle,
                 context: None,
@@ -403,6 +438,11 @@ impl Engine {
         let mut engine = Self::with_media_runtime_and_event_sender(events, media_runtime);
         engine.hid_runtime = hid_runtime;
         engine
+    }
+
+    pub fn with_presentation_timing(mut self, presentation: Arc<PresentationTimingState>) -> Self {
+        self.presentation = presentation;
+        self
     }
 
     pub fn handle(&mut self, command: Command) -> (Vec<Value>, bool) {
@@ -927,6 +967,7 @@ impl Engine {
                 };
             let mjolnir_udp_port = config.mjolnir_udp_port();
             let feedback = config.feedback();
+            config.bind_presentation(Arc::clone(&self.presentation));
             nvst_authenticated_ready = Some(feedback.clone());
             let (upstream_ready, upstream_waiter) = if prepared_nvst.is_some() {
                 let (sender, receiver) = std::sync::mpsc::sync_channel(1);
@@ -1022,6 +1063,7 @@ impl Engine {
 
         let replay_enabled = self.media_session.is_some()
             && ReplayBufferConfig::from_settings(&context.settings).enabled;
+        let stream_presentation = media_stream_config(&context);
         let generation = {
             let mut lifecycle = lock_lifecycle(&self.lifecycle);
             lifecycle.generation = lifecycle.generation.wrapping_add(1);
@@ -1038,6 +1080,14 @@ impl Engine {
             ));
         }
         if let Some(nvst_events) = nvst_events {
+            if let Some(resources) = nvst_resources.as_ref() {
+                resources.feedback.activate_presentation(
+                    generation,
+                    stream_presentation.fps,
+                    stream_presentation.cloud_gsync,
+                    cfg!(target_os = "windows"),
+                );
+            }
             let output = self.events.clone();
             let lifecycle = self.lifecycle.clone();
             let media_feedback = self.media_feedback.take();
@@ -1067,6 +1117,7 @@ impl Engine {
                 })
                 .ok();
             if self.feedback_worker.is_none() {
+                self.presentation.deactivate();
                 if let Some(transport) = self.nvst_transport.take() {
                     transport.stop();
                 }
@@ -1323,6 +1374,7 @@ impl Engine {
     }
 
     fn stop(&mut self, reason: &str) {
+        self.presentation.deactivate();
         self.clip_cancelled.store(true, Ordering::Release);
         if let Some(session) = self.media_session.as_ref() {
             session.control().unsubscribe_recording();
@@ -2702,12 +2754,22 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
     match feedback {
         MediaFeedback::VideoFrameAccepted {
             frame_index,
+            timestamp,
+            clock_rate_hz,
+            accepted_at,
             bytes,
             keyframe,
             ..
         } => {
             state.transport_frame_progress_stalled = false;
             if let Some(frame_index) = frame_index {
+                resources.observe_video_admission(
+                    generation,
+                    frame_index,
+                    timestamp,
+                    clock_rate_hz,
+                    accepted_at,
+                );
                 resources.acknowledge_video_frame(frame_index, bytes);
             }
             if keyframe {
@@ -2853,6 +2915,12 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
             ));
         }
         MediaFeedback::DecodeTimings(timings) => {
+            if state
+                .decode_timings
+                .is_some_and(|previous| previous.epoch != timings.epoch)
+            {
+                resources.invalidate_presentation();
+            }
             state.decode_timings = Some(timings);
             flush_nvst_telemetry(output, resources, state);
         }
@@ -3891,6 +3959,8 @@ mod tests {
             MediaFeedback::VideoFrameAccepted {
                 frame_index: Some(71),
                 timestamp: 90_000,
+                clock_rate_hz: 90_000,
+                accepted_at: Instant::now(),
                 bytes: 1_024,
                 keyframe: true,
             },
@@ -3925,6 +3995,8 @@ mod tests {
             MediaFeedback::VideoFrameAccepted {
                 frame_index: Some(72),
                 timestamp: 90_000,
+                clock_rate_hz: 90_000,
+                accepted_at: Instant::now(),
                 bytes: 125_000,
                 keyframe: false,
             },
@@ -4020,6 +4092,8 @@ mod tests {
                 MediaFeedback::VideoFrameAccepted {
                     frame_index: Some(72),
                     timestamp: 90_000,
+                    clock_rate_hz: 90_000,
+                    accepted_at: Instant::now(),
                     bytes: 125_000,
                     keyframe: false,
                 },
@@ -4180,6 +4254,8 @@ mod tests {
             MediaFeedback::VideoFrameAccepted {
                 frame_index: Some(73),
                 timestamp: 90_000,
+                clock_rate_hz: 90_000,
+                accepted_at: Instant::now(),
                 bytes: 125_000,
                 keyframe: false,
             },
@@ -4256,6 +4332,8 @@ mod tests {
             MediaFeedback::VideoFrameAccepted {
                 frame_index: Some(74),
                 timestamp: 90_000,
+                clock_rate_hz: 90_000,
+                accepted_at: Instant::now(),
                 bytes: 125_000,
                 keyframe: false,
             },
@@ -4322,6 +4400,8 @@ mod tests {
             MediaFeedback::VideoFrameAccepted {
                 frame_index: Some(76),
                 timestamp: 90_000,
+                clock_rate_hz: 90_000,
+                accepted_at: Instant::now(),
                 bytes: 125_000,
                 keyframe: false,
             },
@@ -4440,6 +4520,8 @@ mod tests {
             MediaFeedback::VideoFrameAccepted {
                 frame_index: Some(11),
                 timestamp: 90_000,
+                clock_rate_hz: 90_000,
+                accepted_at: Instant::now(),
                 bytes: 1_000_000,
                 keyframe: false,
             },
@@ -4506,6 +4588,8 @@ mod tests {
             MediaFeedback::VideoFrameAccepted {
                 frame_index: Some(75),
                 timestamp: 90_000,
+                clock_rate_hz: 90_000,
+                accepted_at: Instant::now(),
                 bytes: 125_000,
                 keyframe: false,
             },
@@ -4586,6 +4670,8 @@ mod tests {
             MediaFeedback::VideoFrameAccepted {
                 frame_index: Some(72),
                 timestamp: 90_000,
+                clock_rate_hz: 90_000,
+                accepted_at: Instant::now(),
                 bytes: 125_000,
                 keyframe: false,
             },

@@ -69,6 +69,10 @@ public:
             const OpenNowStreamer *, OpenNowGenericHidOutput *);
         using GetGenericHidAdmissions = OpenNowStreamerStatus (*)(
             const OpenNowStreamer *, OpenNowGenericHidAdmissions *);
+        using GetPresentationConfig = OpenNowStreamerStatus (*)(
+            const OpenNowStreamer *, OpenNowStreamerPresentationConfig *);
+        using SubmitPresentationSample = OpenNowStreamerStatus (*)(
+            const OpenNowStreamer *, const OpenNowStreamerPresentationSample *);
 
         Create create = nullptr;
         Send send = nullptr;
@@ -94,6 +98,8 @@ public:
         SubmitGenericHidReport submitGenericHidReport = nullptr;
         TakeGenericHidOutput takeGenericHidOutput = nullptr;
         GetGenericHidAdmissions getGenericHidAdmissions = nullptr;
+        GetPresentationConfig getPresentationConfig = nullptr;
+        SubmitPresentationSample submitPresentationSample = nullptr;
     };
 
     static constexpr int DefaultShutdownTimeoutMs = 1'500;
@@ -115,6 +121,8 @@ public:
     [[nodiscard]] QString lastError() const;
     [[nodiscard]] quint64 presentationGeneration() const;
     [[nodiscard]] bool presentationAllowed() const;
+    [[nodiscard]] OpenNowStreamerPresentationConfig presentationConfig() const;
+    OpenNowStreamerStatus submitPresentationSample(const OpenNowStreamerPresentationSample &sample);
     [[nodiscard]] QSize decodedDisplaySize() const;
     struct UpstreamProgress
     {

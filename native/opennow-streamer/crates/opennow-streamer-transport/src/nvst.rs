@@ -48,9 +48,8 @@ use str0m::{
 use super::frame_stage_timing::FrameStageTimingsAccumulator;
 use super::nvst_bandwidth::{BandwidthEstimator, PacketBandwidthSample};
 use super::nvst_control::{
-    DEFAULT_FRAME_TIME_US, FRAME_ACK_PAYLOAD_LEN, FRAME_PACING_INTERVAL, MAX_NACK_PACKET_COUNT,
-    QOS_REPORT_INTERVAL, QosPacketSnapshot, QosReport, frame_ack, frame_invalidation_range,
-    frame_pacing_report, idr_request, nack_v2,
+    FRAME_ACK_PAYLOAD_LEN, MAX_NACK_PACKET_COUNT, QOS_REPORT_INTERVAL, QosPacketSnapshot,
+    QosReport, frame_ack, frame_invalidation_range, frame_pacing_report, idr_request, nack_v2,
 };
 use super::nvst_cursor::{CursorCommand, NvstCursorCapture, valid_cursor_channel_message};
 use super::nvst_haptics::NvstHaptics;
@@ -626,6 +625,7 @@ impl RecentNetworkMetrics {
 pub struct NvstFeedbackState {
     pub(crate) idle_warning_active: AtomicBool,
     frame_pacing_enabled: AtomicBool,
+    presentation: Mutex<Arc<crate::presentation_timing::PresentationTimingState>>,
     pub haptics: crate::NvstHaptics,
     /// Bound video stream SSRC (0 until the first packet is authenticated).
     video_ssrc: AtomicU32,
@@ -660,6 +660,9 @@ impl Default for NvstFeedbackState {
         Self {
             idle_warning_active: AtomicBool::new(false),
             frame_pacing_enabled: AtomicBool::new(true),
+            presentation: Mutex::new(Arc::new(
+                crate::presentation_timing::PresentationTimingState::default(),
+            )),
             haptics: crate::NvstHaptics::default(),
             video_ssrc: AtomicU32::new(0),
             highest_sequence: AtomicU32::new(0),
@@ -689,6 +692,38 @@ impl Default for NvstFeedbackState {
 }
 
 impl NvstFeedbackState {
+    pub fn bind_presentation(
+        &self,
+        presentation: Arc<crate::presentation_timing::PresentationTimingState>,
+    ) {
+        *self.presentation.lock().unwrap_or_else(|e| e.into_inner()) = presentation;
+    }
+
+    pub fn presentation(&self) -> Arc<crate::presentation_timing::PresentationTimingState> {
+        Arc::clone(&self.presentation.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    pub fn pacing_feedback_mode(&self) -> u32 {
+        u32::from(self.frame_pacing_enabled.load(Ordering::Acquire))
+    }
+
+    pub fn activate_presentation(
+        &self,
+        generation: u64,
+        fps: u32,
+        cloud_gsync: bool,
+        windows_pts: bool,
+    ) {
+        let presentation = self.presentation.lock().unwrap_or_else(|e| e.into_inner());
+        presentation.activate(
+            generation,
+            fps,
+            cloud_gsync,
+            self.pacing_feedback_mode(),
+            windows_pts,
+        );
+    }
+
     fn receive_server_control(
         &self,
         bytes: &[u8],
@@ -713,6 +748,9 @@ impl NvstFeedbackState {
                     if stream_index == 0 {
                         self.frame_pacing_enabled
                             .store(mode == FramePacingFeedbackMode::Interval, Ordering::Release);
+                        self.presentation().set_feedback_mode(u32::from(
+                            mode == FramePacingFeedbackMode::Interval,
+                        ));
                     } else {
                         diagnostics.invalid_stream = diagnostics.invalid_stream.saturating_add(1);
                     }
@@ -1363,6 +1401,7 @@ pub struct NvstVideoConfig {
     rtcp_on_sctp: bool,
     qos_timings_v5: bool,
     frame_pacing_feedback: bool,
+    presentation_estimator: Option<crate::presentation_timing::PresentationEstimatorConfig>,
     max_control_report_bytes: usize,
     hid_device_mask: u32,
     /// Dedicated NATT-only video (Mjolnir) socket port in the official two-socket
@@ -1381,7 +1420,6 @@ pub struct NvstVideoConfig {
     max_access_unit_bytes: usize,
     timeout: Duration,
     startup_timeout: Duration,
-    frame_time_us: u32,
     /// Negotiated `x-nv-video[0].packetSize`; FEC shards are this plus 16 RTP bytes.
     video_packet_size: usize,
     /// Feedback plane shared with the ICE/DTLS bundle (cloned configs share it).
@@ -1426,7 +1464,6 @@ impl fmt::Debug for NvstVideoConfig {
             .field("max_access_unit_bytes", &self.max_access_unit_bytes)
             .field("timeout", &self.timeout)
             .field("startup_timeout", &self.startup_timeout)
-            .field("frame_time_us", &self.frame_time_us)
             .field("video_packet_size", &self.video_packet_size)
             .finish()
     }
@@ -1806,6 +1843,9 @@ impl NvstVideoConfig {
             rtcp_on_sctp,
             qos_timings_v5,
             frame_pacing_feedback,
+            presentation_estimator: object
+                .get("presentationEstimator")
+                .and_then(|value| serde_json::from_value(value.clone()).ok()),
             max_control_report_bytes,
             mjolnir_udp_port,
             unified_socket,
@@ -1819,9 +1859,11 @@ impl NvstVideoConfig {
             max_access_unit_bytes,
             timeout,
             startup_timeout,
-            frame_time_us: DEFAULT_FRAME_TIME_US,
             video_packet_size,
-            feedback: Arc::new(NvstFeedbackState::default()),
+            feedback: Arc::new(NvstFeedbackState {
+                frame_pacing_enabled: AtomicBool::new(frame_pacing_feedback),
+                ..NvstFeedbackState::default()
+            }),
         })
     }
 
@@ -1832,6 +1874,14 @@ impl NvstVideoConfig {
     /// Shared feedback plane (RTCP-over-SCTP state) for this session.
     pub fn feedback(&self) -> SharedNvstFeedback {
         self.feedback.clone()
+    }
+
+    pub fn bind_presentation(
+        &self,
+        presentation: Arc<crate::presentation_timing::PresentationTimingState>,
+    ) {
+        presentation.configure_estimator(self.presentation_estimator.clone());
+        self.feedback.bind_presentation(presentation);
     }
 
     pub fn video_peer(&self) -> SocketAddr {
@@ -7364,7 +7414,6 @@ fn run_nvst_webrtc_bundle(
     let stun_credentials = config.stun_credentials.clone();
     let feedback = config.feedback();
     let audio_track = config.audio_track().cloned();
-    let frame_time_us = config.frame_time_us;
     // With a dedicated Mjolnir video socket the bundle only carries
     // control/audio keepalive traffic; the Mjolnir receiver owns the media
     // timeout, so the bundle must not raise a spurious media recovery.
@@ -7378,7 +7427,6 @@ fn run_nvst_webrtc_bundle(
     );
     let receive_destination = logical_ice_addr(physical_local, 1);
     let receive_source = logical_ice_addr(bundle_peer, 2);
-    let frame_pacing_feedback = config.frame_pacing_feedback;
     let max_control_report_bytes = config.max_control_report_bytes;
     let mut receiver = NvstVideoReceiver::new(config);
     let mut video_delivery_gap = false;
@@ -7406,7 +7454,6 @@ fn run_nvst_webrtc_bundle(
     let mut last_keyframe_attempt_log: Option<Instant> = None;
     let mut rtcp_reports_sent = 0_u64;
     let mut control_reports = ControlReportBatch::new(Instant::now(), max_control_report_bytes);
-    let mut last_frame_pacing_send = Instant::now() - FRAME_PACING_INTERVAL;
     let control_stats_origin = Instant::now();
     let mut last_control_stats_log = Instant::now();
     let mut frame_pacing_reports_sent = 0_u64;
@@ -7878,21 +7925,6 @@ fn run_nvst_webrtc_bundle(
                 let Some(frame) = feedback.take_completed_frame() else {
                     break;
                 };
-                if frame_pacing_feedback
-                    && feedback.frame_pacing_enabled.load(Ordering::Acquire)
-                    && now.duration_since(last_frame_pacing_send) >= FRAME_PACING_INTERVAL
-                {
-                    // Packet-completion intervals are intentionally bursty and are not display
-                    // pacing error. Feeding that network jitter into the server PID made its
-                    // encoder cadence oscillate. Until a real vsync timestamp is available,
-                    // report a neutral error exactly as the unavailable ACK stage metrics do.
-                    let pacing =
-                        frame_pacing_report(frame.frame_number, frame_time_us, 0).encoded();
-                    if channels.send_partial_control(&mut rtc, &pacing) {
-                        frame_pacing_reports_sent = frame_pacing_reports_sent.saturating_add(1);
-                    }
-                    last_frame_pacing_send = now;
-                }
                 let ack = frame.command(transport_origin).encoded();
                 control_reports.append_ack(frame, &ack, now);
                 if !control_reports.fits(FRAME_ACK_RECORD_LEN) {
@@ -7900,6 +7932,13 @@ fn run_nvst_webrtc_bundle(
                         channels.send_partial_control(&mut rtc, bytes)
                     });
                 }
+            }
+            if writable
+                && feedback.presentation().send_due(now, |report| {
+                    channels.send_partial_control(&mut rtc, &frame_pacing_report(report).encoded())
+                })
+            {
+                frame_pacing_reports_sent = frame_pacing_reports_sent.saturating_add(1);
             }
             if writable
                 && control_reports.qos.is_none()
@@ -12055,14 +12094,14 @@ mod tests {
         }))
         .expect("valid NVST context")
         .expect("NVST handoff");
-        assert_eq!(configured.frame_time_us, DEFAULT_FRAME_TIME_US);
+        assert_eq!(configured.feedback().pacing_feedback_mode(), 1);
         let capped = parse_nvst_video_handoff(&json!({
             "nvstVideo": legacy_handoff(),
             "settings": { "fps": 360 }
         }))
         .expect("valid high-FPS NVST context")
         .expect("NVST handoff");
-        assert_eq!(capped.frame_time_us, DEFAULT_FRAME_TIME_US);
+        assert_eq!(capped.feedback().pacing_feedback_mode(), 1);
         assert!(matches!(
             parse_nvst_video_handoff(&json!({ "nvstTransport": { "tracks": [] } })),
             Err(NvstConfigError::MissingNvstVideoHandoff)

@@ -34,6 +34,11 @@ set(OPENNOW_STREAM_PRESENTATION_SOURCES
     src/streaming/rendering/StreamVideoItemRendering.cpp
     src/streaming/rendering/StreamVideoRenderCallback.h
     src/streaming/rendering/StreamPresentTimings.h
+    src/streaming/rendering/StreamPresentation.cpp
+    src/streaming/rendering/StreamPresentation.h
+    src/streaming/rendering/StreamPresentationPolicy.h
+    src/streaming/rendering/StreamPresentationFeedback.h
+    src/streaming/rendering/WindowsPresentationObserver.h
     src/streaming/rendering/StreamVideoTextureRenderer.h
     src/streaming/rendering/StreamFrameInterpolator.cpp
     src/streaming/rendering/StreamFrameInterpolator.h

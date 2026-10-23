@@ -380,6 +380,15 @@ if(BUILD_TESTING)
     target_include_directories(opennow-streampresenttimings-tests PRIVATE src)
     target_link_libraries(opennow-streampresenttimings-tests PRIVATE Qt6::Test)
     add_test(NAME opennow-streampresenttimings-tests COMMAND opennow-streampresenttimings-tests -o -,txt)
+    qt_add_executable(opennow-streampresentation-tests tests/tst_streampresentation.cpp)
+    target_include_directories(opennow-streampresentation-tests PRIVATE src)
+    target_link_libraries(opennow-streampresentation-tests PRIVATE Qt6::Test)
+    add_test(NAME opennow-streampresentation-tests COMMAND opennow-streampresentation-tests -o -,txt)
+    qt_add_executable(opennow-streampresentationfeedback-tests tests/tst_streampresentationfeedback.cpp)
+    target_include_directories(opennow-streampresentationfeedback-tests PRIVATE src)
+    target_link_libraries(opennow-streampresentationfeedback-tests PRIVATE Qt6::Test)
+    add_test(NAME opennow-streampresentationfeedback-tests
+        COMMAND opennow-streampresentationfeedback-tests -o -,txt)
     qt_add_executable(opennow-fsrupscaler-tests tests/tst_fsrupscaler.cpp)
     target_include_directories(opennow-fsrupscaler-tests PRIVATE src)
     target_link_libraries(opennow-fsrupscaler-tests PRIVATE Qt6::Test Qt6::Gui Qt6::GuiPrivate)
@@ -1107,6 +1116,14 @@ if(BUILD_TESTING)
     add_test(NAME opennow-nativestreamruntime-tests
              COMMAND opennow-nativestreamruntime-tests -o -,txt)
     set_tests_properties(opennow-nativestreamruntime-tests PROPERTIES TIMEOUT 8)
+    qt_add_executable(opennow-nativepresentation-tests
+        tests/tst_nativepresentation.cpp ${OPENNOW_STREAM_RUNTIME_SOURCES})
+    target_include_directories(opennow-nativepresentation-tests PRIVATE src)
+    target_link_libraries(opennow-nativepresentation-tests PRIVATE
+        Qt6::Test Qt6::Core opennow-streamer-ffi)
+    add_dependencies(opennow-nativepresentation-tests opennow-streamer-ffi-build)
+    add_test(NAME opennow-nativepresentation-tests COMMAND opennow-nativepresentation-tests -o -,txt)
+    set_tests_properties(opennow-nativepresentation-tests PROPERTIES TIMEOUT 8)
 
     if(UNIX AND NOT APPLE)
         qt_add_executable(opennow-sonychain-tests
