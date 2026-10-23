@@ -37,7 +37,18 @@ ApplicationWindow {
             && consoleOverlayHost.supportedOverlay ? consoleOverlayHost : null
     onConsoleModalFocusOwnerChanged: if (consoleModalFocusOwner) Qt.callLater(window.restoreConsoleModalFocus)
     onClosing: event => {
-        if (!applicationCloseConfirmed && ShellStore.applicationQuitNeedsConfirmation) {
+        // While a session runs, every close request (Cmd+Q, Dock quit) asks to
+        // end the session instead of quitting the app, matching the official
+        // client. When idle, Dock quits and the close button exit immediately;
+        // only a keyboard quit still asks, and only when the confirmation
+        // setting is enabled.
+        if (activeRoute === "stream") {
+            event.accepted = false
+            ShellStore.requestStreamExitConfirmation()
+            return
+        }
+        if (!applicationCloseConfirmed && ShellStore.applicationQuitNeedsConfirmation
+                && AppController.quitViaKeyboard()) {
             event.accepted = false
             AppController.showOverlay("application-quit-confirm")
         }

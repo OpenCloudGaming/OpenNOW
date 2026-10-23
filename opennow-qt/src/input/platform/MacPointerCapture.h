@@ -8,6 +8,16 @@
 
 class QWindow;
 
+// Distinguishes a keyboard quit (Cmd+Q) from Dock/traffic-light closes so the
+// shell can decide whether to ask before quitting.
+#ifdef Q_OS_MACOS
+namespace OpenNowMacQuit
+{
+void installKeyboardQuitMonitor();
+[[nodiscard]] bool keyboardQuitRecent();
+}
+#endif
+
 class MacPointerCapture final : public QObject
 {
     Q_OBJECT

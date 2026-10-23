@@ -1,6 +1,10 @@
 #include "app/AppController.h"
 #include "media/MediaPaths.h"
 
+#ifdef Q_OS_MACOS
+#include "input/platform/MacPointerCapture.h"
+#endif
+
 #include <algorithm>
 #include <QCoreApplication>
 #include <QClipboard>
@@ -29,6 +33,20 @@ AppController::AppController(QObject *parent)
     : QObject(parent)
     , m_route(u"home"_s)
 {
+#ifdef Q_OS_MACOS
+    // Attribute close requests to Cmd+Q so Dock quits exit immediately while
+    // keyboard quits still ask for confirmation when enabled.
+    OpenNowMacQuit::installKeyboardQuitMonitor();
+#endif
+}
+
+bool AppController::quitViaKeyboard() const
+{
+#ifdef Q_OS_MACOS
+    return OpenNowMacQuit::keyboardQuitRecent();
+#else
+    return false;
+#endif
 }
 
 void AppController::setConsoleLaunchInputBlocked(bool blocked)

@@ -4,6 +4,41 @@
 #import <AppKit/AppKit.h>
 #import <CoreGraphics/CoreGraphics.h>
 
+#include <atomic>
+#include <chrono>
+
+// Records Cmd+Q key presses so a later close event can be attributed to the
+// keyboard instead of the Dock or the close button. External linkage: the
+// shell reads these symbols from AppController.
+namespace OpenNowMacQuit
+{
+std::atomic<std::chrono::steady_clock::time_point> lastKeyboardQuit{};
+id keyboardQuitMonitor = nil;
+
+constexpr auto quitGrace = std::chrono::milliseconds(1000);
+
+void installKeyboardQuitMonitor()
+{
+    if (keyboardQuitMonitor) return;
+    keyboardQuitMonitor = [NSEvent
+        addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown
+        handler:^NSEvent *(NSEvent *event) {
+            if (event.keyCode == 12 && (event.modifierFlags & NSEventModifierFlagCommand)
+                && !(event.modifierFlags & NSEventModifierFlagOption))
+                lastKeyboardQuit.store(std::chrono::steady_clock::now(),
+                                       std::memory_order_release);
+            return event;
+        }];
+}
+
+bool keyboardQuitRecent()
+{
+    const auto last = lastKeyboardQuit.load(std::memory_order_acquire);
+    return last != std::chrono::steady_clock::time_point{}
+        && std::chrono::steady_clock::now() - last < quitGrace;
+}
+} // namespace OpenNowMacQuit
+
 namespace {
 QString cgError(const char *operation, CGError error)
 {

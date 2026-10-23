@@ -73,6 +73,10 @@ public:
 
     void setOverlayTransitionGuard(std::function<bool(bool)> guard);
 
+    // True when the close request follows a Cmd+Q key press, so Dock quits
+    // can exit immediately while keyboard quits still confirm.
+    Q_INVOKABLE bool quitViaKeyboard() const;
+
 public slots:
     void setReducedMotion(bool reducedMotion);
     void setControllerCount(int count);
