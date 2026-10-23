@@ -5,6 +5,8 @@ use crate::{DecodedVideoFrame, EncodedVideoFrame, Result, StreamFormat, VideoCod
 #[cfg(feature = "ffmpeg")]
 mod ffmpeg;
 mod mediacodec;
+#[cfg(feature = "ffmpeg")]
+mod probe_samples;
 mod v4l2;
 pub(crate) use mediacodec::MediaCodecDecoder;
 pub use mediacodec::{MEDIACODEC_MAX_HEIGHT, MEDIACODEC_MAX_WIDTH, probe_mediacodec};
