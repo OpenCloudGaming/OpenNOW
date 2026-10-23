@@ -1258,9 +1258,7 @@ every session using literal bit depth `8` or `10` with the Bifrost 4:4:4 flag
 (`chromaFormat=0` for 4:2:0, `1` for 4:4:4); `dynamicRangeMode=1` is sent for HDR
 only, and SDR omits the line. Bifrost serializes these config bytes unchanged and
 rejects chroma values above `1`; an official 10-bit 4:4:4 session carries
-`bitDepth:10 chromaFormat:1`. `chroma_format_idc` values (`1`/`3`) are not the
-wire enum: seats terminate 10-bit sessions announced with them (0x800e8605) before
-the first video frame. A lone `bitDepth` line is never sent. CloudMatch keeps its
+`bitDepth:10 chromaFormat:1`. A lone `bitDepth` line is never sent. CloudMatch keeps its
 own bit-depth enum (`0` or `1`) with chroma `0`/`1`.
 
 The ANNOUNCE also carries the encoder identity the seat reads before
