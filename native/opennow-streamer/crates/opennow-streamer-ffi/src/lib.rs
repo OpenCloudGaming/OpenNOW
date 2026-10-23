@@ -6,7 +6,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::thread::{self, JoinHandle};
 
-use opennow_streamer_core::presentation_timing::{PresentationSample, PresentationTimingState};
+use opennow_streamer_core::presentation_timing::{
+    PresentationSample, PresentationTimestampPrecision, PresentationTimingState,
+};
 use opennow_streamer_core::{Engine, EventSender};
 use opennow_streamer_hid::generic::{
     GenericAdmission, GenericDevice, GenericError, GenericInterface, GenericReport,
@@ -27,7 +29,10 @@ use serde_json::Value;
 
 static FIRST_FRAME_LOGGED: AtomicBool = AtomicBool::new(false);
 
-pub const OPENNOW_STREAMER_FFI_ABI_VERSION: u32 = 16;
+pub const OPENNOW_STREAMER_FFI_ABI_VERSION: u32 = 17;
+pub const OPENNOW_STREAMER_FRAME_TIMING_CAPTURE: u32 = 1;
+pub const OPENNOW_STREAMER_FRAME_TIMING_PACED: u32 = 2;
+pub const OPENNOW_STREAMER_FRAME_TIMING_PRESENTATION: u32 = 4;
 pub const OPENNOW_STREAMER_PRESENTATION_VERSION: u32 = 1;
 pub const OPENNOW_STREAMER_PRESENTATION_QT_QUEUED: u32 = 1;
 pub const OPENNOW_STREAMER_PRESENTATION_PRESENT_RETURN: u32 = 2;
@@ -49,6 +54,7 @@ pub struct OpenNowStreamerPresentationConfig {
     pub fps: u32,
     pub cloud_gsync: u32,
     pub feedback_mode: u32,
+    pub sender_pacing: u32,
 }
 
 #[repr(C)]
@@ -405,6 +411,13 @@ pub struct OpenNowStreamerFrameInfo {
     pub height: u32,
     pub sequence: u64,
     pub presentation_time_ns: u64,
+    pub sender_generation: u64,
+    pub sender_scene_epoch: u64,
+    pub sender_frame_index: u32,
+    pub sender_timing_flags: u32,
+    pub sender_capture_time_us: u32,
+    pub sender_paced: u32,
+    pub sender_presentation_time_us: u64,
 }
 
 #[repr(C)]
@@ -1762,6 +1775,52 @@ pub unsafe extern "C" fn opennow_streamer_acquire_latest_frame(
             }
         };
         let frame_info = token.info();
+        let mut acquired_info = OpenNowStreamerFrameInfo {
+            width: frame_info.width,
+            height: frame_info.height,
+            sequence: frame_info.sequence,
+            presentation_time_ns: frame_info.presentation_time_ns,
+            ..OpenNowStreamerFrameInfo::default()
+        };
+        let precision = if cfg!(target_os = "windows") {
+            Some(PresentationTimestampPrecision::Windows)
+        } else if cfg!(target_os = "linux") {
+            Some(PresentationTimestampPrecision::Linux)
+        } else if cfg!(target_os = "macos") {
+            Some(PresentationTimestampPrecision::MacOs)
+        } else {
+            None
+        };
+        let presentation = &unsafe { &*handle }.presentation;
+        let config = presentation.config();
+        if let Some(source) = precision.and_then(|precision| {
+            presentation.lookup_source(
+                config.generation,
+                config.scene_epoch,
+                frame_info.presentation_time_ns,
+                precision,
+                std::time::Instant::now(),
+            )
+        }) {
+            acquired_info.sender_generation = source.generation;
+            acquired_info.sender_scene_epoch = source.scene_epoch;
+            acquired_info.sender_frame_index = source.frame_index;
+            acquired_info.sender_timing_flags = OPENNOW_STREAMER_FRAME_TIMING_CAPTURE
+                | if source.timing.sender_paced.is_some() {
+                    OPENNOW_STREAMER_FRAME_TIMING_PACED
+                } else {
+                    0
+                }
+                | if source.timing.presentation_time_us.is_some() {
+                    OPENNOW_STREAMER_FRAME_TIMING_PRESENTATION
+                } else {
+                    0
+                };
+            acquired_info.sender_capture_time_us = source.timing.capture_time_us;
+            acquired_info.sender_paced = u32::from(source.timing.sender_paced.unwrap_or(0));
+            acquired_info.sender_presentation_time_us =
+                source.timing.presentation_time_us.unwrap_or(0);
+        }
         if !FIRST_FRAME_LOGGED.swap(true, Ordering::Relaxed) {
             log::log_line(
                 "INFO",
@@ -1773,12 +1832,7 @@ pub unsafe extern "C" fn opennow_streamer_acquire_latest_frame(
             );
         }
         unsafe {
-            info.write(OpenNowStreamerFrameInfo {
-                width: frame_info.width,
-                height: frame_info.height,
-                sequence: frame_info.sequence,
-                presentation_time_ns: frame_info.presentation_time_ns,
-            });
+            info.write(acquired_info);
             output.write(Box::into_raw(Box::new(OpenNowStreamerFrame { token })));
         }
         OpenNowStreamerStatus::Ok
@@ -1962,6 +2016,7 @@ pub unsafe extern "C" fn opennow_streamer_get_presentation_config(
                 fps: config.fps,
                 cloud_gsync: u32::from(config.cloud_gsync),
                 feedback_mode: config.feedback_mode,
+                sender_pacing: config.sender_pacing,
             });
         }
         OpenNowStreamerStatus::Ok
@@ -2229,7 +2284,7 @@ mod tests {
 
     #[test]
     fn abi_twelve_adds_the_deterministic_graphics_unsupported_status() {
-        assert_eq!(OPENNOW_STREAMER_FFI_ABI_VERSION, 16);
+        assert_eq!(OPENNOW_STREAMER_FFI_ABI_VERSION, 17);
         assert_eq!(OpenNowStreamerStatus::GraphicsUnsupported as i32, 15);
         let header = include_str!("../include/opennow_streamer_ffi.h");
         assert!(header.contains("OPENNOW_STREAMER_GRAPHICS_UNSUPPORTED = 15,"));
@@ -2782,7 +2837,16 @@ mod tests {
             OpenNowStreamerStatus::Ok
         );
         assert_eq!(output.active, 0);
+        assert_eq!(output.sender_pacing, 0);
         handle.presentation.activate(42, 120, false, 1, true);
+        handle.presentation.register_source(
+            42,
+            Some(1),
+            900,
+            90_000,
+            Some(opennow_streamer_core::presentation_timing::SenderFrameTiming::default()),
+            std::time::Instant::now(),
+        );
         assert_eq!(
             unsafe { opennow_streamer_get_presentation_config(&handle, &mut output) },
             OpenNowStreamerStatus::Ok
@@ -2793,9 +2857,10 @@ mod tests {
                 output.active,
                 output.fps,
                 output.cloud_gsync,
-                output.feedback_mode
+                output.feedback_mode,
+                output.sender_pacing
             ),
-            (42, 1, 120, 0, 1)
+            (42, 1, 120, 0, 1, 1)
         );
         assert_eq!(
             unsafe { opennow_streamer_get_presentation_config(ptr::null(), &mut output) },
@@ -2886,6 +2951,271 @@ mod tests {
             std::mem::offset_of!(OpenNowStreamerPresentationConfig, scene_epoch),
             std::mem::offset_of!(OpenNowStreamerPresentationSample, scene_epoch)
         );
+    }
+
+    #[test]
+    fn sender_timing_abi_matches_header_and_appends_fields_without_reordering() {
+        let header = include_str!("../include/opennow_streamer_ffi.h");
+        assert!(header.contains("#define OPENNOW_STREAMER_FFI_ABI_VERSION 17u"));
+        for (name, value) in [
+            ("CAPTURE", OPENNOW_STREAMER_FRAME_TIMING_CAPTURE),
+            ("PACED", OPENNOW_STREAMER_FRAME_TIMING_PACED),
+            ("PRESENTATION", OPENNOW_STREAMER_FRAME_TIMING_PRESENTATION),
+        ] {
+            assert!(header.contains(&format!(
+                "#define OPENNOW_STREAMER_FRAME_TIMING_{name} {value}u"
+            )));
+        }
+        for ((field, offset, c_type), expected) in [
+            (
+                "sender_generation",
+                std::mem::offset_of!(OpenNowStreamerFrameInfo, sender_generation),
+                "uint64_t",
+            ),
+            (
+                "sender_scene_epoch",
+                std::mem::offset_of!(OpenNowStreamerFrameInfo, sender_scene_epoch),
+                "uint64_t",
+            ),
+            (
+                "sender_frame_index",
+                std::mem::offset_of!(OpenNowStreamerFrameInfo, sender_frame_index),
+                "uint32_t",
+            ),
+            (
+                "sender_timing_flags",
+                std::mem::offset_of!(OpenNowStreamerFrameInfo, sender_timing_flags),
+                "uint32_t",
+            ),
+            (
+                "sender_capture_time_us",
+                std::mem::offset_of!(OpenNowStreamerFrameInfo, sender_capture_time_us),
+                "uint32_t",
+            ),
+            (
+                "sender_paced",
+                std::mem::offset_of!(OpenNowStreamerFrameInfo, sender_paced),
+                "uint32_t",
+            ),
+            (
+                "sender_presentation_time_us",
+                std::mem::offset_of!(OpenNowStreamerFrameInfo, sender_presentation_time_us),
+                "uint64_t",
+            ),
+        ]
+        .into_iter()
+        .zip([24, 32, 40, 44, 48, 52, 56])
+        {
+            assert_eq!(offset, expected, "{field}");
+            assert!(header.contains(&format!("{c_type} {field};")));
+        }
+        assert_eq!(size_of::<OpenNowStreamerFrameInfo>(), 64);
+        assert_eq!(
+            std::mem::offset_of!(OpenNowStreamerPresentationConfig, sender_pacing),
+            48
+        );
+        assert_eq!(size_of::<OpenNowStreamerPresentationConfig>(), 56);
+        assert!(header.contains("uint32_t sender_pacing;"));
+        let messages = CallbackMessages::default();
+        let mut config = test_config(&messages);
+        config.abi_version = 16;
+        assert_eq!(
+            validate_config(&config),
+            Err(OpenNowStreamerStatus::InvalidConfig)
+        );
+    }
+
+    #[test]
+    fn acquisition_correlates_actual_gpu_pts_and_preserves_raw_sender_fields() {
+        use opennow_streamer_core::presentation_timing::SenderFrameTiming;
+        let messages = Box::new(CallbackMessages::default());
+        let mut handle = graphics_test_handle(&messages);
+        let context = ffi_graphics_context();
+        assert_eq!(
+            unsafe { opennow_streamer_set_graphics_context(&handle, &context) },
+            OpenNowStreamerStatus::Ok
+        );
+        let publisher = handle.frame_publisher();
+        let lease = publisher.context().unwrap();
+        let recorded = Arc::new(RecordedCommands::default());
+        handle
+            .presentation
+            .activate(7, 120, false, 0, cfg!(target_os = "windows"));
+        for (index, raw) in [
+            SenderFrameTiming {
+                capture_time_us: 0,
+                sender_paced: None,
+                presentation_time_us: None,
+            },
+            SenderFrameTiming {
+                capture_time_us: u32::MAX,
+                sender_paced: Some(0),
+                presentation_time_us: Some(0),
+            },
+            SenderFrameTiming {
+                capture_time_us: 42,
+                sender_paced: Some(9),
+                presentation_time_us: Some(u64::MAX),
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let sequence = (index as u64 + 1) * 1_000;
+            let pts = 8_333_333 * sequence;
+            handle.presentation.register_source(
+                7,
+                Some(100 + index as u32),
+                pts / 1_000,
+                1_000_000,
+                Some(raw),
+                std::time::Instant::now(),
+            );
+            publisher
+                .publish(
+                    lease,
+                    Arc::new(TestGraphicsFrame {
+                        sequence,
+                        recorded: Arc::clone(&recorded),
+                        panic_on_record: false,
+                        error: None,
+                    }),
+                )
+                .unwrap();
+            let mut token = ptr::null_mut();
+            let mut info = OpenNowStreamerFrameInfo::default();
+            assert_eq!(
+                unsafe { opennow_streamer_acquire_latest_frame(&handle, &mut token, &mut info) },
+                OpenNowStreamerStatus::Ok
+            );
+            assert_eq!(info.sequence, sequence);
+            assert_eq!(info.presentation_time_ns, pts);
+            assert_eq!(info.sender_frame_index, 100 + index as u32);
+            assert_eq!(info.sender_generation, 7);
+            assert_eq!(
+                info.sender_scene_epoch,
+                handle.presentation.config().scene_epoch
+            );
+            assert_eq!(info.sender_capture_time_us, raw.capture_time_us);
+            assert_eq!(info.sender_paced, u32::from(raw.sender_paced.unwrap_or(0)));
+            assert_eq!(
+                info.sender_presentation_time_us,
+                raw.presentation_time_us.unwrap_or(0)
+            );
+            assert_eq!(
+                info.sender_timing_flags,
+                1 | if raw.sender_paced.is_some() { 2 } else { 0 }
+                    | if raw.presentation_time_us.is_some() {
+                        4
+                    } else {
+                        0
+                    }
+            );
+            assert_eq!(
+                unsafe { opennow_streamer_release_frame(token) },
+                OpenNowStreamerStatus::Ok
+            );
+        }
+        handle.shutdown();
+    }
+
+    #[test]
+    fn acquisition_never_attaches_metadata_for_ambiguous_or_invalidated_gpu_pts() {
+        use opennow_streamer_core::presentation_timing::SenderFrameTiming;
+        for invalidation in 0..9 {
+            let messages = Box::new(CallbackMessages::default());
+            let mut handle = graphics_test_handle(&messages);
+            let context = ffi_graphics_context();
+            assert_eq!(
+                unsafe { opennow_streamer_set_graphics_context(&handle, &context) },
+                OpenNowStreamerStatus::Ok
+            );
+            let publisher = handle.frame_publisher();
+            let lease = publisher.context().unwrap();
+            let recorded = Arc::new(RecordedCommands::default());
+            handle
+                .presentation
+                .activate(7, 120, false, 0, cfg!(target_os = "windows"));
+            handle.presentation.register_source(
+                7,
+                Some(1),
+                8_333_333,
+                1_000_000,
+                Some(SenderFrameTiming::default()),
+                std::time::Instant::now()
+                    - if invalidation == 8 {
+                        std::time::Duration::from_secs(3)
+                    } else {
+                        std::time::Duration::ZERO
+                    },
+            );
+            match invalidation {
+                0 => handle.presentation.register_source(
+                    7,
+                    Some(2),
+                    8_333_333,
+                    1_000_000,
+                    Some(SenderFrameTiming::default()),
+                    std::time::Instant::now(),
+                ),
+                1 => handle.presentation.invalidate_scene(),
+                2 => handle.presentation.set_feedback_mode(1),
+                3 => handle.presentation.deactivate(),
+                4 => handle.presentation.register_source(
+                    7,
+                    Some(2),
+                    8_333_333,
+                    1_000_000,
+                    None,
+                    std::time::Instant::now(),
+                ),
+                5 => handle.presentation.register_source(
+                    7,
+                    Some(2),
+                    833_333_301,
+                    100_000_000,
+                    Some(SenderFrameTiming::default()),
+                    std::time::Instant::now(),
+                ),
+                7 => handle
+                    .presentation
+                    .activate(8, 120, false, 0, cfg!(target_os = "windows")),
+                _ => {}
+            }
+            let sequence = if invalidation == 6 { 2_000 } else { 1_000 };
+            publisher
+                .publish(
+                    lease,
+                    Arc::new(TestGraphicsFrame {
+                        sequence,
+                        recorded: Arc::clone(&recorded),
+                        panic_on_record: false,
+                        error: None,
+                    }),
+                )
+                .unwrap();
+            let mut token = ptr::null_mut();
+            let mut info = OpenNowStreamerFrameInfo::default();
+            assert_eq!(
+                unsafe { opennow_streamer_acquire_latest_frame(&handle, &mut token, &mut info) },
+                OpenNowStreamerStatus::Ok
+            );
+            assert_eq!(
+                info,
+                OpenNowStreamerFrameInfo {
+                    width: 2560,
+                    height: 1440,
+                    sequence,
+                    presentation_time_ns: 8_333_333 * sequence,
+                    ..OpenNowStreamerFrameInfo::default()
+                }
+            );
+            assert_eq!(
+                unsafe { opennow_streamer_release_frame(token) },
+                OpenNowStreamerStatus::Ok
+            );
+            handle.shutdown();
+        }
     }
 
     #[test]
@@ -3298,7 +3628,7 @@ mod tests {
     #[test]
     fn generic_output_contract_is_versioned_bounded_and_matches_header() {
         let header = include_str!("../include/opennow_streamer_ffi.h");
-        assert!(header.contains("#define OPENNOW_STREAMER_FFI_ABI_VERSION 16u"));
+        assert!(header.contains("#define OPENNOW_STREAMER_FFI_ABI_VERSION 17u"));
         assert!(header.contains("#define OPENNOW_STREAMER_GENERIC_HID_VERSION 1u"));
         for name in [
             "OpenNowGenericHidInterface",
@@ -4160,6 +4490,7 @@ mod tests {
                 height: 1440,
                 sequence: 42,
                 presentation_time_ns: 349_999_986,
+                ..OpenNowStreamerFrameInfo::default()
             }
         );
         let command = ffi_render_command();

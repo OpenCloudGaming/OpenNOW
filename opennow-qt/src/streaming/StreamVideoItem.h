@@ -14,6 +14,7 @@
 #include <QSize>
 #include <QVariantMap>
 #include <QTimer>
+#include <QChronoTimer>
 
 #include <memory>
 #include <optional>
@@ -235,6 +236,7 @@ private:
     int m_upscalingDenoise = 0;
     QTimer m_frameStatsTimer;
     QTimer m_swapStatsTimer;
+    QChronoTimer m_senderFrameTimer;
     QString m_swapGateSource;
     QMetaObject::Connection m_frameSwapConnection;
     QMetaObject::Connection m_frameUpdateConnection;

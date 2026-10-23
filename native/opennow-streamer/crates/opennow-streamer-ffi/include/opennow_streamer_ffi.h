@@ -9,7 +9,10 @@
 extern "C" {
 #endif
 
-#define OPENNOW_STREAMER_FFI_ABI_VERSION 16u
+#define OPENNOW_STREAMER_FFI_ABI_VERSION 17u
+#define OPENNOW_STREAMER_FRAME_TIMING_CAPTURE 1u
+#define OPENNOW_STREAMER_FRAME_TIMING_PACED 2u
+#define OPENNOW_STREAMER_FRAME_TIMING_PRESENTATION 4u
 
 #define OPENNOW_STREAMER_PRESENTATION_VERSION 1u
 #define OPENNOW_STREAMER_PRESENTATION_QT_QUEUED 1u
@@ -194,6 +197,13 @@ typedef struct OpenNowStreamerFrameInfo {
     uint32_t height;
     uint64_t sequence;
     uint64_t presentation_time_ns;
+    uint64_t sender_generation;
+    uint64_t sender_scene_epoch;
+    uint32_t sender_frame_index;
+    uint32_t sender_timing_flags;
+    uint32_t sender_capture_time_us;
+    uint32_t sender_paced;
+    uint64_t sender_presentation_time_us;
 } OpenNowStreamerFrameInfo;
 
 /*
@@ -226,6 +236,7 @@ typedef struct OpenNowStreamerPresentationConfig {
     uint32_t fps;
     uint32_t cloud_gsync;
     uint32_t feedback_mode;
+    uint32_t sender_pacing;
 } OpenNowStreamerPresentationConfig;
 
 typedef struct OpenNowStreamerPresentationSample {

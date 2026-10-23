@@ -150,6 +150,11 @@ public:
 
     OpenNowStreamerStatus setGraphicsContext(
         const OpenNowStreamerGraphicsContext &context);
+    OpenNowStreamerStatus acquireFrame(OpenNowStreamerFrameInfo *info,
+                                      OpenNowStreamerFrame **frame);
+    OpenNowStreamerStatus recordFrame(OpenNowStreamerFrame *frame,
+        const OpenNowStreamerRecordCommand &command, OpenNowStreamerFrameInfo *info,
+        OpenNowStreamerRecordedFrame *recorded);
     OpenNowStreamerStatus recordLatestFrame(
         const OpenNowStreamerRecordCommand &command,
         OpenNowStreamerFrameInfo *info,

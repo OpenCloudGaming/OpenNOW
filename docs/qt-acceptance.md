@@ -24,7 +24,7 @@ the explicit adapter-selection precondition before any layout workload starts. S
 
 ## Windows stream pacing and Cloud G-Sync
 
-Rebuild Qt and the embedded streamer together with FFI ABI 16. The Windows main window
+Rebuild Qt and the embedded streamer together with FFI ABI 17. The Windows main window
 requests an opaque surface so Qt can use an HWND flip swapchain rather than requiring
 alpha composition. Internal QML overlays remain on the same video surface.
 Windows startup defaults `QT_QPA_UPDATE_IDLE_TIME` to `0` before Qt creates the
@@ -46,12 +46,12 @@ statistics. Qt `frameSwapped` remains queued-presentation diagnostics, not scano
 The rendering estimate uses measured CPU preparation/rendering time, not GPU service time.
 Reports require supported, explicit server estimator settings and sufficient valid samples;
 unsupported or ambiguous timing suppresses feedback instead of sending nominal FPS values.
-See the [FFI timing contract](../native/opennow-streamer/crates/opennow-streamer-ffi/README.md#measured-presentation-feedback-abi-16).
+See the [FFI timing contract](../native/opennow-streamer/crates/opennow-streamer-ffi/README.md#measured-presentation-feedback-introduced-in-abi-16).
 
 Run the focused checks before hardware acceptance:
 
 ```sh
-ctest --test-dir build/opennow-qt --output-on-failure -R 'opennow-(streampresentation.*|nativepresentation|nativestreamruntime|streamvideo)-tests'
+ctest --test-dir build/opennow-qt --output-on-failure -R 'opennow-(senderpacing|streampresentation.*|nativepresentation|nativeframegeneration|nativestreamruntime|streamvideo)-tests'
 cargo test --manifest-path native/opennow-streamer/Cargo.toml -p opennow-streamer-transport presentation
 ```
 
@@ -62,6 +62,38 @@ Inspect PresentMon presentation mode, cadence, repeated/dropped frames and laten
 the driver/display VRR indicator. Confirm that capability logs do not substitute for actual
 VRR engagement. Check unavailable statistics and server feedback-mode changes without
 inventing timing samples. Linux/offscreen smoke tests do not validate this hardware path.
+
+### Verify sender-timed frames separately from local VRR
+
+Use a matching Qt executable and ABI-17 native library. Disable frame generation for the
+comparison. Keep the game, resolution, codec, color format, bitrate and display mode unchanged.
+
+For recognized normal NVST frame prefixes, inspect the `Sender frame pacing` diagnostic.
+`metadata=correlated` means that a unique decoder timestamp matched the sender metadata.
+It does not mean that the server accepted Cloud G-Sync. `sender_paced=1` requires a nonzero
+per-frame `0x200` flag. A frame without that flag retains immediate, latest-frame presentation.
+The first I-frame alone cannot establish the mode used by later frames.
+
+For sender-paced frames, compare changing source cadence rather than expecting a constant
+selected FPS. Qt derives deadlines from capture-counter deltas, with a separate extension-clock
+fallback when the primary counter is zero. It retains at most one unrecorded frame and wakes
+through a GUI timer without sleeping on the GUI or render thread. Clock-source changes,
+backward timestamps, epoch changes and long stalls reset the timing anchor. The maximum
+future wait is two observed source intervals, capped at two 30-FPS intervals. This does not
+reproduce NVIDIA's full native frame queue or recover frames lost by the latest-wins mailbox.
+
+Check `senderTimingFrames`, `senderPacedFrames`, `senderDeferredFrames` and
+`senderFramePending` in the swap diagnostics. Repeat with F3 and Ctrl+G overlays open,
+in windowed and fullscreen modes, and after minimizing, resizing, reconnecting and restarting.
+The presenter and transport must stay alive across local overlays. Optional interpolation
+does not run on a sender-paced frame, so it cannot replace that frame's timing with its own clock.
+With FSR enabled and interpolation disabled, `fsrResourceGeneration` must remain unchanged
+across sender-paced frames of the same size and format. It counts successful FSR resource
+creations over the render callback's lifetime, including valid rebuilds after graphics changes.
+
+The explicit NVIDIA `SetVRRState` request is not enabled. Its private ABI does not establish
+baseline restoration or safe backbuffer replacement. The existing DXGI eligibility path remains
+separate from this sender-timing path and does not prove VRR scanout.
 
 ## FSR 1 upscaling on Windows and Linux
 

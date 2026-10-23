@@ -910,10 +910,13 @@ impl Engine {
             let (media_consumer, media_receiver) =
                 std::sync::mpsc::sync_channel(ENCODED_MEDIA_QUEUE_CAPACITY);
             let output = self.events.clone();
+            let presentation = Arc::clone(&self.presentation);
+            let generation = lock_lifecycle(&self.lifecycle).generation.wrapping_add(1);
             let media_worker = match thread::Builder::new()
                 .name("opennow-media-consumer".to_owned())
-                .spawn(move || consume_encoded_media(&output, media_receiver, sink))
-            {
+                .spawn(move || {
+                    consume_encoded_media(&output, media_receiver, sink, presentation, generation)
+                }) {
                 Ok(worker) => worker,
                 Err(spawn_error) => {
                     session.stop();
@@ -2855,6 +2858,7 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
             ));
         }
         MediaFeedback::RequestKeyframe { reason, .. } => {
+            resources.invalidate_presentation();
             resources.request_keyframe();
             let _ = output.send(event(
                 "log",
@@ -2867,6 +2871,9 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
             ));
         }
         MediaFeedback::DecoderError { codec, message } => {
+            if codec != "opus" {
+                resources.invalidate_presentation();
+            }
             let message = format!("{codec} decoder error: {message}");
             state.last_video_decoder_error = Some(message.chars().take(240).collect());
             let _ = output.send(event(
@@ -2913,6 +2920,7 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
             ));
         }
         MediaFeedback::OutputError { message } => {
+            resources.invalidate_presentation();
             let _ = output.send(event(
                 "error",
                 json!({ "event": "output-error", "code": "media-output-error", "message": message }),
@@ -2923,6 +2931,7 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
             recovered,
             message,
         } => {
+            resources.invalidate_presentation();
             let _ = output.send(event(
                 "log",
                 json!({
@@ -3262,6 +3271,8 @@ fn consume_encoded_media(
     output: &EventSender,
     receiver: Receiver<EncodedMediaFrame>,
     sink: MediaSink,
+    presentation: Arc<PresentationTimingState>,
+    generation: u64,
 ) {
     let mut video = 0_u64;
     let mut audio = 0_u64;
@@ -3328,6 +3339,20 @@ fn consume_encoded_media(
         } else {
             MediaCodec::Unsupported(frame.codec)
         };
+        let video_frame = matches!(codec, MediaCodec::H264 | MediaCodec::H265 | MediaCodec::Av1);
+        if video_frame {
+            if !frame.contiguous {
+                presentation.invalidate_generation(generation);
+            }
+            presentation.register_source(
+                generation,
+                frame.frame_index,
+                frame.rtp_timestamp,
+                frame.clock_rate_hz,
+                frame.sender_timing,
+                Instant::now(),
+            );
+        }
         match sink.push(EncodedFrame {
             mid: frame.mid,
             codec,
@@ -3349,9 +3374,24 @@ fn consume_encoded_media(
                     }),
                 ));
             }
-            PushOutcome::Closed => break,
-            PushOutcome::DroppedOldest => dropped += 1,
-            PushOutcome::Paused => paused += 1,
+            PushOutcome::Closed => {
+                if video_frame {
+                    presentation.invalidate_generation(generation);
+                }
+                break;
+            }
+            PushOutcome::DroppedOldest => {
+                if video_frame {
+                    presentation.invalidate_generation(generation);
+                }
+                dropped += 1;
+            }
+            PushOutcome::Paused => {
+                if video_frame {
+                    presentation.invalidate_generation(generation);
+                }
+                paused += 1;
+            }
             PushOutcome::Queued => {}
         }
     }
@@ -3375,6 +3415,75 @@ mod tests {
 
     fn command(value: Value) -> Command {
         serde_json::from_value(value).expect("command")
+    }
+
+    #[test]
+    fn media_consumer_registers_sender_timing_only_for_identified_video_sources() {
+        use presentation_timing::{PresentationTimestampPrecision, SenderFrameTiming};
+        for (codec, frame_index, raw, recognized) in [
+            ("opus", Some(99), Some(SenderFrameTiming::default()), false),
+            ("h264", None, None, false),
+            ("h264", Some(99), None, false),
+            ("h264", Some(99), Some(SenderFrameTiming::default()), true),
+        ] {
+            let (host, runtime) = opennow_streamer_platform::create_test_runtime();
+            let (feedback, _feedback_receiver) = mpsc::channel();
+            let session = runtime
+                .start(feedback, MediaStreamConfig::default())
+                .unwrap();
+            let (events, _events_receiver) = mpsc::channel();
+            let (sender, receiver) = mpsc::sync_channel(1);
+            let presentation = Arc::new(PresentationTimingState::default());
+            presentation.activate(7, 120, false, 0, false);
+            sender
+                .send(EncodedMediaFrame {
+                    mid: "fixture".to_owned(),
+                    codec: codec.to_owned(),
+                    payload: Arc::from([0_u8; 4]),
+                    frame_index,
+                    sender_timing: raw,
+                    rtp_timestamp: 90_000,
+                    clock_rate_hz: 90_000,
+                    channels: Some(2),
+                    received_at_us: 0,
+                    keyframe: true,
+                    contiguous: true,
+                    ssrc: Some(1),
+                })
+                .unwrap();
+            drop(sender);
+            consume_encoded_media(
+                &EventSender::unbounded(events),
+                receiver,
+                session.sink(),
+                Arc::clone(&presentation),
+                7,
+            );
+            let config = presentation.config();
+            let source = presentation.lookup_source(
+                7,
+                config.scene_epoch,
+                1_000_000_000,
+                PresentationTimestampPrecision::Linux,
+                Instant::now(),
+            );
+            assert_eq!(
+                source.is_some(),
+                recognized,
+                "{codec} {frame_index:?} {raw:?}"
+            );
+            if let Some(source) = source {
+                assert_eq!(source.frame_index, 99);
+                assert_eq!(source.timing.capture_time_us, 0);
+                assert_eq!(config.sender_pacing, 1);
+            }
+            if codec == "opus" {
+                assert_eq!(config.sender_pacing, 0);
+            }
+            session.stop();
+            runtime.shutdown();
+            drop(host);
+        }
     }
 
     #[test]
@@ -6468,6 +6577,7 @@ mod tests {
                 frame_index: 1,
                 first_stream_packet_index: 1,
                 frame_type: None,
+                sender_timing: None,
                 keyframe: true,
                 contiguous: true,
                 bytes: vec![0, 0, 0, 1, 0x65],

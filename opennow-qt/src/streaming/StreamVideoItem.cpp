@@ -4,6 +4,7 @@
 #include "input/platform/MacPointerCapture.h"
 #include "streaming/NativeStreamRuntime.h"
 #include "streaming/rendering/NativeStreamRenderCallback.h"
+#include "streaming/rendering/StreamSenderPacer.h"
 
 #include <QCoreApplication>
 #include <QCursor>
@@ -59,6 +60,11 @@ StreamVideoItem::StreamVideoItem(std::unique_ptr<MacPointerCapture> pointerCaptu
             this, &StreamVideoItem::frameGenerationStatsChanged);
     m_swapStatsTimer.setInterval(1000);
     connect(&m_swapStatsTimer, &QTimer::timeout, this, &StreamVideoItem::swapStatsChanged);
+    m_senderFrameTimer.setSingleShot(true);
+    m_senderFrameTimer.setTimerType(Qt::PreciseTimer);
+    connect(&m_senderFrameTimer, &QChronoTimer::timeout, this, [this] {
+        if (isVisible() && m_swapGateSource.isEmpty() && m_renderCallback) update();
+    });
     connect(this, &QQuickItem::visibleChanged, this, &StreamVideoItem::updateSwapGate,
             Qt::UniqueConnection);
     if (s_nativeRuntime) {
@@ -311,6 +317,7 @@ void StreamVideoItem::updateSwapGate()
     const auto source = currentSwapGateSource();
     if (source == m_swapGateSource) return;
     m_swapGateSource = source;
+    if (!source.isEmpty()) m_senderFrameTimer.stop();
     pushSwapGate();
 }
 
@@ -379,6 +386,7 @@ void StreamVideoItem::setFsrUpscaling(bool enabled)
 
 void StreamVideoItem::connectFrameSwaps()
 {
+    m_senderFrameTimer.stop();
     disconnect(m_frameSwapConnection);
     disconnect(m_frameUpdateConnection);
     disconnect(m_frameBeginConnection);
@@ -396,6 +404,16 @@ void StreamVideoItem::connectFrameSwaps()
         if (auto renderer = callback.lock()) renderer->frameSwapped();
     }, Qt::DirectConnection);
     m_frameUpdateConnection = connect(window(), &QQuickWindow::frameSwapped, this, [this] {
+        if (isVisible() && m_swapGateSource.isEmpty() && m_renderCallback) {
+            const auto deadline = m_renderCallback->nextFrameDeadlineNs();
+            if (deadline != 0) {
+                const auto now = StreamSenderPacer::clockNs();
+                m_senderFrameTimer.setInterval(std::chrono::nanoseconds(deadline > now ? deadline - now : 0));
+                m_senderFrameTimer.start();
+                return;
+            }
+        }
+        m_senderFrameTimer.stop();
         if (m_frameGeneration && isVisible() && m_renderCallback && m_renderCallback->needsFrame())
             update();
     }, Qt::QueuedConnection);

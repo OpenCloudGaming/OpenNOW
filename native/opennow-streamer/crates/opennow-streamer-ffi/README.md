@@ -13,7 +13,28 @@ This crate exposes `opennow-streamer-core::Engine` as a C-compatible in-process 
 - `opennow_streamer_destroy` consumes the handle exactly once, waits for the engine and both callback queues to drain, and then returns. No call may race with destroy. A null handle is rejected; reusing a destroyed pointer is caller-side undefined behavior.
 - Every exported function catches Rust panics before they can unwind through the C ABI. A worker-thread panic closes the command queue.
 
-### Measured presentation feedback (ABI 16)
+### Sender frame timing (ABI 17)
+
+`OpenNowStreamerFrameInfo` appends sender generation, scene epoch, frame index and raw timing
+fields. Acquisition correlates the concrete GPU token's PTS with one encoded video source.
+The bounded registry holds at most 1,024 sources for two seconds. Matching uses the backend's
+exact precision: Windows and macOS truncate to 100ns ticks, and Linux truncates to microseconds.
+Capture and sender presentation clocks never replace RTP or decoder PTS.
+
+`sender_timing_flags` identifies which raw fields are present. `OPENNOW_STREAMER_FRAME_TIMING_CAPTURE`
+means a recognized timing sample, including capture time zero. The frame index is valid whenever
+this bit is set. `OPENNOW_STREAMER_FRAME_TIMING_PACED` means the raw paced flag is present,
+not that its value is true. `sender_paced` preserves the raw byte as a `uint32_t`.
+`OPENNOW_STREAMER_FRAME_TIMING_PRESENTATION` marks a present sender presentation timestamp,
+including zero. Without a unique exact match, all appended fields are zero.
+
+The presentation config's `sender_pacing` is 0 for unknown, 1 for recognized timing with an
+absent or zero paced flag, and 2 for a nonzero flag. Recognized unpaced timing does not prove
+Cloud G-Sync activation. Pacing changes advance the scene epoch and clear source correlations
+and feedback histories. Duplicate PTS, precision collisions, stale sources, discontinuities,
+decoder recovery, scene invalidation and session changes suppress unsafe correlations.
+
+### Measured presentation feedback (introduced in ABI 16)
 
 Rebuild Qt and the native library together. Initialize presentation config/sample structures
 with `OPENNOW_STREAMER_PRESENTATION_VERSION` and their C size. The config getter reads active
@@ -80,7 +101,7 @@ the physical checks still required.
 
 ### Server timers and termination (ABI 13)
 
-Rebuild Qt and the native library together with the current ABI 16. Structure layouts and callback
+Rebuild Qt and the native library together with the current ABI 17. Structure layouts and callback
 ownership are unchanged. `event_callback` now delivers generation-scoped
 `session-timer` events with `startId`, `timerType`, `secondsLeft` and `active`.
 Timer type 4 warns of idle expiry; type 5 clears the warning. Successful gameplay

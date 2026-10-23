@@ -64,7 +64,8 @@ use super::nvst_input_delivery::{NvstInputDelivery, NvstInputDeliveryError};
 pub use super::nvst_invalidation::NvstFrameType;
 use super::nvst_invalidation::{FrameInvalidation, FrameInvalidationFeedback};
 use super::{
-    EncodedMediaFrame, MediaConsumer, TransportError, deliver_media_frame, install_crypto,
+    EncodedMediaFrame, MediaConsumer, SenderFrameTiming, TransportError, deliver_media_frame,
+    install_crypto,
 };
 use opennow_streamer_hid::generic::{GenericError, GenericOutbound, GenericSession};
 use opennow_streamer_hid::generic_runtime::{GenericIngress, GenericRuntime};
@@ -2205,6 +2206,7 @@ pub struct EncodedVideoAccessUnit {
     pub first_stream_packet_index: u32,
     /// GameStream frame-header frame type; `None` when the stream carries no frame header.
     pub frame_type: Option<NvstFrameType>,
+    pub sender_timing: Option<SenderFrameTiming>,
     pub keyframe: bool,
     pub contiguous: bool,
     pub bytes: Vec<u8>,
@@ -2327,6 +2329,7 @@ pub enum NvstDropReason {
     Unsupported(NvstUnsupportedFeature),
     AwaitingStartOfFrame,
     FrameDiscontinuity,
+    MalformedFrameHeader,
     MissingAnnexBStartCode,
     InvalidLastPacketPayloadLength {
         reported: usize,
@@ -3280,9 +3283,6 @@ struct VideoAccessUnitAssembler {
     codec: NvstVideoCodec,
     current_frame: Option<u32>,
     first_stream_packet_index: Option<u32>,
-    frame_type: Option<NvstFrameType>,
-    last_packet_payload_length: Option<usize>,
-    expected_access_unit_length: Option<usize>,
     invalid_av1_length_logged: bool,
     first_start_payload_logged: bool,
     first_access_unit_logged: bool,
@@ -3308,15 +3308,102 @@ impl GsFrameHeader {
     }
 }
 
+const MAX_SENDER_EXTENSION_BYTES: usize = 1024;
+const MAX_ASSEMBLED_FRAME_PREFIX_BYTES: usize = u8::MAX as usize + 4 + MAX_SENDER_EXTENSION_BYTES;
+
+struct AssembledVideoPayload<'a> {
+    bytes: &'a [u8],
+    frame_type: Option<NvstFrameType>,
+    sender_timing: Option<SenderFrameTiming>,
+    expected_access_unit_length: Option<usize>,
+}
+
+fn assembled_video_payload(
+    codec: NvstVideoCodec,
+    payload: &[u8],
+) -> Result<AssembledVideoPayload<'_>, NvstDropReason> {
+    let invalid = NvstDropReason::MalformedFrameHeader;
+    if let [version, header_size, ..] = payload
+        && version & 0x7f == 1
+        && *header_size != 0
+    {
+        let header_size = usize::from(*header_size);
+        if header_size < 8 || payload.len() < header_size {
+            return Err(NvstDropReason::MissingAnnexBStartCode);
+        }
+        let mut timing = SenderFrameTiming {
+            capture_time_us: u32::from_le_bytes(payload[4..8].try_into().expect("header checked")),
+            ..SenderFrameTiming::default()
+        };
+        let mut expected_access_unit_length = None;
+        let mut codec_offset = header_size;
+        if version & 0x80 != 0 {
+            let length = payload
+                .get(header_size..header_size + 4)
+                .ok_or(invalid.clone())?;
+            let length = u32::from_le_bytes(length.try_into().expect("length checked")) as usize;
+            if length > MAX_SENDER_EXTENSION_BYTES {
+                return Err(invalid);
+            }
+            codec_offset += 4 + length;
+            let mut extensions = payload
+                .get(header_size + 4..codec_offset)
+                .ok_or(invalid.clone())?;
+            while !extensions.is_empty() {
+                let header = extensions.get(..4).ok_or(invalid.clone())?;
+                let tag = u16::from_le_bytes([header[0], header[1]]);
+                let length = usize::from(u16::from_le_bytes([header[2], header[3]]));
+                let value = extensions.get(4..4 + length).ok_or(invalid.clone())?;
+                match tag {
+                    0x200 => timing.sender_paced = Some(*value.first().ok_or(invalid.clone())?),
+                    0x201 => {
+                        let time = value.get(..8).ok_or(invalid.clone())?;
+                        timing.presentation_time_us = Some(u64::from_le_bytes(
+                            time.try_into().expect("timestamp length checked"),
+                        ));
+                    }
+                    0x202 => {
+                        let length = value.get(..4).ok_or(invalid.clone())?;
+                        expected_access_unit_length = Some(u32::from_le_bytes(
+                            length.try_into().expect("AU length checked"),
+                        ) as usize);
+                    }
+                    _ => {}
+                }
+                extensions = &extensions[4 + length..];
+            }
+        }
+        let bytes = &payload[codec_offset..];
+        if bytes.is_empty() {
+            return Err(invalid);
+        }
+        return Ok(AssembledVideoPayload {
+            bytes,
+            frame_type: Some(NvstFrameType::from_wire(payload[3] & 0x0f)),
+            sender_timing: Some(timing),
+            expected_access_unit_length,
+        });
+    }
+    let bytes =
+        video_picture_payload(codec, payload).ok_or(NvstDropReason::MissingAnnexBStartCode)?;
+    if bytes.is_empty() {
+        return Err(NvstDropReason::MissingAnnexBStartCode);
+    }
+    Ok(AssembledVideoPayload {
+        bytes,
+        frame_type: GsFrameHeader::parse(payload, payload.len() - bytes.len())
+            .map(|header| header.frame_type),
+        sender_timing: None,
+        expected_access_unit_length: None,
+    })
+}
+
 impl VideoAccessUnitAssembler {
     fn new(codec: NvstVideoCodec, max_access_unit_bytes: usize) -> Self {
         Self {
             codec,
             current_frame: None,
             first_stream_packet_index: None,
-            frame_type: None,
-            last_packet_payload_length: None,
-            expected_access_unit_length: None,
             invalid_av1_length_logged: false,
             first_start_payload_logged: false,
             first_access_unit_logged: false,
@@ -3328,9 +3415,6 @@ impl VideoAccessUnitAssembler {
     fn reset(&mut self) {
         self.current_frame = None;
         self.first_stream_packet_index = None;
-        self.frame_type = None;
-        self.last_packet_payload_length = None;
-        self.expected_access_unit_length = None;
         self.bytes.clear();
     }
 
@@ -3345,42 +3429,8 @@ impl VideoAccessUnitAssembler {
                 NvstUnsupportedFeature::FecRepair,
             ));
         }
-        let mut frame_header_size = 0;
-        let mut picture_payload = payload;
         if header.is_start_of_frame() {
             self.reset();
-            picture_payload = video_picture_payload(self.codec, payload)
-                .ok_or(NvstDropReason::MissingAnnexBStartCode)?;
-            frame_header_size = payload.len() - picture_payload.len();
-            self.frame_type =
-                GsFrameHeader::parse(payload, frame_header_size).map(|header| header.frame_type);
-            if !self.first_start_payload_logged {
-                self.first_start_payload_logged = true;
-                eprintln!(
-                    "NVST first {} start payload: frame={} bytes={} frameHeader={} raw={}",
-                    self.codec.label(),
-                    header.frame_index,
-                    payload.len(),
-                    frame_header_size,
-                    diagnostic_hex(payload, 64),
-                );
-            }
-            if self.codec == NvstVideoCodec::Av1 {
-                match payload.first() {
-                    Some(0x01) => {
-                        self.last_packet_payload_length = payload
-                            .get(4..6)
-                            .map(|length| usize::from(u16::from_le_bytes([length[0], length[1]])));
-                    }
-                    Some(0x81) => {
-                        self.expected_access_unit_length = payload.get(16..20).map(|length| {
-                            u32::from_le_bytes([length[0], length[1], length[2], length[3]])
-                                as usize
-                        });
-                    }
-                    _ => {}
-                }
-            }
             self.current_frame = Some(header.frame_index);
             self.first_stream_packet_index = Some(header.stream_packet_index);
         } else if self.current_frame != Some(header.frame_index) {
@@ -3388,46 +3438,80 @@ impl VideoAccessUnitAssembler {
             return Err(NvstDropReason::AwaitingStartOfFrame);
         }
 
-        // GFN pads the final packet to its FEC block size. AVC/HEVC Annex B
-        // decoders tolerate those trailing zeroes, while AV1 decoders require
-        // exact access units. The short header's bytes 4..6 describe the final
-        // packet; the cloud 0x81 header instead advertises the complete AV1
-        // access-unit size in bytes 16..20 and is handled after assembly below.
-        if self.codec == NvstVideoCodec::Av1
-            && header.is_end_of_frame()
-            && let Some(reported) = self.last_packet_payload_length
-        {
-            let exact_payload_length = reported.checked_sub(frame_header_size);
-            if let Some(exact_payload_length) = exact_payload_length
-                && exact_payload_length > 0
-                && exact_payload_length <= picture_payload.len()
-            {
-                picture_payload = &picture_payload[..exact_payload_length];
-            } else if !self.invalid_av1_length_logged {
-                self.invalid_av1_length_logged = true;
-                eprintln!(
-                    "NVST AV1 final-packet length hint ignored: reported={reported} frameHeader={frame_header_size} available={}",
-                    picture_payload.len()
-                );
-            }
+        let mut raw_limit = self
+            .max_access_unit_bytes
+            .saturating_add(MAX_ASSEMBLED_FRAME_PREFIX_BYTES);
+        if self.codec == NvstVideoCodec::Av1 && header.is_end_of_frame() {
+            raw_limit = raw_limit.saturating_add(MAX_NVST_VIDEO_PACKET_SIZE);
         }
-
-        let remaining = self.max_access_unit_bytes.saturating_sub(self.bytes.len());
-        if picture_payload.len() > remaining {
+        let remaining = raw_limit.saturating_sub(self.bytes.len());
+        if payload.len() > remaining {
             self.reset();
             return Err(NvstDropReason::AccessUnitTooLarge {
                 limit: self.max_access_unit_bytes,
             });
         }
-        self.bytes.extend_from_slice(picture_payload);
+        let final_packet_start = self.bytes.len();
+        self.bytes.extend_from_slice(payload);
         if !header.is_end_of_frame() {
             return Ok(None);
         }
 
         let mut bytes = std::mem::take(&mut self.bytes);
-        if self.codec == NvstVideoCodec::Av1
-            && let Some(reported) = self.expected_access_unit_length
-        {
+        let parsed = match assembled_video_payload(self.codec, &bytes) {
+            Ok(parsed) => parsed,
+            Err(reason) => {
+                self.reset();
+                return Err(reason);
+            }
+        };
+        let frame_header_size = bytes.len() - parsed.bytes.len();
+        let frame_type = parsed.frame_type;
+        let sender_timing = parsed.sender_timing;
+        let expected_access_unit_length = parsed.expected_access_unit_length;
+        if !self.first_start_payload_logged {
+            self.first_start_payload_logged = true;
+            eprintln!(
+                "NVST first {} assembled payload: frame={} bytes={} frameHeader={} raw={}",
+                self.codec.label(),
+                header.frame_index,
+                bytes.len(),
+                frame_header_size,
+                diagnostic_hex(&bytes, 64),
+            );
+        }
+        let legacy_av1 = self.codec == NvstVideoCodec::Av1
+            && sender_timing.is_none()
+            && bytes.get(1) == Some(&0);
+        if legacy_av1 && bytes.first() == Some(&0x01) {
+            let reported = usize::from(u16::from_le_bytes([bytes[4], bytes[5]]));
+            let final_header_size = frame_header_size.saturating_sub(final_packet_start);
+            if reported > final_header_size && reported <= payload.len() {
+                bytes.truncate(final_packet_start + reported);
+            } else if !self.invalid_av1_length_logged {
+                self.invalid_av1_length_logged = true;
+                eprintln!(
+                    "NVST AV1 final-packet length hint ignored: reported={reported} frameHeader={final_header_size} available={}",
+                    payload.len().saturating_sub(final_header_size),
+                );
+            }
+        }
+        let expected_access_unit_length = if legacy_av1 && bytes.first() == Some(&0x81) {
+            Some(
+                u32::from_le_bytes(bytes[16..20].try_into().expect("legacy header checked"))
+                    as usize,
+            )
+        } else {
+            expected_access_unit_length.filter(|length| *length != 0)
+        };
+        bytes.drain(..frame_header_size);
+        if sender_timing.is_none() && bytes.len() > self.max_access_unit_bytes {
+            self.reset();
+            return Err(NvstDropReason::AccessUnitTooLarge {
+                limit: self.max_access_unit_bytes,
+            });
+        }
+        if let Some(reported) = expected_access_unit_length {
             if reported > 0 && reported <= bytes.len() {
                 bytes.truncate(reported);
             } else {
@@ -3440,6 +3524,12 @@ impl VideoAccessUnitAssembler {
                 });
             }
         }
+        if bytes.len() > self.max_access_unit_bytes {
+            self.reset();
+            return Err(NvstDropReason::AccessUnitTooLarge {
+                limit: self.max_access_unit_bytes,
+            });
+        }
         strip_trailing_access_unit_delimiter(self.codec, &mut bytes);
         if !self.first_access_unit_logged {
             self.first_access_unit_logged = true;
@@ -3448,7 +3538,7 @@ impl VideoAccessUnitAssembler {
                 self.codec.label(),
                 header.frame_index,
                 bytes.len(),
-                self.frame_type,
+                frame_type,
                 diagnostic_hex(&bytes, 64),
             );
         }
@@ -3462,11 +3552,12 @@ impl VideoAccessUnitAssembler {
             timestamp,
             frame_index: header.frame_index,
             first_stream_packet_index,
-            frame_type: self.frame_type,
+            frame_type,
+            sender_timing,
             keyframe: video_access_unit_is_keyframe(
                 self.codec,
                 &bytes,
-                self.frame_type == Some(NvstFrameType::I),
+                frame_type == Some(NvstFrameType::I),
             ),
             contiguous: true,
             bytes,
@@ -6447,6 +6538,7 @@ impl NvstAudioReceiver {
         let mut frames = Vec::with_capacity(missing_packets.min(MAX_REDUNDANT_AUDIO_BLOCKS) + 1);
         let mut append = |payload: Arc<[u8]>, timestamp: u32| {
             frames.push(EncodedMediaFrame {
+                sender_timing: None,
                 mid: track.mid.clone(),
                 codec: "opus".to_owned(),
                 payload,
@@ -9182,6 +9274,7 @@ fn forward_receive_event(
 ) -> bool {
     if let NvstReceiveEvent::Frame(frame) = event {
         let media_frame = EncodedMediaFrame {
+            sender_timing: frame.sender_timing,
             mid: "nvst-video-0".to_owned(),
             codec: frame.codec.label().to_owned(),
             payload: Arc::from(frame.bytes),
@@ -9422,6 +9515,10 @@ mod tests {
     }
     mod nack_tests {
         include!("nvst_nack_tests.rs");
+    }
+
+    mod sender_timing_tests {
+        include!("nvst_sender_timing_tests.rs");
     }
     use super::*;
     use serde_json::json;
@@ -10145,6 +10242,7 @@ mod tests {
             (true, true)
         );
         let mut frame = EncodedVideoAccessUnit {
+            sender_timing: None,
             codec: NvstVideoCodec::H264,
             timestamp: 90_000,
             frame_index: 42,
@@ -10185,6 +10283,7 @@ mod tests {
             Instant::now(),
             &mut false,
             NvstReceiveEvent::Frame(EncodedVideoAccessUnit {
+                sender_timing: None,
                 codec: NvstVideoCodec::Av1,
                 timestamp: 90_000,
                 frame_index: 2_417,
@@ -10229,6 +10328,7 @@ mod tests {
                     Instant::now(),
                     &mut delivery_gap,
                     NvstReceiveEvent::Frame(EncodedVideoAccessUnit {
+                        sender_timing: None,
                         codec: NvstVideoCodec::H265,
                         timestamp: frame_index * 3_000,
                         frame_index,
@@ -10262,6 +10362,7 @@ mod tests {
         let mut delivery_gap = false;
         let frame = |frame_index: u32| {
             NvstReceiveEvent::Frame(EncodedVideoAccessUnit {
+                sender_timing: None,
                 codec: NvstVideoCodec::H265,
                 timestamp: frame_index * 3_000,
                 frame_index,
@@ -12625,7 +12726,11 @@ mod tests {
         };
         let mut assembler = VideoAccessUnitAssembler::new(NvstVideoCodec::H264, 4096);
         let frame = assembler
-            .push(header, 90_000, &[0x81, 0x08, 0, 0, 0, 1, 0x61, 0xaa])
+            .push(
+                header,
+                90_000,
+                &[0x01, 0x08, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0x61, 0xaa],
+            )
             .expect("source packet")
             .expect("complete frame");
         assert_eq!(frame.bytes, [0, 0, 0, 1, 0x61, 0xaa]);
@@ -14875,6 +14980,7 @@ mod tests {
         let mut queue = BoundedFrameQueue::new(2);
         for frame_index in 1..=3 {
             queue.push(EncodedVideoAccessUnit {
+                sender_timing: None,
                 codec: NvstVideoCodec::H264,
                 timestamp: frame_index,
                 frame_index,

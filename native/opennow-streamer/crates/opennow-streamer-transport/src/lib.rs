@@ -64,6 +64,13 @@ impl TransportError {
     }
 }
 
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SenderFrameTiming {
+    pub capture_time_us: u32,
+    pub sender_paced: Option<u8>,
+    pub presentation_time_us: Option<u64>,
+}
+
 #[derive(Debug, Clone)]
 pub struct EncodedMediaFrame {
     pub mid: String,
@@ -72,6 +79,7 @@ pub struct EncodedMediaFrame {
     /// Sender-authored video frame index from the NVST GS packet header.
     /// Audio and transports without an equivalent identifier leave this unset.
     pub frame_index: Option<u32>,
+    pub sender_timing: Option<SenderFrameTiming>,
     pub rtp_timestamp: u64,
     pub clock_rate_hz: u32,
     pub channels: Option<u8>,
@@ -103,6 +111,7 @@ mod tests {
 
     fn frame() -> EncodedMediaFrame {
         EncodedMediaFrame {
+            sender_timing: None,
             mid: "video-0".to_owned(),
             codec: "H264".to_owned(),
             payload: Arc::from([1_u8, 2, 3, 4]),

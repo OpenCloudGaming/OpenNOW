@@ -749,30 +749,35 @@ OpenNowStreamerStatus NativeStreamRuntime::submitPresentationSample(
         ? d->api.submitPresentationSample(d->handle, &sample) : OPENNOW_STREAMER_CLOSED;
 }
 
-OpenNowStreamerStatus NativeStreamRuntime::recordLatestFrame(
-    const OpenNowStreamerRecordCommand &command,
-    OpenNowStreamerFrameInfo *info,
-    OpenNowStreamerRecordedFrame *recorded,
-    OpenNowStreamerFrame **frame)
+OpenNowStreamerStatus NativeStreamRuntime::acquireFrame(
+    OpenNowStreamerFrameInfo *info, OpenNowStreamerFrame **frame)
 {
-    if (!info || !recorded || !frame) return OPENNOW_STREAMER_NULL_POINTER;
+    if (!info || !frame) return OPENNOW_STREAMER_NULL_POINTER;
     *info = {};
-    *recorded = {};
     *frame = nullptr;
     const std::shared_lock lock(d->handleMutex);
-    if (!d->handle || !d->api.acquireLatestFrame || !d->api.recordFrame
-        || !d->api.releaseFrame) {
-        return OPENNOW_STREAMER_CLOSED;
-    }
+    return d->handle && d->api.acquireLatestFrame
+        ? d->api.acquireLatestFrame(d->handle, frame, info) : OPENNOW_STREAMER_CLOSED;
+}
 
+OpenNowStreamerStatus NativeStreamRuntime::recordFrame(OpenNowStreamerFrame *frame,
+    const OpenNowStreamerRecordCommand &command, OpenNowStreamerFrameInfo *info,
+    OpenNowStreamerRecordedFrame *recorded)
+{
+    if (!frame || !info || !recorded) return OPENNOW_STREAMER_NULL_POINTER;
+    *recorded = {};
+    const std::shared_lock lock(d->handleMutex);
+    if (!d->handle || !d->api.recordFrame) return OPENNOW_STREAMER_CLOSED;
     const auto generation = presentationGeneration();
-    auto status = d->api.acquireLatestFrame(d->handle, frame, info);
-    if (status != OPENNOW_STREAMER_OK) return status;
-    if (!*frame) return OPENNOW_STREAMER_NULL_POINTER;
-    status = d->api.recordFrame(d->handle, *frame, &command, recorded);
-    if (status != OPENNOW_STREAMER_OK) {
-        d->api.releaseFrame(std::exchange(*frame, nullptr));
-    } else {
+    const auto status = d->api.recordFrame(d->handle, frame, &command, recorded);
+    if (status == OPENNOW_STREAMER_OK) {
+        if (info->presentation_time_ns != recorded->presentation_time_ns) {
+            const auto acquired = *info;
+            *info = {};
+            info->width = acquired.width;
+            info->height = acquired.height;
+            info->sequence = acquired.sequence;
+        }
         if (recorded->graphics_api != OPENNOW_STREAMER_GRAPHICS_API_METAL) {
             info->width = recorded->width;
             info->height = recorded->height;
@@ -784,6 +789,20 @@ OpenNowStreamerStatus NativeStreamRuntime::recordLatestFrame(
             publishDecodedDisplaySize(QSize(int(info->width), int(info->height)), generation);
         }
     }
+    return status;
+}
+
+OpenNowStreamerStatus NativeStreamRuntime::recordLatestFrame(
+    const OpenNowStreamerRecordCommand &command, OpenNowStreamerFrameInfo *info,
+    OpenNowStreamerRecordedFrame *recorded, OpenNowStreamerFrame **frame)
+{
+    if (!info || !recorded || !frame) return OPENNOW_STREAMER_NULL_POINTER;
+    *recorded = {};
+    const auto acquired = acquireFrame(info, frame);
+    if (acquired != OPENNOW_STREAMER_OK) return acquired;
+    const auto status = recordFrame(*frame, command, info, recorded);
+    if (status != OPENNOW_STREAMER_OK && *frame)
+        releaseFrame(std::exchange(*frame, nullptr));
     return status;
 }
 

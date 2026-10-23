@@ -389,6 +389,10 @@ if(BUILD_TESTING)
     target_link_libraries(opennow-streampresentationfeedback-tests PRIVATE Qt6::Test)
     add_test(NAME opennow-streampresentationfeedback-tests
         COMMAND opennow-streampresentationfeedback-tests -o -,txt)
+    qt_add_executable(opennow-senderpacing-tests tests/tst_senderpacing.cpp)
+    target_include_directories(opennow-senderpacing-tests PRIVATE src)
+    target_link_libraries(opennow-senderpacing-tests PRIVATE Qt6::Test)
+    add_test(NAME opennow-senderpacing-tests COMMAND opennow-senderpacing-tests -o -,txt)
     qt_add_executable(opennow-fsrupscaler-tests tests/tst_fsrupscaler.cpp)
     target_include_directories(opennow-fsrupscaler-tests PRIVATE src)
     target_link_libraries(opennow-fsrupscaler-tests PRIVATE Qt6::Test Qt6::Gui Qt6::GuiPrivate)
@@ -1332,6 +1336,7 @@ if(BUILD_TESTING)
         opennow-streampresenttimings-tests
         opennow-streampresentation-tests
         opennow-streampresentationfeedback-tests
+        opennow-senderpacing-tests
         opennow-frameinterpolator-tests
         opennow-fsrupscaler-tests
         opennow-streamcolor-tests
@@ -1390,6 +1395,7 @@ if(BUILD_TESTING)
             opennow-nativepresentation-tests
             opennow-streampresentation-tests
             opennow-streampresentationfeedback-tests
+            opennow-senderpacing-tests
             opennow-nativeframegeneration-tests
             opennow-embedded-orchestration-tests
             opennow-singleinstance-tests
@@ -1455,6 +1461,7 @@ if(BUILD_TESTING)
                 opennow-nativepresentation-tests
                 opennow-streampresentation-tests
                 opennow-streampresentationfeedback-tests
+                opennow-senderpacing-tests
                 opennow-nativeframegeneration-tests
                 opennow-embedded-orchestration-tests
                 opennow-singleinstance-tests
