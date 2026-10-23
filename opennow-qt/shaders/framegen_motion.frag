@@ -23,8 +23,8 @@ float cost(vec2 motion)
     for (int y = -1; y <= 1; ++y) {
         for (int x = -1; x <= 1; ++x) {
             vec2 p = uv + vec2(x, y) * geometry.xy;
-            error += difference(texture(sourceTexture, p).rgb,
-                                texture(destinationTexture, p + motion).rgb);
+            error += difference(textureLod(sourceTexture, p, 0.0).rgb,
+                                textureLod(destinationTexture, p + motion, 0.0).rgb);
         }
     }
     return error / 9.0;
@@ -41,7 +41,7 @@ void main()
         for (int y = -1; y <= 1; ++y) {
             for (int x = -1; x <= 1; ++x) {
                 vec2 pixel = clamp(origin + vec2(x, y), vec2(0.0), size - 1.0);
-                vec2 candidate = texture(coarseFlow, (pixel + 0.5) / size).xy;
+                vec2 candidate = textureLod(coarseFlow, (pixel + 0.5) / size, 0.0).xy;
                 candidate = round(candidate / geometry.xy) * geometry.xy;
                 bool duplicate = false;
                 for (int previous = 0; previous < 10; ++previous) {

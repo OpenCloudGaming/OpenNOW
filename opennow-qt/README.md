@@ -462,8 +462,11 @@ The Qt render-thread helper samples native GPU textures into two retained histor
 bidirectional motion through three reduced-resolution pyramids, and synthesizes one midpoint.
 The pyramids filter the source footprint before downsampling. Motion refinement considers distinct
 neighboring coarse vectors rather than blending vectors across object boundaries, and avoids
-counting overlapping search candidates twice. Midpoint synthesis checks each direction against
-the full-resolution source pair, so a reliable direction can supply a region when the other fails.
+counting overlapping search candidates twice. The motion search samples explicit mip level zero,
+matching its non-mipmapped textures. This avoids implicit texture derivatives in divergent search
+loops, which can make the Windows shader compiler unroll the search and stall. Midpoint synthesis
+checks each direction against the full-resolution source pair, so a reliable direction can supply
+a region when the other fails.
 Unreliable regions and detected scene cuts use the actual current image. OpenNOW's overlays
 are composed afterward on the existing video surface. There is no CPU image readback, separate
 presenter, neural model, or additional runtime dependency. The Off path allocates no interpolation
