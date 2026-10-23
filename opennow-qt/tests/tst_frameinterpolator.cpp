@@ -206,6 +206,50 @@ private slots:
         QVERIFY(midpointError < sourceError * 0.45);
     }
 
+    void independentlyMovingRegions_data()
+    {
+        QTest::addColumn<int>("translation");
+        QTest::addColumn<bool>("cameraMotion");
+        for (const int shift : {8, 16, 24, 32, 48, -24}) {
+            QTest::newRow(qPrintable(QStringLiteral("moving-object-%1").arg(shift))) << shift << false;
+            QTest::newRow(qPrintable(QStringLiteral("stationary-hud-%1").arg(shift))) << shift << true;
+        }
+    }
+
+    void independentlyMovingRegions()
+    {
+        QFETCH(int, translation);
+        QFETCH(bool, cameraMotion);
+        const QSize size(640, 360);
+        const auto imageAt = [&](int shift) {
+            QImage image = scene(size, cameraMotion ? shift : 0);
+            const int objectShift = cameraMotion ? 0 : shift;
+            const QImage moving = scene(size, objectShift);
+            for (int y = 96; y < 264; ++y)
+                for (int x = 160 + objectShift; x < 448 + objectShift; ++x) {
+                    const QColor color = moving.pixelColor(x, y);
+                    image.setPixelColor(x, y, QColor(255 - color.red(), color.green() / 2, color.blue()));
+                }
+            return image;
+        };
+        auto source = std::unique_ptr<QRhiTexture>(m_rhi->newTexture(QRhiTexture::RGBA8, size));
+        QVERIFY(source->create());
+        StreamFrameInterpolator interpolator;
+        QVERIFY(interpolator.initialize(m_rhi.get()));
+        const auto previous = imageAt(0);
+        const auto current = imageAt(translation);
+        const auto expected = imageAt(translation / 2);
+        QCOMPARE(submit(interpolator, source.get(), previous, false), previous);
+        const auto midpoint = submit(interpolator, source.get(), current, true);
+        QVERIFY(!midpoint.isNull());
+        const double midpointError = error(midpoint, expected);
+        const double sourceError = error(current, expected);
+        qInfo() << "Independent midpoint/source errors:" << midpointError << sourceError;
+        QVERIFY(midpointError < sourceError * 0.45);
+        if (cameraMotion)
+            QCOMPARE(midpoint.copy(176, 112, 256, 136), previous.copy(176, 112, 256, 136));
+    }
+
     void sceneCutUsesActualAndResetRetainsAllocation()
     {
         const QSize size(128, 96);

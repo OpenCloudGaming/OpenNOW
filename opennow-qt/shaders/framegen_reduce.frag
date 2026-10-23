@@ -7,9 +7,9 @@ layout(std140, binding = 0) uniform Parameters {
 layout(binding = 1) uniform sampler2D sourceTexture;
 void main()
 {
-    vec2 offset = geometry.xy * 0.25;
-    fragColor = (texture(sourceTexture, uv + vec2(-offset.x, -offset.y))
-               + texture(sourceTexture, uv + vec2(offset.x, -offset.y))
-               + texture(sourceTexture, uv + vec2(-offset.x, offset.y))
-               + texture(sourceTexture, uv + vec2(offset.x, offset.y))) * 0.25;
+    vec4 sum = vec4(0.0);
+    for (int y = 0; y < 4; ++y)
+        for (int x = 0; x < 4; ++x)
+            sum += texture(sourceTexture, uv + ((vec2(x, y) + 0.5) * 0.25 - 0.5) * geometry.xy);
+    fragColor = sum * 0.0625;
 }

@@ -283,6 +283,13 @@ public:
                     : recorded.texture_format == OPENNOW_STREAMER_TEXTURE_FORMAT_RGB10A2 ? 10u : 8u,
                   m_reportedOutputBits, m_reportedOutputBits == 8 ? "ordered-8x8" : "none");
         }
+        auto *source = m_textures.importedTexture();
+        if (m_frameGeneration && (m_historySize != source->pixelSize()
+                                  || m_historyFormat != source->format())) {
+            resetFrameGeneration();
+            m_historySize = source->pixelSize();
+            m_historyFormat = source->format();
+        }
         m_outputDirty = true;
         m_outputKind = 1;
         if (m_sourceColorSpace != OPENNOW_STREAMER_COLOR_SPACE_SDR709) {
@@ -313,13 +320,6 @@ public:
             case StreamFramePacer::Result::Discontinuity: m_frameGenerationStatus.store(FrameGenerationState::Discontinuity); break;
             default: m_frameGenerationStatus.store(FrameGenerationState::WarmingUp); break;
             }
-        }
-        auto *source = m_textures.importedTexture();
-        if (m_historySize != source->pixelSize() || m_historyFormat != source->format()) {
-            m_textures.clearExternalTextures();
-            m_interpolator.release();
-            m_historySize = source->pixelSize();
-            m_historyFormat = source->format();
         }
         if (!m_interpolator.initialize(m_rhi) || !m_interpolator.ingest(commandBuffer, source)) {
             disableFrameGeneration();

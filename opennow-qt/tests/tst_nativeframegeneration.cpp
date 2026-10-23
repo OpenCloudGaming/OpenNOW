@@ -418,6 +418,131 @@ private slots:
 #endif
     }
 
+    void generationRecoversAfterUnsupportedSourceSize()
+    {
+#if defined(Q_OS_WIN) || (QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>))
+        Producer producer;
+#if !defined(Q_OS_WIN)
+        producer.instance = &m_instance;
+#endif
+        producerToCreate = &producer;
+        const auto resetProducer = qScopeGuard([] { producerToCreate = nullptr; });
+        NativeStreamRuntime runtime(producerApi());
+        QSignalSpy errors(&runtime, &NativeStreamRuntime::presentationError);
+        QVERIFY(runtime.start());
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                              {QStringLiteral("id"), QStringLiteral("size-recovery-start")}}));
+        QTRY_VERIFY(runtime.presentationAllowed());
+
+        const QSize oversizedSize(3840, 2400);
+        const QSize size(64, 64);
+        auto oversizedSource = std::unique_ptr<QRhiTexture>(
+            m_rhi->newTexture(QRhiTexture::RGBA8, oversizedSize));
+        auto compatibleSource = std::unique_ptr<QRhiTexture>(
+            m_rhi->newTexture(QRhiTexture::RGBA8, size));
+        QVERIFY(oversizedSource->create());
+        QVERIFY(compatibleSource->create());
+        QImage oversizedImage(oversizedSize, QImage::Format_RGBA8888);
+        oversizedImage.fill(QColor(191, 64, 128, 255));
+        QImage compatibleImage(size, QImage::Format_RGBA8888);
+        compatibleImage.fill(QColor(64, 191, 128, 255));
+        auto texture = std::unique_ptr<QRhiTexture>(m_rhi->newTexture(
+            QRhiTexture::RGBA8, size, 1, QRhiTexture::RenderTarget | QRhiTexture::UsedAsTransferSource));
+        QVERIFY(texture->create());
+        auto depth = std::unique_ptr<QRhiRenderBuffer>(m_rhi->newRenderBuffer(
+            QRhiRenderBuffer::DepthStencil, size));
+        QVERIFY(depth->create());
+        QRhiTextureRenderTargetDescription description(QRhiColorAttachment(texture.get()));
+        description.setDepthStencilBuffer(depth.get());
+        auto target = std::unique_ptr<QRhiTextureRenderTarget>(m_rhi->newTextureRenderTarget(description));
+        auto pass = std::unique_ptr<QRhiRenderPassDescriptor>(target->newCompatibleRenderPassDescriptor());
+        target->setRenderPassDescriptor(pass.get());
+        QVERIFY(target->create());
+        auto callback = createNativeStreamRenderCallback(&runtime);
+        const auto release = qScopeGuard([&] { callback->releaseResources(); });
+        callback->setFrameGeneration(true, 165.0);
+        QMatrix4x4 matrix = m_rhi->clipSpaceCorrMatrix();
+        matrix.ortho(0, size.width(), size.height(), 0, -1, 1);
+        const QRectF bounds(QPointF(0, 0), QSizeF(size));
+        callback->setComposition(matrix, bounds, bounds, 1);
+
+        const auto present = [&](const QImage &upload, QColor expected) {
+            QRhiCommandBuffer *cb = nullptr;
+            if (m_rhi->beginOffscreenFrame(&cb) != QRhi::FrameOpSuccess) return false;
+            if (!upload.isNull()) {
+                auto *updates = m_rhi->nextResourceUpdateBatch();
+                updates->uploadTexture(producer.sourceTexture, upload);
+                cb->resourceUpdate(updates);
+            }
+            callback->initialize(m_rhi.get(), cb, target.get());
+            callback->prepareFrame(cb);
+            cb->beginPass(target.get(), Qt::black, {1.0f, 0});
+            cb->setViewport(QRhiViewport(0, 0, size.width(), size.height()));
+            cb->setScissor(QRhiScissor(0, 0, size.width(), size.height()));
+            callback->recordFrame(cb, bounds.toRect());
+            cb->endPass();
+            QRhiReadbackResult readback;
+            bool completed = false;
+            readback.completed = [&] { completed = true; };
+            auto *updates = m_rhi->nextResourceUpdateBatch();
+            updates->readBackTexture(QRhiReadbackDescription(texture.get()), &readback);
+            cb->resourceUpdate(updates);
+            const auto ended = m_rhi->endOffscreenFrame();
+            callback->finishFrame();
+            callback->frameSwapped();
+            if (ended != QRhi::FrameOpSuccess || !completed
+                || readback.data.size() != size.width() * size.height() * 4)
+                return false;
+            const auto *pixel = reinterpret_cast<const unsigned char *>(readback.data.constData())
+                + (32 * size.width() + 32) * 4;
+            return qAbs(int(pixel[0]) - expected.red()) <= 2
+                && qAbs(int(pixel[1]) - expected.green()) <= 2
+                && qAbs(int(pixel[2]) - expected.blue()) <= 2 && pixel[3] == 255;
+        };
+
+        for (quint64 sequence = 1; sequence <= 8; ++sequence) {
+            const bool oversized = sequence <= 2;
+            const QSize sourceSize = oversized ? oversizedSize : size;
+            const QImage &image = oversized ? oversizedImage : compatibleImage;
+            producer.sourceTexture = oversized ? oversizedSource.get() : compatibleSource.get();
+            producer.next = OpenNowStreamerFrameInfo{
+                uint32_t(sourceSize.width()), uint32_t(sourceSize.height()),
+                sequence, 1'000'000'000 + (sequence - 1) * 20'000'000};
+            QVERIFY2(present(sequence == 1 || sequence == 3 ? image : QImage(), image.pixelColor(0, 0)),
+                     "Original video must remain visible across unsupported and compatible source sizes");
+            QCOMPARE(producer.sourceCount, int(sequence));
+            QCOMPARE(producer.releaseCount, producer.sourceCount);
+            QCOMPARE(producer.released.sequence, sequence);
+            QCOMPARE(producer.released.presentation_time_ns,
+                     1'000'000'000 + (sequence - 1) * 20'000'000);
+            if (oversized) {
+                QVERIFY(!callback->needsFrame());
+                QVERIFY(callback->frameGenerationStats().value(QStringLiteral("status")).toString()
+                        != QStringLiteral("active"));
+            } else if (callback->needsFrame()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                QVERIFY(present({}, image.pixelColor(0, 0)));
+                QVERIFY(!callback->needsFrame());
+                QCOMPARE(producer.releaseCount, producer.sourceCount);
+            }
+            QCoreApplication::processEvents();
+            QCOMPARE(errors.size(), 0);
+            QVERIFY(runtime.presentationAllowed());
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        QCOMPARE(callback->frameGenerationStats().value(QStringLiteral("status")).toString(),
+                 QStringLiteral("active"));
+        callback->releaseResources();
+        QCOMPARE(producer.shutdownCount, 1);
+        QVERIFY(runtime.shutdown());
+        QCoreApplication::processEvents();
+        QCOMPARE(errors.size(), 0);
+        QCOMPARE(m_validationErrors.load(), 0);
+#else
+        QSKIP("Native frame generation integration requires D3D11 or Vulkan");
+#endif
+    }
+
     void productionCallback_data()
     {
         QTest::addColumn<bool>("enabled");
