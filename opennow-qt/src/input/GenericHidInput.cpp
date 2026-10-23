@@ -480,6 +480,7 @@ GenericHidInput::Batch GenericHidInput::drain(int limit)
     Batch batch;
     batch.inventoryChanged = std::exchange(m_inventoryChanged, false);
     batch.diagnostics = std::exchange(m_diagnostics, {});
+    batch.scanGeneration = m_scanGeneration;
     if (m_droppedDiagnostics)
         batch.diagnostics.append(QStringLiteral("generic-hid %1 diagnostics dropped").arg(std::exchange(m_droppedDiagnostics, 0)));
     for (const auto &lane : m_lanes) if (lane.claim.incarnation) batch.claims.append(lane.claim);
@@ -787,6 +788,7 @@ void GenericHidInput::run()
             std::sort(inventory.begin(), inventory.end(), [](const auto &a, const auto &b) { return a.deviceId < b.deviceId; });
             QMutexLocker lock(&m_mutex);
             if (m_forwardingEpoch != forwardingEpoch) for (auto &entry : inventory) entry.incarnation = 0;
+            ++m_scanGeneration;
             if (inventory != m_devices) {
                 m_devices = std::move(inventory);
                 markInventoryChangedLocked();

@@ -83,6 +83,11 @@ The connected list distinguishes detection (`ready`) from a verified server
 attach (`active`) and refusal (`declined`). On Linux, a device whose hidraw node
 OpenNOW cannot open for reading and writing shows `no-access`; the HID worker
 checks access on every discovery scan and retries once a udev rule grants it.
+A device SDL reports with an allowlisted VID:PID but no matching hidraw source
+shows `no-hid-path`: it cannot be forwarded and stays out of the gamepad path
+until forwarding is turned off. This status waits until two HID discovery
+scans complete after SDL first reports the device, so startup and hotplug
+ordering do not report it falsely.
 Session teardown and capture detach reset admission; stale incarnations cannot
 update a replacement device.
 

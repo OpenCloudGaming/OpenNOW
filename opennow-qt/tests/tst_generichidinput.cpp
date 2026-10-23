@@ -43,6 +43,9 @@ public:
     bool stopped = false;
     bool onGuiThread = false;
     bool blockOutput = false;
+    bool blockScan = false;
+    QSemaphore scanEntered;
+    QSemaphore scanRelease;
     QSemaphore outputEntered;
     QSemaphore outputRelease;
 
@@ -51,6 +54,15 @@ public:
     void shutdown() override { QMutexLocker lock(&mutex); checkThread(); stopped = true; }
     QList<Device> enumerate() override
     {
+        bool block = false;
+        {
+            QMutexLocker lock(&mutex);
+            block = blockScan;
+        }
+        if (block) {
+            scanEntered.release();
+            scanRelease.acquire();
+        }
         QMutexLocker lock(&mutex);
         checkThread();
         ++scans;
@@ -304,10 +316,53 @@ private slots:
         QCOMPARE(status(), QStringLiteral("ignored"));
     }
 
+    void hotplugWaitsForHidDiscoveryBeforeReportingNoHidPath()
+    {
+        auto backend = std::make_shared<FakeBackend>();
+        ControllerInput input(nullptr, backend);
+        QSignalSpy diagnostics(&input, &ControllerInput::inputDiagnostic);
+        QTRY_VERIFY(backend->scanCount() >= 2);
+        {
+            QMutexLocker lock(&backend->mutex);
+            backend->blockScan = true;
+        }
+        QVERIFY(backend->scanEntered.tryAcquire(1, 2000));
+        SDL_VirtualJoystickDesc virtualDevice{};
+        SDL_INIT_INTERFACE(&virtualDevice);
+        virtualDevice.type = SDL_JOYSTICK_TYPE_WHEEL;
+        virtualDevice.naxes = 3;
+        virtualDevice.nbuttons = 4;
+        virtualDevice.name = "OpenNOW hotplug ordering test";
+        virtualDevice.vendor_id = 0x044f;
+        virtualDevice.product_id = 0x0402;
+        const auto id = SDL_AttachVirtualJoystick(&virtualDevice);
+        QVERIFY(id);
+        struct Detach {
+            SDL_JoystickID id;
+            ~Detach() { SDL_DetachVirtualJoystick(id); }
+        } detach{id};
+        const auto status = [&] {
+            const auto devices = input.flightDevices();
+            return devices.size() == 1 ? devices.first().toMap().value(QStringLiteral("status")).toString() : QString{};
+        };
+        QTRY_COMPARE(status(), QStringLiteral("ready"));
+        {
+            QMutexLocker lock(&backend->mutex);
+            backend->blockScan = false;
+        }
+        backend->scanRelease.release();
+        QTest::qWait(150);
+        QCOMPARE(status(), QStringLiteral("ready"));
+        QVERIFY(diagnostics.isEmpty());
+        QTRY_COMPARE(status(), QStringLiteral("no-hid-path"));
+        QCOMPARE(diagnostics.size(), 1);
+    }
+
     void allowlistedSdlControllerUsesNormalPathWhenForwardingDisabled()
     {
         auto backend = std::make_shared<FakeBackend>();
         ControllerInput input(nullptr, backend);
+        QSignalSpy diagnostics(&input, &ControllerInput::inputDiagnostic);
         SDL_VirtualJoystickDesc virtualDevice{};
         SDL_INIT_INTERFACE(&virtualDevice);
         virtualDevice.type = SDL_JOYSTICK_TYPE_GAMEPAD;
@@ -326,7 +381,13 @@ private slots:
         } detach{id};
         QTRY_COMPARE(input.flightDevices().size(), 1);
         QCOMPARE(input.controllerCount(), 0);
-        QCOMPARE(input.flightDevices().first().toMap().value(QStringLiteral("status")).toString(), QStringLiteral("ready"));
+        QTRY_COMPARE(input.flightDevices().first().toMap().value(QStringLiteral("status")).toString(), QStringLiteral("no-hid-path"));
+        const auto noHidPathLogs = [&] {
+            return std::count_if(diagnostics.cbegin(), diagnostics.cend(), [](const auto &arguments) {
+                return arguments.first().toString().startsWith(QStringLiteral("generic-hid 044f:0402 has no hidraw node"));
+            });
+        };
+        QCOMPARE(noHidPathLogs(), 1);
         input.setForwardFlightControls(false);
         QTRY_COMPARE(input.controllerCount(), 1);
         QCOMPARE(input.flightDevices().first().toMap().value(QStringLiteral("status")).toString(), QStringLiteral("controller"));
@@ -341,7 +402,8 @@ private slots:
         QTRY_VERIFY(!snapshots.isEmpty() && snapshots.last()[2].toUInt() == 0x1000);
         input.setForwardFlightControls(true);
         QCOMPARE(input.controllerCount(), 0);
-        QCOMPARE(input.flightDevices().first().toMap().value(QStringLiteral("status")).toString(), QStringLiteral("ready"));
+        QCOMPARE(input.flightDevices().first().toMap().value(QStringLiteral("status")).toString(), QStringLiteral("no-hid-path"));
+        QCOMPARE(noHidPathLogs(), 2);
         QCOMPARE(input.flightDevices().first().toMap().value(QStringLiteral("player")).toInt(), 0);
         input.setForwardFlightControls(false);
         QCOMPARE(input.controllerCount(), 1);
