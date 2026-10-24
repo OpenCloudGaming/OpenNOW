@@ -42,6 +42,13 @@ class StreamVideoItem : public QQuickItem
                    NOTIFY shortcutBindingsChanged)
     Q_PROPERTY(bool frameGeneration READ frameGeneration WRITE setFrameGeneration
                    NOTIFY frameGenerationChanged)
+    // 0 = off, 2..4 = displayed frames per source frame. `frameGeneration` mirrors it as
+    // a boolean for existing bindings (true selects 2x).
+    Q_PROPERTY(int frameGenerationFactor READ frameGenerationFactor WRITE setFrameGenerationFactor
+                   NOTIFY frameGenerationChanged)
+    // Manual display refresh in Hz for frame-generation pacing; 0 uses the window's screen.
+    Q_PROPERTY(int displayRefreshOverrideHz READ displayRefreshOverrideHz WRITE setDisplayRefreshOverrideHz
+                   NOTIFY displayRefreshOverrideHzChanged)
     Q_PROPERTY(bool metalFxUpscaling READ metalFxUpscaling WRITE setMetalFxUpscaling
                    NOTIFY metalFxUpscalingChanged)
     Q_PROPERTY(bool fsrUpscaling READ fsrUpscaling WRITE setFsrUpscaling
@@ -86,6 +93,10 @@ public:
     void setRenderCallback(std::shared_ptr<StreamVideoRenderCallback> callback);
     bool frameGeneration() const;
     void setFrameGeneration(bool enabled);
+    int frameGenerationFactor() const;
+    void setFrameGenerationFactor(int factor);
+    int displayRefreshOverrideHz() const;
+    void setDisplayRefreshOverrideHz(int hz);
     bool metalFxUpscaling() const;
     void setMetalFxUpscaling(bool enabled);
     bool fsrUpscaling() const;
@@ -143,6 +154,7 @@ signals:
     void relativeMouseChanged();
     void shortcutBindingsChanged();
     void frameGenerationChanged();
+    void displayRefreshOverrideHzChanged();
     void metalFxUpscalingChanged();
     void fsrUpscalingChanged();
     void upscalingSharpnessChanged();
@@ -228,13 +240,19 @@ private:
     bool m_clipboardPaste = false;
     QString m_keyboardLayout = QStringLiteral("en-US");
     const PhysicalKeyMap::Layout *m_keyboardMap = PhysicalKeyMap::layoutFor("en-US");
-    bool m_frameGeneration = false;
+    int m_frameGenerationFactor = 0;
+    int m_displayRefreshOverrideHz = 0;
     bool m_metalFxUpscaling = false;
     bool m_fsrUpscaling = false;
     int m_upscalingSharpness = 10;
     int m_upscalingDenoise = 0;
     QTimer m_frameStatsTimer;
     QTimer m_swapStatsTimer;
+    // Measures how late the GUI thread runs a 10 ms timer while a stream is shown: frames
+    // are requested from the GUI thread, so a GUI stall is a presentation stall.
+    QTimer m_guiStallProbe;
+    qint64 m_guiStallLastNs = 0;
+    qint64 m_guiStallLoggedNs = 0;
     QString m_swapGateSource;
     QMetaObject::Connection m_frameSwapConnection;
     QMetaObject::Connection m_frameUpdateConnection;

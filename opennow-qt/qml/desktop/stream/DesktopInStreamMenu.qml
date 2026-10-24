@@ -90,6 +90,10 @@ FocusScope {
             ShellStore.applyStreamShortcutAction("toggle-anti-afk")
             return
         }
+        if (action === "frameGeneration") {
+            ShellStore.toggleFrameGeneration()
+            return
+        }
         if (action === "fullscreen") {
             fullscreenRequested()
             return
@@ -129,11 +133,12 @@ FocusScope {
     }
 
     readonly property var mainItems: [backButton, microphoneTile, antiAfkTile, statsTile, fullscreenTile,
-        controllersRow, inviteRow, consoleRow, endRow]
-    // Index tables for the 2×2 quick-toggle grid: [up, down, left, right]; -1 keeps focus.
+        frameGenerationTile, controllersRow, inviteRow, consoleRow, endRow]
+    // Index tables for the quick-toggle grid (2 columns, the fifth tile alone in its row):
+    // [up, down, left, right]; -1 keeps focus.
     readonly property var gridMoves: [
         [-1, 1, -1, -1], [0, 3, -1, 2], [0, 4, 1, -1], [1, 5, -1, 4], [2, 5, 3, -1],
-        [3, 6, -1, -1], [5, 7, -1, -1], [6, 8, -1, -1], [7, -1, -1, -1]
+        [3, 6, -1, -1], [5, 7, -1, -1], [6, 8, -1, -1], [7, 9, -1, -1], [8, -1, -1, -1]
     ]
     function usable(item) { return item && item.visible && item.enabled }
     function focusMain(index) {
@@ -637,6 +642,19 @@ FocusScope {
                             stateText: root.fullscreen ? qsTr("On") : qsTr("Off")
                             shortcutText: root.shortcut("shortcutToggleFullscreen", "F11")
                             onActivated: root.runAction("fullscreen")
+                        }
+                        QuickTile {
+                            id: frameGenerationTile
+                            objectName: "streamFrameGenerationControl"
+                            visible: ShellStore.frameGenerationQuickVisible()
+                            checked: ShellStore.frameGenerationMode() !== "off"
+                            shortcutText: root.shortcut("shortcutToggleFrameGeneration", "Ctrl+Shift+G")
+                            glyph: "desktop-dlss.svg"
+                            title: qsTr("Frame generation")
+                            text: ShellStore.frameGenerationMode() !== "off" ? qsTr("Turn frame generation off") : qsTr("Turn frame generation on")
+                            stateText: ShellStore.frameGenerationQuickText()
+                            description: qsTr("Applies to the running stream at once. Levels, target rate and the capability test live in Settings › Stream.")
+                            onActivated: root.runAction("frameGeneration")
                         }
                     }
 

@@ -39,7 +39,22 @@ int AcceptanceSession::startFrameGenerationStatsWorkload()
 {
     auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
     if (!store) return EXIT_FAILURE;
+    // Frame generation only runs once the capability test has allowed the level for the
+    // current preset, so seed a passing profile under the key the shell computes.
     store->setProperty("settings", QVariantMap{{u"fps"_s, 60}, {u"frameGeneration"_s, u"2x"_s}});
+    QMetaObject::invokeMethod(store, "ensureFrameGenerationGpu");
+    QVariant key;
+    QMetaObject::invokeMethod(store, "frameGenerationProfileKey", Q_RETURN_ARG(QVariant, key));
+    QVariant gpu = store->property("settingsOwnerState").value<QObject *>()
+        ? store->property("settingsOwnerState").value<QObject *>()->property("frameGenerationGpu") : QVariant();
+    const QVariantMap profile{{u"engine"_s, u"motion"_s}, {u"gpu"_s, gpu.toString()}, {u"width"_s, 1920},
+        {u"height"_s, 1080}, {u"fps"_s, 60}, {u"refreshHz"_s, 240.0}, {u"p50Ms"_s, 1.5}, {u"p95Ms"_s, 2.0},
+        {u"maxMs"_s, 3.0}, {u"frames"_s, 180}, {u"gpuTimed"_s, true}, {u"engineMaxFactor"_s, 2},
+        {u"allowed"_s, QVariantList{2}}, {u"testedAt"_s, u"acceptance"_s}, {u"version"_s, 1}};
+    // The decision is live: pin the display rate so 2x of 60 FPS fits on any test host.
+    store->setProperty("settings", QVariantMap{{u"fps"_s, 60}, {u"frameGeneration"_s, u"2x"_s},
+        {u"frameGenerationDisplayHz"_s, 240},
+        {u"frameGenerationProfiles"_s, QVariantMap{{key.toString(), profile}}}});
     store->setProperty("streamer", QVariantMap{{u"status"_s, u"streaming"_s}, {u"framesPerSecond"_s, 60},
         {u"firstFrameLatencyMs"_s, 37}});
     store->setProperty("streamState", u"streaming"_s);

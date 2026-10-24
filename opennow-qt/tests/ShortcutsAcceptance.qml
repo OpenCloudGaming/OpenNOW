@@ -65,7 +65,8 @@ QtObject {
         check(page !== null, "shortcuts page must load")
         const row = key => find(page, "shortcutCommand-" + key)
         for (const key of ["shortcutToggleStats", "shortcutToggleFullscreen", "shortcutTogglePointerLock", "shortcutScreenshot",
-                "shortcutToggleMicrophone", "shortcutToggleRecording", "shortcutSaveClip", "shortcutToggleAntiAfk", "shortcutStopStream"])
+                "shortcutToggleMicrophone", "shortcutToggleRecording", "shortcutSaveClip", "shortcutToggleAntiAfk",
+                "shortcutToggleFrameGeneration", "shortcutStopStream"])
             check(row(key) && row(key).visible, key + " must be editable in place")
         check(shortcutCalls().length === 0, "opening the page saves nothing")
         check(find(page, "shortcutRow-sessionMenu").visible && !find(page, "shortcutBinding-guide"),

@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls
 import OpenNOW
 
 Column {
@@ -8,6 +9,10 @@ Column {
     required property var settingsScreen
     required property Component statsSettingsPageComponent
     property bool statisticsOpen: false
+    Component.onCompleted: ShellStore.ensureFrameGenerationGpu()
+    // The smoke harness (--smoke-frame-generation-dialog) opens the dialog over a seeded measurement.
+    function openFrameGenerationDialog() { frameGenerationDialog.openFromSettings() }
+    DesktopFrameGenerationTestDialog { id: frameGenerationDialog }
 
     width: page.availableWidth; spacing: DesktopTokens.px(12)
     DesktopSettingsPanel {
@@ -159,13 +164,91 @@ Column {
             }
         }
         DesktopSettingsRow {
-            width: parent.width; paperStyle: true; glyph: "speed"; title: qsTr("Frame generation (Experimental)")
-            description: qsTr("Targets 120 displayed FPS from a 60 FPS stream. Requires a fast GPU and 120 Hz display; adds latency and artifacts.")
+            objectName: "frameGenerationTestRow"
+            width: parent.width; paperStyle: true; glyph: "check"; title: qsTr("Frame generation capability test")
+            description: ShellStore.frameGenerationTestDescription()
+            DesktopSettingsButton {
+                objectName: "frameGenerationTestButton"
+                compact: true
+                enabled: !FrameGenerationBenchmark.running
+                text: FrameGenerationBenchmark.running ? qsTr("Testing…") : qsTr("Run test")
+                onClicked: frameGenerationDialog.openFromSettings()
+            }
+            AbstractButton {
+                id: framegenLink
+                objectName: "framegenGitHubLink"
+                implicitWidth: DesktopTokens.px(30); implicitHeight: DesktopTokens.px(30)
+                hoverEnabled: true
+                Accessible.name: qsTr("Framegen on GitHub")
+                ToolTip.visible: hovered
+                ToolTip.text: qsTr("Framegen on GitHub")
+                background: Rectangle {
+                    radius: DesktopTokens.px(9)
+                    color: framegenLink.down || framegenLink.hovered ? DesktopTokens.raisedStrong : "transparent"
+                    border.width: 1
+                    border.color: framegenLink.hovered || framegenLink.activeFocus ? Theme.seam : "transparent"
+                }
+                contentItem: Item {
+                    DesktopSettingsIcon {
+                        glyph: "github"; ink: Theme.label
+                        width: DesktopTokens.px(18); height: DesktopTokens.px(18)
+                        anchors.centerIn: parent
+                    }
+                }
+                onClicked: AppController.openExternalUrl("https://github.com/MONZikWasTaken/Framegen")
+            }
+        }
+        DesktopSettingsRow {
+            objectName: "frameGenerationRow"
+            width: parent.width; paperStyle: true; glyph: "speed"; title: qsTr("Frame generation")
+            badge: qsTr("Experimental")
+            description: ShellStore.frameGenerationDescription() + "\n" + ShellStore.frameGenerationEngineNotice()
+            enabled: ShellStore.frameGenerationUnlocked()
+            opacity: enabled ? 1 : 0.45
             DesktopSettingsSegmented {
-                readonly property string current: String(page.settingsScreen.valueSetting("frameGeneration", "off")) === "2x" ? "2x" : "off"
-                options: [{label: qsTr("Off"), value: "off"}, {label: qsTr("2×"), value: "2x"}]
-                optionWidth: 64; selectedIndex: options.findIndex(item => item.value === current)
-                onSelected: (index,item) => page.settingsScreen.setSetting("frameGeneration", item.value)
+                objectName: "frameGenerationMode"
+                optionObjectNamePrefix: "frameGenerationMode-"
+                readonly property string mode: ShellStore.frameGenerationMode()
+                options: [{label: qsTr("Off"), value: "off"}, {label: qsTr("Multiplier"), value: "multiplier"},
+                          {label: qsTr("Target FPS"), value: "target"}, {label: qsTr("Display"), value: "display"}]
+                optionWidth: 86; selectedIndex: Math.max(0, options.findIndex(item => item.value === mode))
+                onSelected: (index,item) => ShellStore.selectFrameGenerationMode(item.value)
+            }
+        }
+        DesktopSettingsRow {
+            objectName: "frameGenerationMultiplierRow"
+            visible: ShellStore.frameGenerationMode() === "multiplier"
+            width: parent.width; paperStyle: true; glyph: "speed"; title: qsTr("Multiplier")
+            description: ShellStore.frameGenerationMultiplierDescription()
+            enabled: ShellStore.frameGenerationUnlocked()
+            opacity: enabled ? 1 : 0.45
+            DesktopSettingsSegmented {
+                objectName: "frameGenerationLevels"
+                readonly property int factor: ShellStore.frameGenerationRequestedFactor()
+                options: [{label: qsTr("2×"), value: "2x"}, {label: qsTr("3×"), value: "3x"}, {label: qsTr("4×"), value: "4x"}]
+                optionWidth: 48; selectedIndex: factor >= 2 ? factor - 2 : -1
+                disabledValues: ShellStore.frameGenerationLockedValues()
+                disabledHint: ShellStore.frameGenerationLockedHint()
+                onSelected: (index,item) => ShellStore.selectFrameGenerationLevel(item.value)
+            }
+        }
+        DesktopSettingsRow {
+            objectName: "frameGenerationTargetRow"
+            visible: ShellStore.frameGenerationMode() === "target"
+            width: parent.width; paperStyle: true; glyph: "speed"; title: qsTr("Output rate")
+            description: ShellStore.frameGenerationTargetDescription()
+            enabled: ShellStore.frameGenerationUnlocked()
+            opacity: enabled ? 1 : 0.45
+            DesktopSettingsSegmented {
+                objectName: "frameGenerationTarget"
+                optionObjectNamePrefix: "frameGenerationTarget-"
+                readonly property var targets: ShellStore.frameGenerationTargetOptions()
+                readonly property int current: Number(page.settingsScreen.valueSetting("frameGenerationTargetFps", 0))
+                options: targets.map(option => ({label: option.label, value: option.value, enabled: option.enabled}))
+                optionWidth: 52
+                selectedIndex: options.findIndex(item => item.value === current)
+                disabledHint: ShellStore.frameGenerationLockedHint()
+                onSelected: (index,item) => ShellStore.selectFrameGenerationTarget(item.value)
             }
         }
     }
@@ -296,6 +379,21 @@ Column {
             DesktopSettingsRow {
                 width: parent.width; paperStyle: true; glyph: "controller"; title: qsTr("Steam Deck identity"); description: qsTr("Unlock Deck resolutions and 90 FPS · refreshes entitlements")
                 DesktopSettingsToggle { checked: page.settingsScreen.boolSetting("identifyAsSteamDeck",false); onValueChangedByUser: value => page.settingsScreen.setSetting("identifyAsSteamDeck",value) }
+            }
+            DesktopSettingsRow {
+                objectName: "frameGenerationDisplayRow"
+                width: parent.width; paperStyle: true; glyph: "monitor"; title: qsTr("Display refresh override")
+                description: ShellStore.frameGenerationDisplayDescription()
+                DesktopSettingsSegmented {
+                    objectName: "frameGenerationDisplayHz"
+                    optionObjectNamePrefix: "frameGenerationDisplay-"
+                    readonly property int current: Number(page.settingsScreen.valueSetting("frameGenerationDisplayHz", 0))
+                    options: [{label: qsTr("Auto"), value: 0}].concat(
+                        ShellStore.frameGenerationDisplayChoices().map(hz => ({label: String(hz), value: hz})))
+                    optionWidth: 44
+                    selectedIndex: Math.max(0, options.findIndex(item => item.value === current))
+                    onSelected: (index,item) => ShellStore.selectFrameGenerationDisplayHz(item.value)
+                }
             }
         }
     }

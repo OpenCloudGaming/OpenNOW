@@ -1209,6 +1209,39 @@ QtObject {
         return Boolean(game && game.requiresPaidMembership === true) && settingsOwner.membershipTierName() === "FREE"
     }
 
+    // Frame generation facade: levels, target FPS, display refresh and the capability test
+    // are owned by SettingsState.
+    function frameGenerationFactor() { return settingsOwner.frameGenerationFactor() }
+    function frameGenerationRequestedFactor() { return settingsOwner.frameGenerationRequestedFactor() }
+    function frameGenerationMode() { return settingsOwner.frameGenerationMode() }
+    function frameGenerationMatrix() { return settingsOwner.frameGenerationMatrix() }
+    function toggleFrameGeneration() { settingsOwner.toggleFrameGeneration() }
+    function frameGenerationQuickText() { return settingsOwner.frameGenerationQuickText() }
+    function frameGenerationQuickVisible() { return settingsOwner.frameGenerationQuickVisible() }
+    function frameGenerationEngineNotice() { return settingsOwner.frameGenerationEngineNotice() }
+    function frameGenerationVerdictFor(fps) { return settingsOwner.frameGenerationVerdictFor(fps) }
+    function frameGenerationModes() { return settingsOwner.frameGenerationModes }
+    function selectFrameGenerationMode(mode) { settingsOwner.selectFrameGenerationMode(mode) }
+    function frameGenerationMultiplierDescription() { return settingsOwner.frameGenerationMultiplierDescription() }
+    function frameGenerationTargetDescription() { return settingsOwner.frameGenerationTargetDescription() }
+    function frameGenerationUnlocked() { return settingsOwner.frameGenerationUnlocked() }
+    function frameGenerationProfileKey() { return settingsOwner.frameGenerationProfileKey() }
+    function frameGenerationTestDescription() { return settingsOwner.frameGenerationTestDescription() }
+    function frameGenerationSourceFps() { return settingsOwner.frameGenerationSourceFps() }
+    function frameGenerationDisplayHz() { return settingsOwner.frameGenerationDisplayHz() }
+    function frameGenerationDescription() { return settingsOwner.frameGenerationDescription() }
+    function frameGenerationOutputDescription() { return settingsOwner.frameGenerationOutputDescription() }
+    function frameGenerationDisplayDescription() { return settingsOwner.frameGenerationDisplayDescription() }
+    function frameGenerationLockedValues() { return settingsOwner.frameGenerationLockedValues() }
+    function frameGenerationLockedHint() { return settingsOwner.frameGenerationLockedHint() }
+    function frameGenerationTargetOptions() { return settingsOwner.frameGenerationTargetOptions() }
+    function frameGenerationDisplayChoices() { return settingsOwner.frameGenerationDisplayChoices }
+    function selectFrameGenerationLevel(value) { settingsOwner.selectFrameGenerationLevel(value) }
+    function selectFrameGenerationTarget(value) { settingsOwner.selectFrameGenerationTarget(value) }
+    function selectFrameGenerationDisplayHz(value) { settingsOwner.selectFrameGenerationDisplayHz(value) }
+    function runFrameGenerationTest() { settingsOwner.runFrameGenerationTest() }
+    function ensureFrameGenerationGpu() { settingsOwner.ensureFrameGenerationGpu() }
+
     function canonicalFpsValues() {
         return settingsOwner.canonicalFpsValues()
     }
@@ -2758,6 +2791,7 @@ QtObject {
             "toggle-fullscreen": [String(settings.shortcutToggleFullscreen ?? "F11")],
             "stop-stream": [String(settings.shortcutStopStream ?? "Ctrl+Shift+Q")],
             "toggle-anti-afk": [String(settings.shortcutToggleAntiAfk ?? "Ctrl+Shift+K")],
+            "toggle-frame-generation": [String(settings.shortcutToggleFrameGeneration ?? "Ctrl+Shift+G")],
             "toggle-microphone": microphoneToggleAvailable
                 ? [String(settings.shortcutToggleMicrophone ?? "Ctrl+Shift+M")] : [],
             "screenshot": [String(settings.shortcutScreenshot ?? "Ctrl+F11")],
@@ -2816,6 +2850,16 @@ QtObject {
         } else if (action === "toggle-anti-afk") {
             antiAfkEnabled = !antiAfkEnabled
             streamControlMessage = antiAfkEnabled ? qsTr("Anti-AFK on") : qsTr("Anti-AFK off")
+            accessibilityMessage = streamControlMessage
+        } else if (action === "toggle-frame-generation") {
+            if (!settingsOwner.frameGenerationUnlocked()) {
+                streamControlMessage = qsTr("Frame generation needs the capability test in Settings first")
+            } else {
+                settingsOwner.toggleFrameGeneration()
+                streamControlMessage = settingsOwner.frameGenerationMode() !== "off"
+                    ? qsTr("Frame generation %1").arg(settingsOwner.frameGenerationQuickText())
+                    : qsTr("Frame generation off")
+            }
             accessibilityMessage = streamControlMessage
         } else if (action === "toggle-stats") {
             const compact = desktopUiActive ? "desktop-stream-stats" : "stream-stats"

@@ -1,9 +1,18 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Window
 import OpenNOW
 
 ApplicationWindow {
     id: window
+    // Frame-generation pacing and the capability test need the refresh rate of the
+    // display OpenNOW is on; SettingsState owns the override logic.
+    Binding {
+        target: ShellStore.settingsOwnerState
+        property: "detectedDisplayHz"
+        // Re-evaluates when the window moves to another screen.
+        value: (window.screen, FrameGenerationBenchmark.displayRefreshRate(window))
+    }
     width: 1600
     height: 900
     minimumWidth: 960

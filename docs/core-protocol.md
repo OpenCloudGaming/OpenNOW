@@ -1022,6 +1022,10 @@ frame rate and bitrate follow the stream; the retained legacy `recordingResoluti
 apply to the next native session. Disabling it sends `replay-stop` immediately,
 clears buffered media and cancels an in-progress clip export.
 
+`shortcutToggleFrameGeneration` (default `Ctrl+Shift+G`) switches local frame generation
+on or off during a stream. The Qt shell handles it like `shortcutToggleMicrophone`; it is
+not part of the `shortcuts` map in `streamer.prepare`.
+
 These commands use the embedded streamer's protocol-7 JSON payload without
 changing the C ABI:
 

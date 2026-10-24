@@ -302,7 +302,8 @@ private:
     QRhi *m_rhi = nullptr;
     QRhiRenderTarget *m_target = nullptr;
     std::array<ImportedFrame, 8> m_imports;
-    std::array<ExternalFrame, 3> m_external;
+    // Two history frames plus up to three generated frames of one pair (4x).
+    std::array<ExternalFrame, 5> m_external;
     StreamFsrUpscaler m_fsr;
     std::unique_ptr<QRhiShaderResourceBindings> m_fsrBinding;
     quint64 m_fsrOutputId = 0;

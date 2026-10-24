@@ -460,7 +460,7 @@ private slots:
         QVERIFY(target->create());
         auto callback = createNativeStreamRenderCallback(&runtime);
         const auto release = qScopeGuard([&] { callback->releaseResources(); });
-        callback->setFrameGeneration(true, 165.0);
+        callback->setFrameGeneration(2, 165.0);
         QMatrix4x4 matrix = m_rhi->clipSpaceCorrMatrix();
         matrix.ortho(0, size.width(), size.height(), 0, -1, 1);
         const QRectF bounds(QPointF(0, 0), QSizeF(size));
@@ -528,7 +528,7 @@ private slots:
             QCoreApplication::processEvents();
             QCOMPARE(errors.size(), 0);
             QVERIFY(runtime.presentationAllowed());
-            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            std::this_thread::sleep_for(std::chrono::milliseconds(8));
         }
         QCOMPARE(callback->frameGenerationStats().value(QStringLiteral("status")).toString(),
                  QStringLiteral("active"));
@@ -540,6 +540,118 @@ private slots:
         QCOMPARE(m_validationErrors.load(), 0);
 #else
         QSKIP("Native frame generation integration requires D3D11 or Vulkan");
+#endif
+    }
+
+    void fourTimesPairKeepsEveryGeneratedFrameSelectable()
+    {
+#if defined(Q_OS_WIN) || (QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>))
+        // A 4x pair selects the two history frames and three generated frames in turn; the
+        // presenter must hold them all (it used to keep three slots: history plus midpoint),
+        // otherwise the first unselectable frame disables generation with "unavailable".
+        Producer producer;
+#if !defined(Q_OS_WIN)
+        producer.instance = &m_instance;
+#endif
+        producerToCreate = &producer;
+        const auto resetProducer = qScopeGuard([] { producerToCreate = nullptr; });
+        NativeStreamRuntime runtime(producerApi());
+        QSignalSpy errors(&runtime, &NativeStreamRuntime::presentationError);
+        QVERIFY(runtime.start());
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                              {QStringLiteral("id"), QStringLiteral("four-times-start")}}));
+        QTRY_VERIFY(runtime.presentationAllowed());
+
+        const QSize size(64, 64);
+        auto sourceTexture = std::unique_ptr<QRhiTexture>(m_rhi->newTexture(QRhiTexture::RGBA8, size));
+        QVERIFY(sourceTexture->create());
+        producer.sourceTexture = sourceTexture.get();
+        QImage image(size, QImage::Format_RGBA8888);
+        image.fill(QColor(64, 191, 128, 255));
+        auto texture = std::unique_ptr<QRhiTexture>(m_rhi->newTexture(
+            QRhiTexture::RGBA8, size, 1, QRhiTexture::RenderTarget | QRhiTexture::UsedAsTransferSource));
+        QVERIFY(texture->create());
+        auto depth = std::unique_ptr<QRhiRenderBuffer>(m_rhi->newRenderBuffer(
+            QRhiRenderBuffer::DepthStencil, size));
+        QVERIFY(depth->create());
+        QRhiTextureRenderTargetDescription description(QRhiColorAttachment(texture.get()));
+        description.setDepthStencilBuffer(depth.get());
+        auto target = std::unique_ptr<QRhiTextureRenderTarget>(m_rhi->newTextureRenderTarget(description));
+        auto pass = std::unique_ptr<QRhiRenderPassDescriptor>(target->newCompatibleRenderPassDescriptor());
+        target->setRenderPassDescriptor(pass.get());
+        QVERIFY(target->create());
+        auto callback = createNativeStreamRenderCallback(&runtime);
+        const auto release = qScopeGuard([&] { callback->releaseResources(); });
+        // A 1000 Hz display keeps the pacer's lead shorter than every 4x slot.
+        callback->setFrameGeneration(4, 1000.0);
+        QMatrix4x4 matrix = m_rhi->clipSpaceCorrMatrix();
+        matrix.ortho(0, size.width(), size.height(), 0, -1, 1);
+        const QRectF bounds(QPointF(0, 0), QSizeF(size));
+        callback->setComposition(matrix, bounds, bounds, 1);
+
+        const auto present = [&](const QImage &upload) {
+            QRhiCommandBuffer *cb = nullptr;
+            if (m_rhi->beginOffscreenFrame(&cb) != QRhi::FrameOpSuccess) return false;
+            if (!upload.isNull()) {
+                auto *updates = m_rhi->nextResourceUpdateBatch();
+                updates->uploadTexture(producer.sourceTexture, upload);
+                cb->resourceUpdate(updates);
+            }
+            callback->initialize(m_rhi.get(), cb, target.get());
+            callback->prepareFrame(cb);
+            cb->beginPass(target.get(), Qt::black, {1.0f, 0});
+            cb->setViewport(QRhiViewport(0, 0, size.width(), size.height()));
+            cb->setScissor(QRhiScissor(0, 0, size.width(), size.height()));
+            callback->recordFrame(cb, bounds.toRect());
+            cb->endPass();
+            QRhiReadbackResult readback;
+            bool completed = false;
+            readback.completed = [&] { completed = true; };
+            auto *updates = m_rhi->nextResourceUpdateBatch();
+            updates->readBackTexture(QRhiReadbackDescription(texture.get()), &readback);
+            cb->resourceUpdate(updates);
+            const auto ended = m_rhi->endOffscreenFrame();
+            callback->finishFrame();
+            callback->frameSwapped();
+            if (ended != QRhi::FrameOpSuccess || !completed
+                || readback.data.size() != size.width() * size.height() * 4)
+                return false;
+            // Every frame of a flat scene, generated or not, must show the scene colour.
+            const auto *pixel = reinterpret_cast<const unsigned char *>(readback.data.constData())
+                + (32 * size.width() + 32) * 4;
+            return qAbs(int(pixel[0]) - 64) <= 2 && qAbs(int(pixel[1]) - 191) <= 2
+                && qAbs(int(pixel[2]) - 128) <= 2 && pixel[3] == 255;
+        };
+
+        int generatedPresents = 0;
+        for (quint64 sequence = 1; sequence <= 8; ++sequence) {
+            producer.next = OpenNowStreamerFrameInfo{uint32_t(size.width()), uint32_t(size.height()),
+                                                     sequence, 1'000'000'000 + (sequence - 1) * 20'000'000};
+            QVERIFY2(present(sequence == 1 ? image : QImage()), "Original and generated frames must present");
+            // Drain the pair's schedule: generated frames 2 and 3, then the original.
+            for (int drained = 0; callback->needsFrame() && drained < 24; ++drained) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                QVERIFY(present({}));
+                ++generatedPresents;
+            }
+            QVERIFY(!callback->needsFrame());
+            QCoreApplication::processEvents();
+            QCOMPARE(errors.size(), 0);
+            QVERIFY2(callback->frameGenerationStats().value(QStringLiteral("status")).toString()
+                         != QStringLiteral("unavailable"),
+                     "The presenter must keep every frame of a 4x pair selectable");
+            std::this_thread::sleep_for(std::chrono::milliseconds(6));
+        }
+        QCOMPARE(callback->frameGenerationStats().value(QStringLiteral("status")).toString(),
+                 QStringLiteral("active"));
+        QCOMPARE(callback->frameGenerationStats().value(QStringLiteral("effectiveFactor")).toInt(), 4);
+        QVERIFY2(generatedPresents >= 3, "A 4x pair presents three generated frames before the original");
+        callback->releaseResources();
+        QCOMPARE(producer.shutdownCount, 1);
+        QVERIFY(runtime.shutdown());
+        QCoreApplication::processEvents();
+        QCOMPARE(errors.size(), 0);
+        QCOMPARE(m_validationErrors.load(), 0);
 #endif
     }
 
@@ -577,8 +689,8 @@ private slots:
         QTRY_VERIFY(runtime.presentationAllowed());
 
         const QSize size = moving ? QSize(320, 224) : QSize(64, 64);
-        std::array<QImage, 17> sources;
-        std::array<QImage, 17> halfway;
+        std::array<QImage, 18> sources;
+        std::array<QImage, 18> halfway;
         std::unique_ptr<QRhiTexture> sourceTexture;
         if (moving || m_rhi->backend() == QRhi::D3D11) {
             for (int i = 0; i < int(sources.size()); ++i) {
@@ -608,7 +720,7 @@ private slots:
         QVERIFY(target->create());
         auto callback = createNativeStreamRenderCallback(&runtime);
         const auto release = qScopeGuard([&] { callback->releaseResources(); });
-        callback->setFrameGeneration(enabled, 165.0);
+        callback->setFrameGeneration(enabled ? 2 : 0, 165.0);
         QMatrix4x4 matrix = m_rhi->clipSpaceCorrMatrix();
         matrix.ortho(0, size.width(), size.height(), 0, -1, 1);
         const QRectF bounds(QPointF(0, 0), QSizeF(size));
@@ -736,7 +848,7 @@ private slots:
             QVERIFY2(generatedPairs >= 3, "Production callback never sustained frame generation from native source arrivals");
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
             producer.next = OpenNowStreamerFrameInfo{uint32_t(size.width()), uint32_t(size.height()),
-                                                     14, timestamp};
+                                                     15, timestamp}; // two skipped frames: a single skip is tolerated
             QVERIFY(present());
             QCOMPARE(callback->frameGenerationStats().value(QStringLiteral("status")).toString(),
                      QStringLiteral("discontinuity"));
@@ -745,7 +857,7 @@ private slots:
                      QStringLiteral("sequence-gap"));
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
             producer.next = OpenNowStreamerFrameInfo{uint32_t(size.width()), uint32_t(size.height()),
-                                                     15, 2'000'000'000};
+                                                     16, 2'000'000'000};
             QVERIFY(present());
             if (callback->needsFrame()) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -754,7 +866,7 @@ private slots:
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
             producer.next = OpenNowStreamerFrameInfo{uint32_t(size.width()), uint32_t(size.height()),
-                                                     16, 1'999'999'999};
+                                                     17, 1'999'999'999};
             QVERIFY(present());
             QCOMPARE(callback->frameGenerationStats().value(QStringLiteral("status")).toString(),
                      QStringLiteral("discontinuity"));

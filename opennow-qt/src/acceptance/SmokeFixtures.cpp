@@ -395,6 +395,34 @@ int AcceptanceSession::prepareWindow()
                     stats->setProperty("metricsOpen", true);
             });
         }
+        if (m_arguments.contains(u"--smoke-frame-generation-dialog"_s)) {
+            // Seed a measurement under the key the shell computes, so the capability dialog
+            // shows a decided table (2 ms per generated frame on a 240 Hz display), then open it.
+            auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
+            if (!store) return EXIT_FAILURE;
+            QMetaObject::invokeMethod(store, "ensureFrameGenerationGpu");
+            QVariant key, resolution;
+            QMetaObject::invokeMethod(store, "frameGenerationProfileKey", Q_RETURN_ARG(QVariant, key));
+            auto *state = store->property("settingsOwnerState").value<QObject *>();
+            if (state) QMetaObject::invokeMethod(state, "frameGenerationResolution", Q_RETURN_ARG(QVariant, resolution));
+            const auto size = resolution.toMap();
+            const QVariantMap profile{{u"engine"_s, u"motion"_s},
+                {u"gpu"_s, state ? state->property("frameGenerationGpu").toString() : QString()},
+                {u"width"_s, size.value(u"width"_s, 1920)}, {u"height"_s, size.value(u"height"_s, 1080)},
+                {u"fps"_s, 60}, {u"refreshHz"_s, 240.0}, {u"p50Ms"_s, 1.6}, {u"p95Ms"_s, 2.0},
+                {u"p95Ms3"_s, 2.6}, {u"p95Ms4"_s, 3.2}, {u"maxMs"_s, 3.1},
+                {u"frames"_s, 180}, {u"gpuTimed"_s, false}, {u"engineMaxFactor"_s, 4},
+                {u"allowed"_s, QVariantList{2}}, {u"testedAt"_s, u"smoke"_s}, {u"version"_s, 1}};
+            const QVariantMap values{{u"frameGenerationProfiles"_s, QVariantMap{{key.toString(), profile}}},
+                {u"frameGenerationDisplayHz"_s, 240}};
+            for (auto it = values.cbegin(); it != values.cend(); ++it)
+                if (!QMetaObject::invokeMethod(store, "applySetting", Q_ARG(QVariant, QVariant(it.key())),
+                        Q_ARG(QVariant, it.value()))) return EXIT_FAILURE;
+            QTimer::singleShot(200, this, [window] {
+                auto *stream = window ? window->findChild<QObject *>(u"desktopStreamSettings"_s) : nullptr;
+                if (stream) QMetaObject::invokeMethod(stream, "openFrameGenerationDialog");
+            });
+        }
         const auto settingsScrollIndex = m_arguments.indexOf(u"--smoke-settings-scroll"_s);
         if (settingsScrollIndex >= 0) {
             if (settingsScrollIndex + 1 >= m_arguments.size()) return EXIT_FAILURE;

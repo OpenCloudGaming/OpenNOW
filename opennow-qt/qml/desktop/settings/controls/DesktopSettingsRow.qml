@@ -11,6 +11,8 @@ Item {
     property bool expandable: false
     signal expansionRequested()
     property string title: ""
+    // Short status pill next to the title, e.g. "Experimental".
+    property string badge: ""
     property string description: ""
     property string value: ""
     property int rowHeight: DesktopTokens.rowHeight
@@ -74,15 +76,42 @@ Item {
         anchors.rightMargin: root.stacked ? root.rightInset : DesktopTokens.px(20)
         y: DesktopTokens.px(10) + Math.max(0, (DesktopTokens.px(40) - height) / 2)
         spacing: DesktopTokens.px(2)
-        Text {
-            id: titleLabel
+        Row {
             width: parent.width
-            text: root.title
-            color: Theme.label
-            font.family: Theme.bodyFont
-            font.pixelSize: DesktopTokens.bodySize
-            font.weight: root.paperStyle ? Font.ExtraBold : Font.Bold
-            wrapMode: Text.WordWrap
+            spacing: DesktopTokens.px(8)
+            Text {
+                id: titleLabel
+                width: Math.min(implicitWidth, parent.width - (badgePill.visible ? badgePill.width + parent.spacing : 0))
+                text: root.title
+                color: Theme.label
+                font.family: Theme.bodyFont
+                font.pixelSize: DesktopTokens.bodySize
+                font.weight: root.paperStyle ? Font.ExtraBold : Font.Bold
+                wrapMode: Text.WordWrap
+            }
+            Rectangle {
+                id: badgePill
+                objectName: "settingsRowBadge"
+                visible: root.badge !== ""
+                anchors.verticalCenter: titleLabel.verticalCenter
+                height: DesktopTokens.px(18)
+                width: badgeLabel.implicitWidth + DesktopTokens.px(14)
+                radius: height / 2
+                color: Qt.rgba(0.96, 0.65, 0.14, 0.16)
+                border.width: 1
+                border.color: Qt.rgba(0.96, 0.65, 0.14, 0.55)
+                Text {
+                    id: badgeLabel
+                    anchors.centerIn: parent
+                    text: root.badge
+                    color: "#F5A623"
+                    font.family: Theme.bodyFont
+                    font.pixelSize: DesktopTokens.px(10)
+                    font.weight: Font.ExtraBold
+                    font.capitalization: Font.AllUppercase
+                    font.letterSpacing: 0.6
+                }
+            }
         }
         Text {
             width: parent.width

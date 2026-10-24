@@ -19,7 +19,8 @@ public:
     virtual void prepareFrame(QRhiCommandBuffer *commandBuffer) = 0;
     virtual void setComposition(const QMatrix4x4 &, const QRectF &, const QRectF &, float) {}
     virtual void setClip(bool, int) {}
-    virtual void setFrameGeneration(bool, double) {}
+    // factor: 0 = off, 2..4 = generated frames per source interval + 1; refresh rate in Hz.
+    virtual void setFrameGeneration(int, double) {}
     virtual void setUpscalingTarget(const QSize &) {}
     virtual void setFsrUpscaling(bool) {}
     virtual void setUpscalingEnhancement(int, int) {}

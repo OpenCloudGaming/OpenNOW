@@ -12,6 +12,7 @@
 #include "streaming/rendering/LinuxVulkanGraphics.h"
 #include "streaming/rendering/HdrOutput.h"
 #include "streaming/rendering/HdrChromeEffect.h"
+#include "streaming/rendering/FrameGenerationBenchmark.h"
 #ifdef OPENNOW_EMBEDDED_STREAMER
 #include "streaming/NativeStreamRuntime.h"
 #endif
@@ -293,6 +294,7 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     qmlRegisterUncreatableType<MacAwdlController>("OpenNOW", 1, 0, "MacAwdlController",
                                                 u"Use the application-owned MacAwdl instance"_s);
     MacAwdlController macAwdl;
+    FrameGenerationBenchmark frameGenerationBenchmark;
 #ifdef OPENNOW_EMBEDDED_STREAMER
     QObject::connect(&nativeStreamRuntime, &NativeStreamRuntime::streamingChanged,
                      &macAwdl, [&] { macAwdl.setStreaming(nativeStreamRuntime.streaming()); });
@@ -309,6 +311,7 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     engine.rootContext()->setContextProperty(u"GraphicsDevices"_s, &graphicsDevices);
     engine.rootContext()->setContextProperty(u"HdrOutput"_s, &hdrOutput);
     engine.rootContext()->setContextProperty(u"MacAwdl"_s, &macAwdl);
+    engine.rootContext()->setContextProperty(u"FrameGenerationBenchmark"_s, &frameGenerationBenchmark);
 #ifdef OPENNOW_EMBEDDED_STREAMER
     engine.rootContext()->setContextProperty(u"NativeStreamRuntime"_s,
                                              &nativeStreamRuntime);

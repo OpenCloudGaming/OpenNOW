@@ -234,3 +234,41 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+Framegen (FG-Legacy frame generation)
+=====================================
+
+OpenNOW's local frame generation, called FG-Legacy, is built on Framegen, the
+real-time neural frame interpolation project by MONZik: the interpolator design,
+pacing rules and capability test follow the Framegen runtime (JavaScript/WGSL,
+ported to Qt/QRhi), and the model weights are the unchanged Framegen v7-small
+release. Notices live under third_party/framegen/. FG-Legacy is planned to be
+replaced by the FlyHigh project from the same author.
+
+https://github.com/MONZikWasTaken/Framegen
+
+Runtime code: MIT License
+
+Copyright (c) 2026 Monzik Allen
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+Model weights (rt_v7s.*): non-commercial research and personal use only. See
+third_party/framegen/WEIGHTS_LICENSE.md and
+https://github.com/MONZikWasTaken/Framegen/blob/main/WEIGHTS_LICENSE.md

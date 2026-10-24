@@ -16,10 +16,34 @@ QtObject {
         return null
     }
     function run(parent) {
-        ShellStore.settings = Object.assign({}, ShellStore.settings, {fps: 60, frameGeneration: "off"})
+        // Levels stay locked until the capability test has allowed them for the current
+        // preset (resolution, frame rate, GPU, engine).
+        ShellStore.settings = Object.assign({}, ShellStore.settings,
+            {fps: 60, resolution: "1920x1080", frameGeneration: "off", frameGenerationTargetFps: 0, frameGenerationProfiles: {}})
         const two = find(parent, "settingsOption-2x")
-        check(two && two.enabled, "2x setting is selectable")
-        check(!find(parent, "settingsOption-3x"), "no 3x option")
+        const three = find(parent, "settingsOption-3x")
+        const four = find(parent, "settingsOption-4x")
+        check(two && three && four, "2x, 3x and 4x levels exist")
+        check(!two.enabled && !three.enabled && !four.enabled, "levels are locked before a capability test")
+        check(!find(parent, "frameGenerationTestButton") || find(parent, "frameGenerationTestButton").enabled,
+            "the capability test can be started")
+        // A saved level without a passing profile must not run: the surfaces stay off.
+        ShellStore.settings = Object.assign({}, ShellStore.settings, {frameGeneration: "2x"})
+        check(ShellStore.frameGenerationFactor() === 0, "an untested preset never generates frames")
+        ShellStore.settings = Object.assign({}, ShellStore.settings, {frameGeneration: "off"})
+        ShellStore.ensureFrameGenerationGpu()
+        // A measurement unlocks the levels that fit the selected rate on the display: at
+        // 60 FPS with 2.1 ms per frame every level fits the GPU, and a 180 Hz display shows
+        // 2x (120) and 3x (180) but not 4x (240).
+        const profiles = {}
+        profiles[ShellStore.settingsOwnerState.frameGenerationProfileKey()] = {
+            engine: "motion", gpu: ShellStore.settingsOwnerState.frameGenerationGpu, width: 1920, height: 1080,
+            fps: 60, refreshHz: 180, p50Ms: 1.5, p95Ms: 2.1, maxMs: 3, frames: 180, gpuTimed: true,
+            engineMaxFactor: 4, allowed: [2, 3], testedAt: "acceptance", version: 1}
+        ShellStore.settings = Object.assign({}, ShellStore.settings,
+            {frameGenerationProfiles: profiles, frameGenerationDisplayHz: 180})
+        check(two.enabled && three.enabled, "a passing profile unlocks the allowed levels")
+        check(!four.enabled, "levels the profile rules out stay locked")
         const desktop = desktopStream.createObject(parent)
         const console = consoleStream.createObject(parent)
         const surfaces = [find(desktop, "streamSurfaceHost"), find(console, "streamSurfaceHost")]
@@ -28,6 +52,20 @@ QtObject {
         check(ShellStore.settings.frameGeneration === "2x", "selection stores the exact 2x value")
         check(surfaces.every(surface => surface.frameGeneration), "both surfaces enable local generation")
         check(ShellStore.settings.fps === 60, "local generation does not raise the stream FPS")
+        // The in-stream toggle (Ctrl+G tile and shortcut) switches off and restores the choice.
+        check(ShellStore.frameGenerationQuickVisible(), "the stream menu tile shows while generation is on")
+        ShellStore.toggleFrameGeneration()
+        check(ShellStore.frameGenerationFactor() === 0 && surfaces.every(surface => !surface.frameGeneration),
+            "the toggle switches generation off at once")
+        check(ShellStore.frameGenerationQuickVisible(), "the tile stays so it can be switched back on")
+        ShellStore.toggleFrameGeneration()
+        check(ShellStore.settings.frameGeneration === "2x" && ShellStore.frameGenerationFactor() === 2,
+            "the toggle restores the 2x level")
+        ShellStore.applyStreamShortcutAction("toggle-frame-generation")
+        check(ShellStore.frameGenerationFactor() === 0 && ShellStore.streamControlMessage === qsTr("Frame generation off"),
+            "the shortcut switches generation off and reports it")
+        ShellStore.applyStreamShortcutAction("toggle-frame-generation")
+        check(ShellStore.frameGenerationFactor() === 2, "the shortcut restores generation")
         ShellStore.applySetting("frameGeneration", "off")
         check(surfaces.every(surface => !surface.frameGeneration), "both surfaces return to off")
         check(find(desktop, "streamSurfaceHost") === surfaces[0]
@@ -45,7 +83,7 @@ QtObject {
             "fallback is reflected in the output measurement")
         ShellStore.streamer = {status: "streaming", framesPerSecond: 120}
         stats.frameGenerationStats = {status: "source-rate-limit", outputFps: 120}
-        check(stats.frameGenerationState() === qsTr("120 FPS generation limit"),
+        check(stats.frameGenerationState() === qsTr("Source rate too high"),
             "the source-rate limit has an explicit status")
         check(stats.cards.find(card => card.field === "framesPerSecond").value === 120
             && stats.cards.find(card => card.field === "frameGenerationOutputFps").value === 120,

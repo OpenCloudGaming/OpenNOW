@@ -14,7 +14,7 @@ const WINDOWS_GPU_DEVICE_ID: &str = "windowsGpuDeviceId";
 const MAXIMUM_WINDOWS_GPU_DEVICE_ID_BYTES: usize = 1024;
 const MAXIMUM_BOOTSTRAP_SETTINGS_BYTES: u64 = 1024 * 1024;
 const MAXIMUM_SHORTCUT_BYTES: usize = 80;
-const SHORTCUT_KEYS: [&str; 9] = [
+const SHORTCUT_KEYS: [&str; 10] = [
     "shortcutToggleStats",
     "shortcutTogglePointerLock",
     "shortcutToggleFullscreen",
@@ -24,6 +24,7 @@ const SHORTCUT_KEYS: [&str; 9] = [
     "shortcutScreenshot",
     "shortcutToggleRecording",
     "shortcutSaveClip",
+    "shortcutToggleFrameGeneration",
 ];
 const RESERVED_SHORTCUTS: [&str; 2] = ["Ctrl+G", "Shift+F3"];
 const HDR_NOTICE_SHOWN: &str = "hdrNoticeShownGameIds";
@@ -512,7 +513,31 @@ impl SettingsStore {
                 self.values.insert(key.to_owned(), json!("auto"));
             }
         }
-        normalize_choice(&mut self.values, "frameGeneration", &["off", "2x"], "off");
+        normalize_choice(
+            &mut self.values,
+            "frameGeneration",
+            &["off", "2x", "3x", "4x"],
+            "off",
+        );
+        normalize_frame_generation_profiles(&mut self.values);
+        // How the output rate is chosen. Profiles saved before the mode existed carry only
+        // the level, so a saved level means multiplier mode.
+        normalize_choice(
+            &mut self.values,
+            "frameGenerationMode",
+            &["off", "multiplier", "target", "display"],
+            "off",
+        );
+        if self.values["frameGenerationMode"] == json!("off")
+            && self.values["frameGeneration"] != json!("off")
+        {
+            self.values
+                .insert("frameGenerationMode".to_owned(), json!("multiplier"));
+        }
+        // 0 = follow the level; otherwise the requested displayed frame rate.
+        clamp_integer(&mut self.values, "frameGenerationTargetFps", 0, 1000, 0);
+        // 0 = detect from the display OpenNOW is on; otherwise a manual refresh override.
+        clamp_integer(&mut self.values, "frameGenerationDisplayHz", 0, 1000, 0);
         let dlss_overrides = crate::dlss::normalize(&self.values[crate::dlss::SETTING]);
         self.values
             .insert(crate::dlss::SETTING.to_owned(), dlss_overrides);
@@ -1100,6 +1125,108 @@ fn normalize_controller_profiles(value: &Value) -> Map<String, Value> {
         .collect()
 }
 
+/// Measured frame-generation capability per preset. Keys are opaque strings composed by
+/// the shell (engine, GPU, resolution and frame rate); values record the measurement and
+/// the factors that fit. Entries are bounded in count, key length and field ranges, and
+/// anything that is not a well-formed profile is dropped.
+pub const FRAME_GENERATION_PROFILES: &str = "frameGenerationProfiles";
+const MAXIMUM_FRAME_GENERATION_PROFILES: usize = 64;
+const MAXIMUM_FRAME_GENERATION_PROFILE_KEY_BYTES: usize = 192;
+const MAXIMUM_FRAME_GENERATION_TEXT_BYTES: usize = 128;
+
+fn normalize_frame_generation_profiles(values: &mut Map<String, Value>) {
+    let mut normalized = Map::new();
+    if let Some(profiles) = values[FRAME_GENERATION_PROFILES].as_object() {
+        let mut keys: Vec<&String> = profiles.keys().collect();
+        keys.sort();
+        for key in keys {
+            if normalized.len() >= MAXIMUM_FRAME_GENERATION_PROFILES {
+                break;
+            }
+            if key.is_empty()
+                || key.len() > MAXIMUM_FRAME_GENERATION_PROFILE_KEY_BYTES
+                || key.contains('\0')
+            {
+                continue;
+            }
+            let Some(profile) = profiles[key].as_object() else {
+                continue;
+            };
+            let text = |field: &str| -> String {
+                profile
+                    .get(field)
+                    .and_then(Value::as_str)
+                    .filter(|value| {
+                        value.len() <= MAXIMUM_FRAME_GENERATION_TEXT_BYTES && !value.contains('\0')
+                    })
+                    .unwrap_or("")
+                    .to_owned()
+            };
+            let number = |field: &str, minimum: f64, maximum: f64| -> f64 {
+                profile
+                    .get(field)
+                    .and_then(Value::as_f64)
+                    .filter(|value| value.is_finite())
+                    .map(|value| value.clamp(minimum, maximum))
+                    .unwrap_or(0.0)
+            };
+            let mut allowed: Vec<i64> = profile
+                .get("allowed")
+                .and_then(Value::as_array)
+                .map(|factors| {
+                    factors
+                        .iter()
+                        .filter_map(Value::as_i64)
+                        .filter(|factor| (2..=4).contains(factor))
+                        .collect()
+                })
+                .unwrap_or_default();
+            allowed.sort_unstable();
+            allowed.dedup();
+            let (Some(width), Some(height)) = (
+                profile.get("width").and_then(Value::as_i64),
+                profile.get("height").and_then(Value::as_i64),
+            ) else {
+                continue;
+            };
+            if !(16..=16_384).contains(&width) || !(16..=16_384).contains(&height) {
+                continue;
+            }
+            let fps = profile
+                .get("fps")
+                .and_then(Value::as_i64)
+                .map(|fps| fps.clamp(0, 360))
+                .unwrap_or(0);
+            normalized.insert(
+                key.clone(),
+                json!({
+                    "engine": text("engine"),
+                    "gpu": text("gpu"),
+                    "width": width,
+                    "height": height,
+                    "fps": fps,
+                    "refreshHz": number("refreshHz", 0.0, 1_000.0),
+                    "p50Ms": number("p50Ms", 0.0, 10_000.0),
+                    "p95Ms": number("p95Ms", 0.0, 10_000.0),
+                    "p95Ms3": number("p95Ms3", 0.0, 10_000.0),
+                    "p95Ms4": number("p95Ms4", 0.0, 10_000.0),
+                    "maxMs": number("maxMs", 0.0, 10_000.0),
+                    "frames": number("frames", 0.0, 1_000_000.0) as i64,
+                    "gpuTimed": profile.get("gpuTimed").and_then(Value::as_bool).unwrap_or(false),
+                    "engineMaxFactor": profile.get("engineMaxFactor").and_then(Value::as_i64).map(|factor| factor.clamp(2, 4)).unwrap_or(2),
+                    "allowed": allowed,
+                    "testedAt": text("testedAt"),
+                    "version": profile.get("version").and_then(Value::as_i64).unwrap_or(1).clamp(1, 1_000),
+                }),
+            );
+        }
+    }
+    values.insert(
+        FRAME_GENERATION_PROFILES.to_owned(),
+        Value::Object(normalized),
+    );
+}
+
 fn normalize_nested_settings(values: &mut Map<String, Value>) {
     let mut interpolation = values["frameInterpolation"]
         .as_object()
@@ -1201,7 +1328,7 @@ fn defaults() -> Map<String, Value> {
     json!({
         "onboardingCompleted":false,
         "resolution":"1920x1080", "aspectRatio":"16:9", "posterSizeScale":1.05,
-        "fps":60, "frameGeneration":"off", "upscaling":"off", "upscalingSharpness":10, "upscalingDenoise":0,
+        "fps":60, "frameGeneration":"off", "frameGenerationMode":"off", "frameGenerationTargetFps":0, "frameGenerationDisplayHz":0, "frameGenerationProfiles":{}, "upscaling":"off", "upscalingSharpness":10, "upscalingDenoise":0,
         "maxBitrateMbps":75, "saveBandwidth":false, "recordingBitrateMbps":null,
         "recordingResolution":"720p", "recordingFps":30, "streamClientMode":"native",
         "replayBufferEnabled":false, "replayBufferSeconds":30, "replayBufferMemoryMiB":256,
@@ -1220,7 +1347,7 @@ fn defaults() -> Map<String, Value> {
         "shortcutToggleFullscreen":"F11", "shortcutStopStream":"Ctrl+Shift+Q",
         "shortcutToggleAntiAfk":"Ctrl+Shift+K", "shortcutToggleMicrophone":"Ctrl+Shift+M",
         "shortcutScreenshot":"Ctrl+F11", "shortcutToggleRecording":"F12",
-        "shortcutSaveClip":"Ctrl+F12",
+        "shortcutSaveClip":"Ctrl+F12", "shortcutToggleFrameGeneration":"Ctrl+Shift+G",
         "microphoneMode":"disabled", "microphoneDeviceId":"", "hideStreamButtons":false,
         "muteWhenOutOfFocus":false, "backgroundStreamReminder":false,
         "showAntiAfkIndicator":true, "antiAfkReminderEveryMinutes":15,
@@ -3052,7 +3179,7 @@ mod tests {
     }
 
     #[test]
-    fn frame_generation_is_limited_to_off_or_2x() {
+    fn frame_generation_accepts_known_factors_only() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -3061,18 +3188,60 @@ mod tests {
         let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
 
         assert_eq!(store.all()["frameGeneration"], json!("off"));
+        for factor in ["2x", "3x", "4x"] {
+            assert_eq!(
+                store.set("frameGeneration", json!(factor)).unwrap(),
+                json!(factor)
+            );
+        }
         assert_eq!(
-            store.set("frameGeneration", json!("2x")).unwrap(),
-            json!("2x")
-        );
-        assert_eq!(
-            store.set("frameGeneration", json!("3x")).unwrap(),
+            store.set("frameGeneration", json!("5x")).unwrap(),
             json!("off")
         );
         assert_eq!(
             store.set("frameGeneration", json!(true)).unwrap(),
             json!("off")
         );
+        assert_eq!(store.all()["frameGenerationTargetFps"], json!(0));
+        assert_eq!(
+            store.set("frameGenerationTargetFps", json!(240)).unwrap(),
+            json!(240)
+        );
+        assert_eq!(
+            store.set("frameGenerationTargetFps", json!(-5)).unwrap(),
+            json!(0)
+        );
+        assert_eq!(
+            store.set("frameGenerationTargetFps", json!(5000)).unwrap(),
+            json!(1000)
+        );
+        assert_eq!(store.all()["frameGenerationDisplayHz"], json!(0));
+        assert_eq!(
+            store.set("frameGenerationDisplayHz", json!(239)).unwrap(),
+            json!(239)
+        );
+        assert_eq!(
+            store
+                .set("frameGenerationDisplayHz", json!("fast"))
+                .unwrap(),
+            json!(0)
+        );
+        // Mode: off by default; a saved level without a mode means multiplier mode.
+        store.set("frameGeneration", json!("off")).unwrap();
+        store.set("frameGenerationMode", json!("off")).unwrap();
+        assert_eq!(store.all()["frameGenerationMode"], json!("off"));
+        assert_eq!(
+            store.set("frameGenerationMode", json!("display")).unwrap(),
+            json!("display")
+        );
+        assert_eq!(
+            store.set("frameGenerationMode", json!("bogus")).unwrap(),
+            json!("off")
+        );
+        store.set("frameGeneration", json!("2x")).unwrap();
+        assert_eq!(store.all()["frameGenerationMode"], json!("multiplier"));
+        store.set("frameGenerationMode", json!("target")).unwrap();
+        assert_eq!(store.all()["frameGenerationMode"], json!("target"));
 
         fs::write(
             directory.join("settings.json"),
@@ -3081,6 +3250,70 @@ mod tests {
         .unwrap();
         let store = SettingsStore::load(Some(directory.clone())).unwrap();
         assert_eq!(store.all()["frameGeneration"], json!("off"));
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn frame_generation_profiles_are_typed_and_bounded() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-frame-generation-profiles-{unique}"));
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()[FRAME_GENERATION_PROFILES], json!({}));
+
+        let stored = store
+            .set(
+                FRAME_GENERATION_PROFILES,
+                json!({
+                    "motion|RTX|1920x1080|60": {
+                        "engine": "motion", "gpu": "RTX", "width": 1920, "height": 1080, "fps": 60,
+                        "refreshHz": 239.0, "p50Ms": 1.5, "p95Ms": 2.25, "maxMs": 4.0, "frames": 180,
+                        "gpuTimed": true, "allowed": [4, 2, 2, 7, "x"], "testedAt": "2026-10-23T20:00:00Z",
+                        "version": 1, "unexpected": "dropped"
+                    },
+                    "no-size": {"engine": "motion", "fps": 60},
+                    "": {"width": 1920, "height": 1080},
+                    "not-an-object": 3,
+                    "clamped": {"width": 1920, "height": 1080, "fps": 9999, "p95Ms": -5, "refreshHz": 1e9}
+                }),
+            )
+            .unwrap();
+        let profiles = stored.as_object().unwrap();
+        assert_eq!(profiles.len(), 2);
+        let profile = &profiles["motion|RTX|1920x1080|60"];
+        assert_eq!(profile["allowed"], json!([2, 4]));
+        assert_eq!(profile["p95Ms"], json!(2.25));
+        assert_eq!(profile["frames"], json!(180));
+        assert_eq!(profile["engineMaxFactor"], json!(2));
+        assert!(profile.get("unexpected").is_none());
+        let clamped = &profiles["clamped"];
+        assert_eq!(clamped["fps"], json!(360));
+        assert_eq!(clamped["p95Ms"], json!(0.0));
+        assert_eq!(clamped["refreshHz"], json!(1000.0));
+        assert_eq!(clamped["allowed"], json!([]));
+
+        let mut many = Map::new();
+        for index in 0..100 {
+            many.insert(
+                format!("profile-{index:03}"),
+                json!({"width": 1280, "height": 720, "fps": 60}),
+            );
+        }
+        let stored = store
+            .set(FRAME_GENERATION_PROFILES, Value::Object(many))
+            .unwrap();
+        assert_eq!(
+            stored.as_object().unwrap().len(),
+            MAXIMUM_FRAME_GENERATION_PROFILES
+        );
+        assert_eq!(
+            store
+                .set(FRAME_GENERATION_PROFILES, json!("invalid"))
+                .unwrap(),
+            json!({})
+        );
         let _ = fs::remove_dir_all(directory);
     }
 
