@@ -65,3 +65,12 @@ number and POC wraps, IDR discard, MMCO5, flush/restart, format renegotiation,
 inferred and invalid reorder restrictions, and an upstream interlaced fixture. They do not
 decode pixels or measure live GPU latency. The unit tests also cover long-term
 references, gap pictures, non-reference cleanup, and incomplete field pairs.
+
+## Initial VAContext size
+
+`VaapiBackend::new` created its placeholder VAContext at 16x16. Mesa radeonsi
+(AMD VCN, e.g. Renoir/Cezanne) rejects H.264 decode contexts below 64x64 with
+`VA_STATUS_ERROR_RESOLUTION_NOT_SUPPORTED`, so the constructor panicked and
+OpenNOW's capability probe reported VA-API as unavailable on those GPUs. The
+placeholder is replaced by `new_sequence` once the SPS arrives, so its size is
+arbitrary; it is now `INITIAL_CONTEXT_SIZE` (64), which OpenNOW's probe shares.

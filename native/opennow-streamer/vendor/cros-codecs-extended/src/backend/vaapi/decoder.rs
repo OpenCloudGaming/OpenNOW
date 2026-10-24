@@ -199,12 +199,18 @@ pub struct VaapiBackend<V: VideoFrame> {
     _phantom_data: PhantomData<V>,
 }
 
+/// Edge length of the placeholder VAContext created before the first SPS.
+pub const INITIAL_CONTEXT_SIZE: u32 = 64;
+
 impl<V: VideoFrame> VaapiBackend<V> {
     pub(crate) fn new(display: Arc<libva::Display>, supports_context_reuse: bool) -> Self {
+        // Placeholder until the first SPS arrives (`new_sequence` replaces the
+        // context). Mesa radeonsi (AMD VCN) rejects H.264 decode contexts
+        // smaller than 64x64 with VA_STATUS_ERROR_RESOLUTION_NOT_SUPPORTED.
         let init_stream_info = StreamInfo {
             format: DecodedFormat::NV12,
-            coded_resolution: Resolution::from((16, 16)),
-            display_resolution: Resolution::from((16, 16)),
+            coded_resolution: Resolution::from((INITIAL_CONTEXT_SIZE, INITIAL_CONTEXT_SIZE)),
+            display_resolution: Resolution::from((INITIAL_CONTEXT_SIZE, INITIAL_CONTEXT_SIZE)),
             min_num_frames: 1,
         };
         let config = display
