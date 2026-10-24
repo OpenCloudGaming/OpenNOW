@@ -242,6 +242,144 @@ final class OpenNOWiOSParityTests: XCTestCase {
     }
 
     @MainActor
+    func testVirtualStickCancellationAndInterruptionReleaseAxesWithoutClicking() {
+        var vector = CGPoint.zero
+        var clicks: [Bool] = []
+        let stick = NativeStreamVirtualStickTouchControl(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
+        stick.changed = { vector = CGPoint(x: $0, y: $1) }
+        stick.pressed = { clicks.append($0) }
+        stick.beginTouch(at: CGPoint(x: 50, y: 50))
+        stick.moveTouch(to: CGPoint(x: 100, y: 50))
+        XCTAssertEqual(vector.x, 1, accuracy: 0.001)
+        stick.endTouch(cancelled: true)
+        XCTAssertEqual(vector, .zero)
+        XCTAssertTrue(clicks.isEmpty)
+        stick.moveTouch(to: CGPoint(x: 100, y: 50))
+        XCTAssertEqual(vector, .zero, "Moves from a cancelled finger must not revive its input")
+        stick.beginTouch(at: CGPoint(x: 50, y: 50))
+        stick.moveTouch(to: CGPoint(x: 50, y: 0))
+        XCTAssertEqual(vector.y, 1, accuracy: 0.001)
+        NotificationCenter.default.post(name: UIApplication.willResignActiveNotification, object: nil)
+        XCTAssertEqual(vector, .zero)
+        XCTAssertTrue(clicks.isEmpty)
+    }
+
+    @MainActor
+    func testVirtualStickRemovalReleasesAndDynamicOriginResetsForNextTouch() async throws {
+        var vector = CGPoint.zero
+        var clicks: [Bool] = []
+        let stick = NativeStreamVirtualStickTouchControl(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
+        stick.followsFinger = true
+        stick.changed = { vector = CGPoint(x: $0, y: $1) }
+        stick.pressed = { clicks.append($0) }
+        stick.beginTouch(at: CGPoint(x: 10, y: 10))
+        stick.moveTouch(to: CGPoint(x: 44, y: 10))
+        XCTAssertEqual(vector.x, 1, accuracy: 0.001)
+        stick.didMoveToWindow() // Detached from the hierarchy.
+        XCTAssertEqual(vector, .zero)
+        stick.beginTouch(at: CGPoint(x: 70, y: 80))
+        XCTAssertEqual(vector, .zero, "A new finger gets a fresh dynamic origin")
+        stick.endTouch(cancelled: false)
+        XCTAssertEqual(clicks, [true])
+        stick.endTouch(cancelled: true)
+        XCTAssertEqual(clicks, [true, false])
+        try await Task.sleep(nanoseconds: 90_000_000)
+        XCTAssertEqual(clicks, [true, false], "An old delayed click must not survive cancellation")
+    }
+
+    @MainActor
+    func testConsoleHomeAndXboxEditorRenderInTheirPresentations() async throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = try XCTUnwrap(scene.windows.first(where: \.isKeyWindow))
+        let previous = window.rootViewController
+        var presenter: NativeStreamPresentationController?
+        defer {
+            presenter?.tearDown()
+            window.rootViewController = previous
+        }
+        let store = OpenNOWStore()
+        store.installDebugStorePreview()
+        store.settings.consoleHomeEnabled = true
+        let home = HomeView().environmentObject(store)
+            .environmentObject(CatalogControllerShortcutCoordinator())
+            .openNowTheme(store.settings)
+        window.rootViewController = UIHostingController(rootView: home)
+        window.makeKeyAndVisible()
+        try await Task.sleep(nanoseconds: 400_000_000)
+        func capture(_ name: String) {
+            window.layoutIfNeeded()
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+                window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+            }
+            let attachment = XCTAttachment(image: image)
+            attachment.name = name
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+        capture("Console Home")
+        let editor = NativeStreamPresentationController(content: AnyView(NativeStreamTouchLayoutPreview()))
+        presenter = editor
+        window.rootViewController = editor
+        for _ in 0..<30 {
+            if scene.interfaceOrientation.isLandscape { break }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        XCTAssertTrue(scene.interfaceOrientation.isLandscape)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        capture("Xbox Layout Editor")
+        editor.tearDown()
+        window.rootViewController = previous
+        scene.requestGeometryUpdate(.iOS(interfaceOrientations: .portrait))
+        for _ in 0..<30 {
+            if scene.interfaceOrientation.isPortrait { break }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+    }
+
+    @MainActor
+    func testStreamHostingControllerEnforcesLandscapeAndRestoresOrientationPolicy() {
+        let host = NativeStreamHostingController(rootView: AnyView(Color.black))
+        StreamOrientation.setStreaming(true)
+        XCTAssertEqual(StreamOrientation.supportedOrientations, .landscape)
+        XCTAssertEqual(host.supportedInterfaceOrientations, .landscape)
+        host.releaseSystemPreferences()
+        XCTAssertFalse(StreamOrientation.isStreaming)
+        XCTAssertTrue(StreamOrientation.supportedOrientations.contains(.portrait))
+        XCTAssertTrue(host.supportedInterfaceOrientations.contains(.portrait))
+    }
+
+    func testLibraryIncludesOwnedCatalogVariantsWithoutAddingUnownedGames() {
+        let synced = Self.makeGame(title: "Synced", controls: [])
+        let owned = Self.makeGame(title: "Catalog owned", controls: [], options: [
+            GameLaunchOption(storefront: "STEAM", appId: "2", supportedControls: [], libraryStatus: "NOT_OWNED"),
+            GameLaunchOption(storefront: "EPIC", appId: "3", supportedControls: [], libraryStatus: "PLATFORM_SYNC")
+        ])
+        let unowned = Self.makeGame(title: "Not owned", controls: [], options: [
+            GameLaunchOption(storefront: "STEAM", appId: "4", supportedControls: [], libraryStatus: "NOT_OWNED")
+        ])
+        let imported = Self.makeGame(title: "Imported", controls: [])
+        let games = LibraryGameCollection.games(synced: [synced], catalog: [owned, unowned, synced],
+                                                imported: [owned, imported])
+        XCTAssertEqual(games.map(\.title), ["Synced", "Catalog owned", "Imported"])
+    }
+
+    func testXboxLayoutPersistsSeparatelyAndUsesOffsetSticks() throws {
+        var settings = TouchSettings()
+        settings.controllerPreset = .xbox
+        let restored = try JSONDecoder().decode(TouchSettings.self, from: JSONEncoder().encode(settings))
+        XCTAssertEqual(restored, settings)
+        XCTAssertTrue(restored.controllerPreset.usesIndependentControls)
+        let left = NativeStreamPresetControl.leftStick.point(for: .xbox)
+        let right = NativeStreamPresetControl.rightStick.point(for: .xbox)
+        XCTAssertLessThan(left.y, right.y)
+        XCTAssertEqual(NativeStreamPresetControl.a.button, .a)
+        XCTAssertNotEqual(NativeStreamPresetControl.a.layoutID(for: .xbox),
+                          NativeStreamPresetControl.a.layoutID(for: .geForceNOW))
+        XCTAssertEqual(NativeStreamPresetControl.a.layoutID(for: .geForceNOW), "geForceNOW.a",
+                       "Existing saved positions must retain their keys")
+    }
+
+    @MainActor
     func testQuickVirtualButtonTapSurvivesHostPollingAndReleases() async throws {
         var events: [Bool] = []
         let button = NativeStreamVirtualButtonTouchControl(frame: .zero)
@@ -1194,6 +1332,14 @@ final class OpenNOWiOSParityTests: XCTestCase {
         // Check the scene's actual status bar, in the app's main window.
         let window = try XCTUnwrap(scene.windows.first(where: \.isKeyWindow))
         let priorController = window.rootViewController
+        // A preceding rendering test may leave the simulator in landscape, where iPhone
+        // intentionally hides its status bar. Start in portrait to verify restoration.
+        scene.requestGeometryUpdate(.iOS(interfaceOrientations: .portrait))
+        for _ in 0..<30 {
+            if scene.interfaceOrientation.isPortrait { break }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        XCTAssertTrue(scene.interfaceOrientation.isPortrait)
         func waitForStatusBar(hidden: Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
             // UIKit updates the scene asynchronously, including its visibility animation.
             for _ in 0..<40 {
@@ -3304,7 +3450,7 @@ final class OpenNOWiOSParityTests: XCTestCase {
         let touch = try XCTUnwrap(json["touch"] as? [String: Any])
         XCTAssertEqual(touch["controllerPreset"] as? String, "standard")
         XCTAssertEqual(try JSONDecoder().decode(AppSettings.self, from: encoded), settings)
-        XCTAssertEqual(TouchControllerPreset.allCases, [.standard, .geForceNOW])
+        XCTAssertEqual(TouchControllerPreset.allCases, [.standard, .geForceNOW, .xbox])
     }
 
     func testGeForceNOWPresetKeepsSeparateControlsAndPersistsCustomPositions() throws {
@@ -3314,18 +3460,18 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertTrue(settings.controllerPreset.usesIndependentControls)
         XCTAssertFalse(settings.controllerPreset.supportsControlModeSelection)
         XCTAssertEqual(TouchControllerPreset.standard.next, .geForceNOW)
-        XCTAssertEqual(TouchControllerPreset.geForceNOW.next, .standard)
-        XCTAssertEqual(GeForceNOWTouchControl.allCases.count, 19)
-        XCTAssertEqual(Set(GeForceNOWTouchControl.allCases.map(\.id)).count, 19)
-        XCTAssertEqual(GeForceNOWTouchControl.back.button, .options)
-        XCTAssertEqual(GeForceNOWTouchControl.start.button, .menu)
-        XCTAssertEqual(GeForceNOWTouchControl.lb.button, .leftShoulder)
-        XCTAssertEqual(GeForceNOWTouchControl.rb.button, .rightShoulder)
-        XCTAssertEqual(GeForceNOWTouchControl.l3.button, .leftStick)
-        XCTAssertEqual(GeForceNOWTouchControl.r3.button, .rightStick)
-        XCTAssertNil(GeForceNOWTouchControl.hub.button) // Opens local controls, without sending a host button.
+        XCTAssertEqual(TouchControllerPreset.geForceNOW.next, .xbox)
+        XCTAssertEqual(NativeStreamPresetControl.allCases.count, 19)
+        XCTAssertEqual(Set(NativeStreamPresetControl.allCases.map(\.id)).count, 19)
+        XCTAssertEqual(NativeStreamPresetControl.back.button, .options)
+        XCTAssertEqual(NativeStreamPresetControl.start.button, .menu)
+        XCTAssertEqual(NativeStreamPresetControl.lb.button, .leftShoulder)
+        XCTAssertEqual(NativeStreamPresetControl.rb.button, .rightShoulder)
+        XCTAssertEqual(NativeStreamPresetControl.l3.button, .leftStick)
+        XCTAssertEqual(NativeStreamPresetControl.r3.button, .rightStick)
+        XCTAssertNil(NativeStreamPresetControl.hub.button) // Opens local controls, without sending a host button.
         var layout = TouchControlLayout.standard
-        layout.independentPositions[GeForceNOWTouchControl.hub.id] = .init(x: 0.6, y: 0.1)
+        layout.independentPositions[NativeStreamPresetControl.hub.layoutID(for: .geForceNOW)] = .init(x: 0.6, y: 0.1)
         layout.independentPositions["faceA"] = .init(x: 0.7, y: 0.8)
         XCTAssertEqual(try JSONDecoder().decode(TouchControlLayout.self, from: JSONEncoder().encode(layout)), layout)
     }

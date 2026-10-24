@@ -21,10 +21,18 @@ struct ContentView: View {
                     }
             } else if ProcessInfo.processInfo.arguments.contains("--opennow-intro-preview") {
                 IntroSetupView(onFinish: {})
-            } else if ProcessInfo.processInfo.arguments.contains("--opennow-store-preview") {
+            } else if ProcessInfo.processInfo.arguments.contains("--opennow-touch-layout-preview") {
+                NativeStreamTouchLayoutPreview()
+            } else if ProcessInfo.processInfo.arguments.contains("--opennow-store-preview")
+                        || ProcessInfo.processInfo.arguments.contains("--opennow-console-preview") {
                 HomeView()
                     .environmentObject(previewControllerShortcuts)
-                    .task { store.installDebugStorePreview() }
+                    .task {
+                        store.installDebugStorePreview()
+                        if ProcessInfo.processInfo.arguments.contains("--opennow-console-preview") {
+                            store.settings.consoleHomeEnabled = true
+                        }
+                    }
             } else if ProcessInfo.processInfo.arguments.contains("--opennow-server-picker-preview") {
                 PrintedWasteQueueView(game: OpenNOWStore.debugStorePreviewGames[0]) { _ in }
             } else if ProcessInfo.processInfo.arguments.contains("--opennow-details-preview") {

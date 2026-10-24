@@ -43,10 +43,12 @@ final class NativeStreamPresentationController: UIViewController {
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         guard !dismantled, host.presentingViewController == nil else { return }
+        StreamOrientation.setStreaming(true)
         present(host, animated: false)
     }
 
     func tearDown() {
+        guard !dismantled else { return }
         dismantled = true
         host.releaseSystemPreferences()
         if host.presentingViewController != nil { host.dismiss(animated: false) }
@@ -62,6 +64,15 @@ final class NativeStreamHostingController: UIHostingController<AnyView> {
     }
 
     override var prefersPointerLocked: Bool { pointerCaptureRequested }
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
+        statusBarHidden ? .landscape : StreamOrientation.supportedOrientations
+    }
+    override var preferredInterfaceOrientationForPresentation: UIInterfaceOrientation { .landscapeRight }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        if statusBarHidden { StreamOrientation.setStreaming(true) }
+    }
 
     private(set) var statusBarHidden = true {
         didSet {
@@ -74,6 +85,7 @@ final class NativeStreamHostingController: UIHostingController<AnyView> {
     func releaseSystemPreferences() {
         pointerCaptureRequested = false
         statusBarHidden = false
+        StreamOrientation.setStreaming(false)
     }
 
     override var prefersStatusBarHidden: Bool { statusBarHidden }

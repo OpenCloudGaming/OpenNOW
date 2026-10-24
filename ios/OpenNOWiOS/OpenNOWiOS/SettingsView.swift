@@ -64,7 +64,7 @@ private enum SettingsCategory: String, CaseIterable, Hashable, Identifiable {
         case .input:
             return ["input", "mouse", "sensitivity", "acceleration", "scroll", "pointer", "keyboard", "layout", "language", "clipboard", "paste", "touch", "native touch", "joystick", "stick", "dead zone", "aim", "controller", "rumble", "haptics", "tutorial", "guide", "replay"]
         case .interface:
-            return ["interface", "ui", "accent", "color", "theme", "expressive", "outline", "cards", "titles", "favorites", "favourites", "store labels", "card size", "launch page", "stats", "hud", "metrics", "position", "afk", "idle", "keep awake", "server selector", "queue", "live activities", "sound", "chime", "ready", "catalog", "wallpaper", "background", "photo", "session report", "counter"]
+            return ["interface", "ui", "accent", "color", "theme", "expressive", "outline", "cards", "titles", "favorites", "favourites", "store labels", "card size", "launch page", "stats", "hud", "metrics", "position", "afk", "idle", "keep awake", "server selector", "queue", "live activities", "sound", "chime", "ready", "catalog", "wallpaper", "console", "home", "background", "photo", "session report", "counter"]
         case .advanced:
             return ["advanced", "experimental", "l4s", "diagnostics", "debug", "logs", "codec", "probe", "decoder", "decoders", "hardware", "native", "h264", "h265", "hevc", "av1"]
         case .account:
@@ -156,95 +156,94 @@ struct SettingsView: View {
                 }
                 .navigationTitle(category.title)
                 .navigationBarTitleDisplayMode(.inline)
-            }
-            .onChangeCompat(of: store.settings) { _ in
-                store.persistSettings()
-            }
-            .onChangeCompat(of: store.settings.queueLiveActivitiesEnabled) { _ in
-                store.refreshTrackedSessionSurface()
-            }
-            .onAppear {
-                enforceAvailableResolution()
-                enforceAvailableFPS()
-                enforceAvailableHDR()
-                enforceAvailableCodec()
-                applyMetalFXQualityPreset()
-            }
-            .onChangeCompat(of: store.settings.preferredAspectRatio) { _ in
-                enforceAvailableResolution()
-                applyMetalFXQualityPreset()
-            }
-            .onChangeCompat(of: store.settings.metalFXUpscalingEnabled) { enabled in
-                if enabled { applyMetalFXQualityPreset() }
-            }
-            .onChangeCompat(of: store.settings.streamerPreferences.stretchStreamToFill) { _ in
-                applyMetalFXQualityPreset()
-            }
-            .onChangeCompat(of: currentMembershipTier ?? "") { _ in
-                enforceAvailableResolution()
-                enforceAvailableFPS()
-                enforceAvailableHDR()
-                applyMetalFXQualityPreset()
-            }
-            .confirmationDialog("Reset settings?", isPresented: $showingResetConfirmation, titleVisibility: .visible) {
-                Button("Reset Settings", role: .destructive) {
-                    store.resetSettings()
-                }
-                Button("Cancel", role: .cancel) {}
-            }
-            .confirmationDialog("Reset app?", isPresented: $showingResetAppConfirmation, titleVisibility: .visible) {
-                Button("Reset App", role: .destructive) {
-                    store.resetApp()
-                    setupCompletedVersion = 0
-                }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("This clears local settings, saved accounts, launch choices, favorites, session state, and cached images on this device.")
-            }
-            .confirmationDialog("Sign out all accounts?", isPresented: $showingSignOutAllConfirmation, titleVisibility: .visible) {
-                Button("Sign Out All Accounts", role: .destructive) {
-                    store.signOutAll()
-                }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("This removes every saved GeForce NOW account from this device.")
-            }
-            .sheet(isPresented: $showingAddAccountProvider) {
-                ProviderChooserSheet(
-                    selectedProviderId: store.settings.selectedProviderIdpId,
-                    onContinue: { provider in
-                        store.selectProvider(provider)
-                        Task { await store.signIn(forceAccountSelection: true) }
+                .confirmationDialog("Reset settings?", isPresented: $showingResetConfirmation, titleVisibility: .visible) {
+                    Button("Reset Settings", role: .destructive) {
+                        store.resetSettings()
                     }
-                )
-                .environmentObject(store)
-            }
-            .alert(
-                "Disconnect account?",
-                isPresented: Binding(
-                    get: { connectorPendingDisconnect != nil },
-                    set: { isPresented in
-                        if !isPresented {
-                            connectorPendingDisconnect = nil
+                    Button("Cancel", role: .cancel) {}
+                }
+                .confirmationDialog("Reset app?", isPresented: $showingResetAppConfirmation, titleVisibility: .visible) {
+                    Button("Reset App", role: .destructive) {
+                        store.resetApp()
+                        setupCompletedVersion = 0
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("This clears local settings, saved accounts, launch choices, favorites, session state, and cached images on this device.")
+                }
+                .confirmationDialog("Sign out all accounts?", isPresented: $showingSignOutAllConfirmation, titleVisibility: .visible) {
+                    Button("Sign Out All Accounts", role: .destructive) {
+                        store.signOutAll()
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("This removes every saved GeForce NOW account from this device.")
+                }
+                .sheet(isPresented: $showingAddAccountProvider) {
+                    ProviderChooserSheet(
+                        selectedProviderId: store.settings.selectedProviderIdpId,
+                        onContinue: { provider in
+                            store.selectProvider(provider)
+                            Task { await store.signIn(forceAccountSelection: true) }
                         }
-                    }
-                )
-            ) {
-                Button("Disconnect", role: .destructive) {
-                    if let connector = connectorPendingDisconnect {
+                    )
+                    .environmentObject(store)
+                }
+                .alert(
+                    "Disconnect account?",
+                    isPresented: Binding(
+                        get: { connectorPendingDisconnect != nil },
+                        set: { isPresented in
+                            if !isPresented {
+                                connectorPendingDisconnect = nil
+                            }
+                        }
+                    ),
+                    presenting: connectorPendingDisconnect
+                ) { connector in
+                    Button("Disconnect", role: .destructive) {
                         Task { await store.disconnectAccountConnector(connector) }
+                        connectorPendingDisconnect = nil
                     }
-                    connectorPendingDisconnect = nil
+                    Button("Cancel", role: .cancel) {
+                        connectorPendingDisconnect = nil
+                    }
+                } message: { _ in
+                    Text("This removes the linked account from GeForce NOW. You can connect it again later.")
                 }
-                Button("Cancel", role: .cancel) {
-                    connectorPendingDisconnect = nil
-                }
-            } message: {
-                Text("This removes the linked account from GeForce NOW. You can connect it again later.")
             }
-            .task {
-                await store.refreshAccountConnectors()
-            }
+        }
+        .onChangeCompat(of: store.settings) { _ in
+            store.persistSettings()
+        }
+        .onChangeCompat(of: store.settings.queueLiveActivitiesEnabled) { _ in
+            store.refreshTrackedSessionSurface()
+        }
+        .onAppear {
+            enforceAvailableResolution()
+            enforceAvailableFPS()
+            enforceAvailableHDR()
+            enforceAvailableCodec()
+            applyMetalFXQualityPreset()
+        }
+        .onChangeCompat(of: store.settings.preferredAspectRatio) { _ in
+            enforceAvailableResolution()
+            applyMetalFXQualityPreset()
+        }
+        .onChangeCompat(of: store.settings.metalFXUpscalingEnabled) { enabled in
+            if enabled { applyMetalFXQualityPreset() }
+        }
+        .onChangeCompat(of: store.settings.streamerPreferences.stretchStreamToFill) { _ in
+            applyMetalFXQualityPreset()
+        }
+        .onChangeCompat(of: currentMembershipTier ?? "") { _ in
+            enforceAvailableResolution()
+            enforceAvailableFPS()
+            enforceAvailableHDR()
+            applyMetalFXQualityPreset()
+        }
+        .task {
+            await store.refreshAccountConnectors()
         }
         // Presented from the stack root so both entry points — About and Advanced — reach it.
         .sheet(item: $bugReportDeck) { deck in
@@ -867,11 +866,11 @@ struct SettingsView: View {
                         format: { String(format: "%.0f%%", $0 * 100) }
                     )
                 }
-                if store.settings.touch.controllerPreset == .geForceNOW {
+                if store.settings.touch.controllerPreset.usesIndependentControls {
                     Text("Outlined controls with separate sticks and stick-click buttons. The center gamepad opens stream controls. Edit the layout to move each control.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                if store.settings.touch.controllerPreset != .geForceNOW {
+                if !store.settings.touch.controllerPreset.usesIndependentControls {
                     Picker("Style", selection: $store.settings.touch.style) {
                         ForEach(TouchControllerStyle.allCases) { style in
                             Text(style.label).tag(style)
@@ -1081,6 +1080,7 @@ struct SettingsView: View {
                     Text(page.label).tag(page)
                 }
             }
+            Toggle("Console Home", isOn: $store.settings.consoleHomeEnabled)
             Toggle("Compact Cards", isOn: $store.settings.compactGameCards)
             Toggle("Card Titles", isOn: $store.settings.showCardTitles)
             Toggle("Store Labels", isOn: $store.settings.showGameStoreLabels)

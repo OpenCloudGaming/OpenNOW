@@ -765,7 +765,6 @@ struct StreamerView: View {
                 coordinator.handleScenePhase(scenePhase)
                 coordinator.start(viewportSize: proxy.size)
             }
-            .onAppear { StreamOrientation.setStreaming(true) }
             .onChangeCompat(of: scenePhase) { newPhase in
                 coordinator.handleScenePhase(newPhase)
             }
@@ -780,7 +779,6 @@ struct StreamerView: View {
             }
             .onDisappear {
                 coordinator.handleViewDisappear(scenePhase: scenePhase)
-                StreamOrientation.setStreaming(false)
             }
         }
         .background(NativeStreamPresentationPreferences(pointerCaptureRequested:
@@ -1991,7 +1989,7 @@ private struct NativeStreamControlsPanel: View {
                         range: 0.5...2
                     )
                 }
-                if coordinator.liveSettings.touch.controllerPreset == .geForceNOW {
+                if coordinator.liveSettings.touch.controllerPreset.usesIndependentControls {
                     NativeStreamInfoRow(title: "Style", value: "Outlined")
                 } else {
                     NativeStreamActionRow(
@@ -3090,6 +3088,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
 
     func handleScenePhase(_ phase: ScenePhase) {
         latestScenePhase = phase
+        updateVirtualControllerAvailability()
         if phase != .active, started, !stopped {
             refreshDeviceStatus()
             if let historyRecord { sessionHistory?.update(historyRecord, force: true) }
@@ -3142,7 +3141,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     }
 
     var virtualControllerInputEnabled: Bool {
-        streamerPreferences.touchControllerVisible &&
+        latestScenePhase == .active && streamerPreferences.touchControllerVisible &&
             (!physicalControllerConnected || showTouchControlsWithPhysicalController) &&
             !touchLayoutEditing
     }
@@ -6831,8 +6830,8 @@ private struct NativeStreamVirtualControllerOverlay: View {
                     .accessibilityLabel("Split touchpad: left side moves, right side looks")
                 }
 
-                if touchSettings.controllerPreset == .geForceNOW {
-                    NativeStreamGeForceNOWControls(inputBridge: inputBridge, layout: layout,
+                if touchSettings.controllerPreset.usesIndependentControls {
+                    NativeStreamPresetControls(inputBridge: inputBridge, layout: layout,
                         settings: touchSettings, editing: editing, onPositionChange: onPositionChange,
                         onOpenHub: onOpenHub)
                     if editing {
@@ -7051,24 +7050,7 @@ struct NativeStreamPositionedControlGroup<Content: View>: View {
     @GestureState private var dragTranslation = CGSize.zero
 
     var body: some View {
-        Group {
-            if editing {
-                positionedContent
-                    .contentShape(Rectangle())
-                    .gesture(
-                        DragGesture(minimumDistance: 0)
-                            .updating($dragTranslation) { value, state, _ in
-                                state = value.translation
-                            }
-                            .onEnded { value in
-                                onPositionChange(normalizedPoint(after: value.translation))
-                            }
-                    )
-                    .accessibilityHint("Drag to move this control group")
-            } else {
-                positionedContent
-            }
-        }
+        positionedContent
         .onPreferenceChange(NativeStreamControlGroupSizePreferenceKey.self) { size in
             guard size.width > 0, size.height > 0 else { return }
             contentSize = size
@@ -7078,6 +7060,13 @@ struct NativeStreamPositionedControlGroup<Content: View>: View {
     private var positionedContent: some View {
         content()
             .allowsHitTesting(!editing)
+            .overlay {
+                if editing {
+                    // The overlay inherits the control's size; a background Color in a ZStack
+                    // would expand every group to the viewport and swallow neighboring drags.
+                    Color.clear.contentShape(Rectangle())
+                }
+            }
             .opacity(editing ? max(opacity, 0.82) : opacity)
             .padding(editing ? 7 : 0)
             .background {
@@ -7109,6 +7098,15 @@ struct NativeStreamPositionedControlGroup<Content: View>: View {
                         .offset(y: -12)
                 }
             }
+            // Attach the gesture before position expands the group to the entire viewport.
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0, coordinateSpace: .global)
+                    .updating($dragTranslation) { value, state, _ in state = value.translation }
+                    .onEnded { value in onPositionChange(normalizedPoint(after: value.translation)) },
+                including: editing ? .all : .subviews
+            )
+            .accessibilityHint(editing ? "Drag to move this control group" : "")
             .scaleEffect(scale)
             .position(basePosition)
             .offset(dragTranslation)
@@ -7481,111 +7479,6 @@ private final class NativeStreamSplitTouchpadView: UIView {
         super.didMoveToWindow()
         if window == nil { cancelTouches() }
     }
-}
-
-struct NativeStreamVirtualStickView: View {
-    let label: String
-    let size: CGFloat
-    /// Fraction of travel ignored around centre. Rests at 0 — a resting thumb on a stick with no
-    /// dead zone still sends tiny deflections, which reads as drift in games that poll raw axes.
-    var deadZone: Double = 0
-    /// `.dynamic` re-centres the stick under wherever the thumb lands rather than pinning it to
-    /// the drawn circle, which is what most touch shooters expect.
-    var followsFinger: Bool = false
-    var outlineStyle: Bool = false
-    var gripDots = false
-    var concentricRings = false
-    let changed: (CGFloat, CGFloat) -> Void
-    let pressed: (Bool) -> Void
-
-    @State private var knobOffset = CGSize.zero
-    @State private var origin: CGPoint?
-    @State private var moved = false
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .fill(outlineStyle ? AnyShapeStyle(Color.black.opacity(0.18)) : AnyShapeStyle(.ultraThinMaterial))
-                .overlay(Circle().stroke(Color.white.opacity(outlineStyle ? 0.42 : 0.22), lineWidth: outlineStyle ? 1.5 : 1))
-            if concentricRings {
-                Circle()
-                    .stroke(Color(white: 0.25).opacity(0.70), lineWidth: 1.5)
-                    .frame(width: size * 0.68, height: size * 0.68)
-            }
-            Circle()
-                .fill(Color.white.opacity(gripDots ? 0.70 : outlineStyle ? 0.14 : 0.30))
-                .overlay(Circle().strokeBorder(Color.white.opacity(outlineStyle && !gripDots ? 0.55 : 0), lineWidth: 1.5))
-                .frame(width: size * (concentricRings ? 0.41 : 0.48), height: size * (concentricRings ? 0.41 : 0.48))
-                .overlay {
-                    if gripDots {
-                        Canvas { context, bounds in
-                            let step = bounds.width / 5
-                            let diameter = step * 0.30
-                            for row in 0..<5 {
-                                for column in 0..<5 {
-                                    // Round off the pattern by leaving the four corners empty.
-                                    guard !((row == 0 || row == 4) && (column == 0 || column == 4)) else { continue }
-                                    let dot = CGRect(x: (CGFloat(column) + 0.5) * step - diameter / 2,
-                                        y: (CGFloat(row) + 0.5) * step - diameter / 2,
-                                        width: diameter, height: diameter)
-                                    context.fill(Path(ellipseIn: dot), with: .color(.black.opacity(0.40)))
-                                }
-                            }
-                        }
-                        .frame(width: size * 0.18, height: size * 0.18)
-                    } else {
-                        Text(label).font(.caption2.bold()).foregroundStyle(.white)
-                    }
-                }
-                .offset(knobOffset)
-        }
-        .frame(width: size, height: size)
-        .contentShape(Circle())
-        .gesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { value in
-                    let radius = max(1, size * 0.34)
-                    // In follow-finger mode the first touch becomes the centre, so the very first
-                    // move is relative to where the thumb landed rather than to the drawn circle.
-                    if origin == nil { origin = followsFinger ? value.startLocation : nil }
-                    let base = origin ?? value.startLocation
-                    let raw = followsFinger
-                        ? CGSize(width: value.location.x - base.x, height: value.location.y - base.y)
-                        : CGSize(width: value.translation.width, height: value.translation.height)
-                    let magnitude = hypot(raw.width, raw.height)
-                    let scale = magnitude > radius ? radius / magnitude : 1
-                    knobOffset = CGSize(width: raw.width * scale, height: raw.height * scale)
-                    moved = moved || magnitude > 5
-                    let (x, y) = TouchStickMath.applyDeadZone(
-                        x: knobOffset.width / radius,
-                        y: -knobOffset.height / radius,
-                        deadZone: deadZone
-                    )
-                    changed(x, y)
-                }
-                .onEnded { _ in
-                    changed(0, 0)
-                    knobOffset = .zero
-                    origin = nil
-                    if !moved {
-                        pressed(true)
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { pressed(false) }
-                    }
-                    moved = false
-                }
-        )
-        .onDisappear { changed(0, 0) }
-        .accessibilityLabel("\(label) thumbstick")
-        .accessibilityAdjustableAction { direction in
-            switch direction {
-            case .increment: changed(0, 1)
-            case .decrement: changed(0, -1)
-            @unknown default: break
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { changed(0, 0) }
-        }
-    }
-
 }
 
 /// What the touch surface needs to turn a finger into a point on the picture.

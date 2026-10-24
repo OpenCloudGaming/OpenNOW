@@ -1,12 +1,42 @@
 import SwiftUI
 
 #if os(iOS) && canImport(WebRTC)
-enum GeForceNOWTouchControl: String, CaseIterable, Identifiable {
+enum NativeStreamPresetControl: String, CaseIterable, Identifiable {
     case lt, lb, rb, rt, back, hub, start
     case up, left, right, down, y, x, b, a
     case leftStick, rightStick, l3, r3
 
-    var id: String { "geForceNOW.\(rawValue)" }
+    var id: String { rawValue }
+    func layoutID(for preset: TouchControllerPreset) -> String { "\(preset.rawValue).\(rawValue)" }
+
+    func point(for preset: TouchControllerPreset) -> TouchControlPoint {
+        guard preset == .xbox else { return point }
+        switch self {
+        case .lt: return .init(x: 0.07, y: 0.12)
+        case .lb: return .init(x: 0.22, y: 0.12)
+        case .rb: return .init(x: 0.78, y: 0.12)
+        case .rt: return .init(x: 0.93, y: 0.12)
+        case .leftStick: return .init(x: 0.16, y: 0.43)
+        case .rightStick: return .init(x: 0.68, y: 0.82)
+        case .up: return .init(x: 0.31, y: 0.60)
+        case .left: return .init(x: 0.25, y: 0.78)
+        case .right: return .init(x: 0.37, y: 0.78)
+        case .down: return .init(x: 0.31, y: 0.96)
+        case .y: return .init(x: 0.87, y: 0.40)
+        case .x: return .init(x: 0.81, y: 0.58)
+        case .b: return .init(x: 0.93, y: 0.58)
+        case .a: return .init(x: 0.87, y: 0.76)
+        default: return point
+        }
+    }
+
+    func label(for preset: TouchControllerPreset) -> String {
+        if preset == .xbox {
+            if self == .back { return "View" }
+            if self == .start { return "Menu" }
+        }
+        return label
+    }
     var label: String {
         switch self {
         case .back: return "Back"
@@ -71,7 +101,7 @@ enum GeForceNOWTouchControl: String, CaseIterable, Identifiable {
 }
 
 /// Screenshot-style layout, using the same input controls and editable geometry as other presets.
-struct NativeStreamGeForceNOWControls: View {
+struct NativeStreamPresetControls: View {
     let inputBridge: NativeStreamInputBridge
     let layout: TouchControlLayout
     let settings: TouchSettings
@@ -81,17 +111,19 @@ struct NativeStreamGeForceNOWControls: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let buttonSize = max(44, min(110, proxy.size.height * 0.15)) * layout.buttonScale
-            let stickSize = max(96, min(230, proxy.size.height * 0.32)) * layout.stickScale
+            let xbox = settings.controllerPreset == .xbox
+            let buttonSize = max(44, min(110, proxy.size.height * (xbox ? 0.13 : 0.15))) * layout.buttonScale
+            let stickSize = max(96, min(230, proxy.size.height * (xbox ? 0.29 : 0.32))) * layout.stickScale
             ZStack {
-                ForEach(GeForceNOWTouchControl.allCases) { control in
-                    let point = layout.independentPositions[control.id] ?? control.point
+                ForEach(NativeStreamPresetControl.allCases) { control in
+                    let key = control.layoutID(for: settings.controllerPreset)
+                    let point = layout.independentPositions[key] ?? control.point(for: settings.controllerPreset)
                     NativeStreamPositionedControlGroup(
-                        label: control.label, point: point, containerSize: proxy.size,
+                        label: control.label(for: settings.controllerPreset), point: point, containerSize: proxy.size,
                         safeAreaInsets: proxy.safeAreaInsets, scale: layout.scale, opacity: layout.opacity,
                         edgePadding: settings.edgePadding, bottomPadding: settings.bottomPadding,
                         sideOffset: settings.sideOffset(for: point), editing: editing,
-                        onPositionChange: { onPositionChange(control.id, $0) }
+                        onPositionChange: { onPositionChange(key, $0) }
                     ) {
                         controlView(control, buttonSize: buttonSize, stickSize: stickSize)
                     }
@@ -101,7 +133,7 @@ struct NativeStreamGeForceNOWControls: View {
     }
 
     @ViewBuilder
-    private func controlView(_ control: GeForceNOWTouchControl, buttonSize: CGFloat, stickSize: CGFloat) -> some View {
+    private func controlView(_ control: NativeStreamPresetControl, buttonSize: CGFloat, stickSize: CGFloat) -> some View {
         switch control {
         case .hub:
             Button(action: onOpenHub) {
@@ -123,7 +155,7 @@ struct NativeStreamGeForceNOWControls: View {
             )
         default:
             NativeStreamVirtualHoldButton(
-                label: control.label, systemImage: control.symbol, size: buttonSize,
+                label: control.label(for: settings.controllerPreset), systemImage: control.symbol, size: buttonSize,
                 width: control == .back || control == .start ? buttonSize : nil,
                 height: control == .back || control == .start ? buttonSize * 0.5 : nil,
                 outlineStyle: true,
@@ -180,4 +212,42 @@ private struct GeForceNOWHubIcon: Shape {
             .concatenating(CGAffineTransform(translationX: rect.minX, y: rect.minY)))
     }
 }
+
+#if DEBUG
+/// Interactive layout QA without allocating a cloud session or requiring an account.
+struct NativeStreamTouchLayoutPreview: View {
+    @State private var layout = TouchControlLayout.standard
+    @State private var settings: TouchSettings = {
+        var value = TouchSettings()
+        value.controllerPreset = .xbox
+        return value
+    }()
+    @State private var editing = true
+    private let inputBridge = NativeStreamInputBridge()
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            NativeStreamPresetControls(inputBridge: inputBridge, layout: layout, settings: settings,
+                editing: editing, onPositionChange: { layout.independentPositions[$0] = $1 },
+                onOpenHub: { editing.toggle() })
+            VStack {
+                Spacer()
+                HStack {
+                    Button(settings.controllerPreset.label) {
+                        settings.controllerPreset = settings.controllerPreset == .xbox ? .geForceNOW : .xbox
+                    }
+                    Button(editing ? "Done" : "Edit") { editing.toggle() }
+                    Button("Reset") { layout = .standard }
+                }
+                .buttonStyle(.borderedProminent)
+                Text("\(layout.independentPositions.count) saved positions")
+                    .font(.caption).foregroundStyle(.white)
+                Spacer()
+            }
+            .allowsHitTesting(true)
+        }
+    }
+}
+#endif
 #endif

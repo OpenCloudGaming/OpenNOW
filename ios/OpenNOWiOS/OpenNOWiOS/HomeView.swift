@@ -716,32 +716,11 @@ struct HomeView: View {
 
     var body: some View {
         NavigationStack {
-            GameCatalogGridView(
-                games: homeGridGames,
-                isLoading: store.isLoadingGames && store.allGames.isEmpty,
-                emptyTitle: homeEmptyTitle,
-                emptySystemImage: store.isSearchingCatalog ? "arrow.triangle.2.circlepath"
-                    : (isHomeSearchActive ? "magnifyingglass" : "square.grid.2x2"),
-                emptyDescription: homeEmptyDescription,
-                topContentPadding: isHomeSearchActive ? 12 : 2,
-                subtitle: { gameCatalogSubtitle(for: $0) },
-                badgeSystemImage: { _ in nil },
-                onOpenDetails: { selectedGameForDetails = $0 },
-                onPlay: launchFromCard,
-                onChooseLauncher: { selectedGameForLauncher = $0 }
-            ) {
-                homeHeader
-            } emptyActions: {
-                if (isHomeSearchActive || hasCatalogFilters) && !store.isSearchingCatalog {
-                    Button(isHomeSearchActive && hasCatalogFilters ? "Clear Search and Filters" :
-                           isHomeSearchActive ? "Clear Search" : "Clear Filters") {
-                        store.searchText = ""
-                        isSearchPresented = false
-                        selectedStores.removeAll()
-                        selectedGenres.removeAll()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(brandAccent)
+            Group {
+                if store.settings.consoleHomeEnabled && !isResultsMode {
+                    consoleHome
+                } else {
+                    catalogGrid
                 }
             }
             .searchableCompat(
@@ -770,35 +749,40 @@ struct HomeView: View {
         .printedWasteLaunchSheet(pendingLaunchRequest: $pendingLaunchRequest)
     }
 
+    private var catalogGrid: some View {
+        GameCatalogGridView(
+            games: homeGridGames,
+            isLoading: store.isLoadingGames && store.allGames.isEmpty,
+            emptyTitle: homeEmptyTitle,
+            emptySystemImage: store.isSearchingCatalog ? "arrow.triangle.2.circlepath"
+                : (isHomeSearchActive ? "magnifyingglass" : "square.grid.2x2"),
+            emptyDescription: homeEmptyDescription,
+            topContentPadding: isHomeSearchActive ? 12 : 2,
+            subtitle: { gameCatalogSubtitle(for: $0) },
+            badgeSystemImage: { _ in nil },
+            onOpenDetails: { selectedGameForDetails = $0 },
+            onPlay: launchFromCard,
+            onChooseLauncher: { selectedGameForLauncher = $0 }
+        ) {
+            homeHeader
+        } emptyActions: {
+            if (isHomeSearchActive || hasCatalogFilters) && !store.isSearchingCatalog {
+                Button(isHomeSearchActive && hasCatalogFilters ? "Clear Search and Filters" :
+                       isHomeSearchActive ? "Clear Search" : "Clear Filters") {
+                    store.searchText = ""
+                    isSearchPresented = false
+                    selectedStores.removeAll()
+                    selectedGenres.removeAll()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(brandAccent)
+            }
+        }
+    }
+
     private var homeHeader: some View {
         VStack(alignment: .leading, spacing: 22) {
-            if !isResultsMode && !newGamesHeroGames.isEmpty {
-                newGamesHeroSection
-            }
-
-            if let error = store.catalogError {
-                ErrorBannerView(
-                    message: error,
-                    failure: store.lastFailure?.message == error ? store.lastFailure : nil,
-                    onRecover: { store.performRecovery($0) },
-                    onDismiss: { store.clearCatalogError() }
-                )
-            }
-
-            if !isResultsMode && jumpBackInHasContent {
-                continueSection
-            }
-
-            if !isResultsMode && !queueGames.isEmpty {
-                CatalogPosterRail(title: "In queue", symbol: "hourglass", games: queueGames,
-                    onOpenDetails: resumeQueueGame, onPlay: resumeQueueGame)
-            }
-
-            if !isResultsMode && !favoriteGames.isEmpty {
-                CatalogPosterRail(title: "Favorites", symbol: "heart.fill", games: favoriteGames,
-                    onOpenDetails: { selectedGameForDetails = $0 }, onPlay: launchFromCard,
-                    onChooseLauncher: { selectedGameForLauncher = $0 })
-            }
+            personalHomeSections
 
             CatalogControlsHeader(
                 title: isResultsMode ? "Results" : "Recommendations",
@@ -865,6 +849,81 @@ struct HomeView: View {
                 }
                 .font(.subheadline)
             }
+        }
+    }
+
+    @ViewBuilder
+    private var personalHomeSections: some View {
+        if !isResultsMode && !newGamesHeroGames.isEmpty {
+            newGamesHeroSection
+        }
+
+        if let error = store.catalogError {
+            ErrorBannerView(
+                message: error,
+                failure: store.lastFailure?.message == error ? store.lastFailure : nil,
+                onRecover: { store.performRecovery($0) },
+                onDismiss: { store.clearCatalogError() }
+            )
+        }
+
+        if !isResultsMode && jumpBackInHasContent {
+            continueSection
+        }
+
+        if !isResultsMode && !queueGames.isEmpty {
+            CatalogPosterRail(title: "In queue", symbol: "hourglass", games: queueGames,
+                onOpenDetails: resumeQueueGame, onPlay: resumeQueueGame)
+        }
+
+        if !isResultsMode && !favoriteGames.isEmpty {
+            CatalogPosterRail(title: "Favorites", symbol: "heart.fill", games: favoriteGames,
+                onOpenDetails: { selectedGameForDetails = $0 }, onPlay: launchFromCard,
+                onChooseLauncher: { selectedGameForLauncher = $0 })
+        }
+
+    }
+
+    /// The same launch actions and artwork as the catalog, arranged as a console library.
+    /// Lazy shelves keep the portrait home inexpensive even with a large synced library.
+    private var consoleHome: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 24) {
+                HStack(spacing: 12) {
+                    BrandLogoView(size: 42)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("OpenNOW").font(.largeTitle.bold())
+                        Text("Your games, ready to play")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                    }
+                }
+                .accessibilityElement(children: .combine)
+
+                personalHomeSections
+
+                if !store.visibleLibraryGames.isEmpty {
+                    CatalogPosterRail(title: "Your games", symbol: "gamecontroller.fill",
+                        games: store.visibleLibraryGames,
+                        onOpenDetails: { selectedGameForDetails = $0 }, onPlay: launchFromCard,
+                        onChooseLauncher: { selectedGameForLauncher = $0 })
+                }
+
+                if !homeGridGames.isEmpty {
+                    CatalogPosterRail(title: "Discover", symbol: "sparkles", games: Array(homeGridGames.prefix(30)),
+                        onOpenDetails: { selectedGameForDetails = $0 }, onPlay: launchFromCard,
+                        onChooseLauncher: { selectedGameForLauncher = $0 })
+                } else if store.isLoadingGames {
+                    ProgressView("Loading games…").frame(maxWidth: .infinity, minHeight: 120)
+                }
+
+                Button { isSearchPresented = true } label: {
+                    Label("Search All Games", systemImage: "magnifyingglass")
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 20)
         }
     }
 

@@ -22,14 +22,27 @@ final class OpenNOWAppDelegate: NSObject, UIApplicationDelegate {
         OpenNOWImageCache.shared.removeAll()
     }
 
+    func application(_ application: UIApplication,
+                     supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
+        StreamOrientation.supportedOrientations
+    }
+
 }
 
 #if os(iOS)
 @MainActor
 enum StreamOrientation {
     private static var previousOrientation: UIInterfaceOrientationMask?
+    private(set) static var isStreaming = false
+
+    static var supportedOrientations: UIInterfaceOrientationMask {
+        isStreaming ? .landscape : (UIDevice.current.userInterfaceIdiom == .pad ? .all : .allButUpsideDown)
+    }
 
     static func setStreaming(_ streaming: Bool) {
+        isStreaming = streaming
+        let restoredOrientation = previousOrientation ?? .portrait
+        if !streaming { previousOrientation = nil }
         guard let scene = UIApplication.shared.connectedScenes
             .compactMap({ $0 as? UIWindowScene })
             .first(where: { $0.activationState == .foregroundActive }) else { return }
@@ -41,9 +54,15 @@ enum StreamOrientation {
             default: previousOrientation = .portrait
             }
         }
-        let orientations: UIInterfaceOrientationMask = streaming ? .landscape : (previousOrientation ?? .portrait)
+        let orientations: UIInterfaceOrientationMask = streaming ? .landscape : restoredOrientation
+        for window in scene.windows {
+            var controller = window.rootViewController
+            while let current = controller {
+                current.setNeedsUpdateOfSupportedInterfaceOrientations()
+                controller = current.presentedViewController
+            }
+        }
         scene.requestGeometryUpdate(.iOS(interfaceOrientations: orientations)) { _ in }
-        if !streaming { previousOrientation = nil }
     }
 }
 #endif

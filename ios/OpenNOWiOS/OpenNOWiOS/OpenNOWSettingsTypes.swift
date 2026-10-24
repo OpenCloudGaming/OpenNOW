@@ -110,12 +110,14 @@ enum TouchControlMode: String, Codable, CaseIterable, Identifiable {
 enum TouchControllerPreset: String, Codable, CaseIterable, Identifiable {
     case standard
     case geForceNOW
+    case xbox
 
     var id: String { rawValue }
     var label: String {
         switch self {
         case .standard: return "Standard"
         case .geForceNOW: return "GeForce NOW"
+        case .xbox: return "Xbox"
         }
     }
     var next: Self { Self.allCases[(Self.allCases.firstIndex(of: self)! + 1) % Self.allCases.count] }

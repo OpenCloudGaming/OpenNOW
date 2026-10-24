@@ -950,6 +950,7 @@ struct AppSettings: Codable, Equatable {
     var controllerShortcuts = NativeStreamControllerShortcuts()
     var launchPage: AppLaunchPage = .store
     var posterSizeScale: Double = 1
+    var consoleHomeEnabled: Bool = false
     var compactGameCards: Bool = true
     var showGameStoreLabels: Bool = true
     var catalogWallpaperEnabled: Bool = false
@@ -1063,6 +1064,7 @@ struct AppSettings: Codable, Equatable {
         case controllerShortcuts
         case launchPage
         case posterSizeScale
+        case consoleHomeEnabled
         case compactGameCards
         case showGameStoreLabels
         case catalogWallpaperEnabled
@@ -1186,6 +1188,7 @@ struct AppSettings: Codable, Equatable {
         controllerShortcuts = try container.decodeIfPresent(NativeStreamControllerShortcuts.self, forKey: .controllerShortcuts) ?? .init()
         launchPage = try container.decodeIfPresent(AppLaunchPage.self, forKey: .launchPage) ?? .store
         posterSizeScale = try container.decodeIfPresent(Double.self, forKey: .posterSizeScale) ?? 1
+        consoleHomeEnabled = try container.decodeIfPresent(Bool.self, forKey: .consoleHomeEnabled) ?? false
         compactGameCards = try container.decodeIfPresent(Bool.self, forKey: .compactGameCards) ?? true
         showGameStoreLabels = try container.decodeIfPresent(Bool.self, forKey: .showGameStoreLabels) ?? true
         catalogWallpaperEnabled = try container.decodeIfPresent(Bool.self, forKey: .catalogWallpaperEnabled) ?? false
@@ -2568,6 +2571,16 @@ enum CatalogQueryPolicy {
     static func isRegistryMiss(_ message: String) -> Bool {
         message.localizedCaseInsensitiveContains("PersistedQueryNotFound")
             || message.localizedCaseInsensitiveContains("PERSISTED_QUERY_NOT_FOUND")
+    }
+}
+
+enum LibraryGameCollection {
+    /// The library query and full catalog can disagree during store sync. Retain owned variants
+    /// returned by either response without treating every playable/free game as owned.
+    static func games(synced: [CloudGame], catalog: [CloudGame], imported: [CloudGame]) -> [CloudGame] {
+        var seen = Set<String>()
+        let owned = catalog.filter { $0.launchOptions.contains(where: \.isOwned) }
+        return (synced + owned + imported).filter { seen.insert(catalogStableGameKey($0)).inserted }
     }
 }
 
@@ -7243,11 +7256,11 @@ final class OpenNOWStore: ObservableObject {
             availableRegions = filteredRegions
             if allGames.isEmpty { allGames = mainGames }
             featuredGames = Array(mainGames.prefix(8))
-            libraryGames = library
+            libraryGames = LibraryGameCollection.games(synced: library, catalog: mainGames, imported: [])
             persistCachedCatalog(
                 allGames: allGames,
                 featuredGames: featuredGames,
-                libraryGames: library,
+                libraryGames: libraryGames,
                 vpcId: vpcId,
                 for: catalogSession
             )
@@ -7263,8 +7276,9 @@ final class OpenNOWStore: ObservableObject {
                 let merged = preservingCatalogMetadata(in: catalog, from: mainGames + allGames + library)
                 var seen = Set(merged.map { catalogStableGameKey($0) })
                 allGames = merged + (mainGames + library).filter { seen.insert(catalogStableGameKey($0)).inserted }
+                libraryGames = LibraryGameCollection.games(synced: library, catalog: allGames, imported: [])
                 persistCachedCatalog(allGames: allGames, featuredGames: featuredGames,
-                    libraryGames: library, vpcId: vpcId, for: catalogSession)
+                    libraryGames: libraryGames, vpcId: vpcId, for: catalogSession)
             } catch {
                 guard accountIsCurrent(requestedUserId) else { return }
                 if OpenNOWErrorPresenter.isCancellation(error) { throw error }
@@ -8873,8 +8887,7 @@ final class OpenNOWStore: ObservableObject {
     /// the long tail. Ordering them this way means the list never reshuffles under a thumb that
     /// is already reaching for a result.
     var visibleLibraryGames: [CloudGame] {
-        var seen = Set<String>()
-        return (libraryGames + importedGames).filter { seen.insert(catalogStableGameKey($0)).inserted }
+        LibraryGameCollection.games(synced: libraryGames, catalog: [], imported: importedGames)
     }
 
     func lookupGamesToAdd(_ raw: String, title: String = "", storefront: String = "STEAM") async throws -> [CloudGame] {

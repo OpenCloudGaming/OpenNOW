@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A16E9C000000000000000001 /* NativeStreamVirtualStick.swift in Sources */ = {isa = PBXBuildFile; fileRef = A16E9C000000000000000002; };
 		4A9F701B95F642B4B396FF48 /* StreamSessionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12734E3A4AF1481E9CA7E9E4; };
 		DC2C1BC3FB56423B96FF2C69 /* StreamSessionHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BEF4FE1193044C9B24243CB; };
 		8E278E5098934E5AB52375FC /* NativeStreamGeForceNOWControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A1DC3C28C7F44DC86ADCDC8; };
@@ -206,6 +207,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		A16E9C000000000000000002 /* NativeStreamVirtualStick.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeStreamVirtualStick.swift; sourceTree = "<group>"; };
 		12734E3A4AF1481E9CA7E9E4 /* StreamSessionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamSessionsView.swift; sourceTree = "<group>"; };
 		6BEF4FE1193044C9B24243CB /* StreamSessionHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamSessionHistory.swift; sourceTree = "<group>"; };
 		5A1DC3C28C7F44DC86ADCDC8 /* NativeStreamGeForceNOWControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeStreamGeForceNOWControls.swift; sourceTree = "<group>"; };
@@ -526,6 +528,7 @@
 				12734E3A4AF1481E9CA7E9E4 /* StreamSessionsView.swift */,
 				6BEF4FE1193044C9B24243CB /* StreamSessionHistory.swift */,
 				5A1DC3C28C7F44DC86ADCDC8 /* NativeStreamGeForceNOWControls.swift */,
+				A16E9C000000000000000002 /* NativeStreamVirtualStick.swift */,
 				BB000000000000000000001F /* NativeStreamAudioDevice.swift */,
 				A27000000000000000000011 /* GameDetailsPresentation.swift */,
 				A26000000000000000000011 /* OpenNOWVisualComponents.swift */,
@@ -842,6 +845,7 @@
 				4A9F701B95F642B4B396FF48 /* StreamSessionsView.swift in Sources */,
 				DC2C1BC3FB56423B96FF2C69 /* StreamSessionHistory.swift in Sources */,
 				8E278E5098934E5AB52375FC /* NativeStreamGeForceNOWControls.swift in Sources */,
+				A16E9C000000000000000001 /* NativeStreamVirtualStick.swift in Sources */,
 				BB000000000000000000000F /* NativeStreamAudioDevice.swift in Sources */,
 				A27000000000000000000001 /* GameDetailsPresentation.swift in Sources */,
 				A26000000000000000000001 /* OpenNOWVisualComponents.swift in Sources */,
