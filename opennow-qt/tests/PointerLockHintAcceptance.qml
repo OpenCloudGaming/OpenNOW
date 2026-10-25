@@ -5,8 +5,10 @@ QtObject {
     property Component pointerLockHintComponent: Component { StreamPointerLockHint {} }
     property var pointerLockHint: null
     property var savedPointerLockHint: null
+    property var coveredPointerLockHint: null
     property bool pointerLockTimeoutVerified: false
     property int savedPointerLockHintAppearances: 0
+    property int coveredPointerLockHintAppearances: 0
 
     function check(ok, message) { if (!ok) throw new Error("Pointer lock notice: " + message) }
     function find(item, name) {
@@ -81,6 +83,22 @@ QtObject {
         })
         saved.streaming = true
         savedPointerLockHint = saved
+
+        const covered = pointerLockHintComponent.createObject(parent, {
+            active:false, streaming:true, pointerLockEnabled:false, sessionId:"covered-pointer-lock-fixture"
+        })
+        check(covered && !covered.visible, "the launch cover suppresses the initial unlocked hint")
+        const coveredTimer = find(covered, "streamPointerLockNoticeTimer")
+        coveredTimer.interval = 50
+        covered.visibleChanged.connect(() => {
+            if (covered.visible) coveredPointerLockHintAppearances += 1
+        })
+        Qt.callLater(() => {
+            check(!covered.visible && !covered.streamStarted,
+                "the startup hint remains pending while the stream is covered")
+            covered.active = true
+        })
+        coveredPointerLockHint = covered
         return true
     }
 
@@ -88,8 +106,11 @@ QtObject {
         check(pointerLockTimeoutVerified, "the unlocked notice completed its real timer and remained dismissed")
         check(savedPointerLockHintAppearances === 1 && !savedPointerLockHint.visible,
             "a saved unlocked preference appears once at stream start, then automatically hides")
+        check(coveredPointerLockHintAppearances === 1 && !coveredPointerLockHint.visible,
+            "clearing the launch cover shows the saved-off hint once, then it automatically hides")
         pointerLockHint.destroy()
         savedPointerLockHint.destroy()
+        coveredPointerLockHint.destroy()
         return true
     }
 }

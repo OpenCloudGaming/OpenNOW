@@ -603,7 +603,7 @@ private slots:
 
     void manualPointerLockOutranksServerCursorMessages()
     {
-        StreamVideoItem item;
+        StreamVideoItem item(std::make_unique<MacPointerCapture>(), false, nullptr);
         const auto hidden = QByteArray::fromHex("0000");
         const auto visible = QByteArray::fromHex("0001");
         item.applyRemoteCursor(hidden);
@@ -629,7 +629,7 @@ private slots:
 
     void manualPointerUnlockClearsHeldInputAndDeferredMode()
     {
-        StreamVideoItem item;
+        StreamVideoItem item(std::make_unique<MacPointerCapture>(), false, nullptr);
         item.setRelativeMouse(true);
         item.m_pressedKeys.insert(1, {0x57, 0});
         item.m_pressedMouseButtons.insert(1);
@@ -725,7 +725,7 @@ private slots:
     {
         CursorSession session;
         QVERIFY(session.start(QStringLiteral("nvst")));
-        StreamVideoItem item(session.window.contentItem());
+        StreamVideoItem item(std::make_unique<MacPointerCapture>(), false, session.window.contentItem());
         item.setRenderCallback({});
         item.setSize(session.window.size());
         item.forceActiveFocus();
@@ -751,6 +751,7 @@ private slots:
     {
         StreamVideoItem item;
         item.m_usesMacPointerCapture = true;
+        item.setMacPointerLockEnabled(false);
         item.m_captureActive = true;
         item.updateLocalCursor();
         QCOMPARE(item.cursor().shape(), Qt::ArrowCursor);
@@ -924,8 +925,7 @@ private slots:
     {
         CursorSession session;
         QVERIFY(session.start());
-        StreamVideoItem item(session.window.contentItem());
-        item.m_usesMacPointerCapture = false;
+        StreamVideoItem item(std::make_unique<MacPointerCapture>(), false, session.window.contentItem());
         item.setRenderCallback({});
         item.setSize(session.window.size());
         item.forceActiveFocus();
@@ -3567,6 +3567,7 @@ private slots:
     void cursorModeChangesDoNotReleaseAnActiveDrag()
     {
         StreamVideoItem item;
+        item.setRelativeMouse(false);
         QVERIFY(item.keepMouseGrab());
         item.m_pressedMouseButtons.insert(1);
         item.setRelativeMouse(true);

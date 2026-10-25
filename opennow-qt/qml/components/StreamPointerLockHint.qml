@@ -12,7 +12,10 @@ Rectangle {
     property bool streamStarted: false
     signal enableRequested()
     visible: active && !pointerLockEnabled && noticeTimer.running
-    onActiveChanged: if (!active) noticeTimer.stop()
+    onActiveChanged: {
+        if (!active) noticeTimer.stop()
+        else Qt.callLater(root.observeStreamStart)
+    }
     onStreamingChanged: {
         if (!streaming) noticeTimer.stop()
         Qt.callLater(root.observeStreamStart)
@@ -29,9 +32,9 @@ Rectangle {
     Component.onCompleted: observeStreamStart()
 
     function observeStreamStart() {
-        if (!streaming || streamStarted) return
+        if (!streaming || !active || streamStarted) return
         streamStarted = true
-        if (active && !pointerLockEnabled) noticeTimer.restart()
+        if (!pointerLockEnabled) noticeTimer.restart()
     }
 
     Timer {
