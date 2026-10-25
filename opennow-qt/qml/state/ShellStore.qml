@@ -176,6 +176,7 @@ QtObject {
     property alias shortcutUpdateRequestId: settingsOwner.shortcutUpdateRequestId
     property alias shortcutUpdateError: settingsOwner.shortcutUpdateError
     property string lastError: ""
+    property var streamEndNotice: null
     property var focusPositions: ({})
     property var providers: []
     property string selectedProviderIdpId: ""
@@ -1951,7 +1952,12 @@ QtObject {
         AppController.navigate("inserting")
     }
 
+    function dismissStreamEndNotice() {
+        streamEndNotice = null
+    }
+
     function launchSelectedGame(directConsoleMode) {
+        streamEndNotice = null
         if (!signedIn) {
             AppController.navigate("sign-in")
             return
@@ -2576,6 +2582,12 @@ QtObject {
         if (termination.source === "nvst-server") {
             lastError = message || qsTr("The server ended the session.")
             accessibilityMessage = lastError
+            const disposition = termination.disposition || "error"
+            if (disposition !== "normal") {
+                const code = typeof termination.extendedCode === "number" ? termination.extendedCode >>> 0 : null
+                streamEndNotice = {kind: disposition, code: code,
+                    codeText: code === null ? "" : "0x" + code.toString(16).toUpperCase().padStart(8, "0")}
+            }
         }
         if (AppController.route === "stream" || AppController.route === "inserting") {
             AppController.showOverlay("")

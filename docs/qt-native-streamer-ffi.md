@@ -36,7 +36,7 @@ resets the display-only countdown.
 Terminal error and status events can include this object:
 
 ```json
-{"source":"nvst-server","code":"server-terminated","startId":"start-42","wireCode":2147680291,"shutdownReason":260,"reason":56,"sessionAlive":false,"extendedCode":2147680263,"resumable":false}
+{"source":"nvst-server","code":"server-terminated","startId":"start-42","wireCode":2147680291,"shutdownReason":260,"reason":56,"sessionAlive":false,"extendedCode":2147680263,"resumable":false,"disposition":"idle"}
 ```
 
 `wireCode` is the raw result from command `0x109`. For the extended teardown
@@ -52,7 +52,15 @@ derived notification reason, `sessionAlive` the native liveness flag, and
 A missing reason yields `0x35`/not alive/`0xC0F52003` and an unlisted reason
 `0x35`/not alive/the table result, `0x80030000` when unmapped. Other wire codes
 pass through as `extendedCode` with `sessionAlive:true`. These fields are always
-present and `resumable` is always a boolean for `nvst-server`. The evidence is
+present and `resumable` is always a boolean for `nvst-server`. `disposition` is
+`normal` for notification `0x34` (an intended stop), `idle` for `0x38`,
+`time-limit` for `0x39`, and `error` otherwise.
+
+When a nonresumable server termination ends the session, `ShellStore` sets
+`streamEndNotice` to `{kind, code, codeText}` for every disposition except
+`normal`. `code` is the u32 `extendedCode` and `codeText` its `0xXXXXXXXX` form. A
+user quit, an intended server stop, and a CloudMatch-only ending leave it null.
+`dismissStreamEndNotice()` and the next launch clear it. The evidence is
 `notes/windows-re/visible-error-codes.md` in the reverse-engineering corpus.
 The native streamer retains the numeric values through the existing JSON callback.
 Qt rejects server termination events whose `startId` does not match the current

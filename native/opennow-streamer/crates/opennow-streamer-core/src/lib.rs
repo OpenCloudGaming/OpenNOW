@@ -2457,6 +2457,7 @@ fn forward_nvst_event<R: NvstSessionResources>(
                 "sessionAlive": termination.session_alive,
                 "extendedCode": termination.extended_code,
                 "resumable": resumable,
+                "disposition": termination.disposition(),
             });
             emit_nvst_terminal_with_termination(
                 output,

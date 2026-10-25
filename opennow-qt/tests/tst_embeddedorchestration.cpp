@@ -2431,6 +2431,7 @@ private slots:
             var ready = true, pendingSessionEnd = null, sessionEndRequestId = '';
             var streamerPrepareRequestId = '', streamPollRequestId = '', streamIdleWarning = null;
             var streamer = {status:'streaming'}, lastError = '', accessibilityMessage = '';
+            var streamEndNotice = null;
             var calls = [], ended = 0;
             var CoreClient = {request:function(method, params) {
                 calls.push({method:method, params:params, sessionBeforeClear:activeSession});
@@ -2460,7 +2461,9 @@ private slots:
                 && calls[0].params.ownerScope.generation === 7
                 && calls[0].sessionBeforeClear !== null
                 && activeSession === null && pendingSessionEnd !== null
-                && sessionEndRequestId === 'end-request';
+                && sessionEndRequestId === 'end-request'
+                && streamEndNotice.kind === 'error' && streamEndNotice.code === null
+                && streamEndNotice.codeText === '';
         )JS"));
         QVERIFY2(!result.isError(), qPrintable(result.toString()));
         QVERIFY(result.toBool());
@@ -2479,6 +2482,24 @@ private slots:
             ready = true; flushPendingSessionEnd();
             calls.length === 2 && calls[1].params.sessionId === 'ended-seat';
         )JS")).toBool());
+        const auto notice = [&](const QString &termination) {
+            return engine.evaluate(QStringLiteral(R"JS(
+                streamEndNotice = null;
+                activeSession = {sessionId:'notice-seat'};
+                finishRemoteSession(%1);
+                JSON.stringify(streamEndNotice);
+            )JS").arg(termination)).toString();
+        };
+        QCOMPARE(notice(QStringLiteral("{source:'nvst-server',code:'server-terminated',resumable:false,"
+            "disposition:'normal',extendedCode:2147680256}")), QStringLiteral("null"));
+        QCOMPARE(notice(QStringLiteral("{source:'nvst-server',code:'server-terminated',resumable:false,"
+            "disposition:'error',extendedCode:2147680265}")),
+            QStringLiteral("{\"kind\":\"error\",\"code\":2147680265,\"codeText\":\"0x80030009\"}"));
+        QCOMPARE(notice(QStringLiteral("{source:'nvst-server',code:'server-terminated',resumable:false,"
+            "disposition:'idle',extendedCode:2147680263}")),
+            QStringLiteral("{\"kind\":\"idle\",\"code\":2147680263,\"codeText\":\"0x80030007\"}"));
+        QCOMPARE(notice(QStringLiteral("{source:'cloudmatch-session-status',status:7,resumable:false}")),
+            QStringLiteral("null"));
     }
 
     void mediaRecoveryIsBoundedUntilVideoActuallyStarts()
