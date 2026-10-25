@@ -3357,7 +3357,7 @@ mod tests {
 
     #[test]
     fn generic_output_contract_is_versioned_bounded_and_matches_header() {
-        let header = include_str!("../include/opennow_streamer_ffi.h");
+        let header = include_str!("../include/opennow_streamer_ffi.h").replace("\r\n", "\n");
         assert!(header.contains("#define OPENNOW_STREAMER_FFI_ABI_VERSION 16u"));
         assert!(header.contains("OpenNowStreamerStatus opennow_streamer_set_controller_active(\n    const OpenNowStreamer *handle,\n    bool active);"));
         assert!(header.contains("#define OPENNOW_STREAMER_GENERIC_HID_VERSION 1u"));
