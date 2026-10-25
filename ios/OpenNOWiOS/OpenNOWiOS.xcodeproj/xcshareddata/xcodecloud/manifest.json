@@ -4,6 +4,10 @@
     {
       "id" : "C4B1DA0D-5569-4766-A742-D50B2509F959",
       "name" : "OpenNOW"
+    },
+    {
+      "id" : "b179c17e-ea70-420c-bb96-fe39efd76687",
+      "name" : "OpenNOWiOS"
     }
   ]
 }
