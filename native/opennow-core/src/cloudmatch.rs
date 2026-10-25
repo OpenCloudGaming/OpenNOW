@@ -2384,6 +2384,7 @@ fn gfn_error_code(value: &Value) -> Option<u32> {
             let text = text.trim();
             match text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
                 Some(hex) => u32::from_str_radix(hex, 16).ok(),
+                None if text.starts_with('-') => text.parse::<i32>().ok().map(|code| code as u32),
                 None if text.bytes().all(|byte| byte.is_ascii_digit()) => text.parse().ok(),
                 None => u32::from_str_radix(text, 16).ok(),
             }
@@ -4842,6 +4843,8 @@ mod tests {
             (json!("0x4af1201e"), Some(0x4AF1201E)),
             (json!(" 0XC0F52159 "), Some(0xC0F52159)),
             (json!("3237290329"), Some(0xC0F52159)),
+            (json!("-1024716763"), Some(0xC2EC1025)),
+            (json!("-3000000000"), None),
             (json!(0), None),
             (json!("0x"), None),
             (json!("0x1FFFFFFFF"), None),
