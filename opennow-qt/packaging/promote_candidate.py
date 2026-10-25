@@ -24,7 +24,9 @@ def validate_provenance(run, run_id, repository, commit):
 
 
 def assemble(source, destination, version, commit, public_key):
-    assets = expected_packages(version, commit, "stable") | {f"OpenNOW-Qt-{version}-Darwin-arm64.zip"}
+    assets = expected_packages(version, commit, "stable") | {
+        f"OpenNOW-Qt-{version}-Darwin-{arch}.zip" for arch in ("x64", "arm64")
+    }
     expected = assets | {name + ".manifest.json" for name in assets}
     files = {}
     paths = {}

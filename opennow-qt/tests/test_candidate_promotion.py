@@ -43,7 +43,10 @@ class CandidatePromotionTest(unittest.TestCase):
         packages = self.source / "packages"
         packages.mkdir(parents=True)
         self.version, self.commit = "1.2.3", "a" * 40
-        names = expected_packages(self.version, self.commit, "stable") | {"OpenNOW-Qt-1.2.3-Darwin-arm64.zip"}
+        names = expected_packages(self.version, self.commit, "stable") | {
+            f"OpenNOW-Qt-{self.version}-Darwin-{arch}.{extension}"
+            for arch in ("x64", "arm64") for extension in ("dmg", "zip")
+        }
         for name in names:
             (packages / name).write_bytes(name.encode())
         (packages / "SHA256SUMS").write_text("".join(
@@ -85,8 +88,14 @@ class CandidatePromotionTest(unittest.TestCase):
             "OpenNOW-Qt-1.2.3-Windows-arm64-setup.exe",
             "OpenNOW-Qt-1.2.3-Windows-x64-setup.exe",
         ])
-        self.assertEqual(len(info["assets"]), 14)
-        self.assertEqual(len(list(self.destination.iterdir())), 30)
+        self.assertEqual(len(info["assets"]), 16)
+        self.assertEqual(len(list(self.destination.iterdir())), 34)
+        self.assertEqual([asset["name"] for asset in info["assets"] if "-Darwin-" in asset["name"]], [
+            "OpenNOW-Qt-1.2.3-Darwin-arm64.dmg",
+            "OpenNOW-Qt-1.2.3-Darwin-arm64.zip",
+            "OpenNOW-Qt-1.2.3-Darwin-x64.dmg",
+            "OpenNOW-Qt-1.2.3-Darwin-x64.zip",
+        ])
         self.assertEqual([asset["name"] for asset in info["assets"] if asset["name"].endswith(".flatpak")], [
             "OpenNOW-Qt-1.2.3-Linux-arm64.flatpak",
             "OpenNOW-Qt-1.2.3-Linux-x64.flatpak",
@@ -96,7 +105,7 @@ class CandidatePromotionTest(unittest.TestCase):
             self.assertEqual((self.source / "packages" / asset["name"]).read_bytes(),
                              (self.destination / asset["name"]).read_bytes())
         sums = (self.destination / "SHA256SUMS").read_text().splitlines()
-        self.assertEqual(len(sums), 29)
+        self.assertEqual(len(sums), 33)
         for line in sums:
             expected, name = line.split("  ")
             self.assertEqual(digest(self.destination / name), expected)
@@ -139,6 +148,30 @@ class CandidatePromotionTest(unittest.TestCase):
                         self.promote()
                     self.assertFalse(self.destination.exists())
                     path.write_bytes(content)
+
+    def test_requires_both_macos_architectures_formats_and_signed_manifests(self):
+        for arch in ("x64", "arm64"):
+            for extension in ("dmg", "zip"):
+                for suffix in ("", ".manifest.json"):
+                    name = f"OpenNOW-Qt-{self.version}-Darwin-{arch}.{extension}{suffix}"
+                    with self.subTest(name=name):
+                        path = self.source / "packages" / name
+                        content = path.read_bytes()
+                        path.unlink()
+                        with self.assertRaisesRegex(ValueError, "Missing"):
+                            self.promote()
+                        self.assertFalse(self.destination.exists())
+                        path.write_bytes(content)
+
+    def test_rejects_macos_manifest_for_the_other_architecture(self):
+        packages = self.source / "packages"
+        target = packages / f"OpenNOW-Qt-{self.version}-Darwin-x64.dmg.manifest.json"
+        source = packages / f"OpenNOW-Qt-{self.version}-Darwin-arm64.dmg.manifest.json"
+        target.write_bytes(source.read_bytes())
+        self.rehash()
+        with self.assertRaisesRegex(ValueError, "Manifest does not match its exact package"):
+            self.promote()
+        self.assertFalse(self.destination.exists())
 
     def test_rejects_duplicate_and_linked_candidates(self):
         asset = next(self.source.rglob("*.AppImage"))

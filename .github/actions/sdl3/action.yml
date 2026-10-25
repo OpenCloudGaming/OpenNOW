@@ -5,7 +5,7 @@ inputs:
     description: SDL release tag
     required: true
   target-arch:
-    description: Target architecture, x64 or arm64
+    description: Target architecture, x64 or arm64, or x86_64 on macOS
     required: true
   parallel:
     description: Maximum concurrent build jobs

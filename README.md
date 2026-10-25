@@ -65,7 +65,7 @@ If there's no published Qt nightly, sign in to GitHub and download the artifacts
 | Windows x64 / ARM64 | `-setup.exe`, portable `.zip` | Run setup.exe, or extract the entire ZIP and run `bin/OpenNOW.exe`. MSI installers are no longer published; if you installed OpenNOW from an `.msi`, run setup.exe once to replace it. |
 | Linux x64 / ARM64 | `.AppImage`, recommended | Make the file executable, then launch it. |
 | Linux x64 / ARM64 | `.deb` | Your distribution must provide Qt 6.8+ and SDL3. Use the AppImage on stock Ubuntu 24.04. |
-| macOS Apple Silicon, macOS 13+ | `.dmg`, nightlies | Open the DMG and drag OpenNOW into Applications. Intel Macs are not included. |
+| macOS Apple Silicon / Intel x64, macOS 13+ | `.dmg`, nightlies | Choose the `arm64` package for Apple Silicon or `x64` for Intel, when available in the release. Open the DMG and drag OpenNOW into Applications. |
 
 Nightly platform packages are unsigned. Windows may show an unknown-publisher warning.
 The macOS app is not notarized; if Gatekeeper blocks it, use System Settings → Privacy &
@@ -75,8 +75,8 @@ pinned signing key need one manual upgrade. Checksums alone detect corrupted dow
 they do not verify who published a package.
 
 The [nightly guide](docs/qt-nightly-release.md) covers these packages. The signed
-candidate workflow builds Windows and Linux, each on x64 and ARM64, and macOS
-on ARM64; see the [release-candidate guide](docs/qt-release-candidate.md). The separate
+candidate workflow builds Windows, Linux, and macOS on x64 and ARM64; see the
+[release-candidate guide](docs/qt-release-candidate.md). The separate
 [OpenNOW-Mac](https://github.com/OpenCloudGaming/OpenNOW-Mac) project is also available.
 
 ### Steam Deck

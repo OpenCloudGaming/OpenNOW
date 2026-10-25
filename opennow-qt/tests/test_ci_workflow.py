@@ -65,7 +65,7 @@ class CIWorkflowTest(unittest.TestCase):
     def test_all_platforms_share_one_packaging_matrix(self):
         entries = jobs((WORKFLOWS / "qt-build.yml").read_text())
         labels = re.findall(r"^          - label: (.+)$", entries["packages"], re.MULTILINE)
-        self.assertCountEqual(labels, ["linux-x64", "linux-arm64", "windows-x64", "windows-arm64", "macos-arm64"])
+        self.assertCountEqual(labels, ["linux-x64", "linux-arm64", "windows-x64", "windows-arm64", "macos-arm64", "macos-x64"])
         self.assertIn("name: Package ${{ matrix.label }}", entries["packages"])
         self.assertIn("Create Linux AppImage", entries["packages"])
         self.assertIn("Test relocated bundle without development libraries", entries["packages"])
@@ -243,6 +243,10 @@ class CIWorkflowTest(unittest.TestCase):
             runners = re.findall(r"^\s+(?:runs-on|os|runner): (.+)$", workflow.read_text(), re.MULTILINE)
             for runner in runners:
                 with self.subTest(workflow=workflow.name, runner=runner):
+                    if runner == "macos-15-intel":
+                        self.assertIn(workflow.name, ("qt-build.yml", "qt-release-candidate.yml"))
+                        self.assertIn("            macos-arch: x86_64\n", workflow.read_text())
+                        continue
                     self.assertTrue(
                         runner.startswith(("blacksmith-", "${{")),
                     )
@@ -299,17 +303,17 @@ class CIWorkflowTest(unittest.TestCase):
         self.assertEqual(key_expression(nightly_rust, "shared-key"),
                          key_expression(block(nightly, "hendrikmuhs/ccache-action"), "key"))
         expression = key_expression(nightly_rust, "shared-key")
-        macos = re.search(r"runner\.os == 'macOS' && '(qt-ci-[^']+)'", expression)
+        macos = re.search(r"runner\.os == 'macOS' && format\('(\S+)', matrix\.label\)", expression)
         template = re.search(r"format\('(\S+)', matrix\.os, matrix\.label\)", expression)
         self.assertIsNotNone(macos, expression)
         self.assertIsNotNone(template, expression)
         platforms = {
-            label: macos[1] if "macos" in image
+            label: macos[1].replace("{0}", label) if label.startswith("macos-")
             else template[1].replace("{0}", image).replace("{1}", label)
             for label, image in re.findall(r"- label: (\S+)\n\s+os: (\S+)\n", nightly)
         }
         self.assertEqual(set(platforms), {
-            "linux-x64", "linux-arm64", "windows-x64", "windows-arm64", "macos-arm64",
+            "linux-x64", "linux-arm64", "windows-x64", "windows-arm64", "macos-arm64", "macos-x64",
         })
         # A candidate restores the nightly cache only when its own key pattern
         # resolves to that platform's key.
@@ -325,7 +329,11 @@ class CIWorkflowTest(unittest.TestCase):
                 f"windows-{arch}": windows.replace("${{ matrix.arch }}", arch)
                 for arch in re.findall(r"- arch: (\S+)\n", candidates["windows"])
             },
-            "macos-arm64": key_expression(block(candidates["macos"], "Swatinem/rust-cache"), "shared-key"),
+            **{
+                f"macos-{arch}": key_expression(block(candidates["macos"], "Swatinem/rust-cache"), "shared-key")
+                                .replace("${{ matrix.arch }}", arch)
+                for arch in re.findall(r"- arch: (\S+)\n", candidates["macos"])
+            },
         }, platforms)
 
         nightly_workspaces = nightly_rust.split("workspaces: |", 1)[1].strip()
@@ -343,7 +351,7 @@ class CIWorkflowTest(unittest.TestCase):
                          "qt-target-${{ matrix.label }}")
         for name, prefix in (("linux", "qt-target-linux-${{ matrix.arch }}"),
                              ("windows", "qt-target-windows-${{ matrix.arch }}"),
-                             ("macos", "qt-target-macos-arm64")):
+                             ("macos", "qt-target-macos-${{ matrix.arch }}")):
             with self.subTest(candidate=name):
                 self.assertIn(f"cache-key-prefix: {prefix}\n", candidates[name])
 

@@ -47,7 +47,7 @@ jobs:
     name: Package ${{ matrix.label }}
     needs: metadata
     runs-on: ${{ matrix.os }}
-    timeout-minutes: ${{ matrix.label == 'macos-arm64' && 60 || 360 }}
+    timeout-minutes: ${{ startsWith(matrix.label, 'macos-') && 120 || 360 }}
     strategy:
       fail-fast: false
       matrix:
@@ -104,13 +104,27 @@ jobs:
             package-generator: "DragNDrop;ZIP"
             rust-target: aarch64-apple-darwin
             cmake-arch: ""
+            macos-arch: arm64
+            package-arch: arm64
+          - label: macos-x64
+            os: macos-15-intel
+            build-parallel: 3
+            qt-host: mac
+            qt-arch: clang_64
+            package-generator: "DragNDrop;ZIP"
+            rust-target: x86_64-apple-darwin
+            cmake-arch: ""
+            macos-arch: x86_64
+            package-arch: x64
 
     env:
       CARGO_TERM_COLOR: always
       SDL_VERSION: release-3.2.20
       OPENNOW_BUILD_VERSION: ${{ needs.metadata.outputs.version }}
       OPENNOW_UPDATE_PUBLIC_KEY: ${{ inputs.update_public_key }}
-      MACOSX_DEPLOYMENT_TARGET: ${{ matrix.label == 'macos-arm64' && '13.0' || '' }}
+      MACOSX_DEPLOYMENT_TARGET: ${{ startsWith(matrix.label, 'macos-') && '13.0' || '' }}
+      OPENNOW_MACOS_ARCH: ${{ matrix.macos-arch }}
+      OPENNOW_PACKAGE_ARCH: ${{ matrix.package-arch }}
 
     steps:
       - name: Checkout
@@ -283,7 +297,7 @@ jobs:
       - name: Cache Rust dependencies and build artifacts
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
-          shared-key: ${{ runner.os == 'macOS' && 'qt-ci-macos-arm64' || format('qt-ci-{0}-{1}', matrix.os, matrix.label) }}
+          shared-key: ${{ runner.os == 'macOS' && format('qt-ci-{0}', matrix.label) || format('qt-ci-{0}-{1}', matrix.os, matrix.label) }}
           cache-bin: false
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
@@ -297,8 +311,8 @@ jobs:
       - name: Cache Qt C++ compilation
         uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639
         with:
-          key: ${{ runner.os == 'macOS' && 'qt-ci-macos-arm64' || format('qt-ci-{0}-{1}', matrix.os, matrix.label) }}
-          restore-keys: ${{ runner.os == 'macOS' && 'qt-ci-macos-arm64' || format('qt-ci-{0}-{1}', matrix.os, matrix.label) }}
+          key: ${{ runner.os == 'macOS' && format('qt-ci-{0}', matrix.label) || format('qt-ci-{0}-{1}', matrix.os, matrix.label) }}
+          restore-keys: ${{ runner.os == 'macOS' && format('qt-ci-{0}', matrix.label) || format('qt-ci-{0}-{1}', matrix.os, matrix.label) }}
           max-size: 1G
           evict-old-files: job
           save: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
@@ -308,7 +322,7 @@ jobs:
         uses: ./.github/actions/sdl3
         with:
           version: ${{ env.SDL_VERSION }}
-          target-arch: ${{ endsWith(matrix.label, 'arm64') && 'arm64' || 'x64' }}
+          target-arch: ${{ matrix.macos-arch || (endsWith(matrix.label, 'arm64') && 'arm64' || 'x64') }}
           parallel: ${{ matrix.build-parallel }}
 
       - name: Finish Windows Media Foundation installation
@@ -523,7 +537,7 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          [[ "$(uname -m)" == arm64 ]]
+          [[ "$(uname -m)" == "$OPENNOW_MACOS_ARCH" ]]
           python3 -m unittest discover -s opennow-qt/tests -p test_macos_build.py
           python3 -m unittest discover -s opennow-qt/packaging -p test_macos_awdl.py
           cargo test --manifest-path native/opennow-core/Cargo.toml --locked
@@ -534,7 +548,7 @@ jobs:
         shell: bash
         run: |
           cmake -S opennow-qt -B build/opennow-qt-release \
-            -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="$OPENNOW_MACOS_ARCH" \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET" \
             -DOPENNOW_MACOS_ADHOC_SIGN=ON \
@@ -559,12 +573,12 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          packages=(build/qt-packages/OpenNOW-Qt-*-Darwin-arm64.zip)
+          packages=(build/qt-packages/OpenNOW-Qt-*-Darwin-"$OPENNOW_PACKAGE_ARCH".zip)
           [[ ${#packages[@]} -eq 1 && -f "${packages[0]}" ]]
           ditto -x -k "${packages[0]}" "$RUNNER_TEMP/zip-relocated"
           zip_app=$(find "$RUNNER_TEMP/zip-relocated" -name OpenNOW.app -type d -print -quit)
           [[ -n "$zip_app" ]]
-          dmgs=(build/qt-packages/OpenNOW-Qt-*-Darwin-arm64.dmg)
+          dmgs=(build/qt-packages/OpenNOW-Qt-*-Darwin-"$OPENNOW_PACKAGE_ARCH".dmg)
           [[ ${#dmgs[@]} -eq 1 && -f "${dmgs[0]}" ]]
           hdiutil verify "${dmgs[0]}"
           mount="$RUNNER_TEMP/opennow-dmg"
@@ -585,16 +599,16 @@ jobs:
             bin="$app/Contents/MacOS"
             for executable in OpenNOW opennow-core opennow-acceptance-verify opennow-update-helper opennow-streamer; do
               test -x "$bin/$executable"
-              lipo "$bin/$executable" -verify_arch arm64
+              lipo "$bin/$executable" -verify_arch "$OPENNOW_MACOS_ARCH"
             done
             test -x "$app/Contents/Helpers/opennow-awdl-helper"
-            lipo "$app/Contents/Helpers/opennow-awdl-helper" -verify_arch arm64
+            lipo "$app/Contents/Helpers/opennow-awdl-helper" -verify_arch "$OPENNOW_MACOS_ARCH"
             /usr/bin/codesign --verify --strict "$app/Contents/Helpers/opennow-awdl-helper"
             /usr/bin/codesign --display --verbose=4 "$app/Contents/Helpers/opennow-awdl-helper" 2>&1 \
               | grep -Fx 'Identifier=io.github.opencloudgaming.OpenNOW.awdl-helper'
             plutil -lint "$app/Contents/Resources/opennow-awdl.plist"
             test -f "$bin/libopennow_streamer_ffi.dylib"
-            lipo "$bin/libopennow_streamer_ffi.dylib" -verify_arch arm64
+            lipo "$bin/libopennow_streamer_ffi.dylib" -verify_arch "$OPENNOW_MACOS_ARCH"
             otool -D "$bin/libopennow_streamer_ffi.dylib" \
               | grep -Fx '@rpath/libopennow_streamer_ffi.dylib'
             test -f "$app/Contents/Resources/licenses/THIRD_PARTY_NOTICES"
@@ -620,7 +634,11 @@ jobs:
           import sys
           import tempfile
 
+          sys.path.insert(0, str(Path.cwd() / "opennow-qt/packaging"))
+          from macos_release import verified_bundle_targets
+
           bin_dir = Path(sys.argv[1])
+          verified_bundle_targets(bin_dir.parent.parent, os.environ["OPENNOW_MACOS_ARCH"])
           for name in ("OpenNOW", "opennow-core", "opennow-acceptance-verify",
                        "opennow-update-helper", "opennow-streamer", "libopennow_streamer_ffi.dylib",
                        "../Helpers/opennow-awdl-helper"):
@@ -667,7 +685,7 @@ jobs:
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
-          name: opennow-macos-arm64-validation
+          name: opennow-${{ matrix.label }}-validation
           path: build/qt-packages/*.zip
           if-no-files-found: error
           retention-days: 14
@@ -677,7 +695,7 @@ jobs:
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
-          name: opennow-qt-macos-arm64-unsigned
+          name: opennow-qt-${{ matrix.label }}-unsigned
           path: build/qt-packages/*.dmg
           if-no-files-found: error
           retention-days: 14

@@ -109,8 +109,8 @@ After a successful run, download
 `opennow-qt-<version>-complete-unsigned` from the run's **Artifacts** section.
 Versions use `<project-version>-nightly.<run-number>.<attempt>` even when release
 publishing is disabled. The complete archive contains Windows x64/ARM64 setup.exe installers and
-portable ZIPs, Linux x64/ARM64 AppImages and DEBs, the Apple Silicon macOS DMG, `SHA256SUMS`,
-and source-commit metadata. The macOS ARM64 validation ZIP is a separate artifact.
+portable ZIPs, Linux x64/ARM64 AppImages and DEBs, Apple Silicon and Intel x64 macOS DMGs, `SHA256SUMS`,
+and source-commit metadata. Each macOS architecture's validation ZIP is a separate artifact.
 Artifacts expire after 14 days.
 
 These default no-key builds have no platform publisher signatures and require manual downloads
@@ -273,10 +273,10 @@ so it can load outside the build tree.
 The app explicitly links Qt Svg so macdeployqt includes the SVG image plugin used
 by the QML icons; the relocated-bundle check requires that plugin to be present.
 
-The manual `macos-arm64` package matrix entry builds and tests the native Apple Silicon
-stack, then checks both a relocated ZIP and an app copied from the mounted DMG with development
-dependencies hidden. The Apple Silicon DMG is part of the public nightly inventory; the ZIP
-remains a separate CI validation artifact. These applications have no Developer ID signature or
+The manual `macos-arm64` and `macos-x64` package matrix entries build and test the native Apple Silicon
+and Intel stacks, then check both a relocated ZIP and an app copied from the mounted DMG with development
+dependencies hidden. Both DMGs are part of the public nightly inventory; the ZIPs
+remain separate CI validation artifacts. These applications have no Developer ID signature or
 notarization and require manual updates. See
 [`qt-nightly-release.md`](../docs/qt-nightly-release.md) for installation warnings and the
 Windows setup.exe/portable ZIP contract. Offscreen tests cover shell and FFI

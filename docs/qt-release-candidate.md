@@ -4,8 +4,8 @@ For certificate-free Windows/Linux nightlies, use the manual `qt-ci` publishing 
 in [`qt-nightly-release.md`](qt-nightly-release.md). This update-signed candidate workflow is separate
 and defaults to unsigned Windows platform packages. Apple signing and notarization remain required.
 
-The `qt-release-candidate` workflow builds one immutable Qt/Rust source commit for Windows and
-Linux, each on x64 and ARM64, and macOS on ARM64. The workflow does not publish a GitHub release;
+The `qt-release-candidate` workflow builds one immutable Qt/Rust source commit for Windows,
+Linux, and macOS, each on x64 and ARM64. The workflow does not publish a GitHub release;
 it produces protected candidate artifacts that must still pass the live matrix and staged rollout.
 
 For credential provisioning and the first release, follow
@@ -63,9 +63,9 @@ the update-signing seed, and does not require a manually registered runner.
   first-party binaries and setup.exe are signed and timestamped, and the extracted payload also
   pass signature verification. Every nonzero `signtool` exit fails the workflow. In `unsigned` mode,
   Windows has no verified publisher identity and may show SmartScreen or unknown-publisher warnings.
-- macOS ARM64 candidates use Developer ID signing, notarization, and stapled tickets.
-  The final DMG and ZIP contain the signed, stapled application. Intel Mac candidates
-  are not included. The application retains only the hardened-runtime exceptions
+- macOS ARM64 and Intel x64 candidates use Developer ID signing, notarization, and stapled tickets.
+  Each architecture has a separate DMG and ZIP containing the signed, stapled application.
+  Intel builds use the GitHub-hosted `macos-15-intel` runner. The application retains only the hardened-runtime exceptions
   needed for QML JIT compilation and microphone input. Library validation stays enabled.
 - Linux x64/ARM64 DEB and checksum-pinned AppImage builds use native runners. Both the probe and
   embedded streamer enable `linux-vaapi` and `linux-ffmpeg-bundled`. Native VAAPI supports H.264
@@ -82,8 +82,8 @@ the update-signing seed, and does not require a manually registered runner.
 - AppImages embed stable-channel update information and include versioned `.zsync` sidecars
   for external delta-update tools. Both sidecars receive manifests and release checksums.
 - The inventory job fails unless it finds both Windows ZIP/setup.exe pairs, both Linux AppImage/DEB pairs,
-  both Linux Flatpak bundles, both AppImage sidecars, the macOS ARM64 DMG/ZIP pair, and exactly one manifest per asset
-  (twelve packages plus two sidecars). Windows `.msi` installers are no longer produced. It records the immutable commit and
+  both Linux Flatpak bundles, both AppImage sidecars, both macOS ARM64 and Intel x64 DMG/ZIP pairs, and exactly one manifest per asset
+  (fourteen packages plus two sidecars). Windows `.msi` installers are no longer produced. It records the immutable commit and
   SHA-256 of every candidate file, plus `windowsSigningMode=unsigned` or
   `windowsSigningMode=authenticode`. Windows artifact bundles use the same mode as their suffix;
   package filenames stay unchanged for updater compatibility.
