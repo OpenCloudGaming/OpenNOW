@@ -3555,6 +3555,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private fun resumeSettingsForActiveSession(active: ActiveSessionInfo, requested: StreamSettings): StreamSettings {
         val resolution = active.resolution?.takeIf { parseResolutionPixelsOrNull(it) != null }
         return requested
+            .withSessionClientIdentity(active.settingsSignature)
             .let { settings ->
                 if (resolution == null) {
                     settings
@@ -5044,8 +5045,12 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         settings: StreamSettings,
         allowWebsiteClientOverride: Boolean = false,
     ): StreamInputMode {
-        _state.value.streamInputModeAtLaunch?.let { return it }
         val providerSettings = settings.forProviderInput(_state.value.authSession?.provider?.code)
+        if (providerSettings.desktopClientMode) {
+            _state.update { it.copy(streamInputModeAtLaunch = StreamInputMode.KeyboardMouse) }
+            return StreamInputMode.KeyboardMouse
+        }
+        _state.value.streamInputModeAtLaunch?.let { return it }
         val nativeTouchAvailable = !androidTvProfile && shouldUseNativeTouch(
             _state.value.settings.androidTouch.effectiveNativeTouchMode(),
             game,
@@ -5284,7 +5289,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun normalizeLaunchError(error: Throwable, gameTitle: String? = null): String =
-        normalizeLaunchErrorMessage(error, gameTitle)
+        normalizeLaunchErrorMessage(error, gameTitle, getApplication<Application>().getString(R.string.launch_no_gfn_plan_body))
 
     private fun AuthSession.toSavedAccount(): SavedAccount =
         SavedAccount(

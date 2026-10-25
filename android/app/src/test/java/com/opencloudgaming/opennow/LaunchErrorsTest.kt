@@ -1,11 +1,17 @@
 package com.opencloudgaming.opennow
 
+import java.io.File
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LaunchErrorsTest {
+    private val entitlementMessage = OpenNowJson.parseToJsonElement(File("../../locales/en.json").readText())
+        .jsonObject.getValue("androidSetup").jsonObject.getValue("launch_no_gfn_plan_body").jsonPrimitive.content
+
     @Test
     fun confirmedTerminalResumeFailureForgetsTheEndedSession() {
         val error = IllegalStateException("Resume failed", TerminalSessionStatusException(7, null))
@@ -28,8 +34,8 @@ class LaunchErrorsTest {
         )
 
         assertEquals(
-            "GeForce NOW rejected this launch because it could not verify a playable membership for the signed-in account. If Free is active, confirm you signed in with the same NVIDIA account, then sign out and back in.",
-            normalizeLaunchErrorMessage(error, "Subnautica 2"),
+            entitlementMessage,
+            normalizeLaunchErrorMessage(error, "Subnautica 2", entitlementMessage),
         )
         assertTrue(isMissingGfnPlanError(error))
     }
@@ -44,8 +50,8 @@ class LaunchErrorsTest {
         val error = IllegalStateException("Upgrade membership", providerError)
 
         assertEquals(
-            "GeForce NOW rejected this launch because it could not verify a playable membership for the signed-in account. If Free is active, confirm you signed in with the same NVIDIA account, then sign out and back in.",
-            normalizeLaunchErrorMessage(error, "Subnautica 2"),
+            entitlementMessage,
+            normalizeLaunchErrorMessage(error, "Subnautica 2", entitlementMessage),
         )
         assertTrue(isMissingGfnPlanError(error))
     }
@@ -59,10 +65,25 @@ class LaunchErrorsTest {
         )
 
         assertEquals(
-            "GeForce NOW rejected this launch because it could not verify a playable membership for the signed-in account. If Free is active, confirm you signed in with the same NVIDIA account, then sign out and back in.",
-            normalizeLaunchErrorMessage(error),
+            entitlementMessage,
+            normalizeLaunchErrorMessage(error, entitlementMessage = entitlementMessage),
         )
         assertTrue(isMissingGfnPlanError(error))
+    }
+
+    @Test
+    fun englishEntitlementCopyExplainsPlatformAndMembershipAsPossibleCauses() {
+        assertTrue(entitlementMessage.contains("client platform"))
+        assertTrue(entitlementMessage.contains("membership"))
+        assertTrue(entitlementMessage.contains("Desktop session identity"))
+        assertFalse(entitlementMessage.contains("because it could not verify a playable membership"))
+    }
+
+    @Test
+    fun entitlementWithoutLocalizedCopyPreservesProviderDetailsInsteadOfInventingMembershipDiagnosis() {
+        val error = CloudMatchRequestStatusException(18, "ENTITLEMENT_FAILURE_STATUS", "8A910006")
+
+        assertEquals(error.message, normalizeLaunchErrorMessage(error))
     }
 
     @Test

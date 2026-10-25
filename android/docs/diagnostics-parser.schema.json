@@ -1412,6 +1412,9 @@
                 "browserClientMode": {
                     "type": "boolean"
                 },
+                "desktopClientMode": {
+                    "type": "boolean"
+                },
                 "experimentalDynamicNetworkAdjustment": {
                     "type": "boolean"
                 },

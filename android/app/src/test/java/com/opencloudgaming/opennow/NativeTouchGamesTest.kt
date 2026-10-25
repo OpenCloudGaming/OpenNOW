@@ -23,6 +23,19 @@ class NativeTouchGamesTest {
     )
 
     @Test
+    fun desktopSessionIdentityDisablesNativeTouchOnlyForNvidia() {
+        val settings = StreamSettings(desktopClientMode = true)
+        val touchGame = game(supportedControls = listOf("TOUCHSCREEN"))
+
+        for (mode in listOf(NativeTouchMode.Auto, NativeTouchMode.Always)) {
+            assertFalse(shouldUseNativeTouch(mode, touchGame, settings.forProviderInput("NVIDIA")))
+            assertTrue(shouldUseNativeTouch(mode, touchGame, settings.forProviderInput("ALLIANCE")))
+        }
+        assertTrue(settings.forStreamInputMode(StreamInputMode.NativeTouch).desktopClientMode)
+        assertTrue(StreamSettings().withUserStreamOptionsFrom(settings).desktopClientMode)
+    }
+
+    @Test
     fun theCatalogTouchFlagEnablesAutoMode() {
         val touchGame = game(title = "Honkai: Star Rail", supportedControls = listOf("TOUCHSCREEN"))
         assertTrue(catalogClaimsTouchSupport(touchGame))

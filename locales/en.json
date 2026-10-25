@@ -675,6 +675,8 @@
     "queueAdUrlLoad": "Error loading url"
   },
   "androidStreamInput": {
+    "settings_desktop_client_mode": "Desktop session identity",
+    "settings_desktop_client_mode_desc": "Use a Windows desktop identity for new NVIDIA sessions, including games unavailable to Android clients. Independent of NVST, resolution and frame rate. Disables native game touch; use a controller or keyboard & mouse. Does not affect Alliance providers or a running session.",
     "stream_touch_mouse_sensitivity": "Touch cursor sensitivity",
     "stream_touch_mouse_sensitivity_description": "Controls how far the cursor or camera moves when you drag a finger. Lower values give finer aim; higher values turn faster. Applies to Finger mouse, including keyboard & mouse controls. Direct click and native touch use the touched position instead.",
     "controls_show_to_move": "Show on-screen controls first",
@@ -830,7 +832,7 @@
     "setup_gfn_action_membership": "Choose a membership",
     "setup_gfn_action_recheck": "Check again",
     "launch_no_gfn_plan_title": "GeForce NOW rejected the launch",
-    "launch_no_gfn_plan_body": "GeForce NOW could not verify a playable membership for the signed-in account. If your Free plan is active, confirm you used the same NVIDIA account, then sign out of OpenNOW and sign back in.",
+    "launch_no_gfn_plan_body": "GeForce NOW could not verify permission to launch this game. This can involve game availability for the selected client platform or your account's membership. For PC-catalog games, try Desktop session identity in Stream connection settings with a controller or keyboard & mouse. If it still fails, check the signed-in account and its GFN membership.",
     "launch_no_gfn_plan_action": "Open memberships",
     "settings_static_outlines": "Static outlines",
     "settings_static_outlines_desc": "Add thin outlines to game artwork, the top bar, and horizontal navigation. Turn off for lighter glass without disabling animated border effects.",

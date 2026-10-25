@@ -1097,13 +1097,20 @@ private fun SettingsContent(
                     viewModel.updateSettings(settings.copy(nativeLowLatencyDecoder = enabled))
                 }
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Stream, searchQuery, stringResource(R.string.settings_section_stream_connection), "stream", "connection", "network", "region", "session proxy", "proxy") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.Stream, searchQuery, stringResource(R.string.settings_section_stream_connection), "stream", "connection", "network", "region", "session proxy", "proxy", "desktop", "identity", "website") {
                 SettingSwitch(
                     label = stringResource(R.string.settings_browser_client_mode),
                     checked = settings.stream.browserClientMode,
                     description = stringResource(R.string.settings_browser_client_mode_desc),
                 ) { enabled ->
-                    viewModel.updateStreamSettings { s -> s.copy(browserClientMode = enabled) }
+                    viewModel.updateStreamSettings { s -> s.copy(browserClientMode = enabled, desktopClientMode = if (enabled) false else s.desktopClientMode) }
+                }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_desktop_client_mode),
+                    checked = settings.stream.desktopClientMode,
+                    description = stringResource(R.string.settings_desktop_client_mode_desc),
+                ) { enabled ->
+                    viewModel.updateStreamSettings { s -> s.copy(desktopClientMode = enabled, browserClientMode = if (enabled) false else s.browserClientMode) }
                 }
                 ChoiceRow(stringResource(R.string.settings_region), listOf(stringResource(R.string.option_auto)) + state.regions.map { it.name }, state.regions.firstOrNull { it.url == settings.stream.region }?.name ?: stringResource(R.string.option_auto)) { label ->
                     val url = state.regions.firstOrNull { it.name == label }?.url.orEmpty()

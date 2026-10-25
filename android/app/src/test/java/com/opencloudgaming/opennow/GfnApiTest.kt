@@ -639,6 +639,142 @@ class GfnApiTest {
     }
 
     @Test
+    fun desktopSessionPreferenceIsOptInAndSurvivesSavedSettings() {
+        val legacy = OpenNowJson.decodeFromString(StreamSettings.serializer(), "{}")
+        val selected = legacy.copy(desktopClientMode = true)
+        val saved = OpenNowJson.encodeToString(StreamSettings.serializer(), selected)
+
+        assertFalse(legacy.desktopClientMode)
+        assertEquals(selected, OpenNowJson.decodeFromString(StreamSettings.serializer(), saved))
+        assertFalse(selected.loweredSessionLaunchProfile().experimentalNvst)
+        assertTrue(selected.loweredSessionLaunchProfile().desktopClientMode)
+    }
+
+    @Test
+    fun explicitDesktopIdentityMatchesCreateAndResumeWithoutNvstAt1080p60() {
+        val settings = StreamSettings(desktopClientMode = true)
+            .eligibleForAndroidLaunch(SubscriptionInfo(membershipTier = "FREE"), null, androidTvProfile = false)
+        val base = "https://np-ams-06.cloudmatchbeta.nvidiagrid.net"
+        val identity = resolveCloudMatchLaunchIdentity(settings, base, GfnAppLaunchMode.GAMEPAD_FRIENDLY)
+        val create = buildSessionRequestBody(
+            appId = "123",
+            internalTitle = "game",
+            settings = settings,
+            accountLinked = true,
+            deviceId = "device",
+            physicalDisplayResolution = null,
+            streamingBaseUrl = base,
+            launchIdentity = identity,
+        )
+        val resumedSettings = StreamSettings(browserClientMode = true)
+            .withSessionClientIdentity(activeSessionSettingsSignature(create))
+        val resumedIdentity = resolveCloudMatchLaunchIdentity(resumedSettings, base, GfnAppLaunchMode.GAMEPAD_FRIENDLY)
+        val claim = buildMinimalClaimRequestBody(
+            appId = "123",
+            deviceId = "device",
+            settings = resumedSettings,
+            streamingBaseUrl = base,
+            launchIdentity = resumedIdentity,
+        )
+
+        assertEquals(identity, resumedIdentity)
+        assertTrue(resumedSettings.desktopClientMode)
+        assertFalse(resumedSettings.browserClientMode)
+        assertFalse(resumedSettings.experimentalNvst)
+        for (request in listOf(create, claim)) {
+            val data = request.getValue("sessionRequestData").jsonObject
+            val monitor = data.getValue("clientRequestMonitorSettings").jsonArray.first().jsonObject
+            assertEquals("windows", data.getValue("clientPlatformName").jsonPrimitive.content)
+            assertTrue(data.getValue("enablePersistingInGameSettings").jsonPrimitive.boolean)
+            assertEquals(GfnAppLaunchMode.GAMEPAD_FRIENDLY, data.getValue("appLaunchMode").jsonPrimitive.int)
+            assertEquals(1920, monitor.getValue("widthInPixels").jsonPrimitive.int)
+            assertEquals(1080, monitor.getValue("heightInPixels").jsonPrimitive.int)
+            assertEquals(60, monitor.getValue("framesPerSecond").jsonPrimitive.int)
+            assertFalse(data.getValue("secureRTSPSupported").jsonPrimitive.boolean)
+            assertEquals(1, data.getValue("enhancedStreamMode").jsonPrimitive.int)
+            assertEquals("1.0", data.getValue("sdkVersion").jsonPrimitive.content)
+        }
+        for (includeOrigin in listOf(false, true)) {
+            val headers = cloudMatchHeaders(
+                token = "token",
+                clientId = "client",
+                deviceId = "device",
+                includeOrigin = includeOrigin,
+                streamingBaseUrl = base,
+                launchIdentity = resumedIdentity,
+            )
+            assertEquals("NATIVE", headers["nv-client-type"])
+            assertEquals("NVIDIA-CLASSIC", headers["nv-client-streamer"])
+            assertEquals("WINDOWS", headers["nv-device-os"])
+            assertEquals("DESKTOP", headers["nv-device-type"])
+            assertEquals("device", headers["x-device-id"])
+        }
+    }
+
+    @Test
+    fun explicitDesktopIdentityWinsOverTouchBrowserPortalAndTvAllocation() {
+        val settings = StreamSettings(
+            resolution = "1376x640",
+            aspectRatio = "19.5:9",
+            desktopClientMode = true,
+            browserClientMode = true,
+        )
+        val base = "https://np-ams-06.cloudmatchbeta.nvidiagrid.net"
+        for (tv in listOf(false, true)) {
+            val identity = resolveCloudMatchLaunchIdentity(settings, base, GfnAppLaunchMode.TOUCH_FRIENDLY, isAndroidTv = tv)
+            val data = buildMinimalClaimRequestBody(
+                appId = "123",
+                deviceId = "device",
+                settings = settings,
+                streamingBaseUrl = base,
+                appLaunchMode = GfnAppLaunchMode.TOUCH_FRIENDLY,
+                launchIdentity = identity,
+            ).getValue("sessionRequestData").jsonObject
+            val headers = cloudMatchHeaders(
+                "token", "client", "device", includeOrigin = true,
+                streamingBaseUrl = base,
+                appLaunchMode = GfnAppLaunchMode.TOUCH_FRIENDLY,
+                preferBrowserMode = true,
+                isAndroidTv = tv,
+                launchIdentity = identity,
+            )
+            assertEquals(GfnAppLaunchMode.GAMEPAD_FRIENDLY, identity.appLaunchMode)
+            assertEquals(GfnAppLaunchMode.GAMEPAD_FRIENDLY, data.getValue("appLaunchMode").jsonPrimitive.int)
+            assertEquals("windows", data.getValue("clientPlatformName").jsonPrimitive.content)
+            assertFalse(data.getValue("availableSupportedControllers").jsonArray.isEmpty())
+            assertEquals("WINDOWS", headers["nv-device-os"])
+            assertEquals("DESKTOP", headers["nv-device-type"])
+        }
+    }
+
+    @Test
+    fun explicitDesktopOptionDoesNotChangeAllianceIdentityOrTouchRouting() {
+        val base = "https://example.alliance.invalid"
+        for (mode in listOf(GfnAppLaunchMode.TOUCH_FRIENDLY, GfnAppLaunchMode.GAMEPAD_FRIENDLY)) {
+            val original = resolveCloudMatchLaunchIdentity(StreamSettings(), base, mode)
+            val forced = resolveCloudMatchLaunchIdentity(StreamSettings(desktopClientMode = true), base, mode)
+            assertEquals(original, forced)
+            assertEquals(mode, forced.appLaunchMode)
+        }
+    }
+
+    @Test
+    fun defaultMobileSessionDoesNotAdoptDesktopPreferenceWhenResumed() {
+        val base = "https://np-ams-06.cloudmatchbeta.nvidiagrid.net"
+        val settings = StreamSettings(desktopClientMode = true)
+            .withSessionClientIdentity(streamSettingsSessionSignature(StreamSettings()))
+        val identity = resolveCloudMatchLaunchIdentity(settings, base, GfnAppLaunchMode.GAMEPAD_FRIENDLY)
+        val headers = cloudMatchHeaders("token", "client", "device", true, launchIdentity = identity)
+        val claim = buildMinimalClaimRequestBody("123", "device", settings, streamingBaseUrl = base)
+
+        assertFalse(settings.desktopClientMode)
+        assertEquals("BROWSER", headers["nv-client-type"])
+        assertEquals("ANDROID", headers["nv-device-os"])
+        assertEquals("browser", claim.getValue("sessionRequestData").jsonObject.getValue("clientPlatformName").jsonPrimitive.content)
+        assertEquals(StreamSettings(desktopClientMode = true), StreamSettings(desktopClientMode = true).withSessionClientIdentity(null))
+    }
+
+    @Test
     fun nvidiaHighPerformanceGamepadLaunchUsesNativeDesktopIdentity() {
         val headers = cloudMatchHeaders(
             token = "token",

@@ -220,6 +220,7 @@ data class StreamSettings(
     val experimentalNvst: Boolean = false,
     /** Opt in to the browser CloudMatch identity for the next NVIDIA session. */
     val browserClientMode: Boolean = false,
+    val desktopClientMode: Boolean = false,
     val experimentalDynamicNetworkAdjustment: Boolean = false,
     val experimentalDynamicMinimumBitrateMbps: Int = 5,
     val mouseSensitivity: Float = 1f,
@@ -250,6 +251,7 @@ internal fun StreamSettings.withUserStreamOptionsFrom(source: StreamSettings): S
         microphoneDeviceId = source.microphoneDeviceId,
         experimentalNvst = source.experimentalNvst,
         browserClientMode = source.browserClientMode,
+        desktopClientMode = source.desktopClientMode,
         experimentalDynamicNetworkAdjustment = source.experimentalDynamicNetworkAdjustment,
         experimentalDynamicMinimumBitrateMbps = source.experimentalDynamicMinimumBitrateMbps,
         recordingBitrateMbps = source.recordingBitrateMbps,
@@ -987,6 +989,15 @@ internal fun parseResolutionPixels(value: String): Pair<Int, Int> {
     return if (width != null && height != null && width > 0 && height > 0) width to height else 1920 to 1080
 }
 
+internal fun StreamSettings.withSessionClientIdentity(signature: String?): StreamSettings {
+    val fields = signature?.split(';') ?: return this
+    if (fields.firstOrNull() != "opennow-android-stream-v1") return this
+    return copy(
+        desktopClientMode = "client=desktop" in fields,
+        browserClientMode = "client=browser" in fields,
+    )
+}
+
 internal fun streamSettingsSessionSignature(settings: StreamSettings): String {
     val compatible = settings.withCodecColorCompatibility()
     val (width, height) = streamResolutionPixels(compatible)
@@ -1004,7 +1015,11 @@ internal fun streamSettingsSessionSignature(settings: StreamSettings): String {
     ).joinToString(";").let { signature ->
         val withControllers = if (settings.multiControllerEnabled) "$signature;controllers=4" else signature
         val withTransport = if (settings.experimentalNvst) "$withControllers;transport=nvst" else withControllers
-        val withClient = if (settings.browserClientMode) "$withTransport;client=browser" else withTransport
+        val withClient = when {
+            settings.desktopClientMode -> "$withTransport;client=desktop"
+            settings.browserClientMode -> "$withTransport;client=browser"
+            else -> withTransport
+        }
         if (settings.experimentalDynamicNetworkAdjustment) {
             val minimumMbps = StreamNetworkAdaptation.bitrateRange(compatible).minimumKbps / 1000
             "$withClient;dynamic=1;minBitrate=$minimumMbps"

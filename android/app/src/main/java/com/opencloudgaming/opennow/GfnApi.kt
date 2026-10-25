@@ -109,7 +109,7 @@ private const val SCOPES = "openid consent email tk_client age"
 private const val PANELS_QUERY_HASH = "46ec15f267a056e7d5e46e629efa929529e5e7542a4850faece90b9f8fa5f810"
 internal const val GFN_APP_METADATA_QUERY_HASH = "cf8b620dfd03617017ba7c858cee65197e1ace5180e41be194b39227227ced63"
 
-private data class CloudMatchClientIdentity(
+internal data class CloudMatchClientIdentity(
     val platformName: String,
     val persistGameSettings: Boolean,
     val streamer: String,
@@ -251,6 +251,38 @@ private fun cloudMatchPlatformName(identity: CloudMatchClientIdentity, appLaunch
     } else {
         identity.platformName
     }
+
+internal data class CloudMatchLaunchIdentity(
+    val client: CloudMatchClientIdentity,
+    val appLaunchMode: Int,
+)
+
+internal fun resolveCloudMatchLaunchIdentity(
+    settings: StreamSettings?,
+    streamingBaseUrl: String?,
+    appLaunchMode: Int,
+    isAndroidTv: Boolean = false,
+    useDesktopNativeTvIdentity: Boolean = false,
+): CloudMatchLaunchIdentity {
+    val host = streamingBaseUrl?.toHttpUrlOrNull()?.host?.lowercase(Locale.US)
+    val forceDesktop = settings?.desktopClientMode == true &&
+        (streamingBaseUrl.isNullOrBlank() || host?.let(::isNvidiaCloudMatchHost) == true)
+    if (forceDesktop) {
+        return CloudMatchLaunchIdentity(NVIDIA_NATIVE_CLOUD_MATCH_IDENTITY, GfnAppLaunchMode.GAMEPAD_FRIENDLY)
+    }
+    return CloudMatchLaunchIdentity(
+        client = cloudMatchClientIdentity(
+            streamingBaseUrl = streamingBaseUrl,
+            appLaunchMode = appLaunchMode,
+            preferBrowserMode = settings?.browserClientMode == true,
+            preferNativeDesktopMode = appLaunchMode != GfnAppLaunchMode.TOUCH_FRIENDLY && settings?.requiresNativeDesktopCloudMatchMode() == true,
+            preferNativeAndroidMode = settings?.requiresNativeAndroidCloudMatchMode() == true,
+            isAndroidTv = isAndroidTv,
+            useDesktopNativeTvIdentity = useDesktopNativeTvIdentity,
+        ),
+        appLaunchMode = appLaunchMode,
+    )
+}
 
 internal fun isNvidiaShieldTvDevice(
     androidTvProfile: Boolean,
@@ -667,18 +699,13 @@ internal fun buildMinimalClaimRequestBody(
     appLaunchMode: Int = GfnAppLaunchMode.GAMEPAD_FRIENDLY,
     isAndroidTv: Boolean = false,
     useDesktopNativeTvIdentity: Boolean = false,
+    launchIdentity: CloudMatchLaunchIdentity = resolveCloudMatchLaunchIdentity(
+        settings, streamingBaseUrl, appLaunchMode, isAndroidTv, useDesktopNativeTvIdentity,
+    ),
 ): JsonObject {
-    val identity = cloudMatchClientIdentity(
-        streamingBaseUrl = streamingBaseUrl,
-        appLaunchMode = appLaunchMode,
-        preferBrowserMode = settings?.browserClientMode == true,
-        preferNativeDesktopMode = if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) false else settings?.requiresNativeDesktopCloudMatchMode() == true,
-        preferNativeAndroidMode = settings?.requiresNativeAndroidCloudMatchMode() == true,
-        isAndroidTv = isAndroidTv,
-        useDesktopNativeTvIdentity = useDesktopNativeTvIdentity,
-    )
+    val identity = launchIdentity.client
     val profile = settings?.requestProfile()
-    val controllerCapabilities = gfnControllerCapabilities(appLaunchMode, settings?.multiControllerEnabled == true)
+    val controllerCapabilities = gfnControllerCapabilities(launchIdentity.appLaunchMode, settings?.multiControllerEnabled == true)
     return buildJsonObject {
         put("action", 2)
         put("data", "RESUME")
@@ -694,7 +721,7 @@ internal fun buildMinimalClaimRequestBody(
             putStreamTransportRequest(settings)
             put("deviceHashId", deviceId)
             put("internalTitle", JsonNull)
-            put("clientPlatformName", cloudMatchPlatformName(identity, appLaunchMode))
+            put("clientPlatformName", cloudMatchPlatformName(identity, launchIdentity.appLaunchMode))
             if (settings != null && profile != null) {
                 putJsonArray("clientRequestMonitorSettings") {
                     add(monitorSettings(profile, settings.fps, identity))
@@ -713,7 +740,7 @@ internal fun buildMinimalClaimRequestBody(
             put("clientIdentification", "GFN-PC")
             put("parentSessionId", JsonNull)
             put("appId", appId.toIntOrNull() ?: 0)
-            put("appLaunchMode", appLaunchMode)
+            put("appLaunchMode", launchIdentity.appLaunchMode)
             put("useOps", true)
             put("clientDisplayHdrCapabilities", if (profile?.hdrEnabled == true) hdrCapabilitiesJson() else JsonNull)
             put("accountLinked", true)
@@ -725,6 +752,54 @@ internal fun buildMinimalClaimRequestBody(
             }
         }
         putJsonArray("metaData") {}
+    }
+}
+
+internal fun buildSessionRequestBody(
+    appId: String,
+    internalTitle: String,
+    settings: StreamSettings,
+    accountLinked: Boolean,
+    deviceId: String,
+    physicalDisplayResolution: Pair<Int, Int>?,
+    streamingBaseUrl: String?,
+    launchIdentity: CloudMatchLaunchIdentity,
+): JsonObject {
+    val identity = launchIdentity.client
+    val profile = settings.requestProfile()
+    val controllerCapabilities = gfnControllerCapabilities(launchIdentity.appLaunchMode, settings.multiControllerEnabled)
+    return buildJsonObject {
+        putJsonObject("sessionRequestData") {
+            put("appId", appId)
+            if (internalTitle.isBlank()) put("internalTitle", JsonNull) else put("internalTitle", internalTitle)
+            putJsonArray("availableSupportedControllers") {
+                controllerCapabilities.supportedControllerTypes.forEach { add(JsonPrimitive(it)) }
+            }
+            put("networkTestSessionId", JsonNull)
+            put("parentSessionId", JsonNull)
+            put("clientIdentification", "GFN-PC")
+            put("deviceHashId", deviceId)
+            put("clientVersion", "30.0")
+            putStreamTransportRequest(settings)
+            put("clientPlatformName", cloudMatchPlatformName(identity, launchIdentity.appLaunchMode))
+            putJsonArray("clientRequestMonitorSettings") {
+                add(monitorSettings(profile, settings.fps, identity))
+            }
+            put("useOps", true)
+            put("audioMode", 2)
+            put("metaData", streamSessionMetadata(settings, profile, physicalDisplayResolution, streamingBaseUrl))
+            put("sdrHdrMode", if (profile.hdrEnabled) 1 else 0)
+            put("clientDisplayHdrCapabilities", if (profile.hdrEnabled) hdrCapabilitiesJson() else JsonNull)
+            put("surroundAudioInfo", 0)
+            put("remoteControllersBitmap", controllerCapabilities.remoteControllersBitmap)
+            put("clientTimezoneOffset", java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()))
+            put("appLaunchMode", launchIdentity.appLaunchMode)
+            put("partnerCustomData", "")
+            put("accountLinked", accountLinked)
+            put("enablePersistingInGameSettings", identity.persistGameSettings)
+            put("userAge", 26)
+            put("requestedStreamingFeatures", requestedStreamingFeatures(settings, profile))
+        }
     }
 }
 
@@ -988,8 +1063,9 @@ internal fun cloudMatchHeaders(
     isAndroidTv: Boolean = false,
     useDesktopNativeTvIdentity: Boolean = false,
     preferNativeAndroidMode: Boolean = false,
+    launchIdentity: CloudMatchLaunchIdentity? = null,
 ): Headers {
-    val identity = cloudMatchClientIdentity(
+    val identity = launchIdentity?.client ?: cloudMatchClientIdentity(
         streamingBaseUrl = streamingBaseUrl,
         appLaunchMode = appLaunchMode,
         preferBrowserMode = preferBrowserMode,
@@ -1002,13 +1078,13 @@ internal fun cloudMatchHeaders(
         preferBrowserMode && identity == NVIDIA_BROWSER_CLOUD_MATCH_IDENTITY -> identity.userAgent
         identity == NVIDIA_NATIVE_CLOUD_MATCH_IDENTITY -> identity.userAgent
         isAndroidTv -> GFN_ANDROID_TV_USER_AGENT
-        appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY -> GFN_ANDROID_TOUCH_USER_AGENT
+        (launchIdentity?.appLaunchMode ?: appLaunchMode) == GfnAppLaunchMode.TOUCH_FRIENDLY -> GFN_ANDROID_TOUCH_USER_AGENT
         else -> identity.userAgent
     }
     val deviceType = when {
         preferBrowserMode && identity == NVIDIA_BROWSER_CLOUD_MATCH_IDENTITY -> identity.deviceType
         isAndroidTv -> "DESKTOP"
-        appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY -> "TABLET"
+        (launchIdentity?.appLaunchMode ?: appLaunchMode) == GfnAppLaunchMode.TOUCH_FRIENDLY -> "TABLET"
         else -> identity.deviceType
     }
     return Headers.Builder()
@@ -3097,6 +3173,9 @@ class GfnSessionRepository(
         val clientId = UUID.randomUUID().toString()
         val deviceId = authStore.stableDeviceId()
         val base = resolveLaunchSessionBaseUrl(token, resolveStreamingBaseUrl(zone, streamingBaseUrl))
+        val launchIdentity = resolveCloudMatchLaunchIdentity(
+            settings, base, appLaunchMode, isAndroidTv, useDesktopNativeTvIdentity,
+        )
         val body = buildSessionRequestBody(
             appId = appId,
             internalTitle = internalTitle,
@@ -3105,7 +3184,7 @@ class GfnSessionRepository(
             deviceId = deviceId,
             physicalDisplayResolution = physicalDisplayResolutionProvider(),
             streamingBaseUrl = base,
-            appLaunchMode = appLaunchMode,
+            launchIdentity = launchIdentity,
         )
         val url = cloudMatchSessionRequestUrl(base, settings)
         val host = Uri.parse(base).host.orEmpty()
@@ -3121,8 +3200,7 @@ class GfnSessionRepository(
                     streamingBaseUrl = base,
                     appLaunchMode = appLaunchMode,
                     preferBrowserMode = settings.browserClientMode,
-                    preferNativeDesktopMode = if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) false else settings.requiresNativeDesktopCloudMatchMode(),
-                    preferNativeAndroidMode = settings.requiresNativeAndroidCloudMatchMode(),
+                    launchIdentity = launchIdentity,
                     isAndroidTv = isAndroidTv,
                     useDesktopNativeTvIdentity = useDesktopNativeTvIdentity,
                 ),
@@ -3248,6 +3326,17 @@ class GfnSessionRepository(
     ): SessionInfo {
         val deviceId = authStore.stableDeviceId()
         val clientId = UUID.randomUUID().toString()
+        val sessionSettings = settings.withSessionClientIdentity(active.settingsSignature)
+        val launchIdentity = resolveCloudMatchLaunchIdentity(
+            sessionSettings, active.streamingBaseUrl, appLaunchMode, isAndroidTv, useDesktopNativeTvIdentity,
+        )
+        val sessionHeaders = cloudMatchHeaders(
+            token, clientId, deviceId, includeOrigin = false,
+            streamingBaseUrl = active.streamingBaseUrl,
+            preferBrowserMode = sessionSettings.browserClientMode,
+            isAndroidTv = isAndroidTv,
+            launchIdentity = launchIdentity,
+        )
         val providerBase = normalizeStreamingServiceUrl(active.streamingBaseUrl.orEmpty())?.trimEnd('/')
         val providerHost = providerBase?.let { Uri.parse(it).host.orEmpty() }.orEmpty()
         val useProviderBaseForSessionOps = providerBase != null && !isZoneHostname(providerHost)
@@ -3259,7 +3348,7 @@ class GfnSessionRepository(
             val requestHttp = sessionProxyHttpClient(settings, http)
             val prefetch = Request.Builder()
                 .url("https://$effectiveServerIp/v2/session/${active.sessionId}")
-                .headers(cloudMatchHeaders(token, clientId, deviceId, includeOrigin = false, streamingBaseUrl = active.streamingBaseUrl, isAndroidTv = isAndroidTv))
+                .headers(sessionHeaders)
                 .build()
             val (code, text) = requestHttp.awaitText(prefetch)
             recordDiagnosticResponse("session.claim.prefetch", prefetch, code, text)
@@ -3271,7 +3360,7 @@ class GfnSessionRepository(
         val validationUrl = "$sessionBase/v2/session/${active.sessionId}"
         val validationRequest = Request.Builder()
             .url(validationUrl)
-            .headers(cloudMatchHeaders(token, clientId, deviceId, includeOrigin = false, streamingBaseUrl = active.streamingBaseUrl, isAndroidTv = isAndroidTv))
+            .headers(sessionHeaders)
             .build()
         val (validationCode, validationText) = http.awaitText(validationRequest)
         recordDiagnosticResponse("session.claim.validation", validationRequest, validationCode, validationText)
@@ -3288,13 +3377,14 @@ class GfnSessionRepository(
         // A recovery GET can already return a stream-ready session. Repeating RESUME in that case
         // can rotate signaling hosts and move a healthy session back through transient setup.
         if (shouldResumeClaimedSession(status, recoveryMode)) {
-            val claimBody = buildClaimRequestBody(
+            val claimBody = buildMinimalClaimRequestBody(
                 appId = active.appId.toString(),
                 deviceId = deviceId,
-                settings = settings,
+                settings = sessionSettings,
                 physicalDisplayResolution = physicalDisplayResolutionProvider(),
                 streamingBaseUrl = active.streamingBaseUrl,
                 appLaunchMode = appLaunchMode,
+                launchIdentity = launchIdentity,
             )
             val claimRequest = Request.Builder()
                 .url(cloudMatchSessionRequestUrl(sessionBase, settings, active.sessionId))
@@ -3306,9 +3396,8 @@ class GfnSessionRepository(
                         includeOrigin = true,
                         streamingBaseUrl = active.streamingBaseUrl,
                         appLaunchMode = appLaunchMode,
-                        preferBrowserMode = settings.browserClientMode,
-                        preferNativeDesktopMode = if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) false else settings.requiresNativeDesktopCloudMatchMode(),
-                        preferNativeAndroidMode = settings.requiresNativeAndroidCloudMatchMode(),
+                        preferBrowserMode = sessionSettings.browserClientMode,
+                        launchIdentity = launchIdentity,
                         isAndroidTv = isAndroidTv,
                         useDesktopNativeTvIdentity = useDesktopNativeTvIdentity,
                     ),
@@ -3324,7 +3413,7 @@ class GfnSessionRepository(
             if (attempt > 0) delay(1000)
             val poll = Request.Builder()
                 .url(validationUrl)
-                .headers(cloudMatchHeaders(token, clientId, deviceId, includeOrigin = false, streamingBaseUrl = active.streamingBaseUrl, isAndroidTv = isAndroidTv))
+                .headers(sessionHeaders)
                 .build()
             val (code, text) = http.awaitText(poll)
             recordDiagnosticResponse("session.claim.poll", poll, code, text)
@@ -3435,81 +3524,6 @@ class GfnSessionRepository(
             )
         }
     }
-
-    private fun buildSessionRequestBody(
-        appId: String,
-        internalTitle: String,
-        settings: StreamSettings,
-        accountLinked: Boolean,
-        deviceId: String,
-        physicalDisplayResolution: Pair<Int, Int>?,
-        streamingBaseUrl: String?,
-        appLaunchMode: Int,
-    ): JsonObject {
-        val identity = cloudMatchClientIdentity(
-            streamingBaseUrl = streamingBaseUrl,
-            appLaunchMode = appLaunchMode,
-            preferBrowserMode = settings.browserClientMode,
-            preferNativeDesktopMode = if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) false else settings.requiresNativeDesktopCloudMatchMode(),
-            preferNativeAndroidMode = settings.requiresNativeAndroidCloudMatchMode(),
-            isAndroidTv = isAndroidTv,
-            useDesktopNativeTvIdentity = useDesktopNativeTvIdentity,
-        )
-        val profile = settings.requestProfile()
-        val controllerCapabilities = gfnControllerCapabilities(appLaunchMode, settings.multiControllerEnabled)
-        return buildJsonObject {
-            putJsonObject("sessionRequestData") {
-                put("appId", appId)
-                if (internalTitle.isBlank()) put("internalTitle", JsonNull) else put("internalTitle", internalTitle)
-                putJsonArray("availableSupportedControllers") {
-                    controllerCapabilities.supportedControllerTypes.forEach { add(JsonPrimitive(it)) }
-                }
-                put("networkTestSessionId", JsonNull)
-                put("parentSessionId", JsonNull)
-                put("clientIdentification", "GFN-PC")
-                put("deviceHashId", deviceId)
-                put("clientVersion", "30.0")
-                putStreamTransportRequest(settings)
-                put("clientPlatformName", cloudMatchPlatformName(identity, appLaunchMode))
-                putJsonArray("clientRequestMonitorSettings") {
-                    add(monitorSettings(profile, settings.fps, identity))
-                }
-                put("useOps", true)
-                put("audioMode", 2)
-                put("metaData", streamSessionMetadata(settings, profile, physicalDisplayResolution, streamingBaseUrl))
-                put("sdrHdrMode", if (profile.hdrEnabled) 1 else 0)
-                put("clientDisplayHdrCapabilities", if (profile.hdrEnabled) hdrCapabilitiesJson() else JsonNull)
-                put("surroundAudioInfo", 0)
-                put("remoteControllersBitmap", controllerCapabilities.remoteControllersBitmap)
-                put("clientTimezoneOffset", java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()))
-                put("appLaunchMode", appLaunchMode)
-                put("partnerCustomData", "")
-                put("accountLinked", accountLinked)
-                put("enablePersistingInGameSettings", identity.persistGameSettings)
-                put("userAge", 26)
-                put("requestedStreamingFeatures", requestedStreamingFeatures(settings, profile))
-            }
-        }
-    }
-
-    private fun buildClaimRequestBody(
-        appId: String,
-        deviceId: String,
-        settings: StreamSettings,
-        physicalDisplayResolution: Pair<Int, Int>?,
-        streamingBaseUrl: String?,
-        appLaunchMode: Int,
-    ): JsonObject =
-        buildMinimalClaimRequestBody(
-            appId = appId,
-            deviceId = deviceId,
-            settings = settings,
-            physicalDisplayResolution = physicalDisplayResolution,
-            streamingBaseUrl = streamingBaseUrl,
-            appLaunchMode = appLaunchMode,
-            isAndroidTv = isAndroidTv,
-            useDesktopNativeTvIdentity = useDesktopNativeTvIdentity,
-        )
 
     private suspend fun toSessionInfo(zone: String, base: String, payload: JsonObject, clientId: String, deviceId: String): SessionInfo {
         val requestStatus = payload.obj("requestStatus")

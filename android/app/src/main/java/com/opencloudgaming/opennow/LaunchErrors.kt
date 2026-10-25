@@ -22,7 +22,11 @@ internal class CloudMatchRequestStatusException(
     },
 )
 
-internal fun normalizeLaunchErrorMessage(error: Throwable, gameTitle: String? = null): String {
+internal fun normalizeLaunchErrorMessage(
+    error: Throwable,
+    gameTitle: String? = null,
+    entitlementMessage: String? = null,
+): String {
     val text = error.message ?: return "Launch failed"
     val cloudMatchFailure = error.cloudMatchRequestStatusException()
     val terminalSession = error.terminalSessionStatusException()
@@ -31,7 +35,7 @@ internal fun normalizeLaunchErrorMessage(error: Throwable, gameTitle: String? = 
             "The cloud session is no longer available (status ${terminalSession.status}). " +
                 "Start the game again to open a new session."
         cloudMatchFailure?.isEntitlementError() == true ->
-            "GeForce NOW rejected this launch because it could not verify a playable membership for the signed-in account. If Free is active, confirm you signed in with the same NVIDIA account, then sign out and back in."
+            entitlementMessage ?: text
         cloudMatchFailure?.isLimitedModeStreamingError() == true -> limitedModeStreamingMessage(gameTitle)
         cloudMatchFailure?.isQueueAbandoned() == true ->
             "The cloud provider ended this queue request. Start the game again to join a new queue."
