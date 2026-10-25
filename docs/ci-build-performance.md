@@ -1,0 +1,81 @@
+# CI build performance
+
+The Qt workflows reuse complete Cargo target directories, including vendored native
+libraries, build-script outputs, and Cargo fingerprints. They do not remove local
+crates before saving the cache. The peer-probe target is cached separately from the
+embedded streamer, matching its CMake ownership.
+
+Linux cache hydration also restores a tracked native source file's earlier
+timestamp when its bytes and permissions are unchanged. Changed and new files
+retain fresh timestamps. This avoids recompiling unchanged vendored C sources
+after every checkout without hiding source changes from Cargo or CMake.
+
+## Persistent caches
+
+Linux jobs use one Blacksmith Sticky Disk for Cargo registry downloads, Git
+dependencies, and the target directories listed by each caller of
+`.github/actions/rust-build-cache`. The cache does not include Cargo credentials,
+configuration, installed tools, or release signing material.
+
+Cache identities separate operating systems, architectures, caller namespaces,
+Rust and native toolchains, and ABI settings. Cargo still checks source changes,
+features, profiles, and dependency versions. A cache hit is not permission to skip
+a build or a test.
+
+The current Blacksmith Sticky Disk action requires Linux block-device and ext4
+tools. Windows and macOS therefore restore complete target archives. Their keys
+include the source commit, with compatible environment and lockfile fallbacks.
+Nightly packages and release candidates retain matching cache namespaces.
+
+Flatpak uses a separate Sticky Disk for the user SDK installation, vendored source
+downloads, and flatpak-builder state. Its build output and state directories stay
+on the same filesystem, as flatpak-builder requires. SDK updates still run, and
+the application is built offline and verified before its bundle is uploaded.
+
+## Snapshot trust
+
+Keep Sticky Disk Branch Protection enabled in Blacksmith. Client-side checks are
+not a security boundary against a pull request that edits the workflow itself.
+The Blacksmith host policy must prevent untrusted jobs from publishing snapshots.
+
+The workflow additionally requests writes only for push or manual runs on `dev`
+or `main`. Rust cache writers must have the triggering commit checked out.
+Pull requests and manual runs on other branches are read-only consumers. Failed
+or cancelled Sticky Disk jobs retain the previous snapshot instead of saving
+partial state.
+
+Blacksmith currently allows protected snapshots to be committed only from the
+repository's default branch. If the default is `main`, runs on `dev` cannot warm
+protected disks, even when the workflow requests a write. Do not disable this
+protection to make `dev` runs faster. Seed compatible caches from the trusted
+default-branch workflow instead.
+
+## Concurrent checks
+
+Qt and native dependencies are installed before Cargo compilation. The native
+check runner uses independent core, streamer, and Qt lanes, with a bounded CPU
+budget and separate logs. Core tests finish before the signed-helper integration
+test cleans and rebuilds their shared target. That integration test retains its
+single-threaded execution and ephemeral signing key.
+
+Each Qt build directory has one CTest scheduler. Existing serial tests, acceptance
+durations, filters, timeouts, doctests, and workspace coverage remain unchanged.
+Standalone Linux package tests use eight workers on the existing eight-core
+runners. Apple Silicon package tests use three workers, and Intel macOS retains
+two. Full package performance acceptance does not overlap external Rust workloads.
+
+## Compare runs
+
+Use two consecutive runs on the same commit to distinguish a cold cache from a
+warm cache. Compare a subsequent source edit to check incremental invalidation.
+Changes to vendored sources must rebuild the affected native library.
+
+The `native-check-diagnostics-*` artifacts contain separate lane logs, elapsed
+times, the Qt JUnit report, and Cargo timing reports from test compilation.
+Compare those phase times before claiming a speedup. A workflow's creation time
+and its first job's start time also reveal delays before compilation begins.
+Those delays are separate from Cargo and test performance.
+
+References: [Cargo build timings](https://doc.rust-lang.org/cargo/reference/timings.html),
+[GitHub cache matching](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching),
+and [Blacksmith Sticky Disks](https://docs.blacksmith.sh/blacksmith-caching/dependencies-sticky-disks).

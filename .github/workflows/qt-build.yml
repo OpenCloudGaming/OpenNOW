@@ -295,17 +295,16 @@ jobs:
         run: sudo apt-get install -y libudev-dev
 
       - name: Cache Rust dependencies and build artifacts
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        uses: ./.github/actions/rust-build-cache
         with:
           shared-key: ${{ runner.os == 'macOS' && format('qt-ci-{0}', matrix.label) || format('qt-ci-{0}-{1}', matrix.os, matrix.label) }}
-          cache-bin: false
-          cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
           workspaces: |
             native/opennow-core -> target
             native/opennow-streamer -> target
             native/opennow-core -> ../../build/opennow-qt-release/rust-target
             native/opennow-core -> ../../build/opennow-qt-release/update-helper-rust-target
+            native/opennow-streamer -> ../../build/opennow-qt-release/peer-probe-rust-target
             native/opennow-streamer -> ../../build/opennow-qt-release/streamer-rust-target
 
       - name: Cache Qt C++ compilation
@@ -377,7 +376,7 @@ jobs:
         id: qt-tests
         if: runner.os == 'Linux'
         shell: bash
-        run: ctest --test-dir build/opennow-qt-release -C Release --output-on-failure --parallel 4 --no-tests=error -LE interactive-desktop
+        run: ctest --test-dir build/opennow-qt-release -C Release --output-on-failure --parallel ${{ matrix.build-parallel }} --no-tests=error -LE interactive-desktop
 
       - name: Create unsigned package
         if: runner.os == 'Windows'
@@ -560,7 +559,7 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          ctest --test-dir build/opennow-qt-release --output-on-failure --parallel 2 --no-tests=error -LE interactive-desktop \
+          ctest --test-dir build/opennow-qt-release --output-on-failure --parallel ${{ matrix.label == 'macos-x64' && 2 || matrix.build-parallel }} --no-tests=error -LE interactive-desktop \
             -R '^opennow-.*-tests$|^opennow-acceptance-verifier-help$|^qml-(desktop-route-(home|settings|stream)|fullscreen-.*stats-shortcut|desktop-stream-.*|streamer-event-contract)$'
       - name: Package unsigned macOS DMG and validation ZIP
         if: runner.os == 'macOS'

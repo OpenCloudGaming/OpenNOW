@@ -7122,9 +7122,10 @@ mod tests {
     fn a_stalled_network_test_allocation_times_out() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let base = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let (release, finished) = std::sync::mpsc::channel();
         let worker = thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
-            thread::sleep(Duration::from_secs(12));
+            finished.recv_timeout(Duration::from_secs(12)).unwrap();
             drop(stream);
         });
         let client = Client::builder().no_proxy().build().unwrap();
@@ -7132,6 +7133,7 @@ mod tests {
             try_network_test_session(&client, &base, "token", "device", &json!({}), &json!({}))
                 .unwrap_err();
         assert_eq!(error.code, "network_error");
+        release.send(()).unwrap();
         worker.join().unwrap();
     }
 

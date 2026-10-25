@@ -133,16 +133,27 @@ class CIWorkflowTest(unittest.TestCase):
         entries = jobs(contracts)
         self.assertEqual(set(entries), {"contracts"})
         self.assertIn("runs-on: blacksmith-2vcpu-ubuntu-2404", entries["contracts"])
-        for forbidden in ("matrix:", "cpack ", "linuxdeploy", "upload-artifact", "--release",
+        runner = (ROOT / ".github/scripts/run-native-checks.py").read_text()
+        for forbidden in ("matrix:", "cpack ", "linuxdeploy", "--release",
                           "uses: ./.github/workflows/qt-build.yml"):
             self.assertNotIn(forbidden, checks)
-        self.assertIn('--target opennow-ci-unit-tests --parallel "$BUILD_PARALLEL"', checks)
-        self.assertIn("--no-tests=error", checks)
-        self.assertIn('-L ci-unit --parallel "$BUILD_PARALLEL" --output-junit qt-unit-tests.xml', checks)
-        self.assertIn("Testing/Temporary/LastTest.log", checks)
-        self.assertIn("cargo clippy --locked", checks)
-        self.assertIn("cargo test --locked", checks)
-        self.assertIn("--workspace --all-targets -- -D warnings", checks)
+        self.assertIn('"--target", "opennow-ci-unit-tests"', runner)
+        self.assertIn('"--no-tests=error"', runner)
+        self.assertIn('"-L", "ci-unit", "--output-junit", "qt-unit-tests.xml"', runner)
+        self.assertIn('"LastTestsFailed.log", "LastTest.log"', runner)
+        self.assertIn('["cargo", "clippy", *core, "--all-targets", "--", "-D", "warnings"]', runner)
+        self.assertIn('["cargo", "clippy", *streamer, "--workspace", "--all-targets", "--", "-D", "warnings"]', runner)
+        self.assertIn('["cargo", "test", *core]', runner)
+        self.assertIn('["cargo", "test", *streamer, "--workspace"]', runner)
+        self.assertIn('"--locked", "--manifest-path", "native/opennow-core/Cargo.toml"', runner)
+        self.assertIn('"--locked", "--manifest-path", "native/opennow-streamer/Cargo.toml"', runner)
+        self.assertIn('tasks[-1].extend(["--parallel", str(jobs)])', runner)
+        self.assertIn('name: native-check-diagnostics-${{ inputs.label }}', checks)
+        self.assertNotIn("build/qt-packages", checks)
+        for phase in ("lint", "build", "test"):
+            self.assertIn(f'run-native-checks.py {phase} --parallel "$CARGO_BUILD_JOBS"', checks)
+        for setup in ("name: Install Qt", "name: Build and cache SDL3 test dependency", "name: Cache complete Rust build state"):
+            self.assertLess(checks.index(setup), checks.index("    - name: Lint Rust"))
         self.assertIn('"$QT_ROOT_DIR/bin/qmlformat"', checks)
         self.assertNotIn("ensure-windows-test-desktop.ps1", checks)
         self.assertIn("ensure-windows-media-foundation.ps1", checks)
@@ -183,19 +194,20 @@ class CIWorkflowTest(unittest.TestCase):
 
     def test_signed_helper_integration_runs_on_every_platform_check_not_signers(self):
         action = (ROOT / ".github/actions/qt-unit-tests/action.yml").read_text()
-        marker = "    - name: Test signed update helper integration\n"
+        marker = "    - name: Test Rust\n"
         before, after = action.split(marker, 1)
         step = after.split("    - name:", 1)[0]
         for setup in ("uses: ilammy/msvc-dev-cmd@v1", "uses: dtolnay/rust-toolchain@stable",
-                      "name: Install Linux test dependencies", "name: Test Rust"):
+                      "name: Install Linux test dependencies", "name: Build Rust and Qt tests concurrently"):
             self.assertIn(setup, before)
         self.assertNotIn("      if:", step)
         self.assertNotIn("continue-on-error", step)
         self.assertIn("working-directory: ${{ env.OPENNOW_CHECKOUT }}", step)
         self.assertIn("CARGO_BUILD_JOBS: ${{ inputs.parallel }}", step)
-        self.assertIn("OPENNOW_UPDATE_TEST_TARGET_DIR: ${{ env.OPENNOW_CHECKOUT }}/native/opennow-core/target", step)
-        self.assertIn("python opennow-qt/tests/run_update_helper_integration.py", step)
-        self.assertIn("python3 opennow-qt/tests/run_update_helper_integration.py", step)
+        self.assertIn('run-native-checks.py test --parallel "$CARGO_BUILD_JOBS"', step)
+        runner = (ROOT / ".github/scripts/run-native-checks.py").read_text()
+        self.assertIn('["cargo", "test", *core], [sys.executable, "opennow-qt/tests/run_update_helper_integration.py"]', runner)
+        self.assertIn('env["OPENNOW_UPDATE_TEST_TARGET_DIR"] = str(Path(environment["OPENNOW_CHECKOUT"]) / "native/opennow-core/target")', runner)
         self.assertNotIn("secrets.", step)
         ci = jobs((WORKFLOWS / "qt-ci.yml").read_text())
         for label in ("linux-x64", "windows-x64", "macos-arm64"):
@@ -254,11 +266,16 @@ class CIWorkflowTest(unittest.TestCase):
     def test_rust_caches_survive_job_renames_and_later_test_failures(self):
         for path in (ROOT / ".github/actions/qt-unit-tests/action.yml", WORKFLOWS / "qt-build.yml"):
             with self.subTest(path=path):
-                cache = path.read_text().split("uses: Swatinem/rust-cache@", 1)[1].split("\n      -", 1)[0]
+                cache = re.split(r"\n\s+- (?:name:|uses:)", path.read_text().split("uses: ./.github/actions/rust-build-cache", 1)[1], 1)[0]
                 self.assertIn("shared-key:", cache)
-                self.assertIn("cache-on-failure: true", cache)
                 self.assertIn("native/opennow-core -> target", cache)
                 self.assertIn("native/opennow-streamer -> target", cache)
+        action = (ROOT / ".github/actions/rust-build-cache/action.yml").read_text()
+        self.assertIn("uses: useblacksmith/stickydisk@", action)
+        self.assertIn("commit: ${{ steps.identity.outputs.save }}", action)
+        self.assertIn("uses: actions/cache/restore@", action)
+        self.assertIn("restore-keys: ${{ steps.identity.outputs.restore-keys }}", action)
+        self.assertNotIn("Swatinem/rust-cache", action)
 
     def test_qt_compile_cache_restores_previous_timestamped_entries(self):
         action = (ROOT / ".github/actions/qt-unit-tests/action.yml").read_text()
@@ -289,7 +306,7 @@ class CIWorkflowTest(unittest.TestCase):
 
     def test_release_candidates_reuse_the_nightly_package_caches(self):
         def block(job, action):
-            return job.split(f"uses: {action}@", 1)[1].split("\n      -", 1)[0]
+            return job.split(f"uses: {action}", 1)[1].split("\n      -", 1)[0]
 
         def key_expression(cache, name):
             return re.search(rf"^\s+{name}: (.+)$", cache, re.MULTILINE).group(1)
@@ -299,7 +316,7 @@ class CIWorkflowTest(unittest.TestCase):
 
         # Resolve the nightly package job's own key expression per matrix entry,
         # so a rename in either workflow has to move both sides together.
-        nightly_rust = block(nightly, "Swatinem/rust-cache")
+        nightly_rust = block(nightly, "./.github/actions/rust-build-cache")
         self.assertEqual(key_expression(nightly_rust, "shared-key"),
                          key_expression(block(nightly, "hendrikmuhs/ccache-action"), "key"))
         expression = key_expression(nightly_rust, "shared-key")
@@ -317,8 +334,8 @@ class CIWorkflowTest(unittest.TestCase):
         })
         # A candidate restores the nightly cache only when its own key pattern
         # resolves to that platform's key.
-        linux = key_expression(block(candidates["linux"], "Swatinem/rust-cache"), "shared-key")
-        windows = key_expression(block(candidates["windows"], "Swatinem/rust-cache"), "shared-key")
+        linux = key_expression(block(candidates["linux"], "./.github/actions/rust-build-cache"), "shared-key")
+        windows = key_expression(block(candidates["windows"], "./.github/actions/rust-build-cache"), "shared-key")
         self.assertEqual({
             **{
                 f"linux-{arch}": linux.replace("${{ matrix.runner }}", runner)
@@ -330,7 +347,7 @@ class CIWorkflowTest(unittest.TestCase):
                 for arch in re.findall(r"- arch: (\S+)\n", candidates["windows"])
             },
             **{
-                f"macos-{arch}": key_expression(block(candidates["macos"], "Swatinem/rust-cache"), "shared-key")
+                f"macos-{arch}": key_expression(block(candidates["macos"], "./.github/actions/rust-build-cache"), "shared-key")
                                 .replace("${{ matrix.arch }}", arch)
                 for arch in re.findall(r"- arch: (\S+)\n", candidates["macos"])
             },
@@ -338,9 +355,10 @@ class CIWorkflowTest(unittest.TestCase):
 
         nightly_workspaces = nightly_rust.split("workspaces: |", 1)[1].strip()
         self.assertIn("native/opennow-core -> ../../build/opennow-qt-release/rust-target", nightly_workspaces)
+        self.assertIn("native/opennow-streamer -> ../../build/opennow-qt-release/peer-probe-rust-target", nightly_workspaces)
         for name in ("linux", "windows", "macos"):
             with self.subTest(candidate=name):
-                rust = block(candidates[name], "Swatinem/rust-cache")
+                rust = block(candidates[name], "./.github/actions/rust-build-cache")
                 ccache = block(candidates[name], "hendrikmuhs/ccache-action")
                 self.assertEqual(key_expression(rust, "shared-key"), key_expression(ccache, "key"))
                 self.assertEqual(rust.split("workspaces: |", 1)[1].strip(), nightly_workspaces)

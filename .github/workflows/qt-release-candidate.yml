@@ -98,6 +98,7 @@ jobs:
         include:
           - arch: x64
             runner: blacksmith-8vcpu-ubuntu-2404
+            build-parallel: 8
             qt_host: linux
             qt_arch: linux_gcc_64
             linuxdeploy_arch: x86_64
@@ -105,6 +106,7 @@ jobs:
             qt_plugin_sha256: 15106be885c1c48a021198e7e1e9a48ce9d02a86dd0a1848f00bdbf3c1c92724
           - arch: arm64
             runner: blacksmith-8vcpu-ubuntu-2404-arm
+            build-parallel: 8
             qt_host: linux_arm64
             qt_arch: linux_gcc_arm64
             linuxdeploy_arch: aarch64
@@ -143,16 +145,15 @@ jobs:
         run: sudo apt-get install -y libudev-dev
 
       - name: Cache Rust dependencies and build artifacts
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        uses: ./.github/actions/rust-build-cache
         with:
           shared-key: qt-ci-${{ matrix.runner }}-linux-${{ matrix.arch }}
-          cache-bin: false
-          cache-on-failure: true
           workspaces: |
             native/opennow-core -> target
             native/opennow-streamer -> target
             native/opennow-core -> ../../build/opennow-qt-release/rust-target
             native/opennow-core -> ../../build/opennow-qt-release/update-helper-rust-target
+            native/opennow-streamer -> ../../build/opennow-qt-release/peer-probe-rust-target
             native/opennow-streamer -> ../../build/opennow-qt-release/streamer-rust-target
 
       - name: Cache Qt C++ compilation
@@ -184,7 +185,7 @@ jobs:
             -DOPENNOW_BUILD_VERSION="$RELEASE_VERSION" \
             -DOPENNOW_UPDATE_ED25519_PUBLIC_KEY="$UPDATE_PUBLIC_KEY"
           cmake --build build/opennow-qt-release --config Release --parallel 6
-          ctest --test-dir build/opennow-qt-release -C Release --output-on-failure --parallel 4
+          ctest --test-dir build/opennow-qt-release -C Release --output-on-failure --parallel ${{ matrix.build-parallel }}
 
       - name: Build DEB and AppImage
         shell: bash
@@ -385,16 +386,15 @@ jobs:
           cache-key-prefix: qt-target-windows-${{ matrix.arch }}
 
       - name: Cache Rust dependencies and build artifacts
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        uses: ./.github/actions/rust-build-cache
         with:
           shared-key: qt-ci-blacksmith-8vcpu-windows-2025-windows-${{ matrix.arch }}
-          cache-bin: false
-          cache-on-failure: true
           workspaces: |
             native/opennow-core -> target
             native/opennow-streamer -> target
             native/opennow-core -> ../../build/opennow-qt-release/rust-target
             native/opennow-core -> ../../build/opennow-qt-release/update-helper-rust-target
+            native/opennow-streamer -> ../../build/opennow-qt-release/peer-probe-rust-target
             native/opennow-streamer -> ../../build/opennow-qt-release/streamer-rust-target
 
       - name: Cache Qt C++ compilation
@@ -581,16 +581,15 @@ jobs:
           cache-key-prefix: qt-target-macos-${{ matrix.arch }}
 
       - name: Cache Rust dependencies and build artifacts
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        uses: ./.github/actions/rust-build-cache
         with:
           shared-key: qt-ci-macos-${{ matrix.arch }}
-          cache-bin: false
-          cache-on-failure: true
           workspaces: |
             native/opennow-core -> target
             native/opennow-streamer -> target
             native/opennow-core -> ../../build/opennow-qt-release/rust-target
             native/opennow-core -> ../../build/opennow-qt-release/update-helper-rust-target
+            native/opennow-streamer -> ../../build/opennow-qt-release/peer-probe-rust-target
             native/opennow-streamer -> ../../build/opennow-qt-release/streamer-rust-target
 
       - name: Cache Qt C++ compilation
@@ -637,7 +636,7 @@ jobs:
       - name: Test Qt shell and embedded runtime offscreen
         shell: bash
         run: |
-          ctest --test-dir build/opennow-qt-release --output-on-failure --parallel 2 --no-tests=error -LE interactive-desktop \
+          ctest --test-dir build/opennow-qt-release --output-on-failure --parallel ${{ matrix.arch == 'x64' && 2 || 3 }} --no-tests=error -LE interactive-desktop \
             -R '^opennow-.*-tests$|^opennow-acceptance-verifier-help$|^qml-(desktop-route-(home|settings|stream)|fullscreen-.*stats-shortcut|desktop-stream-.*|streamer-event-contract)$'
 
       - name: Sign and notarize deployed macOS app and final packages
