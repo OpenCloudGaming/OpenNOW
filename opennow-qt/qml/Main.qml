@@ -33,6 +33,7 @@ ApplicationWindow {
     property string pendingConsoleScreenshotSession: ""
     property int pendingConsoleScreenshotFrames: 0
     readonly property Item consoleModalFocusOwner: consoleSystemWarning.opened ? consoleSystemWarning
+        : consoleStreamEndNotice.opened ? consoleStreamEndNotice
         : (!window.desktopSurfaceActive || AppController.overlay === "session-report")
             && consoleOverlayHost.supportedOverlay ? consoleOverlayHost : null
     onConsoleModalFocusOwnerChanged: if (consoleModalFocusOwner) Qt.callLater(window.restoreConsoleModalFocus)
@@ -995,6 +996,33 @@ ApplicationWindow {
         z: 1200
         onCancelRequested: ShellStore.cancelAccountSwitch()
         onConfirmRequested: ShellStore.confirmAccountSwitch()
+    }
+
+    Item {
+        readonly property real consoleScale: Math.min(parent.width / 1920, parent.height / 1080)
+        visible: consoleStreamEndNotice.present
+        width: parent.width / consoleScale
+        height: parent.height / consoleScale
+        scale: consoleScale
+        transformOrigin: Item.TopLeft
+        z: 1150
+        layer.enabled: HdrOutput.chromeRequired
+        layer.effect: HdrChromeEffect {}
+
+        // The desktop shell owns its own notice; the console surface shows this
+        // one, so a surface switch hands the same pending notice across.
+        ConsoleStreamEndNotice {
+            id: consoleStreamEndNotice
+            anchors.fill: parent
+            opened: !window.desktopSurfaceActive && ShellStore.streamEndNotice !== null
+                && AppController.overlay === "" && !window.onboardingVisible && window.consoleLaunchInputReady
+                && !consoleSystemWarning.opened && ["stream", "inserting", "joining"].indexOf(window.activeRoute) < 0
+            onOpenedChanged: if (!opened) Qt.callLater(() => {
+                if (window.desktopSurfaceActive || window.consoleModalFocusOwner || !routeLoader.item)
+                    return
+                routeLoader.item.forceActiveFocus()
+            })
+        }
     }
 
     Item {
