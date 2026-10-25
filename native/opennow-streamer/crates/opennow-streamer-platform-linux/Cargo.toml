@@ -8,6 +8,7 @@ description = "Linux media backend for the OpenNOW native streamer"
 
 [features]
 default = ["vulkan"]
+hardware-only = []
 vaapi = ["dep:cros-codecs"]
 vulkan = ["dep:ash", "dep:ash-window", "dep:raw-window-handle"]
 ffmpeg = ["dep:ffmpeg-next"]

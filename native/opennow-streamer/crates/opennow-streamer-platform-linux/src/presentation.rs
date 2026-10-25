@@ -2069,7 +2069,9 @@ pub(crate) fn probe_vulkan() -> std::result::Result<(Vec<&'static str>, String),
     let usable_devices = devices
         .into_iter()
         .filter(|device| {
-            supports_swapchain(&instance, *device).unwrap_or(false)
+            crate::vulkan_device::physical_device_allowed(
+                unsafe { instance.get_physical_device_properties(*device) }.device_type,
+            ) && supports_swapchain(&instance, *device).unwrap_or(false)
                 && unsafe { instance.get_physical_device_queue_family_properties(*device) }
                     .iter()
                     .any(|queue| queue.queue_flags.contains(vk::QueueFlags::GRAPHICS))
@@ -2098,6 +2100,11 @@ fn select_device(
     let mut ranked: Vec<(usize, vk::PhysicalDevice, i64)> = devices
         .into_iter()
         .enumerate()
+        .filter(|(_, device)| {
+            crate::vulkan_device::physical_device_allowed(
+                unsafe { instance.get_physical_device_properties(*device) }.device_type,
+            )
+        })
         .map(|(index, device)| {
             let props = unsafe { instance.get_physical_device_properties(device) };
             let queues = unsafe { instance.get_physical_device_queue_family_properties(device) };
@@ -2140,6 +2147,14 @@ fn select_shared_queue(
     shared: &VulkanVideoFrame,
 ) -> Result<(vk::PhysicalDevice, u32)> {
     let physical_device = vk::PhysicalDevice::from_raw(shared.physical_device as u64);
+    if !crate::vulkan_device::physical_device_allowed(
+        unsafe { instance.get_physical_device_properties(physical_device) }.device_type,
+    ) {
+        return Err(Error::unavailable(
+            Subsystem::Vulkan,
+            "hardware-only build forbids software Vulkan devices",
+        ));
+    }
     let properties =
         unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
     for queue_family in &shared.queue_families {

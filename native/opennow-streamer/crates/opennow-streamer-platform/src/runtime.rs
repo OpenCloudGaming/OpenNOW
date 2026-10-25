@@ -215,6 +215,14 @@ impl MediaRuntime {
     }
 
     pub fn validate_backend(&self, requested: &str) -> Result<(), String> {
+        if crate::HARDWARE_ONLY
+            && matches!(
+                requested.trim().to_ascii_lowercase().as_str(),
+                "software" | "ffmpeg"
+            )
+        {
+            return Err(crate::HARDWARE_ONLY_ERROR.to_owned());
+        }
         if !self.is_embedded() {
             return Ok(());
         }
@@ -1133,6 +1141,20 @@ pub fn create_runtime() -> Result<(MainThreadHost, MediaRuntime), String> {
     #[cfg(target_os = "linux")]
     let linux_selection = crate::linux_backend::select_video_path();
     #[cfg(target_os = "linux")]
+    if crate::HARDWARE_ONLY
+        && (matches!(linux_selection.path, LinuxVideoPath::Software)
+            || !linux_selection.use_vulkan_output)
+    {
+        return Err(format!(
+            "{}: {}",
+            crate::HARDWARE_ONLY_ERROR,
+            linux_selection
+                .fallback_reason
+                .as_deref()
+                .unwrap_or("hardware Vulkan presentation is unavailable")
+        ));
+    }
+    #[cfg(target_os = "linux")]
     let linux_software_fallback = Arc::new(AtomicBool::new(matches!(
         linux_selection.path,
         LinuxVideoPath::Software
@@ -1546,6 +1568,25 @@ fn ensure_macos_main_thread() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn hardware_only_runtime_rejects_explicit_software_settings_before_startup() {
+        let (_graphics, frames) = crate::RenderThreadGraphics::new(|| {});
+        let runtime = super::create_embedded_runtime(frames);
+        if crate::HARDWARE_ONLY {
+            for requested in ["software", "ffmpeg", " SOFTWARE "] {
+                assert!(
+                    runtime
+                        .validate_backend(requested)
+                        .unwrap_err()
+                        .contains("hardware-only")
+                );
+            }
+        }
+        assert!(runtime.validate_backend("auto").is_ok());
+        runtime.shutdown();
+    }
+
     #[test]
     fn embedded_runtime_snapshots_windows_adapter_selection() {
         let (_graphics, frames) = crate::RenderThreadGraphics::new(|| {});

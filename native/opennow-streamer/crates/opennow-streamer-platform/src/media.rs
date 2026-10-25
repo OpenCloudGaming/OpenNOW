@@ -1089,7 +1089,7 @@ impl MediaSession {
             ) {
                 Ok(session) => return Ok(session),
                 Err(reason) => {
-                    if stream.codec != MediaVideoCodec::H264 {
+                    if crate::HARDWARE_ONLY || stream.codec != MediaVideoCodec::H264 {
                         return Err(format!(
                             "Linux {} decoder startup failed: {reason}",
                             stream.codec.label().to_ascii_uppercase()
@@ -1101,6 +1101,9 @@ impl MediaSession {
                     });
                 }
             }
+        }
+        if crate::HARDWARE_ONLY {
+            return Err(crate::HARDWARE_ONLY_ERROR.to_owned());
         }
         if !use_windows_backend && stream.codec != MediaVideoCodec::H264 {
             return Err(format!(
@@ -2903,6 +2906,9 @@ struct H264Decoder {
 
 impl H264Decoder {
     fn new() -> Result<Self, String> {
+        if crate::HARDWARE_ONLY {
+            return Err(crate::HARDWARE_ONLY_ERROR.to_owned());
+        }
         OpenH264Decoder::with_api_config(
             OpenH264API::from_source(),
             DecoderConfig::new().debug(false),
@@ -3719,7 +3725,7 @@ fn trigger_linux_fallback(
     host_commands: &Sender<HostCommand>,
     reason: String,
 ) {
-    if shared.linux_codec != MediaVideoCodec::H264 {
+    if crate::HARDWARE_ONLY || shared.linux_codec != MediaVideoCodec::H264 {
         shared.stopped.store(true, Ordering::Release);
         shared.video.close();
         let _ = shared.feedback.send(MediaFeedback::DecoderError {
@@ -4582,6 +4588,19 @@ fn mark_macos_video_desynced(shared: &SharedPipeline, mid: &str, reason: &str) {
 
 #[cfg(test)]
 mod tests {
+    fn software_decoder_forbidden() -> bool {
+        if !crate::HARDWARE_ONLY {
+            return false;
+        }
+        assert!(H264Decoder::new().err().unwrap().contains("hardware-only"));
+        true
+    }
+
+    #[test]
+    fn hardware_only_openh264_constructor_cannot_bypass_decoder_policy() {
+        assert_eq!(H264Decoder::new().is_err(), crate::HARDWARE_ONLY);
+    }
+
     use super::*;
 
     #[cfg(target_os = "macos")]
@@ -4769,6 +4788,46 @@ mod tests {
                 None,
             );
             assert!(result.err().is_some_and(|error| error.contains(expected)));
+        }
+    }
+
+    #[cfg(all(target_os = "linux", feature = "hardware-only"))]
+    #[test]
+    fn hardware_only_embedded_startup_rejects_no_decoder_and_software_before_workers() {
+        use opennow_streamer_platform_linux::DecoderPreference;
+        for (path, expected) in [
+            (LinuxVideoPath::Software, "requires a native NV12 decoder"),
+            (
+                LinuxVideoPath::Hardware(DecoderPreference::SoftwareOnly),
+                "hardware-only",
+            ),
+        ] {
+            let (feedback, feedback_receiver) = std::sync::mpsc::channel();
+            let (commands, command_receiver) = std::sync::mpsc::channel();
+            let (_graphics, frames) = crate::RenderThreadGraphics::new(|| {});
+            let result = MediaSession::spawn_embedded_linux(
+                Arc::new(OutputBuffers::new()),
+                feedback,
+                commands,
+                MediaSessionConfig {
+                    stream: MediaStreamConfig::default(),
+                    audio_device: &opennow_streamer_protocol::AudioOutputDevice::default(),
+                },
+                frames.clone(),
+                LinuxVideoSelection {
+                    path,
+                    use_vulkan_output: true,
+                    fallback_reason: None,
+                },
+                None,
+            );
+            let error = result
+                .err()
+                .expect("startup must fail before creating workers");
+            assert!(error.contains(expected), "{path:?}: {error}");
+            assert!(feedback_receiver.try_recv().is_err());
+            assert!(command_receiver.try_recv().is_err());
+            assert_eq!(frames.published_frames(), 0);
         }
     }
 
@@ -5285,6 +5344,9 @@ mod tests {
 
     #[test]
     fn decodes_a_synthetic_h264_keyframe() {
+        if software_decoder_forbidden() {
+            return;
+        }
         let width = 32;
         let height = 32;
         let mut rgb = vec![0_u8; width * height * 3];
@@ -5308,6 +5370,9 @@ mod tests {
 
     #[test]
     fn software_recovery_replays_parameter_sets_for_an_idr_only_access_unit() {
+        if software_decoder_forbidden() {
+            return;
+        }
         let rgb = vec![96_u8; 32 * 32 * 3];
         let yuv = YUVBuffer::from_rgb_source(RgbSliceU8::new(&rgb, (32, 32)));
         let mut encoder = Encoder::new().unwrap();
@@ -5409,8 +5474,38 @@ mod tests {
         (shared, receiver)
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn hardware_only_standalone_recovery_never_starts_openh264_or_sdl() {
+        let (shared, feedback) = software_test_pipeline();
+        shared
+            .linux_software_fallback
+            .store(false, Ordering::Release);
+        let (commands, host) = std::sync::mpsc::channel();
+        trigger_linux_fallback(&shared, &commands, "hardware decoder lost".to_owned());
+        if crate::HARDWARE_ONLY {
+            assert!(shared.stopped.load(Ordering::Acquire));
+            assert!(!shared.linux_software_fallback.load(Ordering::Acquire));
+            assert!(host.try_recv().is_err());
+            assert!(matches!(
+                feedback.try_recv(),
+                Ok(MediaFeedback::DecoderError { .. })
+            ));
+        } else {
+            assert!(!shared.stopped.load(Ordering::Acquire));
+            assert!(shared.linux_software_fallback.load(Ordering::Acquire));
+            assert!(matches!(
+                host.try_recv(),
+                Ok(HostCommand::FallbackLinux { .. })
+            ));
+        }
+    }
+
     #[test]
     fn software_handoff_decodes_the_pending_h264_keyframe() {
+        if software_decoder_forbidden() {
+            return;
+        }
         let width = 32;
         let height = 32;
         let rgb = vec![96_u8; width * height * 3];
@@ -5444,6 +5539,9 @@ mod tests {
 
     #[test]
     fn software_worker_recovers_an_idr_without_repeated_parameter_sets() {
+        if software_decoder_forbidden() {
+            return;
+        }
         let rgb = vec![96_u8; 32 * 32 * 3];
         let yuv = YUVBuffer::from_rgb_source(RgbSliceU8::new(&rgb, (32, 32)));
         let mut encoder = Encoder::new().unwrap();
@@ -5492,6 +5590,9 @@ mod tests {
 
     #[test]
     fn software_worker_does_not_decode_a_discontinuous_delta_frame() {
+        if software_decoder_forbidden() {
+            return;
+        }
         let rgb = vec![96_u8; 32 * 32 * 3];
         let yuv = YUVBuffer::from_rgb_source(RgbSliceU8::new(&rgb, (32, 32)));
         let mut encoder = Encoder::new().unwrap();
@@ -5529,6 +5630,9 @@ mod tests {
 
     #[test]
     fn software_worker_requests_once_until_a_keyframe_decodes() {
+        if software_decoder_forbidden() {
+            return;
+        }
         let rgb = vec![96_u8; 32 * 32 * 3];
         let yuv = YUVBuffer::from_rgb_source(RgbSliceU8::new(&rgb, (32, 32)));
         let valid_keyframe: Arc<[u8]> = Encoder::new()
@@ -5592,6 +5696,9 @@ mod tests {
 
     #[test]
     fn software_worker_accepts_a_buffered_keyframe_before_output() {
+        if software_decoder_forbidden() {
+            return;
+        }
         let (shared, feedback) = software_test_pipeline();
         shared.keyframe_requested.store(true, Ordering::Release);
         let mut decoder = H264Decoder::new().unwrap();
@@ -5723,8 +5830,12 @@ mod tests {
             },
             #[cfg(target_os = "linux")]
             Arc::new(AtomicBool::new(true)),
-        )
-        .expect("session");
+        );
+        if crate::HARDWARE_ONLY {
+            assert!(session.err().unwrap().contains("hardware-only"));
+            return;
+        }
+        let session = session.expect("session");
         let sink = session.sink();
         session.set_paused(true);
         assert_eq!(
@@ -5778,8 +5889,12 @@ mod tests {
             },
             #[cfg(target_os = "linux")]
             Arc::new(AtomicBool::new(true)),
-        )
-        .expect("session");
+        );
+        if crate::HARDWARE_ONLY {
+            assert!(session.err().unwrap().contains("hardware-only"));
+            return;
+        }
+        let session = session.expect("session");
         assert_eq!(
             session.sink().push(EncodedFrame {
                 mid: "video".to_owned(),

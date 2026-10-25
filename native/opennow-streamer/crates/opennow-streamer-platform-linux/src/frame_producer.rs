@@ -572,6 +572,14 @@ impl LinuxFrameProducer {
             )
         };
         let physical_device = vk::PhysicalDevice::from_raw(render.physical_device as u64);
+        if !crate::vulkan_device::physical_device_allowed(
+            unsafe { instance.get_physical_device_properties(physical_device) }.device_type,
+        ) {
+            return Err(Error::unavailable(
+                Subsystem::Vulkan,
+                "hardware-only build forbids software Vulkan devices",
+            ));
+        }
         let device = unsafe {
             ash::Device::load(
                 instance.fp_v1_0(),

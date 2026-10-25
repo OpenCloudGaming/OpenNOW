@@ -124,6 +124,110 @@ private slots:
         }
     }
 
+    void rejectsNonVulkanSceneGraph_data()
+    {
+        QTest::addColumn<int>("graphicsApi");
+        QTest::newRow("software") << int(QSGRendererInterface::Software);
+        QTest::newRow("opengl") << int(QSGRendererInterface::OpenGL);
+        QTest::newRow("null") << int(QSGRendererInterface::Null);
+        QTest::newRow("unknown") << int(QSGRendererInterface::Unknown);
+    }
+
+    void rejectsNonVulkanSceneGraph()
+    {
+        QFETCH(int, graphicsApi);
+        static QSGRendererInterface::GraphicsApi actualApi;
+        actualApi = QSGRendererInterface::GraphicsApi(graphicsApi);
+        Device::Api api;
+        api.sceneGraphDevice = [](QQuickWindow *) {
+            return Device::SceneGraphDevice{actualApi, std::nullopt};
+        };
+        Device device(api);
+        QQuickWindow window;
+        QVERIFY(!device.validateHardwareRendering(&window));
+        QVERIFY(device.lastError().contains(QStringLiteral("Vulkan")));
+    }
+
+    void rejectsCpuVulkanDevice()
+    {
+        Device::Api api;
+        api.sceneGraphDevice = [](QQuickWindow *) {
+            VkPhysicalDeviceProperties properties{};
+            properties.deviceType = VK_PHYSICAL_DEVICE_TYPE_CPU;
+            return Device::SceneGraphDevice{QSGRendererInterface::Vulkan, properties};
+        };
+        Device device(api);
+        QQuickWindow window;
+        QVERIFY(!device.validateHardwareRendering(&window));
+        QVERIFY(device.lastError().contains(QStringLiteral("CPU")));
+    }
+
+    void rejectsUnqueriedVulkanDevice()
+    {
+        Device::Api api;
+        api.sceneGraphDevice = [](QQuickWindow *) {
+            return Device::SceneGraphDevice{QSGRendererInterface::Vulkan, std::nullopt};
+        };
+        Device device(api);
+        QQuickWindow window;
+        QVERIFY(!device.validateHardwareRendering(&window));
+        QVERIFY(device.lastError().contains(QStringLiteral("physical device")));
+    }
+
+    void validatesPhysicalDeviceType_data()
+    {
+        QTest::addColumn<int>("deviceType");
+        QTest::addColumn<bool>("accepted");
+        QTest::newRow("integrated") << int(VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) << true;
+        QTest::newRow("discrete") << int(VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) << true;
+        QTest::newRow("virtual") << int(VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU) << true;
+        QTest::newRow("other") << int(VK_PHYSICAL_DEVICE_TYPE_OTHER) << false;
+        QTest::newRow("unknown") << int(VK_PHYSICAL_DEVICE_TYPE_MAX_ENUM) << false;
+    }
+
+    void validatesPhysicalDeviceType()
+    {
+        QFETCH(int, deviceType);
+        QFETCH(bool, accepted);
+        static VkPhysicalDeviceType actualType;
+        actualType = VkPhysicalDeviceType(deviceType);
+        Device::Api api;
+        api.sceneGraphDevice = [](QQuickWindow *) {
+            VkPhysicalDeviceProperties properties{};
+            properties.deviceType = actualType;
+            return Device::SceneGraphDevice{QSGRendererInterface::Vulkan, properties};
+        };
+        Device device(api);
+        QQuickWindow window;
+        QCOMPARE(device.validateHardwareRendering(&window), accepted);
+        QCOMPARE(device.lastError().isEmpty(), accepted);
+        QVERIFY(!device.handle());
+    }
+
+    void graphicsOnlyDeviceIsRevalidatedAfterReinitialization()
+    {
+        static int queries = 0;
+        queries = 0;
+        Device::Api api;
+        api.sceneGraphDevice = [](QQuickWindow *) {
+            VkPhysicalDeviceProperties properties{};
+            properties.deviceType = ++queries == 2 ? VK_PHYSICAL_DEVICE_TYPE_CPU
+                                                   : VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+            return Device::SceneGraphDevice{QSGRendererInterface::Vulkan, properties};
+        };
+        Device device(api);
+        QQuickWindow window;
+        QVERIFY(!device.handle());
+        QVERIFY(device.validateHardwareRendering(&window));
+        QVERIFY(device.lastError().isEmpty());
+        QVERIFY(!device.validateHardwareRendering(&window));
+        QVERIFY(device.lastError().contains(QStringLiteral("CPU")));
+        QVERIFY(device.validateHardwareRendering(&window));
+        QVERIFY(device.lastError().isEmpty());
+        QCOMPARE(queries, 3);
+        QVERIFY(!device.handle());
+    }
+
     void fallbackInstanceEnablesAdvertisedHdrColorspace()
     {
         if (QGuiApplication::platformName() == QStringLiteral("offscreen"))
@@ -139,6 +243,64 @@ private slots:
         const QByteArray extension("VK_EXT_swapchain_colorspace");
         QCOMPARE(instance->extensions().contains(extension), instance->supportedExtensions().contains(extension));
         QVERIFY(!window.isVisible());
+    }
+
+    void validatesActualFallbackDeviceAfterSceneGraphRecreation()
+    {
+        if (QGuiApplication::platformName() == QStringLiteral("offscreen")
+                || QGuiApplication::platformName() == QStringLiteral("minimal"))
+            QSKIP("A Vulkan-capable window system is required for physical-device queries.");
+        Device device;
+        std::atomic_int initialized{0};
+        std::atomic_bool correct{true};
+        QString failure;
+        bool validationRequired = true;
+        QQuickWindow window;
+        window.resize(320, 240);
+        window.setPersistentGraphics(false);
+        window.setPersistentSceneGraph(false);
+        QVERIFY2(device.adoptFallback(&window), qPrintable(device.lastError()));
+        QVERIFY(!device.handle());
+        connect(&window, &QQuickWindow::sceneGraphInitialized, &window, [&] {
+            validationRequired = true;
+        }, Qt::DirectConnection);
+        connect(&window, &QQuickWindow::beforeRendering, &window, [&] {
+            if (!validationRequired) return;
+            validationRequired = false;
+            auto *rhi = window.rhi();
+            if (!rhi || rhi->backend() != QRhi::Vulkan) {
+                failure = QStringLiteral("The recreated scene graph has no Vulkan QRhi.");
+                correct.store(false);
+            } else {
+                const auto *handles = static_cast<const QRhiVulkanNativeHandles *>(rhi->nativeHandles());
+                VkPhysicalDeviceProperties properties{};
+                handles->inst->functions()->vkGetPhysicalDeviceProperties(handles->physDev, &properties);
+                const bool hardware = properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU
+                    || properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU
+                    || properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU;
+                if (device.validateHardwareRendering(&window) != hardware
+                        || (hardware != device.lastError().isEmpty())) {
+                    failure = QStringLiteral("Device type %1: %2").arg(int(properties.deviceType))
+                        .arg(device.lastError());
+                    correct.store(false);
+                }
+            }
+            initialized.fetch_add(1);
+        }, Qt::DirectConnection);
+        QSignalSpy invalidated(&window, &QQuickWindow::sceneGraphInvalidated);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        QTRY_VERIFY(initialized.load() > 0);
+        QVERIFY2(correct.load(), qPrintable(failure));
+        window.hide();
+        window.releaseResources();
+        QTRY_VERIFY(!invalidated.isEmpty());
+        const int previous = initialized.load();
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        QTRY_VERIFY(initialized.load() > previous);
+        QVERIFY2(correct.load(), qPrintable(failure));
+        QVERIFY(!device.handle());
     }
 
     void rejectsDifferentQtGraphicsDevice()

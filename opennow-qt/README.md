@@ -15,6 +15,30 @@ On a Windows hybrid laptop, Stream settings → Graphics processor lists each GP
 hardware decode codecs. Automatic uses the first high-performance adapter that
 can decode, so a discrete GPU without a decoder does not hide the integrated GPU.
 
+## Hardware-only Linux builds
+
+To forbid software video decoding and software graphics composition, configure with
+`-DNO_SOFT_RENDERING=ON`. The option defaults to `OFF` and is supported only on Linux.
+
+```sh
+cmake -S opennow-qt -B build/opennow-qt -DCMAKE_BUILD_TYPE=Debug -DNO_SOFT_RENDERING=ON
+cmake --build build/opennow-qt
+```
+
+This build policy applies to both the embedded streamer and the bundled standalone
+streamer. Settings and environment variables cannot enable software decoding.
+Missing or incompatible hardware produces an error instead of a software fallback.
+Qt must use Vulkan on a physical device classified as an integrated, discrete, or
+virtual GPU, including after scene-graph recreation. CPU and unknown devices are rejected.
+A graphics-only Vulkan GPU can compose video decoded by separate hardware such as V4L2.
+
+FFmpeg remains linked because hardware decoder paths also use it. The option does
+not remove all software codec code from dependencies, eliminate CPU work, or add
+support for a particular board. STM32MP257F acceptance still requires testing the
+exact image, kernel, media and GPU drivers, and decoded-frame import on the device.
+Verify that frames reach the display, then disable the hardware device and confirm
+that startup or streaming fails without CPU decoding or composition.
+
 ## CI checks and manual builds
 
 Pull requests and pushes to `dev` or `main` run workflow lint, packaging-contract

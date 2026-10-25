@@ -1553,6 +1553,9 @@ impl SoftwareOutput {
         stream: MediaStreamConfig,
         audio_device: &AudioOutputDevice,
     ) -> Result<Self, String> {
+        if crate::HARDWARE_ONLY {
+            return Err(crate::HARDWARE_ONLY_ERROR.to_owned());
+        }
         #[cfg(target_os = "linux")]
         configure_linux_sdl_video_driver();
         let sdl = sdl2::init().map_err(|error| format!("SDL initialization failed: {error}"))?;
@@ -3125,6 +3128,17 @@ fn aspect_fit(source_width: u32, source_height: u32, width: u32, height: u32) ->
 
 #[cfg(test)]
 mod tests {
+    #[cfg(all(target_os = "linux", feature = "hardware-only"))]
+    #[test]
+    fn hardware_only_rejects_sdl_fallback_before_initialization() {
+        let result = super::SoftwareOutput::initialize(
+            std::sync::Arc::new(super::OutputBuffers::new()),
+            crate::MediaStreamConfig::default(),
+            &opennow_streamer_protocol::AudioOutputDevice::default(),
+        );
+        assert!(result.err().unwrap().contains("hardware-only"));
+    }
+
     use super::*;
 
     #[test]
