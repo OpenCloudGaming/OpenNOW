@@ -42,6 +42,20 @@ impl Cancellation {
             .expect("request receipt poisoned");
         *accepted && !self.cancelled()
     }
+
+    /// Waits for `duration`, returning early with `cancelled` if the request is cancelled.
+    /// Must not be called from inside `commit`, which holds the same lock.
+    pub fn sleep(&self, duration: Duration) -> Result<(), ServiceError> {
+        let accepted = self.0.accepted.lock().expect("request receipt poisoned");
+        drop(
+            self.0
+                .wake
+                .wait_timeout_while(accepted, duration, |_| !self.cancelled())
+                .expect("request receipt poisoned"),
+        );
+        self.check()
+    }
+
     pub fn check(&self) -> Result<(), ServiceError> {
         if self.cancelled() {
             Err(ServiceError {
@@ -186,6 +200,28 @@ mod tests {
             requests.cancel("create");
             assert!(!worker.join().unwrap());
         });
+    }
+    #[test]
+    fn cancellation_interrupts_a_request_sleep() {
+        let started = std::time::Instant::now();
+        assert!(
+            Cancellation::default()
+                .sleep(Duration::from_millis(20))
+                .is_ok()
+        );
+        assert!(started.elapsed() >= Duration::from_millis(20));
+
+        let requests = Arc::new(Requests::default());
+        let permit = requests.admit("discovery", "session.remote.list").unwrap();
+        let started = std::time::Instant::now();
+        std::thread::scope(|scope| {
+            let token = permit.token.clone();
+            let worker = scope.spawn(move || token.sleep(Duration::from_secs(10)));
+            std::thread::sleep(Duration::from_millis(50));
+            requests.cancel("discovery");
+            assert_eq!(worker.join().unwrap().unwrap_err().code, "cancelled");
+        });
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
     #[test]
     fn background_load_reserves_control_capacity_until_workers_really_exit() {

@@ -868,17 +868,15 @@ fn dispatch(
             .map_err(gfn_error),
         "session.active.get" => {
             let settings = core.settings.lock().expect("settings poisoned").all();
-            core.gfn
-                .reconcile_active_session(params, &settings)
-                .map(|value| (value, None))
-                .map_err(gfn_error)
+            let result = core.gfn.reconcile_active_session(params, &settings);
+            record_discovery(core);
+            result.map(|value| (value, None)).map_err(gfn_error)
         }
         "session.remote.list" => {
             let settings = core.settings.lock().expect("settings poisoned").all();
-            core.gfn
-                .remote_sessions(params, &settings)
-                .map(|value| (value, None))
-                .map_err(gfn_error)
+            let result = core.gfn.remote_sessions(params, &settings);
+            record_discovery(core);
+            result.map(|value| (value, None)).map_err(gfn_error)
         }
         "session.claim" => {
             let settings = core.settings.lock().expect("settings poisoned").all();
@@ -1595,6 +1593,12 @@ fn ensure_install_id(core: &AppCore) -> Result<String, (String, String)> {
         .set("telemetryInstallId", json!(install_id.clone()))
         .map_err(|message| ("settings_write_failed".to_owned(), message))?;
     Ok(install_id)
+}
+
+fn record_discovery(core: &AppCore) {
+    for summary in core.gfn.take_discovery_summaries() {
+        core.diagnostics.record("session", "discovery", summary);
+    }
 }
 
 fn upstream_http_status(message: &str) -> Option<u16> {

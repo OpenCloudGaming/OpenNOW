@@ -23,6 +23,12 @@ const NETWORK_TEST_REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 const MAXIMUM_NETWORK_TEST_RESPONSE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_DISCOVERY_REGIONS: usize = 32;
 const DISCOVERY_CONCURRENCY: usize = 4;
+/// Sweep summaries kept until an RPC records them; bounds memory if nothing drains them.
+const DISCOVERY_SUMMARY_BACKLOG: usize = 4;
+const DISCOVERY_RETRY_DELAY: Duration = Duration::from_millis(750);
+// Budget that must remain after the retry delay for a retried request to be useful.
+const DISCOVERY_RETRY_FLOOR: Duration = Duration::from_millis(1500);
+const MAX_DISCOVERY_LOG_FAILURES: usize = 6;
 const MAX_CLEANUP_RECORD_BYTES: usize = 16 * 1024;
 
 fn webrtc_compatibility_enabled(settings: &Value, auth: &AuthSession) -> bool {
@@ -142,6 +148,7 @@ pub struct CloudMatchService {
     client: Client,
     active: Mutex<Option<ActiveSession>>,
     discovered: Mutex<HashMap<String, Value>>,
+    discovery_summaries: Mutex<Vec<String>>,
     conflict: Mutex<Option<SessionConflict>>,
     allocation_admission: Mutex<()>,
     fresh: Mutex<Option<FreshAllocation>>,
@@ -204,6 +211,7 @@ impl CloudMatchService {
             client,
             active: Mutex::new(None),
             discovered: Mutex::new(HashMap::new()),
+            discovery_summaries: Mutex::new(Vec::new()),
             conflict: Mutex::new(None),
             allocation_admission: Mutex::new(()),
             fresh: Mutex::new(None),
@@ -958,69 +966,22 @@ impl CloudMatchService {
         let requested =
             recovery_region.map_or_else(|| requested_streaming_base(params, settings, auth), Ok)?;
         let headers = cloudmatch_headers(session_token(auth), device_id)?;
-        let mut bases = vec![requested.clone()];
         let server_info_url = requested
             .join("v2/serverInfo")
             .map_err(|_| invalid("Invalid server-info URL"))?;
         #[cfg(test)]
         let server_info_url = self.fixture_url(server_info_url);
-        let server_info = client
-            .get(server_info_url)
-            .headers(headers.clone())
-            .timeout(DISCOVERY_REQUEST_TIMEOUT)
-            .send()
-            .map_err(|error| network("Region discovery failed", error))
-            .and_then(|response| {
-                if !response.status().is_success() {
-                    return Err(response_error("Region discovery failed", response));
-                }
-                let payload = response
-                    .json::<Value>()
-                    .map_err(|error| network("Invalid region response", error))?;
-                if payload["metaData"].as_array().is_none()
-                    || (payload.get("requestStatus").is_some()
-                        && value_i64(&payload["requestStatus"]["statusCode"]) != Some(1))
-                {
-                    return Err(upstream("Invalid region response"));
-                }
-                Ok(payload)
-            });
-        if let Err(error) = &server_info
-            && matches!(error.code, "authentication_required" | "http_unauthorized")
-        {
-            return Err(error.clone());
-        }
-        if let Ok(payload) = &server_info {
-            for base in regional_bases(payload) {
-                if !bases.contains(&base) {
-                    bases.push(base);
-                }
-            }
-        }
-        let incomplete = server_info.is_err() || bases.len() > MAX_DISCOVERY_REGIONS;
-        bases.truncate(MAX_DISCOVERY_REGIONS);
-        let mut sessions = discover_sessions(&bases, deadline, incomplete, |base, timeout| {
-            let url = base
-                .join("v2/session")
-                .map_err(|_| invalid("Invalid active-session URL"))?;
-            #[cfg(test)]
-            let url = self.fixture_url(url);
-            let response = client
-                .get(url)
-                .headers(headers.clone())
-                .timeout(timeout)
-                .send()
-                .map_err(|error| network("Active-session discovery failed", error))?;
-            let payload =
-                read_cloudmatch_response("Active-session discovery failed", response, false)?;
-            let sessions = payload["sessions"]
-                .as_array()
-                .ok_or_else(|| upstream("Invalid active-session response"))?;
-            Ok(sessions
-                .iter()
-                .filter_map(|session| remote_session_info(session, base))
-                .collect())
-        })?;
+        let mut log = DiscoveryLog::default();
+        let sessions = self.discover_remote_sessions(
+            &client,
+            &headers,
+            requested,
+            server_info_url,
+            deadline,
+            &mut log,
+        );
+        self.push_discovery_summary(log.summary());
+        let mut sessions = sessions?;
         if let Some(pending) = self.pending_cleanup(auth)
             && !sessions
                 .iter()
@@ -1043,6 +1004,95 @@ impl CloudMatchService {
                 discovered.insert(session_id.to_owned(), session.clone());
             }
         }
+    }
+
+    /// Queues one sweep's diagnostics summary. Every sweep keeps its own line, including the
+    /// first sweep of a token-renewal retry; only the oldest lines beyond the bound are dropped.
+    fn push_discovery_summary(&self, summary: String) {
+        let mut summaries = self
+            .discovery_summaries
+            .lock()
+            .expect("CloudMatch discovery state poisoned");
+        if summaries.len() >= DISCOVERY_SUMMARY_BACKLOG {
+            summaries.remove(0);
+        }
+        summaries.push(summary);
+    }
+
+    /// Returns the diagnostics summaries of the discovery sweeps since the last call, oldest
+    /// first.
+    pub(crate) fn take_discovery_summaries(&self) -> Vec<String> {
+        std::mem::take(
+            &mut *self
+                .discovery_summaries
+                .lock()
+                .expect("CloudMatch discovery state poisoned"),
+        )
+    }
+
+    fn discover_remote_sessions(
+        &self,
+        client: &Client,
+        headers: &HeaderMap,
+        requested: Url,
+        server_info_url: Url,
+        deadline: Instant,
+        log: &mut DiscoveryLog,
+    ) -> Result<Vec<Value>, ServiceError> {
+        let mut server_info = fetch_server_info(
+            client,
+            server_info_url.clone(),
+            headers,
+            DISCOVERY_REQUEST_TIMEOUT,
+        );
+        log.server_info.push(attempt_outcome(&server_info));
+        if let Err((_, kind)) = &server_info
+            && kind.is_transient()
+            && has_retry_budget(deadline)
+        {
+            crate::requests::current().sleep(DISCOVERY_RETRY_DELAY)?;
+            let timeout = deadline
+                .saturating_duration_since(Instant::now())
+                .min(DISCOVERY_REQUEST_TIMEOUT);
+            server_info = fetch_server_info(client, server_info_url, headers, timeout);
+            log.server_info.push(attempt_outcome(&server_info));
+        }
+        let server_info = server_info.map_err(|(error, _)| error);
+        if let Err(error) = &server_info
+            && is_auth_failure(error)
+        {
+            return Err(error.clone());
+        }
+        let mut regions = vec![("selected".to_owned(), requested)];
+        if let Ok(payload) = &server_info {
+            for (name, base) in regional_bases(payload) {
+                match regions.iter_mut().find(|(_, known)| known == &base) {
+                    Some(region) => region.0 = name,
+                    None => regions.push((name, base)),
+                }
+            }
+        }
+        let incomplete = server_info.is_err() || regions.len() > MAX_DISCOVERY_REGIONS;
+        regions.truncate(MAX_DISCOVERY_REGIONS);
+        let (names, bases): (Vec<_>, Vec<_>) = regions.into_iter().unzip();
+        log.attempts = Mutex::new(vec![Vec::new(); names.len()]);
+        log.regions = names;
+        let log = &*log;
+        discover_sessions(&bases, deadline, incomplete, |base, timeout| {
+            let url = base.join("v2/session").map_err(|_| {
+                (
+                    invalid("Invalid active-session URL"),
+                    FailureKind::Unchecked,
+                )
+            })?;
+            #[cfg(test)]
+            let url = self.fixture_url(url);
+            let result = fetch_region_sessions(client, url, headers, base, timeout);
+            if let Some(index) = bases.iter().position(|known| known == base) {
+                log.record(index, attempt_outcome(&result));
+            }
+            result
+        })
     }
 
     pub fn claim(
@@ -1379,13 +1429,7 @@ impl CloudMatchService {
         let mut last_error = None;
         for attempt in 0..=2 {
             match client.get(url.clone()).headers(headers.clone()).send() {
-                Ok(response)
-                    if attempt < 2
-                        && matches!(
-                            response.status().as_u16(),
-                            408 | 425 | 429 | 500 | 502 | 503 | 504
-                        ) =>
-                {
+                Ok(response) if attempt < 2 && is_transient_status(response.status().as_u16()) => {
                     thread::sleep(Duration::from_millis(if attempt == 0 { 250 } else { 750 }));
                 }
                 Ok(response) => {
@@ -1453,6 +1497,7 @@ impl CloudMatchService {
         };
         Ok(regional_bases(&payload)
             .into_iter()
+            .map(|(_, base)| base)
             .find(|base| {
                 !prefer_regional || !base.host_str().unwrap_or_default().starts_with("np-")
             })
@@ -2536,44 +2581,44 @@ fn discover_sessions(
     bases: &[Url],
     deadline: Instant,
     mut incomplete: bool,
-    fetch: impl Fn(&Url, Duration) -> Result<Vec<Value>, ServiceError> + Sync,
+    fetch: impl Fn(&Url, Duration) -> Result<Vec<Value>, RegionFailure> + Sync,
 ) -> Result<Vec<Value>, ServiceError> {
-    let fetch = &fetch;
     let cancellation = crate::requests::current();
-    let mut results = thread::scope(|scope| {
-        let workers = (0..DISCOVERY_CONCURRENCY.min(bases.len()))
-            .map(|worker| {
-                let cancellation = cancellation.clone();
-                scope.spawn(move || {
-                    bases
-                        .iter()
-                        .enumerate()
-                        .skip(worker)
-                        .step_by(DISCOVERY_CONCURRENCY)
-                        .map(|(index, base)| {
-                            let remaining = deadline.saturating_duration_since(Instant::now());
-                            let result = cancellation.check().and_then(|()| {
-                                if remaining.is_zero() {
-                                    Err(discovery_failed())
-                                } else {
-                                    fetch(base, remaining.min(DISCOVERY_REQUEST_TIMEOUT))
-                                }
-                            });
-                            (index, result)
-                        })
-                        .collect::<Vec<_>>()
-                })
-            })
-            .collect::<Vec<_>>();
-        workers
-            .into_iter()
-            .flat_map(|worker| worker.join().expect("CloudMatch discovery worker panicked"))
-            .collect::<Vec<_>>()
-    });
+    let all = (0..bases.len()).collect::<Vec<_>>();
+    let mut results = fetch_regions(bases, &all, deadline, &cancellation, &fetch);
     cancellation.check()?;
-    results.sort_by_key(|(index, _)| *index);
+    // A single transient regional failure must not fail discovery on its own. While nothing was
+    // found and no region rejected the credentials, retry the transiently failed regions once,
+    // after a short delay, if the budget still leaves room for a useful attempt. Other failures
+    // stay final, so an incomplete sweep still fails closed below.
+    let transient = all
+        .into_iter()
+        .filter(|index| {
+            results[*index]
+                .as_ref()
+                .is_err_and(|(_, kind)| kind.is_transient())
+        })
+        .collect::<Vec<_>>();
+    if !transient.is_empty()
+        && !results
+            .iter()
+            .any(|result| result.as_ref().is_ok_and(|found| !found.is_empty()))
+        && !results.iter().any(|result| {
+            result
+                .as_ref()
+                .is_err_and(|(error, _)| is_auth_failure(error))
+        })
+        && has_retry_budget(deadline)
+    {
+        cancellation.sleep(DISCOVERY_RETRY_DELAY)?;
+        let retried = fetch_regions(bases, &transient, deadline, &cancellation, &fetch);
+        cancellation.check()?;
+        for (index, result) in transient.into_iter().zip(retried) {
+            results[index] = result;
+        }
+    }
     let mut sessions = Vec::new();
-    for (_, result) in results {
+    for result in results {
         match result {
             Ok(found) => {
                 for session in found {
@@ -2585,9 +2630,7 @@ fn discover_sessions(
                     }
                 }
             }
-            Err(error) if matches!(error.code, "authentication_required" | "http_unauthorized") => {
-                return Err(error);
-            }
+            Err((error, _)) if is_auth_failure(&error) => return Err(error),
             Err(_) => incomplete = true,
         }
     }
@@ -2595,6 +2638,333 @@ fn discover_sessions(
         return Err(discovery_failed());
     }
     Ok(sessions)
+}
+
+/// Fetches `bases[index]` for each of `indices` with bounded concurrency. Results are returned
+/// in the order of `indices`.
+fn fetch_regions(
+    bases: &[Url],
+    indices: &[usize],
+    deadline: Instant,
+    cancellation: &crate::requests::Cancellation,
+    fetch: &(impl Fn(&Url, Duration) -> Result<Vec<Value>, RegionFailure> + Sync),
+) -> Vec<Result<Vec<Value>, RegionFailure>> {
+    let mut results = thread::scope(|scope| {
+        let workers = (0..DISCOVERY_CONCURRENCY.min(indices.len()))
+            .map(|worker| {
+                scope.spawn(move || {
+                    indices
+                        .iter()
+                        .enumerate()
+                        .skip(worker)
+                        .step_by(DISCOVERY_CONCURRENCY)
+                        .map(|(position, index)| {
+                            let remaining = deadline.saturating_duration_since(Instant::now());
+                            let result = match cancellation.check() {
+                                Err(error) => Err((error, FailureKind::Unchecked)),
+                                Ok(()) if remaining.is_zero() => {
+                                    Err((discovery_failed(), FailureKind::Unchecked))
+                                }
+                                Ok(()) => {
+                                    fetch(&bases[*index], remaining.min(DISCOVERY_REQUEST_TIMEOUT))
+                                }
+                            };
+                            (position, result)
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect::<Vec<_>>();
+        workers
+            .into_iter()
+            .flat_map(|worker| worker.join().expect("CloudMatch discovery worker panicked"))
+            .collect::<Vec<_>>()
+    });
+    results.sort_by_key(|(position, _)| *position);
+    results.into_iter().map(|(_, result)| result).collect()
+}
+
+/// A failed regional request: the error for the caller and its URL-free classification.
+type RegionFailure = (ServiceError, FailureKind);
+
+fn is_auth_failure(error: &ServiceError) -> bool {
+    matches!(error.code, "authentication_required" | "http_unauthorized")
+}
+
+fn has_retry_budget(deadline: Instant) -> bool {
+    deadline.saturating_duration_since(Instant::now())
+        > DISCOVERY_RETRY_DELAY + DISCOVERY_RETRY_FLOOR
+}
+
+/// HTTP statuses after which one more CloudMatch read can succeed. Session polling and
+/// discovery retry the same set.
+fn is_transient_status(status: u16) -> bool {
+    matches!(status, 408 | 425 | 429 | 500 | 502 | 503 | 504)
+}
+
+fn fetch_server_info(
+    client: &Client,
+    url: Url,
+    headers: &HeaderMap,
+    timeout: Duration,
+) -> Result<Value, (ServiceError, FailureKind)> {
+    let response = client
+        .get(url)
+        .headers(headers.clone())
+        .timeout(timeout)
+        .send()
+        .map_err(|error| request_failure("Region discovery failed", error))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err((
+            response_error("Region discovery failed", response),
+            FailureKind::Http(status.as_u16()),
+        ));
+    }
+    let payload = response
+        .json::<Value>()
+        .map_err(|error| request_failure("Invalid region response", error))?;
+    if payload["metaData"].as_array().is_none() {
+        return Err((upstream("Invalid region response"), FailureKind::Body));
+    }
+    if payload.get("requestStatus").is_some()
+        && value_i64(&payload["requestStatus"]["statusCode"]) != Some(1)
+    {
+        return Err((upstream("Invalid region response"), FailureKind::Rejected));
+    }
+    Ok(payload)
+}
+
+fn fetch_region_sessions(
+    client: &Client,
+    url: Url,
+    headers: &HeaderMap,
+    base: &Url,
+    timeout: Duration,
+) -> Result<Vec<Value>, (ServiceError, FailureKind)> {
+    const CONTEXT: &str = "Active-session discovery failed";
+    let response = client
+        .get(url)
+        .headers(headers.clone())
+        .timeout(timeout)
+        .send()
+        .map_err(|error| request_failure(CONTEXT, error))?;
+    let status = response.status();
+    let payload = response.json::<Value>();
+    let kind = match &payload {
+        _ if !status.is_success() => FailureKind::Http(status.as_u16()),
+        Err(error) => FailureKind::of(error),
+        Ok(_) => FailureKind::Rejected,
+    };
+    let payload = validate_cloudmatch_response(CONTEXT, status, payload, false)
+        .map_err(|error| (error, kind))?;
+    let sessions = payload["sessions"].as_array().ok_or_else(|| {
+        (
+            upstream("Invalid active-session response"),
+            FailureKind::Body,
+        )
+    })?;
+    Ok(sessions
+        .iter()
+        .filter_map(|session| remote_session_info(session, base))
+        .collect())
+}
+
+fn request_failure(context: &str, error: reqwest::Error) -> (ServiceError, FailureKind) {
+    (network(context, &error), FailureKind::of(&error))
+}
+
+fn attempt_outcome<T>(result: &Result<T, (ServiceError, FailureKind)>) -> Result<(), FailureKind> {
+    result.as_ref().map(|_| ()).map_err(|(_, kind)| *kind)
+}
+
+/// URL-free classification of one failed discovery request, for diagnostics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FailureKind {
+    Http(u16),
+    Timeout,
+    Dns,
+    Tls,
+    Connect,
+    /// The connection was closed or reset under the request, as with a stale keep-alive
+    /// connection.
+    Closed,
+    /// Invalid JSON or a payload without the expected fields.
+    Body,
+    /// CloudMatch answered with a non-success `requestStatus`.
+    Rejected,
+    /// Another transport failure.
+    Network,
+    /// Never sent: the deadline or the request cancellation ended the sweep first.
+    Unchecked,
+}
+
+impl FailureKind {
+    /// Whether one more attempt can plausibly succeed. As in session polling, that is the
+    /// transient HTTP statuses and any transport failure. Other statuses, malformed bodies,
+    /// rejected requests and unsent requests are final.
+    fn is_transient(self) -> bool {
+        match self {
+            Self::Http(status) => is_transient_status(status),
+            Self::Timeout
+            | Self::Dns
+            | Self::Tls
+            | Self::Connect
+            | Self::Closed
+            | Self::Network => true,
+            Self::Body | Self::Rejected | Self::Unchecked => false,
+        }
+    }
+
+    /// Classifies a failed send or body read. The `timeout`, `dns`, `tls` and `connect` stages
+    /// come from the shared GFN transport classifier; discovery adds closed connections and
+    /// invalid bodies.
+    fn of(error: &reqwest::Error) -> Self {
+        match crate::gfn::transport_failure(error) {
+            Some("timeout") => Self::Timeout,
+            Some("dns") => Self::Dns,
+            Some("tls") => Self::Tls,
+            Some(_) => Self::Connect,
+            None if connection_closed(error) => Self::Closed,
+            None if error.is_decode() => Self::Body,
+            None => Self::Network,
+        }
+    }
+}
+
+/// Whether the connection was closed or reset under the request. hyper reports a pooled
+/// keep-alive connection that the server closed first as "connection closed before message
+/// completed".
+fn connection_closed(error: &reqwest::Error) -> bool {
+    let mut source = std::error::Error::source(error);
+    while let Some(cause) = source {
+        if cause.to_string().starts_with("connection closed") {
+            return true;
+        }
+        source = match cause.downcast_ref::<std::io::Error>() {
+            Some(io)
+                if matches!(
+                    io.kind(),
+                    std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::BrokenPipe
+                        | std::io::ErrorKind::UnexpectedEof
+                ) =>
+            {
+                return true;
+            }
+            Some(io) => io.get_ref().map(|inner| inner as _),
+            None => cause.source(),
+        };
+    }
+    false
+}
+
+impl std::fmt::Display for FailureKind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Http(status) => write!(formatter, "http={status}"),
+            Self::Timeout => formatter.write_str("timeout"),
+            Self::Dns => formatter.write_str("dns"),
+            Self::Tls => formatter.write_str("tls"),
+            Self::Connect => formatter.write_str("connect"),
+            Self::Closed => formatter.write_str("closed"),
+            Self::Body => formatter.write_str("body"),
+            Self::Rejected => formatter.write_str("rejected"),
+            Self::Network => formatter.write_str("network"),
+            Self::Unchecked => formatter.write_str("unchecked"),
+        }
+    }
+}
+
+type Attempts = Vec<Result<(), FailureKind>>;
+
+/// Bounded record of one discovery sweep for `current.log`. It names regions by their
+/// CloudMatch metadata key and never holds URLs, tokens or error messages.
+#[derive(Default)]
+struct DiscoveryLog {
+    server_info: Attempts,
+    regions: Vec<String>,
+    attempts: Mutex<Vec<Attempts>>,
+}
+
+impl DiscoveryLog {
+    fn record(&self, region: usize, outcome: Result<(), FailureKind>) {
+        if let Some(attempts) = self
+            .attempts
+            .lock()
+            .expect("CloudMatch discovery log poisoned")
+            .get_mut(region)
+        {
+            attempts.push(outcome);
+        }
+    }
+
+    /// For example `serverInfo=ok regions=17 failed=1 retried=1 recovered=1
+    /// failures=NP-AMS-03:closed#1`. Attempts are numbered from 1; a region that was never
+    /// requested (deadline or cancellation) is reported as `unchecked`.
+    fn summary(self) -> String {
+        let attempts = self
+            .attempts
+            .into_inner()
+            .expect("CloudMatch discovery log poisoned");
+        let failures_of = |name: &str, attempts: &Attempts| {
+            attempts
+                .iter()
+                .enumerate()
+                .filter_map(|(attempt, outcome)| {
+                    outcome
+                        .err()
+                        .map(|kind| format!("{name}:{kind}#{}", attempt + 1))
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut failures = failures_of("serverInfo", &self.server_info);
+        let (mut failed, mut retried, mut recovered) = (0, 0, 0);
+        for (index, (name, attempts)) in self.regions.iter().zip(&attempts).enumerate() {
+            let name = region_label(index, name);
+            failed += usize::from(attempts.first().is_none_or(Result::is_err));
+            retried += usize::from(attempts.len() > 1);
+            recovered +=
+                usize::from(attempts.len() > 1 && attempts.last().is_some_and(Result::is_ok));
+            if attempts.is_empty() {
+                failures.push(format!("{name}:unchecked#1"));
+            }
+            failures.extend(failures_of(&name, attempts));
+        }
+        let server_info = match self.server_info.as_slice() {
+            [Ok(())] => "ok",
+            [Err(_), Ok(())] => "recovered",
+            _ => "failed",
+        };
+        let mut summary = format!(
+            "serverInfo={server_info} regions={} failed={failed} retried={retried} recovered={recovered}",
+            self.regions.len()
+        );
+        if !failures.is_empty() {
+            let omitted = failures.len().saturating_sub(MAX_DISCOVERY_LOG_FAILURES);
+            failures.truncate(MAX_DISCOVERY_LOG_FAILURES);
+            if omitted > 0 {
+                failures.push(format!("+{omitted}"));
+            }
+            summary.push_str(" failures=");
+            summary.push_str(&failures.join(","));
+        }
+        summary
+    }
+}
+
+/// Logs a region by its metadata key only when that key looks like a region identifier.
+fn region_label(index: usize, name: &str) -> String {
+    if (1..=24).contains(&name.len())
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        name.to_owned()
+    } else {
+        format!("region{index}")
+    }
 }
 
 fn discovery_failed() -> ServiceError {
@@ -2605,7 +2975,8 @@ fn discovery_failed() -> ServiceError {
     }
 }
 
-fn regional_bases(payload: &Value) -> Vec<Url> {
+/// Returns the advertised regional endpoints with their metadata names, local region first.
+fn regional_bases(payload: &Value) -> Vec<(String, Url)> {
     let metadata = payload["metaData"].as_array().cloned().unwrap_or_default();
     let value_for = |key: &str| {
         metadata.iter().find_map(|entry| {
@@ -2630,9 +3001,11 @@ fn regional_bases(payload: &Value) -> Vec<Url> {
     for name in names {
         if let Some(raw) = value_for(&name)
             && let Ok(base) = trusted_cloudmatch_base(&raw)
-            && !result.iter().any(|existing: &Url| existing == &base)
+            && !result
+                .iter()
+                .any(|(_, existing): &(String, Url)| existing == &base)
         {
-            result.push(base);
+            result.push((name, base));
         }
     }
     result
@@ -4956,7 +5329,7 @@ mod tests {
                 false,
                 |base, _| {
                     if base == &bases[0] {
-                        Err(upstream("failed region"))
+                        Err(failure(FailureKind::Body))
                     } else {
                         Ok(if found {
                             vec![json!({"sessionId":"seat"})]
@@ -4992,7 +5365,7 @@ mod tests {
         );
         assert_eq!(
             discover_sessions(&bases, Instant::now() + DISCOVERY_TIMEOUT, false, |_, _| {
-                Err(upstream("failed"))
+                Err(failure(FailureKind::Body))
             })
             .unwrap_err()
             .code,
@@ -5040,10 +5413,13 @@ mod tests {
     fn discovery_preserves_authentication_failures_and_cancellation() {
         let bases = [trusted_cloudmatch_base(DEFAULT_STREAMING_BASE).unwrap()];
         let error = discover_sessions(&bases, Instant::now() + DISCOVERY_TIMEOUT, false, |_, _| {
-            Err(ServiceError {
-                code: "authentication_required",
-                message: "Expired credentials".to_owned(),
-            })
+            Err((
+                ServiceError {
+                    code: "authentication_required",
+                    message: "Expired credentials".to_owned(),
+                },
+                FailureKind::Http(403),
+            ))
         })
         .unwrap_err();
         assert_eq!(error.code, "authentication_required");
@@ -5058,6 +5434,443 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(error.code, "cancelled");
+    }
+
+    fn retry_bases() -> [Url; 3] {
+        [
+            "https://first.nvidiagrid.net",
+            "https://second.nvidiagrid.net",
+            "https://third.nvidiagrid.net",
+        ]
+        .map(|url| trusted_cloudmatch_base(url).unwrap())
+    }
+
+    /// A failed regional request of the given kind, with the error the caller would see.
+    fn failure(kind: FailureKind) -> RegionFailure {
+        (network("Active-session discovery failed", kind), kind)
+    }
+
+    /// Runs discovery over `bases` and returns the result with the number of calls per base.
+    fn discover_counting(
+        bases: &[Url],
+        deadline: Instant,
+        fetch: impl Fn(usize, usize) -> Result<Vec<Value>, RegionFailure> + Sync,
+    ) -> (Result<Vec<Value>, ServiceError>, Vec<usize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = bases
+            .iter()
+            .map(|_| AtomicUsize::new(0))
+            .collect::<Vec<_>>();
+        let result = discover_sessions(bases, deadline, false, |base, timeout| {
+            assert!(timeout <= DISCOVERY_REQUEST_TIMEOUT);
+            let index = bases.iter().position(|known| known == base).unwrap();
+            fetch(index, calls[index].fetch_add(1, Ordering::SeqCst))
+        });
+        let calls = calls.iter().map(|calls| calls.load(Ordering::SeqCst));
+        (result, calls.collect())
+    }
+
+    #[test]
+    fn discovery_retries_a_transient_region_failure_once() {
+        let started = Instant::now();
+        let (result, calls) = discover_counting(
+            &retry_bases(),
+            Instant::now() + DISCOVERY_TIMEOUT,
+            |index, call| {
+                if index == 0 && call == 0 {
+                    Err(failure(FailureKind::Timeout))
+                } else {
+                    Ok(vec![])
+                }
+            },
+        );
+        assert!(result.unwrap().is_empty());
+        assert_eq!(calls, [2, 1, 1]);
+        assert!(started.elapsed() >= DISCOVERY_RETRY_DELAY);
+    }
+
+    #[test]
+    fn discovery_still_fails_closed_when_the_retry_fails() {
+        let (result, calls) = discover_counting(
+            &retry_bases(),
+            Instant::now() + DISCOVERY_TIMEOUT,
+            |index, _| {
+                if index == 0 {
+                    Err(failure(FailureKind::Closed))
+                } else {
+                    Ok(vec![])
+                }
+            },
+        );
+        assert_eq!(result.unwrap_err().code, "session_discovery_failed");
+        assert_eq!(calls, [2, 1, 1]);
+    }
+
+    #[test]
+    fn discovery_does_not_retry_authentication_failures() {
+        let (result, calls) = discover_counting(
+            &retry_bases(),
+            Instant::now() + DISCOVERY_TIMEOUT,
+            |index, _| match index {
+                0 => Err((
+                    ServiceError {
+                        code: "http_unauthorized",
+                        message: "Expired credentials".to_owned(),
+                    },
+                    FailureKind::Http(401),
+                )),
+                1 => Err(failure(FailureKind::Timeout)),
+                _ => Ok(vec![]),
+            },
+        );
+        assert_eq!(result.unwrap_err().code, "http_unauthorized");
+        assert_eq!(calls, [1, 1, 1]);
+    }
+
+    #[test]
+    fn discovery_does_not_retry_non_transient_regional_failures() {
+        for kind in [
+            FailureKind::Http(400),
+            FailureKind::Http(404),
+            FailureKind::Http(501),
+            FailureKind::Body,
+            FailureKind::Rejected,
+        ] {
+            let (result, calls) = discover_counting(
+                &retry_bases(),
+                Instant::now() + DISCOVERY_TIMEOUT,
+                |index, _| {
+                    if index == 0 {
+                        Err(failure(kind))
+                    } else {
+                        Ok(vec![])
+                    }
+                },
+            );
+            // The retry delay only runs before a retry, so one call per region also proves
+            // that no delay was spent.
+            assert_eq!(
+                result.unwrap_err().code,
+                "session_discovery_failed",
+                "{kind}"
+            );
+            assert_eq!(calls, [1, 1, 1], "{kind}");
+        }
+    }
+
+    #[test]
+    fn failure_kinds_separate_transient_from_final_failures() {
+        // The HTTP statuses are the ones session polling (`get_session`) retries.
+        for kind in [
+            FailureKind::Http(408),
+            FailureKind::Http(425),
+            FailureKind::Http(429),
+            FailureKind::Http(500),
+            FailureKind::Http(502),
+            FailureKind::Http(503),
+            FailureKind::Http(504),
+            FailureKind::Timeout,
+            FailureKind::Dns,
+            FailureKind::Tls,
+            FailureKind::Connect,
+            FailureKind::Closed,
+            FailureKind::Network,
+        ] {
+            assert!(kind.is_transient(), "{kind}");
+        }
+        for kind in [
+            FailureKind::Http(302),
+            FailureKind::Http(400),
+            FailureKind::Http(401),
+            FailureKind::Http(403),
+            FailureKind::Http(404),
+            FailureKind::Http(501),
+            FailureKind::Http(505),
+            FailureKind::Body,
+            FailureKind::Rejected,
+            FailureKind::Unchecked,
+        ] {
+            assert!(!kind.is_transient(), "{kind}");
+        }
+    }
+
+    #[test]
+    fn discovery_skips_the_retry_once_a_session_is_found() {
+        let (result, calls) = discover_counting(
+            &retry_bases(),
+            Instant::now() + DISCOVERY_TIMEOUT,
+            |index, _| match index {
+                0 => Err(failure(FailureKind::Timeout)),
+                1 => Ok(vec![json!({"sessionId":"seat"})]),
+                _ => Ok(vec![]),
+            },
+        );
+        assert_eq!(result.unwrap().len(), 1);
+        assert_eq!(calls, [1, 1, 1]);
+    }
+
+    #[test]
+    fn discovery_skips_the_retry_without_budget() {
+        // Exactly the minimum budget at the start, so less than it remains after the first
+        // pass, while the first pass itself has ample time even on a loaded machine.
+        let (result, calls) = discover_counting(
+            &retry_bases(),
+            Instant::now() + DISCOVERY_RETRY_DELAY + DISCOVERY_RETRY_FLOOR,
+            |index, _| {
+                if index == 0 {
+                    Err(failure(FailureKind::Timeout))
+                } else {
+                    Ok(vec![])
+                }
+            },
+        );
+        assert_eq!(result.unwrap_err().code, "session_discovery_failed");
+        assert_eq!(calls, [1, 1, 1]);
+    }
+
+    #[test]
+    fn discovery_retry_delay_honours_cancellation() {
+        let bases = retry_bases();
+        let requests = std::sync::Arc::new(crate::requests::Requests::default());
+        let permit = requests.admit("discovery", "session.remote.list").unwrap();
+        let regions = bases.len();
+        let (fetched_tx, fetched_rx) = std::sync::mpsc::channel();
+        let started = Instant::now();
+        let (result, calls) = thread::scope(|scope| {
+            let requests = &requests;
+            scope.spawn(move || {
+                // Cancel once every region has been requested. This usually lands inside the
+                // retry delay; landing just before it must end discovery the same way, so a
+                // slow machine only loses timing margin, never the outcome.
+                for _ in 0..regions {
+                    fetched_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                }
+                thread::sleep(Duration::from_millis(50));
+                requests.cancel("discovery");
+            });
+            crate::requests::scope(permit.token.clone(), || {
+                discover_counting(&bases, Instant::now() + DISCOVERY_TIMEOUT, |index, _| {
+                    let _ = fetched_tx.send(());
+                    if index == 0 {
+                        Err(failure(FailureKind::Timeout))
+                    } else {
+                        Ok(vec![])
+                    }
+                })
+            })
+        });
+        assert_eq!(result.unwrap_err().code, "cancelled");
+        assert_eq!(calls, [1, 1, 1]);
+        assert!(started.elapsed() < DISCOVERY_RETRY_DELAY);
+    }
+
+    #[test]
+    fn remote_sessions_retries_server_info_and_records_the_sweep() {
+        let session_list = json!({"requestStatus":{"statusCode":1},"sessions":[]});
+        let (base, server) = session_server(
+            vec![
+                (503, json!({})),
+                (
+                    200,
+                    json!({"metaData":[
+                        {"key":"local-region","value":"NP-TEST-01"},
+                        {"key":"NP-TEST-01","value":"https://np-test-01.nvidiagrid.net/"}
+                    ]}),
+                ),
+                (200, session_list.clone()),
+                (200, session_list),
+            ],
+            |_| {},
+        );
+        let mut service = CloudMatchService::new(Client::builder().no_proxy().build().unwrap());
+        service.set_test_control_base(base);
+        let response = service
+            .remote_sessions(&json!({}), &json!({}), &conflict_auth(), "device")
+            .unwrap();
+        assert_eq!(response, json!({"sessions":[]}));
+        assert_eq!(
+            server.join().unwrap(),
+            [
+                "GET /v2/serverInfo HTTP/1.1",
+                "GET /v2/serverInfo HTTP/1.1",
+                "GET /v2/session HTTP/1.1",
+                "GET /v2/session HTTP/1.1",
+            ]
+        );
+        assert_eq!(
+            service.take_discovery_summaries(),
+            [
+                "serverInfo=recovered regions=2 failed=0 retried=0 recovered=0 \
+              failures=serverInfo:http=503#1"
+            ]
+        );
+        assert!(service.take_discovery_summaries().is_empty());
+    }
+
+    #[test]
+    fn remote_sessions_retries_a_transient_regional_failure() {
+        // The selected endpoint is also the only advertised region, so requests are sequential.
+        let (base, server) = session_server(
+            vec![
+                (
+                    200,
+                    json!({"metaData":[
+                        {"key":"local-region","value":"NP-TEST-01"},
+                        {"key":"NP-TEST-01","value":DEFAULT_STREAMING_BASE}
+                    ]}),
+                ),
+                (503, json!({})),
+                (200, json!({"requestStatus":{"statusCode":1},"sessions":[]})),
+            ],
+            |_| {},
+        );
+        let mut service = CloudMatchService::new(Client::builder().no_proxy().build().unwrap());
+        service.set_test_control_base(base);
+        let response = service
+            .remote_sessions(&json!({}), &json!({}), &conflict_auth(), "device")
+            .unwrap();
+        assert_eq!(response, json!({"sessions":[]}));
+        assert_eq!(
+            server.join().unwrap(),
+            [
+                "GET /v2/serverInfo HTTP/1.1",
+                "GET /v2/session HTTP/1.1",
+                "GET /v2/session HTTP/1.1",
+            ]
+        );
+        assert_eq!(
+            service.take_discovery_summaries(),
+            ["serverInfo=ok regions=1 failed=1 retried=1 recovered=1 \
+                 failures=NP-TEST-01:http=503#1"]
+        );
+    }
+
+    #[test]
+    fn remote_sessions_does_not_retry_final_failures() {
+        // A 404 from region discovery and a rejected regional answer are each requested once,
+        // and the incomplete sweep still fails closed.
+        let (base, server) = session_server(
+            vec![
+                (404, json!({})),
+                (200, json!({"requestStatus":{"statusCode":4}})),
+            ],
+            |_| {},
+        );
+        let mut service = CloudMatchService::new(Client::builder().no_proxy().build().unwrap());
+        service.set_test_control_base(base);
+        let error = service
+            .remote_sessions(&json!({}), &json!({}), &conflict_auth(), "device")
+            .unwrap_err();
+        assert_eq!(error.code, "session_discovery_failed");
+        assert_eq!(
+            server.join().unwrap(),
+            ["GET /v2/serverInfo HTTP/1.1", "GET /v2/session HTTP/1.1"]
+        );
+        assert_eq!(
+            service.take_discovery_summaries(),
+            [
+                "serverInfo=failed regions=1 failed=1 retried=0 recovered=0 \
+                 failures=serverInfo:http=404#1,selected:rejected#1"
+            ]
+        );
+    }
+
+    #[test]
+    fn discovery_summaries_keep_every_sweep_until_recorded() {
+        // A token-renewal retry runs a second sweep before the RPC records anything; both
+        // sweeps must still reach the log, and an undrained backlog stays bounded.
+        let service = CloudMatchService::new(Client::builder().no_proxy().build().unwrap());
+        service.push_discovery_summary("first".to_owned());
+        service.push_discovery_summary("second".to_owned());
+        assert_eq!(service.take_discovery_summaries(), ["first", "second"]);
+        assert!(service.take_discovery_summaries().is_empty());
+        for index in 0..DISCOVERY_SUMMARY_BACKLOG + 2 {
+            service.push_discovery_summary(format!("sweep{index}"));
+        }
+        let kept = service.take_discovery_summaries();
+        assert_eq!(kept.len(), DISCOVERY_SUMMARY_BACKLOG);
+        assert_eq!(kept.first().map(String::as_str), Some("sweep2"));
+        assert_eq!(kept.last().map(String::as_str), Some("sweep5"));
+    }
+
+    #[test]
+    fn discovery_summary_names_regions_and_stays_bounded() {
+        let log = DiscoveryLog {
+            server_info: vec![Ok(())],
+            regions: vec![
+                "selected".into(),
+                "NP-AMS-03".into(),
+                "https://np-ams-04.nvidiagrid.net/".into(),
+                "NP-FRK-01".into(),
+            ],
+            attempts: Mutex::new(vec![
+                vec![Ok(())],
+                vec![Err(FailureKind::Closed), Ok(())],
+                vec![Err(FailureKind::Http(503)), Err(FailureKind::Timeout)],
+                vec![],
+            ]),
+        };
+        assert_eq!(
+            log.summary(),
+            "serverInfo=ok regions=4 failed=3 retried=2 recovered=1 \
+             failures=NP-AMS-03:closed#1,region2:http=503#1,region2:timeout#2,NP-FRK-01:unchecked#1"
+        );
+
+        let log = DiscoveryLog {
+            server_info: vec![Err(FailureKind::Connect), Err(FailureKind::Connect)],
+            regions: (0..MAX_DISCOVERY_REGIONS)
+                .map(|index| format!("NP-REGION-{index:02}"))
+                .collect(),
+            attempts: Mutex::new(vec![
+                vec![Err(FailureKind::Closed), Err(FailureKind::Closed)];
+                MAX_DISCOVERY_REGIONS
+            ]),
+        };
+        let summary = log.summary();
+        assert!(summary.starts_with(
+            "serverInfo=failed regions=32 failed=32 retried=32 recovered=0 \
+             failures=serverInfo:connect#1,serverInfo:connect#2,NP-REGION-00:closed#1,"
+        ));
+        assert!(summary.ends_with(",+60"), "{summary}");
+        // Diagnostics redact whitespace-separated words containing '@' or URLs.
+        assert!(summary.len() < 300 && !summary.contains('@') && !summary.contains("://"));
+    }
+
+    #[test]
+    fn failure_kind_tells_closed_connections_from_timeouts() {
+        use std::io::{BufRead, BufReader};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v2/session", listener.local_addr().unwrap());
+        let (timed_out_tx, timed_out_rx) = std::sync::mpsc::channel::<()>();
+        let server = thread::spawn(move || {
+            // Read the request, then close without answering, like a stale keep-alive peer.
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(&stream);
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap() > 0 && line != "\r\n" {
+                line.clear();
+            }
+            drop(stream);
+            // Never answer, and keep the connection open until the client has given up.
+            let (stream, _) = listener.accept().unwrap();
+            let _ = timed_out_rx.recv_timeout(Duration::from_secs(30));
+            drop(stream);
+        });
+        let client = Client::builder().no_proxy().build().unwrap();
+        let closed = client.get(&url).send().unwrap_err();
+        assert_eq!(FailureKind::of(&closed), FailureKind::Closed, "{closed:?}");
+        let timeout = client
+            .get(&url)
+            .timeout(Duration::from_millis(100))
+            .send()
+            .unwrap_err();
+        let _ = timed_out_tx.send(());
+        assert_eq!(
+            FailureKind::of(&timeout),
+            FailureKind::Timeout,
+            "{timeout:?}"
+        );
+        server.join().unwrap();
     }
 
     fn cloudmatch_response(status: u16, body: &str) -> Response {

@@ -699,14 +699,22 @@ reuse that discovery to stop a seat.
 CloudMatch instead of treating the first empty regional response as authoritative.
 Discovery deduplicates session IDs and uses at most four concurrent requests, a
 three-second per-request timeout, a 12-second total budget (including region
-discovery), and at most 32 regional endpoints. If no sessions were found but a
-region failed, returned invalid data, or could not be checked within these bounds,
-the request fails with `session_discovery_failed` rather than returning an empty
-list. HTTP 401 remains `http_unauthorized` after at most one safe-read renewal;
-HTTP 403 remains `authentication_required`. A found session
-can be returned even when another region fails; an empty successful list means
-all discovered regions were checked successfully. Callers must not create a new
-session after a discovery failure.
+discovery), and at most 32 regional endpoints. While no session has been found and
+no region rejected the credentials, a region or region-discovery request that failed
+transiently is retried once, 750 ms later, if more than 2.25 seconds of the budget
+remain. Transient means HTTP 408, 425, 429, 500, 502, 503, or 504 (the statuses
+session polling retries) or a transport failure such as a timeout or a closed
+connection; other HTTP statuses, invalid bodies, and rejected `requestStatus` values
+are final. If no sessions were found but a region failed, returned invalid data, or
+could not be checked within these bounds, even after that retry, the request fails
+with `session_discovery_failed` rather than returning an empty list. HTTP 401
+remains `http_unauthorized` after at most one safe-read renewal; HTTP 403 remains
+`authentication_required`. A found session can be returned even when another region
+fails; an empty successful list means all discovered regions were checked
+successfully. Callers must not create a new session after a discovery failure. Each
+sweep records one bounded `[session] discovery:` diagnostics line with each failed
+request's kind and attempt number, naming regions by CloudMatch metadata key, never
+by URL.
 
 ### Provider routing and account scope
 
