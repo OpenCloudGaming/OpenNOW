@@ -859,6 +859,18 @@ if(BUILD_TESTING)
         set_tests_properties("qml-stream-end-notice-${stream_end_width}x${stream_end_height}" PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
     endforeach()
+    qt_add_resources(opennow-qt "console-stream-end-notice-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/ConsoleStreamEndNoticeAcceptance.qml)
+    foreach(size_pair "1280;720" "1920;1080")
+        list(GET size_pair 0 console_end_width)
+        list(GET size_pair 1 console_end_height)
+        add_test(NAME "qml-console-stream-end-notice-${console_end_width}x${console_end_height}"
+            COMMAND opennow-qt --smoke-test --allow-multiple-instances --console
+                --route game-detail --smoke-console-stream-end-notice-check --reduced-motion
+                --smoke-width ${console_end_width} --smoke-height ${console_end_height})
+        set_tests_properties("qml-console-stream-end-notice-${console_end_width}x${console_end_height}" PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+    endforeach()
     qt_add_resources(opennow-qt "queue-drop-acceptance"
         PREFIX "/acceptance" BASE tests FILES tests/QueueDropsAcceptance.qml)
     qt_add_resources(opennow-qt "color-format-acceptance"
