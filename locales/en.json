@@ -4349,5 +4349,23 @@
     "maximize": "Maximize",
     "restore": "Restore",
     "close": "Close"
+  },
+  "streamEndNotice": {
+    "streamEnded": "STREAM ENDED",
+    "sessionEnded": "SESSION ENDED",
+    "errorTitle": "The stream ended unexpectedly",
+    "errorBodyGame": "The cloud server closed your %1 session. You can start it again from here.",
+    "errorBody": "The cloud server closed your session. You can start it again from here.",
+    "idleTitle": "Closed after inactivity",
+    "idleBodyGame": "%1 didn't get any input for a while, so the session was closed. Start it again whenever you're ready.",
+    "idleBody": "Your game didn't get any input for a while, so the session was closed. Start it again whenever you're ready.",
+    "timeLimitTitle": "Session time limit reached",
+    "timeLimitBodyGame": "%1 ran for the longest session your membership allows. Start a new session to keep playing.",
+    "timeLimitBody": "Your game ran for the longest session your membership allows. Start a new session to keep playing.",
+    "errorCode": "Error code: %1",
+    "copy": "Copy",
+    "copied": "Copied",
+    "copyErrorCode": "Copy error code",
+    "errorCodeCopied": "Error code copied"
   }
 }

@@ -329,6 +329,19 @@ int AcceptanceSession::prepareWindow()
             if (m_arguments.contains(u"--smoke-resolution-open"_s)) picker->setProperty("expanded", true);
             if (m_arguments.contains(u"--smoke-resolution-fits-monitor"_s)) picker->setProperty("fitsMonitor", true);
         }
+        const auto streamEndIndex = m_arguments.indexOf(u"--smoke-stream-end-notice"_s);
+        if (streamEndIndex >= 0) {
+            auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
+            if (!store || streamEndIndex + 1 >= m_arguments.size()) return EXIT_FAILURE;
+            const auto codeIndex = m_arguments.indexOf(u"--smoke-stream-end-code"_s);
+            const auto codeText = codeIndex >= 0 && codeIndex + 1 < m_arguments.size()
+                ? m_arguments.at(codeIndex + 1) : QString();
+            bool parsed = false;
+            const auto code = codeText.toUInt(&parsed, 0);
+            store->setProperty("selectedGame", m_engine.rootContext()->contextProperty(u"SmokeTestGame"_s));
+            store->setProperty("streamEndNotice", QVariantMap{{u"kind"_s, m_arguments.at(streamEndIndex + 1)},
+                {u"code"_s, parsed ? QVariant(code) : QVariant()}, {u"codeText"_s, codeText}});
+        }
         if (m_arguments.contains(u"--smoke-light-theme"_s)) {
             auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
             if (store) store->setProperty("settings", QVariantMap{{u"appTheme"_s, u"light"_s}});
