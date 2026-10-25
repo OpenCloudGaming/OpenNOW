@@ -1,4 +1,35 @@
-pub(crate) fn shutdown_reason_result(reason: u16) -> u32 {
+pub(crate) fn shutdown_reason_outcome(reason: u16) -> (u32, bool, u32) {
+    match reason {
+        0x0000 => (0x40, false, shutdown_reason_result(reason)),
+        0x0001 => (0x4a, true, shutdown_reason_result(reason)),
+        0x0100 => (0x34, false, shutdown_reason_result(reason)),
+        0x0102 => (0x4b, true, shutdown_reason_result(reason)),
+        0x0103 => (0x3d, false, shutdown_reason_result(reason)),
+        0x0104 => (0x38, false, shutdown_reason_result(reason)),
+        0x0105 => (0x3f, false, shutdown_reason_result(reason)),
+        0x0106 => (0x41, false, shutdown_reason_result(reason)),
+        0x0107 => (0x42, false, shutdown_reason_result(reason)),
+        0x0108 => (0x43, false, shutdown_reason_result(reason)),
+        0x010a => (0x45, true, shutdown_reason_result(reason)),
+        0x010b => (0x46, false, shutdown_reason_result(reason)),
+        0x010c => (0x47, false, shutdown_reason_result(reason)),
+        0x010e => (0x35, false, 0x00f1_3003),
+        0x010f => (0x4c, false, 0x00f1_3004),
+        0x0201 => (0x36, false, shutdown_reason_result(reason)),
+        0x0203 => (0x3a, false, shutdown_reason_result(reason)),
+        0x0205 => (0x39, false, shutdown_reason_result(reason)),
+        0x0206 => (0x3b, true, shutdown_reason_result(reason)),
+        0x0207 => (0x3c, false, shutdown_reason_result(reason)),
+        0x0208 => (0x40, false, shutdown_reason_result(reason)),
+        0x0209 => (0x49, false, 0x00f1_3002),
+        0x0300 => (0x48, false, 0x00f1_3001),
+        0x810c => (0x3e, false, shutdown_reason_result(reason)),
+        0x810f => (0x44, false, shutdown_reason_result(reason)),
+        _ => (0x35, false, shutdown_reason_result(reason)),
+    }
+}
+
+fn shutdown_reason_result(reason: u16) -> u32 {
     match reason {
         0x0000 => 0x8011_0000,
         0x0001 => 0x8011_0001,
@@ -196,5 +227,28 @@ pub(crate) fn shutdown_reason_result(reason: u16) -> u32 {
         0x9611 => 0x8013_0003,
         0x9612 => 0x8013_0004,
         _ => 0x8003_0000,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recovered_tables_keep_their_published_sizes() {
+        let reasons = 0..=u16::MAX;
+        assert_eq!(
+            reasons
+                .clone()
+                .filter(|reason| shutdown_reason_result(*reason) != 0x8003_0000)
+                .count(),
+            195
+        );
+        assert_eq!(
+            reasons
+                .filter(|reason| shutdown_reason_outcome(*reason).0 != 0x35)
+                .count(),
+            24
+        );
     }
 }

@@ -111,10 +111,10 @@ fn idle_timer_retries_only_the_latest_state_after_event_backpressure() {
 
 #[test]
 fn server_termination_preserves_classification_and_stops_every_leg_once() {
-    for (shutdown_reason, reason, extended_code, resumable) in [
-        (Some(0x104_u16), 0x38_u32, 0x8003_0007_u32, false),
-        (Some(0x8006), 0x35, 0x8004_0010, false),
-        (None, 0x37, 0x8004_0010, true),
+    for (shutdown_reason, reason, session_alive, extended_code, resumable) in [
+        (Some(0x104_u16), 0x38_u32, false, 0x8003_0007_u32, false),
+        (Some(0x0206), 0x3b, true, 0x8003_000e, false),
+        (None, 0x37, true, 0x8004_0010, true),
     ] {
         let (events, received) = mpsc::channel();
         let output = EventSender::unbounded(events);
@@ -124,6 +124,7 @@ fn server_termination_preserves_classification_and_stops_every_leg_once() {
             wire_code: 0x8003_0023,
             shutdown_reason,
             reason,
+            session_alive,
             extended_code,
         };
         for _ in 0..2 {
@@ -147,6 +148,7 @@ fn server_termination_preserves_classification_and_stops_every_leg_once() {
             assert_eq!(event["termination"]["wireCode"], 0x8003_0023_u32);
             assert_eq!(event["termination"]["shutdownReason"], json!(shutdown_reason));
             assert_eq!(event["termination"]["reason"], json!(reason));
+            assert_eq!(event["termination"]["sessionAlive"], session_alive);
             assert_eq!(event["termination"]["extendedCode"], json!(extended_code));
             assert_eq!(event["termination"]["resumable"], resumable);
         }
@@ -172,6 +174,7 @@ fn stale_server_control_events_cannot_change_a_replacement_session() {
             wire_code: 0x8003_0023,
             shutdown_reason: Some(0x104),
             reason: 0x38,
+            session_alive: false,
             extended_code: 0x8003_0007,
         }),
     ] {
@@ -198,7 +201,7 @@ fn server_termination_during_setup_is_not_mistaken_for_a_duplicate() {
     let lifecycle = connected_lifecycle();
     lock_lifecycle(&lifecycle).state = State::Idle;
     let resources = TestNvstResources::default();
-    assert!(forward_nvst_event(&output, &lifecycle, 7, &resources, &mut 0, &mut NvstControlOutput::default(), None, NvstReceiveEvent::ServerTermination(NvstServerTermination {wire_code: 0x8003_0023, shutdown_reason: Some(0x104), reason: 0x38, extended_code: 0x8003_0007})));
+    assert!(forward_nvst_event(&output, &lifecycle, 7, &resources, &mut 0, &mut NvstControlOutput::default(), None, NvstReceiveEvent::ServerTermination(NvstServerTermination {wire_code: 0x8003_0023, shutdown_reason: Some(0x104), reason: 0x38, session_alive: false, extended_code: 0x8003_0007})));
     assert_eq!(resources.stops.load(Ordering::Relaxed), 1);
     assert_eq!(received.try_iter().count(), 2);
 }
@@ -222,6 +225,7 @@ fn terminal_events_survive_a_full_bounded_callback_queue() {
                 wire_code: 0x8004_0010,
                 shutdown_reason: None,
                 reason: 0x37,
+                session_alive: true,
                 extended_code: 0x8004_0010
             })
         ));

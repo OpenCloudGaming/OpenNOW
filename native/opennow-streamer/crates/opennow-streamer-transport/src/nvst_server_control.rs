@@ -1,4 +1,4 @@
-use crate::nvst_shutdown_reason::shutdown_reason_result;
+use crate::nvst_shutdown_reason::shutdown_reason_outcome;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct ControlKeepaliveHealth {
@@ -58,6 +58,7 @@ pub struct NvstServerTermination {
     pub wire_code: u32,
     pub shutdown_reason: Option<u16>,
     pub reason: u32,
+    pub session_alive: bool,
     pub extended_code: u32,
 }
 
@@ -70,32 +71,19 @@ impl NvstServerTermination {
         } else {
             None
         };
-        let (reason, extended_code) = match (wire_code, shutdown_reason) {
-            (EXTENDED_TEARDOWN, None) => (0x35, 0xc0f5_2003),
-            (EXTENDED_TEARDOWN, Some(0x300)) => (0x48, 0x00f1_3001),
-            (EXTENDED_TEARDOWN, Some(0x209)) => (0x49, 0x00f1_3002),
-            (EXTENDED_TEARDOWN, Some(0x10e)) => (0x35, 0x00f1_3003),
-            (EXTENDED_TEARDOWN, Some(0x10f)) => (0x4c, 0x00f1_3004),
-            (EXTENDED_TEARDOWN, Some(shutdown_reason)) => (
-                match shutdown_reason {
-                    0x100 => 0x34,
-                    0x104 => 0x38,
-                    0x201 => 0x36,
-                    0x205 => 0x39,
-                    0x206 => 0x3b,
-                    _ => 0x35,
-                },
-                shutdown_reason_result(shutdown_reason),
-            ),
-            (0x8003_0000 | 0x8011_0000..=0x8011_0001, _) => (0x34, wire_code),
-            (0x8003_0006, _) => (0x3d, wire_code),
-            (0x8003_001a, _) => (0x44, wire_code),
-            _ => (0x35, wire_code),
+        let (reason, session_alive, extended_code) = match (wire_code, shutdown_reason) {
+            (EXTENDED_TEARDOWN, None) => (0x35, false, 0xc0f5_2003),
+            (EXTENDED_TEARDOWN, Some(shutdown_reason)) => shutdown_reason_outcome(shutdown_reason),
+            (0x8003_0000 | 0x8011_0000..=0x8011_0001, _) => (0x34, true, wire_code),
+            (0x8003_0006, _) => (0x3d, true, wire_code),
+            (0x8003_001a, _) => (0x44, true, wire_code),
+            _ => (0x35, true, wire_code),
         };
         Self {
             wire_code,
             shutdown_reason,
             reason,
+            session_alive,
             extended_code,
         }
     }
@@ -350,28 +338,30 @@ mod tests {
 
     #[test]
     fn shutdown_records_use_the_first_session_termination_reason() {
-        assert_eq!(
-            extended(&[0, 0, 0x02, 0x05, 0, 0, 0x01, 0x04]).shutdown_reason,
-            Some(0x205)
-        );
-        assert_eq!(
-            extended(&[0, 1, 0, 0, 0, 0, 0x02, 0x01]).shutdown_reason,
-            Some(0x201)
-        );
-        assert_eq!(
-            extended(&[0, 1, 0, 3, 1, 2, 3, 0, 0, 0x01, 0x04]).shutdown_reason,
-            Some(0x104)
-        );
+        for (records, shutdown_reason) in [
+            (&[0, 0, 0x02, 0x05, 0, 0, 0x01, 0x04][..], 0x205),
+            (&[0, 1, 0, 0, 0, 0, 0x02, 0x05][..], 0x205),
+            (&[0, 1, 0, 2, 0xaa, 0xbb, 0, 0, 0x01, 0x04][..], 0x104),
+            (&[0, 0, 0xff, 0xff, 0, 0, 0x01, 0x04][..], 0xffff),
+            (
+                &[0, 0, 0x01, 0x04, 0, 2, 0xff, 0xff, 0, 0, 0x02, 0x05][..],
+                0x104,
+            ),
+        ] {
+            assert_eq!(extended(records).shutdown_reason, Some(shutdown_reason));
+        }
     }
 
     #[test]
     fn malformed_or_unknown_shutdown_records_fall_back_to_unknown_reason() {
         for records in [
             &[][..],
+            &[0][..],
             &[0, 0, 0x01][..],
-            &[0, 1, 0, 4, 1, 2, 3, 0, 0, 0x01, 0x04][..],
-            &[0, 1, 0xff, 0xff][..],
-            &[0, 2, 0x01, 0x04, 0, 0, 0x01, 0x04][..],
+            &[0, 2][..],
+            &[0, 2, 0xff, 0xff, 0, 0, 0x01, 0x04][..],
+            &[0, 1, 0, 2, 0xaa, 0xbb][..],
+            &[0, 1, 0, 0xff, 0, 0, 0x01, 0x04][..],
         ] {
             assert_eq!(
                 extended(records),
@@ -379,6 +369,7 @@ mod tests {
                     wire_code: EXTENDED_TEARDOWN,
                     shutdown_reason: None,
                     reason: 0x35,
+                    session_alive: false,
                     extended_code: 0xc0f5_2003,
                 }
             );
@@ -386,58 +377,63 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_reasons_select_notification_and_extended_result() {
-        for (shutdown_reason, reason, extended_code) in [
-            (0x100_u16, 0x34, 0x8003_0000),
-            (0x104, 0x38, 0x8003_0007),
-            (0x201, 0x36, 0x8003_0009),
-            (0x205, 0x39, 0x8003_000c),
-            (0x206, 0x3b, 0x8003_000e),
-            (0x8006, 0x35, 0x8004_0010),
-            (0x8605, 0x35, 0x800e_8605),
-            (0x300, 0x48, 0x00f1_3001),
-            (0x209, 0x49, 0x00f1_3002),
-            (0x10e, 0x35, 0x00f1_3003),
-            (0x10f, 0x4c, 0x00f1_3004),
-            (0xfffe, 0x35, 0x8003_0000),
+    fn shutdown_reasons_select_notification_liveness_and_extended_result() {
+        for (shutdown_reason, reason, session_alive, extended_code) in [
+            (0x0000_u16, 0x40, false, 0x8011_0000),
+            (0x0001, 0x4a, true, 0x8011_0001),
+            (0x0100, 0x34, false, 0x8003_0000),
+            (0x0102, 0x4b, true, 0x8003_0004),
+            (0x0104, 0x38, false, 0x8003_0007),
+            (0x010a, 0x45, true, 0x8003_001e),
+            (0x0201, 0x36, false, 0x8003_0009),
+            (0x0205, 0x39, false, 0x8003_000c),
+            (0x0206, 0x3b, true, 0x8003_000e),
+            (0x810f, 0x44, false, 0x8003_001a),
+            (0x8006, 0x35, false, 0x8004_0010),
+            (0x8605, 0x35, false, 0x800e_8605),
+            (0x0300, 0x48, false, 0x00f1_3001),
+            (0x0209, 0x49, false, 0x00f1_3002),
+            (0x010e, 0x35, false, 0x00f1_3003),
+            (0x010f, 0x4c, false, 0x00f1_3004),
+            (0xfffe, 0x35, false, 0x8003_0000),
         ] {
             let termination = extended(&[[0, 0], shutdown_reason.to_be_bytes()].concat());
-            assert_eq!(termination.shutdown_reason, Some(shutdown_reason));
             assert_eq!(
-                (termination.reason, termination.extended_code),
-                (reason, extended_code)
+                termination,
+                NvstServerTermination {
+                    wire_code: EXTENDED_TEARDOWN,
+                    shutdown_reason: Some(shutdown_reason),
+                    reason,
+                    session_alive,
+                    extended_code,
+                }
             );
             assert!(!termination.resumable());
         }
     }
 
     #[test]
-    fn shutdown_reason_table_has_every_recovered_mapping() {
-        assert_eq!(
-            (0..=u16::MAX)
-                .filter(|reason| shutdown_reason_result(*reason) != 0x8003_0000)
-                .count(),
-            195
-        );
-    }
-
-    #[test]
-    fn direct_server_results_pass_through_with_their_notification() {
+    fn direct_server_results_pass_through_alive_with_their_notification() {
         for (wire_code, reason) in [
-            (0x8003_0000_u32, 0x34),
+            (0x0000_0000_u32, 0x35),
+            (0x8003_0000, 0x34),
+            (0x8003_0007, 0x35),
             (0x8011_0000, 0x34),
             (0x8011_0001, 0x34),
+            (0x8011_0002, 0x35),
             (0x8003_0006, 0x3d),
             (0x8003_001a, 0x44),
+            (0x8003_0024, 0x35),
             (0x8004_0010, 0x35),
+            (0xffff_ffff, 0x35),
         ] {
-            let termination = NvstServerTermination::from_wire(wire_code, &[0, 0, 0x01, 0x04]);
             assert_eq!(
-                termination,
+                NvstServerTermination::from_wire(wire_code, &[0, 0, 0x01, 0x04]),
                 NvstServerTermination {
                     wire_code,
                     shutdown_reason: None,
                     reason,
+                    session_alive: true,
                     extended_code: wire_code,
                 }
             );

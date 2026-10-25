@@ -339,8 +339,8 @@ Native ABI 13 adds `session-timer` events through the existing JSON event callba
 with `startId`, `timerType`, `secondsLeft` and `active`. Idle-warning type 4 shows
 stream chrome without stopping media; type 5 or successfully delivered gameplay
 input clears it. Server termination events preserve `wireCode` and the decoded
-`shutdownReason` separately from the derived `reason` and translated
-`extendedCode` in `termination`, use source `nvst-server`, and always carry a
+`shutdownReason` separately from the derived `reason`, `sessionAlive`, and
+translated `extendedCode` in `termination`, use source `nvst-server`, and always carry a
 boolean `resumable`. Nonresumable server termination prevents automatic restart
 and resume. The JSON protocol
 version is unchanged; the native library and Qt shell must be rebuilt together.

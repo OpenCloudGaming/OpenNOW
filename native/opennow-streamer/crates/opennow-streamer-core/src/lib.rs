@@ -2426,6 +2426,7 @@ fn forward_nvst_event<R: NvstSessionResources>(
                 "wireCode": termination.wire_code,
                 "shutdownReason": termination.shutdown_reason,
                 "reason": termination.reason,
+                "sessionAlive": termination.session_alive,
                 "extendedCode": termination.extended_code,
                 "resumable": resumable,
             });
