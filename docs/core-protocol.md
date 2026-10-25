@@ -701,8 +701,10 @@ Discovery deduplicates session IDs and uses at most four concurrent requests, a
 three-second per-request timeout, a 12-second total budget (including region
 discovery), and at most 32 regional endpoints. While no session has been found and
 no region rejected the credentials, a region or region-discovery request that failed
-transiently is retried once, 750 ms later, if more than 2.25 seconds of the budget
-remain. Transient means HTTP 408, 425, 429, 500, 502, 503, or 504 (the statuses
+transiently is retried once with a 1.5-second timeout. A fast failure is retried
+750 ms later, and a timeout, which has already waited three seconds, at once. The
+retry runs only if more than the delay plus 1.5 seconds of the budget remain, so a
+region that keeps timing out fails the sweep after about 4.5 seconds. Transient means HTTP 408, 425, 429, 500, 502, 503, or 504 (the statuses
 session polling retries) or a transport failure such as a timeout or a closed
 connection; other HTTP statuses, invalid bodies, and rejected `requestStatus` values
 are final. If no sessions were found but a region failed, returned invalid data, or

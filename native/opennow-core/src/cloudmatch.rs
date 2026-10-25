@@ -25,9 +25,13 @@ const MAX_DISCOVERY_REGIONS: usize = 32;
 const DISCOVERY_CONCURRENCY: usize = 4;
 /// Sweep summaries kept until an RPC records them; bounds memory if nothing drains them.
 const DISCOVERY_SUMMARY_BACKLOG: usize = 4;
+/// Pause before retrying a fast failure, such as a refused or reset connection, so a transient
+/// condition can clear. A timed-out request has already waited out its timeout.
 const DISCOVERY_RETRY_DELAY: Duration = Duration::from_millis(750);
-// Budget that must remain after the retry delay for a retried request to be useful.
-const DISCOVERY_RETRY_FLOOR: Duration = Duration::from_millis(1500);
+/// Per-request timeout of the retry, and the budget that must remain after the delay for the
+/// retry to run. A region that answers normally replies well within it, and it bounds what a
+/// region that keeps timing out adds to a failing sweep.
+const DISCOVERY_RETRY_REQUEST_TIMEOUT: Duration = Duration::from_millis(1500);
 const MAX_DISCOVERY_LOG_FAILURES: usize = 6;
 const MAX_CLEANUP_RECORD_BYTES: usize = 16 * 1024;
 
@@ -1048,12 +1052,12 @@ impl CloudMatchService {
         log.server_info.push(attempt_outcome(&server_info));
         if let Err((_, kind)) = &server_info
             && kind.is_transient()
-            && has_retry_budget(deadline)
+            && has_retry_budget(deadline, retry_delay([*kind]))
         {
-            crate::requests::current().sleep(DISCOVERY_RETRY_DELAY)?;
+            crate::requests::current().sleep(retry_delay([*kind]))?;
             let timeout = deadline
                 .saturating_duration_since(Instant::now())
-                .min(DISCOVERY_REQUEST_TIMEOUT);
+                .min(DISCOVERY_RETRY_REQUEST_TIMEOUT);
             server_info = fetch_server_info(client, server_info_url, headers, timeout);
             log.server_info.push(attempt_outcome(&server_info));
         }
@@ -2585,12 +2589,21 @@ fn discover_sessions(
 ) -> Result<Vec<Value>, ServiceError> {
     let cancellation = crate::requests::current();
     let all = (0..bases.len()).collect::<Vec<_>>();
-    let mut results = fetch_regions(bases, &all, deadline, &cancellation, &fetch);
+    let mut results = fetch_regions(
+        bases,
+        &all,
+        deadline,
+        DISCOVERY_REQUEST_TIMEOUT,
+        &cancellation,
+        &fetch,
+    );
     cancellation.check()?;
     // A single transient regional failure must not fail discovery on its own. While nothing was
     // found and no region rejected the credentials, retry the transiently failed regions once,
-    // after a short delay, if the budget still leaves room for a useful attempt. Other failures
-    // stay final, so an incomplete sweep still fails closed below.
+    // if the budget still leaves room for a useful attempt. Fast failures wait a short delay
+    // first; timeouts are retried at once. The retry has a shorter timeout, so a region that
+    // keeps timing out adds at most DISCOVERY_RETRY_REQUEST_TIMEOUT. Other failures stay final,
+    // so an incomplete sweep still fails closed below.
     let transient = all
         .into_iter()
         .filter(|index| {
@@ -2599,6 +2612,11 @@ fn discover_sessions(
                 .is_err_and(|(_, kind)| kind.is_transient())
         })
         .collect::<Vec<_>>();
+    let delay = retry_delay(
+        transient
+            .iter()
+            .filter_map(|index| results[*index].as_ref().err().map(|(_, kind)| *kind)),
+    );
     if !transient.is_empty()
         && !results
             .iter()
@@ -2608,10 +2626,17 @@ fn discover_sessions(
                 .as_ref()
                 .is_err_and(|(error, _)| is_auth_failure(error))
         })
-        && has_retry_budget(deadline)
+        && has_retry_budget(deadline, delay)
     {
-        cancellation.sleep(DISCOVERY_RETRY_DELAY)?;
-        let retried = fetch_regions(bases, &transient, deadline, &cancellation, &fetch);
+        cancellation.sleep(delay)?;
+        let retried = fetch_regions(
+            bases,
+            &transient,
+            deadline,
+            DISCOVERY_RETRY_REQUEST_TIMEOUT,
+            &cancellation,
+            &fetch,
+        );
         cancellation.check()?;
         for (index, result) in transient.into_iter().zip(retried) {
             results[index] = result;
@@ -2640,12 +2665,13 @@ fn discover_sessions(
     Ok(sessions)
 }
 
-/// Fetches `bases[index]` for each of `indices` with bounded concurrency. Results are returned
-/// in the order of `indices`.
+/// Fetches `bases[index]` for each of `indices` with bounded concurrency, each request limited
+/// to `request_timeout` and the deadline. Results are returned in the order of `indices`.
 fn fetch_regions(
     bases: &[Url],
     indices: &[usize],
     deadline: Instant,
+    request_timeout: Duration,
     cancellation: &crate::requests::Cancellation,
     fetch: &(impl Fn(&Url, Duration) -> Result<Vec<Value>, RegionFailure> + Sync),
 ) -> Vec<Result<Vec<Value>, RegionFailure>> {
@@ -2665,9 +2691,7 @@ fn fetch_regions(
                                 Ok(()) if remaining.is_zero() => {
                                     Err((discovery_failed(), FailureKind::Unchecked))
                                 }
-                                Ok(()) => {
-                                    fetch(&bases[*index], remaining.min(DISCOVERY_REQUEST_TIMEOUT))
-                                }
+                                Ok(()) => fetch(&bases[*index], remaining.min(request_timeout)),
                             };
                             (position, result)
                         })
@@ -2691,9 +2715,18 @@ fn is_auth_failure(error: &ServiceError) -> bool {
     matches!(error.code, "authentication_required" | "http_unauthorized")
 }
 
-fn has_retry_budget(deadline: Instant) -> bool {
-    deadline.saturating_duration_since(Instant::now())
-        > DISCOVERY_RETRY_DELAY + DISCOVERY_RETRY_FLOOR
+fn has_retry_budget(deadline: Instant, delay: Duration) -> bool {
+    deadline.saturating_duration_since(Instant::now()) > delay + DISCOVERY_RETRY_REQUEST_TIMEOUT
+}
+
+/// The pause before a retry: none when every failure being retried was a timeout, which already
+/// waited out its request, otherwise `DISCOVERY_RETRY_DELAY`.
+fn retry_delay(kinds: impl IntoIterator<Item = FailureKind>) -> Duration {
+    if kinds.into_iter().all(|kind| kind == FailureKind::Timeout) {
+        Duration::ZERO
+    } else {
+        DISCOVERY_RETRY_DELAY
+    }
 }
 
 /// HTTP statuses after which one more CloudMatch read can succeed. Session polling and
@@ -5478,7 +5511,7 @@ mod tests {
             Instant::now() + DISCOVERY_TIMEOUT,
             |index, call| {
                 if index == 0 && call == 0 {
-                    Err(failure(FailureKind::Timeout))
+                    Err(failure(FailureKind::Closed))
                 } else {
                     Ok(vec![])
                 }
@@ -5487,6 +5520,42 @@ mod tests {
         assert!(result.unwrap().is_empty());
         assert_eq!(calls, [2, 1, 1]);
         assert!(started.elapsed() >= DISCOVERY_RETRY_DELAY);
+    }
+
+    #[test]
+    fn a_region_that_keeps_timing_out_fails_after_one_shorter_retry() {
+        // A timed-out request has already waited out its timeout, so its retry skips the delay
+        // and gets the shorter retry timeout: about 4.5 s to fail instead of 3 + 0.75 + 3 s.
+        let bases = retry_bases();
+        let timeouts = std::sync::Mutex::new(Vec::new());
+        let started = Instant::now();
+        let result = discover_sessions(
+            &bases,
+            Instant::now() + DISCOVERY_TIMEOUT,
+            false,
+            |base, timeout| {
+                if base != &bases[0] {
+                    return Ok(vec![]);
+                }
+                timeouts.lock().unwrap().push(timeout);
+                thread::sleep(timeout);
+                Err(failure(FailureKind::Timeout))
+            },
+        );
+        let elapsed = started.elapsed();
+        assert_eq!(result.unwrap_err().code, "session_discovery_failed");
+        assert_eq!(
+            *timeouts.lock().unwrap(),
+            [DISCOVERY_REQUEST_TIMEOUT, DISCOVERY_RETRY_REQUEST_TIMEOUT]
+        );
+        assert!(elapsed >= DISCOVERY_REQUEST_TIMEOUT + DISCOVERY_RETRY_REQUEST_TIMEOUT);
+        // Below the delayed retry this replaces, with the delay's 750 ms as scheduling slack.
+        assert!(
+            elapsed
+                < DISCOVERY_REQUEST_TIMEOUT
+                    + DISCOVERY_RETRY_DELAY
+                    + DISCOVERY_RETRY_REQUEST_TIMEOUT
+        );
     }
 
     #[test]
@@ -5615,10 +5684,10 @@ mod tests {
         // pass, while the first pass itself has ample time even on a loaded machine.
         let (result, calls) = discover_counting(
             &retry_bases(),
-            Instant::now() + DISCOVERY_RETRY_DELAY + DISCOVERY_RETRY_FLOOR,
+            Instant::now() + DISCOVERY_RETRY_DELAY + DISCOVERY_RETRY_REQUEST_TIMEOUT,
             |index, _| {
                 if index == 0 {
-                    Err(failure(FailureKind::Timeout))
+                    Err(failure(FailureKind::Closed))
                 } else {
                     Ok(vec![])
                 }
@@ -5652,7 +5721,7 @@ mod tests {
                 discover_counting(&bases, Instant::now() + DISCOVERY_TIMEOUT, |index, _| {
                     let _ = fetched_tx.send(());
                     if index == 0 {
-                        Err(failure(FailureKind::Timeout))
+                        Err(failure(FailureKind::Closed))
                     } else {
                         Ok(vec![])
                     }
