@@ -1035,6 +1035,15 @@ void NativeStreamRuntime::cursorCallback(const std::uint8_t *bytes, std::size_t 
     if (shouldSchedule) scheduleDrain(sharedState);
 }
 
+bool NativeStreamRuntime::isTerminalEvent(const QByteArray &payload)
+{
+    const auto object = QJsonDocument::fromJson(payload).object();
+    const auto type = object.value(u"type"_s).toString();
+    const auto status = object.value(u"status"_s).toString();
+    return type == u"error"_s
+        || (type == u"status"_s && (status == u"stopped"_s || status == u"error"_s));
+}
+
 void NativeStreamRuntime::enqueueCallback(CallbackState *state, const std::uint8_t *bytes,
                                           std::size_t length, bool event)
 {
@@ -1059,7 +1068,9 @@ void NativeStreamRuntime::enqueueCallback(CallbackState *state, const std::uint8
         if (!state->accepting) return;
         if (cursorCapture) {
             state->cursorCapture = payload;
-        } else if (state->pending.size() >= MaximumPendingCallbacks) {
+        } else if (state->pending.size() >= MaximumPendingCallbacks
+                   && (!event || state->pending.size() >= MaximumPendingCallbacks + TerminalCallbackReserve
+                       || !isTerminalEvent(payload))) {
             ++state->dropped;
             ++state->rumbleEpoch;
             return;

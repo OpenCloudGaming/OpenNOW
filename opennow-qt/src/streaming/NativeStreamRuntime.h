@@ -100,6 +100,7 @@ public:
     static constexpr int DefaultShutdownTimeoutMs = 1'500;
     static constexpr qsizetype MaximumCallbackBytes = 1024 * 1024;
     static constexpr qsizetype MaximumPendingCallbacks = 512;
+    static constexpr qsizetype TerminalCallbackReserve = 16;
 
     static void initializeDiagnostics(Api::SetLogFile setLogFile = &opennow_streamer_set_log_file);
 
@@ -215,6 +216,7 @@ private:
     static void enqueueCallback(CallbackState *state, const std::uint8_t *bytes,
                                 std::size_t length, bool event);
     static void enqueueFrameAvailable(CallbackState *state);
+    static bool isTerminalEvent(const QByteArray &payload);
     static void scheduleDrain(const std::shared_ptr<CallbackState> &state);
     void drainCallbacks(const std::shared_ptr<CallbackState> &state);
     void setLastError(const QString &error);

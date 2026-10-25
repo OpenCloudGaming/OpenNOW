@@ -3581,8 +3581,7 @@ QtObject {
         } else if (pending.operation === "start") {
             streamerStartRequestId = ""
             if (sessionRecoveryPending) return
-            if (response.transport === "webrtc" && streamer
-                    && (streamer.status === "error" || streamer.status === "stopped")) return
+            if (streamer && (streamer.status === "error" || streamer.status === "stopped")) return
             streamReplayEnabled = response.replayEnabled === true
             if (!replayBufferRequested)
                 disableStreamReplay()

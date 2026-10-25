@@ -1323,6 +1323,45 @@ private slots:
         QVERIFY(runtime.shutdown());
     }
 
+    void terminalEventsSurviveAFullCallbackQueue()
+    {
+        static OpenNowStreamerConfig callbacks;
+        auto api = fakeApi();
+        api.create = [](const OpenNowStreamerConfig *config, OpenNowStreamer **output) {
+            callbacks = *config;
+            return fakeCreate(config, output);
+        };
+        NativeStreamRuntime runtime(api);
+        QVERIFY(runtime.start());
+        QSignalSpy events(&runtime, &NativeStreamRuntime::eventReceived);
+        QSignalSpy dropped(&runtime, &NativeStreamRuntime::callbacksDropped);
+        const auto deliver = [](const QByteArray &bytes) {
+            callbacks.event_callback(reinterpret_cast<const std::uint8_t *>(bytes.constData()),
+                                     bytes.size(), callbacks.user_data);
+        };
+        for (qsizetype i = 0; i < NativeStreamRuntime::MaximumPendingCallbacks; ++i)
+            deliver(R"({"type":"telemetry"})");
+        deliver(R"({"type":"telemetry"})");
+        deliver(R"({"type":"status","status":"streaming"})");
+        deliver(R"({"type":"error","code":"transport-closed","message":"Lost"})");
+        deliver(R"({"type":"status","status":"stopped","message":"Lost"})");
+        for (qsizetype i = 0; i < NativeStreamRuntime::TerminalCallbackReserve; ++i)
+            deliver(R"({"type":"status","status":"error"})");
+        QTRY_COMPARE(events.size(), NativeStreamRuntime::TerminalCallbackReserve);
+        QCOMPARE(dropped.size(), 1);
+        QCOMPARE(dropped.first().first().toInt(), 4);
+        QList<QString> terminal;
+        for (const auto &arguments : events) {
+            const auto event = arguments.first().toJsonObject();
+            const auto type = event.value(QStringLiteral("type")).toString();
+            if (type != QStringLiteral("telemetry"))
+                terminal.append(type + u':' + event.value(QStringLiteral("status")).toString());
+        }
+        QCOMPARE(terminal.mid(0, 2), (QList<QString>{QStringLiteral("error:"), QStringLiteral("status:stopped")}));
+        QCOMPARE(terminal.size(), NativeStreamRuntime::TerminalCallbackReserve);
+        QVERIFY(runtime.shutdown());
+    }
+
     void relativeMouseDefaultUsesOnlyTheAcceptedSessionTransport()
     {
         static OpenNowStreamerConfig callbacks;

@@ -2126,6 +2126,8 @@ private slots:
         QTest::newRow("webrtc-error-arrived-first") << QStringLiteral("webrtc") << QStringLiteral("error") << QStringLiteral("error");
         QTest::newRow("webrtc-stopped-first") << QStringLiteral("webrtc") << QStringLiteral("stopped") << QStringLiteral("stopped");
         QTest::newRow("nvst-unchanged") << QStringLiteral("nvst") << QStringLiteral("starting") << QStringLiteral("streaming");
+        QTest::newRow("nvst-error-arrived-first") << QStringLiteral("nvst") << QStringLiteral("error") << QStringLiteral("error");
+        QTest::newRow("nvst-stopped-first") << QStringLiteral("nvst") << QStringLiteral("stopped") << QStringLiteral("stopped");
     }
 
     void webRtcStartAcknowledgementPreservesMediaProgress()
@@ -2150,7 +2152,7 @@ private slots:
         QVERIFY2(!result.isError(), qPrintable(result.toString()));
         QCOMPARE(engine.evaluate(QStringLiteral("streamer.status")).toString(), expectedStatus);
         QCOMPARE(engine.evaluate(QStringLiteral("streamerStartRequestId")).toString(), QString());
-        if (transport == QStringLiteral("webrtc") && initialStatus != QStringLiteral("starting"))
+        if (initialStatus != QStringLiteral("starting"))
             QCOMPARE(engine.evaluate(QStringLiteral("streamer.message")).toString(), QStringLiteral("Earlier media event"));
     }
 
