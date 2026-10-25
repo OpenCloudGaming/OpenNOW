@@ -129,14 +129,244 @@ pub(super) fn negotiated_announce(
             result.push_str(line);
         }
     }
+    let result = forward_server_features(&result, describe);
     handoff["framePacingFeedbackMode"] =
         json!(super::video_qos_offers(describe).pacing_feedback_mode(&result)?);
     Ok(result)
 }
 
+/// Writes `a=x-nv-NAME:VALUE` lines into ANNOUNCE. A value replaces a line with
+/// the same name; otherwise it is inserted with the session-level attributes
+/// before `t=`.
+fn set_session_attributes(announce: &str, mut pending: Vec<(String, String)>) -> String {
+    let mut result = String::with_capacity(announce.len() + pending.len() * 64);
+    for line in announce.split_inclusive("\r\n") {
+        if let Some(name) = line
+            .strip_prefix("a=x-nv-")
+            .and_then(|attribute| attribute.split_once(':'))
+            .map(|(name, _)| name)
+            && let Some(index) = pending
+                .iter()
+                .position(|(feature, _)| feature.eq_ignore_ascii_case(name))
+        {
+            let (feature, value) = pending.remove(index);
+            result.push_str(&format!("a=x-nv-{feature}:{value}\r\n"));
+            continue;
+        }
+        if line.starts_with("t=") {
+            for (feature, value) in pending.drain(..) {
+                result.push_str(&format!("a=x-nv-{feature}:{value}\r\n"));
+            }
+        }
+        result.push_str(line);
+    }
+    for (feature, value) in pending {
+        result.push_str(&format!("a=x-nv-{feature}:{value}\r\n"));
+    }
+    result
+}
+
+/// Server feature attributes that ANNOUNCE returns with the server's own value.
+///
+/// DESCRIBE answers with `main ;; features || upstream`, and the `;;` section is
+/// separately signed (`o=NvStreamer`, `k=HMAC:`). A key is listed here only when
+/// returning the server's signed value has a measured effect. No value is
+/// invented: a key the server does not sign in `;;` is not sent.
+/// - `video[0].videoSplitEncodeStripsPerFrame` (split-frame encoding on the
+///   host): 3840x2160@120 sessions stayed at about 96 fps without it and
+///   reached 120 fps with it (docs/streamer-comparison/rtsp-negotiation.md).
+///
+/// These keys must stay out of `SERVER_NEGOTIATED`. That list drops a value
+/// equal to the offer, and a returned value always equals the signed offer.
+const FORWARDED_SERVER_FEATURES: &[&str] = &["video[0].videoSplitEncodeStripsPerFrame"];
+
+fn forwards_server_feature(name: &str) -> bool {
+    FORWARDED_SERVER_FEATURES
+        .iter()
+        .any(|forwarded| forwarded.eq_ignore_ascii_case(name))
+}
+
+/// `a=x-nv-NAME:VALUE` attributes from the DESCRIBE features section, in order.
+fn describe_feature_attributes(describe: &str) -> Vec<(String, String)> {
+    let Some((_, features)) = describe
+        .split("||")
+        .next()
+        .unwrap_or_default()
+        .split_once(";;")
+    else {
+        return Vec::new();
+    };
+    features
+        .split(";;")
+        .flat_map(str::lines)
+        .map(str::trim)
+        .filter_map(|line| line.strip_prefix("a=x-nv-"))
+        .filter_map(|attribute| attribute.split_once(':'))
+        .map(|(name, value)| (name.trim().to_owned(), value.trim().to_owned()))
+        .filter(|(name, value)| !name.is_empty() && !value.is_empty())
+        .collect()
+}
+
+/// Returns the allowlisted server features in ANNOUNCE with their signed `;;`
+/// values. The last value of a key wins, as in `sdp_attribute`; a value that is
+/// not an unsigned integer is logged as ignored and nothing is sent for it.
+fn forward_server_features(announce: &str, describe: &str) -> String {
+    let mut pending: Vec<(String, String)> = Vec::new();
+    for (name, value) in describe_feature_attributes(describe) {
+        if !forwards_server_feature(&name) {
+            continue;
+        }
+        pending.retain(|(existing, _)| !existing.eq_ignore_ascii_case(&name));
+        match value.parse::<u32>() {
+            Ok(value) => pending.push((name, value.to_string())),
+            Err(_) => ignore_offer(&name, &value),
+        }
+    }
+    if pending.is_empty() {
+        return announce.to_owned();
+    }
+    opennow_streamer_protocol::log::log_line(
+        "INFO",
+        "transport",
+        &format!(
+            "server-features returned=[{}]",
+            pending
+                .iter()
+                .map(|(name, value)| format!("{name}={value}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+    );
+    set_session_attributes(announce, pending)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Shape of a live DESCRIBE body: `main ;; signed features || upstream`.
+    const DESCRIBE_WITH_FEATURES: &str = "v=0\r\n\
+        a=x-nv-video[0].videoSplitEncodeStripsPerFrame:1\r\n\
+        a=x-nv-general.maxQosMessagesSize:1071\r\n\
+        m=video 5004 RTP/AVP\r\n\
+        ;;v=0\r\n\
+        o=NvStreamer 1 14 IN IPv4 host\r\n\
+        k=HMAC:00\r\n\
+        a=x-nv-general.customMessageOnCC:1 \r\n\
+        a=x-nv-video[0].vbvMultiplier:109 \r\n\
+        a=x-nv-video[0].videoSplitEncodeStripsPerFrame:64 \r\n\
+        a=x-nv-general.dtlsFingerprint:AA:BB\r\n\
+        t=0 0\r\n\
+        m=video 0 RTP/AVP\r\n\
+        ||v=0\r\n\
+        a=x-nv-video[0].videoSplitEncodeStripsPerFrame:2\r\n";
+
+    const ANNOUNCE: &str = "v=0\r\n\
+        a=x-nv-video[0].maxFPS:120\r\n\
+        t=0 0\r\n\
+        m=video 5004\r\n";
+
+    #[test]
+    fn feature_attributes_come_only_from_the_signed_features_section() {
+        let features = describe_feature_attributes(DESCRIBE_WITH_FEATURES);
+        let names: Vec<_> = features.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "general.customMessageOnCC",
+                "video[0].vbvMultiplier",
+                "video[0].videoSplitEncodeStripsPerFrame",
+                "general.dtlsFingerprint",
+            ]
+        );
+        assert_eq!(
+            features[2].1, "64",
+            "values are trimmed and taken from features, not main or upstream"
+        );
+        assert!(
+            describe_feature_attributes(
+                "v=0\r\na=x-nv-video[0].videoSplitEncodeStripsPerFrame:64\r\n"
+            )
+            .is_empty()
+        );
+        assert!(
+            describe_feature_attributes(
+                "v=0\r\n||;;a=x-nv-video[0].videoSplitEncodeStripsPerFrame:64\r\n"
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn split_encode_feature_is_returned_with_session_attributes() {
+        assert_eq!(
+            forward_server_features(ANNOUNCE, DESCRIBE_WITH_FEATURES),
+            "v=0\r\n\
+             a=x-nv-video[0].maxFPS:120\r\n\
+             a=x-nv-video[0].videoSplitEncodeStripsPerFrame:64\r\n\
+             t=0 0\r\n\
+             m=video 5004\r\n"
+        );
+    }
+
+    #[test]
+    fn returned_feature_replaces_a_client_line_with_the_same_name() {
+        let announce = "v=0\r\na=x-nv-video[0].videoSplitEncodeStripsPerFrame:0\r\nt=0 0\r\n";
+        assert_eq!(
+            forward_server_features(announce, DESCRIBE_WITH_FEATURES),
+            "v=0\r\na=x-nv-video[0].videoSplitEncodeStripsPerFrame:64\r\nt=0 0\r\n"
+        );
+    }
+
+    #[test]
+    fn unlisted_and_credential_features_are_not_returned() {
+        let announce = forward_server_features(ANNOUNCE, DESCRIBE_WITH_FEATURES);
+        for withheld in [
+            "customMessageOnCC",
+            "vbvMultiplier",
+            "dtlsFingerprint",
+            "HMAC",
+        ] {
+            assert!(
+                !announce.contains(withheld),
+                "{withheld} must not be returned"
+            );
+        }
+    }
+
+    #[test]
+    fn announce_is_unchanged_without_a_features_section() {
+        for describe in [
+            "",
+            "v=0\r\na=x-nv-video[0].videoSplitEncodeStripsPerFrame:64\r\n",
+        ] {
+            assert_eq!(forward_server_features(ANNOUNCE, describe), ANNOUNCE);
+        }
+    }
+
+    #[test]
+    fn only_a_last_signed_unsigned_integer_is_returned() {
+        let feature = "video[0].videoSplitEncodeStripsPerFrame";
+        for (first, last, expected) in [
+            ("1", "64", Some("64")),
+            ("64", "auto", None),
+            ("64", "-1", None),
+            ("auto", "64", Some("64")),
+        ] {
+            let describe =
+                format!("v=0\r\n;;v=0\r\na=x-nv-{feature}:{first}\r\na=x-nv-{feature}:{last}\r\n");
+            let announce = forward_server_features(ANNOUNCE, &describe);
+            assert_eq!(
+                sdp_attribute(&announce, feature).as_deref(),
+                expected,
+                "{first} then {last}"
+            );
+            assert_eq!(
+                announce.matches(feature).count(),
+                usize::from(expected.is_some())
+            );
+        }
+    }
 
     #[test]
     fn recovery_describe_is_typed_and_does_not_guess_defaults() {
