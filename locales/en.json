@@ -1,4 +1,7 @@
 {
+  "windowsSetup": {
+    "destinationConflict": "This folder contains application directories that do not belong to OpenNOW. Choose a separate OpenNOW folder."
+  },
   "updatesPage": {
     "versionUpgrade": "%1  →  %2 · %3",
     "downloadAmount": "%1 of %2 MB",
