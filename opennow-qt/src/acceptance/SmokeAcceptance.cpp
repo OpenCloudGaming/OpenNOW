@@ -662,25 +662,49 @@ int AcceptanceSession::startSmokeWorkload()
                 m_application.exit(passed ? EXIT_SUCCESS : EXIT_FAILURE);
             });
         });
-    } else if (m_smokeTest && m_arguments.contains(u"--smoke-input-capture-error"_s)) {
+    } else if (m_smokeTest && (m_arguments.contains(u"--smoke-input-capture-error"_s)
+                              || m_arguments.contains(u"--smoke-pointer-lock"_s))) {
         auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
         if (!store) return EXIT_FAILURE;
         store->setProperty("streamer", QVariantMap{{u"status"_s, u"streaming"_s}, {u"firstFrameLatencyMs"_s, 37}});
         store->setProperty("streamState", u"streaming"_s);
         QTimer::singleShot(150, this, [this] {
+            const bool pointerLock = m_arguments.contains(u"--smoke-pointer-lock"_s);
             auto *window = m_engine.rootObjects().isEmpty() ? nullptr
                 : qobject_cast<QQuickWindow *>(m_engine.rootObjects().first());
-            auto *notice = window ? window->findChild<QQuickItem *>(u"streamInputCaptureNotice"_s) : nullptr;
+            auto *notice = window ? window->findChild<QQuickItem *>(pointerLock
+                ? u"streamPointerLockHint"_s : u"streamInputCaptureNotice"_s) : nullptr;
             auto *surface = window ? window->findChild<QQuickItem *>(u"streamSurfaceHost"_s) : nullptr;
             if (!notice || !surface || !surface->isVisible()) {
                 qCritical("Input capture fixture could not find the visible stream surface and notice");
                 m_application.exit(EXIT_FAILURE);
                 return;
             }
-            notice->setProperty("message", u"Relative mouse input requires Wayland relative-pointer-v1 and pointer-constraints-v1; the compositor does not provide both protocols."_s);
-            QTimer::singleShot(250, this, [this, window, notice, surface] {
+            QObject *fixture = nullptr;
+            if (pointerLock) {
+                notice->setProperty("active", true);
+                surface->setProperty("macPointerLockEnabled", false);
+                QQmlComponent component(&m_engine, QUrl(u"qrc:/acceptance/PointerLockHintAcceptance.qml"_s));
+                fixture = component.create();
+                if (fixture) fixture->setParent(&m_engine);
+                QVariant passed;
+                if (!fixture || !QMetaObject::invokeMethod(fixture, "run", Q_RETURN_ARG(QVariant, passed),
+                        Q_ARG(QVariant, QVariant::fromValue(window->contentItem()))) || !passed.toBool()) {
+                    qCritical() << component.errors();
+                    m_application.exit(EXIT_FAILURE);
+                    return;
+                }
+            } else {
+                notice->setProperty("message", u"Relative mouse input requires Wayland relative-pointer-v1 and pointer-constraints-v1; the compositor does not provide both protocols."_s);
+            }
+            QTimer::singleShot(250, this, [this, window, notice, surface, fixture] {
                 bool passed = !m_qmlWarningOccurred && notice->isVisible() && surface->isVisible()
                     && window->findChild<QQuickItem *>(u"streamSurfaceHost"_s) == surface;
+                if (fixture) {
+                    QVariant verified;
+                    passed = passed && QMetaObject::invokeMethod(fixture, "verifyRendered", Q_RETURN_ARG(QVariant, verified),
+                        Q_ARG(QVariant, QVariant::fromValue(window->contentItem()))) && verified.toBool();
+                }
                 const auto shot = m_arguments.indexOf(u"--screenshot"_s);
                 if (shot >= 0 && shot + 1 < m_arguments.size())
                     passed = passed && QFileInfo(m_arguments.at(shot + 1)).isAbsolute()

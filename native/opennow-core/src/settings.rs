@@ -1215,7 +1215,7 @@ fn defaults() -> Map<String, Value> {
         "sessionProxyEnabled":false, "sessionProxyUrl":"", "clipboardPaste":false, "networkTest":false,
         "suppressAwdlWhileStreaming":false,
         "enableGyroscopeControls":false, "steamControllerCompatibilityMode":false,
-        "nativeCursorOverlay":true, "mouseSensitivity":1, "mouseAcceleration":1,
+        "nativeCursorOverlay":true, "macPointerLockEnabled":true, "mouseSensitivity":1, "mouseAcceleration":1,
         "shortcutToggleStats":"Ctrl+N", "shortcutTogglePointerLock":"F8",
         "shortcutToggleFullscreen":"F11", "shortcutStopStream":"Ctrl+Shift+Q",
         "shortcutToggleAntiAfk":"Ctrl+Shift+K", "shortcutToggleMicrophone":"Ctrl+Shift+M",
@@ -1333,6 +1333,23 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn mac_pointer_lock_defaults_on_and_persists_an_explicit_choice() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = SettingsStore::load(Some(directory.path().to_owned())).unwrap();
+        assert_eq!(store.all()["macPointerLockEnabled"], json!(true));
+        store.set("macPointerLockEnabled", json!(false)).unwrap();
+        let mut reloaded = SettingsStore::load(Some(directory.path().to_owned())).unwrap();
+        assert_eq!(reloaded.all()["macPointerLockEnabled"], json!(false));
+        reloaded.set("macPointerLockEnabled", json!(true)).unwrap();
+        assert_eq!(
+            SettingsStore::load(Some(directory.path().to_owned()))
+                .unwrap()
+                .all()["macPointerLockEnabled"],
+            json!(true)
+        );
     }
 
     #[test]

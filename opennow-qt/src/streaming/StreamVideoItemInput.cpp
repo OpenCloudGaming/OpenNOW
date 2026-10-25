@@ -575,8 +575,8 @@ void StreamVideoItem::keyPressEvent(QKeyEvent *event)
         // the eventual release is consumed; QKeyEvent::isAutoRepeat() already
         // prevents repeats, so a stale identity must never suppress the next
         // deliberate F11 press.
-        m_pressedShortcuts.insert(identity);
         emit localShortcutRequested(shortcutAction);
+        m_pressedShortcuts.insert(identity);
         event->accept();
         return;
     }
@@ -1160,13 +1160,34 @@ void StreamVideoItem::resetRemoteCursor()
     m_remoteCursorVisible = false;
     m_serverCursorComposited = s_nativeRuntime ? s_nativeRuntime->serverCursorComposited() : true;
     m_remoteCursor = QCursor();
-    setRelativeMouse(m_manualRelativeMouse.value_or(
-        s_nativeRuntime && s_nativeRuntime->defaultRelativeMouse()));
+    setRelativeMouse(m_usesMacPointerCapture ? m_macPointerLockEnabled
+        : m_manualRelativeMouse.value_or(s_nativeRuntime && s_nativeRuntime->defaultRelativeMouse()));
     updateLocalCursor();
+}
+
+bool StreamVideoItem::macPointerLockEnabled() const
+{
+    return m_macPointerLockEnabled;
+}
+
+void StreamVideoItem::setMacPointerLockEnabled(bool enabled)
+{
+    if (m_macPointerLockEnabled == enabled) return;
+    m_macPointerLockEnabled = enabled;
+    if (m_usesMacPointerCapture) {
+        releaseInput();
+        setRelativeMouse(enabled);
+        syncCaptureState();
+    }
+    emit macPointerLockEnabledChanged();
 }
 
 void StreamVideoItem::togglePointerLock()
 {
+    if (m_usesMacPointerCapture) {
+        setMacPointerLockEnabled(!m_macPointerLockEnabled);
+        return;
+    }
     m_manualRelativeMouse = !m_relativeMouse;
     releaseInput();
     setRelativeMouse(*m_manualRelativeMouse);
@@ -1184,7 +1205,8 @@ void StreamVideoItem::applyRemoteCursor(const QByteArray &bytes)
     const auto metadata = remoteCursorMetadata(bytes);
     m_remoteCursorKnown = true;
     m_remoteCursorVisible = !hidden;
-    setRelativeMouse(m_manualRelativeMouse.value_or(hidden));
+    setRelativeMouse(m_usesMacPointerCapture ? m_macPointerLockEnabled
+                                           : m_manualRelativeMouse.value_or(hidden));
     updateLocalCursor();
     if (hidden) return;
 

@@ -620,6 +620,10 @@ ordering to release a held controller.
 The public-safe `--smoke-test --route stream --smoke-input-capture-error` fixture
 renders the shared error banner over the existing stream item. Add `--desktop` for
 the desktop shell and `--screenshot /absolute/path.png` to save visual evidence.
+Use `--smoke-test --route stream --smoke-pointer-lock` to preview the macOS unlocked
+hint and enable control on any platform. The hint lasts six seconds after unlocking
+or starting a session with pointer lock off. Menus dismiss it without replaying it
+when gameplay resumes. This fixture does not exercise native capture.
 Offscreen and nested compositor tests do not replace live Windows/X11/Wayland
 controller and mouse acceptance on real streaming sessions.
 
@@ -760,13 +764,14 @@ the platform packages from that layout.
 F12 records the negotiated H.264/H.265/AV1 source stream plus Opus audio atomically
 into Matroska.
 
-The screenshot shortcut, Ctrl+F11 by default, grabs the stream's desktop region
-and saves a PNG. This is a compositor-dependent desktop grab, not a video-frame
-snapshot. Visible local menus, statistics, capture indicators, or other windows
-can appear in the image. The compositor can refuse capture. Capture uses a single
-screen. Multi-monitor boundaries, display scaling, and HDR image output require
-target validation. Neither screenshots nor source recordings remove GFN or game UI
-already encoded into the server's video.
+The screenshot shortcut, Ctrl+F11 by default, saves a PNG of the video frame before
+Qt composes local menus, statistics, capture indicators, or other windows. Only an
+explicit screenshot request performs GPU readback. One screenshot may be in flight,
+with a five-second frame timeout, and the image is bounded to 3840×2160 while
+preserving its aspect ratio. PNG encoding and disk writes run off the render and GUI
+threads. HDR video is tone-mapped to SDR for PNG output. Screenshots fail rather than
+falling back to a desktop grab when no video frame is available. Neither screenshots
+nor source recordings remove GFN or game UI already encoded into the server's video.
 
 Settings → Recording exposes source capture information, the recordings folder,
 editable recording/clipping shortcuts, and an opt-in replay buffer. Replay is off
@@ -781,7 +786,11 @@ same video item without taking focus or opening a blocking overlay.
 If a manual recording encounters stream discontinuity, recording-queue overflow,
 or a stream interruption, it stops and finalizes the valid prefix already written
 to the muxer. The capture notice distinguishes this early save from normal
-completion. Recording does not restart automatically. No file is saved before a
+completion. Manual recording continues in a new file after a discontinuity or
+reconnect while the same cloud session remains active, including interruptions
+before the first usable keyframe. Press F12 to cancel continuation while recovery
+is pending. Ending the cloud session clears recording intent. Queue overflow and
+storage failures stop recording without automatic retry. No file is saved before a
 usable video keyframe, and write, finalization, or publication errors remain
 failures. Publication uses a same-directory no-replace rename, not a hard link or
 copy. A filesystem that cannot perform that operation reports a save failure.

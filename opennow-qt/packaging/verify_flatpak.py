@@ -15,7 +15,7 @@ def flatpak_command(command, *arguments):
 def verify_flatpak():
     probe = subprocess.run(
         flatpak_command("opennow-streamer"),
-        input='{"id":"package-probe","type":"hello","protocolVersion":7}\n'
+        input='{"id":"package-probe","type":"hello","protocolVersion":8}\n'
               '{"id":"package-shutdown","type":"shutdown"}\n',
         text=True, capture_output=True, check=True, timeout=45,
     )

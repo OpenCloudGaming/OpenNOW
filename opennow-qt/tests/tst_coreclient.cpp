@@ -532,7 +532,7 @@ private slots:
                 responses.clear();
                 client.setNativeHdrSupported(supported);
                 const QJsonObject capabilities{{QStringLiteral("nativeHdrSupported"), !supported},
-                                               {QStringLiteral("protocolVersion"), 7}};
+                                               {QStringLiteral("protocolVersion"), 8}};
                 const QJsonObject params{{QStringLiteral("runtimeCapabilities"), capabilities},
                                          {QStringLiteral("appId"), QStringLiteral("123")}};
                 QVERIFY(!client.request(method, params).isEmpty());
@@ -543,7 +543,7 @@ private slots:
                 const auto runtime = actual.value(QStringLiteral("runtimeCapabilities")).toObject();
                 QCOMPARE(runtime.value(QStringLiteral("nativeHdrSupported")).toBool(), supported);
                 QVERIFY(!runtime.contains(QStringLiteral("nativeHdrDisplay")));
-                QCOMPARE(runtime.value(QStringLiteral("protocolVersion")).toInt(), 7);
+                QCOMPARE(runtime.value(QStringLiteral("protocolVersion")).toInt(), 8);
                 QVERIFY(!actual.contains(QStringLiteral("settings")));
                 QCOMPARE(params.value(QStringLiteral("runtimeCapabilities")).toObject(), capabilities);
             }
@@ -593,7 +593,7 @@ private slots:
                  QJsonObject{{QStringLiteral("nativeHdrDisplay"),
                               QJsonObject{{QStringLiteral("minimumNits"), 0.005},
                                           {QStringLiteral("maximumNits"), 620}}},
-                             {QStringLiteral("protocolVersion"), 7}}}};
+                             {QStringLiteral("protocolVersion"), 8}}}};
             QVERIFY(!client.request(method, stale).isEmpty());
             QTRY_COMPARE_WITH_TIMEOUT(responses.size(), 1, 2'000);
             const auto absent = responses.first().at(1).toJsonObject()
@@ -627,7 +627,7 @@ private slots:
             display.minimumNits = 0.005;
             display.maximumNits = 620;
             client.setNativeHdrDisplay(display);
-            const auto capabilities = QJsonDocument::fromJson(R"({"protocolVersion":7,
+            const auto capabilities = QJsonDocument::fromJson(R"({"protocolVersion":8,
                 "videoBackends":[{"backend":"vaapi","available":true,"codecs":[
                     {"codec":"h265","available":true,"hdrSupported":true,
                      "colorQualities":["8bit_420","10bit_420"],"hdrColorQualities":["10bit_420"]}]}]})").object();

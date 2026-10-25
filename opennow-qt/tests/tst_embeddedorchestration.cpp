@@ -57,9 +57,11 @@ bool prepareRecordingTeardown(QJSEngine &engine)
     if (engine.evaluate(QStringLiteral(R"JS(
         var mediaRecordingTargetRequestId = '', mediaRecordingTargetSessionId = '';
         var streamRecordingAttempt = null, streamRecordingElapsedMs = 0;
+        var streamRecordingIntentSessionId = '', streamRecordingStartRequestId = '', streamRecordingStopRequestId = '';
     )JS")).isError()) return false;
     return loadShellFunction(engine, QStringLiteral("cancelRecordingTarget"))
-        && loadShellFunction(engine, QStringLiteral("suspendRecordingStart"));
+        && loadShellFunction(engine, QStringLiteral("suspendRecordingStart"))
+        && loadShellFunction(engine, QStringLiteral("resumeStreamRecording"));
 }
 
 bool prepareAuthentication(QJSEngine &engine)
@@ -1253,18 +1255,21 @@ private slots:
             var root = this, desktopUiActive = false, requests = 0, captures = 0, announcements = 0;
             var streamCaptureRect = {x:0, y:0, width:1920, height:1080};
             var selectedGame = {title:'Fixture'}, mediaMessage = '', accessibilityMessage = '', lastError = '';
-            var AppController = {route:'stream', overlay:'guide-session', captureScreenRegion:function(){captures++; return '/fixture.png';}};
+            var AppController = {route:'stream', overlay:'guide-session', captureStreamScreenshot:function(){captures++; return true;}};
             function consoleScreenshotRequested() {requests++;}
             function streamCaptureAnnounced(message) {announcements++;}
             function refreshMedia() {}
             function qsTr(value) {return {arg:function(arg){return value.replace('%1',arg);}, toString:function(){return value;}};}
         )JS")).isError());
         QVERIFY(loadShellFunction(engine, QStringLiteral("captureStreamScreenshot")));
+        QVERIFY(loadShellFunction(engine, QStringLiteral("acceptStreamScreenshot")));
         QVERIFY(!engine.evaluate(QStringLiteral("captureStreamScreenshot()" )).isError());
         QCOMPARE(engine.evaluate(QStringLiteral("requests")).toInt(), 1);
         QCOMPARE(engine.evaluate(QStringLiteral("captures")).toInt(), 0);
         QVERIFY(!engine.evaluate(QStringLiteral("AppController.overlay = ''; captureStreamScreenshot()")).isError());
         QCOMPARE(engine.evaluate(QStringLiteral("captures")).toInt(), 1);
+        QCOMPARE(engine.evaluate(QStringLiteral("announcements")).toInt(), 0);
+        QVERIFY(!engine.evaluate(QStringLiteral("acceptStreamScreenshot('/fixture.png')")).isError());
         QCOMPARE(engine.evaluate(QStringLiteral("announcements")).toInt(), 1);
     }
 
@@ -1739,6 +1744,30 @@ private slots:
         }
     }
 
+    void macPointerLockUsesTheSharedPreferenceAndKeepsErrorsVisible()
+    {
+        const auto controls = source(QStringLiteral(
+            "qml/desktop/settings/pages/DesktopSettingsControlsPage.qml"));
+        QVERIFY(controls.contains(QStringLiteral("objectName: \"macPointerLockToggle\"")));
+        QVERIFY(controls.contains(QStringLiteral("boolSetting(\"macPointerLockEnabled\", true)")));
+        QVERIFY(controls.contains(QStringLiteral("setSetting(\"macPointerLockEnabled\", value)")));
+        const auto menu = source(QStringLiteral("qml/desktop/stream/DesktopInStreamMenu.qml"));
+        QVERIFY(menu.contains(QStringLiteral("objectName: \"streamPointerLockRow\"")));
+        QVERIFY(menu.contains(QStringLiteral("onClicked: ShellStore.pointerLockToggleRequested()")));
+        QVERIFY(menu.contains(QStringLiteral("shortcut(\"shortcutTogglePointerLock\", \"F8\")")));
+        for (const auto &path : {QStringLiteral("qml/screens/StreamScreen.qml"),
+                                QStringLiteral("qml/desktop/stream/DesktopStreamScreen.qml")}) {
+            const auto stream = source(path);
+            QVERIFY(stream.contains(QStringLiteral(
+                "macPointerLockEnabled: ShellStore.settings.macPointerLockEnabled !== false")));
+            QVERIFY(stream.contains(QStringLiteral(
+                "ShellStore.setSetting(\"macPointerLockEnabled\", macPointerLockEnabled)")));
+            QVERIFY(stream.contains(QStringLiteral("StreamPointerLockHint {")));
+            QVERIFY(stream.contains(QStringLiteral("pointerLockEnabled: streamVideo.macPointerLockEnabled")));
+            QVERIFY(stream.contains(QStringLiteral(": streamVideo.relativeMouse ? streamVideo.inputCaptureError : \"\"")));
+        }
+    }
+
     void clipboardPasteUsesTheSharedOptInOnBothSurfaces()
     {
         const auto controls = source(QStringLiteral(
@@ -1891,6 +1920,198 @@ private slots:
             acceptRecordingTarget('replacement',{path:'/wrong-seat.mkv'});
             check(commands.length === 0 && mediaRecordingTargetRequestId === '');
             check(refreshes === completedRefreshes && notices.length === refreshes);
+        )JS"));
+        QVERIFY2(!result.isError(), qPrintable(result.toString() + result.property("stack").toString()));
+    }
+
+    void nativeStopReconcilesRecording_data()
+    {
+        QTest::addColumn<bool>("recovery");
+        QTest::addColumn<QString>("recording");
+        QTest::addColumn<bool>("stopped");
+        QTest::newRow("recover-saved") << true << QStringLiteral(
+            "{requestId:'recording',state:'saved',path:'/first.mkv',videoPackets:3,audioPackets:2,completion:{kind:'cut',reason:'interrupted'}}") << false;
+        QTest::newRow("recover-empty-prefix") << true << QStringLiteral(
+            "{requestId:'recording',state:'failed',message:'no keyframe',completion:{kind:'cut',reason:'interrupted'}}") << false;
+        QTest::newRow("recover-no-recorder") << true << QStringLiteral("null") << false;
+        QTest::newRow("already-stopped-saved") << true << QStringLiteral(
+            "{requestId:'recording',state:'saved',path:'/first.mkv',videoPackets:3,audioPackets:2,completion:{kind:'cut',reason:'interrupted'}}") << true;
+        QTest::newRow("already-stopped-no-recorder") << true << QStringLiteral("null") << true;
+        QTest::newRow("already-stopped-cached-recorder") << true << QStringLiteral(
+            "{requestId:'older-recording',state:'saved',path:'/older.mkv',completion:{kind:'complete'}}") << true;
+        QTest::newRow("user-saved") << false << QStringLiteral(
+            "{requestId:'recording',state:'saved',path:'/first.mkv',videoPackets:3,audioPackets:2,completion:{kind:'complete'}}") << false;
+        QTest::newRow("user-no-recorder") << false << QStringLiteral("null") << false;
+    }
+
+    void nativeStopReconcilesRecording()
+    {
+        QFETCH(bool, recovery);
+        QFETCH(QString, recording);
+        QFETCH(bool, stopped);
+        QJSEngine engine;
+        QVERIFY(prepareRecordingTeardown(engine));
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            var streamRecordingIntentSessionId='seat', streamRecordingStartRequestId='recording';
+            var streamRecordingStopRequestId='', streamRecordingActive=true, streamRecordingStartedAtMs=0;
+            var streamRecordingAttempt={requestId:'recording',sessionId:'seat',completed:false,acceptStart:true};
+            var activeSession={sessionId:'seat'}, streamer={status:'streaming'}, selectedGame={title:'Game'};
+            var streamerStopExpected=false, streamerStopRequestId='', streamerStartRequestId='';
+            var sessionRecoveryPending=false, sessionRecoveryAwaitingAuth=false, sessionStopIntentId='', streamStopRequestId='';
+            var microphoneRequestId='', sessionMicrophoneMode='disabled', streamIdleWarning=null;
+            var pendingRecordingPath='/first.mkv', pendingRecordingThumbnailPath='';
+            var mediaMessage='', accessibilityMessage='', lastError='', nativeRequestSequence=0, nativeRequests={};
+            var commands=[], calls=[], notices=[], refreshes=0;
+            var streamerRestartTimer={stop:function(){}};
+            var NativeStreamRuntime={running:true,send:function(command){commands.push(command);return true;}};
+            var CoreClient={cancel:function(){},request:function(){calls.push('target');return 'target';}};
+            function qsTr(text){return text;}
+            function updateStreamerFields(fields){streamer=Object.assign({},streamer,fields);}
+            function streamCaptureAnnounced(message){notices.push(message);}
+            function refreshMedia(){refreshes++;}
+            function check(value,message){if(!value)throw Error(message);}
+        )JS")).isError());
+        for (const auto &name : {"stopNativeStreamer", "sendNativeCommand", "takeNativeRequest",
+                                "acceptNativeResponse", "acceptRecordingCompletion"})
+            QVERIFY(loadShellFunction(engine, QString::fromLatin1(name)));
+        const auto result = engine.evaluate(QStringLiteral(R"JS(
+            var recovery=%1, result=%2;
+            var completedCurrent=result && result.requestId === 'recording';
+            streamer.status=%3;
+            stopNativeStreamer('Reconnecting the native media transport',recovery);
+            var stop=commands[0];
+            check(stop.type === 'stop' && stop.recovery === recovery,'stop recovery must be explicit');
+            check(nativeRequests[stop.id].recordingRequestId === 'recording','stop must own the original recording');
+            check(streamRecordingIntentSessionId === (recovery?'seat':''),'user stop must clear intent immediately');
+            acceptNativeResponse({id:stop.id,type:'ok',recording:result});
+            check(!streamRecordingAttempt || streamRecordingAttempt.completed,'stop must reconcile dropped completion');
+            check(!streamRecordingActive && streamRecordingStartRequestId === '' && streamRecordingStopRequestId === '',
+                'stop must release all attempt command ownership');
+            check(pendingRecordingPath === '' && pendingRecordingThumbnailPath === '', 'stop must release the target');
+            check(notices.length === (completedCurrent?1:0) && refreshes === notices.length,'stop must complete once');
+            check(calls.length === 0,'stop must wait for media recovery');
+            streamer.status='streaming';streamerStopExpected=false;
+            resumeStreamRecording();resumeStreamRecording();
+            check(calls.length === (recovery?1:0),'only recovery may resume exactly one recording target');
+            streamRecordingAttempt={requestId:'next',sessionId:'seat',completed:false,acceptStart:true};
+            streamRecordingStartRequestId='next';
+            acceptNativeResponse({id:stop.id,type:'ok',recording:result});
+            nativeRequests['stale-stop']={operation:'stop',recordingRequestId:'recording'};
+            acceptNativeResponse({id:'stale-stop',type:'ok',recording:result});
+            acceptRecordingCompletion({requestId:'recording',state:'saved',path:'/first.mkv',completion:{kind:'complete'}},'');
+            check(!streamRecordingAttempt.completed && streamRecordingStartRequestId === 'next',
+                'duplicates must not complete the next segment');
+            check(notices.length === (completedCurrent?1:0),'duplicates must not announce again');
+        )JS").arg(recovery ? QStringLiteral("true") : QStringLiteral("false"), recording,
+            stopped ? QStringLiteral("'stopped'") : QStringLiteral("'streaming'")));
+        QVERIFY2(!result.isError(), qPrintable(result.toString() + result.property("stack").toString()));
+    }
+
+    void manualRecordingContinuesAcrossReconnect()
+    {
+        QJSEngine engine;
+        QVERIFY(prepareRecordingTeardown(engine));
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            var streamRecordingIntentSessionId = '', streamRecordingStartRequestId = '', streamRecordingStopRequestId = '';
+            var streamRecordingActive = false, streamRecordingStartedAtMs = 0;
+            var pendingRecordingPath = '', pendingRecordingThumbnailPath = '', streamCaptureRect = {};
+            var activeSession = {sessionId:'seat'}, streamer = {status:'streaming'};
+            var streamerStopExpected = false, sessionRecoveryPending = false, sessionRecoveryAwaitingAuth = false;
+            var sessionStopIntentId = '', streamStopRequestId = '', selectedGame = {title:'Game'};
+            var mediaMessage = '', accessibilityMessage = '', lastError = '';
+            var NativeStreamRuntime = {running:true}, calls = [], commands = [], cancelled = [], refreshes = 0;
+            var CoreClient = {
+                request:function(method,params) {var id='target-'+calls.length;calls.push(id);return id;},
+                cancel:function(id) {cancelled.push(id);}
+            };
+            var AppController = {showOverlay:function(){}};
+            function sendNativeCommand(type,params) {var id='native-'+commands.length;commands.push({id:id,type:type});return id;}
+            function updateStreamerFields(fields) {streamer=Object.assign({},streamer,fields);}
+            function qsTr(text) {return text;}
+            function refreshMedia() {refreshes++;}
+            function streamCaptureAnnounced() {}
+            function check(value,message) {if (!value) throw Error(message);}
+        )JS")).isError());
+        for (const auto &name : {"toggleStreamRecording", "acceptRecordingTarget", "acceptRecordingResponse",
+                                "acceptRecordingCompletion"})
+            QVERIFY(loadShellFunction(engine, QString::fromLatin1(name)));
+        const auto result = engine.evaluate(QStringLiteral(R"JS(
+            toggleStreamRecording();
+            check(streamRecordingIntentSessionId === 'seat','manual start must retain session intent');
+            acceptRecordingTarget(mediaRecordingTargetRequestId,{path:'/first.mkv'});
+            var first = streamRecordingAttempt.requestId;
+            acceptRecordingResponse({id:first,type:'recording-started'},{operation:'recording-start'});
+            suspendRecordingStart();
+            streamer.status='stopped';
+            acceptRecordingCompletion({requestId:first,state:'saved',path:'/first.mkv',completion:{kind:'cut',reason:'interrupted'}},'');
+            check(streamRecordingIntentSessionId === 'seat' && calls.length === 1,'reconnect must retain intent without allocating early');
+            sessionRecoveryPending=true;
+            streamer.status='streaming';
+            resumeStreamRecording();
+            check(calls.length === 1,'media cannot resume during session recovery');
+            sessionRecoveryPending=false;
+            resumeStreamRecording();
+            resumeStreamRecording();
+            check(calls.length === 2,'resumed media must allocate exactly one new target');
+            var nextTarget=mediaRecordingTargetRequestId;
+            acceptRecordingTarget(nextTarget,{path:'/second.mkv'});
+            var second=streamRecordingAttempt.requestId;
+            check(second !== first && commands.length === 2,'continuation must start a new segment');
+            acceptRecordingCompletion({requestId:first,state:'failed',message:'stale failure'},'');
+            acceptRecordingResponse({id:first,type:'recording-started'},{operation:'recording-start'});
+            check(!streamRecordingActive && streamRecordingStartRequestId === second,'stale callbacks must not own continuation');
+            acceptRecordingResponse({id:second,type:'recording-started'},{operation:'recording-start'});
+            acceptRecordingResponse({id:second,type:'recording-started'},{operation:'recording-start'});
+            check(streamer.recordingStartCount === 2,'duplicate start acknowledgements must be idempotent');
+            acceptRecordingCompletion({requestId:second,state:'saved',path:'/second.mkv',completion:{kind:'cut',reason:'discontinuity'}},'');
+            check(calls.length === 3 && streamRecordingIntentSessionId === 'seat','native discontinuity must continue without reconnect');
+            var cancelledTarget=mediaRecordingTargetRequestId;
+            toggleStreamRecording();
+            acceptRecordingTarget(cancelledTarget,{path:'/cancelled.mkv'});
+            resumeStreamRecording();
+            check(streamRecordingIntentSessionId === '' && commands.length === 2 && cancelled[0] === cancelledTarget,
+                'user stop must cancel pending continuation and ignore its late target');
+            toggleStreamRecording();
+            acceptRecordingTarget(mediaRecordingTargetRequestId,{path:'/third.mkv'});
+            var third=streamRecordingAttempt.requestId;
+            suspendRecordingStart();
+            streamer.status='stopped';
+            toggleStreamRecording();
+            acceptRecordingCompletion({requestId:third,state:'saved',path:'/third.mkv',completion:{kind:'cut',reason:'interrupted'}},'');
+            streamer.status='streaming';
+            resumeStreamRecording();
+            check(streamRecordingIntentSessionId === '' && calls.length === 4,'user stop while reconnecting must cancel intent');
+            for (var failure of ['queue-overflow','storage','normal']) {
+                toggleStreamRecording();
+                acceptRecordingTarget(mediaRecordingTargetRequestId,{path:'/failure.mkv'});
+                var id=streamRecordingAttempt.requestId;
+                acceptRecordingCompletion({requestId:id,state:failure === 'storage' ? 'failed' : 'saved',path:'/failure.mkv',
+                    completion:failure === 'normal' ? {kind:'complete'} : {kind:'cut',reason:failure}},'');
+                var before=calls.length;
+                resumeStreamRecording();
+                check(streamRecordingIntentSessionId === '' && calls.length === before,'terminal completion must not retry '+failure);
+            }
+            toggleStreamRecording();
+            acceptRecordingTarget(mediaRecordingTargetRequestId,{path:'/suspended.mkv'});
+            var suspended=streamRecordingAttempt.requestId;
+            suspendRecordingStart();
+            streamer.status='streaming';
+            resumeStreamRecording();
+            check(mediaRecordingTargetRequestId === '','resume must wait for prior finalization');
+            acceptRecordingCompletion({requestId:suspended,state:'saved',path:'/suspended.mkv',completion:{kind:'cut',reason:'interrupted'}},'');
+            check(mediaRecordingTargetRequestId !== '','late prior finalization must release continuation');
+            toggleStreamRecording();
+            toggleStreamRecording();
+            acceptRecordingTarget(mediaRecordingTargetRequestId,{path:'/empty-prefix.mkv'});
+            var empty=streamRecordingAttempt.requestId;
+            suspendRecordingStart();
+            streamer.status='stopped';
+            acceptRecordingCompletion({requestId:empty,state:'failed',message:'no usable keyframe',completion:{kind:'cut',reason:'interrupted'}},'');
+            check(streamRecordingIntentSessionId === 'seat' && mediaRecordingTargetRequestId === '',
+                'interruption before the first keyframe must retain intent without claiming a saved prefix');
+            streamer.status='streaming';
+            resumeStreamRecording();
+            check(mediaRecordingTargetRequestId !== '','empty-prefix interruption must resume when media returns');
         )JS"));
         QVERIFY2(!result.isError(), qPrintable(result.toString() + result.property("stack").toString()));
     }

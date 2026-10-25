@@ -2548,7 +2548,7 @@ mod tests {
             },
         )
         .unwrap();
-        let expected: Vec<_> = [
+        let mut expected: Vec<_> = [
             RecordingCompletion::Complete,
             RecordingCompletion::Cut {
                 reason: RecordingCutReason::Discontinuity,
@@ -2567,13 +2567,16 @@ mod tests {
             "audioPackets":3, "completion":completion})
         })
         .collect();
+        expected.push(json!({"type":"recording-state", "state":"failed",
+            "requestId":"recording-start-10", "message":"recording ended before a decodable video keyframe arrived",
+            "completion":{"kind":"cut","reason":"interrupted"}}));
         for event in &expected {
             sender.send(event.clone()).unwrap();
         }
         drop(sender);
         dispatcher.join().unwrap();
         assert_eq!(*messages.values.lock().unwrap(), expected);
-        assert_eq!(PROTOCOL_VERSION, 7);
+        assert_eq!(PROTOCOL_VERSION, 8);
     }
 
     fn create_with_test_runtime(
@@ -4668,7 +4671,7 @@ mod tests {
         let command = serde_json::to_vec(&json!({
             "id": "hello-1",
             "type": "hello",
-            "protocolVersion": 7
+            "protocolVersion": 8
         }))
         .expect("hello command");
 
@@ -4733,7 +4736,7 @@ mod tests {
         assert_eq!(response["type"], "audioDevices");
         assert_eq!(response["devices"], json!([]));
         assert_eq!(
-            handle.send(br#"{"id":"hello-after-audio","type":"hello","protocolVersion":7}"#),
+            handle.send(br#"{"id":"hello-after-audio","type":"hello","protocolVersion":8}"#),
             OpenNowStreamerStatus::Ok
         );
         assert_eq!(messages.wait_for_id("hello-after-audio")["type"], "ready");
@@ -4754,7 +4757,7 @@ mod tests {
         let command = serde_json::to_vec(&json!({
             "id": "hello-production",
             "type": "hello",
-            "protocolVersion": 7
+            "protocolVersion": 8
         }))
         .expect("hello command");
         assert_eq!(

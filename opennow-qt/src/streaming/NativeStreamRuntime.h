@@ -6,6 +6,7 @@
 
 #include <QByteArray>
 #include <QJsonObject>
+#include <QImage>
 #include <QObject>
 #include <QSize>
 #include <QString>
@@ -123,6 +124,9 @@ public:
     [[nodiscard]] bool presentationAllowed() const;
     [[nodiscard]] OpenNowStreamerPresentationConfig presentationConfig() const;
     OpenNowStreamerStatus submitPresentationSample(const OpenNowStreamerPresentationSample &sample);
+    bool requestScreenshot();
+    quint64 takeScreenshotRequest();
+    void completeScreenshot(quint64 request, QImage image);
     [[nodiscard]] QSize decodedDisplaySize() const;
     struct UpstreamProgress
     {
@@ -185,6 +189,7 @@ public:
     OpenNowStreamerStatus submitGenericHidReport(const GenericHidReport &report);
 
 signals:
+    void screenshotReady(const QImage &image);
     void inputCaptureReset();
     void inputAllowedChanged();
     void presentationError(const QString &message, const QString &errorCode);

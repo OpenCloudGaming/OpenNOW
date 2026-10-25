@@ -58,7 +58,8 @@ pub use opennow_streamer_platform_windows::{
     D3d11TextureFormat, d3d11_adapter_luid,
 };
 pub use recording::{
-    ManualRecordingSummary, RecordingSummary, record_matroska, record_replay_matroska,
+    ManualRecordingError, ManualRecordingSummary, RecordingSummary, record_matroska,
+    record_replay_matroska,
 };
 pub use replay::ReplaySnapshot;
 pub use runtime::{

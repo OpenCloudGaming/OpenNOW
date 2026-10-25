@@ -146,6 +146,55 @@ class NativeStreamRuntimeTest final : public QObject
     Q_OBJECT
 
 private slots:
+    void screenshotRequestsAreBoundedAndRejectStaleCompletion()
+    {
+        NativeStreamRuntime runtime(fakeApi());
+        QSignalSpy ready(&runtime, &NativeStreamRuntime::screenshotReady);
+        QVERIFY(!runtime.requestScreenshot());
+        QVERIFY(runtime.start());
+        const auto start = [&](const QString &id) {
+            QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                                  {QStringLiteral("id"), id}}));
+            QTRY_VERIFY(runtime.presentationAllowed());
+        };
+        start(QStringLiteral("first"));
+        QVERIFY(runtime.requestScreenshot());
+        QVERIFY(!runtime.requestScreenshot());
+        const auto first = runtime.takeScreenshotRequest();
+        QVERIFY(first);
+        QCOMPARE(runtime.takeScreenshotRequest(), 0u);
+        QImage frame(64, 32, QImage::Format_RGBA8888);
+        frame.fill(Qt::green);
+        runtime.completeScreenshot(first, frame);
+        QTRY_COMPARE(ready.count(), 1);
+        QCOMPARE(qvariant_cast<QImage>(ready.at(0).at(0)), frame);
+        runtime.completeScreenshot(first, frame);
+        QCoreApplication::processEvents();
+        QCOMPARE(ready.count(), 1);
+        QVERIFY(runtime.requestScreenshot());
+        const auto interrupted = runtime.takeScreenshotRequest();
+        start(QStringLiteral("replacement"));
+        QCOMPARE(ready.count(), 2);
+        QVERIFY(qvariant_cast<QImage>(ready.at(1).at(0)).isNull());
+        QVERIFY(runtime.requestScreenshot());
+        const auto resumed = runtime.takeScreenshotRequest();
+        QVERIFY(resumed != interrupted);
+        runtime.completeScreenshot(interrupted, frame);
+        QCoreApplication::processEvents();
+        QCOMPARE(ready.count(), 2);
+        QVERIFY(!runtime.requestScreenshot());
+        runtime.completeScreenshot(resumed, frame);
+        QTRY_COMPARE(ready.count(), 3);
+        QCOMPARE(qvariant_cast<QImage>(ready.at(2).at(0)), frame);
+        QVERIFY(runtime.requestScreenshot());
+        QTRY_COMPARE_WITH_TIMEOUT(ready.count(), 4, 6000);
+        QVERIFY(qvariant_cast<QImage>(ready.at(3).at(0)).isNull());
+        QCOMPARE(runtime.takeScreenshotRequest(), 0u);
+        QVERIFY(runtime.requestScreenshot());
+        QVERIFY(runtime.shutdown());
+        QCOMPARE(ready.count(), 5);
+    }
+
     void actualStreamingLifetimeIsIndependentOfRuntimeAndResumableStatuses()
     {
         static OpenNowStreamerConfig callbacks;
@@ -1503,7 +1552,7 @@ private slots:
         QVERIFY2(runtime.start(), qPrintable(runtime.lastError()));
         QVERIFY2(runtime.send(QJsonObject{{QStringLiteral("id"), QStringLiteral("abi-hello")},
                                           {QStringLiteral("type"), QStringLiteral("hello")},
-                                          {QStringLiteral("protocolVersion"), 7}}),
+                                          {QStringLiteral("protocolVersion"), 8}}),
                  qPrintable(runtime.lastError()));
         QTRY_VERIFY_WITH_TIMEOUT(!responses.isEmpty(), 5'000);
         QCOMPARE(responses.first().first().toJsonObject().value(QStringLiteral("id")).toString(),
@@ -1524,5 +1573,5 @@ private slots:
     }
 };
 
-QTEST_MAIN(NativeStreamRuntimeTest)
+QTEST_GUILESS_MAIN(NativeStreamRuntimeTest)
 #include "tst_nativestreamruntime.moc"

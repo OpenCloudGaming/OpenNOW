@@ -416,6 +416,8 @@ QtObject {
         if (!activeSession && pendingAccountSwitch)
             Qt.callLater(continuePendingAccountSwitch)
         const sessionId = String(activeSession && activeSession.sessionId || "")
+        if (sessionId !== streamRecordingIntentSessionId)
+            streamRecordingIntentSessionId = ""
         if (streamIdleWarning && streamIdleWarning.sessionId !== sessionId)
             streamIdleWarning = null
         if (sessionId !== mediaRecordingTargetSessionId)
@@ -783,6 +785,7 @@ QtObject {
     property string streamRecordingStartRequestId: ""
     property string streamRecordingStopRequestId: ""
     property var streamRecordingAttempt: null
+    property string streamRecordingIntentSessionId: ""
     property string pendingRecordingPath: ""
     property string pendingRecordingThumbnailPath: ""
     property string mediaClipTargetRequestId: ""
@@ -817,7 +820,7 @@ QtObject {
     property string streamControlMessage: ""
     property rect streamCaptureRect: Qt.rect(0, 0, 0, 0)
     property bool nativeRuntimeReady: false
-    readonly property int nativeProtocolVersion: 7
+    readonly property int nativeProtocolVersion: 8
     property var nativeRuntimeCapabilities: ({})
     property var audioOutputDevices: []
     property bool audioOutputDevicesBusy: false
@@ -837,6 +840,10 @@ QtObject {
     property var nativeRequests: ({})
     property int overlayRequestGeneration: 0
     property int screenshotRequestGeneration: 0
+    property Connections screenshotCaptureEvents: Connections {
+        target: AppController
+        function onStreamScreenshotSaved(path) { root.acceptStreamScreenshot(path) }
+    }
     property int recordingToggleRequestGeneration: 0
     property int shortcutActionGeneration: 0
     property var runtimeStreamProfile: ({})
@@ -1138,7 +1145,7 @@ QtObject {
         }
         const requests = Object.assign({}, nativeRequests)
         requests[requestId] = Object.assign({operation: operation || type}, params || ({}))
-        if (operation === "recording-stop")
+        if (operation === "recording-stop" || operation === "stop")
             requests[requestId].recordingRequestId = streamRecordingAttempt ? streamRecordingAttempt.requestId : ""
         nativeRequests = requests
         return requestId
@@ -2339,6 +2346,7 @@ QtObject {
         // One failure produces both error and stopped, plus late input replies.
         // Count it once and preserve the original, actionable error message.
         const wasTerminal = streamer && (streamer.status === "error" || streamer.status === "stopped")
+        const wasStreaming = streamer && streamer.status === "streaming"
         const isTerminal = snapshot && (snapshot.status === "error" || snapshot.status === "stopped")
         if (wasTerminal && isTerminal)
             return
@@ -2363,6 +2371,9 @@ QtObject {
             setStreamInputPaused(desiredStreamInputPaused)
         }
         if (status === "streaming") {
+            if (!wasStreaming && streamRecordingAttempt)
+                streamRecordingAttempt = Object.assign({}, streamRecordingAttempt, {awaitingMedia: false})
+            resumeStreamRecording()
             return
         }
         if (status !== "error" && status !== "stopped")
@@ -2443,8 +2454,8 @@ QtObject {
             if (id !== "") CoreClient.cancel(id)
         // Stop/reap the previous native connection before claiming fresh keys.
         // This is NOT session.stop: the cloud game must remain alive.
-        if (NativeStreamRuntime.running && streamer && streamer.status !== "stopped") {
-            stopNativeStreamer("Reconnecting the native media transport")
+        if (NativeStreamRuntime.running) {
+            stopNativeStreamer("Reconnecting the native media transport", true)
             if (streamerStopRequestId === "")
                 scheduleSessionRecovery(lastError || qsTr("Could not stop the previous native connection"))
             return
@@ -2604,22 +2615,23 @@ QtObject {
         return artworkOwner.acceptArtworkResult(payload)
     }
 
-    function stopNativeStreamer(reason) {
+    function stopNativeStreamer(reason, recovery) {
         streamIdleWarning = null
+        if (recovery !== true)
+            streamRecordingIntentSessionId = ""
         cancelRecordingTarget()
         suspendRecordingStart()
         streamerRestartTimer.stop()
         if (streamerStopRequestId !== "")
             return
-        // A runtime that never started, or that already reported "stopped", has
-        // nothing left to reap. Without this a repeated stop request during a
-        // failing session could issue multiple native stop commands.
         const status = streamer ? String(streamer.status || "") : ""
-        if (status === "" || status === "stopped")
+        if ((status === "" || status === "stopped")
+                && !(recovery === true && NativeStreamRuntime.running))
             return
         streamerStopExpected = true
         streamerStopRequestId = sendNativeCommand("stop", {
-            reason: reason || "User stopped the session"
+            reason: reason || "User stopped the session",
+            recovery: recovery === true
         }, "stop")
         if (streamerStopRequestId === "")
             streamerStopExpected = false
@@ -2723,11 +2735,12 @@ QtObject {
             consoleScreenshotRequested()
             return
         }
-        const rect = streamCaptureRect
         const title = selectedGame && selectedGame.title ? selectedGame.title : "OpenNOW"
-        const path = AppController.captureScreenRegion(
-            Number(rect.x || 0), Number(rect.y || 0),
-            Number(rect.width || 0), Number(rect.height || 0), title)
+        if (!AppController.captureStreamScreenshot(title))
+            acceptStreamScreenshot("")
+    }
+
+    function acceptStreamScreenshot(path) {
         if (path) {
             mediaMessage = qsTr("Screenshot saved")
             accessibilityMessage = qsTr("Screenshot saved to %1").arg(path)
@@ -2736,7 +2749,7 @@ QtObject {
             refreshMedia()
         } else {
             mediaMessage = qsTr("Screenshot capture failed")
-            lastError = qsTr("The desktop compositor did not allow OpenNOW to capture the stream.")
+            lastError = qsTr("No video frame is available, or the screenshot could not be saved.")
             accessibilityMessage = lastError
             if (!desktopUiActive)
                 streamCaptureAnnounced(mediaMessage)
@@ -2901,9 +2914,31 @@ QtObject {
 
     function suspendRecordingStart() {
         if (streamRecordingAttempt)
-            streamRecordingAttempt = Object.assign({}, streamRecordingAttempt, {acceptStart: false})
+            streamRecordingAttempt = Object.assign({}, streamRecordingAttempt, {acceptStart: false, awaitingMedia: false})
+        streamRecordingStartRequestId = ""
+        streamRecordingStopRequestId = ""
         streamRecordingActive = false
         streamRecordingElapsedMs = 0
+    }
+
+    function resumeStreamRecording() {
+        if (streamRecordingIntentSessionId === "" || !activeSession
+                || String(activeSession.sessionId) !== streamRecordingIntentSessionId
+                || !streamer || streamer.status !== "streaming" || streamerStopExpected
+                || sessionRecoveryPending || sessionRecoveryAwaitingAuth
+                || sessionStopIntentId === streamRecordingIntentSessionId || streamStopRequestId !== ""
+                || !NativeStreamRuntime.running || streamRecordingActive
+                || mediaRecordingTargetRequestId !== "" || streamRecordingStartRequestId !== ""
+                || streamRecordingStopRequestId !== ""
+                || (streamRecordingAttempt && (!streamRecordingAttempt.completed || streamRecordingAttempt.awaitingMedia)))
+            return
+        const title = selectedGame && selectedGame.title ? selectedGame.title : "OpenNOW"
+        mediaRecordingTargetSessionId = streamRecordingIntentSessionId
+        mediaRecordingTargetRequestId = CoreClient.request("media.recording.target", {
+            gameTitle: title
+        }, 5000)
+        if (mediaRecordingTargetRequestId === "")
+            streamRecordingIntentSessionId = ""
     }
 
     function acceptRecordingTarget(requestId, result) {
@@ -2913,7 +2948,10 @@ QtObject {
         mediaRecordingTargetRequestId = ""
         mediaRecordingTargetSessionId = ""
         if (!activeSession || String(activeSession.sessionId) !== sessionId
-                || !streamer || streamer.status !== "streaming" || streamerStopExpected)
+                || sessionId !== streamRecordingIntentSessionId
+                || !streamer || streamer.status !== "streaming" || streamerStopExpected
+                || sessionRecoveryPending || sessionRecoveryAwaitingAuth
+                || sessionStopIntentId === sessionId || streamStopRequestId !== "")
             return
         pendingRecordingPath = String(result.path || "")
         pendingRecordingThumbnailPath = String(result.thumbnailPath || "")
@@ -2925,6 +2963,7 @@ QtObject {
             completed: false, acceptStart: true
         }
         if (streamRecordingStartRequestId === "") {
+            streamRecordingIntentSessionId = ""
             pendingRecordingPath = ""
             pendingRecordingThumbnailPath = ""
             mediaMessage = lastError
@@ -2964,7 +3003,15 @@ QtObject {
         } else {
             return
         }
-        streamRecordingAttempt = Object.assign({}, streamRecordingAttempt, {completed: true, acceptStart: false})
+        const continuation = result.completion
+            && result.completion.kind === "cut"
+            && ["discontinuity", "interrupted"].indexOf(result.completion.reason) >= 0
+        const awaitingMedia = continuation && result.completion.reason === "interrupted"
+            && streamRecordingAttempt.acceptStart
+        if (!continuation)
+            streamRecordingIntentSessionId = ""
+        streamRecordingAttempt = Object.assign({}, streamRecordingAttempt,
+            {completed: true, acceptStart: false, awaitingMedia: awaitingMedia})
         streamRecordingStartRequestId = ""
         streamRecordingStopRequestId = ""
         streamRecordingActive = false
@@ -2977,6 +3024,7 @@ QtObject {
         if (result.state === "saved")
             updateStreamerFields({recordingStopCount: Number(streamer && streamer.recordingStopCount || 0) + 1})
         refreshMedia()
+        resumeStreamRecording()
     }
 
     function acceptRecordingResponse(response, pending) {
@@ -3001,7 +3049,8 @@ QtObject {
             acceptRecordingCompletion(Object.assign({}, response, {state: "failed"}), requestId)
             return
         }
-        if (response.type !== "recording-started" || !streamRecordingAttempt.acceptStart
+        if (response.type !== "recording-started" || !streamRecordingAttempt.acceptStart || streamRecordingActive
+                || streamRecordingIntentSessionId !== streamRecordingAttempt.sessionId
                 || !activeSession || String(activeSession.sessionId) !== streamRecordingAttempt.sessionId
                 || !streamer || streamer.status !== "streaming" || streamerStopExpected)
             return
@@ -3021,6 +3070,20 @@ QtObject {
     }
 
     function toggleStreamRecording() {
+        if (streamRecordingIntentSessionId !== "") {
+            streamRecordingIntentSessionId = ""
+            cancelRecordingTarget()
+            const stop = streamRecordingAttempt && !streamRecordingAttempt.completed
+                && streamRecordingAttempt.acceptStart && NativeStreamRuntime.running
+            suspendRecordingStart()
+            if (stop) {
+                streamRecordingStopRequestId = sendNativeCommand("recording-stop", {}, "recording-stop")
+                mediaMessage = streamRecordingStopRequestId === ""
+                    ? lastError : qsTr("Finalizing recording…")
+                accessibilityMessage = mediaMessage
+            }
+            return
+        }
         if (streamRecordingStartRequestId !== "" || streamRecordingStopRequestId !== ""
                 || mediaRecordingTargetRequestId !== "")
             return
@@ -3031,17 +3094,18 @@ QtObject {
             accessibilityMessage = mediaMessage
             return
         }
-        if (!activeSession || !streamer || streamer.status !== "streaming") {
+        if (!activeSession || !streamer || streamer.status !== "streaming" || streamerStopExpected
+                || sessionRecoveryPending || sessionRecoveryAwaitingAuth || streamStopRequestId !== ""
+                || sessionStopIntentId === String(activeSession.sessionId)) {
             mediaMessage = qsTr("Start a native stream before recording")
             accessibilityMessage = mediaMessage
             return
         }
-        const title = selectedGame && selectedGame.title ? selectedGame.title : "OpenNOW"
         AppController.showOverlay("")
-        mediaRecordingTargetSessionId = String(activeSession.sessionId)
-        mediaRecordingTargetRequestId = CoreClient.request("media.recording.target", {
-            gameTitle: title
-        }, 5000)
+        if (streamRecordingAttempt && streamRecordingAttempt.completed)
+            streamRecordingAttempt = null
+        streamRecordingIntentSessionId = String(activeSession.sessionId)
+        resumeStreamRecording()
         mediaMessage = qsTr("Preparing source-quality recording…")
         accessibilityMessage = mediaMessage
     }
@@ -3102,6 +3166,7 @@ QtObject {
     }
 
     function stopStreamingSession() {
+        streamRecordingIntentSessionId = ""
         sessionStopIntentId = activeSession ? String(activeSession.sessionId) : ""
         if (coreSessionRestoreId !== "") streamPollFailureAttempts = 0
         invalidateLaunchInspection()
@@ -3531,6 +3596,17 @@ QtObject {
             updateStreamerFields({status: "stopped", message: pending.reason || qsTr("Stream stopped"),
                                   sessionId: null, transport: null, inputReady: false,
                                   microphoneState: "disabled", microphoneEnabled: false, microphoneMessage: ""})
+            if (pending.recordingRequestId) {
+                if (response.recording && response.recording.requestId === pending.recordingRequestId) {
+                    acceptRecordingCompletion(response.recording, pending.recordingRequestId)
+                } else if (response.recording !== undefined && streamRecordingAttempt
+                        && !streamRecordingAttempt.completed
+                        && streamRecordingAttempt.requestId === pending.recordingRequestId) {
+                    streamRecordingAttempt = null
+                    pendingRecordingPath = ""
+                    pendingRecordingThumbnailPath = ""
+                }
+            }
             if (sessionRecoveryPending) {
                 streamerStartRequestId = ""
                 discoverRecoverySession()
@@ -4402,6 +4478,7 @@ QtObject {
             } else if (requestId === root.mediaRecordingTargetRequestId) {
                 root.mediaRecordingTargetRequestId = ""
                 root.mediaRecordingTargetSessionId = ""
+                root.streamRecordingIntentSessionId = ""
                 root.pendingRecordingPath = ""
                 root.pendingRecordingThumbnailPath = ""
                 root.mediaMessage = message

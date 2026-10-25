@@ -11,6 +11,9 @@
 #ifndef Payload
   #error Compile with /DPayload pointing at the portable ZIP layout
 #endif
+#ifndef DestinationConflictMessage
+  #error Compile with /DDestinationConflictMessage from locales/en.json
+#endif
 
 #define AppName "OpenNOW"
 #define AppExeName "OpenNOW.exe"
@@ -27,7 +30,10 @@ AppPublisher={#AppPublisher}
 AppPublisherURL=https://github.com/OpenCloudGaming/OpenNOW
 AppSupportURL=https://github.com/OpenCloudGaming/OpenNOW
 DefaultDirName={localappdata}\OpenNOW
-DisableDirPage=yes
+DisableDirPage=no
+AppendDefaultDirName=yes
+AllowRootDirectory=no
+UsePreviousAppDir=yes
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputBaseFilename=OpenNOW-setup
@@ -59,10 +65,45 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\bin\{#AppExeName}"; WorkingDi
 Filename: "{app}\bin\{#AppExeName}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
-; Remove the local tree and leave %APPDATA%\OpenNOW alone.
-Type: filesandordirs; Name: "{app}"
+Type: filesandordirs; Name: "{app}\bin"
+Type: filesandordirs; Name: "{app}\plugins"
+Type: filesandordirs; Name: "{app}\qml"
+Type: filesandordirs; Name: "{app}\share"
+Type: filesandordirs; Name: "{app}\translations"
+Type: dirifempty; Name: "{app}"
 
 [Code]
+function DestinationError(Directory: String): String;
+begin
+  Result := '';
+  if FileExists(AddBackslash(Directory) + 'bin\{#AppExeName}') then
+    exit;
+  if DirExists(AddBackslash(Directory) + 'bin') or
+     DirExists(AddBackslash(Directory) + 'plugins') or
+     DirExists(AddBackslash(Directory) + 'qml') or
+     DirExists(AddBackslash(Directory) + 'share') or
+     DirExists(AddBackslash(Directory) + 'translations') then
+    Result := '{#DestinationConflictMessage}';
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  Error: String;
+begin
+  Result := True;
+  if (CurPageID <> wpSelectDir) or WizardSilent then
+    exit;
+  Error := DestinationError(WizardDirValue);
+  Result := Error = '';
+  if not Result then
+    MsgBox(Error, mbError, MB_OK);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  Result := DestinationError(ExpandConstant('{app}'));
+end;
+
 function MsiEnumRelatedProducts(UpgradeCode: String; Reserved: Cardinal; Index: Integer; ProductCode: String): Integer;
 external 'MsiEnumRelatedProductsW@msi.dll stdcall';
 

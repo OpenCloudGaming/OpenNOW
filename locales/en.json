@@ -1,4 +1,7 @@
 {
+  "windowsSetup": {
+    "destinationConflict": "This folder contains application directories that do not belong to OpenNOW. Choose a separate OpenNOW folder."
+  },
   "updatesPage": {
     "versionUpgrade": "%1  →  %2 · %3",
     "downloadAmount": "%1 of %2 MB",
@@ -36,6 +39,16 @@
     "updatesDetail": "Version, channel, notes",
     "whatsNew": "WHAT'S NEW",
     "upToDate": "You're up to date"
+  },
+  "macPointerLock": {
+    "title": "Pointer lock",
+    "description": "Capture the mouse for unrestricted movement. Temporarily released for menus and when OpenNOW loses focus.",
+    "off": "Pointer lock is off",
+    "enabledState": "ON",
+    "disabledState": "OFF",
+    "offHint": "Pointer lock is off. Mouse movement can stop at screen edges.",
+    "controlsHint": "Change pointer lock in the stream menu (Ctrl+G) or Settings > Controls.",
+    "enable": "Enable pointer lock"
   },
   "flightControls": {
     "heading": "FLIGHT CONTROLS & WHEELS",
@@ -2865,6 +2878,7 @@
       "s_18cea849": "The OpenNOW core is not ready",
       "s_1ac6fef1": "The OpenNOW core is still starting",
       "s_f9e99e88": "The desktop compositor did not allow OpenNOW to capture the stream.",
+      "stream_frame_screenshot_failed": "No video frame is available, or the screenshot could not be saved.",
       "s_92782fd0": "The native stream window is not active.",
       "s_1a38a57c": "The provider does not expose a supported friends service.",
       "s_4d2a7da7": "The requested GeForce NOW game was not found in the current catalog.",

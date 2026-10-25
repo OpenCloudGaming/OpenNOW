@@ -39,6 +39,8 @@ class StreamVideoItem : public QQuickItem
     Q_PROPERTY(QString inputCaptureError READ inputCaptureError NOTIFY inputCaptureErrorChanged)
     Q_PROPERTY(bool relativeMouse READ relativeMouse WRITE setRelativeMouse
                    NOTIFY relativeMouseChanged)
+    Q_PROPERTY(bool macPointerLockEnabled READ macPointerLockEnabled WRITE setMacPointerLockEnabled
+                   NOTIFY macPointerLockEnabledChanged)
     Q_PROPERTY(QVariantMap shortcutBindings READ shortcutBindings WRITE setShortcutBindings
                    NOTIFY shortcutBindingsChanged)
     Q_PROPERTY(bool frameGeneration READ frameGeneration WRITE setFrameGeneration
@@ -81,6 +83,8 @@ public:
     [[nodiscard]] QString inputCaptureError() const;
     [[nodiscard]] bool relativeMouse() const;
     void setRelativeMouse(bool relative);
+    [[nodiscard]] bool macPointerLockEnabled() const;
+    void setMacPointerLockEnabled(bool enabled);
     [[nodiscard]] QVariantMap shortcutBindings() const;
     void setShortcutBindings(const QVariantMap &bindings);
     [[nodiscard]] std::shared_ptr<StreamVideoRenderCallback> renderCallback() const;
@@ -142,6 +146,7 @@ signals:
     void clipboardPasteFailed();
     void inputCaptureErrorChanged();
     void relativeMouseChanged();
+    void macPointerLockEnabledChanged();
     void shortcutBindingsChanged();
     void frameGenerationChanged();
     void metalFxUpscalingChanged();
@@ -245,6 +250,7 @@ private:
     QPointer<QQuickWindow> m_inputWindow;
     bool m_captureActive = false;
     bool m_relativeMouse = false;
+    bool m_macPointerLockEnabled = true;
     bool m_rawInputActive = false;
     bool m_cursorConfined = false;
     bool m_nativeWindowMoveLoop = false;

@@ -827,6 +827,19 @@ if(BUILD_TESTING)
         COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
             --route settings-streaming --smoke-stream-recovery --reduced-motion)
     set_tests_properties(qml-stream-recovery PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+    qt_add_resources(opennow-qt "pointer-lock-hint-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/PointerLockHintAcceptance.qml)
+    foreach(surface desktop console)
+        set(pointer_lock_surface_args)
+        if(surface STREQUAL "desktop")
+            list(APPEND pointer_lock_surface_args --desktop)
+        endif()
+        add_test(NAME qml-pointer-lock-hint-${surface}
+            COMMAND opennow-qt --smoke-test --allow-multiple-instances ${pointer_lock_surface_args}
+                --route stream --smoke-pointer-lock --reduced-motion)
+        set_tests_properties(qml-pointer-lock-hint-${surface} PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+    endforeach()
     add_test(NAME qml-stream-recovery-fullscreen
         COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
             --route settings-streaming --smoke-stream-recovery --smoke-stream-recovery-fullscreen --reduced-motion)
@@ -1115,16 +1128,16 @@ if(BUILD_TESTING)
     )
     target_include_directories(opennow-nativestreamruntime-tests PRIVATE src)
     target_link_libraries(opennow-nativestreamruntime-tests PRIVATE
-        Qt6::Test Qt6::Core opennow-streamer-ffi)
+        Qt6::Test Qt6::Core Qt6::Gui opennow-streamer-ffi)
     add_dependencies(opennow-nativestreamruntime-tests opennow-streamer-ffi-build)
     add_test(NAME opennow-nativestreamruntime-tests
              COMMAND opennow-nativestreamruntime-tests -o -,txt)
-    set_tests_properties(opennow-nativestreamruntime-tests PROPERTIES TIMEOUT 8)
+    set_tests_properties(opennow-nativestreamruntime-tests PROPERTIES TIMEOUT 15)
     qt_add_executable(opennow-nativepresentation-tests
         tests/tst_nativepresentation.cpp ${OPENNOW_STREAM_RUNTIME_SOURCES})
     target_include_directories(opennow-nativepresentation-tests PRIVATE src)
     target_link_libraries(opennow-nativepresentation-tests PRIVATE
-        Qt6::Test Qt6::Core opennow-streamer-ffi)
+        Qt6::Test Qt6::Core Qt6::Gui opennow-streamer-ffi)
     add_dependencies(opennow-nativepresentation-tests opennow-streamer-ffi-build)
     add_test(NAME opennow-nativepresentation-tests COMMAND opennow-nativepresentation-tests -o -,txt)
     set_tests_properties(opennow-nativepresentation-tests PROPERTIES TIMEOUT 8)

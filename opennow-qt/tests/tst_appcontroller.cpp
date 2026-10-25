@@ -15,6 +15,57 @@ class AppControllerTest final : public QObject
     Q_OBJECT
 
 private slots:
+    void streamScreenshotSavesOnlyTheProvidedFrame()
+    {
+        QTemporaryDir pictures;
+        QVERIFY(pictures.isValid());
+        const auto previousPictures = qgetenv("OPENNOW_PICTURES_DIR");
+        const auto restore = qScopeGuard([&] {
+            if (previousPictures.isNull()) qunsetenv("OPENNOW_PICTURES_DIR");
+            else qputenv("OPENNOW_PICTURES_DIR", previousPictures);
+        });
+        qputenv("OPENNOW_PICTURES_DIR", pictures.path().toUtf8());
+        AppController controller;
+        QSignalSpy saved(&controller, &AppController::streamScreenshotSaved);
+        QVERIFY(!controller.captureStreamScreenshot(QStringLiteral("Fixture")));
+        int captures = 0;
+        controller.setScreenshotCapture([&] { ++captures; return true; });
+        QVERIFY(controller.captureStreamScreenshot(QStringLiteral("../Fixture")));
+        QVERIFY(!controller.captureStreamScreenshot(QStringLiteral("Other")));
+        QCOMPARE(captures, 1);
+        QImage image(64, 32, QImage::Format_RGBA8888);
+        image.fill(Qt::green);
+        controller.saveStreamScreenshot(image);
+        QVERIFY(!controller.captureStreamScreenshot(QStringLiteral("Other")));
+        QTRY_COMPARE(saved.count(), 1);
+        const auto path = saved.at(0).at(0).toString();
+        QVERIFY(!path.isEmpty());
+        QCOMPARE(QFileInfo(path).absolutePath(),
+            pictures.path() + QStringLiteral("/OpenNOW/Screenshots"));
+        QCOMPARE(QImage(path).convertToFormat(QImage::Format_RGBA8888), image);
+        QVERIFY(controller.captureStreamScreenshot(QStringLiteral("Fixture")));
+        controller.saveStreamScreenshot(image);
+        QTRY_COMPARE(saved.count(), 2);
+        QVERIFY(saved.at(1).at(0).toString() != path);
+        QVERIFY(controller.captureStreamScreenshot(QStringLiteral("Fixture")));
+        controller.saveStreamScreenshot({});
+        QCOMPARE(saved.count(), 3);
+        QVERIFY(saved.at(2).at(0).toString().isEmpty());
+        controller.saveStreamScreenshot(image);
+        QCOMPARE(saved.count(), 3);
+        QFile blocked(pictures.path() + QStringLiteral("/blocked"));
+        QVERIFY(blocked.open(QIODevice::WriteOnly));
+        blocked.close();
+        qputenv("OPENNOW_PICTURES_DIR", blocked.fileName().toUtf8());
+        QVERIFY(controller.captureStreamScreenshot(QStringLiteral("Fixture")));
+        controller.saveStreamScreenshot(image);
+        QTRY_COMPARE(saved.count(), 4);
+        QVERIFY(saved.at(3).at(0).toString().isEmpty());
+        QVERIFY(controller.captureStreamScreenshot(QStringLiteral("Fixture")));
+        controller.saveStreamScreenshot({});
+        QCOMPARE(saved.count(), 5);
+    }
+
     void sessionReportOverlayPreservesTheRoute()
     {
         AppController controller;

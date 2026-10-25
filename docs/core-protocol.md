@@ -936,7 +936,7 @@ Rates snap to 30, 60, 90, 120, 144, 165, 240, or 360 FPS before allocation.
 Embedded codec limits below can reduce the request further.
 
 For the embedded Qt client, `session.create` and `streamer.prepare` accept an optional
-`runtimeCapabilities` object copied from the in-process streamer's protocol-7 `hello` response.
+`runtimeCapabilities` object copied from the in-process streamer's protocol-8 `hello` response.
 The core filters its available `videoBackends` by the persisted `nativeVideoBackend` preference
 and resolves codec `auto` to AV1, HEVC, then H.264 for both SDR and HDR (subject to requested color mode) before
 CloudMatch allocation. This resolution is session-local: the saved preference stays `auto`.
@@ -999,7 +999,7 @@ GeForce MX110 beside Intel HD Graphics 620, therefore uses the integrated GPU
 instead of failing the session. An explicit saved GPU is still used even when
 its index is empty. Each settings choice lists the codecs that index found.
 
-The embedded streamer's protocol-7 `hello` may include `graphicsAdapters`. The
+The embedded streamer's protocol-8 `hello` may include `graphicsAdapters`. The
 field is omitted when no adapters were indexed. Each entry has `name`, `active`,
 `codecs` (`h264`, `h265`, `av1`), `h265Main10`, and an optional `reason`. It does
 not include the adapter LUID. `active` marks the adapter selected for that
@@ -1022,8 +1022,9 @@ frame rate and bitrate follow the stream; the retained legacy `recordingResoluti
 apply to the next native session. Disabling it sends `replay-stop` immediately,
 clears buffered media and cancels an in-progress clip export.
 
-These commands use the embedded streamer's protocol-7 JSON payload without
-changing the C ABI:
+These commands use the embedded streamer's JSON protocol 8. The core RPC protocol
+remains 5 and the native C ABI remains 15. Both the shell and capability probes
+require protocol 8 so recovery cannot silently use the old stop contract.
 
 - Manual `recording-start` uses its command `id` as the recording identity. A
   `recording-state` terminal event carries that identity as `requestId` and a
@@ -1031,21 +1032,37 @@ changing the C ABI:
   `audioPackets`, and `completion`. Normal completion is `{"kind":"complete"}`.
   A preserved valid prefix is `{"kind":"cut","reason":"discontinuity"}`,
   `{"kind":"cut","reason":"queue-overflow"}`, or
-  `{"kind":"cut","reason":"interrupted"}`. A cut stops manual recording and
-  produces a visible early-save notice; it does not start another file or change
-  replay capture.
+  `{"kind":"cut","reason":"interrupted"}`. A cut produces a visible early-save
+  notice. Qt retains manual recording intent for discontinuity and interruption,
+  allocating a new segment when media resumes in the same cloud session. User
+  stop and authoritative session end cancel that intent. Queue overflow stops
+  recording without automatic retry. Replay capture is unchanged.
 - `recording-stopped` repeats the terminal result and its originating `requestId`;
   its `id` still identifies the stop command. Qt applies a correlated terminal
   result once, whether the event or stop response arrives first. A repeated stop
   returns `recording-not-active` without replacing an earlier cut or failure.
   Packet-write, trailer, publication, and no-valid-keyframe failures remain
-  failures, not saved prefixes.
-- Completion metadata and event correlation are additive protocol-7 fields. Qt
-  ignores uncorrelated terminal events and stale recording identities. A missing
-  completion field means ordinary saved output only on an authoritative,
-  correlated stop response. Historical producers without correlated terminal
-  events do not provide the new unsolicited-completion behavior. These fields do
-  not guarantee callback delivery or preservation after a process crash.
+  failures, not saved prefixes. A failed result caused solely by termination
+  before the first usable keyframe also carries `completion`, retaining the
+  structured terminal cause without claiming a saved file. Other failures omit
+  completion metadata or carry `null`, so storage failures never enable retry.
+- Native `stop` accepts an optional boolean `recovery`, defaulting to `false`.
+  Qt sends `true` when stopping or reaping a transport for reconnect, even if a
+  stopped status has already arrived. Recovery closes recording with
+  `{"kind":"cut","reason":"interrupted"}`; an explicit user stop closes it with
+  `{"kind":"complete"}`. A prior terminal cause, including storage failure,
+  is never replaced by recovery.
+- The `stop` response is `{"id":"stop-id","type":"ok","recording":...}`.
+  `recording` is a terminal result with the original recording-start `requestId`,
+  `state`, and the same saved-file or failure fields as `recording-state`.
+  `recording:null` means no recording result is retained. Native cleanup retains
+  at most one terminal result until another recording starts, so repeated stops
+  can repeat it. Qt reconciles the pending attempt from this response when its
+  terminal event was dropped. A null result or a result for a different recording
+  releases a matching pending attempt without claiming that a file was saved.
+  Duplicate events and responses for completed attempts are no-ops. Recovery
+  intent survives reconciliation; user stop and authoritative session end still
+  cancel it. These fields do not preserve recording state after a process crash.
 - The `start` response includes `replayEnabled` for the actual session.
 - `clip-save` accepts `id` and an absolute `.mkv` `outputPath` allocated by
   `media.recording.target`. It returns `clip-saving` promptly or a typed error if
@@ -1846,7 +1863,7 @@ resolution fails or when the launch would fall back to a lower bit depth or a
 different chroma format; the reason names the delivered profile. Codec descriptors
 are disabled only when the codec itself cannot decode 8-bit 4:2:0 SDR on the selected
 backend. Missing or incompatible capabilities do not imply support. This read does not persist or coerce any setting. Protocol 5 and native
-streamer protocol 7 are unchanged.
+streamer protocol 8 are unchanged by this capability read.
 
 CoreClient injects the current native window's `nativeHdrSupported` into
 `runtimeCapabilities`, overriding any caller-supplied flag, just as it does for

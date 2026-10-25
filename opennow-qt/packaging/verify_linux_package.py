@@ -56,7 +56,7 @@ def verify_package(bin_dir, lib_dir=None):
         if "not found" in resolved:
             raise ValueError(f"{name} has unresolved runtime dependencies:\n{resolved}")
     commands = [
-        {"id": "package-probe", "type": "hello", "protocolVersion": 7},
+        {"id": "package-probe", "type": "hello", "protocolVersion": 8},
         {"id": "package-shutdown", "type": "shutdown"},
     ]
     probe = subprocess.run(

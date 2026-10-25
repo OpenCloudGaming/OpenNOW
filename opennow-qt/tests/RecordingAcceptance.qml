@@ -148,6 +148,7 @@ QtObject {
         check(ShellStore.streamRecordingStartRequestId === "",
             "terminal completion must permit retry without a start acknowledgement")
         const oldStart = start
+        ShellStore.toggleStreamRecording()
         start = beginManualRecording("dropped-acknowledgements")
         ShellStore.acceptNativeResponse({id: oldStart.id, type: "recording-started"})
         check(!ShellStore.streamRecordingActive && ShellStore.streamRecordingStartRequestId === start.id,
@@ -169,6 +170,180 @@ QtObject {
         ShellStore.acceptNativeResponse({id: start.id, type: "recording-started"})
         ShellStore.acceptNativeEvent({type: "recording-state", requestId: start.id,
             state: "saved", path: start.outputPath, completion: {kind: "complete"}})
+    }
+    function runReconnectContinuation() {
+        let start = beginManualRecording("reconnect-continuation")
+        ShellStore.acceptNativeResponse({id: start.id, type: "recording-started"})
+        ShellStore.streamerStopExpected = true
+        ShellStore.acceptStreamerSnapshot({status: "stopped"})
+        ShellStore.acceptNativeEvent({type: "recording-state", requestId: start.id,
+            state: "saved", path: start.outputPath, completion: {kind: "cut", reason: "interrupted"}})
+        check(ShellStore.streamRecordingIntentSessionId === "reconnect-continuation"
+            && !ShellStore.streamRecordingActive && ShellStore.mediaRecordingTargetRequestId === "",
+            "transport stop must preserve manual intent without starting before recovery")
+        ShellStore.streamerStopExpected = false
+        ShellStore.acceptStreamerSnapshot({status: "streaming"})
+        const target = ShellStore.mediaRecordingTargetRequestId
+        check(target !== "", "resumed media must allocate another segment")
+        const requests = client.calls.length
+        ShellStore.acceptStreamerSnapshot({status: "streaming"})
+        check(client.calls.length === requests, "duplicate media snapshots cannot allocate duplicate segments")
+        client.responseReceived(target, {path: "/recording-fixture/" + target + ".mkv"})
+        const next = runtime.commands[runtime.commands.length - 1]
+        check(next.type === "recording-start" && next.outputPath !== start.outputPath,
+            "continuation must use a new native recording target")
+        ShellStore.acceptNativeResponse({id: start.id, type: "recording-started"})
+        ShellStore.acceptNativeEvent({type: "recording-state", requestId: start.id,
+            state: "failed", message: "stale segment"})
+        ShellStore.acceptNativeResponse({id: next.id, type: "recording-started"})
+        check(ShellStore.streamRecordingActive && ShellStore.lastError !== "stale segment",
+            "late callbacks must not interfere with the resumed segment")
+        ShellStore.streamerStopExpected = true
+        ShellStore.acceptStreamerSnapshot({status: "stopped"})
+        ShellStore.toggleStreamRecording()
+        ShellStore.acceptNativeEvent({type: "recording-state", requestId: next.id,
+            state: "saved", path: next.outputPath, completion: {kind: "cut", reason: "interrupted"}})
+        ShellStore.streamerStopExpected = false
+        ShellStore.acceptStreamerSnapshot({status: "streaming"})
+        check(ShellStore.streamRecordingIntentSessionId === "" && client.calls.length === requests,
+            "user stop while reconnecting must cancel continuation")
+        start = beginManualRecording("reconnect-session-end")
+        ShellStore.activeSession = null
+        ShellStore.acceptNativeEvent({type: "recording-state", requestId: start.id,
+            state: "saved", path: start.outputPath, completion: {kind: "cut", reason: "interrupted"}})
+        check(ShellStore.streamRecordingIntentSessionId === "" && ShellStore.mediaRecordingTargetRequestId === "",
+            "authoritative session end must clear recording intent")
+        start = beginManualRecording("reconnect-runtime-exit")
+        runtime.running = false
+        check(ShellStore.streamRecordingIntentSessionId === "reconnect-runtime-exit"
+            && ShellStore.streamRecordingAttempt === null, "runtime exit must retain intent without stale attempt ownership")
+        runtime.running = true
+        ShellStore.streamerStopExpected = false
+        ShellStore.acceptStreamerSnapshot({status: "streaming"})
+        check(ShellStore.mediaRecordingTargetRequestId !== "", "runtime recovery must resume even without a completion callback")
+        ShellStore.toggleStreamRecording()
+        ShellStore.activeSession = null
+        start = beginManualRecording("native-discontinuity")
+        ShellStore.acceptNativeEvent({type: "recording-state", requestId: start.id,
+            state: "saved", path: start.outputPath, completion: {kind: "cut", reason: "discontinuity"}})
+        const nativeTarget = ShellStore.mediaRecordingTargetRequestId
+        check(nativeTarget !== "", "native discontinuity must allocate a continuation without a transport restart")
+        client.responseReceived(nativeTarget, {path: "/recording-fixture/" + nativeTarget + ".mkv"})
+        const nativeNext = runtime.commands[runtime.commands.length - 1]
+        ShellStore.acceptNativeEvent({type: "recording-state", requestId: nativeNext.id,
+            state: "saved", path: nativeNext.outputPath, completion: {kind: "cut", reason: "queue-overflow"}})
+        ShellStore.acceptStreamerSnapshot({status: "streaming"})
+        check(ShellStore.streamRecordingIntentSessionId === "" && ShellStore.mediaRecordingTargetRequestId === "",
+            "queue overflow must stop continuation rather than loop")
+        ShellStore.toggleStreamRecording()
+        const failedTarget = ShellStore.mediaRecordingTargetRequestId
+        client.requestFailed(failedTarget, "media_recording_target_failed", "recording storage unavailable")
+        ShellStore.acceptStreamerSnapshot({status: "streaming"})
+        check(ShellStore.streamRecordingIntentSessionId === "" && ShellStore.mediaRecordingTargetRequestId === "",
+            "target storage failure must clear intent rather than retry")
+        start = beginManualRecording("empty-prefix-reconnect")
+        ShellStore.acceptNativeEvent({type: "recording-state", requestId: start.id,
+            state: "failed", message: "recording ended before a decodable video keyframe arrived",
+            completion: {kind: "cut", reason: "interrupted"}})
+        check(ShellStore.streamRecordingIntentSessionId === "empty-prefix-reconnect"
+            && ShellStore.mediaRecordingTargetRequestId === "", "empty-prefix interruption must wait for media recovery")
+        ShellStore.streamerStopExpected = true
+        ShellStore.acceptStreamerSnapshot({status: "stopped"})
+        ShellStore.streamerStopExpected = false
+        ShellStore.acceptStreamerSnapshot({status: "streaming"})
+        check(ShellStore.mediaRecordingTargetRequestId !== "", "empty-prefix interruption must continue after reconnect")
+        ShellStore.toggleStreamRecording()
+        ShellStore.activeSession = null
+    }
+    function runStopResponseReconciliation() {
+        client.state = "ready"
+        for (const scenario of ["saved", "failed", "no-recorder", "stopped-saved", "stopped-no-recorder", "stopped-cached",
+                "event-first", "user-stop", "user-cancel", "session-ended"]) {
+            const sessionId = "stop-response-" + scenario
+            ShellStore.sessionReconnectAttempts = 0
+            const start = beginManualRecording(sessionId)
+            if (scenario.indexOf("no-recorder") < 0 && scenario !== "stopped-cached")
+                ShellStore.acceptNativeResponse({id: start.id, type: "recording-started"})
+            if (scenario.indexOf("stopped-") === 0)
+                ShellStore.acceptNativeEvent({type: "status", status: "stopped"})
+            const commandCount = runtime.commands.length
+            if (scenario === "user-stop")
+                ShellStore.stopNativeStreamer("Reconnecting the native media transport")
+            else
+                ShellStore.recoverStreamingSession("fixture recovery")
+            const stop = runtime.commands[runtime.commands.length - 1]
+            check(runtime.commands.length === commandCount + 1 && stop.type === "stop"
+                && stop.recovery === (scenario !== "user-stop"),
+                "only explicit transport recovery may preserve recording intent")
+            ShellStore.recoverStreamingSession("duplicate recovery")
+            check(runtime.commands.length === commandCount + 1,
+                "recovery must not send another stop while reaping the previous connection")
+            check(ShellStore.nativeRequests[stop.id].recordingRequestId === start.id,
+                "transport stop must retain the original recording request owner")
+            const result = scenario === "stopped-cached"
+                ? {requestId: "older-recording", state: "saved", path: "/recording-fixture/older.mkv",
+                    completion: {kind: "complete"}}
+                : scenario.indexOf("no-recorder") >= 0 ? null : scenario === "failed"
+                ? {requestId: start.id, state: "failed", message: "empty recording prefix",
+                    completion: {kind: "cut", reason: "interrupted"}}
+                : {requestId: start.id, state: "saved", path: start.outputPath, videoPackets: 3, audioPackets: 2,
+                    completion: scenario === "user-stop" ? {kind: "complete"} : {kind: "cut", reason: "interrupted"}}
+            if (scenario === "event-first")
+                ShellStore.acceptNativeEvent(Object.assign({type: "recording-state"}, result))
+            if (scenario === "user-cancel")
+                ShellStore.toggleStreamRecording()
+            if (scenario === "session-ended")
+                ShellStore.activeSession = null
+            const notices = recordingNotices
+            ShellStore.acceptNativeResponse({id: stop.id, type: "ok", recording: result})
+            if (scenario !== "user-stop" && scenario !== "session-ended")
+                check(ShellStore.recoveryDiscoveryRequestId !== "" && runtime.commands.length === commandCount + 1,
+                    "stop reconciliation must advance directly to recovery discovery without another stop")
+            check(!ShellStore.streamRecordingAttempt || ShellStore.streamRecordingAttempt.completed,
+                "stop response must retire the attempt even when its terminal event was dropped")
+            check(!ShellStore.streamRecordingActive && ShellStore.streamRecordingStartRequestId === ""
+                && ShellStore.streamRecordingStopRequestId === "" && ShellStore.mediaRecordingTargetRequestId === "",
+                "reconciliation must release recorder ownership without starting before media recovery")
+            check(recordingNotices === notices + (result && result.requestId === start.id && scenario !== "event-first" ? 1 : 0),
+                "authoritative completion must announce once, including when the event arrived first")
+            const continueRecording = ["user-stop", "user-cancel", "session-ended"].indexOf(scenario) < 0
+            check(ShellStore.streamRecordingIntentSessionId === (continueRecording ? sessionId : ""),
+                "only recovery may retain intent and a user stop or authoritative session end must clear it")
+            ShellStore.cancelSessionRecovery()
+            ShellStore.streamerStopExpected = false
+            ShellStore.acceptStreamerSnapshot({status: "streaming"})
+            let target = ShellStore.mediaRecordingTargetRequestId
+            check((target !== "") === continueRecording,
+                "recovered media must resume precisely when manual intent survived")
+            if (scenario === "session-ended") {
+                ShellStore.activeSession = {sessionId: sessionId, phase: "ready", status: 2}
+            }
+            if (!continueRecording) {
+                ShellStore.toggleStreamRecording()
+                target = ShellStore.mediaRecordingTargetRequestId
+                check(target !== "", "a new user start must not be stuck behind the retired recorder")
+            }
+            client.responseReceived(target, {path: "/recording-fixture/" + target + ".mkv"})
+            const next = runtime.commands[runtime.commands.length - 1]
+            check(next.type === "recording-start" && next.id !== start.id && next.outputPath !== start.outputPath,
+                "resumption must allocate a distinct segment")
+            const resumedNotices = recordingNotices
+            ShellStore.acceptNativeEvent({type: "recording-state", requestId: start.id,
+                state: "saved", path: start.outputPath, completion: {kind: "complete"}})
+            ShellStore.acceptNativeResponse({id: stop.id, type: "ok", recording: result})
+            ShellStore.acceptNativeResponse({id: start.id, type: "recording-started"})
+            check(!ShellStore.streamRecordingAttempt.completed && recordingNotices === resumedNotices
+                && ShellStore.streamRecordingStartRequestId === next.id,
+                "delayed duplicate callbacks must not complete or activate the next segment")
+            ShellStore.acceptNativeResponse({id: next.id, type: "recording-started"})
+            check(ShellStore.streamRecordingActive, "the resumed segment must activate normally")
+            ShellStore.toggleStreamRecording()
+            const recordingStop = runtime.commands[runtime.commands.length - 1]
+            ShellStore.acceptNativeResponse({id: recordingStop.id, type: "recording-stopped", requestId: next.id,
+                path: next.outputPath, completion: {kind: "complete"}})
+            ShellStore.activeSession = null
+        }
+        client.state = "stopped"
     }
     function run(parent) {
         ShellStore.settings = {}
@@ -261,6 +436,8 @@ QtObject {
         check(ShellStore.mediaMessage !== "stale error", "old session failure cannot replace current state")
         runManualRecording(status)
         runDroppedAcknowledgements()
+        runReconnectContinuation()
+        runStopResponseReconciliation()
         binding.destroy()
         status.destroy()
         page.destroy()
