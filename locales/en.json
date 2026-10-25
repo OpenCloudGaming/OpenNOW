@@ -4366,6 +4366,7 @@
     "copy": "Copy",
     "copied": "Copied",
     "copyErrorCode": "Copy error code",
-    "errorCodeCopied": "Error code copied"
+    "errorCodeCopied": "Error code copied",
+    "copyCode": "Copy code"
   }
 }

@@ -10,54 +10,21 @@ FocusScope {
     property bool opened: false
     property bool inputSuspended: false
     readonly property bool ownsInput: opened && !inputSuspended
-    property var presented: null
-    property bool copied: false
-    readonly property string kind: root.presented ? String(root.presented.kind || "error") : "error"
-    readonly property bool failure: root.kind !== "idle" && root.kind !== "time-limit"
-    readonly property string codeText: root.presented ? String(root.presented.codeText || "") : ""
-    readonly property bool codeCopyable: root.failure && root.codeText !== ""
-    readonly property color accent: root.failure ? DesktopTokens.flightDeclined : DesktopTokens.focus
-    readonly property string gameTitle: ShellStore.selectedGame && ShellStore.selectedGame.title
-        ? String(ShellStore.selectedGame.title) : ""
-    readonly property string headline: root.kind === "idle" ? qsTr("Closed after inactivity")
-        : root.kind === "time-limit" ? qsTr("Session time limit reached")
-        : qsTr("The stream ended unexpectedly")
-    readonly property string explanation: {
-        if (root.kind === "idle")
-            return root.gameTitle !== ""
-                ? qsTr("%1 didn't get any input for a while, so the session was closed. Start it again whenever you're ready.").arg(root.gameTitle)
-                : qsTr("Your game didn't get any input for a while, so the session was closed. Start it again whenever you're ready.")
-        if (root.kind === "time-limit")
-            return root.gameTitle !== ""
-                ? qsTr("%1 ran for the longest session your membership allows. Start a new session to keep playing.").arg(root.gameTitle)
-                : qsTr("Your game ran for the longest session your membership allows. Start a new session to keep playing.")
-        return root.gameTitle !== ""
-            ? qsTr("The cloud server closed your %1 session. You can start it again from here.").arg(root.gameTitle)
-            : qsTr("The cloud server closed your session. You can start it again from here.")
-    }
+    StreamEndNoticeCopy { id: copy; notice: root.notice }
+    readonly property color accent: copy.failure ? DesktopTokens.flightDeclined : DesktopTokens.focus
     visible: reveal.present
     enabled: ownsInput
     focus: ownsInput
     MotionProgress { id: reveal; shown: root.opened }
     Accessible.role: Accessible.Dialog
-    Accessible.name: root.headline
-    Accessible.description: root.explanation
+    Accessible.name: copy.headline
+    Accessible.description: copy.explanation
 
-    onNoticeChanged: if (root.notice) {
-        root.presented = root.notice
-        root.copied = false
-    }
-    Component.onCompleted: if (root.notice) root.presented = root.notice
     onOwnsInputChanged: if (ownsInput) Qt.callLater(root.restoreFocus)
 
     function restoreFocus() {
         if (root.ownsInput && !copyButton.activeFocus && !dismissButton.activeFocus)
             dismissButton.forceActiveFocus()
-    }
-    function copyCode() {
-        root.copied = AppController.writeClipboardText(root.codeText)
-        if (root.copied)
-            copiedTimer.restart()
     }
 
     // Game details open in the same frame and focus their Play button; the
@@ -67,26 +34,21 @@ FocusScope {
         enabled: root.ownsInput
         function onActiveFocusItemChanged() { Qt.callLater(root.restoreFocus) }
     }
-    Timer {
-        id: copiedTimer
-        interval: 1600
-        onTriggered: root.copied = false
-    }
 
     Keys.onShortcutOverride: event => event.accepted = event.key !== Qt.Key_F11
     Keys.onPressed: event => {
         if (event.key === Qt.Key_Escape || event.key === Qt.Key_Back) {
-            ShellStore.dismissStreamEndNotice()
+            copy.dismiss()
         } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
             if (copyButton.activeFocus)
-                root.copyCode()
+                copy.copyCode()
             else
-                ShellStore.dismissStreamEndNotice()
+                copy.dismiss()
         } else if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
-            if (root.codeCopyable)
+            if (copy.codeCopyable)
                 (copyButton.activeFocus ? dismissButton : copyButton).forceActiveFocus()
         } else if (event.key === Qt.Key_Up || event.key === Qt.Key_Left) {
-            if (root.codeCopyable)
+            if (copy.codeCopyable)
                 copyButton.forceActiveFocus()
         } else if (event.key === Qt.Key_Down || event.key === Qt.Key_Right) {
             dismissButton.forceActiveFocus()
@@ -139,7 +101,7 @@ FocusScope {
                     color: root.accent
                 }
                 Text {
-                    text: root.failure ? qsTr("STREAM ENDED") : qsTr("SESSION ENDED")
+                    text: copy.eyebrow
                     color: root.accent
                     font.family: DesktopTokens.monoFont
                     font.pixelSize: DesktopTokens.microSize
@@ -151,7 +113,7 @@ FocusScope {
                 objectName: "streamEndNoticeTitle"
                 width: parent.width
                 topPadding: DesktopTokens.px(10)
-                text: root.headline
+                text: copy.headline
                 color: DesktopTokens.text
                 font.family: DesktopTokens.displayFont
                 font.pixelSize: DesktopTokens.titleSize
@@ -164,7 +126,7 @@ FocusScope {
                 objectName: "streamEndNoticeBody"
                 width: parent.width
                 topPadding: DesktopTokens.px(10)
-                text: root.explanation
+                text: copy.explanation
                 color: DesktopTokens.textBody
                 font.family: DesktopTokens.bodyFont
                 font.pixelSize: DesktopTokens.bodySize
@@ -182,7 +144,7 @@ FocusScope {
             Rectangle {
                 id: codeRow
                 objectName: "streamEndNoticeCodeRow"
-                visible: root.codeCopyable
+                visible: copy.codeCopyable
                 width: parent.width
                 height: DesktopTokens.controlHeight + DesktopTokens.px(20)
                 radius: DesktopTokens.px(14)
@@ -194,7 +156,7 @@ FocusScope {
                     x: DesktopTokens.px(16)
                     anchors.verticalCenter: parent.verticalCenter
                     width: copyButton.x - x - DesktopTokens.px(12)
-                    text: qsTr("Error code: %1").arg(root.codeText)
+                    text: copy.codeLine
                     color: DesktopTokens.text
                     font.family: DesktopTokens.monoFont
                     font.pixelSize: DesktopTokens.captionSize
@@ -209,11 +171,11 @@ FocusScope {
                     anchors.verticalCenter: parent.verticalCenter
                     height: DesktopTokens.controlHeight
                     font.pixelSize: DesktopTokens.captionSize
-                    themedGlyph: root.copied ? "check" : "copy"
+                    themedGlyph: copy.copied ? "check" : "copy"
                     glyphSize: DesktopTokens.px(14)
-                    text: root.copied ? qsTr("Copied") : qsTr("Copy")
-                    Accessible.name: root.copied ? qsTr("Error code copied") : qsTr("Copy error code")
-                    onClicked: root.copyCode()
+                    text: copy.copyText
+                    Accessible.name: copy.copyAccessibleName
+                    onClicked: copy.copyCode()
                 }
             }
             Item {
@@ -227,8 +189,8 @@ FocusScope {
                     objectName: "streamEndNoticeQuietCode"
                     anchors.verticalCenter: parent.verticalCenter
                     width: dismissButton.x - DesktopTokens.px(12)
-                    visible: !root.failure && root.codeText !== ""
-                    text: qsTr("Code %1").arg(root.codeText)
+                    visible: copy.quietCodeVisible
+                    text: copy.quietCodeLine
                     color: DesktopTokens.textFaint
                     font.family: DesktopTokens.monoFont
                     font.pixelSize: DesktopTokens.smallSize
@@ -241,9 +203,9 @@ FocusScope {
                     height: DesktopTokens.controlHeight
                     font.pixelSize: DesktopTokens.captionSize
                     primary: true
-                    text: root.failure ? qsTr("Dismiss") : qsTr("Got it")
+                    text: copy.primaryText
                     shortcutText: qsTr("Esc")
-                    onClicked: ShellStore.dismissStreamEndNotice()
+                    onClicked: copy.dismiss()
                 }
             }
         }
