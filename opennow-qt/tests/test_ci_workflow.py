@@ -358,6 +358,23 @@ class CIWorkflowTest(unittest.TestCase):
                 probe = workflow.split('"id":"package-core"', 1)[1].split("core.stdin.flush()", 1)[0]
                 self.assertEqual(int(re.search(r'"protocolVersion":(\d+)', probe).group(1)), version)
 
+    def test_native_streamer_probes_match_shell_protocol(self):
+        protocol = (ROOT / "native/opennow-streamer/crates/opennow-streamer-protocol/src/lib.rs").read_text()
+        version = int(re.search(r"pub const PROTOCOL_VERSION: u64 = (\d+);", protocol).group(1))
+        shell = (ROOT / "opennow-qt/qml/state/ShellStore.qml").read_text()
+        self.assertEqual(int(re.search(r"nativeProtocolVersion: (\d+)", shell).group(1)), version)
+        core = (ROOT / "native/opennow-core/src/streamer.rs").read_text()
+        self.assertEqual(int(re.search(r"const STREAMER_PROTOCOL_VERSION: u64 = (\d+);", core).group(1)), version)
+        for name in ("qt-build.yml", "qt-release-candidate.yml"):
+            with self.subTest(workflow=name):
+                workflow = (WORKFLOWS / name).read_text()
+                probe = workflow.split('"id":"package-probe"', 1)[1].split("communicate(", 1)[0]
+                self.assertEqual(int(re.search(r'"protocolVersion":\s*(\d+)', probe).group(1)), version)
+        for name in ("verify_linux_package.py", "verify_flatpak.py"):
+            with self.subTest(package=name):
+                probe = (ROOT / "opennow-qt/packaging" / name).read_text()
+                self.assertEqual(int(re.search(r'"protocolVersion":\s*(\d+)', probe).group(1)), version)
+
     def test_publishing_remains_explicitly_opt_in_after_build(self):
         ci = (WORKFLOWS / "qt-ci.yml").read_text()
         self.assertIn("        type: boolean\n        default: false", ci)

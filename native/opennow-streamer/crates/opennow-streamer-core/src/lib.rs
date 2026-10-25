@@ -13,11 +13,11 @@ use decode_progress::{
 use opennow_streamer_hid::HidRuntime;
 use opennow_streamer_platform::{
     CapturedInput, CapturedInputQueue, CapturedInputSample, DecodeStageTimings,
-    DecodeTimingsReport, EncodedFrame, ManualRecordingSummary, MediaCodec, MediaColorQuality,
-    MediaControl, MediaFeedback, MediaRuntime, MediaRuntimeControl, MediaSession, MediaSink,
-    MediaStreamConfig, MediaVideoCodec, MouseSettings, PushOutcome, StreamShortcutAction,
-    StreamShortcutBindings, record_matroska, record_replay_matroska, supports_audio_decode,
-    supports_audio_output, video_backends,
+    DecodeTimingsReport, EncodedFrame, ManualRecordingError, ManualRecordingSummary, MediaCodec,
+    MediaColorQuality, MediaControl, MediaFeedback, MediaRuntime, MediaRuntimeControl,
+    MediaSession, MediaSink, MediaStreamConfig, MediaVideoCodec, MouseSettings, PushOutcome,
+    StreamShortcutAction, StreamShortcutBindings, record_matroska, record_replay_matroska,
+    supports_audio_decode, supports_audio_output, video_backends,
 };
 use opennow_streamer_protocol::{
     Capabilities, Command, PROTOCOL_VERSION, RecordingCutReason, ReplayBufferConfig,
@@ -261,6 +261,7 @@ pub struct Engine {
     media_feedback: Option<Receiver<MediaFeedback>>,
     feedback_worker: Option<JoinHandle<PendingMediaFeedback>>,
     recording_worker: Option<RecordingWorker>,
+    recording_terminal: Option<Value>,
     clip_worker: Option<JoinHandle<()>>,
     clip_cancelled: Arc<AtomicBool>,
     replay_budget: Arc<AtomicUsize>,
@@ -270,8 +271,27 @@ pub struct Engine {
 
 struct RecordingWorker {
     request_id: String,
-    thread: JoinHandle<Result<ManualRecordingSummary, String>>,
+    thread: JoinHandle<Result<ManualRecordingSummary, ManualRecordingError>>,
     completed: Arc<AtomicBool>,
+}
+
+fn recording_result(
+    request_id: &str,
+    result: &Result<ManualRecordingSummary, ManualRecordingError>,
+) -> Value {
+    match result {
+        Ok(summary) => json!({
+            "state":"saved", "requestId":request_id,
+            "path":summary.media.path,
+            "videoPackets":summary.media.video_packets,
+            "audioPackets":summary.media.audio_packets,
+            "completion":summary.completion,
+        }),
+        Err(failure) => json!({
+            "state":"failed", "requestId":request_id,
+            "message":failure.message, "completion":failure.completion,
+        }),
+    }
 }
 
 #[derive(Debug)]
@@ -307,6 +327,7 @@ impl Engine {
             media_feedback: None,
             feedback_worker: None,
             recording_worker: None,
+            recording_terminal: None,
             clip_worker: None,
             clip_cancelled: Arc::new(AtomicBool::new(false)),
             replay_budget: Arc::new(AtomicUsize::new(0)),
@@ -347,6 +368,7 @@ impl Engine {
             media_feedback: None,
             feedback_worker: None,
             recording_worker: None,
+            recording_terminal: None,
             clip_worker: None,
             clip_cancelled: Arc::new(AtomicBool::new(false)),
             replay_budget: Arc::new(AtomicUsize::new(0)),
@@ -383,6 +405,7 @@ impl Engine {
             media_feedback: None,
             feedback_worker: None,
             recording_worker: None,
+            recording_terminal: None,
             clip_worker: None,
             clip_cancelled: Arc::new(AtomicBool::new(false)),
             replay_budget: Arc::new(AtomicUsize::new(0)),
@@ -455,8 +478,15 @@ impl Engine {
                 format!("Native streamer cannot apply the {} command", command.kind),
             )),
             "stop" => {
-                self.stop(command.reason.as_deref().unwrap_or("stopped"));
-                Ok(vec![response(id, "ok")])
+                if command.recovery
+                    && let Some(session) = self.media_session.as_ref()
+                {
+                    session
+                        .control()
+                        .cut_recording(RecordingCutReason::Interrupted);
+                }
+                let recording = self.stop(command.reason.as_deref().unwrap_or("stopped"));
+                Ok(vec![json!({"id":id, "type":"ok", "recording":recording})])
             }
             "shutdown" => {
                 self.stop(command.reason.as_deref().unwrap_or("shutdown"));
@@ -1322,7 +1352,7 @@ impl Engine {
         Ok(vec![response(command.id, "ok")])
     }
 
-    fn stop(&mut self, reason: &str) {
+    fn stop(&mut self, reason: &str) -> Value {
         self.clip_cancelled.store(true, Ordering::Release);
         if let Some(session) = self.media_session.as_ref() {
             session.control().unsubscribe_recording();
@@ -1352,6 +1382,8 @@ impl Engine {
         }
         self.reserved_nvst_bundle = None;
         self.nvst_hole_punch_socket = None;
+        let _ = self.stop_recording_inner();
+        let recording = self.recording_terminal.clone().unwrap_or(Value::Null);
         self.stop_media_resources();
         if was_active {
             let _ = self.events.send(event(
@@ -1363,11 +1395,17 @@ impl Engine {
                 json!({ "status": "stopped", "message": reason }),
             ));
         }
+        recording
     }
 
     fn stop_media_resources(&mut self) {
         self.stop_replay();
         self.microphone = None;
+        if let Some(session) = self.media_session.as_ref() {
+            session
+                .control()
+                .cut_recording(RecordingCutReason::Interrupted);
+        }
         let _ = self.stop_recording_inner();
         if self.media_runtime.is_some() {
             self.media_consumer = None;
@@ -1549,22 +1587,9 @@ impl Engine {
             .spawn(move || {
                 let result = record_matroska(&worker_path, stream, receiver);
                 worker_completed.store(true, Ordering::Release);
-                let payload = match &result {
-                    Ok(summary) => json!({
-                        "state":"saved",
-                        "path":summary.media.path,
-                        "videoPackets":summary.media.video_packets,
-                        "audioPackets":summary.media.audio_packets,
-                        "completion":summary.completion,
-                        "requestId":request_id,
-                    }),
-                    Err(failure) => {
-                        json!({"state":"failed","message":failure.message,
-                            "completion":failure.completion,"requestId":request_id})
-                    }
-                };
+                let payload = recording_result(&request_id, &result);
                 let _ = events.send(event("recording-state", payload));
-                result.map_err(|failure| failure.message)
+                result
             })
             .map_err(|spawn_error| {
                 control.unsubscribe_recording();
@@ -1574,6 +1599,7 @@ impl Engine {
                     spawn_error.to_string(),
                 )
             })?;
+        self.recording_terminal = None;
         self.recording_worker = Some(RecordingWorker {
             request_id: command.id.clone(),
             thread: worker,
@@ -1588,17 +1614,18 @@ impl Engine {
 
     fn stop_recording(&mut self, command: Command) -> Result<Vec<Value>, Value> {
         match self.stop_recording_inner() {
-            Ok(Some((request_id, summary))) => Ok(vec![json!({
-                "id":command.id,
-                "type":"recording-stopped",
-                "path":summary.media.path,
-                "videoPackets":summary.media.video_packets,
-                "audioPackets":summary.media.audio_packets,
-                "completion":summary.completion,
-                "requestId":request_id,
-            })]),
-            Ok(None) => Ok(vec![response(command.id, "recording-not-active")]),
-            Err(message) => Err(error(Some(&command.id), "recording-failed", message)),
+            Some(mut result) => {
+                result["id"] = json!(command.id);
+                if result["state"] == "failed" {
+                    result["type"] = json!("error");
+                    result["code"] = json!("recording-failed");
+                    Err(result)
+                } else {
+                    result["type"] = json!("recording-stopped");
+                    Ok(vec![result])
+                }
+            }
+            None => Ok(vec![response(command.id, "recording-not-active")]),
         }
     }
 
@@ -1648,18 +1675,18 @@ impl Engine {
         Ok(vec![response(command.id, "ok")])
     }
 
-    fn stop_recording_inner(&mut self) -> Result<Option<(String, ManualRecordingSummary)>, String> {
-        let Some(worker) = self.recording_worker.take() else {
-            return Ok(None);
-        };
+    fn stop_recording_inner(&mut self) -> Option<Value> {
+        let worker = self.recording_worker.take()?;
         if let Some(session) = self.media_session.as_ref() {
             session.control().unsubscribe_recording();
         }
-        worker
+        let result = worker
             .thread
             .join()
-            .map_err(|_| "native recording worker panicked".to_owned())?
-            .map(|summary| Some((worker.request_id, summary)))
+            .unwrap_or_else(|_| Err("native recording worker panicked".to_owned().into()));
+        let terminal = recording_result(&worker.request_id, &result);
+        self.recording_terminal = Some(terminal.clone());
+        Some(terminal)
     }
 }
 

@@ -820,7 +820,7 @@ QtObject {
     property string streamControlMessage: ""
     property rect streamCaptureRect: Qt.rect(0, 0, 0, 0)
     property bool nativeRuntimeReady: false
-    readonly property int nativeProtocolVersion: 7
+    readonly property int nativeProtocolVersion: 8
     property var nativeRuntimeCapabilities: ({})
     property var audioOutputDevices: []
     property bool audioOutputDevicesBusy: false
@@ -1145,7 +1145,7 @@ QtObject {
         }
         const requests = Object.assign({}, nativeRequests)
         requests[requestId] = Object.assign({operation: operation || type}, params || ({}))
-        if (operation === "recording-stop")
+        if (operation === "recording-stop" || operation === "stop")
             requests[requestId].recordingRequestId = streamRecordingAttempt ? streamRecordingAttempt.requestId : ""
         nativeRequests = requests
         return requestId
@@ -2454,8 +2454,8 @@ QtObject {
             if (id !== "") CoreClient.cancel(id)
         // Stop/reap the previous native connection before claiming fresh keys.
         // This is NOT session.stop: the cloud game must remain alive.
-        if (NativeStreamRuntime.running && streamer && streamer.status !== "stopped") {
-            stopNativeStreamer("Reconnecting the native media transport")
+        if (NativeStreamRuntime.running) {
+            stopNativeStreamer("Reconnecting the native media transport", true)
             if (streamerStopRequestId === "")
                 scheduleSessionRecovery(lastError || qsTr("Could not stop the previous native connection"))
             return
@@ -2615,22 +2615,23 @@ QtObject {
         return artworkOwner.acceptArtworkResult(payload)
     }
 
-    function stopNativeStreamer(reason) {
+    function stopNativeStreamer(reason, recovery) {
         streamIdleWarning = null
+        if (recovery !== true)
+            streamRecordingIntentSessionId = ""
         cancelRecordingTarget()
         suspendRecordingStart()
         streamerRestartTimer.stop()
         if (streamerStopRequestId !== "")
             return
-        // A runtime that never started, or that already reported "stopped", has
-        // nothing left to reap. Without this a repeated stop request during a
-        // failing session could issue multiple native stop commands.
         const status = streamer ? String(streamer.status || "") : ""
-        if (status === "" || status === "stopped")
+        if ((status === "" || status === "stopped")
+                && !(recovery === true && NativeStreamRuntime.running))
             return
         streamerStopExpected = true
         streamerStopRequestId = sendNativeCommand("stop", {
-            reason: reason || "User stopped the session"
+            reason: reason || "User stopped the session",
+            recovery: recovery === true
         }, "stop")
         if (streamerStopRequestId === "")
             streamerStopExpected = false
@@ -3595,6 +3596,17 @@ QtObject {
             updateStreamerFields({status: "stopped", message: pending.reason || qsTr("Stream stopped"),
                                   sessionId: null, transport: null, inputReady: false,
                                   microphoneState: "disabled", microphoneEnabled: false, microphoneMessage: ""})
+            if (pending.recordingRequestId) {
+                if (response.recording && response.recording.requestId === pending.recordingRequestId) {
+                    acceptRecordingCompletion(response.recording, pending.recordingRequestId)
+                } else if (response.recording !== undefined && streamRecordingAttempt
+                        && !streamRecordingAttempt.completed
+                        && streamRecordingAttempt.requestId === pending.recordingRequestId) {
+                    streamRecordingAttempt = null
+                    pendingRecordingPath = ""
+                    pendingRecordingThumbnailPath = ""
+                }
+            }
             if (sessionRecoveryPending) {
                 streamerStartRequestId = ""
                 discoverRecoverySession()

@@ -3981,7 +3981,7 @@ mod tests {
             let mut sdr = partial.clone();
             sdr["negotiatedStreamProfile"]["enableHdr"] = json!(false);
             let prepared = crate::streamer::StreamerService::new().prepare_embedded(
-                &json!({"session":sdr,"runtimeCapabilities":{"protocolVersion":7,"videoBackends":[{
+                &json!({"session":sdr,"runtimeCapabilities":{"protocolVersion":8,"videoBackends":[{
                     "backend":"vaapi","platform":"linux","available":true,"codecs":[{
                         "codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420","10bit_444"]
                     }]
@@ -5248,7 +5248,7 @@ mod tests {
 
     #[test]
     fn launched_variant_without_hdr_requests_sdr_for_that_session_only() {
-        let capabilities = json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+        let capabilities = json!({"protocolVersion":8,"nativeHdrSupported":true,"videoBackends":[{
             "backend":"d3d11","available":true,"codecs":[
                 {"codec":"h265","available":true,"hdrSupported":true,
                     "colorQualities":["8bit_420","10bit_420"],"hdrColorQualities":["10bit_420"]}
@@ -5327,7 +5327,7 @@ mod tests {
 
     #[test]
     fn hdr_444_request_and_accepted_session_preserve_wire_chroma() {
-        let capabilities = json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+        let capabilities = json!({"protocolVersion":8,"nativeHdrSupported":true,"videoBackends":[{
             "backend":"d3d11","available":true,"codecs":[
                 {"codec":"h265","available":true,"hdrSupported":true,
                     "colorQualities":["10bit_444"],"hdrColorQualities":["10bit_444"]}
@@ -5365,7 +5365,7 @@ mod tests {
 
     #[test]
     fn hdr_request_requires_resolved_runtime_opt_in_and_uses_cloudmatch_enums() {
-        let capabilities = json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+        let capabilities = json!({"protocolVersion":8,"nativeHdrSupported":true,"videoBackends":[{
             "backend":"d3d11","available":true,"codecs":[
                 {"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420"]}
             ]
@@ -5407,7 +5407,7 @@ mod tests {
 
     #[test]
     fn validated_display_luminance_replaces_requested_content_defaults() {
-        let capabilities = json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+        let capabilities = json!({"protocolVersion":8,"nativeHdrSupported":true,"videoBackends":[{
             "backend":"vaapi","available":true,"codecs":[
                 {"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420"]}
             ]
@@ -5448,7 +5448,7 @@ mod tests {
                 "maximumFullFrameNits":full_frame,
                 "redX":0.64,"redY":0.33,"greenX":0.30,"greenY":0.60,
                 "blueX":0.15,"blueY":0.06,"whiteX":0.3127,"whiteY":0.329});
-            let capabilities = json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+            let capabilities = json!({"protocolVersion":8,"nativeHdrSupported":true,"videoBackends":[{
                 "backend":"vaapi","available":true,"codecs":[
                     {"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420"]}
                 ]}],"nativeHdrDisplay":display});
@@ -5516,7 +5516,7 @@ mod tests {
             "redX":0.64,"redY":0.33,"greenX":0.30,"greenY":0.60,
             "blueX":0.15,"blueY":0.06,"whiteX":0.3127,"whiteY":0.329});
         let capabilities = |display: Value| {
-            json!({"protocolVersion":7,"nativeHdrSupported":true,
+            json!({"protocolVersion":8,"nativeHdrSupported":true,
             "videoBackends":[{"backend":"vaapi","available":true,"codecs":[
                 {"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420"]}
             ]}],"nativeHdrDisplay":display})
@@ -5566,7 +5566,7 @@ mod tests {
         }
         let no_display = crate::streamer::StreamerService::embedded_session_settings(
             &json!({"codec":"h265","enableHdr":true,"nativeHdrDisplay":valid}),
-            &json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+            &json!({"protocolVersion":8,"nativeHdrSupported":true,"videoBackends":[{
             "backend":"vaapi","available":true,"codecs":[
                 {"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420"]}
             ]}]}),
@@ -5605,7 +5605,7 @@ mod tests {
     #[test]
     fn native_hdr_display_capability_requires_a_validated_pair() {
         let capabilities = |display: Value| {
-            json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+            json!({"protocolVersion":8,"nativeHdrSupported":true,"videoBackends":[{
                 "backend":"vaapi","available":true,"codecs":[
                     {"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420"]}
                 ]
@@ -5642,7 +5642,7 @@ mod tests {
     #[test]
     fn stale_display_snapshot_is_dropped_across_output_transitions() {
         let capabilities = |display: Value| {
-            json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+            json!({"protocolVersion":8,"nativeHdrSupported":true,"videoBackends":[{
                 "backend":"vaapi","available":true,"codecs":[
                     {"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420"]}
                 ]
@@ -5652,7 +5652,7 @@ mod tests {
             "nativeHdrDisplay":{"minimumNits":0.005,"maximumNits":620}});
         let resolved = crate::streamer::StreamerService::embedded_session_settings(
             &previous,
-            &json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+            &json!({"protocolVersion":8,"nativeHdrSupported":true,"videoBackends":[{
                 "backend":"vaapi","available":true,"codecs":[
                     {"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420"]}
                 ]
@@ -6073,10 +6073,10 @@ mod tests {
 
     #[test]
     fn session_create_requests_the_documented_frame_rate_ceiling() {
-        let hardware = json!({"protocolVersion":7, "videoBackends":[{"backend":"vaapi",
+        let hardware = json!({"protocolVersion":8, "videoBackends":[{"backend":"vaapi",
             "available":true, "codecs":[{"codec":"h265", "available":true,
                 "colorQualities":["8bit_420"]}]}]});
-        let software = json!({"protocolVersion":7, "videoBackends":[{"backend":"software",
+        let software = json!({"protocolVersion":8, "videoBackends":[{"backend":"software",
             "available":true, "codecs":[{"codec":"h265", "available":true,
                 "colorQualities":["8bit_420"]}]}]});
         let request = |resolution: &str, fps: i64, capabilities: &Value, entitled: i64| {
@@ -6141,10 +6141,10 @@ mod tests {
 
     #[test]
     fn the_network_test_profile_matches_the_session_profile() {
-        let hardware = json!({"protocolVersion":7, "videoBackends":[{"backend":"vaapi",
+        let hardware = json!({"protocolVersion":8, "videoBackends":[{"backend":"vaapi",
             "available":true, "codecs":[{"codec":"h265", "available":true,
                 "colorQualities":["8bit_420"]}]}]});
-        let software = json!({"protocolVersion":7, "videoBackends":[{"backend":"software",
+        let software = json!({"protocolVersion":8, "videoBackends":[{"backend":"software",
             "available":true, "codecs":[{"codec":"h265", "available":true,
                 "colorQualities":["8bit_420"]}]}]});
         let settings = json!({"resolution":"1920x1080", "fps":360, "codec":"h265"});
@@ -6212,7 +6212,7 @@ mod tests {
 
     #[test]
     fn resolved_capability_fallbacks_reach_the_request_unchanged() {
-        let capabilities = json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+        let capabilities = json!({"protocolVersion":8,"nativeHdrSupported":true,"videoBackends":[{
             "backend":"d3d11","platform":"windows","available":true,"codecs":[
                 {"codec":"h264","available":true,"colorQualities":["8bit_420"]},
                 {"codec":"h265","available":true,"hdrSupported":false,
@@ -6431,7 +6431,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(initial["negotiatedStreamProfile"]["codec"], Value::Null);
-        let capabilities = json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+        let capabilities = json!({"protocolVersion":8,"nativeHdrSupported":true,"videoBackends":[{
             "backend":"videotoolbox","platform":"macos","available":true,"codecs":[{
                 "codec":"h265","available":true,"hdrSupported":true,
                 "colorQualities":["10bit_420"],"hdrColorQualities":["10bit_420"]
@@ -6703,7 +6703,7 @@ mod tests {
     #[test]
     fn nested_negotiated_codec_reaches_hdr_preparation() {
         let base = Url::parse(DEFAULT_STREAMING_BASE).unwrap();
-        let capabilities = json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+        let capabilities = json!({"protocolVersion":8,"nativeHdrSupported":true,"videoBackends":[{
             "backend":"videotoolbox","platform":"macos","available":true,"codecs":[{
                 "codec":"h265","available":true,"hdrSupported":true,
                 "colorQualities":["10bit_420"],"hdrColorQualities":["10bit_420"]

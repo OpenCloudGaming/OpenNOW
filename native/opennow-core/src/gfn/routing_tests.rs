@@ -493,7 +493,7 @@ fn create_uses_the_launched_variant_hdr_metadata_without_saving_settings() {
     store.set("enableHdr", json!(true)).unwrap();
     store.set("webrtcCompatibilityMode", json!("off")).unwrap();
     let saved = store.all();
-    let capabilities = json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+    let capabilities = json!({"protocolVersion":8,"nativeHdrSupported":true,"videoBackends":[{
         "backend":"d3d11","available":true,"codecs":[{"codec":"h265","available":true,
             "hdrSupported":true,"colorQualities":["8bit_420","10bit_420"],
             "hdrColorQualities":["10bit_420"]}]
