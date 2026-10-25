@@ -166,6 +166,10 @@ ApplicationWindow {
     readonly property bool shellCaptureEnabledForSmokeTest: ControllerInput.shellCaptureEnabled
     readonly property bool consoleStreamReady: window.activeRoute === "stream"
         && !window.desktopSurfaceActive && routeLoader.item && routeLoader.item.videoReady === true
+    readonly property bool backgroundControllerStreamReady: window.activeRoute === "stream"
+        && (window.desktopSurfaceActive ? !!routeLoader.item && routeLoader.item.streamReady === true
+            : window.consoleStreamReady)
+    onBackgroundControllerStreamReadyChanged: window.syncInputOwnership()
     onConsoleStreamReadyChanged: {
         if (!consoleStreamReady)
             pendingConsoleScreenshotSession = ""
@@ -314,6 +318,7 @@ ApplicationWindow {
     function syncInputOwnership() {
         const shellOwnsInput = (!window.active && !ControllerInput.backgroundControllerActive)
             || AppController.route !== "stream"
+            || (ControllerInput.backgroundControllerEnabled && !window.backgroundControllerStreamReady)
             || (!window.desktopSurfaceActive && !window.consoleStreamReady)
             || (window.desktopSurfaceActive && !ShellStore.authRestorePending && !ShellStore.signedIn)
             || ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)

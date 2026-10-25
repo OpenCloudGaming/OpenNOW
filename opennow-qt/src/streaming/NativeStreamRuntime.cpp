@@ -208,6 +208,8 @@ struct NativeStreamRuntime::Private {
     bool displaySizeScheduled = false;
     UpstreamProgressSnapshot upstreamProgressSamples;
     std::atomic_bool inputAllowed{false};
+    std::atomic_bool focusedCaptureActive{false};
+    std::atomic<ControllerInputPolicy> controllerInputPolicy{ControllerInputPolicy::FollowCapture};
     std::atomic_bool genericHidInventoryPresent{false};
     std::atomic_bool genericHidCaptureActive{false};
     QTimer *genericHidOutputTimer = nullptr;
@@ -249,7 +251,8 @@ NativeStreamRuntime::NativeStreamRuntime(QObject *parent,
                               &opennow_streamer_replace_generic_hid_inventory,
                               &opennow_streamer_submit_generic_hid_report,
                               &opennow_streamer_take_generic_hid_output,
-                              &opennow_streamer_get_generic_hid_admissions}, parent, vulkanDevice, windowsAdapterLuid)
+                              &opennow_streamer_get_generic_hid_admissions,
+                              &opennow_streamer_set_controller_active}, parent, vulkanDevice, windowsAdapterLuid)
 {
 }
 
@@ -261,6 +264,8 @@ NativeStreamRuntime::NativeStreamRuntime(Api api, QObject *parent,
 {
     d->vulkanDevice = vulkanDevice;
     d->windowsAdapterLuid = windowsAdapterLuid;
+    connect(this, &NativeStreamRuntime::inputAllowedChanged,
+            this, &NativeStreamRuntime::syncControllerAuthorization);
     if (d->api.takeGenericHidOutput || d->api.getGenericHidAdmissions) {
         auto *timer = new QTimer(this);
         d->genericHidOutputTimer = timer;
@@ -874,11 +879,38 @@ OpenNowStreamerStatus NativeStreamRuntime::setCaptureActive(
                                       rawInputActive)
             : OPENNOW_STREAMER_CLOSED;
         d->genericHidCaptureActive.store(active && status == OPENNOW_STREAMER_OK);
+        d->focusedCaptureActive.store(active && status == OPENNOW_STREAMER_OK);
     }
+    syncControllerAuthorization();
     updateGenericHidOutputPolling();
     if (!active) emit genericHidOutputStopped();
     return status;
 }
+
+void NativeStreamRuntime::setControllerInputPolicy(ControllerInputPolicy policy)
+{
+    d->controllerInputPolicy.store(policy);
+    syncControllerAuthorization();
+}
+
+void NativeStreamRuntime::syncControllerAuthorization()
+{
+    const std::shared_lock lock(d->handleMutex);
+    if (!d->handle || !d->api.setControllerActive) return;
+    bool active = false;
+    switch (d->controllerInputPolicy.load()) {
+    case ControllerInputPolicy::FollowCapture:
+        active = d->focusedCaptureActive.load();
+        break;
+    case ControllerInputPolicy::Suspended:
+        break;
+    case ControllerInputPolicy::BackgroundGameplay:
+        active = true;
+        break;
+    }
+    d->api.setControllerActive(d->handle, active && inputAllowed());
+}
+
 OpenNowStreamerStatus NativeStreamRuntime::replaceSdlDeviceClaims(
     const QList<SdlDeviceClaim> &claims)
 {

@@ -2791,11 +2791,11 @@ private slots:
         const auto main = source(QStringLiteral("qml/Main.qml"));
         QJSEngine engine;
         QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
-            var window = {active:false,desktopSurfaceActive:true,consoleStreamReady:true};
+            var window = {active:false,desktopSurfaceActive:true,consoleStreamReady:true,backgroundControllerStreamReady:true};
             var ShellStore = {authRestorePending:false,signedIn:true,settings:{},
                 streamOverlayBlocksGameplayInput:function(overlay){return overlay === 'menu';}};
             var AppController = {route:'stream',overlay:''};
-            var ControllerInput = {backgroundControllerActive:false};
+            var ControllerInput = {backgroundControllerActive:false,backgroundControllerEnabled:false};
         )JS")).isError());
         const auto match = QRegularExpression(QStringLiteral(
             "    function syncInputOwnership\\([^\\n]*\\) \\{.*?\\n    \\}"),
@@ -2807,7 +2807,9 @@ private slots:
                 "; syncInputOwnership(); [ControllerInput.inputSuspended, ControllerInput.shellCaptureEnabled].join(',')")).toString();
         };
         QCOMPARE(ownership(QString()), QStringLiteral("true,true"));
-        QCOMPARE(ownership(QStringLiteral("ControllerInput.backgroundControllerActive=true")), QStringLiteral("false,false"));
+        QCOMPARE(ownership(QStringLiteral("ControllerInput.backgroundControllerEnabled=true; ControllerInput.backgroundControllerActive=true")), QStringLiteral("false,false"));
+        QCOMPARE(ownership(QStringLiteral("window.backgroundControllerStreamReady=false")), QStringLiteral("true,true"));
+        QCOMPARE(ownership(QStringLiteral("window.backgroundControllerStreamReady=true")), QStringLiteral("false,false"));
         QCOMPARE(ownership(QStringLiteral("ShellStore.settings.controllerMode=false")), QStringLiteral("false,false"));
         QCOMPARE(ownership(QStringLiteral("AppController.overlay='menu'")), QStringLiteral("true,false"));
         QCOMPARE(ownership(QStringLiteral("ShellStore.settings.controllerMode=true")), QStringLiteral("true,true"));
@@ -2821,6 +2823,14 @@ private slots:
         QVERIFY(main.contains(QStringLiteral(
             "function onBackgroundControllerActiveChanged() { window.syncInputOwnership() }")));
         QVERIFY(!main.contains(QStringLiteral("property: \"inputControllerId\"")));
+        const auto startup = source(QStringLiteral("src/app/ApplicationStartup.cpp"));
+        QVERIFY(startup.contains(QStringLiteral("ControllerInputPolicy::FollowCapture")));
+        QVERIFY(startup.contains(QStringLiteral("controllerInput.backgroundControllerEnabled()")));
+        QVERIFY(startup.contains(QStringLiteral("controllerInput.backgroundControllerActive() && !controllerInput.inputSuspended()")));
+        QVERIFY(startup.contains(QStringLiteral("&& !controllerInput.shellCaptureEnabled()")));
+        for (const auto &signal : {"backgroundControllerEnabledChanged", "backgroundControllerActiveChanged",
+                                   "inputSuspendedChanged", "shellCaptureEnabledChanged"})
+            QVERIFY(startup.contains(QStringLiteral("&ControllerInput::") + QLatin1StringView(signal)));
     }
 
     void profileUnlockKeepsStreamSurfaceAndShellInputOwnership()

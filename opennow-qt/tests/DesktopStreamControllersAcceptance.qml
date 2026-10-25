@@ -130,6 +130,40 @@ QtObject {
 
     readonly property var steps: [
         function() {
+            check(need("mainRouteLoader").item === need("desktopApp"), "the desktop loader owns DesktopApp")
+            input.backgroundControllerEnabled = true
+            input.inputControllerId = xboxOne.instanceId
+            ShellStore.streamer = Object.assign({}, ShellStore.streamer, {firstFrameLatencyMs: 37})
+            AppController.showOverlay("")
+            return true
+        },
+        function() {
+            if (!need("desktopApp").streamReady) return false
+            check(parent.Window.window.backgroundControllerStreamReady, "Main reads readiness from the actual desktop shell")
+            check(!input.shellCaptureEnabled && !input.inputSuspended, "an assigned ready desktop pad owns gameplay")
+            ShellStore.streamer = Object.assign({}, ShellStore.streamer, {status: "paused"})
+            return true
+        },
+        function() {
+            if (need("desktopApp").streamReady) return false
+            check(!parent.Window.window.backgroundControllerStreamReady, "a paused desktop stream is not ready")
+            check(input.shellCaptureEnabled || input.inputSuspended, "pause revokes background controller gameplay")
+            ShellStore.streamer = Object.assign({}, ShellStore.streamer, {status: "streaming"})
+            return true
+        },
+        function() {
+            if (!need("desktopApp").streamReady) return false
+            check(!input.shellCaptureEnabled && !input.inputSuspended, "resume restores assigned gameplay")
+            AppController.showOverlay("desktop-stream-menu")
+            return true
+        },
+        function() {
+            check(input.shellCaptureEnabled, "the controller menu revokes background gameplay")
+            input.backgroundControllerEnabled = false
+            input.inputControllerId = 0
+            return true
+        },
+        function() {
             const drawer = need("streamMenuDrawer")
             check(drawer.visible && drawer.x >= 0 && drawer.x < 40, "the drawer docks on the left edge")
             check(drawer.x + drawer.width <= parent.width * 0.45, "the game stays visible on the right")

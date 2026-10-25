@@ -348,7 +348,7 @@ fn sony_review_runtime(
 fn parent_review_capture_pause_retains_sony_attachment() {
     let (mut rtc, _peer, channels, _peer_channels) = connect_bundle_pair();
     let (runtime, mut session, mut codec) = sony_review_runtime(11, 5);
-    runtime.set_active(true);
+    runtime.set_controller_active(true);
     let mut mask = 0;
     assert!(pump_hid_pending(
         &runtime,
@@ -360,7 +360,7 @@ fn parent_review_capture_pause_retains_sony_attachment() {
         1
     ));
     assert_eq!(session.attached(0), Some(11));
-    runtime.set_active(false);
+    runtime.set_controller_active(false);
     assert!(pump_hid_pending(
         &runtime,
         &mut session,
@@ -381,13 +381,13 @@ fn parent_review_capture_pause_retains_sony_attachment() {
 #[test]
 fn parent_review_resume_preserves_undrained_release() {
     let (runtime, _session, _codec) = sony_review_runtime(11, 5);
-    runtime.set_active(true);
+    runtime.set_controller_active(true);
     let mut snapshot = opennow_streamer_hid::SonySnapshot::neutral(0, 11, 1);
     snapshot.buttons = 1;
     runtime.submit_snapshot(snapshot);
     runtime.drain(32);
-    runtime.set_active(false);
-    runtime.set_active(true);
+    runtime.set_controller_active(false);
+    runtime.set_controller_active(true);
     assert!(
         runtime
             .drain(32)
@@ -403,7 +403,7 @@ fn unbound_capture_leaves_the_bundle_endpoint_inactive() {
     let runtime = HidRuntime::new();
     let claim = opennow_streamer_hid::SdlDeviceClaim::new(0, 11, 0x054c, 0x05c4).unwrap();
     runtime.replace_inventory(&[Some(claim)]);
-    runtime.set_active(true);
+    runtime.set_controller_active(true);
     let mut session = HidSession::new(SonyCapability {
         server_mask: 5,
         ..SonyCapability::default()
@@ -434,7 +434,7 @@ fn unbound_capture_leaves_the_bundle_endpoint_inactive() {
 fn repeated_capture_pause_cycles_send_one_neutral_report_per_source() {
     let (mut rtc, _peer, channels, _peer_channels) = connect_bundle_pair();
     let (runtime, mut session, mut codec) = sony_review_runtime(11, 5);
-    runtime.set_active(true);
+    runtime.set_controller_active(true);
     let mut mask = 0;
     assert!(pump_hid_pending(
         &runtime,
@@ -451,7 +451,7 @@ fn repeated_capture_pause_cycles_send_one_neutral_report_per_source() {
     assert_eq!(neutral_len, 76);
     for cycle in 0..8_u64 {
         let before = channels.buffered_total(&mut rtc);
-        runtime.set_active(false);
+        runtime.set_controller_active(false);
         assert!(pump_hid_pending(
             &runtime,
             &mut session,
@@ -467,7 +467,7 @@ fn repeated_capture_pause_cycles_send_one_neutral_report_per_source() {
             neutral_len,
             "one capture pause must spend exactly one neutral report"
         );
-        runtime.set_active(true);
+        runtime.set_controller_active(true);
         assert!(pump_hid_pending(
             &runtime,
             &mut session,
@@ -569,7 +569,7 @@ fn sony_shutdown_flush_reaches_the_receiving_peer() {
 fn sony_rich_reports_reach_the_receiving_peer_after_admission() {
     let (mut local, mut peer, channels, _peer_channels) = connect_bundle_pair();
     let (runtime, mut session, mut codec) = sony_review_runtime(11, 5);
-    runtime.set_active(true);
+    runtime.set_controller_active(true);
     let mut mask = 0;
     assert!(pump_hid_pending(
         &runtime,

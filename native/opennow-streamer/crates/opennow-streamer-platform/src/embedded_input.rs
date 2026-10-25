@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::{CapturedInput, CapturedInputQueue, MouseSettings};
 
@@ -14,6 +14,9 @@ pub enum EmbeddedLocalAction {
 pub struct EmbeddedInputCapture {
     queue: Arc<CapturedInputQueue>,
     active: AtomicBool,
+    controller_active: AtomicBool,
+    controller_epoch: Arc<AtomicU64>,
+    authorized_controller_epoch: AtomicU64,
     gamepads: Mutex<[Option<u16>; 4]>,
     #[cfg(target_os = "linux")]
     raw: Mutex<Option<crate::linux_xinput::LinuxXInputController>>,
@@ -23,9 +26,19 @@ pub struct EmbeddedInputCapture {
 
 impl EmbeddedInputCapture {
     pub fn new(queue: Arc<CapturedInputQueue>) -> Self {
+        Self::with_controller_epoch(queue, Arc::new(AtomicU64::new(0)))
+    }
+
+    pub fn with_controller_epoch(
+        queue: Arc<CapturedInputQueue>,
+        controller_epoch: Arc<AtomicU64>,
+    ) -> Self {
         Self {
             queue,
             active: AtomicBool::new(false),
+            controller_active: AtomicBool::new(false),
+            controller_epoch,
+            authorized_controller_epoch: AtomicU64::new(0),
             gamepads: Mutex::new([None; 4]),
             #[cfg(any(target_os = "linux", target_os = "windows"))]
             raw: Mutex::new(None),
@@ -61,24 +74,62 @@ impl EmbeddedInputCapture {
                 *right_stick_x,
                 *right_stick_y,
             ) == (0, 0, 0, 0, 0, 0, 0);
-            if !self.active.load(Ordering::Acquire) && !neutral {
+            let active = self.controller_active();
+            if !active && !neutral {
                 return;
             }
             for value in gamepads.iter_mut().flatten() {
                 *value = *bitmap;
             }
             gamepads[usize::from(*controller_id)] = Some(*bitmap);
-            if neutral && !self.active.load(Ordering::Acquire) {
+            if neutral && !active {
                 self.queue.release_gamepad(*controller_id, *bitmap);
                 return;
             }
+            self.queue.push(input);
+            return;
         }
         if self.active.load(Ordering::Acquire) {
             self.queue.push(input);
         }
     }
 
+    fn controller_active(&self) -> bool {
+        self.controller_active.load(Ordering::Acquire)
+            && self.authorized_controller_epoch.load(Ordering::Acquire)
+                == self.controller_epoch.load(Ordering::Acquire)
+    }
+
+    pub fn set_controller_active(&self, active: bool) {
+        let mut gamepads = self
+            .gamepads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !active {
+            for (controller_id, bitmap) in gamepads.iter_mut().enumerate() {
+                if let Some(bitmap) = bitmap.take() {
+                    self.queue.release_gamepad(controller_id as u8, bitmap);
+                }
+            }
+        }
+        self.authorized_controller_epoch.store(
+            self.controller_epoch.load(Ordering::Acquire),
+            Ordering::Release,
+        );
+        self.controller_active.store(active, Ordering::Release);
+    }
+
     pub fn submit_local_action(&self, action: EmbeddedLocalAction) {
+        if action == EmbeddedLocalAction::Guide {
+            let _gamepads = self
+                .gamepads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if self.controller_active() {
+                self.queue.push(CapturedInput::Guide);
+            }
+            return;
+        }
         self.submit(match action {
             EmbeddedLocalAction::Guide => CapturedInput::Guide,
             EmbeddedLocalAction::Screenshot => CapturedInput::Screenshot,
@@ -101,19 +152,12 @@ impl EmbeddedInputCapture {
     }
 
     pub fn set_active(&self, active: bool, relative_mouse: bool, window_handle: usize) -> bool {
-        let mut gamepads = self
+        let _gamepads = self
             .gamepads
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !active {
             self.queue.discard_text();
-            if self.active.load(Ordering::Acquire) {
-                for (controller_id, bitmap) in gamepads.iter_mut().enumerate() {
-                    if let Some(bitmap) = bitmap.take() {
-                        self.queue.release_gamepad(controller_id as u8, bitmap);
-                    }
-                }
-            }
             self.active.store(false, Ordering::Release);
         } else {
             self.active.store(true, Ordering::Release);
@@ -215,6 +259,7 @@ mod tests {
         let queue = std::sync::Arc::new(crate::CapturedInputQueue::default());
         let capture = super::EmbeddedInputCapture::new(queue.clone());
         capture.set_active(true, false, 0);
+        capture.set_controller_active(true);
         queue.set_text_ready(1, true);
         capture.submit_text(b"old").unwrap();
         let Some(crate::CapturedInput::Text(old)) = queue.take() else {
@@ -247,6 +292,7 @@ mod tests {
             Err(TextInputError::Unavailable)
         );
         capture.set_active(true, false, 0);
+        capture.set_controller_active(true);
         assert_eq!(
             capture.submit_text(b"paste"),
             Err(TextInputError::Unavailable)
@@ -259,9 +305,11 @@ mod tests {
         };
         assert_eq!(capture.submit_text(b"again"), Err(TextInputError::Busy));
         capture.set_active(false, false, 0);
+        capture.set_controller_active(false);
         assert!(text.is_cancelled());
         drop(text);
         capture.set_active(true, false, 0);
+        capture.set_controller_active(true);
         assert_eq!(capture.submit_text(b"again"), Ok(()));
         queue.set_text_ready(1, false);
         assert!(queue.take().is_none());
@@ -277,6 +325,7 @@ mod tests {
         let queue = std::sync::Arc::new(crate::CapturedInputQueue::default());
         let capture = super::EmbeddedInputCapture::new(queue.clone());
         capture.set_active(true, false, 0);
+        capture.set_controller_active(true);
         queue.set_text_ready(1, true);
         for _ in 0..256 {
             capture.submit(crate::CapturedInput::Guide);
@@ -307,21 +356,44 @@ mod tests {
     }
 
     #[test]
+    fn session_epoch_change_requires_fresh_controller_authorization() {
+        let queue = Arc::new(CapturedInputQueue::default());
+        let epoch = Arc::new(AtomicU64::new(0));
+        let capture =
+            EmbeddedInputCapture::with_controller_epoch(Arc::clone(&queue), Arc::clone(&epoch));
+        capture.set_controller_active(true);
+        capture.submit(gamepad(0, 0x0101, 0x1000));
+        assert_eq!(queue.take(), Some(gamepad(0, 0x0101, 0x1000)));
+        epoch.fetch_add(1, Ordering::AcqRel);
+        capture.submit(gamepad(0, 0x0101, 0x1000));
+        capture.submit_local_action(EmbeddedLocalAction::Guide);
+        assert_eq!(queue.take(), None);
+        capture.set_controller_active(true);
+        capture.submit(gamepad(0, 0x0101, 0x1000));
+        capture.submit_local_action(EmbeddedLocalAction::Guide);
+        assert_eq!(queue.take(), Some(gamepad(0, 0x0101, 0x1000)));
+        assert_eq!(queue.take(), Some(CapturedInput::Guide));
+    }
+
+    #[test]
     fn closing_capture_neutralizes_all_controllers_before_rejecting_held_input() {
         let queue = Arc::new(CapturedInputQueue::default());
         let capture = EmbeddedInputCapture::new(Arc::clone(&queue));
         capture.set_active(true, false, 0);
+        capture.set_controller_active(true);
         for id in 0..4 {
             capture.submit(gamepad(id, 0x0f0f, 0x1000));
             assert_eq!(queue.take(), Some(gamepad(id, 0x0f0f, 0x1000)));
         }
         capture.set_active(false, false, 0);
+        capture.set_controller_active(false);
         capture.submit(gamepad(0, 0x0f0f, 0x1000));
         for id in 0..4 {
             assert_eq!(queue.take(), Some(gamepad(id, 0x0f0f, 0)));
         }
         assert_eq!(queue.take(), None);
         capture.set_active(false, false, 0);
+        capture.set_controller_active(false);
         assert_eq!(queue.take(), None);
     }
 
@@ -330,8 +402,10 @@ mod tests {
         let queue = Arc::new(CapturedInputQueue::default());
         let capture = EmbeddedInputCapture::new(Arc::clone(&queue));
         capture.set_active(true, false, 0);
+        capture.set_controller_active(true);
         capture.submit(gamepad(0, 0x0101, 0x1000));
         capture.set_active(false, false, 0);
+        capture.set_controller_active(false);
         capture.submit(gamepad(0, 0, 0));
         assert_eq!(queue.take(), Some(gamepad(0, 0, 0)));
         assert_eq!(queue.take(), None);
@@ -342,6 +416,7 @@ mod tests {
         let queue = Arc::new(CapturedInputQueue::default());
         let capture = Arc::new(EmbeddedInputCapture::new(Arc::clone(&queue)));
         capture.set_active(true, false, 0);
+        capture.set_controller_active(true);
         capture.submit(gamepad(0, 0x0101, 0x1000));
         queue.take();
         let barrier = Arc::new(std::sync::Barrier::new(2));
@@ -357,6 +432,7 @@ mod tests {
         };
         barrier.wait();
         capture.set_active(false, false, 0);
+        capture.set_controller_active(false);
         producer.join().unwrap();
         assert_eq!(queue.take(), Some(gamepad(0, 0x0101, 0)));
         assert_eq!(queue.take(), None);
@@ -368,6 +444,7 @@ mod tests {
         let queue = Arc::new(CapturedInputQueue::default());
         let capture = EmbeddedInputCapture::new(Arc::clone(&queue));
         capture.set_active(true, false, 0);
+        capture.set_controller_active(true);
         capture.submit(CapturedInput::Gamepad {
             controller_id: 0,
             bitmap: 0x0101,
@@ -381,6 +458,7 @@ mod tests {
         });
         queue.take();
         capture.set_active(false, false, 0);
+        capture.set_controller_active(false);
         assert_eq!(queue.take(), Some(gamepad(0, 0x0101, 0)));
         assert_eq!(queue.take(), None);
     }
@@ -390,6 +468,7 @@ mod tests {
         let queue = Arc::new(CapturedInputQueue::default());
         let capture = EmbeddedInputCapture::new(Arc::clone(&queue));
         capture.set_active(true, false, 0);
+        capture.set_controller_active(true);
         for id in 0..4 {
             capture.submit(gamepad(id, 0x0f0f, 0x1000));
             queue.take();
@@ -398,6 +477,7 @@ mod tests {
             capture.submit_local_action(EmbeddedLocalAction::Guide);
         }
         capture.set_active(false, false, 0);
+        capture.set_controller_active(false);
         assert!(!queue.take_overflowed());
         for _ in 0..256 {
             assert_eq!(queue.take(), Some(CapturedInput::Guide));
@@ -414,9 +494,11 @@ mod tests {
         let capture = EmbeddedInputCapture::new(Arc::clone(&queue));
         for _ in 0..3 {
             capture.set_active(true, false, 0);
+            capture.set_controller_active(true);
             assert_eq!(queue.take(), None);
             capture.submit(gamepad(0, 0x0101, 0x1000));
             capture.set_active(false, false, 0);
+            capture.set_controller_active(false);
             assert_eq!(queue.take(), Some(gamepad(0, 0x0101, 0)));
             assert_eq!(queue.take(), None);
         }
@@ -442,6 +524,7 @@ mod tests {
         assert_eq!(queue.take(), None);
 
         capture.active.store(true, Ordering::Release);
+        capture.set_controller_active(true);
         capture.submit_local_action(EmbeddedLocalAction::Guide);
         assert_eq!(queue.take(), Some(CapturedInput::Guide));
     }

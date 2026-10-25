@@ -13,9 +13,27 @@ This crate exposes `opennow-streamer-core::Engine` as a C-compatible in-process 
 - `opennow_streamer_destroy` consumes the handle exactly once, waits for the engine and both callback queues to drain, and then returns. No call may race with destroy. A null handle is rejected; reusing a destroyed pointer is caller-side undefined behavior.
 - Every exported function catches Rust panics before they can unwind through the C ABI. A worker-thread panic closes the command queue.
 
-### Generic flight controls and wheels (ABI 15)
+### Independent controller authorization (ABI 16)
 
-Rebuild Qt and the native library together with ABI 15. The generic-HID exports are
+Rebuild Qt and the native library together with ABI 16. Structure layouts are unchanged.
+`opennow_streamer_set_controller_active(const OpenNowStreamer *, bool active)` authorizes
+ordinary gamepads, Sony rich reports, Sony ordinary fallback, and the controller Guide action.
+Controller authorization defaults to false. Deactivation preserves neutral releases and drops
+pending held state. Session unbind, binding replacement, and endpoint replacement invalidate
+controller authorization, so hosts must explicitly authorize the next session.
+
+`opennow_streamer_set_capture_active` controls keyboard, mouse, raw relative motion, text,
+and generic HID only. It does not change controller authorization. Generic flight controls
+and wheels remain focused-capture gated, even when controllers are authorized in the background.
+Screenshot and recording local actions also retain their focused-capture requirement.
+
+For default behavior, call both setters with the focused-capture permission. Hosts that opt
+into background gameplay can authorize controllers independently, but must still enforce
+session permission and revoke authorization for local controller overlays and shutdown.
+
+### Generic flight controls and wheels (introduced in ABI 15)
+
+Rebuild Qt and the native library together with the current ABI 16. The generic-HID exports are
 `opennow_streamer_replace_generic_hid_inventory`,
 `opennow_streamer_submit_generic_hid_report`,
 `opennow_streamer_take_generic_hid_output`, and
@@ -53,7 +71,7 @@ the physical checks still required.
 
 ### Server timers and termination (ABI 13)
 
-Rebuild Qt and the native library together with the current ABI 15. Structure layouts and callback
+Rebuild Qt and the native library together with the current ABI 16. Structure layouts and callback
 ownership are unchanged. `event_callback` now delivers generation-scoped
 `session-timer` events with `startId`, `timerType`, `secondsLeft` and `active`.
 Timer type 4 warns of idle expiry; type 5 clears the warning. Successful gameplay

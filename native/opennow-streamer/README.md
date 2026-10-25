@@ -34,6 +34,12 @@ an entirely black application window from a stream-only black video surface.
 - `opennow-streamer-platform`: bounded media queues, decode/audio output, recording and GPU-frame publication.
 - `opennow-streamer-platform-{windows,macos,linux}`: platform decoders and native GPU texture producers.
 - `opennow-streamer-ffi`: bounded C ABI used in process by Qt.
+
+The current FFI ABI is 16. Controller authorization uses
+`opennow_streamer_set_controller_active` independently of focused keyboard, mouse, text,
+and generic-HID capture. Default hosts couple both permissions explicitly. See the
+[FFI contract](crates/opennow-streamer-ffi/README.md#independent-controller-authorization-abi-16)
+for session reset and neutral-release behavior.
 - `opennow-streamer`: a development JSON-lines host for the same engine; Qt packages do not include it.
 
 ## Qt GPU integration

@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::{
     InventoryOutcome, InventoryView, MAX_QUEUED_STATE_BYTES, MAX_QUEUED_STATES, MAX_SOURCES,
@@ -102,7 +102,7 @@ impl SourceLane {
 #[derive(Debug, Default)]
 struct RuntimeState {
     binding: Option<u64>,
-    capture_active: bool,
+    controller_active: bool,
     inventory: InventoryView,
     inventory_epoch: u64,
     endpoint: Option<u64>,
@@ -123,6 +123,7 @@ pub struct HidRuntime {
     incarnation_source: AtomicU64,
     inventory_epoch: AtomicU64,
     endpoint_source: AtomicU64,
+    controller_epoch: Arc<AtomicU64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,6 +140,7 @@ impl HidRuntime {
             incarnation_source: AtomicU64::new(1),
             inventory_epoch: AtomicU64::new(0),
             endpoint_source: AtomicU64::new(1),
+            controller_epoch: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -146,6 +148,10 @@ impl HidRuntime {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub fn controller_epoch(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.controller_epoch)
     }
 
     pub fn next_incarnation(&self) -> u64 {
@@ -191,7 +197,11 @@ impl HidRuntime {
 
     pub fn open_endpoint(&self) -> EndpointToken {
         let mut state = self.lock();
-        if let Some(generation) = state.binding {
+        if state.endpoint.is_some() {
+            state.controller_active = false;
+            self.controller_epoch.fetch_add(1, Ordering::AcqRel);
+        }
+        if let Some(generation) = state.binding.take() {
             self.generic.unbind_session(generation);
         }
         let token = self.endpoint_source.fetch_add(1, Ordering::AcqRel);
@@ -209,6 +219,8 @@ impl HidRuntime {
         if state.endpoint != Some(token.0) {
             return;
         }
+        state.controller_active = false;
+        self.controller_epoch.fetch_add(1, Ordering::AcqRel);
         if let Some(generation) = state.binding {
             self.generic.unbind_session(generation);
         }
@@ -224,6 +236,10 @@ impl HidRuntime {
     pub fn bind_session(&self, generation: u64) -> Option<SessionBinding> {
         let mut state = self.lock();
         state.endpoint?;
+        if state.binding.is_some() {
+            state.controller_active = false;
+            self.controller_epoch.fetch_add(1, Ordering::AcqRel);
+        }
         self.generic.bind_session(generation);
         for lane in state.lanes.iter_mut() {
             lane.reset();
@@ -236,9 +252,11 @@ impl HidRuntime {
 
     pub fn unbind_session(&self, generation: u64) {
         let mut state = self.lock();
-        if state.binding.is_some_and(|bound| bound != generation) {
+        if state.binding != Some(generation) {
             return;
         }
+        state.controller_active = false;
+        self.controller_epoch.fetch_add(1, Ordering::AcqRel);
         self.generic.unbind_session(generation);
         for lane in state.lanes.iter_mut() {
             lane.reset();
@@ -278,13 +296,21 @@ impl HidRuntime {
         Self::mode_for_epoch(&self.lock(), slot)
     }
 
-    pub fn set_active(&self, active: bool) {
-        let mut state = self.lock();
+    pub fn set_capture_active(&self, active: bool) {
         self.generic.set_capture(active);
-        if state.capture_active == active {
+    }
+
+    pub fn set_controller_active(&self, active: bool) {
+        self.set_controller_active_with(active, || {});
+    }
+
+    pub fn set_controller_active_with(&self, active: bool, update_ordinary: impl FnOnce()) {
+        let mut state = self.lock();
+        update_ordinary();
+        if state.controller_active == active {
             return;
         }
-        state.capture_active = active;
+        state.controller_active = active;
         if active {
             return;
         }
@@ -298,13 +324,13 @@ impl HidRuntime {
         }
     }
 
-    pub fn is_active(&self) -> bool {
-        self.lock().capture_active
+    pub fn is_controller_active(&self) -> bool {
+        self.lock().controller_active
     }
 
     pub fn output_admitted(&self, slot: u8) -> bool {
         let state = self.lock();
-        if !state.capture_active || state.binding.is_none() {
+        if !state.controller_active || state.binding.is_none() {
             return false;
         }
         if state.inventory.incarnation(slot).is_none() {
@@ -341,6 +367,9 @@ impl HidRuntime {
         let Some(mode) = Self::mode_for_epoch(&state, snapshot.slot) else {
             return SnapshotAdmission::StaleSource;
         };
+        if !state.controller_active && !snapshot.is_neutral() {
+            return SnapshotAdmission::AdmittedInactive;
+        }
         if mode == SourceMode::OrdinaryFallback {
             let mut bitmap = 0_u16;
             for slot in 0..MAX_SOURCES as u8 {
@@ -349,9 +378,13 @@ impl HidRuntime {
                 }
             }
             admit_ordinary(&snapshot, bitmap);
-            return SnapshotAdmission::Admitted;
+            return if state.controller_active {
+                SnapshotAdmission::Admitted
+            } else {
+                SnapshotAdmission::AdmittedInactive
+            };
         }
-        let active = state.capture_active;
+        let active = state.controller_active;
         let lane = &mut state.lanes[usize::from(snapshot.slot)];
         lane.last_observed_at_us = lane.last_observed_at_us.max(snapshot.observed_at_us);
         if !active {
@@ -468,6 +501,30 @@ mod tests {
     }
 
     #[test]
+    fn session_and_endpoint_replacement_revoke_only_controller_authorization() {
+        let runtime = runtime_with([Some(ds4(0, 1).unwrap()), None, None, None]);
+        runtime.set_controller_active(true);
+        runtime.set_capture_active(true);
+        let epoch = runtime.controller_epoch();
+        let before = epoch.load(Ordering::Acquire);
+        runtime.bind_session(2).unwrap();
+        assert!(!runtime.is_controller_active());
+        assert_eq!(epoch.load(Ordering::Acquire), before + 1);
+        assert!(runtime.generic.capture_state().0);
+        runtime.set_controller_active(true);
+        runtime.unbind_session(1);
+        assert!(runtime.is_controller_active());
+        runtime.unbind_session(2);
+        assert!(!runtime.is_controller_active());
+        assert_eq!(epoch.load(Ordering::Acquire), before + 2);
+        runtime.set_controller_active(true);
+        runtime.open_endpoint();
+        assert!(!runtime.is_controller_active());
+        assert_eq!(epoch.load(Ordering::Acquire), before + 3);
+        assert_eq!(runtime.session_generation(), None);
+    }
+
+    #[test]
     fn unsupported_inventory_replacement_leaves_the_previous_view_intact() {
         let runtime = runtime_with([Some(ds4(0, 1).unwrap()), None, None, None]);
         let before = runtime.inventory_epoch();
@@ -491,7 +548,7 @@ mod tests {
     #[test]
     fn snapshots_for_unknown_or_replaced_sources_are_rejected() {
         let runtime = runtime_with([Some(ds4(0, 1).unwrap()), None, None, None]);
-        runtime.set_active(true);
+        runtime.set_controller_active(true);
         assert_eq!(
             runtime.submit_snapshot(snapshot(0, 2)),
             SnapshotAdmission::StaleSource
@@ -538,13 +595,13 @@ mod tests {
             Some(ds4(2, 3).unwrap()),
             None,
         ]);
-        runtime.set_active(true);
+        runtime.set_controller_active(true);
         assert_eq!(
             runtime.submit_snapshot(snapshot(0, 1)),
             SnapshotAdmission::Admitted
         );
-        runtime.set_active(false);
-        runtime.set_active(false);
+        runtime.set_controller_active(false);
+        runtime.set_controller_active(false);
         let items = runtime.drain(8);
         assert_eq!(items.len(), 2);
         assert!(
@@ -557,10 +614,10 @@ mod tests {
     #[test]
     fn repeated_capture_toggles_do_not_accumulate_duplicate_releases() {
         let runtime = runtime_with([Some(ds4(0, 1).unwrap()), None, None, None]);
-        runtime.set_active(true);
+        runtime.set_controller_active(true);
         for _ in 0..64 {
-            runtime.set_active(false);
-            runtime.set_active(true);
+            runtime.set_controller_active(false);
+            runtime.set_controller_active(true);
             let items = runtime.drain(8);
             assert_eq!(items.len(), 1);
             assert_eq!(
@@ -577,7 +634,7 @@ mod tests {
     #[test]
     fn overflow_faults_the_source_and_keeps_the_release_until_consumed() {
         let runtime = runtime_with([Some(ds4(0, 1).unwrap()), None, None, None]);
-        runtime.set_active(true);
+        runtime.set_controller_active(true);
         for _ in 0..MAX_QUEUED_STATES {
             assert_eq!(
                 runtime.submit_snapshot(snapshot(0, 1)),
@@ -620,7 +677,7 @@ mod tests {
                 .outcome,
             InventoryOutcome::Replaced
         );
-        runtime.set_active(true);
+        runtime.set_controller_active(true);
         assert_eq!(
             runtime.submit_snapshot(snapshot(0, 1)),
             SnapshotAdmission::Unbound
@@ -663,17 +720,17 @@ mod tests {
     fn output_admission_requires_capture_a_binding_and_a_healthy_source() {
         let runtime = runtime_with([Some(ds4(0, 1).unwrap()), None, None, None]);
         assert!(!runtime.output_admitted(0));
-        runtime.set_active(true);
+        runtime.set_controller_active(true);
         assert!(runtime.output_admitted(0));
         assert!(!runtime.output_admitted(1));
-        runtime.set_active(false);
+        runtime.set_controller_active(false);
         assert!(!runtime.output_admitted(0));
     }
 
     #[test]
     fn drain_budget_bounds_work_per_iteration() {
         let runtime = runtime_with([Some(ds4(0, 1).unwrap()), None, None, None]);
-        runtime.set_active(true);
+        runtime.set_controller_active(true);
         for _ in 0..MAX_QUEUED_STATES {
             let _ = runtime.submit_snapshot(snapshot(0, 1));
         }
@@ -688,11 +745,11 @@ mod tests {
     #[test]
     fn inventory_replacement_resets_the_lane_and_drops_previous_states() {
         let runtime = runtime_with([Some(ds4(0, 1).unwrap()), None, None, None]);
-        runtime.set_active(true);
+        runtime.set_controller_active(true);
         for _ in 0..8 {
             let _ = runtime.submit_snapshot(snapshot(0, 1));
         }
-        runtime.set_active(false);
+        runtime.set_controller_active(false);
         assert!(
             runtime
                 .replace_inventory(&[None, Some(ds4(1, 2).unwrap()), None, None])
@@ -706,8 +763,8 @@ mod tests {
     #[test]
     fn repeated_neutral_reports_arm_one_release_until_drained() {
         let runtime = runtime_with([Some(ds4(0, 1).unwrap()), None, None, None]);
-        runtime.set_active(true);
-        runtime.set_active(false);
+        runtime.set_controller_active(true);
+        runtime.set_controller_active(false);
         assert_eq!(
             runtime.submit_snapshot(snapshot(0, 1)),
             SnapshotAdmission::AdmittedInactive

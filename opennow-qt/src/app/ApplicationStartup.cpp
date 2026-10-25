@@ -224,6 +224,25 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
         qWarning("Could not start the embedded streamer runtime: %s",
                  qUtf8Printable(nativeStreamRuntime.lastError()));
     StreamVideoItem::setNativeStreamRuntime(&nativeStreamRuntime);
+    const auto syncControllerAuthorization = [&controllerInput, &nativeStreamRuntime] {
+        auto policy = NativeStreamRuntime::ControllerInputPolicy::FollowCapture;
+        if (controllerInput.backgroundControllerEnabled()) {
+            policy = controllerInput.backgroundControllerActive() && !controllerInput.inputSuspended()
+                && !controllerInput.shellCaptureEnabled()
+                ? NativeStreamRuntime::ControllerInputPolicy::BackgroundGameplay
+                : NativeStreamRuntime::ControllerInputPolicy::Suspended;
+        }
+        nativeStreamRuntime.setControllerInputPolicy(policy);
+    };
+    QObject::connect(&controllerInput, &ControllerInput::backgroundControllerEnabledChanged,
+                     &nativeStreamRuntime, syncControllerAuthorization);
+    QObject::connect(&controllerInput, &ControllerInput::backgroundControllerActiveChanged,
+                     &nativeStreamRuntime, syncControllerAuthorization);
+    QObject::connect(&controllerInput, &ControllerInput::inputSuspendedChanged,
+                     &nativeStreamRuntime, syncControllerAuthorization);
+    QObject::connect(&controllerInput, &ControllerInput::shellCaptureEnabledChanged,
+                     &nativeStreamRuntime, syncControllerAuthorization);
+    syncControllerAuthorization();
     QObject::connect(&nativeStreamRuntime, &NativeStreamRuntime::controllerRumbleRequested,
                      &controllerInput, &ControllerInput::playRumble);
     QObject::connect(&nativeStreamRuntime, &NativeStreamRuntime::controllerRumbleStopped,

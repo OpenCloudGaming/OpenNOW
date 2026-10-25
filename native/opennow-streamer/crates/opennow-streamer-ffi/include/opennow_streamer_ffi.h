@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define OPENNOW_STREAMER_FFI_ABI_VERSION 15u
+#define OPENNOW_STREAMER_FFI_ABI_VERSION 16u
 #define OPENNOW_STREAMER_GENERIC_HID_VERSION 1u
 #define OPENNOW_STREAMER_EVENT_SESSION_TIMER "session-timer"
 #define OPENNOW_STREAMER_EVENT_TEXT_INPUT_ERROR "text-input-error"
@@ -373,6 +373,10 @@ OpenNowStreamerStatus opennow_streamer_set_capture_active(
     bool relative_mouse,
     uintptr_t window_handle,
     bool *raw_input_active);
+
+OpenNowStreamerStatus opennow_streamer_set_controller_active(
+    const OpenNowStreamer *handle,
+    bool active);
 
 OpenNowStreamerStatus opennow_streamer_set_graphics_context(
     const OpenNowStreamer *handle,

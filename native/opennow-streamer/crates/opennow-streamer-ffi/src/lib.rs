@@ -26,7 +26,7 @@ use serde_json::Value;
 
 static FIRST_FRAME_LOGGED: AtomicBool = AtomicBool::new(false);
 
-pub const OPENNOW_STREAMER_FFI_ABI_VERSION: u32 = 15;
+pub const OPENNOW_STREAMER_FFI_ABI_VERSION: u32 = 16;
 pub const OPENNOW_STREAMER_MAX_TEXT_BYTES: usize =
     opennow_streamer_protocol::text_input::MAX_TEXT_BYTES;
 pub const OPENNOW_STREAMER_VULKAN_DEVICE_INFO_VERSION: u32 = 1;
@@ -544,7 +544,10 @@ impl OpenNowStreamer {
             },
             graphics,
             frame_publisher,
-            input: EmbeddedInputCapture::new(captured_input),
+            input: EmbeddedInputCapture::with_controller_epoch(
+                captured_input,
+                hid.controller_epoch(),
+            ),
             hid,
             #[cfg(target_os = "windows")]
             windows_adapter_luid: WindowsAdapterLuid::new(config.windows_adapter_luid),
@@ -1592,13 +1595,29 @@ pub unsafe extern "C" fn opennow_streamer_set_capture_active(
             return OpenNowStreamerStatus::NullPointer;
         }
         let handle = unsafe { &*handle };
-        handle.hid.set_active(active);
+        handle.hid.set_capture_active(active);
         let raw = handle
             .input
             .set_active(active, relative_mouse, window_handle);
         unsafe {
             raw_input_active.write(raw);
         }
+        OpenNowStreamerStatus::Ok
+    })
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "C" fn opennow_streamer_set_controller_active(
+    handle: *const OpenNowStreamer,
+    active: bool,
+) -> OpenNowStreamerStatus {
+    ffi_status(|| {
+        let Some(handle) = (unsafe { handle.as_ref() }) else {
+            return OpenNowStreamerStatus::NullPointer;
+        };
+        handle.hid.set_controller_active_with(active, || {
+            handle.input.set_controller_active(active);
+        });
         OpenNowStreamerStatus::Ok
     })
 }
@@ -2093,7 +2112,7 @@ mod tests {
 
     #[test]
     fn abi_twelve_adds_the_deterministic_graphics_unsupported_status() {
-        assert_eq!(OPENNOW_STREAMER_FFI_ABI_VERSION, 15);
+        assert_eq!(OPENNOW_STREAMER_FFI_ABI_VERSION, 16);
         assert_eq!(OpenNowStreamerStatus::GraphicsUnsupported as i32, 15);
         let header = include_str!("../include/opennow_streamer_ffi.h");
         assert!(header.contains("OPENNOW_STREAMER_GRAPHICS_UNSUPPORTED = 15,"));
@@ -2631,10 +2650,305 @@ mod tests {
     }
 
     #[test]
+    fn controller_authorization_is_independent_of_focused_capture() {
+        let messages = Box::new(CallbackMessages::default());
+        let handle = graphics_test_handle(&messages);
+        let queue = handle.input.queue();
+        let mut raw = true;
+        assert_eq!(
+            unsafe { opennow_streamer_set_controller_active(ptr::null(), true) },
+            OpenNowStreamerStatus::NullPointer
+        );
+        assert_eq!(
+            unsafe { opennow_streamer_set_capture_active(&handle, true, false, 0, &mut raw) },
+            OpenNowStreamerStatus::Ok
+        );
+        unsafe {
+            opennow_streamer_submit_gamepad(&handle, 0, 0x0101, 0x1000, 7, 0, 0, 0, 0, 0);
+        }
+        assert!(queue.take().is_none());
+        assert_eq!(
+            unsafe { opennow_streamer_set_capture_active(&handle, false, false, 0, &mut raw) },
+            OpenNowStreamerStatus::Ok
+        );
+        assert!(!raw);
+        assert_eq!(
+            unsafe { opennow_streamer_set_controller_active(&handle, true) },
+            OpenNowStreamerStatus::Ok
+        );
+        queue.set_text_ready(1, true);
+        assert_eq!(
+            unsafe { opennow_streamer_submit_key(&handle, 0x57, 0, true) },
+            OpenNowStreamerStatus::Ok
+        );
+        assert_eq!(
+            unsafe { opennow_streamer_submit_mouse_relative(&handle, 12, 34) },
+            OpenNowStreamerStatus::Ok
+        );
+        assert_eq!(
+            unsafe { opennow_streamer_submit_mouse_absolute(&handle, 20, 30, 640, 360) },
+            OpenNowStreamerStatus::Ok
+        );
+        assert_eq!(
+            unsafe { opennow_streamer_submit_mouse_button(&handle, 1, true) },
+            OpenNowStreamerStatus::Ok
+        );
+        assert_eq!(
+            unsafe { opennow_streamer_submit_mouse_wheel(&handle, 0, -120) },
+            OpenNowStreamerStatus::Ok
+        );
+        assert!(queue.take().is_none());
+        assert_eq!(
+            unsafe { opennow_streamer_submit_text(&handle, b"paste".as_ptr(), 5) },
+            OpenNowStreamerStatus::Closed
+        );
+        let submit_pad = || unsafe {
+            opennow_streamer_submit_gamepad(&handle, 0, 0x0101, 0x1000, 7, 0, 0, 0, 0, 0)
+        };
+        assert_eq!(submit_pad(), OpenNowStreamerStatus::Ok);
+        assert!(matches!(
+            queue.take(),
+            Some(CapturedInput::Gamepad {
+                buttons: 0x1000,
+                ..
+            })
+        ));
+        assert_eq!(
+            unsafe {
+                opennow_streamer_submit_local_action(&handle, OPENNOW_STREAMER_LOCAL_ACTION_GUIDE)
+            },
+            OpenNowStreamerStatus::Ok
+        );
+        assert_eq!(queue.take(), Some(CapturedInput::Guide));
+        assert_eq!(
+            unsafe { opennow_streamer_set_capture_active(&handle, false, false, 0, &mut raw) },
+            OpenNowStreamerStatus::Ok
+        );
+        assert!(queue.take().is_none());
+        assert_eq!(submit_pad(), OpenNowStreamerStatus::Ok);
+        assert!(matches!(
+            queue.take(),
+            Some(CapturedInput::Gamepad {
+                buttons: 0x1000,
+                ..
+            })
+        ));
+
+        let claim = OpenNowSdlDeviceClaim {
+            slot: 1,
+            reserved: [0; 7],
+            incarnation: 41,
+            vendor: 0x054c,
+            product: 0x05c4,
+        };
+        assert_eq!(
+            unsafe { opennow_streamer_replace_sdl_device_claims(&handle, &claim, 1) },
+            OpenNowStreamerStatus::Ok
+        );
+        let endpoint = handle.hid.open_endpoint();
+        handle.hid.bind_session(1).unwrap();
+        let snapshot = OpenNowSonySnapshot {
+            version: OPENNOW_STREAMER_SONY_SNAPSHOT_VERSION,
+            struct_size: size_of::<OpenNowSonySnapshot>(),
+            slot: 1,
+            touchpad_click: 0,
+            reserved: [0; 2],
+            incarnation: 41,
+            buttons: 0x1000,
+            left_trigger: 7,
+            right_trigger: 0,
+            left_stick_x: 0,
+            left_stick_y: 12_000,
+            right_stick_x: 0,
+            right_stick_y: -12_000,
+            contact_active: [0; 2],
+            reserved2: [0; 2],
+            contact_x: [0.0; 2],
+            contact_y: [0.0; 2],
+            reserved3: 0,
+            observed_at_us: 1000,
+        };
+        assert_eq!(
+            unsafe {
+                opennow_streamer_replace_generic_hid_inventory(&handle, &generic_interface(0, 3), 1)
+            },
+            OpenNowStreamerStatus::Ok
+        );
+        let bytes = [1, 2, 3];
+        let generic_report = OpenNowGenericHidReport {
+            version: OPENNOW_STREAMER_GENERIC_HID_VERSION,
+            struct_size: size_of::<OpenNowGenericHidReport>(),
+            slot: 0,
+            interface_number: 3,
+            operation: 0,
+            error: 0,
+            incarnation: 41,
+            bytes: bytes.as_ptr(),
+            byte_count: bytes.len(),
+        };
+        for rich in [false, true] {
+            handle
+                .hid
+                .set_session_admission(if rich { 2 } else { 0 }, handle.hid.inventory_snapshot().1);
+            assert_eq!(
+                unsafe { opennow_streamer_submit_generic_hid_report(&handle, &generic_report) },
+                OpenNowStreamerStatus::Closed
+            );
+            assert_eq!(
+                unsafe { opennow_streamer_submit_sony_snapshot(&handle, &snapshot) },
+                OpenNowStreamerStatus::Ok
+            );
+            if rich {
+                assert!(matches!(
+                    handle.hid.drain(8).as_slice(),
+                    [opennow_streamer_hid::IngressItem::Snapshot(_)]
+                ));
+            } else {
+                assert!(matches!(
+                    queue.take(),
+                    Some(CapturedInput::Gamepad {
+                        controller_id: 1,
+                        buttons: 0x1000,
+                        ..
+                    })
+                ));
+            }
+            assert_eq!(
+                unsafe { opennow_streamer_submit_sony_snapshot(&handle, &snapshot) },
+                OpenNowStreamerStatus::Ok
+            );
+            assert_eq!(
+                unsafe { opennow_streamer_set_controller_active(&handle, false) },
+                OpenNowStreamerStatus::Ok
+            );
+            let mut neutral_count = 0;
+            while let Some(input) = queue.take() {
+                assert!(matches!(
+                    input,
+                    CapturedInput::Gamepad {
+                        buttons: 0,
+                        left_trigger: 0,
+                        right_trigger: 0,
+                        left_stick_x: 0,
+                        left_stick_y: 0,
+                        right_stick_x: 0,
+                        right_stick_y: 0,
+                        ..
+                    }
+                ));
+                neutral_count += 1;
+            }
+            assert!(neutral_count > 0);
+            assert!(matches!(
+                handle.hid.drain(8).as_slice(),
+                [opennow_streamer_hid::IngressItem::Release { slot: 1, .. }]
+            ));
+            assert_eq!(submit_pad(), OpenNowStreamerStatus::Ok);
+            assert_eq!(
+                unsafe { opennow_streamer_submit_sony_snapshot(&handle, &snapshot) },
+                OpenNowStreamerStatus::SonyInactive
+            );
+            unsafe {
+                opennow_streamer_submit_local_action(&handle, OPENNOW_STREAMER_LOCAL_ACTION_GUIDE)
+            };
+            assert!(queue.take().is_none());
+            assert_eq!(
+                unsafe { opennow_streamer_set_controller_active(&handle, true) },
+                OpenNowStreamerStatus::Ok
+            );
+            assert_eq!(submit_pad(), OpenNowStreamerStatus::Ok);
+            assert!(matches!(
+                queue.take(),
+                Some(CapturedInput::Gamepad {
+                    buttons: 0x1000,
+                    ..
+                })
+            ));
+            assert_eq!(
+                unsafe { opennow_streamer_submit_sony_snapshot(&handle, &snapshot) },
+                OpenNowStreamerStatus::Ok
+            );
+            if rich {
+                assert!(matches!(
+                    handle.hid.drain(8).as_slice(),
+                    [opennow_streamer_hid::IngressItem::Snapshot(_)]
+                ));
+            } else {
+                assert!(matches!(
+                    queue.take(),
+                    Some(CapturedInput::Gamepad {
+                        controller_id: 1,
+                        buttons: 0x1000,
+                        ..
+                    })
+                ));
+            }
+        }
+        assert_eq!(
+            unsafe { opennow_streamer_set_capture_active(&handle, true, false, 0, &mut raw) },
+            OpenNowStreamerStatus::Ok
+        );
+        assert_eq!(
+            unsafe { opennow_streamer_set_controller_active(&handle, false) },
+            OpenNowStreamerStatus::Ok
+        );
+        assert_eq!(
+            unsafe { opennow_streamer_submit_generic_hid_report(&handle, &generic_report) },
+            OpenNowStreamerStatus::Ok
+        );
+        assert_eq!(
+            unsafe { opennow_streamer_set_controller_active(&handle, true) },
+            OpenNowStreamerStatus::Ok
+        );
+        assert_eq!(
+            unsafe { opennow_streamer_set_capture_active(&handle, false, false, 0, &mut raw) },
+            OpenNowStreamerStatus::Ok
+        );
+        assert_eq!(
+            unsafe { opennow_streamer_submit_generic_hid_report(&handle, &generic_report) },
+            OpenNowStreamerStatus::Closed
+        );
+        handle.hid.unbind_session(1);
+        handle.hid.close_endpoint(endpoint);
+        handle.hid.open_endpoint();
+        handle.hid.bind_session(2).unwrap();
+        handle
+            .hid
+            .set_session_admission(2, handle.hid.inventory_snapshot().1);
+        while queue.take().is_some() {}
+        assert_eq!(submit_pad(), OpenNowStreamerStatus::Ok);
+        assert!(queue.take().is_none());
+        assert_eq!(
+            unsafe { opennow_streamer_submit_sony_snapshot(&handle, &snapshot) },
+            OpenNowStreamerStatus::SonyInactive
+        );
+        assert_eq!(
+            unsafe { opennow_streamer_set_controller_active(&handle, true) },
+            OpenNowStreamerStatus::Ok
+        );
+        assert_eq!(submit_pad(), OpenNowStreamerStatus::Ok);
+        assert!(matches!(
+            queue.take(),
+            Some(CapturedInput::Gamepad {
+                buttons: 0x1000,
+                ..
+            })
+        ));
+        assert_eq!(
+            unsafe { opennow_streamer_submit_sony_snapshot(&handle, &snapshot) },
+            OpenNowStreamerStatus::Ok
+        );
+    }
+
+    #[test]
     fn typed_submit_api_routes_only_captured_events_to_the_rust_queue() {
         let messages = Box::new(CallbackMessages::default());
         let mut handle = graphics_test_handle(&messages);
         handle.input.set_active(true, false, 0);
+        assert_eq!(
+            unsafe { opennow_streamer_set_controller_active(&handle, true) },
+            OpenNowStreamerStatus::Ok
+        );
 
         assert_eq!(
             unsafe { opennow_streamer_submit_key(&handle, 0x57, 0x02, true) },
@@ -2762,6 +3076,10 @@ mod tests {
         );
         assert_eq!(submit(b"paste"), OpenNowStreamerStatus::Closed);
         handle.input.set_active(true, false, 0);
+        assert_eq!(
+            unsafe { opennow_streamer_set_controller_active(&handle, true) },
+            OpenNowStreamerStatus::Ok
+        );
         assert_eq!(submit(b"paste"), OpenNowStreamerStatus::Closed);
         let queue = handle.input.queue();
         queue.set_text_ready(1, true);
@@ -3040,7 +3358,8 @@ mod tests {
     #[test]
     fn generic_output_contract_is_versioned_bounded_and_matches_header() {
         let header = include_str!("../include/opennow_streamer_ffi.h");
-        assert!(header.contains("#define OPENNOW_STREAMER_FFI_ABI_VERSION 15u"));
+        assert!(header.contains("#define OPENNOW_STREAMER_FFI_ABI_VERSION 16u"));
+        assert!(header.contains("OpenNowStreamerStatus opennow_streamer_set_controller_active(\n    const OpenNowStreamer *handle,\n    bool active);"));
         assert!(header.contains("#define OPENNOW_STREAMER_GENERIC_HID_VERSION 1u"));
         for name in [
             "OpenNowGenericHidInterface",
@@ -3332,7 +3651,7 @@ mod tests {
             unsafe { opennow_streamer_replace_sdl_device_claims(&handle, [claim].as_ptr(), 1) },
             OpenNowStreamerStatus::Ok
         );
-        handle.hid.set_active(true);
+        handle.hid.set_controller_active(true);
         assert_eq!(
             unsafe { opennow_streamer_submit_sony_snapshot(&handle, &snapshot) },
             OpenNowStreamerStatus::Closed
@@ -3388,7 +3707,7 @@ mod tests {
             unsafe { opennow_streamer_submit_sony_snapshot(&handle, &snapshot) },
             OpenNowStreamerStatus::QueueFull
         );
-        handle.hid.set_active(false);
+        handle.hid.set_controller_active(false);
         snapshot.buttons = 0x1000;
         assert_eq!(
             unsafe { opennow_streamer_submit_sony_snapshot(&handle, &snapshot) },
@@ -3417,6 +3736,10 @@ mod tests {
         )
         .expect("FFI handle");
         handle.input.set_active(true, false, 0);
+        assert_eq!(
+            unsafe { opennow_streamer_set_controller_active(&handle, true) },
+            OpenNowStreamerStatus::Ok
+        );
         let claim = OpenNowSdlDeviceClaim {
             slot: 1,
             reserved: [0; 7],
@@ -3430,7 +3753,7 @@ mod tests {
         );
         let endpoint = hid.open_endpoint();
         assert!(hid.bind_session(7).is_some());
-        hid.set_active(true);
+        hid.set_controller_active(true);
         hid.set_session_admission(0, hid.inventory_snapshot().1);
 
         let entered = Arc::new(Barrier::new(2));
@@ -3491,6 +3814,10 @@ mod tests {
         let messages = Box::new(CallbackMessages::default());
         let handle = graphics_test_handle(&messages);
         handle.input.set_active(true, false, 0);
+        assert_eq!(
+            unsafe { opennow_streamer_set_controller_active(&handle, true) },
+            OpenNowStreamerStatus::Ok
+        );
         let claim = OpenNowSdlDeviceClaim {
             slot: 1,
             reserved: [0; 7],
@@ -3504,7 +3831,7 @@ mod tests {
         );
         handle.hid.open_endpoint();
         assert!(handle.hid.bind_session(1).is_some());
-        handle.hid.set_active(true);
+        handle.hid.set_controller_active(true);
         handle
             .hid
             .set_session_admission(0, handle.hid.inventory_snapshot().1);
@@ -3542,6 +3869,10 @@ mod tests {
         let messages = Box::new(CallbackMessages::default());
         let handle = graphics_test_handle(&messages);
         handle.input.set_active(true, false, 0);
+        assert_eq!(
+            unsafe { opennow_streamer_set_controller_active(&handle, true) },
+            OpenNowStreamerStatus::Ok
+        );
         let claim = OpenNowSdlDeviceClaim {
             slot: 1,
             reserved: [0; 7],
@@ -3555,7 +3886,7 @@ mod tests {
         );
         handle.hid.open_endpoint();
         assert!(handle.hid.bind_session(1).is_some());
-        handle.hid.set_active(true);
+        handle.hid.set_controller_active(true);
         handle
             .hid
             .set_session_admission(0, handle.hid.inventory_snapshot().1);
@@ -3619,10 +3950,14 @@ mod tests {
             OpenNowStreamerStatus::Ok
         );
         handle.input.set_active(true, false, 0);
+        assert_eq!(
+            unsafe { opennow_streamer_set_controller_active(&handle, true) },
+            OpenNowStreamerStatus::Ok
+        );
         assert_eq!(handle.hid.session_generation(), None);
         let endpoint = handle.hid.open_endpoint();
         assert!(handle.hid.bind_session(7).is_some());
-        handle.hid.set_active(true);
+        handle.hid.set_controller_active(true);
         handle
             .hid
             .set_session_admission(0b0001, handle.hid.inventory_snapshot().1);
@@ -3680,6 +4015,10 @@ mod tests {
         let messages = Box::new(CallbackMessages::default());
         let handle = graphics_test_handle(&messages);
         handle.input.set_active(true, false, 0);
+        assert_eq!(
+            unsafe { opennow_streamer_set_controller_active(&handle, true) },
+            OpenNowStreamerStatus::Ok
+        );
         let claim = OpenNowSdlDeviceClaim {
             slot: 1,
             reserved: [0; 7],
@@ -3693,7 +4032,7 @@ mod tests {
         );
         handle.hid.open_endpoint();
         assert!(handle.hid.bind_session(1).is_some());
-        handle.hid.set_active(true);
+        handle.hid.set_controller_active(true);
         handle
             .hid
             .set_session_admission(0, handle.hid.inventory_snapshot().1);

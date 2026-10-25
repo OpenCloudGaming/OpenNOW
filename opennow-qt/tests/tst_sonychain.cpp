@@ -753,6 +753,49 @@ class SonyChainTest : public QObject
     Q_OBJECT
 
 private slots:
+    void assignedBackgroundPadReachesThePeerWithoutFocusedCapture()
+    {
+        VirtualSonyController sony;
+        QVERIFY2(sony.attach(0x05c4, "OpenNOW background DS4"), SDL_GetError());
+        sony.input.setInputControllerId(sony.pad.id);
+        sony.input.setBackgroundControllerEnabled(true);
+        SonyChainHarness chain;
+        QVERIFY2(chain.start(reserveChainPorts(), kHidDeviceMaskRich), qUtf8Printable(chain.diagnostics()));
+        wireProductionInput(sony.input, chain.runtime());
+        chain.runtime().setControllerInputPolicy(NativeStreamRuntime::ControllerInputPolicy::BackgroundGameplay);
+        sony.input.setShellCaptureEnabled(false);
+        bool raw = true;
+        QCOMPARE(chain.runtime().setCaptureActive(false, false, 0, &raw), OPENNOW_STREAMER_OK);
+        QVERIFY(!raw);
+        QVERIFY2(chain.sawAttach(), qUtf8Printable(chain.diagnostics()));
+        const auto beforePress = chain.payloadCount();
+        QVERIFY(pressSonyButton(sony.pad.joystick, SDL_GAMEPAD_BUTTON_SOUTH, true));
+        QVERIFY2(chain.sawSonyReportMatching([](const QByteArray &report) {
+            return (quint8(report.at(5)) & 0x20) != 0;
+        }, kChainTimeoutMs, beforePress), qUtf8Printable(chain.diagnostics()));
+
+        const auto beforeSuspension = chain.payloadCount();
+        sony.input.setInputSuspended(true);
+        chain.runtime().setControllerInputPolicy(NativeStreamRuntime::ControllerInputPolicy::Suspended);
+        QVERIFY2(chain.sawSonyReportMatching([](const QByteArray &report) {
+            return (quint8(report.at(5)) & 0x20) == 0;
+        }, kChainTimeoutMs, beforeSuspension), qUtf8Printable(chain.diagnostics()));
+        const auto whileSuspended = chain.payloadCount();
+        QVERIFY(pressSonyButton(sony.pad.joystick, SDL_GAMEPAD_BUTTON_SOUTH, false));
+        QVERIFY(pressSonyButton(sony.pad.joystick, SDL_GAMEPAD_BUTTON_SOUTH, true));
+        QVERIFY(!chain.sawSonyReportMatching([](const QByteArray &report) {
+            return (quint8(report.at(5)) & 0x20) != 0;
+        }, 300, whileSuspended));
+
+        const auto beforeResume = chain.payloadCount();
+        chain.runtime().setControllerInputPolicy(NativeStreamRuntime::ControllerInputPolicy::BackgroundGameplay);
+        sony.input.setInputSuspended(false);
+        QVERIFY2(chain.sawSonyReportMatching([](const QByteArray &report) {
+            return (quint8(report.at(5)) & 0x20) != 0;
+        }, kChainTimeoutMs, beforeResume), qUtf8Printable(chain.diagnostics()));
+        QVERIFY(pressSonyButton(sony.pad.joystick, SDL_GAMEPAD_BUTTON_SOUTH, false));
+    }
+
     void virtualSonyControllerReachesTheBoundPeerWithButtonsTouchAndBothYSigns()
     {
         VirtualSonyController sony;

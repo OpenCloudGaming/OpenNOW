@@ -57,6 +57,7 @@ public:
                                                              std::uint32_t);
         using SetCaptureActive = OpenNowStreamerStatus (*)(const OpenNowStreamer *, bool,
                                                             bool, std::uintptr_t, bool *);
+        using SetControllerActive = OpenNowStreamerStatus (*)(const OpenNowStreamer *, bool);
         using ReplaceSdlDeviceClaims = OpenNowStreamerStatus (*)(
             const OpenNowStreamer *, const OpenNowSdlDeviceClaim *, std::size_t);
         using SubmitSonySnapshot = OpenNowStreamerStatus (*)(
@@ -94,6 +95,7 @@ public:
         SubmitGenericHidReport submitGenericHidReport = nullptr;
         TakeGenericHidOutput takeGenericHidOutput = nullptr;
         GetGenericHidAdmissions getGenericHidAdmissions = nullptr;
+        SetControllerActive setControllerActive = nullptr;
     };
 
     static constexpr int DefaultShutdownTimeoutMs = 1'500;
@@ -166,6 +168,8 @@ public:
     OpenNowStreamerStatus setCaptureActive(bool active, bool relativeMouse,
                                            std::uintptr_t windowHandle,
                                            bool *rawInputActive);
+    enum class ControllerInputPolicy { FollowCapture, Suspended, BackgroundGameplay };
+    void setControllerInputPolicy(ControllerInputPolicy policy);
     OpenNowStreamerStatus replaceSdlDeviceClaims(const QList<SdlDeviceClaim> &claims);
     OpenNowStreamerStatus submitSonySnapshot(const OpenNowSonySnapshot &snapshot);
     OpenNowStreamerStatus replaceGenericHidInventory(const QList<GenericHidDeviceClaim> &claims);
@@ -216,6 +220,7 @@ private:
     void invalidatePresentation();
     void publishDecodedDisplaySize(const QSize &size, quint64 generation);
     void resetInputCapture();
+    void syncControllerAuthorization();
     void updateGenericHidOutputPolling();
     void pollGenericHidAdmissions();
     void setStreaming(bool streaming);

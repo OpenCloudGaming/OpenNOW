@@ -30,6 +30,7 @@ FocusScope {
     readonly property bool sessionStartingVisible: !signInVisible
         && (route === "inserting" || (streamVisible && !desktopStream.videoReady))
     readonly property bool streamVisible: !signInVisible && route === "stream"
+    readonly property bool streamReady: streamVisible && desktopStream.videoReady
     readonly property bool streamPointerLocked: streamVisible && desktopStream.streamPointerLocked
     readonly property var frameGenerationStats: streamVisible ? desktopStream.frameGenerationStats : ({})
     readonly property var swapStats: streamVisible ? desktopStream.swapStats : ({})

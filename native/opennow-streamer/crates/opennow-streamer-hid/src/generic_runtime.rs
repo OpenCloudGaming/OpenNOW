@@ -715,10 +715,10 @@ mod tests {
             .unwrap();
         let endpoint = runtime.open_endpoint();
         runtime.bind_session(1).unwrap();
-        runtime.set_active(true);
+        runtime.set_capture_active(true);
         runtime.generic.submit_report(report(0, 1)).unwrap();
-        runtime.set_active(false);
-        runtime.set_active(true);
+        runtime.set_capture_active(false);
+        runtime.set_capture_active(true);
         assert_eq!(runtime.generic.capture_state(), (true, 1));
         assert!(runtime.generic.drain(1).is_empty());
         runtime.generic.submit_report(report(0, 1)).unwrap();
@@ -740,7 +740,7 @@ mod tests {
             .unwrap();
         let first = runtime.open_endpoint();
         runtime.bind_session(1).unwrap();
-        runtime.set_active(true);
+        runtime.set_capture_active(true);
         runtime.generic.submit_report(report(0, 1)).unwrap();
         let second = runtime.open_endpoint();
         assert!(runtime.generic.drain(8).is_empty());

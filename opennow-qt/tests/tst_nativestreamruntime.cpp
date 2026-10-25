@@ -800,6 +800,68 @@ private slots:
         QCOMPARE(authorization.size(), 8);
     }
 
+    void controllerAuthorizationIsIndependentOfFocusButBoundToGameplayAndSession()
+    {
+        static bool focused;
+        static bool controllerActive;
+        focused = false;
+        controllerActive = false;
+        auto api = fakeApi();
+        api.setCaptureActive = [](const OpenNowStreamer *, bool active, bool,
+                                  std::uintptr_t, bool *raw) {
+            focused = active;
+            *raw = false;
+            return OPENNOW_STREAMER_OK;
+        };
+        api.setControllerActive = [](const OpenNowStreamer *, bool active) {
+            controllerActive = active;
+            return OPENNOW_STREAMER_OK;
+        };
+        NativeStreamRuntime runtime(api);
+        QVERIFY(runtime.start());
+        runtime.setControllerInputPolicy(NativeStreamRuntime::ControllerInputPolicy::BackgroundGameplay);
+        QVERIFY(!controllerActive);
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                              {QStringLiteral("id"), QStringLiteral("background-session")}}));
+        QTRY_VERIFY(runtime.inputAllowed());
+        QVERIFY(controllerActive);
+        QVERIFY(!focused);
+        bool raw = false;
+        QCOMPARE(runtime.setCaptureActive(false, false, 0, &raw), OPENNOW_STREAMER_OK);
+        QVERIFY(controllerActive);
+        QVERIFY(!focused);
+        runtime.setControllerInputPolicy(NativeStreamRuntime::ControllerInputPolicy::Suspended);
+        QVERIFY(!controllerActive);
+        QCOMPARE(runtime.setCaptureActive(true, false, 0, &raw), OPENNOW_STREAMER_OK);
+        QVERIFY(focused);
+        QVERIFY(!controllerActive);
+        runtime.setControllerInputPolicy(NativeStreamRuntime::ControllerInputPolicy::FollowCapture);
+        QVERIFY(controllerActive);
+        QCOMPARE(runtime.setCaptureActive(false, false, 0, &raw), OPENNOW_STREAMER_OK);
+        QVERIFY(!controllerActive);
+        QCOMPARE(runtime.setCaptureActive(true, false, 0, &raw), OPENNOW_STREAMER_OK);
+        QVERIFY(controllerActive);
+        runtime.setControllerInputPolicy(NativeStreamRuntime::ControllerInputPolicy::BackgroundGameplay);
+        QCOMPARE(runtime.setCaptureActive(false, false, 0, &raw), OPENNOW_STREAMER_OK);
+        QVERIFY(controllerActive);
+        sendStatus = OPENNOW_STREAMER_QUEUE_FULL;
+        QVERIFY(!runtime.send({{QStringLiteral("type"), QStringLiteral("stop")}}));
+        QVERIFY(controllerActive);
+        QVERIFY(!focused);
+        sendStatus = OPENNOW_STREAMER_OK;
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("stop")}}));
+        QVERIFY(!controllerActive);
+        QCOMPARE(runtime.setCaptureActive(true, false, 0, &raw), OPENNOW_STREAMER_OK);
+        QVERIFY(!controllerActive);
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                              {QStringLiteral("id"), QStringLiteral("next-session")}}));
+        QTRY_VERIFY(runtime.inputAllowed());
+        QVERIFY(controllerActive);
+        QVERIFY(runtime.shutdown());
+        QVERIFY(!controllerActive);
+        QVERIFY(!focused);
+    }
+
     void realAbiBoundaryAdmitsClaimsAndGatesUnboundSonySnapshots()
     {
         NativeStreamRuntime runtime;
