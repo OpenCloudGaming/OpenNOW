@@ -15,6 +15,10 @@ on:
         description: Optional base64 Ed25519 public key pinned into the application core
         type: string
         default: ""
+      macos_intel_host:
+        description: Intel package host, intel by default or arm64 for cross-build measurements
+        type: string
+        default: intel
     outputs:
       version:
         description: Immutable package version
@@ -36,7 +40,9 @@ jobs:
         shell: bash
         env:
           BUILD_CHANNEL: ${{ inputs.channel }}
+          MACOS_INTEL_HOST: ${{ inputs.macos_intel_host }}
         run: |
+          case "$MACOS_INTEL_HOST" in intel|arm64) ;; *) exit 1 ;; esac
           version=$(python3 opennow-qt/packaging/nightly_release.py version \
             --run "$GITHUB_RUN_NUMBER" --attempt "$GITHUB_RUN_ATTEMPT" \
             --channel "$BUILD_CHANNEL")
@@ -46,7 +52,7 @@ jobs:
   packages:
     name: Package ${{ matrix.label }}
     needs: metadata
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.label == 'macos-x64' && inputs.macos_intel_host == 'arm64' && 'blacksmith-6vcpu-macos-15' || matrix.os }}
     timeout-minutes: ${{ startsWith(matrix.label, 'macos-') && 120 || 360 }}
     strategy:
       fail-fast: false
@@ -124,6 +130,7 @@ jobs:
       OPENNOW_UPDATE_PUBLIC_KEY: ${{ inputs.update_public_key }}
       MACOSX_DEPLOYMENT_TARGET: ${{ startsWith(matrix.label, 'macos-') && '13.0' || '' }}
       OPENNOW_MACOS_ARCH: ${{ matrix.macos-arch }}
+      OPENNOW_MACOS_HOST_ARCH: ${{ matrix.label == 'macos-x64' && inputs.macos_intel_host == 'arm64' && 'arm64' || matrix.macos-arch }}
       OPENNOW_PACKAGE_ARCH: ${{ matrix.package-arch }}
 
     steps:
@@ -166,6 +173,11 @@ jobs:
         if: matrix.rust-target != ''
         shell: bash
         run: rustup target add "${{ matrix.rust-target }}"
+
+      - name: Prepare macOS build target
+        if: runner.os == 'macOS'
+        shell: bash
+        run: bash .github/scripts/prepare-macos-target.sh
 
       - name: Install Windows ARM64 compiler
         if: matrix.label == 'windows-arm64'
@@ -536,11 +548,15 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          [[ "$(uname -m)" == "$OPENNOW_MACOS_ARCH" ]]
+          [[ "$(uname -m)" == "$OPENNOW_MACOS_HOST_ARCH" ]]
           python3 -m unittest discover -s opennow-qt/tests -p test_macos_build.py
           python3 -m unittest discover -s opennow-qt/packaging -p test_macos_awdl.py
-          cargo test --manifest-path native/opennow-core/Cargo.toml --locked
-          cargo test --manifest-path native/opennow-streamer/Cargo.toml --locked \
+          rust_test_target=()
+          if [[ "$OPENNOW_MACOS_HOST_ARCH" != "$OPENNOW_MACOS_ARCH" ]]; then
+            rust_test_target=(--target "${{ matrix.rust-target }}")
+          fi
+          cargo test --manifest-path native/opennow-core/Cargo.toml --locked "${rust_test_target[@]}"
+          cargo test --manifest-path native/opennow-streamer/Cargo.toml --locked "${rust_test_target[@]}" \
             -p opennow-streamer-platform-macos -p opennow-streamer-protocol -p opennow-streamer-ffi -p opennow-awdl-helper
       - name: Configure and build Qt native release
         if: runner.os == 'macOS'

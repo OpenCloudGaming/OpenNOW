@@ -81,6 +81,13 @@ Compare those phase times before claiming a speedup. A workflow's creation time
 and its first job's start time also reveal delays before compilation begins.
 Those delays are separate from Cargo and test performance.
 
+The manual `qt-ci` workflow accepts `macos_intel_host=arm64` for an Intel
+cross-build measurement on the existing six-core Apple Silicon runner. The
+default remains `intel`. The experiment builds x86_64 libraries and applications
+with native ARM compiler tools, then runs target Rust tests and packaged-app
+checks through Rosetta. All existing package tests and relocated-bundle checks
+still run. This measures build performance, not Intel-specific GPU behavior.
+
 References: [Cargo build timings](https://doc.rust-lang.org/cargo/reference/timings.html),
 [GitHub cache matching](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching),
 and [Blacksmith Sticky Disks](https://docs.blacksmith.sh/blacksmith-caching/dependencies-sticky-disks).

@@ -7,6 +7,13 @@ on:
         description: Publish a nightly with signed update manifests after all checks pass
         type: boolean
         default: false
+      macos_intel_host:
+        description: Intel package build host for manual cross-compilation measurements
+        type: choice
+        options:
+          - intel
+          - arm64
+        default: intel
       public_key:
         description: Production Ed25519 public key (leave default for verified updates)
         type: string
@@ -149,6 +156,7 @@ jobs:
     with:
       upload_complete: ${{ github.event_name == 'workflow_dispatch' }}
       update_public_key: ${{ inputs.public_key }}
+      macos_intel_host: ${{ inputs.macos_intel_host }}
 
   sign-nightly:
     name: Isolated nightly update signing
