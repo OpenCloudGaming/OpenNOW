@@ -160,7 +160,7 @@ jobs:
 
   sign-nightly:
     name: Isolated nightly update signing
-    if: github.event_name == 'workflow_dispatch' && inputs.publish_nightly
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_nightly && inputs.macos_intel_host == 'intel'
     needs: [preflight, contracts, checks, build]
     runs-on: blacksmith-2vcpu-ubuntu-2404
     environment: qt-update-signing
@@ -203,7 +203,7 @@ jobs:
 
   publish-nightly:
     name: Publish update-signed nightly prerelease
-    if: github.event_name == 'workflow_dispatch' && inputs.publish_nightly
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_nightly && inputs.macos_intel_host == 'intel'
     needs: [contracts, checks, build, sign-nightly]
     runs-on: blacksmith-2vcpu-ubuntu-2404
     permissions:

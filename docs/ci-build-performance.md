@@ -87,6 +87,8 @@ default remains `intel`. The experiment builds x86_64 libraries and applications
 with native ARM compiler tools, then runs target Rust tests and packaged-app
 checks through Rosetta. All existing package tests and relocated-bundle checks
 still run. This measures build performance, not Intel-specific GPU behavior.
+Selecting `arm64` disables nightly signing and publication even if
+`publish_nightly` is enabled. Measurement packages remain unsigned artifacts.
 
 References: [Cargo build timings](https://doc.rust-lang.org/cargo/reference/timings.html),
 [GitHub cache matching](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching),

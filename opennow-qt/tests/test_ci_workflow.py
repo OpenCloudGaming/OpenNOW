@@ -15,6 +15,17 @@ def jobs(workflow):
 
 
 class CIWorkflowTest(unittest.TestCase):
+    def test_measurement_cross_builds_cannot_sign_or_publish_nightly(self):
+        entries = jobs((WORKFLOWS / "qt-ci.yml").read_text())
+        for name in ("sign-nightly", "publish-nightly"):
+            with self.subTest(job=name):
+                condition = re.search(r"^    if: (.+)$", entries[name], re.MULTILINE).group(1)
+                self.assertEqual(
+                    condition,
+                    "github.event_name == 'workflow_dispatch' && inputs.publish_nightly "
+                    "&& inputs.macos_intel_host == 'intel'",
+                )
+
     def test_stack_base_branches_run_pr_checks_without_new_push_or_publication_triggers(self):
         ci = (WORKFLOWS / "qt-ci.yml").read_text()
         pull = ci.split("  pull_request:\n", 1)[1].split("  push:\n", 1)[0]
