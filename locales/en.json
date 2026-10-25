@@ -37,6 +37,16 @@
     "whatsNew": "WHAT'S NEW",
     "upToDate": "You're up to date"
   },
+  "macPointerLock": {
+    "title": "Pointer lock",
+    "description": "Capture the mouse for unrestricted movement. Temporarily released for menus and when OpenNOW loses focus.",
+    "off": "Pointer lock is off",
+    "enabledState": "ON",
+    "disabledState": "OFF",
+    "offHint": "Pointer lock is off. Mouse movement can stop at screen edges.",
+    "controlsHint": "Change pointer lock in the stream menu (Ctrl+G) or Settings > Controls.",
+    "enable": "Enable pointer lock"
+  },
   "flightControls": {
     "heading": "FLIGHT CONTROLS & WHEELS",
     "description": "Sticks, throttles, pedals and wheels on the supported list reach the game as the real device, not as an Xbox controller.",

@@ -1739,6 +1739,30 @@ private slots:
         }
     }
 
+    void macPointerLockUsesTheSharedPreferenceAndKeepsErrorsVisible()
+    {
+        const auto controls = source(QStringLiteral(
+            "qml/desktop/settings/pages/DesktopSettingsControlsPage.qml"));
+        QVERIFY(controls.contains(QStringLiteral("objectName: \"macPointerLockToggle\"")));
+        QVERIFY(controls.contains(QStringLiteral("boolSetting(\"macPointerLockEnabled\", true)")));
+        QVERIFY(controls.contains(QStringLiteral("setSetting(\"macPointerLockEnabled\", value)")));
+        const auto menu = source(QStringLiteral("qml/desktop/stream/DesktopInStreamMenu.qml"));
+        QVERIFY(menu.contains(QStringLiteral("objectName: \"streamPointerLockRow\"")));
+        QVERIFY(menu.contains(QStringLiteral("onClicked: ShellStore.pointerLockToggleRequested()")));
+        QVERIFY(menu.contains(QStringLiteral("shortcut(\"shortcutTogglePointerLock\", \"F8\")")));
+        for (const auto &path : {QStringLiteral("qml/screens/StreamScreen.qml"),
+                                QStringLiteral("qml/desktop/stream/DesktopStreamScreen.qml")}) {
+            const auto stream = source(path);
+            QVERIFY(stream.contains(QStringLiteral(
+                "macPointerLockEnabled: ShellStore.settings.macPointerLockEnabled !== false")));
+            QVERIFY(stream.contains(QStringLiteral(
+                "ShellStore.setSetting(\"macPointerLockEnabled\", macPointerLockEnabled)")));
+            QVERIFY(stream.contains(QStringLiteral("StreamPointerLockHint {")));
+            QVERIFY(stream.contains(QStringLiteral("pointerLockEnabled: streamVideo.macPointerLockEnabled")));
+            QVERIFY(stream.contains(QStringLiteral(": streamVideo.relativeMouse ? streamVideo.inputCaptureError : \"\"")));
+        }
+    }
+
     void clipboardPasteUsesTheSharedOptInOnBothSurfaces()
     {
         const auto controls = source(QStringLiteral(

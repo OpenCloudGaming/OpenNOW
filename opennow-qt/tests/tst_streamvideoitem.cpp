@@ -677,6 +677,7 @@ private slots:
         StreamVideoItem item(
             std::make_unique<MacPointerCapture>(std::make_unique<Operations>(pointer)),
             true, session.window.contentItem());
+        item.setMacPointerLockEnabled(false);
         item.setRenderCallback({});
         item.setSize(session.window.size());
         item.forceActiveFocus();
@@ -813,6 +814,12 @@ private slots:
         item.setRenderCallback({});
         item.setSize(session.window.size());
         QVERIFY(!item.m_macPointer->locked());
+        QVERIFY(item.macPointerLockEnabled());
+        QSignalSpy preferenceChanges(&item, &StreamVideoItem::macPointerLockEnabledChanged);
+        item.setShortcutBindings({{QStringLiteral("toggle-pointer-lock"), QStringLiteral("F8")}});
+        connect(&item, &StreamVideoItem::localShortcutRequested, &item, [&item](const QString &action) {
+            if (action == QStringLiteral("toggle-pointer-lock")) item.togglePointerLock();
+        });
         QMouseEvent click(QEvent::MouseButtonPress, QPointF(100, 100), QPointF(100, 100),
                           Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
         item.mousePressEvent(&click);
@@ -821,28 +828,35 @@ private slots:
                             Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
         item.mouseReleaseEvent(&release);
         QTRY_VERIFY(item.captureActive());
-        const bool webrtc = transport == QStringLiteral("webrtc");
-        QCOMPARE(item.relativeMouse(), webrtc);
-        QCOMPARE(item.m_macPointer->locked(), webrtc);
-        QCOMPARE(pointer.associated, !webrtc);
-        QCOMPARE(pointer.hideCount, webrtc ? 1 : 0);
-        if (!webrtc) {
-            item.applyRemoteCursor(QByteArray::fromHex("0000"));
-            QVERIFY(item.m_macPointer->locked());
-        }
+        QVERIFY(item.relativeMouse());
+        QVERIFY(item.m_macPointer->locked());
+        QVERIFY(!pointer.associated);
+        QCOMPARE(pointer.hideCount, 1);
+        item.applyRemoteCursor(QByteArray::fromHex("0001"));
+        QVERIFY(item.m_macPointer->locked());
         QVERIFY(pointer.motion);
         const auto move = pointer.motion;
         move(QPointF(-12, 34));
         QCOMPARE(CursorSession::motions, QList<QPoint>{QPoint(-12, 34)});
-        item.togglePointerLock();
+        QKeyEvent unlock(QEvent::KeyPress, Qt::Key_F8, Qt::NoModifier);
+        item.keyPressEvent(&unlock);
+        QVERIFY(unlock.isAccepted());
+        QKeyEvent unlockRelease(QEvent::KeyRelease, Qt::Key_F8, Qt::NoModifier);
+        item.keyReleaseEvent(&unlockRelease);
+        QVERIFY(unlockRelease.isAccepted());
+        QVERIFY(!item.macPointerLockEnabled());
+        QCOMPARE(preferenceChanges.count(), 1);
         QVERIFY(!item.relativeMouse());
         QVERIFY(!item.m_macPointer->locked());
         QVERIFY(pointer.associated);
         QCOMPARE(pointer.hideCount, 0);
         QCOMPARE(item.cursor().shape(), Qt::ArrowCursor);
+        item.applyRemoteCursor(QByteArray::fromHex("0000"));
+        QVERIFY(!item.relativeMouse());
         QQuickItem overlay(session.window.contentItem());
         overlay.forceActiveFocus();
         QTRY_VERIFY(!item.captureActive());
+        QVERIFY(!item.macPointerLockEnabled());
         item.forceActiveFocus();
         QTRY_VERIFY(item.captureActive());
         QVERIFY(!item.relativeMouse());
@@ -851,6 +865,13 @@ private slots:
         QVERIFY(item.m_macPointer->locked());
         QVERIFY(!pointer.associated);
         QCOMPARE(pointer.hideCount, 1);
+
+        overlay.forceActiveFocus();
+        QTRY_VERIFY(!item.captureActive());
+        QVERIFY(item.macPointerLockEnabled());
+        item.forceActiveFocus();
+        QTRY_VERIFY(item.m_macPointer->locked());
+        QCOMPARE(preferenceChanges.count(), 2);
 
         QVERIFY(session.runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
                                       {QStringLiteral("id"), QStringLiteral("replacement")}}));
@@ -869,10 +890,34 @@ private slots:
             reinterpret_cast<const std::uint8_t *>(replacement.constData()), replacement.size(),
             CursorSession::callbacks.user_data);
         QTRY_VERIFY(item.captureActive());
+        QVERIFY(item.relativeMouse());
+        QVERIFY(item.m_macPointer->locked());
+        QVERIFY(!pointer.associated);
+        QCOMPARE(pointer.hideCount, 1);
+        item.setMacPointerLockEnabled(false);
+        item.resetRemoteCursor();
+        item.applyRemoteCursor(QByteArray::fromHex("0000"));
         QVERIFY(!item.relativeMouse());
         QVERIFY(!item.m_macPointer->locked());
-        QVERIFY(pointer.associated);
-        QCOMPARE(pointer.hideCount, 0);
+        item.setVisible(false);
+        item.setVisible(true);
+        item.forceActiveFocus();
+        QTRY_VERIFY(item.captureActive());
+        QVERIFY(!item.macPointerLockEnabled());
+        QVERIFY(!item.relativeMouse());
+        QCOMPARE(preferenceChanges.count(), 3);
+        QVERIFY(session.runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                                      {QStringLiteral("id"), QStringLiteral("unlocked-replacement")}}));
+        QVERIFY(!item.captureActive());
+        const QByteArray unlocked = R"({"id":"unlocked-replacement","type":"ok","transport":"webrtc"})";
+        CursorSession::callbacks.response_callback(
+            reinterpret_cast<const std::uint8_t *>(unlocked.constData()), unlocked.size(),
+            CursorSession::callbacks.user_data);
+        QTRY_VERIFY(item.captureActive());
+        QVERIFY(!item.macPointerLockEnabled());
+        QVERIFY(!item.relativeMouse());
+        QVERIFY(!item.m_macPointer->locked());
+        QCOMPARE(preferenceChanges.count(), 3);
     }
 
     void cursorOwnershipSurvivesOverlaysFullscreenAndRestart()

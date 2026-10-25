@@ -54,6 +54,7 @@ StreamVideoItem::StreamVideoItem(std::unique_ptr<MacPointerCapture> pointerCaptu
     setAcceptedMouseButtons(Qt::AllButtons);
     setKeepMouseGrab(true);
     setAcceptHoverEvents(true);
+    m_relativeMouse = m_usesMacPointerCapture && m_macPointerLockEnabled;
     m_frameStatsTimer.setInterval(1000);
     connect(&m_frameStatsTimer, &QTimer::timeout,
             this, &StreamVideoItem::frameGenerationStatsChanged);
@@ -62,7 +63,8 @@ StreamVideoItem::StreamVideoItem(std::unique_ptr<MacPointerCapture> pointerCaptu
     connect(this, &QQuickItem::visibleChanged, this, &StreamVideoItem::updateSwapGate,
             Qt::UniqueConnection);
     if (s_nativeRuntime) {
-        m_relativeMouse = s_nativeRuntime->defaultRelativeMouse();
+        m_relativeMouse = m_usesMacPointerCapture ? m_macPointerLockEnabled
+                                                : s_nativeRuntime->defaultRelativeMouse();
         m_decodedVideoSize = s_nativeRuntime->decodedDisplaySize();
         refreshVideoSize();
         connect(s_nativeRuntime, &NativeStreamRuntime::decodedDisplaySizeChanged, this,

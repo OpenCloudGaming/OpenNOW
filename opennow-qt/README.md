@@ -620,6 +620,10 @@ ordering to release a held controller.
 The public-safe `--smoke-test --route stream --smoke-input-capture-error` fixture
 renders the shared error banner over the existing stream item. Add `--desktop` for
 the desktop shell and `--screenshot /absolute/path.png` to save visual evidence.
+Use `--smoke-test --route stream --smoke-pointer-lock` to preview the macOS unlocked
+hint and enable control on any platform. The hint lasts six seconds after unlocking
+or starting a session with pointer lock off. Menus dismiss it without replaying it
+when gameplay resumes. This fixture does not exercise native capture.
 Offscreen and nested compositor tests do not replace live Windows/X11/Wayland
 controller and mouse acceptance on real streaming sessions.
 

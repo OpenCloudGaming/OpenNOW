@@ -135,6 +135,11 @@ FocusScope {
             && !ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)
         shortcutBindings: ShellStore.streamShortcutBindings()
         clipboardPaste: ShellStore.settings.clipboardPaste === true
+        macPointerLockEnabled: ShellStore.settings.macPointerLockEnabled !== false
+        onMacPointerLockEnabledChanged: {
+            if (Qt.platform.os === "osx" && macPointerLockEnabled !== (ShellStore.settings.macPointerLockEnabled !== false))
+                ShellStore.setSetting("macPointerLockEnabled", macPointerLockEnabled)
+        }
         keyboardLayout: String((ShellStore.activeSession || {}).keyboardLayout || "en-US")
         videoSize: Qt.size(Number(root.profile.width || 0), Number(root.profile.height || 0))
         frameGeneration: String(ShellStore.settings.frameGeneration || 'off') === '2x'
@@ -173,6 +178,21 @@ FocusScope {
         z: 3
     }
 
+    StreamPointerLockHint {
+        layer.enabled: HdrOutput.chromeRequired
+        layer.effect: HdrChromeEffect {}
+        sessionId: root.sessionId
+        streaming: root.videoReady
+        active: Qt.platform.os === "osx" && root.videoReady && streamVideo.inputEnabled
+            && !clipboardPasteNotice.running
+        pointerLockEnabled: streamVideo.macPointerLockEnabled
+        onEnableRequested: {
+            streamVideo.togglePointerLock()
+            Qt.callLater(root.resynchronizeStreamInput)
+        }
+        z: 3
+    }
+
     StreamCaptureStatus {
         layer.enabled: HdrOutput.chromeRequired
         layer.effect: HdrChromeEffect {}
@@ -182,7 +202,8 @@ FocusScope {
     Connections {
         target: ShellStore
         function onPointerLockToggleRequested() {
-            streamVideo.togglePointerLock()
+            if (root.visible && root.videoReady)
+                streamVideo.togglePointerLock()
         }
         function onTextInputErrorAnnounced(message) {
             root.clipboardPasteMessage = message
