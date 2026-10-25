@@ -22,6 +22,11 @@ Rust and native toolchains, and ABI settings. Cargo still checks source changes,
 features, profiles, and dependency versions. A cache hit is not permission to skip
 a build or a test.
 
+The committed vendor tree is also part of the cache identity. A vendored FFmpeg
+recipe or str0m source change selects a new snapshot, so native sentinel files
+and the cached peer-probe executable cannot bypass that change. Ordinary
+application source edits keep the same compatible cache.
+
 The current Blacksmith Sticky Disk action requires Linux block-device and ext4
 tools. Windows and macOS therefore restore complete target archives. Their keys
 include the source commit, with compatible environment and lockfile fallbacks.

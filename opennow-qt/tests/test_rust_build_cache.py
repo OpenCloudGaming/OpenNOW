@@ -182,6 +182,25 @@ class RustBuildCacheTest(unittest.TestCase):
             for entry in plan["links"]:
                 self.assertTrue(Path(entry["destination"]).is_relative_to(root / "temp/opennow-rust-cache"))
 
+    def test_vendored_native_recipe_or_probe_dependencies_select_a_new_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            self.fixture(root)
+            env = self.environment(root)
+            snapshots = []
+            for vendor_tree in ("old-ffmpeg-and-str0m-tree", "new-ffmpeg-recipe", "new-str0m-source"):
+                def output(command, required=False):
+                    return vendor_tree if "ls-tree" in command else env["GITHUB_SHA"]
+                with patch.object(CACHE, "tool_identity", return_value={"rustc": "fixture"}), \
+                        patch.object(CACHE, "command_output", side_effect=output) as probe:
+                    CACHE.prepare(env)
+                    probe.assert_any_call([
+                        "git", "-C", str(root), "ls-tree", "HEAD", "--", "native/opennow-streamer/vendor",
+                    ], required=True)
+                plan = json.loads((root / "temp/opennow-rust-cache-plan.json").read_text())
+                snapshots.append(plan["disk-key"])
+            self.assertEqual(len(set(snapshots)), 3)
+
     def test_linking_preserves_native_outputs_fingerprints_and_timestamps(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

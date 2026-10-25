@@ -157,6 +157,9 @@ def prepare(env):
         "abi": {key: value for key, value in env.items() if ABI_VARIABLES.fullmatch(key) and value},
         "targets": [str(path.relative_to(root)) for path in targets],
         "recipe": file_digest(Path(__file__)),
+        "vendored-inputs": command_output([
+            "git", "-C", str(root), "ls-tree", "HEAD", "--", "native/opennow-streamer/vendor",
+        ], required=True),
         "cargo-config": {
             str(path): file_digest(path)
             for directory in [cargo_home, root / ".cargo", *(workspace / ".cargo" for workspace in workspaces)]
