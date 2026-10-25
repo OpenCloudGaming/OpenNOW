@@ -126,6 +126,12 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     QQuickStyle::setStyle(u"Basic"_s);
 
     QGuiApplication application(argc, argv);
+#if defined(Q_OS_LINUX) && defined(NO_SOFT_RENDERING)
+#if !QT_CONFIG(vulkan) || !__has_include(<vulkan/vulkan.h>)
+    qCritical("NO_SOFT_RENDERING requires a Qt build with Vulkan support.");
+    return EXIT_FAILURE;
+#endif
+#endif
     QGuiApplication::setDesktopFileName(u"io.github.opencloudgaming.OpenNOW"_s);
     QIcon applicationIcon;
     for (const int size : {16, 24, 32, 48, 64, 128, 256, 512, 1024})
@@ -191,6 +197,9 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
 #if defined(Q_OS_LINUX) && QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
     NativeStreamRuntime::initializeDiagnostics();
     LinuxVulkanGraphics::Device vulkanDevice;
+#ifdef NO_SOFT_RENDERING
+    bool graphicsValidationRequired = true;
+#endif
     if (QQuickWindow::graphicsApi() == QSGRendererInterface::Vulkan
             && !vulkanDevice.initialize())
         qWarning("Embedded Vulkan Video is unavailable: %s Qt will use its default graphics device.",
@@ -352,6 +361,26 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     streamPresentation.attach(rootWindow);
 #endif
 #if defined(Q_OS_LINUX) && QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
+#ifdef NO_SOFT_RENDERING
+    if (!rootWindow || rootWindow->rendererInterface()->graphicsApi() != QSGRendererInterface::Vulkan) {
+        qCritical("NO_SOFT_RENDERING requires the Qt Vulkan scene graph; software and other graphics APIs are forbidden.");
+        return EXIT_FAILURE;
+    }
+    QObject::connect(rootWindow, &QQuickWindow::sceneGraphInitialized, rootWindow, [&graphicsValidationRequired] {
+        graphicsValidationRequired = true;
+    }, Qt::DirectConnection);
+    QObject::connect(rootWindow, &QQuickWindow::beforeRendering, rootWindow,
+                     [&vulkanDevice, rootWindow, &graphicsValidationRequired] {
+        if (!graphicsValidationRequired) return;
+        if (!vulkanDevice.validateHardwareRendering(rootWindow))
+            qFatal("Graphics initialization failed: %s", qUtf8Printable(vulkanDevice.lastError()));
+        graphicsValidationRequired = false;
+    }, Qt::DirectConnection);
+    QObject::connect(rootWindow, &QQuickWindow::sceneGraphError, rootWindow,
+                     [](QQuickWindow::SceneGraphError, const QString &message) {
+        qFatal("NO_SOFT_RENDERING Qt scene-graph initialization failed: %s", qUtf8Printable(message));
+    }, Qt::DirectConnection);
+#endif
     if (vulkanDevice.handle() && !vulkanDevice.adopt(rootWindow)) {
         qWarning("Could not adopt the embedded Vulkan device: %s",
                  qUtf8Printable(vulkanDevice.lastError()));

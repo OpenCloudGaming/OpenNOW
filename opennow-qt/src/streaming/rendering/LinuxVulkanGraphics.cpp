@@ -51,6 +51,51 @@ bool Device::matchesContext(const OpenNowStreamerVulkanDeviceInfo &info,
         && context.queue_family_index == info.graphics_queue_family_index;
 }
 
+Device::SceneGraphDevice Device::querySceneGraphDevice(QQuickWindow *window)
+{
+    SceneGraphDevice device;
+    if (!window || !window->rendererInterface()) return device;
+    device.api = window->rendererInterface()->graphicsApi();
+    if (device.api != QSGRendererInterface::Vulkan) return device;
+    auto *rhi = window->rhi();
+    if (!rhi || rhi->backend() != QRhi::Vulkan) return device;
+    const auto *handles = static_cast<const QRhiVulkanNativeHandles *>(rhi->nativeHandles());
+    if (!handles || !handles->inst || !handles->inst->isValid() || !handles->physDev)
+        return device;
+    auto *functions = handles->inst->functions();
+    if (!functions) return device;
+    VkPhysicalDeviceProperties properties{};
+    functions->vkGetPhysicalDeviceProperties(handles->physDev, &properties);
+    device.physicalDevice = properties;
+    return device;
+}
+
+bool Device::validateHardwareRendering(QQuickWindow *window)
+{
+    const auto device = m_api.sceneGraphDevice ? m_api.sceneGraphDevice(window) : SceneGraphDevice{};
+    if (device.api != QSGRendererInterface::Vulkan) {
+        m_lastError = QStringLiteral("NO_SOFT_RENDERING requires the Qt Vulkan scene graph (actual graphics API %1).")
+            .arg(int(device.api));
+        return false;
+    }
+    if (!device.physicalDevice) {
+        m_lastError = QStringLiteral("NO_SOFT_RENDERING could not query the Qt Vulkan physical device.");
+        return false;
+    }
+    const auto type = device.physicalDevice->deviceType;
+    if (type != VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU && type != VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU
+            && type != VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU) {
+        m_lastError = QStringLiteral("NO_SOFT_RENDERING rejects the %1 Vulkan physical device \"%2\" (type %3).")
+            .arg(type == VK_PHYSICAL_DEVICE_TYPE_CPU ? QStringLiteral("CPU") : QStringLiteral("non-GPU"))
+            .arg(QString::fromUtf8(device.physicalDevice->deviceName,
+                                  qstrnlen(device.physicalDevice->deviceName, VK_MAX_PHYSICAL_DEVICE_NAME_SIZE)))
+            .arg(int(type));
+        return false;
+    }
+    m_lastError.clear();
+    return true;
+}
+
 bool Device::initialize()
 {
     if (m_device) return true;

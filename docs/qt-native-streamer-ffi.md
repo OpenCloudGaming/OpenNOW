@@ -36,10 +36,24 @@ resets the display-only countdown.
 Terminal error and status events can include this object:
 
 ```json
-{"source":"nvst-server","code":"server-terminated","startId":"start-42","wireCode":2147680291,"reason":56,"extendedCode":2147680263,"resumable":false}
+{"source":"nvst-server","code":"server-terminated","startId":"start-42","wireCode":2147680291,"shutdownReason":260,"reason":56,"sessionAlive":false,"extendedCode":2147680263,"resumable":false}
 ```
 
-`reason` and `extendedCode` can be null. `resumable` can be true, false, or null.
+`wireCode` is the raw result from command `0x109`. For the extended teardown
+envelope `0x80030023`, the transport walks the big-endian shutdown records that
+follow it: type 0 is a tag and a `SessionTerminationReason`, and type 1 is a tag,
+a blob length, and a skipped blob. The first type-0 record supplies
+`shutdownReason`. An unknown record type stops the walk because its length is
+unknown, so it hides later records; a truncated record or overlong blob also ends
+the walk. Without a type-0 record `shutdownReason` is null. `reason` is the
+derived notification reason, `sessionAlive` the native liveness flag, and
+`extendedCode` the translated result, following the official client's
+`onStreamerStopped` selection and `SessionTerminationReasonToNvstResult` table.
+A missing reason yields `0x35`/not alive/`0xC0F52003` and an unlisted reason
+`0x35`/not alive/the table result, `0x80030000` when unmapped. Other wire codes
+pass through as `extendedCode` with `sessionAlive:true`. These fields are always
+present and `resumable` is always a boolean for `nvst-server`. The evidence is
+`notes/windows-re/visible-error-codes.md` in the reverse-engineering corpus.
 The native streamer retains the numeric values through the existing JSON callback.
 Qt rejects server termination events whose `startId` does not match the current
 start-command generation, before invalidating input or presentation. The matching

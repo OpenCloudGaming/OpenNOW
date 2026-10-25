@@ -58,24 +58,42 @@ fn zero_second_warning_remains_active_until_clear_or_expiry() {
 
 #[test]
 fn server_termination_preserves_wire_code_and_is_emitted_before_shutdown() {
-    for (wire_code, resumable) in [
-        (0x8003_0023_u32, Some(false)),
-        (0x8004_0010, Some(true)),
-        (0xdead_beef, None),
+    for (wire_code, records, shutdown_reason, reason, session_alive, extended_code) in [
+        (0x8003_0023_u32, &[][..], None, 0x35, false, 0xc0f5_2003),
+        (
+            0x8003_0023,
+            &[0, 1, 0, 2, 0xaa, 0xbb, 0, 0, 0x01, 0x04][..],
+            Some(0x104),
+            0x38,
+            false,
+            0x8003_0007,
+        ),
+        (0x8003_0023, &[0, 0, 0x80, 0x06][..], Some(0x8006), 0x35, false, 0x8004_0010),
+        (0x8004_0010, &[0, 0, 0x01, 0x04][..], None, 0x35, true, 0x8004_0010),
+        (0xdead_beef, &[][..], None, 0x35, true, 0xdead_beef),
     ] {
         let feedback = NvstFeedbackState::default();
         feedback.idle_warning_active.store(true, Ordering::Release);
         let (events, received) = mpsc::channel();
         assert!(feedback.receive_server_control(
-            &server_command(0x109, &wire_code.to_be_bytes()),
+            &server_command(0x109, &[&wire_code.to_be_bytes()[..], records].concat()),
             &mut ServerControlDiagnostics::default(),
             &events
         ));
         let NvstReceiveEvent::ServerTermination(termination) = received.try_recv().unwrap() else {
             panic!("termination event required")
         };
-        assert_eq!(termination.wire_code, wire_code);
-        assert_eq!(termination.resumable(), resumable);
+        assert_eq!(
+            termination,
+            NvstServerTermination {
+                wire_code,
+                shutdown_reason,
+                reason,
+                session_alive,
+                extended_code,
+            }
+        );
+        assert!(!termination.resumable());
         assert!(!feedback.idle_warning_active.load(Ordering::Acquire));
     }
 }

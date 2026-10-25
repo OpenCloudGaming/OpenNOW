@@ -338,11 +338,11 @@ unknown cloud-session disposition rather than assigning a normal-exit reason to 
 Native ABI 13 adds `session-timer` events through the existing JSON event callback,
 with `startId`, `timerType`, `secondsLeft` and `active`. Idle-warning type 4 shows
 stream chrome without stopping media; type 5 or successfully delivered gameplay
-input clears it. Server termination events preserve `wireCode` separately from
-optional application `reason` and `extendedCode` in `termination`, use source
-`nvst-server`, and carry a boolean `resumable` only for verified classifications.
-Nonresumable server termination prevents automatic restart and resume. Unknown
-classification remains null and is reconciled against CloudMatch. The JSON protocol
+input clears it. Server termination events preserve `wireCode` and the decoded
+`shutdownReason` separately from the derived `reason`, `sessionAlive`, and
+translated `extendedCode` in `termination`, use source `nvst-server`, and always carry a
+boolean `resumable`. Nonresumable server termination prevents automatic restart
+and resume. The JSON protocol
 version is unchanged; the native library and Qt shell must be rebuilt together.
 Expected, authoritative server endings do not create stream-error incidents or
 session-error telemetry. Resumable, unknown, and local transport/decode failures

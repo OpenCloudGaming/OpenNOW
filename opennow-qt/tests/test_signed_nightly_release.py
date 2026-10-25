@@ -53,15 +53,20 @@ class SignedNightlyReleaseTest(unittest.TestCase):
     def test_signs_and_verifies_every_exact_package_without_changing_bytes(self):
         self.sign()
         self.verify()
-        self.assertEqual(len(list(self.destination.iterdir())), 28)
-        self.assertEqual(len((self.destination / "SHA256SUMS").read_text().splitlines()), 27)
+        self.assertEqual(len(list(self.destination.iterdir())), 30)
+        self.assertEqual(len((self.destination / "SHA256SUMS").read_text().splitlines()), 29)
         for arch in ("x64", "arm64"):
             self.assertIn(f"OpenNOW-Qt-{self.version}-Linux-{arch}.flatpak", self.packages)
+            self.assertTrue((self.destination / f"OpenNOW-Qt-{self.version}-Darwin-{arch}.dmg.manifest.json").is_file())
         self.assertTrue((self.destination / f"OpenNOW-Qt-{self.version}-Windows-x64-setup.exe.manifest.json").is_file())
         self.assertTrue((self.destination / f"OpenNOW-Qt-{self.version}-Windows-arm64-setup.exe.manifest.json").is_file())
         info = json.loads((self.destination / "RELEASE-INFO.json").read_text())
         self.assertEqual(info["updates"], "signed-manifest")
         self.assertEqual(info["platformSigning"], "unsigned")
+        self.assertFalse(any("Darwin" in asset["name"] and "x64" in asset["name"]
+                             and asset["name"].endswith(".zip") for asset in info["assets"]))
+        for suffix in (".zip", ".zip.manifest.json"):
+            self.assertFalse((self.destination / f"OpenNOW-Qt-{self.version}-Darwin-x64{suffix}").exists())
         for name in self.packages:
             self.assertEqual((self.source / name).read_bytes(), (self.destination / name).read_bytes())
             manifest = json.loads((self.destination / (name + ".manifest.json")).read_text())

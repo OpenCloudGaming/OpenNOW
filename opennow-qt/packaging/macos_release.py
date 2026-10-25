@@ -53,7 +53,7 @@ def run(*args):
     return result.stdout
 
 
-def signing_targets(app):
+def verified_bundle_targets(app, architecture):
     targets = []
     for path in app.rglob("*"):
         if path.is_symlink():
@@ -63,7 +63,7 @@ def signing_targets(app):
         elif path.is_file():
             with path.open("rb") as source:
                 if source.read(4) in MACHO_MAGIC:
-                    run("lipo", path, "-verify_arch", "arm64")
+                    run("lipo", path, "-verify_arch", architecture)
                     targets.append(path)
     return sorted(targets, key=lambda path: (-len(path.parts), str(path))) + [app]
 
@@ -97,7 +97,9 @@ def notarize(path, credentials):
         raise RuntimeError("Apple notarization did not return Accepted")
 
 
-def package(build, output, version):
+def package(build, output, version, arch):
+    if arch not in ("arm64", "x64"):
+        raise ValueError("Unsupported macOS package architecture")
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
         raise ValueError("A numeric release version is required")
     values = {name: os.environ[name] for name in SECRET_NAMES}
@@ -110,7 +112,7 @@ def package(build, output, version):
     requirement = (f'=anchor apple generic and certificate leaf[subject.OU] = "{match[1]}" '
                    'and certificate leaf[field.1.2.840.113635.100.6.1.13] exists')
     output.mkdir(parents=True, exist_ok=True)
-    name = f"OpenNOW-Qt-{version}-Darwin-arm64"
+    name = f"OpenNOW-Qt-{version}-Darwin-{arch}"
     if any((output / f"{name}.{suffix}").exists() for suffix in ("zip", "dmg")):
         raise ValueError("Candidate outputs already exist")
     with tempfile.TemporaryDirectory(prefix="opennow-macos-signing-", dir=os.environ.get("RUNNER_TEMP")) as directory:
@@ -141,7 +143,7 @@ def package(build, output, version):
                 if plistlib.load(source).get("CFBundleIdentifier") != BUNDLE_ID:
                     raise ValueError("Unexpected application bundle identifier")
             print("Signing and verifying nested code inside-out", flush=True)
-            for target in signing_targets(app):
+            for target in verified_bundle_targets(app, "x86_64" if arch == "x64" else "arm64"):
                 options = ["--identifier", BUNDLE_ID, "--entitlements", ENTITLEMENTS] if target == app else []
                 if target == app / "Contents/Helpers/opennow-awdl-helper":
                     options = ["--identifier", AWDL_HELPER_ID]
@@ -197,15 +199,16 @@ def interrupted(signum, frame):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Sign, notarize, and verify macOS ARM64 candidates")
+    parser = argparse.ArgumentParser(description="Sign, notarize, and verify macOS candidates")
     parser.add_argument("--build", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--version", required=True)
+    parser.add_argument("--arch", choices=("arm64", "x64"), required=True)
     args = parser.parse_args()
     signal.signal(signal.SIGTERM, interrupted)
     signal.signal(signal.SIGINT, interrupted)
     os.umask(0o077)
-    package(args.build.resolve(), args.output.resolve(), args.version)
+    package(args.build.resolve(), args.output.resolve(), args.version, args.arch)
 
 
 if __name__ == "__main__":

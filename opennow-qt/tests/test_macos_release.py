@@ -68,6 +68,7 @@ class MacOSReleaseTest(unittest.TestCase):
             (app / "Contents/Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": RELEASE.BUNDLE_ID}))
             for relative in ("MacOS/OpenNOW", "MacOS/opennow-core", "MacOS/opennow-update-helper",
                              "MacOS/libopennow_streamer_ffi.dylib", "PlugIns/platforms/libqcocoa.dylib",
+                             "Frameworks/libSDL3.0.dylib", "Frameworks/libavcodec.61.dylib",
                              "Frameworks/QtCore.framework/Versions/A/QtCore",
                              "Helpers/Nested.app/Contents/MacOS/Nested"):
                 path = app / "Contents" / relative
@@ -100,7 +101,38 @@ class MacOSReleaseTest(unittest.TestCase):
         return ""
 
     def package(self):
-        RELEASE.package(self.root / "build", self.output, "1.2.3")
+        RELEASE.package(self.root / "build", self.output, "1.2.3", "arm64")
+
+    def test_intel_packages_verify_x86_64_code_and_use_x64_names(self):
+        RELEASE.package(self.root / "build", self.output, "1.2.3", "x64")
+        checks = [call for call in self.calls if call[0] == "lipo"]
+        self.assertTrue(checks)
+        self.assertEqual({call[-1] for call in checks}, {"x86_64"})
+        for relative in ("MacOS/OpenNOW", "MacOS/opennow-core", "MacOS/libopennow_streamer_ffi.dylib",
+                         "Frameworks/libSDL3.0.dylib", "Frameworks/libavcodec.61.dylib",
+                         "Frameworks/QtCore.framework/Versions/A/QtCore", "PlugIns/platforms/libqcocoa.dylib"):
+            self.assertTrue(any(call[1].endswith("/Contents/" + relative) for call in checks), relative)
+        self.assertEqual({path.name for path in self.output.iterdir()},
+                         {"OpenNOW-Qt-1.2.3-Darwin-x64.zip", "OpenNOW-Qt-1.2.3-Darwin-x64.dmg"})
+
+    def test_wrong_architecture_prevents_signing_and_promotion(self):
+        original = self.command
+
+        def reject(*args):
+            if args[0] == "lipo" and str(args[1]).endswith("/Frameworks/libavcodec.61.dylib"):
+                raise RuntimeError("Architecture mismatch")
+            return original(*args)
+
+        RELEASE.run.side_effect = reject
+        with self.assertRaisesRegex(RuntimeError, "Architecture mismatch"):
+            RELEASE.package(self.root / "build", self.output, "1.2.3", "x64")
+        self.assertFalse(list(self.output.iterdir()))
+        self.assertFalse(any(call[:2] == ["codesign", "--force"] for call in self.calls))
+
+    def test_unsupported_architecture_is_rejected_before_commands(self):
+        with self.assertRaisesRegex(ValueError, "architecture"):
+            RELEASE.package(self.root / "build", self.output, "1.2.3", "universal")
+        self.assertEqual(self.calls, [])
 
     def test_inside_out_signing_precedes_notarization_and_final_packaging(self):
         self.package()
@@ -290,7 +322,7 @@ class MacOSCandidateWorkflowTest(unittest.TestCase):
                  for platform, arches, extensions in (
                      ("Linux", ("x64", "arm64"), ("AppImage", "AppImage.zsync", "deb", "flatpak")),
                      ("Windows", ("x64", "arm64"), ("zip",)),
-                     ("Darwin", ("arm64",), ("dmg", "zip")))
+                     ("Darwin", ("x64", "arm64"), ("dmg", "zip")))
                  for arch in arches for extension in extensions]
         names.extend(f"OpenNOW-Qt-1.2.3-Windows-{arch}-setup.exe" for arch in ("x64", "arm64"))
         return names
@@ -298,7 +330,7 @@ class MacOSCandidateWorkflowTest(unittest.TestCase):
     @unittest.skipUnless(sys.platform.startswith("linux"), "Inventory uses GNU find on the Linux signing runner")
     def test_exact_platform_artifacts_are_required(self):
         names = self.names()
-        self.assertEqual(len(names), 14)
+        self.assertEqual(len(names), 16)
         self.assertEqual([name for name in names if name.endswith("-setup.exe")], [
             "OpenNOW-Qt-1.2.3-Windows-x64-setup.exe",
             "OpenNOW-Qt-1.2.3-Windows-arm64-setup.exe",
@@ -320,7 +352,7 @@ class MacOSCandidateWorkflowTest(unittest.TestCase):
         macos = workflow.split("  macos:\n", 1)[1].split("  inventory:\n", 1)[0]
         self.assertIn("needs: [preflight, linux, windows, macos, flatpak]", workflow)
         for required in ("blacksmith-6vcpu-macos-15", "environment: qt-production-release",
-                         "CMAKE_OSX_ARCHITECTURES=arm64",
+                         'CMAKE_OSX_ARCHITECTURES="$OPENNOW_MACOS_ARCH"',
                          "OPENNOW_UPDATE_ED25519_PUBLIC_KEY=", "--locked", "ctest --test-dir",
                          'mv "$QT_ROOT_DIR" "$QT_ROOT_DIR.unavailable"',
                          '"--smoke-test"', "macos_release.py"):

@@ -25,8 +25,33 @@ class MacOSBuildContractTest(unittest.TestCase):
         ]
         positions = [workflow.index(command) for command in commands]
         self.assertEqual(positions, sorted(positions))
-        self.assertIn("name: opennow-qt-macos-arm64-unsigned", workflow)
-        self.assertIn("name: opennow-macos-arm64-validation", workflow)
+        self.assertIn("name: opennow-qt-${{ matrix.label }}-unsigned", workflow)
+        self.assertIn("name: opennow-${{ matrix.label }}-validation", workflow)
+
+    def test_native_macos_matrices_match_runner_qt_sdl_rust_and_package_architectures(self):
+        for filename in ("qt-build.yml", "qt-release-candidate.yml"):
+            with self.subTest(workflow=filename):
+                workflow = (QT_SOURCE.parent / ".github/workflows" / filename).read_text()
+                macos = workflow.split("  macos:\n", 1)[1] if filename == "qt-release-candidate.yml" else workflow
+                for arch, native, target, runner in (
+                        ("arm64", "arm64", "aarch64-apple-darwin", "blacksmith-6vcpu-macos-15"),
+                        ("x64", "x86_64", "x86_64-apple-darwin", "macos-15-intel")):
+                    marker = f"          - label: macos-{arch}" if filename == "qt-build.yml" else f"          - arch: {arch}"
+                    matrix = macos.split(marker, 1)[1].split("\n          - ", 1)[0].split("\n    env:", 1)[0]
+                    for required in (f"os: {runner}", f"macos-arch: {native}", f"rust-target: {target}"):
+                        self.assertIn(required, matrix)
+                self.assertIn('[[ "$(uname -m)" == "$OPENNOW_MACOS_ARCH" ]]', workflow)
+                self.assertIn('CMAKE_OSX_ARCHITECTURES="$OPENNOW_MACOS_ARCH"', workflow)
+                self.assertIn('Darwin-"$OPENNOW_PACKAGE_ARCH".dmg', workflow)
+                self.assertNotIn("-verify_arch arm64", workflow)
+        action = (QT_SOURCE.parent / ".github/actions/sdl3/action.yml").read_text()
+        self.assertIn('-DCMAKE_OSX_ARCHITECTURES=$SDL_TARGET_ARCH', action)
+        unsigned = (QT_SOURCE.parent / ".github/workflows/qt-build.yml").read_text()
+        self.assertIn("target-arch: ${{ matrix.macos-arch ||", unsigned)
+        self.assertIn('verified_bundle_targets(bin_dir.parent.parent, os.environ["OPENNOW_MACOS_ARCH"])', unsigned)
+        signed = (QT_SOURCE.parent / ".github/workflows/qt-release-candidate.yml").read_text()
+        self.assertIn("target-arch: ${{ matrix.macos-arch }}", signed)
+        self.assertIn('--arch "$OPENNOW_PACKAGE_ARCH"', signed)
 
     def test_architecture_validation_places_input_before_architecture_list(self):
         workflow = QT_SOURCE.parent / ".github/workflows/qt-build.yml"
@@ -35,9 +60,9 @@ class MacOSBuildContractTest(unittest.TestCase):
         self.assertEqual(len(commands), 3)
         self.assertEqual(
             commands,
-            [["lipo", "$bin/$executable", "-verify_arch", "arm64"],
-             ["lipo", "$app/Contents/Helpers/opennow-awdl-helper", "-verify_arch", "arm64"],
-             ["lipo", "$bin/libopennow_streamer_ffi.dylib", "-verify_arch", "arm64"]],
+            [["lipo", "$bin/$executable", "-verify_arch", "$OPENNOW_MACOS_ARCH"],
+             ["lipo", "$app/Contents/Helpers/opennow-awdl-helper", "-verify_arch", "$OPENNOW_MACOS_ARCH"],
+             ["lipo", "$bin/libopennow_streamer_ffi.dylib", "-verify_arch", "$OPENNOW_MACOS_ARCH"]],
         )
 
     def configure(self, arch="arm64", rust_target="", adhoc=False):
@@ -99,15 +124,21 @@ file(GENERATE OUTPUT "${{CMAKE_BINARY_DIR}}/contract.txt" CONTENT
                     f"streamer-rust-target/{target}/release/libopennow_streamer_ffi.dylib"))
                 self.assertIn("@loader_path", contract[3])
                 self.assertIn("@loader_path", contract[4])
+                package_arch = "x64" if arch == "x86_64" else "arm64"
+                cpack = (build / "CPackConfig.cmake").read_text()
+                self.assertIn(f'set(CPACK_PACKAGE_FILE_NAME "OpenNOW-Qt-1.0.0-Darwin-{package_arch}")', cpack)
 
     def test_matching_explicit_rust_target_is_accepted(self):
         result, _ = self.configure(rust_target="aarch64-apple-darwin")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_mismatched_rust_target_is_rejected(self):
-        result, _ = self.configure(rust_target="x86_64-apple-darwin")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("must match the macOS Qt architecture", result.stderr)
+        for arch, target in (("arm64", "x86_64-apple-darwin"),
+                             ("x86_64", "aarch64-apple-darwin")):
+            with self.subTest(arch=arch):
+                result, _ = self.configure(arch=arch, rust_target=target)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("must match the macOS Qt architecture", result.stderr)
 
     def test_ffi_requests_relocatable_install_name(self):
         result, build = self.configure()

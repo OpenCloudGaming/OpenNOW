@@ -27,7 +27,7 @@ class MacOSAwdlPackagingTest(unittest.TestCase):
                 self.assertIn("python3 -m unittest discover -s opennow-qt/packaging -p test_macos_awdl.py",
                               workflow)
                 self.assertIn('test -x "$app/Contents/Helpers/opennow-awdl-helper"', workflow)
-                self.assertIn('lipo "$app/Contents/Helpers/opennow-awdl-helper" -verify_arch arm64', workflow)
+                self.assertIn('lipo "$app/Contents/Helpers/opennow-awdl-helper" -verify_arch "$OPENNOW_MACOS_ARCH"', workflow)
                 self.assertIn('/usr/bin/codesign --verify --strict "$app/Contents/Helpers/opennow-awdl-helper"', workflow)
                 self.assertIn('plutil -lint "$app/Contents/Resources/opennow-awdl.plist"', workflow)
                 self.assertIn('if name == "../Helpers/opennow-awdl-helper":', workflow)

@@ -74,9 +74,9 @@ actionlint -color=false .github/workflows/qt-ci.yml .github/workflows/qt-checks.
   .github/workflows/qt-build.yml .github/workflows/qt-release-candidate.yml
 ```
 
-The signing tests generate ephemeral test-only keys, sign and verify all thirteen fixture
+The signing tests generate ephemeral test-only keys, sign and verify all fourteen fixture
 nightly assets with OpenSSL. Candidate promotion tests exercise the production candidate's
-signing script with fourteen fixture assets. Both reject mismatched keys, incomplete inventories, changed
+signing script with sixteen fixture assets. Both reject mismatched keys, incomplete inventories, changed
 packages, changed manifests, and invalid public inputs. No production seed is needed.
 
 The platform-check action also runs `opennow-qt/tests/run_update_helper_integration.py`

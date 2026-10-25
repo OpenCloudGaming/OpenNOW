@@ -7,6 +7,7 @@ rust-version.workspace = true
 
 [features]
 default = []
+hardware-only = ["opennow-streamer-platform/hardware-only"]
 linux-vaapi = ["opennow-streamer-platform/linux-vaapi"]
 linux-ffmpeg = ["opennow-streamer-platform/linux-ffmpeg"]
 linux-ffmpeg-bundled = ["opennow-streamer-platform/linux-ffmpeg-bundled"]

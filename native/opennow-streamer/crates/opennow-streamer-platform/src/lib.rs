@@ -74,6 +74,10 @@ use opennow_streamer_protocol::{
     CodecCapability, GraphicsAdapterCapability, VideoBackendCapability,
 };
 
+const HARDWARE_ONLY: bool = cfg!(all(target_os = "linux", feature = "hardware-only"));
+const HARDWARE_ONLY_ERROR: &str =
+    "hardware-only build forbids software video decoding and composition";
+
 #[cfg(any(target_os = "windows", test))]
 fn windows_decode_dimensions() -> Option<opennow_streamer_protocol::DecodeDimensions> {
     Some(opennow_streamer_protocol::DecodeDimensions {
@@ -323,27 +327,32 @@ fn apply_backend_policy(backends: &mut [VideoBackendCapability], requested: Opti
         .filter(|value| !value.is_empty())
         .unwrap_or("auto")
         .to_ascii_lowercase();
-    if requested == "auto" {
-        return;
-    }
     for backend in backends {
         if backend_allowed_by_policy(&requested, backend.backend) {
             continue;
         }
+        let reason = if HARDWARE_ONLY && matches!(backend.backend, "software" | "ffmpeg") {
+            HARDWARE_ONLY_ERROR
+        } else {
+            "video backend was disabled by decoder policy"
+        };
         backend.available = false;
-        backend.reason = Some("video backend was disabled by decoder policy");
+        backend.reason = Some(reason);
         backend.zero_copy_modes.clear();
         for codec in &mut backend.codecs {
             codec.available = false;
             codec.hdr_supported = Some(false);
             codec.hdr_color_qualities = Some(Vec::new());
             codec.color_qualities = Some(Vec::new());
-            codec.reason = Some("video backend was disabled by decoder policy");
+            codec.reason = Some(reason);
         }
     }
 }
 
 fn backend_allowed_by_policy(requested: &str, backend: &str) -> bool {
+    if HARDWARE_ONLY && matches!(backend, "software" | "ffmpeg") {
+        return false;
+    }
     match requested {
         "auto" | "" => true,
         "software" => matches!(backend, "software" | "ffmpeg"),
@@ -667,10 +676,55 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hardware_only_capabilities_cannot_be_overridden_by_decoder_policy() {
+        for policy in [
+            None,
+            Some("auto"),
+            Some("software"),
+            Some("ffmpeg"),
+            Some("hardware"),
+            Some("vulkan"),
+        ] {
+            let mut backends = vec![software_backend()];
+            apply_backend_policy(&mut backends, policy);
+            if HARDWARE_ONLY {
+                assert_eq!(backends.len(), 1);
+                assert!(!backends[0].available, "{policy:?}");
+                assert_eq!(backends[0].reason, Some(HARDWARE_ONLY_ERROR));
+                assert!(backends[0].zero_copy_modes.is_empty());
+                assert!(
+                    backends[0]
+                        .codecs
+                        .iter()
+                        .all(|codec| !codec.available && codec.reason == Some(HARDWARE_ONLY_ERROR))
+                );
+                assert!(
+                    embedded_video_backends()
+                        .iter()
+                        .filter(|backend| matches!(backend.backend, "software" | "ffmpeg"))
+                        .all(|backend| !backend.available
+                            && backend.reason == Some(HARDWARE_ONLY_ERROR))
+                );
+            } else {
+                assert_eq!(backends.len(), 1);
+            }
+        }
+    }
+
+    #[test]
     fn decoder_policy_separates_hardware_software_and_explicit_backends() {
-        assert!(backend_allowed_by_policy("auto", "software"));
-        assert!(backend_allowed_by_policy("software", "ffmpeg"));
-        assert!(backend_allowed_by_policy("software", "software"));
+        assert_eq!(
+            backend_allowed_by_policy("auto", "software"),
+            !HARDWARE_ONLY
+        );
+        assert_eq!(
+            backend_allowed_by_policy("software", "ffmpeg"),
+            !HARDWARE_ONLY
+        );
+        assert_eq!(
+            backend_allowed_by_policy("software", "software"),
+            !HARDWARE_ONLY
+        );
         assert!(!backend_allowed_by_policy("software", "vulkan"));
         assert!(backend_allowed_by_policy("hardware", "d3d11"));
         assert!(!backend_allowed_by_policy("hardware", "software"));
@@ -802,6 +856,17 @@ mod tests {
     #[test]
     fn advertises_only_the_linked_software_codec() {
         let backends = video_backends();
+        if HARDWARE_ONLY {
+            assert!(
+                backends
+                    .iter()
+                    .filter(|backend| matches!(backend.backend, "software" | "ffmpeg"))
+                    .all(
+                        |backend| !backend.available && backend.reason == Some(HARDWARE_ONLY_ERROR)
+                    )
+            );
+            return;
+        }
         let software = backends
             .iter()
             .find(|backend| backend.backend == "software")

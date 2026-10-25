@@ -2500,14 +2500,16 @@ fn forward_nvst_event<R: NvstSessionResources>(
             let resumable = termination.resumable();
             let message = format!(
                 "The server ended the streaming session (0x{:08x})",
-                termination.wire_code,
+                termination.extended_code,
             );
             let termination = json!({
                 "source": "nvst-server",
                 "startId": pending_control_output.start_id,
                 "code": "server-terminated",
                 "wireCode": termination.wire_code,
+                "shutdownReason": termination.shutdown_reason,
                 "reason": termination.reason,
+                "sessionAlive": termination.session_alive,
                 "extendedCode": termination.extended_code,
                 "resumable": resumable,
             });

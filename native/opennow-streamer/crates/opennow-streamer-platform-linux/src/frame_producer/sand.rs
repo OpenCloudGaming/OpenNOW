@@ -656,6 +656,68 @@ mod tests {
     }
 
     #[test]
+    fn pi_1440p_split_sand_requires_real_capture_allocation_padding() {
+        let (mut frame, format) = fixture(true, 2560, 1440);
+        let layout = SandLayout::new(&frame, format).unwrap();
+        assert_eq!(layout.buffer_sizes, [3_686_400, 1_843_200]);
+        let mut allocations = Vec::new();
+        for ((object, &copy_size), required_size) in frame
+            .objects
+            .iter_mut()
+            .zip(&layout.buffer_sizes)
+            .zip([3_686_656, 1_843_456])
+        {
+            assert_eq!((copy_size + 64).next_multiple_of(256), required_size);
+            assert_eq!(required_size, object.size as u64 + 256);
+            let tight = sized_fd(object.size);
+            object.fd = tight.as_raw_fd();
+            assert!(import_allocation_size(object, required_size).is_err());
+
+            for page_size in [4096, 16384] {
+                let padded_size = (object.size + 4096).next_multiple_of(page_size);
+                let padded = sized_fd(padded_size);
+                object.fd = padded.as_raw_fd();
+                assert_eq!(
+                    import_allocation_size(object, required_size).unwrap(),
+                    padded_size as u64
+                );
+                allocations.push(padded);
+            }
+        }
+        assert_eq!(
+            SandLayout::new(&frame, format).unwrap().buffer_sizes,
+            layout.buffer_sizes
+        );
+    }
+
+    #[test]
+    fn pi_1080p_split_sand_page_rounding_can_cover_driver_read_ahead() {
+        let (mut frame, format) = fixture(true, 1920, 1080);
+        let layout = SandLayout::new(&frame, format).unwrap();
+        assert_eq!(layout.buffer_sizes, [2_073_600, 1_036_800]);
+        for (page_size, allocations) in [
+            (4096, [2_076_672, 1_040_384]),
+            (16384, [2_080_768, 1_048_576]),
+        ] {
+            for ((object, &copy_size), allocation_size) in frame
+                .objects
+                .iter_mut()
+                .zip(&layout.buffer_sizes)
+                .zip(allocations)
+            {
+                let required_size = (copy_size + 64).next_multiple_of(256);
+                assert_eq!(allocation_size, object.size.next_multiple_of(page_size));
+                let fd = sized_fd(allocation_size);
+                object.fd = fd.as_raw_fd();
+                assert_eq!(
+                    import_allocation_size(object, required_size).unwrap(),
+                    allocation_size as u64
+                );
+            }
+        }
+    }
+
+    #[test]
     fn sand_transfer_buffers_leave_decoder_padding_for_driver_read_ahead() {
         let (mut frame, format) = fixture(true, 1920, 1080);
         frame.layers[0].planes[0].pitch = 1088;
