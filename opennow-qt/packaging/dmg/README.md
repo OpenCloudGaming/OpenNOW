@@ -3,7 +3,7 @@
 The DMG uses the approved [Paper design A](https://app.paper.design/file/01M5SKRE8ET2F3B1KZCSS4YCZ2).
 The background contains instructional text, the mint arrow, and filename backings. Finder supplies the real
 OpenNOW app icon, Applications alias, labels, and window chrome.
-Flat neutral backings keep Finder's filenames readable with either black or white
+Rounded neutral backings, centered on the label text, keep Finder's filenames readable with either black or white
 native label text; the app and folder remain normal draggable Finder items.
 
 Nightly builds and signed release packaging share `../macos-dmg.cmake` and the

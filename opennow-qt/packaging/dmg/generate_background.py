@@ -30,10 +30,11 @@ def background(scale):
     text("Drag OpenNOW into Applications.", 101, 15, 500, "#A3A3A3")
     text("Then open OpenNOW from Applications.", 399, 13, 400, "#A3A3A3")
     # Finder owns filename color. This neutral supports both black and white labels.
-    for left, right in ((174, 270), (440, 556)):
-        draw.rectangle((left * render_scale, 306 * render_scale,
-                        right * render_scale, 330 * render_scale),
-                       fill="#767676")
+    # Plates are centered on Finder's measured 14 pt label, descenders included.
+    for left, right in ((180, 262), (450, 544)):
+        draw.rounded_rectangle((left * render_scale, 314 * render_scale,
+                                right * render_scale, 334 * render_scale),
+                               radius=5 * render_scale, fill="#767676")
     for points in (((322, 241), (395, 241)), ((383, 231), (395, 241), (383, 251))):
         draw.line([(x * render_scale, y * render_scale) for x, y in points],
                   fill="#56E6A5", width=2 * render_scale, joint="curve")
