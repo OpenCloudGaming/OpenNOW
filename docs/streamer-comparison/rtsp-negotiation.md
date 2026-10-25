@@ -41,6 +41,65 @@ sample does not establish a general startup ratio. No ratio is inferred, and
 no Windows merged config is copied into ANNOUNCE. The source evidence is the
 Windows research report `sdp-attributes.md` and `logs-timeline.md`.
 
+## AV1 QP scale
+
+The host's dynamic quality controls (DRC, DFC and GRC under `vqos[0]`) compare
+the encoder's QP against thresholds that DESCRIBE offers on the H.264/H.265
+scale (0..=51, for example `drc.upperQpThreshold` 39). AV1 QP runs 0..=255, so
+against those thresholds every AV1 frame looks badly over-quantized and the
+host keeps stepping quality down. With the `saveBandwidth` policy
+(`dynamicStreamingMode` 1) at 3840×2160 @ 120, 8-bit AV1 received 70–99 fps
+instead of 120, and 10-bit AV1 sessions ended with `0x800e8605` 7–20 s after
+PLAY; neither happened with the values below. PR #1269 decodes that code as
+`NVST_DISCONN_SERVER_VIDEO_PIPELINE_SCALE_FRAME_FAILED`. Those runs sent
+`chromaFormat:1` for 4:2:0, which `docs/core-protocol.md` also ties to
+`0x800e8605`; there the session ends before the first video frame, whereas
+these ended mid-stream and only with the policy on.
+
+When ANNOUNCE carries `vqos[0].bitStreamFormat:2` (AV1) and DESCRIBE's
+`drc.upperQpThreshold` is at most 49 or absent, `av1_qp_settings` in
+`native/opennow-streamer/crates/opennow-streamer-core/src/nvst_rtsp_negotiation.rs`
+writes the official client's AV1 values as session attributes and logs
+`av1-qp-settings applied=[...]`. A higher offer is already on the AV1 scale,
+so ANNOUNCE is left unchanged and the log says `av1-qp-settings skipped`.
+
+| Field | `drc` | `dfc` | `grc` |
+|---|---|---|---|
+| `minQpHeadroom` | 20 | 20 | 20 |
+| `lowerQpThreshold` / `qpLowerLimit` | 100 | 100 | 100 |
+| `upperQpThreshold` / `qpMaxUpperLimit` | 200 | 200 | 200 |
+| `minAdaptiveQpThreshold` / `qpMinUpperLimit` | 200 if width × height ≥ 3440 × 1440, else 180 | same | same |
+| `qpMaxResThresholdAdj` | offered value × 5, as a wrapping byte | same | same |
+| `qpCodecThresholdAdj` | 0 | 0 | 0 |
+
+- The resolution test compares pixel counts, as the official client does:
+  2560×1600 gets 180, while 3840×1600 and 3200×1800 get 200.
+- The official client scales its own merged `qpMaxResThresholdAdj`. OpenNOW
+  scales only a value DESCRIBE offers and otherwise sends none, so the server's
+  default stays. The byte wrap is kept: an offered 60 is sent as 44.
+- All 18 values are sent even when one equals the DESCRIBE offer. None of them
+  is in the server-negotiated list that ANNOUNCE omits when it matches DESCRIBE.
+
+The values and the gate come from read-only static analysis of `libBifrost2.so`
+in the official Linux client 2.0.89.141 (Flatpak `com.nvidia.geforcenow`),
+BuildID `1e4ee18f55be056167757d72e407a7155362d84c`, SHA-256
+`29754306f013488456ac688fd4e5cc58b798cd22778b054069d7bc74480511c7`. Addresses
+are ELF virtual addresses in that file. `applyDefaultVideoFormatSpecificSettings`
+at `0x344921` tests `vqos[0].bitStreamFormat` for 2 and the
+`drc.upperQpThreshold` byte for at most `0x31`, then up to `0x344b4b` logs
+"Applying default AV1 QP settings" (string at `0xdbecf0`) and writes the 18
+bytes. The 200/180 choice uses the resolution-level table built at `0x348b7f`,
+whose level 3 has a 3440×1440 minimum. The config-name setters store to the
+same offsets, for example `vqos[0].drc.minQpHeadroom` (reference at
+`0x36959e`) to vqos `+0x1f8`, `dfc.qpMaxUpperLimit` (`0x36d498`) to `+0x288`,
+and `grc.minQpHeadroom` (`0x36ae34`) to `+0x230`. The official macOS client's
+AV1 config dump also shows `drc` and `dfc` thresholds on this scale, for
+example `drc.upperQpThreshold` and `dfc.qpMaxUpperLimit` 200; its `grc` values
+were not collected. The same routine also sets `video[0].minQp` to 25 for AV1
+and, by resolution level, changes `video[0].encoderPreset` and split-encode
+settings; OpenNOW does not send those. No binary, raw log, or pseudocode is
+committed.
+
 ## Additive internal handoff
 
 `nvstVideo.recoveryPolicy` carries optional typed DESCRIBE values:

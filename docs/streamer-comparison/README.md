@@ -59,7 +59,7 @@ Official GFN local files used:
 - `C:\Users\Zortos\AppData\Local\NVIDIA Corporation\GeForceNOW\sharedstorage.json`
 - `C:\Users\Zortos\AppData\Local\NVIDIA Corporation\GeForceNOW\Mall\shared\assets\config\config.json`
 
-No official binary was disassembled. Official behavior is what those logs and JSON files print.
+Those logs and JSON files are the main evidence for official behavior. Some sections also cite static analysis of official binaries by address, such as the Windows and macOS reverse-engineering reports in [features](features.md) and [transport recovery](transport-recovery.md), and Linux `libBifrost2.so` from GeForce NOW 2.0.89.141 in the AV1 QP scale section of [RTSP negotiation](rtsp-negotiation.md), which identifies that file by BuildID and SHA-256. No official binary, raw log, or pseudocode is committed.
 
 ## Limits
 
