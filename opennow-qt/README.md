@@ -15,6 +15,46 @@ On a Windows hybrid laptop, Stream settings → Graphics processor lists each GP
 hardware decode codecs. Automatic uses the first high-performance adapter that
 can decode, so a discrete GPU without a decoder does not hide the integrated GPU.
 
+## Two-account couch co-op
+
+Launch one named profile per player, using the Qt executable for your platform:
+
+```sh
+opennow-qt --profile player-one --desktop
+opennow-qt --profile player-two --desktop
+```
+
+Each named profile has separate settings, sign-in credentials, session state and
+device identity under `profiles/<name>` in the normal OpenNOW data directory.
+`OPENNOW_DATA_DIR` overrides that parent directory. Launching without `--profile`
+still uses the existing default profile, without moving or copying its data.
+Profile names contain 1 to 64 ASCII letters, digits, underscores or hyphens and
+must start with a letter or digit. Launching the same profile again activates its
+existing window instead of starting a second mutable core.
+
+Sign in separately in each window. In Settings → Controllers → Controller input
+source, select a different physical pad for each player. A named profile forwards
+only that pad as Player 1, including while its window is inactive. Until a pad is
+assigned, no controller gameplay input is forwarded. Overlays still pause gameplay
+input, and keyboard and mouse input still require window focus. Reassign the pad
+after reconnecting it, and select it again after restarting the app. Do not assign
+the same physical pad to both windows. Generic flight controls are not forwarded
+in this mode.
+
+For scripted launches, `--controller <SDL instance ID>` selects a pad at startup
+and requires a named profile. These IDs are local to the running process and
+device connection. App-initiated restarts retain the profile but clear the pad
+assignment. The settings picker is the recommended assignment method.
+
+Concurrent Nintendo Switch controller use still needs physical-device validation.
+SDL's HIDAPI driver can send device-mode and rumble commands when opening or
+closing a pad, even if this instance did not forward that pad's gameplay input.
+
+Arrange the windows using your operating system's tiling controls. Automatic
+split-screen tiling is not provided. Both accounts need their own GeForce NOW
+membership and access to a game that supports online co-op. This runs two online
+sessions, not two players in one remote session.
+
 ## CI checks and manual builds
 
 Pull requests and pushes to `dev` or `main` run workflow lint, packaging-contract

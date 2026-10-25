@@ -310,6 +310,54 @@ mod tests {
     }
 
     #[test]
+    fn named_profile_fallback_and_legacy_sources_are_isolated() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("profiles/one");
+        let second = directory.path().join("profiles/two");
+        let default = CredentialVault::without_os_store(directory.path().into());
+        let one = CredentialVault::without_os_store(first.clone());
+        let two = CredentialVault::without_os_store(second.clone());
+        let mut session_one = sample_session("same-user");
+        let mut session_two = session_one.clone();
+        session_one.tokens.access_token = "first-profile-fixture".into();
+        session_two.tokens.access_token = "second-profile-fixture".into();
+        default.save(&sample_session("default-user")).unwrap();
+        one.save(&session_one).unwrap();
+        assert!(two.load_active().unwrap().is_none());
+        two.save(&session_two).unwrap();
+        let one = CredentialVault::without_os_store(first);
+        let two = CredentialVault::without_os_store(second);
+        assert_eq!(
+            one.load_active().unwrap().unwrap().tokens.access_token,
+            session_one.tokens.access_token
+        );
+        assert_eq!(
+            two.load_active().unwrap().unwrap().tokens.access_token,
+            session_two.tokens.access_token
+        );
+        let _ = one.remove_all();
+        assert!(one.load_active().unwrap().is_none());
+        assert_eq!(
+            two.load_active().unwrap().unwrap().tokens.access_token,
+            session_two.tokens.access_token
+        );
+        assert_eq!(
+            default.load_active().unwrap().unwrap().user.user_id,
+            "default-user"
+        );
+        fs::create_dir_all(directory.path().join("sessions")).unwrap();
+        fs::write(
+            directory.path().join("sessions/legacy-user.json"),
+            serde_json::to_vec(&sample_session("legacy-user")).unwrap(),
+        )
+        .unwrap();
+        let fresh = CredentialVault::memory(directory.path().join("profiles/three"));
+        assert_eq!(fresh.migrate_legacy_electron_sessions().unwrap(), 0);
+        assert!(fresh.load("legacy-user").unwrap().is_none());
+        assert!(directory.path().join("sessions/legacy-user.json").exists());
+    }
+
+    #[test]
     fn secure_store_is_preferred_without_creating_json() {
         let directory = tempfile::tempdir().unwrap();
         let vault = CredentialVault::with_store(directory.path().into(), Box::<Store>::default());

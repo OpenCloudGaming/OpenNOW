@@ -13,6 +13,8 @@ QtObject {
             {instanceId: 4, slot: 4, name: "Xbox 360 Controller", family: "xbox", powerState: "unknown", batteryPercent: -1, charging: false}
         ]
         property int inputControllerId: 0
+        property bool backgroundControllerEnabled: false
+        readonly property bool backgroundControllerActive: backgroundControllerEnabled && inputControllerId !== 0
         property var controllers: inputControllerId === 0 ? availableControllers
             : availableControllers.filter(controller => controller.instanceId === inputControllerId)
         property int controllerCount: controllers.length
@@ -88,6 +90,16 @@ QtObject {
         check(choice.glyph === "playstation", "PlayStation source branding")
         choice.selected(0)
         check(choice.glyph === "controller", "multiplayer generic icon")
+        input.backgroundControllerEnabled = true
+        check(choice.items[0].label === "No controller assigned", "profile cannot select all controllers")
+        check(choice.description.indexOf("inactive") >= 0, "profile explains background controller ownership")
+        const flightToggle = find(page, "forwardFlightControlsToggle")
+        check(flightToggle && !flightToggle.checked && !flightToggle.enabled, "profile cannot forward flight controls")
+        choice.selected(2)
+        check(input.inputControllerId === 2 && input.backgroundControllerActive, "profile assigns one background pad")
+        choice.selected(0)
+        check(!input.backgroundControllerActive, "unassigning disables background controller ownership")
+        input.backgroundControllerEnabled = false
         const devices = input.availableControllers
         input.availableControllers = []
         check(choice.items.length === 1 && input.controllers.length === 0, "disconnect clears device choices")

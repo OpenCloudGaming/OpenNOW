@@ -41,7 +41,7 @@ use gfn::GfnService;
 use opennow_core::update_apply;
 use rand::RngCore;
 use serde_json::{Map, Value, json};
-use settings::{SettingsStore, resolve_data_dir};
+use settings::SettingsStore;
 use std::env;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -82,7 +82,8 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
-    let data_dir = resolve_data_dir(argument_value("--data-dir").map(PathBuf::from));
+    let data_dir = settings::data_dir(argument_value("--data-dir").map(PathBuf::from))
+        .map_err(|error| error.to_string())?;
     if env::args_os().any(|argument| argument == "--graphics-preferences") {
         let windows_gpu_device_id = SettingsStore::windows_gpu_device_id_read_only(Some(data_dir))
             .map_err(|error| error.to_string())?;
@@ -109,6 +110,8 @@ fn run() -> Result<(), String> {
         }
     })?;
     PROFILE_LOCK.get_or_init(|| profile_lock);
+    opennow_core::profile::initialize_credential_namespace(&data_dir)
+        .map_err(|error| format!("Could not initialize the credential namespace: {error}"))?;
     let (output_tx, output_rx) = mpsc::channel::<Value>();
     thread::Builder::new()
         .name("opennow-core-writer".to_owned())

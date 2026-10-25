@@ -83,6 +83,7 @@ ControllerInput::~ControllerInput()
 int ControllerInput::controllerCount() const
 {
     return m_inputControllerId ? static_cast<int>(m_gamepadSlots.contains(m_inputControllerId))
+                               : m_backgroundControllerEnabled ? 0
                                : m_gamepadSlots.size();
 }
 
@@ -105,10 +106,10 @@ void ControllerInput::setForwardFlightControls(bool enabled)
 {
     if (m_forwardFlightControls == enabled) return;
     m_forwardFlightControls = enabled;
-    m_genericHid->setForwardingEnabled(enabled);
+    m_genericHid->setForwardingEnabled(enabled && !m_backgroundControllerEnabled);
     m_genericHidAdmissions.clear();
     emit genericDeviceClaimsChanged();
-    if (enabled) {
+    if (enabled || m_backgroundControllerEnabled) {
         QList<SDL_JoystickID> closing;
         for (const auto &slot : m_slots)
             if (slot.gamepad && GenericHidInput::allowed(slot.vendor, slot.product)) closing.append(slot.instanceId);
@@ -152,6 +153,7 @@ void ControllerInput::resetGenericHidAdmissions()
 
 void ControllerInput::refreshFlightDevices()
 {
+    const auto forwarding = m_forwardFlightControls && !m_backgroundControllerEnabled;
     const auto devices = m_genericHid ? m_genericHid->devices() : QList<GenericHidInput::DetectedDevice>{};
     const auto claims = genericHidClaims();
     for (auto it = m_genericHidAdmissions.begin(); it != m_genericHidAdmissions.end();) {
@@ -174,10 +176,10 @@ void ControllerInput::refreshFlightDevices()
         metadata.remove(QStringLiteral("evidence"));
         metadata.remove(QStringLiteral("uncertainty"));
         metadata.insert(QStringLiteral("deviceId"), device.deviceId);
-        QString status = m_forwardFlightControls ? QStringLiteral("ready") : QStringLiteral("ignored");
+        QString status = forwarding ? QStringLiteral("ready") : QStringLiteral("ignored");
         int player = 0;
-        if (m_forwardFlightControls && device.noAccess) status = QStringLiteral("no-access");
-        if (m_forwardFlightControls && device.incarnation) {
+        if (forwarding && device.noAccess) status = QStringLiteral("no-access");
+        if (forwarding && device.incarnation) {
             switch (m_genericHidAdmissions.value(device.incarnation, GenericHidAdmission::Pending)) {
             case GenericHidAdmission::Pending: break;
             case GenericHidAdmission::Admitted: status = QStringLiteral("active"); break;
@@ -204,7 +206,7 @@ void ControllerInput::refreshFlightDevices()
         if (candidates.size() == 1 && matchingDevices == 1) {
             const auto id = candidates.first();
             matched.insert(id);
-            if (!m_forwardFlightControls && m_gamepadSlots.contains(id)) {
+            if (!forwarding && m_gamepadSlots.contains(id)) {
                 status = QStringLiteral("controller");
                 player = m_gamepadSlots.value(id) + 1;
             }
@@ -243,12 +245,15 @@ quint32 ControllerInput::inputControllerId() const
 
 bool ControllerInput::acceptsController(SDL_JoystickID id) const
 {
-    return id != 0 && (m_inputControllerId == 0 || m_inputControllerId == id);
+    return id != 0 && (m_inputControllerId == id
+        || (m_inputControllerId == 0 && !m_backgroundControllerEnabled));
 }
 
 void ControllerInput::setInputControllerId(quint32 id)
 {
-    if (id == m_inputControllerId || (id != 0 && !m_gamepadSlots.contains(id))) return;
+    if (id == m_inputControllerId) return;
+    const auto wasBackgroundActive = backgroundControllerActive();
+    cancelChordReplays();
     stopRumble();
     publishConnectedInputs(true);
     for (int slot = 0; slot < static_cast<int>(m_slots.size()); ++slot)
@@ -263,6 +268,44 @@ void ControllerInput::setInputControllerId(quint32 id)
     refreshControllerMetadata();
     updatePollInterval();
     emit inputControllerIdChanged();
+    if (wasBackgroundActive != backgroundControllerActive()) emit backgroundControllerActiveChanged();
+}
+
+void ControllerInput::setBackgroundControllerEnabled(bool enabled)
+{
+    if (m_backgroundControllerEnabled == enabled) return;
+    const auto wasBackgroundActive = backgroundControllerActive();
+    cancelChordReplays();
+    stopRumble();
+    publishConnectedInputs(true);
+    for (int slot = 0; slot < static_cast<int>(m_slots.size()); ++slot)
+        releaseShellButtons(slot);
+    resetDirections();
+    m_backgroundControllerEnabled = enabled;
+    m_genericHid->setForwardingEnabled(m_forwardFlightControls && !enabled);
+    m_genericHidAdmissions.clear();
+    if (enabled) {
+        QList<SDL_JoystickID> closing;
+        for (const auto &slot : m_slots)
+            if (slot.gamepad && GenericHidInput::allowed(slot.vendor, slot.product)) closing.append(slot.instanceId);
+        for (const auto id : closing) closeController(id);
+    } else if (!m_forwardFlightControls && m_sdlReady) {
+        int count = 0;
+        if (auto *ids = SDL_GetGamepads(&count)) {
+            for (int index = 0; index < count; ++index) openController(ids[index]);
+            SDL_free(ids);
+        }
+    }
+    for (int slot = 0; slot < static_cast<int>(m_slots.size()); ++slot)
+        updateSlotSnapshot(slot);
+    emit genericDeviceClaimsChanged();
+    emit deviceClaimsChanged();
+    emit controllerCountChanged(controllerCount());
+    if (!m_shellCaptureEnabled) publishConnectedInputs();
+    refreshControllerMetadata();
+    updatePollInterval();
+    emit backgroundControllerEnabledChanged();
+    if (wasBackgroundActive != backgroundControllerActive()) emit backgroundControllerActiveChanged();
 }
 
 void ControllerInput::updatePollInterval()
@@ -500,7 +543,7 @@ void ControllerInput::playRumble(quint8 controllerId, quint16 lowFrequency,
 void ControllerInput::stopRumble()
 {
     for (const auto &slot : m_slots) {
-        if (slot.gamepad
+        if (slot.gamepad && acceptsController(slot.instanceId)
             && SDL_GetBooleanProperty(SDL_GetGamepadProperties(slot.gamepad),
                                       SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false))
             SDL_RumbleGamepad(slot.gamepad, 0, 0, 0);
@@ -600,7 +643,8 @@ void ControllerInput::poll()
             emit genericDeviceClaimsChanged();
             refreshFlightDevices();
         }
-        if (m_forwardFlightControls) for (const auto &report : batch.reports) emit genericHidReport(report);
+        if (m_forwardFlightControls && !m_backgroundControllerEnabled)
+            for (const auto &report : batch.reports) emit genericHidReport(report);
     }
     if (!m_sdlReady) return;
     SDL_Event event;
@@ -662,7 +706,8 @@ void ControllerInput::poll()
 void ControllerInput::openController(SDL_JoystickID id)
 {
     if (m_gamepadSlots.contains(id)) return;
-    if (m_forwardFlightControls && GenericHidInput::allowed(SDL_GetGamepadVendorForID(id), SDL_GetGamepadProductForID(id))) return;
+    if ((m_forwardFlightControls || m_backgroundControllerEnabled)
+        && GenericHidInput::allowed(SDL_GetGamepadVendorForID(id), SDL_GetGamepadProductForID(id))) return;
     const auto freeSlot = std::find_if(m_slots.begin(), m_slots.end(),
                                       [](const GamepadSlot &slot) { return !slot.gamepad; });
     if (freeSlot == m_slots.end()) return;
@@ -688,8 +733,8 @@ void ControllerInput::openController(SDL_JoystickID id)
     }
     m_gamepadSlots.insert(id, slot);
     updateSlotSnapshot(slot);
-    if (!m_shellCaptureEnabled) publishSlotSnapshot(slot);
     emit deviceClaimsChanged();
+    if (!m_shellCaptureEnabled) publishSlotSnapshot(slot);
     emit controllerCountChanged(controllerCount());
     updatePollInterval();
     refreshControllerMetadata();
@@ -697,12 +742,14 @@ void ControllerInput::openController(SDL_JoystickID id)
 
 QList<GenericHidDeviceClaim> ControllerInput::genericHidClaims() const
 {
-    return m_forwardFlightControls && m_genericHid ? m_genericHid->claims() : QList<GenericHidDeviceClaim>{};
+    return m_forwardFlightControls && !m_backgroundControllerEnabled && m_genericHid
+        ? m_genericHid->claims() : QList<GenericHidDeviceClaim>{};
 }
 
 void ControllerInput::handleGenericHidOutput(const GenericHidReport &report)
 {
-    if (m_forwardFlightControls && m_genericHid) m_genericHid->submitOutput(report);
+    if (m_forwardFlightControls && !m_backgroundControllerEnabled && m_genericHid)
+        m_genericHid->submitOutput(report);
 }
 
 void ControllerInput::stopGenericHidOutput()
@@ -724,9 +771,9 @@ void ControllerInput::closeController(SDL_JoystickID id)
     if (sony) releaseSonyContacts(slotIndex);
     SDL_CloseGamepad(slot.gamepad);
     slot = {};
-    emit deviceClaimsChanged();
     if (accepted && !sony)
         emit gamepadSnapshot(static_cast<quint8>(publishedSlot), gamepadBitmap(), 0, 0, 0, 0, 0, 0, 0);
+    emit deviceClaimsChanged();
     emit controllerCountChanged(controllerCount());
     updatePollInterval();
     refreshControllerMetadata();

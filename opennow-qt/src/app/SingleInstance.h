@@ -16,7 +16,7 @@ public:
     explicit SingleInstance(QObject *parent = nullptr);
 
     enum class Acquisition { Primary, Forwarded, Failed };
-    Acquisition acquire(const QStringList &arguments);
+    Acquisition acquire(const QStringList &arguments, const QString &dataDirectory);
 
 signals:
     void activationRequested(const QStringList &arguments);
@@ -24,7 +24,7 @@ signals:
 private:
     void acceptConnection();
     void readConnection(QLocalSocket *socket);
-    static QString serverName();
+    static QString serverName(const QString &dataDirectory);
     static bool forwardToPrimary(const QString &name, const QStringList &arguments);
 
     std::unique_ptr<QLockFile> m_lock;

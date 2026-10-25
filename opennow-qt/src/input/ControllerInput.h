@@ -28,6 +28,8 @@ class ControllerInput final : public QObject
     Q_PROPERTY(QVariantList supportedFlightDevices READ supportedFlightDevices CONSTANT)
     Q_PROPERTY(bool forwardFlightControls READ forwardFlightControls WRITE setForwardFlightControls NOTIFY forwardFlightControlsChanged)
     Q_PROPERTY(quint32 inputControllerId READ inputControllerId WRITE setInputControllerId NOTIFY inputControllerIdChanged)
+    Q_PROPERTY(bool backgroundControllerEnabled READ backgroundControllerEnabled WRITE setBackgroundControllerEnabled NOTIFY backgroundControllerEnabledChanged)
+    Q_PROPERTY(bool backgroundControllerActive READ backgroundControllerActive NOTIFY backgroundControllerActiveChanged)
     Q_PROPERTY(bool shellCaptureEnabled READ shellCaptureEnabled WRITE setShellCaptureEnabled NOTIFY shellCaptureEnabledChanged)
     Q_PROPERTY(bool inputSuspended READ inputSuspended WRITE setInputSuspended NOTIFY inputSuspendedChanged)
     Q_PROPERTY(bool shellInputBlocked READ shellInputBlocked WRITE setShellInputBlocked NOTIFY shellInputBlockedChanged)
@@ -77,6 +79,9 @@ public:
     [[nodiscard]] QVariantList supportedFlightDevices() const;
     [[nodiscard]] quint32 inputControllerId() const;
     void setInputControllerId(quint32 id);
+    [[nodiscard]] bool backgroundControllerEnabled() const { return m_backgroundControllerEnabled; }
+    [[nodiscard]] bool backgroundControllerActive() const { return m_backgroundControllerEnabled && m_inputControllerId != 0; }
+    void setBackgroundControllerEnabled(bool enabled);
     [[nodiscard]] bool shellCaptureEnabled() const;
     void setShellCaptureEnabled(bool enabled);
     [[nodiscard]] bool inputSuspended() const;
@@ -116,6 +121,8 @@ signals:
     void flightDevicesChanged();
     void forwardFlightControlsChanged();
     void inputControllerIdChanged();
+    void backgroundControllerEnabledChanged();
+    void backgroundControllerActiveChanged();
     void shellCaptureEnabledChanged();
     void inputSuspendedChanged();
     void shellInputBlockedChanged();
@@ -238,6 +245,7 @@ private:
     QHash<quint64, GenericHidAdmission> m_genericHidAdmissions;
     bool m_forwardFlightControls = true;
     SDL_JoystickID m_inputControllerId = 0;
+    bool m_backgroundControllerEnabled = false;
     QElapsedTimer m_clock;
     QHash<SDL_JoystickID, int> m_gamepadSlots;
     std::array<GamepadSlot, 4> m_slots;

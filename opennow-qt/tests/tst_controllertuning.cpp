@@ -1,6 +1,7 @@
 #include "input/ControllerInput.h"
 
 #include <QKeyEvent>
+#include <QScopeGuard>
 #include <QSignalSpy>
 #include <QTest>
 
@@ -354,6 +355,72 @@ private slots:
         input.playRumble(255, 20000, 40000, 1000);
         QCOMPARE(first.lowFrequency, 0);
         QCOMPARE(second.lowFrequency, 0);
+    }
+
+    void exclusiveRumbleStopsOnlyTheOwnedController()
+    {
+        QVERIFY(SDL_InitSubSystem(SDL_INIT_GAMEPAD));
+        const auto sdlCleanup = qScopeGuard([] { SDL_QuitSubSystem(SDL_INIT_GAMEPAD); });
+        TuningPad first;
+        TuningPad second;
+        QVERIFY(first.id && second.id);
+        {
+            ControllerInput startup;
+            startup.setBackgroundControllerEnabled(true);
+            startup.stopRumble();
+            QCOMPARE(first.rumbleCalls, 0);
+            QCOMPARE(second.rumbleCalls, 0);
+        }
+        QCOMPARE(first.rumbleCalls, 0);
+        QCOMPARE(second.rumbleCalls, 0);
+        auto input = std::make_unique<ControllerInput>();
+        QCOMPARE(input->controllerCount(), 2);
+        auto *firstExternalOwner = SDL_OpenGamepad(first.id);
+        auto *secondExternalOwner = SDL_OpenGamepad(second.id);
+        QVERIFY(firstExternalOwner && secondExternalOwner);
+        const auto ownersCleanup = qScopeGuard([&] {
+            SDL_CloseGamepad(firstExternalOwner);
+            SDL_CloseGamepad(secondExternalOwner);
+        });
+        input->setInputControllerId(first.id);
+        input->setBackgroundControllerEnabled(true);
+        input->setShellCaptureEnabled(false);
+        QVERIFY(SDL_RumbleGamepad(secondExternalOwner, 12000, 18000, 60'000));
+        auto unownedCalls = second.rumbleCalls;
+        input->playRumble(0, 5000, 9000, 60'000);
+        QCOMPARE(first.lowFrequency, 5000);
+        input->setInputSuspended(true);
+        QCOMPARE(first.lowFrequency, 0);
+        QCOMPARE(second.lowFrequency, 12000);
+        QCOMPARE(second.rumbleCalls, unownedCalls);
+        input->setInputSuspended(false);
+        input->playRumble(0, 5000, 9000, 60'000);
+        input->setShellCaptureEnabled(true);
+        QCOMPARE(first.lowFrequency, 0);
+        QCOMPARE(second.rumbleCalls, unownedCalls);
+        input->setShellCaptureEnabled(false);
+        input->playRumble(0, 5000, 9000, 60'000);
+        input->setInputControllerId(second.id);
+        QCOMPARE(first.lowFrequency, 0);
+        QCOMPARE(second.lowFrequency, 12000);
+        QCOMPARE(second.rumbleCalls, unownedCalls);
+        QVERIFY(SDL_RumbleGamepad(firstExternalOwner, 15000, 21000, 60'000));
+        unownedCalls = first.rumbleCalls;
+        input->playRumble(0, 6000, 10000, 60'000);
+        input->setInputControllerId(0);
+        QCOMPARE(second.lowFrequency, 0);
+        QCOMPARE(first.lowFrequency, 15000);
+        QCOMPARE(first.rumbleCalls, unownedCalls);
+        input->stopRumble();
+        QCOMPARE(first.rumbleCalls, unownedCalls);
+        input->setInputControllerId(second.id);
+        input->playRumble(0, 6000, 10000, 60'000);
+        input.reset();
+        QCOMPARE(second.lowFrequency, 0);
+        QCOMPARE(second.highFrequency, 0);
+        QCOMPARE(first.lowFrequency, 15000);
+        QCOMPARE(first.highFrequency, 21000);
+        QCOMPARE(first.rumbleCalls, unownedCalls);
     }
 
     void rumbleExpiresRefreshesAndStopsExplicitly()

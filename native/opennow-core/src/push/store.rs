@@ -21,7 +21,7 @@ impl RegistrationStore {
     }
 
     pub fn default_service() -> Self {
-        Self::new(PUSH_SERVICE_NAME)
+        Self::new(&crate::profile::credential_service_name(PUSH_SERVICE_NAME))
     }
 
     fn entry(&self, account: &str) -> Result<keyring::Entry, PushError> {

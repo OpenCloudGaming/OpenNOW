@@ -2786,6 +2786,43 @@ private slots:
         QVERIFY(!main.contains(QStringLiteral("function syncPadHold()")));
     }
 
+    void backgroundControllerOnlyBypassesFocusForUnobstructedStreams()
+    {
+        const auto main = source(QStringLiteral("qml/Main.qml"));
+        QJSEngine engine;
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            var window = {active:false,desktopSurfaceActive:true,consoleStreamReady:true};
+            var ShellStore = {authRestorePending:false,signedIn:true,settings:{},
+                streamOverlayBlocksGameplayInput:function(overlay){return overlay === 'menu';}};
+            var AppController = {route:'stream',overlay:''};
+            var ControllerInput = {backgroundControllerActive:false};
+        )JS")).isError());
+        const auto match = QRegularExpression(QStringLiteral(
+            "    function syncInputOwnership\\([^\\n]*\\) \\{.*?\\n    \\}"),
+            QRegularExpression::DotMatchesEverythingOption).match(main);
+        QVERIFY(match.hasMatch());
+        QVERIFY(!engine.evaluate(match.captured()).isError());
+        const auto ownership = [&](const QString &change) {
+            return engine.evaluate(change + QStringLiteral(
+                "; syncInputOwnership(); [ControllerInput.inputSuspended, ControllerInput.shellCaptureEnabled].join(',')")).toString();
+        };
+        QCOMPARE(ownership(QString()), QStringLiteral("true,true"));
+        QCOMPARE(ownership(QStringLiteral("ControllerInput.backgroundControllerActive=true")), QStringLiteral("false,false"));
+        QCOMPARE(ownership(QStringLiteral("ShellStore.settings.controllerMode=false")), QStringLiteral("false,false"));
+        QCOMPARE(ownership(QStringLiteral("AppController.overlay='menu'")), QStringLiteral("true,false"));
+        QCOMPARE(ownership(QStringLiteral("ShellStore.settings.controllerMode=true")), QStringLiteral("true,true"));
+        QCOMPARE(ownership(QStringLiteral("window.active=true")), QStringLiteral("false,true"));
+        QCOMPARE(ownership(QStringLiteral("window.active=false; AppController.overlay='stats'")), QStringLiteral("false,false"));
+        QCOMPARE(ownership(QStringLiteral("AppController.route='settings'")), QStringLiteral("true,true"));
+        QCOMPARE(ownership(QStringLiteral("AppController.route='stream'; ShellStore.signedIn=false")), QStringLiteral("true,true"));
+        QCOMPARE(ownership(QStringLiteral("window.desktopSurfaceActive=false; window.consoleStreamReady=false")), QStringLiteral("true,true"));
+        QCOMPARE(ownership(QStringLiteral("window.consoleStreamReady=true")), QStringLiteral("false,false"));
+        QCOMPARE(ownership(QStringLiteral("ControllerInput.backgroundControllerActive=false")), QStringLiteral("true,true"));
+        QVERIFY(main.contains(QStringLiteral(
+            "function onBackgroundControllerActiveChanged() { window.syncInputOwnership() }")));
+        QVERIFY(!main.contains(QStringLiteral("property: \"inputControllerId\"")));
+    }
+
     void profileUnlockKeepsStreamSurfaceAndShellInputOwnership()
     {
         const auto main = source(QStringLiteral("qml/Main.qml"));

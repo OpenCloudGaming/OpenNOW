@@ -76,12 +76,12 @@ trait SecretStore: Send + Sync {
 }
 
 struct OsSecretStore {
-    service: &'static str,
+    service: String,
 }
 
 impl SecretStore for OsSecretStore {
     fn get(&self, user_id: &str) -> Result<Option<String>, String> {
-        match credential(self.service, user_id)?.get_password() {
+        match credential(&self.service, user_id)?.get_password() {
             Ok(value) => Ok(Some(value)),
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(_) => Err("OS credential store is unavailable or locked".into()),
@@ -89,13 +89,13 @@ impl SecretStore for OsSecretStore {
     }
 
     fn set(&self, user_id: &str, encoded: &str) -> Result<(), String> {
-        credential(self.service, user_id)?
+        credential(&self.service, user_id)?
             .set_password(encoded)
             .map_err(|_| "OS credential store could not save the session".into())
     }
 
     fn delete(&self, user_id: &str) -> Result<(), String> {
-        match credential(self.service, user_id)?.delete_credential() {
+        match credential(&self.service, user_id)?.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(_) => Err("OS credential store could not remove the session".into()),
         }
@@ -144,15 +144,15 @@ impl CredentialVault {
         let store = Box::new(encrypted_secret_store::EncryptedSecretStore::new(
             data_dir.join("secure-sessions"),
             Box::new(OsSecretStore {
-                service: KEY_SERVICE_NAME,
+                service: opennow_core::profile::credential_service_name(KEY_SERVICE_NAME),
             }),
             Box::new(OsSecretStore {
-                service: SERVICE_NAME,
+                service: opennow_core::profile::credential_service_name(SERVICE_NAME),
             }),
         ));
         #[cfg(not(windows))]
         let store = Box::new(OsSecretStore {
-            service: SERVICE_NAME,
+            service: opennow_core::profile::credential_service_name(SERVICE_NAME),
         });
         Self::with_store(data_dir, store)
     }

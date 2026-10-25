@@ -55,6 +55,8 @@ QtObject {
         readonly property int controllerCount: controllers.length
         property bool shellCaptureEnabled: true
         property bool inputSuspended: false
+        property bool backgroundControllerEnabled: false
+        readonly property bool backgroundControllerActive: backgroundControllerEnabled && inputControllerId !== 0
         property bool shellInputBlocked: false
         readonly property bool shellInputDraining: false
         property bool leftStickNavigationEnabled: true

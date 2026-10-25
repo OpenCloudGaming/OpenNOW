@@ -295,9 +295,12 @@ FocusScope {
             rows.push({t:"Controllers", control:"controllers", height:131, controllers:controllerCards, route:"joining"})
             rows.push({t:"Button glyphs", d:"Detected automatically from the active controller", v:"Auto", info:true})
             rows.push(choice(qsTr("Controller input source"),
-                qsTr("Choose one device as Player 1 if a controller appears twice. Selection lasts until app restart; select again after reconnecting."),
+                ControllerInput.backgroundControllerEnabled
+                    ? qsTr("Only the selected pad controls this profile, even when its window is inactive. Select again after reconnecting.")
+                    : qsTr("Choose one device as Player 1 if a controller appears twice. Selection lasts until app restart; select again after reconnecting."),
                 "controllerInputSource", [0].concat(ControllerInput.availableControllers.map(controller => Number(controller.instanceId))),
-                [qsTr("All controllers (multiplayer)")].concat(ControllerInput.availableControllers.map(controller => qsTr("Device %1 · %2").arg(controller.slot).arg(controller.name)))))
+                [ControllerInput.backgroundControllerEnabled ? qsTr("No controller assigned") : qsTr("All controllers (multiplayer)")]
+                    .concat(ControllerInput.availableControllers.map(controller => qsTr("Device %1 · %2").arg(controller.slot).arg(controller.name)))))
             rows.push(toggle("Gyroscope", "Forward motion data to the rig", "enableGyroscopeControls"))
             rows.push(toggle(qsTr("Clipboard paste"), qsTr("Paste local text into the stream with Ctrl+V (Command+V on macOS). Up to 64 KiB per paste. No automatic clipboard sync."), "clipboardPaste"))
             for (const setting of [

@@ -449,7 +449,8 @@ FocusScope {
                         anchors.left: parent.left
                         anchors.verticalCenter: parent.verticalCenter
                         width: parent.width - flightCount.width - 12
-                        text: ControllerInput.forwardFlightControls ? qsTr("FLIGHT CONTROLS · SENT AS THE REAL DEVICE")
+                        text: ControllerInput.forwardFlightControls && !ControllerInput.backgroundControllerEnabled
+                            ? qsTr("FLIGHT CONTROLS · SENT AS THE REAL DEVICE")
                             : qsTr("FLIGHT CONTROLS · FORWARDING OFF")
                         elide: Text.ElideRight
                     }
@@ -885,7 +886,9 @@ FocusScope {
                 width: parent.width
                 height: 58
                 text: root.playerOneMissing ? qsTr("Player 1 pad disconnected") : qsTr("Only this pad is Player 1")
-                description: root.playerOneMissing ? qsTr("Other pads are ignored. Turn this off to use them.")
+                description: ControllerInput.backgroundControllerEnabled
+                    ? qsTr("Only the selected pad controls this profile, even when its window is inactive. Select again after reconnecting.")
+                    : root.playerOneMissing ? qsTr("Other pads are ignored. Turn this off to use them.")
                     : qsTr("Ignores the other pads until the app restarts")
                 Accessible.checkable: true
                 Accessible.checked: playerOne

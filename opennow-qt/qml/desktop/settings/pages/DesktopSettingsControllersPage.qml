@@ -37,9 +37,12 @@ DesktopSettingsPanel {
         objectName: "controllerSourceChoice"
         width: parent.width
         title: qsTr("Controller input source")
-        description: qsTr("Choose one device as Player 1 if a controller appears twice. Selection lasts until app restart; select again after reconnecting.")
+        description: ControllerInput.backgroundControllerEnabled
+            ? qsTr("Only the selected pad controls this profile, even when its window is inactive. Select again after reconnecting.")
+            : qsTr("Choose one device as Player 1 if a controller appears twice. Selection lasts until app restart; select again after reconnecting.")
         glyph: current ? current.glyph || "controller" : "controller"
-        items: [{value: 0, label: qsTr("All controllers (multiplayer)")}].concat(
+        items: [{value: 0, label: ControllerInput.backgroundControllerEnabled
+            ? qsTr("No controller assigned") : qsTr("All controllers (multiplayer)")}].concat(
             ControllerInput.availableControllers.map(controller => ({
                 value: controller.instanceId,
                 label: qsTr("Device %1 · %2").arg(controller.slot).arg(controller.name),

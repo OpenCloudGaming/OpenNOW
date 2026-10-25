@@ -8,7 +8,7 @@ DesktopSettingsPanel {
     property var settingsScreen: null
     property var devices: ControllerInput.flightDevices
     property var supportedDevices: ControllerInput.supportedFlightDevices
-    property bool forwarding: ControllerInput.forwardFlightControls
+    property bool forwarding: ControllerInput.forwardFlightControls && !ControllerInput.backgroundControllerEnabled
     property bool supportedExpanded: false
     readonly property var supportedGroups: {
         const groups = [
@@ -98,9 +98,12 @@ DesktopSettingsPanel {
         paperStyle: true
         glyph: "stick"
         title: qsTr("Forward flight sticks and wheels as native devices")
-        description: qsTr("Games read every axis, button and hat switch. Supported devices skip controller emulation, so they never appear twice.")
+        description: ControllerInput.backgroundControllerEnabled
+            ? qsTr("Flight controls are disabled for isolated profiles. Only the assigned controller is forwarded.")
+            : qsTr("Games read every axis, button and hat switch. Supported devices skip controller emulation, so they never appear twice.")
         DesktopSettingsToggle {
             objectName: "forwardFlightControlsToggle"
+            enabled: !ControllerInput.backgroundControllerEnabled
             checked: root.forwarding
             onValueChangedByUser: value => {
                 if (root.settingsScreen)
@@ -112,7 +115,7 @@ DesktopSettingsPanel {
     }
     DesktopSettingsRow {
         width: parent.width
-        visible: !root.forwarding
+        visible: !root.forwarding && !ControllerInput.backgroundControllerEnabled
         paperStyle: true
         glyph: "controller"
         title: qsTr("These devices now use the regular controller path")

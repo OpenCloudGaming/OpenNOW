@@ -477,10 +477,76 @@ fn plan(directory: &Path, kind: InstallKind) -> Plan {
         target,
         application_executable: application,
         data_dir: directory.join("settings"),
+        restart_profile: None,
         processes: vec![],
         nonce: "a".repeat(64),
         managed_identity: None,
     }
+}
+
+#[test]
+fn named_profile_update_restarts_restore_the_base_and_profile_without_double_appending() {
+    let directory = tempfile::tempdir().unwrap();
+    let base = directory.path().join("settings");
+    let data_dir = base.join("profiles/Player_1");
+    fs::create_dir_all(&data_dir).unwrap();
+    let mut plan = plan(directory.path(), InstallKind::AppImage);
+    plan.data_dir = fs::canonicalize(&data_dir).unwrap();
+    plan.restart_profile = RestartProfile::capture(&data_dir, Some("Player_1".into())).unwrap();
+    let encoded = serde_json::to_vec(&plan).unwrap();
+    let restored: Plan = serde_json::from_slice(&encoded).unwrap();
+    restored
+        .restart_profile
+        .as_ref()
+        .unwrap()
+        .validate(&plan.data_dir)
+        .unwrap();
+    let command = restart_command(&restored);
+    let environment: std::collections::HashMap<_, _> = command.get_envs().collect();
+    assert_eq!(
+        environment[std::ffi::OsStr::new("OPENNOW_PROFILE")],
+        Some(std::ffi::OsStr::new("Player_1"))
+    );
+    let expected_base = fs::canonicalize(&base).unwrap();
+    assert_eq!(
+        environment[std::ffi::OsStr::new("OPENNOW_DATA_DIR")],
+        Some(expected_base.as_os_str())
+    );
+    assert_eq!(
+        fs::canonicalize(expected_base.join("profiles/Player_1")).unwrap(),
+        plan.data_dir
+    );
+    for name in ["../escape", "other-profile"] {
+        assert!(RestartProfile::capture(&data_dir, Some(name.into())).is_err());
+    }
+    #[cfg(unix)]
+    {
+        let alias = base.join("profiles/alias");
+        std::os::unix::fs::symlink(&data_dir, &alias).unwrap();
+        let profile = RestartProfile::capture(&alias, Some("alias".into()))
+            .unwrap()
+            .unwrap();
+        profile.validate(&plan.data_dir).unwrap();
+        assert_eq!(profile.name, "alias");
+        assert_eq!(profile.base_dir, fs::canonicalize(&base).unwrap());
+    }
+}
+
+#[test]
+fn default_update_restarts_keep_the_existing_root_and_clear_inherited_profile_selection() {
+    let directory = tempfile::tempdir().unwrap();
+    let plan = plan(directory.path(), InstallKind::AppImage);
+    let mut encoded = serde_json::to_value(&plan).unwrap();
+    encoded.as_object_mut().unwrap().remove("restartProfile");
+    let restored: Plan = serde_json::from_value(encoded).unwrap();
+    assert!(restored.restart_profile.is_none());
+    let command = restart_command(&restored);
+    let environment: std::collections::HashMap<_, _> = command.get_envs().collect();
+    assert_eq!(environment[std::ffi::OsStr::new("OPENNOW_PROFILE")], None);
+    assert_eq!(
+        environment[std::ffi::OsStr::new("OPENNOW_DATA_DIR")],
+        Some(plan.data_dir.as_os_str())
+    );
 }
 
 fn stage_native_executable(path: &Path) {

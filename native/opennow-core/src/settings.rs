@@ -66,9 +66,11 @@ impl SettingsStore {
     }
 
     fn load_with_policy(data_dir: Option<PathBuf>, policy: LoadPolicy) -> io::Result<Self> {
-        let path = data_dir
-            .unwrap_or_else(default_data_dir)
-            .join("settings.json");
+        let path = match data_dir {
+            Some(directory) => directory,
+            None => self::data_dir(None)?,
+        }
+        .join("settings.json");
         let defaults = defaults();
         let mut values = defaults.clone();
         let mut passthrough = Map::new();
@@ -824,10 +826,19 @@ fn normalize_resolution(values: &mut Map<String, Value>) {
     }
 }
 
-pub fn resolve_data_dir(data_dir: Option<PathBuf>) -> PathBuf {
-    data_dir.unwrap_or_else(|| {
+pub fn data_dir(base: Option<PathBuf>) -> io::Result<PathBuf> {
+    let profile = opennow_core::profile::name()?;
+    let base = base.unwrap_or_else(|| {
         let primary = default_data_dir();
-        select_existing_data_dir(primary.clone(), legacy_data_dirs(&primary))
+        if profile.is_some() {
+            primary
+        } else {
+            select_existing_data_dir(primary.clone(), legacy_data_dirs(&primary))
+        }
+    });
+    Ok(match profile {
+        Some(name) => base.join("profiles").join(name),
+        None => base,
     })
 }
 
@@ -835,13 +846,25 @@ fn select_existing_data_dir(
     primary: PathBuf,
     legacy_candidates: impl IntoIterator<Item = PathBuf>,
 ) -> PathBuf {
-    if primary.exists() {
+    if primary.exists() && !contains_only_named_profiles(&primary) {
         return primary;
     }
     legacy_candidates
         .into_iter()
         .find(|candidate| candidate.exists())
         .unwrap_or(primary)
+}
+
+fn contains_only_named_profiles(directory: &Path) -> bool {
+    let Ok(mut entries) = fs::read_dir(directory) else {
+        return false;
+    };
+    let Some(Ok(entry)) = entries.next() else {
+        return false;
+    };
+    entry.file_name() == "profiles"
+        && entry.file_type().is_ok_and(|kind| kind.is_dir())
+        && entries.next().is_none()
 }
 
 fn normalize_choice(values: &mut Map<String, Value>, key: &str, choices: &[&str], fallback: &str) {

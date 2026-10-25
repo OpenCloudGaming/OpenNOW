@@ -86,9 +86,47 @@ struct Plan {
     target: PathBuf,
     application_executable: PathBuf,
     data_dir: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    restart_profile: Option<RestartProfile>,
     processes: Vec<ProcessIdentity>,
     nonce: String,
     managed_identity: Option<managed::Identity>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RestartProfile {
+    name: String,
+    base_dir: PathBuf,
+}
+
+impl RestartProfile {
+    fn capture(data_dir: &Path, name: Option<String>) -> Result<Option<Self>, String> {
+        let Some(name) = name else { return Ok(None) };
+        let base_dir = data_dir
+            .parent()
+            .and_then(Path::parent)
+            .ok_or("Named profile has no base directory")?;
+        let profile = Self {
+            name,
+            base_dir: fs::canonicalize(base_dir).map_err(|error| error.to_string())?,
+        };
+        profile.validate(&fs::canonicalize(data_dir).map_err(|error| error.to_string())?)?;
+        Ok(Some(profile))
+    }
+
+    fn validate(&self, data_dir: &Path) -> Result<(), String> {
+        crate::profile::validate_name(Some(std::ffi::OsStr::new(&self.name)))
+            .map_err(|error| error.to_string())?;
+        if !self.base_dir.is_absolute()
+            || fs::canonicalize(self.base_dir.join("profiles").join(&self.name))
+                .map_err(|error| error.to_string())?
+                != data_dir
+        {
+            return Err("Update profile does not match its data directory".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -262,6 +300,10 @@ pub fn prepare_update(request: PrepareRequest) -> Result<PreparedUpdate, String>
     if request.kind == InstallKind::WindowsPortable && managed::windows_managed(&target)? {
         return Err(WINDOWS_INSTALLER_REPLACEMENT_MESSAGE.to_owned());
     }
+    let restart_profile = RestartProfile::capture(
+        &request.data_dir,
+        crate::profile::name().map_err(|error| error.to_string())?,
+    )?;
     let data_dir = fs::canonicalize(&request.data_dir).map_err(|error| error.to_string())?;
     if (data_dir.starts_with(&target) && request.kind != InstallKind::WindowsPortable)
         || target.starts_with(&data_dir)
@@ -300,6 +342,7 @@ pub fn prepare_update(request: PrepareRequest) -> Result<PreparedUpdate, String>
             target,
             application_executable: application,
             data_dir,
+            restart_profile,
             processes: vec![app_process, core_process],
             nonce: format!("{:064x}", rand::random::<u128>()),
             managed_identity,
@@ -599,6 +642,9 @@ fn validate_plan(plan: &Plan, directory: &Path) -> Result<(), String> {
     {
         return Err("Invalid update installation paths".to_owned());
     }
+    if let Some(profile) = &plan.restart_profile {
+        profile.validate(&plan.data_dir)?;
+    }
     if !matches!(
         plan.kind,
         InstallKind::WindowsMsi | InstallKind::DebianPackage
@@ -839,13 +885,12 @@ fn rollback(plan: &Plan, directory: &Path) -> Result<(), String> {
 }
 
 fn restart_previous(plan: &Plan) -> Result<Child, String> {
-    Command::new(restart_executable(plan))
+    restart_command(plan)
         .current_dir(
             restart_executable(plan)
                 .parent()
                 .ok_or("Application executable has no directory")?,
         )
-        .env("OPENNOW_DATA_DIR", &plan.data_dir)
         .env_remove("APPIMAGE")
         .env_remove("APPDIR")
         .env_remove("ARGV0")
@@ -856,6 +901,23 @@ fn restart_previous(plan: &Plan) -> Result<Child, String> {
         .stderr(Stdio::null())
         .spawn()
         .map_err(|error| error.to_string())
+}
+
+fn restart_command(plan: &Plan) -> Command {
+    let mut command = Command::new(restart_executable(plan));
+    match &plan.restart_profile {
+        Some(profile) => {
+            command
+                .env("OPENNOW_DATA_DIR", &profile.base_dir)
+                .env("OPENNOW_PROFILE", &profile.name);
+        }
+        None => {
+            command
+                .env("OPENNOW_DATA_DIR", &plan.data_dir)
+                .env_remove("OPENNOW_PROFILE");
+        }
+    }
+    command
 }
 
 fn restart_executable(plan: &Plan) -> &Path {
@@ -871,9 +933,8 @@ fn restart_and_acknowledge(
     directory: &Path,
     timeout: Duration,
 ) -> Result<(), RestartFailure> {
-    let mut command = Command::new(restart_executable(plan));
+    let mut command = restart_command(plan);
     command
-        .env("OPENNOW_DATA_DIR", &plan.data_dir)
         .current_dir(restart_executable(plan).parent().ok_or_else(|| {
             RestartFailure::RollbackSafe("Application executable has no directory".to_owned())
         })?)

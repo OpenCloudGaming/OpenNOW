@@ -3,10 +3,10 @@
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDir>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLocalSocket>
-#include <QStandardPaths>
 
 using namespace Qt::StringLiterals;
 
@@ -16,9 +16,14 @@ SingleInstance::SingleInstance(QObject *parent)
     connect(&m_server, &QLocalServer::newConnection, this, &SingleInstance::acceptConnection);
 }
 
-SingleInstance::Acquisition SingleInstance::acquire(const QStringList &arguments)
+SingleInstance::Acquisition SingleInstance::acquire(const QStringList &arguments, const QString &dataDirectory)
 {
-    const auto name = serverName();
+    const auto canonicalDirectory = QFileInfo(dataDirectory).canonicalFilePath();
+    if (canonicalDirectory.isEmpty() || !QFileInfo(canonicalDirectory).isDir()) {
+        qWarning("Could not resolve the single-instance profile directory");
+        return Acquisition::Failed;
+    }
+    const auto name = serverName(canonicalDirectory);
     if (forwardToPrimary(name, arguments)) return Acquisition::Forwarded;
     m_lock = std::make_unique<QLockFile>(QDir::temp().filePath(name + u".lock"_s));
     m_lock->setStaleLockTime(0);
@@ -99,9 +104,9 @@ void SingleInstance::readConnection(QLocalSocket *socket)
     socket->setProperty("opennowBuffer", buffer);
 }
 
-QString SingleInstance::serverName()
+QString SingleInstance::serverName(const QString &dataDirectory)
 {
-    const auto scope = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation).toUtf8();
+    const auto scope = dataDirectory.toUtf8();
     const auto digest = QCryptographicHash::hash(scope, QCryptographicHash::Sha256).toHex().first(16);
     return u"opennow-%1"_s.arg(QString::fromLatin1(digest));
 }

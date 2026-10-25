@@ -277,6 +277,7 @@ fn fixture(wrong_identity: bool) -> Fixture {
         target,
         application_executable: application_path,
         data_dir: fs::canonicalize(data_dir).unwrap(),
+        restart_profile: None,
         processes: vec![
             ProcessIdentity::capture(application.0.id()).unwrap(),
             ProcessIdentity::capture(core.0.id()).unwrap(),

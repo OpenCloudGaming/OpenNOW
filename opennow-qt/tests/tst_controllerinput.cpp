@@ -40,6 +40,168 @@ class ControllerInputTest final : public QObject
     Q_OBJECT
 
 private slots:
+    void backgroundControllerRequiresAnAssignment()
+    {
+        ControllerInput input;
+        QCOMPARE(input.property("backgroundControllerEnabled"), QVariant(false));
+        QCOMPARE(input.property("backgroundControllerActive"), QVariant(false));
+        QSignalSpy activeChanged(&input, SIGNAL(backgroundControllerActiveChanged()));
+        QVERIFY(input.setProperty("backgroundControllerEnabled", true));
+        QVERIFY(!input.property("backgroundControllerActive").toBool());
+        QCOMPARE(activeChanged.size(), 0);
+        input.setInputControllerId(123456);
+        QCOMPARE(input.inputControllerId(), 123456u);
+        QVERIFY(input.property("backgroundControllerActive").toBool());
+        QCOMPARE(activeChanged.size(), 1);
+        QCOMPARE(input.controllerCount(), 0);
+        input.setInputControllerId(0);
+        QVERIFY(!input.property("backgroundControllerActive").toBool());
+        QCOMPARE(activeChanged.size(), 2);
+    }
+
+    void exclusiveBackgroundControllerNeutralizesAndNeverFallsBack()
+    {
+        ControllerInput input;
+        QVERIFY(input.setProperty("backgroundControllerEnabled", true));
+        input.setShellCaptureEnabled(false);
+        QSignalSpy snapshots(&input, &ControllerInput::gamepadSnapshot);
+        QSignalSpy activity(&input, &ControllerInput::controllerActivity);
+        SDL_VirtualJoystickDesc descriptor{};
+        SDL_INIT_INTERFACE(&descriptor);
+        descriptor.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+        descriptor.naxes = SDL_GAMEPAD_AXIS_COUNT;
+        descriptor.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+        descriptor.button_mask = (1u << SDL_GAMEPAD_BUTTON_SOUTH) | (1u << SDL_GAMEPAD_BUTTON_EAST);
+        descriptor.name = "OpenNOW exclusive background controller";
+        const auto first = SDL_AttachVirtualJoystick(&descriptor);
+        const auto second = SDL_AttachVirtualJoystick(&descriptor);
+        QVERIFY(first != 0 && second != 0);
+        const auto cleanup = qScopeGuard([&] {
+            SDL_DetachVirtualJoystick(first);
+            SDL_DetachVirtualJoystick(second);
+        });
+        QTRY_COMPARE_WITH_TIMEOUT(input.availableControllers().size(), 2, 2'000);
+        QCOMPARE(input.controllerCount(), 0);
+        QVERIFY(input.deviceClaims().isEmpty());
+        QTest::qWait(150);
+        QVERIFY(snapshots.isEmpty());
+        auto *firstJoystick = SDL_GetJoystickFromID(first);
+        auto *secondJoystick = SDL_GetJoystickFromID(second);
+        QVERIFY(firstJoystick && secondJoystick);
+        QVERIFY(SDL_SetJoystickVirtualButton(firstJoystick, SDL_GAMEPAD_BUTTON_EAST, true));
+        QVERIFY(SDL_SetJoystickVirtualButton(secondJoystick, SDL_GAMEPAD_BUTTON_SOUTH, true));
+        SDL_UpdateJoysticks();
+        input.setInputControllerId(second);
+        QCOMPARE(input.deviceClaims().size(), 1);
+        QCOMPARE(input.deviceClaims().first().slot, 0);
+        QTRY_VERIFY_WITH_TIMEOUT(!snapshots.isEmpty() && snapshots.last().at(2).toUInt() == 0x1000, 1'000);
+        for (const auto &snapshot : snapshots) {
+            QCOMPARE(snapshot.at(0).toUInt(), 0u);
+            QCOMPARE(snapshot.at(1).toUInt(), 0x0101u);
+            QCOMPARE(snapshot.at(2).toUInt() & 0x2000, 0u);
+        }
+        snapshots.clear();
+        input.setInputControllerId(first);
+        QVERIFY(snapshots.size() >= 2);
+        QCOMPARE(snapshots.first().at(2).toUInt(), 0u);
+        QCOMPARE(snapshots.last().at(2).toUInt(), 0x2000u);
+        QCOMPARE(snapshots.last().at(0).toUInt(), 0u);
+        input.setInputSuspended(true);
+        QCOMPARE(snapshots.last().at(2).toUInt(), 0u);
+        auto count = snapshots.size();
+        QTest::qWait(150);
+        QCOMPARE(snapshots.size(), count);
+        input.setInputSuspended(false);
+        QCOMPARE(snapshots.last().at(2).toUInt(), 0x2000u);
+        input.setInputControllerId(0);
+        QCOMPARE(snapshots.last().at(2).toUInt(), 0u);
+        count = snapshots.size();
+        QTest::qWait(150);
+        QCOMPARE(snapshots.size(), count);
+        input.setInputControllerId(first);
+        QCOMPARE(snapshots.last().at(2).toUInt(), 0x2000u);
+        bool neutralBeforeRemoval = false;
+        QObject disconnectObserver;
+        connect(&input, &ControllerInput::deviceClaimsChanged, &disconnectObserver, [&] {
+            if (input.deviceClaims().isEmpty())
+                neutralBeforeRemoval = snapshots.last().at(2).toUInt() == 0;
+        });
+        SDL_Event removed{};
+        removed.type = SDL_EVENT_GAMEPAD_REMOVED;
+        removed.gdevice.which = first;
+        QVERIFY(SDL_PushEvent(&removed));
+        QTRY_COMPARE_WITH_TIMEOUT(input.controllerCount(), 0, 2'000);
+        QVERIFY(neutralBeforeRemoval);
+        QVERIFY(SDL_DetachVirtualJoystick(first));
+        QCOMPARE(input.inputControllerId(), first);
+        QCOMPARE(snapshots.last().at(1).toUInt(), 0u);
+        QCOMPARE(snapshots.last().at(2).toUInt(), 0u);
+        count = snapshots.size();
+        QTest::qWait(150);
+        QCOMPARE(snapshots.size(), count);
+        input.setInputControllerId(0);
+        QTest::qWait(150);
+        QCOMPARE(snapshots.size(), count);
+        QVERIFY(input.deviceClaims().isEmpty());
+        QCOMPARE(activity.size(), 0);
+        input.setInputControllerId(second);
+        QCOMPARE(snapshots.last().at(2).toUInt(), 0x1000u);
+        snapshots.clear();
+        int shutdownNeutrals = 0;
+        {
+            ControllerInput shuttingDown;
+            shuttingDown.setInputControllerId(second);
+            QVERIFY(shuttingDown.setProperty("backgroundControllerEnabled", true));
+            shuttingDown.setShellCaptureEnabled(false);
+            connect(&shuttingDown, &ControllerInput::gamepadSnapshot, &input,
+                    [&](quint8, quint16, quint16 buttons, quint8, quint8, qint16, qint16, qint16, qint16) {
+                QCOMPARE(buttons, 0u);
+                ++shutdownNeutrals;
+            });
+        }
+        QCOMPARE(shutdownNeutrals, 1);
+    }
+
+    void backgroundSelectionSurvivesDiscoveryAndExcludesMappedFlightDevices()
+    {
+        ControllerInput input;
+        input.setForwardFlightControls(false);
+        SDL_VirtualJoystickDesc descriptor{};
+        SDL_INIT_INTERFACE(&descriptor);
+        descriptor.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+        descriptor.naxes = SDL_GAMEPAD_AXIS_COUNT;
+        descriptor.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+        descriptor.name = "OpenNOW delayed discovery controller";
+        const auto selected = SDL_AttachVirtualJoystick(&descriptor);
+        descriptor.vendor_id = 0x046d;
+        descriptor.product_id = 0xc262;
+        const auto flight = SDL_AttachVirtualJoystick(&descriptor);
+        QVERIFY(selected != 0 && flight != 0);
+        const auto cleanup = qScopeGuard([&] {
+            SDL_DetachVirtualJoystick(selected);
+            SDL_DetachVirtualJoystick(flight);
+        });
+        input.setInputControllerId(selected);
+        QCOMPARE(input.inputControllerId(), selected);
+        QVERIFY(input.setProperty("backgroundControllerEnabled", true));
+        input.setShellCaptureEnabled(false);
+        QTRY_COMPARE_WITH_TIMEOUT(input.controllerCount(), 1, 2'000);
+        QCOMPARE(input.availableControllers().size(), 1);
+        QCOMPARE(input.deviceClaims().size(), 1);
+        QCOMPARE(input.deviceClaims().first().slot, 0);
+        input.setInputControllerId(flight);
+        QCOMPARE(input.controllerCount(), 0);
+        QVERIFY(input.deviceClaims().isEmpty());
+        QVERIFY(input.genericHidClaims().isEmpty());
+        QVERIFY(input.setProperty("backgroundControllerEnabled", false));
+        QCOMPARE(input.controllerCount(), 1);
+        QCOMPARE(input.availableControllers().size(), 2);
+        QVERIFY(input.setProperty("backgroundControllerEnabled", true));
+        QCOMPARE(input.controllerCount(), 0);
+        QCOMPARE(input.inputControllerId(), flight);
+        QCOMPARE(input.availableControllers().size(), 1);
+    }
+
     void digitalDpadRepeatsUntilReleased_data()
     {
         QTest::addColumn<int>("button");

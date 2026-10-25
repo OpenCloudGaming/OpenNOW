@@ -273,6 +273,33 @@ private slots:
         QVERIFY(!changes.isEmpty());
     }
 
+    void exclusiveControllerModeBlocksGenericHidClaimsReportsAndOutputs()
+    {
+        auto backend = std::make_shared<FakeBackend>();
+        backend->devices = {device("a", "parent-a")};
+        ControllerInput input(nullptr, backend);
+        QTRY_COMPARE(input.genericHidClaims().size(), 1);
+        const auto previous = input.genericHidClaims().first();
+        QSignalSpy reports(&input, &ControllerInput::genericHidReport);
+        QSignalSpy claimsChanged(&input, &ControllerInput::genericDeviceClaimsChanged);
+        input.setBackgroundControllerEnabled(true);
+        QVERIFY(input.genericHidClaims().isEmpty());
+        QVERIFY(!claimsChanged.isEmpty());
+        QCOMPARE(input.flightDevices().first().toMap().value(QStringLiteral("status")).toString(), QStringLiteral("ignored"));
+        input.setInputControllerId(123456);
+        input.setForwardFlightControls(false);
+        input.setForwardFlightControls(true);
+        QVERIFY(input.genericHidClaims().isEmpty());
+        backend->push("a", 1);
+        input.handleGenericHidOutput(output(previous, 1, QByteArray::fromHex("0102")));
+        QTest::qWait(350);
+        QCOMPARE(reports.size(), 0);
+        QCOMPARE(backend->outputCount(), 0);
+        input.setBackgroundControllerEnabled(false);
+        QTRY_COMPARE(input.genericHidClaims().size(), 1);
+        QVERIFY(input.genericHidClaims().first().incarnation > previous.incarnation);
+    }
+
     void deniedAccessReportsNoAccessAndRetriesWhenGranted()
     {
         auto backend = std::make_shared<FakeBackend>();

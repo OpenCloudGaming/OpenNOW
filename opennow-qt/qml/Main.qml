@@ -11,7 +11,7 @@ ApplicationWindow {
     visible: true
     visibility: ApplicationWindow.Windowed
     color: "black"
-    title: qsTr("OpenNOW")
+    title: qsTr("OpenNOW") + (InstanceProfileName !== "" ? " · " + InstanceProfileName : "")
     WindowTheme {
         id: windowTheme
         targetWindow: window
@@ -312,11 +312,13 @@ ApplicationWindow {
     }
 
     function syncInputOwnership() {
-        const shellOwnsInput = !window.active || AppController.route !== "stream"
+        const shellOwnsInput = (!window.active && !ControllerInput.backgroundControllerActive)
+            || AppController.route !== "stream"
             || (!window.desktopSurfaceActive && !window.consoleStreamReady)
             || (window.desktopSurfaceActive && !ShellStore.authRestorePending && !ShellStore.signedIn)
             || ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)
-        ControllerInput.inputSuspended = !window.active
+        ControllerInput.inputSuspended = (!window.active
+                && (!ControllerInput.backgroundControllerActive || shellOwnsInput))
             || (shellOwnsInput && ShellStore.settings.controllerMode === false)
         ControllerInput.shellCaptureEnabled = shellOwnsInput
             && ShellStore.settings.controllerMode !== false
@@ -1162,6 +1164,7 @@ ApplicationWindow {
     Connections {
         target: ControllerInput
         function onShellInputSkipRequested() { if (consoleLaunch.active) consoleLaunch.skip() }
+        function onBackgroundControllerActiveChanged() { window.syncInputOwnership() }
     }
     onTargetDesktopSurfaceChanged: {
         window.synchronizeRenderedSurface()

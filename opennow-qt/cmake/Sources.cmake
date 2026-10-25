@@ -67,6 +67,7 @@ qt_add_executable(opennow-qt
     src/app/platform/WindowTheme.h
     src/app/ApplicationStartup.cpp
     src/app/ApplicationStartup.h
+    src/app/InstanceLaunchOptions.h
     src/app/SingleInstance.cpp
     src/app/SingleInstance.h
     src/core/CoreClient.cpp

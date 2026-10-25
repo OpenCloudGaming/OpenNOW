@@ -3,9 +3,11 @@
 #include "app/platform/WindowTheme.h"
 #include "acceptance/AcceptanceSession.h"
 #include "app/ApplicationStartup.h"
+#include "app/InstanceLaunchOptions.h"
 #include "app/platform/MacAwdlController.h"
 #include "input/ControllerInput.h"
 #include "core/CoreClient.h"
+#include "diagnostics/DiagnosticsPaths.h"
 #include "input/InputModeTracker.h"
 #include "input/SonySnapshotWire.h"
 #include "localization/Localization.h"
@@ -94,7 +96,8 @@ private:
 };
 }
 
-static int runApplicationSession(int argc, char *argv[], QString &restartExecutable)
+static int runApplicationSession(int argc, char *argv[], QString &restartExecutable,
+                                 QStringList &restartArguments)
 {
 #ifdef Q_OS_WIN
     if (!qEnvironmentVariableIsSet("QT_D3D_NO_VBLANK_THREAD"))
@@ -144,9 +147,26 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     applicationFont.setStyleStrategy(QFont::PreferAntialias);
     application.setFont(applicationFont);
     const auto arguments = application.arguments();
+    const auto launchOptions = InstanceLaunchOptions::parse(arguments, qEnvironmentVariable("OPENNOW_PROFILE"));
+    if (!launchOptions.error.isEmpty()) {
+        qCritical("%s", qUtf8Printable(launchOptions.error));
+        return EXIT_FAILURE;
+    }
+    if (launchOptions.profile.isEmpty() && qEnvironmentVariableIsSet("OPENNOW_PROFILE")) {
+        qCritical("OPENNOW_PROFILE must not be empty");
+        return EXIT_FAILURE;
+    }
+    if (!launchOptions.profile.isEmpty())
+        qputenv("OPENNOW_PROFILE", launchOptions.profile.toUtf8());
+    restartArguments = launchOptions.restartArguments();
+    const auto dataRoot = coreDiagnosticsDataRoot();
+    if (dataRoot.isEmpty() || !QDir().mkpath(dataRoot)) {
+        qCritical("Could not create the profile data directory");
+        return EXIT_FAILURE;
+    }
     SingleInstance singleInstance;
-    if (!arguments.contains(u"--allow-multiple-instances"_s)) {
-        const auto acquisition = singleInstance.acquire(arguments);
+    if (!launchOptions.profile.isEmpty() || !arguments.contains(u"--allow-multiple-instances"_s)) {
+        const auto acquisition = singleInstance.acquire(arguments, dataRoot);
         if (acquisition == SingleInstance::Acquisition::Forwarded) return EXIT_SUCCESS;
         if (acquisition == SingleInstance::Acquisition::Failed) return EXIT_FAILURE;
     }
@@ -165,6 +185,8 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     FileOpenFilter fileOpenFilter(&controller);
     application.installEventFilter(&fileOpenFilter);
     ControllerInput controllerInput;
+    controllerInput.setInputControllerId(launchOptions.controllerId);
+    controllerInput.setBackgroundControllerEnabled(!launchOptions.profile.isEmpty());
     ThumbnailGenerator thumbnailGenerator;
     Localization localization;
     application.installTranslator(&localization);
@@ -303,6 +325,7 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     AcceptanceSession acceptance(application, engine, controller, coreClient, arguments);
     engine.rootContext()->setContextProperty(u"AppController"_s, &controller);
     engine.rootContext()->setContextProperty(u"ControllerInput"_s, &controllerInput);
+    engine.rootContext()->setContextProperty(u"InstanceProfileName"_s, launchOptions.profile);
     engine.rootContext()->setContextProperty(u"ThumbnailGenerator"_s, &thumbnailGenerator);
     engine.rootContext()->setContextProperty(u"I18n"_s, &localization);
     engine.rootContext()->setContextProperty(u"CoreClient"_s, &coreClient);
@@ -375,6 +398,7 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
 
     const auto exitCode = application.exec();
     armTeardownDeadline(exitCode);
+    controllerInput.setInputSuspended(true);
     coreClient.stop();
 #ifdef OPENNOW_EMBEDDED_STREAMER
     const auto roots = engine.rootObjects();
@@ -391,10 +415,11 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
 int runApplication(int argc, char *argv[])
 {
     QString restartExecutable;
-    const auto exitCode = runApplicationSession(argc, argv, restartExecutable);
+    QStringList restartArguments;
+    const auto exitCode = runApplicationSession(argc, argv, restartExecutable, restartArguments);
     if (restartExecutable.isEmpty())
         return exitCode;
-    if (!QProcess::startDetached(restartExecutable, {}, QFileInfo(restartExecutable).absolutePath())) {
+    if (!QProcess::startDetached(restartExecutable, restartArguments, QFileInfo(restartExecutable).absolutePath())) {
         qCritical("Could not restart OpenNOW. Reopen the application to continue setup.");
         return EXIT_FAILURE;
     }
