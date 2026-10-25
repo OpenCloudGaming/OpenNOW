@@ -25,7 +25,7 @@ class WindowsSetupTests(unittest.TestCase):
         self.assertNotIn("msiexec.exe'), '/i", script)
         self.assertIn("msiexec.exe'), '/x", script)
         self.assertNotIn("{userappdata}\\OpenNOW", script)
-        self.assertIn('Type: filesandordirs; Name: "{app}"', script)
+        self.assertIn('Type: dirifempty; Name: "{app}"', script)
         app_id = "7E2A9C14-6B0D-4E58-9F31-0C8A5D2B6E17"
         self.assertIn(app_id, script)
         for upgrade in (
@@ -35,6 +35,32 @@ class WindowsSetupTests(unittest.TestCase):
         ):
             self.assertIn(upgrade, script)
             self.assertNotEqual(app_id, upgrade)
+
+    def test_setup_allows_selecting_a_dedicated_destination_on_any_drive(self):
+        script = ISS.read_text()
+        self.assertIn("DisableDirPage=no", script)
+        self.assertIn("AppendDefaultDirName=yes", script)
+        self.assertIn("AllowRootDirectory=no", script)
+        self.assertIn("UsePreviousAppDir=yes", script)
+        self.assertIn('DestDir: "{app}"', script)
+        self.assertIn('WorkingDir: "{app}\\bin"', script)
+
+    def test_uninstall_preserves_untracked_files_in_the_selected_destination(self):
+        script = ISS.read_text()
+        uninstall = script.split("[UninstallDelete]", 1)[1].split("[Code]", 1)[0]
+        self.assertEqual(
+            [line.strip() for line in uninstall.splitlines() if line.strip()],
+            [
+                r'Type: filesandordirs; Name: "{app}\bin"',
+                r'Type: filesandordirs; Name: "{app}\plugins"',
+                r'Type: filesandordirs; Name: "{app}\qml"',
+                r'Type: filesandordirs; Name: "{app}\share"',
+                r'Type: filesandordirs; Name: "{app}\translations"',
+                'Type: dirifempty; Name: "{app}"',
+            ],
+        )
+        files = script.split("[Files]", 1)[1].split("[Tasks]", 1)[0]
+        self.assertNotIn("uninsneveruninstall", files)
 
     def test_build_script_requires_the_portable_executables(self):
         script = BUILD.read_text()

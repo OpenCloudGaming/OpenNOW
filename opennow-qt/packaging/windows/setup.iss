@@ -27,7 +27,10 @@ AppPublisher={#AppPublisher}
 AppPublisherURL=https://github.com/OpenCloudGaming/OpenNOW
 AppSupportURL=https://github.com/OpenCloudGaming/OpenNOW
 DefaultDirName={localappdata}\OpenNOW
-DisableDirPage=yes
+DisableDirPage=no
+AppendDefaultDirName=yes
+AllowRootDirectory=no
+UsePreviousAppDir=yes
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputBaseFilename=OpenNOW-setup
@@ -59,8 +62,12 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\bin\{#AppExeName}"; WorkingDi
 Filename: "{app}\bin\{#AppExeName}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
-; Remove the local tree and leave %APPDATA%\OpenNOW alone.
-Type: filesandordirs; Name: "{app}"
+Type: filesandordirs; Name: "{app}\bin"
+Type: filesandordirs; Name: "{app}\plugins"
+Type: filesandordirs; Name: "{app}\qml"
+Type: filesandordirs; Name: "{app}\share"
+Type: filesandordirs; Name: "{app}\translations"
+Type: dirifempty; Name: "{app}"
 
 [Code]
 function MsiEnumRelatedProducts(UpgradeCode: String; Reserved: Cardinal; Index: Integer; ProductCode: String): Integer;
