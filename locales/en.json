@@ -2865,6 +2865,7 @@
       "s_18cea849": "The OpenNOW core is not ready",
       "s_1ac6fef1": "The OpenNOW core is still starting",
       "s_f9e99e88": "The desktop compositor did not allow OpenNOW to capture the stream.",
+      "stream_frame_screenshot_failed": "No video frame is available, or the screenshot could not be saved.",
       "s_92782fd0": "The native stream window is not active.",
       "s_1a38a57c": "The provider does not expose a supported friends service.",
       "s_4d2a7da7": "The requested GeForce NOW game was not found in the current catalog.",

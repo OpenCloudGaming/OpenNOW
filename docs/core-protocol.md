@@ -1031,15 +1031,20 @@ changing the C ABI:
   `audioPackets`, and `completion`. Normal completion is `{"kind":"complete"}`.
   A preserved valid prefix is `{"kind":"cut","reason":"discontinuity"}`,
   `{"kind":"cut","reason":"queue-overflow"}`, or
-  `{"kind":"cut","reason":"interrupted"}`. A cut stops manual recording and
-  produces a visible early-save notice; it does not start another file or change
-  replay capture.
+  `{"kind":"cut","reason":"interrupted"}`. A cut produces a visible early-save
+  notice. Qt retains manual recording intent for discontinuity and interruption,
+  allocating a new segment when media resumes in the same cloud session. User
+  stop and authoritative session end cancel that intent. Queue overflow stops
+  recording without automatic retry. Replay capture is unchanged.
 - `recording-stopped` repeats the terminal result and its originating `requestId`;
   its `id` still identifies the stop command. Qt applies a correlated terminal
   result once, whether the event or stop response arrives first. A repeated stop
   returns `recording-not-active` without replacing an earlier cut or failure.
   Packet-write, trailer, publication, and no-valid-keyframe failures remain
-  failures, not saved prefixes.
+  failures, not saved prefixes. A failed result caused solely by termination
+  before the first usable keyframe also carries `completion`, retaining the
+  structured terminal cause without claiming a saved file. Other failures omit
+  completion metadata or carry `null`, so storage failures never enable retry.
 - Completion metadata and event correlation are additive protocol-7 fields. Qt
   ignores uncorrelated terminal events and stale recording identities. A missing
   completion field means ordinary saved output only on an authoritative,

@@ -1558,12 +1558,13 @@ impl Engine {
                         "completion":summary.completion,
                         "requestId":request_id,
                     }),
-                    Err(message) => {
-                        json!({"state":"failed","message":message,"requestId":request_id})
+                    Err(failure) => {
+                        json!({"state":"failed","message":failure.message,
+                            "completion":failure.completion,"requestId":request_id})
                     }
                 };
                 let _ = events.send(event("recording-state", payload));
-                result
+                result.map_err(|failure| failure.message)
             })
             .map_err(|spawn_error| {
                 control.unsubscribe_recording();

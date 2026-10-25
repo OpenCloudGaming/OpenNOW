@@ -1102,11 +1102,11 @@ if(BUILD_TESTING)
     )
     target_include_directories(opennow-nativestreamruntime-tests PRIVATE src)
     target_link_libraries(opennow-nativestreamruntime-tests PRIVATE
-        Qt6::Test Qt6::Core opennow-streamer-ffi)
+        Qt6::Test Qt6::Core Qt6::Gui opennow-streamer-ffi)
     add_dependencies(opennow-nativestreamruntime-tests opennow-streamer-ffi-build)
     add_test(NAME opennow-nativestreamruntime-tests
              COMMAND opennow-nativestreamruntime-tests -o -,txt)
-    set_tests_properties(opennow-nativestreamruntime-tests PROPERTIES TIMEOUT 8)
+    set_tests_properties(opennow-nativestreamruntime-tests PROPERTIES TIMEOUT 15)
 
     if(UNIX AND NOT APPLE)
         qt_add_executable(opennow-sonychain-tests

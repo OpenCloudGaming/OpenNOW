@@ -9,6 +9,7 @@
 #include "streaming/rendering/StreamVideoTextureRenderer.h"
 #include "streaming/rendering/StreamFrameInterpolator.h"
 #include "streaming/rendering/StreamFramePacer.h"
+#include "streaming/rendering/StreamFrameSnapshot.h"
 
 #include <rhi/qrhi.h>
 #include <rhi/qrhi_platform.h>
@@ -47,6 +48,11 @@ public:
     explicit NativeStreamRenderCallback(NativeStreamRuntime *runtime)
         : m_runtime(runtime)
     {
+    }
+
+    ~NativeStreamRenderCallback() override
+    {
+        releaseResources();
     }
 
     void initialize(QRhi *rhi, QRhiCommandBuffer *commandBuffer,
@@ -148,6 +154,24 @@ public:
         if (!m_runtime || !m_runtime->presentationAllowed()
             || m_presentationGeneration != m_runtime->presentationGeneration()
             || !m_graphicsReady || !m_rhi || !commandBuffer) return;
+        if (!m_snapshotRequest) {
+            m_snapshot.reset();
+            const auto request = m_runtime->takeScreenshotRequest();
+            if (request) {
+                m_snapshot = std::make_unique<StreamFrameSnapshot>();
+                m_snapshotRequest = request;
+                if (!m_textures.importedTexture()
+                    || !m_snapshot->submit(m_rhi, commandBuffer, m_textures.importedTexture(),
+                        m_sourceColorSpace, [this, request](QImage image) {
+                            if (m_snapshotRequest != request) return;
+                            m_snapshotRequest = 0;
+                            m_runtime->completeScreenshot(request, std::move(image));
+                        })) {
+                    m_snapshotRequest = 0;
+                    m_runtime->completeScreenshot(request, {});
+                }
+            }
+        }
         m_textures.prepareUpscaling(commandBuffer, m_upscalingTarget, m_fsrUpscaling,
             m_sourceColorSpace == OPENNOW_STREAMER_COLOR_SPACE_SDR709, m_upscalingSharpness);
     }
@@ -486,7 +510,11 @@ public:
     void tearDownResources(bool ownRearm, bool deviceChanged, bool generationChanged)
     {
         m_swapStall.onResourcesReleased(ownRearm, deviceChanged, generationChanged);
+        if (m_snapshot) m_snapshot->cancel();
+        if (const auto request = std::exchange(m_snapshotRequest, 0); request && m_runtime)
+            m_runtime->completeScreenshot(request, {});
         if (m_rhi && m_graphicsReady) m_rhi->finish();
+        m_snapshot.reset();
         finishFrame();
         m_textures.release();
         m_interpolator.release();
@@ -542,6 +570,8 @@ private:
     std::uint32_t m_reportedColorSpace = 0;
     int m_reportedOutputBits = 0;
     StreamVideoTextureRenderer m_textures;
+    std::unique_ptr<StreamFrameSnapshot> m_snapshot;
+    quint64 m_snapshotRequest = 0;
     StreamPresentTimings m_swapTimings;
     StreamSwapStallWatchdog m_swapStall;
     bool m_resourceRearmPending = false;

@@ -2357,7 +2357,7 @@ mod tests {
             },
         )
         .unwrap();
-        let expected: Vec<_> = [
+        let mut expected: Vec<_> = [
             RecordingCompletion::Complete,
             RecordingCompletion::Cut {
                 reason: RecordingCutReason::Discontinuity,
@@ -2376,6 +2376,9 @@ mod tests {
             "audioPackets":3, "completion":completion})
         })
         .collect();
+        expected.push(json!({"type":"recording-state", "state":"failed",
+            "requestId":"recording-start-10", "message":"recording ended before a decodable video keyframe arrived",
+            "completion":{"kind":"cut","reason":"interrupted"}}));
         for event in &expected {
             sender.send(event.clone()).unwrap();
         }

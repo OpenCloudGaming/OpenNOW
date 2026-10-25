@@ -201,6 +201,11 @@ struct NativeStreamRuntime::Private {
     bool firstNotification = false;
     std::atomic<quint64> presentationGeneration{0};
     std::atomic_bool presentationAllowed{false};
+    std::atomic<quint64> screenshotRequest{0};
+    quint64 screenshotSerial = 0;
+    quint64 screenshotPending = 0;
+    quint64 screenshotGeneration = 0;
+    QTimer *screenshotTimeout = nullptr;
     QSize decodedDisplaySize;
     std::mutex displaySizeMutex;
     QSize pendingDisplaySize;
@@ -261,6 +266,12 @@ NativeStreamRuntime::NativeStreamRuntime(Api api, QObject *parent,
 {
     d->vulkanDevice = vulkanDevice;
     d->windowsAdapterLuid = windowsAdapterLuid;
+    d->screenshotTimeout = new QTimer(this);
+    d->screenshotTimeout->setSingleShot(true);
+    d->screenshotTimeout->setInterval(5000);
+    connect(d->screenshotTimeout, &QTimer::timeout, this, [this] {
+        completeScreenshot(d->screenshotPending, {});
+    });
     if (d->api.takeGenericHidOutput || d->api.getGenericHidAdmissions) {
         auto *timer = new QTimer(this);
         d->genericHidOutputTimer = timer;
@@ -453,6 +464,9 @@ void NativeStreamRuntime::invalidatePresentation()
 {
     d->presentationAllowed.store(false, std::memory_order_release);
     const auto generation = d->presentationGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+    d->screenshotRequest.store(0);
+    d->screenshotTimeout->stop();
+    if (std::exchange(d->screenshotPending, 0)) emit screenshotReady({});
     {
         const std::lock_guard lock(d->displaySizeMutex);
         d->pendingDisplaySize = {};
@@ -469,6 +483,35 @@ void NativeStreamRuntime::invalidatePresentation()
     d->upstreamProgressSamples.publish(false, false, 0, 0);
     emit controllerRumbleStopped();
     emit frameAvailable(); // Repaint even when the dead transport sends no more frames.
+}
+
+bool NativeStreamRuntime::requestScreenshot()
+{
+    if (!presentationAllowed() || d->screenshotPending) return false;
+    const auto request = ++d->screenshotSerial;
+    d->screenshotPending = request;
+    d->screenshotGeneration = presentationGeneration();
+    d->screenshotRequest.store(request);
+    d->screenshotTimeout->start();
+    emit frameAvailable();
+    return true;
+}
+
+quint64 NativeStreamRuntime::takeScreenshotRequest()
+{
+    return d->screenshotRequest.exchange(0);
+}
+
+void NativeStreamRuntime::completeScreenshot(quint64 request, QImage image)
+{
+    QMetaObject::invokeMethod(this, [this, request, image = std::move(image)] {
+        if (!request || request != d->screenshotPending) return;
+        d->screenshotTimeout->stop();
+        d->screenshotRequest.store(0);
+        d->screenshotPending = 0;
+        emit screenshotReady(presentationAllowed()
+            && d->screenshotGeneration == presentationGeneration() ? image : QImage());
+    }, Qt::QueuedConnection);
 }
 
 void NativeStreamRuntime::logRenderDiagnostic(const QString &detail)

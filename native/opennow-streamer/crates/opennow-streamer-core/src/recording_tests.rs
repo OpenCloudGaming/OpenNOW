@@ -139,6 +139,8 @@ fn recording_can_restart_after_finished_worker_failure() {
         completion["message"],
         "recording stopped because the video stream was discontinuous"
     );
+    assert_eq!(completion["completion"]["kind"], "cut");
+    assert_eq!(completion["completion"]["reason"], "discontinuity");
     assert!(
         engine
             .recording_worker

@@ -1,8 +1,10 @@
 #include "streaming/NativeStreamRuntime.h"
 #include "streaming/rendering/NativeStreamRenderCallback.h"
 #include "streaming/rendering/StreamVideoRenderCallback.h"
+#include "streaming/rendering/StreamFrameSnapshot.h"
 
 #include <QGuiApplication>
+#include <QDir>
 #include <QImage>
 #include <QJsonDocument>
 #include <QScopeGuard>
@@ -315,6 +317,211 @@ private:
     }
 
 private slots:
+    void screenshotRecoversAfterResourceRelease_data()
+    {
+        QTest::addColumn<bool>("destroyCallback");
+        QTest::newRow("release-resources") << false;
+        QTest::newRow("destroy-callback") << true;
+    }
+
+    void screenshotRecoversAfterResourceRelease()
+    {
+#if defined(Q_OS_WIN) || (QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>))
+        QFETCH(bool, destroyCallback);
+        Producer producer;
+#if !defined(Q_OS_WIN)
+        producer.instance = &m_instance;
+#endif
+        producerToCreate = &producer;
+        const auto resetProducer = qScopeGuard([] { producerToCreate = nullptr; });
+        NativeStreamRuntime runtime(producerApi());
+        QSignalSpy snapshots(&runtime, &NativeStreamRuntime::screenshotReady);
+        QVERIFY(runtime.start());
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                              {QStringLiteral("id"), QStringLiteral("screenshot-release")}}));
+        QTRY_VERIFY(runtime.presentationAllowed());
+        const QSize size(64, 32);
+        auto source = std::unique_ptr<QRhiTexture>(m_rhi->newTexture(QRhiTexture::RGBA8, size));
+        QVERIFY(source->create());
+        producer.sourceTexture = source.get();
+        QImage image(size, QImage::Format_RGBA8888);
+        image.fill(Qt::green);
+        auto texture = std::unique_ptr<QRhiTexture>(m_rhi->newTexture(
+            QRhiTexture::RGBA8, size, 1, QRhiTexture::RenderTarget));
+        QVERIFY(texture->create());
+        QRhiTextureRenderTargetDescription description(QRhiColorAttachment(texture.get()));
+        auto target = std::unique_ptr<QRhiTextureRenderTarget>(m_rhi->newTextureRenderTarget(description));
+        auto pass = std::unique_ptr<QRhiRenderPassDescriptor>(target->newCompatibleRenderPassDescriptor());
+        target->setRenderPassDescriptor(pass.get());
+        QVERIFY(target->create());
+        auto callback = createNativeStreamRenderCallback(&runtime);
+        const auto release = qScopeGuard([&] { if (callback) callback->releaseResources(); });
+        QVERIFY(runtime.requestScreenshot());
+        QRhiCommandBuffer *cb = nullptr;
+        QCOMPARE(m_rhi->beginOffscreenFrame(&cb), QRhi::FrameOpSuccess);
+        auto *updates = m_rhi->nextResourceUpdateBatch();
+        updates->uploadTexture(source.get(), image);
+        cb->resourceUpdate(updates);
+        producer.next = OpenNowStreamerFrameInfo{64, 32, 1, 1'000'000'000};
+        callback->initialize(m_rhi.get(), cb, target.get());
+        callback->prepareFrame(cb);
+        QCOMPARE(snapshots.count(), 0);
+        if (destroyCallback)
+            callback.reset();
+        else
+            callback->releaseResources();
+        QCOMPARE(m_rhi->endOffscreenFrame(), QRhi::FrameOpSuccess);
+        QTRY_COMPARE(snapshots.count(), 1);
+        QVERIFY(qvariant_cast<QImage>(snapshots.at(0).at(0)).isNull());
+        if (!callback) callback = createNativeStreamRenderCallback(&runtime);
+        QVERIFY(runtime.requestScreenshot());
+        QCOMPARE(m_rhi->beginOffscreenFrame(&cb), QRhi::FrameOpSuccess);
+        producer.next = OpenNowStreamerFrameInfo{64, 32, 2, 1'020'000'000};
+        callback->initialize(m_rhi.get(), cb, target.get());
+        callback->prepareFrame(cb);
+        QCOMPARE(m_rhi->endOffscreenFrame(), QRhi::FrameOpSuccess);
+        callback->finishFrame();
+        QTRY_COMPARE(snapshots.count(), 2);
+        QCOMPARE(qvariant_cast<QImage>(snapshots.at(1).at(0)), image);
+        QCoreApplication::processEvents();
+        QCOMPARE(snapshots.count(), 2);
+        QCOMPARE(m_validationErrors.load(), 0);
+#else
+        QSKIP("Native screenshot integration requires D3D11 or Vulkan");
+#endif
+    }
+
+    void screenshotReadbackIsBounded()
+    {
+        const QSize sourceSize(4096, 32);
+        auto source = std::unique_ptr<QRhiTexture>(m_rhi->newTexture(QRhiTexture::RGBA8, sourceSize));
+        QVERIFY(source->create());
+        QImage image(sourceSize, QImage::Format_RGBA8888);
+        image.fill(Qt::green);
+        StreamFrameSnapshot snapshot;
+        QImage captured;
+        QRhiCommandBuffer *cb = nullptr;
+        QCOMPARE(m_rhi->beginOffscreenFrame(&cb), QRhi::FrameOpSuccess);
+        auto *updates = m_rhi->nextResourceUpdateBatch();
+        updates->uploadTexture(source.get(), image);
+        cb->resourceUpdate(updates);
+        QVERIFY(snapshot.submit(m_rhi.get(), cb, source.get(), OPENNOW_STREAMER_COLOR_SPACE_SDR709,
+            [&](QImage result) { captured = std::move(result); }));
+        QVERIFY(!snapshot.submit(m_rhi.get(), cb, source.get(), OPENNOW_STREAMER_COLOR_SPACE_SDR709,
+            [](QImage) {}));
+        QCOMPARE(m_rhi->endOffscreenFrame(), QRhi::FrameOpSuccess);
+        QCOMPARE(captured.size(), QSize(3840, 30));
+        QCOMPARE(captured.pixelColor(0, 0), QColor(Qt::green));
+        QCOMPARE(captured.pixelColor(3839, 29), QColor(Qt::green));
+        QCOMPARE(m_validationErrors.load(), 0);
+    }
+
+    void cleanScreenshot_data()
+    {
+        QTest::addColumn<QSize>("windowSize");
+        QTest::addColumn<bool>("overlay");
+        QTest::newRow("windowed-video") << QSize(320, 240) << false;
+        QTest::newRow("windowed-overlay") << QSize(320, 240) << true;
+        QTest::newRow("fullscreen-video") << QSize(1920, 1080) << false;
+        QTest::newRow("fullscreen-overlay") << QSize(1920, 1080) << true;
+    }
+
+    void cleanScreenshot()
+    {
+#if defined(Q_OS_WIN) || (QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>))
+        QFETCH(QSize, windowSize);
+        QFETCH(bool, overlay);
+        Producer producer;
+#if !defined(Q_OS_WIN)
+        producer.instance = &m_instance;
+#endif
+        producerToCreate = &producer;
+        const auto resetProducer = qScopeGuard([] { producerToCreate = nullptr; });
+        NativeStreamRuntime runtime(producerApi());
+        QSignalSpy snapshots(&runtime, &NativeStreamRuntime::screenshotReady);
+        QVERIFY(!runtime.requestScreenshot());
+        QVERIFY(runtime.start());
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                              {QStringLiteral("id"), QStringLiteral("screenshot-start")}}));
+        QTRY_VERIFY(runtime.presentationAllowed());
+        const QSize sourceSize(64, 32);
+        auto source = std::unique_ptr<QRhiTexture>(m_rhi->newTexture(QRhiTexture::RGBA8, sourceSize));
+        QVERIFY(source->create());
+        producer.sourceTexture = source.get();
+        QImage image(sourceSize, QImage::Format_RGBA8888);
+        image.fill(QColor(32, 192, 64));
+        for (int y = sourceSize.height() / 2; y < sourceSize.height(); ++y)
+            for (int x = 0; x < sourceSize.width(); ++x)
+                image.setPixelColor(x, y, QColor(192, 64, 32));
+        auto texture = std::unique_ptr<QRhiTexture>(m_rhi->newTexture(QRhiTexture::RGBA8,
+            windowSize, 1, QRhiTexture::RenderTarget | QRhiTexture::UsedAsTransferSource));
+        QVERIFY(texture->create());
+        auto depth = std::unique_ptr<QRhiRenderBuffer>(m_rhi->newRenderBuffer(
+            QRhiRenderBuffer::DepthStencil, windowSize));
+        QVERIFY(depth->create());
+        QRhiTextureRenderTargetDescription description(QRhiColorAttachment(texture.get()));
+        description.setDepthStencilBuffer(depth.get());
+        auto target = std::unique_ptr<QRhiTextureRenderTarget>(m_rhi->newTextureRenderTarget(description));
+        auto pass = std::unique_ptr<QRhiRenderPassDescriptor>(target->newCompatibleRenderPassDescriptor());
+        target->setRenderPassDescriptor(pass.get());
+        QVERIFY(target->create());
+        auto callback = createNativeStreamRenderCallback(&runtime);
+        const auto release = qScopeGuard([&] { callback->releaseResources(); });
+        auto matrix = m_rhi->clipSpaceCorrMatrix();
+        matrix.ortho(0, windowSize.width(), windowSize.height(), 0, -1, 1);
+        const QRect bounds(QPoint(), windowSize);
+        callback->setComposition(matrix, bounds, bounds, 1);
+        QVERIFY(runtime.requestScreenshot());
+        QVERIFY(!runtime.requestScreenshot());
+        QRhiCommandBuffer *cb = nullptr;
+        QCOMPARE(m_rhi->beginOffscreenFrame(&cb), QRhi::FrameOpSuccess);
+        auto *updates = m_rhi->nextResourceUpdateBatch();
+        updates->uploadTexture(source.get(), image);
+        cb->resourceUpdate(updates);
+        producer.next = OpenNowStreamerFrameInfo{64, 32, 1, 1'000'000'000};
+        callback->initialize(m_rhi.get(), cb, target.get());
+        callback->prepareFrame(cb);
+        cb->beginPass(target.get(), Qt::black, {1.0f, 0});
+        cb->setViewport(QRhiViewport(0, 0, windowSize.width(), windowSize.height()));
+        cb->setScissor({0, 0, windowSize.width(), windowSize.height()});
+        callback->recordFrame(cb, bounds);
+        cb->endPass();
+        if (overlay) {
+            cb->beginPass(target.get(), Qt::magenta, {1.0f, 0});
+            cb->endPass();
+        }
+        QRhiReadbackResult composited;
+        updates = m_rhi->nextResourceUpdateBatch();
+        updates->readBackTexture(QRhiReadbackDescription(texture.get()), &composited);
+        cb->resourceUpdate(updates);
+        QCOMPARE(m_rhi->endOffscreenFrame(), QRhi::FrameOpSuccess);
+        callback->finishFrame();
+        QTRY_COMPARE(snapshots.count(), 1);
+        const auto snapshot = qvariant_cast<QImage>(snapshots.at(0).at(0));
+        QCOMPARE(snapshot, image);
+        const auto evidence = qEnvironmentVariable("OPENNOW_TEST_SCREENSHOT_DIR");
+        if (!evidence.isEmpty()) {
+            QVERIFY(QDir().mkpath(evidence));
+            QVERIFY(snapshot.save(QDir(evidence).filePath(
+                QString::fromLatin1(QTest::currentDataTag()) + QStringLiteral("-frame.png"))));
+        }
+        if (overlay) {
+            const QImage window(reinterpret_cast<const uchar *>(composited.data.constData()),
+                windowSize.width(), windowSize.height(), QImage::Format_RGBA8888);
+            QCOMPARE(window.pixelColor(0, 0), QColor(Qt::magenta));
+            QVERIFY(window.pixelColor(0, 0) != snapshot.pixelColor(0, 0));
+            if (!evidence.isEmpty())
+                QVERIFY(window.save(QDir(evidence).filePath(
+                    QString::fromLatin1(QTest::currentDataTag()) + QStringLiteral("-window.png"))));
+        }
+        QCOMPARE(producer.sourceCount, 1);
+        QCOMPARE(producer.releaseCount, 1);
+        QCOMPARE(m_validationErrors.load(), 0);
+#else
+        QSKIP("Native screenshot integration requires D3D11 or Vulkan");
+#endif
+    }
+
     void initTestCase()
     {
 #if defined(Q_OS_WIN)

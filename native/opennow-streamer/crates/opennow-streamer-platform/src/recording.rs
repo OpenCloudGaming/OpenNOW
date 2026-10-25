@@ -97,6 +97,29 @@ pub struct ManualRecordingSummary {
     pub completion: RecordingCompletion,
 }
 
+#[derive(Debug)]
+pub struct ManualRecordingError {
+    pub message: String,
+    pub completion: Option<RecordingCompletion>,
+}
+
+impl From<String> for ManualRecordingError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            completion: None,
+        }
+    }
+}
+
+impl std::fmt::Display for ManualRecordingError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ManualRecordingError {}
+
 struct ActiveMuxer {
     muxer: MkvMuxer,
     video_codec: MediaVideoCodec,
@@ -126,7 +149,7 @@ pub fn record_matroska(
     output_path: impl AsRef<Path>,
     stream: MediaStreamConfig,
     receiver: EncodedRecordingReceiver,
-) -> Result<ManualRecordingSummary, String> {
+) -> Result<ManualRecordingSummary, ManualRecordingError> {
     record_matroska_with(
         output_path.as_ref(),
         stream,
@@ -215,14 +238,11 @@ pub(crate) fn record_matroska_with(
     receiver: EncodedRecordingReceiver,
     open: impl FnOnce(&Path) -> Result<Box<dyn WriteSeek>, String>,
     publish: impl FnOnce(&Path, &Path) -> Result<(), String>,
-) -> Result<ManualRecordingSummary, String> {
+) -> Result<ManualRecordingSummary, ManualRecordingError> {
     let output_path = validate_output_path(output_path)?;
     let part_path = part_path_for(&output_path)?;
     if output_path.exists() {
-        return Err(format!(
-            "recording output already exists: {}",
-            output_path.display()
-        ));
+        return Err(format!("recording output already exists: {}", output_path.display()).into());
     }
 
     let mut owns_partial = false;
@@ -251,7 +271,7 @@ fn record_matroska_inner(
     receiver: &EncodedRecordingReceiver,
     open: impl FnOnce(&Path) -> Result<Box<dyn WriteSeek>, String>,
     publish: impl FnOnce(&Path, &Path) -> Result<(), String>,
-) -> Result<ManualRecordingSummary, String> {
+) -> Result<ManualRecordingSummary, ManualRecordingError> {
     let mut active: Option<ActiveMuxer> = None;
     let mut audio_channels = 2_u8;
     let mut open = Some(open);
@@ -263,10 +283,15 @@ fn record_matroska_inner(
         };
         if !frame.contiguous {
             if active.is_none() {
-                return Err(format!(
-                    "recording stopped because the {} stream was discontinuous",
-                    frame.mid
-                ));
+                return Err(ManualRecordingError {
+                    message: format!(
+                        "recording stopped because the {} stream was discontinuous",
+                        frame.mid
+                    ),
+                    completion: Some(RecordingCompletion::Cut {
+                        reason: RecordingCutReason::Discontinuity,
+                    }),
+                });
             }
             break RecordingCompletion::Cut {
                 reason: RecordingCutReason::Discontinuity,
@@ -282,7 +307,9 @@ fn record_matroska_inner(
                 continue;
             }
             if !has_video_picture(&frame, stream.codec) {
-                return Err("recording keyframe did not contain a video picture".to_owned());
+                return Err("recording keyframe did not contain a video picture"
+                    .to_owned()
+                    .into());
             }
             active = Some(start_muxer_with(
                 part_path,
@@ -297,10 +324,13 @@ fn record_matroska_inner(
     };
 
     let Some(mut active) = active else {
-        return Err("recording ended before a decodable video keyframe arrived".to_owned());
+        return Err(ManualRecordingError {
+            message: "recording ended before a decodable video keyframe arrived".to_owned(),
+            completion: Some(completion),
+        });
     };
     if active.video_packets == 0 {
-        return Err("recording ended without a video picture".to_owned());
+        return Err("recording ended without a video picture".to_owned().into());
     }
     active
         .muxer
@@ -1349,7 +1379,8 @@ mod tests {
                 },
             );
             let error = result.unwrap_err();
-            assert!(error.contains(failure), "{failure}: {error}");
+            assert!(error.message.contains(failure), "{failure}: {error}");
+            assert_eq!(error.completion, None);
             assert_eq!(failed.load(Ordering::Acquire), failure != "publication");
             assert_eq!(published.load(Ordering::Acquire), failure == "publication");
             assert!(!output.exists());

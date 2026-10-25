@@ -397,6 +397,28 @@ fn recording_fixture_directories_are_exclusively_owned() {
 }
 
 #[test]
+fn recording_without_a_prefix_retains_its_terminal_cause() {
+    for reason in [
+        RecordingCutReason::Interrupted,
+        RecordingCutReason::Discontinuity,
+        RecordingCutReason::QueueOverflow,
+    ] {
+        let tap = RecordingTap::default();
+        let receiver = tap.subscribe().unwrap();
+        tap.close(cut(reason));
+        let directory = directory("no-prefix-interruption");
+        let output = directory.join("empty.mkv");
+        let failure =
+            crate::recording::record_matroska(&output, MediaStreamConfig::default(), receiver)
+                .unwrap_err();
+        assert_eq!(failure.completion, Some(cut(reason)));
+        assert!(!output.exists());
+        assert!(!directory.join(".empty.mkv.part").exists());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[test]
 fn overflow_before_any_mux_commit_does_not_create_a_saved_recording() {
     let tap = RecordingTap::default();
     let receiver = tap.subscribe().unwrap();
@@ -408,8 +430,12 @@ fn overflow_before_any_mux_commit_does_not_create_a_saved_recording() {
     let error = crate::recording::record_matroska(&output, MediaStreamConfig::default(), receiver)
         .expect_err("queued frames are not a mux-committed prefix");
     assert_eq!(
-        error,
+        error.message,
         "recording ended before a decodable video keyframe arrived"
+    );
+    assert_eq!(
+        error.completion,
+        Some(cut(RecordingCutReason::QueueOverflow))
     );
     assert!(!output.exists());
     assert!(!directory.join(".overflow.mkv.part").exists());

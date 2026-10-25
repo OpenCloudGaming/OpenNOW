@@ -202,6 +202,11 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
         qWarning("Could not start the embedded streamer runtime: %s",
                  qUtf8Printable(nativeStreamRuntime.lastError()));
     StreamVideoItem::setNativeStreamRuntime(&nativeStreamRuntime);
+    controller.setScreenshotCapture([&nativeStreamRuntime] {
+        return nativeStreamRuntime.requestScreenshot();
+    });
+    QObject::connect(&nativeStreamRuntime, &NativeStreamRuntime::screenshotReady,
+                     &controller, &AppController::saveStreamScreenshot);
     QObject::connect(&nativeStreamRuntime, &NativeStreamRuntime::controllerRumbleRequested,
                      &controllerInput, &ControllerInput::playRumble);
     QObject::connect(&nativeStreamRuntime, &NativeStreamRuntime::controllerRumbleStopped,
