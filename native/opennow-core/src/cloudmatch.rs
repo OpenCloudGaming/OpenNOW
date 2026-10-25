@@ -2348,14 +2348,9 @@ fn validate_cloudmatch_response(
         let description = payload["requestStatus"]["statusDescription"]
             .as_str()
             .unwrap_or("CloudMatch rejected the request");
-        let code = value_i64(&payload["requestStatus"]["unifiedErrorCode"])
-            .or_else(|| value_i64(&payload["session"]["errorCode"]));
         return Err(ServiceError {
             code: "session_error",
-            message: code.map_or_else(
-                || description.to_owned(),
-                |code| format!("{description} ({code})"),
-            ),
+            message: with_gfn_error_code(description.to_owned(), &payload),
         });
     }
     Ok(payload)
@@ -2371,13 +2366,40 @@ fn is_session_conflict(payload: &Value) -> bool {
             &payload["session"]["errorCode"],
         ]
         .iter()
-        .any(|code| {
-            value_i64(code) == Some(0x4AF1201E)
-                || code.as_str().is_some_and(|code| {
-                    code.trim_start_matches("0x")
-                        .eq_ignore_ascii_case("4AF1201E")
-                })
-        })
+        .any(|code| gfn_error_code(code) == Some(0x4AF1201E))
+}
+
+fn gfn_error_code(value: &Value) -> Option<u32> {
+    let code = match value {
+        Value::Number(number) => number
+            .as_u64()
+            .and_then(|code| u32::try_from(code).ok())
+            .or_else(|| {
+                number
+                    .as_i64()
+                    .and_then(|code| i32::try_from(code).ok())
+                    .map(|code| code as u32)
+            }),
+        Value::String(text) => {
+            let text = text.trim();
+            match text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+                Some(hex) => u32::from_str_radix(hex, 16).ok(),
+                None if text.bytes().all(|byte| byte.is_ascii_digit()) => text.parse().ok(),
+                None => u32::from_str_radix(text, 16).ok(),
+            }
+        }
+        _ => None,
+    }?;
+    (code != 0).then_some(code)
+}
+
+fn with_gfn_error_code(message: String, payload: &Value) -> String {
+    match gfn_error_code(&payload["requestStatus"]["unifiedErrorCode"])
+        .or_else(|| gfn_error_code(&payload["session"]["errorCode"]))
+    {
+        Some(code) => format!("{message} (Error code: 0x{code:08X})"),
+        None => message,
+    }
 }
 
 fn response_error(context: &str, response: Response) -> ServiceError {
@@ -2391,6 +2413,10 @@ fn cloudmatch_http_error(
     payload: Option<&Value>,
 ) -> ServiceError {
     let detail = payload.and_then(|payload| payload["requestStatus"]["statusDescription"].as_str());
+    let message = detail.map_or_else(
+        || format!("{context} ({status})"),
+        |detail| format!("{context} ({status}): {detail}"),
+    );
     ServiceError {
         code: if status.as_u16() == 401 {
             "http_unauthorized"
@@ -2399,10 +2425,10 @@ fn cloudmatch_http_error(
         } else {
             "upstream_error"
         },
-        message: detail.map_or_else(
-            || format!("{context} ({status})"),
-            |detail| format!("{context} ({status}): {detail}"),
-        ),
+        message: match payload {
+            Some(payload) => with_gfn_error_code(message, payload),
+            None => message,
+        },
     }
 }
 
@@ -4804,6 +4830,65 @@ mod tests {
             assert!(service.take_conflict_sessions(&next_auth).is_none());
             assert!(service.take_conflict_sessions(&auth).is_none());
         }
+    }
+
+    #[test]
+    fn gfn_error_codes_parse_every_upstream_representation() {
+        for (value, code) in [
+            (json!(0x4AF1201E_i64), Some(0x4AF1201E)),
+            (json!(-1024716763), Some(0xC2EC1025)),
+            (json!(3270250533_u64), Some(0xC2EC1025)),
+            (json!("4AF1201E"), Some(0x4AF1201E)),
+            (json!("0x4af1201e"), Some(0x4AF1201E)),
+            (json!(" 0XC0F52159 "), Some(0xC0F52159)),
+            (json!("3237290329"), Some(0xC0F52159)),
+            (json!(0), None),
+            (json!("0x"), None),
+            (json!("0x1FFFFFFFF"), None),
+            (json!(0x1_0000_0000_u64), None),
+            (json!("not a code"), None),
+            (Value::Null, None),
+        ] {
+            assert_eq!(gfn_error_code(&value), code, "{value}");
+        }
+    }
+
+    #[test]
+    fn cloudmatch_errors_show_the_unified_code_in_hex() {
+        let rejected = |payload: Value| {
+            validate_cloudmatch_response("create", reqwest::StatusCode::OK, Ok(payload), false)
+                .unwrap_err()
+        };
+        let error = rejected(
+            json!({"requestStatus":{"statusCode":89,"statusDescription":"STORAGE",
+            "unifiedErrorCode":"C0F52159"},"session":{"errorCode":7}}),
+        );
+        assert_eq!(
+            (error.code, error.message.as_str()),
+            ("session_error", "STORAGE (Error code: 0xC0F52159)")
+        );
+        let error =
+            rejected(json!({"requestStatus":{"statusCode":3},"session":{"errorCode":-1024716763}}));
+        assert_eq!(
+            error.message,
+            "CloudMatch rejected the request (Error code: 0xC2EC1025)"
+        );
+        let error =
+            rejected(json!({"requestStatus":{"statusCode":3,"statusDescription":"NO_CODE"}}));
+        assert_eq!(error.message, "NO_CODE");
+        let error = cloudmatch_http_error(
+            "CloudMatch create",
+            reqwest::StatusCode::BAD_GATEWAY,
+            Some(
+                &json!({"requestStatus":{"statusDescription":"SERVER","unifiedErrorCode":3237290244_u64}}),
+            ),
+        );
+        assert_eq!(error.code, "upstream_error");
+        assert!(
+            error.message.ends_with("SERVER (Error code: 0xC0F52104)"),
+            "{}",
+            error.message
+        );
     }
 
     #[test]
