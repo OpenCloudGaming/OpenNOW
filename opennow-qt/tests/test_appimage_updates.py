@@ -66,6 +66,9 @@ class AppImageUpdatesTest(unittest.TestCase):
     def test_every_packaging_path_embeds_verifies_and_uploads_sidecars(self):
         for name in ("qt-build.yml", "qt-release-candidate.yml"):
             workflow = (ROOT / ".github/workflows" / name).read_text()
+            if name == "qt-build.yml":
+                self.assertIn("uses: ./.github/actions/linux-package", workflow)
+                workflow += (ROOT / ".github/actions/linux-package/action.yml").read_text()
             self.assertIn("LDAI_UPDATE_INFORMATION=$(python3 opennow-qt/packaging/appimage_updates.py information", workflow)
             self.assertIn("appimage_updates.py verify", workflow)
             self.assertIn("OpenNOW-Qt-*.AppImage.zsync", workflow)

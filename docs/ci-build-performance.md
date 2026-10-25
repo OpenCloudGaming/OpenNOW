@@ -90,6 +90,27 @@ still run. This measures build performance, not Intel-specific GPU behavior.
 Selecting `arm64` disables nightly signing and publication even if
 `publish_nightly` is enabled. Measurement packages remain unsigned artifacts.
 
+The same manual workflow accepts `linux_arm64_host=x64` to benchmark an additional
+ARM64 Linux release and all Qt test executables on the existing eight-core x64
+runner alongside the unchanged native ARM64 baseline. The default is `native`.
+A separate Ubuntu 24.04 ARM64 development
+sysroot is downloaded and extracted without installing ARM programs on the host.
+Native x64 Qt 6.8.3 tools generate code for the matching ARM64 Qt libraries.
+The ARM64 SDL3 build and Rust native dependencies use the same cross toolchain.
+
+The existing eight-core ARM runner restores the checked build/test tree and SDL
+prefix without rebuilding, verifies the revision, version, paths, file hashes,
+ELF architecture and CTest inventory, and runs the unchanged complete CTest,
+AppImage, bundled-DEB and smoke checks. No tests run under emulation. This option
+also disables nightly signing and publication. Flatpak is not cross-compiled.
+
+Run with `linux_arm64_host=x64`, `publish_nightly=false` and
+`macos_intel_host=arm64`. Compare the native ARM64 package job with the additional
+cross-compilation and ARM validation jobs from that same run. Include SDK setup,
+compilation, archive upload/download, native tests and packaging in the ARM64
+comparison. Other platform builds do not wait for the experiment. Its packages
+are uploaded separately and never replace the native package inventory.
+
 References: [Cargo build timings](https://doc.rust-lang.org/cargo/reference/timings.html),
 [GitHub cache matching](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching),
 and [Blacksmith Sticky Disks](https://docs.blacksmith.sh/blacksmith-caching/dependencies-sticky-disks).

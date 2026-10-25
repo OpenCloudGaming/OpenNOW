@@ -10,6 +10,12 @@ inputs:
   parallel:
     description: Maximum concurrent build jobs
     required: true
+  cmake-toolchain-file:
+    description: Optional Linux cross-compilation toolchain
+    default: ""
+  sdk-identity:
+    description: Target sysroot package identity for cross-compilation caches
+    default: ""
 runs:
   using: composite
   steps:
@@ -32,7 +38,7 @@ runs:
       uses: actions/cache@v4
       with:
         path: ${{ runner.temp }}/SDL-install
-        key: sdl3-v2-${{ runner.os }}-${{ runner.arch }}-${{ inputs.target-arch }}-${{ inputs.version }}-${{ steps.toolchain.outputs.digest }}-${{ hashFiles('.github/actions/sdl3/action.yml') }}
+        key: sdl3-v2-${{ runner.os }}-${{ runner.arch }}-${{ inputs.target-arch }}-${{ inputs.version }}-${{ steps.toolchain.outputs.digest }}-${{ inputs.sdk-identity }}-${{ inputs.cmake-toolchain-file != '' && hashFiles('.github/cmake/linux-arm64-cross.cmake') || 'native' }}-${{ hashFiles('.github/actions/sdl3/action.yml') }}
     - name: Build SDL3
       if: steps.cache.outputs.cache-hit != 'true'
       shell: bash
@@ -40,8 +46,12 @@ runs:
         SDL_VERSION: ${{ inputs.version }}
         SDL_TARGET_ARCH: ${{ inputs.target-arch }}
         SDL_BUILD_PARALLEL: ${{ inputs.parallel }}
+        SDL_CMAKE_TOOLCHAIN_FILE: ${{ inputs.cmake-toolchain-file }}
       run: |
         args=()
+        if [[ -n "$SDL_CMAKE_TOOLCHAIN_FILE" ]]; then
+          args+=("-DCMAKE_TOOLCHAIN_FILE=$SDL_CMAKE_TOOLCHAIN_FILE")
+        fi
         if [[ "$RUNNER_OS" == Windows ]]; then
           args+=(-G "Ninja Multi-Config" -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl)
           if [[ "$SDL_TARGET_ARCH" == arm64 ]]; then

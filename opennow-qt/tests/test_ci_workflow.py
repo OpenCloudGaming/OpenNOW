@@ -10,7 +10,7 @@ WORKFLOWS = ROOT / ".github/workflows"
 
 
 def jobs(workflow):
-    sections = re.split(r"^  ([a-z][a-z-]*):\n", workflow.split("jobs:\n", 1)[1], flags=re.MULTILINE)
+    sections = re.split(r"^  ([a-z][a-z0-9-]*):\n", workflow.split("jobs:\n", 1)[1], flags=re.MULTILINE)
     return dict(zip(sections[1::2], sections[2::2]))
 
 
@@ -23,7 +23,7 @@ class CIWorkflowTest(unittest.TestCase):
                 self.assertEqual(
                     condition,
                     "github.event_name == 'workflow_dispatch' && inputs.publish_nightly "
-                    "&& inputs.macos_intel_host == 'intel'",
+                    "&& inputs.macos_intel_host == 'intel' && inputs.linux_arm64_host == 'native'",
                 )
 
     def test_stack_base_branches_run_pr_checks_without_new_push_or_publication_triggers(self):
@@ -40,6 +40,9 @@ class CIWorkflowTest(unittest.TestCase):
         for name in ("qt-build.yml", "qt-release-candidate.yml"):
             with self.subTest(workflow=name):
                 workflow = (WORKFLOWS / name).read_text()
+                if name == "qt-build.yml":
+                    self.assertIn("uses: ./.github/actions/linux-package", workflow)
+                    workflow += (ROOT / ".github/actions/linux-package/action.yml").read_text()
                 self.assertIn("qtwaylandcompositor", workflow)
                 self.assertIn("EXTRA_QT_MODULES: waylandcompositor", workflow)
                 self.assertIn(
@@ -65,8 +68,10 @@ class CIWorkflowTest(unittest.TestCase):
 
     def test_manual_packages_cannot_bypass_dispatch_gate(self):
         entries = jobs((WORKFLOWS / "qt-build.yml").read_text())
-        self.assertEqual(set(entries), {"metadata", "packages", "flatpak", "artifact-inventory"})
+        self.assertEqual(set(entries), {"metadata", "linux-arm64-cross", "packages", "flatpak", "artifact-inventory"})
         self.assertIn("    if: github.event_name == 'workflow_dispatch'\n", entries["metadata"])
+        self.assertIn("    needs: metadata\n", entries["linux-arm64-cross"])
+        self.assertIn("    if: inputs.linux_arm64_host == 'x64'\n", entries["linux-arm64-cross"])
         self.assertIn("    needs: metadata\n", entries["packages"])
         self.assertNotIn("always()", entries["packages"])
         self.assertIn("    needs: metadata\n", entries["flatpak"])

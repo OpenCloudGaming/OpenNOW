@@ -28,7 +28,8 @@ jobs:
           "$RUNNER_TEMP/actionlint" -color=false \
             .github/workflows/qt-ci.yml .github/workflows/qt-checks.yml \
             .github/workflows/qt-build.yml .github/workflows/qt-release-candidate.yml \
-            .github/workflows/qt-flatpak.yml .github/workflows/qt-stable-release.yml
+            .github/workflows/qt-flatpak.yml .github/workflows/qt-stable-release.yml \
+            .github/workflows/qt-linux-arm64-cross.yml
       - name: Test build and packaging contracts
         run: |
           python3 -m venv "$RUNNER_TEMP/qt-contracts"

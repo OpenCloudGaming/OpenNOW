@@ -19,6 +19,10 @@ on:
         description: Intel package host, intel by default or arm64 for cross-build measurements
         type: string
         default: intel
+      linux_arm64_host:
+        description: Add an x64 cross-build benchmark alongside the native ARM64 baseline
+        type: string
+        default: native
     outputs:
       version:
         description: Immutable package version
@@ -41,13 +45,25 @@ jobs:
         env:
           BUILD_CHANNEL: ${{ inputs.channel }}
           MACOS_INTEL_HOST: ${{ inputs.macos_intel_host }}
+          LINUX_ARM64_HOST: ${{ inputs.linux_arm64_host }}
         run: |
           case "$MACOS_INTEL_HOST" in intel|arm64) ;; *) exit 1 ;; esac
+          case "$LINUX_ARM64_HOST" in native|x64) ;; *) exit 1 ;; esac
           version=$(python3 opennow-qt/packaging/nightly_release.py version \
             --run "$GITHUB_RUN_NUMBER" --attempt "$GITHUB_RUN_ATTEMPT" \
             --channel "$BUILD_CHANNEL")
           echo "version=$version" >> "$GITHUB_OUTPUT"
           [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+
+  linux-arm64-cross:
+    name: Linux ARM64 cross-build
+    needs: metadata
+    if: inputs.linux_arm64_host == 'x64'
+    uses: ./.github/workflows/qt-linux-arm64-cross.yml
+    with:
+      version: ${{ needs.metadata.outputs.version }}
+      update_public_key: ${{ inputs.update_public_key }}
+      channel: ${{ inputs.channel }}
 
   packages:
     name: Package ${{ matrix.label }}
@@ -67,9 +83,6 @@ jobs:
             rust-target: ""
             cmake-arch: ""
             linuxdeploy-arch: x86_64
-            linuxdeploy-sha256: c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d
-            qt-plugin-sha256: 15106be885c1c48a021198e7e1e9a48ce9d02a86dd0a1848f00bdbf3c1c92724
-            appimage-runtime-sha256: 2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
           - label: linux-arm64
             os: blacksmith-8vcpu-ubuntu-2404-arm
             build-parallel: 8
@@ -79,9 +92,6 @@ jobs:
             rust-target: ""
             cmake-arch: ""
             linuxdeploy-arch: aarch64
-            linuxdeploy-sha256: 620095110d693282b8ebeb244a95b5e911cf8f65f76c88b4b47d16ae6346fcff
-            qt-plugin-sha256: bf1c24aff6d749b5cf423afad6f15abd4440f81dec1aab95706b25f6667cdcf1
-            appimage-runtime-sha256: 00cbdfcf917cc6c0ff6d3347d59e0ca1f7f45a6df1a428a0d6d8a78664d87444
           - label: windows-arm64
             os: blacksmith-8vcpu-windows-2025
             build-parallel: 8
@@ -99,9 +109,6 @@ jobs:
             rust-target: ""
             cmake-arch: ""
             linuxdeploy-arch: ""
-            linuxdeploy-sha256: ""
-            qt-plugin-sha256: ""
-            appimage-runtime-sha256: ""
           - label: macos-arm64
             os: blacksmith-6vcpu-macos-15
             build-parallel: 3
@@ -271,40 +278,9 @@ jobs:
 
       - name: Install Linux media dependencies
         if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            clang \
-            libclang-dev \
-            libasound2-dev \
-            libdbus-1-dev \
-            libdrm-dev \
-            libgstreamer-plugins-bad1.0-0 \
-            libgstreamer-plugins-good1.0-0 \
-            libpulse-dev \
-            libsecret-1-dev \
-            libva-dev \
-            libvulkan-dev \
-            libwayland-dev \
-            libx11-dev \
-            libxcursor-dev \
-            libxext-dev \
-            libxfixes-dev \
-            libxi-dev \
-            libxrandr-dev \
-            libxrender-dev \
-            libxss-dev \
-            mesa-vulkan-drivers \
-            make \
-            nasm \
-            pkg-config \
-            wayland-protocols \
-            xvfb
-
-      - name: Install ARM64 V4L2 request dependencies
-        if: matrix.label == 'linux-arm64'
-        run: sudo apt-get install -y libudev-dev
+        uses: ./.github/actions/linux-dependencies
+        with:
+          arch: ${{ matrix.linuxdeploy-arch }}
 
       - name: Cache Rust dependencies and build artifacts
         uses: ./.github/actions/rust-build-cache
@@ -431,102 +407,12 @@ jobs:
           $setup = Join-Path (Resolve-Path build/qt-packages) ([IO.Path]::GetFileNameWithoutExtension($zip[0].Name) + "-setup.exe")
           ./opennow-qt/packaging/windows/build-setup.ps1 -Payload $payload -Version $env:SETUP_VERSION -Arch $env:SETUP_ARCH -OutputFile $setup
 
-      - name: Create Linux AppImage
+      - name: Create Linux AppImage and bundled DEB and smoke-test
         if: runner.os == 'Linux'
-        shell: bash
-        env:
-          APPIMAGE_EXTRACT_AND_RUN: "1"
-          EXTRA_PLATFORM_PLUGINS: libqoffscreen.so;libqwayland-egl.so;libqwayland-generic.so
-          EXTRA_QT_MODULES: waylandcompositor
-          LINUXDEPLOY_ARCH: ${{ matrix.linuxdeploy-arch }}
-          LINUXDEPLOY_SHA256: ${{ matrix.linuxdeploy-sha256 }}
-          QT_PLUGIN_SHA256: ${{ matrix.qt-plugin-sha256 }}
-          APPIMAGE_RUNTIME_SHA256: ${{ matrix.appimage-runtime-sha256 }}
-          BUILD_CHANNEL: ${{ inputs.channel }}
-          PACKAGE_ARCH: ${{ matrix.linuxdeploy-arch == 'aarch64' && 'arm64' || 'x64' }}
-        run: |
-          export LD_LIBRARY_PATH="$RUNNER_TEMP/SDL-install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-          mkdir -p build/qt-packages
-          cmake --install build/opennow-qt-release --config Release \
-            --prefix "$PWD/build/AppDir/usr"
-          python3 opennow-qt/packaging/verify_linux_package.py build/AppDir/usr/bin --libdir lib
-          curl --fail --location --retry 3 \
-            "https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-${LINUXDEPLOY_ARCH}.AppImage" \
-            --output "build/linuxdeploy-${LINUXDEPLOY_ARCH}.AppImage"
-          curl --fail --location --retry 3 \
-            "https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/1-alpha-20250213-1/linuxdeploy-plugin-qt-${LINUXDEPLOY_ARCH}.AppImage" \
-            --output "build/linuxdeploy-plugin-qt-${LINUXDEPLOY_ARCH}.AppImage"
-          echo "$LINUXDEPLOY_SHA256  build/linuxdeploy-${LINUXDEPLOY_ARCH}.AppImage" | sha256sum --check --strict
-          echo "$QT_PLUGIN_SHA256  build/linuxdeploy-plugin-qt-${LINUXDEPLOY_ARCH}.AppImage" | sha256sum --check --strict
-          curl --fail --location --retry 5 --retry-all-errors --retry-max-time 300 \
-            --connect-timeout 20 --max-time 120 \
-            "https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-${LINUXDEPLOY_ARCH}" \
-            --output "build/appimage-runtime-${LINUXDEPLOY_ARCH}"
-          echo "$APPIMAGE_RUNTIME_SHA256  build/appimage-runtime-${LINUXDEPLOY_ARCH}" | sha256sum --check --strict
-          chmod +x "build/linuxdeploy-${LINUXDEPLOY_ARCH}.AppImage" "build/linuxdeploy-plugin-qt-${LINUXDEPLOY_ARCH}.AppImage"
-          install -Dm644 opennow-qt/packaging/opennow-vaapi-hook.sh \
-            build/AppDir/apprun-hooks/opennow-vaapi-hook.sh
-          for library in libva libva-drm; do
-            install -Dm644 "$(pkg-config --variable=libdir "$library")/$library.so.2" \
-              "build/AppDir/usr/lib/libva-fallback/$library.so.2"
-            install -Dm644 "/usr/share/doc/${library}2/copyright" \
-              "build/AppDir/usr/share/doc/${library}2/copyright"
-          done
-          export LDAI_UPDATE_INFORMATION
-          LDAI_UPDATE_INFORMATION=$(python3 opennow-qt/packaging/appimage_updates.py information \
-            --channel "$BUILD_CHANNEL" --arch "$PACKAGE_ARCH")
-          QMAKE="$QT_ROOT_DIR/bin/qmake" \
-          QML_SOURCES_PATHS="$PWD/opennow-qt/qml" \
-          LDAI_RUNTIME_FILE="$PWD/build/appimage-runtime-${LINUXDEPLOY_ARCH}" \
-          LDAI_OUTPUT="OpenNOW-Qt-${OPENNOW_BUILD_VERSION}-Linux-${{ matrix.linuxdeploy-arch == 'aarch64' && 'arm64' || 'x64' }}.AppImage" \
-            "build/linuxdeploy-${LINUXDEPLOY_ARCH}.AppImage" \
-              --appdir build/AppDir \
-              --desktop-file build/AppDir/usr/share/applications/io.github.opencloudgaming.OpenNOW.desktop \
-              --icon-file build/AppDir/usr/share/icons/hicolor/scalable/apps/io.github.opencloudgaming.OpenNOW.svg \
-              --exclude-library 'libva.so.*' \
-              --exclude-library 'libva-drm.so.*' \
-              --exclude-library libglib-2.0.so.0 \
-              --exclude-library libgobject-2.0.so.0 \
-              --exclude-library libgio-2.0.so.0 \
-              --exclude-library libgmodule-2.0.so.0 \
-              --plugin qt \
-              --output appimage
-          test -f build/AppDir/usr/plugins/platforms/libqoffscreen.so
-          test -f build/AppDir/usr/plugins/platforms/libqwayland-egl.so
-          test -f build/AppDir/usr/plugins/platforms/libqwayland-generic.so
-          test -f build/AppDir/usr/plugins/wayland-shell-integration/libxdg-shell.so
-          LD_LIBRARY_PATH="$PWD/build/AppDir/usr/lib:$LD_LIBRARY_PATH" \
-            python3 opennow-qt/packaging/verify_linux_package.py build/AppDir/usr/bin --libdir lib --appdir build/AppDir
-          python3 opennow-qt/packaging/appimage_updates.py verify \
-            --channel "$BUILD_CHANNEL" --arch "$PACKAGE_ARCH" \
-            --appimage "OpenNOW-Qt-${OPENNOW_BUILD_VERSION}-Linux-${PACKAGE_ARCH}.AppImage"
-          mv OpenNOW-Qt-*.AppImage OpenNOW-Qt-*.AppImage.zsync build/qt-packages/
-
-      - name: Create bundled Linux DEB
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          cpack --config build/opennow-qt-release/CPackConfig.cmake \
-            -D "CPACK_PROJECT_CONFIG_FILE=$PWD/opennow-qt/packaging/LinuxBundledDeb.cmake" \
-            -D "OPENNOW_APPDIR=$PWD/build/AppDir" \
-            -C Release -G DEB -B build/qt-packages
-          debs=(build/qt-packages/*.deb)
-          [[ ${#debs[@]} -eq 1 && -f "${debs[0]}" ]]
-          bash opennow-qt/packaging/verify_bundled_deb.sh "${debs[0]}"
-
-      - name: Smoke-test Linux AppImage
-        if: runner.os == 'Linux'
-        shell: bash
-        env:
-          APPIMAGE_EXTRACT_AND_RUN: "1"
-          QT_QPA_PLATFORM: offscreen
-        run: |
-          appimages=(build/qt-packages/OpenNOW-Qt-*.AppImage)
-          [[ ${#appimages[@]} -eq 1 && -f "${appimages[0]}" ]]
-          env -u QT_PLUGIN_PATH -u QT_QPA_PLATFORM_PLUGIN_PATH \
-            -u QML2_IMPORT_PATH -u QML_IMPORT_PATH -u LD_LIBRARY_PATH \
-            "${appimages[0]}" \
-            --smoke-test --allow-multiple-instances --route home --reduced-motion
+        uses: ./.github/actions/linux-package
+        with:
+          arch: ${{ matrix.linuxdeploy-arch }}
+          channel: ${{ inputs.channel }}
 
       - name: Upload unsigned package
         if: runner.os != 'macOS'
