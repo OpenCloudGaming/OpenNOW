@@ -65,6 +65,9 @@ the update-signing seed, and does not require a manually registered runner.
   Windows has no verified publisher identity and may show SmartScreen or unknown-publisher warnings.
 - macOS ARM64 and Intel x64 candidates use Developer ID signing, notarization, and stapled tickets.
   Each architecture has a separate DMG and ZIP containing the signed, stapled application.
+  Promotion validates the Intel ZIP and its manifest but keeps them candidate-only, because
+  older Windows updaters can mistake `Darwin-x64.zip` for a Windows package. Intel Macs update
+  from the published DMG and its manifest.
   Intel builds use the GitHub-hosted `macos-15-intel` runner. The application retains only the hardened-runtime exceptions
   needed for QML JIT compilation and microphone input. Library validation stays enabled.
 - Linux x64/ARM64 DEB and checksum-pinned AppImage builds use native runners. Both the probe and

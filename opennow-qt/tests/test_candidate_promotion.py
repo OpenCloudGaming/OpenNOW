@@ -88,13 +88,12 @@ class CandidatePromotionTest(unittest.TestCase):
             "OpenNOW-Qt-1.2.3-Windows-arm64-setup.exe",
             "OpenNOW-Qt-1.2.3-Windows-x64-setup.exe",
         ])
-        self.assertEqual(len(info["assets"]), 16)
-        self.assertEqual(len(list(self.destination.iterdir())), 34)
+        self.assertEqual(len(info["assets"]), 15)
+        self.assertEqual(len(list(self.destination.iterdir())), 32)
         self.assertEqual([asset["name"] for asset in info["assets"] if "-Darwin-" in asset["name"]], [
             "OpenNOW-Qt-1.2.3-Darwin-arm64.dmg",
             "OpenNOW-Qt-1.2.3-Darwin-arm64.zip",
             "OpenNOW-Qt-1.2.3-Darwin-x64.dmg",
-            "OpenNOW-Qt-1.2.3-Darwin-x64.zip",
         ])
         self.assertEqual([asset["name"] for asset in info["assets"] if asset["name"].endswith(".flatpak")], [
             "OpenNOW-Qt-1.2.3-Linux-arm64.flatpak",
@@ -105,10 +104,33 @@ class CandidatePromotionTest(unittest.TestCase):
             self.assertEqual((self.source / "packages" / asset["name"]).read_bytes(),
                              (self.destination / asset["name"]).read_bytes())
         sums = (self.destination / "SHA256SUMS").read_text().splitlines()
-        self.assertEqual(len(sums), 33)
+        self.assertEqual(len(sums), 31)
         for line in sums:
             expected, name = line.split("  ")
             self.assertEqual(digest(self.destination / name), expected)
+
+    def test_intel_zip_and_manifest_are_validated_but_never_published(self):
+        self.promote()
+        name = f"OpenNOW-Qt-{self.version}-Darwin-x64.zip"
+        info = json.loads((self.destination / "RELEASE-INFO.json").read_text())
+        public_names = {asset["name"] for asset in info["assets"]}
+        self.assertIn(name.removesuffix(".zip") + ".dmg", public_names)
+        self.assertFalse(any("Darwin" in name and "x64" in name and name.endswith(".zip")
+                             for name in public_names))
+        for suffix in ("", ".manifest.json"):
+            self.assertTrue((self.source / "packages" / (name + suffix)).is_file())
+            self.assertFalse((self.destination / (name + suffix)).exists())
+            self.assertNotIn(name + suffix, (self.destination / "SHA256SUMS").read_text())
+
+    def test_rejects_tampered_candidate_only_intel_zip_manifest(self):
+        path = self.source / "packages" / f"OpenNOW-Qt-{self.version}-Darwin-x64.zip.manifest.json"
+        manifest = json.loads(path.read_text())
+        manifest["signature"] = base64.b64encode(bytes(64)).decode()
+        path.write_text(json.dumps(manifest))
+        self.rehash()
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.promote()
+        self.assertFalse(self.destination.exists())
 
     def test_rejects_missing_sidecar_manifest_wrong_source_and_changed_checksums(self):
         sidecar = next(self.source.rglob("*.zsync.manifest.json"))

@@ -63,6 +63,10 @@ class SignedNightlyReleaseTest(unittest.TestCase):
         info = json.loads((self.destination / "RELEASE-INFO.json").read_text())
         self.assertEqual(info["updates"], "signed-manifest")
         self.assertEqual(info["platformSigning"], "unsigned")
+        self.assertFalse(any("Darwin" in asset["name"] and "x64" in asset["name"]
+                             and asset["name"].endswith(".zip") for asset in info["assets"]))
+        for suffix in (".zip", ".zip.manifest.json"):
+            self.assertFalse((self.destination / f"OpenNOW-Qt-{self.version}-Darwin-x64{suffix}").exists())
         for name in self.packages:
             self.assertEqual((self.source / name).read_bytes(), (self.destination / name).read_bytes())
             manifest = json.loads((self.destination / (name + ".manifest.json")).read_text())

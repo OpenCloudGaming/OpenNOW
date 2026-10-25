@@ -67,6 +67,10 @@ def assemble(source, destination, version, commit, public_key):
         asset_info = [{"name": name, "size": (staged / name).stat().st_size,
                        "sha256": digest(staged / name)} for name in sorted(assets)]
         verify_manifests(staged, version, asset_info, public_key)
+        candidate_only = f"OpenNOW-Qt-{version}-Darwin-x64.zip"
+        for name in (candidate_only, candidate_only + ".manifest.json"):
+            (staged / name).unlink()
+        asset_info = [asset for asset in asset_info if asset["name"] != candidate_only]
         metadata = {"version": version, "sourceCommit": commit,
                     "platformSigning": "macos-developer-id", "windowsSigningMode": lines[3].split("=", 1)[1],
                     "updates": "signed-manifest", "assets": asset_info}

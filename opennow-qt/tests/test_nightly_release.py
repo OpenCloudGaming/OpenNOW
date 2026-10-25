@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packaging"))
-from nightly_release import assemble, nightly_version
+from nightly_release import assemble, expected_packages, nightly_version
 
 
 class NightlyReleaseTest(unittest.TestCase):
@@ -92,6 +92,15 @@ class NightlyReleaseTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "Unexpected"):
                     self.collect()
                 extra.unlink()
+
+    def test_public_inventories_exclude_intel_darwin_zips_in_every_channel(self):
+        for version, channel in ((self.version, "nightly"), ("1.0.0", "stable"),
+                                 ("1.0.0-supporter.123.2", "supporter")):
+            with self.subTest(channel=channel):
+                names = expected_packages(version, self.commit, channel)
+                self.assertIn(f"OpenNOW-Qt-{version}-Darwin-x64.dmg", names)
+                self.assertFalse(any("Darwin" in name and "x64" in name and name.endswith(".zip")
+                                     for name in names))
 
     def test_wrong_version_and_empty_artifacts_are_rejected(self):
         self.packages[0].write_bytes(b"")
