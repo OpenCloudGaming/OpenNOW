@@ -15,33 +15,34 @@ FONT = HERE.parents[1] / "res/fonts/Nunito-Variable.ttf"
 def background(scale):
     # Coordinates exclude Paper's 36 px title bar. Extra black below the artwork
     # covers Finder title-bar height differences without exposing a white edge.
-    image = Image.new("RGB", (720 * scale, 500 * scale), "#000000")
+    render_scale = scale * 4
+    image = Image.new("RGB", (720 * render_scale, 500 * render_scale), "#000000")
     draw = ImageDraw.Draw(image)
 
-    def text(value, top, size, weight, color, tracking=0):
-        font = ImageFont.truetype(str(FONT), size * scale)
+    def text(value, top, size, weight, color):
+        font = ImageFont.truetype(str(FONT), size * render_scale)
         font.set_variation_by_axes([weight])
-        spacing = tracking * size * scale
-        width = sum(font.getlength(letter) for letter in value) + spacing * (len(value) - 1)
-        x = (image.width - width) / 2
         ascent, descent = font.getmetrics()
-        baseline = (top + size / 2) * scale + (ascent - descent) / 2
-        for letter in value:
-            draw.text((x, baseline), letter, font=font, fill=color, anchor="ls")
-            x += font.getlength(letter) + spacing
+        baseline = (top + size / 2) * render_scale + (ascent - descent) / 2
+        draw.text((image.width / 2, baseline), value, font=font, fill=color, anchor="ms")
 
-    text("Install OpenNOW", 54, 32, 900, "#FFFFFF", -0.035)
+    text("Install OpenNOW", 54, 32, 900, "#FFFFFF")
     text("Drag OpenNOW into Applications.", 101, 15, 500, "#A3A3A3")
     text("Then open OpenNOW from Applications.", 399, 13, 400, "#A3A3A3")
     # Finder owns filename color. This neutral supports both black and white labels.
     for left, right in ((174, 270), (440, 556)):
-        draw.rectangle((left * scale, 306 * scale, right * scale, 330 * scale),
+        draw.rectangle((left * render_scale, 306 * render_scale,
+                        right * render_scale, 330 * render_scale),
                        fill="#767676")
-    draw.line([(x * scale, y * scale) for x, y in ((322, 241), (395, 241))],
-              fill="#56E6A5", width=2 * scale)
-    draw.line([(x * scale, y * scale) for x, y in ((383, 231), (395, 241), (383, 251))],
-              fill="#56E6A5", width=2 * scale, joint="curve")
-    return image
+    for points in (((322, 241), (395, 241)), ((383, 231), (395, 241), (383, 251))):
+        draw.line([(x * render_scale, y * render_scale) for x, y in points],
+                  fill="#56E6A5", width=2 * render_scale, joint="curve")
+        for x, y in points:
+            draw.ellipse(((x - 1) * render_scale, (y - 1) * render_scale,
+                          (x + 1) * render_scale, (y + 1) * render_scale), fill="#56E6A5")
+    # Render above the output resolution so text and diagonal strokes stay smooth
+    # in both Finder's standard and Retina image representations.
+    return image.resize((720 * scale, 500 * scale), Image.Resampling.LANCZOS)
 
 
 def main():
