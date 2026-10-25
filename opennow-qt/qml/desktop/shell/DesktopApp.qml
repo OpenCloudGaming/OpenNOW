@@ -274,6 +274,7 @@ FocusScope {
         anchors.fill: parent
         notice: ShellStore.streamEndNotice
         opened: root.shellVisible && ShellStore.streamEndNotice !== null
+        inputSuspended: AppController.overlay !== ""
         z: 140
         onOpenedChanged: {
             if (opened) root.commandOpen = false

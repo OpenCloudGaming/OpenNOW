@@ -8,6 +8,8 @@ FocusScope {
     objectName: "desktopStreamEndNotice"
     property var notice: null
     property bool opened: false
+    property bool inputSuspended: false
+    readonly property bool ownsInput: opened && !inputSuspended
     property var presented: null
     property bool copied: false
     readonly property string kind: root.presented ? String(root.presented.kind || "error") : "error"
@@ -34,8 +36,8 @@ FocusScope {
             : qsTr("The cloud server closed your session. You can start it again from here.")
     }
     visible: reveal.present
-    enabled: opened
-    focus: opened
+    enabled: ownsInput
+    focus: ownsInput
     MotionProgress { id: reveal; shown: root.opened }
     Accessible.role: Accessible.Dialog
     Accessible.name: root.headline
@@ -46,10 +48,10 @@ FocusScope {
         root.copied = false
     }
     Component.onCompleted: if (root.notice) root.presented = root.notice
-    onOpenedChanged: if (opened) Qt.callLater(root.restoreFocus)
+    onOwnsInputChanged: if (ownsInput) Qt.callLater(root.restoreFocus)
 
     function restoreFocus() {
-        if (root.opened && !copyButton.activeFocus && !dismissButton.activeFocus)
+        if (root.ownsInput && !copyButton.activeFocus && !dismissButton.activeFocus)
             dismissButton.forceActiveFocus()
     }
     function copyCode() {
@@ -62,7 +64,7 @@ FocusScope {
     // notice keeps input until it is dismissed.
     Connections {
         target: root.Window.window
-        enabled: root.opened
+        enabled: root.ownsInput
         function onActiveFocusItemChanged() { Qt.callLater(root.restoreFocus) }
     }
     Timer {
@@ -71,6 +73,7 @@ FocusScope {
         onTriggered: root.copied = false
     }
 
+    Keys.onShortcutOverride: event => event.accepted = event.key !== Qt.Key_F11
     Keys.onPressed: event => {
         if (event.key === Qt.Key_Escape || event.key === Qt.Key_Back) {
             ShellStore.dismissStreamEndNotice()

@@ -854,6 +854,7 @@ int AcceptanceSession::startSmokeWorkload()
             || m_arguments.contains(u"--smoke-library-error"_s)
             || m_arguments.contains(u"--smoke-push-invalidation"_s)
             || m_arguments.contains(u"--smoke-bug-reports"_s)
+            || m_arguments.contains(u"--smoke-stream-end-notice-check"_s)
             || m_arguments.contains(u"--smoke-recording"_s)
             || m_arguments.contains(u"--smoke-shortcuts"_s)
             || m_arguments.contains(u"--smoke-queue-drops"_s)
@@ -935,6 +936,13 @@ int AcceptanceSession::startSmokeWorkload()
                         QKeyEvent release(QEvent::KeyRelease, key, modifiers);
                         QGuiApplication::sendEvent(window, &press);
                         QGuiApplication::sendEvent(window, &release);
+                    }
+                    if (const auto systemKey = fixture->property("systemKey").toInt(); systemKey != 0) {
+                        fixture->setProperty("systemKey", 0);
+                        const auto modifiers = Qt::KeyboardModifiers(fixture->property("modifiers").toInt());
+                        using Delivery = QWindowSystemInterface::SynchronousDelivery;
+                        QWindowSystemInterface::handleKeyEvent<Delivery>(window, QEvent::KeyPress, systemKey, modifiers);
+                        QWindowSystemInterface::handleKeyEvent<Delivery>(window, QEvent::KeyRelease, systemKey, modifiers);
                     }
                     if (const auto clickValue = fixture->property("click"); clickValue.isValid()
                             && clickValue.toPointF().x() >= 0) {

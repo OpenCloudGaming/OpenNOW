@@ -6,9 +6,24 @@ QtObject {
     property var host: null
     property int phase: 0
     property int key: 0
+    property int systemKey: 0
     property int modifiers: 0
     property bool settling: false
+    property string accountState: ""
+    property QtObject client: QtObject {
+        property string state: "ready"
+        property string lastError: ""
+        property int sequence: 0
+        signal responseReceived(string requestId, var result)
+        signal requestFailed(string requestId, string code, string message)
+        signal eventReceived(string name, var payload)
+        function markUiReady() {}
+        function logShellDiagnostic(message) {}
+        function request(method, params, timeout) { return "stream-end-" + (++sequence) }
+        function cancel(id) { return true }
+    }
     onKeyChanged: if (key !== 0) settling = true
+    onSystemKeyChanged: if (systemKey !== 0) settling = true
 
     function check(value, message) { if (!value) throw new Error("Stream end notice acceptance: " + message) }
     function namedChild(item, name) {
@@ -31,6 +46,10 @@ QtObject {
         }
         return false
     }
+    function accountSnapshot() {
+        return JSON.stringify([AppController.route, AppController.overlay, ShellStore.accountSwitchRequestId,
+            ShellStore.accountSwitchConfirmTarget, ShellStore.pendingAccountSwitch, ShellStore.accountMessage])
+    }
     function press(value, keyModifiers) {
         modifiers = keyModifiers || Qt.NoModifier
         key = value
@@ -52,6 +71,8 @@ QtObject {
 
     function advance() {
         if (settling) { settling = false; return 0 }
+        if (phase === 16)
+            check(accountSnapshot() === accountState, "Ctrl+2 switched accounts behind the notice")
         const notice = need("desktopStreamEndNotice")
         const dismiss = need("streamEndNoticeDismiss")
         const copy = need("streamEndNoticeCopy")
@@ -149,7 +170,36 @@ QtObject {
         }
         if (phase === 14) {
             check(ShellStore.streamEndNotice === null && !notice.opened, "clicking Dismiss did not dismiss")
-            console.log("STREAM END NOTICE PASS focus, Ctrl+K, copy, Tab, Escape, controller A/Back, fallbacks, empty code")
+            ShellStore.savedAccounts = [
+                {userId: "notice-fixture", displayName: "Notice fixture"},
+                {userId: "second-fixture", displayName: "Second fixture", hasPin: true}]
+            ShellStore.streamEndNotice = {kind: "error", code: 2147680265, codeText: "0x80030009"}
+            phase = 15
+            return 0
+        }
+        if (phase === 15) {
+            check(notice.opened && dismiss.activeFocus, "the notice did not reopen with focus")
+            accountState = accountSnapshot()
+            modifiers = Qt.ControlModifier
+            systemKey = Qt.Key_2
+            phase = 16
+            return 0
+        }
+        if (phase === 16) {
+            check(inside("desktopStreamEndNotice"), "Ctrl+2 moved focus behind the notice")
+            AppController.showOverlay("application-quit-confirm")
+            phase = 17
+            return 0
+        }
+        if (phase === 17) {
+            check(inside("applicationQuitConfirmation"), "the notice took focus from the quit confirmation")
+            return press(Qt.Key_Escape)
+        }
+        if (phase === 18) {
+            check(AppController.overlay === "", "Escape did not cancel the quit confirmation")
+            check(ShellStore.streamEndNotice !== null && notice.opened, "Escape on the quit confirmation dismissed the notice")
+            check(dismiss.activeFocus, "the notice did not take focus back after the quit confirmation closed")
+            console.log("STREAM END NOTICE PASS focus, Ctrl+K, copy, Tab, Escape, controller A/Back, fallbacks, empty code, account shortcuts, quit confirmation")
             return 1
         }
         return -1
