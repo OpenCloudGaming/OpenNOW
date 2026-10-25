@@ -254,6 +254,7 @@ qt_add_qml_module(opennow-qt
         qml/overlays/ConsoleSessionConflict.qml
         qml/overlays/ConsoleSessionReport.qml
         qml/overlays/ConsoleQueueAd.qml
+        qml/overlays/ConsoleStreamEndNotice.qml
         qml/components/GlassPanel.qml
         qml/components/HintBar.qml
         qml/components/HomeTileMenu.qml
@@ -267,6 +268,7 @@ qt_add_qml_module(opennow-qt
         qml/components/ScreenBackground.qml
         qml/components/SettingRow.qml
         qml/components/StreamCaptureStatus.qml
+        qml/components/StreamEndNoticeCopy.qml
         qml/components/StreamIdleWarning.qml
         qml/components/StreamInputNotice.qml
         qml/components/StreamPointerLockHint.qml

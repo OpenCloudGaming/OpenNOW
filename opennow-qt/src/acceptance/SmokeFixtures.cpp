@@ -346,6 +346,13 @@ int AcceptanceSession::prepareWindow()
             auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
             if (store) store->setProperty("settings", QVariantMap{{u"appTheme"_s, u"light"_s}});
         }
+        const auto themePackIndex = m_arguments.indexOf(u"--smoke-theme-pack"_s);
+        if (themePackIndex >= 0) {
+            auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
+            if (!store || themePackIndex + 1 >= m_arguments.size()) return EXIT_FAILURE;
+            store->setProperty("settings", QVariantMap{{u"themePack"_s, m_arguments.at(themePackIndex + 1)},
+                {u"appTheme"_s, m_arguments.contains(u"--smoke-light-theme"_s) ? u"light"_s : u"dark"_s}});
+        }
         if (m_arguments.contains(u"--smoke-settings-advanced"_s)) {
             auto *settings = window ? window->findChild<QObject *>(u"desktopSettingsScreen"_s) : nullptr;
             if (settings) settings->setProperty("advancedOpen", true);
