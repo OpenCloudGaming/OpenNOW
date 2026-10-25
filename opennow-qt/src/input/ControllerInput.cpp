@@ -550,8 +550,7 @@ void ControllerInput::setInputSuspended(bool suspended)
     m_inputSuspended = suspended;
     resetDirections();
     if (!suspended && !m_shellCaptureEnabled) {
-        for (int slot = 0; slot < static_cast<int>(m_slots.size()); ++slot)
-            updateSlotSnapshot(slot);
+        resumeStreamInput();
         publishConnectedInputs();
     }
     updatePollInterval();
@@ -571,8 +570,7 @@ void ControllerInput::setShellCaptureEnabled(bool enabled)
     }
     m_shellCaptureEnabled = enabled;
     if (!enabled) {
-        for (int slot = 0; slot < static_cast<int>(m_slots.size()); ++slot)
-            updateSlotSnapshot(slot);
+        resumeStreamInput();
         publishConnectedInputs();
         m_lastGamepadSnapshotAt = m_clock.elapsed();
     } else {
@@ -586,7 +584,23 @@ void ControllerInput::cancelChordReplays()
 {
     for (auto &slot : m_slots) {
         slot.chordDeadline = 0;
+        slot.chordStartedNs = 0;
         slot.tappedButtons = 0;
+        slot.tapReleaseAt = 0;
+    }
+}
+
+void ControllerInput::resumeStreamInput()
+{
+    if (m_sdlReady) SDL_UpdateGamepads();
+    m_streamInputStartedNs = SDL_GetTicksNS();
+    for (int index = 0; index < static_cast<int>(m_slots.size()); ++index) {
+        updateSlotSnapshot(index);
+        auto &slot = m_slots[static_cast<std::size_t>(index)];
+        if (!slot.gamepad) continue;
+        slot.withheldButtons = slot.buttons & sessionChordButtons;
+        slot.guideLatched = SDL_GetGamepadButton(slot.gamepad, SDL_GAMEPAD_BUTTON_GUIDE);
+        slot.touchpadClick = SDL_GetGamepadButton(slot.gamepad, SDL_GAMEPAD_BUTTON_TOUCHPAD);
     }
 }
 
@@ -734,6 +748,7 @@ void ControllerInput::closeController(SDL_JoystickID id)
 
 void ControllerInput::handleButton(const SDL_GamepadButtonEvent &event, bool pressed)
 {
+    if (!m_shellCaptureEnabled && event.timestamp < m_streamInputStartedNs) return;
     const auto slotIndex = m_gamepadSlots.value(event.which, -1);
     if (slotIndex < 0 || !acceptsController(event.which)) return;
     auto &slot = m_slots[static_cast<std::size_t>(slotIndex)];
@@ -800,6 +815,7 @@ void ControllerInput::handleButton(const SDL_GamepadButtonEvent &event, bool pre
 
 void ControllerInput::handleAxis(const SDL_GamepadAxisEvent &event)
 {
+    if (!m_shellCaptureEnabled && event.timestamp < m_streamInputStartedNs) return;
     const auto slotIndex = m_gamepadSlots.value(event.which, -1);
     if (slotIndex < 0 || !acceptsController(event.which)) return;
     auto &slot = m_slots[static_cast<std::size_t>(slotIndex)];
@@ -980,6 +996,7 @@ void ControllerInput::releaseSonyContacts(int slotIndex)
 
 void ControllerInput::handleTouchpad(const SDL_GamepadTouchpadEvent &event)
 {
+    if (!m_shellCaptureEnabled && event.timestamp < m_streamInputStartedNs) return;
     const auto slotIndex = m_gamepadSlots.value(event.which, -1);
     if (slotIndex < 0 || !acceptsController(event.which)) return;
     if (event.touchpad != 0) return;

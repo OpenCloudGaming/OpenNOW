@@ -205,6 +205,7 @@ private:
     void publishSlotSnapshot(int slotIndex, bool neutral = false);
     void releaseSonyContacts(int slotIndex);
     void cancelChordReplays();
+    void resumeStreamInput();
     [[nodiscard]] int effectiveSlot(int slotIndex) const;
     bool updateDirection(RepeatingDirection &direction, bool active);
     void reportActivity(int slot, const QString &control, int value);
@@ -253,6 +254,7 @@ private:
     bool m_leftStickNavigationEnabled = true;
     qint64 m_lastControllerMetadataAt = 0;
     qint64 m_lastGamepadSnapshotAt = 0;
+    quint64 m_streamInputStartedNs = 0;
     quint64 m_nextIncarnation = 1;
 };
 
