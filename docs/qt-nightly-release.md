@@ -155,7 +155,7 @@ automatic updates must not bypass the helper's identity checks.
 
 Authenticode and Apple Developer ID signatures authenticate platform applications. Ed25519
 manifests authenticate the exact updater payload bytes; they do not remove SmartScreen or
-Gatekeeper warnings. Apple Silicon ad-hoc executable signatures are not Developer ID signatures
+Gatekeeper warnings. macOS ad-hoc executable signatures are not Developer ID signatures
 or notarization. Keep the Ed25519 private key on the isolated signer, never on platform build workers.
 
 The separate [`qt-release-candidate`](qt-release-candidate.md) workflow remains a signed,

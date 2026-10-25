@@ -128,13 +128,16 @@ jobs:
           cat > release-notes.md <<EOF
           OpenNOW $RELEASE_VERSION uses Qt Quick and a native Rust streaming engine.
 
-          Updates are authenticated with signed Ed25519 manifests. The Apple Silicon macOS packages require macOS 13+ and are Developer ID-signed and notarized. Windows platform signing follows the candidate's windowsSigningMode recorded in RELEASE-INFO.json; unsigned Windows packages may trigger SmartScreen.
+          Updates are authenticated with signed Ed25519 manifests.
+          The macOS DMGs require macOS 13+ and are Developer ID-signed and notarized.
+          Use \`OpenNOW-Qt-$RELEASE_VERSION-Darwin-arm64.dmg\` for Apple Silicon (arm64) or \`OpenNOW-Qt-$RELEASE_VERSION-Darwin-x64.dmg\` for Intel (x64).
+          Windows platform signing follows the candidate's windowsSigningMode recorded in RELEASE-INFO.json; unsigned Windows packages may trigger SmartScreen.
           Older builds without the production update key (including v1.0.0) require one manual installation to enable verified updates.
           Linux AppImages include embedded update information and .zsync sidecars for external delta-update tools. Make the AppImage executable before launching.
           DEBs bundle Qt and SDL3; install with \`sudo apt install ./OpenNOW-Qt-$RELEASE_VERSION-Linux-x64.deb\` (use arm64 on ARM systems) to install system dependencies, including pkexec for update authorization.
           Flatpak bundles are included for x64 and arm64; install with \`flatpak install --user ./OpenNOW-Qt-$RELEASE_VERSION-Linux-x64.flatpak\` (use arm64 on ARM systems). Flatpak updates are managed externally, not by the in-app updater.
 
-          Intel macOS is not included. Windows ARM64 is cross-built, not runtime-tested by CI. Hardware-specific gameplay acceptance is not implied by CI passing.
+          Windows ARM64 is cross-built, not runtime-tested by CI. Hardware-specific gameplay acceptance is not implied by CI passing.
           **Known issue: Alliance Partners may not work correctly.**
           **Known issue: YUV 4:4:4 is marked Coming soon because it is not working correctly. Use a 4:2:0 color profile.**
           SHA256SUMS detects corrupted downloads; update manifests authenticate the exact asset bytes.

@@ -15,12 +15,15 @@ approval through `qt-production-release`, validates the candidate run's reposito
 workflow path, event, completed-success status and exact source SHA, then downloads
 only that run's named complete-candidate artifact.
 
-The release contains twelve packages: Windows x64/ARM64 portable ZIP and setup.exe,
-Linux x64/ARM64 AppImage, DEB, and Flatpak, and macOS Apple Silicon DMG and ZIP. It also includes two
-AppImage `.zsync` sidecars, fourteen exact sibling Ed25519 manifests, `RELEASE-INFO.json`,
-and `SHA256SUMS` (30 files). The candidate's isolated signer signs the complete inventory.
+The release contains thirteen packages: Windows x64/ARM64 portable ZIP and setup.exe,
+Linux x64/ARM64 AppImage, DEB, and Flatpak, macOS Apple Silicon DMG and ZIP, and Intel x64 DMG.
+Both macOS DMGs require macOS 13+ and are Developer ID-signed and notarized. The release also includes two
+AppImage `.zsync` sidecars, fifteen exact sibling Ed25519 manifests, `RELEASE-INFO.json`,
+and `SHA256SUMS` (32 files). The candidate's isolated signer signs the complete inventory.
 The publisher independently verifies every signature, candidate checksum, filename,
-version and source identity, then creates flattened checksums and metadata without
+version and source identity. It validates the Intel ZIP and its manifest but excludes them from
+publication so older Windows clients cannot mistake the ZIP for a Windows update. Intel Macs
+update from the published DMG. The publisher creates flattened checksums and metadata without
 changing any package or manifest bytes. It uploads a draft
 release, and only then marks it public and latest.
 An existing tag/release is not overwritten; a failed upload can leave a draft
