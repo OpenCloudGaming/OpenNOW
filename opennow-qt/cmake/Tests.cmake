@@ -1242,6 +1242,7 @@ if(BUILD_TESTING)
 
     qt_add_executable(opennow-controllerinput-tests
         tests/tst_controllerinput.cpp
+        tests/SdlJoystickTestSession.h
         src/input/ControllerInput.cpp
         src/input/ControllerInput.h
         src/input/SdlDeviceClaim.h
@@ -1287,6 +1288,7 @@ if(BUILD_TESTING)
     )
     qt_add_executable(opennow-controllersources-tests
         tests/tst_controllersources.cpp
+        tests/SdlJoystickTestSession.h
         src/input/ControllerInput.cpp
         src/input/ControllerInput.h
         src/input/SdlDeviceClaim.h

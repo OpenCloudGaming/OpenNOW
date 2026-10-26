@@ -1,4 +1,5 @@
 #include "input/ControllerInput.h"
+#include "SdlJoystickTestSession.h"
 
 #include <QCoreApplication>
 #include <QEvent>
@@ -39,7 +40,20 @@ class ControllerInputTest final : public QObject
 {
     Q_OBJECT
 
+private:
+    SdlJoystickTestSession m_joysticks;
+
 private slots:
+    void initTestCase()
+    {
+        QVERIFY2(m_joysticks.ready(), SDL_GetError());
+    }
+
+    void cleanup()
+    {
+        QVERIFY2(m_joysticks.reset(), SDL_GetError());
+    }
+
     void digitalDpadRepeatsUntilReleased_data()
     {
         QTest::addColumn<int>("button");
