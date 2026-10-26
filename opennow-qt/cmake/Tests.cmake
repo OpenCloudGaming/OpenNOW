@@ -1327,6 +1327,7 @@ if(BUILD_TESTING)
     endforeach()
     if(APPLE)
         set_tests_properties(
+            opennow-consolelaunchinput-tests
             opennow-generichidinput-tests
             opennow-controllerinput-tests
             opennow-controllernavigation-tests
