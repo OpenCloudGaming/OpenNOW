@@ -7,11 +7,6 @@ class SdlJoystickTestSession final
 public:
     SdlJoystickTestSession()
     {
-#ifdef SDL_PLATFORM_MACOS
-        SDL_SetHint(SDL_HINT_JOYSTICK_IOKIT, "0");
-        SDL_SetHint(SDL_HINT_JOYSTICK_MFI, "0");
-        SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "0");
-#endif
         SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
         SDL_SetHint(SDL_HINT_HIDAPI_ENUMERATE_ONLY_CONTROLLERS, "0");
         m_ready = SDL_InitSubSystem(SDL_INIT_JOYSTICK);
