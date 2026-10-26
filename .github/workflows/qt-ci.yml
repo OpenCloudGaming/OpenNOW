@@ -28,6 +28,8 @@ jobs:
           parallel: "3"
       - name: Build only the unchanged controller-input target
         run: |
+          git fetch origin capy/fix-controller-event-sampling
+          git show 5103bcb2:opennow-qt/tests/tst_controllerinput.cpp > opennow-qt/tests/tst_controllerinput.cpp
           cmake -S opennow-qt -B build/probe -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/SDL-install"
           cmake --build build/probe --target opennow-controllerinput-tests opennow-controllersources-tests opennow-controllernavigation-tests opennow-controllertuning-tests opennow-controllermetadata-tests opennow-generichidinput-tests --parallel 3
       - name: Profile native and isolated virtual-device runs
