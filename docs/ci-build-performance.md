@@ -81,15 +81,14 @@ Compare those phase times before claiming a speedup. A workflow's creation time
 and its first job's start time also reveal delays before compilation begins.
 Those delays are separate from Cargo and test performance.
 
-The manual `qt-ci` workflow defaults to `macos_intel_host=arm64` for Intel
-packages built on the existing six-core Apple Silicon runner. It builds x86_64
+The manual `qt-ci` workflow builds Intel packages on the existing six-core
+Apple Silicon runner without a host-selection input. It builds x86_64
 libraries and applications
 with native ARM compiler tools, then runs target Rust tests and packaged-app
 checks through Rosetta. All existing package tests and relocated-bundle checks
 still run. Rosetta checks do not validate Intel-specific GPU behavior.
-Both host choices support nightly signing and publication after the unchanged
-artifact checks and protected signing approval. Select `macos_intel_host=intel`
-only for a native Intel comparison.
+These packages support nightly signing and publication after the unchanged
+artifact checks and protected signing approval.
 
 The same manual workflow accepts `linux_arm64_host=x64` to benchmark an additional
 ARM64 Linux release and all Qt test executables on the existing eight-core x64
@@ -105,8 +104,8 @@ ELF architecture and CTest inventory, and runs the unchanged complete CTest,
 AppImage, bundled-DEB and smoke checks. No tests run under emulation. This option
 also disables nightly signing and publication. Flatpak is not cross-compiled.
 
-Run with `linux_arm64_host=x64`, `publish_nightly=false` and
-`macos_intel_host=arm64`. Compare the native ARM64 package job with the additional
+Run with `linux_arm64_host=x64` and `publish_nightly=false`.
+Compare the native ARM64 package job with the additional
 cross-compilation and ARM validation jobs from that same run. Include SDK setup,
 compilation, archive upload/download, native tests and packaging in the ARM64
 comparison. Other platform builds do not wait for the experiment. Its packages

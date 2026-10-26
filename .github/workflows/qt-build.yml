@@ -15,10 +15,6 @@ on:
         description: Optional base64 Ed25519 public key pinned into the application core
         type: string
         default: ""
-      macos_intel_host:
-        description: Intel package host, arm64 by default or intel for native comparisons
-        type: string
-        default: arm64
       linux_arm64_host:
         description: Add an x64 cross-build benchmark alongside the native ARM64 baseline
         type: string
@@ -44,10 +40,8 @@ jobs:
         shell: bash
         env:
           BUILD_CHANNEL: ${{ inputs.channel }}
-          MACOS_INTEL_HOST: ${{ inputs.macos_intel_host }}
           LINUX_ARM64_HOST: ${{ inputs.linux_arm64_host }}
         run: |
-          case "$MACOS_INTEL_HOST" in intel|arm64) ;; *) exit 1 ;; esac
           case "$LINUX_ARM64_HOST" in native|x64) ;; *) exit 1 ;; esac
           version=$(python3 opennow-qt/packaging/nightly_release.py version \
             --run "$GITHUB_RUN_NUMBER" --attempt "$GITHUB_RUN_ATTEMPT" \
@@ -68,7 +62,7 @@ jobs:
   packages:
     name: Package ${{ matrix.label }}
     needs: metadata
-    runs-on: ${{ matrix.label == 'macos-x64' && inputs.macos_intel_host == 'arm64' && 'blacksmith-6vcpu-macos-15' || matrix.os }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ startsWith(matrix.label, 'macos-') && 120 || 360 }}
     strategy:
       fail-fast: false
@@ -120,7 +114,7 @@ jobs:
             macos-arch: arm64
             package-arch: arm64
           - label: macos-x64
-            os: macos-15-intel
+            os: blacksmith-6vcpu-macos-15
             build-parallel: 3
             qt-host: mac
             qt-arch: clang_64
@@ -137,7 +131,7 @@ jobs:
       OPENNOW_UPDATE_PUBLIC_KEY: ${{ inputs.update_public_key }}
       MACOSX_DEPLOYMENT_TARGET: ${{ startsWith(matrix.label, 'macos-') && '13.0' || '' }}
       OPENNOW_MACOS_ARCH: ${{ matrix.macos-arch }}
-      OPENNOW_MACOS_HOST_ARCH: ${{ matrix.label == 'macos-x64' && inputs.macos_intel_host == 'arm64' && 'arm64' || matrix.macos-arch }}
+      OPENNOW_MACOS_HOST_ARCH: ${{ startsWith(matrix.label, 'macos-') && 'arm64' || '' }}
       OPENNOW_PACKAGE_ARCH: ${{ matrix.package-arch }}
 
     steps:
