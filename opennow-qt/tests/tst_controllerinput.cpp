@@ -7,6 +7,7 @@
 #include <QScopeGuard>
 #include <QSignalSpy>
 #include <QTest>
+#include <QTimer>
 
 class ControllerKeySink final : public QObject
 {
@@ -103,9 +104,14 @@ private slots:
         input.setInputSuspended(false);
         QTest::qWait(350);
         QCOMPARE(sink.leftPresses, count);
+        auto *pollTimer = input.findChild<QTimer *>(QStringLiteral("controllerPollTimer"));
+        QVERIFY(pollTimer);
+        pollTimer->stop();
         QVERIFY(SDL_SetJoystickVirtualButton(joystick, button, false));
+        SDL_UpdateJoysticks();
         QTest::qWait(30);
         QVERIFY(SDL_SetJoystickVirtualButton(joystick, button, true));
+        pollTimer->start();
         QTRY_COMPARE(sink.leftPresses, count + 1);
         input.setShellCaptureEnabled(false);
         count = sink.leftPresses;
