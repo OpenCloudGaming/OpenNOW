@@ -16,9 +16,9 @@ on:
         type: string
         default: ""
       macos_intel_host:
-        description: Intel package host, intel by default or arm64 for cross-build measurements
+        description: Intel package host, arm64 by default or intel for native comparisons
         type: string
-        default: intel
+        default: arm64
       linux_arm64_host:
         description: Add an x64 cross-build benchmark alongside the native ARM64 baseline
         type: string

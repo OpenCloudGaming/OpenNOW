@@ -81,14 +81,15 @@ Compare those phase times before claiming a speedup. A workflow's creation time
 and its first job's start time also reveal delays before compilation begins.
 Those delays are separate from Cargo and test performance.
 
-The manual `qt-ci` workflow accepts `macos_intel_host=arm64` for an Intel
-cross-build measurement on the existing six-core Apple Silicon runner. The
-default remains `intel`. The experiment builds x86_64 libraries and applications
+The manual `qt-ci` workflow defaults to `macos_intel_host=arm64` for Intel
+packages built on the existing six-core Apple Silicon runner. It builds x86_64
+libraries and applications
 with native ARM compiler tools, then runs target Rust tests and packaged-app
 checks through Rosetta. All existing package tests and relocated-bundle checks
-still run. This measures build performance, not Intel-specific GPU behavior.
-Selecting `arm64` disables nightly signing and publication even if
-`publish_nightly` is enabled. Measurement packages remain unsigned artifacts.
+still run. Rosetta checks do not validate Intel-specific GPU behavior.
+Both host choices support nightly signing and publication after the unchanged
+artifact checks and protected signing approval. Select `macos_intel_host=intel`
+only for a native Intel comparison.
 
 The same manual workflow accepts `linux_arm64_host=x64` to benchmark an additional
 ARM64 Linux release and all Qt test executables on the existing eight-core x64

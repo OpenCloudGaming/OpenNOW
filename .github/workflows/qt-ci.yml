@@ -8,12 +8,12 @@ on:
         type: boolean
         default: false
       macos_intel_host:
-        description: Intel package build host for manual cross-compilation measurements
+        description: Intel package build host (ARM by default, Intel for comparisons)
         type: choice
         options:
-          - intel
           - arm64
-        default: intel
+          - intel
+        default: arm64
       linux_arm64_host:
         description: Add an x64 cross-build benchmark alongside the native ARM64 baseline
         type: choice
@@ -172,7 +172,7 @@ jobs:
 
   sign-nightly:
     name: Isolated nightly update signing
-    if: github.event_name == 'workflow_dispatch' && inputs.publish_nightly && inputs.macos_intel_host == 'intel' && inputs.linux_arm64_host == 'native'
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_nightly && inputs.linux_arm64_host == 'native'
     needs: [preflight, contracts, checks, build]
     runs-on: blacksmith-2vcpu-ubuntu-2404
     environment: qt-update-signing
@@ -215,7 +215,7 @@ jobs:
 
   publish-nightly:
     name: Publish update-signed nightly prerelease
-    if: github.event_name == 'workflow_dispatch' && inputs.publish_nightly && inputs.macos_intel_host == 'intel' && inputs.linux_arm64_host == 'native'
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_nightly && inputs.linux_arm64_host == 'native'
     needs: [contracts, checks, build, sign-nightly]
     runs-on: blacksmith-2vcpu-ubuntu-2404
     permissions:

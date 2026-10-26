@@ -15,7 +15,7 @@ def jobs(workflow):
 
 
 class CIWorkflowTest(unittest.TestCase):
-    def test_measurement_cross_builds_cannot_sign_or_publish_nightly(self):
+    def test_arm_hosted_intel_can_publish_but_linux_measurements_cannot(self):
         entries = jobs((WORKFLOWS / "qt-ci.yml").read_text())
         for name in ("sign-nightly", "publish-nightly"):
             with self.subTest(job=name):
@@ -23,7 +23,7 @@ class CIWorkflowTest(unittest.TestCase):
                 self.assertEqual(
                     condition,
                     "github.event_name == 'workflow_dispatch' && inputs.publish_nightly "
-                    "&& inputs.macos_intel_host == 'intel' && inputs.linux_arm64_host == 'native'",
+                    "&& inputs.linux_arm64_host == 'native'",
                 )
 
     def test_stack_base_branches_run_pr_checks_without_new_push_or_publication_triggers(self):

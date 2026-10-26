@@ -66,14 +66,16 @@ class MacOSCrossHostTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(environment, "")
 
-    def test_manual_experiment_changes_only_intel_host_and_keeps_native_default(self):
+    def test_intel_target_defaults_to_arm_host_and_keeps_target_tests(self):
         ci = (ROOT / ".github/workflows/qt-ci.yml").read_text()
         build = (ROOT / ".github/workflows/qt-build.yml").read_text()
         self.assertIn("macos_intel_host:", ci)
         self.assertIn("macos_intel_host: ${{ inputs.macos_intel_host }}", ci)
         self.assertIn("matrix.label == 'macos-x64' && inputs.macos_intel_host == 'arm64'", build)
         self.assertIn("'blacksmith-6vcpu-macos-15' || matrix.os", build)
-        self.assertIn("default: intel", build)
+        for workflow in (ci, build):
+            host_input = workflow.split("      macos_intel_host:\n", 1)[1].split("      linux_arm64_host:\n", 1)[0]
+            self.assertIn("default: arm64", host_input)
         self.assertIn('rust_test_target=()', build)
         self.assertIn('if [[ "$OPENNOW_MACOS_HOST_ARCH" != "$OPENNOW_MACOS_ARCH" ]]', build)
         self.assertIn('rust_test_target=(--target "${{ matrix.rust-target }}")', build)
