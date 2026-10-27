@@ -1033,6 +1033,7 @@ int AcceptanceSession::startSmokeWorkload()
                             m_application.exit(EXIT_FAILURE);
                             return;
                         }
+                        SDL_UpdateJoysticks();
                     }
                     const auto key = fixture->property("key").toInt();
                     if (key != 0) {

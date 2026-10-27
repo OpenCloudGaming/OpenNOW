@@ -2950,6 +2950,19 @@ private slots:
         QVERIFY(!main.contains(QStringLiteral("qputenv(\"QSG_RENDER_LOOP\", \"basic\")")));
     }
 
+    void virtualControllerEdgesAreCommittedBeforeFixtureAdvances()
+    {
+        const auto smoke = source(QStringLiteral("src/acceptance/SmokeAcceptance.cpp"));
+        const auto timer = smoke.indexOf(QStringLiteral("controllerRelease = -1, deadline = QDeadlineTimer(15000)"));
+        const auto clear = smoke.indexOf(QStringLiteral("fixture->setProperty(\"padButton\", -1)"), timer);
+        const auto commit = smoke.indexOf(QStringLiteral("SDL_UpdateJoysticks()"), clear);
+        const auto advance = smoke.indexOf(QStringLiteral("QMetaObject::invokeMethod(fixture, \"advance\""), clear);
+        QVERIFY(timer >= 0);
+        QVERIFY(clear > timer);
+        QVERIFY(commit > clear);
+        QVERIFY(advance > commit);
+    }
+
     void linuxVulkanOwnerOutlivesRuntimeAndHiddenRootAdoption()
     {
         const auto main = source(QStringLiteral("src/app/ApplicationStartup.cpp"));
