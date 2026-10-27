@@ -65,7 +65,7 @@ ApplicationWindow {
     }
 
     function finishSessionQuit() {
-        if (!window.sessionQuitStopping || !ShellStore.sessionWorkIdle)
+        if (!window.sessionQuitStopping || !ShellStore.sessionWorkIdle || CoreClient.allocationsSettled !== true)
             return
         window.applicationCloseConfirmed = true
         window.close()
@@ -316,6 +316,12 @@ ApplicationWindow {
             AppController.showOverlay("")
             window.update()
         }
+    }
+
+    Connections {
+        target: CoreClient
+        function onAllocationsSettledChanged() { Qt.callLater(window.finishSessionQuit) }
+        ignoreUnknownSignals: true
     }
 
     Connections {

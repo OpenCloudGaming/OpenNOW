@@ -617,9 +617,12 @@ fn native_session_end_releases_owned_seat_before_next_allocation() {
         })
         .unwrap();
     assert_eq!(created["session"]["sessionId"], "replacement-seat");
-    service
-        .finish_session_create("replacement-seat", true)
-        .unwrap();
+    assert_eq!(
+        service
+            .finish_session_create("replacement-seat", true)
+            .unwrap(),
+        SessionCreateOutcome::HandedOff
+    );
     assert_eq!(
         service.acknowledge_session_end(&notification).unwrap()["cleared"],
         false
@@ -1803,7 +1806,10 @@ fn durable_seat_republication_does_not_renew_allocation_receipt_authority() {
             .allocation_generation,
         Some(7)
     );
-    service.finish_session_create("fresh-seat", true).unwrap();
+    assert_eq!(
+        service.finish_session_create("fresh-seat", true).unwrap(),
+        SessionCreateOutcome::Cleaned
+    );
     assert!(service.cloudmatch.active()["session"].is_null());
     assert!(
         service

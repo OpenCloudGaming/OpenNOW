@@ -313,6 +313,12 @@ pub struct ServiceError {
     pub message: String,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum SessionCreateOutcome {
+    HandedOff,
+    Cleaned,
+}
+
 impl ServiceError {
     pub(crate) fn network(context: &str, error: reqwest::Error) -> Self {
         let error = error.without_url();
@@ -1895,7 +1901,7 @@ impl GfnService {
         &self,
         session_id: &str,
         accepted: bool,
-    ) -> Result<(), ServiceError> {
+    ) -> Result<SessionCreateOutcome, ServiceError> {
         let mut routing = self
             .session_routing
             .lock()
@@ -1916,7 +1922,13 @@ impl GfnService {
         {
             owner.allocation_generation = None;
         }
-        result
+        result.map(|()| {
+            if accepted {
+                SessionCreateOutcome::HandedOff
+            } else {
+                SessionCreateOutcome::Cleaned
+            }
+        })
     }
 
     pub fn stop_session(&self, params: &Value, settings: &Value) -> Result<Value, ServiceError> {

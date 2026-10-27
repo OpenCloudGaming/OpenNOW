@@ -36,6 +36,12 @@ int main(int argc, char **argv)
     int startupAcknowledgements = 0;
     int createReceipts = 0;
     std::unordered_map<std::string, int> busyAttempts;
+    std::unordered_map<std::string, bool> allocations;
+    const auto settle = [&](const std::string &requestId, const std::string &outcome) {
+        std::cout << "{\"type\":\"event\",\"name\":\"session.allocation.settled\",\"payload\":{\"requestId\":"
+                  << std::quoted(requestId) << ",\"outcome\":" << std::quoted(outcome) << "}}\n" << std::flush;
+        allocations.erase(requestId);
+    };
     if (argc == 3 && std::string(argv[1]) == "--eof-marker") {
         eofMarker = argv[2];
     }
@@ -45,19 +51,25 @@ int main(int argc, char **argv)
         const auto method = field(line, "method");
         if (field(line, "type") == "ack") {
             ++createReceipts;
+            if (allocations.contains(id) && !allocations.at(id)) settle(id, "handed-off");
+        } else if (method == "test.allocation.settle") {
+            settle(field(line, "requestId"), field(line, "outcome"));
+            std::cout << "{\"type\":\"response\",\"id\":\"" << id << "\",\"ok\":true,\"result\":{}}\n" << std::flush;
         } else if (method == "test.create-receipts") {
             std::cout << "{\"type\":\"response\",\"id\":\"" << id
                       << "\",\"ok\":true,\"result\":{\"receipts\":" << createReceipts << "}}\n" << std::flush;
         } else if (field(line, "type") == "cancel") {
+            if (allocations.contains(id) && !allocations.at(id)) settle(id, "cleaned");
             continue;
         } else if (method == "core.hello") {
-            const auto protocolVersion = std::getenv("OPENNOW_TEST_OLD_CORE") ? 4 : 5;
+            const auto protocolVersion = std::getenv("OPENNOW_TEST_OLD_CORE") ? 5 : 6;
             std::cout << "{\"type\":\"response\",\"id\":\"" << id
                       << "\",\"ok\":true,\"result\":{\"protocolVersion\":" << protocolVersion
                       << ",\"capabilities\":[\"settings\",\"catalog.libraryPages.v1\",\"catalog.metadata.v1\",\"account.syncObservation.v1\",\"catalog.languages.v1\",\"nativeStreamer.v7\",\"nativeStreamer.ownedNvstNegotiation\""
                       << (std::getenv("OPENNOW_TEST_NO_QUEUE_CAPABILITY") ? "" : ",\"queue.servers.v1\"")
                       << (std::getenv("OPENNOW_TEST_NO_ACCOUNT_PICKER_CAPABILITY") ? "" : ",\"auth.accountPicker.v1\"")
                       << (std::getenv("OPENNOW_TEST_NO_TERMINAL_CLEANUP_CAPABILITY") ? "" : ",\"session.terminalCleanup.v1\"")
+                      << (std::getenv("OPENNOW_TEST_NO_ALLOCATION_SETTLEMENT_CAPABILITY") ? "" : ",\"session.allocationSettlement.v1\"")
                       << "]}}\n" << std::flush;
         } else if (method == "updater.startup.ack") {
             ++startupAcknowledgements;
@@ -76,6 +88,16 @@ int main(int argc, char **argv)
                       << ",\"hasUpdateEnvironment\":" << (std::getenv("OPENNOW_UPDATE_PLAN") && std::getenv("OPENNOW_UPDATE_NONCE") ? "true" : "false")
                       << "}}\n" << std::flush;
         } else if (method == "session.create" || method == "streamer.prepare" || method == "settings.choices.get") {
+            if (method == "session.create") {
+                if (line.find("\"allocationBusy\":true") != std::string::npos) {
+                    std::cout << "{\"type\":\"response\",\"id\":\"" << id
+                              << "\",\"ok\":false,\"error\":{\"code\":\"busy\",\"message\":\"busy\"}}\n" << std::flush;
+                    continue;
+                }
+                const bool held = line.find("\"holdSettlement\":true") != std::string::npos;
+                allocations[id] = held;
+                if (held) continue;
+            }
             if (line.find("\"delayReceipt\":true") != std::string::npos)
                 std::this_thread::sleep_for(std::chrono::milliseconds(150));
             std::cout << "{\"type\":\"response\",\"id\":\"" << id

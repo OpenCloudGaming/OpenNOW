@@ -394,11 +394,18 @@ class CIWorkflowTest(unittest.TestCase):
         version = int(re.search(r"CurrentProtocolVersion = (\d+);", header).group(1))
         core = (ROOT / "native/opennow-core/src/main.rs").read_text()
         self.assertEqual(int(re.search(r"const PROTOCOL_VERSION: i64 = (\d+);", core).group(1)), version)
+        client = (ROOT / "opennow-qt/src/core/CoreClient.cpp").read_text()
+        required = re.search(r"for \(const auto &capability : \{(.*?)\}\)", client, re.DOTALL)[1]
+        capabilities = re.findall(r'u"([^"]+)"_s', required)
+        self.assertTrue(capabilities)
         for name in ("qt-build.yml", "qt-release-candidate.yml"):
             with self.subTest(workflow=name):
                 workflow = (WORKFLOWS / name).read_text()
                 probe = workflow.split('"id":"package-core"', 1)[1].split("core.stdin.flush()", 1)[0]
                 self.assertEqual(int(re.search(r'"protocolVersion":(\d+)', probe).group(1)), version)
+                assertion = next(line for line in workflow.splitlines() if '.issubset(response["result"]["capabilities"])' in line)
+                for capability in capabilities:
+                    self.assertIn(f'"{capability}"', assertion)
 
     def test_native_streamer_probes_match_shell_protocol(self):
         protocol = (ROOT / "native/opennow-streamer/crates/opennow-streamer-protocol/src/lib.rs").read_text()

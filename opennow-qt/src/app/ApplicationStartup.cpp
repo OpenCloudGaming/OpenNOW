@@ -433,8 +433,10 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     if (acceptance.startWorkload() != EXIT_SUCCESS) return EXIT_FAILURE;
 
     const auto exitCode = application.exec();
+    auto *qmlCoreClient = engine.rootContext()->contextProperty(u"CoreClient"_s).value<QObject *>();
     const auto requestedQuitCompleted = rootWindow && rootWindow->property("sessionQuitStopping").toBool()
         && rootWindow->property("applicationCloseConfirmed").toBool()
+        && qmlCoreClient && qmlCoreClient->property("allocationsSettled").toBool()
         && engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s)->property("sessionWorkIdle").toBool();
     armTeardownDeadline(exitCode);
     coreClient.stop();

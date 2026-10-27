@@ -6,6 +6,7 @@
 #include <QDir>
 #include <QStandardPaths>
 #include <QLocalSocket>
+#include <QScopeGuard>
 
 #include <atomic>
 #include <thread>
@@ -101,9 +102,13 @@ private slots:
         QSignalSpy activated(&primary, &SingleInstance::activationRequested);
         std::atomic_bool completed = false;
         std::atomic_int result = -1;
-        std::jthread secondary([&] {
+        std::thread secondary([&] {
             result = SingleInstance::requestQuit();
             completed = true;
+        });
+        const auto joinSecondary = qScopeGuard([&] {
+            primary.cancelQuitRequest();
+            secondary.join();
         });
         QTRY_COMPARE_WITH_TIMEOUT(requested.size(), 1, 2'000);
         QCOMPARE(activated.size(), 0);

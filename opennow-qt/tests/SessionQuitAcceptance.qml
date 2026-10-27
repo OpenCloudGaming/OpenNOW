@@ -24,6 +24,7 @@ QtObject {
     }
     property QtObject client: QtObject {
         property string state: "ready"
+        property bool allocationsSettled: true
         property string lastError: ""
         property var calls: []
         signal responseReceived(string requestId, var result)
@@ -71,6 +72,7 @@ QtObject {
         check(recording.type === "recording-start", "recording was not started")
         ShellStore.acceptNativeResponse({id: recording.id, type: "recording-started"})
         ShellStore.streamerStartRequestId = ""
+        client.allocationsSettled = false
         steps.start()
         console.info("SESSION_QUIT_READY")
     }
@@ -125,6 +127,7 @@ QtObject {
                 if (fixture.stopFailure) {
                     client.requestFailed(stopCalls[0].id, "fixture_stop_failed", "The cloud session could not be stopped")
                     fixture.finishRecording()
+                    client.allocationsSettled = true
                     fixture.step = 5
                     console.info("SESSION_QUIT_STOP_FAILED")
                 } else {
@@ -135,6 +138,11 @@ QtObject {
                 check(window.sessionQuitStopping && !ShellStore.sessionWorkIdle,
                     "cloud stop bypassed recording finalization")
                 fixture.finishRecording()
+                fixture.step = 6
+            } else if (fixture.step === 6) {
+                check(ShellStore.sessionWorkIdle && !window.applicationCloseConfirmed,
+                    "recorder completion bypassed an earlier cancelled allocation")
+                client.allocationsSettled = true
                 console.info("SESSION_QUIT_FINALIZED")
                 stop()
             } else {

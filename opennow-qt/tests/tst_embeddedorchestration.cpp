@@ -2885,6 +2885,7 @@ private slots:
         QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
             var stops=0, closes=0, overlays=[];
             var ShellStore={sessionWorkIdle:false, stopStreamingSession:function(){++stops;}};
+            var CoreClient={allocationsSettled:false};
             var AppController={showOverlay:function(value){overlays.push(value);}};
             var window={sessionQuitPending:false, sessionQuitStopping:false,
                 applicationCloseConfirmed:false, close:function(){++closes;}};
@@ -2905,6 +2906,8 @@ private slots:
         QCOMPARE(engine.evaluate(QStringLiteral("stops")).toInt(), 1);
         QCOMPARE(engine.evaluate(QStringLiteral("closes")).toInt(), 0);
         QVERIFY(!engine.evaluate(QStringLiteral("ShellStore.sessionWorkIdle=true; finishSessionQuit();")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("closes")).toInt(), 0);
+        QVERIFY(!engine.evaluate(QStringLiteral("CoreClient.allocationsSettled=true; finishSessionQuit();")).isError());
         QCOMPARE(engine.evaluate(QStringLiteral("closes")).toInt(), 1);
         QVERIFY(engine.evaluate(QStringLiteral("window.applicationCloseConfirmed")).toBool());
     }
