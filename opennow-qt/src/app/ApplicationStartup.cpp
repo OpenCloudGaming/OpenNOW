@@ -352,6 +352,10 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     engine.loadFromModule(u"OpenNOW"_s, u"Main"_s);
     auto *rootWindow = engine.rootObjects().isEmpty() ? nullptr
         : qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+    if (!WindowTheme::prepareWindow(rootWindow)) {
+        qCritical("Could not establish window decoration ownership before native surface creation");
+        return EXIT_FAILURE;
+    }
     if (!graphicsDevices.applyTo(rootWindow)) {
         qCritical("Could not select the graphics adapter before scene-graph initialization");
         return EXIT_FAILURE;

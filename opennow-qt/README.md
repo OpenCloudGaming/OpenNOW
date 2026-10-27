@@ -15,6 +15,12 @@ On a Windows hybrid laptop, Stream settings → Graphics processor lists each GP
 hardware decode codecs. Automatic uses the first high-performance adapter that
 can decode, so a discrete GPU without a decoder does not hide the integrated GPU.
 
+On Linux Wayland with Vulkan, OpenNOW owns the title bar and resize edges. Startup
+sets `Qt::FramelessWindowHint` before creating the native surface, so Qt does not
+negotiate compositor decorations. This avoids duplicate or missing controls when
+the compositor changes its preferred decoration mode. Other graphics backends
+and window systems keep their native decoration behavior.
+
 ## Graceful quit requests
 
 `opennow-qt --request-quit` contacts the running instance for the same user and application-data scope. It does not start a window or a core process and does not require a display connection. Pass this flag by itself, through the same installed executable or Flatpak launcher used to start OpenNOW.

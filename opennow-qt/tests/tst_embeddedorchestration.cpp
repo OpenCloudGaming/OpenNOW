@@ -2955,6 +2955,8 @@ private slots:
         const auto engine = main.indexOf(QStringLiteral("QQmlApplicationEngine engine"));
         const auto hidden = main.indexOf(QStringLiteral("engine.setInitialProperties"));
         const auto load = main.indexOf(QStringLiteral("engine.loadFromModule"));
+        const auto decorations = main.indexOf(QStringLiteral("WindowTheme::prepareWindow(rootWindow)"));
+        const auto graphicsSetup = main.indexOf(QStringLiteral("graphicsDevices.applyTo(rootWindow)"));
         const auto adopt = main.indexOf(QStringLiteral("vulkanDevice.adopt(rootWindow)"));
         const auto prepare = main.indexOf(QStringLiteral("acceptance.prepareWindow()"));
         const auto show = main.indexOf(QStringLiteral("rootWindow->show()"));
@@ -2965,7 +2967,9 @@ private slots:
         QVERIFY(engine > runtime);
         QVERIFY(hidden > engine);
         QVERIFY(load > hidden);
-        QVERIFY(adopt > load);
+        QVERIFY(decorations > load);
+        QVERIFY(graphicsSetup > decorations);
+        QVERIFY(adopt > graphicsSetup);
         QVERIFY(prepare > adopt);
         QVERIFY(show > prepare);
         const auto graphics = source(QStringLiteral("src/streaming/rendering/LinuxVulkanGraphics.cpp"));
