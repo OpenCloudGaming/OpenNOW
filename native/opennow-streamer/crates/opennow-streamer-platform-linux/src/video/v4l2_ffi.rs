@@ -25,7 +25,6 @@ pub const v4l2_memory_V4L2_MEMORY_MMAP: v4l2_memory = 1;
 pub type v4l2_field = u32;
 pub const v4l2_field_V4L2_FIELD_NONE: v4l2_field = 1;
 pub type v4l2_colorspace = u32;
-#[cfg(test)]
 pub const v4l2_colorspace_V4L2_COLORSPACE_DEFAULT: v4l2_colorspace = 0;
 #[cfg(test)]
 pub const v4l2_colorspace_V4L2_COLORSPACE_SMPTE170M: v4l2_colorspace = 1;
