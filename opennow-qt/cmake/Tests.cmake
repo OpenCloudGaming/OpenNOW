@@ -814,6 +814,8 @@ if(BUILD_TESTING)
         COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
             --route settings-streaming --smoke-stream-recovery --reduced-motion)
     set_tests_properties(qml-stream-recovery PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+    qt_add_resources(opennow-qt "stream-transition-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/StreamTransitionAcceptance.qml)
     qt_add_resources(opennow-qt "pointer-lock-hint-acceptance"
         PREFIX "/acceptance" BASE tests FILES tests/PointerLockHintAcceptance.qml)
     foreach(surface desktop console)

@@ -417,6 +417,8 @@ QtObject {
         if (!activeSession && pendingAccountSwitch)
             Qt.callLater(continuePendingAccountSwitch)
         const sessionId = String(activeSession && activeSession.sessionId || "")
+        if (sessionId !== sessionAdSessionId)
+            abandonSessionAdReports(sessionId)
         if (sessionId !== streamRecordingIntentSessionId)
             streamRecordingIntentSessionId = ""
         if (streamIdleWarning && streamIdleWarning.sessionId !== sessionId)
@@ -779,6 +781,17 @@ QtObject {
     property alias storageLocationsRequestId: accountServicesOwner.storageLocationsRequestId
     property alias storageResetRequestId: accountServicesOwner.storageResetRequestId
     property string sessionAdRequestId: ""
+    property string sessionAdSessionId: ""
+    property var sessionAdReports: []
+    property var sessionAdInFlight: null
+    property int sessionAdRetryAttempts: 0
+    property Timer sessionAdRetryTimer: Timer {
+        interval: Math.min(30000, 1000 * Math.pow(2, Math.min(5, root.sessionAdRetryAttempts)))
+        onTriggered: {
+            stop()
+            root.flushSessionAdReports()
+        }
+    }
     property string mediaRequestId: ""
     property string mediaDeleteRequestId: ""
     property string mediaRecordingTargetRequestId: ""
@@ -2274,17 +2287,112 @@ QtObject {
         }, 5000)
     }
 
-    function reportSessionAd(action, ad, watchedTimeMs, cancelReason) {
-        if (!ready || !activeSession || !ad || sessionAdRequestId !== "")
-            return
-        sessionAdRequestId = CoreClient.request("session.ad.report", {
-            sessionId: activeSession.sessionId,
+    function abandonSessionAdReports(sessionId) {
+        const requestId = sessionAdRequestId
+        sessionAdRequestId = ""
+        sessionAdInFlight = null
+        sessionAdReports = []
+        sessionAdSessionId = sessionId
+        sessionAdRetryAttempts = 0
+        sessionAdRetryTimer.stop()
+        if (requestId !== "") CoreClient.cancel(requestId)
+    }
+
+    function prepareSessionAd(ad, sessionId) {
+        const owner = String(activeSession && activeSession.sessionId || "")
+        if (!owner || !ad || !ad.adId || (sessionId !== undefined && String(sessionId) !== owner))
+            return false
+        if (sessionAdSessionId !== owner)
+            abandonSessionAdReports(owner)
+        const reports = sessionAdReports.filter(value => value.adId === ad.adId || value.events.length > 0)
+        if (reports.some(value => value.adId === ad.adId))
+            return true
+        if (reports.length >= 8)
+            return false
+        reports.push({adId: ad.adId, events: [], lastAction: "", terminal: false})
+        sessionAdReports = reports
+        return true
+    }
+
+    function reportSessionAd(action, ad, watchedTimeMs, cancelReason, sessionId) {
+        if (["start", "pause", "resume", "finish", "cancel"].indexOf(action) < 0
+                || !prepareSessionAd(ad, sessionId))
+            return false
+        const report = sessionAdReports.find(value => value.adId === ad.adId)
+        if (report.terminal || report.lastAction === action || (action === "start" && report.lastAction !== ""))
+            return true
+        const event = {
+            sessionId: sessionAdSessionId,
             adId: ad.adId,
             action: action,
             watchedTimeInMs: Math.max(0, Math.round(watchedTimeMs || 0)),
             pausedTimeInMs: 0,
+            clientTimestamp: Math.floor(Date.now() / 1000),
             cancelReason: cancelReason || undefined
-        }, 30000)
+        }
+        const tail = report.events[report.events.length - 1]
+        if ((action === "pause" || action === "resume") && tail
+                && (tail.action === "pause" || tail.action === "resume")
+                && (!sessionAdInFlight || sessionAdInFlight.event !== tail))
+            report.events[report.events.length - 1] = event
+        else
+            report.events.push(event)
+        report.lastAction = action
+        report.terminal = action === "finish" || action === "cancel"
+        sessionAdReports = sessionAdReports.slice()
+        if (!sessionAdRetryTimer.running)
+            flushSessionAdReports()
+        return true
+    }
+
+    function flushSessionAdReports() {
+        if (!ready || sessionAdRequestId !== "" || !activeSession
+                || String(activeSession.sessionId) !== sessionAdSessionId)
+            return
+        const report = sessionAdReports.find(value => value.events.length > 0)
+        if (!report)
+            return
+        sessionAdInFlight = {report: report, event: report.events[0]}
+        sessionAdRequestId = CoreClient.request("session.ad.report", sessionAdInFlight.event, 30000)
+        if (sessionAdRequestId === "") {
+            sessionAdInFlight = null
+            sessionAdRetryAttempts = Math.min(5, sessionAdRetryAttempts + 1)
+            sessionAdRetryTimer.restart()
+        }
+    }
+
+    function finishSessionAdReport(requestId, result, message) {
+        if (requestId === "" || requestId !== sessionAdRequestId || !sessionAdInFlight)
+            return false
+        const pending = sessionAdInFlight
+        sessionAdRequestId = ""
+        sessionAdInFlight = null
+        if (!result || (result.scope && !matchesAuthScope(result.scope) && !acceptsSessionScope(result.scope))) {
+            if (message) streamMessage = message
+            sessionAdRetryAttempts = Math.min(5, sessionAdRetryAttempts + 1)
+            sessionAdRetryTimer.restart()
+            return true
+        }
+        sessionAdRetryAttempts = 0
+        sessionAdRetryTimer.stop()
+        pending.report.events.shift()
+        if (pending.event.action === "finish" || pending.event.action === "cancel")
+            sessionAdReports = sessionAdReports.filter(value => value !== pending.report)
+        else
+            sessionAdReports = sessionAdReports.slice()
+        const state = activeSession ? (activeSession.adState || ({})) : ({})
+        const ads = state.sessionAds || state.ads || []
+        if (activeSession && String(activeSession.sessionId) === pending.event.sessionId
+                && ads.length > 0 && ads[0].adId === pending.event.adId
+                && result.session && String(result.session.sessionId) === pending.event.sessionId) {
+            acceptStreamingSession(result.session)
+            const next = activeSession ? (activeSession.adState || ({})) : ({})
+            if (!(next.sessionAdsRequired || next.isAdsRequired) || !(next.sessionAds || next.ads || []).length) {
+                if (AppController.overlay === "queue-ad") AppController.showOverlay("")
+            }
+        }
+        flushSessionAdReports()
+        return true
     }
 
     function startNativeStreamer() {
@@ -2298,6 +2406,11 @@ QtObject {
                 && streamer.status !== "stopped" && streamer.status !== "error"
                 && streamer.status !== "starting")
             return
+        if (streamer && streamer.sessionId && streamer.sessionId !== activeSession.sessionId
+                && streamer.status !== "stopped" && streamer.status !== "error") {
+            stopNativeStreamer("Replacing the native media session")
+            return
+        }
         streamIdleWarning = null
         streamer = {
             status: "starting",
@@ -2309,7 +2422,11 @@ QtObject {
             inputResumeCount: 0,
             recordingStartCount: 0,
             recordingStopCount: 0,
-            queueDropCount: 0
+            queueDropCount: 0,
+            overlayRequestGeneration: overlayRequestGeneration,
+            screenshotRequestGeneration: screenshotRequestGeneration,
+            recordingToggleRequestGeneration: recordingToggleRequestGeneration,
+            shortcutActionGeneration: shortcutActionGeneration
         }
         streamColorFormat = null
         microphoneRequestId = ""
@@ -2634,6 +2751,11 @@ QtObject {
         cancelRecordingTarget()
         suspendRecordingStart()
         streamerRestartTimer.stop()
+        const prepareId = streamerPrepareRequestId
+        streamerPrepareRequestId = ""
+        if (prepareId !== "") CoreClient.cancel(prepareId)
+        if (streamerStartRequestId !== "") takeNativeRequest(streamerStartRequestId)
+        streamerStartRequestId = ""
         if (streamerStopRequestId !== "")
             return
         const status = streamer ? String(streamer.status || "") : ""
@@ -3501,6 +3623,8 @@ QtObject {
         const pending = takeNativeRequest(requestId)
         if (!pending)
             return
+        if (pending.operation === "start" && requestId !== streamerStartRequestId)
+            return
         if (pending.operation === "recording-start" || pending.operation === "recording-stop") {
             acceptRecordingResponse(response, pending)
             return
@@ -3621,6 +3745,9 @@ QtObject {
             if (sessionRecoveryPending) {
                 streamerStartRequestId = ""
                 discoverRecoverySession()
+            } else if (activeSession && ["ready", "streaming"].indexOf(activeSession.phase
+                       || (Number(activeSession.status) >= 2 ? "ready" : "preparing")) >= 0) {
+                startNativeStreamer()
             }
         } else if (pending.operation === "input") {
             streamInputPauseRequestId = ""
@@ -3934,6 +4061,7 @@ QtObject {
             if (CoreClient.state === "ready") {
                 root.authGeneration = 0
                 root.initializeServices()
+                root.flushSessionAdReports()
             }
             else {
                 root.invalidateStoreLaunch()
@@ -3945,6 +4073,7 @@ QtObject {
             }
         }
         function onResponseReceived(requestId, result) {
+            if (requestId === root.sessionAdRequestId && root.finishSessionAdReport(requestId, result, "")) return
             if (settingsOwner.acceptResponse(requestId, result)) return
             const ownedTermination = root.ownedSessionTermination(result)
             if (ownedTermination) {
@@ -4243,13 +4372,6 @@ QtObject {
                     : result.reportId
                     ? qsTr("Thanks — this bug has been sent to the developer. Reference %1").arg(result.reportId)
                     : qsTr("Thanks — this bug has been sent to the developer.")
-            } else if (requestId === root.sessionAdRequestId) {
-                root.sessionAdRequestId = ""
-                root.acceptStreamingSession(result.session || root.activeSession)
-                const state = root.activeSession ? (root.activeSession.adState || ({})) : ({})
-                const ads = state.sessionAds || state.ads || []
-                if (!(state.sessionAdsRequired || state.isAdsRequired) || ads.length === 0)
-                    AppController.showOverlay("")
             } else if (requestId === root.sessionEndRequestId) {
                 root.sessionEndRequestId = ""
                 root.pendingSessionEnd = null
@@ -4384,6 +4506,7 @@ QtObject {
             }
         }
         function onRequestFailed(requestId, code, message) {
+            if (requestId === root.sessionAdRequestId && root.finishSessionAdReport(requestId, null, message)) return
             if (requestId === root.sessionEndRequestId && requestId !== "") {
                 root.sessionEndRequestId = ""
                 return
@@ -4533,9 +4656,6 @@ QtObject {
                 root.bugReportRequestId = ""
                 root.reportingState = "error"
                 root.reportingMessage = message
-            } else if (requestId === root.sessionAdRequestId) {
-                root.sessionAdRequestId = ""
-                root.streamMessage = message
             } else if (requestId === root.activeSessionRequestId) {
                 root.activeSessionRequestId = ""
             } else if (requestId === root.remoteSessionsRequestId) {
