@@ -934,6 +934,65 @@ private slots:
         }
     }
 
+    void launchDiscoveryFailure_data()
+    {
+        QTest::addColumn<QString>("code");
+        QTest::addColumn<QString>("context");
+        QTest::addColumn<bool>("continuesLaunch");
+        QTest::newRow("unavailable-region") << QStringLiteral("session_discovery_failed") << QString() << true;
+        for (const auto &code : {"http_unauthorized", "authentication_required", "cancelled", "timeout", "network_error"})
+            QTest::newRow(code) << QString::fromLatin1(code) << QString() << false;
+        for (const auto &context : {"launchConflictDetected = true", "conflictSession = {sessionId:'existing'}",
+                 "conflictSessionNeedsRefresh = true", "activeSession = {sessionId:'existing'}",
+                 "pendingLaunchParams = null", "catalogOwner.selectedIdentity = 'changed'", "ready = false",
+                 "signedIn = false", "onboardingReplaying = true"})
+            QTest::newRow(context) << QStringLiteral("session_discovery_failed") << QString::fromLatin1(context) << false;
+    }
+
+    void launchDiscoveryFailure()
+    {
+        QFETCH(QString, code);
+        QFETCH(QString, context);
+        QFETCH(bool, continuesLaunch);
+        QJSEngine engine;
+        QVERIFY(prepareLaunchGuards(engine));
+        engine.installExtensions(QJSEngine::TranslationExtension);
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            var root = this, ready = true, onboardingReplaying = false, nativeRuntimeReady = true;
+            var activeSession = null, conflictSession = null, conflictSessionNeedsRefresh = false;
+            var launchConflictDetected = false, streamCreateRequestId = '', remoteSessionsRequestId = 'discovery';
+            var pendingLaunchParams = {appId:'123',catalogAppId:'parent',variantId:'123',selectionIdentity:'selection',
+                authGeneration:0,actionGeneration:0,requestContextKey:''};
+            var requests = [], streamState = 'checking', streamMessage = '', lastError = '';
+            var settingsOwner = {acceptFailure:function(){return false;}};
+            var onboardingOwner = {acceptFailure:function(){return false;}};
+            function finishArtworkRequest(){return false;}
+            var CoreClient = {request:function(method,params){
+                requests.push({method:method,params:params});return 'request-' + requests.length;
+            }};
+        )JS")).isError());
+        QVERIFY(loadShellFunction(engine, QStringLiteral("createPendingSession")));
+        QVERIFY(loadShellFunction(engine, QStringLiteral("onRequestFailed"), 8));
+        QVERIFY(!engine.evaluate(context).isError());
+        engine.globalObject().setProperty(QStringLiteral("failureCode"), code);
+        const auto result = engine.evaluate(QStringLiteral("onRequestFailed('discovery',failureCode,'Discovery failed')"));
+        QVERIFY2(!result.isError(), qPrintable(result.toString()));
+        QCOMPARE(engine.evaluate(QStringLiteral("remoteSessionsRequestId")).toString(), QString());
+        QCOMPARE(engine.evaluate(QStringLiteral("requests.length")).toInt(), continuesLaunch ? 1 : 0);
+        QCOMPARE(engine.evaluate(QStringLiteral("streamState")).toString(),
+            continuesLaunch ? QStringLiteral("requesting") : QStringLiteral("error"));
+        if (continuesLaunch) {
+            QCOMPARE(engine.evaluate(QStringLiteral("requests[0].method")).toString(), QStringLiteral("catalog.launch.inspect"));
+            QCOMPARE(engine.evaluate(QStringLiteral("launchInspectStage")).toString(), QStringLiteral("create"));
+            QCOMPARE(engine.evaluate(QStringLiteral("requests[0].params.variantId")).toString(), QStringLiteral("123"));
+            QCOMPARE(engine.evaluate(QStringLiteral("lastError")).toString(), QString());
+            QVERIFY(!engine.evaluate(QStringLiteral("onRequestFailed('discovery',failureCode,'Late failure')")).isError());
+            QCOMPARE(engine.evaluate(QStringLiteral("requests.length")).toInt(), 1);
+        } else {
+            QVERIFY(!engine.evaluate(QStringLiteral("lastError")).toString().isEmpty());
+        }
+    }
+
     void sessionCreationConflictTriggersDiscoveryInsteadOfAnotherCreate()
     {
         const auto shell = source(QStringLiteral("qml/state/ShellStore.qml"));

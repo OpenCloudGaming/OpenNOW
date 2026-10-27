@@ -4540,6 +4540,14 @@ QtObject {
                 root.activeSessionRequestId = ""
             } else if (requestId === root.remoteSessionsRequestId) {
                 root.remoteSessionsRequestId = ""
+                if (code === "session_discovery_failed" && root.launchIntentCurrent()
+                        && !root.activeSession && !root.conflictSession
+                        && !root.conflictSessionNeedsRefresh && !root.launchConflictDetected
+                        && !root.onboardingReplaying) {
+                    root.lastError = ""
+                    root.createPendingSession()
+                    return
+                }
                 root.streamState = "error"
                 root.streamMessage = qsTr("We couldn't check whether your game is still running. Check your connection, then try again.")
                 root.lastError = root.streamMessage

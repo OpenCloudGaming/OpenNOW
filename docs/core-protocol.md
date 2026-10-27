@@ -705,8 +705,14 @@ the request fails with `session_discovery_failed` rather than returning an empty
 list. HTTP 401 remains `http_unauthorized` after at most one safe-read renewal;
 HTTP 403 remains `authentication_required`. A found session
 can be returned even when another region fails; an empty successful list means
-all discovered regions were checked successfully. Callers must not create a new
-session after a discovery failure.
+all discovered regions were checked successfully. Reconnect, reconciliation, and
+known-conflict discovery remain strict: callers must not treat a discovery failure
+as proof that an existing session has ended. For a current new-launch intent with
+no active or known conflicting session, Qt may revalidate the selected game and
+attempt `session.create` after `session_discovery_failed`. CloudMatch's
+`session_conflict` response still redirects that attempt to resume/end handling;
+discovery failures after a known conflict never trigger another create. Authentication
+errors, cancellation, and request timeouts do not use this fallback.
 
 ### Provider routing and account scope
 
