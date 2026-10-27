@@ -7790,9 +7790,7 @@ fn run_nvst_webrtc_bundle(
             );
             break 'bundle;
         }
-        if upstream_allowed
-            && input_state.handshake_timed_out(sctp_started_at, now)
-        {
+        if upstream_allowed && input_state.handshake_timed_out(sctp_started_at, now) {
             let _ = event_sender.send(NvstReceiveEvent::InputUnavailable(
                 "input handshake timed out",
             ));
