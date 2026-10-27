@@ -947,6 +947,13 @@ if(BUILD_TESTING)
             --smoke-width 960 --smoke-height 540 --reduced-motion)
     set_tests_properties("qml-stream-toast-pending-stats-overlay" PROPERTIES
         ENVIRONMENT "${color_format_environment}" TIMEOUT 30)
+    add_test(NAME "qml-stream-toast-overflow-queue"
+        COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+            --route stream --smoke-stream-toast-pending --toast-overflow-queue
+            --overlay desktop-stream-stats-expanded
+            --smoke-width 960 --smoke-height 540 --reduced-motion)
+    set_tests_properties("qml-stream-toast-overflow-queue" PROPERTIES
+        ENVIRONMENT "${color_format_environment}" TIMEOUT 30)
     foreach(minimum_fixture color-format hdr-downgrade)
         add_test(NAME "qml-${minimum_fixture}-minimum-stats-overlay"
             COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
