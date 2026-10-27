@@ -15,6 +15,14 @@ On a Windows hybrid laptop, Stream settings → Graphics processor lists each GP
 hardware decode codecs. Automatic uses the first high-performance adapter that
 can decode, so a discrete GPU without a decoder does not hide the integrated GPU.
 
+## Graceful quit requests
+
+`opennow-qt --request-quit` contacts the running instance for the same user and application-data scope. It does not start a window or a core process and does not require a display connection. Pass this flag by itself, through the same installed executable or Flatpak launcher used to start OpenNOW.
+
+The running Qt window asks for confirmation even when idle quit confirmation is disabled. Confirming ends the cloud session and waits for native recording finalization before closing. Normal window-close behavior remains disconnect-only. The command returns `0` and prints `opennow-quit-complete` only after the confirmed session shutdown and application teardown complete, `2` when the user cancels, and `1` for an unavailable endpoint, a busy request, disconnect, or the 120-second deadline. Callers must check the completion marker as well as the exit code because older releases ignore the flag. A failed request never authorizes process termination.
+
+Linux acceptance coverage runs with `ctest --test-dir build/opennow-qt -R qml-requested-quit --output-on-failure`. It exercises the real secondary executable and single-instance connection with fixture core and native responses, including cancellation, failed cloud stops, and delayed recording completion in desktop/console and windowed/fullscreen modes. Add `--smoke-exit-interactive` to the fixture's application arguments to operate its two confirmations manually. Real cloud-session and recorder I/O still require gameplay validation.
+
 ## Hardware-only Linux builds
 
 To forbid software video decoding and software graphics composition, configure with
