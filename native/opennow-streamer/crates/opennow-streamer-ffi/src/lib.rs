@@ -2241,18 +2241,15 @@ mod tests {
         values: Mutex<Vec<Value>>,
         changed: Condvar,
         frames_available: AtomicUsize,
-        drop_order: Option<CallbackDropOrder>,
+        response_gate: Mutex<Option<CallbackGate>>,
+        worker_exited: Option<std::sync::mpsc::Sender<()>>,
     }
 
-    struct CallbackDropOrder {
-        runtime_destroyed: Arc<AtomicBool>,
-        observed: Arc<Mutex<Option<bool>>>,
-    }
-
-    impl Drop for CallbackDropOrder {
-        fn drop(&mut self) {
-            *self.observed.lock().unwrap() = Some(self.runtime_destroyed.load(Ordering::SeqCst));
-        }
+    struct CallbackGate {
+        id: &'static str,
+        entered: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+        completed: std::sync::mpsc::Sender<()>,
     }
 
     impl CallbackMessages {
@@ -2277,12 +2274,27 @@ mod tests {
 
     unsafe extern "C" fn collect_response(bytes: *const u8, length: usize, user_data: *mut c_void) {
         let bytes = unsafe { std::slice::from_raw_parts(bytes, length) };
-        let Ok(value) = serde_json::from_slice(bytes) else {
+        let Ok(value) = serde_json::from_slice::<Value>(bytes) else {
             return;
         };
         let messages = unsafe { &*(user_data as *const CallbackMessages) };
+        let gate = {
+            let mut gate = messages.response_gate.lock().expect("callback gate");
+            if gate.as_ref().is_some_and(|gate| value["id"] == gate.id) {
+                gate.take()
+            } else {
+                None
+            }
+        };
+        if let Some(gate) = &gate {
+            let _ = gate.entered.send(());
+            let _ = gate.release.recv_timeout(Duration::from_secs(5));
+        }
         messages.values.lock().expect("callback values").push(value);
         messages.changed.notify_all();
+        if let Some(gate) = gate {
+            let _ = gate.completed.send(());
+        }
     }
 
     unsafe extern "C" fn collect_frame_available(user_data: *mut c_void) {
@@ -2512,12 +2524,18 @@ mod tests {
     ) {
         let (host, runtime) = create_test_runtime();
         let shutdown_runtime = runtime.clone();
+        let worker_exited = messages.worker_exited.clone();
         let handle = OpenNowStreamer::create(
             test_config(messages),
             runtime.captured_input(),
             Arc::new(HidRuntime::new()),
             move |events, _frames, _cursor| Engine::with_embedded_media_runtime(events, runtime),
-            move || shutdown_runtime.shutdown(),
+            move || {
+                shutdown_runtime.shutdown();
+                if let Some(exited) = worker_exited {
+                    let _ = exited.send(());
+                }
+            },
         )
         .expect("FFI handle");
         (handle, host)
@@ -4195,25 +4213,19 @@ mod tests {
         handle: Option<Box<OpenNowStreamer>>,
         messages: Arc<CallbackMessages>,
         host: Option<opennow_streamer_platform::TestMediaRuntimeHost>,
-        runtime_destroyed: Arc<AtomicBool>,
     }
 
     impl CancellationTestRuntime {
         fn new() -> Self {
-            let runtime_destroyed = Arc::new(AtomicBool::new(false));
-            let messages = Arc::new(CallbackMessages {
-                drop_order: Some(CallbackDropOrder {
-                    runtime_destroyed: Arc::clone(&runtime_destroyed),
-                    observed: Arc::new(Mutex::new(None)),
-                }),
-                ..CallbackMessages::default()
-            });
+            Self::with_messages(Arc::new(CallbackMessages::default()))
+        }
+
+        fn with_messages(messages: Arc<CallbackMessages>) -> Self {
             let (handle, host) = create_with_test_runtime(&messages);
             Self {
                 handle: Some(Box::new(handle)),
                 messages,
                 host: Some(host),
-                runtime_destroyed,
             }
         }
 
@@ -4224,21 +4236,13 @@ mod tests {
         }
 
         fn destroy(&mut self) -> OpenNowStreamerStatus {
-            let status =
-                unsafe { opennow_streamer_destroy(Box::into_raw(self.handle.take().unwrap())) };
-            if status == OpenNowStreamerStatus::Ok {
-                self.runtime_destroyed.store(true, Ordering::SeqCst);
-            }
-            status
+            unsafe { opennow_streamer_destroy(Box::into_raw(self.handle.take().unwrap())) }
         }
     }
 
     impl Drop for CancellationTestRuntime {
         fn drop(&mut self) {
-            if let Some(handle) = self.handle.take() {
-                drop(handle);
-                self.runtime_destroyed.store(true, Ordering::SeqCst);
-            }
+            drop(self.handle.take());
             if let Some(host) = self.host.take() {
                 let result = host.join();
                 if !thread::panicking() {
@@ -4248,35 +4252,79 @@ mod tests {
         }
     }
 
-    #[test]
-    fn cancellation_fixture_unwind_destroys_runtime_before_callback_userdata() {
-        let runtime = CancellationTestRuntime::new();
-        let observed = Arc::clone(&runtime.messages.drop_order.as_ref().unwrap().observed);
-        let messages = Arc::downgrade(&runtime.messages);
-        let result = catch_unwind(AssertUnwindSafe(move || {
-            assert_eq!(
-                runtime.send(br#"{"id":"unwind","type":"hello","protocolVersion":8}"#),
-                OpenNowStreamerStatus::Ok
-            );
-            panic!("injected fixture failure");
-        }));
-        assert!(result.is_err());
-        assert!(messages.upgrade().is_none());
-        assert_eq!(*observed.lock().unwrap(), Some(true));
+    fn verify_in_flight_callback_drain(unwind: bool) {
+        use std::sync::mpsc;
+
+        let (entered, callback_entered) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let (completed, callback_completed) = mpsc::channel();
+        let (exited, worker_exited) = mpsc::channel();
+        let messages = Arc::new(CallbackMessages {
+            response_gate: Mutex::new(Some(CallbackGate {
+                id: "unwind",
+                entered,
+                release: released,
+                completed,
+            })),
+            worker_exited: Some(exited),
+            ..CallbackMessages::default()
+        });
+        let mut runtime = CancellationTestRuntime::with_messages(Arc::clone(&messages));
+        let userdata = Arc::downgrade(&messages);
+        assert_eq!(
+            runtime.send(br#"{"id":"unwind","type":"hello","protocolVersion":8}"#),
+            OpenNowStreamerStatus::Ok
+        );
+        callback_entered
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        let (finished, completion) = mpsc::channel();
+        let destroy = thread::spawn(move || {
+            let result = catch_unwind(AssertUnwindSafe(move || {
+                if unwind {
+                    let _runtime = runtime;
+                    panic!("injected fixture failure");
+                }
+                runtime.destroy()
+            }))
+            .map_err(|_| ());
+            finished.send(result).unwrap();
+        });
+        worker_exited.recv_timeout(Duration::from_secs(5)).unwrap();
+        let early = completion.recv_timeout(Duration::from_millis(100));
+        release.send(()).unwrap();
+        callback_completed
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        let returned_early = early.is_ok();
+        let result =
+            early.unwrap_or_else(|_| completion.recv_timeout(Duration::from_secs(5)).unwrap());
+        destroy.join().unwrap();
+        assert!(
+            !returned_early,
+            "runtime destruction returned with a live callback"
+        );
+        assert_eq!(
+            result,
+            if unwind {
+                Err(())
+            } else {
+                Ok(OpenNowStreamerStatus::Ok)
+            }
+        );
+        assert_eq!(messages.values.lock().unwrap()[0]["id"], "unwind");
+        drop(messages);
+        assert!(userdata.upgrade().is_none());
     }
 
     #[test]
-    fn callback_userdata_drop_records_missing_runtime_destruction() {
-        let observed = Arc::new(Mutex::new(None));
-        let messages = CallbackMessages {
-            drop_order: Some(CallbackDropOrder {
-                runtime_destroyed: Arc::new(AtomicBool::new(false)),
-                observed: Arc::clone(&observed),
-            }),
-            ..CallbackMessages::default()
-        };
-        drop(messages);
-        assert_eq!(*observed.lock().unwrap(), Some(false));
+    fn cancellation_fixture_unwind_destroys_runtime_before_callback_userdata() {
+        verify_in_flight_callback_drain(true);
+    }
+
+    #[test]
+    fn destroy_waits_for_an_in_flight_response_callback() {
+        verify_in_flight_callback_drain(false);
     }
 
     #[test]
