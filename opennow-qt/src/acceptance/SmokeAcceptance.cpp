@@ -793,6 +793,7 @@ int AcceptanceSession::startSmokeWorkload()
                      || m_arguments.contains(u"--smoke-stream-end-notice-check"_s)
                      || m_arguments.contains(u"--smoke-clock-skew-check"_s)
                      || m_arguments.contains(u"--smoke-titlebar-keyboard-check"_s)
+                     || m_arguments.contains(u"--smoke-literal-game-title-check"_s)
                      || m_arguments.contains(u"--smoke-console-stream-end-notice-check"_s))) {
         QQmlComponent component(&m_engine, QUrl(m_arguments.contains(u"--smoke-library-error"_s)
             ? u"qrc:/acceptance/LibraryErrorAcceptance.qml"_s
@@ -870,10 +871,17 @@ int AcceptanceSession::startSmokeWorkload()
             ? u"qrc:/acceptance/ClockSkewAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-titlebar-keyboard-check"_s)
             ? u"qrc:/acceptance/WindowTitleBarAcceptance.qml"_s
+            : m_arguments.contains(u"--smoke-literal-game-title-check"_s)
+            ? u"qrc:/acceptance/LiteralGameTitleAcceptance.qml"_s
             : u"qrc:/acceptance/BackendAvailabilityAcceptance.qml"_s));
         auto *fixture = component.create();
         if (!fixture) { qCritical() << component.errors(); return EXIT_FAILURE; }
         fixture->setParent(&m_engine);
+        const auto titleSinkIndex = m_arguments.indexOf(u"--smoke-literal-game-title-check"_s);
+        if (titleSinkIndex >= 0) {
+            if (titleSinkIndex + 1 >= m_arguments.size()) return EXIT_FAILURE;
+            fixture->setProperty("sink", m_arguments.at(titleSinkIndex + 1));
+        }
         if (m_arguments.contains(u"--smoke-console-spacing"_s))
             fixture->setProperty("recordingSection", m_arguments.contains(u"--smoke-spacing-recording"_s));
         if (m_arguments.contains(u"--smoke-stream-controllers"_s)
@@ -974,6 +982,7 @@ int AcceptanceSession::startSmokeWorkload()
                        || m_arguments.contains(u"--smoke-console-stream-end-notice-check"_s)
                        || m_arguments.contains(u"--smoke-clock-skew-check"_s)
                        || m_arguments.contains(u"--smoke-titlebar-keyboard-check"_s)
+                       || m_arguments.contains(u"--smoke-literal-game-title-check"_s)
                        || m_arguments.contains(u"--smoke-game-dlss"_s)
                        || m_arguments.contains(u"--smoke-game-details-layout"_s))) {
                 if (m_arguments.contains(u"--smoke-game-details-layout"_s)

@@ -865,6 +865,19 @@ if(BUILD_TESTING)
         PREFIX "/acceptance" BASE tests FILES tests/ClockSkewAcceptance.qml)
     qt_add_resources(opennow-qt "titlebar-keyboard-acceptance"
         PREFIX "/acceptance" BASE tests FILES tests/WindowTitleBarAcceptance.qml)
+    qt_add_resources(opennow-qt "literal-game-title-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/LiteralGameTitleAcceptance.qml)
+    foreach(sink game-detail console-choice console-choice-description desktop-exit desktop-menu desktop-starting)
+        set(title_surface --desktop)
+        if(sink MATCHES "^(game-detail|console-choice|console-choice-description)$")
+            set(title_surface --console)
+        endif()
+        add_test(NAME "qml-literal-game-title-${sink}"
+            COMMAND opennow-qt --smoke-test --allow-multiple-instances ${title_surface}
+                --route home --smoke-literal-game-title-check ${sink} --reduced-motion)
+        set_tests_properties("qml-literal-game-title-${sink}" PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
+    endforeach()
     foreach(surface desktop console)
         foreach(check clock-skew titlebar-keyboard)
             add_test(NAME "qml-${check}-${surface}"
