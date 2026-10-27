@@ -440,7 +440,12 @@ loaded games and the failed cursor on error. Retries resume that page.
 Search/account changes cancel requests before clearing state; late responses
 are ignored.
 
-### Local Store browsing (`catalog.storeLocal.v1`)
+### Local Store browsing (`catalog.storeLocal.v2`)
+
+Protocol 5 Qt shells require `catalog.storeLocal.v2` before becoming ready. The
+capability includes replacement-page handling; a core advertising only v1 is
+rejected rather than silently using unstable offset traversal. Package probes
+check the same capability without changing the protocol version.
 
 `catalog.store.local` pages and searches the saved catalog, without replaying
 every cached page into Qt. It accepts `limit` (capped at 60), `cursor`,
