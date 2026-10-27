@@ -31,6 +31,21 @@ pub type DepsFactory = dyn Fn(Arc<GfnService>, ScopeSource, Sender<Value>) -> Re
     + Send
     + Sync;
 
+pub fn reconcile_after_request(method: &str, reconcile: impl FnOnce()) {
+    if matches!(
+        method,
+        "auth.session.get"
+            | "auth.device.complete"
+            | "auth.logout"
+            | "auth.accounts.logoutAll"
+            | "auth.accounts.switch"
+            | "auth.accounts.remove"
+            | "settings.set"
+    ) {
+        reconcile();
+    }
+}
+
 pub struct PushRegistry {
     gfn: Arc<GfnService>,
     output: Sender<Value>,
@@ -624,6 +639,62 @@ mod tests {
         assert_eq!(harness.factories.load(Ordering::SeqCst), 0);
         assert!(harness.registry.owner.is_none());
         harness.registry.stop();
+    }
+
+    #[test]
+    fn lazy_saved_account_restore_starts_one_supervisor_without_a_settings_write() {
+        let dir = config_dir("lazy-auth-restore");
+        let mut harness = harness(dir.clone(), true);
+        let (gfn, profile) = crate::gfn::tests::saved_service("saved-account");
+        let gfn = Arc::new(gfn);
+        let provider_id = crate::gfn::tests::auth_fixture("saved-account")
+            .provider
+            .idp_id;
+        let mut config = raw_config();
+        config["providerIdpId"] = json!(provider_id);
+        std::fs::write(
+            dir.join(opennow_core::push::PUSH_CONFIG_FILE),
+            config.to_string(),
+        )
+        .unwrap();
+        let actual_scope = {
+            let gfn = gfn.clone();
+            Arc::new(move || gfn.push_scope()) as ScopeSource
+        };
+        harness.registry.gfn = gfn.clone();
+        harness.registry.scope_source = actual_scope;
+        *harness.scope.lock().unwrap() = None;
+        harness.registry.reconcile().unwrap();
+        assert_eq!(harness.factories.load(Ordering::SeqCst), 0);
+        assert!(gfn.push_scope().is_none());
+
+        let restored = gfn.session().unwrap();
+        assert_eq!(restored["session"]["user"]["userId"], "saved-account");
+        let scope = gfn.push_scope().unwrap();
+        assert_eq!(scope.provider_id, provider_id);
+        *harness.scope.lock().unwrap() = Some(scope.clone());
+        reconcile_after_request("auth.session.get", || harness.registry.reconcile().unwrap());
+        assert_eq!(harness.factories.load(Ordering::SeqCst), 1);
+        assert_eq!(workers(&harness), 1);
+        assert_eq!(
+            harness
+                .registry
+                .owner
+                .as_ref()
+                .unwrap()
+                .config()
+                .0
+                .provider_id,
+            scope.provider_id
+        );
+
+        gfn.session().unwrap();
+        reconcile_after_request("auth.session.get", || harness.registry.reconcile().unwrap());
+        assert_eq!(harness.factories.load(Ordering::SeqCst), 1);
+        assert_eq!(workers(&harness), 1);
+        harness.connect.release();
+        harness.registry.stop();
+        std::fs::remove_dir_all(profile).ok();
     }
 
     #[test]

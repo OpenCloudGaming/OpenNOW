@@ -37,6 +37,15 @@ Qt client rejects cores that omit it during `core.hello`, before any product
 request. The capability is additive: the protocol version, the envelope and the
 native streaming ABI are unchanged.
 
+Saved-account restoration is lazy. An unavailable credential store leaves
+`persistence:"unavailable"` and permits another auth-resolution request after
+1, 2, 4, 8, 16, then at most 30 seconds between attempts. No background worker
+or automatic request replay is created. A successful empty restore, explicit
+logout, credential tombstones, and a PIN-protected account still suppress
+automatic sign-in. A restored account starts push supervision after
+`auth.session.get`; repeated reads reuse the same supervisor without a settings
+write. Provider configuration can still disable push.
+
 `auth.accounts.list` returns `{accounts, activeUserId, generation}`. Each account
 contains only public identity fields; tokens never cross the boundary:
 
@@ -1800,6 +1809,21 @@ a new traversal or reappear after a core restart. Failure to persist the revisio
 endpoint, resolved VPC, proxy route, locale and schema revision.
 
 ### Store synchronization observation
+
+The shell and relocated package probes require `account.mutations.scoped.v1`
+during `core.hello`. This capability does not change the protocol version or
+native streaming ABI. `account.connections.sync`, `account.connections.unlink`,
+`account.connections.link.start`, and `account.storage.reset` require an
+initiating `scope: {generation, userId, providerIdpId}`. The shell captures the
+scope when creating the action or opening its confirmation, not when accepting
+an older confirmation. Reset also requires `confirmed:true` and accepts an
+optional `storageRegion`; connection mutations require `provider`.
+
+The core compares this exact scope before authenticated remote work and after
+credential resolution. A missing or different scope returns `stale_account`
+without a remote mutation, including when only the generation changed for the
+same user and provider. The auth-operation lock prevents a switch between
+validation and the mutation. Responses retain the same authenticated `scope`.
 
 `account.connections.sync` sends one ALS POST and accepts only HTTP 202. It
 returns `operationId`, `provider`, and a local `phase`. Repeated starts for the
