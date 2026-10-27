@@ -70,6 +70,12 @@ QtObject {
         onConsoleSurfaceRequested: enabled => root.consoleSurfaceRequested(enabled)
         onAccessibilityAnnounced: message => root.accessibilityMessage = message
         onErrorReported: message => root.lastError = message
+        onSettingWriteFinished: (token, result, message) => {
+            catalogOwner.finishCollectionWrite(token, result, message)
+            if (result) onboardingOwner.acceptResponse(token, result)
+            else onboardingOwner.acceptFailure(token, message)
+        }
+        onResetStarted: onboardingOwner.interruptForSettingsReset()
     }
 
     property AccountServicesState accountServicesOwnerState: AccountServicesState {
@@ -112,7 +118,7 @@ QtObject {
     readonly property bool onboardingAwdlReady: true
     property OnboardingState onboardingOwnerState: OnboardingState {
         id: onboardingOwner
-        coreClient: CoreClient
+        persistSetting: (key, value) => settingsOwner.setSetting(key, value, "onboarding")
         persistedSettings: root.settings
         ready: root.ready
         signedIn: root.signedIn
@@ -123,10 +129,6 @@ QtObject {
             && ["starting", "streaming", "stopping"].indexOf(root.streamerStatus) < 0
         onRestartRequested: AppController.restartApplication()
         onRequirementsMissing: root.onboardingRequirementsMissing()
-        onSettingSaved: (key, value, changes) => {
-            settingsOwner.applyCoupledSettings(changes)
-            settingsOwner.applySetting(key, value)
-        }
         onCompleted: {
             root.consoleSurfaceRequested(root.settings.launchInConsoleMode === true)
             root.onboardingCompleted()
@@ -2604,6 +2606,10 @@ QtObject {
         return artworkOwner.artworkUrl(sourceUrl)
     }
 
+    function reportArtworkLoad(sourceUrl, resolvedUrl, failed) {
+        return artworkOwner.reportArtworkLoad(sourceUrl, resolvedUrl, failed)
+    }
+
     function retainArtwork(source) {
         return artworkOwner.retainArtwork(source)
     }
@@ -3987,7 +3993,7 @@ QtObject {
             } else if (root.finishArtworkRequest(requestId, result, false)) {
                 return
             } else if (requestId === root.settingsRequestId && result.settings) {
-                settingsOwner.acceptSettings(result)
+                settingsOwner.acceptSettings(result, true)
                 root.resolveDirectLaunch()
                 root.showSavedAccountSelection()
                 root.syncDiscordPresence()
@@ -4601,8 +4607,9 @@ QtObject {
         function onEventReceived(name, payload) {
             if (name === "settings.changed") {
                 settingsOwner.acceptSettingsChange(payload)
-            } else if (name === "settings.reset")
-                root.refreshSettings()
+            } else if (name === "settings.reset") {
+                if (!settingsOwner.resetting) root.refreshSettings()
+            }
             else if (name === "auth.session.changed") {
                 if (!root.acceptAuthEnvelope(payload))
                     return

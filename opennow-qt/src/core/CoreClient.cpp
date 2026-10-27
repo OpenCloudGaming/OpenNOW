@@ -545,7 +545,7 @@ void CoreClient::processLine(const QByteArray &line)
                                              u"account.syncObservation.v1"_s, u"catalog.languages.v1"_s,
                                              u"queue.servers.v1"_s, u"auth.accountPicker.v1"_s,
                                              u"session.terminalCleanup.v1"_s, u"session.allocationSettlement.v1"_s,
-                                             u"account.mutations.scoped.v1"_s}) {
+                                             u"account.mutations.scoped.v1"_s, u"catalog.storeLocal.v2"_s}) {
                     if (!capabilities.contains(capability)) {
                         protocolFailure(u"The packaged core lacks a required capability: "_s + capability);
                         return;

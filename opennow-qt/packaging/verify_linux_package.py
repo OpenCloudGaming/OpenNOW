@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import select
 import subprocess
 import tempfile
 
@@ -24,6 +25,14 @@ def verify_capabilities(message):
             or any(type(available) is not bool for available in fallback_codecs.values())
             or not all(fallback_codecs[codec] for codec in ("h264", "h265"))):
         raise ValueError("The packaged FFmpeg software fallback is unavailable")
+
+
+def verify_core_capabilities(message):
+    result = message.get("result", {})
+    if (message.get("id") != "package-core" or message.get("ok") is not True
+            or result.get("protocolVersion") != 6
+            or not {"catalog.storeLocal.v2", "account.mutations.scoped.v1", "session.allocationSettlement.v1"}.issubset(result.get("capabilities", []))):
+        raise ValueError(f"The packaged core lacks protocol 6 Store replacement support, scoped account mutations, or allocation settlement: {message}")
 
 
 def verify_apprun(appdir):
@@ -70,6 +79,25 @@ def verify_package(bin_dir, lib_dir=None):
     )
     messages = [json.loads(line) for line in probe.stdout.splitlines()]
     verify_capabilities(next(message for message in messages if message.get("id") == "package-probe"))
+    verify_core(bin_dir)
+
+
+def verify_core(bin_dir):
+    with tempfile.TemporaryDirectory(prefix="opennow-core-check-") as directory:
+        core = subprocess.Popen(
+            [bin_dir / "opennow-core", "--data-dir", directory],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+        )
+        try:
+            core.stdin.write('{"type":"request","id":"package-core","method":"core.hello",'
+                             '"params":{"protocolVersion":6}}\n')
+            core.stdin.flush()
+            if not select.select([core.stdout], [], [], 30)[0]:
+                raise TimeoutError("The packaged core handshake timed out")
+            verify_core_capabilities(json.loads(core.stdout.readline()))
+        finally:
+            core.kill()
+            core.communicate(timeout=5)
 
 
 if __name__ == "__main__":

@@ -483,13 +483,32 @@ loaded games and the failed cursor on error. Retries resume that page.
 Search/account changes cancel requests before clearing state; late responses
 are ignored.
 
-### Local Store browsing (`catalog.storeLocal.v1`)
+### Local Store browsing (`catalog.storeLocal.v2`)
+
+Protocol 6 Qt shells require `catalog.storeLocal.v2` before becoming ready. The
+capability includes replacement-page handling; a core advertising only v1 is
+rejected rather than silently using unstable offset traversal. Package probes
+check this alongside the scoped-account and allocation-settlement capabilities.
 
 `catalog.store.local` pages and searches the saved catalog, without replaying
 every cached page into Qt. It accepts `limit` (capped at 60), `cursor`,
 `searchQuery`, and optional `genre`, `store`, and `categoryId` strings (at most
 256 UTF-8 bytes each). A cursor belongs to its search/filter context and must
 be returned unchanged. The existing 768 KiB result budget still applies.
+
+Local cursors contain a bounded offset, a digest of the ranked game IDs already
+returned, and the number of saved upstream pages. The core validates every
+component, including the page-count suffix. Malformed cursors and cursors from
+another search/filter context return `invalid_params`.
+
+Each successful result includes `replace`. Normally it is `false`. If index
+growth changes the already-returned ranked prefix, or the saved traversal loses
+pages, the core restarts at offset zero and returns `replace:true` with fresh
+facets. The shell discards accumulated games, seen cursors, and its page count
+before validating and accepting this replacement as a first page. A replacement
+may reuse a previously seen cursor. Growth after the consumed prefix continues
+without replacement. This contract keeps newly discovered higher-ranked matches
+reachable without retaining per-search snapshots in the core.
 
 The result includes `games`, `count`, `totalCount` (matching games),
 `catalogTotalCount`, `hasNextPage`, `nextCursor`, `source:"store-local"`,
