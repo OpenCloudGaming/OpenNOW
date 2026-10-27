@@ -63,7 +63,7 @@ pub use recording::{
 };
 pub use replay::ReplaySnapshot;
 pub use runtime::{
-    EmbeddedRuntimeConfig, MainThreadHost, MediaRuntime, MediaRuntimeControl,
+    CursorUpdate, EmbeddedRuntimeConfig, MainThreadHost, MediaRuntime, MediaRuntimeControl,
     create_embedded_runtime, create_embedded_runtime_with_config,
     create_embedded_runtime_with_input, create_runtime,
 };

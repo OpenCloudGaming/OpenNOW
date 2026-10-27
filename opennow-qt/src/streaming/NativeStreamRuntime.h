@@ -211,7 +211,8 @@ private:
     static void eventCallback(const std::uint8_t *bytes, std::size_t length,
                               void *userData);
     static void frameAvailableCallback(void *userData);
-    static void cursorCallback(const std::uint8_t *bytes, std::size_t length,
+    static void cursorCallback(const std::uint8_t *startId, std::size_t startIdLength,
+                               const std::uint8_t *bytes, std::size_t length,
                                void *userData);
     static void enqueueCallback(CallbackState *state, const std::uint8_t *bytes,
                                 std::size_t length, bool event);
