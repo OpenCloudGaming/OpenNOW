@@ -40,7 +40,7 @@ QtObject {
 
     function acknowledge() {
         const request = client.requests[client.requests.length - 1]
-        ShellStore.onboardingOwnerState.acceptResponse(request.id, {value: request.params.value})
+        ShellStore.settingsOwnerState.acceptResponse(request.id, {value: request.params.value})
     }
 
     function run(parent) {
@@ -55,7 +55,8 @@ QtObject {
             codec: "auto", enableHdr: false, maxBitrateMbps: 75, reducedMotion: true
         })
         const owner = ShellStore.onboardingOwnerState
-        owner.coreClient = client
+        ShellStore.settingsOwnerState.coreClient = client
+        ShellStore.settingsOwnerState.ready = true
         owner.ready = true
         AppController.navigate("home")
         const screen = find(parent, "desktopOnboardingScreen")
@@ -132,7 +133,7 @@ QtObject {
         screen.next()
         check(ShellStore.onboardingSaving, "finish did not begin persistence")
         check(client.requests[0].params.key === "launchInConsoleMode", "first choice was not saved first")
-        owner.acceptFailure(owner.requestId, "Simulated write failure")
+        ShellStore.settingsOwnerState.acceptFailure(owner.requestId, "Simulated write failure")
         check(!ShellStore.onboardingSaving && ShellStore.onboardingRequired,
             "failed save incorrectly completed onboarding")
         check(ShellStore.onboardingError.length > 0 && screen.visible, "retry error was not shown")

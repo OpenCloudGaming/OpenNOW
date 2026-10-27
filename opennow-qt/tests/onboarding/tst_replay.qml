@@ -19,7 +19,7 @@ TestCase {
 
     OnboardingState {
         id: state
-        coreClient: core
+        persistSetting: (key, value) => core.request("settings.set", {key:key, value:value})
         persistedSettings: ({onboardingCompleted: true, resolution: "2560x1440"})
         ready: true
         signedIn: true

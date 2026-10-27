@@ -186,6 +186,224 @@ QtObject {
         owner.acceptResponse(reconnectedCollection, {key:"gameCollections", value:[]})
         owner.acceptSettings({settings:saved, keyboardLayouts:owner.keyboardLayouts})
     }
+    function verifyResetAndReadOrdering() {
+        const saved = owner.settings
+        owner.acceptSettings({settings:Object.assign({}, saved, {windowWidth:900}), keyboardLayouts:owner.keyboardLayouts})
+        owner.refreshSettings()
+        const stale = {settings:Object.assign({}, owner.settings), keyboardLayouts:owner.keyboardLayouts}
+        owner.setSetting("windowWidth", 1100)
+        owner.acceptResponse(owner.settingWrites.windowWidth.id, {key:"windowWidth", value:1100})
+        owner.acceptSettings(stale, true)
+        check(owner.settings.windowWidth === 1100 && owner.confirmedSettings.windowWidth === 1100,
+            "a read issued before an acknowledged write cannot replace its visible or rollback value")
+
+        owner.setSetting("windowWidth", 1200)
+        const issued = owner.settingWrites.windowWidth.id
+        owner.setSetting("windowWidth", 1300)
+        const beforeReset = client.calls.length
+        owner.resetSettings()
+        check(client.calls.length === beforeReset, "reset waits for already issued settings writes")
+        owner.setSetting("windowWidth", 1400)
+        owner.acceptResponse(issued, {key:"windowWidth", value:1200})
+        check(client.calls[client.calls.length - 1].method === "settings.reset",
+            "the old acknowledgement drains into reset rather than replaying a pre-reset tail")
+        const reset = client.calls[client.calls.length - 1].id
+        owner.acceptResponse(reset, {settings:Object.assign({}, saved, {windowWidth:900})})
+        check(owner.settingWrites.windowWidth && owner.settingWrites.windowWidth.value === 1400,
+            "edits intentionally made after reset starts are saved after its snapshot")
+        owner.acceptResponse(owner.settingWrites.windowWidth.id, {key:"windowWidth", value:1400})
+        check(owner.settings.windowWidth === 1400 && owner.confirmedSettings.windowWidth === 1400,
+            "the post-reset intent becomes authoritative")
+        check(!client.calls.slice(beforeReset).some(call => call.params.value === 1300),
+            "superseded pre-reset values are never reissued")
+        const catalog = ShellStore.catalogOwnerState
+        catalog.ready = true
+        owner.resetSettings()
+        const collectionReset = owner.resetRequestId
+        check(catalog.createCollection("Deferred reset collection", null) && catalog.collectionsBusy,
+            "the real collection caller tracks a deferred save")
+        const token = catalog.collectionRequestId
+        owner.acceptResponse(collectionReset, {settings:Object.assign({}, saved, {gameCollections:[]})})
+        const collectionWrite = owner.settingWrites.gameCollections
+        check(collectionWrite.token === token && collectionWrite.id !== token,
+            "dispatch preserves the collection caller token across the barrier")
+        owner.acceptResponse(collectionWrite.id, {key:"gameCollections", value:collectionWrite.value})
+        check(!catalog.collectionsBusy && owner.settings.gameCollections.some(item => item.name === "Deferred reset collection"),
+            "the real collection caller receives the deferred acknowledgement")
+        catalog.ready = Qt.binding(() => ShellStore.ready)
+        owner.acceptSettings({settings:saved, keyboardLayouts:owner.keyboardLayouts})
+    }
+    function verifyResetWriters() {
+        const component = Qt.createComponent("qrc:/qt/qml/OpenNOW/qml/state/settings/SettingsState.qml")
+        check(component.status === Component.Ready, component.errorString())
+        const state = component.createObject(fixture, {coreClient:client, appController:owner.appController,
+            i18n:owner.i18n, ready:true, subscription:null, authSession:null,
+            nativeRuntimeReady:false, nativeRuntimeCapabilities:{}, refreshAccountServices:function(){},
+            refreshStreamerDetection:function(){}, syncDiscordPresence:function(){}, lastError:""})
+        check(state, "isolated settings owner can be created")
+        const defaults = Object.assign({}, owner.settings, {windowWidth:900, launchInConsoleMode:false, gameCollections:[]})
+        state.acceptSettings({settings:defaults})
+        state.setSetting("windowWidth", 1000)
+        state.setSetting("windowWidth", 1010)
+        const ordinary = state.settingWrites.windowWidth.id
+        const collection = state.setSetting("gameCollections", [{id:"before-reset", name:"Before reset", gameIds:[]}])
+        state.requestConsoleSurface(true)
+        const consoleRequest = state.consoleSurfaceRequestId
+        state.requestConsoleSurface(false)
+        const shortcut = state.updateShortcuts({shortcutToggleStats:"Ctrl+M"})
+        const count = client.calls.length
+        state.resetSettings()
+        check(state.consoleSurfaceRequestId === consoleRequest, "reset retains ownership of the issued console write while draining")
+        state.setSetting("windowWidth", 1400)
+        const deferredCollection = state.setSetting("gameCollections", [{id:"after-reset", name:"After reset", gameIds:[]}])
+        state.requestConsoleSurface(true)
+        state.updateShortcuts({shortcutToggleStats:"Alt+M"})
+        check(client.calls.length === count, "every post-reset writer waits behind the reset")
+        state.acceptResponse(ordinary, {key:"windowWidth", value:1000})
+        state.acceptSettingsChange({key:"windowWidth", value:1000})
+        check(state.settings.windowWidth === 1400, "a draining head cannot replace post-reset optimistic intent")
+        state.acceptConsoleSurface({value:true})
+        state.acceptResponse(collection, {key:"gameCollections", value:[]})
+        check(client.calls.length === count, "ordinary, collection and console replies do not skip an outstanding shortcut")
+        state.acceptResponse(shortcut, {bindings:{shortcutToggleStats:"Ctrl+M"}})
+        check(client.calls.length === count + 1 && client.calls[count].method === "settings.reset",
+            "the reset starts only after every issued writer has drained")
+        const reset = state.resetRequestId
+        state.acceptResponse(reset, {settings:defaults})
+        check(!state.resetting && state.settingWrites.windowWidth.value === 1400
+            && state.settingWrites.gameCollections.token === deferredCollection,
+            "post-reset collection completion retains its caller token")
+        check(state.consoleSurfaceRequestId !== "" && state.shortcutUpdateRequestId !== "",
+            "post-reset console and shortcut writes are released")
+        state.acceptResponse(state.settingWrites.windowWidth.id, {key:"windowWidth", value:1400})
+        state.acceptResponse(state.settingWrites.gameCollections.id, {key:"gameCollections", value:[{id:"after-reset"}]})
+        state.acceptConsoleSurface({value:true})
+        state.acceptResponse(state.shortcutUpdateRequestId, {bindings:{shortcutToggleStats:"Alt+M"}})
+        check(state.confirmedSettings.windowWidth === 1400 && state.confirmedSettings.launchInConsoleMode
+            && state.confirmedSettings.shortcutToggleStats === "Alt+M", "all post-reset writers confirm their new values")
+        check(!state.acceptResponse(reset, {settings:defaults}) && state.settings.windowWidth === 1400,
+            "a duplicate reset acknowledgement cannot replace later edits")
+
+        state.refreshSettings()
+        const stale = {settings:Object.assign({}, state.settings)}
+        state.setSetting("themePack", "bone")
+        state.acceptResponse(state.settingWrites.themePack.id,
+            {key:"themePack",value:"bone",changes:{appTheme:"light",themeAccentOverride:false}})
+        state.updateShortcuts({shortcutToggleStats:"Ctrl+N"})
+        state.acceptResponse(state.shortcutUpdateRequestId, {bindings:{shortcutToggleStats:"Ctrl+N"}})
+        state.requestConsoleSurface(false)
+        state.acceptConsoleSurface({value:false})
+        state.acceptSettings(stale, true)
+        check(state.settings.themePack === "bone" && state.confirmedSettings.appTheme === "light"
+            && state.settings.shortcutToggleStats === "Ctrl+N" && state.confirmedSettings.shortcutToggleStats === "Ctrl+N"
+            && !state.settings.launchInConsoleMode && !state.confirmedSettings.launchInConsoleMode,
+            "stale reads preserve coupled, shortcut and console acknowledgements")
+        state.setSetting("windowWidth", 1500)
+        state.resetSettings()
+        const abandoned = state.setSetting("windowWidth", 1600)
+        state.ready = false
+        state.ready = true
+        check(!state.resetting && !state.settingWrites.windowWidth && state.settings.windowWidth === 1400,
+            "disconnect aborts the barrier and rolls back deferred optimistic edits without replay")
+        check(!state.acceptResponse(abandoned, {value:1600}), "aborted deferred tokens never accept core replies")
+        const onboardingComponent = Qt.createComponent("qrc:/qt/qml/OpenNOW/qml/state/settings/OnboardingState.qml")
+        check(onboardingComponent.status === Component.Ready, onboardingComponent.errorString())
+        const onboarding = onboardingComponent.createObject(fixture, {
+            persistSetting:function(key, value) { return state.setSetting(key, value, "onboarding") },
+            persistedSettings:Qt.binding(() => state.settings), ready:true, signedIn:true,
+            checkRequirements:function() { return "" }})
+        check(onboarding, "onboarding can share the settings writer")
+        state.settingWriteFinished.connect(function(token, result, message) {
+            if (result) onboarding.acceptResponse(token, result)
+            else onboarding.acceptFailure(token, message)
+        })
+        state.resetStarted.connect(onboarding.interruptForSettingsReset)
+        state.resetSettings()
+        onboarding.setSetting("fps", 120)
+        onboarding.finish()
+        check(onboarding.saving && !state.settingWrites.fps && state.deferredSettingWrites.fps,
+            "an intentional setup save started after reset uses the barrier")
+        state.acceptResponse(state.resetRequestId, {settings:defaults})
+        state.acceptResponse(state.settingWrites.fps.id, {key:"fps", value:120})
+        state.acceptResponse(state.settingWrites.onboardingCompleted.id, {key:"onboardingCompleted", value:true})
+        check(!onboarding.saving && state.confirmedSettings.fps === 120,
+            "setup continues through shared-writer acknowledgements after reset")
+        onboarding.setSetting("fps", 144)
+        onboarding.finish()
+        const setupHead = state.settingWrites.fps.id
+        state.resetSettings()
+        check(!onboarding.saving && !onboarding.remainingKeys.length,
+            "reset discards the unissued tail of an earlier setup save")
+        state.acceptResponse(setupHead, {key:"fps", value:144})
+        check(state.resetRequestId !== "" && !state.settingWrites.onboardingCompleted,
+            "a drained setup acknowledgement cannot replay pre-reset work")
+        state.acceptResponse(state.resetRequestId, {settings:defaults})
+        onboarding.resetSettings(Object.keys(onboarding.draft))
+        const surfaceRequests = []
+        state.consoleSurfaceRequested.connect(function(enabled) { surfaceRequests.push(enabled) })
+        onboarding.setSetting("launchInConsoleMode", true)
+        onboarding.finish()
+        const consoleSetup = state.settingWrites.launchInConsoleMode
+        state.acceptSettingsChange({key:"launchInConsoleMode", value:true})
+        state.acceptResponse(consoleSetup.id, {key:"launchInConsoleMode", value:true})
+        check(onboarding.saving && surfaceRequests.length === 0,
+            "the onboarding console acknowledgement does not switch surfaces before setup completes")
+        while (onboarding.saving) {
+            const key = Object.keys(state.settingWrites)[0]
+            const write = state.settingWrites[key]
+            state.acceptResponse(write.id, {key:key, value:write.value})
+        }
+        state.requestConsoleSurface(false)
+        state.failConsoleSurface("Synthetic desktop-mode persistence failure after onboarding")
+        check(state.settings.launchInConsoleMode === true && state.consoleSurfaceConfirmedValue === true
+            && state.consoleSurfaceDesiredValue === true && state.consoleSurfaceInitialized
+            && surfaceRequests[surfaceRequests.length - 1] === true,
+            "a failed later desktop-mode write restores the console mode confirmed by onboarding")
+        const competingFailures = []
+        for (const consoleFirst of [false, true]) {
+            state.acceptSettings({settings:defaults})
+            const start = client.calls.length
+            const setup = state.setSetting("launchInConsoleMode", true, "onboarding")
+            state.requestConsoleSurface(false)
+            if (state.consoleSurfaceRequestId !== "") {
+                if (consoleFirst) state.acceptConsoleSurface({value:false})
+                state.acceptResponse(setup, {key:"launchInConsoleMode", value:true})
+                if (!consoleFirst) state.acceptConsoleSurface({value:false})
+            } else {
+                state.requestConsoleSurface(true)
+                state.requestConsoleSurface(false)
+                check(client.calls.length === start + 1,
+                    "a queued console intent cannot issue a competing write before the onboarding acknowledgement")
+                state.acceptResponse(setup, {key:"launchInConsoleMode", value:true})
+                check(state.consoleSurfaceRequestId !== "", "the later console intent dispatches after onboarding drains")
+                check(state.settings.launchInConsoleMode === false && state.consoleSurfaceDesiredValue === false,
+                    "the onboarding acknowledgement preserves the later visible desktop intent while its save is pending")
+                state.acceptConsoleSurface({value:false})
+            }
+            const unwanted = client.calls.slice(start).filter(call => call.method === "settings.set"
+                && call.params.key === "launchInConsoleMode" && call.params.value === true).length - 1
+            if (unwanted || state.settings.launchInConsoleMode !== false
+                    || state.consoleSurfaceConfirmedValue !== false || state.consoleSurfaceDesiredValue !== false)
+                competingFailures.push((consoleFirst ? "console-first" : "onboarding-first")
+                    + ": unwanted console writes=" + unwanted + ", displayed=" + state.settings.launchInConsoleMode
+                    + ", confirmed=" + state.consoleSurfaceConfirmedValue + ", desired=" + state.consoleSurfaceDesiredValue)
+            if (state.consoleSurfaceRequestId !== "")
+                state.acceptConsoleSurface({value:state.consoleSurfaceRequestValue})
+        }
+        check(competingFailures.length === 0, "later desktop intent must win for both acknowledgement orders: " + competingFailures.join("; "))
+        state.acceptSettings({settings:defaults})
+        const disconnectedSetup = state.setSetting("launchInConsoleMode", true, "onboarding")
+        state.requestConsoleSurface(true)
+        state.ready = false
+        check(state.settings.launchInConsoleMode === false && surfaceRequests[surfaceRequests.length - 1] === false
+            && !state.settingWrites.launchInConsoleMode && state.consoleSurfaceRequestId === "",
+            "core loss drops queued console intent and restores the confirmed surface")
+        state.ready = true
+        check(!state.acceptResponse(disconnectedSetup, {key:"launchInConsoleMode", value:true}),
+            "a disconnected onboarding acknowledgement cannot replay the abandoned console tail")
+        onboarding.destroy()
+        state.destroy()
+    }
     function verifyRapidSettingCallers(parent) {
         const saved = owner.settings
         const catalog = ShellStore.catalogOwnerState
@@ -343,6 +561,8 @@ QtObject {
         check(owner.settings.gameLanguage === "it_IT", "legitimate unowned settings events still apply")
         owner.acceptSettingsChange({key:"gameLanguage",value:"zh_Hant_TW"})
         verifyOrdinarySettingWrites()
+        verifyResetAndReadOrdering()
+        verifyResetWriters()
         verifyRapidSettingCallers(parent)
         verifyCoupledSettingWrites()
         const beforeCoupled = owner.settings

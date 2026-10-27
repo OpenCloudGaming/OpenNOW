@@ -622,6 +622,23 @@ private slots:
         QVERIFY(client.request(QStringLiteral("session.ended")).isEmpty());
     }
 
+    void rejectsCoreWithoutStoreReplacementCapability()
+    {
+        const auto previous = qgetenv("OPENNOW_TEST_NO_STORE_REPLACEMENT_CAPABILITY");
+        const auto restore = qScopeGuard([previous] {
+            if (previous.isNull()) qunsetenv("OPENNOW_TEST_NO_STORE_REPLACEMENT_CAPABILITY");
+            else qputenv("OPENNOW_TEST_NO_STORE_REPLACEMENT_CAPABILITY", previous);
+        });
+        qputenv("OPENNOW_TEST_NO_STORE_REPLACEMENT_CAPABILITY", "1");
+        QStringList errors;
+        CoreClient client;
+        connect(&client, &CoreClient::lastErrorChanged, &client, [&] { errors.append(client.lastError()); });
+        QVERIFY(client.start(fakeCorePath()));
+        QTRY_COMPARE_WITH_TIMEOUT(client.state(), QStringLiteral("failed"), 2'000);
+        QVERIFY(errors.contains(QStringLiteral("The packaged core lacks a required capability: catalog.storeLocal.v2")));
+        QVERIFY(client.request(QStringLiteral("catalog.store.local")).isEmpty());
+    }
+
     void rejectsCoreWithoutScopedAccountMutationsCapability()
     {
         const auto previous = qgetenv("OPENNOW_TEST_NO_SCOPED_ACCOUNT_MUTATIONS_CAPABILITY");
