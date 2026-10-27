@@ -2241,6 +2241,18 @@ mod tests {
         values: Mutex<Vec<Value>>,
         changed: Condvar,
         frames_available: AtomicUsize,
+        drop_order: Option<CallbackDropOrder>,
+    }
+
+    struct CallbackDropOrder {
+        runtime_destroyed: Arc<AtomicBool>,
+        observed: Arc<Mutex<Option<bool>>>,
+    }
+
+    impl Drop for CallbackDropOrder {
+        fn drop(&mut self) {
+            *self.observed.lock().unwrap() = Some(self.runtime_destroyed.load(Ordering::SeqCst));
+        }
     }
 
     impl CallbackMessages {
@@ -4183,16 +4195,25 @@ mod tests {
         handle: Option<Box<OpenNowStreamer>>,
         messages: Arc<CallbackMessages>,
         host: Option<opennow_streamer_platform::TestMediaRuntimeHost>,
+        runtime_destroyed: Arc<AtomicBool>,
     }
 
     impl CancellationTestRuntime {
         fn new() -> Self {
-            let messages = Arc::new(CallbackMessages::default());
+            let runtime_destroyed = Arc::new(AtomicBool::new(false));
+            let messages = Arc::new(CallbackMessages {
+                drop_order: Some(CallbackDropOrder {
+                    runtime_destroyed: Arc::clone(&runtime_destroyed),
+                    observed: Arc::new(Mutex::new(None)),
+                }),
+                ..CallbackMessages::default()
+            });
             let (handle, host) = create_with_test_runtime(&messages);
             Self {
                 handle: Some(Box::new(handle)),
                 messages,
                 host: Some(host),
+                runtime_destroyed,
             }
         }
 
@@ -4203,13 +4224,21 @@ mod tests {
         }
 
         fn destroy(&mut self) -> OpenNowStreamerStatus {
-            unsafe { opennow_streamer_destroy(Box::into_raw(self.handle.take().unwrap())) }
+            let status =
+                unsafe { opennow_streamer_destroy(Box::into_raw(self.handle.take().unwrap())) };
+            if status == OpenNowStreamerStatus::Ok {
+                self.runtime_destroyed.store(true, Ordering::SeqCst);
+            }
+            status
         }
     }
 
     impl Drop for CancellationTestRuntime {
         fn drop(&mut self) {
-            drop(self.handle.take());
+            if let Some(handle) = self.handle.take() {
+                drop(handle);
+                self.runtime_destroyed.store(true, Ordering::SeqCst);
+            }
             if let Some(host) = self.host.take() {
                 let result = host.join();
                 if !thread::panicking() {
@@ -4222,6 +4251,7 @@ mod tests {
     #[test]
     fn cancellation_fixture_unwind_destroys_runtime_before_callback_userdata() {
         let runtime = CancellationTestRuntime::new();
+        let observed = Arc::clone(&runtime.messages.drop_order.as_ref().unwrap().observed);
         let messages = Arc::downgrade(&runtime.messages);
         let result = catch_unwind(AssertUnwindSafe(move || {
             assert_eq!(
@@ -4232,6 +4262,21 @@ mod tests {
         }));
         assert!(result.is_err());
         assert!(messages.upgrade().is_none());
+        assert_eq!(*observed.lock().unwrap(), Some(true));
+    }
+
+    #[test]
+    fn callback_userdata_drop_records_missing_runtime_destruction() {
+        let observed = Arc::new(Mutex::new(None));
+        let messages = CallbackMessages {
+            drop_order: Some(CallbackDropOrder {
+                runtime_destroyed: Arc::new(AtomicBool::new(false)),
+                observed: Arc::clone(&observed),
+            }),
+            ..CallbackMessages::default()
+        };
+        drop(messages);
+        assert_eq!(*observed.lock().unwrap(), Some(false));
     }
 
     #[test]
