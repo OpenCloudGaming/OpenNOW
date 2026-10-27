@@ -4179,6 +4179,61 @@ mod tests {
         );
     }
 
+    struct CancellationTestRuntime {
+        handle: Option<Box<OpenNowStreamer>>,
+        messages: Arc<CallbackMessages>,
+        host: Option<opennow_streamer_platform::TestMediaRuntimeHost>,
+    }
+
+    impl CancellationTestRuntime {
+        fn new() -> Self {
+            let messages = Arc::new(CallbackMessages::default());
+            let (handle, host) = create_with_test_runtime(&messages);
+            Self {
+                handle: Some(Box::new(handle)),
+                messages,
+                host: Some(host),
+            }
+        }
+
+        fn send(&self, bytes: &[u8]) -> OpenNowStreamerStatus {
+            unsafe {
+                opennow_streamer_send(self.handle.as_deref().unwrap(), bytes.as_ptr(), bytes.len())
+            }
+        }
+
+        fn destroy(&mut self) -> OpenNowStreamerStatus {
+            unsafe { opennow_streamer_destroy(Box::into_raw(self.handle.take().unwrap())) }
+        }
+    }
+
+    impl Drop for CancellationTestRuntime {
+        fn drop(&mut self) {
+            drop(self.handle.take());
+            if let Some(host) = self.host.take() {
+                let result = host.join();
+                if !thread::panicking() {
+                    result.unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cancellation_fixture_unwind_destroys_runtime_before_callback_userdata() {
+        let runtime = CancellationTestRuntime::new();
+        let messages = Arc::downgrade(&runtime.messages);
+        let result = catch_unwind(AssertUnwindSafe(move || {
+            assert_eq!(
+                runtime.send(br#"{"id":"unwind","type":"hello","protocolVersion":8}"#),
+                OpenNowStreamerStatus::Ok
+            );
+            panic!("injected fixture failure");
+        }));
+        assert!(result.is_err());
+        assert!(messages.upgrade().is_none());
+    }
+
     #[test]
     fn stop_and_destroy_cancel_startup_while_the_tls_peer_stays_open() {
         use std::io::Read;
@@ -4202,6 +4257,7 @@ mod tests {
                         Err(error) => panic!("accept failed: {error}"),
                     }
                 };
+                socket.set_nonblocking(false).unwrap();
                 socket
                     .set_read_timeout(Some(Duration::from_secs(5)))
                     .unwrap();
@@ -4209,9 +4265,8 @@ mod tests {
                 accepted.send(()).unwrap();
                 let _ = released.recv_timeout(Duration::from_secs(5));
             });
-            let messages = Box::new(CallbackMessages::default());
-            let (handle, host) = create_with_test_runtime(&messages);
-            let handle = Box::into_raw(Box::new(handle));
+            let mut runtime = CancellationTestRuntime::new();
+            let messages = Arc::clone(&runtime.messages);
             let start = serde_json::to_vec(&json!({
                 "id":"in-flight", "type":"start", "context": {
                     "session":{"sessionId":"ffi-startup-test", "serverIp":"127.0.0.1",
@@ -4220,18 +4275,12 @@ mod tests {
                 }
             }))
             .unwrap();
-            assert_eq!(
-                unsafe { opennow_streamer_send(handle, start.as_ptr(), start.len()) },
-                OpenNowStreamerStatus::Ok
-            );
+            assert_eq!(runtime.send(&start), OpenNowStreamerStatus::Ok);
             acceptance.recv_timeout(Duration::from_secs(5)).unwrap();
             let completed_while_peer_open;
             if stop {
                 let command = br#"{"id":"stop-in-flight","type":"stop"}"#;
-                assert_eq!(
-                    unsafe { opennow_streamer_send(handle, command.as_ptr(), command.len()) },
-                    OpenNowStreamerStatus::Ok
-                );
+                assert_eq!(runtime.send(command), OpenNowStreamerStatus::Ok);
                 let values = messages.values.lock().unwrap();
                 let (values, _) = messages
                     .changed
@@ -4246,16 +4295,11 @@ mod tests {
                     .any(|value| value["id"] == "stop-in-flight" && value["type"] == "ok");
                 drop(values);
                 release.send(()).unwrap();
-                assert_eq!(
-                    unsafe { opennow_streamer_destroy(handle) },
-                    OpenNowStreamerStatus::Ok
-                );
+                assert_eq!(runtime.destroy(), OpenNowStreamerStatus::Ok);
             } else {
-                let address = handle as usize;
                 let (finished, completion) = mpsc::channel();
                 let destroy = thread::spawn(move || {
-                    let result =
-                        unsafe { opennow_streamer_destroy(address as *mut OpenNowStreamer) };
+                    let result = runtime.destroy();
                     finished.send(result).unwrap();
                 });
                 let result = completion.recv_timeout(Duration::from_secs(1));
@@ -4264,7 +4308,6 @@ mod tests {
                 destroy.join().unwrap();
             }
             peer.join().unwrap();
-            host.join().unwrap();
             assert!(
                 completed_while_peer_open,
                 "cancellation waited for the TLS peer, stop={stop}"
