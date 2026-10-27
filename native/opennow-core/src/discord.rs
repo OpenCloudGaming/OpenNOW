@@ -1329,6 +1329,7 @@ mod tests {
     #[cfg(unix)]
     mod fake_ipc {
         use super::*;
+        use std::os::fd::AsRawFd;
         use std::os::unix::net::{UnixListener, UnixStream};
         use std::sync::Mutex;
         use tempfile::TempDir;
@@ -1336,7 +1337,6 @@ mod tests {
         struct FakeDiscord {
             directory: TempDir,
             state: Arc<Mutex<FakeState>>,
-            streams: Arc<Mutex<Vec<UnixStream>>>,
             running: Arc<AtomicBool>,
             accept: Option<thread::JoinHandle<()>>,
         }
@@ -1348,6 +1348,8 @@ mod tests {
             peak_open: usize,
             handshakes: usize,
             applied: Option<Value>,
+            applied_connection: Option<usize>,
+            streams: Vec<(usize, UnixStream)>,
             pongs: usize,
             reject_handshake: bool,
             reject_activity: bool,
@@ -1363,7 +1365,6 @@ mod tests {
                 let mut fake = Self {
                     directory,
                     state: Arc::new(Mutex::new(FakeState::default())),
-                    streams: Arc::new(Mutex::new(Vec::new())),
                     running: Arc::new(AtomicBool::new(true)),
                     accept: None,
                 };
@@ -1376,16 +1377,14 @@ mod tests {
                     UnixListener::bind(self.directory.path().join("discord-ipc-0")).unwrap();
                 listener.set_nonblocking(true).unwrap();
                 let state = Arc::clone(&self.state);
-                let streams = Arc::clone(&self.streams);
                 let running = Arc::clone(&self.running);
                 self.accept = Some(thread::spawn(move || {
                     while running.load(Ordering::SeqCst) {
                         match listener.accept() {
                             Ok((stream, _)) => {
                                 let state = Arc::clone(&state);
-                                let streams = Arc::clone(&streams);
                                 let running = Arc::clone(&running);
-                                thread::spawn(move || serve(stream, state, streams, running));
+                                thread::spawn(move || serve(stream, state, running, || {}));
                             }
                             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                                 thread::sleep(Duration::from_millis(2));
@@ -1401,11 +1400,13 @@ mod tests {
             }
 
             fn state(&self) -> std::sync::MutexGuard<'_, FakeState> {
-                self.state.lock().unwrap_or_else(PoisonError::into_inner)
+                let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+                state.refresh_open();
+                state
             }
 
             fn send_frame(&self, opcode: u32, value: &Value) {
-                if let Some(stream) = self.streams.lock().unwrap().last_mut() {
+                if let Some((_, stream)) = self.state().streams.last_mut() {
                     let _ = stream.write_all(&frame_bytes(opcode, value));
                 }
             }
@@ -1413,14 +1414,13 @@ mod tests {
             fn restart(&mut self) {
                 self.shutdown();
                 self.state = Arc::new(Mutex::new(FakeState::default()));
-                self.streams = Arc::new(Mutex::new(Vec::new()));
                 self.running = Arc::new(AtomicBool::new(true));
                 self.bind();
             }
 
             fn shutdown(&mut self) {
                 self.running.store(false, Ordering::SeqCst);
-                for stream in self.streams.lock().unwrap().drain(..) {
+                for (_, stream) in self.state().streams.drain(..) {
                     let _ = stream.shutdown(std::net::Shutdown::Both);
                 }
                 if let Some(accept) = self.accept.take() {
@@ -1436,20 +1436,47 @@ mod tests {
             }
         }
 
+        impl FakeState {
+            fn refresh_open(&mut self) {
+                self.open = self
+                    .streams
+                    .iter()
+                    .filter(|(_, stream)| {
+                        let mut descriptor = libc::pollfd {
+                            fd: stream.as_raw_fd(),
+                            events: libc::POLLIN,
+                            revents: 0,
+                        };
+                        let result = unsafe { libc::poll(&mut descriptor, 1, 0) };
+                        assert!(
+                            result >= 0,
+                            "could not poll fake Discord peer: {}",
+                            io::Error::last_os_error()
+                        );
+                        descriptor.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) == 0
+                    })
+                    .count();
+                self.peak_open = self.peak_open.max(self.open);
+            }
+        }
+
         fn serve(
             mut stream: UnixStream,
             state: Arc<Mutex<FakeState>>,
-            streams: Arc<Mutex<Vec<UnixStream>>>,
             running: Arc<AtomicBool>,
+            before_disconnect: impl FnOnce(),
         ) {
             let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
-            streams.lock().unwrap().push(stream.try_clone().unwrap());
-            {
+            let connection = {
                 let mut state = state.lock().unwrap();
                 state.connections += 1;
-                state.open += 1;
-                state.peak_open = state.peak_open.max(state.open);
-            }
+                let connection = state.connections;
+                state
+                    .streams
+                    .push((connection, stream.try_clone().unwrap()));
+                state.refresh_open();
+                connection
+            };
             if let Some((OPCODE_HANDSHAKE, _)) = read_frame(&mut stream) {
                 let (reject, split, delay_ready) = {
                     let mut state = state.lock().unwrap();
@@ -1554,6 +1581,8 @@ mod tests {
                                             } else {
                                                 Some(activity)
                                             };
+                                            state.applied_connection =
+                                                state.applied.as_ref().map(|_| connection);
                                         }
                                         let _ = write_frame(
                                             &mut stream,
@@ -1581,9 +1610,100 @@ mod tests {
                     }
                 }
             }
+            before_disconnect();
             let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
-            state.open -= 1;
-            state.applied = None;
+            state.streams.retain(|(id, _)| *id != connection);
+            state.refresh_open();
+            if state.applied_connection == Some(connection) {
+                state.applied = None;
+                state.applied_connection = None;
+            }
+        }
+
+        #[test]
+        fn an_old_connection_teardown_preserves_a_new_connections_activity() {
+            let fake = FakeDiscord::start(TempDir::new().unwrap());
+            let (mut older, older_peer) = UnixStream::pair().unwrap();
+            let (disconnected_tx, disconnected_rx) = mpsc::channel();
+            let (release_tx, release_rx) = mpsc::channel();
+            std::thread::scope(|scope| {
+                let fake = &fake;
+                let older_handler = scope.spawn(move || {
+                    serve(
+                        older_peer,
+                        Arc::clone(&fake.state),
+                        Arc::clone(&fake.running),
+                        || {
+                            disconnected_tx.send(()).unwrap();
+                            release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                        },
+                    );
+                });
+                write_frame(
+                    &mut older,
+                    OPCODE_HANDSHAKE,
+                    &json!({"v":1,"client_id":CLIENT_ID}),
+                    false,
+                )
+                .unwrap();
+                assert_eq!(read_frame(&mut older).unwrap().1["evt"], "READY");
+                drop(older);
+                disconnected_rx
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap();
+
+                let service = DiscordService::with_directories(fake.directories());
+                let status = service.sync(&streaming_params()).unwrap();
+                let applied = fake.state().applied.clone();
+                let peak_open = fake.state().peak_open;
+                release_tx.send(()).unwrap();
+                older_handler.join().unwrap();
+                let retained = fake.state().applied.clone();
+                let repeated = service.sync(&streaming_params()).unwrap();
+                drop(service);
+                wait_until(|| {
+                    let state = fake.state();
+                    state.open == 0 && state.applied.is_none()
+                });
+
+                assert_eq!(status["connected"], true);
+                assert_eq!(
+                    applied,
+                    Some(activity_payload(&streaming_params()).unwrap())
+                );
+                assert_eq!(repeated["unchanged"], true);
+                assert_eq!(
+                    peak_open, 1,
+                    "a closed peer was counted as a live connection"
+                );
+                assert_eq!(
+                    retained, applied,
+                    "older handler erased the newer connection's activity"
+                );
+                assert!(fake.state().applied.is_none());
+            });
+        }
+
+        #[test]
+        fn live_peer_accounting_excludes_closed_peers_and_detects_concurrent_connections() {
+            let (older, older_peer) = UnixStream::pair().unwrap();
+            let mut state = FakeState {
+                streams: vec![(1, older_peer)],
+                ..FakeState::default()
+            };
+            state.refresh_open();
+            assert_eq!(state.open, 1);
+            drop(older);
+            let (_newer, newer_peer) = UnixStream::pair().unwrap();
+            state.streams.push((2, newer_peer));
+            state.refresh_open();
+            assert_eq!(state.open, 1);
+            assert_eq!(state.peak_open, 1);
+            let (_concurrent, concurrent_peer) = UnixStream::pair().unwrap();
+            state.streams.push((3, concurrent_peer));
+            state.refresh_open();
+            assert_eq!(state.open, 2);
+            assert_eq!(state.peak_open, 2);
         }
 
         fn read_frame(stream: &mut UnixStream) -> Option<(u32, Value)> {
