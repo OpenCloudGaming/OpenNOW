@@ -6,7 +6,7 @@ Play GeForce NOW on your Steam Deck from Game Mode. The OpenNOW plugin for [Deck
 
 ## Install
 
-You need a Steam Deck (or another SteamOS device), an internet connection, and a GeForce NOW account. The plugin isn't in the Decky Plugin Store yet, so you install it from a link.
+You need a Steam Deck (or another SteamOS device), an internet connection, and a GeForce NOW account. Installing or updating OpenNOW also requires host OpenSSL 3.0 or later with Ed25519 support. The plugin isn't in the Decky Plugin Store yet, so you install it from a link.
 
 ### 1. Install Decky Loader
 
@@ -87,6 +87,7 @@ The **Stream** page sets resolution, frame rate, bitrate, codec and HDR. Under *
 - **The plugin doesn't appear after installing.** Open Decky's settings and select **Restart Decky** under **General**, or restart the Deck.
 - **OpenNOW asks you to sign in every time.** Update to the newest OpenNOW. On a Steam Deck, OpenNOW saves your sign-in to a file instead of the desktop keyring, which stays locked in Game Mode.
 - **On DroidDeck, Install OpenNOW says to set up Flatpak.** Set up Flatpak from DroidDeck's Store, then select **Install OpenNOW** again. The plugin installs the ARM64 build through DroidDeck's Flatpak helper. The first install also downloads the KDE runtime, which can take a while.
+- **OpenNOW installation reports a signature or OpenSSL error.** The plugin verifies stable and nightly Flatpaks against the production Ed25519 key before running either Flatpak installer. Missing manifests, invalid signatures, mismatched downloads, and unavailable or incompatible host OpenSSL stop installation. Update the plugin and your host OS; do not bypass verification.
 - **An old version of OpenNOW starts.** Close every OpenNOW window, including any left open in Desktop Mode, then launch it again. The plugin only uses the copies listed under [How it finds OpenNOW](#how-it-finds-opennow).
 
 ## How it finds OpenNOW
@@ -105,7 +106,7 @@ Game Mode only shows apps that Steam starts, so the plugin always launches OpenN
 
 ## Develop
 
-Requirements: Node.js 22 and Python 3.11. Run all commands from `decky/`.
+Requirements: Node.js 22, Python 3.11, and host OpenSSL 3.0 or later with Ed25519 support. Run all commands from `decky/`.
 
 ```sh
 npx pnpm@9 install

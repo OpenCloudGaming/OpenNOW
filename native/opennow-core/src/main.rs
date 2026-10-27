@@ -265,17 +265,7 @@ fn run() -> Result<(), String> {
                 }
                 let _ = worker_output.send(json!({"type":"event", "name":"updater.changed", "payload":worker_core.updater.state()}));
             }
-            if matches!(
-                method.as_str(),
-                "auth.device.complete"
-                    | "auth.logout"
-                    | "auth.accounts.logoutAll"
-                    | "auth.accounts.switch"
-                    | "auth.accounts.remove"
-                    | "settings.set"
-            ) {
-                reconcile_push(&worker_core);
-            }
+            push_registry::reconcile_after_request(&method, || reconcile_push(&worker_core));
             if !was_cancelled && !(settings_rpc::handles(&method) && result.is_ok()) {
                 publish_response(&worker_output, &id, &result);
             }
@@ -441,7 +431,7 @@ fn dispatch(
                 ));
             }
             Ok((
-                json!({"protocolVersion":PROTOCOL_VERSION, "coreVersion":version::APPLICATION_VERSION, "capabilities":["settings", "gfn.deviceAuth", "gfn.providers", "gfn.publicCatalog", "catalog.storePages.v1", "catalog.libraryPages.v1", "catalog.metadata.v1", "account.syncObservation.v1", "account.pushInvalidation.v1", "catalog.languages.v1", "queue.servers.v1", "auth.accountPicker.v1", "catalog.storeLocal.v1", "gfn.accountLibrary", "gfn.regions", "gfn.subscription", "gfn.cloudmatch", "sessionProxy", "session.terminalCleanup.v1", "catalogArtworkCache.v1", "nativeStreamer.v7", "nativeStreamer.ownedNvstNegotiation", "nativeStreamer.dynamicSurface", "nativeStreamer.acceptanceEvidence", "liveAcceptance.v1", "osCredentialStore", "electronAccountMigration", "redactedDiagnostics", "mediaLibrary", "githubUpdateDiscovery", "discordRpc", "feedback", "bugReports", "automaticBugReports.v2", "social.capabilitySurface"]}),
+                json!({"protocolVersion":PROTOCOL_VERSION, "coreVersion":version::APPLICATION_VERSION, "capabilities":["settings", "gfn.deviceAuth", "gfn.providers", "gfn.publicCatalog", "catalog.storePages.v1", "catalog.libraryPages.v1", "catalog.metadata.v1", "account.syncObservation.v1", "account.mutations.scoped.v1", "account.pushInvalidation.v1", "catalog.languages.v1", "queue.servers.v1", "auth.accountPicker.v1", "catalog.storeLocal.v1", "gfn.accountLibrary", "gfn.regions", "gfn.subscription", "gfn.cloudmatch", "sessionProxy", "session.terminalCleanup.v1", "catalogArtworkCache.v1", "nativeStreamer.v7", "nativeStreamer.ownedNvstNegotiation", "nativeStreamer.dynamicSurface", "nativeStreamer.acceptanceEvidence", "liveAcceptance.v1", "osCredentialStore", "electronAccountMigration", "redactedDiagnostics", "mediaLibrary", "githubUpdateDiscovery", "discordRpc", "feedback", "bugReports", "automaticBugReports.v2", "social.capabilitySurface"]}),
                 None,
             ))
         }

@@ -8,11 +8,21 @@ const PAYWALL_BASE: &str = "https://api-prod.nvidia.com/gfn-paywall-api/api/v2";
 
 pub struct PersistentStorageService {
     client: Client,
+    base_url: String,
 }
 
 impl PersistentStorageService {
     pub fn new(client: Client) -> Self {
-        Self { client }
+        Self {
+            client,
+            base_url: PAYWALL_BASE.into(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_test_base_url(&mut self, base_url: String) {
+        assert_eq!(Url::parse(&base_url).unwrap().host_str(), Some("127.0.0.1"));
+        self.base_url = base_url;
     }
 
     pub fn locations(&self, params: &Value, auth: &AuthSession) -> Result<Value, ServiceError> {
@@ -23,7 +33,7 @@ impl PersistentStorageService {
             .as_str()
             .filter(|value| !value.trim().is_empty());
         let mut url =
-            Url::parse(&format!("{PAYWALL_BASE}/products")).expect("constant paywall URL is valid");
+            Url::parse(&format!("{}/products", self.base_url)).expect("paywall URL is valid");
         url.query_pairs_mut()
             .append_pair("locale", params["locale"].as_str().unwrap_or("en_US"));
         if let Some(vpc_id) = params["serverRegionId"]
@@ -82,8 +92,8 @@ impl PersistentStorageService {
         let region = params["storageRegion"]
             .as_str()
             .filter(|value| !value.trim().is_empty());
-        let mut url = Url::parse(&format!("{PAYWALL_BASE}/reset/storage"))
-            .expect("constant paywall URL is valid");
+        let mut url =
+            Url::parse(&format!("{}/reset/storage", self.base_url)).expect("paywall URL is valid");
         url.query_pairs_mut()
             .append_pair("storageRegion", region.unwrap_or("null"));
         let response = self

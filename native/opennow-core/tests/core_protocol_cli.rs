@@ -74,6 +74,7 @@ fn protocol_five_shells_receive_the_paged_library_capabilities() {
         "queue.servers.v1",
         "auth.accountPicker.v1",
         "session.terminalCleanup.v1",
+        "account.mutations.scoped.v1",
     ] {
         assert!(capabilities.contains(&json!(capability)));
     }

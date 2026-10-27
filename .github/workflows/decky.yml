@@ -8,6 +8,7 @@ on:
     paths:
       - ".github/workflows/decky.yml"
       - "decky/**"
+      - "opennow-qt/packaging/update-public-key.base64"
   push:
     branches:
       - dev
@@ -15,6 +16,7 @@ on:
     paths:
       - ".github/workflows/decky.yml"
       - "decky/**"
+      - "opennow-qt/packaging/update-public-key.base64"
 
 permissions:
   contents: read
