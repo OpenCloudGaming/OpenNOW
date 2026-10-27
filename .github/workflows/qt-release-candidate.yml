@@ -196,6 +196,7 @@ jobs:
           LINUXDEPLOY_ARCH: ${{ matrix.linuxdeploy_arch }}
           LINUXDEPLOY_SHA256: ${{ matrix.linuxdeploy_sha256 }}
           QT_PLUGIN_SHA256: ${{ matrix.qt_plugin_sha256 }}
+          APPIMAGE_RUNTIME_SHA256: ${{ matrix.arch == 'arm64' && '00cbdfcf917cc6c0ff6d3347d59e0ca1f7f45a6df1a428a0d6d8a78664d87444' || '2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d' }}
           PACKAGE_ARCH: ${{ matrix.arch }}
         run: |
           export LD_LIBRARY_PATH="$RUNNER_TEMP/SDL-install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
@@ -212,6 +213,11 @@ jobs:
             --output "build/linuxdeploy-plugin-qt-${LINUXDEPLOY_ARCH}.AppImage"
           echo "$LINUXDEPLOY_SHA256  build/linuxdeploy-${LINUXDEPLOY_ARCH}.AppImage" | sha256sum --check --strict
           echo "$QT_PLUGIN_SHA256  build/linuxdeploy-plugin-qt-${LINUXDEPLOY_ARCH}.AppImage" | sha256sum --check --strict
+          curl --fail --location --retry 5 --retry-all-errors --retry-max-time 300 \
+            --connect-timeout 20 --max-time 120 \
+            "https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-${LINUXDEPLOY_ARCH}" \
+            --output "build/appimage-runtime-${LINUXDEPLOY_ARCH}"
+          echo "$APPIMAGE_RUNTIME_SHA256  build/appimage-runtime-${LINUXDEPLOY_ARCH}" | sha256sum --check --strict
           chmod +x build/linuxdeploy-*.AppImage build/linuxdeploy-plugin-qt-*.AppImage
           install -Dm644 opennow-qt/packaging/opennow-vaapi-hook.sh \
             build/AppDir/apprun-hooks/opennow-vaapi-hook.sh
@@ -225,6 +231,7 @@ jobs:
           LDAI_UPDATE_INFORMATION=$(python3 opennow-qt/packaging/appimage_updates.py information \
             --channel stable --arch "$PACKAGE_ARCH")
           QMAKE="$QT_ROOT_DIR/bin/qmake" QML_SOURCES_PATHS="$PWD/opennow-qt/qml" \
+          LDAI_RUNTIME_FILE="$PWD/build/appimage-runtime-${LINUXDEPLOY_ARCH}" \
           OUTPUT="OpenNOW-Qt-${{ inputs.version }}-Linux-${{ matrix.arch }}.AppImage" \
             "build/linuxdeploy-${LINUXDEPLOY_ARCH}.AppImage" \
               --appdir build/AppDir \
