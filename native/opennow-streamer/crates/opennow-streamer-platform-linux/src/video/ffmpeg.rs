@@ -476,9 +476,14 @@ impl FfmpegDecoder {
     }
 
     fn convert_frame(&mut self, decoded: &frame::Video) -> Result<DecodedVideoFrame> {
-        if self.mode == FfmpegMode::Software {
-            reject_corrupt_software_frame(decoded)?;
-        }
+        reject_corrupt_frame(
+            decoded,
+            if self.mode == FfmpegMode::V4l2Request {
+                Subsystem::V4l2
+            } else {
+                Subsystem::Ffmpeg
+            },
+        )?;
         if self.mode == FfmpegMode::V4l2Request {
             let output =
                 retain_request_frame(decoded, self.last_timestamp_us, self.negotiated_format)?;
@@ -922,13 +927,13 @@ fn vulkan_cpu_nv12_fallback(
     }))
 }
 
-fn reject_corrupt_software_frame(decoded: &frame::Video) -> Result<()> {
+fn reject_corrupt_frame(decoded: &frame::Video, subsystem: Subsystem) -> Result<()> {
     unsafe {
         let raw = &*decoded.as_ptr();
         if raw.flags & ffi::AV_FRAME_FLAG_CORRUPT != 0 || raw.decode_error_flags != 0 {
             return Err(Error::ReferenceLost {
-                subsystem: Subsystem::Ffmpeg,
-                reason: "software decode failed; refusing a corrupt frame".to_owned(),
+                subsystem,
+                reason: "decode failed; refusing a corrupt reference frame".to_owned(),
             });
         }
     }
@@ -1152,6 +1157,7 @@ fn retain_request_frame(
     fallback_timestamp_us: u64,
     metadata: StreamFormat,
 ) -> Result<DecodedVideoFrame> {
+    reject_corrupt_frame(decoded, Subsystem::V4l2)?;
     if decoded.format() != Pixel::DRM_PRIME {
         return Err(Error::backend(
             Subsystem::V4l2,
@@ -1160,12 +1166,6 @@ fn retain_request_frame(
     }
     unsafe {
         let raw = &*decoded.as_ptr();
-        if raw.flags & ffi::AV_FRAME_FLAG_CORRUPT != 0 || raw.decode_error_flags != 0 {
-            return Err(Error::ReferenceLost {
-                subsystem: Subsystem::V4l2,
-                reason: "request decode failed; refusing a corrupt reference frame".to_owned(),
-            });
-        }
         if raw.crop_left != 0 || raw.crop_top != 0 {
             return Err(Error::unavailable(
                 Subsystem::V4l2,
@@ -1613,7 +1613,8 @@ fn decoded_metadata(frame: &frame::Video, defaults: StreamFormat) -> StreamForma
     let chroma_location = match frame.chroma_location() {
         ffmpeg::chroma::Location::Unspecified => defaults.chroma_location,
         ffmpeg::chroma::Location::Center => ChromaLocation::Center,
-        ffmpeg::chroma::Location::Left | ffmpeg::chroma::Location::TopLeft => ChromaLocation::Left,
+        ffmpeg::chroma::Location::Left => ChromaLocation::Left,
+        ffmpeg::chroma::Location::TopLeft => ChromaLocation::TopLeft,
         other => unsupported_color_metadata(3, "chroma location", other, defaults.chroma_location),
     };
     StreamFormat {
@@ -1660,6 +1661,34 @@ mod tests {
             return None;
         }
         Some(opened.unwrap())
+    }
+
+    fn decoder_for_synthetic_frames(format: StreamFormat) -> FfmpegDecoder {
+        initialize_ffmpeg().unwrap();
+        let definition = ffmpeg::decoder::find(codec::Id::H264).unwrap();
+        let decoder = codec::context::Context::new_with_codec(definition)
+            .decoder()
+            .open_as(definition)
+            .unwrap()
+            .video()
+            .unwrap();
+        FfmpegDecoder {
+            decoder,
+            wanted_hw_format: None,
+            scaler: None,
+            codec: VideoCodec::H264,
+            mode: FfmpegMode::Software,
+            configured_format: format,
+            negotiated_format: format,
+            pending_format_change: None,
+            last_timestamp_us: 0,
+            zero_copy_active: false,
+            zero_copy_unavailable_reported: false,
+            #[cfg(feature = "vulkan")]
+            shared_device: None,
+            #[cfg(feature = "vulkan")]
+            snapshot_pool: None,
+        }
     }
 
     #[test]
@@ -1854,6 +1883,47 @@ mod tests {
     }
 
     #[test]
+    fn every_decode_mode_rejects_corruption_before_hardware_inspection() {
+        let format = StreamFormat::video_default(2, 2).unwrap();
+        let mut decoder = decoder_for_synthetic_frames(format);
+        for (mode, pixel) in [
+            (FfmpegMode::Software, Pixel::NV12),
+            (FfmpegMode::Vulkan, Pixel::VULKAN),
+            (FfmpegMode::Vaapi, Pixel::VAAPI),
+            (FfmpegMode::Cuda, Pixel::CUDA),
+            (FfmpegMode::V4l2Request, Pixel::DRM_PRIME),
+        ] {
+            decoder.mode = mode;
+            decoder.wanted_hw_format = Some(Box::new(HardwareFormatSelection {
+                pixel_format: pixel.into(),
+                exportable_vulkan_frames: false,
+            }));
+            for (flags, decode_error_flags) in [(ffi::AV_FRAME_FLAG_CORRUPT, 0), (0, 1)] {
+                let mut decoded = frame::Video::empty();
+                decoded.set_format(pixel);
+                unsafe {
+                    (*decoded.as_mut_ptr()).flags = flags;
+                    (*decoded.as_mut_ptr()).decode_error_flags = decode_error_flags;
+                }
+                let expected_subsystem = if mode == FfmpegMode::V4l2Request {
+                    Subsystem::V4l2
+                } else {
+                    Subsystem::Ffmpeg
+                };
+                assert!(
+                    matches!(
+                        decoder.convert_frame(&decoded),
+                        Err(Error::ReferenceLost { subsystem, .. }) if subsystem == expected_subsystem
+                    ),
+                    "{mode:?}, flags={flags}, decode_error_flags={decode_error_flags}"
+                );
+                assert!(decoder.pending_format_change.is_none());
+                assert_eq!(decoder.configured_format, format);
+            }
+        }
+    }
+
+    #[test]
     fn yuv420p_pack_interleaves_chroma_and_drops_stride_padding() {
         let y = [1u8, 2, 3, 4, 9, 9, 5, 6, 7, 8, 9, 9];
         let u = [20u8, 21, 0, 22, 23, 0];
@@ -1993,6 +2063,23 @@ mod tests {
         drop(output);
         unsafe {
             assert_eq!(ffi::av_buffer_get_ref_count((*decoded.as_ptr()).buf[0]), 1);
+        }
+    }
+
+    #[test]
+    fn request_frames_retain_explicit_chroma_metadata_with_drm_backing() {
+        let (mut decoded, _file) = request_frame_fixture();
+        let defaults = StreamFormat::video_default(256, 144).unwrap();
+        for (source, expected) in [
+            (ffmpeg::chroma::Location::Left, ChromaLocation::Left),
+            (ffmpeg::chroma::Location::Center, ChromaLocation::Center),
+            (ffmpeg::chroma::Location::TopLeft, ChromaLocation::TopLeft),
+        ] {
+            unsafe { (*decoded.as_mut_ptr()).chroma_location = source.into() };
+            let output = retain_request_frame(&decoded, 0, defaults).unwrap();
+            assert_eq!(output.format.chroma_location, expected);
+            assert!(output.dmabuf.is_some());
+            assert!(output.planes.is_empty());
         }
     }
 
@@ -2209,7 +2296,7 @@ mod tests {
         }
         assert_eq!(
             decoded_metadata(&frame, defaults).chroma_location,
-            ChromaLocation::Left
+            ChromaLocation::TopLeft
         );
         unsafe {
             (*frame.as_mut_ptr()).chroma_location = ffmpeg::chroma::Location::Bottom.into();
@@ -2220,6 +2307,27 @@ mod tests {
         assert_eq!(metadata.chroma_location, defaults.chroma_location);
         assert_eq!(metadata.color_primaries, defaults.color_primaries);
         assert_eq!(metadata.color_transfer, defaults.color_transfer);
+    }
+
+    #[test]
+    fn decoded_frames_retain_each_explicit_chroma_location() {
+        let defaults = StreamFormat::video_default(4, 4).unwrap();
+        let mut decoder = decoder_for_synthetic_frames(defaults);
+        for (source, expected) in [
+            (ffmpeg::chroma::Location::Center, ChromaLocation::Center),
+            (ffmpeg::chroma::Location::Left, ChromaLocation::Left),
+            (ffmpeg::chroma::Location::TopLeft, ChromaLocation::TopLeft),
+        ] {
+            let mut decoded = frame::Video::new(Pixel::NV12, 4, 4);
+            unsafe { (*decoded.as_mut_ptr()).chroma_location = source.into() };
+            let output = decoder.convert_frame(&decoded).unwrap();
+            assert_eq!(output.format.chroma_location, expected);
+            assert_eq!(decoder.configured_format.chroma_location, expected);
+            assert_eq!(
+                decoder.pending_format_change.unwrap().chroma_location,
+                expected
+            );
+        }
     }
 
     #[test]

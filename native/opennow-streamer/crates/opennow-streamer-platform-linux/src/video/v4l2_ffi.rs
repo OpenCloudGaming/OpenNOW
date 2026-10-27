@@ -25,13 +25,26 @@ pub const v4l2_memory_V4L2_MEMORY_MMAP: v4l2_memory = 1;
 pub type v4l2_field = u32;
 pub const v4l2_field_V4L2_FIELD_NONE: v4l2_field = 1;
 pub type v4l2_colorspace = u32;
+#[cfg(test)]
 pub const v4l2_colorspace_V4L2_COLORSPACE_DEFAULT: v4l2_colorspace = 0;
 #[cfg(test)]
 pub const v4l2_colorspace_V4L2_COLORSPACE_SMPTE170M: v4l2_colorspace = 1;
+pub const v4l2_colorspace_V4L2_COLORSPACE_SMPTE240M: v4l2_colorspace = 2;
 pub const v4l2_colorspace_V4L2_COLORSPACE_REC709: v4l2_colorspace = 3;
+pub const v4l2_colorspace_V4L2_COLORSPACE_JPEG: v4l2_colorspace = 7;
 pub const v4l2_colorspace_V4L2_COLORSPACE_BT2020: v4l2_colorspace = 10;
+pub const v4l2_colorspace_V4L2_COLORSPACE_DCI_P3: v4l2_colorspace = 12;
+pub type v4l2_ycbcr_encoding = u32;
+pub const v4l2_ycbcr_encoding_V4L2_YCBCR_ENC_DEFAULT: v4l2_ycbcr_encoding = 0;
+pub const v4l2_ycbcr_encoding_V4L2_YCBCR_ENC_601: v4l2_ycbcr_encoding = 1;
+pub const v4l2_ycbcr_encoding_V4L2_YCBCR_ENC_709: v4l2_ycbcr_encoding = 2;
+pub const v4l2_ycbcr_encoding_V4L2_YCBCR_ENC_SYCC: v4l2_ycbcr_encoding = 5;
+pub const v4l2_ycbcr_encoding_V4L2_YCBCR_ENC_BT2020: v4l2_ycbcr_encoding = 6;
+pub const v4l2_ycbcr_encoding_V4L2_YCBCR_ENC_SMPTE240M: v4l2_ycbcr_encoding = 8;
 pub type v4l2_quantization = u32;
+pub const v4l2_quantization_V4L2_QUANTIZATION_DEFAULT: v4l2_quantization = 0;
 pub const v4l2_quantization_V4L2_QUANTIZATION_FULL_RANGE: v4l2_quantization = 1;
+pub const v4l2_quantization_V4L2_QUANTIZATION_LIM_RANGE: v4l2_quantization = 2;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]

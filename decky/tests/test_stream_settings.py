@@ -1,10 +1,13 @@
 import json
+import os
+import stat
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tests import support  # noqa: F401
-from opennow_decky import stream_settings
+from opennow_decky import files, stream_settings
 
 
 class StreamSettingsTests(unittest.TestCase):
@@ -14,6 +17,81 @@ class StreamSettingsTests(unittest.TestCase):
 
     def test_missing_file_reads_the_core_defaults(self):
         self.assertEqual(stream_settings.read(self.data_dir), stream_settings.DEFAULTS)
+
+    @unittest.skipUnless(os.name == "posix", "Unix file permissions")
+    def test_writes_and_backups_are_private_with_existing_insecure_files(self):
+        original = {"fps": 60, "sessionProxyUrl": "http://fixture:synthetic@localhost:8080"}
+        previous_umask = os.umask(0o022)
+        try:
+            stream_settings.write(self.data_dir, "fps", 90)
+            self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)
+            for suffix in ("", ".tmp", ".bak"):
+                path = self.path.with_name(self.path.name + suffix)
+                path.write_text(json.dumps(original))
+                path.chmod(0o644)
+            for fps in (90, 120, 60):
+                previous = self.path.read_bytes()
+                stream_settings.write(self.data_dir, "fps", fps)
+                backup = self.path.with_name(self.path.name + ".bak")
+                self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)
+                self.assertEqual(stat.S_IMODE(backup.stat().st_mode), 0o600)
+                self.assertEqual(backup.read_bytes(), previous)
+                self.assertIn("sessionProxyUrl", json.loads(self.path.read_text()))
+        finally:
+            os.umask(previous_umask)
+
+    @unittest.skipUnless(os.name == "posix", "Unix file links")
+    def test_settings_writes_reject_link_destinations_without_touching_the_target(self):
+        for suffix in ("", ".tmp", ".bak"):
+            for hard_link in (False, True):
+                with self.subTest(suffix=suffix, hard_link=hard_link), tempfile.TemporaryDirectory() as directory:
+                    data_dir = Path(directory)
+                    target = data_dir / "unrelated"
+                    target.write_text('{"fps": 60}')
+                    target.chmod(0o644)
+                    destination = data_dir / ("settings.json" + suffix)
+                    if hard_link:
+                        os.link(target, destination)
+                    else:
+                        destination.symlink_to(target)
+                    if suffix:
+                        (data_dir / "settings.json").write_text('{"fps": 60}')
+                    with self.assertRaises((OSError, stream_settings.SettingsError)):
+                        stream_settings.write(data_dir, "fps", 90)
+                    self.assertEqual(target.read_text(), '{"fps": 60}')
+                    self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o644)
+
+    @unittest.skipUnless(os.name == "posix", "Unix file permissions")
+    def test_new_files_are_private_before_any_chmod(self):
+        chmod = os.fchmod
+        observed = []
+
+        def check_mode(descriptor, mode):
+            observed.append(stat.S_IMODE(os.fstat(descriptor).st_mode))
+            self.assertEqual(observed[-1], 0o600)
+            chmod(descriptor, mode)
+
+        previous_umask = os.umask(0o022)
+        try:
+            with mock.patch.object(files.os, "fchmod", side_effect=check_mode):
+                stream_settings.write(self.data_dir, "fps", 90)
+                stream_settings.write(self.data_dir, "fps", 120)
+            self.assertTrue(observed)
+        finally:
+            os.umask(previous_umask)
+
+    @unittest.skipUnless(os.name == "posix", "Unix file links")
+    def test_settings_writes_do_not_create_dangling_link_targets(self):
+        for suffix in ("", ".tmp", ".bak"):
+            with self.subTest(suffix=suffix), tempfile.TemporaryDirectory() as directory:
+                data_dir = Path(directory)
+                target = data_dir / "must-not-be-created"
+                (data_dir / ("settings.json" + suffix)).symlink_to(target)
+                if suffix:
+                    (data_dir / "settings.json").write_text('{"fps": 60}')
+                with self.assertRaises(OSError):
+                    stream_settings.write(data_dir, "fps", 90)
+                self.assertFalse(target.exists())
 
     def test_write_keeps_every_other_key_and_backs_up_the_previous_file(self):
         original = {"fps": 60, "themePack": "nocturne", "favoriteGameIds": ["1"], "unknownFutureKey": {"a": 1}}
