@@ -11,6 +11,13 @@ struct Remote {
     worker: Option<std::thread::JoinHandle<()>>,
 }
 
+fn prepare_request_stream(stream: &std::net::TcpStream) {
+    stream.set_nonblocking(false).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+}
+
 impl Remote {
     fn new() -> Self {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -30,9 +37,7 @@ impl Remote {
                     }
                     Err(error) => panic!("{error}"),
                 };
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(5)))
-                    .unwrap();
+                prepare_request_stream(&stream);
                 let mut reader = BufReader::new(&mut stream);
                 let mut first = String::new();
                 reader.read_line(&mut first).unwrap();
@@ -88,8 +93,70 @@ impl Remote {
 impl Drop for Remote {
     fn drop(&mut self) {
         self.done.store(true, Ordering::SeqCst);
-        self.worker.take().unwrap().join().unwrap();
+        let result = self.worker.take().unwrap().join();
+        if !std::thread::panicking() {
+            result.unwrap();
+        }
     }
+}
+
+#[test]
+fn accepted_nonblocking_socket_waits_for_delayed_request_bytes() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    let (mut server, _) = listener.accept().unwrap();
+    server.set_nonblocking(true).unwrap();
+    prepare_request_stream(&server);
+    let (sent, received) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let mut line = String::new();
+        let result = BufReader::new(&mut server)
+            .read_line(&mut line)
+            .map(|_| line);
+        sent.send(result).unwrap();
+    });
+    assert!(
+        matches!(
+            received.recv_timeout(Duration::from_millis(100)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ),
+        "accepted socket did not wait for request bytes"
+    );
+    client.write_all(b"GET /delayed HTTP/1.1\r\n").unwrap();
+    assert_eq!(
+        received
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .unwrap(),
+        "GET /delayed HTTP/1.1\r\n"
+    );
+    worker.join().unwrap();
+}
+
+fn failed_remote() -> Remote {
+    Remote {
+        url: String::new(),
+        mutations: Arc::new(AtomicUsize::new(0)),
+        done: Arc::new(AtomicBool::new(false)),
+        worker: Some(std::thread::spawn(|| panic!("fixture worker failure"))),
+    }
+}
+
+#[test]
+fn remote_worker_failure_is_reported_on_normal_drop() {
+    assert!(std::panic::catch_unwind(|| drop(failed_remote())).is_err());
+}
+
+#[test]
+fn remote_worker_failure_during_unwind_preserves_initial_panic() {
+    let result = std::panic::catch_unwind(|| {
+        let _remote = failed_remote();
+        panic!("initial fixture failure");
+    });
+    assert_eq!(
+        result.unwrap_err().downcast_ref::<&str>(),
+        Some(&"initial fixture failure")
+    );
 }
 
 fn fixture(remote: &Remote) -> (GfnService, PathBuf) {
