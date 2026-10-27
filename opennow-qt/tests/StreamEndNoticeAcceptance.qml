@@ -62,7 +62,7 @@ QtObject {
         ShellStore.authRestorePending = false
         ShellStore.authGeneration = 3
         ShellStore.authSession = {user: {userId: "notice-fixture", displayName: "Notice fixture"}}
-        ShellStore.selectedGame = {title: "Portal 2"}
+        ShellStore.selectedGame = {title: "<b>Portal 2 & Friends</b> <i>Co-op</i>"}
         AppController.navigate("game-detail")
         check(!need("desktopStreamEndNotice").opened, "a null notice opened the dialog")
         ShellStore.streamEndNotice = {kind: "error", code: 2147680265, codeText: "0x80030009"}
@@ -85,6 +85,9 @@ QtObject {
             check(dismiss.activeFocus, "Dismiss did not take the initial focus")
             check(need("streamEndNoticeTitle").text === "The stream ended unexpectedly", "error headline is wrong")
             check(need("streamEndNoticeBody").text.indexOf("Portal 2") >= 0, "the body does not name the game")
+            check(need("streamEndNoticeBody").textFormat === Text.PlainText, "the desktop body interprets an untrusted title as markup")
+            check(need("streamEndNoticeBody").text.indexOf(ShellStore.selectedGame.title) >= 0,
+                "the desktop body changed the literal title")
             check(need("streamEndNoticeCodeRow").visible
                 && need("streamEndNoticeCode").text === "Error code: 0x80030009", "the error code row is missing")
             check(!need("streamEndNoticeQuietCode").visible, "an error showed the quiet code line")

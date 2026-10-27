@@ -55,7 +55,7 @@ QtObject {
         ShellStore.authRestorePending = false
         ShellStore.authGeneration = 3
         ShellStore.authSession = {user: {userId: "console-notice", displayName: "Console notice"}}
-        ShellStore.selectedGame = {title: "Portal 2"}
+        ShellStore.selectedGame = {title: "<b>Portal 2 & Friends</b> <i>Co-op</i>"}
         AppController.navigate("game-detail")
         check(!window().desktopSurfaceActive, "the fixture did not start on the console surface")
         check(!need("consoleStreamEndNotice").opened, "a null notice opened the console dialog")
@@ -79,6 +79,9 @@ QtObject {
             check(corner.x >= 0 && corner.y >= 0, "the console card starts outside the window")
             check(need("consoleStreamEndNoticeTitle").text === "The stream ended unexpectedly", "error headline is wrong")
             check(need("consoleStreamEndNoticeBody").text.indexOf("Portal 2") >= 0, "the body does not name the game")
+            check(need("consoleStreamEndNoticeBody").textFormat === Text.PlainText, "the console body interprets an untrusted title as markup")
+            check(need("consoleStreamEndNoticeBody").text.indexOf(ShellStore.selectedGame.title) >= 0,
+                "the console body changed the literal title")
             check(need("consoleStreamEndNoticeCodeRow").visible
                 && need("consoleStreamEndNoticeCode").text === "Error code: 0x80030009", "the error code row is missing")
             return press(Qt.Key_Up)

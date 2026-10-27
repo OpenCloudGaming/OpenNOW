@@ -749,6 +749,8 @@ int AcceptanceSession::startSmokeWorkload()
                      || m_arguments.contains(u"--smoke-stream-toast-pending"_s)
                      || m_arguments.contains(u"--smoke-stream-recovery"_s)
                      || m_arguments.contains(u"--smoke-stream-end-notice-check"_s)
+                     || m_arguments.contains(u"--smoke-clock-skew-check"_s)
+                     || m_arguments.contains(u"--smoke-titlebar-keyboard-check"_s)
                      || m_arguments.contains(u"--smoke-console-stream-end-notice-check"_s))) {
         QQmlComponent component(&m_engine, QUrl(m_arguments.contains(u"--smoke-library-error"_s)
             ? u"qrc:/acceptance/LibraryErrorAcceptance.qml"_s
@@ -822,6 +824,10 @@ int AcceptanceSession::startSmokeWorkload()
             ? u"qrc:/acceptance/StreamEndNoticeAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-console-stream-end-notice-check"_s)
             ? u"qrc:/acceptance/ConsoleStreamEndNoticeAcceptance.qml"_s
+            : m_arguments.contains(u"--smoke-clock-skew-check"_s)
+            ? u"qrc:/acceptance/ClockSkewAcceptance.qml"_s
+            : m_arguments.contains(u"--smoke-titlebar-keyboard-check"_s)
+            ? u"qrc:/acceptance/WindowTitleBarAcceptance.qml"_s
             : u"qrc:/acceptance/BackendAvailabilityAcceptance.qml"_s));
         auto *fixture = component.create();
         if (!fixture) { qCritical() << component.errors(); return EXIT_FAILURE; }
@@ -924,6 +930,8 @@ int AcceptanceSession::startSmokeWorkload()
                        || m_arguments.contains(u"--bug-report-notice-check"_s)
                        || m_arguments.contains(u"--smoke-stream-end-notice-check"_s)
                        || m_arguments.contains(u"--smoke-console-stream-end-notice-check"_s)
+                       || m_arguments.contains(u"--smoke-clock-skew-check"_s)
+                       || m_arguments.contains(u"--smoke-titlebar-keyboard-check"_s)
                        || m_arguments.contains(u"--smoke-game-dlss"_s)
                        || m_arguments.contains(u"--smoke-game-details-layout"_s))) {
                 if (m_arguments.contains(u"--smoke-game-details-layout"_s)
@@ -976,6 +984,7 @@ int AcceptanceSession::startSmokeWorkload()
                             && image.save(m_arguments.at(shot + 1));
                     }
                     if (!success) qCritical("Interactive shell acceptance failed");
+                    if (success && m_arguments.contains(u"--smoke-ui-hold"_s)) return;
                     m_application.exit(success ? EXIT_SUCCESS : EXIT_FAILURE);
                 });
                 timer->start();

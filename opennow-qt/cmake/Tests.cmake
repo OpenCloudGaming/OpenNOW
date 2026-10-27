@@ -861,6 +861,19 @@ if(BUILD_TESTING)
     endforeach()
     qt_add_resources(opennow-qt "console-stream-end-notice-acceptance"
         PREFIX "/acceptance" BASE tests FILES tests/ConsoleStreamEndNoticeAcceptance.qml)
+    qt_add_resources(opennow-qt "clock-skew-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/ClockSkewAcceptance.qml)
+    qt_add_resources(opennow-qt "titlebar-keyboard-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/WindowTitleBarAcceptance.qml)
+    foreach(surface desktop console)
+        foreach(check clock-skew titlebar-keyboard)
+            add_test(NAME "qml-${check}-${surface}"
+                COMMAND opennow-qt --smoke-test --allow-multiple-instances --${surface}
+                    --route home --smoke-${check}-check --reduced-motion)
+            set_tests_properties("qml-${check}-${surface}" PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
+        endforeach()
+    endforeach()
     foreach(size_pair "1280;720" "1920;1080")
         list(GET size_pair 0 console_end_width)
         list(GET size_pair 1 console_end_height)

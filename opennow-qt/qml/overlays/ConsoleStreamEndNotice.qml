@@ -131,6 +131,7 @@ FocusScope {
                 topPadding: 16
                 horizontalAlignment: Text.AlignHCenter
                 text: copy.explanation
+                textFormat: Text.PlainText
                 color: Qt.rgba(Theme.label.r, Theme.label.g, Theme.label.b, 0.76)
                 wrapMode: Text.WordWrap
                 maximumLineCount: 4
