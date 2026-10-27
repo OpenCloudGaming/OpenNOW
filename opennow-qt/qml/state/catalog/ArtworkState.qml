@@ -47,11 +47,32 @@ QtObject {
         artworkInterests = interests
     }
 
-    function scheduleArtworkRetry(source) {
+    function reportArtworkLoad(sourceUrl, resolvedUrl, failed) {
+        const source = String(sourceUrl || "")
+        const resolved = String(resolvedUrl || "")
+        if (!/^https?:\/\//i.test(source) || !/^file:/i.test(resolved)
+                || artworkUrls[source] !== resolved)
+            return
+        if (failed) {
+            const urls = Object.assign({}, artworkUrls)
+            delete urls[source]
+            artworkUrls = urls
+            scheduleArtworkRetry(source, true)
+        } else {
+            if (!artworkRetrySources[source]) return
+            const retries = Object.assign({}, artworkRetrySources)
+            delete retries[source]
+            artworkRetrySources = retries
+        }
+    }
+
+    function scheduleArtworkRetry(source, loadFailed) {
         if (!artworkInterests[source]) return
         const retries = Object.assign({}, artworkRetrySources)
         const failures = Math.min(7, (retries[source] ? retries[source].failures : 0) + 1)
-        retries[source] = {failures: failures, nextAt: Date.now() + Math.min(1800000, 30000 * Math.pow(2, failures - 1))}
+        retries[source] = {failures: failures,
+            loadFailed: loadFailed === true || !!(retries[source] && retries[source].loadFailed),
+            nextAt: Date.now() + Math.min(1800000, 30000 * Math.pow(2, failures - 1))}
         artworkRetrySources = retries
     }
 
@@ -61,7 +82,8 @@ QtObject {
         for (const source of Object.keys(artworkRetrySources)) {
             if (!budget) break
             const retry = artworkRetrySources[source]
-            if (!artworkInterests[source] || retry.nextAt > now || artworkPending[source]) continue
+            if (!artworkInterests[source] || retry.nextAt > now || artworkPending[source]
+                    || (artworkUrls[source] !== undefined && String(artworkUrls[source]) !== source)) continue
             // A pending cache job completes via artwork.resolved; don't repeatedly
             // query it while waiting. A missed event can be retried after backoff.
             retry.nextAt = now + Math.min(1800000, 30000 * Math.pow(2, retry.failures - 1))
@@ -106,7 +128,8 @@ QtObject {
             urls[source] = resolved
             artworkUrls = urls
             const retries = Object.assign({}, artworkRetrySources)
-            delete retries[source]
+            if (!retries[source] || !retries[source].loadFailed)
+                delete retries[source]
             artworkRetrySources = retries
         }
         if (failed || (result && result.cached === false)) {
@@ -132,7 +155,7 @@ QtObject {
         const retries = Object.assign({}, artworkRetrySources)
         if (payload.cached === false) {
             scheduleArtworkRetry(source)
-        } else {
+        } else if (!retries[source] || !retries[source].loadFailed) {
             delete retries[source]
             artworkRetrySources = retries
         }

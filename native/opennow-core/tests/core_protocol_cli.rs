@@ -74,6 +74,7 @@ fn protocol_six_shells_receive_allocation_settlement_capability() {
     let capabilities = response["result"]["capabilities"].as_array().unwrap();
     for capability in [
         "catalog.libraryPages.v1",
+        "catalog.storeLocal.v2",
         "catalog.metadata.v1",
         "account.syncObservation.v1",
         "account.pushInvalidation.v1",

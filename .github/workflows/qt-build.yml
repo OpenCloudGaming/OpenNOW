@@ -564,7 +564,7 @@ jobs:
                   assert select.select([core.stdout], [], [], 30)[0], "Core handshake timed out"
                   response = json.loads(core.stdout.readline())
                   assert response.get("id") == "package-core" and response.get("ok") is True, response
-                  assert {"catalog.libraryPages.v1", "catalog.metadata.v1", "account.syncObservation.v1", "account.mutations.scoped.v1", "catalog.languages.v1", "queue.servers.v1", "auth.accountPicker.v1", "session.terminalCleanup.v1", "session.allocationSettlement.v1"}.issubset(response["result"]["capabilities"]), response
+                  assert {"catalog.libraryPages.v1", "catalog.metadata.v1", "account.syncObservation.v1", "account.mutations.scoped.v1", "catalog.languages.v1", "queue.servers.v1", "auth.accountPicker.v1", "session.terminalCleanup.v1", "session.allocationSettlement.v1", "catalog.storeLocal.v2"}.issubset(response["result"]["capabilities"]), response
               finally:
                   core.kill()
                   core.communicate(timeout=5)

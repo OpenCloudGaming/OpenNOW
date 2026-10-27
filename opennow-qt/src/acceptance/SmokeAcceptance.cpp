@@ -6,6 +6,7 @@
 
 #include <QColor>
 #include <QGuiApplication>
+#include <QImage>
 #include <QKeyEvent>
 #include <qpa/qwindowsysteminterface.h>
 #include <QDeadlineTimer>
@@ -22,9 +23,50 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <memory>
 
 using namespace Qt::StringLiterals;
+
+static void awaitArtworkEviction(QGuiApplication &application, QObject *fixture,
+                                 QTemporaryFile *cachedImage, const std::function<void()> &finished)
+{
+    auto *regression = fixture->findChild<QObject *>(u"artworkEvictionRegression"_s);
+    if (!regression) {
+        qCritical("Deferred artwork eviction regression was not created");
+        application.exit(EXIT_FAILURE);
+        return;
+    }
+    auto *timer = new QTimer(fixture);
+    timer->setInterval(20);
+    const auto deadline = QDeadlineTimer(5'000);
+    QObject::connect(timer, &QTimer::timeout, fixture,
+                     [&application, regression, cachedImage, timer, deadline, finished] {
+        const auto error = regression->property("error").toString();
+        if (!error.isEmpty() || deadline.hasExpired()) {
+            qCritical("Artwork eviction regression failed: %s", qPrintable(error.isEmpty()
+                ? u"deferred regression timed out"_s : error));
+            timer->stop();
+            application.exit(EXIT_FAILURE);
+            return;
+        }
+        if (regression->property("evictRequested").toBool()
+                && !regression->property("evicted").toBool()) {
+            if (!cachedImage->remove()) {
+                qCritical("Could not evict the cached artwork PNG");
+                timer->stop();
+                application.exit(EXIT_FAILURE);
+                return;
+            }
+            regression->setProperty("evicted", true);
+        }
+        if (regression->property("passed").toBool()) {
+            timer->stop();
+            finished();
+        }
+    });
+    timer->start();
+}
 
 static qreal relativeLuminance(const QColor &color)
 {
@@ -1029,6 +1071,20 @@ int AcceptanceSession::startSmokeWorkload()
         });
     } else if (m_smokeTest && (m_arguments.contains(u"--smoke-region-ping"_s) || m_arguments.contains(u"--smoke-store-paging"_s))) {
         const bool storePaging = m_arguments.contains(u"--smoke-store-paging"_s);
+        QTemporaryFile *artworkEvictionFile = nullptr;
+        if (storePaging) {
+            QVariantMap urls;
+            for (const auto &name : {u"cached"_s, u"recovered"_s}) {
+                auto *file = new QTemporaryFile(&m_engine);
+                QImage image(1, 1, QImage::Format_ARGB32);
+                image.fill(Qt::magenta);
+                if (!file->open() || !image.save(file, "PNG") || !file->flush()) return EXIT_FAILURE;
+                urls.insert(name, QUrl::fromLocalFile(file->fileName()).toString());
+                file->close();
+                if (name == u"cached"_s) artworkEvictionFile = file;
+            }
+            m_engine.rootContext()->setContextProperty(u"ArtworkEvictionUrls"_s, urls);
+        }
         QQmlComponent component(&m_engine, QUrl(storePaging ? u"qrc:/acceptance/StorePagingAcceptance.qml"_s
             : u"qrc:/acceptance/RegionPingAcceptance.qml"_s));
         auto *fixture = component.create();
@@ -1037,7 +1093,7 @@ int AcceptanceSession::startSmokeWorkload()
         auto *client = fixture->property("client").value<QObject *>();
         if (!client) return EXIT_FAILURE;
         m_engine.rootContext()->setContextProperty(u"CoreClient"_s, client);
-        QTimer::singleShot(150, this, [this, fixture, storePaging] {
+        QTimer::singleShot(150, this, [this, fixture, storePaging, artworkEvictionFile] {
             auto *window = qobject_cast<QQuickWindow *>(m_engine.rootObjects().first());
             auto *screen = window->findChild<QObject *>(storePaging ? u"desktopStoreContent"_s : u"desktopSettingsScreen"_s);
             auto *row = window->findChild<QObject *>(storePaging ? u"storePageStatusText"_s : u"renewRegionLatency"_s);
@@ -1053,30 +1109,36 @@ int AcceptanceSession::startSmokeWorkload()
                 m_application.exit(EXIT_FAILURE);
                 return;
             }
-            if (auto *results = window->findChild<QObject *>(u"renewNetworkRegion"_s))
-                results->setProperty("expanded", true);
-            if (storePaging && m_arguments.contains(u"--smoke-store-navigation"_s)) {
-                startStoreNavigationAcceptance(window, &m_qmlWarningOccurred);
-                return;
-            }
-            if (storePaging && m_arguments.contains(u"--smoke-store-appearance"_s)) {
-                QVariant prepared;
-                if (!QMetaObject::invokeMethod(fixture, "prepareAppearance", Q_RETURN_ARG(QVariant, prepared),
-                        Q_ARG(QVariant, QVariant::fromValue(screen)),
-                        Q_ARG(QVariant, QVariant(m_arguments.contains(u"--smoke-store-genres"_s)))) || !prepared.toBool()) {
-                    m_application.exit(EXIT_FAILURE);
+            const auto finishAcceptance = [this, window, fixture, screen, storePaging] {
+                if (auto *results = window->findChild<QObject *>(u"renewNetworkRegion"_s))
+                    results->setProperty("expanded", true);
+                if (storePaging && m_arguments.contains(u"--smoke-store-navigation"_s)) {
+                    startStoreNavigationAcceptance(window, &m_qmlWarningOccurred);
                     return;
                 }
-            }
-            QTimer::singleShot(250, this, [this, window] {
-                bool passed = !m_qmlWarningOccurred;
-                const auto shot = m_arguments.indexOf(u"--screenshot"_s);
-                if (shot >= 0 && shot + 1 < m_arguments.size()) {
-                    const auto path = m_arguments.at(shot + 1);
-                    passed = passed && QFileInfo(path).isAbsolute() && window->grabWindow().save(path);
+                if (storePaging && m_arguments.contains(u"--smoke-store-appearance"_s)) {
+                    QVariant prepared;
+                    if (!QMetaObject::invokeMethod(fixture, "prepareAppearance", Q_RETURN_ARG(QVariant, prepared),
+                            Q_ARG(QVariant, QVariant::fromValue(screen)),
+                            Q_ARG(QVariant, QVariant(m_arguments.contains(u"--smoke-store-genres"_s)))) || !prepared.toBool()) {
+                        m_application.exit(EXIT_FAILURE);
+                        return;
+                    }
                 }
-                m_application.exit(passed ? EXIT_SUCCESS : EXIT_FAILURE);
-            });
+                QTimer::singleShot(250, this, [this, window] {
+                    bool passed = !m_qmlWarningOccurred;
+                    const auto shot = m_arguments.indexOf(u"--screenshot"_s);
+                    if (shot >= 0 && shot + 1 < m_arguments.size()) {
+                        const auto path = m_arguments.at(shot + 1);
+                        passed = passed && QFileInfo(path).isAbsolute() && window->grabWindow().save(path);
+                    }
+                    m_application.exit(passed ? EXIT_SUCCESS : EXIT_FAILURE);
+                });
+            };
+            if (storePaging)
+                awaitArtworkEviction(m_application, screen, artworkEvictionFile, finishAcceptance);
+            else
+                finishAcceptance();
         });
     } else if (m_smokeTest && m_arguments.contains(u"--smoke-settings-motion"_s)) {
         auto *window = m_engine.rootObjects().isEmpty()

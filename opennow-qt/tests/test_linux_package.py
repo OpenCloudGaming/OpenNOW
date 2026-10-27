@@ -1,4 +1,5 @@
 import copy
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -6,7 +7,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packaging"))
-from verify_linux_package import verify_capabilities, verify_package
+from verify_linux_package import verify_capabilities, verify_core, verify_core_capabilities, verify_package
 
 
 class LinuxPackageDependenciesTest(unittest.TestCase):
@@ -67,6 +68,56 @@ file(WRITE "{source.as_posix()}/architecture.txt" "${{CPACK_DEBIAN_PACKAGE_ARCHI
             helper.chmod(0o600)
             with self.assertRaisesRegex(ValueError, "executable update helper"):
                 verify_package(bin_dir)
+
+
+class CorePackageCapabilitiesTest(unittest.TestCase):
+    def setUp(self):
+        self.message = {"id": "package-core", "ok": True,
+                        "result": {"protocolVersion": 6, "capabilities": ["catalog.storeLocal.v2", "account.mutations.scoped.v1", "session.allocationSettlement.v1"]}}
+
+    def test_store_replacement_capability_is_required(self):
+        verify_core_capabilities(self.message)
+        self.message["result"]["capabilities"] = ["catalog.storeLocal.v1", "account.mutations.scoped.v1", "session.allocationSettlement.v1"]
+        with self.assertRaisesRegex(ValueError, "Store replacement support"):
+            verify_core_capabilities(self.message)
+
+    def test_scoped_account_mutation_capability_is_required(self):
+        self.message["result"]["capabilities"] = ["catalog.storeLocal.v2", "session.allocationSettlement.v1"]
+        with self.assertRaisesRegex(ValueError, "scoped account mutations"):
+            verify_core_capabilities(self.message)
+
+    def test_allocation_settlement_capability_is_required(self):
+        self.message["result"]["capabilities"] = ["catalog.storeLocal.v2", "account.mutations.scoped.v1"]
+        with self.assertRaisesRegex(ValueError, "allocation settlement"):
+            verify_core_capabilities(self.message)
+
+    def test_previous_protocol_is_rejected(self):
+        self.message["result"]["protocolVersion"] = 5
+        with self.assertRaisesRegex(ValueError, "Store replacement support"):
+            verify_core_capabilities(self.message)
+
+    def test_core_failure_is_not_a_valid_handshake(self):
+        self.message["ok"] = False
+        with self.assertRaisesRegex(ValueError, "Store replacement support"):
+            verify_core_capabilities(self.message)
+
+    def test_installed_core_probe_checks_the_real_response(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "opennow-core"
+            for capability in ("catalog.storeLocal.v2", "catalog.storeLocal.v1"):
+                self.message["result"]["capabilities"] = [capability, "account.mutations.scoped.v1", "session.allocationSettlement.v1"]
+                binary.write_text(
+                    "#!/usr/bin/env python3\nimport json, sys\n"
+                    "request = json.loads(sys.stdin.readline())\n"
+                    "assert request['method'] == 'core.hello' and request['params']['protocolVersion'] == 6\n"
+                    f"print({json.dumps(self.message)!r}, flush=True)\n"
+                )
+                binary.chmod(0o700)
+                if capability.endswith("v2"):
+                    verify_core(Path(directory))
+                else:
+                    with self.assertRaisesRegex(ValueError, "Store replacement support"):
+                        verify_core(Path(directory))
 
 
 class LinuxPackageCapabilitiesTest(unittest.TestCase):

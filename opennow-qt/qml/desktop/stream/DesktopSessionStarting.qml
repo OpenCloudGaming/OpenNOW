@@ -72,6 +72,7 @@ FocusScope {
     Image {
         anchors.fill: parent
         source: artwork.resolvedUrl
+        onStatusChanged: artwork.reportImageStatus(status, source)
         fillMode: Image.PreserveAspectCrop
         asynchronous: true
         cache: true
