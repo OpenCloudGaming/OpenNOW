@@ -33,14 +33,14 @@ async function waitFor(predicate: () => boolean, attempts = 20, delay = 100): Pr
 }
 
 export function applyLaunchCommand(appId: number, name: string, command: LaunchCommand) {
-  SteamClient.Apps.SetShortcutName(appId, name);
-  SteamClient.Apps.SetShortcutExe(appId, command.exe);
-  SteamClient.Apps.SetShortcutStartDir(appId, command.startDir);
-  SteamClient.Apps.SetShortcutLaunchOptions(appId, command.options);
+  window.SteamClient.Apps.SetShortcutName(appId, name);
+  window.SteamClient.Apps.SetShortcutExe(appId, command.exe);
+  window.SteamClient.Apps.SetShortcutStartDir(appId, command.startDir);
+  window.SteamClient.Apps.SetShortcutLaunchOptions(appId, command.options);
 }
 
 export async function createShortcut(name: string, command: LaunchCommand): Promise<number> {
-  const appId = await SteamClient.Apps.AddShortcut(name, command.exe, command.startDir, command.options);
+  const appId = await window.SteamClient.Apps.AddShortcut(name, command.exe, command.startDir, command.options);
   if (typeof appId !== "number" || !(await waitFor(() => overview(appId) !== null))) {
     throw new Error("Steam didn't create the shortcut. Restart Steam and try again.");
   }
@@ -50,7 +50,7 @@ export async function createShortcut(name: string, command: LaunchCommand): Prom
 
 export async function removeShortcut(appId: number) {
   if (overview(appId) === null) return;
-  SteamClient.Apps.RemoveShortcut(appId);
+  window.SteamClient.Apps.RemoveShortcut(appId);
   await waitFor(() => overview(appId) === null);
 }
 
@@ -64,7 +64,7 @@ const ART_SLOTS: [keyof CatalogArt, ELibraryAssetType][] = [
 export async function setCatalogArtwork(appId: number, art: CatalogArt) {
   await Promise.all(ART_SLOTS.filter(([key]) => art[key]).map(async ([key, slot]) => {
     const image = await backend.artwork(art[key]);
-    await SteamClient.Apps.SetCustomArtworkForApp(appId, image.data, image.type, slot);
+    await window.SteamClient.Apps.SetCustomArtworkForApp(appId, image.data, image.type, slot);
   }));
 }
 
@@ -86,12 +86,12 @@ export function isRunning(appId: number | null): boolean {
 export function launch(appId: number) {
   const app = overview(appId);
   if (!app) throw new Error("That shortcut is gone from your library.");
-  SteamClient.Apps.RunGame(app.gameid, "", -1, 100);
+  window.SteamClient.Apps.RunGame(app.gameid, "", -1, 100);
 }
 
 export function terminate(appId: number) {
   const app = overview(appId);
-  if (app) SteamClient.Apps.TerminateApp(app.gameid, false);
+  if (app) window.SteamClient.Apps.TerminateApp(app.gameid, false);
 }
 
 export async function waitForExit(appId: number, timeoutMs: number): Promise<boolean> {
@@ -99,7 +99,7 @@ export async function waitForExit(appId: number, timeoutMs: number): Promise<boo
 }
 
 export function onAppLifetime(callback: (appId: number, running: boolean) => void): () => void {
-  const registration = SteamClient.GameSessions.RegisterForAppLifetimeNotifications((notification) => {
+  const registration = window.SteamClient.GameSessions.RegisterForAppLifetimeNotifications((notification) => {
     callback(notification.unAppID, notification.bRunning);
   });
   return () => registration.unregister();

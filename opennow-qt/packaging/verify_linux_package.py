@@ -31,8 +31,8 @@ def verify_core_capabilities(message):
     result = message.get("result", {})
     if (message.get("id") != "package-core" or message.get("ok") is not True
             or result.get("protocolVersion") != 5
-            or "catalog.storeLocal.v2" not in result.get("capabilities", [])):
-        raise ValueError(f"The packaged core lacks protocol 5 Store replacement support: {message}")
+            or not {"catalog.storeLocal.v2", "account.mutations.scoped.v1"}.issubset(result.get("capabilities", []))):
+        raise ValueError(f"The packaged core lacks protocol 5 Store replacement support or scoped account mutations: {message}")
 
 
 def verify_apprun(appdir):
