@@ -73,22 +73,27 @@ file(WRITE "{source.as_posix()}/architecture.txt" "${{CPACK_DEBIAN_PACKAGE_ARCHI
 class CorePackageCapabilitiesTest(unittest.TestCase):
     def setUp(self):
         self.message = {"id": "package-core", "ok": True,
-                        "result": {"protocolVersion": 6, "capabilities": ["catalog.storeLocal.v2", "account.mutations.scoped.v1", "session.allocationSettlement.v1"]}}
+                        "result": {"protocolVersion": 6, "capabilities": ["catalog.storeLocal.v2", "account.mutations.scoped.v1", "session.allocationSettlement.v1", "session.adReportIdentity.v1"]}}
 
     def test_store_replacement_capability_is_required(self):
         verify_core_capabilities(self.message)
-        self.message["result"]["capabilities"] = ["catalog.storeLocal.v1", "account.mutations.scoped.v1", "session.allocationSettlement.v1"]
+        self.message["result"]["capabilities"] = ["catalog.storeLocal.v1", "account.mutations.scoped.v1", "session.allocationSettlement.v1", "session.adReportIdentity.v1"]
         with self.assertRaisesRegex(ValueError, "Store replacement support"):
             verify_core_capabilities(self.message)
 
     def test_scoped_account_mutation_capability_is_required(self):
-        self.message["result"]["capabilities"] = ["catalog.storeLocal.v2", "session.allocationSettlement.v1"]
+        self.message["result"]["capabilities"].remove("account.mutations.scoped.v1")
         with self.assertRaisesRegex(ValueError, "scoped account mutations"):
             verify_core_capabilities(self.message)
 
     def test_allocation_settlement_capability_is_required(self):
-        self.message["result"]["capabilities"] = ["catalog.storeLocal.v2", "account.mutations.scoped.v1"]
+        self.message["result"]["capabilities"].remove("session.allocationSettlement.v1")
         with self.assertRaisesRegex(ValueError, "allocation settlement"):
+            verify_core_capabilities(self.message)
+
+    def test_ad_report_identity_capability_is_required(self):
+        self.message["result"]["capabilities"].remove("session.adReportIdentity.v1")
+        with self.assertRaisesRegex(ValueError, "ad report identity"):
             verify_core_capabilities(self.message)
 
     def test_previous_protocol_is_rejected(self):
@@ -105,7 +110,7 @@ class CorePackageCapabilitiesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             binary = Path(directory) / "opennow-core"
             for capability in ("catalog.storeLocal.v2", "catalog.storeLocal.v1"):
-                self.message["result"]["capabilities"] = [capability, "account.mutations.scoped.v1", "session.allocationSettlement.v1"]
+                self.message["result"]["capabilities"] = [capability, "account.mutations.scoped.v1", "session.allocationSettlement.v1", "session.adReportIdentity.v1"]
                 binary.write_text(
                     "#!/usr/bin/env python3\nimport json, sys\n"
                     "request = json.loads(sys.stdin.readline())\n"
@@ -118,6 +123,18 @@ class CorePackageCapabilitiesTest(unittest.TestCase):
                 else:
                     with self.assertRaisesRegex(ValueError, "Store replacement support"):
                         verify_core(Path(directory))
+
+    def test_installed_core_without_ad_report_identity_is_rejected(self):
+        self.message["result"]["capabilities"].remove("session.adReportIdentity.v1")
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "opennow-core"
+            binary.write_text(
+                "#!/usr/bin/env python3\nimport sys\nsys.stdin.readline()\n"
+                f"print({json.dumps(self.message)!r}, flush=True)\n"
+            )
+            binary.chmod(0o700)
+            with self.assertRaisesRegex(ValueError, "ad report identity"):
+                verify_core(Path(directory))
 
 
 class LinuxPackageCapabilitiesTest(unittest.TestCase):
