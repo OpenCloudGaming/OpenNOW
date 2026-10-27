@@ -27,6 +27,7 @@ mod reports;
 mod requests;
 mod server_vpc_cache;
 mod settings;
+mod settings_rpc;
 mod store_cache;
 mod store_catalog_page;
 mod store_index;
@@ -40,7 +41,7 @@ use fs2::FileExt;
 use gfn::GfnService;
 use opennow_core::update_apply;
 use rand::RngCore;
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use settings::{SettingsStore, resolve_data_dir};
 use std::env;
 use std::io::{self, BufRead, Write};
@@ -212,7 +213,7 @@ fn run() -> Result<(), String> {
             let started = Instant::now();
             let result = requests::scope(permit.token.clone(), || {
                 requests::check().map_err(|error| (error.code.to_owned(), error.message))?;
-                dispatch(&method, &params, &worker_core, &worker_output).map(|(mut value, event)| {
+                dispatch(&method, &params, &worker_core, &worker_output, &id).map(|(mut value, event)| {
                     if method.starts_with("catalog.") {
                         let settings = worker_core.settings.lock().expect("settings poisoned").all();
                         worker_core.gfn.annotate_dlss(&mut value, &settings);
@@ -275,21 +276,8 @@ fn run() -> Result<(), String> {
             ) {
                 reconcile_push(&worker_core);
             }
-            if !was_cancelled {
-                match result {
-                    Ok((value, event)) => {
-                        if let Some(("settings.changed", payload)) = &event {
-                            let _ = worker_output.send(json!({"type":"event", "name":"settings.changed", "payload":payload}));
-                        }
-                        let _ = worker_output.send(json!({"type":"response", "id":id, "ok":true, "result":value}));
-                        if let Some((name, payload)) = event && name != "settings.changed" {
-                            let _ = worker_output.send(json!({"type":"event", "name":name, "payload":payload}));
-                        }
-                    }
-                    Err((code, message)) => {
-                        let _ = worker_output.send(json!({"type":"response", "id":id, "ok":false, "error":{"code":code, "message":message}}));
-                    }
-                }
+            if !was_cancelled && !(settings_rpc::handles(&method) && result.is_ok()) {
+                publish_response(&worker_output, &id, &result);
             }
             drop(permit);
         }).map_err(|error| error.to_string())?;
@@ -299,6 +287,26 @@ fn run() -> Result<(), String> {
 }
 
 type DispatchResult = Result<(Value, Option<(&'static str, Value)>), (String, String)>;
+
+fn publish_response(output: &mpsc::Sender<Value>, id: &str, result: &DispatchResult) {
+    match result {
+        Ok((value, event)) => {
+            if let Some(("settings.changed", payload)) = event {
+                let _ = output
+                    .send(json!({"type":"event", "name":"settings.changed", "payload":payload}));
+            }
+            let _ = output.send(json!({"type":"response", "id":id, "ok":true, "result":value}));
+            if let Some((name, payload)) = event
+                && *name != "settings.changed"
+            {
+                let _ = output.send(json!({"type":"event", "name":name, "payload":payload}));
+            }
+        }
+        Err((code, message)) => {
+            let _ = output.send(json!({"type":"response", "id":id, "ok":false, "error":{"code":code, "message":message}}));
+        }
+    }
+}
 
 fn update_session_idle(session: &Value, streamer: &Value) -> bool {
     session.get("session") == Some(&Value::Null)
@@ -402,6 +410,7 @@ fn dispatch(
     params: &Value,
     core: &Arc<AppCore>,
     output: &mpsc::Sender<Value>,
+    request_id: &str,
 ) -> DispatchResult {
     let session_transition = matches!(
         method,
@@ -450,11 +459,6 @@ fn dispatch(
             }),
             None,
         )),
-        "settings.get" => Ok((
-            json!({"settings":core.settings.lock().expect("settings poisoned").all(),
-                "keyboardLayouts":language::keyboard_choices()}),
-            None,
-        )),
         "settings.choices.get" => {
             let settings = core.settings.lock().expect("settings poisoned").all();
             Ok((
@@ -467,99 +471,33 @@ fn dispatch(
                 None,
             ))
         }
-        "settings.set" => {
-            let key = params["key"].as_str().ok_or((
-                "invalid_params".to_owned(),
-                "settings.set requires a key".to_owned(),
-            ))?;
+        "settings.set" if params["key"] == "region" => {
+            let key = "region";
             let value = params.get("value").cloned().ok_or((
                 "invalid_params".to_owned(),
                 "settings.set requires a value".to_owned(),
             ))?;
-            if key == "region" {
-                let provider = params["providerIdpId"].as_str().unwrap_or("");
-                let event = core.gfn.with_region_provider(provider, || {
-                    let mut settings = core.settings.lock().expect("settings poisoned");
-                    let applied = settings.set_provider_region(provider, value).map_err(|message| gfn::ServiceError { code: "invalid_setting", message })?;
-                    Ok(json!({"key":key,"value":applied,"changes":{
-                        "regionProviderIdpId":provider,"providerRegions":settings.all()["providerRegions"]
-                    }}))
-                }).map_err(gfn_error)?;
-                return Ok((event.clone(), Some(("settings.changed", event))));
-            }
-            let mut settings = core.settings.lock().expect("settings poisoned");
-            let codec_before = settings.all()["codec"].clone();
-            let fallback_before = settings.all()["fallbackCodec"].clone();
-            let applied = settings
-                .set(key, value)
-                .map_err(|message| ("invalid_setting".to_owned(), message))?;
-            let mut event = json!({"key":key, "value":applied});
-            if key == "colorQuality" {
-                // An explicitly saved codec the new color mode cannot use is
-                // healed toward Auto in the same save; report the repair so the
-                // shell follows it without re-reading all settings.
-                let current = settings.all();
-                let mut changes = Map::new();
-                if current["codec"] != codec_before {
-                    changes.insert("codec".to_owned(), current["codec"].clone());
+            let provider = params["providerIdpId"].as_str().unwrap_or("");
+            let event = core.gfn.with_region_provider(provider, || {
+                let mut settings = core.settings.lock().expect("settings poisoned");
+                let applied = settings.set_provider_region(provider, value).map_err(|message| gfn::ServiceError { code: "invalid_setting", message })?;
+                let event = json!({"key":key,"value":applied,"changes":{
+                    "regionProviderIdpId":provider,"providerRegions":settings.all()["providerRegions"]
+                }});
+                let result = Ok((event.clone(), Some(("settings.changed", event.clone()))));
+                if !requests::current().cancelled() {
+                    publish_response(output, request_id, &result);
                 }
-                if current["fallbackCodec"] != fallback_before {
-                    changes.insert("fallbackCodec".to_owned(), current["fallbackCodec"].clone());
-                }
-                if !changes.is_empty() {
-                    event["changes"] = Value::Object(changes);
-                }
-            }
-            if key == "launchInConsoleMode" && applied == json!(false) {
-                event["changes"] = json!({"switchToConsoleOnPad": false});
-            } else if key == "themePack" {
-                let values = settings.all();
-                event["changes"] = json!({
-                    "appTheme": values["appTheme"],
-                    "themeAccentOverride": values["themeAccentOverride"]
-                });
-            } else if key == "appAccentColor" {
-                event["changes"] = json!({"themeAccentOverride": true});
-            } else if key == "webrtcCompatibilityMode" {
-                event["changes"] = json!({"allianceWebrtcCompatibility": settings.all()["allianceWebrtcCompatibility"]});
-            } else if key == "allianceWebrtcCompatibility" {
-                event["changes"] =
-                    json!({"webrtcCompatibilityMode": settings.all()["webrtcCompatibilityMode"]});
-            }
-            if key == "microphoneMode" && applied == json!("voice-activity") {
-                event["changes"] = json!({"microphoneDeviceId": ""});
-            }
+                Ok(event)
+            }).map_err(gfn_error)?;
             Ok((event.clone(), Some(("settings.changed", event))))
         }
-        "settings.shortcuts.update" => {
-            let bindings = core
-                .settings
-                .lock()
-                .expect("settings poisoned")
-                .set_shortcuts(&params["bindings"])
-                .map_err(|message| ("invalid_setting".to_owned(), message))?;
-            let (key, value) = bindings
-                .iter()
-                .next()
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .expect("shortcut transaction applies at least one binding");
-            let event = json!({"key":key, "value":value, "changes":bindings});
-            Ok((
-                json!({"bindings":bindings}),
-                Some(("settings.changed", event)),
-            ))
-        }
-        "settings.reset" => {
-            let values = core
-                .settings
-                .lock()
-                .expect("settings poisoned")
-                .reset()
-                .map_err(|message| ("settings_write_failed".to_owned(), message))?;
-            Ok((
-                json!({"settings":values}),
-                Some(("settings.reset", json!({}))),
-            ))
+        "settings.get" | "settings.set" | "settings.shortcuts.update" | "settings.reset" => {
+            settings_rpc::dispatch(&core.settings, method, params, |result| {
+                if !requests::current().cancelled() {
+                    publish_response(output, request_id, result);
+                }
+            })
         }
         "auth.providers.list" => core
             .gfn
