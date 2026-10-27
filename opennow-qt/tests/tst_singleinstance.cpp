@@ -5,19 +5,19 @@
 #include <QCryptographicHash>
 #include <QDir>
 #include <QStandardPaths>
+#include <QLocalSocket>
+#include <QScopeGuard>
 
 #include <atomic>
 #include <thread>
 
 namespace {
-#ifdef Q_OS_UNIX
 QString endpointName()
 {
     const auto scope = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation).toUtf8();
     const auto digest = QCryptographicHash::hash(scope, QCryptographicHash::Sha256).toHex().first(16);
     return QStringLiteral("opennow-%1").arg(QString::fromLatin1(digest));
 }
-#endif
 }
 
 class SingleInstanceTest final : public QObject
@@ -77,6 +77,73 @@ private slots:
         QCOMPARE(secondaryAcquisition.load(), SingleInstance::Acquisition::Forwarded);
         const auto arguments = activation.first().first().toStringList();
         QCOMPARE(arguments.value(1), QStringLiteral("opennow://launch/99"));
+    }
+
+    void quitWithoutAPrimaryDoesNotStartAnApplication()
+    {
+        QCOMPARE(SingleInstance::requestQuit(), EXIT_FAILURE);
+        SingleInstance instance;
+        QCOMPARE(instance.acquire({QStringLiteral("opennow")}), SingleInstance::Acquisition::Primary);
+    }
+
+    void quitWaitsForCompletionAndCanBeCancelled_data()
+    {
+        QTest::addColumn<bool>("cancel");
+        QTest::newRow("completed") << false;
+        QTest::newRow("cancelled") << true;
+    }
+
+    void quitWaitsForCompletionAndCanBeCancelled()
+    {
+        QFETCH(bool, cancel);
+        SingleInstance primary;
+        QCOMPARE(primary.acquire({QStringLiteral("opennow")}), SingleInstance::Acquisition::Primary);
+        QSignalSpy requested(&primary, &SingleInstance::quitRequested);
+        QSignalSpy activated(&primary, &SingleInstance::activationRequested);
+        std::atomic_bool completed = false;
+        std::atomic_int result = -1;
+        std::thread secondary([&] {
+            result = SingleInstance::requestQuit();
+            completed = true;
+        });
+        const auto joinSecondary = qScopeGuard([&] {
+            primary.cancelQuitRequest();
+            secondary.join();
+        });
+        QTRY_COMPARE_WITH_TIMEOUT(requested.size(), 1, 2'000);
+        QCOMPARE(activated.size(), 0);
+        QTest::qWait(50);
+        QVERIFY(!completed.load());
+        if (cancel) primary.cancelQuitRequest();
+        else primary.finishQuitRequest();
+        QTRY_VERIFY_WITH_TIMEOUT(completed.load(), 2'000);
+        QCOMPARE(result.load(), cancel ? 2 : EXIT_SUCCESS);
+        if (!cancel) {
+            SingleInstance replacement;
+            QCOMPARE(replacement.acquire({QStringLiteral("opennow")}), SingleInstance::Acquisition::Primary);
+        }
+    }
+
+    void abandonedQuitIsCancelledAndAllowsAnotherRequest()
+    {
+        SingleInstance primary;
+        QCOMPARE(primary.acquire({QStringLiteral("opennow")}), SingleInstance::Acquisition::Primary);
+        QSignalSpy requested(&primary, &SingleInstance::quitRequested);
+        QSignalSpy abandoned(&primary, &SingleInstance::quitRequestAbandoned);
+        QLocalSocket peer;
+        peer.connectToServer(endpointName());
+        QVERIFY(peer.waitForConnected());
+        peer.write("[\"--request-quit\"]\n");
+        peer.flush();
+        QTRY_COMPARE(requested.size(), 1);
+        peer.abort();
+        QTRY_COMPARE(abandoned.size(), 1);
+        peer.connectToServer(endpointName());
+        QVERIFY(peer.waitForConnected());
+        peer.write("[\"--request-quit\"]\n");
+        peer.flush();
+        QTRY_COMPARE(requested.size(), 2);
+        primary.cancelQuitRequest();
     }
 };
 

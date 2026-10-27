@@ -28,7 +28,7 @@ function Request-Catalog([string]$Method, [hashtable]$Params) {
     return $response.result
 }
 try {
-    $hello = Request-Catalog 'core.hello' @{protocolVersion=5;shell='qt';shellVersion='0.5.4'}
+    $hello = Request-Catalog 'core.hello' @{protocolVersion=6;shell='qt';shellVersion='0.5.4'}
     if ($hello.capabilities -notcontains 'catalog.storePages.v1') { throw 'Core lacks Store pagination capability' }
     $cursor = ''
     $seenCursors = [System.Collections.Generic.HashSet[string]]::new()
@@ -51,7 +51,7 @@ try {
         $sections[$section] = @($presentation.items).Count
     }
     $search = Request-Catalog 'catalog.store.list' @{limit=100;cursor='';searchQuery='Fortnite'}
-    $alive = Request-Catalog 'core.hello' @{protocolVersion=5;shell='qt';shellVersion='0.5.4'}
+    $alive = Request-Catalog 'core.hello' @{protocolVersion=6;shell='qt';shellVersion='0.5.4'}
     [pscustomobject]@{pages=$pages;uniqueGames=$games.Count;totalCount=$page.totalCount;
         maxResponseBytes=$maximumBytes;protocolLimitBytes=1048576;sections=$sections;
         searchResults=@($search.games).Count;coreStillAlive=(-not $core.HasExited)} | ConvertTo-Json -Depth 4

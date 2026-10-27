@@ -30,9 +30,9 @@ def verify_capabilities(message):
 def verify_core_capabilities(message):
     result = message.get("result", {})
     if (message.get("id") != "package-core" or message.get("ok") is not True
-            or result.get("protocolVersion") != 5
-            or not {"catalog.storeLocal.v2", "account.mutations.scoped.v1"}.issubset(result.get("capabilities", []))):
-        raise ValueError(f"The packaged core lacks protocol 5 Store replacement support or scoped account mutations: {message}")
+            or result.get("protocolVersion") != 6
+            or not {"catalog.storeLocal.v2", "account.mutations.scoped.v1", "session.allocationSettlement.v1"}.issubset(result.get("capabilities", []))):
+        raise ValueError(f"The packaged core lacks protocol 6 Store replacement support, scoped account mutations, or allocation settlement: {message}")
 
 
 def verify_apprun(appdir):
@@ -90,7 +90,7 @@ def verify_core(bin_dir):
         )
         try:
             core.stdin.write('{"type":"request","id":"package-core","method":"core.hello",'
-                             '"params":{"protocolVersion":5}}\n')
+                             '"params":{"protocolVersion":6}}\n')
             core.stdin.flush()
             if not select.select([core.stdout], [], [], 30)[0]:
                 raise TimeoutError("The packaged core handshake timed out")

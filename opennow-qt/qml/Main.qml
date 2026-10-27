@@ -29,6 +29,48 @@ ApplicationWindow {
         visible: windowTheme.clientDecorations && window.visibility === ApplicationWindow.Windowed
     }
     property bool applicationCloseConfirmed: false
+    property bool sessionQuitPending: false
+    property bool sessionQuitStopping: false
+    signal sessionQuitCancelled()
+
+    function requestSessionQuit() {
+        if (window.sessionQuitPending)
+            return
+        window.sessionQuitPending = true
+        AppController.showOverlay("application-quit-confirm")
+    }
+
+    function cancelSessionQuit() {
+        if (!window.sessionQuitPending)
+            return
+        window.sessionQuitPending = false
+        window.sessionQuitStopping = false
+        window.sessionQuitCancelled()
+        if (AppController.overlay === "application-quit-confirm")
+            AppController.showOverlay("")
+    }
+
+    function confirmApplicationQuit() {
+        if (window.sessionQuitPending) {
+            if (window.sessionQuitStopping)
+                return
+            window.sessionQuitStopping = true
+            AppController.showOverlay("")
+            ShellStore.stopStreamingSession()
+            window.finishSessionQuit()
+            return
+        }
+        window.applicationCloseConfirmed = true
+        window.close()
+    }
+
+    function finishSessionQuit() {
+        if (!window.sessionQuitStopping || !ShellStore.sessionWorkIdle || CoreClient.allocationsSettled !== true)
+            return
+        window.applicationCloseConfirmed = true
+        window.close()
+    }
+
     property bool librarySearchPending: false
     property string pendingConsoleScreenshotSession: ""
     property int pendingConsoleScreenshotFrames: 0
@@ -38,6 +80,10 @@ ApplicationWindow {
             && consoleOverlayHost.supportedOverlay ? consoleOverlayHost : null
     onConsoleModalFocusOwnerChanged: if (consoleModalFocusOwner) Qt.callLater(window.restoreConsoleModalFocus)
     onClosing: event => {
+        if (window.sessionQuitStopping && !applicationCloseConfirmed) {
+            event.accepted = false
+            return
+        }
         if (!applicationCloseConfirmed && ShellStore.applicationQuitNeedsConfirmation) {
             event.accepted = false
             AppController.showOverlay("application-quit-confirm")
@@ -243,6 +289,7 @@ ApplicationWindow {
 
     Connections {
         target: ShellStore
+        function onSessionWorkIdleChanged() { Qt.callLater(window.finishSessionQuit) }
         function onActiveSessionChanged() {
             if (!ShellStore.activeSession
                     || String(ShellStore.activeSession.sessionId || "") !== window.pendingConsoleScreenshotSession)
@@ -269,6 +316,12 @@ ApplicationWindow {
             AppController.showOverlay("")
             window.update()
         }
+    }
+
+    Connections {
+        target: CoreClient
+        function onAllocationsSettledChanged() { Qt.callLater(window.finishSessionQuit) }
+        ignoreUnknownSignals: true
     }
 
     Connections {
@@ -403,6 +456,8 @@ ApplicationWindow {
     }
 
     function quitIfSessionFinished() {
+        if (window.sessionQuitPending)
+            return
         if (!QuitAfterSession)
             return
         if (ShellStore.forceNewAfterStop || ShellStore.launchInspectRequestId !== ""
@@ -818,6 +873,9 @@ ApplicationWindow {
                 Qt.callLater(() => window.showConfiguredStreamStats())
             }
             function onOverlayChanged() {
+                if (window.sessionQuitPending && !window.sessionQuitStopping
+                        && AppController.overlay !== "application-quit-confirm")
+                    window.cancelSessionQuit()
                 if (AppController.overlay !== "")
                     window.pendingConsoleScreenshotSession = ""
                 if (window.desktopSurfaceActive && window.activeRoute === "stream"
@@ -976,13 +1034,14 @@ ApplicationWindow {
         layer.enabled: HdrOutput.chromeRequired
         layer.effect: HdrChromeEffect {}
         quittingApplication: true
+        endingSessionOnQuit: window.sessionQuitPending
         opened: window.desktopSurfaceActive && AppController.overlay === "application-quit-confirm"
         z: 1200
-        onCancelRequested: AppController.showOverlay("")
-        onConfirmRequested: {
-            window.applicationCloseConfirmed = true
-            window.close()
+        onCancelRequested: {
+            window.cancelSessionQuit()
+            AppController.showOverlay("")
         }
+        onConfirmRequested: window.confirmApplicationQuit()
     }
 
     DesktopStreamExitConfirm {
@@ -1058,9 +1117,9 @@ ApplicationWindow {
                 : switchingAccount ? qsTr("Switch to %1?").arg(switchTargetName) : endingSession
                 ? (waitingForSession ? qsTr("Leave this session request?") : qsTr("End this session?"))
                 : qsTr("Update could not be completed")
-            message: quittingApplication
+            message: quittingApplication && !window.sessionQuitPending
                 ? qsTr("OpenNOW will close and disconnect from any active cloud session.")
-                : switchingAccount
+                : switchingAccount || quittingApplication
                 ? qsTr("Your game will close on the remote rig. This session cannot be resumed after it ends.")
                 : endingSession
                 ? (waitingForSession ? qsTr("Your session request will be cancelled and you will leave the queue.")
@@ -1095,8 +1154,7 @@ ApplicationWindow {
             })
             onConfirmRequested: {
                 if (quittingApplication) {
-                    window.applicationCloseConfirmed = true
-                    window.close()
+                    window.confirmApplicationQuit()
                 } else if (switchingAccount) {
                     ShellStore.confirmAccountSwitch()
                 } else if (endingSession) {

@@ -30,6 +30,234 @@ fn reconciliation_hint() -> Value {
 }
 
 #[test]
+fn restarted_cleanup_recovers_only_from_authenticated_exact_seat_evidence() {
+    for scenario in [
+        "delete",
+        "absent",
+        "target-absent",
+        "wrong-account",
+        "wrong-get-id",
+    ] {
+        let seat = json!({"sessionId":"seat-a","status":3,"sessionRequestData":{"appId":123}});
+        let mut responses = vec![
+            (200, json!({"metaData":[]})),
+            (
+                200,
+                json!({"requestStatus":{"statusCode":1},"sessions":if scenario == "absent" {json!([])} else {json!([seat.clone()])}}),
+            ),
+        ];
+        if matches!(scenario, "delete" | "wrong-get-id" | "target-absent") {
+            responses.push((
+                if scenario == "target-absent" {
+                    404
+                } else {
+                    200
+                },
+                json!({"requestStatus":{"statusCode":1},"session":if scenario == "wrong-get-id" {
+                    json!({"sessionId":"unrelated-seat","status":3})
+                } else {seat}}),
+            ));
+        }
+        if scenario == "delete" {
+            responses.push((204, json!({})));
+        }
+        let (url, worker) = mock_requests(responses, |index, request| {
+            assert!(!request.contains("attacker.example"));
+            if index == 3 {
+                assert!(request.starts_with("DELETE /v2/session/seat-a "));
+            } else {
+                assert!(request.starts_with("GET "));
+            }
+            assert!(request.contains("GFNJWT test-access"));
+        });
+        let (mut service, path) = service(&url);
+        let marker = path.join("pending-session-cleanup.json");
+        std::fs::write(&marker, serde_json::to_vec(&json!({
+            "sessionId":"seat-a","streamingBaseUrl":"https://attacker.example/",
+            "owner":[DEFAULT_IDP_ID, if scenario == "wrong-account" {"account-b"} else {"account-a"}],
+            "cleanupPending":true
+        })).unwrap()).unwrap();
+        service.cloudmatch =
+            CloudMatchService::with_cleanup_path(service.client.clone(), marker.clone());
+        service
+            .cloudmatch
+            .set_test_control_base(url::Url::parse(&url).unwrap());
+        service.remote_sessions(&json!({}), &json!({})).unwrap();
+        if scenario != "absent" {
+            let result = service.stop_session(&json!({"sessionId":"seat-a"}), &json!({}));
+            if matches!(scenario, "delete" | "target-absent") {
+                assert_eq!(result.unwrap()["stopped"], true);
+            } else {
+                assert_eq!(
+                    result.unwrap_err().code,
+                    if scenario == "wrong-account" {
+                        "session_cleanup_pending"
+                    } else {
+                        "upstream_error"
+                    }
+                );
+            }
+        }
+        let resolved = matches!(scenario, "delete" | "absent" | "target-absent");
+        assert_eq!(!marker.exists(), resolved, "{scenario}");
+        assert_eq!(
+            service.cloudmatch.admit_create().is_ok(),
+            resolved,
+            "{scenario}"
+        );
+        worker.join().unwrap();
+        std::fs::remove_dir_all(path).unwrap();
+    }
+}
+
+#[test]
+fn failed_attach_provenance_keeps_exact_seat_retry_and_stop_available() {
+    for reconcile in [false, true] {
+        for retry in [false, true] {
+            let ready = json!({"requestStatus":{"statusCode":1},"session":{
+                "sessionId":"seat-a","status":3,"sessionRequestData":{"appId":123,
+                    "secureRTSPSupported":false,"metaData":[{"key":"GSStreamerType","value":"WebRTC"}]},
+                "connectionInfo":[{"usage":14,"appLevelProtocol":4,"ip":"seat.partner.example","port":443,"resourcePath":"/nvst/"}]
+            }});
+            let ack = (200, json!({"requestStatus":{"statusCode":1}}));
+            let mut responses = Vec::new();
+            if reconcile {
+                responses.extend(vec![(200, json!({"metaData":[]})),
+                (200, json!({"requestStatus":{"statusCode":1},"sessions":[ready["session"].clone()]}))]);
+            }
+            responses.push((200, ready.clone()));
+            if !reconcile {
+                responses.push(ack.clone());
+            }
+            if retry {
+                responses.push((200, ready));
+                responses.push(ack);
+            } else {
+                responses.push((204, json!({})));
+            }
+            let (url, worker) = mock_requests(responses, |_, request| {
+                assert!(!request.contains("unrelated-seat"));
+                assert!(request.contains("GFNJWT test-access"));
+            });
+            let (mut service, path) = service(&url);
+            service
+                .cloudmatch
+                .set_test_control_base(url::Url::parse(&url).unwrap());
+            std::fs::create_dir(path.join("webrtc-session.json")).unwrap();
+            if !reconcile {
+                service.cloudmatch.seed_discovered_sessions(&[
+                    json!({"sessionId":"seat-a","streamingBaseUrl":DEFAULT_STREAMING_URL}),
+                ]);
+                service.session_routing.lock().unwrap().discovery_owner =
+                    Some((DEFAULT_IDP_ID.into(), "account-a".into(), 7));
+            }
+            let settings = json!({"webrtcCompatibilityMode":"on"});
+            let result = if reconcile {
+                service.reconcile_active_session(&reconciliation_hint(), &settings)
+            } else {
+                service.claim_session(&json!({"sessionId":"seat-a"}), &settings)
+            };
+            assert_eq!(result.unwrap_err().code, "session_provenance_unavailable");
+            assert!(service.cloudmatch.active()["session"].is_null());
+            assert!(
+                service
+                    .session_routing
+                    .lock()
+                    .unwrap()
+                    .active_owner
+                    .is_none()
+            );
+            if retry {
+                std::fs::remove_dir(path.join("webrtc-session.json")).unwrap();
+                let result = service
+                    .claim_session(&json!({"sessionId":"seat-a"}), &settings)
+                    .unwrap();
+                assert_eq!(result["session"]["sessionId"], "seat-a");
+                assert!(
+                    service
+                        .session_routing
+                        .lock()
+                        .unwrap()
+                        .active_owner
+                        .is_some()
+                );
+            } else {
+                assert_eq!(
+                    service
+                        .stop_session(&json!({"sessionId":"seat-a"}), &settings)
+                        .unwrap()["stopped"],
+                    true
+                );
+            }
+            worker.join().unwrap();
+            std::fs::remove_dir_all(path).unwrap();
+        }
+    }
+}
+
+#[test]
+fn cancelled_claim_fences_handover_and_retains_exact_seat_stop() {
+    for cancel_on in [0, 1] {
+        let requests = std::sync::Arc::new(crate::requests::Requests::default());
+        let permit = requests.admit("claim", "session.claim").unwrap();
+        let remote_requests = requests.clone();
+        let mut responses = vec![(
+            200,
+            json!({"requestStatus":{"statusCode":1},"session":{
+                "sessionId":"seat-a","status":3,"sessionRequestData":{"appId":123}
+            }}),
+        )];
+        if cancel_on == 1 {
+            responses.push((200, json!({"requestStatus":{"statusCode":1}})));
+        }
+        responses.push((204, json!({})));
+        let (url, worker) = mock_requests(responses, move |index, request| {
+            if index == 0 {
+                assert!(request.starts_with("GET /v2/session/seat-a "));
+            } else if cancel_on == 1 && index == 1 {
+                assert!(request.starts_with("PUT /v2/session/seat-a?"));
+                assert!(request.contains("RESUME"));
+            } else {
+                assert!(request.starts_with("DELETE /v2/session/seat-a "));
+            }
+            if index == cancel_on {
+                remote_requests.cancel("claim");
+            }
+        });
+        let (mut service, path) = service(&url);
+        service
+            .cloudmatch
+            .set_test_control_base(url::Url::parse(&url).unwrap());
+        service.cloudmatch.seed_discovered_sessions(&[
+            json!({"sessionId":"seat-a","streamingBaseUrl":DEFAULT_STREAMING_URL}),
+        ]);
+        service.session_routing.lock().unwrap().discovery_owner =
+            Some((DEFAULT_IDP_ID.into(), "account-a".into(), 7));
+        let result = crate::requests::scope(permit.token.clone(), || {
+            service.claim_session(&json!({"sessionId":"seat-a"}), &json!({}))
+        });
+        assert_eq!(result.unwrap_err().code, "cancelled");
+        assert!(service.cloudmatch.active()["session"].is_null());
+        assert!(
+            service
+                .session_routing
+                .lock()
+                .unwrap()
+                .active_owner
+                .is_none()
+        );
+        assert_eq!(
+            service
+                .stop_session(&json!({"sessionId":"seat-a"}), &json!({}))
+                .unwrap()["stopped"],
+            true
+        );
+        worker.join().unwrap();
+        std::fs::remove_dir_all(path).unwrap();
+    }
+}
+
+#[test]
 fn hinted_active_get_restores_control_without_resuming_media() {
     let payload = json!({"requestStatus":{"statusCode":1},"session":{
         "sessionId":"seat-a","status":3,"sessionRequestData":{"appId":"123"},
@@ -486,6 +714,314 @@ fn launch_metadata() -> Vec<(u16, Value)> {
 }
 
 #[test]
+fn fresh_create_provenance_failure_keeps_public_owner_and_durable_cleanup() {
+    for stop in [false, true] {
+        let mut responses = launch_metadata();
+        responses.extend([
+            (200, json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"fresh-seat","status":1,
+                "sessionControlInfo":{"ip":"seat.nvidiagrid.net","port":443}}})),
+            (204, json!({})),
+        ]);
+        let (url, worker) = mock_requests(responses, |index, request| {
+            if index == 6 {
+                assert!(request.starts_with("POST /v2/session?"));
+            }
+            if index == 7 {
+                assert!(request.starts_with("DELETE /v2/session/fresh-seat "));
+            }
+        });
+        let (mut service, path) = service(&url);
+        service
+            .cloudmatch
+            .set_test_control_base(url::Url::parse(&url).unwrap());
+        std::fs::create_dir(path.join("webrtc-session.json")).unwrap();
+        let result = service.create_session(
+            &launch_params("123"),
+            &json!({"webrtcCompatibilityMode":"on"}),
+            |settings| Ok(settings.clone()),
+        );
+        assert_eq!(result.unwrap_err().code, "session_provenance_unavailable");
+        assert_eq!(
+            service.active_session().unwrap()["session"]["sessionId"],
+            "fresh-seat"
+        );
+        assert!(
+            service
+                .session_routing
+                .lock()
+                .unwrap()
+                .active_owner
+                .as_ref()
+                .unwrap()
+                .matches(&auth_fixture("account-a"), "fresh-seat")
+        );
+        let recovery = path.join("unresolved-allocation.json");
+        let restarted = CloudMatchService::with_cleanup_path(
+            service.client.clone(),
+            path.join("pending-session-cleanup.json"),
+        );
+        assert_eq!(
+            restarted
+                .admit_create()
+                .err()
+                .expect("restart must retain the allocation obligation")
+                .code,
+            "session_allocation_unresolved"
+        );
+        let record: Value = serde_json::from_slice(&std::fs::read(&recovery).unwrap()).unwrap();
+        assert_eq!(record["sessionId"], "fresh-seat");
+        if stop {
+            assert_eq!(
+                service
+                    .stop_session(&json!({"sessionId":"fresh-seat"}), &json!({}))
+                    .unwrap()["stopped"],
+                true
+            );
+        } else {
+            service.finish_session_create("fresh-seat", false).unwrap();
+        }
+        assert!(service.active_session().unwrap()["session"].is_null());
+        assert!(service.cloudmatch.admit_create().is_ok());
+        assert!(!recovery.exists());
+        worker.join().unwrap();
+        std::fs::remove_dir_all(path).unwrap();
+    }
+}
+
+#[test]
+fn fresh_create_write_ahead_record_survives_handoff_and_acceptance_until_stop() {
+    let mut responses = launch_metadata();
+    responses.extend([
+        (
+            200,
+            json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"fresh-seat","status":1,
+            "sessionControlInfo":{"ip":"seat.nvidiagrid.net","port":443}}}),
+        ),
+        (204, json!({})),
+        (204, json!({})),
+    ]);
+    let (url, worker) = mock_requests(responses, |index, request| {
+        if index == 7 {
+            assert!(request.starts_with("DELETE /v2/session/other-seat "));
+        }
+        if index == 8 {
+            assert!(request.starts_with("DELETE /v2/session/fresh-seat "));
+        }
+    });
+    let (mut service, path) = service(&url);
+    service
+        .cloudmatch
+        .set_test_control_base(url::Url::parse(&url).unwrap());
+    service
+        .create_session(&launch_params("123"), &json!({}), |settings| {
+            Ok(settings.clone())
+        })
+        .unwrap();
+    for accepted in [false, true] {
+        if accepted {
+            service.finish_session_create("fresh-seat", true).unwrap();
+        }
+        let restarted = CloudMatchService::with_cleanup_path(
+            service.client.clone(),
+            path.join("pending-session-cleanup.json"),
+        );
+        assert_eq!(
+            restarted
+                .admit_create()
+                .err()
+                .expect("restart before or after acceptance must retain ownership")
+                .code,
+            "session_allocation_unresolved"
+        );
+        assert_eq!(
+            restarted
+                .finish_create("fresh-seat", false)
+                .unwrap_err()
+                .code,
+            "session_allocation_unresolved"
+        );
+    }
+    assert_eq!(
+        service
+            .cloudmatch
+            .stop(
+                &json!({"sessionId":"fresh-seat"}),
+                &json!({}),
+                &auth_fixture("account-b"),
+                &service.device_id
+            )
+            .unwrap_err()
+            .code,
+        "session_allocation_unresolved"
+    );
+    service.cloudmatch.seed_discovered_sessions(&[
+        json!({"sessionId":"other-seat","streamingBaseUrl":DEFAULT_STREAMING_URL}),
+    ]);
+    service.session_routing.lock().unwrap().discovery_owner =
+        Some((DEFAULT_IDP_ID.into(), "account-a".into(), 7));
+    service
+        .stop_session(&json!({"sessionId":"other-seat"}), &json!({}))
+        .unwrap();
+    assert!(path.join("unresolved-allocation.json").exists());
+    assert_eq!(
+        service.active_session().unwrap()["session"]["sessionId"],
+        "fresh-seat"
+    );
+    assert_eq!(
+        service
+            .stop_session(&json!({"sessionId":"fresh-seat"}), &json!({}))
+            .unwrap()["stopped"],
+        true
+    );
+    assert!(!path.join("unresolved-allocation.json").exists());
+    assert!(service.cloudmatch.admit_create().is_ok());
+    worker.join().unwrap();
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn failed_fresh_seat_identification_keeps_original_write_ahead_and_exact_cleanup() {
+    let mut responses = launch_metadata();
+    responses.extend([
+        (200, json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"fresh-seat","status":1}})),
+        (204, json!({})),
+    ]);
+    let (path_tx, path_rx) = std::sync::mpsc::channel::<PathBuf>();
+    let (url, worker) = mock_requests(responses, move |index, request| {
+        if index == 6 {
+            assert!(request.starts_with("POST /v2/session?"));
+            std::fs::create_dir(
+                path_rx
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap()
+                    .join("unresolved-allocation.tmp"),
+            )
+            .unwrap();
+        }
+        if index == 7 {
+            assert!(request.starts_with("DELETE /v2/session/fresh-seat "));
+        }
+    });
+    let (mut service, path) = service(&url);
+    path_tx.send(path.clone()).unwrap();
+    service
+        .cloudmatch
+        .set_test_control_base(url::Url::parse(&url).unwrap());
+    let result = service.create_session(&launch_params("123"), &json!({}), |settings| {
+        Ok(settings.clone())
+    });
+    assert_eq!(result.unwrap_err().code, "session_allocation_unresolved");
+    assert!(service.active_session().unwrap()["session"].is_null());
+    let record: Value =
+        serde_json::from_slice(&std::fs::read(path.join("unresolved-allocation.json")).unwrap())
+            .unwrap();
+    assert!(record["sessionId"].is_null());
+    let restarted = CloudMatchService::with_cleanup_path(
+        service.client.clone(),
+        path.join("pending-session-cleanup.json"),
+    );
+    assert_eq!(
+        restarted.admit_create().err().unwrap().code,
+        "session_allocation_unresolved"
+    );
+    service.finish_session_create("fresh-seat", false).unwrap();
+    assert!(!path.join("unresolved-allocation.json").exists());
+    assert!(service.cloudmatch.admit_create().is_ok());
+    worker.join().unwrap();
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn unrelated_terminal_poll_preserves_the_durable_allocation_obligation() {
+    let mut responses = launch_metadata();
+    responses.extend([
+        (200, json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"fresh-seat","status":1,
+            "sessionControlInfo":{"ip":"seat.nvidiagrid.net","port":443}}})),
+        (200, json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"other-seat","status":7}})),
+        (204, json!({})),
+    ]);
+    let (url, worker) = mock_requests(responses, |index, request| {
+        if index == 7 {
+            assert!(request.starts_with("GET /v2/session/fresh-seat "));
+        }
+        if index == 8 {
+            assert!(request.starts_with("DELETE /v2/session/fresh-seat "));
+        }
+    });
+    let (mut service, path) = service(&url);
+    service
+        .cloudmatch
+        .set_test_control_base(url::Url::parse(&url).unwrap());
+    service
+        .create_session(&launch_params("123"), &json!({}), |settings| {
+            Ok(settings.clone())
+        })
+        .unwrap();
+    service.finish_session_create("fresh-seat", true).unwrap();
+    assert_eq!(
+        service
+            .poll_session(&json!({"sessionId":"fresh-seat"}))
+            .unwrap_err()
+            .code,
+        "upstream_error"
+    );
+    assert_eq!(
+        service.active_session().unwrap()["session"]["sessionId"],
+        "fresh-seat"
+    );
+    assert!(path.join("unresolved-allocation.json").exists());
+    let restarted = CloudMatchService::with_cleanup_path(
+        service.client.clone(),
+        path.join("pending-session-cleanup.json"),
+    );
+    assert_eq!(
+        restarted.admit_create().err().unwrap().code,
+        "session_allocation_unresolved"
+    );
+    service
+        .stop_session(&json!({"sessionId":"fresh-seat"}), &json!({}))
+        .unwrap();
+    assert!(!path.join("unresolved-allocation.json").exists());
+    worker.join().unwrap();
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn accepted_fresh_seat_authoritative_termination_clears_durable_obligation() {
+    for status in [7, 404] {
+        let mut responses = launch_metadata();
+        responses.extend([
+            (200, json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"fresh-seat","status":1,
+                "sessionControlInfo":{"ip":"seat.nvidiagrid.net","port":443}}})),
+            (if status == 404 {404} else {200}, json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"fresh-seat","status":7}})),
+        ]);
+        let (url, worker) = mock_requests(responses, |index, request| {
+            if index == 7 {
+                assert!(request.starts_with("GET /v2/session/fresh-seat "));
+            }
+        });
+        let (mut service, path) = service(&url);
+        service
+            .cloudmatch
+            .set_test_control_base(url::Url::parse(&url).unwrap());
+        service
+            .create_session(&launch_params("123"), &json!({}), |settings| {
+                Ok(settings.clone())
+            })
+            .unwrap();
+        service.finish_session_create("fresh-seat", true).unwrap();
+        service
+            .poll_session(&json!({"sessionId":"fresh-seat"}))
+            .unwrap();
+        assert!(service.active_session().unwrap()["session"].is_null());
+        assert!(!path.join("unresolved-allocation.json").exists());
+        assert!(service.cloudmatch.admit_create().is_ok());
+        worker.join().unwrap();
+        std::fs::remove_dir_all(path).unwrap();
+    }
+}
+
+#[test]
 fn create_uses_the_launched_variant_hdr_metadata_without_saving_settings() {
     let directory = tempfile::tempdir().unwrap();
     let mut store =
@@ -617,9 +1153,12 @@ fn native_session_end_releases_owned_seat_before_next_allocation() {
         })
         .unwrap();
     assert_eq!(created["session"]["sessionId"], "replacement-seat");
-    service
-        .finish_session_create("replacement-seat", true)
-        .unwrap();
+    assert_eq!(
+        service
+            .finish_session_create("replacement-seat", true)
+            .unwrap(),
+        SessionCreateOutcome::HandedOff
+    );
     assert_eq!(
         service.acknowledge_session_end(&notification).unwrap()["cleared"],
         false
@@ -846,7 +1385,7 @@ fn reject_concurrent_create_during(discovery: bool) {
             if discovery {
                 "cancelled"
             } else {
-                "upstream_error"
+                "session_allocation_unresolved"
             }
         );
         assert_eq!(
@@ -859,7 +1398,14 @@ fn reject_concurrent_create_during(discovery: bool) {
         second.join().unwrap();
     });
     assert!(service.cloudmatch.active()["session"].is_null());
-    assert!(service.cloudmatch.admit_create().is_ok());
+    if discovery {
+        assert!(service.cloudmatch.admit_create().is_ok());
+    } else {
+        assert_eq!(
+            service.cloudmatch.admit_create().err().unwrap().code,
+            "session_allocation_unresolved"
+        );
+    }
     worker.join().unwrap();
     std::fs::remove_dir_all(path).unwrap();
 }
@@ -1803,7 +2349,10 @@ fn durable_seat_republication_does_not_renew_allocation_receipt_authority() {
             .allocation_generation,
         Some(7)
     );
-    service.finish_session_create("fresh-seat", true).unwrap();
+    assert_eq!(
+        service.finish_session_create("fresh-seat", true).unwrap(),
+        SessionCreateOutcome::Cleaned
+    );
     assert!(service.cloudmatch.active()["session"].is_null());
     assert!(
         service

@@ -45,6 +45,18 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("--fullscreen", options)
         self.assertNotIn("--quit-after-session", options)
 
+    async def test_close_requests_qt_confirmation_through_the_installed_flatpak(self):
+        with mock.patch("opennow_decky.process.request_quit", return_value=True, create=True) as request:
+            self.assertTrue(await self.plugin.close_opennow())
+        install = request.call_args.args[0]
+        self.assertEqual([install.exe, *install.args, "--request-quit"], [
+            "/usr/bin/flatpak", "run", "--user", "io.github.opencloudgaming.OpenNOW", "--request-quit",
+        ])
+
+    async def test_cancelled_qt_confirmation_does_not_report_a_closed_application(self):
+        with mock.patch("opennow_decky.process.request_quit", return_value=False, create=True):
+            self.assertFalse(await self.plugin.close_opennow())
+
     async def test_game_page_waits_for_the_first_catalog_load(self):
         game = {"id": "g", "title": "Silksong", "variants": [{"id": "1", "store": "STEAM", "storeId": "1030300"}], "art": {}}
 

@@ -41,6 +41,8 @@ jobs:
         run: python -m unittest discover -s tests -t .
       - name: Install frontend dependencies
         run: npx --yes pnpm@9 install
+      - name: Frontend tests
+        run: node --experimental-vm-modules --test tests/*.test.mjs
       - name: Typecheck
         run: npx --yes pnpm@9 run typecheck
       - name: Build

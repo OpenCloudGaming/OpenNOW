@@ -73,21 +73,26 @@ file(WRITE "{source.as_posix()}/architecture.txt" "${{CPACK_DEBIAN_PACKAGE_ARCHI
 class CorePackageCapabilitiesTest(unittest.TestCase):
     def setUp(self):
         self.message = {"id": "package-core", "ok": True,
-                        "result": {"protocolVersion": 5, "capabilities": ["catalog.storeLocal.v2", "account.mutations.scoped.v1"]}}
+                        "result": {"protocolVersion": 6, "capabilities": ["catalog.storeLocal.v2", "account.mutations.scoped.v1", "session.allocationSettlement.v1"]}}
 
     def test_store_replacement_capability_is_required(self):
         verify_core_capabilities(self.message)
-        self.message["result"]["capabilities"] = ["catalog.storeLocal.v1", "account.mutations.scoped.v1"]
+        self.message["result"]["capabilities"] = ["catalog.storeLocal.v1", "account.mutations.scoped.v1", "session.allocationSettlement.v1"]
         with self.assertRaisesRegex(ValueError, "Store replacement support"):
             verify_core_capabilities(self.message)
 
     def test_scoped_account_mutation_capability_is_required(self):
-        self.message["result"]["capabilities"] = ["catalog.storeLocal.v2"]
+        self.message["result"]["capabilities"] = ["catalog.storeLocal.v2", "session.allocationSettlement.v1"]
         with self.assertRaisesRegex(ValueError, "scoped account mutations"):
             verify_core_capabilities(self.message)
 
-    def test_protocol_six_is_not_accepted_early(self):
-        self.message["result"]["protocolVersion"] = 6
+    def test_allocation_settlement_capability_is_required(self):
+        self.message["result"]["capabilities"] = ["catalog.storeLocal.v2", "account.mutations.scoped.v1"]
+        with self.assertRaisesRegex(ValueError, "allocation settlement"):
+            verify_core_capabilities(self.message)
+
+    def test_previous_protocol_is_rejected(self):
+        self.message["result"]["protocolVersion"] = 5
         with self.assertRaisesRegex(ValueError, "Store replacement support"):
             verify_core_capabilities(self.message)
 
@@ -100,11 +105,11 @@ class CorePackageCapabilitiesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             binary = Path(directory) / "opennow-core"
             for capability in ("catalog.storeLocal.v2", "catalog.storeLocal.v1"):
-                self.message["result"]["capabilities"] = [capability, "account.mutations.scoped.v1"]
+                self.message["result"]["capabilities"] = [capability, "account.mutations.scoped.v1", "session.allocationSettlement.v1"]
                 binary.write_text(
                     "#!/usr/bin/env python3\nimport json, sys\n"
                     "request = json.loads(sys.stdin.readline())\n"
-                    "assert request['method'] == 'core.hello' and request['params']['protocolVersion'] == 5\n"
+                    "assert request['method'] == 'core.hello' and request['params']['protocolVersion'] == 6\n"
                     f"print({json.dumps(self.message)!r}, flush=True)\n"
                 )
                 binary.chmod(0o700)

@@ -2879,6 +2879,39 @@ private slots:
         QVERIFY(!main.contains(QStringLiteral("StreamSurfaceController")));
     }
 
+    void requestedQuitWaitsForTheSessionAndRecorderBeforeClosing()
+    {
+        QJSEngine engine;
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            var stops=0, closes=0, overlays=[];
+            var ShellStore={sessionWorkIdle:false, stopStreamingSession:function(){++stops;}};
+            var CoreClient={allocationsSettled:false};
+            var AppController={showOverlay:function(value){overlays.push(value);}};
+            var window={sessionQuitPending:false, sessionQuitStopping:false,
+                applicationCloseConfirmed:false, close:function(){++closes;}};
+        )JS")).isError());
+        const auto main = source(QStringLiteral("qml/Main.qml"));
+        for (const auto &name : {"requestSessionQuit", "confirmApplicationQuit", "finishSessionQuit"}) {
+            const auto match = QRegularExpression(QStringLiteral(
+                "    function %1\\([^\\n]*\\) \\{.*?\\n    \\}").arg(QString::fromLatin1(name)),
+                QRegularExpression::DotMatchesEverythingOption).match(main);
+            QVERIFY2(match.hasMatch(), name);
+            QVERIFY(!engine.evaluate(match.captured()).isError());
+            QVERIFY(!engine.evaluate(QStringLiteral("window.%1=%1").arg(QString::fromLatin1(name))).isError());
+        }
+        QVERIFY(!engine.evaluate(QStringLiteral("requestSessionQuit(); requestSessionQuit();")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("stops")).toInt(), 0);
+        QCOMPARE(engine.evaluate(QStringLiteral("overlays.join(',')")).toString(), QStringLiteral("application-quit-confirm"));
+        QVERIFY(!engine.evaluate(QStringLiteral("confirmApplicationQuit();")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("stops")).toInt(), 1);
+        QCOMPARE(engine.evaluate(QStringLiteral("closes")).toInt(), 0);
+        QVERIFY(!engine.evaluate(QStringLiteral("ShellStore.sessionWorkIdle=true; finishSessionQuit();")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("closes")).toInt(), 0);
+        QVERIFY(!engine.evaluate(QStringLiteral("CoreClient.allocationsSettled=true; finishSessionQuit();")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("closes")).toInt(), 1);
+        QVERIFY(engine.evaluate(QStringLiteral("window.applicationCloseConfirmed")).toBool());
+    }
+
     void quitStopsTheCoreBeforeBoundedPresentationTeardown()
     {
         const auto main = source(QStringLiteral("src/app/ApplicationStartup.cpp"));
@@ -2887,11 +2920,15 @@ private slots:
         const auto core = main.indexOf(QStringLiteral("coreClient.stop();"));
         const auto roots = main.indexOf(QStringLiteral("for (auto *root : roots) delete root;"));
         const auto streamer = main.indexOf(QStringLiteral("nativeStreamRuntime.shutdown()"), exec);
+        const auto completed = main.indexOf(QStringLiteral("singleInstance.finishQuitRequest();"), exec);
         QVERIFY(exec >= 0);
         QVERIFY(deadline > exec);
         QVERIFY(core > deadline);
         QVERIFY(roots > core);
         QVERIFY(streamer > roots);
+        QVERIFY(completed > streamer);
+        QVERIFY(main.contains(QStringLiteral("if (exitCode == EXIT_SUCCESS && requestedQuitCompleted)")));
+        QVERIFY(main.contains(QStringLiteral("->property(\"sessionWorkIdle\").toBool()")));
         QVERIFY(main.contains(QStringLiteral("TerminateProcess(GetCurrentProcess(), UINT(exitCode));")));
         QVERIFY(main.contains(QStringLiteral("std::_Exit(exitCode);")));
     }

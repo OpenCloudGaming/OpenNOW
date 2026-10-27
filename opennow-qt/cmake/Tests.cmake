@@ -1702,6 +1702,20 @@ if(BUILD_TESTING)
         set_tests_properties("qml-${surface}-input-capture-error" PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT ${OPENNOW_QT_SMOKE_TIMEOUT})
     endforeach()
+    qt_add_resources(opennow-qt "session-quit-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/SessionQuitAcceptance.qml)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        find_package(Python3 COMPONENTS Interpreter REQUIRED)
+        foreach(surface desktop console)
+            foreach(mode windowed fullscreen)
+                add_test(NAME "qml-requested-quit-${surface}-${mode}"
+                    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_session_quit.py"
+                        "$<TARGET_FILE:opennow-qt>" ${surface} ${mode})
+                set_tests_properties("qml-requested-quit-${surface}-${mode}" PROPERTIES
+                    ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 45)
+            endforeach()
+        endforeach()
+    endif()
     foreach(surface desktop console)
         foreach(mode windowed fullscreen)
             foreach(route stream inserting home)

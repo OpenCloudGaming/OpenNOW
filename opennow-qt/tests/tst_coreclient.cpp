@@ -34,6 +34,139 @@ class CoreClientTest final : public QObject
     Q_OBJECT
 
 private slots:
+    void allocationCancellationWaitsForExplicitSettlement_data()
+    {
+        QTest::addColumn<bool>("cancelExplicitly");
+        QTest::newRow("cancelled") << true;
+        QTest::newRow("deadline") << false;
+    }
+
+    void allocationCancellationWaitsForExplicitSettlement()
+    {
+        QFETCH(bool, cancelExplicitly);
+        CoreClient client;
+        QSignalSpy failures(&client, &CoreClient::requestFailed);
+        QVERIFY(client.start(fakeCorePath()));
+        QTRY_COMPARE_WITH_TIMEOUT(client.state(), QStringLiteral("ready"), 2'000);
+        QVERIFY(client.property("allocationsSettled").toBool());
+        const auto id = client.request(QStringLiteral("session.create"), {{QStringLiteral("holdSettlement"), true}}, 100);
+        QVERIFY(!id.isEmpty());
+        QVERIFY(!client.property("allocationsSettled").toBool());
+        if (cancelExplicitly) QVERIFY(client.cancel(id));
+        else QTRY_COMPARE_WITH_TIMEOUT(failures.size(), 1, 2'000);
+        QTest::qWait(50);
+        QVERIFY(!client.property("allocationsSettled").toBool());
+        QVERIFY(!client.request(QStringLiteral("test.allocation.settle"), {
+            {QStringLiteral("requestId"), id}, {QStringLiteral("outcome"), QStringLiteral("cleaned")}}).isEmpty());
+        QTRY_VERIFY_WITH_TIMEOUT(client.property("allocationsSettled").toBool(), 2'000);
+    }
+
+    void allocationLossAndCleanupFailureStayFailClosed_data()
+    {
+        QTest::addColumn<bool>("coreLoss");
+        QTest::newRow("cleanup-failure") << false;
+        QTest::newRow("core-loss-and-restart") << true;
+    }
+
+    void allocationLossAndCleanupFailureStayFailClosed()
+    {
+        QFETCH(bool, coreLoss);
+        CoreClient client;
+        QVERIFY(client.start(fakeCorePath()));
+        QTRY_COMPARE_WITH_TIMEOUT(client.state(), QStringLiteral("ready"), 2'000);
+        const auto id = client.request(QStringLiteral("session.create"), {{QStringLiteral("holdSettlement"), true}});
+        QVERIFY(client.cancel(id));
+        if (coreLoss) {
+            QVERIFY(!client.request(QStringLiteral("test.exit")).isEmpty());
+            QTRY_VERIFY_WITH_TIMEOUT(!client.lastError().isEmpty(), 2'000);
+            QTRY_COMPARE_WITH_TIMEOUT(client.state(), QStringLiteral("ready"), 4'000);
+        } else {
+            QVERIFY(!client.request(QStringLiteral("test.allocation.settle"), {
+                {QStringLiteral("requestId"), id}, {QStringLiteral("outcome"), QStringLiteral("failed")}}).isEmpty());
+            QTest::qWait(100);
+        }
+        QVERIFY(!client.property("allocationsSettled").toBool());
+        QVERIFY(client.request(QStringLiteral("session.create")).isEmpty());
+    }
+
+    void cancelledAllocationTrackingIsBounded()
+    {
+        CoreClient client;
+        QVERIFY(client.start(fakeCorePath()));
+        QTRY_COMPARE_WITH_TIMEOUT(client.state(), QStringLiteral("ready"), 2'000);
+        QStringList allocations;
+        for (int index = 0; index < CoreClient::MaximumTrackedAllocations; ++index) {
+            const auto id = client.request(QStringLiteral("session.create"), {{QStringLiteral("holdSettlement"), true}});
+            QVERIFY(!id.isEmpty());
+            QVERIFY(client.cancel(id));
+            allocations.append(id);
+        }
+        QVERIFY(client.request(QStringLiteral("session.create")).isEmpty());
+        for (const auto &id : allocations)
+            QVERIFY(!client.request(QStringLiteral("test.allocation.settle"), {
+                {QStringLiteral("requestId"), id}, {QStringLiteral("outcome"), QStringLiteral("cleaned")}}).isEmpty());
+        QTRY_VERIFY_WITH_TIMEOUT(client.property("allocationsSettled").toBool(), 2'000);
+    }
+
+    void allocationSettlementCannotBeDroppedByEventOverflow()
+    {
+        CoreClient client;
+        QSignalSpy dropped(&client, &CoreClient::eventsDropped);
+        QVERIFY(client.start(fakeCorePath()));
+        QTRY_COMPARE_WITH_TIMEOUT(client.state(), QStringLiteral("ready"), 2'000);
+        const auto id = client.request(QStringLiteral("session.create"), {{QStringLiteral("holdSettlement"), true}});
+        QVERIFY(client.cancel(id));
+        const auto event = QByteArrayLiteral("{\"type\":\"event\",\"name\":\"test.generic\",\"payload\":{}}");
+        for (int index = 0; index < CoreClient::MaximumQueuedEvents + 32; ++index)
+            client.processLine(event);
+        QVERIFY(!client.allocationsSettled());
+        client.processLine(QJsonDocument(QJsonObject{
+            {QStringLiteral("type"), QStringLiteral("event")},
+            {QStringLiteral("name"), QStringLiteral("session.allocation.settled")},
+            {QStringLiteral("payload"), QJsonObject{{QStringLiteral("requestId"), id},
+                {QStringLiteral("outcome"), QStringLiteral("cleaned")}}}}).toJson(QJsonDocument::Compact));
+        for (int index = 0; index < CoreClient::MaximumQueuedEvents + 32; ++index)
+            client.processLine(event);
+        QVERIFY(client.allocationsSettled());
+        QTRY_VERIFY_WITH_TIMEOUT(!dropped.isEmpty(), 2'000);
+        QVERIFY(dropped.first().first().toInt() > 0);
+    }
+
+    void busyAllocationCancellationDoesNotAwaitAnUnadmittedWorker_data()
+    {
+        QTest::addColumn<bool>("cancelImmediately");
+        QTest::newRow("cancel-before-busy-response") << true;
+        QTest::newRow("cancel-after-busy-response") << false;
+    }
+
+    void busyAllocationCancellationDoesNotAwaitAnUnadmittedWorker()
+    {
+        QFETCH(bool, cancelImmediately);
+        CoreClient client;
+        QVERIFY(client.start(fakeCorePath()));
+        QTRY_COMPARE_WITH_TIMEOUT(client.state(), QStringLiteral("ready"), 2'000);
+        const auto id = client.request(QStringLiteral("session.create"), {{QStringLiteral("allocationBusy"), true}});
+        QVERIFY(!id.isEmpty());
+        if (!cancelImmediately) QTest::qWait(50);
+        QVERIFY(client.cancel(id));
+        QTRY_VERIFY_WITH_TIMEOUT(client.property("allocationsSettled").toBool(), 2'000);
+    }
+
+    void rejectsCoreWithoutAllocationSettlementCapability()
+    {
+        const auto previous = qgetenv("OPENNOW_TEST_NO_ALLOCATION_SETTLEMENT_CAPABILITY");
+        const auto restore = qScopeGuard([previous] {
+            if (previous.isNull()) qunsetenv("OPENNOW_TEST_NO_ALLOCATION_SETTLEMENT_CAPABILITY");
+            else qputenv("OPENNOW_TEST_NO_ALLOCATION_SETTLEMENT_CAPABILITY", previous);
+        });
+        qputenv("OPENNOW_TEST_NO_ALLOCATION_SETTLEMENT_CAPABILITY", "1");
+        CoreClient client;
+        QVERIFY(client.start(fakeCorePath()));
+        QTRY_COMPARE_WITH_TIMEOUT(client.state(), QStringLiteral("failed"), 2'000);
+        QVERIFY(!client.property("allocationsSettled").toBool());
+        QVERIFY(client.request(QStringLiteral("session.create")).isEmpty());
+    }
+
     void deliversSettingsChangesBeforeTheirAcknowledgements()
     {
         CoreClient client;
@@ -411,7 +544,8 @@ private slots:
     {
         CoreClient client;
         QCOMPARE(client.state(), QStringLiteral("stopped"));
-        QCOMPARE(client.protocolVersion(), 5);
+        QCOMPARE(client.protocolVersion(), 6);
+        QVERIFY(!client.property("allocationsSettled").toBool());
         QVERIFY(client.lastError().isEmpty());
     }
 

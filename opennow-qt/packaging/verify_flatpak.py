@@ -28,7 +28,7 @@ def verify_flatpak():
     )
     try:
         core.stdin.write('{"type":"request","id":"package-core","method":"core.hello",'
-                         '"params":{"protocolVersion":5}}\n')
+                         '"params":{"protocolVersion":6}}\n')
         core.stdin.flush()
         if not select.select([core.stdout], [], [], 30)[0]:
             raise TimeoutError("The installed Flatpak core handshake timed out")
