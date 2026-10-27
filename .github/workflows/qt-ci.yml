@@ -260,6 +260,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 opennow-qt/packaging/verify_release_tag.py \
-            --repository "$GITHUB_REPOSITORY" --tag "v$RELEASE_VERSION" --commit "$SOURCE_SHA"
+            --repository "$GITHUB_REPOSITORY" --tag "v$RELEASE_VERSION" \
+            --commit "$SOURCE_SHA" --create-missing
           gh release edit "v$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" \
             --draft=false --prerelease --latest=false

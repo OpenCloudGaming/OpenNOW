@@ -4,16 +4,16 @@ import re
 import subprocess
 
 
-def github(path):
+def github(path, *arguments):
     try:
-        response = subprocess.run(["gh", "api", path], check=True, capture_output=True,
+        response = subprocess.run(["gh", "api", path, *arguments], check=True, capture_output=True,
                                   text=True, timeout=30)
         return json.loads(response.stdout)
     except (OSError, subprocess.SubprocessError, ValueError):
         raise ValueError("Could not read release tag identity from GitHub") from None
 
 
-def verify_tag(repository, tag, commit, allow_missing=False):
+def verify_tag(repository, tag, commit, allow_missing=False, create_missing=False):
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
         raise ValueError("Expected an owner/repository identity")
     if not re.fullmatch(r"v[0-9][A-Za-z0-9.+-]*", tag):
@@ -24,6 +24,12 @@ def verify_tag(repository, tag, commit, allow_missing=False):
     if not isinstance(references, list) or any(not isinstance(ref, dict) for ref in references):
         raise ValueError("GitHub returned invalid tag references")
     matches = [ref for ref in references if ref.get("ref") == f"refs/tags/{tag}"]
+    if not matches and create_missing:
+        created = github(f"repos/{repository}/git/refs", "--method", "POST",
+                         "-f", f"ref=refs/tags/{tag}", "-f", f"sha={commit}")
+        if not isinstance(created, dict) or created.get("ref") != f"refs/tags/{tag}":
+            raise ValueError("GitHub returned an invalid created tag reference")
+        matches = [created]
     if not matches:
         if allow_missing:
             return
@@ -51,10 +57,12 @@ def main():
     parser.add_argument("--repository", required=True)
     parser.add_argument("--tag", required=True)
     parser.add_argument("--commit", required=True)
-    parser.add_argument("--allow-missing", action="store_true")
+    missing = parser.add_mutually_exclusive_group()
+    missing.add_argument("--allow-missing", action="store_true")
+    missing.add_argument("--create-missing", action="store_true")
     args = parser.parse_args()
     try:
-        verify_tag(args.repository, args.tag, args.commit, args.allow_missing)
+        verify_tag(args.repository, args.tag, args.commit, args.allow_missing, args.create_missing)
     except ValueError as error:
         parser.error(str(error))
 

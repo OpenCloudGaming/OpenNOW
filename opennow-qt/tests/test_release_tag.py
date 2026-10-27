@@ -23,12 +23,26 @@ class ReleaseTagTest(unittest.TestCase):
         return {"ref": "refs/tags/" + (tag or self.tag),
                 "object": {"type": kind, "sha": sha or self.commit}}
 
-    def verify(self, responses, allow_missing=False):
+    def verify(self, responses, allow_missing=False, create_missing=False):
         with patch("verify_release_tag.subprocess.run") as run:
             run.side_effect = [subprocess.CompletedProcess([], 0, json.dumps(value))
                                for value in responses]
-            verify_tag(self.repository, self.tag, self.commit, allow_missing)
+            verify_tag(self.repository, self.tag, self.commit, allow_missing, create_missing)
             return run
+
+    def test_explicitly_creates_only_a_missing_tag_at_the_verified_commit(self):
+        run = self.verify([[], self.reference()], create_missing=True)
+        self.assertEqual(run.call_args.args[0],
+                         ["gh", "api", f"repos/{self.repository}/git/refs", "--method", "POST",
+                          "-f", "ref=refs/tags/" + self.tag, "-f", "sha=" + self.commit])
+        run = self.verify([[self.reference()]], create_missing=True)
+        self.assertEqual(run.call_count, 1)
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            self.verify([[self.reference(sha="b" * 40)]], create_missing=True)
+        for created in ({}, [], self.reference(tag="v1.2.30"), self.reference(sha="b" * 40)):
+            with self.subTest(created=created):
+                with self.assertRaises(ValueError):
+                    self.verify([[], created], create_missing=True)
 
     def test_absent_tag_is_allowed_only_before_creation(self):
         self.verify([[]], allow_missing=True)
@@ -93,6 +107,7 @@ class ReleaseTagWorkflowTest(unittest.TestCase):
                 self.assertIn("verify_release_tag.py", before_create)
                 self.assertIn("--allow-missing", before_create)
                 self.assertIn("verify_release_tag.py", before_publish)
+                self.assertIn("--create-missing", before_publish)
                 self.assertNotIn("--allow-missing", before_publish)
 
     def test_wrong_or_moved_tags_cannot_publish_a_release(self):
@@ -128,16 +143,25 @@ class ReleaseTagWorkflowTest(unittest.TestCase):
                             state = json.loads(path.read_text())
                             args = sys.argv[1:]
                             if args[0] == "api":
-                                assert args[1].endswith("/git/matching-refs/tags/v1.2.3"), args
-                                print(json.dumps([] if state["tag"] is None else [{
-                                    "ref": "refs/tags/v1.2.3",
-                                    "object": {"type": "commit", "sha": state["tag"]}}]))
+                                if "--method" in args:
+                                    assert args[1].endswith("/git/refs"), args
+                                    assert args[args.index("--method") + 1] == "POST", args
+                                    assert state["tag"] is None
+                                    state["tag"] = next(arg[4:] for arg in args if arg.startswith("sha="))
+                                    print(json.dumps({"ref": "refs/tags/v1.2.3",
+                                          "object": {"type": "commit", "sha": state["tag"]}}))
+                                else:
+                                    assert args[1].endswith("/git/matching-refs/tags/v1.2.3"), args
+                                    print(json.dumps([] if state["tag"] is None else [{
+                                        "ref": "refs/tags/v1.2.3",
+                                        "object": {"type": "commit", "sha": state["tag"]}}]))
                             elif args[:2] == ["release", "create"]:
-                                state["tag"] = state["tag"] or args[args.index("--target") + 1]
+                                state["target"] = args[args.index("--target") + 1]
                                 state["draft"] = True
                                 if state["move"]:
                                     state["tag"] = "b" * 40
                             elif args[:2] == ["release", "edit"]:
+                                state["tag"] = state["tag"] or state["target"]
                                 state["draft"] = False
                             else:
                                 raise SystemExit("Unexpected fixture command")
