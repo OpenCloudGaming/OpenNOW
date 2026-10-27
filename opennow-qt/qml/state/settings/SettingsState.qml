@@ -200,7 +200,9 @@ QtObject {
             settingsRequestId = ""
             settingsReadProtected = ({})
             shortcutUpdateRequestId = ""
+            const consoleWrite = settingWrites.launchInConsoleMode
             const consolePending = consoleSurfaceRequestId !== ""
+                || (consoleWrite && consoleWrite.queued && consoleWrite.nextSource === "console")
             consoleSurfaceRequestId = ""
             consoleSurfaceDesiredValue = consoleSurfaceConfirmedValue
             if (consolePending) {

@@ -391,6 +391,16 @@ QtObject {
                 state.acceptConsoleSurface({value:state.consoleSurfaceRequestValue})
         }
         check(competingFailures.length === 0, "later desktop intent must win for both acknowledgement orders: " + competingFailures.join("; "))
+        state.acceptSettings({settings:defaults})
+        const disconnectedSetup = state.setSetting("launchInConsoleMode", true, "onboarding")
+        state.requestConsoleSurface(true)
+        state.ready = false
+        check(state.settings.launchInConsoleMode === false && surfaceRequests[surfaceRequests.length - 1] === false
+            && !state.settingWrites.launchInConsoleMode && state.consoleSurfaceRequestId === "",
+            "core loss drops queued console intent and restores the confirmed surface")
+        state.ready = true
+        check(!state.acceptResponse(disconnectedSetup, {key:"launchInConsoleMode", value:true}),
+            "a disconnected onboarding acknowledgement cannot replay the abandoned console tail")
         onboarding.destroy()
         state.destroy()
     }
