@@ -448,6 +448,20 @@ every cached page into Qt. It accepts `limit` (capped at 60), `cursor`,
 256 UTF-8 bytes each). A cursor belongs to its search/filter context and must
 be returned unchanged. The existing 768 KiB result budget still applies.
 
+Local cursors contain a bounded offset, a digest of the ranked game IDs already
+returned, and the number of saved upstream pages. The core validates every
+component, including the page-count suffix. Malformed cursors and cursors from
+another search/filter context return `invalid_params`.
+
+Each successful result includes `replace`. Normally it is `false`. If index
+growth changes the already-returned ranked prefix, or the saved traversal loses
+pages, the core restarts at offset zero and returns `replace:true` with fresh
+facets. The shell discards accumulated games, seen cursors, and its page count
+before validating and accepting this replacement as a first page. A replacement
+may reuse a previously seen cursor. Growth after the consumed prefix continues
+without replacement. This contract keeps newly discovered higher-ranked matches
+reachable without retaining per-search snapshots in the core.
+
 The result includes `games`, `count`, `totalCount` (matching games),
 `catalogTotalCount`, `hasNextPage`, `nextCursor`, `source:"store-local"`,
 `cacheHit:true`, and `cacheComplete`. First pages also include `facets` with

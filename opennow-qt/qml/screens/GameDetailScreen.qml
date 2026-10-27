@@ -186,6 +186,7 @@ FocusScope {
         width: parent.width - x
         height: parent.height
         source: heroSource.resolvedUrl
+        onStatusChanged: heroSource.reportImageStatus(status, source)
         fillMode: Image.PreserveAspectCrop
         sourceSize: Qt.size(Math.ceil(width), Math.ceil(height))
         asynchronous: true

@@ -9,6 +9,11 @@ QtObject {
     property string retainedSource: ""
     readonly property string resolvedUrl: active ? ShellStore.artworkUrl(sourceUrl) : ""
 
+    function reportImageStatus(status, imageSource) {
+        if (active && (status === Image.Error || status === Image.Ready))
+            ShellStore.reportArtworkLoad(sourceUrl, String(imageSource), status === Image.Error)
+    }
+
     function ensureRequested() {
         const wanted = active && requestActive ? sourceUrl : ""
         if (wanted !== retainedSource) {

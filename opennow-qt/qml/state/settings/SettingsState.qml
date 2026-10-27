@@ -17,6 +17,8 @@ QtObject {
     signal consoleSurfaceRequested(bool enabled)
     signal accessibilityAnnounced(string message)
     signal errorReported(string message)
+    signal settingWriteFinished(string token, var result, string message)
+    signal resetStarted()
     property var settings: ({})
     property var confirmedSettings: ({})
     readonly property bool forwardFlightControls: confirmedSettings.forwardFlightControls !== false
@@ -46,6 +48,11 @@ QtObject {
     }
     property string previewThemePack: ""
     property string settingsRequestId: ""
+    property var settingsReadProtected: ({})
+    property bool resetting: false
+    property string resetRequestId: ""
+    property var deferredSettingWrites: ({})
+    property var deferredShortcuts: null
     property string consoleSurfaceRequestId: ""
     property bool consoleSurfaceConfirmedValue: false
     property bool consoleSurfaceDesiredValue: false
@@ -188,11 +195,32 @@ QtObject {
     onSettingsActiveChanged: if (settingsActive) ensureGameLanguages()
     onReadyChanged: {
         if (!ready) {
+            resetting = false
+            resetRequestId = ""
+            settingsRequestId = ""
+            settingsReadProtected = ({})
+            shortcutUpdateRequestId = ""
+            const consolePending = consoleSurfaceRequestId !== ""
+            consoleSurfaceRequestId = ""
+            consoleSurfaceDesiredValue = consoleSurfaceConfirmedValue
+            if (consolePending) {
+                applySetting("launchInConsoleMode", consoleSurfaceConfirmedValue)
+                consoleSurfaceRequested(consoleSurfaceConfirmedValue)
+            }
+            const deferred = deferredSettingWrites
+            deferredSettingWrites = ({})
+            deferredShortcuts = null
             const writes = settingWrites
             settingWrites = ({})
             for (const key of Object.keys(writes)) {
                 if (!ownsConfirmedSetting(key) && key !== "gameCollections")
                     reconcileSetting(key, writes[key].coupledKeys)
+                settingWriteFinished(writes[key].token, null, qsTr("The OpenNOW core is not ready"))
+            }
+            for (const key of Object.keys(deferred)) {
+                if (!ownsConfirmedSetting(key) && key !== "gameCollections")
+                    reconcileSetting(key, Object.keys(settingValues(key, deferred[key].value)).filter(changedKey => changedKey !== key))
+                settingWriteFinished(deferred[key].token, null, qsTr("The OpenNOW core is not ready"))
             }
         }
     }
@@ -247,7 +275,8 @@ QtObject {
             "forwardFlightControls"].includes(key)
     }
 
-    function beginSettingWrite(key, value, previousWrite, source) {
+    function beginSettingWrite(key, value, previousWrite, source, token) {
+        protectSettingsRead(Object.keys(settingValues(key, value)))
         const writes = Object.assign({}, settingWrites)
         if (writes[key]) {
             writes[key] = Object.assign({}, writes[key], {next:value, nextSource:source, queued:true,
@@ -267,7 +296,7 @@ QtObject {
                 baseline[changedKey] = settings[changedKey]
         }
         confirmedSettings = baseline
-        writes[key] = {id:id, value:value, queued:false, providerIdpId:providerIdpId,
+        writes[key] = {id:id, token:token || id, source:source, value:value, queued:false, providerIdpId:providerIdpId,
             scopeGeneration:scopeGeneration,
             sequence:previousWrite ? previousWrite.sequence : ++settingWriteSequence,
             coupledKeys:coupledKeys,
@@ -280,13 +309,14 @@ QtObject {
         const key = Object.keys(settingWrites).find(key => settingWrites[key].id === id)
         if (!key) return false
         const write = settingWrites[key]
-        const confirmed = ownsConfirmedSetting(key)
-        const dispatchNext = write.queued && ready && (key !== "region"
+        const confirmed = ownsConfirmedSetting(key) || write.source === "onboarding"
+        const dispatchNext = !resetting && write.queued && ready && (key !== "region"
             || (write.nextProviderIdpId === providerIdpId && write.nextScopeGeneration === scopeGeneration))
         const writes = Object.assign({}, settingWrites)
         delete writes[key]
         settingWrites = writes
         if (result) {
+            protectSettingsRead([key].concat(Object.keys(result.changes || {})))
             confirmedSettings = Object.assign({}, confirmedSettings, result.changes || {}, {[key]:result.value})
             write.coupledKeys = Array.from(new Set(write.coupledKeys.concat(Object.keys(result.changes || {}))))
         }
@@ -304,6 +334,8 @@ QtObject {
             if (key === "identifyAsSteamDeck" && confirmedSettings[key] !== write.initialValue)
                 Qt.callLater(root.refreshAccountServices)
         }
+        settingWriteFinished(write.token, result, message)
+        continueSettingsReset()
         return confirmed
     }
 
@@ -322,11 +354,27 @@ QtObject {
                     values[changedKey] = changes[changedKey]
             }
         }
+        for (const deferredKey of Object.keys(deferredSettingWrites)) {
+            if (ownsConfirmedSetting(deferredKey) || deferredKey === "gameCollections") continue
+            const changes = settingValues(deferredKey, deferredSettingWrites[deferredKey].value)
+            for (const changedKey of keys) {
+                if (Object.prototype.hasOwnProperty.call(changes, changedKey))
+                    values[changedKey] = changes[changedKey]
+            }
+        }
         for (const changedKey of keys)
             applySetting(changedKey, values[changedKey])
     }
 
     function acceptResponse(id, result) {
+        if (id !== "" && id === resetRequestId) {
+            resetRequestId = ""
+            acceptSettings({settings:result.settings, keyboardLayouts:keyboardLayouts})
+            finishSettingsReset()
+            syncDiscordPresence()
+            Qt.callLater(refreshStreamerDetection)
+            return true
+        }
         if (id !== "" && id === languageRequestId) {
             languageRequestId = ""
             languageDeadline.stop()
@@ -349,8 +397,11 @@ QtObject {
             return true
         }
         if (id !== "" && id === shortcutUpdateRequestId) {
+            protectSettingsRead(Object.keys(result.bindings || {}))
+            confirmedSettings = Object.assign({}, confirmedSettings, result.bindings || {})
             applyCoupledSettings(result.bindings)
             shortcutUpdateRequestId = ""
+            continueSettingsReset()
             return true
         }
         return finishSettingWrite(id, result, "")
@@ -358,10 +409,18 @@ QtObject {
 
     function acceptFailure(id, message) {
         if (id !== "" && id === cancellingRequestId) return true
+        if (id !== "" && id === resetRequestId) {
+            resetRequestId = ""
+            errorReported(message)
+            finishSettingsReset()
+            refreshSettings()
+            return true
+        }
         if (id !== "" && id === shortcutUpdateRequestId) {
             shortcutUpdateError = message || qsTr("The shortcut could not be saved.")
             shortcutUpdateRequestId = ""
             accessibilityAnnounced(shortcutUpdateError)
+            continueSettingsReset()
             return true
         }
         if (id !== "" && id === languageRequestId) {
@@ -382,9 +441,20 @@ QtObject {
     }
 
     function refreshSettings() {
-        if (!ready)
+        if (!ready || resetting)
             return
+        const previous = settingsRequestId
+        settingsRequestId = ""
+        cancelOwnedRequest(previous)
+        settingsReadProtected = ({})
         settingsRequestId = coreClient.request("settings.get", {})
+    }
+
+    function protectSettingsRead(keys) {
+        if (settingsRequestId === "") return
+        const protectedKeys = Object.assign({}, settingsReadProtected)
+        for (const key of keys) protectedKeys[key] = true
+        settingsReadProtected = protectedKeys
     }
 
     function codecNamesFromCapabilities(capabilities, hdrOnly) {
@@ -670,6 +740,7 @@ QtObject {
     }
 
     function requestConsoleSurface(enabled) {
+        protectSettingsRead(["launchInConsoleMode"])
         const requested = Boolean(enabled)
         const previous = consoleSurfaceInitialized
             ? consoleSurfaceConfirmedValue : Boolean(settings.launchInConsoleMode)
@@ -686,6 +757,8 @@ QtObject {
             accessibilityAnnounced(lastError)
             return ""
         }
+        if (resetting)
+            return deferSettingWrite("launchInConsoleMode", requested, "console")
         if (consoleSurfaceRequestId === "")
             beginConsoleSurfacePersistence()
         return consoleSurfaceRequestId
@@ -709,7 +782,7 @@ QtObject {
     }
 
     function setSetting(key, value, source) {
-        if (key === "launchInConsoleMode")
+        if (key === "launchInConsoleMode" && source !== "onboarding")
             return requestConsoleSurface(Boolean(value))
         if (!ready) {
             if (!ownsConfirmedSetting(key) && Object.prototype.hasOwnProperty.call(confirmedSettings, key))
@@ -717,8 +790,14 @@ QtObject {
             errorReported(qsTr("The OpenNOW core is not ready"))
             return ""
         }
+        if (resetting) {
+            const token = deferSettingWrite(key, value, source)
+            if (!ownsConfirmedSetting(key) && key !== "gameCollections" && source !== "onboarding")
+                applySetting(key, value)
+            return token
+        }
         const id = beginSettingWrite(key, value, null, source)
-        if (id !== "" && !ownsConfirmedSetting(key) && key !== "gameCollections")
+        if (id !== "" && !ownsConfirmedSetting(key) && key !== "gameCollections" && source !== "onboarding")
             applySetting(key, value)
         else if (id === "" && !ownsConfirmedSetting(key)
                  && Object.prototype.hasOwnProperty.call(confirmedSettings, key))
@@ -727,6 +806,10 @@ QtObject {
     }
 
     function updateShortcuts(bindings) {
+        if (resetting && ready) {
+            deferredShortcuts = Object.assign({}, deferredShortcuts || {}, bindings)
+            return "settings-reset-shortcuts"
+        }
         if (shortcutUpdateRequestId !== "")
             return ""
         shortcutUpdateError = ""
@@ -735,6 +818,7 @@ QtObject {
             return ""
         }
         shortcutUpdateRequestId = coreClient.request("settings.shortcuts.update", {bindings: bindings}, 15000)
+        protectSettingsRead(Object.keys(bindings))
         if (shortcutUpdateRequestId === "")
             shortcutUpdateError = qsTr("The shortcut could not be saved.")
         return shortcutUpdateRequestId
@@ -745,7 +829,67 @@ QtObject {
             errorReported(qsTr("The OpenNOW core is not ready"))
             return
         }
-        coreClient.request("settings.reset", {})
+        if (resetting) return
+        resetting = true
+        resetStarted()
+        const read = settingsRequestId
+        settingsRequestId = ""
+        cancelOwnedRequest(read)
+        const writes = Object.assign({}, settingWrites)
+        for (const key of Object.keys(writes)) {
+            writes[key] = Object.assign({}, writes[key], {queued:false})
+            if (!ownsConfirmedSetting(key) && key !== "gameCollections")
+                applySetting(key, writes[key].value)
+        }
+        settingWrites = writes
+        consoleSurfaceDesiredValue = consoleSurfaceRequestId !== ""
+            ? consoleSurfaceRequestValue : consoleSurfaceConfirmedValue
+        continueSettingsReset()
+    }
+
+    function deferSettingWrite(key, value, source) {
+        protectSettingsRead(Object.keys(settingValues(key, value)))
+        const deferred = Object.assign({}, deferredSettingWrites)
+        const token = deferred[key] ? deferred[key].token : "settings-deferred-" + (++settingWriteSequence)
+        delete deferred[key]
+        deferred[key] = {token:token, value:value, source:source,
+            providerIdpId:providerIdpId, scopeGeneration:scopeGeneration}
+        deferredSettingWrites = deferred
+        return token
+    }
+
+    function continueSettingsReset() {
+        if (!resetting || !ready || resetRequestId !== "" || Object.keys(settingWrites).length
+                || consoleSurfaceRequestId !== "" || shortcutUpdateRequestId !== "") return
+        resetRequestId = coreClient.request("settings.reset", {}, 15000)
+        if (resetRequestId === "") {
+            errorReported(qsTr("The setting could not be saved."))
+            finishSettingsReset()
+        }
+    }
+
+    function finishSettingsReset() {
+        const deferred = deferredSettingWrites
+        const shortcuts = deferredShortcuts
+        deferredSettingWrites = ({})
+        deferredShortcuts = null
+        resetting = false
+        for (const key of Object.keys(deferred)) {
+            const write = deferred[key]
+            if (key === "region" && (write.providerIdpId !== providerIdpId || write.scopeGeneration !== scopeGeneration)) {
+                settingWriteFinished(write.token, null, qsTr("The setting could not be saved."))
+                continue
+            }
+            if (key === "launchInConsoleMode" && write.source === "console") {
+                requestConsoleSurface(write.value)
+                continue
+            }
+            const id = beginSettingWrite(key, write.value, null, write.source, write.token)
+            if (id === "") settingWriteFinished(write.token, null, qsTr("The setting could not be saved."))
+            else if (!ownsConfirmedSetting(key) && key !== "gameCollections" && write.source !== "onboarding")
+                applySetting(key, write.value)
+        }
+        if (shortcuts) updateShortcuts(shortcuts)
     }
 
     function applyCoupledSettings(changes) {
@@ -777,9 +921,15 @@ QtObject {
             syncDiscordPresence()
     }
 
-    function acceptSettings(result) {
+    function acceptSettings(result, fromRead) {
         const confirmed = Object.assign({}, result.settings)
         const displayed = Object.assign({}, result.settings)
+        if (fromRead) {
+            for (const key of Object.keys(settingsReadProtected)) {
+                confirmed[key] = confirmedSettings[key]
+                displayed[key] = settings[key]
+            }
+        }
         for (const key of Object.keys(settingWrites)) {
             confirmed[key] = confirmedSettings[key]
             displayed[key] = settings[key]
@@ -792,7 +942,7 @@ QtObject {
             confirmed.launchInConsoleMode = consoleSurfaceConfirmedValue
             displayed.launchInConsoleMode = consoleSurfaceDesiredValue
         } else {
-            root.consoleSurfaceConfirmedValue = Boolean(result.settings.launchInConsoleMode)
+            root.consoleSurfaceConfirmedValue = Boolean(confirmed.launchInConsoleMode)
             root.consoleSurfaceDesiredValue = root.consoleSurfaceConfirmedValue
             root.consoleSurfaceInitialized = true
         }
@@ -805,10 +955,16 @@ QtObject {
     }
 
     function acceptConsoleSurface(result) {
+        protectSettingsRead(["launchInConsoleMode"].concat(Object.keys(result.changes || {})))
+        confirmedSettings = Object.assign({}, confirmedSettings, result.changes || {}, {launchInConsoleMode:Boolean(result.value)})
         root.applyCoupledSettings(result.changes)
         root.consoleSurfaceRequestId = ""
         root.consoleSurfaceConfirmedValue = Boolean(result.value)
         root.consoleSurfaceInitialized = true
+        if (resetting) {
+            continueSettingsReset()
+            return
+        }
         if (root.consoleSurfaceDesiredValue === root.consoleSurfaceConfirmedValue) {
             root.applySetting("launchInConsoleMode", root.consoleSurfaceConfirmedValue)
             root.consoleSurfaceError = ""
@@ -821,6 +977,10 @@ QtObject {
 
     function failConsoleSurface(message) {
         root.consoleSurfaceRequestId = ""
+        if (resetting) {
+            continueSettingsReset()
+            return
+        }
         root.consoleSurfaceDesiredValue = root.consoleSurfaceConfirmedValue
         root.applySetting("launchInConsoleMode", root.consoleSurfaceConfirmedValue)
         root.consoleSurfaceRequested(root.consoleSurfaceConfirmedValue)
@@ -830,8 +990,9 @@ QtObject {
     }
 
     function acceptSettingsChange(payload) {
+        protectSettingsRead([payload.key].concat(Object.keys(payload.changes || {})))
         const write = root.settingWrites[payload.key]
-        if (write) return
+        if (write || deferredSettingWrites[payload.key]) return
         confirmedSettings = Object.assign({}, confirmedSettings, payload.changes || {}, {[payload.key]:payload.value})
         // Coupled preferences are saved atomically by the core.
         root.applyCoupledSettings(payload.changes)
