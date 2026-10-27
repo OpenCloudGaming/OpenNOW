@@ -2385,18 +2385,38 @@ QtObject {
             sessionAdReports = sessionAdReports.filter(value => value !== pending.report)
         else
             sessionAdReports = sessionAdReports.slice()
-        const state = activeSession ? (activeSession.adState || ({})) : ({})
-        const ads = state.sessionAds || state.ads || []
-        if (activeSession && String(activeSession.sessionId) === pending.event.sessionId
-                && ads.length > 0 && ads[0].adId === pending.event.adId
-                && result.session && String(result.session.sessionId) === pending.event.sessionId) {
-            acceptStreamingSession(result.session)
-            const next = activeSession ? (activeSession.adState || ({})) : ({})
-            if (!(next.sessionAdsRequired || next.isAdsRequired) || !(next.sessionAds || next.ads || []).length) {
-                if (AppController.overlay === "queue-ad") AppController.showOverlay("")
-            }
-        }
+        const identity = result.adReportIdentity
+        if (identity && identity.sessionId === pending.event.sessionId && identity.adId === pending.event.adId)
+            acceptSessionAdSnapshot(result)
         flushSessionAdReports()
+        return true
+    }
+
+    function acceptSessionAdSnapshot(payload) {
+        const identity = payload && payload.adReportIdentity
+        if (!identity || typeof identity.sessionId !== "string" || typeof identity.adId !== "string"
+                || identity.sessionId.length === 0 || identity.sessionId.length > 256
+                || identity.adId.length === 0 || identity.adId.length > 256
+                || /[\u0000-\u001f\u007f]/.test(identity.sessionId + identity.adId)
+                || !activeSession || String(activeSession.sessionId) !== identity.sessionId
+                || !acceptsSessionScope(payload.scope))
+            return false
+        const state = activeSession.adState || ({})
+        const ads = state.sessionAds || state.ads || []
+        if (!ads.length || ads[0].adId !== identity.adId || !payload.session
+                || String(payload.session.sessionId) !== identity.sessionId)
+            return false
+        const termination = ownedSessionTermination(payload)
+        if (termination)
+            finishRemoteSession(termination)
+        else if (isRemoteSessionTermination(payload.termination))
+            finishRemoteSession(payload.termination)
+        else
+            acceptStreamingSession(payload.session)
+        const next = activeSession ? (activeSession.adState || ({})) : ({})
+        if (!(next.sessionAdsRequired || next.isAdsRequired) || !(next.sessionAds || next.ads || []).length) {
+            if (AppController.overlay === "queue-ad") AppController.showOverlay("")
+        }
         return true
     }
 
@@ -4079,6 +4099,7 @@ QtObject {
         }
         function onResponseReceived(requestId, result) {
             if (requestId === root.sessionAdRequestId && root.finishSessionAdReport(requestId, result, "")) return
+            if (result.adReportIdentity !== undefined) return
             if (settingsOwner.acceptResponse(requestId, result)) return
             const ownedTermination = root.ownedSessionTermination(result)
             if (ownedTermination) {
@@ -4736,6 +4757,10 @@ QtObject {
                 root.streamMessage = root.lastError
                 root.refreshRemoteSessions()
             } else if (name === "session.changed") {
+                if (payload.adReportIdentity !== undefined) {
+                    root.acceptSessionAdSnapshot(payload)
+                    return
+                }
                 const ownedTermination = root.ownedSessionTermination(payload)
                 if (ownedTermination) {
                     root.finishRemoteSession(ownedTermination)

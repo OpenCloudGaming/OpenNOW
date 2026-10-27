@@ -191,8 +191,11 @@ QtObject {
         client.requestFailed(start, "network_error", "delayed start failed")
         ShellStore.sessionAdRetryTimer.triggered()
         const retriedStart = ShellStore.sessionAdRequestId
-        client.responseReceived(retriedStart, {session:{sessionId:"playback-seat", status:1, phase:"queued",
-            adState:{sessionAdsRequired:true, sessionAds:[{adId:"play-a"}]}}})
+        const delayed = {adReportIdentity:{sessionId:"playback-seat", adId:"play-a"},
+            session:{sessionId:"playback-seat", status:1, phase:"queued",
+            adState:{sessionAdsRequired:true, sessionAds:[{adId:"play-a"}]}}}
+        client.responseReceived(retriedStart, delayed)
+        client.eventReceived("session.changed", delayed)
         check(ShellStore.activeSession.adState.sessionAds[0].adId === "play-b", "a stale ad snapshot cannot replace the current ad")
         const expected = [["pause", "play-a"], ["finish", "play-a"], ["start", "play-b"], ["cancel", "play-b"]]
         for (const pair of expected) {
@@ -207,12 +210,74 @@ QtObject {
         check(player.started && player.completed && player.player === second, "same-ID polls never replay a completed ad")
         player.destroy()
     }
+    function checkReportCompanionEnvelopes(parent) {
+        const seat = adId => ({sessionId:"envelope-seat", status:1, phase:"queued",
+            adState:{sessionAdsRequired:true, sessionAds:[{adId:adId}]}})
+        const envelope = adId => ({adReportIdentity:{sessionId:"envelope-seat", adId:"envelope-a"},
+            session:seat(adId)})
+        for (const retry of [false, true]) {
+            reset()
+            ShellStore.activeSession = seat("envelope-a")
+            const player = adComponent.createObject(parent)
+            ShellStore.reportSessionAd("start", {adId:"envelope-a"}, 0, "")
+            if (retry) {
+                client.requestFailed(ShellStore.sessionAdRequestId, "network_error", "delayed ad report")
+                ShellStore.sessionAdRetryTimer.triggered()
+            }
+            const requestId = ShellStore.sessionAdRequestId
+            ShellStore.acceptStreamingSession(seat("envelope-b"))
+            const current = player.player
+            client.responseReceived(requestId, envelope("envelope-a"))
+            client.eventReceived("session.changed", envelope("envelope-a"))
+            check(ShellStore.activeSession.adState.sessionAds[0].adId === "envelope-b"
+                && player.player === current,
+                "ad-report response AND companion event cannot roll back the polled replacement, retry=" + retry)
+            const owner = {generation:7, userId:"envelope-owner", providerIdpId:"envelope-provider"}
+            const live = seat("envelope-b")
+            live.ownerScope = owner
+            ShellStore.activeSession = live
+            const ended = envelope("envelope-a")
+            ended.scope = owner
+            ended.session.status = 7
+            client.responseReceived("abandoned-ad-report", ended)
+            client.eventReceived("session.changed", ended)
+            check(ShellStore.activeSession && ShellStore.activeSession.adState.sessionAds[0].adId === "envelope-b"
+                && player.player === current, "unowned tagged replies cannot bypass identity checks through termination handling")
+            player.destroy()
+        }
+        for (const eventFirst of [false, true]) {
+            reset()
+            ShellStore.activeSession = seat("envelope-a")
+            const player = adComponent.createObject(parent)
+            ShellStore.reportSessionAd("finish", {adId:"envelope-a"}, 1000, "")
+            const requestId = ShellStore.sessionAdRequestId
+            if (eventFirst) client.eventReceived("session.changed", envelope("envelope-b"))
+            else client.responseReceived(requestId, envelope("envelope-b"))
+            const advanced = player.player
+            check(ShellStore.activeSession.adState.sessionAds[0].adId === "envelope-b",
+                "a matching report can advance the current ad")
+            if (eventFirst) client.responseReceived(requestId, envelope("envelope-b"))
+            else client.eventReceived("session.changed", envelope("envelope-b"))
+            check(player.player === advanced && ShellStore.sessionAdRequestId === "",
+                "the companion delivery cannot recreate the advanced ad")
+            for (const identity of [null, {}, {sessionId:"wrong-seat", adId:"envelope-b"},
+                    {sessionId:"envelope-seat", adId:"x".repeat(257)}]) {
+                client.eventReceived("session.changed", {adReportIdentity:identity, session:seat("forged-ad")})
+                check(player.player === advanced, "malformed or foreign report identities cannot adopt a snapshot")
+            }
+            client.eventReceived("session.changed", {session:seat("ordinary-poll")})
+            check(ShellStore.activeSession.adState.sessionAds[0].adId === "ordinary-poll",
+                "ordinary untagged session events remain authoritative")
+            player.destroy()
+        }
+    }
     function run(parent, core, nativeRuntime) {
         client = core
         runtime = nativeRuntime
         const failures = []
         for (const probe of [checkLocalActions, checkStopReplacement, checkAdReports, () => checkAdIdentity(parent),
-                () => checkPlayerReporting(parent), () => checkBoundedAdReports(parent)]) {
+                () => checkPlayerReporting(parent), () => checkBoundedAdReports(parent),
+                () => checkReportCompanionEnvelopes(parent)]) {
             try { probe() } catch (error) { failures.push(String(error)) }
         }
         reset()
