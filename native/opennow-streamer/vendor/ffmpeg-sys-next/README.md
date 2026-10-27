@@ -26,15 +26,6 @@ release (or the `OPENNOW_FFMPEG_ARCHIVE` tarball) and apply every
   Negotiated sizes, pitches, and DRM descriptor extents remain unchanged, as do
   OUTPUT allocations, other capture formats, and 10-bit SAND. Overflow is rejected.
 
-The capture allocator regression test requires the source file from a prepared
-FFmpeg tree with all four patches applied. It compiles the allocator into a C test
-program without a video device:
-
-```sh
-python3 native/opennow-streamer/vendor/ffmpeg-sys-next/tests/v4l2_request_capture_padding.py \
-  /path/to/prepared-ffmpeg/libavutil/hwcontext_v4l2request.c
-```
-
 The source and install directories include a hash of the patch contents, so
 editing a patch invalidates the bundled cache. Other targets retain the upstream
 FFmpeg `release/9.0` path. System FFmpeg builds are unchanged.

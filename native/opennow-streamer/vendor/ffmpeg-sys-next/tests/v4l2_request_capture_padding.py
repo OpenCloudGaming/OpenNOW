@@ -1,22 +1,32 @@
 """Compile and exercise the bundled FFmpeg capture allocator without a video device."""
 
-import argparse
 import pathlib
 import subprocess
+import sys
 import tempfile
 
 
-parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument(
-    'prepared_source', type=pathlib.Path,
-    help='path to libavutil/hwcontext_v4l2request.c after applying all bundled V4L2 request patches',
-)
-args = parser.parse_args()
+def patched_source(directory):
+    patches = pathlib.Path(__file__).resolve().parents[1] / 'patches' / 'v4l2-request'
+    target = 'a/libavutil/hwcontext_v4l2request.c b/libavutil/hwcontext_v4l2request.c'
+    for patch in sorted(patches.glob('*.patch')):
+        chunks = [
+            'diff --git ' + chunk
+            for chunk in patch.read_text().split('diff --git ')
+            if chunk.startswith(target + '\n')
+        ]
+        if chunks:
+            subprocess.run(
+                ['patch', '-p1', '--batch', '--fuzz=0'],
+                input=''.join(chunks), text=True, cwd=directory, check=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+    return (directory / 'libavutil' / 'hwcontext_v4l2request.c').read_text()
 
 
 with tempfile.TemporaryDirectory(prefix='opennow-capture-padding-') as temporary:
     directory = pathlib.Path(temporary)
-    source = args.prepared_source.read_text()
+    source = pathlib.Path(sys.argv[1]).read_text() if len(sys.argv) > 1 else patched_source(directory)
     start = source.index('static AVBufferRef *v4l2request_v4l2_buffer_alloc(')
     end = source.index('\nstatic AVBufferRef *v4l2request_capture_buffer_alloc(', start)
     allocator = source[start:end]
