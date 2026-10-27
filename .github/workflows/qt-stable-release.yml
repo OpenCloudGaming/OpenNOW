@@ -147,9 +147,15 @@ jobs:
       - name: Upload as draft before publishing the complete release
         run: |
           set -euo pipefail
+          python3 opennow-qt/packaging/verify_release_tag.py \
+            --repository "$GITHUB_REPOSITORY" --tag "v$RELEASE_VERSION" \
+            --commit "$SOURCE_SHA" --allow-missing
           gh release create "v$RELEASE_VERSION" release/* \
             --repo "$GITHUB_REPOSITORY" --target "$SOURCE_SHA" \
             --title "OpenNOW v$RELEASE_VERSION" --notes-file release-notes.md \
             --draft --latest=false
+          python3 opennow-qt/packaging/verify_release_tag.py \
+            --repository "$GITHUB_REPOSITORY" --tag "v$RELEASE_VERSION" \
+            --commit "$SOURCE_SHA" --create-missing
           gh release edit "v$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" \
             --draft=false --prerelease=false --latest
