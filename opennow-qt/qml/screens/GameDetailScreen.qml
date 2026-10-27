@@ -234,8 +234,10 @@ FocusScope {
             font.letterSpacing: 1.8
         }
         Text {
+            objectName: "consoleGameDetailTitle"
             width: parent.width
             text: String(root.game.title || "")
+            textFormat: Text.PlainText
             wrapMode: Text.WordWrap
             maximumLineCount: 2
             elide: Text.ElideRight

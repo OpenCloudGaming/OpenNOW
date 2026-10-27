@@ -149,18 +149,18 @@ impl FfmpegDecoder {
                 "hardware-only build forbids software video decoding",
             ));
         }
-        #[cfg(all(feature = "hardware-only", not(feature = "vulkan")))]
-        if mode == FfmpegMode::Vulkan {
-            return Err(Error::unavailable(
-                Subsystem::Vulkan,
-                "hardware-only Vulkan requires native GPU validation support",
-            ));
-        }
         format.validate()?;
         if format.pixel_format.is_444() && (mode != FfmpegMode::Vulkan || shared_device.is_none()) {
             return Err(Error::unavailable(
                 Subsystem::Ffmpeg,
                 "4:4:4 requires shared Vulkan Video GPU snapshots; CUDA, VAAPI and CPU conversion are unsupported",
+            ));
+        }
+        #[cfg(all(feature = "hardware-only", not(feature = "vulkan")))]
+        if mode == FfmpegMode::Vulkan {
+            return Err(Error::unavailable(
+                Subsystem::Vulkan,
+                "hardware-only Vulkan requires native GPU validation support",
             ));
         }
         if mode == FfmpegMode::V4l2Request {
@@ -2328,6 +2328,26 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    #[cfg(all(feature = "hardware-only", not(feature = "vulkan")))]
+    fn hardware_only_vulkan_without_validation_rejects_after_format_validation() {
+        let format = StreamFormat::video_default(1920, 1080).unwrap();
+        let invalid = StreamFormat { width: 0, ..format };
+        let error = FfmpegDecoder::open(VideoCodec::H265, invalid, FfmpegMode::Vulkan)
+            .err()
+            .expect("invalid dimensions must reject before device validation");
+        assert!(matches!(error, Error::InvalidFormat(_)), "{error}");
+        let error = FfmpegDecoder::open(VideoCodec::H265, format, FfmpegMode::Vulkan)
+            .err()
+            .expect("hardware-only Vulkan must still require GPU validation");
+        assert!(
+            error
+                .to_string()
+                .contains("hardware-only Vulkan requires native GPU validation support"),
+            "{error}"
+        );
     }
 
     #[test]

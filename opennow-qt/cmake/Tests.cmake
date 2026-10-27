@@ -820,6 +820,8 @@ if(BUILD_TESTING)
         COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
             --route settings-streaming --smoke-stream-recovery --reduced-motion)
     set_tests_properties(qml-stream-recovery PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+    qt_add_resources(opennow-qt "stream-transition-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/StreamTransitionAcceptance.qml)
     qt_add_resources(opennow-qt "pointer-lock-hint-acceptance"
         PREFIX "/acceptance" BASE tests FILES tests/PointerLockHintAcceptance.qml)
     foreach(surface desktop console)
@@ -867,6 +869,46 @@ if(BUILD_TESTING)
     endforeach()
     qt_add_resources(opennow-qt "console-stream-end-notice-acceptance"
         PREFIX "/acceptance" BASE tests FILES tests/ConsoleStreamEndNoticeAcceptance.qml)
+    qt_add_resources(opennow-qt "clock-skew-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/ClockSkewAcceptance.qml)
+    qt_add_resources(opennow-qt "clock-skew-overlap-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/ClockSkewOverlapAcceptance.qml)
+    foreach(order update-first clock-first)
+        foreach(mode windowed fullscreen)
+            set(clock_overlap_args --smoke-test --allow-multiple-instances --console --route home
+                --smoke-clock-skew-overlap-check ${order} --reduced-motion)
+            if(mode STREQUAL "fullscreen")
+                list(APPEND clock_overlap_args --clock-overlap-fullscreen)
+            endif()
+            add_test(NAME "qml-clock-skew-overlap-${order}-${mode}" COMMAND opennow-qt ${clock_overlap_args})
+            set_tests_properties("qml-clock-skew-overlap-${order}-${mode}" PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 25)
+        endforeach()
+    endforeach()
+    qt_add_resources(opennow-qt "titlebar-keyboard-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/WindowTitleBarAcceptance.qml)
+    qt_add_resources(opennow-qt "literal-game-title-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/LiteralGameTitleAcceptance.qml)
+    foreach(sink game-detail console-choice console-choice-description desktop-exit desktop-menu desktop-starting)
+        set(title_surface --desktop)
+        if(sink MATCHES "^(game-detail|console-choice|console-choice-description)$")
+            set(title_surface --console)
+        endif()
+        add_test(NAME "qml-literal-game-title-${sink}"
+            COMMAND opennow-qt --smoke-test --allow-multiple-instances ${title_surface}
+                --route home --smoke-literal-game-title-check ${sink} --reduced-motion)
+        set_tests_properties("qml-literal-game-title-${sink}" PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
+    endforeach()
+    foreach(surface desktop console)
+        foreach(check clock-skew titlebar-keyboard)
+            add_test(NAME "qml-${check}-${surface}"
+                COMMAND opennow-qt --smoke-test --allow-multiple-instances --${surface}
+                    --route home --smoke-${check}-check --reduced-motion)
+            set_tests_properties("qml-${check}-${surface}" PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
+        endforeach()
+    endforeach()
     foreach(size_pair "1280;720" "1920;1080")
         list(GET size_pair 0 console_end_width)
         list(GET size_pair 1 console_end_height)

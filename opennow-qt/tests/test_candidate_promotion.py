@@ -109,6 +109,35 @@ class CandidatePromotionTest(unittest.TestCase):
             expected, name = line.split("  ")
             self.assertEqual(digest(self.destination / name), expected)
 
+    def test_documented_counts_match_the_platform_candidate_and_promoted_release(self):
+        packages = self.source / "packages"
+        (packages / "SHA256SUMS").unlink()
+        for path in packages.iterdir():
+            platform, arch = path.name.split(f"OpenNOW-Qt-{self.version}-", 1)[1].split("-", 1)
+            arch = arch.split(".", 1)[0].split("-", 1)[0]
+            suffix = "-flatpak" if ".flatpak" in path.name else ""
+            group = self.source / f"{platform}-{arch}{suffix}"
+            group.mkdir(exist_ok=True)
+            path.rename(group / path.name)
+        packages.rmdir()
+        for group in self.source.iterdir():
+            if group.is_dir() and not group.name.endswith("-flatpak"):
+                assets = [path for path in group.iterdir()
+                          if not path.name.endswith(".manifest.json")]
+                (group / "SHA256SUMS").write_text("".join(
+                    f"{digest(path)}  {path.name}\n" for path in sorted(assets)))
+        self.rehash()
+        self.promote()
+        documentation = (ROOT / "docs/update-signing.md").read_text()
+        for label, directory in (("Signed candidate", self.source), ("Promoted stable", self.destination)):
+            files = [path for path in directory.rglob("*") if path.is_file()]
+            manifests = [path for path in files if path.name.endswith(".manifest.json")]
+            other = [path for path in files if path.name in (
+                "SHA256SUMS", "RELEASE-INFO.json", "RELEASE-CANDIDATE-INVENTORY.txt")]
+            assets = len(files) - len(manifests) - len(other)
+            self.assertIn(f"| {label} | {assets} | {len(manifests)} | {len(other)} | {len(files)} |",
+                          documentation)
+
     def test_intel_zip_and_manifest_are_validated_but_never_published(self):
         self.promote()
         name = f"OpenNOW-Qt-{self.version}-Darwin-x64.zip"

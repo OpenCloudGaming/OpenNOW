@@ -117,9 +117,11 @@ FocusScope {
             font.letterSpacing: 1.8
         }
         Text {
+            objectName: "sessionLaunchGameTitle"
             width: parent.width
             topPadding: 10
             text: String(root.game.title || qsTr("GeForce NOW"))
+            textFormat: Text.PlainText
             color: Theme.mediaForeground
             font.family: DesktopTokens.displayFont
             font.pixelSize: root.width < 800 ? 34 : 44

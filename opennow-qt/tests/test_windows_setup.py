@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 import unittest
 
 
@@ -51,16 +52,25 @@ class WindowsSetupTests(unittest.TestCase):
         self.assertEqual(
             [line.strip() for line in uninstall.splitlines() if line.strip()],
             [
-                r'Type: filesandordirs; Name: "{app}\bin"',
-                r'Type: filesandordirs; Name: "{app}\plugins"',
-                r'Type: filesandordirs; Name: "{app}\qml"',
-                r'Type: filesandordirs; Name: "{app}\share"',
-                r'Type: filesandordirs; Name: "{app}\translations"',
+                r'Type: dirifempty; Name: "{app}\bin"',
+                r'Type: dirifempty; Name: "{app}\plugins"',
+                r'Type: dirifempty; Name: "{app}\qml"',
+                r'Type: dirifempty; Name: "{app}\share"',
+                r'Type: dirifempty; Name: "{app}\translations"',
                 'Type: dirifempty; Name: "{app}"',
             ],
         )
         files = script.split("[Files]", 1)[1].split("[Tasks]", 1)[0]
         self.assertNotIn("uninsneveruninstall", files)
+        self.assertEqual(files.strip(),
+                         'Source: "{#Payload}\\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs')
+        self.assertNotRegex(script.lower(), r"\[(?:installdelete|dirs)\]")
+        self.assertNotRegex(script.lower(), r"\b(?:deltree|deletefile|removedir)\s*\(")
+        self.assertNotRegex(script.lower(), r"\buninstallable\s*=\s*no\b")
+        validation = script.split("function DestinationError", 1)[1].split("function NextButtonClick", 1)[0]
+        self.assertRegex(validation, re.compile(
+            r"if FileExists\(AddBackslash\(Directory\) \+ 'bin\\\{#AppExeName\}'\) then\s+exit;"
+            r"\s+if DirExists", re.MULTILINE))
 
     def test_build_script_requires_the_portable_executables(self):
         script = BUILD.read_text()

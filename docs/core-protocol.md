@@ -598,6 +598,23 @@ and artwork only near the viewport, using the section's local category ID
 - `discord.activity.sync`, `discord.activity.clear`
 - `feedback.submit`, `bug_report.submit`, `bug_report.incident`, `analytics.track`
 
+### Session ad report snapshot identity
+
+The `session.adReportIdentity.v1` capability is required by Qt and relocated
+package probes without changing the numeric protocol version. Every successful
+`session.ad.report` response and its companion `session.changed` event include
+`adReportIdentity: {sessionId, adId}`. The core captures the session ID from the
+validated owned seat and the ad ID from the report request before remote work.
+Both IDs must be nonempty strings of at most 256 UTF-8 bytes without control
+characters. Caller-supplied envelope identities are ignored.
+
+This identity names the reported ad, not the next ad in the returned session.
+Qt applies either delivery's snapshot only while that original session/ad is
+still current. A matching report can advance A to B; its later companion cannot
+revert or recreate B. A poll that already selected B also fences delayed or
+retried A reports. Ordinary session snapshots without this marker retain their
+existing scope and termination semantics.
+
 ### Usage & bug reports (`automaticBugReports.v2`)
 
 `automaticBugReports.v2` replaces `automaticBugReports.v1` and removes

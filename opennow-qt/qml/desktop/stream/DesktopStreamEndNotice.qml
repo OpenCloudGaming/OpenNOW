@@ -127,6 +127,7 @@ FocusScope {
                 width: parent.width
                 topPadding: DesktopTokens.px(10)
                 text: copy.explanation
+                textFormat: Text.PlainText
                 color: DesktopTokens.textBody
                 font.family: DesktopTokens.bodyFont
                 font.pixelSize: DesktopTokens.bodySize

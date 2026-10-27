@@ -25,6 +25,8 @@ bool prepareLaunchGuards(QJSEngine &engine)
         var queueSelector={opened:false,begin:function(title){return false}};
         var bugReports={observeTelemetry:function(){},observeFrameDrops:function(){},reportStreamError:function(){}};
         var launchRequestedAtMs=0;
+        var overlayRequestGeneration=0, screenshotRequestGeneration=0;
+        var recordingToggleRequestGeneration=0, shortcutActionGeneration=0;
         function reportSessionStart() {}
         function reportSessionEnd() {}
     )JS")).isError()) return false;
@@ -1065,6 +1067,7 @@ private slots:
         QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
             var remoteSessionsRequestId = '', streamCreateRequestId = '', streamPollRequestId = '';
             var streamerPrepareRequestId = 'prepare', streamerStopRequestId = '', streamStopRequestId = '';
+            var streamerStartRequestId = '';
             var activeSession = {sessionId:'seat'}, streamStartedAtMs = 0, streamState = 'starting';
             var streamer = {status:'starting'}, nativeCommands = [], snapshots = 0;
             var negotiatedStreamProfile = {};
@@ -2016,6 +2019,7 @@ private slots:
             var streamRecordingAttempt={requestId:'recording',sessionId:'seat',completed:false,acceptStart:true};
             var activeSession={sessionId:'seat'}, streamer={status:'streaming'}, selectedGame={title:'Game'};
             var streamerStopExpected=false, streamerStopRequestId='', streamerStartRequestId='';
+            var streamerPrepareRequestId='';
             var sessionRecoveryPending=false, sessionRecoveryAwaitingAuth=false, sessionStopIntentId='', streamStopRequestId='';
             var microphoneRequestId='', sessionMicrophoneMode='disabled', streamIdleWarning=null;
             var pendingRecordingPath='/first.mkv', pendingRecordingThumbnailPath='';

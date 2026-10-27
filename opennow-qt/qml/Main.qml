@@ -74,10 +74,12 @@ ApplicationWindow {
     property bool librarySearchPending: false
     property string pendingConsoleScreenshotSession: ""
     property int pendingConsoleScreenshotFrames: 0
-    readonly property Item consoleModalFocusOwner: consoleSystemWarning.opened ? consoleSystemWarning
+    readonly property Item consoleSheetFocusOwner: consoleSystemWarning.opened ? consoleSystemWarning
         : consoleStreamEndNotice.opened ? consoleStreamEndNotice
         : (!window.desktopSurfaceActive || AppController.overlay === "session-report")
             && consoleOverlayHost.supportedOverlay ? consoleOverlayHost : null
+    readonly property Item consoleModalFocusOwner: !window.desktopSurfaceActive && clockSkewDialog.visible
+        ? clockSkewDialog.contentItem : consoleSheetFocusOwner
     onConsoleModalFocusOwnerChanged: if (consoleModalFocusOwner) Qt.callLater(window.restoreConsoleModalFocus)
     onClosing: event => {
         if (window.sessionQuitStopping && !applicationCloseConfirmed) {
@@ -350,6 +352,10 @@ ApplicationWindow {
         const owner = window.consoleModalFocusOwner
         if (!window.active || !owner)
             return
+        if (owner === clockSkewDialog.contentItem) {
+            clockSkewDialog.claimKeyboard()
+            return
+        }
         for (let item = window.activeFocusItem; item; item = item.parent) {
             if (item === owner)
                 return
@@ -1361,10 +1367,12 @@ ApplicationWindow {
     }
 
     ClockSkewDialog {
+        id: clockSkewDialog
         parent: Overlay.overlay
         anchors.centerIn: parent
         message: ShellStore.clockSkewDismissed ? "" : ShellStore.clockSkewMessage
-        sessionSafe: window.desktopSurfaceActive && ShellStore.clockSkewSessionSafe
+        sessionSafe: ShellStore.clockSkewSessionSafe
+            && (window.desktopSurfaceActive || window.consoleSheetFocusOwner === null)
         onDismissed: ShellStore.clockSkewDismissed = true
     }
 

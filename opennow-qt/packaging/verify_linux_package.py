@@ -31,8 +31,8 @@ def verify_core_capabilities(message):
     result = message.get("result", {})
     if (message.get("id") != "package-core" or message.get("ok") is not True
             or result.get("protocolVersion") != 6
-            or not {"catalog.storeLocal.v2", "account.mutations.scoped.v1", "session.allocationSettlement.v1"}.issubset(result.get("capabilities", []))):
-        raise ValueError(f"The packaged core lacks protocol 6 Store replacement support, scoped account mutations, or allocation settlement: {message}")
+            or not {"catalog.storeLocal.v2", "account.mutations.scoped.v1", "session.allocationSettlement.v1", "session.adReportIdentity.v1"}.issubset(result.get("capabilities", []))):
+        raise ValueError(f"The packaged core lacks protocol 6 Store replacement support, scoped account mutations, allocation settlement, or ad report identity: {message}")
 
 
 def verify_apprun(appdir):

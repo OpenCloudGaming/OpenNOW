@@ -83,6 +83,7 @@ FocusScope {
             }
             Text {
                 objectName: "accountSwitchBody"
+                textFormat: Text.PlainText
                 width: parent.width
                 topPadding: 10
                 elide: Text.ElideRight

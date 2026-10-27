@@ -65,11 +65,11 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\bin\{#AppExeName}"; WorkingDi
 Filename: "{app}\bin\{#AppExeName}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
-Type: filesandordirs; Name: "{app}\bin"
-Type: filesandordirs; Name: "{app}\plugins"
-Type: filesandordirs; Name: "{app}\qml"
-Type: filesandordirs; Name: "{app}\share"
-Type: filesandordirs; Name: "{app}\translations"
+Type: dirifempty; Name: "{app}\bin"
+Type: dirifempty; Name: "{app}\plugins"
+Type: dirifempty; Name: "{app}\qml"
+Type: dirifempty; Name: "{app}\share"
+Type: dirifempty; Name: "{app}\translations"
 Type: dirifempty; Name: "{app}"
 
 [Code]

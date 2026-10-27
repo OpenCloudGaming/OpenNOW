@@ -83,6 +83,7 @@ fn protocol_six_shells_receive_allocation_settlement_capability() {
         "auth.accountPicker.v1",
         "session.terminalCleanup.v1",
         "session.allocationSettlement.v1",
+        "session.adReportIdentity.v1",
         "account.mutations.scoped.v1",
     ] {
         assert!(capabilities.contains(&json!(capability)));

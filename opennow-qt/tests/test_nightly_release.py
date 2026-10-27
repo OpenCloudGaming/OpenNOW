@@ -1,6 +1,7 @@
 import hashlib
 import json
 from pathlib import Path
+import re
 import sys
 import tempfile
 import unittest
@@ -62,6 +63,15 @@ class NightlyReleaseTest(unittest.TestCase):
         for line in sums:
             digest, name = line.split("  ")
             self.assertEqual(digest, hashlib.sha256((self.destination / name).read_bytes()).hexdigest())
+
+    def test_signing_documentation_lists_every_nightly_package(self):
+        documentation = (Path(__file__).resolve().parents[2] / "docs/update-signing.md").read_text()
+        inventory = documentation.split("the public nightly inventory contains exactly these packages:", 1)[1]
+        inventory = inventory.split("Both AppImages", 1)[0]
+        documented = set(re.findall(r"^- `(OpenNOW-Qt-[^`]+)`$", inventory, re.MULTILINE))
+        expected = {name.replace(self.version, "<version>") for name in
+                    expected_packages(self.version, self.commit) if not name.endswith(".zsync")}
+        self.assertEqual(documented, expected)
 
     def test_missing_architecture_is_rejected(self):
         self.packages[0].unlink()

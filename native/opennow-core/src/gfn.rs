@@ -2189,6 +2189,18 @@ impl GfnService {
         let _operation = crate::store_requests::lock(&self.auth_operation)?;
         let (session, generation) = self.session_snapshot_locked()?;
         let mut owned = self.owned_session_params(params, &routing, &session, generation, false)?;
+        let mut identity = json!({});
+        for (key, source) in [("sessionId", &owned), ("adId", params)] {
+            let value = source[key]
+                .as_str()
+                .filter(|value| {
+                    !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
+                })
+                .ok_or_else(|| {
+                    ServiceError::invalid("Session ad identity requires bounded string IDs")
+                })?;
+            identity[key] = json!(value);
+        }
         for key in [
             "action",
             "adId",
@@ -2203,7 +2215,8 @@ impl GfnService {
         }
         self.cloudmatch
             .report_ad(&owned, &session, &self.device_id)
-            .and_then(|result| {
+            .and_then(|mut result| {
+                result["adReportIdentity"] = identity;
                 self.publish_active_result(&mut routing, &session, generation, result)
             })
     }

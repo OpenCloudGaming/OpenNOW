@@ -1280,8 +1280,8 @@ fn native_session_end_rejects_stale_owners_and_preserves_pending_handoffs() {
 
 #[test]
 fn owned_ad_reports_preserve_event_fields_without_accepting_foreign_session_routing() {
-    let response =
-        json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"seat-a","status":2}});
+    let response = json!({"requestStatus":{"statusCode":1},"session":{
+        "sessionId":"seat-a","status":2,"sessionAdsRequired":true,"sessionAds":[{"adId":"ad-b"}]}});
     let (url, worker) = mock_requests(vec![(200, response); 2], |index, request| {
         assert!(request.starts_with("PUT /v2/session/seat-a "));
         assert!(request.contains("GFNJWT test-access"));
@@ -1315,14 +1315,74 @@ fn owned_ad_reports_preserve_event_fields_without_accepting_foreign_session_rout
     service.session_routing.lock().unwrap().active_owner =
         Some(ActiveSeatOwner::capture(auth_fixture("account-a"), 7, &seat, None).unwrap());
     for action in ["finish", "cancel"] {
-        service.report_session_ad(&json!({
+        let result = service.report_session_ad(&json!({
             "sessionId":"seat-a","streamingBaseUrl":"https://forged.nvidiagrid.net/",
             "action":action,"adId":"ad-a","clientTimestamp":123456,
+            "adReportIdentity":{"sessionId":"forged-seat","adId":"forged-ad"},
             "watchedTimeInMs":if action == "finish" {30000} else {-10},
             "pausedTimeInMs":250,"cancelReason":if action == "cancel" {json!("error")} else {Value::Null}
         })).unwrap();
+        assert_eq!(
+            result["adReportIdentity"],
+            json!({"sessionId":"seat-a","adId":"ad-a"})
+        );
+        assert_eq!(
+            result["session"]["adState"]["sessionAds"][0]["adId"],
+            "ad-b"
+        );
+        let (output, messages) = std::sync::mpsc::channel();
+        crate::publish_response(
+            &output,
+            "ad-report",
+            &Ok((result.clone(), Some(("session.changed", result.clone())))),
+        );
+        let response = messages.try_recv().unwrap();
+        let event = messages.try_recv().unwrap();
+        assert_eq!(response["type"], "response");
+        assert_eq!(event["name"], "session.changed");
+        assert_eq!(response["result"], result);
+        assert_eq!(event["payload"], result);
+        assert!(messages.try_recv().is_err());
     }
     worker.join().unwrap();
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn ad_report_identity_rejects_unbounded_or_untyped_ids_before_remote_work() {
+    let (service, path) = service("http://127.0.0.1:9");
+    let seat = json!({"sessionId":"seat-a","status":3});
+    service.cloudmatch.seed_owned_session(seat.clone());
+    service.session_routing.lock().unwrap().active_owner =
+        Some(ActiveSeatOwner::capture(auth_fixture("account-a"), 7, &seat, None).unwrap());
+    for ad_id in [
+        Value::Null,
+        json!(1),
+        json!(""),
+        json!("a".repeat(257)),
+        json!("ad\nforged"),
+    ] {
+        assert_eq!(
+            service
+                .report_session_ad(&json!({
+                    "sessionId":"seat-a","adId":ad_id,"action":"start"
+                }))
+                .unwrap_err()
+                .code,
+            "invalid_params"
+        );
+    }
+    let seat = json!({"sessionId":"a".repeat(257),"status":3});
+    service.cloudmatch.seed_owned_session(seat.clone());
+    service.session_routing.lock().unwrap().active_owner =
+        Some(ActiveSeatOwner::capture(auth_fixture("account-a"), 7, &seat, None).unwrap());
+    assert_eq!(
+        service
+            .report_session_ad(&json!({"adId":"ad-a","action":"start"}))
+            .unwrap_err()
+            .code,
+        "invalid_params"
+    );
     std::fs::remove_dir_all(path).unwrap();
 }
 

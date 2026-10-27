@@ -119,6 +119,8 @@ pub(crate) struct V4l2Decoder {
     file: File,
     device: V4l2DeviceInfo,
     format: StreamFormat,
+    stream_color_matrix: ColorMatrix,
+    stream_color_range: ColorRange,
     output_type: u32,
     capture_type: u32,
     output: Vec<QueueBuffer>,
@@ -176,6 +178,8 @@ impl V4l2Decoder {
             file,
             device,
             format,
+            stream_color_matrix: format.color_matrix,
+            stream_color_range: format.color_range,
             output_type,
             capture_type,
             output: Vec::new(),
@@ -244,8 +248,8 @@ impl V4l2Decoder {
                 )));
             }
         };
-        self.format.color_matrix = negotiated.color_matrix;
-        self.format.color_range = negotiated.color_range;
+        self.format.color_matrix = negotiated.color_matrix.unwrap_or(self.stream_color_matrix);
+        self.format.color_range = negotiated.color_range.unwrap_or(self.stream_color_range);
         self.format.validate()?;
         self.capture_format = Some(negotiated.clone());
         if self.format != previous {
@@ -712,8 +716,8 @@ pub(super) struct NegotiatedFormat {
     visible_height: u32,
     fourcc: u32,
     planes: Vec<PlaneGeometry>,
-    color_matrix: ColorMatrix,
-    color_range: ColorRange,
+    color_matrix: Option<ColorMatrix>,
+    color_range: Option<ColorRange>,
 }
 
 pub(super) fn set_format(
@@ -821,6 +825,9 @@ fn negotiated_format(format: &v4l2_format) -> Result<NegotiatedFormat> {
     };
     let encoding = if ycbcr_enc == v4l2_ycbcr_encoding_V4L2_YCBCR_ENC_DEFAULT {
         match colorspace {
+            ffi::v4l2_colorspace_V4L2_COLORSPACE_DEFAULT => {
+                v4l2_ycbcr_encoding_V4L2_YCBCR_ENC_DEFAULT
+            }
             ffi::v4l2_colorspace_V4L2_COLORSPACE_REC709
             | ffi::v4l2_colorspace_V4L2_COLORSPACE_DCI_P3 => v4l2_ycbcr_encoding_V4L2_YCBCR_ENC_709,
             ffi::v4l2_colorspace_V4L2_COLORSPACE_BT2020 => {
@@ -835,10 +842,11 @@ fn negotiated_format(format: &v4l2_format) -> Result<NegotiatedFormat> {
         ycbcr_enc
     };
     let color_matrix = match encoding {
+        ffi::v4l2_ycbcr_encoding_V4L2_YCBCR_ENC_DEFAULT => None,
         ffi::v4l2_ycbcr_encoding_V4L2_YCBCR_ENC_601
-        | ffi::v4l2_ycbcr_encoding_V4L2_YCBCR_ENC_SYCC => ColorMatrix::Bt601,
-        ffi::v4l2_ycbcr_encoding_V4L2_YCBCR_ENC_709 => ColorMatrix::Bt709,
-        ffi::v4l2_ycbcr_encoding_V4L2_YCBCR_ENC_BT2020 => ColorMatrix::Bt2020,
+        | ffi::v4l2_ycbcr_encoding_V4L2_YCBCR_ENC_SYCC => Some(ColorMatrix::Bt601),
+        ffi::v4l2_ycbcr_encoding_V4L2_YCBCR_ENC_709 => Some(ColorMatrix::Bt709),
+        ffi::v4l2_ycbcr_encoding_V4L2_YCBCR_ENC_BT2020 => Some(ColorMatrix::Bt2020),
         _ => {
             return Err(Error::InvalidFormat(format!(
                 "unsupported V4L2 YCbCr encoding {encoding}"
@@ -846,15 +854,20 @@ fn negotiated_format(format: &v4l2_format) -> Result<NegotiatedFormat> {
         }
     };
     let color_range = match quantization {
+        ffi::v4l2_quantization_V4L2_QUANTIZATION_DEFAULT
+            if colorspace == v4l2_colorspace_V4L2_COLORSPACE_DEFAULT =>
+        {
+            None
+        }
         ffi::v4l2_quantization_V4L2_QUANTIZATION_DEFAULT => {
             if colorspace == v4l2_colorspace_V4L2_COLORSPACE_JPEG {
-                ColorRange::Full
+                Some(ColorRange::Full)
             } else {
-                ColorRange::Limited
+                Some(ColorRange::Limited)
             }
         }
-        ffi::v4l2_quantization_V4L2_QUANTIZATION_FULL_RANGE => ColorRange::Full,
-        ffi::v4l2_quantization_V4L2_QUANTIZATION_LIM_RANGE => ColorRange::Limited,
+        ffi::v4l2_quantization_V4L2_QUANTIZATION_FULL_RANGE => Some(ColorRange::Full),
+        ffi::v4l2_quantization_V4L2_QUANTIZATION_LIM_RANGE => Some(ColorRange::Limited),
         _ => {
             return Err(Error::InvalidFormat(format!(
                 "unsupported V4L2 quantization {quantization}"
@@ -1362,6 +1375,7 @@ mod tests {
 
     fn capture_color_format(
         multiplanar: bool,
+        (width, height): (u32, u32),
         colorspace: u32,
         encoding: u32,
         quantization: u32,
@@ -1370,8 +1384,8 @@ mod tests {
         if multiplanar {
             raw.type_ = v4l2_buf_type_V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
             let mut pixel = unsafe { raw.fmt.pix_mp };
-            pixel.width = 1920;
-            pixel.height = 1080;
+            pixel.width = width;
+            pixel.height = height;
             pixel.pixelformat = NV12M;
             pixel.num_planes = 2;
             pixel.colorspace = colorspace;
@@ -1381,8 +1395,8 @@ mod tests {
         } else {
             raw.type_ = v4l2_buf_type_V4L2_BUF_TYPE_VIDEO_CAPTURE;
             let mut pixel = unsafe { raw.fmt.pix };
-            pixel.width = 1920;
-            pixel.height = 1080;
+            pixel.width = width;
+            pixel.height = height;
             pixel.pixelformat = NV12;
             pixel.colorspace = colorspace;
             pixel.__bindgen_anon_1.ycbcr_enc = encoding;
@@ -1404,12 +1418,21 @@ mod tests {
                 (7, 2, 1, ColorMatrix::Bt709, ColorRange::Full),
                 (3, 5, 0, ColorMatrix::Bt601, ColorRange::Limited),
             ] {
-                let raw = capture_color_format(multiplanar, colorspace, encoding, quantization);
+                let raw = capture_color_format(
+                    multiplanar,
+                    (1920, 1080),
+                    colorspace,
+                    encoding,
+                    quantization,
+                );
                 let actual = negotiated_format(&raw).unwrap();
-                assert_eq!((actual.color_matrix, actual.color_range), (matrix, range));
+                assert_eq!(
+                    (actual.color_matrix, actual.color_range),
+                    (Some(matrix), Some(range))
+                );
             }
             for colorspace in 0..=12 {
-                let raw = capture_color_format(multiplanar, colorspace, 0, 0);
+                let raw = capture_color_format(multiplanar, (1920, 1080), colorspace, 0, 0);
                 if colorspace == 2 {
                     assert!(negotiated_format(&raw).is_err());
                     continue;
@@ -1418,17 +1441,18 @@ mod tests {
                 assert_eq!(
                     actual.color_matrix,
                     match colorspace {
-                        3 | 12 => ColorMatrix::Bt709,
-                        10 => ColorMatrix::Bt2020,
-                        _ => ColorMatrix::Bt601,
+                        0 => None,
+                        3 | 12 => Some(ColorMatrix::Bt709),
+                        10 => Some(ColorMatrix::Bt2020),
+                        _ => Some(ColorMatrix::Bt601),
                     }
                 );
                 assert_eq!(
                     actual.color_range,
-                    if colorspace == 7 {
-                        ColorRange::Full
-                    } else {
-                        ColorRange::Limited
+                    match colorspace {
+                        0 => None,
+                        7 => Some(ColorRange::Full),
+                        _ => Some(ColorRange::Limited),
                     }
                 );
             }
@@ -1438,47 +1462,148 @@ mod tests {
     #[test]
     fn capture_colorimetry_rejects_unrepresentable_explicit_values() {
         for multiplanar in [false, true] {
-            for encoding in [3, 4, 7, 8, 255] {
-                let raw = capture_color_format(multiplanar, 3, encoding, 0);
+            for colorspace in [0, 3, 7] {
+                for encoding in [3, 4, 7, 8, 255] {
+                    let raw =
+                        capture_color_format(multiplanar, (1920, 1080), colorspace, encoding, 0);
+                    assert!(matches!(
+                        negotiated_format(&raw),
+                        Err(Error::InvalidFormat(_))
+                    ));
+                }
+                let raw = capture_color_format(multiplanar, (1920, 1080), colorspace, 0, 255);
                 assert!(matches!(
                     negotiated_format(&raw),
                     Err(Error::InvalidFormat(_))
                 ));
             }
-            let raw = capture_color_format(multiplanar, 3, 0, 255);
-            assert!(matches!(
-                negotiated_format(&raw),
-                Err(Error::InvalidFormat(_))
-            ));
         }
     }
 
     #[test]
     fn unspecified_capture_colorspace_uses_stream_default_at_every_resolution() {
-        for (width, height) in [(1920, 1080), (960, 540), (640, 480)] {
-            let mut raw: v4l2_format = zeroed();
-            raw.type_ = v4l2_buf_type_V4L2_BUF_TYPE_VIDEO_CAPTURE;
-            let mut pixel = unsafe { raw.fmt.pix };
-            pixel.width = width;
-            pixel.height = height;
-            pixel.pixelformat = NV12;
-            pixel.colorspace = v4l2_colorspace_V4L2_COLORSPACE_DEFAULT;
-            raw.fmt.pix = pixel;
-            assert_eq!(
-                negotiated_format(&raw).unwrap().color_matrix,
-                ColorMatrix::Bt601
-            );
+        for multiplanar in [false, true] {
+            for (width, height) in [(1920, 1080), (960, 540), (640, 480), (3840, 2160)] {
+                for matrix in [ColorMatrix::Bt709, ColorMatrix::Bt601, ColorMatrix::Bt2020] {
+                    for range in [ColorRange::Limited, ColorRange::Full] {
+                        let mut stream = StreamFormat::h264_default(width, height).unwrap();
+                        stream.color_matrix = matrix;
+                        stream.color_range = range;
+                        let mut decoder = decoder_without_device_with_format(false, stream);
+                        let raw = capture_color_format(
+                            multiplanar,
+                            (width, height),
+                            v4l2_colorspace_V4L2_COLORSPACE_DEFAULT,
+                            0,
+                            0,
+                        );
+                        decoder
+                            .apply_negotiated_format(&negotiated_format(&raw).unwrap())
+                            .unwrap();
+                        assert_eq!(decoder.format, stream);
+                        assert_eq!(decoder.take_format_change(), None);
 
-            pixel.colorspace = v4l2_colorspace_V4L2_COLORSPACE_SMPTE170M;
-            raw.fmt.pix = pixel;
-            assert_eq!(
-                negotiated_format(&raw).unwrap().color_matrix,
-                ColorMatrix::Bt601
-            );
+                        let raw = capture_color_format(
+                            multiplanar,
+                            (width, height),
+                            v4l2_colorspace_V4L2_COLORSPACE_SMPTE170M,
+                            0,
+                            0,
+                        );
+                        decoder
+                            .apply_negotiated_format(&negotiated_format(&raw).unwrap())
+                            .unwrap();
+                        let expected = StreamFormat {
+                            color_matrix: ColorMatrix::Bt601,
+                            color_range: ColorRange::Limited,
+                            ..stream
+                        };
+                        assert_eq!(decoder.format, expected);
+                        assert_eq!(
+                            decoder.take_format_change(),
+                            (expected != stream).then_some(expected)
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn capture_color_overrides_restore_stream_defaults_on_reconfigure() {
+        for multiplanar in [false, true] {
+            for dimensions in [(640, 480), (1920, 1080), (3840, 2160)] {
+                for matrix in [ColorMatrix::Bt601, ColorMatrix::Bt709, ColorMatrix::Bt2020] {
+                    for range in [ColorRange::Full, ColorRange::Limited] {
+                        let mut stream = StreamFormat::h264_default(1280, 720).unwrap();
+                        stream.color_matrix = matrix;
+                        stream.color_range = range;
+                        for (colorspace, encoding, quantization, expected_matrix, expected_range) in [
+                            (0, 1, 1, ColorMatrix::Bt601, ColorRange::Full),
+                            (0, 2, 2, ColorMatrix::Bt709, ColorRange::Limited),
+                            (0, 6, 0, ColorMatrix::Bt2020, range),
+                            (0, 5, 0, ColorMatrix::Bt601, range),
+                            (0, 0, 1, matrix, ColorRange::Full),
+                            (0, 0, 2, matrix, ColorRange::Limited),
+                            (1, 0, 0, ColorMatrix::Bt601, ColorRange::Limited),
+                            (3, 0, 0, ColorMatrix::Bt709, ColorRange::Limited),
+                            (12, 0, 0, ColorMatrix::Bt709, ColorRange::Limited),
+                            (10, 0, 0, ColorMatrix::Bt2020, ColorRange::Limited),
+                            (7, 0, 0, ColorMatrix::Bt601, ColorRange::Full),
+                            (7, 2, 2, ColorMatrix::Bt709, ColorRange::Limited),
+                        ] {
+                            let mut decoder = decoder_without_device_with_format(false, stream);
+                            let raw = capture_color_format(
+                                multiplanar,
+                                dimensions,
+                                colorspace,
+                                encoding,
+                                quantization,
+                            );
+                            decoder
+                                .apply_negotiated_format(&negotiated_format(&raw).unwrap())
+                                .unwrap();
+                            let expected = StreamFormat {
+                                width: dimensions.0,
+                                height: dimensions.1,
+                                color_matrix: expected_matrix,
+                                color_range: expected_range,
+                                ..stream
+                            };
+                            assert_eq!(decoder.format, expected);
+                            assert_eq!(decoder.take_format_change(), Some(expected));
+
+                            let raw = capture_color_format(multiplanar, dimensions, 0, 0, 0);
+                            decoder
+                                .apply_negotiated_format(&negotiated_format(&raw).unwrap())
+                                .unwrap();
+                            let restored = StreamFormat {
+                                width: dimensions.0,
+                                height: dimensions.1,
+                                ..stream
+                            };
+                            assert_eq!(decoder.format, restored);
+                            assert_eq!(
+                                decoder.take_format_change(),
+                                (expected != restored).then_some(restored)
+                            );
+                            decoder
+                                .apply_negotiated_format(&negotiated_format(&raw).unwrap())
+                                .unwrap();
+                            assert_eq!(decoder.format, restored);
+                            assert_eq!(decoder.take_format_change(), None);
+                        }
+                    }
+                }
+            }
         }
     }
 
     fn decoder_without_device(drained: bool) -> V4l2Decoder {
+        decoder_without_device_with_format(drained, StreamFormat::h264_default(1920, 1080).unwrap())
+    }
+
+    fn decoder_without_device_with_format(drained: bool, format: StreamFormat) -> V4l2Decoder {
         V4l2Decoder {
             file: File::open("/dev/null").unwrap(),
             device: V4l2DeviceInfo {
@@ -1488,7 +1613,9 @@ mod tests {
                 multiplanar: true,
                 capture_fourcc: NV12,
             },
-            format: StreamFormat::h264_default(1920, 1080).unwrap(),
+            format,
+            stream_color_matrix: format.color_matrix,
+            stream_color_range: format.color_range,
             output_type: v4l2_buf_type_V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE,
             capture_type: v4l2_buf_type_V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
             output: Vec::new(),

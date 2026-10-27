@@ -21,6 +21,10 @@ release (or the `OPENNOW_FFMPEG_ARCHIVE` tarball) and apply every
 - `0003-opennow-uapi-compat.patch`: definitions for the Linux 7.0 HEVC controls
   and the Raspberry Pi COL128 capture formats, which SDK and distribution UAPI
   headers lack.
+- `0004-opennow-sand-capture-padding.patch`: reserves 4096 extra bytes per
+  8-bit SAND capture memory plane for Vulkan import alignment and GPU read-ahead.
+  Negotiated sizes, pitches, and DRM descriptor extents remain unchanged, as do
+  OUTPUT allocations, other capture formats, and 10-bit SAND. Overflow is rejected.
 
 The source and install directories include a hash of the patch contents, so
 editing a patch invalidates the bundled cache. Other targets retain the upstream
