@@ -107,7 +107,11 @@ class NativeChecksRunnerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             marker = directory / "pid"
-            child = f"import os,time;open({str(marker)!r}, 'w').write(str(os.getpid()));time.sleep(30)"
+            child = (
+                "import os,time; from pathlib import Path; "
+                f"marker=Path({str(marker)!r}); pending=marker.with_suffix('.pending'); "
+                "pending.write_text(str(os.getpid())); pending.replace(marker); time.sleep(30)"
+            )
             program = (
                 "import importlib.util,sys;from pathlib import Path; "
                 f"spec=importlib.util.spec_from_file_location('runner', {str(ROOT / '.github/scripts/run-native-checks.py')!r}); "
