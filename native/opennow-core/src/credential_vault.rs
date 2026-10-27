@@ -476,7 +476,16 @@ impl CredentialVault {
             }
             Err(error) => {
                 if let Some(session) = self.load_legacy_session(user_id)? {
-                    self.warn(format!("migration:{user_id}"), "Legacy credential migration is pending; this session is not securely persisted".into());
+                    if self.local_only && !self.store.is_plaintext(user_id) {
+                        if let Err(error) = self.save(&session) {
+                            self.warn(
+                                format!("migration:{user_id}"),
+                                format!("Credential migration to this device is pending: {error}"),
+                            );
+                        }
+                    } else {
+                        self.warn(format!("migration:{user_id}"), "Legacy credential migration is pending; this session is not securely persisted".into());
+                    }
                     return Ok(Some(session));
                 }
                 return Err(error);
@@ -1226,6 +1235,104 @@ mod tests {
         assert!(vault.load_active().is_err());
         assert!(!directory.path().join("fallback-sessions").exists());
         assert!(store.get("deck-expected").unwrap().is_some());
+    }
+
+    #[test]
+    fn steam_deck_unavailable_keyring_migrates_legacy_session_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = MemorySecretStore {
+            unavailable: true,
+            ..Default::default()
+        };
+        let vault = CredentialVault::local_only(directory.path().into(), Box::new(store.clone()));
+        let session = sample_session("deck-legacy-file");
+        fs::create_dir(vault.sessions_dir()).unwrap();
+        let source = vault.session_file(&session.user.user_id);
+        fs::write(&source, serde_json::to_vec(&session).unwrap()).unwrap();
+
+        let restored = vault.load(&session.user.user_id).unwrap().unwrap();
+        assert!(
+            serde_json::to_value(&restored).unwrap() == serde_json::to_value(&session).unwrap()
+        );
+        assert_eq!(vault.persistence_state(&restored), "device-file");
+        assert_eq!(vault.list().unwrap()[0]["userId"], session.user.user_id);
+        assert!(!source.exists());
+        assert!(vault.warnings().is_empty());
+        drop(vault);
+
+        let vault = CredentialVault::local_only(directory.path().into(), Box::new(store));
+        let restored = vault.load_active().unwrap().unwrap();
+        assert!(
+            serde_json::to_value(&restored).unwrap() == serde_json::to_value(&session).unwrap()
+        );
+    }
+
+    #[test]
+    fn steam_deck_unavailable_keyring_migrates_legacy_auth_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = MemorySecretStore {
+            unavailable: true,
+            ..Default::default()
+        };
+        let vault = CredentialVault::local_only(directory.path().into(), Box::new(store.clone()));
+        let session = sample_session("deck-legacy-state");
+        let source = directory.path().join("auth-state.json");
+        fs::write(
+            &source,
+            serde_json::to_vec(&json!({"sessions": [session]})).unwrap(),
+        )
+        .unwrap();
+
+        vault.migrate_legacy_electron_sessions().unwrap();
+        let restored = vault.load_active().unwrap().unwrap();
+        assert!(
+            serde_json::to_value(&restored).unwrap() == serde_json::to_value(&session).unwrap()
+        );
+        assert_eq!(vault.persistence_state(&restored), "device-file");
+        assert_eq!(vault.list().unwrap()[0]["userId"], session.user.user_id);
+        assert!(!source.exists());
+        assert!(vault.warnings().is_empty());
+        drop(vault);
+
+        let vault = CredentialVault::local_only(directory.path().into(), Box::new(store));
+        let restored = vault.load_active().unwrap().unwrap();
+        assert!(
+            serde_json::to_value(&restored).unwrap() == serde_json::to_value(&session).unwrap()
+        );
+    }
+
+    #[test]
+    fn steam_deck_unavailable_keyring_retains_legacy_source_until_local_migration_succeeds() {
+        use sha2::{Digest, Sha256};
+
+        let directory = tempfile::tempdir().unwrap();
+        let vault = CredentialVault::local_only(
+            directory.path().into(),
+            Box::new(MemorySecretStore {
+                unavailable: true,
+                ..Default::default()
+            }),
+        );
+        let session = sample_session("deck-legacy-retry");
+        let source = directory.path().join("auth-state.json");
+        let bytes = serde_json::to_vec(&json!({"sessions": [session]})).unwrap();
+        fs::write(&source, &bytes).unwrap();
+        let root = directory.path().join("fallback-sessions");
+        fs::create_dir(&root).unwrap();
+        let digest = Sha256::digest(session.user.user_id.as_bytes());
+        let blocked = root.join(format!("{digest:x}.tmp"));
+        fs::create_dir(&blocked).unwrap();
+
+        assert!(vault.migrate_legacy_electron_sessions().is_err());
+        assert_eq!(fs::read(&source).unwrap(), bytes);
+        assert!(vault.list().unwrap().is_empty());
+        assert!(!vault.warnings().is_empty());
+        fs::remove_dir(blocked).unwrap();
+        vault.migrate_legacy_electron_sessions().unwrap();
+        assert_eq!(vault.persistence_state(&session), "device-file");
+        assert_eq!(vault.list().unwrap()[0]["userId"], session.user.user_id);
+        assert!(!source.exists());
+        assert!(vault.warnings().is_empty());
     }
 
     #[test]

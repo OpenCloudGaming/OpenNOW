@@ -211,6 +211,8 @@ Compatibility reads make at most six Secret Service requests, each with a two-se
 timeout, separate from D-Bus connection setup. The core never requests an unlock or displays
 a keyring prompt on Steam Deck. Locked entries remain recoverable after the keyring is
 unlocked externally. Local files remain usable when the keyring is locked or unavailable.
+Legacy session files also migrate into device files and the account index without an
+available keyring; their sources remain until persistence is verified and metadata commits.
 Logout also attempts prompt-free OS-store deletion; failed cleanup remains suppressed and
 is retried on startup.
 
