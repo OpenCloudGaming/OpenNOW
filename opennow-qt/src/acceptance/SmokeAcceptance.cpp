@@ -20,6 +20,7 @@
 #include <QTimer>
 #include <QTemporaryFile>
 #include <QVariantMap>
+#include <SDL3/SDL.h>
 
 #include <cstdio>
 #include <cstdlib>
@@ -792,6 +793,7 @@ int AcceptanceSession::startSmokeWorkload()
                      || m_arguments.contains(u"--smoke-stream-recovery"_s)
                      || m_arguments.contains(u"--smoke-stream-end-notice-check"_s)
                      || m_arguments.contains(u"--smoke-clock-skew-check"_s)
+                     || m_arguments.contains(u"--smoke-clock-skew-overlap-check"_s)
                      || m_arguments.contains(u"--smoke-titlebar-keyboard-check"_s)
                      || m_arguments.contains(u"--smoke-literal-game-title-check"_s)
                      || m_arguments.contains(u"--smoke-console-stream-end-notice-check"_s))) {
@@ -869,6 +871,8 @@ int AcceptanceSession::startSmokeWorkload()
             ? u"qrc:/acceptance/ConsoleStreamEndNoticeAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-clock-skew-check"_s)
             ? u"qrc:/acceptance/ClockSkewAcceptance.qml"_s
+            : m_arguments.contains(u"--smoke-clock-skew-overlap-check"_s)
+            ? u"qrc:/acceptance/ClockSkewOverlapAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-titlebar-keyboard-check"_s)
             ? u"qrc:/acceptance/WindowTitleBarAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-literal-game-title-check"_s)
@@ -877,6 +881,23 @@ int AcceptanceSession::startSmokeWorkload()
         auto *fixture = component.create();
         if (!fixture) { qCritical() << component.errors(); return EXIT_FAILURE; }
         fixture->setParent(&m_engine);
+        SDL_JoystickID clockOverlapPad = 0;
+        const auto overlapIndex = m_arguments.indexOf(u"--smoke-clock-skew-overlap-check"_s);
+        if (overlapIndex >= 0) {
+            if (overlapIndex + 1 >= m_arguments.size()) return EXIT_FAILURE;
+            fixture->setProperty("order", m_arguments.at(overlapIndex + 1));
+            SDL_VirtualJoystickDesc descriptor{};
+            SDL_INIT_INTERFACE(&descriptor);
+            descriptor.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+            descriptor.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+            descriptor.name = "OpenNOW clock overlap acceptance controller";
+            clockOverlapPad = SDL_AttachVirtualJoystick(&descriptor);
+            if (clockOverlapPad == 0) return EXIT_FAILURE;
+            connect(fixture, &QObject::destroyed, this, [clockOverlapPad] { SDL_DetachVirtualJoystick(clockOverlapPad); });
+            fixture->setProperty("padButtons", QVariantMap{{u"south"_s, SDL_GAMEPAD_BUTTON_SOUTH},
+                {u"east"_s, SDL_GAMEPAD_BUTTON_EAST}, {u"rightShoulder"_s, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER},
+                {u"start"_s, SDL_GAMEPAD_BUTTON_START}});
+        }
         const auto titleSinkIndex = m_arguments.indexOf(u"--smoke-literal-game-title-check"_s);
         if (titleSinkIndex >= 0) {
             if (titleSinkIndex + 1 >= m_arguments.size()) return EXIT_FAILURE;
@@ -927,13 +948,14 @@ int AcceptanceSession::startSmokeWorkload()
             if (!client) return EXIT_FAILURE;
             m_engine.rootContext()->setContextProperty(u"CoreClient"_s, client);
         }
-        QTimer::singleShot(150, this, [this, fixture] {
+        QTimer::singleShot(150, this, [this, fixture, clockOverlapPad] {
             auto *window = qobject_cast<QQuickWindow *>(m_engine.rootObjects().first());
             if (window && (m_arguments.contains(u"--smoke-color-format-fullscreen"_s)
                     || m_arguments.contains(u"--smoke-hdr-downgrade-fullscreen"_s)
                     || m_arguments.contains(u"--smoke-store-launch-fullscreen"_s)
                     || m_arguments.contains(u"--smoke-stream-recovery-fullscreen"_s)))
                 window->showFullScreen();
+            if (window && m_arguments.contains(u"--clock-overlap-fullscreen"_s)) window->showFullScreen();
             if (window && m_arguments.contains(u"--smoke-flight-controls"_s)
                     && m_arguments.contains(u"--flight-fullscreen"_s))
                 window->showFullScreen();
@@ -981,6 +1003,7 @@ int AcceptanceSession::startSmokeWorkload()
                        || m_arguments.contains(u"--smoke-stream-end-notice-check"_s)
                        || m_arguments.contains(u"--smoke-console-stream-end-notice-check"_s)
                        || m_arguments.contains(u"--smoke-clock-skew-check"_s)
+                       || m_arguments.contains(u"--smoke-clock-skew-overlap-check"_s)
                        || m_arguments.contains(u"--smoke-titlebar-keyboard-check"_s)
                        || m_arguments.contains(u"--smoke-literal-game-title-check"_s)
                        || m_arguments.contains(u"--smoke-game-dlss"_s)
@@ -990,7 +1013,27 @@ int AcceptanceSession::startSmokeWorkload()
                     return;
                 auto *timer = new QTimer(this);
                 timer->setInterval(25);
-                connect(timer, &QTimer::timeout, this, [this, fixture, window, timer, deadline = QDeadlineTimer(15000)] {
+                connect(timer, &QTimer::timeout, this, [this, fixture, window, timer, clockOverlapPad,
+                        controllerRelease = -1, deadline = QDeadlineTimer(15000)]() mutable {
+                    if (clockOverlapPad != 0) {
+                        auto *joystick = SDL_GetJoystickFromID(clockOverlapPad);
+                        const auto button = fixture->property("padButton").toInt();
+                        bool sent = true;
+                        if (controllerRelease >= 0) {
+                            sent = joystick && SDL_SetJoystickVirtualButton(joystick, controllerRelease, false);
+                            controllerRelease = -1;
+                        } else if (button >= 0) {
+                            sent = joystick && SDL_SetJoystickVirtualButton(joystick, button, true);
+                            controllerRelease = button;
+                            fixture->setProperty("padButton", -1);
+                        }
+                        if (!sent) {
+                            timer->stop();
+                            qCritical("Clock overlap virtual controller input failed");
+                            m_application.exit(EXIT_FAILURE);
+                            return;
+                        }
+                    }
                     const auto key = fixture->property("key").toInt();
                     if (key != 0) {
                         fixture->setProperty("key", 0);

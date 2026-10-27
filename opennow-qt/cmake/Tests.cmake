@@ -863,6 +863,20 @@ if(BUILD_TESTING)
         PREFIX "/acceptance" BASE tests FILES tests/ConsoleStreamEndNoticeAcceptance.qml)
     qt_add_resources(opennow-qt "clock-skew-acceptance"
         PREFIX "/acceptance" BASE tests FILES tests/ClockSkewAcceptance.qml)
+    qt_add_resources(opennow-qt "clock-skew-overlap-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/ClockSkewOverlapAcceptance.qml)
+    foreach(order update-first clock-first)
+        foreach(mode windowed fullscreen)
+            set(clock_overlap_args --smoke-test --allow-multiple-instances --console --route home
+                --smoke-clock-skew-overlap-check ${order} --reduced-motion)
+            if(mode STREQUAL "fullscreen")
+                list(APPEND clock_overlap_args --clock-overlap-fullscreen)
+            endif()
+            add_test(NAME "qml-clock-skew-overlap-${order}-${mode}" COMMAND opennow-qt ${clock_overlap_args})
+            set_tests_properties("qml-clock-skew-overlap-${order}-${mode}" PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 25)
+        endforeach()
+    endforeach()
     qt_add_resources(opennow-qt "titlebar-keyboard-acceptance"
         PREFIX "/acceptance" BASE tests FILES tests/WindowTitleBarAcceptance.qml)
     qt_add_resources(opennow-qt "literal-game-title-acceptance"
