@@ -73,11 +73,41 @@ file(WRITE "{source.as_posix()}/architecture.txt" "${{CPACK_DEBIAN_PACKAGE_ARCHI
 class CorePackageCapabilitiesTest(unittest.TestCase):
     def setUp(self):
         self.message = {"id": "package-core", "ok": True,
-                        "result": {"protocolVersion": 6, "capabilities": ["catalog.storeLocal.v2", "account.mutations.scoped.v1", "session.allocationSettlement.v1", "session.adReportIdentity.v1"]}}
+                        "result": {"protocolVersion": 6, "capabilities": [
+                            "catalog.libraryPages.v1", "catalog.metadata.v1",
+                            "account.syncObservation.v1", "catalog.languages.v1",
+                            "queue.servers.v1", "auth.accountPicker.v1",
+                            "session.terminalCleanup.v1", "session.allocationSettlement.v1",
+                            "session.adReportIdentity.v1", "account.mutations.scoped.v1",
+                            "catalog.storeLocal.v2"]}}
+
+    def test_each_runtime_capability_is_required(self):
+        for capability in self.message["result"]["capabilities"]:
+            with self.subTest(capability=capability):
+                message = copy.deepcopy(self.message)
+                message["result"]["capabilities"].remove(capability)
+                with self.assertRaises(ValueError):
+                    verify_core_capabilities(message)
+
+    def test_installed_core_rejects_each_missing_runtime_capability(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "opennow-core"
+            for capability in self.message["result"]["capabilities"]:
+                with self.subTest(capability=capability):
+                    message = copy.deepcopy(self.message)
+                    message["result"]["capabilities"].remove(capability)
+                    binary.write_text(
+                        "#!/usr/bin/env python3\nimport sys\nsys.stdin.readline()\n"
+                        f"print({json.dumps(message)!r}, flush=True)\n"
+                    )
+                    binary.chmod(0o700)
+                    with self.assertRaises(ValueError):
+                        verify_core(Path(directory))
 
     def test_store_replacement_capability_is_required(self):
         verify_core_capabilities(self.message)
-        self.message["result"]["capabilities"] = ["catalog.storeLocal.v1", "account.mutations.scoped.v1", "session.allocationSettlement.v1", "session.adReportIdentity.v1"]
+        self.message["result"]["capabilities"].remove("catalog.storeLocal.v2")
+        self.message["result"]["capabilities"].append("catalog.storeLocal.v1")
         with self.assertRaisesRegex(ValueError, "Store replacement support"):
             verify_core_capabilities(self.message)
 
@@ -110,12 +140,14 @@ class CorePackageCapabilitiesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             binary = Path(directory) / "opennow-core"
             for capability in ("catalog.storeLocal.v2", "catalog.storeLocal.v1"):
-                self.message["result"]["capabilities"] = [capability, "account.mutations.scoped.v1", "session.allocationSettlement.v1", "session.adReportIdentity.v1"]
+                message = copy.deepcopy(self.message)
+                message["result"]["capabilities"].remove("catalog.storeLocal.v2")
+                message["result"]["capabilities"].append(capability)
                 binary.write_text(
                     "#!/usr/bin/env python3\nimport json, sys\n"
                     "request = json.loads(sys.stdin.readline())\n"
                     "assert request['method'] == 'core.hello' and request['params']['protocolVersion'] == 6\n"
-                    f"print({json.dumps(self.message)!r}, flush=True)\n"
+                    f"print({json.dumps(message)!r}, flush=True)\n"
                 )
                 binary.chmod(0o700)
                 if capability.endswith("v2"):

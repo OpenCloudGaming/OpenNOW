@@ -27,7 +27,12 @@ class FlatpakTests(unittest.TestCase):
     def test_core_ad_report_identity_is_required_before_launching_flatpak(self):
         for supported in (False, True):
             with self.subTest(supported=supported):
-                capabilities = ["catalog.storeLocal.v2", "account.mutations.scoped.v1", "session.allocationSettlement.v1"]
+                capabilities = [
+                    "catalog.libraryPages.v1", "catalog.metadata.v1", "account.syncObservation.v1",
+                    "catalog.languages.v1", "queue.servers.v1", "auth.accountPicker.v1",
+                    "session.terminalCleanup.v1", "session.allocationSettlement.v1",
+                    "account.mutations.scoped.v1", "catalog.storeLocal.v2",
+                ]
                 if supported:
                     capabilities.append("session.adReportIdentity.v1")
                 hello = {"id":"package-core", "ok":True,
