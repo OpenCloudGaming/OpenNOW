@@ -40,6 +40,8 @@ mod nvst_rtsp;
 mod queue_drops;
 #[cfg(test)]
 mod recording_tests;
+mod signaling_io;
+mod startup;
 mod telemetry;
 mod webrtc;
 
@@ -50,6 +52,7 @@ use queue_drops::QueueDropReports;
 use telemetry::{TELEMETRY_INTERVAL, media_telemetry};
 
 pub use opennow_streamer_transport::{EncodedMediaFrame, MediaConsumer};
+pub use startup::{EngineCancellation, StartupToken};
 
 #[derive(Clone)]
 pub struct EventSender {
@@ -160,7 +163,7 @@ trait NvstSessionResources {
         text: opennow_streamer_protocol::text_input::UnicodeText,
         timestamp_us: u64,
     ) -> Result<(), TransportError>;
-    fn apply_cursor(&self, bytes: Vec<u8>);
+    fn apply_cursor(&self, start_id: String, bytes: Vec<u8>);
     fn recover(&self) -> Result<(), String>;
     fn stop(&self);
 }
@@ -216,9 +219,9 @@ impl NvstSessionResources for ActiveNvstResources {
         self.bundle.queue_text(text, timestamp_us)
     }
 
-    fn apply_cursor(&self, bytes: Vec<u8>) {
+    fn apply_cursor(&self, start_id: String, bytes: Vec<u8>) {
         if let Some(media) = self.media.as_ref() {
-            media.update_cursor(bytes);
+            media.update_cursor(start_id, bytes);
         }
     }
 
@@ -246,6 +249,7 @@ impl NvstSessionResources for ActiveNvstResources {
 }
 
 pub struct Engine {
+    cancellation: EngineCancellation,
     lifecycle: Arc<Mutex<Lifecycle>>,
     webrtc_session: Option<webrtc::OwnedSession>,
     nvst_transport: Option<NvstUdpReceiverSession>,
@@ -308,6 +312,7 @@ impl Engine {
 
     pub fn with_event_sender(events: EventSender) -> Self {
         Self {
+            cancellation: EngineCancellation::default(),
             lifecycle: Arc::new(Mutex::new(Lifecycle {
                 state: State::Idle,
                 context: None,
@@ -349,6 +354,7 @@ impl Engine {
         media_consumer: MediaConsumer,
     ) -> Self {
         Self {
+            cancellation: EngineCancellation::default(),
             lifecycle: Arc::new(Mutex::new(Lifecycle {
                 state: State::Idle,
                 context: None,
@@ -386,6 +392,7 @@ impl Engine {
         media_runtime: MediaRuntime,
     ) -> Self {
         Self {
+            cancellation: EngineCancellation::default(),
             lifecycle: Arc::new(Mutex::new(Lifecycle {
                 state: State::Idle,
                 context: None,
@@ -429,6 +436,19 @@ impl Engine {
     }
 
     pub fn handle(&mut self, command: Command) -> (Vec<Value>, bool) {
+        let token = self.cancellation.token();
+        self.handle_with_startup_token(command, token)
+    }
+
+    pub fn set_cancellation(&mut self, cancellation: EngineCancellation) {
+        self.cancellation = cancellation;
+    }
+
+    pub fn handle_with_startup_token(
+        &mut self,
+        command: Command,
+        token: StartupToken,
+    ) -> (Vec<Value>, bool) {
         let summary = opennow_streamer_protocol::log::message_summary(&json!({
             "id": &command.id, "type": &command.kind
         }));
@@ -446,7 +466,7 @@ impl Engine {
             "nvst-bind" => self.nvst_bind(command),
             "nvst-unbind" => self.nvst_unbind(command),
             "nvst-send" => self.nvst_send(command),
-            "start" => self.start(command),
+            "start" => self.start(command, token),
             "input-paused" => self.set_paused(command),
             "surface" => self.update_surface(command),
             "stats-toggle" => Ok(vec![
@@ -718,7 +738,14 @@ impl Engine {
         Ok(vec![response])
     }
 
-    fn start(&mut self, command: Command) -> Result<Vec<Value>, Value> {
+    fn start(&mut self, command: Command, token: StartupToken) -> Result<Vec<Value>, Value> {
+        if token.is_cancelled() {
+            return Err(error(
+                Some(&command.id),
+                "nvst-start-aborted",
+                "Session startup was cancelled before dispatch",
+            ));
+        }
         let mut context = parse_context(command.context, &command.id)?;
         validate_context(&context, &command.id)?;
         let audio_device =
@@ -785,7 +812,7 @@ impl Engine {
                     .reserved_nvst_bundle
                     .as_mut()
                     .expect("NVST reservation created above");
-                let result = prepare_owned_nvst(&context, bundle);
+                let result = prepare_owned_nvst(&context, bundle, token.clone());
                 if result.is_ok() {
                     stage.complete();
                 }
@@ -1121,6 +1148,7 @@ impl Engine {
         if let Some(prepared) = prepared_nvst {
             let readiness = nvst_rtsp::wait_authenticated_transport(
                 || {
+                    prepared.check_startup()?;
                     let lifecycle = lock_lifecycle(&self.lifecycle);
                     if lifecycle.generation != generation || lifecycle.state != State::Connected {
                         return Err(nvst_rtsp::NvstRtspError {
@@ -1147,6 +1175,14 @@ impl Engine {
             match prepared.finish() {
                 Ok(active) => {
                     self.nvst_rtsp = Some(active);
+                    if token.is_cancelled() {
+                        self.stop("NVST startup was cancelled");
+                        return Err(error(
+                            Some(&command.id),
+                            "nvst-start-aborted",
+                            "NVST startup was cancelled",
+                        ));
+                    }
                     if nvst_upstream_ready
                         .take()
                         .is_some_and(|ready| ready.try_send(()).is_err())
@@ -2470,7 +2506,7 @@ fn forward_nvst_event<R: NvstSessionResources>(
             )
         }
         NvstReceiveEvent::Cursor(bytes) => {
-            resources.apply_cursor(bytes);
+            resources.apply_cursor(pending_control_output.start_id.clone(), bytes);
             false
         }
         NvstReceiveEvent::CursorCapture(composited) => {
@@ -3724,7 +3760,7 @@ mod tests {
             Ok(())
         }
 
-        fn apply_cursor(&self, _bytes: Vec<u8>) {}
+        fn apply_cursor(&self, _start_id: String, _bytes: Vec<u8>) {}
 
         fn send_captured_text(
             &self,

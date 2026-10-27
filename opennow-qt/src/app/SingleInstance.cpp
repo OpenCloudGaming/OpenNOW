@@ -3,17 +3,65 @@
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLocalSocket>
 #include <QStandardPaths>
+
+#include <cstdlib>
 
 using namespace Qt::StringLiterals;
 
 SingleInstance::SingleInstance(QObject *parent)
     : QObject(parent)
 {
+    m_server.setSocketOptions(QLocalServer::UserAccessOption);
     connect(&m_server, &QLocalServer::newConnection, this, &SingleInstance::acceptConnection);
+}
+
+int SingleInstance::requestQuit()
+{
+    QLocalSocket peer;
+    peer.connectToServer(serverName(), QIODevice::ReadWrite);
+    if (!peer.waitForConnected(1'000)) return EXIT_FAILURE;
+    const QByteArray payload("[\"--request-quit\"]\n");
+    if (peer.write(payload) != payload.size()) return EXIT_FAILURE;
+    if (peer.bytesToWrite() > 0 && !peer.waitForBytesWritten(1'000)) return EXIT_FAILURE;
+    QElapsedTimer deadline;
+    deadline.start();
+    for (;;) {
+        const auto remaining = 120'000 - deadline.elapsed();
+        if (remaining <= 0) return EXIT_FAILURE;
+        if (!peer.canReadLine() && !peer.waitForReadyRead(int(remaining)))
+            return EXIT_FAILURE;
+        const auto result = peer.readLine().trimmed();
+        if (result == "closed") return EXIT_SUCCESS;
+        if (result == "cancelled") return 2;
+        if (result != "pending") return EXIT_FAILURE;
+    }
+}
+
+void SingleInstance::cancelQuitRequest()
+{
+    if (!m_quitPeer) return;
+    auto *peer = m_quitPeer.data();
+    m_quitPeer.clear();
+    peer->write("cancelled\n");
+    peer->disconnectFromServer();
+}
+
+void SingleInstance::finishQuitRequest()
+{
+    if (!m_quitPeer) return;
+    auto *peer = m_quitPeer.data();
+    m_quitPeer.clear();
+    m_server.close();
+    m_lock.reset();
+    peer->write("closed\n");
+    peer->flush();
+    if (peer->bytesToWrite() > 0) peer->waitForBytesWritten(1'000);
+    peer->disconnectFromServer();
 }
 
 SingleInstance::Acquisition SingleInstance::acquire(const QStringList &arguments)
@@ -67,10 +115,15 @@ void SingleInstance::acceptConnection()
 {
     while (auto *socket = m_server.nextPendingConnection()) {
         socket->setParent(this);
+        socket->setReadBufferSize(65'536);
         connect(socket, &QLocalSocket::readyRead, this,
                 [this, socket] { readConnection(socket); });
         connect(socket, &QLocalSocket::disconnected, this, [this, socket] {
             readConnection(socket);
+            if (m_quitPeer == socket) {
+                m_quitPeer.clear();
+                emit quitRequestAbandoned();
+            }
             socket->deleteLater();
         });
         // A short-lived secondary can write and disconnect before newConnection
@@ -83,6 +136,10 @@ void SingleInstance::readConnection(QLocalSocket *socket)
 {
     auto buffer = socket->property("opennowBuffer").toByteArray();
     buffer += socket->readAll();
+    if (buffer.size() > 65'536) {
+        socket->abort();
+        return;
+    }
     qsizetype newline = -1;
     while ((newline = buffer.indexOf('\n')) >= 0) {
         const auto document = QJsonDocument::fromJson(buffer.first(newline).trimmed());
@@ -91,6 +148,18 @@ void SingleInstance::readConnection(QLocalSocket *socket)
         QStringList arguments;
         for (const auto &value : document.array()) {
             if (value.isString()) arguments.push_back(value.toString());
+        }
+        if (arguments == QStringList{u"--request-quit"_s}) {
+            if (m_quitPeer) {
+                socket->write("busy\n");
+                socket->disconnectFromServer();
+                return;
+            }
+            m_quitPeer = socket;
+            socket->write("pending\n");
+            socket->flush();
+            emit quitRequested();
+            continue;
         }
         emit activationRequested(arguments);
         socket->write("ok\n");

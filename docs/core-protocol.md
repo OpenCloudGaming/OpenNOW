@@ -11,14 +11,14 @@ ambiguous state.
 The first shell request is always:
 
 ```json
-{"type":"request","id":"1","method":"core.hello","params":{"protocolVersion":5,"shell":"qt","shellVersion":"0.5.4"}}
+{"type":"request","id":"1","method":"core.hello","params":{"protocolVersion":6,"shell":"qt","shellVersion":"0.5.4"}}
 ```
 
-Protocol 5 requires an exact selected catalog variant and account scope for fresh
-session allocation. It retains the bounded library-page contract introduced in
-protocol 4. Older shells are rejected with `incompatible_protocol` during
-`core.hello`, and protocol-5 shells reject older cores. The native streamer
-protocol remains 7.
+Protocol 6 requires explicit allocation settlement before graceful application
+shutdown. It retains protocol 5's exact selected catalog variant and account scope
+for fresh allocation and protocol 4's bounded library pages. Older shells are
+rejected with `incompatible_protocol` during `core.hello`, and protocol-6 shells
+reject older cores. The native streamer protocol remains 8.
 
 The core must return the same protocol version and its capabilities. The shell
 does not send product requests before this succeeds. Version mismatches, a
@@ -29,6 +29,9 @@ The desktop queue selector requires the `queue.servers.v1` capability in this
 handshake. The Qt client and relocated package probes reject cores that omit it,
 including older protocol-5 binaries, before sending any product requests. This
 additive capability leaves the JSON envelope and native streaming ABI unchanged.
+
+Protocol 6 also requires `session.allocationSettlement.v1`. Qt does not regard an
+unstarted, incompatible, or capability-missing core as safely settled.
 
 ## Saved accounts (`auth.accountPicker.v1`)
 
@@ -304,6 +307,37 @@ retry, blocks another fresh allocation, and reports `session_cleanup_pending`.
 The failed-cleanup record persists only the seat identity, app/status, trusted control
 route, original provider/account identity, and error code in `pending-session-cleanup.json`;
 it contains no tokens or signaling secrets. Discovery surfaces it only to that account.
+
+Protocol 6 adds a non-droppable settlement notification for every admitted
+`session.create`, including cancelled and timed-out requests whose ordinary
+responses are suppressed:
+
+```json
+{"type":"event","name":"session.allocation.settled","payload":{"requestId":"42","outcome":"cleaned"}}
+```
+
+`outcome` is `handed-off` after the allocation receipt and ownership handoff
+complete, `cleaned` after an allocation-free error or successful compensating
+cleanup, or `failed` when cleanup remains unresolved. `session_allocation_unresolved`
+also requires `failed`: a lost or malformed POST response does not prove that no
+seat was allocated. Sending a response,
+clearing a local request ID, or requesting cancellation is not settlement.
+An admission `busy` response means no worker was admitted and is not followed
+by settlement; Qt tracks retries until they are cancelled or admitted.
+
+CoreClient retains at most eight allocation request IDs independently of its
+ordinary pending-response map. Cancellation and deadlines do not release an
+admitted allocation. Settlement is consumed immediately, outside the bounded
+general event queue, so event overflow cannot discard it. Graceful quit requires
+both the shell's idle state and `CoreClient.allocationsSettled` to be true.
+
+Cleanup failure or core loss with an unsettled allocation makes the current
+CoreClient lifetime fail closed. Restarting the core does not erase that
+uncertainty, and new allocations and graceful-quit success remain blocked.
+Later manual exact-seat reconciliation does not silently clear this safety
+state: recovery would require an additional authoritative settlement contract.
+Normal user-owned window-close behavior is unchanged. The bounded request
+deadline can end a quit request without terminating the running application.
 Explicit successful DELETE or not-found clears that exact record, never a different seat.
 HTTP-success DELETE responses containing an explicit vendor rejection retain ownership.
 The CloudMatch owner reserves fresh-create admission before endpoint resolution or POST.
@@ -315,7 +349,7 @@ one overflow-detection byte before parsing, including for corrupt or oversized f
 
 The `session.terminalCleanup.v1` capability adds `session.ended`. The Qt client
 requires this capability during the handshake so an older packaged core cannot
-silently retain an ended seat. The JSON protocol version remains 5.
+silently retain an ended seat. Protocol 6 retains this requirement.
 
 After an authoritative, non-resumable `nvst-server` termination, the shell sends
 `session.ended` with `{sessionId, ownerScope: {userId, providerIdpId}}`

@@ -2677,8 +2677,10 @@ impl MediaControl {
             .close(RecordingCompletion::Cut { reason });
     }
 
-    pub fn update_cursor(&self, bytes: Vec<u8>) {
-        let _ = self.host_commands.send(HostCommand::Cursor(bytes));
+    pub fn update_cursor(&self, start_id: String, bytes: Vec<u8>) {
+        let _ = self
+            .host_commands
+            .send(HostCommand::Cursor(crate::CursorUpdate { start_id, bytes }));
     }
 
     pub fn stop(&self) {

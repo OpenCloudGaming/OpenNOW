@@ -89,11 +89,6 @@ export function launch(appId: number) {
   window.SteamClient.Apps.RunGame(app.gameid, "", -1, 100);
 }
 
-export function terminate(appId: number) {
-  const app = overview(appId);
-  if (app) window.SteamClient.Apps.TerminateApp(app.gameid, false);
-}
-
 export async function waitForExit(appId: number, timeoutMs: number): Promise<boolean> {
   return waitFor(() => !isRunning(appId), Math.ceil(timeoutMs / 200), 200);
 }

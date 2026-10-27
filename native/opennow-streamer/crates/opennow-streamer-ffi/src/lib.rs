@@ -1,12 +1,12 @@
 use std::ffi::{CStr, c_char, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
-use opennow_streamer_core::{Engine, EventSender};
+use opennow_streamer_core::{Engine, EngineCancellation, EventSender, StartupToken};
 use opennow_streamer_hid::generic::{
     GenericAdmission, GenericDevice, GenericError, GenericInterface, GenericReport,
 };
@@ -14,7 +14,7 @@ use opennow_streamer_hid::{
     HidRuntime, InventoryOutcome, SdlDeviceClaim, SnapshotAdmission, SonySnapshot,
 };
 use opennow_streamer_platform::{
-    CapturedInput, CapturedInputQueue, EmbeddedInputCapture, EmbeddedLocalAction,
+    CapturedInput, CapturedInputQueue, CursorUpdate, EmbeddedInputCapture, EmbeddedLocalAction,
     EmbeddedRuntimeConfig, GraphicsApi, GraphicsContext, GraphicsFramePublisher,
     GraphicsFrameToken, GraphicsRecordCommand, GraphicsRecordedFrame, GraphicsRuntimeError,
     GraphicsTextureFormat, RenderThreadGraphics, SharedVulkanDevice, WindowsAdapterLuid,
@@ -26,7 +26,7 @@ use serde_json::Value;
 
 static FIRST_FRAME_LOGGED: AtomicBool = AtomicBool::new(false);
 
-pub const OPENNOW_STREAMER_FFI_ABI_VERSION: u32 = 15;
+pub const OPENNOW_STREAMER_FFI_ABI_VERSION: u32 = 16;
 pub const OPENNOW_STREAMER_MAX_TEXT_BYTES: usize =
     opennow_streamer_protocol::text_input::MAX_TEXT_BYTES;
 pub const OPENNOW_STREAMER_VULKAN_DEVICE_INFO_VERSION: u32 = 1;
@@ -38,8 +38,15 @@ pub type OpenNowStreamerCallback =
     Option<unsafe extern "C" fn(bytes: *const u8, length: usize, user_data: *mut c_void)>;
 pub type OpenNowStreamerFrameAvailableCallback =
     Option<unsafe extern "C" fn(user_data: *mut c_void)>;
-pub type OpenNowStreamerCursorCallback =
-    Option<unsafe extern "C" fn(bytes: *const u8, length: usize, user_data: *mut c_void)>;
+pub type OpenNowStreamerCursorCallback = Option<
+    unsafe extern "C" fn(
+        start_id: *const u8,
+        start_id_length: usize,
+        bytes: *const u8,
+        length: usize,
+        user_data: *mut c_void,
+    ),
+>;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -422,24 +429,17 @@ impl Callback {
             function(bytes.as_ptr(), bytes.len(), self.user_data as *mut c_void);
         }
     }
-
-    fn invoke_bytes(self, bytes: &[u8]) {
-        let Some(function) = self.function else {
-            return;
-        };
-        unsafe {
-            function(bytes.as_ptr(), bytes.len(), self.user_data as *mut c_void);
-        }
-    }
 }
 
 enum WorkerCommand {
-    Send(Vec<u8>),
+    Send(Vec<u8>, StartupToken),
     Destroy,
 }
 
 pub struct OpenNowStreamer {
     commands: Option<SyncSender<WorkerCommand>>,
+    cancellation: EngineCancellation,
+    command_admission: Mutex<()>,
     worker: Option<JoinHandle<()>>,
     response_dispatcher: Option<JoinHandle<()>>,
     event_dispatcher: Option<JoinHandle<()>>,
@@ -458,7 +458,11 @@ impl OpenNowStreamer {
         config: OpenNowStreamerConfig,
         captured_input: Arc<CapturedInputQueue>,
         hid: Arc<HidRuntime>,
-        engine_factory: impl FnOnce(EventSender, GraphicsFramePublisher, SyncSender<Vec<u8>>) -> Engine
+        engine_factory: impl FnOnce(
+            EventSender,
+            GraphicsFramePublisher,
+            SyncSender<CursorUpdate>,
+        ) -> Engine
         + Send
         + 'static,
         exit_hook: impl FnOnce() + Send + 'static,
@@ -496,17 +500,22 @@ impl OpenNowStreamer {
                 return Err(status);
             }
         };
-        let cursor_dispatcher =
-            match spawn_cursor_dispatcher(cursor_receiver, callback(config.cursor_callback)) {
-                Ok(dispatcher) => dispatcher,
-                Err(status) => {
-                    drop(responses);
-                    drop(events);
-                    let _ = response_dispatcher.join();
-                    let _ = event_dispatcher.join();
-                    return Err(status);
-                }
-            };
+        let cursor_dispatcher = match spawn_cursor_dispatcher(
+            cursor_receiver,
+            config.cursor_callback,
+            config.user_data as usize,
+        ) {
+            Ok(dispatcher) => dispatcher,
+            Err(status) => {
+                drop(responses);
+                drop(events);
+                let _ = response_dispatcher.join();
+                let _ = event_dispatcher.join();
+                return Err(status);
+            }
+        };
+        let cancellation = EngineCancellation::default();
+        let engine_cancellation = cancellation.clone();
         let worker = match thread::Builder::new()
             .name("opennow-ffi-engine".to_owned())
             .spawn(move || {
@@ -516,7 +525,10 @@ impl OpenNowStreamer {
                         responses,
                         EventSender::bounded(events),
                         move |events| {
-                            engine_factory(events, engine_frame_publisher, cursor_updates)
+                            let mut engine =
+                                engine_factory(events, engine_frame_publisher, cursor_updates);
+                            engine.set_cancellation(engine_cancellation);
+                            engine
                         },
                     );
                 }));
@@ -533,6 +545,8 @@ impl OpenNowStreamer {
         };
         Ok(Self {
             commands: Some(commands),
+            cancellation,
+            command_admission: Mutex::new(()),
             worker: Some(worker),
             response_dispatcher: Some(response_dispatcher),
             event_dispatcher: Some(event_dispatcher),
@@ -558,7 +572,18 @@ impl OpenNowStreamer {
         let Some(commands) = self.commands.as_ref() else {
             return OpenNowStreamerStatus::Closed;
         };
-        match commands.try_send(WorkerCommand::Send(bytes.to_vec())) {
+        let cancels_startup = serde_json::from_slice::<Command>(bytes)
+            .is_ok_and(|command| matches!(command.kind.as_str(), "stop" | "shutdown"));
+        let Ok(_admission) = self.command_admission.lock() else {
+            return OpenNowStreamerStatus::Closed;
+        };
+        if cancels_startup {
+            self.cancellation.cancel();
+        }
+        match commands.try_send(WorkerCommand::Send(
+            bytes.to_vec(),
+            self.cancellation.token(),
+        )) {
             Ok(()) => OpenNowStreamerStatus::Ok,
             Err(TrySendError::Full(_)) => OpenNowStreamerStatus::QueueFull,
             Err(TrySendError::Disconnected(_)) => OpenNowStreamerStatus::Closed,
@@ -566,6 +591,7 @@ impl OpenNowStreamer {
     }
 
     fn shutdown(&mut self) {
+        self.cancellation.cancel();
         if let Some(commands) = self.commands.take() {
             let _ = commands.send(WorkerCommand::Destroy);
         }
@@ -673,14 +699,25 @@ fn should_log_event(
 }
 
 fn spawn_cursor_dispatcher(
-    receiver: Receiver<Vec<u8>>,
-    callback: Callback,
+    receiver: Receiver<CursorUpdate>,
+    callback: OpenNowStreamerCursorCallback,
+    user_data: usize,
 ) -> Result<JoinHandle<()>, OpenNowStreamerStatus> {
     thread::Builder::new()
         .name("opennow-ffi-cursor".to_owned())
         .spawn(move || {
-            while let Ok(bytes) = receiver.recv() {
-                callback.invoke_bytes(&bytes);
+            while let Ok(update) = receiver.recv() {
+                if let Some(callback) = callback {
+                    unsafe {
+                        callback(
+                            update.start_id.as_ptr(),
+                            update.start_id.len(),
+                            update.bytes.as_ptr(),
+                            update.bytes.len(),
+                            user_data as *mut c_void,
+                        );
+                    }
+                }
             }
         })
         .map_err(|_| OpenNowStreamerStatus::Closed)
@@ -694,8 +731,8 @@ fn run_engine(
 ) {
     let mut engine = engine_factory(events);
     while let Ok(command) = commands.recv() {
-        let bytes = match command {
-            WorkerCommand::Send(bytes) => bytes,
+        let (bytes, token) = match command {
+            WorkerCommand::Send(bytes, token) => (bytes, token),
             WorkerCommand::Destroy => break,
         };
         let command: Command = match serde_json::from_slice(&bytes) {
@@ -710,7 +747,7 @@ fn run_engine(
                 continue;
             }
         };
-        let (messages, keep_running) = engine.handle(command);
+        let (messages, keep_running) = engine.handle_with_startup_token(command, token);
         for message in messages {
             if responses.send(message).is_err() {
                 return;
@@ -940,8 +977,8 @@ pub unsafe extern "C" fn opennow_streamer_create(
             captured_input,
             Arc::clone(&hid),
             move |events, frames, cursor_updates| {
-                let cursor_update = Arc::new(move |bytes: Vec<u8>| {
-                    let _ = cursor_updates.try_send(bytes);
+                let cursor_update = Arc::new(move |update: CursorUpdate| {
+                    let _ = cursor_updates.try_send(update);
                 });
                 Engine::with_embedded_media_runtime_and_hid(
                     events,
@@ -2093,7 +2130,7 @@ mod tests {
 
     #[test]
     fn abi_twelve_adds_the_deterministic_graphics_unsupported_status() {
-        assert_eq!(OPENNOW_STREAMER_FFI_ABI_VERSION, 15);
+        assert_eq!(OPENNOW_STREAMER_FFI_ABI_VERSION, 16);
         assert_eq!(OpenNowStreamerStatus::GraphicsUnsupported as i32, 15);
         let header = include_str!("../include/opennow_streamer_ffi.h");
         assert!(header.contains("OPENNOW_STREAMER_GRAPHICS_UNSUPPORTED = 15,"));
@@ -2204,6 +2241,15 @@ mod tests {
         values: Mutex<Vec<Value>>,
         changed: Condvar,
         frames_available: AtomicUsize,
+        response_gate: Mutex<Option<CallbackGate>>,
+        worker_exited: Option<std::sync::mpsc::Sender<()>>,
+    }
+
+    struct CallbackGate {
+        id: &'static str,
+        entered: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+        completed: std::sync::mpsc::Sender<()>,
     }
 
     impl CallbackMessages {
@@ -2228,12 +2274,27 @@ mod tests {
 
     unsafe extern "C" fn collect_response(bytes: *const u8, length: usize, user_data: *mut c_void) {
         let bytes = unsafe { std::slice::from_raw_parts(bytes, length) };
-        let Ok(value) = serde_json::from_slice(bytes) else {
+        let Ok(value) = serde_json::from_slice::<Value>(bytes) else {
             return;
         };
         let messages = unsafe { &*(user_data as *const CallbackMessages) };
+        let gate = {
+            let mut gate = messages.response_gate.lock().expect("callback gate");
+            if gate.as_ref().is_some_and(|gate| value["id"] == gate.id) {
+                gate.take()
+            } else {
+                None
+            }
+        };
+        if let Some(gate) = &gate {
+            let _ = gate.entered.send(());
+            let _ = gate.release.recv_timeout(Duration::from_secs(5));
+        }
         messages.values.lock().expect("callback values").push(value);
         messages.changed.notify_all();
+        if let Some(gate) = gate {
+            let _ = gate.completed.send(());
+        }
     }
 
     unsafe extern "C" fn collect_frame_available(user_data: *mut c_void) {
@@ -2257,6 +2318,73 @@ mod tests {
             vulkan_device: ptr::null(),
             windows_adapter_luid: 0,
         }
+    }
+
+    #[test]
+    fn cursor_dispatcher_preserves_producer_identity_and_rejects_old_abi() {
+        unsafe extern "C" fn collect_cursor(
+            start_id: *const u8,
+            start_id_length: usize,
+            bytes: *const u8,
+            length: usize,
+            user_data: *mut c_void,
+        ) {
+            let sender = unsafe { &*user_data.cast::<SyncSender<CursorUpdate>>() };
+            let start_id = unsafe { std::slice::from_raw_parts(start_id, start_id_length) };
+            let bytes = unsafe { std::slice::from_raw_parts(bytes, length) };
+            sender
+                .send(CursorUpdate {
+                    start_id: String::from_utf8(start_id.to_vec()).unwrap(),
+                    bytes: bytes.to_vec(),
+                })
+                .unwrap();
+        }
+
+        let messages = CallbackMessages::default();
+        let mut config = test_config(&messages);
+        config.abi_version = 15;
+        assert_eq!(
+            validate_config(&config),
+            Err(OpenNowStreamerStatus::InvalidConfig)
+        );
+        let (callbacks, received) = sync_channel::<CursorUpdate>(2);
+        let (sender, receiver) = sync_channel(2);
+        sender
+            .send(CursorUpdate {
+                start_id: "old".into(),
+                bytes: vec![0, 0],
+            })
+            .unwrap();
+        sender
+            .send(CursorUpdate {
+                start_id: "replacement".into(),
+                bytes: vec![1, 12, 0],
+            })
+            .unwrap();
+        drop(sender);
+        let dispatcher = spawn_cursor_dispatcher(
+            receiver,
+            Some(collect_cursor),
+            ptr::from_ref(&callbacks) as usize,
+        )
+        .unwrap();
+        dispatcher.join().unwrap();
+        assert_eq!(
+            received.recv().unwrap(),
+            CursorUpdate {
+                start_id: "old".into(),
+                bytes: vec![0, 0]
+            }
+        );
+        assert_eq!(
+            received.recv().unwrap(),
+            CursorUpdate {
+                start_id: "replacement".into(),
+                bytes: vec![1, 12, 0]
+            }
+        );
+        let header = include_str!("../include/opennow_streamer_ffi.h");
+        assert!(header.contains("OpenNowStreamerCursorCallback cursor_callback;"));
     }
 
     #[test]
@@ -2396,12 +2524,18 @@ mod tests {
     ) {
         let (host, runtime) = create_test_runtime();
         let shutdown_runtime = runtime.clone();
+        let worker_exited = messages.worker_exited.clone();
         let handle = OpenNowStreamer::create(
             test_config(messages),
             runtime.captured_input(),
             Arc::new(HidRuntime::new()),
             move |events, _frames, _cursor| Engine::with_embedded_media_runtime(events, runtime),
-            move || shutdown_runtime.shutdown(),
+            move || {
+                shutdown_runtime.shutdown();
+                if let Some(exited) = worker_exited {
+                    let _ = exited.send(());
+                }
+            },
         )
         .expect("FFI handle");
         (handle, host)
@@ -3043,7 +3177,7 @@ mod tests {
     #[test]
     fn generic_output_contract_is_versioned_bounded_and_matches_header() {
         let header = include_str!("../include/opennow_streamer_ffi.h");
-        assert!(header.contains("#define OPENNOW_STREAMER_FFI_ABI_VERSION 15u"));
+        assert!(header.contains("#define OPENNOW_STREAMER_FFI_ABI_VERSION 16u"));
         assert!(header.contains("#define OPENNOW_STREAMER_GENERIC_HID_VERSION 1u"));
         for name in [
             "OpenNowGenericHidInterface",
@@ -4073,6 +4207,205 @@ mod tests {
             unsafe { opennow_streamer_destroy(handle) },
             OpenNowStreamerStatus::Ok
         );
+    }
+
+    struct CancellationTestRuntime {
+        handle: Option<Box<OpenNowStreamer>>,
+        messages: Arc<CallbackMessages>,
+        host: Option<opennow_streamer_platform::TestMediaRuntimeHost>,
+    }
+
+    impl CancellationTestRuntime {
+        fn new() -> Self {
+            Self::with_messages(Arc::new(CallbackMessages::default()))
+        }
+
+        fn with_messages(messages: Arc<CallbackMessages>) -> Self {
+            let (handle, host) = create_with_test_runtime(&messages);
+            Self {
+                handle: Some(Box::new(handle)),
+                messages,
+                host: Some(host),
+            }
+        }
+
+        fn send(&self, bytes: &[u8]) -> OpenNowStreamerStatus {
+            unsafe {
+                opennow_streamer_send(self.handle.as_deref().unwrap(), bytes.as_ptr(), bytes.len())
+            }
+        }
+
+        fn destroy(&mut self) -> OpenNowStreamerStatus {
+            unsafe { opennow_streamer_destroy(Box::into_raw(self.handle.take().unwrap())) }
+        }
+    }
+
+    impl Drop for CancellationTestRuntime {
+        fn drop(&mut self) {
+            drop(self.handle.take());
+            if let Some(host) = self.host.take() {
+                let result = host.join();
+                if !thread::panicking() {
+                    result.unwrap();
+                }
+            }
+        }
+    }
+
+    fn verify_in_flight_callback_drain(unwind: bool) {
+        use std::sync::mpsc;
+
+        let (entered, callback_entered) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let (completed, callback_completed) = mpsc::channel();
+        let (exited, worker_exited) = mpsc::channel();
+        let messages = Arc::new(CallbackMessages {
+            response_gate: Mutex::new(Some(CallbackGate {
+                id: "unwind",
+                entered,
+                release: released,
+                completed,
+            })),
+            worker_exited: Some(exited),
+            ..CallbackMessages::default()
+        });
+        let mut runtime = CancellationTestRuntime::with_messages(Arc::clone(&messages));
+        let userdata = Arc::downgrade(&messages);
+        assert_eq!(
+            runtime.send(br#"{"id":"unwind","type":"hello","protocolVersion":8}"#),
+            OpenNowStreamerStatus::Ok
+        );
+        callback_entered
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        let (finished, completion) = mpsc::channel();
+        let destroy = thread::spawn(move || {
+            let result = catch_unwind(AssertUnwindSafe(move || {
+                if unwind {
+                    let _runtime = runtime;
+                    panic!("injected fixture failure");
+                }
+                runtime.destroy()
+            }))
+            .map_err(|_| ());
+            finished.send(result).unwrap();
+        });
+        worker_exited.recv_timeout(Duration::from_secs(5)).unwrap();
+        let early = completion.recv_timeout(Duration::from_millis(100));
+        release.send(()).unwrap();
+        callback_completed
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        let returned_early = early.is_ok();
+        let result =
+            early.unwrap_or_else(|_| completion.recv_timeout(Duration::from_secs(5)).unwrap());
+        destroy.join().unwrap();
+        assert!(
+            !returned_early,
+            "runtime destruction returned with a live callback"
+        );
+        assert_eq!(
+            result,
+            if unwind {
+                Err(())
+            } else {
+                Ok(OpenNowStreamerStatus::Ok)
+            }
+        );
+        assert_eq!(messages.values.lock().unwrap()[0]["id"], "unwind");
+        drop(messages);
+        assert!(userdata.upgrade().is_none());
+    }
+
+    #[test]
+    fn cancellation_fixture_unwind_destroys_runtime_before_callback_userdata() {
+        verify_in_flight_callback_drain(true);
+    }
+
+    #[test]
+    fn destroy_waits_for_an_in_flight_response_callback() {
+        verify_in_flight_callback_drain(false);
+    }
+
+    #[test]
+    fn stop_and_destroy_cancel_startup_while_the_tls_peer_stays_open() {
+        use std::io::Read;
+        use std::sync::mpsc;
+
+        for stop in [true, false] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let (accepted, acceptance) = mpsc::channel();
+            let (release, released) = mpsc::channel();
+            let peer = thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let mut socket = loop {
+                    match listener.accept() {
+                        Ok((socket, _)) => break socket,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(Instant::now() < deadline, "startup did not connect");
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("accept failed: {error}"),
+                    }
+                };
+                socket.set_nonblocking(false).unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                assert!(socket.read(&mut [0; 4096]).unwrap() > 0);
+                accepted.send(()).unwrap();
+                let _ = released.recv_timeout(Duration::from_secs(5));
+            });
+            let mut runtime = CancellationTestRuntime::new();
+            let messages = Arc::clone(&runtime.messages);
+            let start = serde_json::to_vec(&json!({
+                "id":"in-flight", "type":"start", "context": {
+                    "session":{"sessionId":"ffi-startup-test", "serverIp":"127.0.0.1",
+                               "rtspsEndpoints":[format!("rtsps://{address}")]},
+                    "settings":{"transportMode":"nvst"}, "shortcuts":{}
+                }
+            }))
+            .unwrap();
+            assert_eq!(runtime.send(&start), OpenNowStreamerStatus::Ok);
+            acceptance.recv_timeout(Duration::from_secs(5)).unwrap();
+            let completed_while_peer_open;
+            if stop {
+                let command = br#"{"id":"stop-in-flight","type":"stop"}"#;
+                assert_eq!(runtime.send(command), OpenNowStreamerStatus::Ok);
+                let values = messages.values.lock().unwrap();
+                let (values, _) = messages
+                    .changed
+                    .wait_timeout_while(values, Duration::from_secs(1), |values| {
+                        !values.iter().any(|value| value["id"] == "stop-in-flight")
+                    })
+                    .unwrap();
+                completed_while_peer_open = values.iter().any(|value| {
+                    value["id"] == "in-flight" && value["code"] == "nvst-start-aborted"
+                }) && values
+                    .iter()
+                    .any(|value| value["id"] == "stop-in-flight" && value["type"] == "ok");
+                drop(values);
+                release.send(()).unwrap();
+                assert_eq!(runtime.destroy(), OpenNowStreamerStatus::Ok);
+            } else {
+                let (finished, completion) = mpsc::channel();
+                let destroy = thread::spawn(move || {
+                    let result = runtime.destroy();
+                    finished.send(result).unwrap();
+                });
+                let result = completion.recv_timeout(Duration::from_secs(1));
+                completed_while_peer_open = matches!(result, Ok(OpenNowStreamerStatus::Ok));
+                release.send(()).unwrap();
+                destroy.join().unwrap();
+            }
+            peer.join().unwrap();
+            assert!(
+                completed_while_peer_open,
+                "cancellation waited for the TLS peer, stop={stop}"
+            );
+        }
     }
 
     #[test]

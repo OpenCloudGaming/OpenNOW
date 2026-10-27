@@ -162,7 +162,7 @@ function QuickLaunch() {
       )}
       {games.slice(0, QUICK_LAUNCH_LIMIT).map((game) => (
         <PanelSectionRow key={game.appId}>
-          <Field label={game.title} onActivate={() => launchGame(game.appId, game.title).catch(report)} highlightOnFocus focusable>
+          <Field label={game.title} onActivate={() => launchGame(game.appId).catch(report)} highlightOnFocus focusable>
             <StoreIcon store={game.store} />
           </Field>
         </PanelSectionRow>

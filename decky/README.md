@@ -76,6 +76,8 @@ Press **View** and **Menu** together to open the session menu (OpenNOW 1.0.4 nig
 
 ### Stream settings
 
+Closing OpenNOW or switching games from Decky brings OpenNOW to the foreground and asks for confirmation there. Confirming ends the cloud session, finishes any recording, and closes the app before another game starts. Cancelling keeps the current session running. If the request times out or your installed OpenNOW does not support it, Decky leaves the app running instead of killing it.
+
 The **Stream** page sets resolution, frame rate, bitrate, codec and HDR. Under **Device**, **Steam Deck identity** tells GeForce NOW the device is a Steam Deck, which unlocks 90 fps. OpenNOW turns it on automatically the first time it runs on a Deck. Settings are read-only while OpenNOW is running.
 
 | Picture | Device |

@@ -222,5 +222,7 @@ class Plugin:
         return True
 
     async def close_opennow(self) -> bool:
-        data_dir = await asyncio.to_thread(self._data_dir)
-        return data_dir is not None and await asyncio.to_thread(process.terminate, data_dir)
+        install = await asyncio.to_thread(self._install)
+        if install is None:
+            raise RuntimeError("OpenNOW is not installed")
+        return await asyncio.to_thread(process.request_quit, install)

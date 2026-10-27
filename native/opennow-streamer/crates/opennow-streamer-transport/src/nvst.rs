@@ -5149,6 +5149,10 @@ fn handle_stun_datagram(
     }
 }
 
+#[path = "nvst_commands.rs"]
+mod commands;
+use commands::{COMMANDS_PER_ITERATION, CommandReceiver, CommandSender, command_queue};
+
 enum UdpReceiverCommand {
     SendText {
         text: opennow_streamer_protocol::text_input::UnicodeText,
@@ -5161,13 +5165,13 @@ enum UdpReceiverCommand {
         bytes: Vec<u8>,
         reply: Option<mpsc::SyncSender<Result<(), TransportError>>>,
     },
-    Stop,
+    Stop(NvstStopCause),
 }
 
 /// Owns the bounded UDP receive worker. Frames go through the same bounded `MediaConsumer` used
 /// by WebRTC, so a slow decoder cannot make UDP receive unbounded.
 pub struct NvstUdpReceiverSession {
-    commands: Sender<UdpReceiverCommand>,
+    commands: CommandSender,
     join: Option<JoinHandle<()>>,
     input_ready: Arc<AtomicBool>,
     microphone: Arc<Mutex<MicrophoneQueue>>,
@@ -5175,7 +5179,7 @@ pub struct NvstUdpReceiverSession {
 
 #[derive(Clone)]
 pub struct NvstUdpReceiverControl {
-    commands: Sender<UdpReceiverCommand>,
+    commands: CommandSender,
     input_ready: Arc<AtomicBool>,
     microphone: Arc<Mutex<MicrophoneQueue>>,
 }
@@ -5233,7 +5237,9 @@ impl NvstUdpReceiverSession {
         if let Ok(mut queue) = self.microphone.lock() {
             queue.close();
         }
-        let _ = self.commands.send(UdpReceiverCommand::Stop);
+        let _ = self
+            .commands
+            .send(UdpReceiverCommand::Stop(NvstStopCause::Requested));
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }
@@ -5310,8 +5316,8 @@ impl NvstUdpReceiverControl {
 
     /// Queues latency-sensitive locally captured input without waiting for the
     /// receive worker to round-trip an acknowledgement. Readiness is still
-    /// checked before enqueueing and the ordered command channel preserves the
-    /// exact keyboard/button/motion sequence.
+    /// checked before bounded admission. Motion may be dropped under pressure;
+    /// discrete input keeps its order or terminates the session on exhaustion.
     pub fn queue_input(
         &self,
         bytes: Vec<u8>,
@@ -5330,7 +5336,7 @@ impl NvstUdpReceiverControl {
             .lock()
             .map_err(|_| NvstUdpReceiverError::Closed)?
             .close();
-        self.send(UdpReceiverCommand::Stop)
+        self.send(UdpReceiverCommand::Stop(NvstStopCause::Requested))
     }
 
     fn send(&self, command: UdpReceiverCommand) -> Result<(), NvstUdpReceiverError> {
@@ -5345,7 +5351,9 @@ impl Drop for NvstUdpReceiverSession {
         if let Ok(mut queue) = self.microphone.lock() {
             queue.close();
         }
-        let _ = self.commands.send(UdpReceiverCommand::Stop);
+        let _ = self
+            .commands
+            .send(UdpReceiverCommand::Stop(NvstStopCause::Requested));
     }
 }
 
@@ -6156,7 +6164,7 @@ fn spawn_receiver_thread(
     socket
         .set_read_timeout(Some(UDP_RECEIVE_POLL_INTERVAL))
         .map_err(NvstUdpReceiverError::Configure)?;
-    let (commands, receiver) = mpsc::channel();
+    let (commands, receiver) = command_queue();
     let input_ready = Arc::new(AtomicBool::new(false));
     let worker_input_ready = input_ready.clone();
     let microphone = Arc::new(Mutex::new(MicrophoneQueue::new(
@@ -7328,7 +7336,7 @@ fn store_sony_output(
 fn run_nvst_webrtc_bundle(
     socket: UdpSocket,
     config: NvstVideoConfig,
-    commands: Receiver<UdpReceiverCommand>,
+    commands: CommandReceiver,
     outputs: NvstReceiverOutputs,
     transport_origin: Instant,
     setup: NvstWorkerSetup,
@@ -7432,7 +7440,6 @@ fn run_nvst_webrtc_bundle(
     let mut control_keepalive_at = next_control_keepalive(Instant::now());
     let mut control_keepalive_health = ControlKeepaliveHealth::default();
     let mut server_control_diagnostics = ServerControlDiagnostics::default();
-    let mut input_timeout_reported = false;
     let mut upstream_ready = upstream_ready;
     let mut upstream_allowed = upstream_ready.is_none();
     let mut pending_input_version = None;
@@ -7483,7 +7490,7 @@ fn run_nvst_webrtc_bundle(
                 version,
             );
         }
-        loop {
+        for _ in 0..COMMANDS_PER_ITERATION {
             match commands.try_recv() {
                 Ok(UdpReceiverCommand::Pause) => forward_optional(&event_sender, receiver.pause()),
                 Ok(UdpReceiverCommand::Resume) => {
@@ -7507,7 +7514,7 @@ fn run_nvst_webrtc_bundle(
                             && input_state.is_ready()
                             && let Some(channels) = input_channels
                         {
-                            channels.send_encoded(&mut rtc, message)
+                            input_state.send_encoded(channels, &mut rtc, message)
                         } else {
                             classify_nvst_unready_input(&mut rtc, input_channels, message)
                         };
@@ -7611,7 +7618,7 @@ fn run_nvst_webrtc_bundle(
                                         diagnostic_hex(&message.bytes, 128),
                                     );
                                 }
-                                channels.send_encoded(&mut rtc, message)
+                                input_state.send_encoded(channels, &mut rtc, message)
                             },
                         ) {
                             forward_optional(
@@ -7647,12 +7654,17 @@ fn run_nvst_webrtc_bundle(
                         }
                     }
                 }
-                command @ (Ok(UdpReceiverCommand::Stop) | Err(TryRecvError::Disconnected)) => {
-                    let cause = if command.is_ok() {
-                        NvstStopCause::Requested
-                    } else {
-                        NvstStopCause::ControllerClosed
+                command @ (Ok(UdpReceiverCommand::Stop(_)) | Err(TryRecvError::Disconnected)) => {
+                    let cause = match command {
+                        Ok(UdpReceiverCommand::Stop(cause)) => cause,
+                        _ => NvstStopCause::ControllerClosed,
                     };
+                    if matches!(cause, NvstStopCause::InputDeliveryFailed) {
+                        input_ready.store(false, Ordering::Release);
+                        let _ = event_sender.send(NvstReceiveEvent::InputUnavailable(
+                            "discrete input admission exhausted; stopping to prevent stuck input",
+                        ));
+                    }
                     opennow_streamer_protocol::log::log_async(
                         "INFO",
                         "nvst-bundle",
@@ -7673,7 +7685,7 @@ fn run_nvst_webrtc_bundle(
             && input_delivery
                 .flush(|message| {
                     let outcome = if input_state.is_ready() {
-                        channels.send_encoded(&mut rtc, message)
+                        input_state.send_encoded(channels, &mut rtc, message)
                     } else {
                         classify_nvst_unready_input(&mut rtc, Some(channels), message)
                     };
@@ -7778,14 +7790,16 @@ fn run_nvst_webrtc_bundle(
             );
             break 'bundle;
         }
-        if upstream_allowed
-            && !input_timeout_reported
-            && input_state.handshake_timed_out(sctp_started_at, now)
-        {
-            input_timeout_reported = true;
+        if upstream_allowed && input_state.handshake_timed_out(sctp_started_at, now) {
             let _ = event_sender.send(NvstReceiveEvent::InputUnavailable(
                 "input handshake timed out",
             ));
+            input_ready.store(false, Ordering::Release);
+            forward_optional(
+                &event_sender,
+                receiver.stop(NvstStopCause::InputDeliveryFailed),
+            );
+            break 'bundle;
         }
         let ping_interval = if dtls_ready {
             PING_INTERVAL_AFTER_CONNECTION
@@ -8363,17 +8377,20 @@ fn run_nvst_webrtc_bundle(
                             if id == channels.control_reliable {
                                 cursor_capture.reset();
                             }
-                            let input_channel_closed = id == channels.input_partial;
-                            if input_state.channel_closed(channels, id) || input_channel_closed {
-                                pending_input_version = None;
+                            if input_state.channel_closed(channels, id) {
                                 input_ready.store(false, Ordering::Release);
-                                let reason = if input_channel_closed {
+                                let reason = if id == channels.input_partial {
                                     "partially reliable input data channel closed"
                                 } else {
                                     "reliable input data channel closed"
                                 };
                                 let _ =
                                     event_sender.send(NvstReceiveEvent::InputUnavailable(reason));
+                                forward_optional(
+                                    &event_sender,
+                                    receiver.stop(NvstStopCause::InputDeliveryFailed),
+                                );
+                                break 'bundle;
                             }
                         }
                         if input_channels.is_some_and(|channels| id == channels.control_partial) {
@@ -8679,29 +8696,49 @@ fn run_nvst_webrtc_bundle(
             forward_frame_progress(&mut receiver, &event_sender, now);
         }
     }
+    input_ready.store(false, Ordering::Release);
+    let timestamp_us = transport_origin
+        .elapsed()
+        .as_micros()
+        .try_into()
+        .unwrap_or(u64::MAX);
+    let neutral_input = input_delivery.take_neutral_input(timestamp_us);
+    if let Some(channels) = input_channels {
+        let mut neutral_queued = true;
+        for message in neutral_input {
+            neutral_queued &= channels.send_control_teardown(&mut rtc, &message.bytes);
+        }
+        if !neutral_queued {
+            opennow_streamer_protocol::log::log_async(
+                "WARN",
+                "nvst-input",
+                "input neutralization could not be fully queued on the closing reliable channel; session is terminal",
+            );
+        }
+    }
     let mut shutdown_queued = true;
-    if let Some(hid_runtime) = hid_runtime.as_ref() {
-        if let (Some(hid_session), Some(channels)) = (hid_session.as_mut(), input_channels) {
-            shutdown_queued &= queue_hid_shutdown(hid_session, channels, &mut rtc);
-        }
-        if let (Some(session), Some(channels)) = (generic_session.as_mut(), input_channels) {
-            let actions = session.retire_all();
-            shutdown_queued &= send_generic_hid_actions(session, actions, |command, _| {
-                channels.send_control_teardown(&mut rtc, command)
-            });
-        }
-        forward_rtc_outputs(
-            &mut rtc,
-            |output| {
-                if let Output::Transmit(transmit) = output {
-                    let _ = socket.send_to(&transmit.contents, bundle_peer);
-                }
-            },
-            SONY_SHUTDOWN_FLUSH_BUDGET,
-        );
-        if let Some(generation) = hid_runtime.session_generation() {
-            hid_runtime.unbind_session(generation);
-        }
+    if let (Some(hid_session), Some(channels)) = (hid_session.as_mut(), input_channels) {
+        shutdown_queued &= queue_hid_shutdown(hid_session, channels, &mut rtc);
+    }
+    if let (Some(session), Some(channels)) = (generic_session.as_mut(), input_channels) {
+        let actions = session.retire_all();
+        shutdown_queued &= send_generic_hid_actions(session, actions, |command, _| {
+            channels.send_control_teardown(&mut rtc, command)
+        });
+    }
+    forward_rtc_outputs(
+        &mut rtc,
+        |output| {
+            if let Output::Transmit(transmit) = output {
+                let _ = socket.send_to(&transmit.contents, bundle_peer);
+            }
+        },
+        SONY_SHUTDOWN_FLUSH_BUDGET,
+    );
+    if let Some(hid_runtime) = hid_runtime.as_ref()
+        && let Some(generation) = hid_runtime.session_generation()
+    {
+        hid_runtime.unbind_session(generation);
     }
     if !shutdown_queued {
         input_ready.store(false, Ordering::Release);
@@ -8715,7 +8752,7 @@ fn run_nvst_webrtc_bundle(
 fn run_nvst_udp_receiver(
     socket: UdpSocket,
     config: NvstVideoConfig,
-    commands: Receiver<UdpReceiverCommand>,
+    commands: CommandReceiver,
     outputs: NvstReceiverOutputs,
     transport_origin: Instant,
     setup: NvstWorkerSetup,
@@ -8745,7 +8782,7 @@ fn run_nvst_udp_receiver(
 fn run_nvst_video_receiver(
     socket: UdpSocket,
     config: NvstVideoConfig,
-    commands: Receiver<UdpReceiverCommand>,
+    commands: CommandReceiver,
     outputs: NvstReceiverOutputs,
     transport_origin: Instant,
     mut send_keepalive: impl FnMut(&UdpSocket, &[u8], SocketAddr) -> std::io::Result<usize>,
@@ -8782,7 +8819,7 @@ fn run_nvst_video_receiver(
     let mut last_inbound_at = None;
     let mut port_unreachable = 0_u64;
     loop {
-        loop {
+        for _ in 0..COMMANDS_PER_ITERATION {
             match commands.try_recv() {
                 Ok(UdpReceiverCommand::Pause) => forward_optional(&event_sender, receiver.pause()),
                 Ok(UdpReceiverCommand::Resume) => {
@@ -8797,11 +8834,10 @@ fn run_nvst_video_receiver(
                         let _ = reply.send(Err(TransportError::InputNotReady));
                     }
                 }
-                command @ (Ok(UdpReceiverCommand::Stop) | Err(TryRecvError::Disconnected)) => {
-                    let cause = if command.is_ok() {
-                        NvstStopCause::Requested
-                    } else {
-                        NvstStopCause::ControllerClosed
+                command @ (Ok(UdpReceiverCommand::Stop(_)) | Err(TryRecvError::Disconnected)) => {
+                    let cause = match command {
+                        Ok(UdpReceiverCommand::Stop(cause)) => cause,
+                        _ => NvstStopCause::ControllerClosed,
                     };
                     forward_optional(&event_sender, receiver.stop(cause));
                     return;
@@ -9310,9 +9346,80 @@ mod tests {
     }
 
     #[test]
+    fn continuous_motion_cannot_starve_network_keepalive_or_stop() {
+        let server = UdpSocket::bind("127.0.0.1:0").unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let mut config = config();
+        config.video_peer = server.local_addr().unwrap();
+        config.client_udp_port = client.local_addr().unwrap().port();
+        let (media, _frames) = mpsc::sync_channel(1);
+        let (events, _received) = mpsc::channel();
+        let session = spawn_nvst_mjolnir_receiver(client, config, media, events).unwrap();
+        session.input_ready.store(true, Ordering::Release);
+        let control = session.control();
+        let producer_control = control.clone();
+        let (done, finished) = mpsc::sync_channel(1);
+        let producer = thread::spawn(move || {
+            let mut motion = vec![0; 22];
+            motion[..4].copy_from_slice(&7_u32.to_le_bytes());
+            while producer_control.queue_input(motion.clone(), true).is_ok() {}
+            done.send(()).unwrap();
+        });
+        let mut packet = [0; 2048];
+        server.recv_from(&mut packet).unwrap();
+        server.recv_from(&mut packet).unwrap();
+        let stopped_at = Instant::now();
+        control.stop().unwrap();
+        finished.recv_timeout(Duration::from_secs(1)).unwrap();
+        producer.join().unwrap();
+        session.stop();
+        assert!(stopped_at.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn outer_input_admission_is_bounded_before_worker_drain() {
+        let (commands, receiver) = command_queue();
+        let control = NvstUdpReceiverControl {
+            commands,
+            input_ready: Arc::new(AtomicBool::new(true)),
+            microphone: Arc::new(Mutex::new(MicrophoneQueue::new(false))),
+        };
+        let mut rejected = false;
+        for _ in 0..257 {
+            let mut key = vec![0; 18];
+            key[..4].copy_from_slice(&3_u32.to_le_bytes());
+            rejected |= control.queue_input(key, false).is_err();
+        }
+        assert!(
+            rejected,
+            "discrete overflow must settle instead of growing the queue"
+        );
+        drop(receiver);
+    }
+
+    #[test]
+    fn outer_stop_preempts_queued_input() {
+        let (commands, receiver) = command_queue();
+        let control = NvstUdpReceiverControl {
+            commands,
+            input_ready: Arc::new(AtomicBool::new(true)),
+            microphone: Arc::new(Mutex::new(MicrophoneQueue::new(false))),
+        };
+        control.queue_input(vec![0; 18], false).unwrap();
+        control.stop().unwrap();
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(UdpReceiverCommand::Stop(_))
+        ));
+    }
+
+    #[test]
     fn typed_text_queue_preserves_order_reservation_and_readiness() {
         use opennow_streamer_protocol::text_input::{TextInputError, TextInputSlot};
-        let (commands, receiver) = std::sync::mpsc::channel();
+        let (commands, receiver) = command_queue();
         let control = super::NvstUdpReceiverControl {
             commands,
             input_ready: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -9361,6 +9468,10 @@ mod tests {
 
     mod audio_tests {
         include!("nvst_audio_tests.rs");
+    }
+
+    mod input_lifecycle_tests {
+        include!("nvst_input_lifecycle_tests.rs");
     }
 
     mod ping_tests {
@@ -11090,7 +11201,7 @@ mod tests {
         socket
             .set_read_timeout(Some(UDP_RECEIVE_POLL_INTERVAL))
             .unwrap();
-        let (commands, receiver) = mpsc::channel();
+        let (commands, receiver) = command_queue();
         let input_ready = Arc::new(AtomicBool::new(false));
         let microphone = Arc::new(Mutex::new(MicrophoneQueue::new(false)));
         let outputs = NvstReceiverOutputs {
@@ -11132,7 +11243,7 @@ mod tests {
         let rtc =
             prepare_nvst_webrtc_bundle(&socket, &config, create_nvst_bundle_rtc(&socket).unwrap())
                 .unwrap();
-        let (commands, receiver) = mpsc::channel();
+        let (commands, receiver) = command_queue();
         let input_ready = Arc::new(AtomicBool::new(false));
         let microphone = Arc::new(Mutex::new(MicrophoneQueue::new(false)));
         let outputs = NvstReceiverOutputs {

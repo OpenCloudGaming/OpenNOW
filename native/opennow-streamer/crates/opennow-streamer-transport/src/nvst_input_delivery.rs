@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 
 use crate::nvst_budget::TEXT_BATCH_GUARD;
 use crate::nvst_input::{
-    NvstEncodedInput, NvstInputCodec, NvstInputCodecError, NvstInputWrite,
+    NvstEncodedInput, NvstInputCodec, NvstInputCodecError, NvstInputHeldState, NvstInputWrite,
     native_input_type_is_motion, native_input_types, text_batch_fits, unicode_text_messages,
 };
 
@@ -25,6 +25,63 @@ mod tests {
         let mut bytes = vec![0; 18];
         bytes[..4].copy_from_slice(&(if pressed { 3_u32 } else { 4_u32 }).to_le_bytes());
         bytes
+    }
+
+    #[test]
+    fn shutdown_neutralizes_sent_gamepad_state_over_reliable_control() {
+        let mut delivery = NvstInputDelivery::default();
+        let mut codec = NvstInputCodec::default();
+        let mut gamepad = vec![0; 38];
+        gamepad[..4].copy_from_slice(&12_u32.to_le_bytes());
+        gamepad[8..10].copy_from_slice(&1_u16.to_le_bytes());
+        gamepad[12..14].copy_from_slice(&1_u16.to_le_bytes());
+        delivery
+            .submit(&mut codec, &gamepad, 0, |_| NvstInputWrite::Sent)
+            .unwrap();
+        let neutral = delivery.take_neutral_input(42);
+        assert_eq!(neutral.len(), 2);
+        assert!(
+            neutral
+                .iter()
+                .all(|message| message.route == crate::nvst_input::NvstInputRoute::ControlReliable)
+        );
+        assert_eq!(neutral[0].bytes[13], 0x22);
+        assert_eq!(&neutral[0].bytes[26..38], &[0; 12]);
+        assert_eq!(&neutral[1].bytes[22..24], &[0; 2]);
+        assert!(delivery.take_neutral_input(42).is_empty());
+    }
+
+    #[test]
+    fn neutralization_uses_successful_writes_not_deferred_releases_or_presses() {
+        let mut delivery = NvstInputDelivery::default();
+        let mut codec = NvstInputCodec::default();
+        let mut press = key(true);
+        press[4..6].copy_from_slice(&65_u16.to_be_bytes());
+        let mut release = press.clone();
+        release[..4].copy_from_slice(&4_u32.to_le_bytes());
+        delivery
+            .submit(&mut codec, &press, 0, |_| NvstInputWrite::Sent)
+            .unwrap();
+        delivery
+            .submit(&mut codec, &release, 0, |_| NvstInputWrite::Deferred)
+            .unwrap();
+        assert_eq!(
+            delivery.take_neutral_input(0),
+            codec.encode(&release, 0).unwrap()
+        );
+        assert!(delivery.is_empty());
+        assert!(delivery.take_neutral_input(0).is_empty());
+        delivery
+            .submit(&mut codec, &press, 0, |_| NvstInputWrite::Deferred)
+            .unwrap();
+        assert!(delivery.take_neutral_input(0).is_empty());
+        delivery
+            .submit(&mut codec, &press, 0, |_| NvstInputWrite::Sent)
+            .unwrap();
+        delivery
+            .submit(&mut codec, &release, 0, |_| NvstInputWrite::Sent)
+            .unwrap();
+        assert!(delivery.take_neutral_input(0).is_empty());
     }
 
     #[test]
@@ -440,6 +497,7 @@ mod tests {
 
 #[derive(Default)]
 pub(crate) struct NvstInputDelivery {
+    held: NvstInputHeldState,
     pending: VecDeque<PendingInput>,
     pending_messages: usize,
     pending_bytes: usize,
@@ -468,6 +526,10 @@ pub(crate) struct NvstInputDeliverySnapshot {
 }
 
 impl NvstInputDelivery {
+    pub(crate) fn take_neutral_input(&mut self, timestamp_us: u64) -> Vec<NvstEncodedInput> {
+        std::mem::take(self).held.neutralize(timestamp_us)
+    }
+
     pub(crate) fn snapshot(&self) -> NvstInputDeliverySnapshot {
         NvstInputDeliverySnapshot {
             pending_messages: self.pending_messages,
@@ -580,21 +642,24 @@ impl NvstInputDelivery {
                 }
             };
             match send(message) {
-                NvstInputWrite::Sent => match pending {
-                    PendingInput::Discrete(message) => {
-                        self.pending_bytes -= message.bytes.len();
-                        self.pending_messages -= 1;
-                        self.pending.pop_front();
-                    }
-                    PendingInput::Text { messages, .. } => {
-                        self.pending_text_bytes -=
-                            messages.pop_front().expect("sent text message").bytes.len();
-                        self.pending_text_messages -= 1;
-                        if messages.is_empty() {
+                NvstInputWrite::Sent => {
+                    self.held.record_sent(message);
+                    match pending {
+                        PendingInput::Discrete(message) => {
+                            self.pending_bytes -= message.bytes.len();
+                            self.pending_messages -= 1;
                             self.pending.pop_front();
                         }
+                        PendingInput::Text { messages, .. } => {
+                            self.pending_text_bytes -=
+                                messages.pop_front().expect("sent text message").bytes.len();
+                            self.pending_text_messages -= 1;
+                            if messages.is_empty() {
+                                self.pending.pop_front();
+                            }
+                        }
                     }
-                },
+                }
                 NvstInputWrite::Deferred => {
                     self.deferred_writes = self.deferred_writes.saturating_add(1);
                     return Ok(());

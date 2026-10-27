@@ -7,15 +7,26 @@ This crate exposes `opennow-streamer-core::Engine` as a C-compatible in-process 
 - Initialize every `OpenNowStreamerConfig` field, set `abi_version` to `OPENNOW_STREAMER_FFI_ABI_VERSION`, and set `struct_size` to `sizeof(OpenNowStreamerConfig)`.
 - `opennow_streamer_create` writes one owned opaque handle to `output`. On failure it writes `NULL` when the supplied config header is readable.
 - `opennow_streamer_send` copies one serialized JSON protocol command before returning. `OPENNOW_STREAMER_OK` means the bounded command queue accepted it, not that the protocol command succeeded. Parse errors and protocol results arrive at `response_callback`.
+- Concurrent sends serialize cancellation, startup-token capture and bounded queue admission together. Stop and shutdown cancel an in-flight startup even if the command queue is full. Destroy cancels startup before waiting for its worker.
 - Values returned directly by `Engine::handle` go to `response_callback`. Unsolicited engine events go to `event_callback`. Each byte slice is UTF-8 JSON and is valid only for the duration of that callback.
 - `frame_available_callback` is separate from the protocol callbacks. It only asks the shell to schedule a render; it carries no frame or protocol payload and may run on a decoder thread.
 - Response and event callbacks each run serially on their own dispatcher thread, so the two callbacks may overlap. They must return promptly and must not re-enter this handle. `user_data` must remain valid until `opennow_streamer_destroy` returns.
 - `opennow_streamer_destroy` consumes the handle exactly once, waits for the engine and both callback queues to drain, and then returns. No call may race with destroy. A null handle is rejected; reusing a destroyed pointer is caller-side undefined behavior.
 - Every exported function catches Rust panics before they can unwind through the C ABI. A worker-thread panic closes the command queue.
 
-### Generic flight controls and wheels (ABI 15)
+### Session-scoped cursors (ABI 16)
 
-Rebuild Qt and the native library together with ABI 15. The generic-HID exports are
+Rebuild Qt and the native library together. `cursor_callback` now uses
+`OpenNowStreamerCursorCallback`, which receives the producer's UTF-8 `start_id`
+and its length before the unchanged binary cursor payload and its length.
+Both slices are borrowed only for the callback duration. Cursor delivery uses
+its own bounded dispatcher and may overlap responses and events. Consumers must
+copy the identity with the payload and reject cursors whose identity does not
+match their active start command, including callbacks delivered after a restart.
+
+### Generic flight controls and wheels
+
+The generic-HID exports introduced in ABI 15 remain available in ABI 16. They are
 `opennow_streamer_replace_generic_hid_inventory`,
 `opennow_streamer_submit_generic_hid_report`,
 `opennow_streamer_take_generic_hid_output`, and
@@ -53,7 +64,7 @@ the physical checks still required.
 
 ### Server timers and termination (ABI 13)
 
-Rebuild Qt and the native library together with the current ABI 15. Structure layouts and callback
+Rebuild Qt and the native library together with the current ABI 16. Structure layouts and callback
 ownership are unchanged. `event_callback` now delivers generation-scoped
 `session-timer` events with `startId`, `timerType`, `secondsLeft` and `active`.
 Timer type 4 warns of idle expiry; type 5 clears the warning. Successful gameplay
