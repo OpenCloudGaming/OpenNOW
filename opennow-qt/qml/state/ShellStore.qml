@@ -81,6 +81,7 @@ QtObject {
         refreshCatalogAfterAccountChange: catalogOwner.refreshCatalogAfterAccountChange
         refreshAccountServices: root.refreshAccountServices
         acceptsScope: root.matchesAuthScope
+        authScope: catalogOwner.authScope
         onAccessibilityAnnounced: message => root.accessibilityMessage = message
     }
 
@@ -1523,28 +1524,32 @@ QtObject {
         return accountServicesOwner.refreshGameAccounts()
     }
 
-    function startAccountLink(provider) {
-        return accountServicesOwner.startAccountLink(provider)
+    function captureAccountScope() {
+        return accountServicesOwner.captureAuthScope()
+    }
+
+    function startAccountLink(provider, scope) {
+        return accountServicesOwner.startAccountLink(provider, scope)
     }
 
     function pollAccountLink() {
         return accountServicesOwner.pollAccountLink()
     }
 
-    function syncGameAccount(provider) {
-        return accountServicesOwner.syncGameAccount(provider)
+    function syncGameAccount(provider, scope) {
+        return accountServicesOwner.syncGameAccount(provider, scope)
     }
 
-    function unlinkGameAccount(provider) {
-        return accountServicesOwner.unlinkGameAccount(provider)
+    function unlinkGameAccount(provider, scope) {
+        return accountServicesOwner.unlinkGameAccount(provider, scope)
     }
 
     function refreshStorageLocations() {
         return accountServicesOwner.refreshStorageLocations()
     }
 
-    function resetPersistentStorage(regionCode) {
-        return accountServicesOwner.resetPersistentStorage(regionCode)
+    function resetPersistentStorage(regionCode, scope) {
+        return accountServicesOwner.resetPersistentStorage(regionCode, scope)
     }
 
     function refreshMedia() {

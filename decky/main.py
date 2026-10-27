@@ -165,35 +165,46 @@ class Plugin:
     async def install_opennow(self, nightly: bool | None = None) -> bool:
         if self.install_task and not self.install_task.done():
             return False
-        if nightly is not None:
-            await self.set_preference("nightlyChannel", nightly)
-        release = self.release or await self.check_update()
-        asset = release.get("asset")
-        if not asset:
-            raise RuntimeError("This release has no Flatpak for this device")
         loop = asyncio.get_running_loop()
         self.install_cancel = threading.Event()
         cancelled = self.install_cancel
-
-        def report(phase: str, fraction: float):
-            previous = self.install_progress
-            progress = {"phase": phase, "fraction": round(fraction, 2), "version": release["version"]}
-            if previous and previous["phase"] == phase and previous["fraction"] == progress["fraction"]:
-                return
-            self.install_progress = progress
-            asyncio.run_coroutine_threadsafe(decky.emit("install_progress", progress), loop)
+        self.install_progress = {"phase": "download", "fraction": 0.0, "version": ""}
 
         async def run():
             try:
-                await asyncio.to_thread(installer.install_bundle, asset["url"], asset["size"],
-                                        Path(decky.DECKY_PLUGIN_RUNTIME_DIR), report, cancelled)
+                if nightly is not None:
+                    await self.set_preference("nightlyChannel", nightly)
+                release = self.release or await self.check_update()
+                if cancelled.is_set():
+                    raise installer.Cancelled("Install cancelled")
+                asset = release.get("asset")
+                if not asset:
+                    raise RuntimeError("This release has no signed Flatpak for this device")
+
+                def report(phase: str, fraction: float):
+                    previous = self.install_progress
+                    progress = {"phase": phase, "fraction": round(fraction, 2), "version": release["version"]}
+                    if previous == progress:
+                        return
+                    self.install_progress = progress
+                    asyncio.run_coroutine_threadsafe(decky.emit("install_progress", progress), loop)
+
+                report("download", 0.0)
+                worker = loop.create_task(asyncio.to_thread(installer.install_bundle, asset,
+                                          Path(decky.DECKY_PLUGIN_RUNTIME_DIR), report, cancelled))
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    cancelled.set()
+                    await worker
+                    raise
                 installed = await asyncio.to_thread(self._install)
                 if installed and installed.revision:
                     self.state.remember_flatpak_version(installed.revision, release["version"])
                 if self.release is release:
                     self.release = {**release, "updateAvailable": False, "installedVersionKnown": True}
                 await decky.emit("install_done", True, release["version"])
-            except installer.Cancelled:
+            except (installer.Cancelled, asyncio.CancelledError):
                 await decky.emit("install_done", False, "")
             except Exception as error:
                 decky.logger.error(f"Install failed: {error}")

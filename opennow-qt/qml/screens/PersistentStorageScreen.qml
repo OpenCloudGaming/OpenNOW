@@ -15,7 +15,8 @@ FocusScope {
     function requestReset() {
         if (!selectedLocation || !selectedLocation.isAvailable)
             return
-        resetTarget = selectedLocation
+        resetTarget = Object.freeze({code: selectedLocation.code, name: selectedLocation.name,
+            scope: ShellStore.captureAccountScope()})
         resetOpen = true
     }
 
@@ -33,7 +34,7 @@ FocusScope {
         const target = resetTarget
         closeReset()
         if (target)
-            ShellStore.resetPersistentStorage(target.code)
+            ShellStore.resetPersistentStorage(target.code, target.scope)
     }
 
     function focusDefault() {

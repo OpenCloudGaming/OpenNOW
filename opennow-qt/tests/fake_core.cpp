@@ -70,6 +70,7 @@ int main(int argc, char **argv)
                       << (std::getenv("OPENNOW_TEST_NO_ACCOUNT_PICKER_CAPABILITY") ? "" : ",\"auth.accountPicker.v1\"")
                       << (std::getenv("OPENNOW_TEST_NO_TERMINAL_CLEANUP_CAPABILITY") ? "" : ",\"session.terminalCleanup.v1\"")
                       << (std::getenv("OPENNOW_TEST_NO_ALLOCATION_SETTLEMENT_CAPABILITY") ? "" : ",\"session.allocationSettlement.v1\"")
+                      << (std::getenv("OPENNOW_TEST_NO_SCOPED_ACCOUNT_MUTATIONS_CAPABILITY") ? "" : ",\"account.mutations.scoped.v1\"")
                       << "]}}\n" << std::flush;
         } else if (method == "updater.startup.ack") {
             ++startupAcknowledgements;

@@ -14,7 +14,8 @@ FocusScope {
     function requestUnlink(origin) {
         if (!selectedAccount)
             return
-        unlinkTarget = selectedAccount
+        unlinkTarget = Object.freeze({provider: selectedAccount.provider, label: selectedAccount.label,
+            scope: ShellStore.captureAccountScope()})
         unlinkOrigin = origin
         unlinkOpen = true
     }
@@ -33,7 +34,7 @@ FocusScope {
         const target = unlinkTarget
         closeUnlink()
         if (target)
-            ShellStore.unlinkGameAccount(target.provider)
+            ShellStore.unlinkGameAccount(target.provider, target.scope)
     }
 
     function focusDefault() {
@@ -122,10 +123,11 @@ FocusScope {
                 onClicked: {
                     if (!root.selectedAccount)
                         return
+                    const scope = ShellStore.captureAccountScope()
                     if (root.primaryAction === "sync")
-                        ShellStore.syncGameAccount(root.selectedAccount.provider)
+                        ShellStore.syncGameAccount(root.selectedAccount.provider, scope)
                     else if (root.primaryAction === "link")
-                        ShellStore.startAccountLink(root.selectedAccount.provider)
+                        ShellStore.startAccountLink(root.selectedAccount.provider, scope)
                     else if (root.primaryAction === "unlink")
                         root.requestUnlink(actionButton)
                 }
