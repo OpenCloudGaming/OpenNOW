@@ -131,16 +131,20 @@ struct ActiveMuxer {
 
 #[derive(Default)]
 struct TrackClock {
-    base: Option<u64>,
+    timestamp: Option<u64>,
     last_pts: i64,
 }
 
 impl TrackClock {
     fn pts(&mut self, timestamp: u64) -> i64 {
-        let base = *self.base.get_or_insert(timestamp);
-        let delta = rtp_timestamp_delta(base, timestamp);
-        let pts = i64::try_from(delta).unwrap_or(i64::MAX);
-        self.last_pts = self.last_pts.max(pts);
+        let previous = *self.timestamp.get_or_insert(timestamp);
+        let delta = rtp_timestamp_delta(previous, timestamp);
+        if delta > 0 {
+            self.last_pts = self
+                .last_pts
+                .saturating_add(i64::try_from(delta).unwrap_or(i64::MAX));
+            self.timestamp = Some(timestamp);
+        }
         self.last_pts
     }
 }
@@ -610,16 +614,10 @@ fn opus_head(channels: u8) -> Vec<u8> {
 }
 
 fn rtp_timestamp_delta(base: u64, timestamp: u64) -> u64 {
-    if timestamp >= base {
-        return timestamp - base;
+    if base <= u64::from(u32::MAX) && timestamp <= u64::from(u32::MAX) {
+        return u64::from(((timestamp as u32).wrapping_sub(base as u32) as i32).max(0) as u32);
     }
-    let base_low = base as u32;
-    let timestamp_low = timestamp as u32;
-    if base_low.wrapping_sub(timestamp_low) > (u32::MAX / 2) {
-        u64::from(timestamp_low.wrapping_sub(base_low))
-    } else {
-        0
-    }
+    timestamp.saturating_sub(base)
 }
 
 pub(crate) fn av1_codec_private(temporal_unit: &[u8]) -> Result<Vec<u8>, String> {
@@ -895,7 +893,11 @@ impl<'a> BitReader<'a> {
     }
 
     fn skip(&mut self, count: usize) -> Result<(), String> {
-        self.read(count).map(|_| ())
+        if count > self.bytes.len().saturating_mul(8).saturating_sub(self.bit) {
+            return Err("HEVC SPS bitstream is truncated".to_owned());
+        }
+        self.bit += count;
+        Ok(())
     }
 
     fn read_ue(&mut self) -> Result<u64, String> {
@@ -1512,9 +1514,193 @@ mod tests {
     }
 
     #[test]
+    fn track_clock_unwraps_successive_timestamps_without_rebasing_late_packets() {
+        for base in [0_u64, 0xf000_0000, u64::from(u32::MAX) + 100] {
+            let mut clock = TrackClock::default();
+            for minute in 0..=420_u64 {
+                let elapsed = minute * 60 * 90_000;
+                let timestamp = if base <= u64::from(u32::MAX) {
+                    u64::from((base as u32).wrapping_add(elapsed as u32))
+                } else {
+                    base + elapsed
+                };
+                assert_eq!(clock.pts(timestamp), elapsed as i64, "minute {minute}");
+                assert_eq!(clock.pts(timestamp.saturating_sub(1)), elapsed as i64);
+                assert_eq!(clock.pts(timestamp), elapsed as i64);
+            }
+        }
+        let mut clock = TrackClock::default();
+        assert_eq!(clock.pts(u64::from(u32::MAX) - 10), 0);
+        assert_eq!(clock.pts(20), 31);
+        assert_eq!(clock.pts(u64::from(u32::MAX) - 5), 31);
+        assert_eq!(clock.pts(51), 62);
+    }
+
+    #[test]
+    fn seven_hour_manual_recording_keeps_unwrapped_pts_until_discontinuity() {
+        let directory = recording_test_directory("recording-seven-hours");
+        let output = directory.join("long.mkv");
+        let (sender, receiver) = channel();
+        let picture = real_h264_keyframe();
+        for minute in 0..=420_u32 {
+            let timestamp = 0xf000_0000_u32.wrapping_add(minute * 60 * 90_000);
+            sender
+                .send(frame(
+                    MediaCodec::H264,
+                    picture.clone(),
+                    u64::from(timestamp),
+                    true,
+                ))
+                .unwrap();
+        }
+        let mut broken = frame(MediaCodec::H264, picture.clone(), 10, true);
+        broken.contiguous = false;
+        sender.send(broken).unwrap();
+        sender
+            .send(frame(MediaCodec::H264, picture, 90_010, true))
+            .unwrap();
+        drop(sender);
+        let result = record_matroska(
+            &output,
+            MediaStreamConfig {
+                width: 64,
+                height: 64,
+                ..MediaStreamConfig::default()
+            },
+            EncodedRecordingReceiver::from_receiver(receiver),
+        )
+        .unwrap();
+        assert_eq!(result.media.video_packets, 421);
+        assert_eq!(
+            result.completion,
+            RecordingCompletion::Cut {
+                reason: RecordingCutReason::Discontinuity
+            }
+        );
+        let file: Box<dyn ReadSeek> = Box::new(std::fs::File::open(&output).unwrap());
+        let mut demuxer = oxideav_mkv::demux::open(file, &NullCodecResolver).unwrap();
+        for minute in 0..=420_i64 {
+            let packet = demuxer.next_packet().unwrap();
+            assert_eq!(packet.stream_index, VIDEO_STREAM_INDEX);
+            assert_eq!(packet.pts, Some(minute * 60_000), "minute {minute}");
+        }
+        assert!(demuxer.next_packet().is_err());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn hevc_sublayer_profile_parses_and_survives_manual_and_replay_muxing() {
+        let picture = x265_keyframe_with_sublayer_profile();
+        let sps = split_annex_b(&picture)
+            .into_iter()
+            .find(|nal| (nal[0] >> 1) & 0x3f == 33)
+            .unwrap();
+        let profile = parse_hevc_sps(sps).unwrap();
+        assert_eq!(profile.max_sub_layers_minus_one, 1);
+        assert_eq!(profile.profile_idc, 1);
+        assert_eq!(profile.chroma_format_idc, 1);
+        assert_eq!(profile.bit_depth_luma_minus_eight, 0);
+        assert!(parse_hevc_sps(&sps[..30]).is_err());
+        let repacked = annexb_to_hvcc(&picture).unwrap();
+        let directory = recording_test_directory("recording-hevc-sublayer");
+        let stream = MediaStreamConfig {
+            codec: MediaVideoCodec::H265,
+            width: 64,
+            height: 64,
+            ..MediaStreamConfig::default()
+        };
+        let video = frame(MediaCodec::H265, picture, 0xf000_0000, true);
+        let (sender, receiver) = channel();
+        sender.send(video.clone()).unwrap();
+        drop(sender);
+        let manual = directory.join("manual.mkv");
+        let summary = record_matroska(
+            &manual,
+            stream,
+            EncodedRecordingReceiver::from_receiver(receiver),
+        )
+        .unwrap();
+        assert_eq!(summary.completion, RecordingCompletion::Complete);
+        assert_eq!(summary.media.video_packets, 1);
+        let tap = crate::replay::ReplayTap::default();
+        tap.start(
+            opennow_streamer_protocol::ReplayBufferConfig::from_settings(
+                &serde_json::json!({"replayBufferEnabled":true}),
+            ),
+        );
+        tap.publish(&video);
+        let replay = directory.join("replay.mkv");
+        assert_eq!(
+            record_replay_matroska(
+                &replay,
+                stream,
+                tap.snapshot().unwrap(),
+                &AtomicBool::new(false)
+            )
+            .unwrap()
+            .video_packets,
+            1
+        );
+        for path in [&manual, &replay] {
+            let file: Box<dyn ReadSeek> = Box::new(std::fs::File::open(path).unwrap());
+            let mut demuxer = oxideav_mkv::demux::open(file, &NullCodecResolver).unwrap();
+            assert_eq!(demuxer.streams()[0].params.codec_id.as_str(), "h265");
+            assert_eq!(
+                demuxer.streams()[0].params.extradata,
+                repacked.config_record
+            );
+            let saved = demuxer.next_packet().unwrap();
+            assert_eq!(saved.pts, Some(0));
+            assert_eq!(saved.data.as_slice(), repacked.packetized);
+            assert!(demuxer.next_packet().is_err());
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn bit_skip_is_bounded_and_does_not_consume_truncated_fields() {
+        let mut reader = BitReader::new(&[0xaa; 16]);
+        reader.read(3).unwrap();
+        reader.skip(88).unwrap();
+        assert_eq!(reader.bit, 91);
+        assert_eq!(reader.read(5).unwrap(), 10);
+        assert!(reader.skip(33).is_err());
+        assert_eq!(reader.bit, 96);
+        assert!(reader.skip(usize::MAX).is_err());
+        assert_eq!(reader.bit, 96);
+        reader.skip(32).unwrap();
+        assert!(reader.skip(1).is_err());
+    }
+
+    fn x265_keyframe_with_sublayer_profile() -> Vec<u8> {
+        [
+            &[
+                0x40, 0x01, 0x0c, 0x02, 0xff, 0xff, 0x01, 0x60, 0x00, 0x00, 0x03, 0x00, 0x90, 0x00,
+                0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x1e, 0x00, 0x00, 0x95, 0x98, 0xac, 0xc0, 0x48,
+            ][..],
+            &[
+                0x42, 0x01, 0x02, 0x01, 0x60, 0x00, 0x00, 0x03, 0x00, 0x90, 0x00, 0x00, 0x03, 0x00,
+                0x00, 0x03, 0x00, 0x1e, 0x80, 0x00, 0x01, 0x60, 0x00, 0x00, 0x03, 0x00, 0x90, 0x00,
+                0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0xa0, 0x20, 0x81, 0x05, 0x96, 0x56, 0x62, 0xb3,
+                0x49, 0x26, 0x57, 0x80, 0xb4, 0x04, 0x00, 0x00, 0x03, 0x00, 0x04, 0x00, 0x00, 0x03,
+                0x00, 0x78, 0x20,
+            ][..],
+            &[0x44, 0x01, 0xc1, 0x72, 0xb4, 0x22, 0x40][..],
+            &[
+                0x28, 0x01, 0xaf, 0x08, 0x60, 0xf9, 0x2a, 0x5c, 0xff, 0xfb, 0xcf, 0xe5, 0x62, 0xe8,
+            ][..],
+        ]
+        .into_iter()
+        .flat_map(|nal| [0, 0, 0, 1].into_iter().chain(nal.iter().copied()))
+        .collect()
+    }
+
+    #[test]
     fn timestamp_delta_handles_rtp_wrap() {
         assert_eq!(rtp_timestamp_delta(u64::from(u32::MAX) - 10, 20), 31);
         assert_eq!(rtp_timestamp_delta(100, 90), 0);
+        assert_eq!(rtp_timestamp_delta(20, u64::from(u32::MAX) - 5), 0);
+        assert_eq!(rtp_timestamp_delta(u64::MAX - 20, u64::MAX), 20);
     }
 
     #[test]

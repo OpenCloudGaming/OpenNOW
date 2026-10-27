@@ -2103,6 +2103,7 @@ impl MediaSession {
         if let Some(worker) = self.embedded_host_worker.take() {
             let _ = worker.join();
         }
+        self.sink.shared.output.clear();
         // Clear after all publishers stop, so a late decoder callback cannot
         // republish the previous session's surface into the next session.
         if let Some(frames) = &self.embedded_frames {
@@ -2681,11 +2682,12 @@ impl MediaControl {
     }
 
     pub fn stop(&self) {
-        if self.shared.stopped.swap(true, Ordering::AcqRel) {
-            return;
-        }
+        let already_stopped = self.shared.stopped.swap(true, Ordering::AcqRel);
         self.shared.video.close();
         self.shared.audio.close();
+        if already_stopped {
+            return;
+        }
         self.cut_recording(RecordingCutReason::Interrupted);
         self.shared.replay_tap.stop();
         self.shared.output.stop_microphone();
@@ -3728,6 +3730,7 @@ fn trigger_linux_fallback(
     if crate::HARDWARE_ONLY || shared.linux_codec != MediaVideoCodec::H264 {
         shared.stopped.store(true, Ordering::Release);
         shared.video.close();
+        shared.audio.close();
         let _ = shared.feedback.send(MediaFeedback::DecoderError {
             codec: shared.linux_codec.label(),
             message: reason,
@@ -5783,6 +5786,155 @@ mod tests {
             .expect("packet-loss concealment");
         assert_eq!(concealed.len(), input.len());
         assert!(concealed.iter().all(|sample| sample.is_finite()));
+    }
+
+    fn audio_test_session(
+        shared: Arc<SharedPipeline>,
+        host_commands: Sender<HostCommand>,
+    ) -> MediaSession {
+        let audio_shared = Arc::clone(&shared);
+        let decoder = OpusDecoder::new(2).unwrap();
+        let worker = thread::spawn(move || run_audio_decoder(audio_shared, decoder));
+        MediaSession {
+            sink: MediaSink { shared },
+            video_worker: None,
+            audio_worker: Some(worker),
+            #[cfg(target_os = "linux")]
+            linux_monitor: None,
+            embedded_host_worker: None,
+            #[cfg(target_os = "windows")]
+            embedded_d3d11: None,
+            embedded_frames: None,
+            host_commands,
+        }
+    }
+
+    #[test]
+    fn stop_clears_opus_pcm_published_after_the_initial_output_clear() {
+        use std::time::Duration;
+
+        let (shared, _feedback) = software_test_pipeline();
+        let output = Arc::clone(&shared.output);
+        let (arrived, before_push) = sync_channel(1);
+        let (release, continue_push) = sync_channel(1);
+        *output.audio_push_barrier.lock().unwrap() = Some((arrived, continue_push));
+        let (commands, host) = std::sync::mpsc::channel();
+        let mut session = audio_test_session(shared, commands);
+        let mut encoder =
+            OpusEncoder::new(OPUS_SAMPLE_RATE, Channels::Stereo, Application::Audio).unwrap();
+        let mut packet = vec![0; 4_000];
+        let length = encoder
+            .encode_float(&vec![0.25; 960 * 2], &mut packet)
+            .unwrap();
+        packet.truncate(length);
+        assert_eq!(
+            session.sink().push(EncodedFrame {
+                mid: "audio".to_owned(),
+                codec: MediaCodec::Opus { channels: 2 },
+                data: packet.into(),
+                frame_index: None,
+                timestamp: 0,
+                clock_rate_hz: OPUS_SAMPLE_RATE,
+                keyframe: false,
+                contiguous: true,
+                ssrc: None,
+            }),
+            PushOutcome::Queued
+        );
+        before_push.recv_timeout(Duration::from_secs(2)).unwrap();
+        let stopping = thread::spawn(move || {
+            session.stop_inner();
+            session
+        });
+        assert!(matches!(
+            host.recv_timeout(Duration::from_secs(2)).unwrap(),
+            HostCommand::Stop
+        ));
+        output.clear();
+        assert!(!output.audio_samples_pending());
+        release.send(()).unwrap();
+        let session = stopping.join().unwrap();
+        assert!(!output.audio_samples_pending());
+        drop(session);
+
+        let (mut replacement_shared, _feedback) = software_test_pipeline();
+        Arc::get_mut(&mut replacement_shared).unwrap().output = Arc::clone(&output);
+        let (commands, _host) = std::sync::mpsc::channel();
+        let replacement = audio_test_session(replacement_shared, commands);
+        assert!(!output.audio_samples_pending());
+        replacement.stop();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn fatal_standalone_video_still_closes_audio_and_completes_stop() {
+        use std::time::Duration;
+
+        let (mut shared, feedback) = software_test_pipeline();
+        Arc::get_mut(&mut shared).unwrap().linux_codec = MediaVideoCodec::H265;
+        shared
+            .linux_software_fallback
+            .store(false, Ordering::Release);
+        let (commands, host) = std::sync::mpsc::channel();
+        let mut session = audio_test_session(Arc::clone(&shared), commands.clone());
+        trigger_linux_fallback(&shared, &commands, "fatal video failure".to_owned());
+        assert!(shared.stopped.load(Ordering::Acquire));
+        assert!(matches!(
+            feedback.try_recv(),
+            Ok(MediaFeedback::DecoderError { codec: "h265", .. })
+        ));
+        let (finished, stopped) = sync_channel(1);
+        let stopping = thread::spawn(move || {
+            session.stop_inner();
+            finished.send(()).unwrap();
+            session
+        });
+        let completed = stopped.recv_timeout(Duration::from_secs(2)).is_ok();
+        if !completed {
+            shared.audio.close();
+            stopped.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
+        let session = stopping.join().unwrap();
+        assert!(
+            completed,
+            "fatal video must not strand the Opus worker in pop"
+        );
+        assert!(host.try_recv().is_err());
+        session.control().stop();
+        assert!(shared.audio.pop().is_none());
+        assert!(shared.video.pop().is_none());
+    }
+
+    #[test]
+    fn stopped_control_closes_queues_without_repeating_runtime_side_effects() {
+        use std::time::Duration;
+
+        let (shared, _feedback) = software_test_pipeline();
+        let (commands, host) = std::sync::mpsc::channel();
+        let session = audio_test_session(Arc::clone(&shared), commands);
+        shared.stopped.store(true, Ordering::Release);
+        session.control().stop();
+        let (finished, closed) = sync_channel(1);
+        let audio = Arc::clone(&shared.audio);
+        let video = Arc::clone(&shared.video);
+        let waiter = thread::spawn(move || {
+            finished
+                .send(audio.pop().is_none() && video.pop().is_none())
+                .unwrap()
+        });
+        let result = closed.recv_timeout(Duration::from_secs(2));
+        if result.is_err() {
+            shared.audio.close();
+            shared.video.close();
+            closed.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
+        waiter.join().unwrap();
+        assert!(result.unwrap(), "terminal cleanup must close both queues");
+        shared.output.push_audio(&[0.25, -0.25]);
+        session.control().stop();
+        assert!(shared.output.audio_samples_pending());
+        assert!(host.try_recv().is_err());
+        session.stop();
     }
 
     #[test]
