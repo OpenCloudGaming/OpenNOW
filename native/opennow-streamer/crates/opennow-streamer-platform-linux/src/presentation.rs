@@ -1551,6 +1551,7 @@ struct ConversionConstants {
     coded_scale: [f32; 2],
     color_matrix: u32,
     full_range: u32,
+    chroma_offset: [f32; 2],
 }
 
 fn conversion_constants(
@@ -1582,6 +1583,7 @@ fn conversion_constants(
             ColorMatrix::Bt2020 => 2,
         },
         full_range: u32::from(frame.format.color_range == ColorRange::Full),
+        chroma_offset: frame.format.chroma_offset(coded_height),
     }
 }
 
@@ -2431,7 +2433,7 @@ mod tests {
 
         use crate::{ChromaLocation, FramePlane, StreamFormat};
 
-        let frame = DecodedVideoFrame {
+        let mut frame = DecodedVideoFrame {
             format: StreamFormat {
                 width: 1920,
                 height: 1080,
@@ -2466,7 +2468,9 @@ mod tests {
         assert_eq!(constants.texture_scale, [1.0, 768.0 / 576.0]);
         assert_eq!(constants.color_matrix, 2);
         assert_eq!(constants.full_range, 1);
-        assert_eq!(std::mem::size_of::<ConversionConstants>(), 24);
+        assert_eq!(std::mem::size_of::<ConversionConstants>(), 32);
+        assert_eq!(std::mem::offset_of!(ConversionConstants, chroma_offset), 24);
+        assert_eq!(constants.chroma_offset, [0.5 / 1920.0, 0.0]);
 
         // An unpadded import, and one padded the way the Apple AVD block pads:
         // only the latter crops, and the letterbox scale is untouched either
@@ -2478,6 +2482,16 @@ mod tests {
         let padded = conversion_constants(&frame, extent, Some(1088));
         assert_eq!(padded.coded_scale, [1.0, 1080.0 / 1088.0]);
         assert_eq!(padded.texture_scale, constants.texture_scale);
+        frame.format.chroma_location = ChromaLocation::TopLeft;
+        assert_eq!(
+            conversion_constants(&frame, extent, Some(1088)).chroma_offset,
+            [0.5 / 1920.0, 0.5 / 1088.0]
+        );
+        frame.format.chroma_location = ChromaLocation::Center;
+        assert_eq!(
+            conversion_constants(&frame, extent, Some(1088)).chroma_offset,
+            [0.0, 0.0]
+        );
     }
 
     #[test]
