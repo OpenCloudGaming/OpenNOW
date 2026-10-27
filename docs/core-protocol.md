@@ -201,10 +201,18 @@ If the account-index commit fails after JSON is written, persistence remains
 `local-file` and warnings report that account restoration may fail. Interrupted
 JSON temporary files are removed on startup and during account cleanup.
 
-On a Steam Deck (DMI board vendor `Valve`, product `Jupiter` or `Galileo`) the core never
-uses the OS credential store, because Game Mode runs with the desktop keyring locked. Sessions
-are always written to the same per-account JSON file and reported as `device-file`, which the
-shell treats as normal persistence and does not warn about.
+On a Steam Deck (DMI board vendor `Valve`, product `Jupiter` or `Galileo`) sessions are
+always written to the same per-account JSON file and reported as `device-file`, which the
+shell treats as normal persistence and does not warn about. Existing OS-store sessions
+are read only when no local file exists and the matching entry is already unlocked.
+Restoration verifies the identity and copies the session to the device file without changing
+the account index. Failed copies retain the OS-store source and report `migration-pending`.
+Compatibility reads make at most six Secret Service requests, each with a two-second reply
+timeout, separate from D-Bus connection setup. The core never requests an unlock or displays
+a keyring prompt on Steam Deck. Locked entries remain recoverable after the keyring is
+unlocked externally. Local files remain usable when the keyring is locked or unavailable.
+Logout also attempts prompt-free OS-store deletion; failed cleanup remains suppressed and
+is retried on startup.
 
 `memory-only` never writes a plaintext credential fallback. `migration-pending` means
 a recoverable legacy source remains because migration could not finish. `unavailable`
