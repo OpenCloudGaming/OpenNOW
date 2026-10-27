@@ -932,6 +932,61 @@ fn failed_fresh_seat_identification_keeps_original_write_ahead_and_exact_cleanup
 }
 
 #[test]
+fn unrelated_terminal_poll_preserves_the_durable_allocation_obligation() {
+    let mut responses = launch_metadata();
+    responses.extend([
+        (200, json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"fresh-seat","status":1,
+            "sessionControlInfo":{"ip":"seat.nvidiagrid.net","port":443}}})),
+        (200, json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"other-seat","status":7}})),
+        (204, json!({})),
+    ]);
+    let (url, worker) = mock_requests(responses, |index, request| {
+        if index == 7 {
+            assert!(request.starts_with("GET /v2/session/fresh-seat "));
+        }
+        if index == 8 {
+            assert!(request.starts_with("DELETE /v2/session/fresh-seat "));
+        }
+    });
+    let (mut service, path) = service(&url);
+    service
+        .cloudmatch
+        .set_test_control_base(url::Url::parse(&url).unwrap());
+    service
+        .create_session(&launch_params("123"), &json!({}), |settings| {
+            Ok(settings.clone())
+        })
+        .unwrap();
+    service.finish_session_create("fresh-seat", true).unwrap();
+    assert_eq!(
+        service
+            .poll_session(&json!({"sessionId":"fresh-seat"}))
+            .unwrap_err()
+            .code,
+        "upstream_error"
+    );
+    assert_eq!(
+        service.active_session().unwrap()["session"]["sessionId"],
+        "fresh-seat"
+    );
+    assert!(path.join("unresolved-allocation.json").exists());
+    let restarted = CloudMatchService::with_cleanup_path(
+        service.client.clone(),
+        path.join("pending-session-cleanup.json"),
+    );
+    assert_eq!(
+        restarted.admit_create().err().unwrap().code,
+        "session_allocation_unresolved"
+    );
+    service
+        .stop_session(&json!({"sessionId":"fresh-seat"}), &json!({}))
+        .unwrap();
+    assert!(!path.join("unresolved-allocation.json").exists());
+    worker.join().unwrap();
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn accepted_fresh_seat_authoritative_termination_clears_durable_obligation() {
     for status in [7, 404] {
         let mut responses = launch_metadata();

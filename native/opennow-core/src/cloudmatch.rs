@@ -843,6 +843,9 @@ impl CloudMatchService {
             }
             Err(error) => return Err(error),
         };
+        if payload["session"]["sessionId"] != session_id {
+            return Err(upstream("CloudMatch returned a different session ID"));
+        }
         let zone = current
             .as_ref()
             .map(|state| state.zone.clone())
