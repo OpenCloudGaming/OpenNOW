@@ -312,6 +312,8 @@ QtObject {
         const confirmed = ownsConfirmedSetting(key) || write.source === "onboarding"
         const dispatchNext = !resetting && write.queued && ready && (key !== "region"
             || (write.nextProviderIdpId === providerIdpId && write.nextScopeGeneration === scopeGeneration))
+        const consoleTail = dispatchNext && key === "launchInConsoleMode"
+            && write.source === "onboarding" && write.nextSource === "console"
         const writes = Object.assign({}, settingWrites)
         delete writes[key]
         settingWrites = writes
@@ -321,7 +323,7 @@ QtObject {
             write.coupledKeys = Array.from(new Set(write.coupledKeys.concat(Object.keys(result.changes || {}))))
             if (key === "launchInConsoleMode" && write.source === "onboarding") {
                 consoleSurfaceConfirmedValue = Boolean(result.value)
-                consoleSurfaceDesiredValue = consoleSurfaceConfirmedValue
+                consoleSurfaceDesiredValue = consoleTail ? Boolean(write.next) : consoleSurfaceConfirmedValue
                 consoleSurfaceInitialized = true
             }
         }
@@ -330,9 +332,15 @@ QtObject {
             // with the primary key, e.g. an explicit codec the new color mode
             // cannot use is healed toward Auto in the same save.
             applyCoupledSettings(result.changes)
-            applySetting(key, result.value)
+            if (!consoleTail) applySetting(key, result.value)
         } else if (!result && confirmed && !dispatchNext) errorReported(message)
-        const nextId = dispatchNext ? beginSettingWrite(key, write.next, write, write.nextSource) : ""
+        let nextId = ""
+        if (dispatchNext) {
+            if (consoleTail) {
+                beginConsoleSurfacePersistence()
+                nextId = consoleSurfaceRequestId
+            } else nextId = beginSettingWrite(key, write.next, write, write.nextSource)
+        }
         if (!nextId) {
             if (!confirmed && key !== "gameCollections")
                 reconcileSetting(key, write.coupledKeys)
@@ -764,6 +772,8 @@ QtObject {
         }
         if (resetting)
             return deferSettingWrite("launchInConsoleMode", requested, "console")
+        if (settingWrites.launchInConsoleMode)
+            return beginSettingWrite("launchInConsoleMode", requested, null, "console")
         if (consoleSurfaceRequestId === "")
             beginConsoleSurfacePersistence()
         return consoleSurfaceRequestId

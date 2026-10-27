@@ -359,6 +359,38 @@ QtObject {
             && state.consoleSurfaceDesiredValue === true && state.consoleSurfaceInitialized
             && surfaceRequests[surfaceRequests.length - 1] === true,
             "a failed later desktop-mode write restores the console mode confirmed by onboarding")
+        const competingFailures = []
+        for (const consoleFirst of [false, true]) {
+            state.acceptSettings({settings:defaults})
+            const start = client.calls.length
+            const setup = state.setSetting("launchInConsoleMode", true, "onboarding")
+            state.requestConsoleSurface(false)
+            if (state.consoleSurfaceRequestId !== "") {
+                if (consoleFirst) state.acceptConsoleSurface({value:false})
+                state.acceptResponse(setup, {key:"launchInConsoleMode", value:true})
+                if (!consoleFirst) state.acceptConsoleSurface({value:false})
+            } else {
+                state.requestConsoleSurface(true)
+                state.requestConsoleSurface(false)
+                check(client.calls.length === start + 1,
+                    "a queued console intent cannot issue a competing write before the onboarding acknowledgement")
+                state.acceptResponse(setup, {key:"launchInConsoleMode", value:true})
+                check(state.consoleSurfaceRequestId !== "", "the later console intent dispatches after onboarding drains")
+                check(state.settings.launchInConsoleMode === false && state.consoleSurfaceDesiredValue === false,
+                    "the onboarding acknowledgement preserves the later visible desktop intent while its save is pending")
+                state.acceptConsoleSurface({value:false})
+            }
+            const unwanted = client.calls.slice(start).filter(call => call.method === "settings.set"
+                && call.params.key === "launchInConsoleMode" && call.params.value === true).length - 1
+            if (unwanted || state.settings.launchInConsoleMode !== false
+                    || state.consoleSurfaceConfirmedValue !== false || state.consoleSurfaceDesiredValue !== false)
+                competingFailures.push((consoleFirst ? "console-first" : "onboarding-first")
+                    + ": unwanted console writes=" + unwanted + ", displayed=" + state.settings.launchInConsoleMode
+                    + ", confirmed=" + state.consoleSurfaceConfirmedValue + ", desired=" + state.consoleSurfaceDesiredValue)
+            if (state.consoleSurfaceRequestId !== "")
+                state.acceptConsoleSurface({value:state.consoleSurfaceRequestValue})
+        }
+        check(competingFailures.length === 0, "later desktop intent must win for both acknowledgement orders: " + competingFailures.join("; "))
         onboarding.destroy()
         state.destroy()
     }
