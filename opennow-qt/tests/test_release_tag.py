@@ -87,6 +87,13 @@ class ReleaseTagTest(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "Could not read"):
                         verify_tag(self.repository, self.tag, self.commit, True)
 
+    def test_tag_creation_failures_identify_the_failed_write(self):
+        with patch("verify_release_tag.subprocess.run", side_effect=[
+                subprocess.CompletedProcess([], 0, "[]"),
+                subprocess.CalledProcessError(1, "gh")]):
+            with self.assertRaisesRegex(ValueError, "Could not create release tag"):
+                verify_tag(self.repository, self.tag, self.commit, create_missing=True)
+
     def test_invalid_arguments_do_not_reach_github(self):
         for repository, tag, commit in (("owner/repo/extra", self.tag, self.commit),
                                         (self.repository, "refs/tags/v1.2.3", self.commit),

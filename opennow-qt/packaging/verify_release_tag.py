@@ -4,13 +4,13 @@ import re
 import subprocess
 
 
-def github(path, *arguments):
+def github(path, *arguments, failure="Could not read release tag identity from GitHub"):
     try:
         response = subprocess.run(["gh", "api", path, *arguments], check=True, capture_output=True,
                                   text=True, timeout=30)
         return json.loads(response.stdout)
     except (OSError, subprocess.SubprocessError, ValueError):
-        raise ValueError("Could not read release tag identity from GitHub") from None
+        raise ValueError(failure) from None
 
 
 def verify_tag(repository, tag, commit, allow_missing=False, create_missing=False):
@@ -26,7 +26,8 @@ def verify_tag(repository, tag, commit, allow_missing=False, create_missing=Fals
     matches = [ref for ref in references if ref.get("ref") == f"refs/tags/{tag}"]
     if not matches and create_missing:
         created = github(f"repos/{repository}/git/refs", "--method", "POST",
-                         "-f", f"ref=refs/tags/{tag}", "-f", f"sha={commit}")
+                         "-f", f"ref=refs/tags/{tag}", "-f", f"sha={commit}",
+                         failure="Could not create release tag at the verified source commit on GitHub")
         if not isinstance(created, dict) or created.get("ref") != f"refs/tags/{tag}":
             raise ValueError("GitHub returned an invalid created tag reference")
         matches = [created]
