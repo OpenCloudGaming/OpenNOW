@@ -28,6 +28,10 @@ mod store_launch;
 use catalog::*;
 
 #[cfg(test)]
+mod account_mutation_tests;
+#[cfg(test)]
+mod auth_restore_tests;
+#[cfg(test)]
 mod catalog_tests;
 #[cfg(test)]
 mod routing_tests;
@@ -300,6 +304,8 @@ struct ServiceState {
     public_games: Vec<Value>,
     public_games_proxy_scope: String,
     restore_attempted: bool,
+    restore_retry_at: Option<Instant>,
+    restore_retry_delay: Duration,
     persistence_state: String,
     persistence_intent: PersistenceIntent,
     generation: u64,
@@ -1014,40 +1020,56 @@ impl GfnService {
         Ok(self.auth_envelope(&state, session.as_ref(), refresh))
     }
 
+    fn restore_session_locked_with(
+        &self,
+        now: Instant,
+        load: impl FnOnce() -> Result<Option<AuthSession>, String>,
+    ) {
+        let mut state = self.state.lock().expect("GFN state poisoned");
+        if state.session.is_some()
+            || state.restore_attempted
+            || state
+                .restore_retry_at
+                .is_some_and(|deadline| now < deadline)
+        {
+            return;
+        }
+        state.restore_attempted = true;
+        drop(state);
+        match load() {
+            Ok(session) => {
+                let session =
+                    session.filter(|session| !self.profiles.has_pin(&session.user.user_id));
+                let mut state = self.state.lock().expect("GFN state poisoned");
+                state.persistence_state = session
+                    .as_ref()
+                    .map(|session| self.vault.persistence_state(session))
+                    .unwrap_or("none")
+                    .to_owned();
+                state.persistence_intent = PersistenceIntent::SecureStore;
+                state.restore_retry_at = None;
+                state.restore_retry_delay = Duration::ZERO;
+                state.generation += 1;
+                state.session = session;
+            }
+            Err(error) => {
+                eprintln!("auth: saved session unavailable: {error}");
+                let mut state = self.state.lock().expect("GFN state poisoned");
+                state.persistence_state = "unavailable".to_owned();
+                state.restore_attempted = false;
+                state.restore_retry_delay = (state.restore_retry_delay * 2)
+                    .clamp(Duration::from_secs(1), Duration::from_secs(30));
+                state.restore_retry_at = Some(now + state.restore_retry_delay);
+            }
+        }
+    }
+
     fn resolve_session_locked(
         &self,
         purpose: TokenPurpose,
         force: bool,
     ) -> Result<(Option<AuthSession>, Value), ServiceError> {
-        {
-            let mut state = self.state.lock().expect("GFN state poisoned");
-            if state.session.is_none() && !state.restore_attempted {
-                state.restore_attempted = true;
-                drop(state);
-                match self.vault.load_active() {
-                    Ok(session) => {
-                        let session =
-                            session.filter(|session| !self.profiles.has_pin(&session.user.user_id));
-                        let mut state = self.state.lock().expect("GFN state poisoned");
-                        state.persistence_state = session
-                            .as_ref()
-                            .map(|session| self.vault.persistence_state(session))
-                            .unwrap_or("none")
-                            .to_owned();
-                        state.persistence_intent = PersistenceIntent::SecureStore;
-                        state.generation += 1;
-                        state.session = session;
-                    }
-                    Err(error) => {
-                        eprintln!("auth: saved session unavailable: {error}");
-                        self.state
-                            .lock()
-                            .expect("GFN state poisoned")
-                            .persistence_state = "unavailable".to_owned();
-                    }
-                }
-            }
-        }
+        self.restore_session_locked_with(Instant::now(), || self.vault.load_active());
         let current = self
             .state
             .lock()
@@ -2466,7 +2488,8 @@ impl GfnService {
         settings: &Value,
     ) -> Result<Value, ServiceError> {
         self.providers()?;
-        let (session, generation) = self.authenticated_snapshot(TokenPurpose::ServiceId, false)?;
+        let _operation = crate::store_requests::lock(&self.auth_operation)?;
+        let (session, generation) = self.account_mutation_snapshot_locked(params)?;
         let result = self.with_account_context(&session, generation, settings, |context| {
             self.account_connections.sync(params, context)
         })?;
@@ -2503,7 +2526,8 @@ impl GfnService {
         settings: &Value,
     ) -> Result<Value, ServiceError> {
         self.providers()?;
-        let (session, generation) = self.authenticated_snapshot(TokenPurpose::ServiceId, false)?;
+        let _operation = crate::store_requests::lock(&self.auth_operation)?;
+        let (session, generation) = self.account_mutation_snapshot_locked(params)?;
         let result = self.with_account_context(&session, generation, settings, |context| {
             self.account_connections.unlink(params, context)
         })?;
@@ -2518,7 +2542,8 @@ impl GfnService {
         settings: &Value,
     ) -> Result<Value, ServiceError> {
         self.providers()?;
-        let (session, generation) = self.authenticated_snapshot(TokenPurpose::ServiceId, false)?;
+        let _operation = crate::store_requests::lock(&self.auth_operation)?;
+        let (session, generation) = self.account_mutation_snapshot_locked(params)?;
         let result = self.with_account_context(&session, generation, settings, |context| {
             self.account_connections.start_link(params, context)
         })?;
@@ -2548,10 +2573,36 @@ impl GfnService {
 
     pub fn reset_persistent_storage(&self, params: &Value) -> Result<Value, ServiceError> {
         let _operation = crate::store_requests::lock(&self.auth_operation)?;
-        let (session, generation) = self.session_snapshot_locked()?;
+        let (session, generation) = self.account_mutation_snapshot_locked(params)?;
         self.persistent_storage
             .reset(params, &session)
             .map(|result| scoped_result(result, &session, generation))
+    }
+
+    fn account_mutation_snapshot_locked(
+        &self,
+        params: &Value,
+    ) -> Result<(AuthSession, u64), ServiceError> {
+        let validate = |session: &AuthSession, generation| {
+            if params["scope"] != scoped_result(json!({}), session, generation)["scope"] {
+                return Err(ServiceError {
+                    code: "stale_account",
+                    message: "This action belongs to a different account context. Review it again."
+                        .into(),
+                });
+            }
+            Ok(())
+        };
+        {
+            let state = self.state.lock().expect("GFN state poisoned");
+            if let Some(session) = &state.session {
+                validate(session, state.generation)?;
+            }
+        }
+        let (session, generation) =
+            self.authenticated_snapshot_locked(TokenPurpose::ServiceId, false)?;
+        validate(&session, generation)?;
+        Ok((session, generation))
     }
 
     pub(crate) fn authenticated_snapshot(
@@ -2563,6 +2614,14 @@ impl GfnService {
             .auth_operation
             .lock()
             .expect("GFN auth operation poisoned");
+        self.authenticated_snapshot_locked(purpose, force)
+    }
+
+    fn authenticated_snapshot_locked(
+        &self,
+        purpose: TokenPurpose,
+        force: bool,
+    ) -> Result<(AuthSession, u64), ServiceError> {
         crate::requests::check()?;
         let (session, _) = self.resolve_session_locked(purpose, force)?;
         session
@@ -4700,6 +4759,12 @@ pub(crate) mod tests {
         service.state.lock().unwrap().providers = vec![LoginProvider::default_nvidia()];
         service.state.lock().unwrap().providers_expires =
             Some(Instant::now() + Duration::from_secs(900));
+        (service, path)
+    }
+
+    pub(crate) fn saved_service(user: &str) -> (GfnService, PathBuf) {
+        let (service, path) = test_service("http://127.0.0.1:1");
+        service.vault.save(&auth_fixture(user)).unwrap();
         (service, path)
     }
 
