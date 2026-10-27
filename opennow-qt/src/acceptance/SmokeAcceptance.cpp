@@ -1,4 +1,5 @@
 #include "acceptance/AcceptanceSession.h"
+#include "acceptance/VirtualControllerInput.h"
 #include "app/AppController.h"
 #include "core/CoreClient.h"
 #include "streaming/NativeStreamRuntime.h"
@@ -1020,10 +1021,10 @@ int AcceptanceSession::startSmokeWorkload()
                         const auto button = fixture->property("padButton").toInt();
                         bool sent = true;
                         if (controllerRelease >= 0) {
-                            sent = joystick && SDL_SetJoystickVirtualButton(joystick, controllerRelease, false);
+                            sent = setSmokeControllerButton(joystick, controllerRelease, false);
                             controllerRelease = -1;
                         } else if (button >= 0) {
-                            sent = joystick && SDL_SetJoystickVirtualButton(joystick, button, true);
+                            sent = setSmokeControllerButton(joystick, button, true);
                             controllerRelease = button;
                             fixture->setProperty("padButton", -1);
                         }
@@ -1033,7 +1034,6 @@ int AcceptanceSession::startSmokeWorkload()
                             m_application.exit(EXIT_FAILURE);
                             return;
                         }
-                        SDL_UpdateJoysticks();
                     }
                     const auto key = fixture->property("key").toInt();
                     if (key != 0) {

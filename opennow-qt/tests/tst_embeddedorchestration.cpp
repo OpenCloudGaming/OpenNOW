@@ -2953,14 +2953,21 @@ private slots:
     void virtualControllerEdgesAreCommittedBeforeFixtureAdvances()
     {
         const auto smoke = source(QStringLiteral("src/acceptance/SmokeAcceptance.cpp"));
+        const auto helper = source(QStringLiteral("src/acceptance/VirtualControllerInput.h"));
         const auto timer = smoke.indexOf(QStringLiteral("controllerRelease = -1, deadline = QDeadlineTimer(15000)"));
+        const auto release = smoke.indexOf(QStringLiteral("setSmokeControllerButton(joystick, controllerRelease, false)"), timer);
+        const auto press = smoke.indexOf(QStringLiteral("setSmokeControllerButton(joystick, button, true)"), release);
         const auto clear = smoke.indexOf(QStringLiteral("fixture->setProperty(\"padButton\", -1)"), timer);
-        const auto commit = smoke.indexOf(QStringLiteral("SDL_UpdateJoysticks()"), clear);
+        const auto setter = helper.indexOf(QStringLiteral("SDL_SetJoystickVirtualButton"));
+        const auto commit = helper.indexOf(QStringLiteral("SDL_UpdateJoysticks()"));
         const auto advance = smoke.indexOf(QStringLiteral("QMetaObject::invokeMethod(fixture, \"advance\""), clear);
         QVERIFY(timer >= 0);
-        QVERIFY(clear > timer);
-        QVERIFY(commit > clear);
-        QVERIFY(advance > commit);
+        QVERIFY(release > timer);
+        QVERIFY(press > release);
+        QVERIFY(clear > press);
+        QVERIFY(advance > clear);
+        QVERIFY(setter >= 0);
+        QVERIFY(commit > setter);
     }
 
     void linuxVulkanOwnerOutlivesRuntimeAndHiddenRootAdoption()

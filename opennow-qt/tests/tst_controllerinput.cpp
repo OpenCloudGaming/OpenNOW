@@ -1,3 +1,4 @@
+#include "acceptance/VirtualControllerInput.h"
 #include "input/ControllerInput.h"
 #include "SdlJoystickTestSession.h"
 
@@ -15,16 +16,20 @@ public:
     int trackedKey = Qt::Key_Left;
     int leftPresses = 0;
     int repeatedLeftPresses = 0;
+    int releases = 0;
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override
     {
-        if (event->type() == QEvent::KeyPress) {
+        if (event->type() == QEvent::KeyPress || event->type() == QEvent::KeyRelease) {
             const auto *key = static_cast<QKeyEvent *>(event);
             if (key->key() == trackedKey
                     && key->nativeScanCode() == ControllerInput::syntheticControllerScanCode) {
-                ++leftPresses;
-                if (key->isAutoRepeat()) ++repeatedLeftPresses;
+                if (event->type() == QEvent::KeyRelease) ++releases;
+                else {
+                    ++leftPresses;
+                    if (key->isAutoRepeat()) ++repeatedLeftPresses;
+                }
             }
         }
         return QObject::eventFilter(watched, event);
@@ -53,6 +58,41 @@ private slots:
     void cleanup()
     {
         QVERIFY2(m_joysticks.reset(), SDL_GetError());
+    }
+
+    void smokeControllerPulseSurvivesDeferredPolling()
+    {
+        ControllerInput input;
+        ControllerKeySink sink;
+        sink.trackedKey = Qt::Key_Escape;
+        QCoreApplication::instance()->installEventFilter(&sink);
+        SDL_VirtualJoystickDesc descriptor{};
+        SDL_INIT_INTERFACE(&descriptor);
+        descriptor.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+        descriptor.naxes = SDL_GAMEPAD_AXIS_COUNT;
+        descriptor.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+        descriptor.name = "OpenNOW deferred smoke controller pulse";
+        const auto id = SDL_AttachVirtualJoystick(&descriptor);
+        QVERIFY2(id != 0, SDL_GetError());
+        const auto cleanup = qScopeGuard([id] { SDL_DetachVirtualJoystick(id); });
+        QTRY_COMPARE(input.controllerCount(), 1);
+        auto *joystick = SDL_GetJoystickFromID(id);
+        QVERIFY(joystick);
+        auto *pollTimer = input.findChild<QTimer *>(QStringLiteral("controllerPollTimer"));
+        QVERIFY(pollTimer);
+        pollTimer->stop();
+        QVERIFY(SDL_SetJoystickVirtualButton(joystick, SDL_GAMEPAD_BUTTON_EAST, true));
+        QVERIFY(SDL_SetJoystickVirtualButton(joystick, SDL_GAMEPAD_BUTTON_EAST, false));
+        QVERIFY(QMetaObject::invokeMethod(&input, "poll", Qt::DirectConnection));
+        QCoreApplication::sendPostedEvents();
+        QCOMPARE(sink.leftPresses, 0);
+        QCOMPARE(sink.releases, 0);
+        QVERIFY(setSmokeControllerButton(joystick, SDL_GAMEPAD_BUTTON_EAST, true));
+        QVERIFY(setSmokeControllerButton(joystick, SDL_GAMEPAD_BUTTON_EAST, false));
+        QVERIFY(QMetaObject::invokeMethod(&input, "poll", Qt::DirectConnection));
+        QTRY_COMPARE(sink.releases, 1);
+        QCOMPARE(sink.leftPresses, 1);
+        QCOMPARE(sink.repeatedLeftPresses, 0);
     }
 
     void digitalDpadRepeatsUntilReleased_data()
