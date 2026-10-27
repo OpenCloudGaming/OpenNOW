@@ -48,7 +48,6 @@ export function InstallProgressRows({ progress }: { progress: InstallProgress })
           nProgress={measured ? progress.fraction * 100 : undefined}
           indeterminate={!measured}
           sOperationText={downloading ? "Downloading OpenNOW " + progress.version : "Installing OpenNOW " + progress.version}
-          sTimeRemaining={measured ? Math.round(progress.fraction * 100) + "%" : undefined}
           bottomSeparator="none"
         />
       </PanelSectionRow>
