@@ -18,8 +18,9 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.decky = support.install_fake_decky(self.home)
         import main
         main.decky = self.decky
-        flatpak = subprocess.CompletedProcess([], 0, "      Commit: abc123\n", "")
-        mock.patch("opennow_decky.install.run_quiet", return_value=flatpak).start()
+        self.commit = "a" * 64
+        mock.patch("opennow_decky.install.run_quiet", side_effect=lambda command: subprocess.CompletedProcess(
+            command, 0, self.commit + "\n" if "--show-commit" in command else "提交：" + self.commit + "\n", "")).start()
         self.addCleanup(mock.patch.stopall)
         with mock.patch.object(main.Plugin, "_warm_catalog", new=mock.AsyncMock()):
             self.plugin = main.Plugin()
@@ -86,7 +87,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         started = asyncio.Event()
         loop = asyncio.get_running_loop()
 
-        def slow_install(url, size, work_dir, progress, cancelled):
+        def slow_install(selected, work_dir, progress, cancelled):
             loop.call_soon_threadsafe(started.set)
             cancelled.wait(5)
             from opennow_decky import installer
@@ -99,6 +100,103 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
             await self.plugin.install_task
         self.assertEqual(self.decky.emitted[-1], ("install_done", (False, "")))
         self.assertFalse(await self.plugin.cancel_install())
+
+    async def test_first_install_reserves_ownership_during_release_lookup(self):
+        entered, release_lookup = asyncio.Event(), asyncio.Event()
+
+        async def lookup():
+            entered.set()
+            await release_lookup.wait()
+            return {"version": "1.0.4", "asset": {"name": "selected"}}
+
+        with mock.patch.object(self.plugin, "check_update", side_effect=lookup) as check, \
+                mock.patch("opennow_decky.installer.install_bundle") as install:
+            first = asyncio.create_task(self.plugin.install_opennow())
+            await entered.wait()
+            second = asyncio.create_task(self.plugin.install_opennow())
+            await asyncio.sleep(0)
+            try:
+                self.assertTrue(second.done(), "Second caller entered the release lookup")
+                self.assertFalse(await second)
+                self.assertIsNotNone((await self.plugin.get_status())["installProgress"])
+                self.assertTrue(await self.plugin.cancel_install())
+            finally:
+                release_lookup.set()
+                await asyncio.gather(first, second)
+                if self.plugin.install_task:
+                    await self.plugin.install_task
+        check.assert_awaited_once()
+        install.assert_not_called()
+        self.assertIsNone(self.plugin.install_progress)
+
+    async def test_first_install_lookup_and_worker_have_one_owner(self):
+        entered, release_lookup, worker_started = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        finish_worker = threading.Event()
+        selected = support.selected_asset()
+        loop = asyncio.get_running_loop()
+
+        async def lookup():
+            entered.set()
+            await release_lookup.wait()
+            return {"version": "1.0.4", "asset": selected}
+
+        def worker(asset, directory, progress, cancelled):
+            loop.call_soon_threadsafe(worker_started.set)
+            finish_worker.wait(5)
+
+        with mock.patch.object(self.plugin, "check_update", side_effect=lookup) as check, \
+                mock.patch("opennow_decky.installer.install_bundle", side_effect=worker) as install:
+            self.assertTrue(await self.plugin.install_opennow())
+            await entered.wait()
+            self.assertFalse(await self.plugin.install_opennow(True))
+            self.assertFalse(self.plugin.state.preferences["nightlyChannel"])
+            release_lookup.set()
+            await worker_started.wait()
+            owner = self.plugin.install_task
+            try:
+                self.assertFalse(await self.plugin.install_opennow())
+                owner.cancel()
+                await asyncio.sleep(0)
+                self.assertFalse(await self.plugin.install_opennow())
+                self.assertIs(self.plugin.install_task, owner)
+            finally:
+                finish_worker.set()
+                await owner
+        check.assert_awaited_once()
+        install.assert_called_once()
+        self.assertIs(install.call_args.args[0], selected)
+        self.assertIsNone(self.plugin.install_progress)
+        self.assertEqual(self.decky.emitted[-1], ("install_done", (False, "")))
+
+    async def test_lookup_failure_releases_ownership_and_a_retry_can_install(self):
+        with mock.patch.object(self.plugin, "check_update", side_effect=ValueError("lookup failed")):
+            self.assertTrue(await self.plugin.install_opennow())
+            await self.plugin.install_task
+        self.assertEqual(self.decky.emitted[-1], ("install_done", (False, "lookup failed")))
+        self.assertIsNone(self.plugin.install_progress)
+        self.assertFalse(await self.plugin.cancel_install())
+        self.plugin.release = {"version": "1.0.4", "asset": support.selected_asset()}
+        with mock.patch("opennow_decky.installer.install_bundle") as install:
+            self.assertTrue(await self.plugin.install_opennow())
+            await self.plugin.install_task
+        install.assert_called_once()
+
+    async def test_localized_flatpak_retains_installed_version_and_update_tracking_after_reload(self):
+        self.plugin.release = {"version": "1.0.4", "asset": support.selected_asset()}
+        with mock.patch("opennow_decky.installer.install_bundle"):
+            await self.plugin.install_opennow()
+            await self.plugin.install_task
+        import main
+        with mock.patch.object(main.Plugin, "_warm_catalog", new=mock.AsyncMock()):
+            reloaded = main.Plugin()
+            await reloaded._main()
+        status = await reloaded.get_status()
+        self.assertEqual(status["install"]["revision"], self.commit)
+        self.assertEqual(status["install"]["version"], "1.0.4")
+        with mock.patch("opennow_decky.releases.fetch_latest", return_value=support.github_release("1.0.5")):
+            release = await reloaded.check_update()
+        self.assertTrue(release["installedVersionKnown"])
+        self.assertTrue(release["updateAvailable"])
 
     async def test_an_unexpected_install_failure_still_ends_the_install(self):
         self.plugin.release = {"version": "1.0.4", "asset": {"url": "https://github.com/x", "size": 1}, "updateAvailable": True}
@@ -113,7 +211,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         release = {"version": "1.0.4", "asset": {"url": "https://github.com/x", "size": 1}, "updateAvailable": True}
         self.plugin.release = release
 
-        def fake_install(url, size, work_dir, progress, cancelled):
+        def fake_install(selected, work_dir, progress, cancelled):
             progress("download", 0.5)
             progress("install", 1.0)
 
@@ -139,7 +237,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         started, release_install = asyncio.Event(), threading.Event()
         loop = asyncio.get_running_loop()
 
-        def held_install(url, size, work_dir, progress, cancelled):
+        def held_install(selected, work_dir, progress, cancelled):
             loop.call_soon_threadsafe(started.set)
             release_install.wait(5)
 
@@ -154,15 +252,14 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_choosing_nightly_at_install_switches_the_update_channel(self):
         self.plugin.release = {"version": "1.0.3", "asset": {"url": "https://github.com/x", "size": 1}}
-        nightly = {"tag_name": "v1.0.4-nightly.1201.1", "assets": [
-            {"name": "OpenNOW-Qt-1.0.4-nightly.1201.1-Linux-x64.flatpak", "browser_download_url": "https://github.com/n", "size": 2}]}
+        nightly = support.github_release("1.0.4-nightly.1201.1", ("x64",))
         with mock.patch("opennow_decky.releases.fetch_latest", return_value=nightly) as fetch, \
                 mock.patch("opennow_decky.releases.platform.machine", return_value="x86_64"), \
                 mock.patch("opennow_decky.installer.install_bundle") as install:
             self.assertTrue(await self.plugin.install_opennow(True))
             await self.plugin.install_task
         fetch.assert_called_once_with(True)
-        self.assertEqual(install.call_args.args[0], "https://github.com/n")
+        self.assertEqual(install.call_args.args[0], support.selected_asset("1.0.4-nightly.1201.1"))
         self.assertTrue((await self.plugin.get_state())["preferences"]["nightlyChannel"])
         self.assertEqual(self.decky.emitted[-1], ("install_done", (True, "1.0.4-nightly.1201.1")))
 
