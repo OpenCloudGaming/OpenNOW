@@ -319,6 +319,11 @@ QtObject {
             protectSettingsRead([key].concat(Object.keys(result.changes || {})))
             confirmedSettings = Object.assign({}, confirmedSettings, result.changes || {}, {[key]:result.value})
             write.coupledKeys = Array.from(new Set(write.coupledKeys.concat(Object.keys(result.changes || {}))))
+            if (key === "launchInConsoleMode" && write.source === "onboarding") {
+                consoleSurfaceConfirmedValue = Boolean(result.value)
+                consoleSurfaceDesiredValue = consoleSurfaceConfirmedValue
+                consoleSurfaceInitialized = true
+            }
         }
         if (result && confirmed) {
             // Coupled values first (per protocol): core repairs persisted together

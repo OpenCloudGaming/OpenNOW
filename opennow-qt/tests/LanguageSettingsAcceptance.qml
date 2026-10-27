@@ -338,6 +338,27 @@ QtObject {
         check(state.resetRequestId !== "" && !state.settingWrites.onboardingCompleted,
             "a drained setup acknowledgement cannot replay pre-reset work")
         state.acceptResponse(state.resetRequestId, {settings:defaults})
+        onboarding.resetSettings(Object.keys(onboarding.draft))
+        const surfaceRequests = []
+        state.consoleSurfaceRequested.connect(function(enabled) { surfaceRequests.push(enabled) })
+        onboarding.setSetting("launchInConsoleMode", true)
+        onboarding.finish()
+        const consoleSetup = state.settingWrites.launchInConsoleMode
+        state.acceptSettingsChange({key:"launchInConsoleMode", value:true})
+        state.acceptResponse(consoleSetup.id, {key:"launchInConsoleMode", value:true})
+        check(onboarding.saving && surfaceRequests.length === 0,
+            "the onboarding console acknowledgement does not switch surfaces before setup completes")
+        while (onboarding.saving) {
+            const key = Object.keys(state.settingWrites)[0]
+            const write = state.settingWrites[key]
+            state.acceptResponse(write.id, {key:key, value:write.value})
+        }
+        state.requestConsoleSurface(false)
+        state.failConsoleSurface("Synthetic desktop-mode persistence failure after onboarding")
+        check(state.settings.launchInConsoleMode === true && state.consoleSurfaceConfirmedValue === true
+            && state.consoleSurfaceDesiredValue === true && state.consoleSurfaceInitialized
+            && surfaceRequests[surfaceRequests.length - 1] === true,
+            "a failed later desktop-mode write restores the console mode confirmed by onboarding")
         onboarding.destroy()
         state.destroy()
     }
