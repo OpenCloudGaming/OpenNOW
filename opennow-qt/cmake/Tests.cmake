@@ -1170,11 +1170,15 @@ if(BUILD_TESTING)
              COMMAND opennow-streamvideo-tests -o -,txt)
     set_tests_properties(opennow-streamvideo-tests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    qt_add_executable(opennow-windowsmoveloop-tests tests/tst_windowswindowmoveloop.cpp)
+    target_link_libraries(opennow-windowsmoveloop-tests PRIVATE opennow-platform-input Qt6::Test)
+    add_test(NAME opennow-windowsmoveloop-tests COMMAND opennow-windowsmoveloop-tests -o -,txt)
     if(WIN32)
-        add_test(NAME opennow-windowsmoveloop-native-tests
-            COMMAND opennow-streamvideo-tests nativeWindowMoveLoopOwnsTheCursorUntilItExits -o -,txt)
-        set_tests_properties(opennow-windowsmoveloop-native-tests PROPERTIES
+        set_tests_properties(opennow-windowsmoveloop-tests PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=windows" RUN_SERIAL TRUE TIMEOUT 30)
+    else()
+        set_tests_properties(opennow-windowsmoveloop-tests PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
     endif()
 
     qt_add_executable(opennow-waylandpointer-tests tests/tst_waylandpointercapture.cpp)
@@ -1426,6 +1430,7 @@ if(BUILD_TESTING)
         opennow-qt-tests
         opennow-coreclient-tests
         opennow-waylandpointer-tests
+        opennow-windowsmoveloop-tests
         opennow-macpointer-tests
         opennow-embedded-orchestration-tests
         opennow-singleinstance-tests
@@ -1472,6 +1477,7 @@ if(BUILD_TESTING)
             opennow-qt-tests
             opennow-coreclient-tests
             opennow-streamvideo-tests
+            opennow-windowsmoveloop-tests
             opennow-waylandpointer-tests
             opennow-nativestreamruntime-tests
             opennow-nativeframegeneration-tests
@@ -1534,6 +1540,7 @@ if(BUILD_TESTING)
                 opennow-qt-tests
                 opennow-coreclient-tests
                 opennow-streamvideo-tests
+                opennow-windowsmoveloop-tests
                 opennow-waylandpointer-tests
                 opennow-nativestreamruntime-tests
                 opennow-nativeframegeneration-tests

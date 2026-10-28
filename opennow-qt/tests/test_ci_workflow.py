@@ -175,8 +175,9 @@ class CIWorkflowTest(unittest.TestCase):
         self.assertIn("ensure-windows-media-foundation.ps1", checks)
         cmake = (ROOT / "opennow-qt/cmake/Tests.cmake").read_text()
         targets = re.search(r"set\(OPENNOW_CI_UNIT_TEST_TARGETS\s+(.*?)\)", cmake, re.DOTALL)[1].split()
-        self.assertEqual(len(targets), 36)
-        self.assertEqual(len(set(targets)), 36)
+        self.assertEqual(len(targets), 37)
+        self.assertEqual(len(set(targets)), 37)
+        self.assertIn("opennow-windowsmoveloop-tests", targets)
         self.assertIn("opennow-generichidinput-tests", targets)
         self.assertIn("opennow-windowtheme-tests", targets)
         self.assertIn("opennow-updatefailure-tests", targets)
@@ -207,6 +208,25 @@ class CIWorkflowTest(unittest.TestCase):
         self.assertIn("add_custom_target(opennow-ci-unit-tests DEPENDS ${OPENNOW_CI_UNIT_TEST_TARGETS})", cmake)
         self.assertIn('set_tests_properties(${OPENNOW_CI_UNIT_TEST_TARGETS} PROPERTIES LABELS "ci-unit")', cmake)
         self.assertIn('ENVIRONMENT "QT_QPA_PLATFORM=cocoa" RUN_SERIAL TRUE TIMEOUT 30 LABELS "interactive-desktop"', cmake)
+
+    def test_windows_move_loop_regression_runs_in_the_unit_lane_without_a_desktop(self):
+        cmake = (ROOT / "opennow-qt/cmake/Tests.cmake").read_text()
+        targets = re.search(r"set\(OPENNOW_CI_UNIT_TEST_TARGETS\s+(.*?)\)", cmake, re.DOTALL)[1].split()
+        self.assertIn("opennow-windowsmoveloop-tests", targets)
+        registration = cmake.split("qt_add_executable(opennow-windowsmoveloop-tests", 1)[1]
+        registration = registration.split("qt_add_executable(opennow-waylandpointer-tests", 1)[0]
+        self.assertIn("tests/tst_windowswindowmoveloop.cpp", registration)
+        self.assertIn("opennow-platform-input Qt6::Test", registration)
+        self.assertIn("add_test(NAME opennow-windowsmoveloop-tests COMMAND opennow-windowsmoveloop-tests", registration)
+        self.assertRegex(registration, r'if\(WIN32\)\s+'
+                         r'set_tests_properties\(opennow-windowsmoveloop-tests PROPERTIES\s+'
+                         r'ENVIRONMENT "QT_QPA_PLATFORM=windows" RUN_SERIAL TRUE TIMEOUT 30\)')
+        native = (ROOT / "opennow-qt/tests/tst_windowswindowmoveloop.cpp").read_text()
+        self.assertIn("void sentSystemCommandsSuspendBeforeQtDispatch()", native)
+        self.assertIn('QCOMPARE(QGuiApplication::platformName(), QStringLiteral("windows"))', native)
+        self.assertIn("SendMessageW(hwnd, WM_SYSCOMMAND, command, position)", native)
+        self.assertIn("QVERIFY(!IsWindowVisible(hwnd))", native)
+        self.assertNotIn("QSKIP", native)
 
     def test_signed_helper_integration_runs_on_every_platform_check_not_signers(self):
         action = (ROOT / ".github/actions/qt-unit-tests/action.yml").read_text()
