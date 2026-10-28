@@ -2,6 +2,11 @@ add_library(opennow-generic-hid STATIC
     src/input/GenericHidInput.cpp
     src/input/GenericHidInput.h
     src/input/GenericHidWire.h)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_sources(opennow-generic-hid PRIVATE
+        src/input/platform/LinuxHidIdentity.cpp
+        src/input/platform/LinuxHidIdentity.h)
+endif()
 target_include_directories(opennow-generic-hid PUBLIC src)
 target_link_libraries(opennow-generic-hid PUBLIC Qt6::Core SDL3::SDL3)
 if(APPLE)

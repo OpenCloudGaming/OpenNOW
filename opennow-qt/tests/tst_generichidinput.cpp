@@ -1,5 +1,11 @@
 #include "input/ControllerInput.h"
 #include "input/GenericHidInput.h"
+#ifdef Q_OS_LINUX
+#include "input/platform/LinuxHidIdentity.h"
+#include <QDir>
+#include <QFile>
+#include <QTemporaryDir>
+#endif
 
 #include <QMutexLocker>
 #include <QElapsedTimer>
@@ -10,6 +16,54 @@
 #include <cstring>
 
 namespace {
+#ifdef Q_OS_LINUX
+class LinuxSysfs
+{
+public:
+    QTemporaryDir directory;
+
+    QString classRoot() const { return directory.path() + QStringLiteral("/class"); }
+    QString usbPath(const QString &port) const { return directory.path() + QStringLiteral("/devices/") + port; }
+    QString hidPath(const QString &port) const { return usbPath(port) + QStringLiteral("/interface/hid-arrival"); }
+
+    bool write(const QString &path, const QByteArray &bytes)
+    {
+        QFile file(path);
+        return file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size();
+    }
+
+    bool add(const QString &node, const QString &port, const QByteArray &hidSerial = "aa-bb-cc-dd",
+             const QByteArray &usbSerial = "0000123456789abc")
+    {
+        const auto link = classRoot() + (node.startsWith(QStringLiteral("event"))
+            ? QStringLiteral("/input/") : QStringLiteral("/hidraw/")) + node;
+        const auto target = hidPath(port) + (node.startsWith(QStringLiteral("event"))
+            ? QStringLiteral("/input/input5") : QString{});
+        return directory.isValid() && QDir().mkpath(target) && QDir().mkpath(link)
+            && write(usbPath(port) + QStringLiteral("/idVendor"), "046d\n")
+            && write(usbPath(port) + QStringLiteral("/idProduct"), "c262\n")
+            && write(usbPath(port) + QStringLiteral("/serial"), usbSerial + '\n')
+            && write(hidPath(port) + QStringLiteral("/uevent"),
+                "HID_ID=0003:0000046D:0000C262\nHID_NAME=Logitech G920\nHID_UNIQ=" + hidSerial + '\n')
+            && QFile::link(target, link + QStringLiteral("/device"));
+    }
+
+    GenericHidBackend::Device wheel(const char *path = "/dev/hidraw5", const QString &serial = QStringLiteral("aa-bb-cc-dd")) const
+    {
+        GenericHidBackend::Device result;
+        result.path = path;
+        result.serial = serial;
+        result.vendor = 0x046d;
+        result.product = 0xc262;
+        result.interfaceNumber = 0;
+        const auto identity = LinuxHidIdentity::resolve(result, classRoot());
+        result.physicalKey = identity.physicalKey;
+        result.instanceKey = identity.instanceKey;
+        return result;
+    }
+};
+#endif
+
 QByteArray descriptor(quint8 id = 0)
 {
     auto bytes = QByteArray::fromHex("05010904a1010509190129081500250175019508");
@@ -148,6 +202,145 @@ class GenericHidInputTest final : public QObject
 {
     Q_OBJECT
 private slots:
+#ifdef Q_OS_LINUX
+    void linuxHidSerialUsesDeviceNamespace()
+    {
+        LinuxSysfs sysfs;
+        QVERIFY(sysfs.add(QStringLiteral("hidraw5"), QStringLiteral("wheel-a")));
+        const auto hid = sysfs.wheel();
+        QCOMPARE(hid.physicalKey, sysfs.usbPath(QStringLiteral("wheel-a")).toUtf8());
+        QVERIFY(!hid.instanceKey.isEmpty());
+        const auto usb = sysfs.wheel("/dev/hidraw5", QStringLiteral("0000123456789abc"));
+        QCOMPARE(usb.physicalKey, hid.physicalKey);
+        QCOMPARE(usb.instanceKey, hid.instanceKey);
+        QVERIFY(sysfs.wheel("/dev/hidraw5", QStringLiteral("unrelated-serial")).physicalKey.isEmpty());
+        QVERIFY(sysfs.wheel("/dev/hidraw5", QStringLiteral("AA-BB-CC-DD")).physicalKey.isEmpty());
+        QVERIFY(sysfs.add(QStringLiteral("hidraw6"), QStringLiteral("wheel-b"), "11-22-33-44", "different-usb-serial"));
+        QVERIFY(sysfs.wheel("/dev/hidraw6").physicalKey.isEmpty());
+        QVERIFY(!sysfs.wheel("/dev/hidraw6", QStringLiteral("11-22-33-44")).physicalKey.isEmpty());
+        auto wrongProduct = hid;
+        wrongProduct.product = 0xc261;
+        QVERIFY(LinuxHidIdentity::resolve(wrongProduct, sysfs.classRoot()).physicalKey.isEmpty());
+        auto wrongVendor = hid;
+        wrongVendor.vendor = 0x044f;
+        QVERIFY(LinuxHidIdentity::resolve(wrongVendor, sysfs.classRoot()).physicalKey.isEmpty());
+    }
+
+    void linuxHidIdentityRejectsUnrelatedPaths()
+    {
+        LinuxSysfs sysfs;
+        QVERIFY(sysfs.add(QStringLiteral("hidraw5"), QStringLiteral("wheel-a")));
+        for (const auto *path : {"/dev/hidraw6", "/dev/input/event5", "hidraw5", "/tmp/hidraw5",
+                 "/dev/hidraw/../hidraw5", "/dev/hidraw5/../hidraw5", "/dev/input/event/../../hidraw5"}) {
+            QVERIFY2(sysfs.wheel(path, QStringLiteral("0000123456789abc")).physicalKey.isEmpty(), path);
+        }
+        QVERIFY(QFile::remove(sysfs.classRoot() + QStringLiteral("/hidraw/hidraw5/device")));
+        QVERIFY(sysfs.wheel().physicalKey.isEmpty());
+    }
+
+    void linuxHidSerialKeepsWheelsAndArrivalsDistinct()
+    {
+        LinuxSysfs sysfs;
+        QVERIFY(sysfs.add(QStringLiteral("hidraw5"), QStringLiteral("wheel-a")));
+        QVERIFY(sysfs.add(QStringLiteral("hidraw6"), QStringLiteral("wheel-b")));
+        QVERIFY(sysfs.add(QStringLiteral("event5"), QStringLiteral("wheel-a")));
+        const auto first = sysfs.wheel();
+        const auto second = sysfs.wheel("/dev/hidraw6");
+        QVERIFY(!first.physicalKey.isEmpty());
+        QVERIFY(!second.physicalKey.isEmpty());
+        QVERIFY(first.physicalKey != second.physicalKey);
+        QVERIFY(first.instanceKey != second.instanceKey);
+        QCOMPARE(sysfs.wheel("/dev/input/event5").physicalKey, first.physicalKey);
+        QVERIFY(QDir().rename(sysfs.hidPath(QStringLiteral("wheel-a")),
+            sysfs.hidPath(QStringLiteral("wheel-a")) + QStringLiteral("-old")));
+        QVERIFY(sysfs.wheel().physicalKey.isEmpty());
+        QVERIFY(QDir().mkpath(sysfs.hidPath(QStringLiteral("wheel-a"))));
+        QVERIFY(QFile::copy(sysfs.hidPath(QStringLiteral("wheel-a")) + QStringLiteral("-old/uevent"),
+            sysfs.hidPath(QStringLiteral("wheel-a")) + QStringLiteral("/uevent")));
+        const auto replacement = sysfs.wheel();
+        QCOMPARE(replacement.physicalKey, first.physicalKey);
+        QVERIFY(!replacement.instanceKey.isEmpty());
+        QVERIFY(replacement.instanceKey != first.instanceKey);
+        QCOMPARE(sysfs.wheel("/dev/hidraw6").instanceKey, second.instanceKey);
+    }
+
+    void linuxHidSerialRequiresMatchingEvidence()
+    {
+        LinuxSysfs sysfs;
+        QVERIFY(sysfs.add(QStringLiteral("hidraw5"), QStringLiteral("wheel-a")));
+        QVERIFY(QFile::remove(sysfs.hidPath(QStringLiteral("wheel-a")) + QStringLiteral("/uevent")));
+        QVERIFY(sysfs.wheel().physicalKey.isEmpty());
+        QVERIFY(!sysfs.wheel("/dev/hidraw5", QStringLiteral("0000123456789abc")).physicalKey.isEmpty());
+        QVERIFY(sysfs.write(sysfs.hidPath(QStringLiteral("wheel-a")) + QStringLiteral("/uevent"),
+            "OTHER_HID_UNIQ=aa-bb-cc-dd\nHID_UNIQ=other-device\n"));
+        QVERIFY(sysfs.wheel().physicalKey.isEmpty());
+        QVERIFY(sysfs.write(sysfs.hidPath(QStringLiteral("wheel-a")) + QStringLiteral("/uevent"),
+            "HID_UNIQ=aa-bb-cc-dd\n"));
+        QVERIFY(sysfs.write(sysfs.usbPath(QStringLiteral("wheel-a")) + QStringLiteral("/idProduct"), "c24f\n"));
+        auto otherModel = sysfs.wheel();
+        QVERIFY(otherModel.physicalKey.isEmpty());
+        otherModel.product = 0xc24f;
+        QVERIFY(!LinuxHidIdentity::resolve(otherModel, sysfs.classRoot()).physicalKey.isEmpty());
+    }
+
+    void linuxHidArrivalsRetireOnlyReplacedWheel()
+    {
+        LinuxSysfs sysfs;
+        QVERIFY(sysfs.add(QStringLiteral("hidraw5"), QStringLiteral("wheel-a")));
+        QVERIFY(sysfs.add(QStringLiteral("hidraw6"), QStringLiteral("wheel-b")));
+        const auto first = sysfs.wheel();
+        const auto second = sysfs.wheel("/dev/hidraw6");
+        QVERIFY(!first.physicalKey.isEmpty());
+        QVERIFY(!second.physicalKey.isEmpty());
+        auto backend = std::make_shared<FakeBackend>();
+        backend->devices = {first, second};
+        GenericHidInput input(backend);
+        QTRY_COMPARE(input.claims().size(), 2);
+        const auto claims = input.claims();
+        const auto firstKey = GenericHidInput::groupKey(first);
+        const auto devices = input.devices();
+        const auto found = std::find_if(devices.cbegin(), devices.cend(),
+            [&](const auto &entry) { return entry.key == firstKey; });
+        QVERIFY(found != devices.cend());
+        const auto oldClaim = std::find_if(claims.cbegin(), claims.cend(),
+            [&](const auto &claim) { return claim.incarnation == found->incarnation; });
+        QVERIFY(oldClaim != claims.cend());
+        const auto old = *oldClaim;
+        const auto unaffectedClaim = std::find_if(claims.cbegin(), claims.cend(),
+            [&](const auto &claim) { return claim.incarnation != old.incarnation; });
+        QVERIFY(unaffectedClaim != claims.cend());
+        const auto unaffected = *unaffectedClaim;
+        QVERIFY(QDir().rename(sysfs.hidPath(QStringLiteral("wheel-a")),
+            sysfs.hidPath(QStringLiteral("wheel-a")) + QStringLiteral("-old")));
+        QVERIFY(QDir().mkpath(sysfs.hidPath(QStringLiteral("wheel-a"))));
+        QVERIFY(QFile::copy(sysfs.hidPath(QStringLiteral("wheel-a")) + QStringLiteral("-old/uevent"),
+            sysfs.hidPath(QStringLiteral("wheel-a")) + QStringLiteral("/uevent")));
+        {
+            QMutexLocker lock(&backend->mutex);
+            backend->devices[0] = sysfs.wheel();
+        }
+        QTRY_COMPARE(backend->closeCount(), 1);
+        QTRY_COMPARE(input.claims().size(), 2);
+        const auto replacements = input.claims();
+        const auto replacementClaim = std::find_if(replacements.cbegin(), replacements.cend(),
+            [&](const auto &claim) { return claim.slot == old.slot; });
+        QVERIFY(replacementClaim != replacements.cend());
+        const auto replacement = *replacementClaim;
+        QVERIFY(replacement.incarnation != old.incarnation);
+        QVERIFY(std::any_of(replacements.cbegin(), replacements.cend(),
+            [&](const auto &claim) { return claim.incarnation == unaffected.incarnation; }));
+        input.submitOutput(output(old, 0, QByteArray(1, char(1))));
+        input.submitOutput(output(replacement, 0, QByteArray(1, char(2))));
+        input.submitOutput(output(unaffected, 0, QByteArray(1, char(3))));
+        QTRY_COMPARE(backend->outputCount(), 2);
+        input.stop();
+        for (const auto &entry : backend->outputs) {
+            QCOMPARE(entry.bytes, entry.path == "/dev/hidraw5" ? QByteArray::fromHex("0002") : QByteArray::fromHex("0003"));
+        }
+        QCOMPARE(backend->opens, backend->closes);
+    }
+#endif
+
     void supportedDeviceMetadataMatchesAllowlist()
     {
         ControllerInput input;
