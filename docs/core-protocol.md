@@ -1334,7 +1334,9 @@ the session. It records the exact layout sent in the CloudMatch request, not the
 saved preference. Polls and ad updates preserve it only for the same session ID; a successful
 resume replaces it with the newly requested layout. Qt uses this value for physical key
 mapping, so changing settings during a stream does not change input before the remote
-layout changes. An unclaimed session whose layout is unknown omits this field.
+layout changes. A tolerated `SESSION_NOT_PAUSED` response does not confirm that the
+requested layout was applied, so the same session keeps its previous layout, or leaves
+it unknown if none was recorded. An unclaimed session whose layout is unknown omits this field.
 
 Color negotiation overlays each returned `finalizedStreamingFeatures` field on the server's
 returned `sessionRequestData.requestedStreamingFeatures`. An empty or partial finalized object

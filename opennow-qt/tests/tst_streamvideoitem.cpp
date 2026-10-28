@@ -2400,6 +2400,103 @@ private slots:
         QCOMPARE(item->eventVirtualKey(&synthetic), quint16(0xdb));
     }
 
+    void germanKeysUseNativePhysicalPositions_data()
+    {
+        QTest::addColumn<bool>("fullscreen");
+        QTest::newRow("windowed") << false;
+        QTest::newRow("fullscreen") << true;
+    }
+
+    void germanKeysUseNativePhysicalPositions()
+    {
+        QFETCH(bool, fullscreen);
+        static QList<QList<quint16>> inputCalls;
+        inputCalls.clear();
+        auto api = CursorSession::api();
+        api.submitKey = [](const OpenNowStreamer *, std::uint16_t vk,
+                           std::uint16_t modifiers, bool pressed) {
+            inputCalls.append({vk, modifiers, quint16(pressed)});
+            return OPENNOW_STREAMER_OK;
+        };
+        CursorSession session(api);
+        QVERIFY(session.start());
+        StreamVideoItem item(session.window.contentItem());
+        item.setRenderCallback({});
+        item.setSize(session.window.size());
+        if (fullscreen) session.window.showFullScreen();
+        QTRY_VERIFY(session.runtime.inputAllowed());
+        QTRY_VERIFY(session.window.isActive());
+        item.forceActiveFocus();
+        QTRY_VERIFY(item.captureActive());
+        QQuickItem overlay(session.window.contentItem());
+        overlay.setVisible(false);
+        const struct {
+            int key;
+            quint32 xkbKeycode;
+            quint16 virtualKey;
+        } positions[] = {
+            {Qt::Key_Y, 52, 0x5a},
+            {Qt::Key_Z, 29, 0x59},
+            {Qt::Key_Udiaeresis, 34, 0xdb},
+            {Qt::Key_Odiaeresis, 47, 0xba},
+            {Qt::Key_Adiaeresis, 48, 0xde},
+            {Qt::Key_ssharp, 20, 0xbd},
+            {Qt::Key_Dead_Acute, 21, 0xbb},
+            {Qt::Key_Plus, 35, 0xdd},
+            {Qt::Key_NumberSign, 51, 0xdc},
+            {Qt::Key_Dead_Circumflex, 49, 0xc0},
+            {Qt::Key_Comma, 59, 0xbc},
+            {Qt::Key_Period, 60, 0xbe},
+            {Qt::Key_Minus, 61, 0xbf},
+            {Qt::Key_Less, 94, 0xe2},
+            {Qt::Key_QuoteDbl, 11, 0x32},
+            {Qt::Key_At, 24, 0x51},
+        };
+        for (const auto &position : positions) {
+            for (const auto &alias : {QStringLiteral("de-DE"), QStringLiteral("DE_de"),
+                                      QStringLiteral("de")}) {
+                item.setKeyboardLayout(alias);
+                QKeyEvent event(QEvent::KeyPress, position.key, Qt::NoModifier,
+                                position.xkbKeycode, 0, 0);
+                QCOMPARE(item.eventVirtualKey(&event), position.virtualKey);
+            }
+            for (const auto modifiers : {Qt::NoModifier, Qt::ShiftModifier,
+                                         Qt::GroupSwitchModifier}) {
+                const quint16 wireModifiers = modifiers == Qt::ShiftModifier ? 1
+                    : modifiers == Qt::GroupSwitchModifier ? 6 : 0;
+                inputCalls.clear();
+                QKeyEvent press(QEvent::KeyPress, position.key, modifiers,
+                                position.xkbKeycode, 0, 0);
+                QCoreApplication::sendEvent(&session.window, &press);
+                QCOMPARE(inputCalls, (QList<QList<quint16>>{
+                    {position.virtualKey, wireModifiers, 1}}));
+                item.setKeyboardLayout(QStringLiteral("fr-FR"));
+                QKeyEvent release(QEvent::KeyRelease, Qt::Key_unknown, modifiers,
+                                  position.xkbKeycode, 0, 0);
+                QCoreApplication::sendEvent(&session.window, &release);
+                QCOMPARE(inputCalls.last(), (QList<quint16>{position.virtualKey, wireModifiers, 0}));
+                QVERIFY(item.m_pressedKeys.isEmpty());
+                item.setKeyboardLayout(QStringLiteral("de-DE"));
+            }
+            inputCalls.clear();
+            QKeyEvent held(QEvent::KeyPress, position.key, Qt::NoModifier,
+                           position.xkbKeycode, 0, 0);
+            QCoreApplication::sendEvent(&session.window, &held);
+            overlay.setVisible(true);
+            overlay.forceActiveFocus();
+            QTRY_VERIFY(!item.captureActive());
+            QCOMPARE(inputCalls, (QList<QList<quint16>>{
+                {position.virtualKey, 0, 1}, {position.virtualKey, 0, 0}}));
+            QCoreApplication::sendEvent(&session.window, &held);
+            QCOMPARE(inputCalls.size(), 2);
+            overlay.setVisible(false);
+            item.forceActiveFocus();
+            QTRY_VERIFY(item.captureActive());
+        }
+        QKeyEvent synthetic(QEvent::KeyPress, Qt::Key_Y, Qt::NoModifier);
+        QCOMPARE(item.eventVirtualKey(&synthetic), quint16(0x59));
+    }
+
     void linuxRegionalKeysUsePhysicalPositions_data()
     {
         QTest::addColumn<QString>("layout");
@@ -2419,9 +2516,9 @@ private slots:
         row("uk-backslash", "en-GB", Qt::Key_Backslash, 0, 86, 0xdc);
         row("turkish-dotless-i", "tr-TR", 0x0131, 0, 23, 0x49);
         row("turkish-dotted-i", "tr-TR", 0x0130, 0, 40, 0xde);
-        row("german-y", "de-DE", Qt::Key_Y, 0, 44, 0x59);
-        row("german-z", "de-DE", Qt::Key_Z, 0, 21, 0x5a);
-        row("german-umlaut", "de-DE", Qt::Key_Udiaeresis, 0, 26, 0xba);
+        row("german-y", "de-DE", Qt::Key_Y, 0, 44, 0x5a);
+        row("german-z", "de-DE", Qt::Key_Z, 0, 21, 0x59);
+        row("german-umlaut", "de-DE", Qt::Key_Udiaeresis, 0, 26, 0xdb);
         row("french-a", "fr-FR", Qt::Key_A, 0, 16, 0x41);
         row("french-q", "fr-FR", Qt::Key_Q, 0, 30, 0x51);
         row("french-m", "fr-FR", Qt::Key_M, 0, 39, 0x4d);

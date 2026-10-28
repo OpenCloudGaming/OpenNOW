@@ -61,6 +61,23 @@ Alt, with Control+Alt modifier bits on the accompanying keys. It must not match
 an unmodified local shortcut. Key-up uses the virtual key saved on key-down,
 even if the logical key or selected map changes before release.
 
+## German physical wire keys
+
+Linux German input uses the existing US physical-position mapper before the
+generated regional table, matching the Windows and macOS gameplay paths.
+The generated Windows VK table is not a native-stream wire table. Applying it
+to German input swaps Y and Z and sends the wrong OEM positions. For example,
+the physical ö key must send `0xba`, not the German Windows VK `0xc0`.
+The generated tables stay unchanged, and other Linux layouts retain their
+existing behavior.
+
+German Shift+2 sends `0x32` with Shift, and AltGr+Q sends `0x51` with Control+Alt.
+The remote session must use German to compose the intended characters. A
+`SESSION_NOT_PAUSED` resume response does not confirm a layout change. The core
+keeps the same session's last-known layout instead of replacing it with the
+current preference. End the existing session and launch a new German session
+if the remote layout has not changed.
+
 ## Swedish OEM wire keys
 
 The Linux Swedish map uses US physical-position identifiers for the twelve
@@ -130,6 +147,7 @@ builds nor the application fetch these files.
 ```sh
 cmake --build build/opennow-qt --target opennow-streamvideo-tests
 QT_QPA_PLATFORM=offscreen build/opennow-qt/opennow-streamvideo-tests \
+  germanKeysUseNativePhysicalPositions \
   windowsModifierScanCodesPreserveSides \
   secondaryLayoutAltGrPreservesKeyLifetimes \
   swedishOemKeysMatchOfficialNativeInput \
