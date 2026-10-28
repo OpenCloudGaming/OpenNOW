@@ -221,9 +221,13 @@ class CIWorkflowTest(unittest.TestCase):
         self.assertIn('Testing/Temporary/windows-move-loop-results.xml,junitxml', registration)
         self.assertRegex(registration, r'if\(WIN32\)\s+'
                          r'add_test\(NAME opennow-windowsmoveloop-native-tests\s+'
-                         r'COMMAND opennow-streamvideo-tests nativeWindowMoveLoopOwnsTheCursorUntilItExits -o -,txt\)')
+                         r'COMMAND opennow-streamvideo-tests nativeWindowMoveLoopOwnsTheCursorUntilItExits -o -,txt\s+'
+                         r'-o "\$\{CMAKE_CURRENT_BINARY_DIR\}/Testing/Temporary/native-stream-item-move-loop-results.xml,junitxml"\)')
         self.assertIn('set_tests_properties(opennow-windowsmoveloop-native-tests PROPERTIES\n'
-                      '            ENVIRONMENT "QT_QPA_PLATFORM=windows" RUN_SERIAL TRUE TIMEOUT 30)', registration)
+                      '            ENVIRONMENT "QT_QPA_PLATFORM=windows;QT_QUICK_BACKEND=software"\n'
+                      '            RUN_SERIAL TRUE TIMEOUT 30 LABELS "ci-unit")', registration)
+        self.assertRegex(cmake, r'if\(WIN32\)\s+'
+                         r'add_dependencies\(opennow-ci-unit-tests opennow-streamvideo-tests\)')
         self.assertRegex(registration, r'set_tests_properties\(opennow-windowsmoveloop-tests PROPERTIES\s+'
                          r'ENVIRONMENT "QT_QPA_PLATFORM=windows" RUN_SERIAL TRUE TIMEOUT 30\)')
         native = (ROOT / "opennow-qt/tests/tst_windowswindowmoveloop.cpp").read_text()

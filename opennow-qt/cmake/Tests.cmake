@@ -1181,9 +1181,11 @@ if(BUILD_TESTING)
         -o "${CMAKE_CURRENT_BINARY_DIR}/Testing/Temporary/windows-move-loop-results.xml,junitxml")
     if(WIN32)
         add_test(NAME opennow-windowsmoveloop-native-tests
-            COMMAND opennow-streamvideo-tests nativeWindowMoveLoopOwnsTheCursorUntilItExits -o -,txt)
+            COMMAND opennow-streamvideo-tests nativeWindowMoveLoopOwnsTheCursorUntilItExits -o -,txt
+            -o "${CMAKE_CURRENT_BINARY_DIR}/Testing/Temporary/native-stream-item-move-loop-results.xml,junitxml")
         set_tests_properties(opennow-windowsmoveloop-native-tests PROPERTIES
-            ENVIRONMENT "QT_QPA_PLATFORM=windows" RUN_SERIAL TRUE TIMEOUT 30)
+            ENVIRONMENT "QT_QPA_PLATFORM=windows;QT_QUICK_BACKEND=software"
+            RUN_SERIAL TRUE TIMEOUT 30 LABELS "ci-unit")
         set_tests_properties(opennow-windowsmoveloop-tests PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=windows" RUN_SERIAL TRUE TIMEOUT 30)
     else()
@@ -1463,6 +1465,7 @@ if(BUILD_TESTING)
     set_tests_properties(${OPENNOW_CI_UNIT_TEST_TARGETS} PROPERTIES LABELS "ci-unit")
 
     if(WIN32)
+        add_dependencies(opennow-ci-unit-tests opennow-streamvideo-tests)
         add_dependencies(opennow-nativeframegeneration-tests opennow-streamer-ffi-test-runtime)
         # Qt's executable helper defaults to the GUI subsystem on Windows. Keep
         # test runners as console programs so CTest captures QtTest failures.
