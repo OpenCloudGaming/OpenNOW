@@ -1,10 +1,14 @@
 #include "streaming/rendering/LinuxVulkanGraphics.h"
 
 #include <QGuiApplication>
+#include <QProcess>
 #include <QQmlApplicationEngine>
 #include <QQuickWindow>
+#include <QScopeGuard>
 #include <QSignalSpy>
+#include <QTemporaryDir>
 #include <QTest>
+#include <private/qquickwindow_p.h>
 #include <rhi/qrhi.h>
 #include <rhi/qrhi_platform.h>
 
@@ -301,6 +305,107 @@ private slots:
         QTRY_VERIFY(initialized.load() > previous);
         QVERIFY2(correct.load(), qPrintable(failure));
         QVERIFY(!device.handle());
+    }
+
+    void waylandSurfaceLifecycle()
+    {
+#ifdef OPENNOW_WINDOWTHEME_COMPOSITOR
+        QTemporaryDir runtime;
+        QVERIFY(runtime.isValid());
+        auto environment = QProcessEnvironment::systemEnvironment();
+        environment.insert("XDG_RUNTIME_DIR", runtime.path());
+        environment.insert("QT_QPA_PLATFORM", "offscreen");
+        QProcess compositor;
+        compositor.setProcessEnvironment(environment);
+        compositor.start(QStringLiteral(OPENNOW_WINDOWTHEME_COMPOSITOR));
+        const auto cleanup = qScopeGuard([&] {
+            compositor.terminate();
+            if (!compositor.waitForFinished(2000)) {
+                compositor.kill();
+                compositor.waitForFinished();
+            }
+        });
+        QVERIFY(compositor.waitForStarted());
+        QVERIFY(compositor.waitForReadyRead(5000));
+        QVERIFY(compositor.readAllStandardOutput().contains("READY"));
+        environment.insert("QT_QPA_PLATFORM", "wayland");
+        environment.insert("QT_WAYLAND_SHELL_INTEGRATION", "xdg-shell");
+        environment.insert("WAYLAND_DISPLAY", "opennow-windowtheme-test");
+        QProcess client;
+        client.setProcessEnvironment(environment);
+        client.start(QCoreApplication::applicationFilePath(),
+                     {"waylandSwapchainReleasedBeforeNativeHide", "-nocrashhandler"});
+        QVERIFY(client.waitForFinished(10000));
+        const auto diagnostics = client.readAllStandardOutput() + client.readAllStandardError();
+        QVERIFY2(client.exitStatus() == QProcess::NormalExit && client.exitCode() == 0,
+                 diagnostics.constData());
+        QVERIFY2(!diagnostics.contains("destroyed while proxies still attached"), diagnostics.constData());
+        QVERIFY2(!diagnostics.contains("destroyed queue"), diagnostics.constData());
+#else
+        QSKIP("Qt Wayland Compositor is unavailable");
+#endif
+    }
+
+    void waylandSwapchainReleasedBeforeNativeHide_data()
+    {
+        QTest::addColumn<bool>("fullscreen");
+        QTest::newRow("windowed") << false;
+        QTest::newRow("fullscreen") << true;
+    }
+
+    void waylandSwapchainReleasedBeforeNativeHide()
+    {
+        if (!QGuiApplication::platformName().startsWith(QStringLiteral("wayland")))
+            QSKIP("Requires a Wayland compositor");
+        QFETCH(bool, fullscreen);
+        Device device;
+        QQmlApplicationEngine engine;
+        engine.loadData("import QtQuick\nWindow { id: root; width: 320; height: 240; property bool overlayOpen: false; Rectangle { anchors.fill: parent; color: 'blue' } Rectangle { anchors.centerIn: parent; width: 40; height: 40; color: 'white'; visible: root.overlayOpen } }");
+        QCOMPARE(engine.rootObjects().size(), 1);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        QVERIFY(window);
+        QVERIFY2(device.adoptFallback(window), qPrintable(device.lastError()));
+        QSignalSpy invalidated(window, &QQuickWindow::sceneGraphInvalidated);
+        QSignalSpy swapped(window, &QQuickWindow::frameSwapped);
+        int hides = 0;
+        connect(window, &QWindow::visibleChanged, window, [&](bool visible) {
+            if (visible) return;
+            ++hides;
+            QVERIFY(window->handle());
+            QVERIFY(QVulkanInstance::surfaceForWindow(window));
+            auto *d = QQuickWindowPrivate::get(window);
+            QVERIFY2(!d->swapchain, "The swapchain must be released before Wayland destroys its Vulkan surface");
+            QVERIFY(!d->hasActiveSwapchain);
+            QVERIFY(!d->hasRenderableSwapchain);
+        });
+        for (int cycle = 0; cycle < 5; ++cycle) {
+            swapped.clear();
+            window->setProperty("overlayOpen", bool(cycle % 2));
+            if (fullscreen) window->showFullScreen();
+            else window->show();
+            QVERIFY(QTest::qWaitForWindowExposed(window));
+            QTRY_VERIFY(!swapped.isEmpty());
+            const auto image = window->grabWindow();
+            QVERIFY(!image.isNull());
+            QCOMPARE(image.pixelColor(image.width() / 2, image.height() / 2),
+                     cycle % 2 ? QColor(Qt::white) : QColor(Qt::blue));
+            auto *d = QQuickWindowPrivate::get(window);
+            QVERIFY(d->swapchain);
+            QVERIFY(d->hasActiveSwapchain);
+            auto *rhi = window->rhi();
+            if (cycle % 2) QVERIFY(window->close());
+            else window->hide();
+            QCOMPARE(hides, cycle + 1);
+            QCOMPARE(window->rhi(), rhi);
+            QVERIFY(invalidated.isEmpty());
+        }
+        swapped.clear();
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QTRY_VERIFY(!swapped.isEmpty());
+        QVERIFY(!window->grabWindow().isNull());
+        delete window;
+        QCOMPARE(hides, 6);
     }
 
     void rejectsDifferentQtGraphicsDevice()

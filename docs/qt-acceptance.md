@@ -24,7 +24,7 @@ the explicit adapter-selection precondition before any layout workload starts. S
 
 ## Windows stream pacing and Cloud G-Sync
 
-Rebuild Qt and the embedded streamer together with FFI ABI 17. The Windows main window
+Rebuild Qt and the embedded streamer together with FFI ABI 18. The Windows main window
 requests an opaque surface so Qt can use an HWND flip swapchain rather than requiring
 alpha composition. Internal QML overlays remain on the same video surface.
 Windows startup defaults `QT_QPA_UPDATE_IDLE_TIME` to `0` before Qt creates the
@@ -65,7 +65,7 @@ inventing timing samples. Linux/offscreen smoke tests do not validate this hardw
 
 ### Verify sender-timed frames separately from local VRR
 
-Use a matching Qt executable and ABI-17 native library. Disable frame generation for the
+Use a matching Qt executable and ABI-18 native library. Disable frame generation for the
 comparison. Keep the game, resolution, codec, color format, bitrate and display mode unchanged.
 
 For recognized normal NVST frame prefixes, inspect the `Sender frame pacing` diagnostic.
@@ -136,6 +136,54 @@ OpenNOW Socket → Desktop Renew → Renew 08 and Renew 09a–c in Paper. These 
 not network quality or hardware decode. Unsupported FEC recovery and decoder queue values are
 not populated from the design's example numbers. The bitrate bar divides measured Mbps by the
 prepared session's allocation and clamps its fill to 0–100%.
+
+## Steam Deck mouse latency measurements
+
+Compare OpenNOW and the official client on the same display output, codec, resolution,
+stream FPS and game settings. Record the requested FPS separately from measured stream
+FPS and display refresh. A requested 90 FPS stream on a 60 Hz output does not establish
+that either client receives 90 FPS or that a presentation queue is growing.
+
+While the cursor feels delayed, capture F3 and export diagnostics before stopping the
+session. Include Desktop or Game Mode, windowed or fullscreen, frame-generation state,
+the mouse model and its actual report rate. `/sys/module/usbhid/parameters/mousepoll=0`
+is a driver override value, not a measurement of the mouse's report rate.
+
+The embedded NVST input path writes payload-free `INFO input-timing` JSON summaries
+to `native-streamer.log` at most once per one-second telemetry interval while mouse
+input is being submitted. The existing bounded asynchronous logger persists these
+summaries for an export after stopping, subject to log rotation or diagnostic-queue
+pressure. No pointer coordinates, button states or key values are logged.
+
+`relative` and `absolute` are separate; an unsampled mode is null. `submitted` counts
+transport-submission calls returning success in that interval. `windowSamples` is bounded
+to the latest 256 measured submissions per mode. `captureToTransportSubmitMs` reports
+nearest-rank p50, p95 and maximum over that window, using the original capture time
+even after an input-readiness retry. Windows native capture timestamps originate in
+the capture owner; Qt mouse timestamps originate when FFI enqueues the event, after
+Qt delivery. These are not hardware-to-network or end-to-end latency measurements.
+
+This stage includes native input-queue residence, polling and the transport submission call.
+Transport success does not prove admission or delivery: motion may be discarded under
+pressure, which the existing `nvst-input admission dropped_motion` logs report separately.
+It excludes OS/compositor-to-Qt delivery, the transport worker's pending SCTP queue,
+network delivery, host input processing and scanout. Decoder residence and Qt
+submit-to-swap are separate stages and cannot fill those gaps. In particular,
+submit-to-swap is not input-to-photon latency. Low capture-to-submission measurements
+rule out only that measured stage, not the reported cursor delay.
+
+Account-free checks:
+
+```sh
+cargo test --manifest-path native/opennow-streamer/Cargo.toml -p opennow-streamer-core mouse
+QT_QPA_PLATFORM=offscreen build/opennow-qt/opennow-streamvideo-tests absoluteMouseReportsDoNotWaitForAFrame
+```
+
+The synthetic timing tests inject capture and queue times. The Qt test dispatches
+mouse-report bursts through the real window into fake native operations without
+processing a rendered frame, in windowed and fullscreen modes with capture enabled
+and disabled for overlays. These checks do not reproduce SteamOS, physical mouse
+reporting, VA-API decode latency or a GFN session.
 
 ## Check existing-session recovery
 

@@ -11,14 +11,14 @@ ambiguous state.
 The first shell request is always:
 
 ```json
-{"type":"request","id":"1","method":"core.hello","params":{"protocolVersion":5,"shell":"qt","shellVersion":"0.5.4"}}
+{"type":"request","id":"1","method":"core.hello","params":{"protocolVersion":6,"shell":"qt","shellVersion":"0.5.4"}}
 ```
 
-Protocol 5 requires an exact selected catalog variant and account scope for fresh
-session allocation. It retains the bounded library-page contract introduced in
-protocol 4. Older shells are rejected with `incompatible_protocol` during
-`core.hello`, and protocol-5 shells reject older cores. The native streamer
-protocol remains 7.
+Protocol 6 requires explicit allocation settlement before graceful application
+shutdown. It retains protocol 5's exact selected catalog variant and account scope
+for fresh allocation and protocol 4's bounded library pages. Older shells are
+rejected with `incompatible_protocol` during `core.hello`, and protocol-6 shells
+reject older cores. The native streamer protocol remains 8.
 
 The core must return the same protocol version and its capabilities. The shell
 does not send product requests before this succeeds. Version mismatches, a
@@ -30,12 +30,24 @@ handshake. The Qt client and relocated package probes reject cores that omit it,
 including older protocol-5 binaries, before sending any product requests. This
 additive capability leaves the JSON envelope and native streaming ABI unchanged.
 
+Protocol 6 also requires `session.allocationSettlement.v1`. Qt does not regard an
+unstarted, incompatible, or capability-missing core as safely settled.
+
 ## Saved accounts (`auth.accountPicker.v1`)
 
 The "Who's playing?" picker requires the `auth.accountPicker.v1` capability. The
 Qt client rejects cores that omit it during `core.hello`, before any product
 request. The capability is additive: the protocol version, the envelope and the
 native streaming ABI are unchanged.
+
+Saved-account restoration is lazy. An unavailable credential store leaves
+`persistence:"unavailable"` and permits another auth-resolution request after
+1, 2, 4, 8, 16, then at most 30 seconds between attempts. No background worker
+or automatic request replay is created. A successful empty restore, explicit
+logout, credential tombstones, and a PIN-protected account still suppress
+automatic sign-in. A restored account starts push supervision after
+`auth.session.get`; repeated reads reuse the same supervisor without a settings
+write. Provider configuration can still disable push.
 
 `auth.accounts.list` returns `{accounts, activeUserId, generation}`. Each account
 contains only public identity fields; tokens never cross the boundary:
@@ -201,10 +213,20 @@ If the account-index commit fails after JSON is written, persistence remains
 `local-file` and warnings report that account restoration may fail. Interrupted
 JSON temporary files are removed on startup and during account cleanup.
 
-On a Steam Deck (DMI board vendor `Valve`, product `Jupiter` or `Galileo`) the core never
-uses the OS credential store, because Game Mode runs with the desktop keyring locked. Sessions
-are always written to the same per-account JSON file and reported as `device-file`, which the
-shell treats as normal persistence and does not warn about.
+On a Steam Deck (DMI board vendor `Valve`, product `Jupiter` or `Galileo`) sessions are
+always written to the same per-account JSON file and reported as `device-file`, which the
+shell treats as normal persistence and does not warn about. Existing OS-store sessions
+are read only when no local file exists and the matching entry is already unlocked.
+Restoration verifies the identity and copies the session to the device file without changing
+the account index. Failed copies retain the OS-store source and report `migration-pending`.
+Compatibility reads make at most six Secret Service requests, each with a two-second reply
+timeout, separate from D-Bus connection setup. The core never requests an unlock or displays
+a keyring prompt on Steam Deck. Locked entries remain recoverable after the keyring is
+unlocked externally. Local files remain usable when the keyring is locked or unavailable.
+Legacy session files also migrate into device files and the account index without an
+available keyring; their sources remain until persistence is verified and metadata commits.
+Logout also attempts prompt-free OS-store deletion; failed cleanup remains suppressed and
+is retried on startup.
 
 `memory-only` never writes a plaintext credential fallback. `migration-pending` means
 a recoverable legacy source remains because migration could not finish. `unavailable`
@@ -285,6 +307,37 @@ retry, blocks another fresh allocation, and reports `session_cleanup_pending`.
 The failed-cleanup record persists only the seat identity, app/status, trusted control
 route, original provider/account identity, and error code in `pending-session-cleanup.json`;
 it contains no tokens or signaling secrets. Discovery surfaces it only to that account.
+
+Protocol 6 adds a non-droppable settlement notification for every admitted
+`session.create`, including cancelled and timed-out requests whose ordinary
+responses are suppressed:
+
+```json
+{"type":"event","name":"session.allocation.settled","payload":{"requestId":"42","outcome":"cleaned"}}
+```
+
+`outcome` is `handed-off` after the allocation receipt and ownership handoff
+complete, `cleaned` after an allocation-free error or successful compensating
+cleanup, or `failed` when cleanup remains unresolved. `session_allocation_unresolved`
+also requires `failed`: a lost or malformed POST response does not prove that no
+seat was allocated. Sending a response,
+clearing a local request ID, or requesting cancellation is not settlement.
+An admission `busy` response means no worker was admitted and is not followed
+by settlement; Qt tracks retries until they are cancelled or admitted.
+
+CoreClient retains at most eight allocation request IDs independently of its
+ordinary pending-response map. Cancellation and deadlines do not release an
+admitted allocation. Settlement is consumed immediately, outside the bounded
+general event queue, so event overflow cannot discard it. Graceful quit requires
+both the shell's idle state and `CoreClient.allocationsSettled` to be true.
+
+Cleanup failure or core loss with an unsettled allocation makes the current
+CoreClient lifetime fail closed. Restarting the core does not erase that
+uncertainty, and new allocations and graceful-quit success remain blocked.
+Later manual exact-seat reconciliation does not silently clear this safety
+state: recovery would require an additional authoritative settlement contract.
+Normal user-owned window-close behavior is unchanged. The bounded request
+deadline can end a quit request without terminating the running application.
 Explicit successful DELETE or not-found clears that exact record, never a different seat.
 HTTP-success DELETE responses containing an explicit vendor rejection retain ownership.
 The CloudMatch owner reserves fresh-create admission before endpoint resolution or POST.
@@ -296,7 +349,7 @@ one overflow-detection byte before parsing, including for corrupt or oversized f
 
 The `session.terminalCleanup.v1` capability adds `session.ended`. The Qt client
 requires this capability during the handshake so an older packaged core cannot
-silently retain an ended seat. The JSON protocol version remains 5.
+silently retain an ended seat. Protocol 6 retains this requirement.
 
 After an authoritative, non-resumable `nvst-server` termination, the shell sends
 `session.ended` with `{sessionId, ownerScope: {userId, providerIdpId}}`
@@ -430,13 +483,32 @@ loaded games and the failed cursor on error. Retries resume that page.
 Search/account changes cancel requests before clearing state; late responses
 are ignored.
 
-### Local Store browsing (`catalog.storeLocal.v1`)
+### Local Store browsing (`catalog.storeLocal.v2`)
+
+Protocol 6 Qt shells require `catalog.storeLocal.v2` before becoming ready. The
+capability includes replacement-page handling; a core advertising only v1 is
+rejected rather than silently using unstable offset traversal. Package probes
+check this alongside the scoped-account and allocation-settlement capabilities.
 
 `catalog.store.local` pages and searches the saved catalog, without replaying
 every cached page into Qt. It accepts `limit` (capped at 60), `cursor`,
 `searchQuery`, and optional `genre`, `store`, and `categoryId` strings (at most
 256 UTF-8 bytes each). A cursor belongs to its search/filter context and must
 be returned unchanged. The existing 768 KiB result budget still applies.
+
+Local cursors contain a bounded offset, a digest of the ranked game IDs already
+returned, and the number of saved upstream pages. The core validates every
+component, including the page-count suffix. Malformed cursors and cursors from
+another search/filter context return `invalid_params`.
+
+Each successful result includes `replace`. Normally it is `false`. If index
+growth changes the already-returned ranked prefix, or the saved traversal loses
+pages, the core restarts at offset zero and returns `replace:true` with fresh
+facets. The shell discards accumulated games, seen cursors, and its page count
+before validating and accepting this replacement as a first page. A replacement
+may reuse a previously seen cursor. Growth after the consumed prefix continues
+without replacement. This contract keeps newly discovered higher-ranked matches
+reachable without retaining per-search snapshots in the core.
 
 The result includes `games`, `count`, `totalCount` (matching games),
 `catalogTotalCount`, `hasNextPage`, `nextCursor`, `source:"store-local"`,
@@ -525,6 +597,23 @@ and artwork only near the viewport, using the section's local category ID
 - `social.capabilities.get`
 - `discord.activity.sync`, `discord.activity.clear`
 - `feedback.submit`, `bug_report.submit`, `bug_report.incident`, `analytics.track`
+
+### Session ad report snapshot identity
+
+The `session.adReportIdentity.v1` capability is required by Qt and relocated
+package probes without changing the numeric protocol version. Every successful
+`session.ad.report` response and its companion `session.changed` event include
+`adReportIdentity: {sessionId, adId}`. The core captures the session ID from the
+validated owned seat and the ad ID from the report request before remote work.
+Both IDs must be nonempty strings of at most 256 UTF-8 bytes without control
+characters. Caller-supplied envelope identities are ignored.
+
+This identity names the reported ad, not the next ad in the returned session.
+Qt applies either delivery's snapshot only while that original session/ad is
+still current. A matching report can advance A to B; its later companion cannot
+revert or recreate B. A poll that already selected B also fences delayed or
+retried A reports. Ordinary session snapshots without this marker retain their
+existing scope and termination semantics.
 
 ### Usage & bug reports (`automaticBugReports.v2`)
 
@@ -705,8 +794,14 @@ the request fails with `session_discovery_failed` rather than returning an empty
 list. HTTP 401 remains `http_unauthorized` after at most one safe-read renewal;
 HTTP 403 remains `authentication_required`. A found session
 can be returned even when another region fails; an empty successful list means
-all discovered regions were checked successfully. Callers must not create a new
-session after a discovery failure.
+all discovered regions were checked successfully. Reconnect, reconciliation, and
+known-conflict discovery remain strict: callers must not treat a discovery failure
+as proof that an existing session has ended. For a current new-launch intent with
+no active or known conflicting session, Qt may revalidate the selected game and
+attempt `session.create` after `session_discovery_failed`. CloudMatch's
+`session_conflict` response still redirects that attempt to resume/end handling;
+discovery failures after a known conflict never trigger another create. Authentication
+errors, cancellation, and request timeouts do not use this fallback.
 
 ### Provider routing and account scope
 
@@ -1784,6 +1879,21 @@ a new traversal or reappear after a core restart. Failure to persist the revisio
 endpoint, resolved VPC, proxy route, locale and schema revision.
 
 ### Store synchronization observation
+
+The shell and relocated package probes require `account.mutations.scoped.v1`
+during `core.hello`. This capability does not change the protocol version or
+native streaming ABI. `account.connections.sync`, `account.connections.unlink`,
+`account.connections.link.start`, and `account.storage.reset` require an
+initiating `scope: {generation, userId, providerIdpId}`. The shell captures the
+scope when creating the action or opening its confirmation, not when accepting
+an older confirmation. Reset also requires `confirmed:true` and accepts an
+optional `storageRegion`; connection mutations require `provider`.
+
+The core compares this exact scope before authenticated remote work and after
+credential resolution. A missing or different scope returns `stale_account`
+without a remote mutation, including when only the generation changed for the
+same user and provider. The auth-operation lock prevents a switch between
+validation and the mutation. Responses retain the same authenticated `scope`.
 
 `account.connections.sync` sends one ALS POST and accepts only HTTP 202. It
 returns `operationId`, `provider`, and a local `phase`. Repeated starts for the

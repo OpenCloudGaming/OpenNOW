@@ -73,6 +73,15 @@ class SignedNightlyReleaseTest(unittest.TestCase):
             self.assertEqual(manifest["asset"], name)
             self.assertEqual(manifest["version"], self.version)
 
+    def test_documented_signed_nightly_counts_match_the_generated_inventory(self):
+        self.sign()
+        files = list(self.destination.iterdir())
+        manifests = list(self.destination.glob("*.manifest.json"))
+        other = len(files) - len(self.packages) - len(manifests)
+        documentation = (ROOT / "docs/update-signing.md").read_text()
+        self.assertIn(f"| Signed nightly | {len(self.packages)} | {len(manifests)} | {other} | {len(files)} |",
+                      documentation)
+
     def test_mismatched_seed_never_exposes_a_final_inventory(self):
         self.seed = base64.b64encode(os.urandom(32)).decode()
         with self.assertRaisesRegex(ValueError, "does not match"):

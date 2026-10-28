@@ -93,9 +93,40 @@ QtObject {
         client.requestFailed("unrelated", "other_error", "Unrelated account error")
         check(ShellStore.storeError === "", "unrelated error leaked into Store")
 
+        ShellStore.refreshStore("growing index")
+        client.responseReceived(ShellStore.storeRequestId, Object.assign(page([game("old")], "same-offset", true),
+            {source:"store-local",cacheComplete:false}))
+        check(ShellStore.storeWarning !== "", "partial index coverage is visible")
+        const coverageRetryStart = client.requests.length
+        ShellStore.retryStore()
+        check(client.requests.slice(coverageRetryStart).some(call => call.method === "catalog.store.local"),
+            "coverage retry continues the catalog instead of only requesting presentation")
+        client.responseReceived(ShellStore.storeRequestId, Object.assign(page([game("new-exact")], "same-offset", true),
+            {source:"store-local",cacheComplete:true,replace:true}))
+        check(ShellStore.storeGames.length === 1 && ShellStore.storeGames[0].id === "new-exact"
+            && ShellStore.storeState === "ready", "a restarted ranking replaces games and accepts a fresh cursor history")
+        check(ShellStore.storeWarning === "", "complete catalog coverage clears the old advisory")
+        ShellStore.requestStorePage()
+        client.responseReceived(ShellStore.storeRequestId, page([game("old")], "", false))
+        ShellStore.refreshStore("")
+        client.responseReceived(ShellStore.storeRequestId, page([game("a"),game("b"),game("c")], "", false))
+
         const presentation = ShellStore.storePresentationRequestId
         client.requestFailed(presentation, "upstream_error", "Banner unavailable")
         check(ShellStore.storeGames.length === 3 && ShellStore.storeWarning.indexOf("Banner unavailable") >= 0, "chrome failure broke games")
+        const beforePresentationRetry = client.requests.filter(call => call.method === "catalog.store.local").length
+        ShellStore.retryStore()
+        check(ShellStore.storeWarning.indexOf("Banner unavailable") >= 0,
+            "presentation retry cannot hide an unresolved presentation failure")
+        for (const section of ["panels", "filters"])
+            client.responseReceived(ShellStore.storePresentationRequestId, {section:section,items:[]})
+        check(ShellStore.storeWarning.indexOf("Banner unavailable") >= 0,
+            "an unrelated successful presentation section cannot clear the failed section")
+        ShellStore.retryStore()
+        for (const section of ["marquee", "panels", "filters"])
+            client.responseReceived(ShellStore.storePresentationRequestId, {section:section,items:[]})
+        check(ShellStore.storeWarning === "" && client.requests.filter(call => call.method === "catalog.store.local").length === beforePresentationRetry,
+            "presentation-only retry clears its warning only on success and never reloads catalog pages")
 
         const cachedCount = client.requests.length
         ShellStore.ensureStore("")
@@ -319,7 +350,110 @@ QtObject {
         client.requestFailed(ShellStore.storeRequestId, "upstream_error", "Store HTTP 503 — the next catalog page is temporarily unavailable.")
         ShellStore.cancelStoreRequests()
         check(status.text.indexOf("24") >= 0 && retry.visible, "partial-error feedback is not actionable")
+        runArtworkEviction(screen)
         return true
+    }
+
+    function runArtworkEviction(screen) {
+        const source = "https://artwork.test/evicted-png"
+        const cached = String(ArtworkEvictionUrls.cached)
+        const recovered = String(ArtworkEvictionUrls.recovered)
+        const state = Qt.createQmlObject(`import QtQuick; Item {
+            objectName: "artworkEvictionRegression"
+            property bool evictRequested: false
+            property bool evicted: false
+            property bool passed: false
+            property string error: ""
+        }`, screen)
+        const component = Qt.createComponent("qrc:/qt/qml/OpenNOW/qml/components/RoundedArtwork.qml")
+        check(component.status === Component.Ready, "artwork regression component did not load: " + component.errorString())
+        ShellStore.acceptArtworkResult({sourceUrl:source, cached:true, artworkUrl:cached})
+        let card = component.createObject(state, {artwork:source, width:31, height:31, scrimStart:1})
+        const timer = Qt.createQmlObject('import QtQuick; Timer { interval:20; repeat:true }', state)
+        const requests = () => client.requests.filter(r => r.method === "artwork.resolve" && r.params.sourceUrl === source)
+        function imageIn(item) {
+            if (item.source !== undefined && item.status !== undefined) return item
+            for (const child of item.children || []) {
+                const found = imageIn(child)
+                if (found) return found
+            }
+            return null
+        }
+        let phase = 0
+        let errorDeadline = 0
+        const deadline = Date.now() + 4000
+        timer.triggered.connect(function() {
+            try {
+                check(Date.now() < deadline, "deferred artwork eviction timed out in phase " + phase)
+                const image = imageIn(card)
+                check(image !== null, "artwork regression did not create an Image")
+                if (phase === 0) {
+                    if (image.status !== Image.Ready) return
+                    check(requests().length === 0, "cached artwork resolved again before eviction")
+                    state.evictRequested = true
+                    phase = 1
+                } else if (phase === 1) {
+                    if (!state.evicted) return
+                    card.destroy()
+                    card = component.createObject(state, {artwork:source, width:43, height:43, scrimStart:1})
+                    errorDeadline = Date.now() + 300
+                    phase = 2
+                } else if (phase === 2) {
+                    if (ShellStore.artworkUrl(source) !== "" && Date.now() < errorDeadline) return
+                    check(ShellStore.artworkUrl(source) === "",
+                        "removed cached PNG was not invalidated after Image.Error, status=" + image.status)
+                    check(requests().length === 0, "Image.Error immediately re-resolved artwork")
+                    const retry = ShellStore.artworkRetrySources[source]
+                    check(retry && retry.failures === 1 && retry.nextAt > Date.now(), "eviction did not enter paced retry")
+                    ShellStore.reportArtworkLoad(source, cached, true)
+                    ShellStore.reportArtworkLoad(source, recovered, true)
+                    check(ShellStore.artworkRetrySources[source].failures === 1, "duplicate or stale image errors extended backoff")
+                    for (let i = 0; i < 20; ++i) ShellStore.requestArtwork(source)
+                    check(requests().length === 0, "evicted artwork bypassed retry backoff")
+                    retry.nextAt = 0
+                    ShellStore.retryVisibleArtwork(Date.now())
+                    check(requests().length === 1, "evicted artwork did not retry once when due")
+                    client.responseReceived(requests()[0].id, {cached:true, artworkUrl:cached})
+                    errorDeadline = Date.now() + 300
+                    phase = 3
+                } else if (phase === 3) {
+                    if (ShellStore.artworkUrl(source) !== "" && Date.now() < errorDeadline) return
+                    check(ShellStore.artworkUrl(source) === "", "repeated cached-file Image.Error did not invalidate")
+                    const retry = ShellStore.artworkRetrySources[source]
+                    check(retry && retry.failures === 2 && retry.nextAt > Date.now() + 50000,
+                        "repeated cached-file errors lost exponential backoff")
+                    check(requests().length === 1, "repeated cached-file errors entered a resolve loop")
+                    retry.nextAt = 0
+                    ShellStore.retryVisibleArtwork(Date.now())
+                    check(requests().length === 2, "second eviction retry was not bounded")
+                    client.responseReceived(requests()[1].id, {cached:false})
+                    check(ShellStore.artworkRetrySources[source].failures === 3, "eviction retry lost exponential backoff")
+                    card.visible = false
+                    check(!ShellStore.artworkInterests[source] && !ShellStore.artworkRetrySources[source],
+                        "hidden evicted artwork retained retry work")
+                    ShellStore.retryVisibleArtwork(Date.now() + 3600000)
+                    check(requests().length === 2, "hidden evicted artwork kept resolving")
+                    card.visible = true
+                    check(requests().length === 3, "reacquired evicted artwork did not resolve")
+                    client.responseReceived(requests()[2].id, {cached:true, artworkUrl:recovered})
+                    phase = 4
+                } else if (phase === 4) {
+                    if (image.status !== Image.Ready) return
+                    check(String(image.source) === recovered, "reacquired artwork did not display the replacement PNG")
+                    check(!ShellStore.artworkRetrySources[source], "successful artwork kept retry work")
+                    ShellStore.reportArtworkLoad(source, cached, true)
+                    check(ShellStore.artworkUrl(source) === recovered, "stale image error invalidated recovered artwork")
+                    check(requests().length === 3, "recovered artwork entered a resolve loop")
+                    card.destroy()
+                    state.passed = true
+                    timer.stop()
+                }
+            } catch (error) {
+                state.error = String(error)
+                timer.stop()
+            }
+        })
+        timer.start()
     }
 
     function prepareAppearance(screen, genreMenu) {
@@ -336,7 +470,8 @@ QtObject {
         ShellStore.storeGames = preview
         ShellStore.storeHasMore = false
         ShellStore.storeError = ""
-        ShellStore.storeWarning = ""
+        ShellStore.catalogOwnerState.storeCoverageWarning = ""
+        ShellStore.catalogOwnerState.storePresentationErrors = ({})
         ShellStore.applySetting("desktopRailCollapsed", false)
         ShellStore.authSession = {user:{userId:"store-fixture", displayName:"A very long account display name"}}
         check(screen.storeOptions.length === 10, "store choices were truncated")

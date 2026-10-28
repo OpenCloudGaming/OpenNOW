@@ -1,13 +1,31 @@
 #include "streaming/rendering/LinuxVulkanGraphics.h"
 
 #if defined(Q_OS_LINUX) && QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
+#include <QGuiApplication>
+#include <QPlatformSurfaceEvent>
 #include <QQuickGraphicsDevice>
 #include <QQuickWindow>
 #include <QSGRendererInterface>
+#include <private/qquickwindow_p.h>
+#include <private/qsgrenderloop_p.h>
 #include <rhi/qrhi_platform.h>
 #include <limits>
 
 namespace LinuxVulkanGraphics {
+namespace {
+void prepareWaylandSurfaceTeardown(QQuickWindow *window)
+{
+    if (!QGuiApplication::platformName().startsWith(QStringLiteral("wayland"))) return;
+    QObject::connect(window, &QWindow::visibleChanged, window, [window](bool visible) {
+        if (visible) return;
+        auto *renderLoop = QQuickWindowPrivate::get(window)->windowManager;
+        if (!renderLoop) return;
+        QPlatformSurfaceEvent event(QPlatformSurfaceEvent::SurfaceAboutToBeDestroyed);
+        renderLoop->eventFilter(window, &event);
+    });
+}
+}
+
 Device::Device() : Device(Api{}) {}
 
 Device::Device(Api api) : m_api(api) {}
@@ -152,6 +170,7 @@ bool Device::adopt(QQuickWindow *window)
         reinterpret_cast<VkPhysicalDevice>(m_info.physical_device),
         reinterpret_cast<VkDevice>(m_info.device), int(m_info.graphics_queue_family_index),
         int(m_info.graphics_queue_index)));
+    prepareWaylandSurfaceTeardown(window);
     return true;
 }
 
@@ -176,6 +195,7 @@ bool Device::adoptFallback(QQuickWindow *window)
         }
     }
     window->setVulkanInstance(&m_instance);
+    prepareWaylandSurfaceTeardown(window);
     m_lastError.clear();
     return true;
 }

@@ -153,10 +153,12 @@ FocusScope {
                 font.letterSpacing: 2
             }
             Text {
+                objectName: "consoleChoiceTitle"
                 width: parent.width
                 height: 44
                 verticalAlignment: Text.AlignVCenter
                 text: root.title !== "" ? root.title : qsTr("Choose a value")
+                textFormat: Text.PlainText
                 color: Theme.label
                 elide: Text.ElideRight
                 font.family: Theme.displayFont
@@ -170,9 +172,11 @@ FocusScope {
                 height: Math.max(1, descriptionText.lineCount) * 22
                 Text {
                     id: descriptionText
+                    objectName: "consoleChoiceDescription"
                     y: -1
                     width: parent.width
                     text: root.description
+                    textFormat: Text.PlainText
                     color: Theme.textMuted
                     wrapMode: Text.WordWrap
                     maximumLineCount: 3

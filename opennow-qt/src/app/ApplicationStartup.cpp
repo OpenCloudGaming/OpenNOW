@@ -35,8 +35,10 @@
 #include <QSGRendererInterface>
 #include <QFileOpenEvent>
 #include <QProcess>
+#include <QPointer>
 
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <thread>
 
@@ -110,6 +112,14 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     QGuiApplication::setOrganizationName(u"OpenCloudGaming"_s);
     QGuiApplication::setOrganizationDomain(u"opennow.app"_s);
     QGuiApplication::setApplicationVersion(QString::fromLatin1(OPENNOW_VERSION));
+    for (int index = 1; index < argc; ++index) {
+        if (QString::fromLocal8Bit(argv[index]) != u"--request-quit"_s) continue;
+        QCoreApplication requestApplication(argc, argv);
+        if (requestApplication.arguments().size() != 2) return EXIT_FAILURE;
+        const auto result = SingleInstance::requestQuit();
+        if (result == EXIT_SUCCESS) std::puts("opennow-quit-complete");
+        return result;
+    }
 #ifdef Q_OS_WIN
     QQuickWindow::setDefaultAlphaBuffer(false);
 #else
@@ -352,6 +362,10 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     engine.loadFromModule(u"OpenNOW"_s, u"Main"_s);
     auto *rootWindow = engine.rootObjects().isEmpty() ? nullptr
         : qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+    if (!WindowTheme::prepareWindow(rootWindow)) {
+        qCritical("Could not establish window decoration ownership before native surface creation");
+        return EXIT_FAILURE;
+    }
     if (!graphicsDevices.applyTo(rootWindow)) {
         qCritical("Could not select the graphics adapter before scene-graph initialization");
         return EXIT_FAILURE;
@@ -403,7 +417,9 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
                          if (engine.rootObjects().isEmpty()) return;
                          auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
                          if (!window) return;
-                         window->show();
+                         if (window->visibility() == QWindow::Minimized)
+                             window->setWindowStates(window->windowStates() & ~Qt::WindowMinimized);
+                         if (!window->isVisible()) window->show();
                          window->raise();
                          window->requestActivate();
                      });
@@ -412,6 +428,19 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
                          controller.activationRequested();
                          controller.handleArguments(forwardedArguments);
                      });
+    const QPointer<QQuickWindow> quitWindow(rootWindow);
+    QObject::connect(&singleInstance, &SingleInstance::quitRequested,
+                     &application, [&controller, quitWindow] {
+                         controller.activateWindow();
+                         if (quitWindow) QMetaObject::invokeMethod(quitWindow, "requestSessionQuit");
+                     });
+    QObject::connect(&singleInstance, &SingleInstance::quitRequestAbandoned,
+                     &application, [quitWindow] {
+                         if (quitWindow) QMetaObject::invokeMethod(quitWindow, "cancelSessionQuit");
+                     });
+    if (rootWindow)
+        QObject::connect(rootWindow, SIGNAL(sessionQuitCancelled()),
+                         &singleInstance, SLOT(cancelQuitRequest()));
 
     if (acceptance.measureStartup(startupTimer, qmlReadyMs) != EXIT_SUCCESS)
         return EXIT_FAILURE;
@@ -421,6 +450,11 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     if (acceptance.startWorkload() != EXIT_SUCCESS) return EXIT_FAILURE;
 
     const auto exitCode = application.exec();
+    auto *qmlCoreClient = engine.rootContext()->contextProperty(u"CoreClient"_s).value<QObject *>();
+    const auto requestedQuitCompleted = rootWindow && rootWindow->property("sessionQuitStopping").toBool()
+        && rootWindow->property("applicationCloseConfirmed").toBool()
+        && qmlCoreClient && qmlCoreClient->property("allocationsSettled").toBool()
+        && engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s)->property("sessionWorkIdle").toBool();
     armTeardownDeadline(exitCode);
     coreClient.stop();
 #ifdef OPENNOW_EMBEDDED_STREAMER
@@ -430,8 +464,10 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     if (!nativeStreamRuntime.shutdown()) {
         qWarning("Could not complete embedded streamer shutdown: %s",
                  qUtf8Printable(nativeStreamRuntime.lastError()));
+        return EXIT_FAILURE;
     }
 #endif
+    if (exitCode == EXIT_SUCCESS && requestedQuitCompleted) singleInstance.finishQuitRequest();
     return exitCode;
 }
 

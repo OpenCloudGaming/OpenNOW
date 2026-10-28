@@ -1,4 +1,4 @@
-import { ConfirmModal, Navigation, showModal, sleep } from "@decky/ui";
+import { ConfirmModal, Navigation, Router, showModal, sleep } from "@decky/ui";
 import { toaster } from "@decky/api";
 import { backend, CatalogGame, CatalogVariant, PluginState } from "./backend";
 import * as steam from "./steam";
@@ -48,20 +48,6 @@ export async function launchOpenNOW() {
   steam.launch(launcher);
 }
 
-function confirmEndSession(title: string, okText: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    showModal(
-      <ConfirmModal
-        strTitle={title}
-        strDescription="The game you're streaming in OpenNOW will end."
-        strOKButtonText={okText}
-        onOK={() => resolve(true)}
-        onCancel={() => resolve(false)}
-      />,
-    );
-  });
-}
-
 function chooseOpenGame(title: string): Promise<"resume" | "restart" | "cancel"> {
   return new Promise((resolve) => {
     showModal(
@@ -81,34 +67,34 @@ function chooseOpenGame(title: string): Promise<"resume" | "restart" | "cancel">
 const EXIT_TIMEOUT_MS = 15000;
 const START_TIMEOUT_MS = 30000;
 
-async function stopOpenNOW() {
+async function stopOpenNOW(): Promise<boolean> {
   const state = store.get().state;
   const running = state ? runningShortcut(state) : null;
-  if (running !== null) steam.terminate(running);
-  await backend.closeOpenNOW();
+  if (running !== null) Router.NavigateToRunningApp(false);
+  Navigation.CloseSideMenus();
+  if (!(await backend.closeOpenNOW())) return false;
   if (running !== null && !(await steam.waitForExit(running, EXIT_TIMEOUT_MS))) {
     throw new Error("OpenNOW didn't close. Try again.");
   }
   await refresh();
   if (store.get().status?.running) throw new Error("OpenNOW didn't close. Try again.");
-}
-
-async function endSessionFor(title: string): Promise<boolean> {
-  const state = store.get().state;
-  if ((state ? runningShortcut(state) : null) === null && !store.get().status?.running) return true;
-  if (!(await confirmEndSession("Switch to " + title + "?", "Switch game"))) return false;
-  await stopOpenNOW();
   return true;
 }
 
-export async function launchGame(appId: number, title: string) {
+async function endSessionFor(): Promise<boolean> {
+  const state = store.get().state;
+  if ((state ? runningShortcut(state) : null) === null && !store.get().status?.running) return true;
+  return stopOpenNOW();
+}
+
+export async function launchGame(appId: number) {
   await refresh();
   const state = store.get().state;
   if (state && runningShortcut(state) === appId) {
     Navigation.CloseSideMenus();
     return;
   }
-  if (await endSessionFor(title)) steam.launch(appId);
+  if (await endSessionFor()) steam.launch(appId);
 }
 
 export async function playOnOpenNOW(game: CatalogGame, variant: CatalogVariant) {
@@ -121,8 +107,8 @@ export async function playOnOpenNOW(game: CatalogGame, variant: CatalogVariant) 
       steam.launch(launcher);
       return;
     }
-    await stopOpenNOW();
-  } else if (!(await endSessionFor(shortcutName(game, variant)))) return;
+    if (!(await stopOpenNOW())) return;
+  } else if (!(await endSessionFor())) return;
   steam.applyLaunchCommand(launcher, LAUNCHER_NAME, await backend.launchCommand(variant.id, game.title));
   try {
     steam.launch(launcher);
@@ -136,7 +122,7 @@ export async function playOnOpenNOW(game: CatalogGame, variant: CatalogVariant) 
 }
 
 export async function closeOpenNOW() {
-  if (await confirmEndSession("Close OpenNOW?", "Close OpenNOW")) await stopOpenNOW();
+  await stopOpenNOW();
 }
 
 export function shortcutName(game: CatalogGame, variant: CatalogVariant): string {

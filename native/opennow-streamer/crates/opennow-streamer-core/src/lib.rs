@@ -40,6 +40,8 @@ mod nvst_rtsp;
 mod queue_drops;
 #[cfg(test)]
 mod recording_tests;
+mod signaling_io;
+mod startup;
 mod telemetry;
 mod webrtc;
 
@@ -47,11 +49,12 @@ use microphone::MicrophoneController;
 
 use nvst_rtsp::{ActiveNvstRtspSession, prepare_owned_nvst};
 use queue_drops::QueueDropReports;
-use telemetry::{TELEMETRY_INTERVAL, media_telemetry};
+use telemetry::{MouseInputTimings, TELEMETRY_INTERVAL, media_telemetry};
 
 pub use opennow_streamer_transport::presentation_timing;
 pub use opennow_streamer_transport::{EncodedMediaFrame, MediaConsumer};
 use presentation_timing::PresentationTimingState;
+pub use startup::{EngineCancellation, StartupToken};
 
 #[derive(Clone)]
 pub struct EventSender {
@@ -172,7 +175,7 @@ trait NvstSessionResources {
         text: opennow_streamer_protocol::text_input::UnicodeText,
         timestamp_us: u64,
     ) -> Result<(), TransportError>;
-    fn apply_cursor(&self, bytes: Vec<u8>);
+    fn apply_cursor(&self, start_id: String, bytes: Vec<u8>);
     fn recover(&self) -> Result<(), String>;
     fn stop(&self);
 }
@@ -245,9 +248,9 @@ impl NvstSessionResources for ActiveNvstResources {
         self.bundle.queue_text(text, timestamp_us)
     }
 
-    fn apply_cursor(&self, bytes: Vec<u8>) {
+    fn apply_cursor(&self, start_id: String, bytes: Vec<u8>) {
         if let Some(media) = self.media.as_ref() {
-            media.update_cursor(bytes);
+            media.update_cursor(start_id, bytes);
         }
     }
 
@@ -278,6 +281,7 @@ impl NvstSessionResources for ActiveNvstResources {
 
 pub struct Engine {
     presentation: Arc<PresentationTimingState>,
+    cancellation: EngineCancellation,
     lifecycle: Arc<Mutex<Lifecycle>>,
     webrtc_session: Option<webrtc::OwnedSession>,
     nvst_transport: Option<NvstUdpReceiverSession>,
@@ -341,6 +345,7 @@ impl Engine {
     pub fn with_event_sender(events: EventSender) -> Self {
         Self {
             presentation: Arc::new(PresentationTimingState::default()),
+            cancellation: EngineCancellation::default(),
             lifecycle: Arc::new(Mutex::new(Lifecycle {
                 state: State::Idle,
                 context: None,
@@ -383,6 +388,7 @@ impl Engine {
     ) -> Self {
         Self {
             presentation: Arc::new(PresentationTimingState::default()),
+            cancellation: EngineCancellation::default(),
             lifecycle: Arc::new(Mutex::new(Lifecycle {
                 state: State::Idle,
                 context: None,
@@ -421,6 +427,7 @@ impl Engine {
     ) -> Self {
         Self {
             presentation: Arc::new(PresentationTimingState::default()),
+            cancellation: EngineCancellation::default(),
             lifecycle: Arc::new(Mutex::new(Lifecycle {
                 state: State::Idle,
                 context: None,
@@ -469,6 +476,19 @@ impl Engine {
     }
 
     pub fn handle(&mut self, command: Command) -> (Vec<Value>, bool) {
+        let token = self.cancellation.token();
+        self.handle_with_startup_token(command, token)
+    }
+
+    pub fn set_cancellation(&mut self, cancellation: EngineCancellation) {
+        self.cancellation = cancellation;
+    }
+
+    pub fn handle_with_startup_token(
+        &mut self,
+        command: Command,
+        token: StartupToken,
+    ) -> (Vec<Value>, bool) {
         let summary = opennow_streamer_protocol::log::message_summary(&json!({
             "id": &command.id, "type": &command.kind
         }));
@@ -486,7 +506,7 @@ impl Engine {
             "nvst-bind" => self.nvst_bind(command),
             "nvst-unbind" => self.nvst_unbind(command),
             "nvst-send" => self.nvst_send(command),
-            "start" => self.start(command),
+            "start" => self.start(command, token),
             "input-paused" => self.set_paused(command),
             "surface" => self.update_surface(command),
             "stats-toggle" => Ok(vec![
@@ -758,7 +778,14 @@ impl Engine {
         Ok(vec![response])
     }
 
-    fn start(&mut self, command: Command) -> Result<Vec<Value>, Value> {
+    fn start(&mut self, command: Command, token: StartupToken) -> Result<Vec<Value>, Value> {
+        if token.is_cancelled() {
+            return Err(error(
+                Some(&command.id),
+                "nvst-start-aborted",
+                "Session startup was cancelled before dispatch",
+            ));
+        }
         let mut context = parse_context(command.context, &command.id)?;
         validate_context(&context, &command.id)?;
         let audio_device =
@@ -825,7 +852,7 @@ impl Engine {
                     .reserved_nvst_bundle
                     .as_mut()
                     .expect("NVST reservation created above");
-                let result = prepare_owned_nvst(&context, bundle);
+                let result = prepare_owned_nvst(&context, bundle, token.clone());
                 if result.is_ok() {
                     stage.complete();
                 }
@@ -1175,6 +1202,7 @@ impl Engine {
         if let Some(prepared) = prepared_nvst {
             let readiness = nvst_rtsp::wait_authenticated_transport(
                 || {
+                    prepared.check_startup()?;
                     let lifecycle = lock_lifecycle(&self.lifecycle);
                     if lifecycle.generation != generation || lifecycle.state != State::Connected {
                         return Err(nvst_rtsp::NvstRtspError {
@@ -1201,6 +1229,14 @@ impl Engine {
             match prepared.finish() {
                 Ok(active) => {
                     self.nvst_rtsp = Some(active);
+                    if token.is_cancelled() {
+                        self.stop("NVST startup was cancelled");
+                        return Err(error(
+                            Some(&command.id),
+                            "nvst-start-aborted",
+                            "NVST startup was cancelled",
+                        ));
+                    }
                     if nvst_upstream_ready
                         .take()
                         .is_some_and(|ready| ready.try_send(()).is_err())
@@ -2075,7 +2111,7 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
                         continue;
                     }
                     if let Err(error) =
-                        forward_nvst_captured_sample(&resources, &input, &feedback_state)
+                        forward_nvst_captured_sample(&resources, &input, &mut feedback_state)
                     {
                         if matches!(error, TransportError::InputNotReady) {
                             pending_input = Some(input);
@@ -2512,6 +2548,7 @@ fn forward_nvst_event<R: NvstSessionResources>(
                 "sessionAlive": termination.session_alive,
                 "extendedCode": termination.extended_code,
                 "resumable": resumable,
+                "disposition": termination.disposition(),
             });
             emit_nvst_terminal_with_termination(
                 output,
@@ -2524,7 +2561,7 @@ fn forward_nvst_event<R: NvstSessionResources>(
             )
         }
         NvstReceiveEvent::Cursor(bytes) => {
-            resources.apply_cursor(bytes);
+            resources.apply_cursor(pending_control_output.start_id.clone(), bytes);
             false
         }
         NvstReceiveEvent::CursorCapture(composited) => {
@@ -2712,6 +2749,7 @@ struct NvstMediaFeedbackState {
     recovery_attempts: usize,
     input_origin: Instant,
     input_available: bool,
+    mouse_input_timings: MouseInputTimings,
     telemetry_window_started: Instant,
     telemetry_frames: u64,
     telemetry_bytes: u64,
@@ -2733,6 +2771,7 @@ impl NvstMediaFeedbackState {
             recovery_attempts: 0,
             input_origin: Instant::now(),
             input_available,
+            mouse_input_timings: MouseInputTimings::default(),
             telemetry_window_started: Instant::now(),
             telemetry_frames: 0,
             telemetry_bytes: 0,
@@ -2757,6 +2796,9 @@ fn flush_nvst_telemetry<R: NvstSessionResources>(
     let elapsed = state.telemetry_window_started.elapsed();
     if elapsed < TELEMETRY_INTERVAL {
         return;
+    }
+    if let Some(report) = state.mouse_input_timings.take_report() {
+        opennow_streamer_protocol::log::log_async("INFO", "input-timing", &report.to_string());
     }
     let mut payload = media_telemetry(
         elapsed,
@@ -3015,7 +3057,7 @@ fn forward_nvst_captured_input<R: NvstSessionResources>(
 fn forward_nvst_captured_sample<R: NvstSessionResources>(
     resources: &R,
     sample: &CapturedInputSample,
-    state: &NvstMediaFeedbackState,
+    state: &mut NvstMediaFeedbackState,
 ) -> Result<(), TransportError> {
     if matches!(
         sample.input,
@@ -3037,7 +3079,9 @@ fn forward_nvst_captured_sample<R: NvstSessionResources>(
     if let CapturedInput::Text(text) = &sample.input {
         return resources.send_captured_text(text.clone(), timestamp_us);
     }
-    resources.send_captured_input(captured_input_packet(sample.input.clone(), timestamp_us))
+    resources.send_captured_input(captured_input_packet(sample.input.clone(), timestamp_us))?;
+    state.mouse_input_timings.record(sample, Instant::now());
+    Ok(())
 }
 
 fn mouse_settings_packet(settings: MouseSettings, state: &NvstMediaFeedbackState) -> Vec<u8> {
@@ -3900,7 +3944,7 @@ mod tests {
             Ok(())
         }
 
-        fn apply_cursor(&self, _bytes: Vec<u8>) {}
+        fn apply_cursor(&self, _start_id: String, _bytes: Vec<u8>) {}
 
         fn send_captured_text(
             &self,
@@ -4946,7 +4990,7 @@ mod tests {
                 },
                 captured_at: input_origin + Duration::from_micros(4_242),
             },
-            &state,
+            &mut state,
         )
         .expect("captured input");
 
@@ -5135,7 +5179,7 @@ mod tests {
     fn captured_unicode_text_uses_typed_transport_without_key_expansion() {
         use opennow_streamer_protocol::text_input::TextInputSlot;
         let resources = TestNvstResources::default();
-        let state = NvstMediaFeedbackState::new(true);
+        let mut state = NvstMediaFeedbackState::new(true);
         let text = TextInputSlot::default()
             .submit("é世界🦫".as_bytes())
             .unwrap();
@@ -5145,7 +5189,7 @@ mod tests {
                 input: CapturedInput::Text(text),
                 captured_at: state.input_origin,
             },
-            &state,
+            &mut state,
         )
         .unwrap();
         assert_eq!(
@@ -6424,6 +6468,71 @@ mod tests {
             error["message"],
             "NVST receiver stopped unexpectedly (cause=input-delivery-failed)"
         );
+    }
+
+    #[test]
+    fn captured_mouse_queue_delay_reaches_the_native_log() {
+        let _sink = LOG_SINK_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let path =
+            std::env::temp_dir().join(format!("opennow-input-timing-{}.log", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        opennow_streamer_protocol::log::set_log_file(path.to_str().unwrap()).unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = EventSender::unbounded(sender);
+        let resources = TestNvstResources {
+            input_not_ready: Arc::new(AtomicUsize::new(1)),
+            ..TestNvstResources::default()
+        };
+        let mut state = NvstMediaFeedbackState::new(true);
+        let sample = CapturedInputSample {
+            input: CapturedInput::MouseMove {
+                delta_x: 123,
+                delta_y: -456,
+            },
+            captured_at: Instant::now() - Duration::from_millis(20),
+        };
+        assert!(matches!(
+            forward_nvst_captured_sample(&resources, &sample, &mut state),
+            Err(TransportError::InputNotReady)
+        ));
+        forward_nvst_captured_sample(&resources, &sample, &mut state).unwrap();
+        state.telemetry_window_started = Instant::now() - Duration::from_secs(1);
+        flush_nvst_telemetry(&sender, &resources, &mut state);
+        assert_eq!(receiver.recv().unwrap()["type"], "telemetry");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let log = loop {
+            let log = std::fs::read_to_string(&path).unwrap();
+            if log.contains("INFO input-timing ") || Instant::now() >= deadline {
+                break log;
+            }
+            thread::sleep(Duration::from_millis(5));
+        };
+        let report: Value = serde_json::from_str(
+            log.lines()
+                .find_map(|line| {
+                    line.split_once("INFO input-timing ")
+                        .map(|(_, report)| report)
+                })
+                .expect("capture-to-transport-submission timing report"),
+        )
+        .unwrap();
+        assert_eq!(report["relative"]["submitted"], 1);
+        assert_eq!(report["relative"]["windowSamples"], 1);
+        assert!(
+            report["relative"]["captureToTransportSubmitMs"]["p50"]
+                .as_f64()
+                .unwrap()
+                >= 20.0
+        );
+        assert_eq!(report["absolute"], Value::Null);
+        assert_eq!(report.as_object().unwrap().len(), 2);
+        assert_eq!(report["relative"].as_object().unwrap().len(), 3);
+        state.telemetry_window_started = Instant::now() - Duration::from_secs(1);
+        flush_nvst_telemetry(&sender, &resources, &mut state);
+        assert!(state.mouse_input_timings.take_report().is_none());
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

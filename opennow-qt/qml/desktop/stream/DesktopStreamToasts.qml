@@ -33,6 +33,7 @@ Column {
     property real antiAfkLifetime: 0
     width: Math.min(384, parent ? Math.max(0, parent.width - 48) : 384)
     spacing: 12
+    property real maximumHeight: Infinity
     readonly property var pendingStack: [
         antiAfkNotice ? antiAfkToast : null,
         decoderNotice ? decoderToast : null,
@@ -43,12 +44,20 @@ Column {
         connectionNotificationsEnabled && lossNotice ? lossToast : null
     ].filter(notice => notice !== null)
     readonly property int pendingNotices: pendingStack.length
-    // The gate reserves what the notices that are showing actually paint. Summing the pending
-    // notices keeps a tall notice from reserving its height for the others, which is what makes a
-    // wrapped notice honest: it reserves the wrapped height only while it is the one on screen.
-    readonly property real stackHeight: pendingStack.length === 0 ? 0
-        : pendingStack.reduce((total, notice) => total + notice.height, 0)
-            + spacing * (pendingStack.length - 1)
+    readonly property var displayedStack: {
+        const notices = []
+        let usedHeight = 0
+        for (const notice of pendingStack) {
+            const nextHeight = usedHeight + (notices.length > 0 ? spacing : 0) + notice.height
+            if (nextHeight > maximumHeight) continue
+            notices.push(notice)
+            usedHeight = nextHeight
+        }
+        return notices
+    }
+    readonly property real stackHeight: displayedStack.length === 0 ? 0
+        : displayedStack.reduce((total, notice) => total + notice.height, 0)
+            + spacing * (displayedStack.length - 1)
 
     function reset() {
         controllerAnimation.stop()
@@ -96,16 +105,29 @@ Column {
             lossNotice = false
             return
         }
-        if (!visible) return
-        if (!health.claimNotice()) return
+        if (!visible || (!lossNotice && !health.canClaimNotice())) return
         lossNotice = true
+        presentLossNotice()
+    }
+
+    function presentLossNotice() {
+        if (!lossNotice || !lossToast.visible || lossAnimation.running) return
+        if (!health.claimNotice()) {
+            lossNotice = false
+            return
+        }
         lossAnimation.restart()
     }
 
     function observeDecoder() {
         if (!active || !visible || !health.decoderLimited || decoderNoticeSessionId === sessionId) return
-        decoderNoticeSessionId = sessionId
         decoderNotice = true
+        presentDecoderNotice()
+    }
+
+    function presentDecoderNotice() {
+        if (!decoderToast.visible || decoderNoticeSessionId === sessionId) return
+        decoderNoticeSessionId = sessionId
         decoderAnimation.restart()
     }
 
@@ -125,7 +147,7 @@ Column {
     }
 
     function presentColorNotice() {
-        if (!visible || !colorNotice || ShellStore.streamColorNoticeShown) return
+        if (!colorToast.visible || ShellStore.streamColorNoticeShown) return
         ShellStore.streamColorNoticeShown = true
         colorAnimation.restart()
     }
@@ -138,7 +160,7 @@ Column {
     }
 
     function presentHdrNotice() {
-        if (!visible || !hdrNotice || ShellStore.streamHdrNoticeShown) return
+        if (!hdrToast.visible || ShellStore.streamHdrNoticeShown) return
         if (!ShellStore.claimHdrNotice(hdrDowngrade)) {
             hdrNotice = false
             return
@@ -184,9 +206,10 @@ Column {
         }
     }
     function syncLifetimeRunning() {
-        for (const animation of [controllerAnimation, lossAnimation, decoderAnimation, bugReportAnimation,
-                antiAfkAnimation, hdrAnimation, colorAnimation]) {
-            if (visible) {
+        for (const [notice, animation] of [[controllerToast, controllerAnimation], [lossToast, lossAnimation],
+                [decoderToast, decoderAnimation], [bugReportToast, bugReportAnimation],
+                [antiAfkToast, antiAfkAnimation], [hdrToast, hdrAnimation], [colorToast, colorAnimation]]) {
+            if (notice.visible) {
                 if (animation.paused) animation.resume()
             } else if (animation.running && !animation.paused) {
                 animation.pause()
@@ -195,9 +218,11 @@ Column {
     }
     onVisibleChanged: {
         syncLifetimeRunning()
+        observeTelemetry()
         observeDecoder()
         presentColorNotice()
         presentHdrNotice()
+        presentLossNotice()
     }
     onSessionIdChanged: reset()
     Component.onCompleted: {
@@ -215,49 +240,57 @@ Column {
         target: root; property: "controllerLifetime"
         from: 1; to: 0; duration: 4000
         onFinished: root.controllerNotice = null
+        onRunningChanged: root.syncLifetimeRunning()
     }
     NumberAnimation {
         id: lossAnimation
         target: root; property: "lossLifetime"
         from: 1; to: 0; duration: 4000
         onFinished: root.lossNotice = false
+        onRunningChanged: root.syncLifetimeRunning()
     }
     NumberAnimation {
         id: decoderAnimation
         target: root; property: "decoderLifetime"
         from: 1; to: 0; duration: 8000
         onFinished: root.decoderNotice = false
+        onRunningChanged: root.syncLifetimeRunning()
     }
     NumberAnimation {
         id: bugReportAnimation
         target: root; property: "bugReportLifetime"
         from: 1; to: 0; duration: 5000
         onFinished: root.bugReportNotice = false
+        onRunningChanged: root.syncLifetimeRunning()
     }
     NumberAnimation {
         id: antiAfkAnimation
         target: root; property: "antiAfkLifetime"
         from: 1; to: 0; duration: 4000
         onFinished: root.antiAfkNotice = false
+        onRunningChanged: root.syncLifetimeRunning()
     }
     NumberAnimation {
         id: hdrAnimation
         target: root; property: "hdrLifetime"
         from: 1; to: 0; duration: 4000
         onFinished: root.hdrNotice = false
+        onRunningChanged: root.syncLifetimeRunning()
     }
     NumberAnimation {
         id: colorAnimation
         target: root; property: "colorLifetime"
         from: 1; to: 0; duration: 4000
         onFinished: root.colorNotice = false
+        onRunningChanged: root.syncLifetimeRunning()
     }
 
     DesktopStreamToast {
         id: antiAfkToast
         objectName: "streamAntiAfkToast"
         width: root.width
-        visible: root.active && root.antiAfkNotice
+        visible: root.active && root.displayedStack.indexOf(antiAfkToast) >= 0
+        onVisibleChanged: root.syncLifetimeRunning()
         formatNotice: true
         title: ShellStore.antiAfkEnabled ? qsTr("Anti-AFK on") : qsTr("Anti-AFK off")
         subtitle: ShellStore.antiAfkEnabled
@@ -270,7 +303,11 @@ Column {
         id: decoderToast
         objectName: "streamDecoderLimitedToast"
         width: root.width
-        visible: root.active && root.decoderNotice && !ShellStore.streamerStopExpected
+        visible: root.active && root.displayedStack.indexOf(decoderToast) >= 0 && !ShellStore.streamerStopExpected
+        onVisibleChanged: {
+            root.syncLifetimeRunning()
+            root.presentDecoderNotice()
+        }
         warning: true
         formatNotice: true
         title: qsTr("Decoder can't keep up")
@@ -282,7 +319,11 @@ Column {
         id: colorToast
         objectName: "streamColorFormatToast"
         width: root.width
-        visible: root.active && root.colorNotice && !ShellStore.streamerStopExpected
+        visible: root.active && root.displayedStack.indexOf(colorToast) >= 0 && !ShellStore.streamerStopExpected
+        onVisibleChanged: {
+            root.syncLifetimeRunning()
+            root.presentColorNotice()
+        }
         formatNotice: true
         title: qsTr("Stream color format changed")
         subtitle: !root.colorFormat ? "" : (root.colorFormat.source === "server"
@@ -297,7 +338,11 @@ Column {
         id: hdrToast
         objectName: "streamHdrDowngradeToast"
         width: root.width
-        visible: root.active && root.hdrNotice && !ShellStore.streamerStopExpected
+        visible: root.active && root.displayedStack.indexOf(hdrToast) >= 0 && !ShellStore.streamerStopExpected
+        onVisibleChanged: {
+            root.syncLifetimeRunning()
+            Qt.callLater(root.presentHdrNotice)
+        }
         formatNotice: true
         title: qsTr("Streaming in SDR")
         subtitle: qsTr("%1 doesn't support HDR. Your HDR setting stays on.")
@@ -309,7 +354,8 @@ Column {
         id: bugReportToast
         objectName: "streamBugReportToast"
         width: root.width
-        visible: root.active && root.bugReportNotice && root.bugReport !== null
+        visible: root.active && root.displayedStack.indexOf(bugReportToast) >= 0
+        onVisibleChanged: root.syncLifetimeRunning()
         formatNotice: true
         title: !root.bugReport ? "" : root.bugReport.kind === "frame_drops"
             ? qsTr("Frame drops reported to the developer")
@@ -322,7 +368,8 @@ Column {
         id: controllerToast
         objectName: "streamControllerToast"
         width: root.width
-        visible: root.active && root.connectionNotificationsEnabled && root.controllerNotice !== null
+        visible: root.active && root.displayedStack.indexOf(controllerToast) >= 0
+        onVisibleChanged: root.syncLifetimeRunning()
         title: qsTr("Controller connected")
         subtitle: root.controllerNotice
             ? root.controllerNotice.name + " · " + qsTr("Player %1").arg(root.controllerNotice.slot) : ""
@@ -341,7 +388,11 @@ Column {
         id: lossToast
         objectName: "streamPacketLossToast"
         width: root.width
-        visible: root.active && root.connectionNotificationsEnabled && root.lossNotice
+        visible: root.active && root.displayedStack.indexOf(lossToast) >= 0
+        onVisibleChanged: {
+            root.syncLifetimeRunning()
+            Qt.callLater(root.presentLossNotice)
+        }
         warning: true
         title: qsTr("Connection unstable")
         subtitle: root.lastLoss === null ? "" : qsTr("Packet loss · %1%").arg(Number(root.lastLoss).toFixed(1))

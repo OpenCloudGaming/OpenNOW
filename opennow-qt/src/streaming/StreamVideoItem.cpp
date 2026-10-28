@@ -2,11 +2,11 @@
 
 #include "input/platform/WaylandPointerCapture.h"
 #include "input/platform/MacPointerCapture.h"
+#include "input/platform/WindowsWindowMoveLoop.h"
 #include "streaming/NativeStreamRuntime.h"
 #include "streaming/rendering/NativeStreamRenderCallback.h"
 #include "streaming/rendering/StreamSenderPacer.h"
 
-#include <QCoreApplication>
 #include <QCursor>
 #include <QMetaObject>
 #include <QQmlEngine>
@@ -47,9 +47,9 @@ StreamVideoItem::StreamVideoItem(std::unique_ptr<MacPointerCapture> pointerCaptu
         if (m_captureActive && m_inputEnabled && m_relativeMouse && s_nativeRuntime)
             s_nativeRuntime->submitMouseRelative(x, y);
     });
-#if defined(Q_OS_WIN)
-    QCoreApplication::instance()->installNativeEventFilter(&m_nativeWindowMoveLoopFilter);
-#endif
+    m_windowsWindowMoveLoop = std::make_unique<WindowsWindowMoveLoop>(
+        [this] { return isVisible() && s_nativeRuntime && s_nativeRuntime->running(); },
+        [this](bool active) { setNativeWindowMoveLoop(active); });
     setFlag(ItemHasContents, true);
     setActiveFocusOnTab(true);
     setAcceptedMouseButtons(Qt::AllButtons);
@@ -112,6 +112,7 @@ StreamVideoItem::StreamVideoItem(std::unique_ptr<MacPointerCapture> pointerCaptu
         if (m_inputWindow) m_inputWindow->removeEventFilter(this);
         m_inputWindow = currentWindow;
         if (m_inputWindow) m_inputWindow->installEventFilter(this);
+        m_windowsWindowMoveLoop->setWindow(currentWindow);
         connectFrameSwaps();
         if (currentWindow) {
             connect(currentWindow, &QWindow::activeChanged,
@@ -138,6 +139,7 @@ StreamVideoItem::StreamVideoItem(std::unique_ptr<MacPointerCapture> pointerCaptu
 
 StreamVideoItem::~StreamVideoItem()
 {
+    m_windowsWindowMoveLoop.reset();
     disconnect(this, nullptr, this, nullptr);
     disconnect(m_frameSwapConnection);
     disconnect(m_frameUpdateConnection);

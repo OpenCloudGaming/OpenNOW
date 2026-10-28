@@ -165,6 +165,7 @@ struct NativeStreamRuntime::CallbackState final
         bool event = false;
         bool cursor = false;
         quint64 rumbleEpoch = 0;
+        QByteArray cursorStartId;
     };
 
     std::mutex mutex;
@@ -1046,11 +1047,14 @@ void NativeStreamRuntime::frameAvailableCallback(void *userData)
     enqueueFrameAvailable(static_cast<CallbackState *>(userData));
 }
 
-void NativeStreamRuntime::cursorCallback(const std::uint8_t *bytes, std::size_t length,
+void NativeStreamRuntime::cursorCallback(const std::uint8_t *startId, std::size_t startIdLength,
+                                         const std::uint8_t *bytes, std::size_t length,
                                          void *userData)
 {
     auto *state = static_cast<CallbackState *>(userData);
-    if (!state || (!bytes && length != 0)
+    if (!state || !startId || startIdLength == 0
+        || startIdLength > static_cast<std::size_t>(MaximumCallbackBytes)
+        || (!bytes && length != 0)
         || length > static_cast<std::size_t>(MaximumCallbackBytes)
         || length > static_cast<std::size_t>(std::numeric_limits<qsizetype>::max())) {
         return;
@@ -1067,13 +1071,24 @@ void NativeStreamRuntime::cursorCallback(const std::uint8_t *bytes, std::size_t 
         }
         state->pending.enqueue(
             {QByteArray(reinterpret_cast<const char *>(bytes),
-                        static_cast<qsizetype>(length)), false, true});
+                        static_cast<qsizetype>(length)), false, true, 0,
+             QByteArray(reinterpret_cast<const char *>(startId),
+                        static_cast<qsizetype>(startIdLength))});
         if (!state->drainScheduled) {
             state->drainScheduled = true;
             shouldSchedule = true;
         }
     }
     if (shouldSchedule) scheduleDrain(sharedState);
+}
+
+bool NativeStreamRuntime::isTerminalEvent(const QByteArray &payload)
+{
+    const auto object = QJsonDocument::fromJson(payload).object();
+    const auto type = object.value(u"type"_s).toString();
+    const auto status = object.value(u"status"_s).toString();
+    return type == u"error"_s
+        || (type == u"status"_s && (status == u"stopped"_s || status == u"error"_s));
 }
 
 void NativeStreamRuntime::enqueueCallback(CallbackState *state, const std::uint8_t *bytes,
@@ -1100,7 +1115,9 @@ void NativeStreamRuntime::enqueueCallback(CallbackState *state, const std::uint8
         if (!state->accepting) return;
         if (cursorCapture) {
             state->cursorCapture = payload;
-        } else if (state->pending.size() >= MaximumPendingCallbacks) {
+        } else if (state->pending.size() >= MaximumPendingCallbacks
+                   && (!event || state->pending.size() >= MaximumPendingCallbacks + TerminalCallbackReserve
+                       || !isTerminalEvent(payload))) {
             ++state->dropped;
             ++state->rumbleEpoch;
             return;
@@ -1197,6 +1214,8 @@ void NativeStreamRuntime::drainCallbacks(const std::shared_ptr<CallbackState> &s
         if (!current()) return;
         const auto message = messages.dequeue();
         if (message.cursor) {
+            if (!d->streamSessionActive || d->cursorStartId.isEmpty()
+                || message.cursorStartId != d->cursorStartId.toUtf8()) continue;
             emit cursorUpdated(message.bytes);
             continue;
         }

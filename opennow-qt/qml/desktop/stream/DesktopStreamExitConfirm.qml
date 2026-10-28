@@ -6,6 +6,7 @@ FocusScope {
     id: root
     property bool opened: false
     property bool quittingApplication: false
+    property bool endingSessionOnQuit: false
     property string switchTargetName: ""
     readonly property bool switchingAccount: switchTargetName !== ""
     readonly property color onDarkTitle: Theme.lightMode ? "#F6F3EE" : DesktopTokens.text
@@ -82,11 +83,12 @@ FocusScope {
             }
             Text {
                 objectName: "accountSwitchBody"
+                textFormat: Text.PlainText
                 width: parent.width
                 topPadding: 10
                 elide: Text.ElideRight
                 maximumLineCount: 3
-                text: root.quittingApplication
+                text: root.quittingApplication && !root.endingSessionOnQuit
                     ? qsTr("OpenNOW will close and disconnect from any active cloud session.")
                     : root.switchingAccount
                     ? (root.sessionTitle !== ""

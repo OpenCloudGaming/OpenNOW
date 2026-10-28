@@ -7,8 +7,12 @@
 <p align="center"><strong>An open-source desktop client for GeForce NOW.</strong></p>
 
 <p align="center">
-  <a href="https://github.com/OpenCloudGaming/OpenNOW/releases"><img src="https://img.shields.io/badge/Download-Desktop_builds-56E6A5?style=for-the-badge&labelColor=101916" alt="Download desktop builds" /></a>
-    <a href="https://play.google.com/store/apps/details?id=com.opencloudgaming.opennow"><img src="https://img.shields.io/badge/Download-Android_app-56E6A5?style=for-the-badge&labelColor=101916" alt="Download Android Build" /></a>
+  <a href="https://github.com/OpenCloudGaming/OpenNOW/releases">
+    <img src="https://img.shields.io/badge/Download-Desktop_builds-56E6A5?style=for-the-badge&logo=github&logoColor=white&labelColor=101916" alt="Download desktop builds" />
+  </a>
+  <a href="https://play.google.com/store/apps/details?id=com.opencloudgaming.opennow">
+    <img src="https://img.shields.io/badge/Download-Android_app-56E6A5?style=for-the-badge&logo=android&logoColor=white&labelColor=101916" alt="Download Android Build" />
+  </a>
   <a href="https://opennow.zortos.me"><img src="https://img.shields.io/badge/Read_the-Docs-FFFFFF?style=for-the-badge&labelColor=101916" alt="Read the documentation" /></a>
   <a href="https://discord.gg/8EJYaJcNfD"><img src="https://img.shields.io/badge/Join-Discord-5865F2?style=for-the-badge&labelColor=101916" alt="Join Discord" /></a>
 </p>

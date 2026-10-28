@@ -85,9 +85,11 @@ class MacOSReleaseTest(unittest.TestCase):
             shutil.copytree(self.copies[args[-2]], Path(args[-1]) / "OpenNOW.app", symlinks=True)
         elif args[0] == "ditto":
             shutil.copytree(args[-2], args[-1], symlinks=True)
-        elif args[:2] == ["hdiutil", "create"]:
-            Path(args[-1]).write_bytes(b"dmg fixture")
-            self.copies[args[-1]] = Path(args[args.index("-srcfolder") + 1]) / "OpenNOW.app"
+        elif args[0] == "cpack":
+            settings = dict(arg.split("=", 1) for arg in args if arg.startswith("CPACK_"))
+            dmg = Path(settings["CPACK_PACKAGE_DIRECTORY"]) / (settings["CPACK_PACKAGE_FILE_NAME"] + ".dmg")
+            dmg.write_bytes(b"dmg fixture")
+            self.copies[str(dmg)] = Path(settings["CPACK_INSTALLED_DIRECTORIES"].split(";")[0]) / "OpenNOW.app"
         elif args[:2] == ["hdiutil", "attach"]:
             shutil.copytree(self.copies[args[2]], Path(args[-1]) / "OpenNOW.app", symlinks=True)
         elif args[:3] == ["xcrun", "notarytool", "submit"]:

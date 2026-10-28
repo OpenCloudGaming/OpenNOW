@@ -98,6 +98,7 @@ jobs:
         include:
           - arch: x64
             runner: blacksmith-8vcpu-ubuntu-2404
+            build-parallel: 8
             qt_host: linux
             qt_arch: linux_gcc_64
             linuxdeploy_arch: x86_64
@@ -105,6 +106,7 @@ jobs:
             qt_plugin_sha256: 15106be885c1c48a021198e7e1e9a48ce9d02a86dd0a1848f00bdbf3c1c92724
           - arch: arm64
             runner: blacksmith-8vcpu-ubuntu-2404-arm
+            build-parallel: 8
             qt_host: linux_arm64
             qt_arch: linux_gcc_arm64
             linuxdeploy_arch: aarch64
@@ -143,16 +145,15 @@ jobs:
         run: sudo apt-get install -y libudev-dev
 
       - name: Cache Rust dependencies and build artifacts
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        uses: ./.github/actions/rust-build-cache
         with:
           shared-key: qt-ci-${{ matrix.runner }}-linux-${{ matrix.arch }}
-          cache-bin: false
-          cache-on-failure: true
           workspaces: |
             native/opennow-core -> target
             native/opennow-streamer -> target
             native/opennow-core -> ../../build/opennow-qt-release/rust-target
             native/opennow-core -> ../../build/opennow-qt-release/update-helper-rust-target
+            native/opennow-streamer -> ../../build/opennow-qt-release/peer-probe-rust-target
             native/opennow-streamer -> ../../build/opennow-qt-release/streamer-rust-target
 
       - name: Cache Qt C++ compilation
@@ -184,7 +185,7 @@ jobs:
             -DOPENNOW_BUILD_VERSION="$RELEASE_VERSION" \
             -DOPENNOW_UPDATE_ED25519_PUBLIC_KEY="$UPDATE_PUBLIC_KEY"
           cmake --build build/opennow-qt-release --config Release --parallel 6
-          ctest --test-dir build/opennow-qt-release -C Release --output-on-failure --parallel 4
+          ctest --test-dir build/opennow-qt-release -C Release --output-on-failure --parallel ${{ matrix.build-parallel }}
 
       - name: Build DEB and AppImage
         shell: bash
@@ -195,6 +196,7 @@ jobs:
           LINUXDEPLOY_ARCH: ${{ matrix.linuxdeploy_arch }}
           LINUXDEPLOY_SHA256: ${{ matrix.linuxdeploy_sha256 }}
           QT_PLUGIN_SHA256: ${{ matrix.qt_plugin_sha256 }}
+          APPIMAGE_RUNTIME_SHA256: ${{ matrix.arch == 'arm64' && '00cbdfcf917cc6c0ff6d3347d59e0ca1f7f45a6df1a428a0d6d8a78664d87444' || '2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d' }}
           PACKAGE_ARCH: ${{ matrix.arch }}
         run: |
           export LD_LIBRARY_PATH="$RUNNER_TEMP/SDL-install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
@@ -211,6 +213,11 @@ jobs:
             --output "build/linuxdeploy-plugin-qt-${LINUXDEPLOY_ARCH}.AppImage"
           echo "$LINUXDEPLOY_SHA256  build/linuxdeploy-${LINUXDEPLOY_ARCH}.AppImage" | sha256sum --check --strict
           echo "$QT_PLUGIN_SHA256  build/linuxdeploy-plugin-qt-${LINUXDEPLOY_ARCH}.AppImage" | sha256sum --check --strict
+          curl --fail --location --retry 5 --retry-all-errors --retry-max-time 300 \
+            --connect-timeout 20 --max-time 120 \
+            "https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-${LINUXDEPLOY_ARCH}" \
+            --output "build/appimage-runtime-${LINUXDEPLOY_ARCH}"
+          echo "$APPIMAGE_RUNTIME_SHA256  build/appimage-runtime-${LINUXDEPLOY_ARCH}" | sha256sum --check --strict
           chmod +x build/linuxdeploy-*.AppImage build/linuxdeploy-plugin-qt-*.AppImage
           install -Dm644 opennow-qt/packaging/opennow-vaapi-hook.sh \
             build/AppDir/apprun-hooks/opennow-vaapi-hook.sh
@@ -224,6 +231,7 @@ jobs:
           LDAI_UPDATE_INFORMATION=$(python3 opennow-qt/packaging/appimage_updates.py information \
             --channel stable --arch "$PACKAGE_ARCH")
           QMAKE="$QT_ROOT_DIR/bin/qmake" QML_SOURCES_PATHS="$PWD/opennow-qt/qml" \
+          LDAI_RUNTIME_FILE="$PWD/build/appimage-runtime-${LINUXDEPLOY_ARCH}" \
           OUTPUT="OpenNOW-Qt-${{ inputs.version }}-Linux-${{ matrix.arch }}.AppImage" \
             "build/linuxdeploy-${LINUXDEPLOY_ARCH}.AppImage" \
               --appdir build/AppDir \
@@ -385,16 +393,15 @@ jobs:
           cache-key-prefix: qt-target-windows-${{ matrix.arch }}
 
       - name: Cache Rust dependencies and build artifacts
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        uses: ./.github/actions/rust-build-cache
         with:
           shared-key: qt-ci-blacksmith-8vcpu-windows-2025-windows-${{ matrix.arch }}
-          cache-bin: false
-          cache-on-failure: true
           workspaces: |
             native/opennow-core -> target
             native/opennow-streamer -> target
             native/opennow-core -> ../../build/opennow-qt-release/rust-target
             native/opennow-core -> ../../build/opennow-qt-release/update-helper-rust-target
+            native/opennow-streamer -> ../../build/opennow-qt-release/peer-probe-rust-target
             native/opennow-streamer -> ../../build/opennow-qt-release/streamer-rust-target
 
       - name: Cache Qt C++ compilation
@@ -581,16 +588,15 @@ jobs:
           cache-key-prefix: qt-target-macos-${{ matrix.arch }}
 
       - name: Cache Rust dependencies and build artifacts
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        uses: ./.github/actions/rust-build-cache
         with:
           shared-key: qt-ci-macos-${{ matrix.arch }}
-          cache-bin: false
-          cache-on-failure: true
           workspaces: |
             native/opennow-core -> target
             native/opennow-streamer -> target
             native/opennow-core -> ../../build/opennow-qt-release/rust-target
             native/opennow-core -> ../../build/opennow-qt-release/update-helper-rust-target
+            native/opennow-streamer -> ../../build/opennow-qt-release/peer-probe-rust-target
             native/opennow-streamer -> ../../build/opennow-qt-release/streamer-rust-target
 
       - name: Cache Qt C++ compilation
@@ -637,7 +643,7 @@ jobs:
       - name: Test Qt shell and embedded runtime offscreen
         shell: bash
         run: |
-          ctest --test-dir build/opennow-qt-release --output-on-failure --parallel 2 --no-tests=error -LE interactive-desktop \
+          ctest --test-dir build/opennow-qt-release --output-on-failure --parallel ${{ matrix.arch == 'x64' && 2 || 3 }} --no-tests=error -LE interactive-desktop \
             -R '^opennow-.*-tests$|^opennow-acceptance-verifier-help$|^qml-(desktop-route-(home|settings|stream)|fullscreen-.*stats-shortcut|desktop-stream-.*|streamer-event-contract)$'
 
       - name: Sign and notarize deployed macOS app and final packages
@@ -746,12 +752,12 @@ jobs:
                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
               try:
                   core.stdin.write('{"type":"request","id":"package-core","method":"core.hello",'
-                                   '"params":{"protocolVersion":5}}\n')
+                                   '"params":{"protocolVersion":6}}\n')
                   core.stdin.flush()
                   assert select.select([core.stdout], [], [], 30)[0], "Core handshake timed out"
                   response = json.loads(core.stdout.readline())
                   assert response.get("id") == "package-core" and response.get("ok") is True, response
-                  assert {"catalog.libraryPages.v1", "catalog.metadata.v1", "account.syncObservation.v1", "catalog.languages.v1", "queue.servers.v1"}.issubset(response["result"]["capabilities"]), response
+                  assert {"catalog.libraryPages.v1", "catalog.metadata.v1", "account.syncObservation.v1", "account.mutations.scoped.v1", "catalog.languages.v1", "queue.servers.v1", "auth.accountPicker.v1", "session.terminalCleanup.v1", "session.allocationSettlement.v1", "catalog.storeLocal.v2", "session.adReportIdentity.v1"}.issubset(response["result"]["capabilities"]), response
               finally:
                   core.kill()
                   core.communicate(timeout=5)

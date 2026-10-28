@@ -69,6 +69,9 @@ impl SettingsStore {
         let path = data_dir
             .unwrap_or_else(default_data_dir)
             .join("settings.json");
+        if policy == LoadPolicy::ReadWrite {
+            tighten_settings_files(&path)?;
+        }
         let defaults = defaults();
         let mut values = defaults.clone();
         let mut passthrough = Map::new();
@@ -676,25 +679,104 @@ impl SettingsStore {
     fn save(&self) -> io::Result<()> {
         let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
         fs::create_dir_all(parent)?;
+        tighten_settings_files(&self.path)?;
         let temporary = self.path.with_extension("json.tmp");
         let backup = self.path.with_extension("json.bak");
         let mut persisted = self.passthrough.clone();
         persisted.extend(self.values.clone());
         let data = serde_json::to_vec_pretty(&persisted).map_err(io::Error::other)?;
-        let mut file = fs::File::create(&temporary)?;
-        file.write_all(&data)?;
-        file.sync_all()?;
-        drop(file);
-        if read_persisted_settings(&self.path, LoadPolicy::ReadWrite).is_some() {
-            fs::copy(&self.path, &backup)?;
-            fs::OpenOptions::new()
-                .write(true)
-                .open(&backup)?
-                .sync_all()?;
+        write_private_settings(&temporary, &data)?;
+        if let Ok(previous) = read_settings_data(&self.path, LoadPolicy::ReadWrite)
+            && serde_json::from_slice::<Map<String, Value>>(&previous).is_ok()
+        {
+            write_private_settings(&backup, &previous)?;
         }
         fs::rename(&temporary, &self.path)?;
         Ok(())
     }
+}
+
+fn open_settings_file(path: &Path, write: bool) -> io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(write).create(write);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Settings path is not a regular file",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.nlink() != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Settings file has other hard links",
+            ));
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes()
+            & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+            != 0
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Settings path is a reparse point",
+            ));
+        }
+    }
+    Ok(file)
+}
+
+fn tighten_settings_permissions(file: &fs::File) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    #[cfg(not(unix))]
+    let _ = file;
+    Ok(())
+}
+
+fn tighten_settings_files(path: &Path) -> io::Result<()> {
+    for extension in ["json", "json.tmp", "json.bak", "json.corrupt"] {
+        let destination = path.with_extension(extension);
+        if fs::symlink_metadata(&destination).is_ok_and(|metadata| metadata.is_dir()) {
+            continue;
+        }
+        match open_settings_file(&destination, false) {
+            Ok(file) => tighten_settings_permissions(&file)?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+fn write_private_settings(path: &Path, data: &[u8]) -> io::Result<()> {
+    let mut file = open_settings_file(path, true)?;
+    tighten_settings_permissions(&file)?;
+    file.set_len(0)?;
+    file.write_all(data)?;
+    file.sync_all()
 }
 
 pub(crate) fn on_steam_deck() -> bool {
@@ -708,23 +790,25 @@ fn is_steam_deck(dmi_directory: &Path) -> bool {
 }
 
 fn read_persisted_settings(path: &Path, policy: LoadPolicy) -> Option<Map<String, Value>> {
-    match policy {
-        LoadPolicy::ReadWrite => fs::read_to_string(path)
-            .ok()
-            .and_then(|text| serde_json::from_str(&text).ok()),
-        LoadPolicy::ReadOnly => {
-            let mut data = Vec::new();
-            fs::File::open(path)
-                .ok()?
-                .take(MAXIMUM_BOOTSTRAP_SETTINGS_BYTES + 1)
-                .read_to_end(&mut data)
-                .ok()?;
-            if data.len() as u64 > MAXIMUM_BOOTSTRAP_SETTINGS_BYTES {
-                return None;
-            }
-            serde_json::from_slice(&data).ok()
-        }
+    serde_json::from_slice(&read_settings_data(path, policy).ok()?).ok()
+}
+
+fn read_settings_data(path: &Path, policy: LoadPolicy) -> io::Result<Vec<u8>> {
+    let limit = match policy {
+        LoadPolicy::ReadOnly => MAXIMUM_BOOTSTRAP_SETTINGS_BYTES,
+        LoadPolicy::ReadWrite => u64::MAX,
+    };
+    let mut data = Vec::new();
+    open_settings_file(path, false)?
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut data)?;
+    if data.len() as u64 > limit {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Settings file exceeds the read limit",
+        ));
     }
+    Ok(data)
 }
 
 fn validate_bounded_string(value: &Value, key: &str, maximum_bytes: usize) -> Result<(), String> {
@@ -1272,6 +1356,238 @@ fn defaults() -> Map<String, Value> {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[cfg(unix)]
+    fn settings_mode(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn settings_files_are_private_under_umask_022() {
+        const CHILD: &str = "OPENNOW_SETTINGS_PERMISSIONS_TEST_CHILD";
+        if env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "settings::tests::settings_files_are_private_under_umask_022",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        unsafe { libc::umask(0o022) };
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let backup = path.with_extension("json.bak");
+        let mut store = SettingsStore::load(Some(directory.path().to_owned())).unwrap();
+        store
+            .set(
+                "sessionProxyUrl",
+                json!("http://fixture:synthetic@localhost:8080"),
+            )
+            .unwrap();
+        assert_eq!(settings_mode(&path), 0o600);
+        for width in [1600, 1800, 1920] {
+            let previous = fs::read(&path).unwrap();
+            store.set("windowWidth", json!(width)).unwrap();
+            assert_eq!(settings_mode(&path), 0o600);
+            assert_eq!(settings_mode(&backup), 0o600);
+            assert_eq!(fs::read(&backup).unwrap(), previous);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn settings_writable_load_tightens_all_existing_copies_but_read_only_does_not() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut store = SettingsStore::load(Some(directory.path().to_owned())).unwrap();
+        store
+            .set("windowsGpuDeviceId", json!("fixture-gpu"))
+            .unwrap();
+        let bytes = fs::read(&path).unwrap();
+        let copies = [
+            path.clone(),
+            path.with_extension("json.bak"),
+            path.with_extension("json.tmp"),
+            path.with_extension("json.corrupt"),
+        ];
+        for copy in &copies {
+            fs::write(copy, &bytes).unwrap();
+            fs::set_permissions(copy, fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        let modified: Vec<_> = copies
+            .iter()
+            .map(|copy| fs::metadata(copy).unwrap().modified().unwrap())
+            .collect();
+        assert_eq!(
+            SettingsStore::windows_gpu_device_id_read_only(Some(directory.path().to_owned()))
+                .unwrap(),
+            "fixture-gpu"
+        );
+        for (copy, modified) in copies.iter().zip(&modified) {
+            assert_eq!(settings_mode(copy), 0o644);
+            assert_eq!(fs::read(copy).unwrap(), bytes);
+            assert_eq!(fs::metadata(copy).unwrap().modified().unwrap(), *modified);
+        }
+        let mut store = SettingsStore::load(Some(directory.path().to_owned())).unwrap();
+        for copy in &copies {
+            assert_eq!(settings_mode(copy), 0o600);
+            assert_eq!(fs::read(copy).unwrap(), bytes);
+        }
+        fs::set_permissions(
+            path.with_extension("json.tmp"),
+            fs::Permissions::from_mode(0o666),
+        )
+        .unwrap();
+        fs::set_permissions(
+            path.with_extension("json.bak"),
+            fs::Permissions::from_mode(0o666),
+        )
+        .unwrap();
+        store.set("windowWidth", json!(1600)).unwrap();
+        assert_eq!(settings_mode(&path), 0o600);
+        assert_eq!(settings_mode(&path.with_extension("json.bak")), 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn settings_backup_recovery_tightens_insecure_files() {
+        use std::os::unix::fs::PermissionsExt;
+        for corrupt in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("settings.json");
+            let backup = path.with_extension("json.bak");
+            let mut store = SettingsStore::load(Some(directory.path().to_owned())).unwrap();
+            store.set("windowWidth", json!(1600)).unwrap();
+            let bytes = fs::read(&path).unwrap();
+            fs::rename(&path, &backup).unwrap();
+            fs::set_permissions(&backup, fs::Permissions::from_mode(0o644)).unwrap();
+            if corrupt {
+                fs::write(&path, b"{").unwrap();
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+            }
+            SettingsStore::windows_gpu_device_id_read_only(Some(directory.path().to_owned()))
+                .unwrap();
+            assert_eq!(settings_mode(&backup), 0o644);
+            assert_eq!(fs::read(&backup).unwrap(), bytes);
+            if corrupt {
+                assert_eq!(settings_mode(&path), 0o644);
+                assert_eq!(fs::read(&path).unwrap(), b"{");
+            } else {
+                assert!(!path.exists());
+            }
+            assert_eq!(
+                SettingsStore::load(Some(directory.path().to_owned()))
+                    .unwrap()
+                    .all()["windowWidth"],
+                json!(1600)
+            );
+            assert_eq!(settings_mode(&path), 0o600);
+            assert_eq!(settings_mode(&backup), 0o600);
+            assert_eq!(fs::read(&backup).unwrap(), bytes);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn settings_reject_symlink_and_hard_link_destinations_without_touching_targets() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        for extension in ["json", "json.tmp", "json.bak", "json.corrupt"] {
+            for hard_link in [false, true] {
+                let directory = tempfile::tempdir().unwrap();
+                let path = directory.path().join("settings.json");
+                let mut store = SettingsStore::load(Some(directory.path().to_owned())).unwrap();
+                store.set("windowWidth", json!(1600)).unwrap();
+                let target = directory.path().join("unrelated");
+                fs::write(&target, b"unrelated data").unwrap();
+                fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+                let destination = path.with_extension(extension);
+                if destination.exists() {
+                    fs::remove_file(&destination).unwrap();
+                }
+                if hard_link {
+                    fs::hard_link(&target, &destination).unwrap();
+                } else {
+                    symlink(&target, &destination).unwrap();
+                }
+                let before = store.all();
+                assert!(
+                    store.set("windowWidth", json!(1800)).is_err(),
+                    "save accepted {extension}"
+                );
+                assert_eq!(store.all(), before);
+                assert!(
+                    SettingsStore::load(Some(directory.path().to_owned())).is_err(),
+                    "load accepted {extension}"
+                );
+                assert_eq!(fs::read(&target).unwrap(), b"unrelated data");
+                assert_eq!(settings_mode(&target), 0o644);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn settings_permission_migration_errors_do_not_replace_the_primary() {
+        use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let backup = path.with_extension("json.bak");
+        let mut store = SettingsStore::load(Some(directory.path().to_owned())).unwrap();
+        store.set("windowWidth", json!(1600)).unwrap();
+        let before = store.all();
+        let bytes = fs::read(&path).unwrap();
+        fs::write(&backup, &bytes).unwrap();
+        fs::set_permissions(&backup, fs::Permissions::from_mode(0o000)).unwrap();
+        assert_eq!(
+            SettingsStore::load(Some(directory.path().to_owned()))
+                .err()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert!(store.set("windowWidth", json!(1800)).is_err());
+        assert_eq!(store.all(), before);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        fs::set_permissions(&backup, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(fs::read(&backup).unwrap(), bytes);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn settings_reject_dangling_symlink_destinations() {
+        use std::os::unix::fs::symlink;
+        for extension in ["json", "json.tmp", "json.bak"] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("settings.json");
+            let mut store = SettingsStore::load(Some(directory.path().to_owned())).unwrap();
+            store.set("windowWidth", json!(1600)).unwrap();
+            let target = directory.path().join("must-not-be-created");
+            let destination = path.with_extension(extension);
+            if destination.exists() {
+                fs::remove_file(&destination).unwrap();
+            }
+            symlink(&target, destination).unwrap();
+            assert!(store.set("windowWidth", json!(1800)).is_err());
+            assert!(SettingsStore::load(Some(directory.path().to_owned())).is_err());
+            assert!(!target.exists());
+        }
+    }
 
     #[test]
     fn hdr_notice_history_keeps_the_newest_two_hundred_distinct_ids() {

@@ -10,11 +10,22 @@ WORKFLOWS = ROOT / ".github/workflows"
 
 
 def jobs(workflow):
-    sections = re.split(r"^  ([a-z][a-z-]*):\n", workflow.split("jobs:\n", 1)[1], flags=re.MULTILINE)
+    sections = re.split(r"^  ([a-z][a-z0-9-]*):\n", workflow.split("jobs:\n", 1)[1], flags=re.MULTILINE)
     return dict(zip(sections[1::2], sections[2::2]))
 
 
 class CIWorkflowTest(unittest.TestCase):
+    def test_arm_hosted_intel_can_publish_but_linux_measurements_cannot(self):
+        entries = jobs((WORKFLOWS / "qt-ci.yml").read_text())
+        for name in ("sign-nightly", "publish-nightly"):
+            with self.subTest(job=name):
+                condition = re.search(r"^    if: (.+)$", entries[name], re.MULTILINE).group(1)
+                self.assertEqual(
+                    condition,
+                    "github.event_name == 'workflow_dispatch' && inputs.publish_nightly "
+                    "&& inputs.linux_arm64_host == 'native'",
+                )
+
     def test_stack_base_branches_run_pr_checks_without_new_push_or_publication_triggers(self):
         ci = (WORKFLOWS / "qt-ci.yml").read_text()
         pull = ci.split("  pull_request:\n", 1)[1].split("  push:\n", 1)[0]
@@ -29,6 +40,9 @@ class CIWorkflowTest(unittest.TestCase):
         for name in ("qt-build.yml", "qt-release-candidate.yml"):
             with self.subTest(workflow=name):
                 workflow = (WORKFLOWS / name).read_text()
+                if name == "qt-build.yml":
+                    self.assertIn("uses: ./.github/actions/linux-package", workflow)
+                    workflow += (ROOT / ".github/actions/linux-package/action.yml").read_text()
                 self.assertIn("qtwaylandcompositor", workflow)
                 self.assertIn("EXTRA_QT_MODULES: waylandcompositor", workflow)
                 self.assertIn(
@@ -54,8 +68,10 @@ class CIWorkflowTest(unittest.TestCase):
 
     def test_manual_packages_cannot_bypass_dispatch_gate(self):
         entries = jobs((WORKFLOWS / "qt-build.yml").read_text())
-        self.assertEqual(set(entries), {"metadata", "packages", "flatpak", "artifact-inventory"})
+        self.assertEqual(set(entries), {"metadata", "linux-arm64-cross", "packages", "flatpak", "artifact-inventory"})
         self.assertIn("    if: github.event_name == 'workflow_dispatch'\n", entries["metadata"])
+        self.assertIn("    needs: metadata\n", entries["linux-arm64-cross"])
+        self.assertIn("    if: inputs.linux_arm64_host == 'x64'\n", entries["linux-arm64-cross"])
         self.assertIn("    needs: metadata\n", entries["packages"])
         self.assertNotIn("always()", entries["packages"])
         self.assertIn("    needs: metadata\n", entries["flatpak"])
@@ -133,23 +149,35 @@ class CIWorkflowTest(unittest.TestCase):
         entries = jobs(contracts)
         self.assertEqual(set(entries), {"contracts"})
         self.assertIn("runs-on: blacksmith-2vcpu-ubuntu-2404", entries["contracts"])
-        for forbidden in ("matrix:", "cpack ", "linuxdeploy", "upload-artifact", "--release",
+        runner = (ROOT / ".github/scripts/run-native-checks.py").read_text()
+        for forbidden in ("matrix:", "cpack ", "linuxdeploy", "--release",
                           "uses: ./.github/workflows/qt-build.yml"):
             self.assertNotIn(forbidden, checks)
-        self.assertIn('--target opennow-ci-unit-tests --parallel "$BUILD_PARALLEL"', checks)
-        self.assertIn("--no-tests=error", checks)
-        self.assertIn('-L ci-unit --parallel "$BUILD_PARALLEL" --output-junit qt-unit-tests.xml', checks)
-        self.assertIn("Testing/Temporary/LastTest.log", checks)
-        self.assertIn("cargo clippy --locked", checks)
-        self.assertIn("cargo test --locked", checks)
-        self.assertIn("--workspace --all-targets -- -D warnings", checks)
+        self.assertIn('"--target", "opennow-ci-unit-tests"', runner)
+        self.assertIn('"--no-tests=error"', runner)
+        self.assertIn('"-L", "ci-unit", "--output-junit", "qt-unit-tests.xml"', runner)
+        self.assertIn('"LastTestsFailed.log", "LastTest.log"', runner)
+        self.assertIn('["cargo", "clippy", *core, "--all-targets", "--", "-D", "warnings"]', runner)
+        self.assertIn('["cargo", "clippy", *streamer, "--workspace", "--all-targets", "--", "-D", "warnings"]', runner)
+        self.assertIn('["cargo", "test", *core]', runner)
+        self.assertIn('["cargo", "test", *streamer, "--workspace"]', runner)
+        self.assertIn('"--locked", "--manifest-path", "native/opennow-core/Cargo.toml"', runner)
+        self.assertIn('"--locked", "--manifest-path", "native/opennow-streamer/Cargo.toml"', runner)
+        self.assertIn('tasks[-1].extend(["--parallel", str(jobs)])', runner)
+        self.assertIn('name: native-check-diagnostics-${{ inputs.label }}', checks)
+        self.assertNotIn("build/qt-packages", checks)
+        for phase in ("lint", "build", "test"):
+            self.assertIn(f'run-native-checks.py {phase} --parallel "$CARGO_BUILD_JOBS"', checks)
+        for setup in ("name: Install Qt", "name: Build and cache SDL3 test dependency", "name: Cache complete Rust build state"):
+            self.assertLess(checks.index(setup), checks.index("    - name: Lint Rust"))
         self.assertIn('"$QT_ROOT_DIR/bin/qmlformat"', checks)
         self.assertNotIn("ensure-windows-test-desktop.ps1", checks)
         self.assertIn("ensure-windows-media-foundation.ps1", checks)
         cmake = (ROOT / "opennow-qt/cmake/Tests.cmake").read_text()
         targets = re.search(r"set\(OPENNOW_CI_UNIT_TEST_TARGETS\s+(.*?)\)", cmake, re.DOTALL)[1].split()
-        self.assertEqual(len(targets), 39)
-        self.assertEqual(len(set(targets)), 39)
+        self.assertEqual(len(targets), 40)
+        self.assertEqual(len(set(targets)), 40)
+        self.assertIn("opennow-windowsmoveloop-tests", targets)
         self.assertIn("opennow-generichidinput-tests", targets)
         self.assertIn("opennow-windowtheme-tests", targets)
         self.assertIn("opennow-updatefailure-tests", targets)
@@ -184,21 +212,50 @@ class CIWorkflowTest(unittest.TestCase):
         self.assertIn('set_tests_properties(${OPENNOW_CI_UNIT_TEST_TARGETS} PROPERTIES LABELS "ci-unit")', cmake)
         self.assertIn('ENVIRONMENT "QT_QPA_PLATFORM=cocoa" RUN_SERIAL TRUE TIMEOUT 30 LABELS "interactive-desktop"', cmake)
 
+    def test_windows_move_loop_regression_runs_in_the_unit_lane_without_a_desktop(self):
+        cmake = (ROOT / "opennow-qt/cmake/Tests.cmake").read_text()
+        targets = re.search(r"set\(OPENNOW_CI_UNIT_TEST_TARGETS\s+(.*?)\)", cmake, re.DOTALL)[1].split()
+        self.assertIn("opennow-windowsmoveloop-tests", targets)
+        registration = cmake.split("qt_add_executable(opennow-windowsmoveloop-tests", 1)[1]
+        registration = registration.split("qt_add_executable(opennow-waylandpointer-tests", 1)[0]
+        self.assertIn("tests/tst_windowswindowmoveloop.cpp", registration)
+        self.assertIn("opennow-platform-input Qt6::Test", registration)
+        self.assertIn("add_test(NAME opennow-windowsmoveloop-tests COMMAND opennow-windowsmoveloop-tests", registration)
+        self.assertIn('Testing/Temporary/windows-move-loop-results.xml,junitxml', registration)
+        self.assertRegex(registration, r'if\(WIN32\)\s+'
+                         r'add_test\(NAME opennow-windowsmoveloop-native-tests\s+'
+                         r'COMMAND opennow-streamvideo-tests nativeWindowMoveLoopOwnsTheCursorUntilItExits -o -,txt\s+'
+                         r'-o "\$\{CMAKE_CURRENT_BINARY_DIR\}/Testing/Temporary/native-stream-item-move-loop-results.xml,junitxml"\)')
+        self.assertIn('set_tests_properties(opennow-windowsmoveloop-native-tests PROPERTIES\n'
+                      '            ENVIRONMENT "QT_QPA_PLATFORM=windows;QT_QUICK_BACKEND=software"\n'
+                      '            RUN_SERIAL TRUE TIMEOUT 30 LABELS "ci-unit")', registration)
+        self.assertRegex(cmake, r'if\(WIN32\)\s+'
+                         r'add_dependencies\(opennow-ci-unit-tests opennow-streamvideo-tests\)')
+        self.assertRegex(registration, r'set_tests_properties\(opennow-windowsmoveloop-tests PROPERTIES\s+'
+                         r'ENVIRONMENT "QT_QPA_PLATFORM=windows" RUN_SERIAL TRUE TIMEOUT 30\)')
+        native = (ROOT / "opennow-qt/tests/tst_windowswindowmoveloop.cpp").read_text()
+        self.assertIn("void sentSystemCommandsSuspendBeforeQtDispatch()", native)
+        self.assertIn('QCOMPARE(QGuiApplication::platformName(), QStringLiteral("windows"))', native)
+        self.assertIn("SendMessageW(hwnd, WM_SYSCOMMAND, command, position)", native)
+        self.assertIn("QVERIFY(!IsWindowVisible(hwnd))", native)
+        self.assertNotIn("QSKIP", native)
+
     def test_signed_helper_integration_runs_on_every_platform_check_not_signers(self):
         action = (ROOT / ".github/actions/qt-unit-tests/action.yml").read_text()
-        marker = "    - name: Test signed update helper integration\n"
+        marker = "    - name: Test Rust\n"
         before, after = action.split(marker, 1)
         step = after.split("    - name:", 1)[0]
         for setup in ("uses: ilammy/msvc-dev-cmd@v1", "uses: dtolnay/rust-toolchain@stable",
-                      "name: Install Linux test dependencies", "name: Test Rust"):
+                      "name: Install Linux test dependencies", "name: Build Rust and Qt tests concurrently"):
             self.assertIn(setup, before)
         self.assertNotIn("      if:", step)
         self.assertNotIn("continue-on-error", step)
         self.assertIn("working-directory: ${{ env.OPENNOW_CHECKOUT }}", step)
         self.assertIn("CARGO_BUILD_JOBS: ${{ inputs.parallel }}", step)
-        self.assertIn("OPENNOW_UPDATE_TEST_TARGET_DIR: ${{ env.OPENNOW_CHECKOUT }}/native/opennow-core/target", step)
-        self.assertIn("python opennow-qt/tests/run_update_helper_integration.py", step)
-        self.assertIn("python3 opennow-qt/tests/run_update_helper_integration.py", step)
+        self.assertIn('run-native-checks.py test --parallel "$CARGO_BUILD_JOBS"', step)
+        runner = (ROOT / ".github/scripts/run-native-checks.py").read_text()
+        self.assertIn('["cargo", "test", *core], [sys.executable, "opennow-qt/tests/run_update_helper_integration.py"]', runner)
+        self.assertIn('env["OPENNOW_UPDATE_TEST_TARGET_DIR"] = str(Path(environment["OPENNOW_CHECKOUT"]) / "native/opennow-core/target")', runner)
         self.assertNotIn("secrets.", step)
         ci = jobs((WORKFLOWS / "qt-ci.yml").read_text())
         for label in ("linux-x64", "windows-x64", "macos-arm64"):
@@ -257,11 +314,16 @@ class CIWorkflowTest(unittest.TestCase):
     def test_rust_caches_survive_job_renames_and_later_test_failures(self):
         for path in (ROOT / ".github/actions/qt-unit-tests/action.yml", WORKFLOWS / "qt-build.yml"):
             with self.subTest(path=path):
-                cache = path.read_text().split("uses: Swatinem/rust-cache@", 1)[1].split("\n      -", 1)[0]
+                cache = re.split(r"\n\s+- (?:name:|uses:)", path.read_text().split("uses: ./.github/actions/rust-build-cache", 1)[1], 1)[0]
                 self.assertIn("shared-key:", cache)
-                self.assertIn("cache-on-failure: true", cache)
                 self.assertIn("native/opennow-core -> target", cache)
                 self.assertIn("native/opennow-streamer -> target", cache)
+        action = (ROOT / ".github/actions/rust-build-cache/action.yml").read_text()
+        self.assertIn("uses: useblacksmith/stickydisk@", action)
+        self.assertIn("commit: ${{ steps.identity.outputs.save }}", action)
+        self.assertIn("uses: actions/cache/restore@", action)
+        self.assertIn("restore-keys: ${{ steps.identity.outputs.restore-keys }}", action)
+        self.assertNotIn("Swatinem/rust-cache", action)
 
     def test_qt_compile_cache_restores_previous_timestamped_entries(self):
         action = (ROOT / ".github/actions/qt-unit-tests/action.yml").read_text()
@@ -292,7 +354,7 @@ class CIWorkflowTest(unittest.TestCase):
 
     def test_release_candidates_reuse_the_nightly_package_caches(self):
         def block(job, action):
-            return job.split(f"uses: {action}@", 1)[1].split("\n      -", 1)[0]
+            return job.split(f"uses: {action}", 1)[1].split("\n      -", 1)[0]
 
         def key_expression(cache, name):
             return re.search(rf"^\s+{name}: (.+)$", cache, re.MULTILINE).group(1)
@@ -302,7 +364,7 @@ class CIWorkflowTest(unittest.TestCase):
 
         # Resolve the nightly package job's own key expression per matrix entry,
         # so a rename in either workflow has to move both sides together.
-        nightly_rust = block(nightly, "Swatinem/rust-cache")
+        nightly_rust = block(nightly, "./.github/actions/rust-build-cache")
         self.assertEqual(key_expression(nightly_rust, "shared-key"),
                          key_expression(block(nightly, "hendrikmuhs/ccache-action"), "key"))
         expression = key_expression(nightly_rust, "shared-key")
@@ -320,8 +382,8 @@ class CIWorkflowTest(unittest.TestCase):
         })
         # A candidate restores the nightly cache only when its own key pattern
         # resolves to that platform's key.
-        linux = key_expression(block(candidates["linux"], "Swatinem/rust-cache"), "shared-key")
-        windows = key_expression(block(candidates["windows"], "Swatinem/rust-cache"), "shared-key")
+        linux = key_expression(block(candidates["linux"], "./.github/actions/rust-build-cache"), "shared-key")
+        windows = key_expression(block(candidates["windows"], "./.github/actions/rust-build-cache"), "shared-key")
         self.assertEqual({
             **{
                 f"linux-{arch}": linux.replace("${{ matrix.runner }}", runner)
@@ -333,7 +395,7 @@ class CIWorkflowTest(unittest.TestCase):
                 for arch in re.findall(r"- arch: (\S+)\n", candidates["windows"])
             },
             **{
-                f"macos-{arch}": key_expression(block(candidates["macos"], "Swatinem/rust-cache"), "shared-key")
+                f"macos-{arch}": key_expression(block(candidates["macos"], "./.github/actions/rust-build-cache"), "shared-key")
                                 .replace("${{ matrix.arch }}", arch)
                 for arch in re.findall(r"- arch: (\S+)\n", candidates["macos"])
             },
@@ -341,9 +403,10 @@ class CIWorkflowTest(unittest.TestCase):
 
         nightly_workspaces = nightly_rust.split("workspaces: |", 1)[1].strip()
         self.assertIn("native/opennow-core -> ../../build/opennow-qt-release/rust-target", nightly_workspaces)
+        self.assertIn("native/opennow-streamer -> ../../build/opennow-qt-release/peer-probe-rust-target", nightly_workspaces)
         for name in ("linux", "windows", "macos"):
             with self.subTest(candidate=name):
-                rust = block(candidates[name], "Swatinem/rust-cache")
+                rust = block(candidates[name], "./.github/actions/rust-build-cache")
                 ccache = block(candidates[name], "hendrikmuhs/ccache-action")
                 self.assertEqual(key_expression(rust, "shared-key"), key_expression(ccache, "key"))
                 self.assertEqual(rust.split("workspaces: |", 1)[1].strip(), nightly_workspaces)
@@ -363,11 +426,18 @@ class CIWorkflowTest(unittest.TestCase):
         version = int(re.search(r"CurrentProtocolVersion = (\d+);", header).group(1))
         core = (ROOT / "native/opennow-core/src/main.rs").read_text()
         self.assertEqual(int(re.search(r"const PROTOCOL_VERSION: i64 = (\d+);", core).group(1)), version)
+        client = (ROOT / "opennow-qt/src/core/CoreClient.cpp").read_text()
+        required = re.search(r"for \(const auto &capability : \{(.*?)\}\)", client, re.DOTALL)[1]
+        capabilities = re.findall(r'u"([^"]+)"_s', required)
+        self.assertTrue(capabilities)
         for name in ("qt-build.yml", "qt-release-candidate.yml"):
             with self.subTest(workflow=name):
                 workflow = (WORKFLOWS / name).read_text()
                 probe = workflow.split('"id":"package-core"', 1)[1].split("core.stdin.flush()", 1)[0]
                 self.assertEqual(int(re.search(r'"protocolVersion":(\d+)', probe).group(1)), version)
+                assertion = next(line for line in workflow.splitlines() if '.issubset(response["result"]["capabilities"])' in line)
+                for capability in capabilities:
+                    self.assertIn(f'"{capability}"', assertion)
 
     def test_native_streamer_probes_match_shell_protocol(self):
         protocol = (ROOT / "native/opennow-streamer/crates/opennow-streamer-protocol/src/lib.rs").read_text()

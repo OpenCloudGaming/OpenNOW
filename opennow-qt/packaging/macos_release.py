@@ -161,9 +161,13 @@ def package(build, output, version, arch):
             archive = temporary / f"{name}.zip"
             dmg = temporary / f"{name}.dmg"
             run("ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", app, archive)
-            (stage / "Applications").symlink_to("/Applications")
-            run("hdiutil", "create", "-volname", "OpenNOW", "-srcfolder", stage,
-                "-format", "UDZO", dmg)
+            # Package the stapled app without reinstalling or stripping signed code.
+            run("cpack", "-G", "DragNDrop", "--config", Path(__file__).with_name("macos-dmg.cmake"),
+                "-D", f"CPACK_INSTALLED_DIRECTORIES={stage};/",
+                "-D", f"CPACK_PACKAGE_DIRECTORY={temporary}",
+                "-D", f"CPACK_PACKAGE_FILE_NAME={name}",
+                "-D", f"CPACK_PACKAGE_VERSION={version}",
+                "-D", "CPACK_STRIP_FILES=OFF")
             run("codesign", "--force", "--sign", identity, "--keychain", keychain, "--timestamp", dmg)
             print("Notarizing and stapling the final disk image", flush=True)
             notarize(dmg, credentials)

@@ -213,6 +213,12 @@ quint16 StreamVideoItem::windowsGameplayVirtualKey(int key, Qt::KeyboardModifier
 {
     const auto scanCode = nativeScanCode & 0xff;
     if (nativeVirtualKey > 0 && nativeVirtualKey < 0x100) {
+        switch (nativeVirtualKey) {
+        case 0x10: return nativeScanCode == 0x36 ? 0xa1 : 0xa0;
+        case 0x11: return nativeScanCode == 0xe01d ? 0xa3 : 0xa2;
+        case 0x12: return nativeScanCode == 0xe038 ? 0xa5 : 0xa4;
+        default: break;
+        }
         // Numpad divide shares set-1 scan code 0x35 with the main slash key.
         // Its virtual key stays VK_DIVIDE on every layout.
         if (scanCode == 0x35 && nativeVirtualKey == 0x6f)
@@ -532,6 +538,9 @@ Qt::KeyboardModifiers StreamVideoItem::eventModifiers(const QKeyEvent *event) co
 {
     auto modifiers = event->modifiers();
     if (event->key() == Qt::Key_AltGr
+#if defined(Q_OS_WIN) || defined(Q_OS_LINUX)
+        || (modifiers.testFlag(Qt::ControlModifier) && eventVirtualKey(event) == 0xa5)
+#endif
         || std::any_of(m_pressedKeys.cbegin(), m_pressedKeys.cend(),
                        [](const PressedKey &key) { return key.altGr; }))
         modifiers |= Qt::GroupSwitchModifier;
@@ -619,8 +628,10 @@ void StreamVideoItem::keyPressEvent(QKeyEvent *event)
         return;
     }
     if (!m_pressedKeys.contains(identity)) {
-        const auto wireModifiers = inputModifiers(modifiers, event->key());
-        m_pressedKeys.insert(identity, {virtualKey, wireModifiers, event->key() == Qt::Key_AltGr});
+        const bool altGr = virtualKey == 0xa5 && modifiers.testFlag(Qt::GroupSwitchModifier);
+        const auto wireModifiers = inputModifiers(modifiers,
+                                                 altGr ? Qt::Key_AltGr : event->key());
+        m_pressedKeys.insert(identity, {virtualKey, wireModifiers, altGr});
         s_nativeRuntime->submitKey(virtualKey, wireModifiers, true);
     }
     event->accept();
@@ -907,39 +918,6 @@ void StreamVideoItem::submitAbsoluteMouse(const QPointF &position)
         static_cast<quint16>(std::min(coordinates.y(), 65535)),
         static_cast<quint16>(std::min(coordinates.width(), 65535)),
         static_cast<quint16>(std::min(coordinates.height(), 65535)));
-}
-
-bool StreamVideoItem::NativeWindowMoveLoopFilter::nativeEventFilter(
-    const QByteArray &eventType, void *message, qintptr *result)
-{
-#if defined(Q_OS_WIN)
-    if (eventType != "windows_generic_MSG") return false;
-    const auto *msg = static_cast<const MSG *>(message);
-    const auto command = msg->wParam & 0xfff0;
-    if (msg->message != WM_SYSCOMMAND || (command != SC_MOVE && command != SC_SIZE))
-        return false;
-    const auto *window = m_item.window();
-    if (!window || !window->handle() || msg->hwnd != reinterpret_cast<HWND>(window->winId())
-        || !m_item.isVisible() || !s_nativeRuntime
-        || !s_nativeRuntime->running())
-        return false;
-    const QPointer<StreamVideoItem> item(&m_item);
-    const auto hwnd = msg->hwnd;
-    const auto wParam = msg->wParam;
-    const auto lParam = msg->lParam;
-    item->setNativeWindowMoveLoop(true);
-    if (wParam & 0x000f)
-        SetCursorPos(static_cast<short>(LOWORD(lParam)), static_cast<short>(HIWORD(lParam)));
-    const auto handled = DefWindowProcW(hwnd, WM_SYSCOMMAND, wParam, lParam);
-    if (result) *result = handled;
-    if (item) item->setNativeWindowMoveLoop(false);
-    return true;
-#else
-    Q_UNUSED(eventType);
-    Q_UNUSED(message);
-    Q_UNUSED(result);
-    return false;
-#endif
 }
 
 void StreamVideoItem::setNativeWindowMoveLoop(bool active)

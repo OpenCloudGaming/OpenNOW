@@ -85,29 +85,57 @@ For version `<version>`, the public nightly inventory contains exactly these pac
 - `OpenNOW-Qt-<version>-Linux-x64.flatpak`
 - `OpenNOW-Qt-<version>-Linux-arm64.flatpak`
 - `OpenNOW-Qt-<version>-Darwin-arm64.dmg`
+- `OpenNOW-Qt-<version>-Darwin-x64.dmg`
 
 Both AppImages also have versioned `.AppImage.zsync` sidecars. `setup.exe` is a
-Windows install artifact for each architecture. All thirteen assets have
+Windows install artifact for each architecture. All fourteen assets have
 exact sibling manifests. `RELEASE-INFO.json` retains the immutable
 package inventory and changes `updates` from `manual-download` to `signed-manifest`.
 `platformSigning` remains `unsigned`: update signatures do not provide Authenticode
-or macOS notarization. Final `SHA256SUMS` covers all thirteen assets, all thirteen manifests,
-and the rewritten release metadata. The validation-only macOS ZIP is never published.
+or macOS notarization. Final `SHA256SUMS` covers all fourteen assets, all fourteen manifests,
+and the rewritten release metadata. Neither macOS validation ZIP is published nightly.
 
-The production `qt-release-candidate.yml` contract uses twelve Linux, Windows,
-and macOS packages plus two AppImage sidecars, optional Windows platform signing and
+The production `qt-release-candidate.yml` contract uses fourteen Linux, Windows,
+and macOS packages plus two AppImage sidecars. It adds both
+`OpenNOW-Qt-<version>-Darwin-arm64.zip` and `OpenNOW-Qt-<version>-Darwin-x64.zip`
+to the nightly package set. It uses optional Windows platform signing and
 required macOS platform signing, isolated update signing,
 and a candidate artifact. See [Set up signed Qt releases](qt-release-signing-setup.md)
 for production credentials and first-release instructions.
 `qt-stable-release.yml` promotes only a successful candidate run with the exact reviewed
 main SHA and project version. It verifies the run's repository/workflow provenance,
 candidate inventory and production-key signatures before flattening and publishing
-the unchanged packages and manifests. Its 30-file release includes fourteen assets,
-fourteen manifests, metadata and checksums. The macOS Developer ID identity and
+the unchanged packages and manifests. Promotion verifies the Intel macOS ZIP and its
+manifest, then excludes both from publication. The Apple Silicon ZIP remains public.
+The resulting 32-file release includes fifteen assets, fifteen manifests, metadata
+and checksums. The macOS Developer ID identity and
 notarization from the candidate are preserved; stable releases must not replace
 these with ad-hoc packages because the update helper rejects a changed signing identity.
 Nightly release notes use GitHub-generated changelogs. Installation guidance and known
 limitations are documented in [`qt-nightly-release.md`](qt-nightly-release.md).
+
+The inventory counts include AppImage sidecars as assets:
+
+| Inventory | Assets | Manifests | Other files | Total files |
+| --- | --- | --- | --- | --- |
+| Signed nightly | 14 | 14 | 2 | 30 |
+| Signed candidate | 16 | 16 | 7 | 39 |
+| Promoted stable | 15 | 15 | 2 | 32 |
+
+Nightly and stable each include `RELEASE-INFO.json` and `SHA256SUMS` as their other
+files. The nested candidate retains six platform `SHA256SUMS` files, one per Linux,
+Windows, and macOS architecture, plus `RELEASE-CANDIDATE-INVENTORY.txt`. Flatpak
+artifacts do not add checksum files. The candidate inventory covers all 38 other
+files; the final nightly and stable checksum files cover 29 and 31 files respectively.
+
+These counts follow `nightly_release.py`, the candidate workflow's inventory step,
+and `promote_candidate.py`. Recheck the package list and generated inventories with
+fixture-only signing keys:
+
+```sh
+PYTHONPATH=opennow-qt/tests python3 -m unittest \
+  test_nightly_release test_signed_nightly_release test_candidate_promotion
+```
 
 Nightly macOS packaging enables `OPENNOW_MACOS_ADHOC_SIGN`. Qt deployment signs nested
 code with `macdeployqt -codesign=-`, then the final install script seals the complete

@@ -6,6 +6,7 @@
 #include "streaming/rendering/StreamSenderPacer.h"
 #include "input/platform/WaylandPointerCapture.h"
 #include "input/platform/MacPointerCapture.h"
+#include "input/platform/WindowsWindowMoveLoop.h"
 
 #include <QGuiApplication>
 #include <QClipboard>
@@ -37,6 +38,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <commctrl.h>
 #endif
 
 class TestRenderCallback final : public StreamVideoRenderCallback
@@ -224,6 +226,9 @@ class StreamVideoItemTest final : public QObject
     struct CursorSession {
         inline static OpenNowStreamerConfig callbacks;
         inline static QList<QPoint> motions;
+        inline static QList<QRect> absoluteMotions;
+
+        explicit CursorSession(NativeStreamRuntime::Api api = CursorSession::api()) : runtime(api) {}
 
         static NativeStreamRuntime::Api api()
         {
@@ -248,12 +253,18 @@ class StreamVideoItemTest final : public QObject
                 motions.append(QPoint(x, y));
                 return OPENNOW_STREAMER_OK;
             };
+            api.submitMouseAbsolute = [](const OpenNowStreamer *, std::uint16_t x, std::uint16_t y,
+                                          std::uint16_t width, std::uint16_t height) {
+                absoluteMotions.append(QRect(x, y, width, height));
+                return OPENNOW_STREAMER_OK;
+            };
             return api;
         }
 
         bool start(const QString &transport = {})
         {
             motions.clear();
+            absoluteMotions.clear();
             if (!runtime.start()) return false;
             StreamVideoItem::setNativeStreamRuntime(&runtime);
             if (!runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
@@ -282,12 +293,59 @@ class StreamVideoItemTest final : public QObject
 
         ~CursorSession() { StreamVideoItem::setNativeStreamRuntime(nullptr); }
 
-        NativeStreamRuntime runtime{api()};
+        NativeStreamRuntime runtime;
         QQuickWindow window;
         QString startId = QStringLiteral("cursor-test");
     };
 
 private slots:
+    void absoluteMouseReportsDoNotWaitForAFrame_data()
+    {
+        QTest::addColumn<bool>("fullscreen");
+        QTest::newRow("windowed") << false;
+        QTest::newRow("fullscreen") << true;
+    }
+
+    void absoluteMouseReportsDoNotWaitForAFrame()
+    {
+        QFETCH(bool, fullscreen);
+        CursorSession session;
+        QVERIFY(session.start(QStringLiteral("nvst")));
+        StreamVideoItem item(std::make_unique<MacPointerCapture>(), false, session.window.contentItem());
+        item.setRenderCallback({});
+        if (fullscreen) session.window.showFullScreen();
+        QTRY_VERIFY(session.window.isActive());
+        item.setSize(session.window.size());
+        item.setVideoSize(QSize(3840, 2160));
+        item.forceActiveFocus();
+        QTRY_VERIFY(item.captureActive());
+        QVERIFY(!item.relativeMouse());
+        QSignalSpy swaps(&session.window, &QQuickWindow::frameSwapped);
+        for (const bool overlayVisible : {false, true, false}) {
+            item.setInputEnabled(!overlayVisible);
+            QCOMPARE(item.captureActive(), !overlayVisible);
+            CursorSession::absoluteMotions.clear();
+            const auto swapsBefore = swaps.size();
+            for (int report = 0; report < 64; ++report) {
+                const QPointF position(session.window.width() / 2.0 + report,
+                                       session.window.height() / 2.0);
+                const auto before = CursorSession::absoluteMotions.size();
+                QMouseEvent move(QEvent::MouseMove, position, session.window.mapToGlobal(position.toPoint()),
+                                 Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+                move.setTimestamp(1'000 + report * 4);
+                QCoreApplication::sendEvent(&session.window, &move);
+                if (overlayVisible) {
+                    QCOMPARE(CursorSession::absoluteMotions.size(), before);
+                } else {
+                    QVERIFY(CursorSession::absoluteMotions.size() > before);
+                    QCOMPARE(CursorSession::absoluteMotions.last(),
+                             StreamVideoItem::absoluteMouseCoordinates(position, item.videoSize(), item.size()));
+                }
+                QCOMPARE(swaps.size(), swapsBefore);
+            }
+        }
+    }
+
     void clipboardPasteRouting_data()
     {
         QTest::addColumn<bool>("fullscreen");
@@ -1005,10 +1063,192 @@ private slots:
         QCOMPARE(item.cursor().shape(), Qt::ArrowCursor);
     }
 
+    void windowsSystemCommandsReachCaptureOwner_data()
+    {
+        QTest::addColumn<bool>("relative");
+        QTest::addColumn<quintptr>("command");
+        QTest::addColumn<bool>("fullscreen");
+        for (const bool fullscreen : {false, true}) {
+            const auto mode = fullscreen ? QByteArray("fullscreen-") : QByteArray("windowed-");
+            QTest::newRow(mode + "relative-mouse-move") << true << quintptr(0xf012) << fullscreen;
+            QTest::newRow(mode + "absolute-mouse-size") << false << quintptr(0xf004) << fullscreen;
+            QTest::newRow(mode + "relative-keyboard-size") << true << quintptr(0xf000) << fullscreen;
+            QTest::newRow(mode + "absolute-keyboard-move") << false << quintptr(0xf010) << fullscreen;
+        }
+    }
+
+    void windowsSystemCommandsReachCaptureOwner()
+    {
+        QFETCH(bool, relative);
+        QFETCH(quintptr, command);
+        QFETCH(bool, fullscreen);
+        static bool nativeCaptureActive;
+        nativeCaptureActive = false;
+        auto api = CursorSession::api();
+        api.setCaptureActive = [](const OpenNowStreamer *, bool active, bool relative,
+                                  std::uintptr_t, bool *raw) {
+            nativeCaptureActive = active;
+            *raw = active && relative;
+            return OPENNOW_STREAMER_OK;
+        };
+        CursorSession session(api);
+        QVERIFY(session.start());
+        if (fullscreen) session.window.showFullScreen();
+        struct State {
+            WindowsWindowMoveLoop *owner = nullptr;
+            quintptr window = 0;
+            QList<QPoint> cursorPositions;
+            std::function<void()> forward;
+        } state;
+        class Operations final : public WindowsWindowMoveLoop::NativeOperations {
+        public:
+            explicit Operations(State &state) : state(state) {}
+            bool install(quintptr window, WindowsWindowMoveLoop *owner) override
+            {
+                state.window = window;
+                state.owner = owner;
+                return true;
+            }
+            void remove(quintptr, WindowsWindowMoveLoop *) override
+            {
+                state.owner = nullptr;
+                state.window = 0;
+            }
+            qintptr forward(quintptr window, quint32, quintptr, qintptr) override
+            {
+                Q_ASSERT(window == state.window);
+                if (state.forward) state.forward();
+                return 42;
+            }
+            void setCursorPosition(int x, int y) override { state.cursorPositions.append({x, y}); }
+            State &state;
+        };
+        StreamVideoItem item(std::make_unique<MacPointerCapture>(), false, nullptr);
+        item.setRenderCallback({});
+        item.m_windowsWindowMoveLoop = std::make_unique<WindowsWindowMoveLoop>(
+            [&] { return item.isVisible() && session.runtime.running(); },
+            [&](bool active) { item.setNativeWindowMoveLoop(active); },
+            std::make_unique<Operations>(state));
+        item.setParentItem(session.window.contentItem());
+        item.setSize(session.window.size());
+        item.forceActiveFocus();
+        QTRY_VERIFY(session.runtime.inputAllowed());
+        QTRY_VERIFY(session.window.isActive());
+        item.setRelativeMouse(relative);
+        QTRY_VERIFY(item.captureActive());
+        QVERIFY(nativeCaptureActive);
+        QCOMPARE(item.m_rawInputActive, relative);
+        QVERIFY(state.owner);
+        QCOMPARE(state.window, quintptr(session.window.winId()));
+
+        const auto position = session.window.position();
+        const auto size = session.window.size();
+        const auto cursor = qintptr(quintptr(quint16(-1800)) | (quintptr(quint16(310)) << 16));
+        state.forward = [&] {
+            QVERIFY(item.m_nativeWindowMoveLoop);
+            QVERIFY(!item.captureActive());
+            QVERIFY(!item.m_cursorConfined);
+            QVERIFY(!item.m_rawInputActive);
+            QVERIFY(!nativeCaptureActive);
+            item.resynchronizeInput();
+            QVERIFY(!item.captureActive());
+            QVERIFY(session.runtime.running());
+            QVERIFY(session.runtime.inputAllowed());
+            QCOMPARE(session.window.position(), position);
+            QCOMPARE(session.window.size(), size);
+            QCOMPARE(state.cursorPositions.size(), (command & 0xf) ? 1 : 0);
+        };
+        QCOMPARE(state.owner->dispatch(0x0112, command, cursor), qintptr(42));
+        if (command & 0xf) QCOMPARE(state.cursorPositions.first(), QPoint(-1800, 310));
+        QVERIFY(!item.m_nativeWindowMoveLoop);
+        QVERIFY(!item.captureActive());
+        QTRY_VERIFY(item.captureActive());
+
+        item.setInputEnabled(false);
+        state.cursorPositions.clear();
+        state.forward = [&] {
+            QVERIFY(!item.captureActive());
+            item.resynchronizeInput();
+            QVERIFY(!item.captureActive());
+        };
+        QCOMPARE(state.owner->dispatch(0x0112, command, cursor), qintptr(42));
+        QCoreApplication::processEvents();
+        QVERIFY(!item.captureActive());
+        item.setInputEnabled(true);
+        item.forceActiveFocus();
+        QTRY_VERIFY(item.captureActive());
+
+        state.forward = [&] {
+            item.setFocus(false);
+            QVERIFY(!item.captureActive());
+            item.resynchronizeInput();
+            QVERIFY(!item.captureActive());
+        };
+        QCOMPARE(state.owner->dispatch(0x0112, command, cursor), qintptr(42));
+        QCoreApplication::processEvents();
+        QVERIFY(!item.captureActive());
+        item.forceActiveFocus();
+        QTRY_VERIFY(item.captureActive());
+
+        state.forward = [&] { QVERIFY(item.captureActive()); };
+        state.cursorPositions.clear();
+        QCOMPARE(state.owner->dispatch(0x0112, 0xf030, cursor), qintptr(42));
+        QVERIFY(state.cursorPositions.isEmpty());
+        item.setParentItem(nullptr);
+        QVERIFY(!state.owner);
+        QVERIFY(!item.captureActive());
+
+        QQuickWindow recreated;
+        QVERIFY(!recreated.handle());
+        item.m_windowsWindowMoveLoop->setWindow(&recreated);
+        QVERIFY(!recreated.handle());
+        QVERIFY(!state.owner);
+        item.setParentItem(recreated.contentItem());
+        recreated.show();
+        QTRY_VERIFY(state.owner);
+        QCOMPARE(state.window, quintptr(recreated.winId()));
+        recreated.destroy();
+        QVERIFY(!state.owner);
+        recreated.show();
+        QTRY_VERIFY(state.owner);
+        QCOMPARE(state.window, quintptr(recreated.winId()));
+        item.setParentItem(nullptr);
+        QVERIFY(!state.owner);
+    }
+
     void nativeWindowMoveLoopOwnsTheCursorUntilItExits()
     {
         CursorSession session;
         QVERIFY(session.start());
+#if defined(Q_OS_WIN)
+        struct Probe {
+            StreamVideoItem *item = nullptr;
+            bool captureActive = true;
+            bool moveActive = false;
+            int calls = 0;
+        } probe;
+        const bool nativeWindow = QGuiApplication::platformName() == QStringLiteral("windows");
+        const auto hwnd = reinterpret_cast<HWND>(session.window.winId());
+        const auto procedure = +[](HWND window, UINT message, WPARAM wParam, LPARAM lParam,
+                                    UINT_PTR, DWORD_PTR data) -> LRESULT {
+            const auto command = wParam & 0xfff0;
+            if (message == WM_SYSCOMMAND && (command == SC_MOVE || command == SC_SIZE)) {
+                auto &probe = *reinterpret_cast<Probe *>(data);
+                probe.captureActive = probe.item->captureActive();
+                probe.moveActive = probe.item->m_nativeWindowMoveLoop;
+                ++probe.calls;
+                return 42;
+            }
+            return DefSubclassProc(window, message, wParam, lParam);
+        };
+        if (nativeWindow)
+            QVERIFY(SetWindowSubclass(hwnd, procedure, 1, reinterpret_cast<DWORD_PTR>(&probe)));
+        const auto removeProbe = qScopeGuard([&] {
+            if (nativeWindow) RemoveWindowSubclass(hwnd, procedure, 1);
+        });
+#endif
+        QWindowSystemInterface::handleFocusWindowChanged(&session.window, Qt::ActiveWindowFocusReason);
+        QCoreApplication::processEvents();
         StreamVideoItem item(session.window.contentItem());
         item.m_usesMacPointerCapture = false;
         item.setRenderCallback({});
@@ -1020,20 +1260,21 @@ private slots:
         QCOMPARE(item.cursor().shape(), Qt::BlankCursor);
 
 #if defined(Q_OS_WIN)
-        MSG unrelated{};
-        unrelated.hwnd = reinterpret_cast<HWND>(session.window.winId());
-        unrelated.message = WM_SYSCOMMAND;
-        unrelated.wParam = SC_MOVE;
-        QVERIFY(!item.m_nativeWindowMoveLoopFilter.nativeEventFilter(
-            "windows_dispatcher_MSG", &unrelated, nullptr));
-        unrelated.hwnd = nullptr;
-        QVERIFY(!item.m_nativeWindowMoveLoopFilter.nativeEventFilter(
-            "windows_generic_MSG", &unrelated, nullptr));
-        unrelated.hwnd = reinterpret_cast<HWND>(session.window.winId());
-        unrelated.wParam = SC_MAXIMIZE;
-        QVERIFY(!item.m_nativeWindowMoveLoopFilter.nativeEventFilter(
-            "windows_generic_MSG", &unrelated, nullptr));
-        QVERIFY(item.captureActive());
+        if (nativeWindow) {
+            probe.item = &item;
+            QVERIFY(!item.m_nativeWindowMoveLoop);
+            SendMessageW(hwnd, WM_NULL, 0, 0);
+            QVERIFY(!item.m_nativeWindowMoveLoop);
+            QVERIFY(item.captureActive());
+            for (const auto command : {SC_MOVE, SC_SIZE}) {
+                QCOMPARE(SendMessageW(hwnd, WM_SYSCOMMAND, command, 0), LRESULT(42));
+                QVERIFY(!probe.captureActive);
+                QVERIFY(probe.moveActive);
+                QVERIFY(!item.m_nativeWindowMoveLoop);
+                QTRY_VERIFY(item.captureActive());
+            }
+            QCOMPARE(probe.calls, 2);
+        }
 #endif
         const auto moveLoop = [&](bool entering) {
             item.setNativeWindowMoveLoop(entering);
@@ -1271,6 +1512,164 @@ private slots:
         QFETCH(quint32, nativeKey);
         QFETCH(quint16, expected);
         QCOMPARE(StreamVideoItem::windowsVirtualKey(key, Qt::NoModifier, nativeKey), expected);
+    }
+
+    void windowsModifierScanCodesPreserveSides_data()
+    {
+        QTest::addColumn<int>("key");
+        QTest::addColumn<quint32>("scanCode");
+        QTest::addColumn<quint32>("nativeKey");
+        QTest::addColumn<quint16>("expected");
+        QTest::newRow("left-shift") << int(Qt::Key_Shift) << quint32(0x2a)
+                                   << quint32(0x10) << quint16(0xa0);
+        QTest::newRow("right-shift") << int(Qt::Key_Shift) << quint32(0x36)
+                                    << quint32(0x10) << quint16(0xa1);
+        QTest::newRow("left-control") << int(Qt::Key_Control) << quint32(0x1d)
+                                     << quint32(0x11) << quint16(0xa2);
+        QTest::newRow("right-control") << int(Qt::Key_Control) << quint32(0xe01d)
+                                      << quint32(0x11) << quint16(0xa3);
+        QTest::newRow("left-alt") << int(Qt::Key_Alt) << quint32(0x38)
+                                 << quint32(0x12) << quint16(0xa4);
+        QTest::newRow("right-alt") << int(Qt::Key_Alt) << quint32(0xe038)
+                                  << quint32(0x12) << quint16(0xa5);
+        QTest::newRow("french-altgr") << int(Qt::Key_AltGr) << quint32(0xe038)
+                                     << quint32(0x12) << quint16(0xa5);
+        QTest::newRow("altgr-release-after-layout-change") << int(Qt::Key_Alt)
+            << quint32(0xe038) << quint32(0x12) << quint16(0xa5);
+        QTest::newRow("explicit-right-alt") << int(Qt::Key_AltGr) << quint32(0xe038)
+                                           << quint32(0xa5) << quint16(0xa5);
+        QTest::newRow("no-scan-control-fallback") << int(Qt::Key_Control) << quint32(0)
+                                                << quint32(0x11) << quint16(0xa2);
+        QTest::newRow("no-scan-synthetic-altgr") << int(Qt::Key_AltGr) << quint32(0)
+                                               << quint32(0) << quint16(0xa5);
+    }
+
+    void windowsModifierScanCodesPreserveSides()
+    {
+        QFETCH(int, key);
+        QFETCH(quint32, scanCode);
+        QFETCH(quint32, nativeKey);
+        QFETCH(quint16, expected);
+        QCOMPARE(StreamVideoItem::windowsGameplayVirtualKey(
+                     key, Qt::NoModifier, scanCode, nativeKey), expected);
+    }
+
+    void secondaryLayoutAltGrPreservesKeyLifetimes_data()
+    {
+        QTest::addColumn<bool>("fullscreen");
+        QTest::addColumn<bool>("qtAltGr");
+        QTest::newRow("windowed-altgr") << false << true;
+        QTest::newRow("fullscreen-altgr") << true << true;
+        QTest::newRow("windowed-ctrl-right-alt") << false << false;
+        QTest::newRow("fullscreen-ctrl-right-alt") << true << false;
+    }
+
+    void secondaryLayoutAltGrPreservesKeyLifetimes()
+    {
+#if defined(Q_OS_WIN) || defined(Q_OS_LINUX)
+        QFETCH(bool, fullscreen);
+        QFETCH(bool, qtAltGr);
+        static QList<QList<quint16>> inputCalls;
+        inputCalls.clear();
+        auto api = CursorSession::api();
+        api.submitKey = [](const OpenNowStreamer *, std::uint16_t key,
+                           std::uint16_t modifiers, bool pressed) {
+            inputCalls.append({key, modifiers, quint16(pressed)});
+            return OPENNOW_STREAMER_OK;
+        };
+        NativeStreamRuntime runtime(api);
+        QVERIFY(runtime.start());
+        StreamVideoItem::setNativeStreamRuntime(&runtime);
+        const auto reset = qScopeGuard([] { StreamVideoItem::setNativeStreamRuntime(nullptr); });
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                              {QStringLiteral("id"), QStringLiteral("secondary-layout")}}));
+        const QByteArray ready = R"({"id":"secondary-layout","type":"ok"})";
+        CursorSession::callbacks.response_callback(
+            reinterpret_cast<const std::uint8_t *>(ready.constData()), ready.size(),
+            CursorSession::callbacks.user_data);
+        QTRY_VERIFY(runtime.inputAllowed());
+        QQuickWindow window;
+        window.resize(640, 480);
+        auto *item = new StreamVideoItem(window.contentItem());
+        item->setRenderCallback({});
+        item->setSize(window.size());
+        item->setKeyboardLayout(QStringLiteral("fr-FR"));
+        item->setShortcutBindings({{QStringLiteral("local-e"), QStringLiteral("Ctrl+Alt+E")}});
+        QSignalSpy shortcuts(item, &StreamVideoItem::localShortcutRequested);
+        QQuickItem overlay(window.contentItem());
+        overlay.setVisible(false);
+        if (fullscreen) window.showFullScreen();
+        else window.showNormal();
+        window.requestActivate();
+        QTRY_VERIFY(window.isActive());
+        item->forceActiveFocus();
+        QTRY_VERIFY(item->captureActive());
+#if defined(Q_OS_WIN)
+        constexpr quint32 altScan = 0xe038;
+        constexpr quint32 eScan = 0x12;
+        constexpr quint32 digitScan = 0x03;
+#else
+        constexpr quint32 altScan = 108;
+        constexpr quint32 eScan = 26;
+        constexpr quint32 digitScan = 11;
+#endif
+        const auto send = [&](QEvent::Type type, int key, quint32 scan, quint32 native,
+                              Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
+            QKeyEvent event(type, key, modifiers, scan, native, 0);
+            QCoreApplication::sendEvent(&window, &event);
+        };
+        const auto pressAltGr = [&] {
+            send(QEvent::KeyPress, qtAltGr ? Qt::Key_AltGr : Qt::Key_Alt, altScan, 0x12,
+                 qtAltGr ? Qt::NoModifier : Qt::ControlModifier | Qt::AltModifier);
+        };
+        const quint16 altGrPressModifiers = qtAltGr ? 0 : 2;
+        pressAltGr();
+        send(QEvent::KeyPress, 0x20ac, eScan, 0x45,
+             qtAltGr ? Qt::GroupSwitchModifier : Qt::ControlModifier | Qt::AltModifier);
+        QCOMPARE(inputCalls, (QList<QList<quint16>>{
+            {0xa5, altGrPressModifiers, 1}, {0x45, 6, 1}}));
+        send(QEvent::KeyRelease, Qt::Key_E, eScan, 0x45);
+        send(QEvent::KeyRelease, Qt::Key_Alt, altScan, 0x12, Qt::AltModifier);
+        QCOMPARE(inputCalls, (QList<QList<quint16>>{
+            {0xa5, altGrPressModifiers, 1}, {0x45, 6, 1}, {0x45, 6, 0}, {0xa5, 0, 0}}));
+        QVERIFY(shortcuts.isEmpty());
+        QVERIFY(item->m_pressedKeys.isEmpty());
+
+        send(QEvent::KeyPress, Qt::Key_Eacute, digitScan, 0x32);
+        send(QEvent::KeyRelease, Qt::Key_2, digitScan, 0x32);
+        QCOMPARE(inputCalls.last(), (QList<quint16>{0x32, 0, 0}));
+        send(QEvent::KeyPress, Qt::Key_E, eScan, 0x45,
+             Qt::ControlModifier | Qt::AltModifier);
+        QCOMPARE(shortcuts.size(), 1);
+        const auto callsBeforeShortcutRelease = inputCalls.size();
+        send(QEvent::KeyRelease, Qt::Key_unknown, eScan, 0x45);
+        QCOMPARE(inputCalls.size(), callsBeforeShortcutRelease);
+
+        pressAltGr();
+        send(QEvent::KeyPress, 0x20ac, eScan, 0x45);
+        const auto callsBeforeOverlay = inputCalls.size();
+        overlay.setVisible(true);
+        overlay.forceActiveFocus();
+        QTRY_VERIFY(!item->captureActive());
+        const auto releases = inputCalls.sliced(callsBeforeOverlay);
+        QCOMPARE(releases.size(), 2);
+        QVERIFY(releases.contains({0xa5, 0, 0}));
+        QVERIFY(releases.contains({0x45, 0, 0}));
+        QVERIFY(item->m_pressedKeys.isEmpty());
+        const auto callsBeforeOverlayInput = inputCalls.size();
+        send(QEvent::KeyPress, Qt::Key_Eacute, digitScan, 0x32);
+        send(QEvent::KeyRelease, Qt::Key_E, eScan, 0x45);
+        send(QEvent::KeyRelease, Qt::Key_Alt, altScan, 0x12, Qt::AltModifier);
+        QCOMPARE(inputCalls.size(), callsBeforeOverlayInput);
+        overlay.setVisible(false);
+        item->forceActiveFocus();
+        QTRY_VERIFY(item->captureActive());
+        send(QEvent::KeyPress, Qt::Key_Eacute, digitScan, 0x32);
+        send(QEvent::KeyRelease, Qt::Key_2, digitScan, 0x32);
+        QCOMPARE(inputCalls.last(), (QList<quint16>{0x32, 0, 0}));
+#else
+        QSKIP("This fixture uses Windows and XKB native scan codes.");
+#endif
     }
 
     void mapsGermanUmlautAndMinusAwayFromLayoutVirtualKeys()

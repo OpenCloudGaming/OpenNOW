@@ -91,6 +91,15 @@ impl NvstServerTermination {
     pub fn resumable(self) -> bool {
         session_resumable(Some(self.reason), Some(self.extended_code)) == Some(true)
     }
+
+    pub fn disposition(self) -> &'static str {
+        match self.reason {
+            0x34 => "normal",
+            0x38 => "idle",
+            0x39 => "time-limit",
+            _ => "error",
+        }
+    }
 }
 
 fn first_session_termination_reason(mut records: &[u8]) -> Option<u16> {
@@ -398,6 +407,15 @@ mod tests {
             (0xfffe, 0x35, false, 0x8003_0000),
         ] {
             let termination = extended(&[[0, 0], shutdown_reason.to_be_bytes()].concat());
+            assert_eq!(
+                termination.disposition(),
+                match shutdown_reason {
+                    0x0100 => "normal",
+                    0x0104 => "idle",
+                    0x0205 => "time-limit",
+                    _ => "error",
+                }
+            );
             assert_eq!(
                 termination,
                 NvstServerTermination {

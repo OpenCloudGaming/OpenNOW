@@ -1392,6 +1392,7 @@ dependencies = [
  "aes-gcm",
  "base64",
  "chrono",
+ "dbus-secret-service",
  "ed25519-dalek",
  "flate2",
  "fs2",

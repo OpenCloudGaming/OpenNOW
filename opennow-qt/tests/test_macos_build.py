@@ -36,11 +36,14 @@ class MacOSBuildContractTest(unittest.TestCase):
                 for arch, native, target, runner in (
                         ("arm64", "arm64", "aarch64-apple-darwin", "blacksmith-6vcpu-macos-15"),
                         ("x64", "x86_64", "x86_64-apple-darwin", "macos-15-intel")):
+                    if filename == "qt-build.yml":
+                        runner = "blacksmith-6vcpu-macos-15"
                     marker = f"          - label: macos-{arch}" if filename == "qt-build.yml" else f"          - arch: {arch}"
                     matrix = macos.split(marker, 1)[1].split("\n          - ", 1)[0].split("\n    env:", 1)[0]
                     for required in (f"os: {runner}", f"macos-arch: {native}", f"rust-target: {target}"):
                         self.assertIn(required, matrix)
-                self.assertIn('[[ "$(uname -m)" == "$OPENNOW_MACOS_ARCH" ]]', workflow)
+                expected_host = "OPENNOW_MACOS_HOST_ARCH" if filename == "qt-build.yml" else "OPENNOW_MACOS_ARCH"
+                self.assertIn('[[ "$(uname -m)" == "$' + expected_host + '" ]]', workflow)
                 self.assertIn('CMAKE_OSX_ARCHITECTURES="$OPENNOW_MACOS_ARCH"', workflow)
                 self.assertIn('Darwin-"$OPENNOW_PACKAGE_ARCH".dmg', workflow)
                 self.assertNotIn("-verify_arch arm64", workflow)

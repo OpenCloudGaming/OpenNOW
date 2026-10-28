@@ -53,6 +53,16 @@ fn error(message: &str) -> ServiceError {
     }
 }
 
+fn cursor_digest(entries: &[Entry], matches: &[(usize, u32)]) -> String {
+    let mut digest = Sha256::new();
+    for &(at, _) in matches {
+        let id = &entries[at].id;
+        digest.update((id.len() as u64).to_le_bytes());
+        digest.update(id.as_bytes());
+    }
+    format!("{:x}", digest.finalize())
+}
+
 impl StoreIndex {
     pub fn add(&mut self, game: &Value, key: Value, pointer: String, category: Option<&str>) {
         let id = game["id"].as_str().unwrap_or("");
@@ -193,15 +203,36 @@ impl StoreIndex {
             )
         );
         let prefix = format!("local:{}:", &fingerprint[..16]);
-        let offset = if page.cursor.is_empty() {
-            0
+        let continuation = if page.cursor.is_empty() {
+            None
         } else {
-            page.cursor
+            let invalid = || error("Local Store cursor does not match its search and filters");
+            let mut parts = page
+                .cursor
                 .strip_prefix(&prefix)
-                .and_then(|s| s.split(':').next())
-                .and_then(|s| s.parse::<usize>().ok())
-                .filter(|n| *n <= 12000)
-                .ok_or_else(|| error("Local Store cursor does not match its search and filters"))?
+                .ok_or_else(invalid)?
+                .split(':');
+            let number = |text: Option<&str>, max: usize| {
+                text.filter(|text| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()))
+                    .and_then(|text| text.parse::<usize>().ok())
+                    .filter(|n| *n <= max)
+                    .ok_or_else(invalid)
+            };
+            let offset = number(parts.next(), 12000)?;
+            let digest = parts
+                .next()
+                .filter(|text| {
+                    text.len() == 64
+                        && text
+                            .bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                })
+                .ok_or_else(invalid)?;
+            let pages = number(parts.next(), 100)?;
+            if parts.next().is_some() {
+                return Err(invalid());
+            }
+            Some((offset, digest, pages))
         };
         let mut matches: Vec<_> = self
             .entries
@@ -229,6 +260,17 @@ impl StoreIndex {
         if !query.is_empty() {
             matches.sort_by_key(|&(at, score)| (std::cmp::Reverse(score), at));
         }
+        let (offset, replace) = match continuation {
+            Some((offset, digest, pages))
+                if pages > self.pages
+                    || offset > matches.len()
+                    || digest != cursor_digest(&self.entries, &matches[..offset]) =>
+            {
+                (0, true)
+            }
+            Some((offset, _, _)) => (offset, false),
+            None => (0, false),
+        };
         let genres: BTreeSet<_> = self
             .entries
             .iter()
@@ -264,9 +306,18 @@ impl StoreIndex {
             let count = selected.len().min(limit);
             let next = offset + count;
             let more = next < matches.len() || !self.complete;
+            let next_cursor = if more {
+                format!(
+                    "{prefix}{next}:{}:{}",
+                    cursor_digest(&self.entries, &matches[..next]),
+                    self.pages
+                )
+            } else {
+                String::new()
+            };
             Ok(
                 json!({"games":&selected[..count],"count":count,"totalCount":matches.len(),"catalogTotalCount":self.entries.len(),
-                "hasNextPage":more,"nextCursor":if more {format!("{prefix}{next}:{}",self.pages)} else {String::new()},
+                "hasNextPage":more,"nextCursor":next_cursor,"replace":replace,
                 "source":"store-local","cacheHit":true,"cacheComplete":self.complete,
                 "localHasNextPage":next < matches.len(),
                 "upstreamCoverage":if self.complete {"complete-traversal"} else {"partial"},
@@ -415,6 +466,172 @@ mod tests {
                 .unwrap()["games"][0]["id"],
             "3"
         );
+    }
+
+    #[test]
+    fn ranked_insertion_before_offset_replaces_and_reaches_every_match() {
+        let mut games = json!({"games":[
+            {"id":"festival","title":"Fortnite Festival"},
+            {"id":"zero","title":"Fortnite Zero"}
+        ]});
+        let mut index = StoreIndex {
+            pages: 1,
+            ..StoreIndex::default()
+        };
+        for (at, game) in games["games"].as_array().unwrap().iter().enumerate() {
+            index.add(game, json!("page"), format!("/games/{at}"), None);
+        }
+        let first = index
+            .query(&json!({"limit":1,"searchQuery":"fortnite"}), |_| {
+                Some(games.clone())
+            })
+            .unwrap();
+        assert_eq!(first["games"][0]["id"], "festival");
+        let exact = json!({"id":"exact","title":"Fortnite"});
+        index.add(&exact, json!("page"), "/games/2".into(), None);
+        games["games"].as_array_mut().unwrap().push(exact);
+        index.pages = 2;
+        index.complete = true;
+
+        let mut result = index
+            .query(
+                &json!({"limit":1,"searchQuery":"fortnite","cursor":first["nextCursor"]}),
+                |_| Some(games.clone()),
+            )
+            .unwrap();
+        assert_eq!(result["games"][0]["id"], "exact");
+        assert_eq!(result["replace"], true);
+        assert!(result["facets"].is_object());
+        let mut reached = vec![result["games"][0]["id"].clone()];
+        for _ in 0..2 {
+            result = index
+                .query(
+                    &json!({"limit":1,"searchQuery":"fortnite","cursor":result["nextCursor"]}),
+                    |_| Some(games.clone()),
+                )
+                .unwrap();
+            assert_eq!(result["replace"], false);
+            reached.push(result["games"][0]["id"].clone());
+        }
+        assert_eq!(
+            reached,
+            vec![json!("exact"), json!("festival"), json!("zero")]
+        );
+        assert_eq!(result["hasNextPage"], false);
+        assert_eq!(result["nextCursor"], "");
+    }
+
+    #[test]
+    fn local_cursor_requires_a_valid_complete_pages_suffix() {
+        let (index, games) = fixture();
+        let first = index
+            .query(&json!({"limit":1}), |_| Some(games.clone()))
+            .unwrap();
+        let cursor = first["nextCursor"].as_str().unwrap();
+        let (without_pages, _) = cursor.rsplit_once(':').unwrap();
+        for invalid in [
+            format!("{without_pages}:not-a-page"),
+            format!("{without_pages}:101"),
+            format!("{cursor}:ignored"),
+            without_pages.to_owned(),
+        ] {
+            assert_eq!(
+                index
+                    .query(&json!({"limit":1,"cursor":invalid}), |_| panic!(
+                        "invalid cursor read a page"
+                    ))
+                    .unwrap_err()
+                    .code,
+                "invalid_params"
+            );
+        }
+    }
+
+    #[test]
+    fn growth_after_consumed_prefix_continues_without_replacement() {
+        let (mut index, mut games) = fixture();
+        index.pages = 1;
+        index.complete = false;
+        let first = index
+            .query(&json!({"limit":1,"searchQuery":"fortnite"}), |_| {
+                Some(games.clone())
+            })
+            .unwrap();
+        assert_eq!(first["games"][0]["id"], "2");
+        let added = json!({"id":"4","title":"Fortnite Zero"});
+        index.add(&added, json!("page"), "/games/3".into(), None);
+        games["games"].as_array_mut().unwrap().push(added);
+        index.pages = 2;
+        index.complete = true;
+        let next = index
+            .query(
+                &json!({"limit":1,"searchQuery":"fortnite","cursor":first["nextCursor"]}),
+                |_| Some(games.clone()),
+            )
+            .unwrap();
+        assert_eq!(next["replace"], false);
+        assert_eq!(next["games"][0]["id"], "3");
+        assert_eq!(next["facets"], Value::Null);
+        let last = index
+            .query(
+                &json!({"limit":1,"searchQuery":"fortnite","cursor":next["nextCursor"]}),
+                |_| Some(games.clone()),
+            )
+            .unwrap();
+        assert_eq!(last["replace"], false);
+        assert_eq!(last["games"][0]["id"], "4");
+        assert_eq!(last["hasNextPage"], false);
+    }
+
+    #[test]
+    fn saved_page_loss_replaces_even_when_ranked_prefix_is_unchanged() {
+        let (mut index, games) = fixture();
+        index.pages = 2;
+        let first = index
+            .query(&json!({"limit":1}), |_| Some(games.clone()))
+            .unwrap();
+        index.pages = 1;
+        let replacement = index
+            .query(&json!({"limit":1,"cursor":first["nextCursor"]}), |_| {
+                Some(games.clone())
+            })
+            .unwrap();
+        assert_eq!(replacement["replace"], true);
+        assert_eq!(replacement["games"], first["games"]);
+        assert_ne!(replacement["nextCursor"], first["nextCursor"]);
+        assert!(replacement["facets"].is_object());
+    }
+
+    #[test]
+    fn empty_partial_search_progress_uses_pages_suffix_until_completion() {
+        let (mut index, _) = fixture();
+        index.complete = false;
+        index.pages = 1;
+        let first = index
+            .query(&json!({"searchQuery":"no matching game"}), |_| panic!())
+            .unwrap();
+        assert_eq!(first["count"], 0);
+        assert_eq!(first["hasNextPage"], true);
+        index.pages = 2;
+        let next = index
+            .query(
+                &json!({"searchQuery":"no matching game","cursor":first["nextCursor"]}),
+                |_| panic!(),
+            )
+            .unwrap();
+        assert_eq!(next["replace"], false);
+        assert_eq!(next["count"], 0);
+        assert_ne!(next["nextCursor"], first["nextCursor"]);
+        index.complete = true;
+        let last = index
+            .query(
+                &json!({"searchQuery":"no matching game","cursor":next["nextCursor"]}),
+                |_| panic!(),
+            )
+            .unwrap();
+        assert_eq!(last["replace"], false);
+        assert_eq!(last["hasNextPage"], false);
+        assert_eq!(last["nextCursor"], "");
     }
     #[test]
     fn only_selected_pages_are_read() {

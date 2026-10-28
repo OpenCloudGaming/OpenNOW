@@ -70,6 +70,12 @@ QtObject {
         onConsoleSurfaceRequested: enabled => root.consoleSurfaceRequested(enabled)
         onAccessibilityAnnounced: message => root.accessibilityMessage = message
         onErrorReported: message => root.lastError = message
+        onSettingWriteFinished: (token, result, message) => {
+            catalogOwner.finishCollectionWrite(token, result, message)
+            if (result) onboardingOwner.acceptResponse(token, result)
+            else onboardingOwner.acceptFailure(token, message)
+        }
+        onResetStarted: onboardingOwner.interruptForSettingsReset()
     }
 
     property AccountServicesState accountServicesOwnerState: AccountServicesState {
@@ -81,6 +87,7 @@ QtObject {
         refreshCatalogAfterAccountChange: catalogOwner.refreshCatalogAfterAccountChange
         refreshAccountServices: root.refreshAccountServices
         acceptsScope: root.matchesAuthScope
+        authScope: catalogOwner.authScope
         onAccessibilityAnnounced: message => root.accessibilityMessage = message
     }
 
@@ -111,7 +118,7 @@ QtObject {
     readonly property bool onboardingAwdlReady: true
     property OnboardingState onboardingOwnerState: OnboardingState {
         id: onboardingOwner
-        coreClient: CoreClient
+        persistSetting: (key, value) => settingsOwner.setSetting(key, value, "onboarding")
         persistedSettings: root.settings
         ready: root.ready
         signedIn: root.signedIn
@@ -122,10 +129,6 @@ QtObject {
             && ["starting", "streaming", "stopping"].indexOf(root.streamerStatus) < 0
         onRestartRequested: AppController.restartApplication()
         onRequirementsMissing: root.onboardingRequirementsMissing()
-        onSettingSaved: (key, value, changes) => {
-            settingsOwner.applyCoupledSettings(changes)
-            settingsOwner.applySetting(key, value)
-        }
         onCompleted: {
             root.consoleSurfaceRequested(root.settings.launchInConsoleMode === true)
             root.onboardingCompleted()
@@ -176,6 +179,7 @@ QtObject {
     property alias shortcutUpdateRequestId: settingsOwner.shortcutUpdateRequestId
     property alias shortcutUpdateError: settingsOwner.shortcutUpdateError
     property string lastError: ""
+    property var streamEndNotice: null
     property var focusPositions: ({})
     property var providers: []
     property string selectedProviderIdpId: ""
@@ -416,6 +420,8 @@ QtObject {
         if (!activeSession && pendingAccountSwitch)
             Qt.callLater(continuePendingAccountSwitch)
         const sessionId = String(activeSession && activeSession.sessionId || "")
+        if (sessionId !== sessionAdSessionId)
+            abandonSessionAdReports(sessionId)
         if (sessionId !== streamRecordingIntentSessionId)
             streamRecordingIntentSessionId = ""
         if (streamIdleWarning && streamIdleWarning.sessionId !== sessionId)
@@ -778,6 +784,17 @@ QtObject {
     property alias storageLocationsRequestId: accountServicesOwner.storageLocationsRequestId
     property alias storageResetRequestId: accountServicesOwner.storageResetRequestId
     property string sessionAdRequestId: ""
+    property string sessionAdSessionId: ""
+    property var sessionAdReports: []
+    property var sessionAdInFlight: null
+    property int sessionAdRetryAttempts: 0
+    property Timer sessionAdRetryTimer: Timer {
+        interval: Math.min(30000, 1000 * Math.pow(2, Math.min(5, root.sessionAdRetryAttempts)))
+        onTriggered: {
+            stop()
+            root.flushSessionAdReports()
+        }
+    }
     property string mediaRequestId: ""
     property string mediaDeleteRequestId: ""
     property string mediaRecordingTargetRequestId: ""
@@ -1522,28 +1539,32 @@ QtObject {
         return accountServicesOwner.refreshGameAccounts()
     }
 
-    function startAccountLink(provider) {
-        return accountServicesOwner.startAccountLink(provider)
+    function captureAccountScope() {
+        return accountServicesOwner.captureAuthScope()
+    }
+
+    function startAccountLink(provider, scope) {
+        return accountServicesOwner.startAccountLink(provider, scope)
     }
 
     function pollAccountLink() {
         return accountServicesOwner.pollAccountLink()
     }
 
-    function syncGameAccount(provider) {
-        return accountServicesOwner.syncGameAccount(provider)
+    function syncGameAccount(provider, scope) {
+        return accountServicesOwner.syncGameAccount(provider, scope)
     }
 
-    function unlinkGameAccount(provider) {
-        return accountServicesOwner.unlinkGameAccount(provider)
+    function unlinkGameAccount(provider, scope) {
+        return accountServicesOwner.unlinkGameAccount(provider, scope)
     }
 
     function refreshStorageLocations() {
         return accountServicesOwner.refreshStorageLocations()
     }
 
-    function resetPersistentStorage(regionCode) {
-        return accountServicesOwner.resetPersistentStorage(regionCode)
+    function resetPersistentStorage(regionCode, scope) {
+        return accountServicesOwner.resetPersistentStorage(regionCode, scope)
     }
 
     function refreshMedia() {
@@ -1951,7 +1972,12 @@ QtObject {
         AppController.navigate("inserting")
     }
 
+    function dismissStreamEndNotice() {
+        streamEndNotice = null
+    }
+
     function launchSelectedGame(directConsoleMode) {
+        streamEndNotice = null
         if (!signedIn) {
             AppController.navigate("sign-in")
             return
@@ -2268,17 +2294,132 @@ QtObject {
         }, 5000)
     }
 
-    function reportSessionAd(action, ad, watchedTimeMs, cancelReason) {
-        if (!ready || !activeSession || !ad || sessionAdRequestId !== "")
-            return
-        sessionAdRequestId = CoreClient.request("session.ad.report", {
-            sessionId: activeSession.sessionId,
+    function abandonSessionAdReports(sessionId) {
+        const requestId = sessionAdRequestId
+        sessionAdRequestId = ""
+        sessionAdInFlight = null
+        sessionAdReports = []
+        sessionAdSessionId = sessionId
+        sessionAdRetryAttempts = 0
+        sessionAdRetryTimer.stop()
+        if (requestId !== "") CoreClient.cancel(requestId)
+    }
+
+    function prepareSessionAd(ad, sessionId) {
+        const owner = String(activeSession && activeSession.sessionId || "")
+        if (!owner || !ad || !ad.adId || (sessionId !== undefined && String(sessionId) !== owner))
+            return false
+        if (sessionAdSessionId !== owner)
+            abandonSessionAdReports(owner)
+        const reports = sessionAdReports.filter(value => value.adId === ad.adId || value.events.length > 0)
+        if (reports.some(value => value.adId === ad.adId))
+            return true
+        if (reports.length >= 8)
+            return false
+        reports.push({adId: ad.adId, events: [], lastAction: "", terminal: false})
+        sessionAdReports = reports
+        return true
+    }
+
+    function reportSessionAd(action, ad, watchedTimeMs, cancelReason, sessionId) {
+        if (["start", "pause", "resume", "finish", "cancel"].indexOf(action) < 0
+                || !prepareSessionAd(ad, sessionId))
+            return false
+        const report = sessionAdReports.find(value => value.adId === ad.adId)
+        if (report.terminal || report.lastAction === action || (action === "start" && report.lastAction !== ""))
+            return true
+        const event = {
+            sessionId: sessionAdSessionId,
             adId: ad.adId,
             action: action,
             watchedTimeInMs: Math.max(0, Math.round(watchedTimeMs || 0)),
             pausedTimeInMs: 0,
+            clientTimestamp: Math.floor(Date.now() / 1000),
             cancelReason: cancelReason || undefined
-        }, 30000)
+        }
+        const tail = report.events[report.events.length - 1]
+        if ((action === "pause" || action === "resume") && tail
+                && (tail.action === "pause" || tail.action === "resume")
+                && (!sessionAdInFlight || sessionAdInFlight.event !== tail))
+            report.events[report.events.length - 1] = event
+        else
+            report.events.push(event)
+        report.lastAction = action
+        report.terminal = action === "finish" || action === "cancel"
+        sessionAdReports = sessionAdReports.slice()
+        if (!sessionAdRetryTimer.running)
+            flushSessionAdReports()
+        return true
+    }
+
+    function flushSessionAdReports() {
+        if (!ready || sessionAdRequestId !== "" || !activeSession
+                || String(activeSession.sessionId) !== sessionAdSessionId)
+            return
+        const report = sessionAdReports.find(value => value.events.length > 0)
+        if (!report)
+            return
+        sessionAdInFlight = {report: report, event: report.events[0]}
+        sessionAdRequestId = CoreClient.request("session.ad.report", sessionAdInFlight.event, 30000)
+        if (sessionAdRequestId === "") {
+            sessionAdInFlight = null
+            sessionAdRetryAttempts = Math.min(5, sessionAdRetryAttempts + 1)
+            sessionAdRetryTimer.restart()
+        }
+    }
+
+    function finishSessionAdReport(requestId, result, message) {
+        if (requestId === "" || requestId !== sessionAdRequestId || !sessionAdInFlight)
+            return false
+        const pending = sessionAdInFlight
+        sessionAdRequestId = ""
+        sessionAdInFlight = null
+        if (!result || (result.scope && !matchesAuthScope(result.scope) && !acceptsSessionScope(result.scope))) {
+            if (message) streamMessage = message
+            sessionAdRetryAttempts = Math.min(5, sessionAdRetryAttempts + 1)
+            sessionAdRetryTimer.restart()
+            return true
+        }
+        sessionAdRetryAttempts = 0
+        sessionAdRetryTimer.stop()
+        pending.report.events.shift()
+        if (pending.event.action === "finish" || pending.event.action === "cancel")
+            sessionAdReports = sessionAdReports.filter(value => value !== pending.report)
+        else
+            sessionAdReports = sessionAdReports.slice()
+        const identity = result.adReportIdentity
+        if (identity && identity.sessionId === pending.event.sessionId && identity.adId === pending.event.adId)
+            acceptSessionAdSnapshot(result)
+        flushSessionAdReports()
+        return true
+    }
+
+    function acceptSessionAdSnapshot(payload) {
+        const identity = payload && payload.adReportIdentity
+        if (!identity || typeof identity.sessionId !== "string" || typeof identity.adId !== "string"
+                || identity.sessionId.length === 0 || identity.sessionId.length > 256
+                || identity.adId.length === 0 || identity.adId.length > 256
+                || /[\u0000-\u001f\u007f]/.test(identity.sessionId + identity.adId)
+                || !activeSession || String(activeSession.sessionId) !== identity.sessionId
+                || !acceptsSessionScope(payload.scope))
+            return false
+        const state = activeSession.adState || ({})
+        const ads = state.sessionAds || state.ads || []
+        if (!ads.length || ads[0].adId !== identity.adId || !payload.session
+                || String(payload.session.sessionId) !== identity.sessionId)
+            return false
+        const termination = ownedSessionTermination(payload)
+        if (termination)
+            finishRemoteSession(termination)
+        else if (isRemoteSessionTermination(payload.termination))
+            finishRemoteSession(payload.termination)
+        else
+            acceptStreamingSession(payload.session)
+        const next = activeSession ? (activeSession.adState || ({})) : ({})
+        if (!(next.sessionAdsRequired || next.isAdsRequired) || !(next.sessionAds || next.ads || []).length) {
+            if (AppController.overlay === "queue-ad") AppController.showOverlay("")
+        }
+        return true
     }
 
     function startNativeStreamer() {
@@ -2292,6 +2433,11 @@ QtObject {
                 && streamer.status !== "stopped" && streamer.status !== "error"
                 && streamer.status !== "starting")
             return
+        if (streamer && streamer.sessionId && streamer.sessionId !== activeSession.sessionId
+                && streamer.status !== "stopped" && streamer.status !== "error") {
+            stopNativeStreamer("Replacing the native media session")
+            return
+        }
         streamIdleWarning = null
         streamer = {
             status: "starting",
@@ -2303,7 +2449,11 @@ QtObject {
             inputResumeCount: 0,
             recordingStartCount: 0,
             recordingStopCount: 0,
-            queueDropCount: 0
+            queueDropCount: 0,
+            overlayRequestGeneration: overlayRequestGeneration,
+            screenshotRequestGeneration: screenshotRequestGeneration,
+            recordingToggleRequestGeneration: recordingToggleRequestGeneration,
+            shortcutActionGeneration: shortcutActionGeneration
         }
         streamColorFormat = null
         microphoneRequestId = ""
@@ -2576,6 +2726,12 @@ QtObject {
         if (termination.source === "nvst-server") {
             lastError = message || qsTr("The server ended the session.")
             accessibilityMessage = lastError
+            const disposition = termination.disposition || "error"
+            if (disposition !== "normal") {
+                const code = typeof termination.extendedCode === "number" ? termination.extendedCode >>> 0 : null
+                streamEndNotice = {kind: disposition, code: code,
+                    codeText: code === null ? "" : "0x" + code.toString(16).toUpperCase().padStart(8, "0")}
+            }
         }
         if (AppController.route === "stream" || AppController.route === "inserting") {
             AppController.showOverlay("")
@@ -2585,6 +2741,10 @@ QtObject {
 
     function artworkUrl(sourceUrl) {
         return artworkOwner.artworkUrl(sourceUrl)
+    }
+
+    function reportArtworkLoad(sourceUrl, resolvedUrl, failed) {
+        return artworkOwner.reportArtworkLoad(sourceUrl, resolvedUrl, failed)
     }
 
     function retainArtwork(source) {
@@ -2622,6 +2782,11 @@ QtObject {
         cancelRecordingTarget()
         suspendRecordingStart()
         streamerRestartTimer.stop()
+        const prepareId = streamerPrepareRequestId
+        streamerPrepareRequestId = ""
+        if (prepareId !== "") CoreClient.cancel(prepareId)
+        if (streamerStartRequestId !== "") takeNativeRequest(streamerStartRequestId)
+        streamerStartRequestId = ""
         if (streamerStopRequestId !== "")
             return
         const status = streamer ? String(streamer.status || "") : ""
@@ -3489,6 +3654,8 @@ QtObject {
         const pending = takeNativeRequest(requestId)
         if (!pending)
             return
+        if (pending.operation === "start" && requestId !== streamerStartRequestId)
+            return
         if (pending.operation === "recording-start" || pending.operation === "recording-stop") {
             acceptRecordingResponse(response, pending)
             return
@@ -3569,8 +3736,7 @@ QtObject {
         } else if (pending.operation === "start") {
             streamerStartRequestId = ""
             if (sessionRecoveryPending) return
-            if (response.transport === "webrtc" && streamer
-                    && (streamer.status === "error" || streamer.status === "stopped")) return
+            if (streamer && (streamer.status === "error" || streamer.status === "stopped")) return
             streamReplayEnabled = response.replayEnabled === true
             if (!replayBufferRequested)
                 disableStreamReplay()
@@ -3610,6 +3776,9 @@ QtObject {
             if (sessionRecoveryPending) {
                 streamerStartRequestId = ""
                 discoverRecoverySession()
+            } else if (activeSession && ["ready", "streaming"].indexOf(activeSession.phase
+                       || (Number(activeSession.status) >= 2 ? "ready" : "preparing")) >= 0) {
+                startNativeStreamer()
             }
         } else if (pending.operation === "input") {
             streamInputPauseRequestId = ""
@@ -3923,6 +4092,7 @@ QtObject {
             if (CoreClient.state === "ready") {
                 root.authGeneration = 0
                 root.initializeServices()
+                root.flushSessionAdReports()
             }
             else {
                 root.invalidateStoreLaunch()
@@ -3934,6 +4104,8 @@ QtObject {
             }
         }
         function onResponseReceived(requestId, result) {
+            if (requestId === root.sessionAdRequestId && root.finishSessionAdReport(requestId, result, "")) return
+            if (result.adReportIdentity !== undefined) return
             if (settingsOwner.acceptResponse(requestId, result)) return
             const ownedTermination = root.ownedSessionTermination(result)
             if (ownedTermination) {
@@ -3971,7 +4143,7 @@ QtObject {
             } else if (root.finishArtworkRequest(requestId, result, false)) {
                 return
             } else if (requestId === root.settingsRequestId && result.settings) {
-                settingsOwner.acceptSettings(result)
+                settingsOwner.acceptSettings(result, true)
                 root.resolveDirectLaunch()
                 root.showSavedAccountSelection()
                 root.syncDiscordPresence()
@@ -4232,13 +4404,6 @@ QtObject {
                     : result.reportId
                     ? qsTr("Thanks — this bug has been sent to the developer. Reference %1").arg(result.reportId)
                     : qsTr("Thanks — this bug has been sent to the developer.")
-            } else if (requestId === root.sessionAdRequestId) {
-                root.sessionAdRequestId = ""
-                root.acceptStreamingSession(result.session || root.activeSession)
-                const state = root.activeSession ? (root.activeSession.adState || ({})) : ({})
-                const ads = state.sessionAds || state.ads || []
-                if (!(state.sessionAdsRequired || state.isAdsRequired) || ads.length === 0)
-                    AppController.showOverlay("")
             } else if (requestId === root.sessionEndRequestId) {
                 root.sessionEndRequestId = ""
                 root.pendingSessionEnd = null
@@ -4275,6 +4440,7 @@ QtObject {
             } else if (requestId === root.streamCreateRequestId) {
                 root.streamCreateRequestId = ""
                 root.launchConflictDetected = false
+                root.pendingLaunchParams = null
                 root.acceptStreamingSession(result.session || null)
                 if (root.activeSession)
                     root.streamRequestedColorQuality = root.pendingRequestedColorQuality
@@ -4373,6 +4539,7 @@ QtObject {
             }
         }
         function onRequestFailed(requestId, code, message) {
+            if (requestId === root.sessionAdRequestId && root.finishSessionAdReport(requestId, null, message)) return
             if (requestId === root.sessionEndRequestId && requestId !== "") {
                 root.sessionEndRequestId = ""
                 return
@@ -4522,13 +4689,18 @@ QtObject {
                 root.bugReportRequestId = ""
                 root.reportingState = "error"
                 root.reportingMessage = message
-            } else if (requestId === root.sessionAdRequestId) {
-                root.sessionAdRequestId = ""
-                root.streamMessage = message
             } else if (requestId === root.activeSessionRequestId) {
                 root.activeSessionRequestId = ""
             } else if (requestId === root.remoteSessionsRequestId) {
                 root.remoteSessionsRequestId = ""
+                if (code === "session_discovery_failed" && root.launchIntentCurrent()
+                        && !root.activeSession && !root.conflictSession
+                        && !root.conflictSessionNeedsRefresh && !root.launchConflictDetected
+                        && !root.onboardingReplaying) {
+                    root.lastError = ""
+                    root.createPendingSession()
+                    return
+                }
                 root.streamState = "error"
                 root.streamMessage = qsTr("We couldn't check whether your game is still running. Check your connection, then try again.")
                 root.lastError = root.streamMessage
@@ -4577,8 +4749,9 @@ QtObject {
         function onEventReceived(name, payload) {
             if (name === "settings.changed") {
                 settingsOwner.acceptSettingsChange(payload)
-            } else if (name === "settings.reset")
-                root.refreshSettings()
+            } else if (name === "settings.reset") {
+                if (!settingsOwner.resetting) root.refreshSettings()
+            }
             else if (name === "auth.session.changed") {
                 if (!root.acceptAuthEnvelope(payload))
                     return
@@ -4592,6 +4765,10 @@ QtObject {
                 root.streamMessage = root.lastError
                 root.refreshRemoteSessions()
             } else if (name === "session.changed") {
+                if (payload.adReportIdentity !== undefined) {
+                    root.acceptSessionAdSnapshot(payload)
+                    return
+                }
                 const ownedTermination = root.ownedSessionTermination(payload)
                 if (ownedTermination) {
                     root.finishRemoteSession(ownedTermination)

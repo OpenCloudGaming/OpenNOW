@@ -15,8 +15,11 @@ use opennow_streamer_transport::{ReservedNvstBundle, nvst_video_packet_size};
 use serde_json::{Value, json};
 use tungstenite::client::IntoClientRequest;
 use tungstenite::http::{HeaderValue, Uri};
+use tungstenite::protocol::WebSocketConfig;
 use tungstenite::stream::MaybeTlsStream;
-use tungstenite::{Message, WebSocket, connect};
+use tungstenite::{Message, WebSocket};
+
+use crate::{StartupToken, signaling_io};
 
 #[path = "nvst_rtsp_color.rs"]
 mod color;
@@ -103,6 +106,31 @@ struct RtspClient {
     socket: WebSocket<MaybeTlsStream<TcpStream>>,
     cseq: u64,
     buffer: String,
+    startup: Option<StartupBudget>,
+}
+
+#[derive(Clone)]
+struct StartupBudget {
+    token: StartupToken,
+    deadline: Instant,
+}
+
+impl StartupBudget {
+    fn check(&self) -> Result<(), NvstRtspError> {
+        if self.token.is_cancelled() {
+            return Err(NvstRtspError::new(
+                "nvst-start-aborted",
+                "NVST startup was cancelled",
+            ));
+        }
+        if Instant::now() >= self.deadline {
+            return Err(NvstRtspError::new(
+                "nvst-startup-timeout",
+                "NVST startup deadline expired",
+            ));
+        }
+        Ok(())
+    }
 }
 
 struct VideoSetup {
@@ -382,7 +410,15 @@ impl RtspClient {
                             sleep_for.as_millis(),
                         ),
                     );
-                    std::thread::sleep(sleep_for);
+                    let retry_at = Instant::now() + sleep_for;
+                    while Instant::now() < retry_at {
+                        self.check_startup()?;
+                        thread::sleep(
+                            retry_at
+                                .saturating_duration_since(Instant::now())
+                                .min(Duration::from_millis(25)),
+                        );
+                    }
                 }
             }
         }
@@ -509,7 +545,23 @@ impl RtspClient {
         })
     }
 
-    fn connect(endpoint: &str, session_id: &str) -> Result<(Self, String), NvstRtspError> {
+    fn check_startup(&self) -> Result<(), NvstRtspError> {
+        if let Some(startup) = &self.startup {
+            startup.check()?;
+        }
+        Ok(())
+    }
+
+    fn connect_with_options(
+        endpoint: &str,
+        session_id: &str,
+        connector: Option<tungstenite::Connector>,
+        startup: StartupBudget,
+    ) -> Result<(Self, String), NvstRtspError> {
+        startup.check()?;
+        let deadline = startup
+            .deadline
+            .min(Instant::now() + signaling_io::CONNECT_TIMEOUT);
         let (wss, target) = rtsp_endpoint_urls(endpoint)?;
         let mut request = wss
             .into_client_request()
@@ -523,13 +575,68 @@ impl RtspClient {
         request
             .headers_mut()
             .insert("content-length", HeaderValue::from_static("0"));
-        let (mut socket, _) = connect_with_retry(|| connect(request.clone()))?;
-        set_io_timeout(&mut socket, REQUEST_TIMEOUT);
+        let result = connect_with_retry(|| {
+            let mut request = request.clone();
+            let mut redirects = 0;
+            loop {
+                let connector = match &connector {
+                    Some(tungstenite::Connector::Rustls(config)) => {
+                        Some(tungstenite::Connector::Rustls(Arc::clone(config)))
+                    }
+                    _ => None,
+                };
+                let result = signaling_io::connect(
+                    request.clone(),
+                    deadline,
+                    || startup.token.is_cancelled(),
+                    WebSocketConfig::default()
+                        .max_write_buffer_size(MAX_REQUEST_RESPONSE_BYTES * 2)
+                        .max_message_size(Some(MAX_REQUEST_RESPONSE_BYTES))
+                        .max_frame_size(Some(MAX_REQUEST_RESPONSE_BYTES)),
+                    connector,
+                );
+                match result {
+                    Err(tungstenite::Error::Http(response))
+                        if response.status().is_redirection() && redirects < 3 =>
+                    {
+                        let Some(location) = response.headers().get("Location") else {
+                            return Err(tungstenite::Error::Http(response));
+                        };
+                        *request.uri_mut() = location.to_str()?.parse()?;
+                        redirects += 1;
+                    }
+                    result => return result,
+                }
+            }
+        });
+        startup.check()?;
+        if Instant::now() >= deadline {
+            return Err(NvstRtspError::new(
+                "nvst-connect-timeout",
+                "RTSPS connection timed out",
+            ));
+        }
+        let mut socket = result?;
+        let stream = match socket.get_mut() {
+            MaybeTlsStream::Plain(stream) => stream,
+            MaybeTlsStream::Rustls(stream) => stream.get_mut(),
+            _ => {
+                return Err(NvstRtspError::new(
+                    "nvst-connect-failed",
+                    "Unsupported TLS backend",
+                ));
+            }
+        };
+        stream.set_nonblocking(false).map_err(|_| {
+            NvstRtspError::new("nvst-connect-failed", "Could not configure RTSPS socket")
+        })?;
+        set_io_timeout(&mut socket, CONTROL_IO_TIMEOUT);
         Ok((
             Self {
                 socket,
                 cseq: 0,
                 buffer: String::new(),
+                startup: Some(startup),
             },
             target,
         ))
@@ -554,8 +661,14 @@ impl RtspClient {
         timeout: Duration,
     ) -> Result<RtspResponse, NvstRtspError> {
         let mut stage = opennow_streamer_protocol::log::Stage::begin("rtsps.request");
-        let deadline = Instant::now() + timeout;
-        set_io_timeout(&mut self.socket, timeout);
+        self.check_startup()?;
+        let deadline = self
+            .startup
+            .as_ref()
+            .map_or(Instant::now() + timeout, |startup| {
+                startup.deadline.min(Instant::now() + timeout)
+            });
+        set_io_timeout(&mut self.socket, timeout.min(CONTROL_IO_TIMEOUT));
         self.socket.set_config(|config| {
             config.max_message_size = Some(MAX_REQUEST_RESPONSE_BYTES);
             config.max_frame_size = Some(MAX_REQUEST_RESPONSE_BYTES);
@@ -572,6 +685,7 @@ impl RtspClient {
             ),
         );
         loop {
+            self.check_startup()?;
             if self.buffer.len() > MAX_REQUEST_RESPONSE_BYTES {
                 return Err(NvstRtspError::new(
                     "nvst-rtsp-failed",
@@ -614,6 +728,7 @@ impl RtspClient {
                 &mut self.socket,
                 deadline
                     .saturating_duration_since(Instant::now())
+                    .min(CONTROL_IO_TIMEOUT)
                     .max(Duration::from_millis(1)),
             );
             match self.socket.read() {
@@ -699,6 +814,14 @@ fn connect_with_retry<T>(
 }
 
 fn rtsp_connect_error(error: &tungstenite::Error) -> NvstRtspError {
+    if let tungstenite::Error::Io(error) = error {
+        if error.kind() == ErrorKind::Interrupted {
+            return NvstRtspError::new("nvst-start-aborted", "NVST startup was cancelled");
+        }
+        if error.kind() == ErrorKind::TimedOut {
+            return NvstRtspError::new("nvst-connect-timeout", "RTSPS connection timed out");
+        }
+    }
     if let tungstenite::Error::Http(response) = error {
         let status = response.status().as_u16();
         return NvstRtspError::new(
@@ -762,6 +885,13 @@ pub struct PreparedNvstRtspSession {
 }
 
 impl PreparedNvstRtspSession {
+    pub(crate) fn check_startup(&self) -> Result<(), NvstRtspError> {
+        if let Some(client) = &self.client {
+            client.check_startup()?;
+        }
+        Ok(())
+    }
+
     pub fn announce(&mut self) -> Result<(), NvstRtspError> {
         if self.announced {
             return Ok(());
@@ -800,10 +930,12 @@ impl PreparedNvstRtspSession {
             ensure_rtsp_ok("PLAY", &play)?;
         }
 
-        let client = self
+        self.check_startup()?;
+        let mut client = self
             .client
             .take()
             .ok_or_else(|| NvstRtspError::new("nvst-rtsp-failed", "RTSPS client is unavailable"))?;
+        client.startup = None;
         self.owns_session = false;
         ActiveNvstRtspSession::spawn(client, self.control_ping.clone())
     }
@@ -817,6 +949,7 @@ impl Drop for PreparedNvstRtspSession {
         let Some(client) = self.client.as_mut() else {
             return;
         };
+        client.startup = None;
         set_io_timeout(&mut client.socket, CONTROL_IO_TIMEOUT);
         let mut headers = self.common_headers.clone();
         headers.push(("Session", self.rtsp_session.clone()));
@@ -948,7 +1081,13 @@ impl Drop for ActiveNvstRtspSession {
 pub fn prepare_owned_nvst(
     context: &SessionContext,
     bundle: &mut ReservedNvstBundle,
+    token: StartupToken,
 ) -> Result<PreparedNvstRtspSession, NvstRtspError> {
+    let startup = StartupBudget {
+        token,
+        deadline: Instant::now() + REQUEST_TIMEOUT,
+    };
+    startup.check()?;
     ensure_tls_crypto_provider()?;
     let endpoints = context
         .session
@@ -968,7 +1107,7 @@ pub fn prepare_owned_nvst(
     }
 
     try_signaling_endpoints(&endpoints, |endpoint| {
-        prepare_on_endpoint(context, bundle, session_id, endpoint)
+        prepare_on_endpoint(context, bundle, session_id, endpoint, startup.clone())
     })
 }
 
@@ -1017,6 +1156,7 @@ fn try_signaling_endpoints<T>(
                 if !matches!(
                     error.code,
                     "nvst-connect-failed"
+                        | "nvst-connect-timeout"
                         | "nvst-network-failed"
                         | "nvst-rtsp-timeout"
                         | "nvst-service-unavailable"
@@ -1054,6 +1194,7 @@ fn prepare_on_endpoint(
     bundle: &mut ReservedNvstBundle,
     session_id: &str,
     endpoint: &str,
+    startup: StartupBudget,
 ) -> Result<PreparedNvstRtspSession, NvstRtspError> {
     let client_port = bundle
         .local_addr()
@@ -1066,7 +1207,8 @@ fn prepare_on_endpoint(
     let identity = bundle.identity();
 
     let mut connect_stage = opennow_streamer_protocol::log::Stage::begin("rtsps.connect");
-    let (mut client, target) = RtspClient::connect(endpoint, session_id)?;
+    let (mut client, target) =
+        RtspClient::connect_with_options(endpoint, session_id, None, startup)?;
     connect_stage.complete();
     drop(connect_stage);
     let host = target

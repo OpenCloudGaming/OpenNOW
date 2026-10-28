@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define OPENNOW_STREAMER_FFI_ABI_VERSION 17u
+#define OPENNOW_STREAMER_FFI_ABI_VERSION 18u
 #define OPENNOW_STREAMER_FRAME_TIMING_CAPTURE 1u
 #define OPENNOW_STREAMER_FRAME_TIMING_PACED 2u
 #define OPENNOW_STREAMER_FRAME_TIMING_PRESENTATION 4u
@@ -134,6 +134,13 @@ typedef void (*OpenNowStreamerCallback)(
 
 typedef void (*OpenNowStreamerFrameAvailableCallback)(void *user_data);
 
+typedef void (*OpenNowStreamerCursorCallback)(
+    const uint8_t *start_id,
+    size_t start_id_length,
+    const uint8_t *bytes,
+    size_t length,
+    void *user_data);
+
 typedef struct OpenNowStreamerConfig {
     uint32_t abi_version;
     size_t struct_size;
@@ -144,7 +151,7 @@ typedef struct OpenNowStreamerConfig {
     OpenNowStreamerCallback response_callback;
     OpenNowStreamerCallback event_callback;
     OpenNowStreamerFrameAvailableCallback frame_available_callback;
-    OpenNowStreamerCallback cursor_callback;
+    OpenNowStreamerCursorCallback cursor_callback;
     void *user_data;
     const OpenNowStreamerVulkanDevice *vulkan_device;
     /* Packed Windows LUID bits. Zero selects the system default adapter. */

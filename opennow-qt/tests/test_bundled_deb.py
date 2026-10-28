@@ -121,6 +121,9 @@ class BundledDebWorkflowTest(unittest.TestCase):
         for name in ("qt-build.yml", "qt-release-candidate.yml"):
             with self.subTest(workflow=name):
                 workflow = (ROOT / ".github/workflows" / name).read_text()
+                if name == "qt-build.yml":
+                    self.assertIn("uses: ./.github/actions/linux-package", workflow)
+                    workflow += (ROOT / ".github/actions/linux-package/action.yml").read_text()
                 self.assertIn('CPACK_PROJECT_CONFIG_FILE=$PWD/opennow-qt/packaging/LinuxBundledDeb.cmake', workflow)
                 self.assertIn('OPENNOW_APPDIR=$PWD/build/AppDir', workflow)
                 self.assertIn('bash opennow-qt/packaging/verify_bundled_deb.sh "${debs[0]}"', workflow)

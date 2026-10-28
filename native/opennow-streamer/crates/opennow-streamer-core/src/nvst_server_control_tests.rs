@@ -149,6 +149,10 @@ fn server_termination_preserves_classification_and_stops_every_leg_once() {
             assert_eq!(event["termination"]["shutdownReason"], json!(shutdown_reason));
             assert_eq!(event["termination"]["reason"], json!(reason));
             assert_eq!(event["termination"]["sessionAlive"], session_alive);
+            assert_eq!(
+                event["termination"]["disposition"],
+                if reason == 0x38 { "idle" } else { "error" }
+            );
             assert_eq!(event["termination"]["extendedCode"], json!(extended_code));
             assert_eq!(event["termination"]["resumable"], resumable);
         }

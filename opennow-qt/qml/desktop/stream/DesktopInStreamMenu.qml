@@ -405,9 +405,11 @@ FocusScope {
                             fallbackColor: "#1A2030"
                         }
                         Text {
+                            objectName: "streamMenuGameTitle"
                             x: 62; y: 2
                             width: parent.width - x - closeChip.width - 12
                             text: String(root.game.title || qsTr("GeForce NOW"))
+                            textFormat: Text.PlainText
                             color: DesktopTokens.text
                             font.family: DesktopTokens.displayFont
                             font.pixelSize: 20

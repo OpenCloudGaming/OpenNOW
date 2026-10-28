@@ -25,6 +25,8 @@ bool prepareLaunchGuards(QJSEngine &engine)
         var queueSelector={opened:false,begin:function(title){return false}};
         var bugReports={observeTelemetry:function(){},observeFrameDrops:function(){},reportStreamError:function(){}};
         var launchRequestedAtMs=0;
+        var overlayRequestGeneration=0, screenshotRequestGeneration=0;
+        var recordingToggleRequestGeneration=0, shortcutActionGeneration=0;
         function reportSessionStart() {}
         function reportSessionEnd() {}
     )JS")).isError()) return false;
@@ -934,6 +936,65 @@ private slots:
         }
     }
 
+    void launchDiscoveryFailure_data()
+    {
+        QTest::addColumn<QString>("code");
+        QTest::addColumn<QString>("context");
+        QTest::addColumn<bool>("continuesLaunch");
+        QTest::newRow("unavailable-region") << QStringLiteral("session_discovery_failed") << QString() << true;
+        for (const auto &code : {"http_unauthorized", "authentication_required", "cancelled", "timeout", "network_error"})
+            QTest::newRow(code) << QString::fromLatin1(code) << QString() << false;
+        for (const auto &context : {"launchConflictDetected = true", "conflictSession = {sessionId:'existing'}",
+                 "conflictSessionNeedsRefresh = true", "activeSession = {sessionId:'existing'}",
+                 "pendingLaunchParams = null", "catalogOwner.selectedIdentity = 'changed'", "ready = false",
+                 "signedIn = false", "onboardingReplaying = true"})
+            QTest::newRow(context) << QStringLiteral("session_discovery_failed") << QString::fromLatin1(context) << false;
+    }
+
+    void launchDiscoveryFailure()
+    {
+        QFETCH(QString, code);
+        QFETCH(QString, context);
+        QFETCH(bool, continuesLaunch);
+        QJSEngine engine;
+        QVERIFY(prepareLaunchGuards(engine));
+        engine.installExtensions(QJSEngine::TranslationExtension);
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            var root = this, ready = true, onboardingReplaying = false, nativeRuntimeReady = true;
+            var activeSession = null, conflictSession = null, conflictSessionNeedsRefresh = false;
+            var launchConflictDetected = false, streamCreateRequestId = '', remoteSessionsRequestId = 'discovery';
+            var pendingLaunchParams = {appId:'123',catalogAppId:'parent',variantId:'123',selectionIdentity:'selection',
+                authGeneration:0,actionGeneration:0,requestContextKey:''};
+            var requests = [], streamState = 'checking', streamMessage = '', lastError = '';
+            var settingsOwner = {acceptFailure:function(){return false;}};
+            var onboardingOwner = {acceptFailure:function(){return false;}};
+            function finishArtworkRequest(){return false;}
+            var CoreClient = {request:function(method,params){
+                requests.push({method:method,params:params});return 'request-' + requests.length;
+            }};
+        )JS")).isError());
+        QVERIFY(loadShellFunction(engine, QStringLiteral("createPendingSession")));
+        QVERIFY(loadShellFunction(engine, QStringLiteral("onRequestFailed"), 8));
+        QVERIFY(!engine.evaluate(context).isError());
+        engine.globalObject().setProperty(QStringLiteral("failureCode"), code);
+        const auto result = engine.evaluate(QStringLiteral("onRequestFailed('discovery',failureCode,'Discovery failed')"));
+        QVERIFY2(!result.isError(), qPrintable(result.toString()));
+        QCOMPARE(engine.evaluate(QStringLiteral("remoteSessionsRequestId")).toString(), QString());
+        QCOMPARE(engine.evaluate(QStringLiteral("requests.length")).toInt(), continuesLaunch ? 1 : 0);
+        QCOMPARE(engine.evaluate(QStringLiteral("streamState")).toString(),
+            continuesLaunch ? QStringLiteral("requesting") : QStringLiteral("error"));
+        if (continuesLaunch) {
+            QCOMPARE(engine.evaluate(QStringLiteral("requests[0].method")).toString(), QStringLiteral("catalog.launch.inspect"));
+            QCOMPARE(engine.evaluate(QStringLiteral("launchInspectStage")).toString(), QStringLiteral("create"));
+            QCOMPARE(engine.evaluate(QStringLiteral("requests[0].params.variantId")).toString(), QStringLiteral("123"));
+            QCOMPARE(engine.evaluate(QStringLiteral("lastError")).toString(), QString());
+            QVERIFY(!engine.evaluate(QStringLiteral("onRequestFailed('discovery',failureCode,'Late failure')")).isError());
+            QCOMPARE(engine.evaluate(QStringLiteral("requests.length")).toInt(), 1);
+        } else {
+            QVERIFY(!engine.evaluate(QStringLiteral("lastError")).toString().isEmpty());
+        }
+    }
+
     void sessionCreationConflictTriggersDiscoveryInsteadOfAnotherCreate()
     {
         const auto shell = source(QStringLiteral("qml/state/ShellStore.qml"));
@@ -1006,6 +1067,7 @@ private slots:
         QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
             var remoteSessionsRequestId = '', streamCreateRequestId = '', streamPollRequestId = '';
             var streamerPrepareRequestId = 'prepare', streamerStopRequestId = '', streamStopRequestId = '';
+            var streamerStartRequestId = '';
             var activeSession = {sessionId:'seat'}, streamStartedAtMs = 0, streamState = 'starting';
             var streamer = {status:'starting'}, nativeCommands = [], snapshots = 0;
             var negotiatedStreamProfile = {};
@@ -1957,6 +2019,7 @@ private slots:
             var streamRecordingAttempt={requestId:'recording',sessionId:'seat',completed:false,acceptStart:true};
             var activeSession={sessionId:'seat'}, streamer={status:'streaming'}, selectedGame={title:'Game'};
             var streamerStopExpected=false, streamerStopRequestId='', streamerStartRequestId='';
+            var streamerPrepareRequestId='';
             var sessionRecoveryPending=false, sessionRecoveryAwaitingAuth=false, sessionStopIntentId='', streamStopRequestId='';
             var microphoneRequestId='', sessionMicrophoneMode='disabled', streamIdleWarning=null;
             var pendingRecordingPath='/first.mkv', pendingRecordingThumbnailPath='';
@@ -2126,6 +2189,8 @@ private slots:
         QTest::newRow("webrtc-error-arrived-first") << QStringLiteral("webrtc") << QStringLiteral("error") << QStringLiteral("error");
         QTest::newRow("webrtc-stopped-first") << QStringLiteral("webrtc") << QStringLiteral("stopped") << QStringLiteral("stopped");
         QTest::newRow("nvst-unchanged") << QStringLiteral("nvst") << QStringLiteral("starting") << QStringLiteral("streaming");
+        QTest::newRow("nvst-error-arrived-first") << QStringLiteral("nvst") << QStringLiteral("error") << QStringLiteral("error");
+        QTest::newRow("nvst-stopped-first") << QStringLiteral("nvst") << QStringLiteral("stopped") << QStringLiteral("stopped");
     }
 
     void webRtcStartAcknowledgementPreservesMediaProgress()
@@ -2150,7 +2215,7 @@ private slots:
         QVERIFY2(!result.isError(), qPrintable(result.toString()));
         QCOMPARE(engine.evaluate(QStringLiteral("streamer.status")).toString(), expectedStatus);
         QCOMPARE(engine.evaluate(QStringLiteral("streamerStartRequestId")).toString(), QString());
-        if (transport == QStringLiteral("webrtc") && initialStatus != QStringLiteral("starting"))
+        if (initialStatus != QStringLiteral("starting"))
             QCOMPARE(engine.evaluate(QStringLiteral("streamer.message")).toString(), QStringLiteral("Earlier media event"));
     }
 
@@ -2431,6 +2496,7 @@ private slots:
             var ready = true, pendingSessionEnd = null, sessionEndRequestId = '';
             var streamerPrepareRequestId = '', streamPollRequestId = '', streamIdleWarning = null;
             var streamer = {status:'streaming'}, lastError = '', accessibilityMessage = '';
+            var streamEndNotice = null;
             var calls = [], ended = 0;
             var CoreClient = {request:function(method, params) {
                 calls.push({method:method, params:params, sessionBeforeClear:activeSession});
@@ -2460,7 +2526,9 @@ private slots:
                 && calls[0].params.ownerScope.generation === 7
                 && calls[0].sessionBeforeClear !== null
                 && activeSession === null && pendingSessionEnd !== null
-                && sessionEndRequestId === 'end-request';
+                && sessionEndRequestId === 'end-request'
+                && streamEndNotice.kind === 'error' && streamEndNotice.code === null
+                && streamEndNotice.codeText === '';
         )JS"));
         QVERIFY2(!result.isError(), qPrintable(result.toString()));
         QVERIFY(result.toBool());
@@ -2479,6 +2547,24 @@ private slots:
             ready = true; flushPendingSessionEnd();
             calls.length === 2 && calls[1].params.sessionId === 'ended-seat';
         )JS")).toBool());
+        const auto notice = [&](const QString &termination) {
+            return engine.evaluate(QStringLiteral(R"JS(
+                streamEndNotice = null;
+                activeSession = {sessionId:'notice-seat'};
+                finishRemoteSession(%1);
+                JSON.stringify(streamEndNotice);
+            )JS").arg(termination)).toString();
+        };
+        QCOMPARE(notice(QStringLiteral("{source:'nvst-server',code:'server-terminated',resumable:false,"
+            "disposition:'normal',extendedCode:2147680256}")), QStringLiteral("null"));
+        QCOMPARE(notice(QStringLiteral("{source:'nvst-server',code:'server-terminated',resumable:false,"
+            "disposition:'error',extendedCode:2147680265}")),
+            QStringLiteral("{\"kind\":\"error\",\"code\":2147680265,\"codeText\":\"0x80030009\"}"));
+        QCOMPARE(notice(QStringLiteral("{source:'nvst-server',code:'server-terminated',resumable:false,"
+            "disposition:'idle',extendedCode:2147680263}")),
+            QStringLiteral("{\"kind\":\"idle\",\"code\":2147680263,\"codeText\":\"0x80030007\"}"));
+        QCOMPARE(notice(QStringLiteral("{source:'cloudmatch-session-status',status:7,resumable:false}")),
+            QStringLiteral("null"));
     }
 
     void mediaRecoveryIsBoundedUntilVideoActuallyStarts()
@@ -2797,6 +2883,39 @@ private slots:
         QVERIFY(!main.contains(QStringLiteral("StreamSurfaceController")));
     }
 
+    void requestedQuitWaitsForTheSessionAndRecorderBeforeClosing()
+    {
+        QJSEngine engine;
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            var stops=0, closes=0, overlays=[];
+            var ShellStore={sessionWorkIdle:false, stopStreamingSession:function(){++stops;}};
+            var CoreClient={allocationsSettled:false};
+            var AppController={showOverlay:function(value){overlays.push(value);}};
+            var window={sessionQuitPending:false, sessionQuitStopping:false,
+                applicationCloseConfirmed:false, close:function(){++closes;}};
+        )JS")).isError());
+        const auto main = source(QStringLiteral("qml/Main.qml"));
+        for (const auto &name : {"requestSessionQuit", "confirmApplicationQuit", "finishSessionQuit"}) {
+            const auto match = QRegularExpression(QStringLiteral(
+                "    function %1\\([^\\n]*\\) \\{.*?\\n    \\}").arg(QString::fromLatin1(name)),
+                QRegularExpression::DotMatchesEverythingOption).match(main);
+            QVERIFY2(match.hasMatch(), name);
+            QVERIFY(!engine.evaluate(match.captured()).isError());
+            QVERIFY(!engine.evaluate(QStringLiteral("window.%1=%1").arg(QString::fromLatin1(name))).isError());
+        }
+        QVERIFY(!engine.evaluate(QStringLiteral("requestSessionQuit(); requestSessionQuit();")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("stops")).toInt(), 0);
+        QCOMPARE(engine.evaluate(QStringLiteral("overlays.join(',')")).toString(), QStringLiteral("application-quit-confirm"));
+        QVERIFY(!engine.evaluate(QStringLiteral("confirmApplicationQuit();")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("stops")).toInt(), 1);
+        QCOMPARE(engine.evaluate(QStringLiteral("closes")).toInt(), 0);
+        QVERIFY(!engine.evaluate(QStringLiteral("ShellStore.sessionWorkIdle=true; finishSessionQuit();")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("closes")).toInt(), 0);
+        QVERIFY(!engine.evaluate(QStringLiteral("CoreClient.allocationsSettled=true; finishSessionQuit();")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("closes")).toInt(), 1);
+        QVERIFY(engine.evaluate(QStringLiteral("window.applicationCloseConfirmed")).toBool());
+    }
+
     void quitStopsTheCoreBeforeBoundedPresentationTeardown()
     {
         const auto main = source(QStringLiteral("src/app/ApplicationStartup.cpp"));
@@ -2805,11 +2924,15 @@ private slots:
         const auto core = main.indexOf(QStringLiteral("coreClient.stop();"));
         const auto roots = main.indexOf(QStringLiteral("for (auto *root : roots) delete root;"));
         const auto streamer = main.indexOf(QStringLiteral("nativeStreamRuntime.shutdown()"), exec);
+        const auto completed = main.indexOf(QStringLiteral("singleInstance.finishQuitRequest();"), exec);
         QVERIFY(exec >= 0);
         QVERIFY(deadline > exec);
         QVERIFY(core > deadline);
         QVERIFY(roots > core);
         QVERIFY(streamer > roots);
+        QVERIFY(completed > streamer);
+        QVERIFY(main.contains(QStringLiteral("if (exitCode == EXIT_SUCCESS && requestedQuitCompleted)")));
+        QVERIFY(main.contains(QStringLiteral("->property(\"sessionWorkIdle\").toBool()")));
         QVERIFY(main.contains(QStringLiteral("TerminateProcess(GetCurrentProcess(), UINT(exitCode));")));
         QVERIFY(main.contains(QStringLiteral("std::_Exit(exitCode);")));
     }
@@ -2842,6 +2965,26 @@ private slots:
         QVERIFY(end > setting);
     }
 
+    void virtualControllerEdgesAreCommittedBeforeFixtureAdvances()
+    {
+        const auto smoke = source(QStringLiteral("src/acceptance/SmokeAcceptance.cpp"));
+        const auto helper = source(QStringLiteral("src/acceptance/VirtualControllerInput.h"));
+        const auto timer = smoke.indexOf(QStringLiteral("controllerRelease = -1, deadline = QDeadlineTimer(15000)"));
+        const auto release = smoke.indexOf(QStringLiteral("setSmokeControllerButton(joystick, controllerRelease, false)"), timer);
+        const auto press = smoke.indexOf(QStringLiteral("setSmokeControllerButton(joystick, button, true)"), release);
+        const auto clear = smoke.indexOf(QStringLiteral("fixture->setProperty(\"padButton\", -1)"), timer);
+        const auto setter = helper.indexOf(QStringLiteral("SDL_SetJoystickVirtualButton"));
+        const auto commit = helper.indexOf(QStringLiteral("SDL_UpdateJoysticks()"));
+        const auto advance = smoke.indexOf(QStringLiteral("QMetaObject::invokeMethod(fixture, \"advance\""), clear);
+        QVERIFY(timer >= 0);
+        QVERIFY(release > timer);
+        QVERIFY(press > release);
+        QVERIFY(clear > press);
+        QVERIFY(advance > clear);
+        QVERIFY(setter >= 0);
+        QVERIFY(commit > setter);
+    }
+
     void linuxVulkanOwnerOutlivesRuntimeAndHiddenRootAdoption()
     {
         const auto main = source(QStringLiteral("src/app/ApplicationStartup.cpp"));
@@ -2851,6 +2994,8 @@ private slots:
         const auto engine = main.indexOf(QStringLiteral("QQmlApplicationEngine engine"));
         const auto hidden = main.indexOf(QStringLiteral("engine.setInitialProperties"));
         const auto load = main.indexOf(QStringLiteral("engine.loadFromModule"));
+        const auto decorations = main.indexOf(QStringLiteral("WindowTheme::prepareWindow(rootWindow)"));
+        const auto graphicsSetup = main.indexOf(QStringLiteral("graphicsDevices.applyTo(rootWindow)"));
         const auto adopt = main.indexOf(QStringLiteral("vulkanDevice.adopt(rootWindow)"));
         const auto prepare = main.indexOf(QStringLiteral("acceptance.prepareWindow()"));
         const auto show = main.indexOf(QStringLiteral("rootWindow->show()"));
@@ -2861,7 +3006,9 @@ private slots:
         QVERIFY(engine > runtime);
         QVERIFY(hidden > engine);
         QVERIFY(load > hidden);
-        QVERIFY(adopt > load);
+        QVERIFY(decorations > load);
+        QVERIFY(graphicsSetup > decorations);
+        QVERIFY(adopt > graphicsSetup);
         QVERIFY(prepare > adopt);
         QVERIFY(show > prepare);
         const auto graphics = source(QStringLiteral("src/streaming/rendering/LinuxVulkanGraphics.cpp"));

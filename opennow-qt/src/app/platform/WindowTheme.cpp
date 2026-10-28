@@ -16,11 +16,6 @@
 #include <dwmapi.h>
 #endif
 
-#ifdef OPENNOW_WAYLAND_DECORATIONS
-#include <QtGui/qguiapplication_platform.h>
-#include <wayland-client.h>
-#endif
-
 namespace {
 void applyNativeTheme(QWindow *window, bool darkMode)
 {
@@ -41,46 +36,25 @@ void applyNativeTheme(QWindow *window, bool darkMode)
 #endif
 }
 
-#ifdef OPENNOW_WAYLAND_DECORATIONS
-bool compositorOffersServerDecorations()
+bool usesApplicationDecorations(QWindow *window)
 {
-    auto *wayland = qGuiApp->nativeInterface<QNativeInterface::QWaylandApplication>();
-    if (!wayland || !wayland->display()) return true;
-    wl_display *display = wayland->display();
-    wl_event_queue *queue = wl_display_create_queue(display);
-    auto *wrapper = static_cast<wl_display *>(wl_proxy_create_wrapper(display));
-    wl_proxy_set_queue(reinterpret_cast<wl_proxy *>(wrapper), queue);
-    wl_registry *registry = wl_display_get_registry(wrapper);
-    bool offered = false;
-    static const wl_registry_listener listener{
-        [](void *data, wl_registry *, uint32_t, const char *interface, uint32_t) {
-            if (QByteArrayView(interface) == "zxdg_decoration_manager_v1")
-                *static_cast<bool *>(data) = true;
-        },
-        [](void *, wl_registry *, uint32_t) {}};
-    wl_registry_add_listener(registry, &listener, &offered);
-    wl_display_roundtrip_queue(display, queue);
-    wl_registry_destroy(registry);
-    wl_proxy_wrapper_destroy(wrapper);
-    wl_event_queue_destroy(queue);
-    return offered;
-}
-#endif
-
-bool needsClientDecorations(QWindow *window)
-{
-#ifdef OPENNOW_WAYLAND_DECORATIONS
-    if (!QGuiApplication::platformName().startsWith(QStringLiteral("wayland"))
-            || window->surfaceType() != QSurface::VulkanSurface
-            || window->flags().testFlag(Qt::FramelessWindowHint))
-        return false;
-    static const bool serverDecorations = compositorOffersServerDecorations();
-    return !serverDecorations;
+#ifdef Q_OS_LINUX
+    return QGuiApplication::platformName().startsWith(QStringLiteral("wayland"))
+        && window->surfaceType() == QSurface::VulkanSurface;
 #else
     Q_UNUSED(window);
     return false;
 #endif
 }
+}
+
+bool WindowTheme::prepareWindow(QWindow *window)
+{
+    if (!window) return false;
+    if (!usesApplicationDecorations(window)) return true;
+    if (window->handle()) return window->flags().testFlag(Qt::FramelessWindowHint);
+    window->setFlag(Qt::FramelessWindowHint);
+    return true;
 }
 
 WindowTheme::WindowTheme(QObject *parent)
@@ -130,7 +104,8 @@ void WindowTheme::apply()
 {
     if (!m_window || !m_window->handle()) return;
     m_applyTheme(m_window, m_darkMode);
-    const bool clientDecorations = needsClientDecorations(m_window);
+    const bool clientDecorations = usesApplicationDecorations(m_window)
+        && m_window->flags().testFlag(Qt::FramelessWindowHint);
     if (m_clientDecorations == clientDecorations) return;
     m_clientDecorations = clientDecorations;
     emit clientDecorationsChanged();
