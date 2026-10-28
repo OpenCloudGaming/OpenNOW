@@ -466,6 +466,7 @@ int AcceptanceSession::startSmokeWorkload()
                        || m_arguments.contains(u"--smoke-upscaling"_s)
                        || m_arguments.contains(u"--smoke-stream-stats"_s)
                        || m_arguments.contains(u"--smoke-stream-stats-v2"_s)
+                       || m_arguments.contains(u"--smoke-flight-stats-status"_s)
                        || m_arguments.contains(u"--smoke-controller-metadata"_s)
                        || m_arguments.contains(u"--smoke-custom-background"_s))) {
         const bool controllerMetadata = m_arguments.contains(u"--smoke-controller-metadata"_s);
@@ -499,13 +500,15 @@ int AcceptanceSession::startSmokeWorkload()
             ? u"qrc:/acceptance/StreamStatsAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-stream-stats-v2"_s)
             ? u"qrc:/acceptance/StreamStatsV2Acceptance.qml"_s
+            : m_arguments.contains(u"--smoke-flight-stats-status"_s)
+            ? u"qrc:/acceptance/FlightStatsStatusAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-upscaling"_s)
             ? u"qrc:/acceptance/UpscalingAcceptance.qml"_s
             : u"qrc:/acceptance/FrameGenerationAcceptance.qml"_s));
         auto *fixture = component.create();
         if (!fixture) { qCritical() << component.errors(); return EXIT_FAILURE; }
         fixture->setParent(&m_engine);
-        if (controllerMetadata)
+        if (controllerMetadata || m_arguments.contains(u"--smoke-flight-stats-status"_s))
             m_engine.rootContext()->setContextProperty(u"ControllerInput"_s, fixture->property("input").value<QObject *>());
         if (languageSettings && m_arguments.contains(u"--language-hdr-invalidation"_s))
             m_engine.rootContext()->setContextProperty(u"HdrOutput"_s, fixture->property("hdrOutput").value<QObject *>());

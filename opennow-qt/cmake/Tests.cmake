@@ -750,6 +750,21 @@ if(BUILD_TESTING)
         PREFIX "/acceptance" BASE tests FILES tests/StreamStatsAcceptance.qml)
     qt_add_resources(opennow-qt "stream-stats-v2-acceptance"
         PREFIX "/acceptance" BASE tests FILES tests/StreamStatsV2Acceptance.qml)
+    qt_add_resources(opennow-qt "flight-stats-status-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/FlightStatsStatusAcceptance.qml)
+    foreach(mode compact expanded)
+        foreach(window_mode windowed fullscreen)
+            set(flight_stats_args --smoke-test --allow-multiple-instances --desktop --route stream
+                --smoke-flight-stats-status --smoke-stats-${mode} --reduced-motion)
+            if(window_mode STREQUAL "fullscreen")
+                list(APPEND flight_stats_args --fullscreen)
+            endif()
+            add_test(NAME qml-flight-stats-status-${mode}-${window_mode}
+                COMMAND opennow-qt ${flight_stats_args})
+            set_tests_properties(qml-flight-stats-status-${mode}-${window_mode} PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+        endforeach()
+    endforeach()
     foreach(mode compact expanded degraded scaled)
         add_test(NAME qml-stream-stats-v2-${mode}
             COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
