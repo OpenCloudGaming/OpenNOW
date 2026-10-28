@@ -1172,7 +1172,8 @@ if(BUILD_TESTING)
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     qt_add_executable(opennow-windowsmoveloop-tests tests/tst_windowswindowmoveloop.cpp)
     target_link_libraries(opennow-windowsmoveloop-tests PRIVATE opennow-platform-input Qt6::Test)
-    add_test(NAME opennow-windowsmoveloop-tests COMMAND opennow-windowsmoveloop-tests -o -,txt)
+    add_test(NAME opennow-windowsmoveloop-tests COMMAND opennow-windowsmoveloop-tests -o -,txt
+        -o "${CMAKE_CURRENT_BINARY_DIR}/Testing/Temporary/windows-move-loop-results.xml,junitxml")
     if(WIN32)
         add_test(NAME opennow-windowsmoveloop-native-tests
             COMMAND opennow-streamvideo-tests nativeWindowMoveLoopOwnsTheCursorUntilItExits -o -,txt)

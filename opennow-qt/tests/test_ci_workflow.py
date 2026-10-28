@@ -218,6 +218,7 @@ class CIWorkflowTest(unittest.TestCase):
         self.assertIn("tests/tst_windowswindowmoveloop.cpp", registration)
         self.assertIn("opennow-platform-input Qt6::Test", registration)
         self.assertIn("add_test(NAME opennow-windowsmoveloop-tests COMMAND opennow-windowsmoveloop-tests", registration)
+        self.assertIn('Testing/Temporary/windows-move-loop-results.xml,junitxml', registration)
         self.assertRegex(registration, r'if\(WIN32\)\s+'
                          r'add_test\(NAME opennow-windowsmoveloop-native-tests\s+'
                          r'COMMAND opennow-streamvideo-tests nativeWindowMoveLoopOwnsTheCursorUntilItExits -o -,txt\)')
