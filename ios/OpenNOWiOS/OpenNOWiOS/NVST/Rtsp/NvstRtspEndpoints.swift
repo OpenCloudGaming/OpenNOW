@@ -106,8 +106,9 @@ public enum NvstRtspEndpoints {
         let normalized = endpoint
             .replacingOccurrences(of: "rtsps://", with: "https://", options: [.caseInsensitive, .anchored])
             .replacingOccurrences(of: "rtsp://", with: "http://", options: [.caseInsensitive, .anchored])
-        guard let url = URL(string: normalized), let host = url.host, !host.isEmpty else { return nil }
-        let port = UInt16(url.port ?? 322)
+        guard let url = URL(string: normalized), let host = url.host, !host.isEmpty,
+              url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
+              let port = UInt16(exactly: url.port ?? 322), port > 0 else { return nil }
         return Target(host: host, port: port)
     }
 

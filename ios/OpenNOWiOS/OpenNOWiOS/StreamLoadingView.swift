@@ -6,6 +6,9 @@ struct StreamLoadingView: View {
   var coversBottomBar = false
 
   private var queueStatusText: String {
+    if let session = store.activeSession, QueueSessionPhase.isPastQueue(session) {
+      return session.status == 1 ? "Setting up gaming rig" : "Launching stream"
+    }
     if let position = store.displayQueuePosition {
       return "Queue position \(position)"
     }
@@ -97,8 +100,15 @@ struct StreamLoadingView: View {
         .padding(.top, 10)
 
       Spacer().frame(height: 18)
-      OscillatingQueueProgressView()
-        .frame(maxWidth: 430)
+      Group {
+        if let session = store.activeSession, QueueSessionPhase.isPastQueue(session) {
+          SessionSetupProgressView()
+            .id(session.id)
+        } else {
+          OscillatingQueueProgressView()
+        }
+      }
+      .frame(maxWidth: 430)
       Spacer().frame(height: 12)
       actionButtons
         .frame(maxWidth: 430)

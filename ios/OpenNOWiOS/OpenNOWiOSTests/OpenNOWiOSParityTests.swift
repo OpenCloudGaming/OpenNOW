@@ -51,6 +51,171 @@ private struct GameDetailsPresentationTestRoot: View {
 }
 
 final class OpenNOWiOSParityTests: XCTestCase {
+    func testSessionRoutingPrefersWebRTCOverEarlierRTSPAndPreservesPort() throws {
+        let session: [String: Any] = ["connectionInfo": [
+            ["usage": 14, "resourcePath": "rtsps://native.example:322", "appLevelProtocol": 6],
+            ["usage": "14", "ip": "203.0.113.7", "resourcePath": "https://rtc.example:8443/nvst/"],
+            ["usage": 16, "resourcePath": "rtsps://other.example:322"]
+        ]]
+        let route = try XCTUnwrap(SessionConnectionPolicy.resolve(session: session, fallbackHost: nil))
+        XCTAssertEqual(route.url, "wss://rtc.example:8443/nvst/")
+        XCTAssertFalse(route.requiresNativeTransport)
+        XCTAssertEqual(route.server, "rtc.example:8443")
+        XCTAssertEqual(route.allocationHost, "203.0.113.7")
+    }
+
+    func testNativeAllocationSelectsNativeWithoutChangingSavedPreference() throws {
+        for connection: [String: Any] in [
+            ["usage": 14, "resourcePath": "rtsps://native.example:322"],
+            ["usage": 14, "appLevelProtocol": 6, "resourcePath": "wss://native.example/nvst/"],
+            ["usage": 16, "ip": "native.example", "resourcePath": "/nvst/", "port": 49003]
+        ] {
+            let route = try XCTUnwrap(SessionConnectionPolicy.resolve(session: ["connectionInfo": [connection]], fallbackHost: nil))
+            XCTAssertTrue(route.requiresNativeTransport)
+            var session = Self.makeActiveSession(game: Self.makeGame(title: "Native", controls: []), status: 3)
+            session.nativeTransportRequired = route.requiresNativeTransport
+            var settings = AppSettings.default
+            settings.experimentalNativeNVSTEnabled = false
+            XCTAssertTrue(session.usesNativeTransport(settings: settings))
+            XCTAssertFalse(settings.experimentalNativeNVSTEnabled)
+            let restored = try JSONDecoder().decode(ActiveSession.self, from: JSONEncoder().encode(session))
+            XCTAssertEqual(restored.nativeTransportRequired, true)
+        }
+        let oldSession = Self.makeActiveSession(game: Self.makeGame(title: "Legacy", controls: []), status: 3)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(oldSession)) as? [String: Any])
+        json.removeValue(forKey: "nativeTransportRequired")
+        let restored = try JSONDecoder().decode(ActiveSession.self, from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertNil(restored.nativeTransportRequired)
+    }
+
+    func testSessionRoutingSkipsMalformedEntriesAndKeepsRelativeSignalingOn443() throws {
+        let route = try XCTUnwrap(SessionConnectionPolicy.resolve(session: ["connectionInfo": [
+            ["usage": 14, "resourcePath": "wss://user:password@bad.example/nvst/"],
+            ["usage": 14, "resourcePath": "wss://bad.example:99999/nvst/"],
+            ["usage": 14, "ip": "2001:db8::1", "port": 49003, "resourcePath": "/nvst/"]
+        ]], fallbackHost: nil))
+        XCTAssertEqual(URLComponents(string: route.url)?.port, 443)
+        XCTAssertFalse(route.requiresNativeTransport)
+        XCTAssertNil(SessionConnectionPolicy.resolve(session: ["connectionInfo": [NSNull(), 3]], fallbackHost: "seat.example"))
+        XCTAssertNil(SessionConnectionPolicy.resolve(session: [:], fallbackHost: "seat.example"))
+    }
+
+    func testSessionMediaSkipsMalformedEntriesAndNeverUsesRTSPControl() {
+        let media = SessionConnectionPolicy.mediaEndpoint(session: ["connectionInfo": [
+            ["usage": 2, "ip": "0.0.0.0", "port": 49003],
+            ["usage": 2, "ip": "media.example", "port": 99999],
+            ["usage": 14, "resourcePath": "rtsps://control.example:322", "port": 322],
+            ["usage": "17", "appLevelProtocol": 6, "ip": "bundle.example", "port": "49005"]
+        ]])
+        XCTAssertEqual(media.ip, "bundle.example")
+        XCTAssertEqual(media.port, 49005)
+        XCTAssertNil(SessionConnectionPolicy.mediaEndpoint(session: ["connectionInfo": [
+            ["usage": 14, "resourcePath": "rtsps://control.example:322", "port": 322]
+        ]]).ip)
+    }
+
+    func testSignInURLKeepsPathAndEncodesPairingValues() throws {
+        let url = try XCTUnwrap(SessionConnectionPolicy.signInURL(base: "wss://seat.example:8443/nvst/?old=1",
+            peerName: "peer&name", sessionID: "session&other=1"))
+        let components = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        XCTAssertEqual(components.path, "/nvst/sign_in")
+        XCTAssertEqual(components.port, 8443)
+        XCTAssertEqual(components.queryItems?.first(where: { $0.name == "pairing_id" })?.value, "session&other=1")
+        XCTAssertEqual(components.queryItems?.count, 4)
+        XCTAssertNil(SessionConnectionPolicy.signInURL(base: "rtsps://seat.example:322", peerName: "p", sessionID: "s"))
+    }
+
+    func testUntrustedSessionNumbersAndControlPortsCannotTrap() {
+        for value: Any in [NSNull(), true, [], [:], Double.nan, Double.infinity, Double.greatestFiniteMagnitude, "9999999999999999999999999"] {
+            XCTAssertNil(SessionConnectionPolicy.integer(value), "Unexpected integer for \(value)")
+        }
+        XCTAssertEqual(SessionConnectionPolicy.integer(" 3 "), 3)
+        XCTAssertEqual(SessionConnectionPolicy.integer(3.0), 3)
+        for port in ["0", "-1", "65536", "9999999999"] {
+            XCTAssertNil(NvstRtspEndpoints.parse(endpoint: "rtsps://seat.example:\(port)"))
+        }
+        XCTAssertEqual(NvstRtspEndpoints.parse(endpoint: "rtsps://seat.example:322")?.port, 322)
+    }
+
+    func testSetupProgressCapsBeforeCompletionAndSetupHidesStaleQueuePosition() {
+        XCTAssertEqual(SessionSetupProgress.fraction(elapsed: -1), 0)
+        XCTAssertEqual(SessionSetupProgress.fraction(elapsed: 6), 0.45, accuracy: 0.0001)
+        XCTAssertEqual(SessionSetupProgress.fraction(elapsed: 12), 0.9)
+        XCTAssertEqual(SessionSetupProgress.fraction(elapsed: 600), 0.9)
+        XCTAssertEqual(SessionSetupProgress.fraction(elapsed: .nan), 0)
+        var session = Self.makeActiveSession(game: Self.makeGame(title: "Setup", controls: []), status: 1)
+        session.seatSetupStep = 3
+        session.queuePosition = 1
+        XCTAssertTrue(QueueSessionPhase.isPastQueue(session))
+        session.queuePosition = 4
+        XCTAssertFalse(QueueSessionPhase.isPastQueue(session))
+    }
+
+    @MainActor
+    func testConnectionDiagnosticsRemainBoundedAndRedactedAfterStop() {
+        let diagnostics = StreamConnectionDiagnostics(capacity: 2)
+        let first = diagnostics.begin(endpoint: "wss://seat.example/nvst/?token=secret")
+        let second = diagnostics.begin(endpoint: "wss://other.example/nvst/?pairing_id=private-session")
+        diagnostics.update(second) { $0.offers = 1; $0.stage = "local_stop" }
+        diagnostics.failure(second, error: NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled))
+        let third = diagnostics.begin(endpoint: "wss://last.example/nvst/")
+        diagnostics.failure(third, error: NSError(domain: NSURLErrorDomain, code: -1005))
+        diagnostics.update(first) { $0.stage = "stale_callback" }
+        XCTAssertEqual(diagnostics.attempts.count, 2)
+        XCTAssertEqual(diagnostics.attempts.first?.stage, "local_stop")
+        let export = diagnostics.export()
+        XCTAssertTrue(export.contains("code=-1005"))
+        for secret in ["token=", "secret", "pairing_id", "private-session", "stale_callback"] {
+            XCTAssertFalse(export.contains(secret))
+        }
+    }
+
+    func testQueueFreshnessRejectsExpiredFutureAndInvalidSourceTimestamps() {
+        let now: TimeInterval = 1_800_000_000
+        XCTAssertTrue(PrintedWasteQueueFreshness.isFresh(now - 1800, now: now))
+        XCTAssertFalse(PrintedWasteQueueFreshness.isFresh(now - 1801, now: now))
+        XCTAssertFalse(PrintedWasteQueueFreshness.isFresh(now + 1, now: now))
+        XCTAssertFalse(PrintedWasteQueueFreshness.isFresh(0, now: now))
+        XCTAssertFalse(PrintedWasteQueueFreshness.isFresh(.nan, now: now))
+    }
+
+    @MainActor
+    func testEndingSessionClearsMediaAndCancelsDelayedReopen() async throws {
+        let store = OpenNOWStore()
+        store.signOutAll()
+        store.installDebugQueuePreview(position: 1)
+        store.installDebugQueuePreview(position: 1, isSettingUp: true)
+        XCTAssertNil(store.displayQueuePosition)
+        store.streamSession = store.activeSession
+        store.scheduleStreamerReopen()
+        await store.endSession()
+        XCTAssertNil(store.streamSession)
+        XCTAssertNil(store.activeSession)
+        XCTAssertFalse(store.showStreamLoading)
+        XCTAssertFalse(store.canReopenStreamer)
+        try await Task.sleep(for: .seconds(1))
+        XCTAssertNil(store.activeSession)
+        XCTAssertNil(store.streamSession)
+    }
+
+    @MainActor
+    func testCancelledResumeDoesNotScheduleANewSessionTask() async throws {
+        let store = OpenNOWStore()
+        store.signOutAll()
+        let candidate = RemoteSessionCandidate(id: "cancelled", appId: "game", status: 3,
+            serverIp: nil, streamSettingsSignature: nil, resolution: nil, fps: nil)
+        let cancelled = Task { @MainActor in
+            await Task.yield()
+            XCTAssertTrue(Task.isCancelled)
+            store.scheduleResume(candidate: candidate)
+        }
+        cancelled.cancel()
+        await cancelled.value
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertFalse(store.isLaunchingSession)
+        XCTAssertNil(store.lastError, "A cancelled parent must not spawn an uncancelled resume task")
+    }
+
     func testControllerShortcutsPersistWithoutChangingSavedRumbleGain() throws {
         let legacy = try JSONDecoder().decode(AppSettings.self, from: Data("{}".utf8))
         XCTAssertEqual(legacy.controllerShortcuts.action(for: "Button A"), .none)

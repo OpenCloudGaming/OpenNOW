@@ -50,3 +50,11 @@ Run the simulator test scheme `OpenNOWiOS`, plus the GPU validation commands in 
 Build 152 adds a direct output test under Settings → Input → Touch & Controller. Connect the G8+ MFi, check the reported controller name/category and iOS haptics availability, then use Test Controller Rumble. Left/right tests appear only for exposed handle outputs. A successful API call reports acceptance, not proof that the physical motors moved. The pulse lasts 0.4 seconds; Stop Test, leaving the page, backgrounding and connection changes clean up the test engine. No stream or phone vibration fallback is used.
 
 If controller haptics are unavailable, the normal GameController API cannot drive this controller's motors in its current connection/firmware state. If the direct test works but game rumble does not, investigate host haptic events and controller-slot routing next. No unsupported vendor protocol or firmware change is attempted by this branch.
+
+## Android streaming parity (October 2026)
+
+The iOS client now shares Android's preference for a usable WebRTC route over an earlier RTSP control entry, and honors native-only allocations without changing the saved Native NVST setting. Session reply numbers and ICE line indexes are checked before conversion. Stop immediately dismisses local media and invalidates pending launch, claim, poll and delayed reopen work before waiting for the provider.
+
+Rig setup uses Android's 12-second estimated progress animation, capped at 90% until the session advances. It updates only the bar, pauses in the background and stops ticking at the cap. Queue position is hidden once rig setup has started. PrintedWaste routes require source data no older than 30 minutes and are rechecked when selected.
+
+Diagnostics exports include up to eight in-memory signaling attempts, retained after Stop/retry, with packet/offer/send counters, close/error codes and available URLSession DNS/TCP/TLS timings. Payloads, SDP and URL queries are excluded. Send completion does not establish server acknowledgment. Android JVM crash handlers and MediaCodec tuning are platform-specific; iOS retains its existing VideoToolbox/Metal decoder and presentation paths.

@@ -562,6 +562,7 @@ struct ActiveSession: Identifiable, Codable, Equatable {
     /// we performed"; those sessions keep the old behaviour of trusting the setting.
     var touchProvisioned: Bool? = nil
     var nativeRtspsEndpoints: [String]? = nil
+    var nativeTransportRequired: Bool? = nil
 }
 
 struct RemoteSessionCandidate: Identifiable, Codable, Equatable {
@@ -2449,83 +2450,6 @@ private func summarizeOAuthCallback(_ url: URL) -> String {
     return "\(scheme)://\(host)\(path) queryKeys=[\(querySummary)]"
 }
 
-private func normalizedEndpointHost(from value: Any?) -> String? {
-    if let stringValue = value as? String {
-        return normalizedEndpointHost(from: stringValue)
-    }
-    if let stringValues = value as? [String] {
-        return stringValues.compactMap { normalizedEndpointHost(from: $0) }.first
-    }
-    return nil
-}
-
-private func normalizedEndpointHost(from stringValue: String?) -> String? {
-    guard var raw = stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
-        return nil
-    }
-    let urlSchemes: Set<String> = ["http", "https", "ws", "wss", "rtsp", "rtsps"]
-    if let components = URLComponents(string: raw),
-       let scheme = components.scheme?.lowercased(),
-       urlSchemes.contains(scheme) {
-        return validEndpointHost(components.host)
-    }
-
-    if raw.hasPrefix("[") {
-        guard let end = raw.firstIndex(of: "]") else { return nil }
-        let hostStart = raw.index(after: raw.startIndex)
-        return validEndpointHost(String(raw[hostStart..<end]))
-    }
-
-    if let separator = raw.firstIndex(where: { $0 == "/" || $0 == "?" || $0 == "#" }) {
-        raw = String(raw[..<separator])
-    }
-    guard !raw.contains("@") else { return nil }
-
-    let colonCount = raw.filter { $0 == ":" }.count
-    if colonCount == 1, let separator = raw.lastIndex(of: ":") {
-        let portStart = raw.index(after: separator)
-        let port = raw[portStart...]
-        if !port.isEmpty, port.allSatisfy({ $0.isNumber }) {
-            raw = String(raw[..<separator])
-        }
-    }
-
-    return validEndpointHost(raw)
-}
-
-private func validEndpointHost(_ host: String?) -> String? {
-    guard let host else { return nil }
-    let normalized = host.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !normalized.isEmpty,
-          normalized.rangeOfCharacter(from: .whitespacesAndNewlines) == nil else {
-        return nil
-    }
-
-    if normalized.contains(":") {
-        let allowedIPv6 = CharacterSet(charactersIn: "0123456789abcdefABCDEF:.")
-        guard normalized.unicodeScalars.allSatisfy({ allowedIPv6.contains($0) }) else {
-            return nil
-        }
-        return normalized
-    }
-
-    let allowedHost = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.-")
-    guard normalized.unicodeScalars.allSatisfy({ allowedHost.contains($0) }),
-          !normalized.hasPrefix("."),
-          !normalized.hasSuffix("."),
-          !normalized.hasPrefix("-"),
-          !normalized.hasSuffix("-"),
-          !normalized.contains("..") else {
-        return nil
-    }
-
-    let labels = normalized.split(separator: ".", omittingEmptySubsequences: false)
-    guard labels.allSatisfy({ !$0.isEmpty && !$0.hasPrefix("-") && !$0.hasSuffix("-") }) else {
-        return nil
-    }
-    return normalized
-}
-
 /// CloudMatch's control address is a queue endpoint, never a media/signaling address.
 enum SessionControlRouting {
     static func baseURL(host rawHost: String?, port: Int?) -> String? {
@@ -2585,6 +2509,9 @@ enum LibraryGameCollection {
 }
 
 enum QueueSessionPhase {
+    static func isPastQueue(_ session: ActiveSession) -> Bool {
+        session.status == 2 || session.status == 3 || isSettingUp(session)
+    }
     static func isQueued(_ session: ActiveSession) -> Bool {
         guard session.status == 1 else { return false }
         if isSessionAdsRequired(session.adState) || session.seatSetupStep == 1 { return true }
@@ -4398,8 +4325,8 @@ private actor GFNAPIClient {
             serverIp: serverIp,
             mediaIp: mediaConnectionInfo.ip,
             mediaPort: mediaConnectionInfo.port,
-            signalingServer: signaling.server,
-            signalingUrl: signaling.url,
+            signalingServer: signaling?.server,
+            signalingUrl: signaling?.url,
             iceServers: iceServers,
             zone: Self.extractZoneId(from: base, fallback: vpcId),
             streamingBaseUrl: base,
@@ -4413,7 +4340,8 @@ private actor GFNAPIClient {
             ),
             finalizedStreamingFeatures: Self.extractStreamingFeatures(sessionObj["finalizedStreamingFeatures"] as? [String: Any]),
             touchProvisioned: deviceProfile.appLaunchMode == .touchFriendly,
-            nativeRtspsEndpoints: NativeStreamNVSTConfiguration.endpoints(sessionObj: sessionObj, fallbackHost: serverIp)
+            nativeRtspsEndpoints: NativeStreamNVSTConfiguration.endpoints(sessionObj: sessionObj, fallbackHost: serverIp),
+            nativeTransportRequired: signaling?.requiresNativeTransport
         )
         active.sessionControlBaseUrl = controlBase
         return active
@@ -4508,8 +4436,9 @@ private actor GFNAPIClient {
         updated.mediaPort = mediaConnectionInfo.port > 0 ? mediaConnectionInfo.port : updated.mediaPort
         let nativeEndpoints = NativeStreamNVSTConfiguration.endpoints(sessionObj: sessionObj, fallbackHost: serverIp)
         if !nativeEndpoints.isEmpty { updated.nativeRtspsEndpoints = nativeEndpoints }
-        updated.signalingServer = signaling.server ?? updated.signalingServer
-        updated.signalingUrl = signaling.url ?? updated.signalingUrl
+        if let signaling { updated.nativeTransportRequired = signaling.requiresNativeTransport }
+        updated.signalingServer = signaling?.server ?? updated.signalingServer
+        updated.signalingUrl = signaling?.url ?? updated.signalingUrl
         if !iceServers.isEmpty {
             updated.iceServers = iceServers
         }
@@ -4844,8 +4773,8 @@ private actor GFNAPIClient {
             serverIp: claimServerIp,
             mediaIp: mediaConnectionInfo.ip,
             mediaPort: mediaConnectionInfo.port,
-            signalingServer: signaling.server ?? claimServerIp,
-            signalingUrl: signaling.url ?? "wss://\(claimServerIp):443/nvst/",
+            signalingServer: signaling?.server ?? claimServerIp,
+            signalingUrl: signaling?.url ?? "wss://\(claimServerIp):443/nvst/",
             iceServers: iceServers,
             zone: vpcId,
             streamingBaseUrl: zoneBase,
@@ -4859,7 +4788,8 @@ private actor GFNAPIClient {
             ),
             finalizedStreamingFeatures: Self.extractStreamingFeatures(resolvedSessionObj["finalizedStreamingFeatures"] as? [String: Any]),
             touchProvisioned: deviceProfile.appLaunchMode == .touchFriendly,
-            nativeRtspsEndpoints: NativeStreamNVSTConfiguration.endpoints(sessionObj: resolvedSessionObj, fallbackHost: claimServerIp)
+            nativeRtspsEndpoints: NativeStreamNVSTConfiguration.endpoints(sessionObj: resolvedSessionObj, fallbackHost: claimServerIp),
+            nativeTransportRequired: signaling?.requiresNativeTransport
         )
         let claimedControl = (resolvedSessionObj["sessionControlInfo"] as? [String: Any])
             ?? (validationSessionObj["sessionControlInfo"] as? [String: Any])
@@ -4911,6 +4841,7 @@ private actor GFNAPIClient {
     }
 
     private static func extractServerIp(sessionObj: [String: Any]) -> String? {
+        if let route = SessionConnectionPolicy.resolve(session: sessionObj, fallbackHost: nil) { return route.allocationHost }
         if let connections = sessionObj["connectionInfo"] as? [[String: Any]] {
             if let usage14 = connections.first(where: { ($0["usage"] as? Int) == 14 }) {
                 if let ip = normalizedEndpointHost(from: usage14["ip"]) {
@@ -4949,79 +4880,22 @@ private actor GFNAPIClient {
     }
 
     private static func extractMediaConnectionInfo(sessionObj: [String: Any]) -> (ip: String?, port: Int) {
-        let connections = sessionObj["connectionInfo"] as? [[String: Any]] ?? []
-
-        func extractIp(from connection: [String: Any]) -> String? {
-            if let ip = normalizedEndpointHost(from: connection["ip"]) {
-                return ip
-            }
-            if let host = normalizedEndpointHost(from: connection["resourcePath"]) {
-                return host
-            }
-            return nil
-        }
-
-        func extractPort(from connection: [String: Any]) -> Int {
-            if let port = connection["port"] as? Int, port > 0 {
-                return port
-            }
-            if let resourcePath = connection["resourcePath"] as? String,
-               let parsedPort = URL(string: resourcePath.replacingOccurrences(of: "rtsps://", with: "https://").replacingOccurrences(of: "rtsp://", with: "http://"))?.port,
-               parsedPort > 0 {
-                return parsedPort
-            }
-            return 0
-        }
-
-        // Desktop only treats usage=2/17 as WebRTC media endpoints. Other
-        // usages can be RTSPS/signaling fallbacks and must not drive WebRTC ICE.
-        for usage in [2, 17] {
-            if let candidate = connections.first(where: { ($0["usage"] as? Int) == usage }) {
-                let ip = extractIp(from: candidate)
-                let port = extractPort(from: candidate)
-                if ip != nil, port > 0 {
-                    return (ip, port)
-                }
-            }
-        }
-
-        return (nil, 0)
+        SessionConnectionPolicy.mediaEndpoint(session: sessionObj)
     }
 
     private static func extractSeatSetupStep(sessionObj: [String: Any]) -> Int? {
         let seatSetupInfo = sessionObj["seatSetupInfo"] as? [String: Any]
-        if let step = seatSetupInfo?["seatSetupStep"] as? Int {
-            return step
-        }
-        if let stepDouble = seatSetupInfo?["seatSetupStep"] as? Double, stepDouble.isFinite {
-            return Int(stepDouble)
-        }
-        if let stepString = seatSetupInfo?["seatSetupStep"] as? String, let step = Int(stepString) {
-            return step
-        }
-        return nil
+        return SessionConnectionPolicy.integer(seatSetupInfo?["seatSetupStep"])
     }
 
     private static func toPositiveInt(_ value: Any?) -> Int? {
-        if let intValue = value as? Int, intValue > 0 {
-            return intValue
-        }
-        if let doubleValue = value as? Double, doubleValue.isFinite {
-            let normalized = Int(doubleValue)
-            return normalized > 0 ? normalized : nil
-        }
-        if let stringValue = value as? String,
-           let parsed = Int(stringValue.trimmingCharacters(in: .whitespacesAndNewlines)),
-           parsed > 0 {
-            return parsed
-        }
-        return nil
+        guard let number = SessionConnectionPolicy.integer(value), number > 0 else { return nil }
+        return number
     }
 
     private static func toNonnegativeInt(_ value: Any?) -> Int? {
-        if let number = value as? Int, number >= 0 { return number }
-        if let text = value as? String, let number = Int(text), number >= 0 { return number }
-        return nil
+        guard let number = SessionConnectionPolicy.integer(value), number >= 0 else { return nil }
+        return number
     }
 
     private static func toBoolean(_ value: Any?) -> Bool? {
@@ -5061,7 +4935,7 @@ private actor GFNAPIClient {
             return SessionAdMediaFile(mediaFileUrl: mediaFileUrl, encodingProfile: encodingProfile)
         }
         let adLengthInSeconds = ad["adLengthInSeconds"] as? Double
-        let durationMs = adLengthInSeconds.map { Int(round($0 * 1000)) }
+        let durationMs = adLengthInSeconds.flatMap { toPositiveInt(($0 * 1000).rounded()) }
             ?? toPositiveInt(ad["durationMs"])
             ?? toPositiveInt(ad["durationInMs"])
         let state = ad["state"] as? Int
@@ -5186,28 +5060,8 @@ private actor GFNAPIClient {
         return normalized
     }
 
-    private static func resolveSignaling(sessionObj: [String: Any], fallbackServerIp: String?) -> (server: String?, url: String?) {
-        let connections = sessionObj["connectionInfo"] as? [[String: Any]] ?? []
-        let signalingConnection = connections.first(where: { ($0["usage"] as? Int) == 14 }) ?? connections.first
-        let resourcePath = signalingConnection?["resourcePath"] as? String ?? "/nvst/"
-        let serverIp = normalizedEndpointHost(from: fallbackServerIp) ?? extractServerIp(sessionObj: sessionObj)
-        guard let serverIp, !serverIp.isEmpty else {
-            return (nil, nil)
-        }
-
-        if resourcePath.hasPrefix("rtsps://") || resourcePath.hasPrefix("rtsp://") {
-            if let host = normalizedEndpointHost(from: resourcePath) {
-                return (host, "wss://\(host)/nvst/")
-            }
-            return (serverIp, "wss://\(serverIp):443/nvst/")
-        }
-        if resourcePath.hasPrefix("wss://"), let host = normalizedEndpointHost(from: resourcePath) {
-            return (host, resourcePath)
-        }
-        if resourcePath.hasPrefix("/") {
-            return (serverIp, "wss://\(serverIp):443\(resourcePath)")
-        }
-        return (serverIp, "wss://\(serverIp):443/nvst/")
+    private static func resolveSignaling(sessionObj: [String: Any], fallbackServerIp: String?) -> SessionConnectionPolicy.Route? {
+        SessionConnectionPolicy.resolve(session: sessionObj, fallbackHost: fallbackServerIp)
     }
 
     private static func extractIceServers(sessionObj: [String: Any]) -> [IceServerConfig] {
@@ -6416,6 +6270,7 @@ final class OpenNOWStore: ObservableObject {
     @Published private(set) var isLoadingFullCatalog = false
     @Published var isLoadingGames = false
     @Published var isLaunchingSession = false
+    @Published private(set) var isEndingSession = false
     @Published var showStreamLoading: Bool = false
     @Published var queueOverlayVisible: Bool = false
     @Published var streamSession: ActiveSession?
@@ -6457,6 +6312,7 @@ final class OpenNOWStore: ObservableObject {
     private let defaults = UserDefaults.standard
     private var authSession: AuthSession?
     private var authGeneration = UUID()
+    private var sessionOperationGeneration = UUID()
     private var sessionPollTask: Task<Void, Never>?
     private var launchTask: Task<Void, Never>?
     private var sessionReportAccumulator: StreamSessionReportAccumulator?
@@ -6685,6 +6541,9 @@ final class OpenNOWStore: ObservableObject {
             apiTrace
             \(apiTrace)
 
+            streamConnections
+            \(StreamConnectionDiagnostics.shared.export())
+
             lifecycleEvents
             \(eventTimeline.isEmpty ? "entries=0" : eventTimeline)
 
@@ -6814,9 +6673,11 @@ final class OpenNOWStore: ObservableObject {
     }
 
     #if DEBUG
-    func installDebugQueuePreview(position: Int) {
+    func installDebugQueuePreview(position: Int, isSettingUp: Bool = false) {
         if activeSession?.id == "debug-queue-preview" {
             activeSession?.queuePosition = max(1, position)
+            activeSession?.status = isSettingUp ? 2 : 1
+            activeSession?.seatSetupStep = isSettingUp ? 4 : 1
             syncTrackedSessionSurface()
             return
         }
@@ -6853,9 +6714,9 @@ final class OpenNOWStore: ObservableObject {
             id: "debug-queue-preview",
             game: game,
             startedAt: Date(),
-            status: 1,
+            status: isSettingUp ? 2 : 1,
             queuePosition: max(1, position),
-            seatSetupStep: 1,
+            seatSetupStep: isSettingUp ? 4 : 1,
             serverIp: nil,
             mediaIp: nil,
             mediaPort: 0,
@@ -7173,6 +7034,9 @@ final class OpenNOWStore: ObservableObject {
     }
 
     private func clearAccountScopedState() {
+        sessionOperationGeneration = UUID()
+        reopenToken = UUID()
+        isLaunchingSession = false
         isLoadingFullCatalog = false
         isLoadingGames = false
         allGames = []
@@ -7487,6 +7351,7 @@ final class OpenNOWStore: ObservableObject {
         launchOption: GameLaunchOption? = nil,
         settingsOverride: AppSettings? = nil
     ) async {
+        guard !isEndingSession, !isLaunchingSession else { return }
         sessionError = nil
         guard supportsEmbeddedStreamer else {
             lastError = OpenNOWPlatform.streamingUnavailableReason
@@ -7502,6 +7367,7 @@ final class OpenNOWStore: ObservableObject {
             return
         }
         let generation = authGeneration
+        let operation = sessionOperationGeneration
         if let launchRestriction = launchRestrictionMessage(for: game) {
             lastError = launchRestriction
             return
@@ -7513,12 +7379,12 @@ final class OpenNOWStore: ObservableObject {
         isLaunchingSession = true
         showStreamLoading = true
         queueOverlayVisible = true
-        defer { isLaunchingSession = false }
+        defer { if operation == sessionOperationGeneration { isLaunchingSession = false } }
         do {
             logger.info("Launch requested game=\(game.title, privacy: .public) zoneUrl=\(zoneUrl ?? "default", privacy: .public)")
             let refreshed = try await api.refreshSession(session)
             try Task.checkCancellation()
-            guard generation == authGeneration else { throw CancellationError() }
+            guard generation == authGeneration, operation == sessionOperationGeneration else { throw CancellationError() }
             authSession = refreshed
             user = refreshed.user
             persistAuthSession(refreshed)
@@ -7562,7 +7428,7 @@ final class OpenNOWStore: ObservableObject {
                 logger.warning("Could not refresh active sessions before launch error=\(error.localizedDescription, privacy: .public)")
             }
             try Task.checkCancellation()
-            guard generation == authGeneration else { throw CancellationError() }
+            guard generation == authGeneration, operation == sessionOperationGeneration else { throw CancellationError() }
 
             let compatibleCandidates = compatibleRemoteSessions(activeCandidates, settings: launchSettings, session: refreshed)
             resumableSessions = activeCandidates.filter {
@@ -7636,7 +7502,9 @@ final class OpenNOWStore: ObservableObject {
                     }
                 }
                 func startNewSession(using settings: AppSettings) async throws -> ActiveSession {
-                    try await api.startSession(
+                    try Task.checkCancellation()
+                    guard generation == authGeneration, operation == sessionOperationGeneration else { throw CancellationError() }
+                    return try await api.startSession(
                         session: refreshed,
                         game: game,
                         vpcId: cachedVpcId,
@@ -7655,7 +7523,7 @@ final class OpenNOWStore: ObservableObject {
                 started = try await startNewSession(using: launchSettings)
             }
             try Task.checkCancellation()
-            guard generation == authGeneration else { throw CancellationError() }
+            guard generation == authGeneration, operation == sessionOperationGeneration else { throw CancellationError() }
             activeSession = started
             activeStreamSettings = launchSettings
             adReportStateById = [:]
@@ -7667,6 +7535,7 @@ final class OpenNOWStore: ObservableObject {
         } catch where OpenNOWErrorPresenter.isCancellation(error) {
             return
         } catch {
+            guard operation == sessionOperationGeneration else { return }
             logger.error("Session launch failed error=\(error.localizedDescription, privacy: .public)")
             showStreamLoading = false
             queueOverlayVisible = false
@@ -7676,6 +7545,7 @@ final class OpenNOWStore: ObservableObject {
     }
 
     func scheduleLaunch(game: CloudGame, zoneUrl: String? = nil, launchOption: GameLaunchOption? = nil) {
+        guard !isEndingSession, !isLaunchingSession else { return }
         let request = PendingLaunchRequest(game: game, zoneUrl: zoneUrl, launchOption: launchOption)
         // Starting a second game silently discards the rig the first one is holding, which on the
         // free tier also burns the hour. Ask first — this is the one confirmation in the launch
@@ -7693,11 +7563,12 @@ final class OpenNOWStore: ObservableObject {
     }
 
     func confirmPendingLaunch() {
+        guard !isEndingSession, !isLaunchingSession else { return }
         guard let conflict = pendingLaunchConflict else { return }
         pendingLaunchConflict = nil
         launchTask?.cancel()
         launchTask = Task {
-            await self.endSession()
+            await self.endSession(cancelPendingLaunch: false)
             guard !Task.isCancelled else { return }
             await self.launch(
                 game: conflict.request.game,
@@ -8026,6 +7897,9 @@ final class OpenNOWStore: ObservableObject {
     }
 
     func resumeSession(candidate: RemoteSessionCandidate) async {
+        guard !isEndingSession, !isLaunchingSession else { return }
+        let generation = authGeneration
+        let operation = sessionOperationGeneration
         guard supportsEmbeddedStreamer else {
             lastError = OpenNOWPlatform.streamingUnavailableReason
             return
@@ -8045,10 +7919,12 @@ final class OpenNOWStore: ObservableObject {
         isLaunchingSession = true
         showStreamLoading = true
         queueOverlayVisible = true
-        defer { isLaunchingSession = false }
+        defer { if operation == sessionOperationGeneration { isLaunchingSession = false } }
         do {
             logger.info("Resume requested candidateId=\(candidate.id, privacy: .public) status=\(candidate.status)")
             let refreshed = try await api.refreshSession(session)
+            try Task.checkCancellation()
+            guard generation == authGeneration, operation == sessionOperationGeneration else { return }
             authSession = refreshed
             persistAuthSession(refreshed)
             let requestedSettings = nativeLaunchSettings(for: settings, context: "resumeSession")
@@ -8066,6 +7942,8 @@ final class OpenNOWStore: ObservableObject {
                 settings: streamSettings,
                 deviceId: persistentDeviceId()
             )
+            try Task.checkCancellation()
+            guard generation == authGeneration, operation == sessionOperationGeneration else { return }
             activeSession = claimed
             activeStreamSettings = streamSettings
             adReportStateById = [:]
@@ -8077,6 +7955,7 @@ final class OpenNOWStore: ObservableObject {
         } catch where OpenNOWErrorPresenter.isCancellation(error) {
             return
         } catch {
+            guard operation == sessionOperationGeneration else { return }
             logger.error("Resume session failed error=\(error.localizedDescription, privacy: .public)")
             showStreamLoading = false
             queueOverlayVisible = false
@@ -8086,6 +7965,7 @@ final class OpenNOWStore: ObservableObject {
     }
 
     func scheduleResume(candidate: RemoteSessionCandidate) {
+        guard !Task.isCancelled, !isEndingSession, !isLaunchingSession else { return }
         launchTask?.cancel()
         launchTask = Task { await self.resumeSession(candidate: candidate) }
     }
@@ -8102,6 +7982,7 @@ final class OpenNOWStore: ObservableObject {
     }
 
     func jumpBackToSession() {
+        guard !isEndingSession else { return }
         if let active = activeSession {
             restoreActiveSessionSurface(active)
             return
@@ -8112,41 +7993,59 @@ final class OpenNOWStore: ObservableObject {
             return
         }
 
+        let operation = sessionOperationGeneration
         launchTask?.cancel()
         launchTask = Task { [weak self] in
             guard let self else { return }
             await self.refreshRemoteSessions()
+            guard !Task.isCancelled, operation == self.sessionOperationGeneration else { return }
             if let candidate = self.primaryRemoteJumpBackSession {
                 self.scheduleResume(candidate: candidate)
             }
         }
     }
 
-    func endSession() async {
-        launchTask?.cancel()
-        launchTask = nil
+    func endSession(cancelPendingLaunch: Bool = true) async {
+        guard !isEndingSession else { return }
+        isEndingSession = true
+        defer { isEndingSession = false }
+        let session = authSession
+        let active = activeSession
+        let generation = authGeneration
+        if cancelPendingLaunch {
+            launchTask?.cancel()
+            launchTask = nil
+        }
+        // Tear down local media and invalidate in-flight polls/claims before any network wait.
         showStreamLoading = false
         queueOverlayVisible = false
+        clearLocalSessionState(reason: "endSession.requested")
         await NotificationManager.shared.cancelSessionNotifications()
-        guard let session = authSession, let active = activeSession else {
-            clearLocalSessionState(reason: "endSession.noActiveSession")
-            return
-        }
+        guard let session, let active else { return }
         do {
             let refreshed = try await api.refreshSession(session)
+            guard generation == authGeneration else { return }
             authSession = refreshed
             persistAuthSession(refreshed)
             try await api.stopSession(session: refreshed, activeSession: active)
         } catch where OpenNOWErrorPresenter.isCancellation(error) {
-            // The session is being torn down either way; a cancelled stop is not a failure.
+            // Local teardown has already completed.
         } catch {
+            guard generation == authGeneration else { return }
             lastError = "Stop session failed: \(OpenNOWErrorPresenter.message(for: error, fallback: "The session could not be stopped."))"
         }
-        clearLocalSessionState(reason: "endSession.completed")
-        resumableSessions.removeAll { $0.id == active.id }
+        if generation == authGeneration { resumableSessions.removeAll { $0.id == active.id } }
     }
 
     private func terminateAllSessions(reason: String) async {
+        guard !isEndingSession else { return }
+        isEndingSession = true
+        defer { isEndingSession = false }
+        let activeToStop = activeSession
+        let generation = authGeneration
+        launchTask?.cancel()
+        launchTask = nil
+        clearLocalSessionState(reason: reason)
         showStreamLoading = false
         queueOverlayVisible = false
         await NotificationManager.shared.cancelSessionNotifications()
@@ -8159,9 +8058,9 @@ final class OpenNOWStore: ObservableObject {
         var failures: [String] = []
         do {
             let refreshed = try await api.refreshSession(session)
+            guard generation == authGeneration else { return }
             authSession = refreshed
             persistAuthSession(refreshed)
-            let activeToStop = activeSession
             if let activeToStop {
                 do {
                     try await api.stopSession(session: refreshed, activeSession: activeToStop)
@@ -8177,6 +8076,7 @@ final class OpenNOWStore: ObservableObject {
                 settings: settings,
                 deviceId: persistentDeviceId()
             )) ?? []
+            guard generation == authGeneration else { return }
             for candidate in remoteSessions where candidate.id != activeToStop?.id {
                 do {
                     try await api.stopRemoteSession(
@@ -8193,12 +8093,15 @@ final class OpenNOWStore: ObservableObject {
             failures.append("refresh")
         }
 
-        clearLocalSessionState(reason: reason)
+        guard generation == authGeneration else { return }
         resumableSessions = []
         lastError = failures.isEmpty ? nil : "Could not stop every remote session: \(failures.joined(separator: ", "))"
     }
 
     private func clearLocalSessionState(reason: String) {
+        sessionOperationGeneration = UUID()
+        reopenToken = UUID()
+        isLaunchingSession = false
         finalizeSessionReport(reason: reason)
         if let id = activeSession?.id { QueueReadyAlert.forget(sessionId: id) }
         activeSession = nil
@@ -8225,7 +8128,7 @@ final class OpenNOWStore: ObservableObject {
     var canReopenStreamer: Bool {
         guard supportsEmbeddedStreamer else { return false }
         guard let active = activeSession else { return false }
-        return streamSession == nil && isReadyForStreamer(active)
+        return !isEndingSession && streamSession == nil && isReadyForStreamer(active)
     }
 
     var effectiveAdState: SessionAdState? {
@@ -8555,6 +8458,7 @@ final class OpenNOWStore: ObservableObject {
     }
 
     private func restoreActiveSessionSurface(_ session: ActiveSession) {
+        guard !isEndingSession else { return }
         guard activeSession?.id == session.id else { return }
         if canReopenStreamer {
             reopenStreamer()
@@ -8573,6 +8477,7 @@ final class OpenNOWStore: ObservableObject {
     }
 
     func reopenStreamer() {
+        guard !isEndingSession else { return }
         guard supportsEmbeddedStreamer else {
             lastError = OpenNOWPlatform.streamingUnavailableReason
             return
@@ -8585,6 +8490,7 @@ final class OpenNOWStore: ObservableObject {
     /// Schedule a streamer reopen with a 0.8s delay.
     /// Automatically aborts if a new session starts before the delay completes.
     func scheduleStreamerReopen() {
+        guard !isEndingSession else { return }
         guard supportsEmbeddedStreamer else { return }
         let token = UUID()
         reopenToken = token
@@ -9077,6 +8983,8 @@ final class OpenNOWStore: ObservableObject {
     }
 
     private func startSessionTasks() {
+        guard !isEndingSession else { return }
+        let operation = sessionOperationGeneration
         recordDebugEvent("queue", "Starting session poll status=\(activeSession?.status ?? -1) queue=\(activeSession?.queuePosition ?? -1)")
         setStreamSession(nil, reason: "startSessionTasks.reset")
         if activeSession != nil, activeStreamSettings == nil {
@@ -9115,7 +9023,7 @@ final class OpenNOWStore: ObservableObject {
                 do {
                     let refreshed = try await self.api.refreshSession(session)
                     try Task.checkCancellation()
-                    guard generation == self.authGeneration else { break }
+                    guard generation == self.authGeneration, operation == self.sessionOperationGeneration else { break }
                     self.authSession = refreshed
                     self.persistAuthSession(refreshed)
                     let polled = try await self.api.pollSession(
@@ -9124,7 +9032,7 @@ final class OpenNOWStore: ObservableObject {
                         settings: self.currentStreamerSettings
                     )
                     try Task.checkCancellation()
-                    guard generation == self.authGeneration else { break }
+                    guard generation == self.authGeneration, operation == self.sessionOperationGeneration else { break }
                     consecutivePollFailures = 0
                     if self.sessionError?.hasPrefix("Session poll failed:") == true {
                         self.sessionError = nil
@@ -9173,6 +9081,7 @@ final class OpenNOWStore: ObservableObject {
                             continue
                         }
                         let handoffSession = await self.prepareSessionForStreamer(polled)
+                        guard !Task.isCancelled, operation == self.sessionOperationGeneration else { break }
                         self.logger.notice(
                             "Session ready for streamer handoff id=\(handoffSession.id, privacy: .public) status=\(handoffSession.status) readyStreak=\(readyPollStreak) readyHoldSeconds=\(Int(readyHoldElapsed)). Presenting iOS streamer."
                         )
@@ -9235,6 +9144,7 @@ final class OpenNOWStore: ObservableObject {
                     // and both used to end the session on a banner reading "cancelled".
                     break
                 } catch where (error as NSError).domain == "OpenNOW.Queue" {
+                    guard !Task.isCancelled, operation == self.sessionOperationGeneration else { break }
                     self.logger.notice("CloudMatch ended the queue request. Clearing the local session.")
                     self.clearLocalSessionState(reason: "queue.abandoned")
                     self.showStreamLoading = false
@@ -9246,6 +9156,7 @@ final class OpenNOWStore: ObservableObject {
                     await NotificationManager.shared.cancelSessionNotifications()
                     break
                 } catch {
+                    guard !Task.isCancelled, operation == self.sessionOperationGeneration else { break }
                     consecutivePollFailures += 1
                     self.logger.error("Session poll failed attempt=\(consecutivePollFailures) error=\(error.localizedDescription, privacy: .public)")
                     self.recordDebugEvent("queue", "Poll failed attempt=\(consecutivePollFailures) error=\(error.localizedDescription)")
@@ -9285,7 +9196,7 @@ final class OpenNOWStore: ObservableObject {
         if let queuePosition = session.queuePosition, queuePosition > 1 {
             return false
         }
-        if (activeStreamSettings ?? settings).experimentalNativeNVSTEnabled {
+        if session.usesNativeTransport(settings: activeStreamSettings ?? settings) {
             return !(session.nativeRtspsEndpoints ?? []).isEmpty
         }
         return hasUsableSignalingEndpoint(session) && hasUsableMediaEndpoint(session)
@@ -9318,6 +9229,8 @@ final class OpenNOWStore: ObservableObject {
     }
 
     private func prepareSessionForStreamer(_ session: ActiveSession) async -> ActiveSession {
+        let generation = authGeneration
+        let operation = sessionOperationGeneration
         guard session.status == 2 else { return session }
         // Refresh auth token so it's valid for the upcoming signaling connection.
         // Do NOT claim/migrate the session — the polled server has already handled
@@ -9328,6 +9241,8 @@ final class OpenNOWStore: ObservableObject {
         guard let currentAuth = authSession else { return session }
         do {
             let refreshed = try await api.refreshSession(currentAuth)
+            try Task.checkCancellation()
+            guard generation == authGeneration, operation == sessionOperationGeneration else { return session }
             authSession = refreshed
             persistAuthSession(refreshed)
         } catch {
@@ -9342,6 +9257,9 @@ final class OpenNOWStore: ObservableObject {
     }
 
     private func reopenCurrentSession(_ session: ActiveSession) async {
+        guard !isEndingSession else { return }
+        let generation = authGeneration
+        let operation = sessionOperationGeneration
         guard let currentAuth = authSession else {
             lastError = "Sign in first."
             return
@@ -9349,6 +9267,8 @@ final class OpenNOWStore: ObservableObject {
 
         do {
             let refreshed = try await api.refreshSession(currentAuth)
+            try Task.checkCancellation()
+            guard generation == authGeneration, operation == sessionOperationGeneration else { return }
             authSession = refreshed
             persistAuthSession(refreshed)
             let requestedStreamSettings = currentStreamerSettings
@@ -9361,6 +9281,8 @@ final class OpenNOWStore: ObservableObject {
                 settings: requestedStreamSettings,
                 deviceId: deviceId
             )
+            try Task.checkCancellation()
+            guard generation == authGeneration, operation == sessionOperationGeneration else { return }
             let compatibleCandidates = activeCandidates.filter {
                 remoteSession($0, matchesStreamSettings: requestedStreamSettings, session: refreshed)
             }
@@ -9429,6 +9351,8 @@ final class OpenNOWStore: ObservableObject {
                     )
                     try await Task.sleep(for: .seconds(1))
                     latest = try await api.pollSession(session: refreshed, activeSession: latest, settings: pollingSettings)
+                    try Task.checkCancellation()
+                    guard generation == authGeneration, operation == sessionOperationGeneration else { return }
                     activeSession = mergeQueueSessionState(previous: activeSession ?? latest, next: latest)
                 }
                 guard isReadyForStreamer(latest), let serverIp = latest.serverIp, !serverIp.isEmpty else {
@@ -9471,6 +9395,8 @@ final class OpenNOWStore: ObservableObject {
                 deviceId: deviceId,
                 touchProvisionedOverride: session.touchProvisioned
             )
+            try Task.checkCancellation()
+            guard generation == authGeneration, operation == sessionOperationGeneration else { return }
             activeSession = claimed
             activeStreamSettings = streamSettings
             setStreamSession(claimed, reason: "reopenStreamer.claimed")
@@ -9479,6 +9405,7 @@ final class OpenNOWStore: ObservableObject {
         } catch where OpenNOWErrorPresenter.isCancellation(error) {
             return
         } catch {
+            guard operation == sessionOperationGeneration else { return }
             logger.error(
                 "Reopen refresh failed id=\(session.id, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
             )
@@ -9637,7 +9564,8 @@ final class OpenNOWStore: ObservableObject {
     /// Feeds the trend estimator, and resets it when the queue is no longer the thing on screen.
     /// A stale trend from the previous launch is worse than no trend at all.
     private func updateQueueTrend(for session: ActiveSession?) {
-        guard let session, session.status < 2, let position = session.queuePosition else {
+        guard let session, !QueueSessionPhase.isPastQueue(session),
+              let position = session.queuePosition, position > 0 else {
             displayQueuePosition = nil
             queueTrendSessionId = nil
             if !queueTrend.samples.isEmpty {

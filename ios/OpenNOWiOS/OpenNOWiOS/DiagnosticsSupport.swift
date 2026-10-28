@@ -1,6 +1,73 @@
 import CryptoKit
 import Foundation
 
+/// Bounded, process-local history retained after a coordinator stops or retries.
+/// No SDP, payloads, credentials, or peer identities are recorded here.
+@MainActor
+final class StreamConnectionDiagnostics {
+    static let shared = StreamConnectionDiagnostics()
+
+    struct Attempt {
+        let id: UUID
+        let startedAt: Date
+        let endpoint: String
+        var stage = "connecting"
+        var packets = 0
+        var invalidPackets = 0
+        var offers = 0
+        var sends = 0
+        var sendFailures = 0
+        var lastFailure: String?
+        var closeCode: Int?
+        var httpStatus: Int?
+        var timing: String?
+    }
+
+    private let capacity: Int
+    private(set) var attempts: [Attempt] = []
+
+    init(capacity: Int = 8) { self.capacity = min(32, max(1, capacity)) }
+
+    @discardableResult
+    func begin(endpoint: String, now: Date = .now) -> UUID {
+        let id = UUID()
+        // URL queries can carry pairing/auth values, so retain only the sanitized host/path.
+        var components = URLComponents(string: endpoint)
+        components?.query = nil
+        components?.user = nil
+        components?.password = nil
+        components?.fragment = nil
+        let safe = DiagnosticsSanitizer.sanitize(String((components?.string ?? "unknown").prefix(400)))
+        attempts.append(Attempt(id: id, startedAt: now, endpoint: safe))
+        if attempts.count > capacity { attempts.removeFirst(attempts.count - capacity) }
+        return id
+    }
+
+    func update(_ id: UUID?, _ update: (inout Attempt) -> Void) {
+        guard let id, let index = attempts.firstIndex(where: { $0.id == id }) else { return }
+        update(&attempts[index])
+    }
+
+    func failure(_ id: UUID?, error: Error) {
+        let error = error as NSError
+        update(id) {
+            if !["local_stop", "local_retry"].contains($0.stage) { $0.stage = "failed" }
+            $0.lastFailure = DiagnosticsSanitizer.sanitize(String(error.domain.prefix(120))) + " code=\(error.code)"
+        }
+    }
+
+    func export() -> String {
+        let formatter = ISO8601DateFormatter()
+        return (["attempts=\(attempts.count) retention=inMemoryOnly sendCompletionIsNotServerAcknowledgment=true"]
+            + attempts.enumerated().map { index, value in
+                "attempt=\(index + 1) started=\(formatter.string(from: value.startedAt)) endpoint=\(value.endpoint) "
+                    + "stage=\(value.stage) packets=\(value.packets) invalid=\(value.invalidPackets) offers=\(value.offers) "
+                    + "sends=\(value.sends) sendFailures=\(value.sendFailures) close=\(value.closeCode.map(String.init) ?? "none") "
+                    + "http=\(value.httpStatus.map(String.init) ?? "none") failure=\(value.lastFailure ?? "none") timing=\(value.timing ?? "none")"
+            }).joined(separator: "\n")
+    }
+}
+
 enum DiagnosticsSanitizer {
     private static let sensitiveKeys: Set<String> = [
         "authorization", "proxyauthorization", "cookie", "setcookie", "password", "passwd",

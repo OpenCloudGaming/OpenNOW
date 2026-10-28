@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A184D1000000000000000001 /* SessionConnectionPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A184D1000000000000000002; };
 		A16E9C000000000000000001 /* NativeStreamVirtualStick.swift in Sources */ = {isa = PBXBuildFile; fileRef = A16E9C000000000000000002; };
 		4A9F701B95F642B4B396FF48 /* StreamSessionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12734E3A4AF1481E9CA7E9E4; };
 		DC2C1BC3FB56423B96FF2C69 /* StreamSessionHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BEF4FE1193044C9B24243CB; };
@@ -207,6 +208,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		A184D1000000000000000002 /* SessionConnectionPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionConnectionPolicy.swift; sourceTree = "<group>"; };
 		A16E9C000000000000000002 /* NativeStreamVirtualStick.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeStreamVirtualStick.swift; sourceTree = "<group>"; };
 		12734E3A4AF1481E9CA7E9E4 /* StreamSessionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamSessionsView.swift; sourceTree = "<group>"; };
 		6BEF4FE1193044C9B24243CB /* StreamSessionHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamSessionHistory.swift; sourceTree = "<group>"; };
@@ -489,6 +491,7 @@
 				BB000000000000000000001B /* Haptics.swift */,
 				0A1B2C3D4E5F6A7B8C9D2001 /* OpenNOWiOSApp.swift */,
 				0A1B2C3D4E5F6A7B8C9D2002 /* ContentView.swift */,
+				A184D1000000000000000002 /* SessionConnectionPolicy.swift */,
 				AB0000000000000000000011 /* DiagnosticsSupport.swift */,
 				AC0000000000000000000011 /* AccountStateSupport.swift */,
 				0A1B2C3D4E5F6A7B8C9D2006 /* OpenNOWStore.swift */,
@@ -804,6 +807,7 @@
 				4A5F97824B2E12F3BD7390F7 /* NativeStreamNVSTInput.swift in Sources */,
 				0A1B2C3D4E5F6A7B8C9D1002 /* ContentView.swift in Sources */,
 				0A1B2C3D4E5F6A7B8C9D1001 /* OpenNOWiOSApp.swift in Sources */,
+				A184D1000000000000000001 /* SessionConnectionPolicy.swift in Sources */,
 				AB0000000000000000000001 /* DiagnosticsSupport.swift in Sources */,
 				AC0000000000000000000001 /* AccountStateSupport.swift in Sources */,
 				0A1B2C3D4E5F6A7B8C9D1005 /* OpenNOWStore.swift in Sources */,

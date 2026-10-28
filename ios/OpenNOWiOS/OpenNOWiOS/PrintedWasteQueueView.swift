@@ -22,6 +22,7 @@ struct PrintedWasteZone: Identifiable, Equatable {
     var isMeasuring: Bool
     let regionSuffix: String
     let gpuTier: String?
+    var lastUpdated: TimeInterval? = nil
 
     init(
         id: String,
@@ -47,6 +48,12 @@ struct PrintedWasteZone: Identifiable, Equatable {
         self.isMeasuring = isMeasuring
         self.regionSuffix = regionSuffix
         self.gpuTier = gpuTier
+    }
+}
+
+enum PrintedWasteQueueFreshness {
+    static func isFresh(_ updatedAt: TimeInterval, now: TimeInterval = Date().timeIntervalSince1970) -> Bool {
+        updatedAt.isFinite && now.isFinite && updatedAt > 0 && updatedAt <= now && updatedAt >= now - 1800
     }
 }
 
@@ -487,6 +494,11 @@ struct PrintedWasteQueueView: View {
             }
 
             Button {
+                if let updatedAt = selectedRoutingZone?.lastUpdated,
+                   !PrintedWasteQueueFreshness.isFresh(updatedAt) {
+                    Task { await loadZones() }
+                    return
+                }
                 onConfirm(selectedZoneUrl)
                 dismiss()
             } label: {
@@ -542,8 +554,9 @@ struct PrintedWasteQueueView: View {
             })
 
             zones = queue.data
-                .filter { zoneId, _ in
-                    Self.isStandardZone(zoneId)
+                .filter { zoneId, zone in
+                    PrintedWasteQueueFreshness.isFresh(zone.LastUpdated)
+                        && Self.isStandardZone(zoneId)
                         && !nukedZones.contains(zoneId)
                         && !StreamZonePolicy.isBlocked(zoneId)
                 }
@@ -558,7 +571,7 @@ struct PrintedWasteQueueView: View {
                         .map { String($0) }
                     let region = components.first ?? zone.Region
                     let suffix = components.count > 1 ? components[1] : zone.Region
-                    return PrintedWasteZone(
+                    var selectable = PrintedWasteZone(
                         id: zoneId,
                         title: mapping.data[zoneId]?.title?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty ?? zoneId,
                         region: region,
@@ -573,6 +586,8 @@ struct PrintedWasteQueueView: View {
                         gpuTier: mapping.data[zoneId]?.is5080Server == true ? "RTX 5080" :
                             (mapping.data[zoneId]?.is4080Server == true ? "RTX 4080" : nil)
                     )
+                    selectable.lastUpdated = zone.LastUpdated
+                    return selectable
                 }
                 .sorted { lhs, rhs in
                     if lhs.region == rhs.region {

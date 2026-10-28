@@ -2712,6 +2712,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     private var signalingSession: URLSession?
     private var webSocket: URLSessionWebSocketTask?
     private var signalingHeartbeat: DispatchSourceTimer?
+    private var connectionDiagnosticID: UUID?
     private var offerTimeoutWorkItem: DispatchWorkItem?
     private var iceDisconnectWorkItem: DispatchWorkItem?
     private var statsTimer: DispatchSourceTimer?
@@ -2939,18 +2940,22 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         historyRecord = StreamSessionRecord(gameTitle: session.game.title,
             resolution: "\(streamProfile.width)×\(streamProfile.height)", targetFPS: streamProfile.fps,
             codec: settings.preferredCodec.uppercased(), hdr: settings.hdrEnabled,
-            transport: settings.experimentalNativeNVSTEnabled ? "Native NVST" : "WebRTC")
+            transport: session.usesNativeTransport(settings: settings) ? "Native NVST" : "WebRTC")
         refreshDeviceStatus()
         if let historyRecord { sessionHistory?.update(historyRecord, force: true) }
         retryAvailable = onRetry != nil
         updateStatus("Checking codecs", detail: codecReport.summary)
 
         let requires444 = StreamSettingsResolver.colorQuality(for: settings) == .tenBit444
-        if requires444 && !settings.experimentalNativeNVSTEnabled {
+        if requires444 && !session.usesNativeTransport(settings: settings) {
             fail("10-bit 4:4:4 requires the Native NVST Receiver. Enable it in Settings → Stream → Connection.")
             return
         }
-        if settings.experimentalNativeNVSTEnabled {
+        if session.usesNativeTransport(settings: settings) {
+            guard !(session.nativeRtspsEndpoints ?? []).isEmpty else {
+                fail("The session requires native streaming but has no native control endpoint. Try reopening the session.")
+                return
+            }
             guard #available(iOS 17.0, *) else { fail("Native NVST requires iOS 17 or newer"); return }
             let codec = NativeStreamVideoCodec.normalized(settings.preferredCodec)
                 ?? (requires444 ? .h265 : [.h265, .av1, .h264].first { codecReport.capability(for: $0)?.videoToolboxHardwareDecode == true } ?? .h264)
@@ -3753,6 +3758,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
             self.batteryMonitoringWasEnabled = nil
         }
         stopped = true
+        StreamConnectionDiagnostics.shared.update(connectionDiagnosticID) { $0.stage = "local_stop" }
         nativeNVSTStart?.cancel(); nativeNVSTStart = nil
         let nativeTransport = nativeNVST; nativeNVST = nil
         Task { await nativeTransport?.close() }
@@ -3847,6 +3853,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     }
 
     private func closeLocalTransportForRetry() {
+        StreamConnectionDiagnostics.shared.update(connectionDiagnosticID) { $0.stage = "local_retry" }
         offerTimeoutWorkItem?.cancel()
         offerTimeoutWorkItem = nil
         iceDisconnectWorkItem?.cancel()
@@ -3953,6 +3960,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     }
 
     private func connectSignaling() {
+        guard !stopped else { return }
         guard let url = signalingURL() else {
             fail("Missing signaling endpoint")
             return
@@ -3973,6 +3981,8 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
             request.setValue(hostHeader, forHTTPHeaderField: "Host")
         }
         let task = urlSession.webSocketTask(with: request)
+        connectionDiagnosticID = StreamConnectionDiagnostics.shared.begin(endpoint: url.absoluteString)
+        task.taskDescription = connectionDiagnosticID?.uuidString
         webSocket = task
         scheduleOfferTimeout()
         task.resume()
@@ -3993,13 +4003,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         } else {
             return nil
         }
-        let withoutScheme = base
-            .replacingOccurrences(of: "wss://", with: "", options: [.caseInsensitive])
-            .replacingOccurrences(of: "ws://", with: "", options: [.caseInsensitive])
-            .replacingOccurrences(of: "https://", with: "", options: [.caseInsensitive])
-            .replacingOccurrences(of: "http://", with: "", options: [.caseInsensitive])
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        return URL(string: "wss://\(withoutScheme)/sign_in?peer_id=\(peerName)&version=2&peer_role=1&pairing_id=\(session.id)")
+        return SessionConnectionPolicy.signInURL(base: base, peerName: peerName, sessionID: session.id)
     }
 
     private func receiveSignaling(from task: URLSessionWebSocketTask) {
@@ -4017,6 +4021,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
                     }
                     self.receiveSignaling(from: task)
                 case .failure(let error):
+                    StreamConnectionDiagnostics.shared.failure(self.connectionDiagnosticID, error: error)
                     self.handleSignalingFailure("Signaling failed: \(error.localizedDescription)", task: task)
                 @unknown default:
                     self.receiveSignaling(from: task)
@@ -4053,8 +4058,10 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     }
 
     private func handleSignalingText(_ text: String) {
+        StreamConnectionDiagnostics.shared.update(connectionDiagnosticID) { $0.packets += 1 }
         guard let data = text.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            StreamConnectionDiagnostics.shared.update(connectionDiagnosticID) { $0.invalidPackets += 1 }
             log("Ignoring non-JSON signaling packet")
             return
         }
@@ -4062,23 +4069,27 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         if let info = object["peer_info"] as? [String: Any],
            let name = info["name"] as? String,
            name == peerName {
-            peerId = info["id"] as? Int ?? peerId
+            peerId = SessionConnectionPolicy.integer(info["id"]) ?? peerId
         }
 
-        if let ack = object["ackid"] as? Int {
-            let sourceId = (object["peer_info"] as? [String: Any])?["id"] as? Int
+        if let ack = SessionConnectionPolicy.integer(object["ackid"]) {
+            let sourceId = SessionConnectionPolicy.integer((object["peer_info"] as? [String: Any])?["id"])
             if sourceId != peerId {
                 sendJSON(["ack": ack])
             }
         }
 
-        if object["hb"] != nil {
+        if object["error"] != nil, !(object["error"] is NSNull) {
+            StreamConnectionDiagnostics.shared.update(connectionDiagnosticID) { $0.lastFailure = "server_rejection" }
+        }
+
+        if object["hb"] != nil, !(object["hb"] is NSNull) {
             sendJSON(["hb": 1])
             return
         }
 
         guard let peerMessage = object["peer_msg"] as? [String: Any] else { return }
-        remotePeerId = peerMessage["from"] as? Int ?? remotePeerId
+        remotePeerId = SessionConnectionPolicy.integer(peerMessage["from"]) ?? remotePeerId
         guard let message = peerMessage["msg"] as? String,
               let messageData = message.data(using: .utf8),
               let payload = try? JSONSerialization.jsonObject(with: messageData) as? [String: Any] else {
@@ -4091,7 +4102,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
             addRemoteCandidate(
                 candidate,
                 sdpMid: payload["sdpMid"] as? String,
-                sdpMLineIndex: payload["sdpMLineIndex"] as? Int
+                sdpMLineIndex: SessionConnectionPolicy.integer(payload["sdpMLineIndex"])
             )
         }
     }
@@ -4113,6 +4124,8 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     }
 
     private func handleOffer(_ offerSDP: String) {
+        guard !stopped, peerConnection == nil, let socket = webSocket else { return }
+        StreamConnectionDiagnostics.shared.update(connectionDiagnosticID) { $0.offers += 1; $0.stage = "offer_received" }
         offerTimeoutWorkItem?.cancel()
         updateStatus("Negotiating video", detail: "\(selectedCodec.rawValue) \(streamProfile.resolutionString) @ \(streamProfile.fps) fps")
         inputBridge.configure(
@@ -4123,6 +4136,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         workQueue.async { [weak self] in
             guard let self else { return }
             Task { @MainActor in
+                guard !self.stopped, self.webSocket === socket, self.peerConnection == nil else { return }
                 self.createPeerConnection(with: offerSDP)
             }
         }
@@ -4421,7 +4435,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     }
 
     private func addRemoteCandidate(_ candidate: String, sdpMid: String?, sdpMLineIndex: Int?) {
-        guard let peerConnection else { return }
+        guard let peerConnection, let lineIndex = Int32(exactly: sdpMLineIndex ?? 0), lineIndex >= 0 else { return }
         let rewrittenCandidate = NativeStreamSDP.rewriteIceCandidateEndpoint(
             candidate,
             mediaIP: session.mediaIp,
@@ -4432,7 +4446,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         }
         let ice = RTCIceCandidate(
             sdp: rewrittenCandidate,
-            sdpMLineIndex: Int32(sdpMLineIndex ?? 0),
+            sdpMLineIndex: lineIndex,
             sdpMid: sdpMid
         )
         peerConnection.add(ice) { [weak self] error in
@@ -4461,15 +4475,18 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     }
 
     private func sendJSON(_ object: [String: Any]) {
-        guard let data = try? JSONSerialization.data(withJSONObject: object),
-              let text = String(data: data, encoding: .utf8) else {
-            return
-        }
-        webSocket?.send(.string(text)) { [weak self] error in
-            if let error {
-                Task { @MainActor in
-                    self?.log("Signaling send failed: \(error.localizedDescription)")
-                }
+        guard !stopped, let socket = webSocket,
+              let data = try? JSONSerialization.data(withJSONObject: object),
+              let text = String(data: data, encoding: .utf8) else { return }
+        let diagnosticID = connectionDiagnosticID
+        StreamConnectionDiagnostics.shared.update(diagnosticID) { $0.sends += 1 }
+        socket.send(.string(text)) { [weak self, weak socket] error in
+            guard let error else { return }
+            Task { @MainActor in
+                StreamConnectionDiagnostics.shared.update(diagnosticID) { $0.sendFailures += 1 }
+                StreamConnectionDiagnostics.shared.failure(diagnosticID, error: error)
+                guard let self, let socket, !self.stopped, self.webSocket === socket else { return }
+                self.handleSignalingFailure("Signaling send failed: \(error.localizedDescription)", task: socket)
             }
         }
     }
@@ -4481,9 +4498,11 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
 
     private func scheduleOfferTimeout() {
         offerTimeoutWorkItem?.cancel()
+        let socket = webSocket
         let item = DispatchWorkItem { [weak self] in
             Task { @MainActor in
-                guard let self, !self.stopped, self.peerConnection == nil else { return }
+                guard let self, !self.stopped, self.peerConnection == nil, self.webSocket === socket else { return }
+                StreamConnectionDiagnostics.shared.update(self.connectionDiagnosticID) { $0.stage = "offer_timeout"; $0.lastFailure = "offer_timeout" }
                 let reason = "Timed out waiting for WebRTC offer"
                 if !self.requestSelectedVideoProfileRetry(reason) { self.fail(reason) }
             }
@@ -5428,13 +5447,31 @@ extension NativeStreamCoordinator: NativeStreamInputSink {
 }
 
 extension NativeStreamCoordinator: URLSessionWebSocketDelegate {
+    nonisolated func urlSession(_ session: URLSession, task: URLSessionTask,
+                               didFinishCollecting metrics: URLSessionTaskMetrics) {
+        guard let rawID = task.taskDescription, let id = UUID(uuidString: rawID) else { return }
+        let transaction = metrics.transactionMetrics.last
+        func milliseconds(_ start: Date?, _ end: Date?) -> String {
+            guard let start, let end else { return "unavailable" }
+            return String(Int(clamping: Int64(max(0, min(3_600_000, end.timeIntervalSince(start) * 1000)))))
+        }
+        let timing = "dnsMs=\(milliseconds(transaction?.domainLookupStartDate, transaction?.domainLookupEndDate)) "
+            + "connectMs=\(milliseconds(transaction?.connectStartDate, transaction?.connectEndDate)) "
+            + "tlsMs=\(milliseconds(transaction?.secureConnectionStartDate, transaction?.secureConnectionEndDate))"
+        let httpStatus = (transaction?.response as? HTTPURLResponse)?.statusCode
+        Task { @MainActor in
+            StreamConnectionDiagnostics.shared.update(id) { $0.timing = timing; $0.httpStatus = httpStatus }
+        }
+    }
+
     nonisolated func urlSession(
         _ session: URLSession,
         webSocketTask: URLSessionWebSocketTask,
         didOpenWithProtocol protocol: String?
     ) {
         Task { @MainActor in
-            guard self.webSocket === webSocketTask else { return }
+            guard !self.stopped, self.webSocket === webSocketTask else { return }
+            StreamConnectionDiagnostics.shared.update(self.connectionDiagnosticID) { $0.stage = "socket_open" }
             self.updateStatus("Signaling connected", detail: "Waiting for offer")
             self.sendPeerInfo()
             self.startSignalingHeartbeat()
@@ -5449,6 +5486,7 @@ extension NativeStreamCoordinator: URLSessionWebSocketDelegate {
     ) {
         Task { @MainActor in
             guard !self.stopped, self.webSocket === webSocketTask else { return }
+            StreamConnectionDiagnostics.shared.update(self.connectionDiagnosticID) { $0.closeCode = closeCode.rawValue; $0.stage = "closed" }
             let reason = "Signaling closed: \(closeCode.rawValue)"
             self.handleSignalingFailure(reason, task: webSocketTask)
         }

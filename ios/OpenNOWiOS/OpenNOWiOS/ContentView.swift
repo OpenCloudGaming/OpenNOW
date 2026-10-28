@@ -17,7 +17,8 @@ struct ContentView: View {
             if let queuePosition = debugQueuePreviewPosition {
                 StreamLoadingView(coversBottomBar: true)
                     .task {
-                        store.installDebugQueuePreview(position: queuePosition)
+                        store.installDebugQueuePreview(position: queuePosition,
+                            isSettingUp: ProcessInfo.processInfo.arguments.contains("--opennow-setup-preview"))
                     }
             } else if ProcessInfo.processInfo.arguments.contains("--opennow-intro-preview") {
                 IntroSetupView(onFinish: {})

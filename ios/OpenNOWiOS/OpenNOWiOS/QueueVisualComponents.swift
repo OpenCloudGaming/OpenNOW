@@ -1,5 +1,49 @@
 import SwiftUI
 
+enum SessionSetupProgress {
+    static let duration: TimeInterval = 12
+    static let limit = 0.9
+
+    static func fraction(elapsed: TimeInterval) -> Double {
+        guard elapsed.isFinite else { return elapsed == .infinity ? limit : 0 }
+        return min(limit, max(0, elapsed / duration * limit))
+    }
+}
+
+/// Only this small bar ticks; the shared store and full-screen artwork don't redraw with it.
+struct SessionSetupProgressView: View {
+    @Environment(\.openNowAccent) private var accent
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var startedAt = ProcessInfo.processInfo.systemUptime
+    @State private var settled = false
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: reduceMotion ? 1 : 1.0 / 30,
+                                paused: scenePhase != .active || settled)) { _ in
+            let fraction = SessionSetupProgress.fraction(elapsed: ProcessInfo.processInfo.systemUptime - startedAt)
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.primary.opacity(0.10))
+                    Capsule().fill(accent.color)
+                        .frame(width: max(0, geometry.size.width * fraction))
+                }
+            }
+            .frame(height: 6)
+            .transaction { $0.animation = nil }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Session setup")
+        // This is Android's estimated preparation animation, not a server completion percentage.
+        .accessibilityValue("Preparing stream")
+        .task {
+            do { try await Task.sleep(for: .seconds(SessionSetupProgress.duration)) }
+            catch { return }
+            settled = true
+        }
+    }
+}
+
 /// The ambient wash behind the queue screen.
 ///
 /// Rewritten twice, both times for cost. The first version put a 52-point `.blur` on two
