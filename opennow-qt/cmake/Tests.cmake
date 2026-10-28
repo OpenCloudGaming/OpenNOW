@@ -1766,6 +1766,16 @@ if(BUILD_TESTING)
     endif()
     foreach(surface desktop console)
         foreach(mode windowed fullscreen)
+            set(post_end_mode_args)
+            if(mode STREQUAL "fullscreen")
+                list(APPEND post_end_mode_args --fullscreen)
+            endif()
+            add_test(NAME "qml-post-end-close-${surface}-${mode}"
+                COMMAND opennow-qt --smoke-test --allow-multiple-instances
+                    --${surface} --route home --smoke-stream-exit --smoke-exit-post-end
+                    ${post_end_mode_args} --reduced-motion)
+            set_tests_properties("qml-post-end-close-${surface}-${mode}" PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
             foreach(route stream inserting home)
                 add_test(NAME "qml-window-close-${surface}-${mode}-${route}"
                     COMMAND opennow-qt --smoke-test --allow-multiple-instances

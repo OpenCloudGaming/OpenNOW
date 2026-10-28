@@ -23,7 +23,8 @@ int AcceptanceSession::startStreamExitWorkload()
         : qobject_cast<QQuickWindow *>(m_engine.rootObjects().first());
     auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
     if (!window || !store) return EXIT_FAILURE;
-    if (m_arguments.contains(u"--smoke-exit-requested-quit"_s)) {
+    if (m_arguments.contains(u"--smoke-exit-requested-quit"_s)
+            || m_arguments.contains(u"--smoke-exit-post-end"_s)) {
         QQmlComponent component(&m_engine, QUrl(u"qrc:/acceptance/SessionQuitAcceptance.qml"_s));
         auto *fixture = component.create();
         if (!fixture) {
@@ -33,6 +34,7 @@ int AcceptanceSession::startStreamExitWorkload()
         fixture->setParent(&m_engine);
         fixture->setProperty("interactive", m_arguments.contains(u"--smoke-exit-interactive"_s));
         fixture->setProperty("stopFailure", m_arguments.contains(u"--smoke-exit-stop-failure"_s));
+        fixture->setProperty("postEndClose", m_arguments.contains(u"--smoke-exit-post-end"_s));
         m_engine.rootContext()->setContextProperty(u"CoreClient"_s, fixture->property("client").value<QObject *>());
         m_engine.rootContext()->setContextProperty(u"NativeStreamRuntime"_s, fixture->property("runtime").value<QObject *>());
         return QMetaObject::invokeMethod(fixture, "run", Q_ARG(QVariant, QVariant::fromValue(window)))

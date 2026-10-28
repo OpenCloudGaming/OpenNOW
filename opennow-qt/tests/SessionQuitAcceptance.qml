@@ -9,6 +9,7 @@ QtObject {
     property var recording
     property bool interactive: false
     property bool stopFailure: false
+    property bool postEndClose: false
     property int originalVisibility: 0
     property QtObject runtime: QtObject {
         property bool running: true
@@ -57,6 +58,10 @@ QtObject {
     function run(parent) {
         window = parent
         originalVisibility = window.visibility
+        if (postEndClose) {
+            checkPostEndClose()
+            return
+        }
         surface = find(parent.contentItem, "streamSurfaceHost")
         ShellStore.settings = {confirmQuitWhenIdle: false, showSessionReport: false}
         ShellStore.streamerStartRequestId = "fixture-blocked"
@@ -75,6 +80,80 @@ QtObject {
         client.allocationsSettled = false
         steps.start()
         console.info("SESSION_QUIT_READY")
+    }
+    function checkCloseGuard(message) {
+        const visibility = window.visibility
+        check(!window.close() && window.visible && window.visibility === visibility
+            && AppController.overlay === "application-quit-confirm", message)
+        AppController.showOverlay("")
+    }
+    function checkPostEndClose() {
+        const owner = {generation:7, userId:"quit-owner", providerIdpId:"quit-provider"}
+        ShellStore.authSession = {user:{userId:owner.userId, displayName:"Quit fixture"}, provider:{idpId:owner.providerIdpId}}
+        ShellStore.authGeneration = owner.generation
+        ShellStore.settings = {confirmQuitWhenIdle:false, showSessionReport:false}
+        ShellStore.activeSessionRequestId = ""
+        ShellStore.streamInputPauseRequestId = "fixture-blocked"
+        ShellStore.pendingLaunchParams = {appId:"123", title:"Quit fixture"}
+        ShellStore.streamCreateRequestId = "create-failed"
+        client.requestFailed("create-failed", "network_error", "Create failed")
+        check(ShellStore.pendingLaunchParams !== null, "a failed create must retain its retry intent")
+        checkCloseGuard("an unresolved launch must still ask")
+        for (const ending of ["native", "status-response", "status-event", "http", "stop"]) {
+            const seat = {sessionId:"quit-" + ending, status:1, phase:"queued", ownerScope:owner}
+            ShellStore.pendingLaunchParams = {appId:"123", title:"Quit fixture"}
+            ShellStore.streamCreateRequestId = "create-" + ending
+            client.responseReceived(ShellStore.streamCreateRequestId, {scope:owner, session:seat})
+            checkCloseGuard(ending + ": a created queued session must still ask")
+            ShellStore.streamPollTimer.stop()
+            ShellStore.activeSession = Object.assign({}, seat, {status:3, phase:"streaming"})
+            ShellStore.streamer = {status:"stopped"}
+            checkCloseGuard("disconnected media with a live cloud session must still ask")
+            ShellStore.streamer = {sessionId:seat.sessionId, status:"streaming"}
+            ShellStore.streamState = "streaming"
+            ShellStore.streamerStopExpected = false
+            checkCloseGuard(ending + ": a live stream must still ask")
+            const termination = ending === "native"
+                ? {source:"nvst-server", code:"server-terminated", sessionId:seat.sessionId, resumable:false}
+                : {source:"cloudmatch-http", httpStatus:404, sessionId:seat.sessionId, resumable:false}
+            if (ending === "stop") {
+                ShellStore.stopStreamingSession()
+                checkCloseGuard("a pending cloud stop must still ask")
+                client.requestFailed(ShellStore.streamStopRequestId, "network_error", "Stop failed")
+                checkCloseGuard("a failed cloud stop must retain the live session guard")
+                ShellStore.stopStreamingSession()
+                client.responseReceived(ShellStore.streamStopRequestId, {session:null, sessionId:seat.sessionId})
+            } else if (ending === "native") {
+                runtime.eventReceived({type:"error", code:"server-terminated", termination:termination})
+                checkCloseGuard("native termination must wait for core cleanup")
+                client.responseReceived(ShellStore.sessionEndRequestId, {sessionId:seat.sessionId, cleared:true})
+            } else if (ending === "status-event") {
+                client.eventReceived("session.changed", {scope:owner, session:Object.assign({}, seat, {status:7})})
+            } else {
+                ShellStore.streamPollRequestId = "poll-" + ending
+                client.responseReceived(ShellStore.streamPollRequestId, ending === "http"
+                    ? {scope:owner, session:null, termination:termination}
+                    : {scope:owner, session:Object.assign({}, seat, {status:7})})
+            }
+            check(ShellStore.activeSession === null, ending + ": the cloud session must be terminal")
+            checkCloseGuard(ending + ": native teardown must still ask")
+            runtime.responseReceived({id:ShellStore.streamerStopRequestId, type:"ok"})
+            check(!ShellStore.applicationQuitNeedsConfirmation,
+                ending + ": completed session must allow idle opt-out close; pending launch="
+                    + JSON.stringify(ShellStore.pendingLaunchParams))
+            ShellStore.remoteSessions = [{sessionId:"other-live-seat", status:3}]
+            checkCloseGuard("a separately resumable cloud session must still ask")
+            ShellStore.remoteSessions = []
+            ShellStore.settings = {confirmQuitWhenIdle:true, showSessionReport:false}
+            checkCloseGuard("enabled idle confirmation must still ask after ending")
+            ShellStore.settings = {confirmQuitWhenIdle:false, showSessionReport:false}
+            check(window.visibility === originalVisibility && window.close()
+                && !window.visible && AppController.overlay === "",
+                ending + ": post-end native close must honor idle opt-out without changing window mode")
+            if (ending !== "stop") window.visibility = originalVisibility
+        }
+        console.info("SESSION_POST_END_CLOSE_PASS")
+        Qt.callLater(() => Qt.exit(0))
     }
     function finishRecording() {
         ShellStore.acceptNativeResponse({id: ShellStore.streamerStopRequestId, type: "ok",

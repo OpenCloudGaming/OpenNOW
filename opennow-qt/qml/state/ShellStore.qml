@@ -4440,6 +4440,7 @@ QtObject {
             } else if (requestId === root.streamCreateRequestId) {
                 root.streamCreateRequestId = ""
                 root.launchConflictDetected = false
+                root.pendingLaunchParams = null
                 root.acceptStreamingSession(result.session || null)
                 if (root.activeSession)
                     root.streamRequestedColorQuality = root.pendingRequestedColorQuality
