@@ -1269,6 +1269,164 @@ private slots:
         QCOMPARE(StreamVideoItem::windowsVirtualKey(key, Qt::NoModifier, nativeKey), expected);
     }
 
+    void windowsModifierScanCodesPreserveSides_data()
+    {
+        QTest::addColumn<int>("key");
+        QTest::addColumn<quint32>("scanCode");
+        QTest::addColumn<quint32>("nativeKey");
+        QTest::addColumn<quint16>("expected");
+        QTest::newRow("left-shift") << int(Qt::Key_Shift) << quint32(0x2a)
+                                   << quint32(0x10) << quint16(0xa0);
+        QTest::newRow("right-shift") << int(Qt::Key_Shift) << quint32(0x36)
+                                    << quint32(0x10) << quint16(0xa1);
+        QTest::newRow("left-control") << int(Qt::Key_Control) << quint32(0x1d)
+                                     << quint32(0x11) << quint16(0xa2);
+        QTest::newRow("right-control") << int(Qt::Key_Control) << quint32(0xe01d)
+                                      << quint32(0x11) << quint16(0xa3);
+        QTest::newRow("left-alt") << int(Qt::Key_Alt) << quint32(0x38)
+                                 << quint32(0x12) << quint16(0xa4);
+        QTest::newRow("right-alt") << int(Qt::Key_Alt) << quint32(0xe038)
+                                  << quint32(0x12) << quint16(0xa5);
+        QTest::newRow("french-altgr") << int(Qt::Key_AltGr) << quint32(0xe038)
+                                     << quint32(0x12) << quint16(0xa5);
+        QTest::newRow("altgr-release-after-layout-change") << int(Qt::Key_Alt)
+            << quint32(0xe038) << quint32(0x12) << quint16(0xa5);
+        QTest::newRow("explicit-right-alt") << int(Qt::Key_AltGr) << quint32(0xe038)
+                                           << quint32(0xa5) << quint16(0xa5);
+        QTest::newRow("no-scan-control-fallback") << int(Qt::Key_Control) << quint32(0)
+                                                << quint32(0x11) << quint16(0xa2);
+        QTest::newRow("no-scan-synthetic-altgr") << int(Qt::Key_AltGr) << quint32(0)
+                                               << quint32(0) << quint16(0xa5);
+    }
+
+    void windowsModifierScanCodesPreserveSides()
+    {
+        QFETCH(int, key);
+        QFETCH(quint32, scanCode);
+        QFETCH(quint32, nativeKey);
+        QFETCH(quint16, expected);
+        QCOMPARE(StreamVideoItem::windowsGameplayVirtualKey(
+                     key, Qt::NoModifier, scanCode, nativeKey), expected);
+    }
+
+    void secondaryLayoutAltGrPreservesKeyLifetimes_data()
+    {
+        QTest::addColumn<bool>("fullscreen");
+        QTest::addColumn<bool>("qtAltGr");
+        QTest::newRow("windowed-altgr") << false << true;
+        QTest::newRow("fullscreen-altgr") << true << true;
+        QTest::newRow("windowed-ctrl-right-alt") << false << false;
+        QTest::newRow("fullscreen-ctrl-right-alt") << true << false;
+    }
+
+    void secondaryLayoutAltGrPreservesKeyLifetimes()
+    {
+#if defined(Q_OS_WIN) || defined(Q_OS_LINUX)
+        QFETCH(bool, fullscreen);
+        QFETCH(bool, qtAltGr);
+        static QList<QList<quint16>> inputCalls;
+        inputCalls.clear();
+        auto api = CursorSession::api();
+        api.submitKey = [](const OpenNowStreamer *, std::uint16_t key,
+                           std::uint16_t modifiers, bool pressed) {
+            inputCalls.append({key, modifiers, quint16(pressed)});
+            return OPENNOW_STREAMER_OK;
+        };
+        NativeStreamRuntime runtime(api);
+        QVERIFY(runtime.start());
+        StreamVideoItem::setNativeStreamRuntime(&runtime);
+        const auto reset = qScopeGuard([] { StreamVideoItem::setNativeStreamRuntime(nullptr); });
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                              {QStringLiteral("id"), QStringLiteral("secondary-layout")}}));
+        const QByteArray ready = R"({"id":"secondary-layout","type":"ok"})";
+        CursorSession::callbacks.response_callback(
+            reinterpret_cast<const std::uint8_t *>(ready.constData()), ready.size(),
+            CursorSession::callbacks.user_data);
+        QTRY_VERIFY(runtime.inputAllowed());
+        QQuickWindow window;
+        window.resize(640, 480);
+        auto *item = new StreamVideoItem(window.contentItem());
+        item->setRenderCallback({});
+        item->setSize(window.size());
+        item->setKeyboardLayout(QStringLiteral("fr-FR"));
+        item->setShortcutBindings({{QStringLiteral("local-e"), QStringLiteral("Ctrl+Alt+E")}});
+        QSignalSpy shortcuts(item, &StreamVideoItem::localShortcutRequested);
+        QQuickItem overlay(window.contentItem());
+        overlay.setVisible(false);
+        if (fullscreen) window.showFullScreen();
+        else window.showNormal();
+        window.requestActivate();
+        QTRY_VERIFY(window.isActive());
+        item->forceActiveFocus();
+        QTRY_VERIFY(item->captureActive());
+#if defined(Q_OS_WIN)
+        constexpr quint32 altScan = 0xe038;
+        constexpr quint32 eScan = 0x12;
+        constexpr quint32 digitScan = 0x03;
+#else
+        constexpr quint32 altScan = 108;
+        constexpr quint32 eScan = 26;
+        constexpr quint32 digitScan = 11;
+#endif
+        const auto send = [&](QEvent::Type type, int key, quint32 scan, quint32 native,
+                              Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
+            QKeyEvent event(type, key, modifiers, scan, native, 0);
+            QCoreApplication::sendEvent(&window, &event);
+        };
+        const auto pressAltGr = [&] {
+            send(QEvent::KeyPress, qtAltGr ? Qt::Key_AltGr : Qt::Key_Alt, altScan, 0x12,
+                 qtAltGr ? Qt::NoModifier : Qt::ControlModifier | Qt::AltModifier);
+        };
+        const quint16 altGrPressModifiers = qtAltGr ? 0 : 2;
+        pressAltGr();
+        send(QEvent::KeyPress, 0x20ac, eScan, 0x45,
+             qtAltGr ? Qt::GroupSwitchModifier : Qt::ControlModifier | Qt::AltModifier);
+        QCOMPARE(inputCalls, (QList<QList<quint16>>{
+            {0xa5, altGrPressModifiers, 1}, {0x45, 6, 1}}));
+        send(QEvent::KeyRelease, Qt::Key_E, eScan, 0x45);
+        send(QEvent::KeyRelease, Qt::Key_Alt, altScan, 0x12, Qt::AltModifier);
+        QCOMPARE(inputCalls, (QList<QList<quint16>>{
+            {0xa5, altGrPressModifiers, 1}, {0x45, 6, 1}, {0x45, 6, 0}, {0xa5, 0, 0}}));
+        QVERIFY(shortcuts.isEmpty());
+        QVERIFY(item->m_pressedKeys.isEmpty());
+
+        send(QEvent::KeyPress, Qt::Key_Eacute, digitScan, 0x32);
+        send(QEvent::KeyRelease, Qt::Key_2, digitScan, 0x32);
+        QCOMPARE(inputCalls.last(), (QList<quint16>{0x32, 0, 0}));
+        send(QEvent::KeyPress, Qt::Key_E, eScan, 0x45,
+             Qt::ControlModifier | Qt::AltModifier);
+        QCOMPARE(shortcuts.size(), 1);
+        const auto callsBeforeShortcutRelease = inputCalls.size();
+        send(QEvent::KeyRelease, Qt::Key_unknown, eScan, 0x45);
+        QCOMPARE(inputCalls.size(), callsBeforeShortcutRelease);
+
+        pressAltGr();
+        send(QEvent::KeyPress, 0x20ac, eScan, 0x45);
+        const auto callsBeforeOverlay = inputCalls.size();
+        overlay.setVisible(true);
+        overlay.forceActiveFocus();
+        QTRY_VERIFY(!item->captureActive());
+        const auto releases = inputCalls.sliced(callsBeforeOverlay);
+        QCOMPARE(releases.size(), 2);
+        QVERIFY(releases.contains({0xa5, 0, 0}));
+        QVERIFY(releases.contains({0x45, 0, 0}));
+        QVERIFY(item->m_pressedKeys.isEmpty());
+        const auto callsBeforeOverlayInput = inputCalls.size();
+        send(QEvent::KeyPress, Qt::Key_Eacute, digitScan, 0x32);
+        send(QEvent::KeyRelease, Qt::Key_E, eScan, 0x45);
+        send(QEvent::KeyRelease, Qt::Key_Alt, altScan, 0x12, Qt::AltModifier);
+        QCOMPARE(inputCalls.size(), callsBeforeOverlayInput);
+        overlay.setVisible(false);
+        item->forceActiveFocus();
+        QTRY_VERIFY(item->captureActive());
+        send(QEvent::KeyPress, Qt::Key_Eacute, digitScan, 0x32);
+        send(QEvent::KeyRelease, Qt::Key_2, digitScan, 0x32);
+        QCOMPARE(inputCalls.last(), (QList<quint16>{0x32, 0, 0}));
+#else
+        QSKIP("This fixture uses Windows and XKB native scan codes.");
+#endif
+    }
+
     void mapsGermanUmlautAndMinusAwayFromLayoutVirtualKeys()
     {
         const auto gameplay = [](int key, quint32 scanCode, quint32 layoutVirtualKey) {
