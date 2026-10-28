@@ -1242,11 +1242,9 @@ private slots:
         const auto removeProbe = qScopeGuard([&] {
             if (nativeWindow) RemoveWindowSubclass(hwnd, procedure, 1);
         });
-        if (nativeWindow) {
-            QWindowSystemInterface::handleWindowActivated(&session.window);
-            QCoreApplication::processEvents();
-        }
 #endif
+        QWindowSystemInterface::handleFocusWindowChanged(&session.window, Qt::ActiveWindowFocusReason);
+        QCoreApplication::processEvents();
         StreamVideoItem item(session.window.contentItem());
         item.m_usesMacPointerCapture = false;
         item.setRenderCallback({});
