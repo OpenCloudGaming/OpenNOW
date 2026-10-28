@@ -3,6 +3,7 @@
 #include <QWaylandCompositor>
 #include <QWaylandOutput>
 #include <QWaylandOutputMode>
+#include <QWaylandSurface>
 #include <QWaylandXdgDecorationManagerV1>
 #include <QWaylandXdgShell>
 
@@ -14,6 +15,13 @@ int main(int argc, char **argv)
     QWaylandCompositor compositor;
     compositor.setSocketName("opennow-windowtheme-test");
     compositor.setUseHardwareIntegrationExtension(false);
+    QObject::connect(&compositor, &QWaylandCompositor::surfaceCreated, &application,
+                     [](QWaylandSurface *surface) {
+        QObject::connect(surface, &QWaylandSurface::redraw, surface, [surface] {
+            surface->frameStarted();
+            surface->sendFrameCallbacks();
+        });
+    });
     QWaylandXdgShell shell(&compositor);
     QObject::connect(&shell, &QWaylandXdgShell::toplevelCreated, &application,
                      [](QWaylandXdgToplevel *toplevel) {

@@ -1159,8 +1159,13 @@ if(BUILD_TESTING)
             src/streaming/rendering/LinuxVulkanGraphics.h)
         target_include_directories(opennow-linuxvulkangraphics-tests PRIVATE src)
         target_link_libraries(opennow-linuxvulkangraphics-tests PRIVATE
-            Qt6::Test Qt6::GuiPrivate Qt6::Quick opennow-streamer-ffi Vulkan::Vulkan)
+            Qt6::Test Qt6::GuiPrivate Qt6::QuickPrivate opennow-streamer-ffi Vulkan::Vulkan)
         add_dependencies(opennow-linuxvulkangraphics-tests opennow-streamer-ffi-build)
+        if(TARGET opennow-windowtheme-compositor)
+            add_dependencies(opennow-linuxvulkangraphics-tests opennow-windowtheme-compositor)
+            target_compile_definitions(opennow-linuxvulkangraphics-tests PRIVATE
+                OPENNOW_WINDOWTHEME_COMPOSITOR="$<TARGET_FILE:opennow-windowtheme-compositor>")
+        endif()
         add_test(NAME opennow-linuxvulkangraphics-tests
             COMMAND opennow-linuxvulkangraphics-tests -o -,txt)
         set_tests_properties(opennow-linuxvulkangraphics-tests PROPERTIES
