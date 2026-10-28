@@ -220,6 +220,7 @@ class StreamVideoItemTest final : public QObject
     struct CursorSession {
         inline static OpenNowStreamerConfig callbacks;
         inline static QList<QPoint> motions;
+        inline static QList<QRect> absoluteMotions;
 
         static NativeStreamRuntime::Api api()
         {
@@ -244,12 +245,18 @@ class StreamVideoItemTest final : public QObject
                 motions.append(QPoint(x, y));
                 return OPENNOW_STREAMER_OK;
             };
+            api.submitMouseAbsolute = [](const OpenNowStreamer *, std::uint16_t x, std::uint16_t y,
+                                          std::uint16_t width, std::uint16_t height) {
+                absoluteMotions.append(QRect(x, y, width, height));
+                return OPENNOW_STREAMER_OK;
+            };
             return api;
         }
 
         bool start(const QString &transport = {})
         {
             motions.clear();
+            absoluteMotions.clear();
             if (!runtime.start()) return false;
             StreamVideoItem::setNativeStreamRuntime(&runtime);
             if (!runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
@@ -284,6 +291,53 @@ class StreamVideoItemTest final : public QObject
     };
 
 private slots:
+    void absoluteMouseReportsDoNotWaitForAFrame_data()
+    {
+        QTest::addColumn<bool>("fullscreen");
+        QTest::newRow("windowed") << false;
+        QTest::newRow("fullscreen") << true;
+    }
+
+    void absoluteMouseReportsDoNotWaitForAFrame()
+    {
+        QFETCH(bool, fullscreen);
+        CursorSession session;
+        QVERIFY(session.start(QStringLiteral("nvst")));
+        StreamVideoItem item(std::make_unique<MacPointerCapture>(), false, session.window.contentItem());
+        item.setRenderCallback({});
+        if (fullscreen) session.window.showFullScreen();
+        QTRY_VERIFY(session.window.isActive());
+        item.setSize(session.window.size());
+        item.setVideoSize(QSize(3840, 2160));
+        item.forceActiveFocus();
+        QTRY_VERIFY(item.captureActive());
+        QVERIFY(!item.relativeMouse());
+        QSignalSpy swaps(&session.window, &QQuickWindow::frameSwapped);
+        for (const bool overlayVisible : {false, true, false}) {
+            item.setInputEnabled(!overlayVisible);
+            QCOMPARE(item.captureActive(), !overlayVisible);
+            CursorSession::absoluteMotions.clear();
+            const auto swapsBefore = swaps.size();
+            for (int report = 0; report < 64; ++report) {
+                const QPointF position(session.window.width() / 2.0 + report,
+                                       session.window.height() / 2.0);
+                const auto before = CursorSession::absoluteMotions.size();
+                QMouseEvent move(QEvent::MouseMove, position, session.window.mapToGlobal(position.toPoint()),
+                                 Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+                move.setTimestamp(1'000 + report * 4);
+                QCoreApplication::sendEvent(&session.window, &move);
+                if (overlayVisible) {
+                    QCOMPARE(CursorSession::absoluteMotions.size(), before);
+                } else {
+                    QVERIFY(CursorSession::absoluteMotions.size() > before);
+                    QCOMPARE(CursorSession::absoluteMotions.last(),
+                             StreamVideoItem::absoluteMouseCoordinates(position, item.videoSize(), item.size()));
+                }
+                QCOMPARE(swaps.size(), swapsBefore);
+            }
+        }
+    }
+
     void clipboardPasteRouting_data()
     {
         QTest::addColumn<bool>("fullscreen");
