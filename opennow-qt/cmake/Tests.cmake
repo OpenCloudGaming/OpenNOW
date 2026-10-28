@@ -1174,6 +1174,10 @@ if(BUILD_TESTING)
     target_link_libraries(opennow-windowsmoveloop-tests PRIVATE opennow-platform-input Qt6::Test)
     add_test(NAME opennow-windowsmoveloop-tests COMMAND opennow-windowsmoveloop-tests -o -,txt)
     if(WIN32)
+        add_test(NAME opennow-windowsmoveloop-native-tests
+            COMMAND opennow-streamvideo-tests nativeWindowMoveLoopOwnsTheCursorUntilItExits -o -,txt)
+        set_tests_properties(opennow-windowsmoveloop-native-tests PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=windows" RUN_SERIAL TRUE TIMEOUT 30)
         set_tests_properties(opennow-windowsmoveloop-tests PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=windows" RUN_SERIAL TRUE TIMEOUT 30)
     else()

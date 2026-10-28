@@ -219,7 +219,11 @@ class CIWorkflowTest(unittest.TestCase):
         self.assertIn("opennow-platform-input Qt6::Test", registration)
         self.assertIn("add_test(NAME opennow-windowsmoveloop-tests COMMAND opennow-windowsmoveloop-tests", registration)
         self.assertRegex(registration, r'if\(WIN32\)\s+'
-                         r'set_tests_properties\(opennow-windowsmoveloop-tests PROPERTIES\s+'
+                         r'add_test\(NAME opennow-windowsmoveloop-native-tests\s+'
+                         r'COMMAND opennow-streamvideo-tests nativeWindowMoveLoopOwnsTheCursorUntilItExits -o -,txt\)')
+        self.assertIn('set_tests_properties(opennow-windowsmoveloop-native-tests PROPERTIES\n'
+                      '            ENVIRONMENT "QT_QPA_PLATFORM=windows" RUN_SERIAL TRUE TIMEOUT 30)', registration)
+        self.assertRegex(registration, r'set_tests_properties\(opennow-windowsmoveloop-tests PROPERTIES\s+'
                          r'ENVIRONMENT "QT_QPA_PLATFORM=windows" RUN_SERIAL TRUE TIMEOUT 30\)')
         native = (ROOT / "opennow-qt/tests/tst_windowswindowmoveloop.cpp").read_text()
         self.assertIn("void sentSystemCommandsSuspendBeforeQtDispatch()", native)
