@@ -3,7 +3,6 @@
 #include "streaming/PhysicalKeyMap.h"
 #include "streaming/rendering/StreamVideoRenderCallback.h"
 
-#include <QAbstractNativeEventFilter>
 #include <QQuickItem>
 #include <QCursor>
 #include <QHash>
@@ -174,16 +173,6 @@ protected:
 
 private:
     friend class StreamVideoItemTest;
-    class NativeWindowMoveLoopFilter final : public QAbstractNativeEventFilter
-    {
-    public:
-        explicit NativeWindowMoveLoopFilter(StreamVideoItem &item) : m_item(item) {}
-        bool nativeEventFilter(const QByteArray &eventType, void *message,
-                               qintptr *result) override;
-
-    private:
-        StreamVideoItem &m_item;
-    };
     StreamVideoItem(std::unique_ptr<class MacPointerCapture> pointerCapture,
                     bool usesMacPointerCapture, QQuickItem *parent);
     struct PressedKey {
@@ -250,7 +239,7 @@ private:
     bool m_rawInputActive = false;
     bool m_cursorConfined = false;
     bool m_nativeWindowMoveLoop = false;
-    NativeWindowMoveLoopFilter m_nativeWindowMoveLoopFilter{*this};
+    std::unique_ptr<class WindowsWindowMoveLoop> m_windowsWindowMoveLoop;
     bool m_remoteCursorKnown = false;
     bool m_serverCursorComposited = true;
     bool m_remoteCursorVisible = false;

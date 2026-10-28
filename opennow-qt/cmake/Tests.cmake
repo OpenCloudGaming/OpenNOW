@@ -1170,6 +1170,12 @@ if(BUILD_TESTING)
              COMMAND opennow-streamvideo-tests -o -,txt)
     set_tests_properties(opennow-streamvideo-tests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    if(WIN32)
+        add_test(NAME opennow-windowsmoveloop-native-tests
+            COMMAND opennow-streamvideo-tests nativeWindowMoveLoopOwnsTheCursorUntilItExits -o -,txt)
+        set_tests_properties(opennow-windowsmoveloop-native-tests PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=windows" RUN_SERIAL TRUE TIMEOUT 30)
+    endif()
 
     qt_add_executable(opennow-waylandpointer-tests tests/tst_waylandpointercapture.cpp)
     target_link_libraries(opennow-waylandpointer-tests PRIVATE opennow-platform-input Qt6::Test)

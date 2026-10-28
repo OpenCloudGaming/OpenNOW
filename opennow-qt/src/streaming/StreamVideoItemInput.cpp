@@ -909,39 +909,6 @@ void StreamVideoItem::submitAbsoluteMouse(const QPointF &position)
         static_cast<quint16>(std::min(coordinates.height(), 65535)));
 }
 
-bool StreamVideoItem::NativeWindowMoveLoopFilter::nativeEventFilter(
-    const QByteArray &eventType, void *message, qintptr *result)
-{
-#if defined(Q_OS_WIN)
-    if (eventType != "windows_generic_MSG") return false;
-    const auto *msg = static_cast<const MSG *>(message);
-    const auto command = msg->wParam & 0xfff0;
-    if (msg->message != WM_SYSCOMMAND || (command != SC_MOVE && command != SC_SIZE))
-        return false;
-    const auto *window = m_item.window();
-    if (!window || !window->handle() || msg->hwnd != reinterpret_cast<HWND>(window->winId())
-        || !m_item.isVisible() || !s_nativeRuntime
-        || !s_nativeRuntime->running())
-        return false;
-    const QPointer<StreamVideoItem> item(&m_item);
-    const auto hwnd = msg->hwnd;
-    const auto wParam = msg->wParam;
-    const auto lParam = msg->lParam;
-    item->setNativeWindowMoveLoop(true);
-    if (wParam & 0x000f)
-        SetCursorPos(static_cast<short>(LOWORD(lParam)), static_cast<short>(HIWORD(lParam)));
-    const auto handled = DefWindowProcW(hwnd, WM_SYSCOMMAND, wParam, lParam);
-    if (result) *result = handled;
-    if (item) item->setNativeWindowMoveLoop(false);
-    return true;
-#else
-    Q_UNUSED(eventType);
-    Q_UNUSED(message);
-    Q_UNUSED(result);
-    return false;
-#endif
-}
-
 void StreamVideoItem::setNativeWindowMoveLoop(bool active)
 {
     if (m_nativeWindowMoveLoop == active) return;
