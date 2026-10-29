@@ -25,8 +25,10 @@ struct NativeStreamPresentation<Content: View>: UIViewControllerRepresentable {
 final class NativeStreamPresentationController: UIViewController {
     let host: NativeStreamHostingController
     private var dismantled = false
+    private let orientationBeforePresentation: UIInterfaceOrientationMask
 
     init(content: AnyView) {
+        orientationBeforePresentation = StreamOrientation.currentOrientation
         host = NativeStreamHostingController(rootView: content)
         super.init(nibName: nil, bundle: nil)
         host.modalPresentationStyle = .fullScreen
@@ -43,7 +45,7 @@ final class NativeStreamPresentationController: UIViewController {
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         guard !dismantled, host.presentingViewController == nil else { return }
-        StreamOrientation.setStreaming(true)
+        StreamOrientation.setStreaming(true, restoring: orientationBeforePresentation)
         present(host, animated: false)
     }
 

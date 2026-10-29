@@ -73,6 +73,7 @@ actor NativeStreamNVST: NativeStreamNVSTTransport {
     private let onSample: @Sendable (NativeStreamNVSTSample) -> Void
     private let onFailure: @Sendable (String) -> Void
     private let onHaptics: @Sendable ([NvstHapticEvent]) -> Void
+    private let onProgress: @Sendable (NvstRtspStage) -> Void
     private let clock = NvstSessionClock()
     private var reserver: NvstLocalBundleReserver?
     private var rtsp: NvstRtspSession?
@@ -111,10 +112,12 @@ actor NativeStreamNVST: NativeStreamNVSTTransport {
          onFrame: @escaping @Sendable (RTCVideoFrame) -> Void,
          onSample: @escaping @Sendable (NativeStreamNVSTSample) -> Void,
          onFailure: @escaping @Sendable (String) -> Void,
-         onHaptics: @escaping @Sendable ([NvstHapticEvent]) -> Void) {
+         onHaptics: @escaping @Sendable ([NvstHapticEvent]) -> Void,
+         onProgress: @escaping @Sendable (NvstRtspStage) -> Void) {
         self.allocation = allocation; self.settings = settings; self.profile = profile
         self.codec = codec; self.displayFPS = displayFPS
         self.onFrame = onFrame; self.onSample = onSample; self.onFailure = onFailure; self.onHaptics = onHaptics
+        self.onProgress = onProgress
     }
 
     func start() async throws {
@@ -134,7 +137,7 @@ actor NativeStreamNVST: NativeStreamNVSTTransport {
             disablesOwdCongestionControl: false, vsyncMode: .adaptive,
             announceOverrides: [("x-nv-vqos[0].dfc.enable", "0")])
         do {
-            let negotiated = try await NvstRtspNegotiator(reserver: reserver).negotiate(input,
+            let negotiated = try await NvstRtspNegotiator(reserver: reserver, onProgress: onProgress).negotiate(input,
                 onVideoReady: { [weak self] handoff in
                     guard let self else { throw CancellationError() }
                     try await self.startVideo(handoff)

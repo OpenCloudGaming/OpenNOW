@@ -1,9 +1,22 @@
 import Foundation
 import Network
 
+public enum NvstRtspStage: String, Sendable {
+    case connecting = "TCP/TLS connection"
+    case upgrading = "WebSocket upgrade"
+    case options = "OPTIONS"
+    case describe = "DESCRIBE"
+    case setup = "SETUP"
+    case preparingVideo = "Preparing video receiver"
+    case preparingBundle = "Preparing audio/control bundle"
+    case announce = "ANNOUNCE"
+    case play = "PLAY"
+}
+
 /// The RTSP control channel the negotiator drives. Abstracted so the handshake can be
 /// exercised against recorded seat responses without a socket.
 public protocol NvstRtspControlChannel: Sendable {
+    func setProgressHandler(_ handler: (@Sendable (NvstRtspStage) -> Void)?) async
     func connect(sessionID: String?) async throws
     @discardableResult
     func request(method: String, uri: String, headers: [(String, String)], body: String) async throws -> NvstRtspResponse
@@ -23,6 +36,7 @@ public protocol NvstRtspControlChannel: Sendable {
 }
 
 public extension NvstRtspControlChannel {
+    func setProgressHandler(_ handler: (@Sendable (NvstRtspStage) -> Void)?) async {}
     func startKeepAlive(uri: String, headers: [(String, String)]) async {}
     func stopKeepAlive() async {}
     /// Latest keepalive round trip in milliseconds; -1 when the channel cannot measure one.
@@ -72,6 +86,8 @@ public actor NvstRtspConnection: NvstRtspControlChannel {
     private var pendingResponses: [NvstRtspResponse] = []
     private var responseWaiter: CheckedContinuation<NvstRtspResponse, Error>?
     private var failure: Error?
+    private var onProgress: (@Sendable (NvstRtspStage) -> Void)?
+    private var requestInFlight = false
     private var cseq = 0
     private var keepAliveTask: Task<Void, Never>?
     private var keepAliveGeneration: UInt64 = 0
@@ -89,51 +105,47 @@ public actor NvstRtspConnection: NvstRtspControlChannel {
 
     // MARK: - Lifecycle
 
+    public func setProgressHandler(_ handler: (@Sendable (NvstRtspStage) -> Void)?) async {
+        onProgress = handler
+    }
+
     public func connect(sessionID: String?) async throws {
-        // Per-socket, like the connection itself. `sendKeepAlive` and every request guard on it, so
-        // a connection reused after a failure answered nothing: the keepalive loop could re-arm and
-        // then no-op every two seconds for the rest of the session.
-        failure = nil
         let parameters = NWParameters(tls: tlsOptions(), tcp: NWProtocolTCP.Options())
         let endpoint = NWEndpoint.hostPort(host: .init(target.host), port: .init(integerLiteral: target.port))
         let connection = NWConnection(to: endpoint, using: parameters)
+        try await connect(connection: connection, sessionID: sessionID)
+    }
+
+    func connect(connection: NWConnection, sessionID: String?) async throws {
+        failure = nil
         self.connection = connection
-        // NWConnection has no connect deadline of its own: an unroutable seat would sit in
-        // `.waiting` forever. Cancelling on the deadline is what makes the state handler fire —
-        // racing the continuation against a sleep would leave the continuation unresumed.
-        let timedOut = OneShotFlag()
-        let timeoutTask = Task { [timeout] in
-            try? await Task.sleep(for: timeout)
-            guard !Task.isCancelled else { return }
-            timedOut.set()
-            connection.cancel()
-        }
         do {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                let resumed = OneShot(continuation)
-                connection.stateUpdateHandler = { state in
-                    switch state {
-                    case .ready: resumed.resume(.success(()))
-                    case .failed(let error): resumed.resume(.failure(ConnectionError.connectFailed(error.localizedDescription)))
-                    case .cancelled: resumed.resume(.failure(timedOut.isSet ? ConnectionError.timedOut("CONNECT") : ConnectionError.closed))
-                    default: break
+            try await withDeadline(connection: connection, method: "CONNECT/UPGRADE") {
+                await self.reportProgress(.connecting)
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    let resumed = OneShot(continuation)
+                    connection.stateUpdateHandler = { state in
+                        switch state {
+                        case .ready: resumed.resume(.success(()))
+                        case .failed(let error): resumed.resume(.failure(ConnectionError.connectFailed(error.localizedDescription)))
+                        case .cancelled: resumed.resume(.failure(ConnectionError.closed))
+                        default: break
+                        }
                     }
+                    connection.start(queue: Self.queue)
                 }
-                connection.start(queue: Self.queue)
+                await self.reportProgress(.upgrading)
+                try await self.performUpgrade(connection: connection, sessionID: sessionID)
             }
-            timeoutTask.cancel()
+            receiveLoop(connection: connection)
         } catch {
-            timeoutTask.cancel()
-            connection.cancel()
-            self.connection = nil
+            close()
             throw error
         }
-        logger?("NVST RTSPS TLS connected to \(target.host):\(target.port)")
-        try await performUpgrade(connection: connection, sessionID: sessionID)
-        receiveLoop(connection: connection)
     }
 
     public func close() {
+        failure = ConnectionError.closed
         keepAliveTask?.cancel()
         keepAliveTask = nil
         connection?.cancel()
@@ -153,12 +165,24 @@ public actor NvstRtspConnection: NvstRtspControlChannel {
                         body: String) async throws -> NvstRtspResponse {
         guard let connection else { throw ConnectionError.closed }
         if let failure { throw failure }
-        guard responseWaiter == nil else { throw ConnectionError.overlappingRequest }
+        guard !requestInFlight else { throw ConnectionError.overlappingRequest }
+        requestInFlight = true
+        defer { requestInFlight = false }
         cseq += 1
         let message = NvstRtspMessage.buildRequest(method: method, uri: uri, headers: headers, body: body, cseq: cseq)
         let sentAt = DispatchTime.now().uptimeNanoseconds
-        try await send(connection: connection, data: NvstWebSocketFrame.encodeText(Data(message.utf8)))
-        let response = try await nextResponse(method: method)
+        switch method {
+        case "OPTIONS": reportProgress(.options)
+        case "DESCRIBE": reportProgress(.describe)
+        case "SETUP": reportProgress(.setup)
+        case "ANNOUNCE": reportProgress(.announce)
+        case "PLAY": reportProgress(.play)
+        default: break
+        }
+        let response = try await withDeadline(connection: connection, method: method) {
+            try await self.send(connection: connection, data: NvstWebSocketFrame.encodeText(Data(message.utf8)))
+            return try await self.awaitResponse()
+        }
         noteRequestRoundTrip(method: method, sentAt: sentAt)
         return response
     }
@@ -219,7 +243,7 @@ public actor NvstRtspConnection: NvstRtspControlChannel {
 
     @discardableResult
     func sendKeepAlive(uri: String, headers: [(String, String)]) async -> Bool {
-        guard connection != nil, failure == nil, responseWaiter == nil else { return false }
+        guard connection != nil, failure == nil, !requestInFlight else { return false }
         keepAlivesSent += 1
         let sentAt = DispatchTime.now().uptimeNanoseconds
         do {
@@ -276,35 +300,35 @@ public actor NvstRtspConnection: NvstRtspControlChannel {
         }
     }
 
-    private func nextResponse(method: String) async throws -> NvstRtspResponse {
-        if !pendingResponses.isEmpty { return pendingResponses.removeFirst() }
-        if let failure { throw failure }
-        let deadline = timeout
-        return try await withThrowingTaskGroup(of: NvstRtspResponse.self) { group in
-            group.addTask { [weak self] in
-                guard let self else { throw ConnectionError.closed }
-                return try await self.awaitResponse()
-            }
-            group.addTask { [weak self] in
-                try await Task.sleep(for: deadline)
-                // Resume the waiting continuation too: leaving it pending would deadlock the
-                // group, which cannot return until every child task finishes.
-                await self?.failPending(ConnectionError.timedOut(method))
-                throw ConnectionError.timedOut(method)
-            }
-            guard let response = try await group.next() else {
-                throw ConnectionError.timedOut(method)
-            }
-            group.cancelAll()
-            return response
-        }
+    private func reportProgress(_ stage: NvstRtspStage) {
+        onProgress?(stage)
     }
 
-    /// Fails a pending request without tearing down the connection.
-    private func failPending(_ error: Error) {
-        guard let waiter = responseWaiter else { return }
-        responseWaiter = nil
-        waiter.resume(throwing: error)
+    private func withDeadline<Value: Sendable>(connection: NWConnection, method: String,
+                                               operation: @Sendable () async throws -> Value) async throws -> Value {
+        let timedOut = OneShotFlag()
+        let timeoutTask = Task { [timeout] in
+            do { try await Task.sleep(for: timeout) } catch { return }
+            guard !Task.isCancelled else { return }
+            timedOut.set()
+            connection.cancel()
+        }
+        defer { timeoutTask.cancel() }
+        return try await withTaskCancellationHandler {
+            do {
+                try Task.checkCancellation()
+                let value = try await operation()
+                try Task.checkCancellation()
+                if timedOut.isSet { throw ConnectionError.timedOut(method) }
+                return value
+            } catch {
+                if Task.isCancelled { throw CancellationError() }
+                if timedOut.isSet { throw ConnectionError.timedOut(method) }
+                throw error
+            }
+        } onCancel: {
+            connection.cancel()
+        }
     }
 
     private func awaitResponse() async throws -> NvstRtspResponse {

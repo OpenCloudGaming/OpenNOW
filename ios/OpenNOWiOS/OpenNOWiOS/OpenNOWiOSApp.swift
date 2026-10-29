@@ -39,7 +39,19 @@ enum StreamOrientation {
         isStreaming ? .landscape : (UIDevice.current.userInterfaceIdiom == .pad ? .all : .allButUpsideDown)
     }
 
-    static func setStreaming(_ streaming: Bool) {
+    static var currentOrientation: UIInterfaceOrientationMask {
+        let orientation = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .first(where: { $0.activationState == .foregroundActive })?.interfaceOrientation
+        switch orientation {
+        case .landscapeLeft: return .landscapeLeft
+        case .landscapeRight: return .landscapeRight
+        case .portraitUpsideDown: return .portraitUpsideDown
+        default: return .portrait
+        }
+    }
+
+    static func setStreaming(_ streaming: Bool, restoring orientation: UIInterfaceOrientationMask? = nil) {
         isStreaming = streaming
         let restoredOrientation = previousOrientation ?? .portrait
         if !streaming { previousOrientation = nil }
@@ -47,12 +59,7 @@ enum StreamOrientation {
             .compactMap({ $0 as? UIWindowScene })
             .first(where: { $0.activationState == .foregroundActive }) else { return }
         if streaming && previousOrientation == nil {
-            switch scene.interfaceOrientation {
-            case .landscapeLeft: previousOrientation = .landscapeLeft
-            case .landscapeRight: previousOrientation = .landscapeRight
-            case .portraitUpsideDown: previousOrientation = .portraitUpsideDown
-            default: previousOrientation = .portrait
-            }
+            previousOrientation = orientation ?? currentOrientation
         }
         let orientations: UIInterfaceOrientationMask = streaming ? .landscape : restoredOrientation
         for window in scene.windows {

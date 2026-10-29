@@ -368,6 +368,17 @@ final class OpenNOWiOSParityTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testNativeConnectionFailureRetainsItsLastSafeStage() {
+        let diagnostics = StreamConnectionDiagnostics()
+        let id = diagnostics.begin(endpoint: "rtsps://seat.example:322")
+        diagnostics.update(id) { $0.stage = "nvst_\(NvstRtspStage.upgrading.rawValue)" }
+        diagnostics.failure(id, error: NvstRtspConnection.ConnectionError.timedOut("CONNECT/UPGRADE"))
+        XCTAssertEqual(diagnostics.attempts.first?.stage, "failed")
+        XCTAssertTrue(diagnostics.export().contains("at=nvst_WebSocket upgrade"))
+        XCTAssertFalse(diagnostics.export().contains("x-nv-sessionid"))
+    }
+
     func testQueueFreshnessRejectsExpiredFutureAndInvalidSourceTimestamps() {
         let now: TimeInterval = 1_800_000_000
         XCTAssertTrue(PrintedWasteQueueFreshness.isFresh(now - 1800, now: now))
