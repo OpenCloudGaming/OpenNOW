@@ -51,8 +51,8 @@ final class StreamConnectionDiagnostics {
     func failure(_ id: UUID?, error: Error) {
         let error = error as NSError
         update(id) {
+            $0.lastFailure = DiagnosticsSanitizer.sanitize(String(error.domain.prefix(120))) + " code=\(error.code) at=\(DiagnosticsSanitizer.sanitize($0.stage))"
             if !["local_stop", "local_retry"].contains($0.stage) { $0.stage = "failed" }
-            $0.lastFailure = DiagnosticsSanitizer.sanitize(String(error.domain.prefix(120))) + " code=\(error.code)"
         }
     }
 

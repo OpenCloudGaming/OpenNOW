@@ -257,6 +257,19 @@ private struct StubReserver: NvstBundleReserving {
 }
 
 @Suite struct NvstRtspNegotiatorTests {
+    @Test func cancellationDoesNotTryAnotherEndpoint() async throws {
+        let seat = Self.seat()
+        let negotiator = Self.negotiator(seat)
+        let input = NvstRtspNegotiationInput(sessionID: "test-session", rtspsEndpoints: [
+            "rtsps://first.example.com:322", "rtsps://second.example.com:322"
+        ])
+        await #expect(throws: CancellationError.self) {
+            _ = try await negotiator.negotiate(input, onVideoReady: { _ in throw CancellationError() })
+        }
+        #expect(await seat.requests("OPTIONS").count == 1)
+        #expect(await seat.closed)
+    }
+
     private static let reservation = NvstBundleReservation(
         bundlePort: 49_005,
         mjolnirPort: 49_006,

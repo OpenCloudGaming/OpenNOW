@@ -3000,6 +3000,8 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     @available(iOS 17.0, *)
     private func startNativeNVST() {
         updateStatus("Connecting native NVST", detail: "Negotiating the dedicated video connection")
+        connectionDiagnosticID = StreamConnectionDiagnostics.shared.begin(endpoint: session.nativeRtspsEndpoints?.first ?? "unknown")
+        let diagnosticID = connectionDiagnosticID
         let sink = videoSink
         let maxDisplayFPS = max(
             streamProfile.fps,
@@ -3015,6 +3017,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
             onFailure: { [weak self] reason in Task { @MainActor in
                 guard let self, !self.stopped else { return }
                 self.nativeNVSTFailed = true
+                StreamConnectionDiagnostics.shared.update(diagnosticID) { $0.lastFailure = "native_transport_failure at=\($0.stage)"; $0.stage = "nvst_failed" }
                 self.markMediaTransportDisconnected()
                 self.updateStatus("Native NVST failed", detail: reason)
                 self.retryAvailable = self.onRetry != nil
@@ -3025,17 +3028,24 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
                     self.inputBridge.applyRumble(controllerId: Int(event.gamepadIndex),
                         weakMagnitude: Int(event.rightMotor), strongMagnitude: Int(event.leftMotor))
                 }
+            } },
+            onProgress: { [weak self] stage in Task { @MainActor in
+                guard let self, !self.stopped, !self.nativeNVSTFailed, !self.mediaTransportConnected else { return }
+                StreamConnectionDiagnostics.shared.update(diagnosticID) { $0.stage = "nvst_\(stage.rawValue)" }
+                self.updateStatus("Connecting native NVST", detail: stage.rawValue)
             } })
         nativeNVST = transport
         nativeNVSTStart = Task { [weak self] in
             do {
                 try await transport.start()
                 guard let self, !self.stopped, !Task.isCancelled else { return }
+                StreamConnectionDiagnostics.shared.update(diagnosticID) { $0.stage = "nvst_negotiated" }
                 self.markMediaTransportConnected()
             }
             catch {
                 guard let self, !self.stopped, !Task.isCancelled else { return }
                 self.nativeNVSTFailed = true
+                StreamConnectionDiagnostics.shared.failure(diagnosticID, error: error)
                 self.updateStatus("Native NVST failed", detail: error.localizedDescription)
                 self.retryAvailable = self.onRetry != nil
             }

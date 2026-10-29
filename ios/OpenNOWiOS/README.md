@@ -61,6 +61,8 @@ Diagnostics exports include up to eight in-memory signaling attempts, retained a
 
 Native NVST requests a keyframe when the control channel becomes ready and retries once per second while decoded video is stalled, within the existing 20-second failure budget. Asynchronous decoder failures request recovery immediately rather than waiting for another video packet. Audio reception does not reset the video watchdog.
 
+Native connection progress distinguishes TCP/TLS, WebSocket upgrade, OPTIONS, DESCRIBE, SETUP, local receiver/bundle preparation, ANNOUNCE and PLAY. The connection deadline includes the WebSocket upgrade, and request deadlines include both writes and responses. Stop cancels pending socket operations without waiting for their deadline or trying another endpoint. Bounded in-memory connection diagnostics retain the last stage on failure without logging handshake headers, SDP or credentials. These checks establish connection timeout/cancellation behavior, not successful physical-iPhone gameplay.
+
 Catalog projections are reused until their inputs change, and catalog snapshot JSON encoding/decoding runs off the main actor. Account and catalog generations prevent stale cache reads or writes from crossing account changes. The library exposes All Games/Favorites, search, and labeled filtering/sorting controls; server selection uses native grouped sections and adapts to accessibility text sizes.
 
 Continue Playing supports Android-style local dismissal: long-press a recently played card and choose **Remove from Continue Playing**. **Show Hidden Games** in the section's options menu restores those cards. Playing a game again also restores it. This does not alter provider history or hide active/resumable sessions.

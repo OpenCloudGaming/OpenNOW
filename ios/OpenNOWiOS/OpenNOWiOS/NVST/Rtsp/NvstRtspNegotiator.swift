@@ -15,15 +15,18 @@ public struct NvstRtspNegotiator: Sendable {
 
     let reserver: any NvstBundleReserving
     let logger: (@Sendable (String) -> Void)?
+    let onProgress: (@Sendable (NvstRtspStage) -> Void)?
     private let connectionFactory: @Sendable (NvstRtspEndpoints.Target, Duration, (@Sendable (String) -> Void)?) -> any NvstRtspControlChannel
 
     public init(reserver: any NvstBundleReserving,
                 logger: (@Sendable (String) -> Void)? = nil,
+                onProgress: (@Sendable (NvstRtspStage) -> Void)? = nil,
                 connectionFactory: @escaping @Sendable (NvstRtspEndpoints.Target, Duration, (@Sendable (String) -> Void)?) -> any NvstRtspControlChannel = { target, timeout, logger in
                     NvstRtspConnection(target: target, timeout: timeout, logger: logger)
                 }) {
         self.reserver = reserver
         self.logger = logger
+        self.onProgress = onProgress
         self.connectionFactory = connectionFactory
     }
 
@@ -38,9 +41,11 @@ public struct NvstRtspNegotiator: Sendable {
         var bestError: Error = NvstRtspNegotiationError.missingEndpoint
         var bestProgress = -1
         for endpoint in candidates {
+            try Task.checkCancellation()
             do {
                 return try await negotiate(endpoint: endpoint, input: input, onVideoReady: onVideoReady, onAnnounceReady: onAnnounceReady)
             } catch {
+                if Task.isCancelled || error is CancellationError { throw CancellationError() }
                 logger?("NVST control endpoint \(endpoint) failed: \(error.localizedDescription)")
                 // Report the candidate that got furthest, not the last one tried: a media port
                 // failing OPTIONS says nothing, while the control port failing SETUP is the story.
@@ -99,6 +104,7 @@ public struct NvstRtspNegotiator: Sendable {
         var steps: [String] = []
         let connection = connectionFactory(target, input.timeout, logger)
         do {
+            await connection.setProgressHandler(onProgress)
             try await connection.connect(sessionID: input.sessionID)
             steps.append("wss-open")
 
@@ -120,6 +126,7 @@ public struct NvstRtspNegotiator: Sendable {
                                                 steps: &steps)
 
             if let onVideoReady {
+                onProgress?(.preparingVideo)
                 try await onVideoReady(resolved.handoff)
                 steps.append("native-receive-armed")
             }
@@ -157,6 +164,7 @@ public struct NvstRtspNegotiator: Sendable {
                            steps: steps)
         } catch {
             await connection.close()
+            if Task.isCancelled || error is CancellationError { throw CancellationError() }
             throw NvstEndpointFailure(progress: Self.progress(of: error, reachedSteps: steps), underlying: error)
         }
     }
@@ -231,6 +239,7 @@ extension NvstRtspNegotiator {
                                reservation: NvstBundleReservation,
                                input: NvstRtspNegotiationInput,
                                steps: inout [String]) async throws {
+        onProgress?(.preparingBundle)
         let bundleIdentity = await reserver.bundleIdentity(for: resolved.handoff,
                                                            microphoneOfferedOnBundle: described.microphoneOfferedOnBundle)
         let bundlePort = bundleIdentity?.bundlePort ?? reservation.bundlePort

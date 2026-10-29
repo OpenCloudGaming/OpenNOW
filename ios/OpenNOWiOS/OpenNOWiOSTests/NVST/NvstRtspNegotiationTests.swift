@@ -1,6 +1,202 @@
 import Foundation
+import Network
 import Testing
+import XCTest
 @testable import OpenNOWiOS
+
+final class NvstRtspSocketTests: XCTestCase {
+    func testSilentUpgradeTimesOut() async throws {
+        let seat = try NvstLoopbackControlSeat(upgrade: .silent)
+        let port = try await seat.start()
+        defer { seat.stop() }
+        let client = NvstRtspConnection(target: .init(host: "localhost", port: port.rawValue), timeout: .milliseconds(250))
+        do {
+            try await client.connect(connection: seat.client(port: port), sessionID: "test-session")
+            XCTFail("A silent WebSocket upgrade must time out")
+        } catch {
+            XCTAssertEqual(error as? NvstRtspConnection.ConnectionError, .timedOut("CONNECT/UPGRADE"))
+        }
+    }
+
+    func testPartialUpgradeTimesOut() async throws {
+        let seat = try NvstLoopbackControlSeat(upgrade: .partial)
+        let port = try await seat.start()
+        defer { seat.stop() }
+        let client = NvstRtspConnection(target: .init(host: "localhost", port: port.rawValue), timeout: .milliseconds(250))
+        do {
+            try await client.connect(connection: seat.client(port: port), sessionID: "test-session")
+            XCTFail("An incomplete WebSocket upgrade must time out")
+        } catch {
+            XCTAssertEqual(error as? NvstRtspConnection.ConnectionError, .timedOut("CONNECT/UPGRADE"))
+        }
+    }
+
+    func testCancellingUpgradeUnblocksImmediately() async throws {
+        let seat = try NvstLoopbackControlSeat(upgrade: .silent)
+        let port = try await seat.start()
+        defer { seat.stop() }
+        let client = NvstRtspConnection(target: .init(host: "localhost", port: port.rawValue), timeout: .seconds(10))
+        let upgrading = expectation(description: "WebSocket upgrade started")
+        await client.setProgressHandler { if $0 == .upgrading { upgrading.fulfill() } }
+        let task = Task { try await client.connect(connection: seat.client(port: port), sessionID: "test-session") }
+        await fulfillment(of: [upgrading], timeout: 2)
+        let cancelledAt = ContinuousClock.now
+        task.cancel()
+        do {
+            try await task.value
+            XCTFail("Cancellation must terminate the upgrade")
+        } catch {
+            XCTAssertTrue(error is CancellationError)
+        }
+        XCTAssertLessThan(cancelledAt.duration(to: .now), .seconds(2))
+    }
+
+    func testSilentRtspResponseTimesOut() async throws {
+        let seat = try NvstLoopbackControlSeat(upgrade: .complete)
+        let port = try await seat.start()
+        defer { seat.stop() }
+        let client = NvstRtspConnection(target: .init(host: "localhost", port: port.rawValue), timeout: .milliseconds(250))
+        try await client.connect(connection: seat.client(port: port), sessionID: "test-session")
+        do {
+            _ = try await client.request(method: "DESCRIBE", uri: "rtsps://localhost", headers: [])
+            XCTFail("A silent RTSP response must time out")
+        } catch {
+            XCTAssertEqual(error as? NvstRtspConnection.ConnectionError, .timedOut("DESCRIBE"))
+        }
+        await client.close()
+    }
+
+    func testCancellingPendingResponseUnblocksImmediately() async throws {
+        let requested = expectation(description: "RTSP request reached the seat")
+        let seat = try NvstLoopbackControlSeat(upgrade: .complete, onRequest: { requested.fulfill() })
+        let port = try await seat.start()
+        defer { seat.stop() }
+        let client = NvstRtspConnection(target: .init(host: "localhost", port: port.rawValue), timeout: .seconds(10))
+        try await client.connect(connection: seat.client(port: port), sessionID: "test-session")
+        let task = Task { try await client.request(method: "DESCRIBE", uri: "rtsps://localhost", headers: []) }
+        await fulfillment(of: [requested], timeout: 2)
+        let cancelledAt = ContinuousClock.now
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("Cancellation must resume the pending RTSP response")
+        } catch {
+            XCTAssertTrue(error is CancellationError)
+        }
+        XCTAssertLessThan(cancelledAt.duration(to: .now), .seconds(2))
+        await client.close()
+    }
+
+    func testSuccessfulUpgradeDisarmsItsDeadlineAndReportsProgress() async throws {
+        let seat = try NvstLoopbackControlSeat(upgrade: .complete, answersRequests: true)
+        let port = try await seat.start()
+        defer { seat.stop() }
+        let client = NvstRtspConnection(target: .init(host: "localhost", port: port.rawValue), timeout: .milliseconds(250))
+        let connecting = expectation(description: "TCP/TLS stage")
+        let upgrading = expectation(description: "WebSocket stage")
+        let options = expectation(description: "OPTIONS stage")
+        await client.setProgressHandler {
+            switch $0 {
+            case .connecting: connecting.fulfill()
+            case .upgrading: upgrading.fulfill()
+            case .options: options.fulfill()
+            default: break
+            }
+        }
+        try await client.connect(connection: seat.client(port: port), sessionID: "test-session")
+        try await Task.sleep(for: .milliseconds(350))
+        let response = try await client.request(method: "OPTIONS", uri: "rtsps://localhost", headers: [])
+        XCTAssertEqual(response.statusCode, 200)
+        await fulfillment(of: [connecting, upgrading, options], timeout: 2)
+        await client.close()
+    }
+}
+
+private final class NvstLoopbackControlSeat: @unchecked Sendable {
+    enum Upgrade { case silent, partial, complete }
+    private let listener: NWListener
+    private let queue = DispatchQueue(label: "com.opennow.tests.rtsp")
+    private let upgrade: Upgrade
+    private let answersRequests: Bool
+    private let onRequest: @Sendable () -> Void
+    private var peers: [NWConnection] = []
+
+    init(upgrade: Upgrade, answersRequests: Bool = false, onRequest: @escaping @Sendable () -> Void = {}) throws {
+        listener = try NWListener(using: .tcp, on: .any)
+        self.upgrade = upgrade
+        self.answersRequests = answersRequests
+        self.onRequest = onRequest
+    }
+
+    func start() async throws -> NWEndpoint.Port {
+        try await withCheckedThrowingContinuation { continuation in
+            listener.stateUpdateHandler = { [listener] state in
+                switch state {
+                case .ready: continuation.resume(returning: listener.port!)
+                case .failed(let error): continuation.resume(throwing: error)
+                default: break
+                }
+            }
+            listener.newConnectionHandler = { [weak self] connection in
+                guard let self else { connection.cancel(); return }
+                peers.append(connection)
+                connection.start(queue: queue)
+                receiveUpgrade(connection, buffer: Data())
+            }
+            listener.start(queue: queue)
+        }
+    }
+
+    func client(port: NWEndpoint.Port) -> NWConnection {
+        NWConnection(host: "127.0.0.1", port: port, using: .tcp)
+    }
+
+    func stop() {
+        queue.sync {
+            peers.forEach { $0.cancel() }
+            peers.removeAll()
+            listener.cancel()
+        }
+    }
+
+    private func receiveUpgrade(_ connection: NWConnection, buffer: Data) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 16_384) { [weak self] data, _, complete, error in
+            guard let self, let data, !complete, error == nil else { return }
+            let buffer = buffer + data
+            guard let request = String(data: buffer, encoding: .utf8), request.contains("\r\n\r\n") else {
+                receiveUpgrade(connection, buffer: buffer)
+                return
+            }
+            switch upgrade {
+            case .silent: return
+            case .partial:
+                connection.send(content: Data("HTTP/1.1 101 Switching".utf8), completion: .contentProcessed { _ in })
+            case .complete:
+                guard let key = request.components(separatedBy: "\r\n").first(where: { $0.hasPrefix("Sec-WebSocket-Key:") })?
+                    .split(separator: ":", maxSplits: 1).last?.trimmingCharacters(in: .whitespaces) else { return }
+                let response = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: \(NvstWebSocketUpgrade.expectedAccept(for: key))\r\n\r\n"
+                connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in })
+                receiveRequest(connection, reader: NvstWebSocketFrameReader())
+            }
+        }
+    }
+
+    private func receiveRequest(_ connection: NWConnection, reader: NvstWebSocketFrameReader) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 16_384) { [weak self] data, _, complete, error in
+            guard let self, let data, !complete, error == nil else { return }
+            var reader = reader
+            guard let payloads = try? reader.push(data) else { return }
+            if !payloads.isEmpty {
+                onRequest()
+                if answersRequests {
+                    let response = Data("RTSP/1.0 200 OK\r\nCSeq: 1\r\nContent-Length: 0\r\n\r\n".utf8)
+                    connection.send(content: Data([0x81, UInt8(response.count)]) + response, completion: .contentProcessed { _ in })
+                }
+            }
+            receiveRequest(connection, reader: reader)
+        }
+    }
+}
 
 /// The NVST control plane is classic RTSP tunnelled over a WebSocket on `:322`. These tests pin
 /// the wire shapes we cannot re-derive at runtime: the Poco-shaped upgrade, the RTSP framing, the
