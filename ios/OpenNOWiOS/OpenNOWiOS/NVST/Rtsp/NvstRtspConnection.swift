@@ -105,7 +105,7 @@ public actor NvstRtspConnection: NvstRtspControlChannel {
 
     // MARK: - Lifecycle
 
-    public func setProgressHandler(_ handler: (@Sendable (NvstRtspStage) -> Void)?) {
+    public func setProgressHandler(_ handler: (@Sendable (NvstRtspStage) -> Void)?) async {
         onProgress = handler
     }
 
