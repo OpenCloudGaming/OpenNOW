@@ -57,6 +57,7 @@ public:
             m_state->format = format;
             m_state->sourceFormat = source->format();
             m_state->ready = m_state->create(source);
+            if (m_state->ready) ++m_resourceGeneration;
             if (!m_state->ready)
                 qWarning("FSR1 EASU resources unavailable; retaining normal video scaling");
         }
@@ -84,8 +85,11 @@ public:
     }
 
     void release() { m_state.reset(); }
+    quint64 resourceGeneration() const { return m_resourceGeneration; }
 
 private:
+    quint64 m_resourceGeneration = 0;
+
     static QShader shader(const char *name)
     {
         QFile file(QStringLiteral(":/opennow/shaders/") + QString::fromLatin1(name)

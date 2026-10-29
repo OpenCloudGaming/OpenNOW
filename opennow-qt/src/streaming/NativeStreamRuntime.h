@@ -70,6 +70,10 @@ public:
             const OpenNowStreamer *, OpenNowGenericHidOutput *);
         using GetGenericHidAdmissions = OpenNowStreamerStatus (*)(
             const OpenNowStreamer *, OpenNowGenericHidAdmissions *);
+        using GetPresentationConfig = OpenNowStreamerStatus (*)(
+            const OpenNowStreamer *, OpenNowStreamerPresentationConfig *);
+        using SubmitPresentationSample = OpenNowStreamerStatus (*)(
+            const OpenNowStreamer *, const OpenNowStreamerPresentationSample *);
 
         Create create = nullptr;
         Send send = nullptr;
@@ -95,6 +99,8 @@ public:
         SubmitGenericHidReport submitGenericHidReport = nullptr;
         TakeGenericHidOutput takeGenericHidOutput = nullptr;
         GetGenericHidAdmissions getGenericHidAdmissions = nullptr;
+        GetPresentationConfig getPresentationConfig = nullptr;
+        SubmitPresentationSample submitPresentationSample = nullptr;
     };
 
     static constexpr int DefaultShutdownTimeoutMs = 1'500;
@@ -117,6 +123,8 @@ public:
     [[nodiscard]] QString lastError() const;
     [[nodiscard]] quint64 presentationGeneration() const;
     [[nodiscard]] bool presentationAllowed() const;
+    [[nodiscard]] OpenNowStreamerPresentationConfig presentationConfig() const;
+    OpenNowStreamerStatus submitPresentationSample(const OpenNowStreamerPresentationSample &sample);
     bool requestScreenshot();
     quint64 takeScreenshotRequest();
     void completeScreenshot(quint64 request, QImage image);
@@ -147,6 +155,11 @@ public:
 
     OpenNowStreamerStatus setGraphicsContext(
         const OpenNowStreamerGraphicsContext &context);
+    OpenNowStreamerStatus acquireFrame(OpenNowStreamerFrameInfo *info,
+                                      OpenNowStreamerFrame **frame);
+    OpenNowStreamerStatus recordFrame(OpenNowStreamerFrame *frame,
+        const OpenNowStreamerRecordCommand &command, OpenNowStreamerFrameInfo *info,
+        OpenNowStreamerRecordedFrame *recorded);
     OpenNowStreamerStatus recordLatestFrame(
         const OpenNowStreamerRecordCommand &command,
         OpenNowStreamerFrameInfo *info,

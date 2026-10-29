@@ -14,6 +14,57 @@ This crate exposes `opennow-streamer-core::Engine` as a C-compatible in-process 
 - `opennow_streamer_destroy` consumes the handle exactly once, waits for the engine and both callback queues to drain, and then returns. No call may race with destroy. A null handle is rejected; reusing a destroyed pointer is caller-side undefined behavior.
 - Every exported function catches Rust panics before they can unwind through the C ABI. A worker-thread panic closes the command queue.
 
+### Sender frame timing (ABI 18)
+
+Rebuild Qt and the native library together. ABI 18 combines sender timing with the
+session-scoped cursor callback. It rejects earlier ABI-17 test libraries, whose cursor
+callback did not carry the producer's start identity.
+
+`OpenNowStreamerFrameInfo` appends sender generation, scene epoch, frame index and raw timing
+fields. Acquisition correlates the concrete GPU token's PTS with one encoded video source.
+The bounded registry holds at most 1,024 sources for two seconds. Matching uses the backend's
+exact precision: Windows and macOS truncate to 100ns ticks, and Linux truncates to microseconds.
+Capture and sender presentation clocks never replace RTP or decoder PTS.
+
+`sender_timing_flags` identifies which raw fields are present. `OPENNOW_STREAMER_FRAME_TIMING_CAPTURE`
+means a recognized timing sample, including capture time zero. The frame index is valid whenever
+this bit is set. `OPENNOW_STREAMER_FRAME_TIMING_PACED` means the raw paced flag is present,
+not that its value is true. `sender_paced` preserves the raw byte as a `uint32_t`.
+`OPENNOW_STREAMER_FRAME_TIMING_PRESENTATION` marks a present sender presentation timestamp,
+including zero. Without a unique exact match, all appended fields are zero.
+
+The presentation config's `sender_pacing` is 0 for unknown, 1 for recognized timing with an
+absent or zero paced flag, and 2 for a nonzero flag. Recognized unpaced timing does not prove
+Cloud G-Sync activation. Pacing changes advance the scene epoch and clear source correlations
+and feedback histories. Duplicate PTS, precision collisions, stale sources, discontinuities,
+decoder recovery, scene invalidation and session changes suppress unsafe correlations.
+
+### Measured presentation feedback (introduced in ABI 16)
+
+Rebuild Qt and the native library together. Initialize presentation config/sample structures
+with `OPENNOW_STREAMER_PRESENTATION_VERSION` and their C size. The config getter reads active
+session generation, observation epoch, stream FPS, resolved Cloud G-Sync and effective feedback
+mode without using the engine command queue. Scene-graph shutdown, decoder epoch changes,
+recovery and mode changes invalidate observations; samples must retain the epoch from their draw.
+
+Samples use the corrected `RecordedFrame.presentation_time_ns`, never the acquisition sequence.
+Only explicitly platform-presented observations with all four timing validity bits can update
+feedback. Qt queued and Present-return kinds remain distinct and do not enable feedback.
+`completion_age_ns` is elapsed time from the platform observation to the FFI call. Together
+with `render_present_to_complete_ns`, it reconstructs render-present in native monotonic time.
+`render_duration_ns` is the host's measured CPU rendering interval, not measured GPU service time
+or a claim of exact parity with NVIDIA's renderer. No endpoint reports physical scanout completion.
+
+Windows source timestamps are matched exactly after Media Foundation's 100ns rounding.
+Unknown/zero timestamps, collisions and unsupported backends suppress reports. The collector
+keeps bounded histories and requires measured positive source cadence. Offset 16 is a jitter
+standard-deviation estimate plus a render mean/standard-deviation estimate, independently
+clamped by explicitly negotiated mode-1 settings. It excludes admission latency and presentation
+wait. This implementation uses bounded sample windows, not NVIDIA's exact exponential filter.
+Offset 20 is the bounded-window mean of measured presentation delay. Missing/unsupported
+estimator settings or insufficient measurements suppress the whole timing-v5 report rather
+than send fabricated defaults. A known VSync-off interval is zero; unknown interval is invalid.
+
 ### Session-scoped cursors (ABI 16)
 
 Rebuild Qt and the native library together. `cursor_callback` now uses
@@ -24,9 +75,10 @@ its own bounded dispatcher and may overlap responses and events. Consumers must
 copy the identity with the payload and reject cursors whose identity does not
 match their active start command, including callbacks delivered after a restart.
 
-### Generic flight controls and wheels
+### Generic flight controls and wheels (ABI 15)
 
-The generic-HID exports introduced in ABI 15 remain available in ABI 16. They are
+These exports were introduced in ABI 15. Rebuild Qt and the native library together
+with the current ABI version. The generic-HID exports are
 `opennow_streamer_replace_generic_hid_inventory`,
 `opennow_streamer_submit_generic_hid_report`,
 `opennow_streamer_take_generic_hid_output`, and
@@ -64,7 +116,7 @@ the physical checks still required.
 
 ### Server timers and termination (ABI 13)
 
-Rebuild Qt and the native library together with the current ABI 16. Structure layouts and callback
+Rebuild Qt and the native library together with the current ABI 18. Structure layouts and callback
 ownership are unchanged. `event_callback` now delivers generation-scoped
 `session-timer` events with `startId`, `timerType`, `secondsLeft` and `active`.
 Timer type 4 warns of idle expiry; type 5 clears the warning. Successful gameplay

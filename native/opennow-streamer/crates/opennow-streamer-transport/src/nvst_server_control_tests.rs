@@ -118,6 +118,7 @@ fn server_feedback_mode_updates_only_the_owned_video_stream() {
             feedback.frame_pacing_enabled.load(Ordering::Acquire),
             enabled
         );
+        assert_eq!(feedback.presentation().config().feedback_mode, u32::from(enabled));
     }
     assert_eq!(diagnostics.invalid_stream, 1);
     assert!(received.try_recv().is_err());

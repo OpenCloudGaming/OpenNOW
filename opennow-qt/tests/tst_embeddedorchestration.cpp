@@ -2950,6 +2950,21 @@ private slots:
         QVERIFY(!main.contains(QStringLiteral("qputenv(\"QSG_RENDER_LOOP\", \"basic\")")));
     }
 
+    void windowsFrameReadyUpdatesAvoidAdditionalIdleDelay()
+    {
+        const auto main = source(QStringLiteral("src/app/ApplicationStartup.cpp"));
+        const auto guard = main.indexOf(QStringLiteral("if (!qEnvironmentVariableIsSet(\"QT_QPA_UPDATE_IDLE_TIME\"))"));
+        const auto setting = main.indexOf(QStringLiteral("qputenv(\"QT_QPA_UPDATE_IDLE_TIME\", \"0\")"));
+        const auto application = main.indexOf(QStringLiteral("QGuiApplication application"));
+        QVERIFY(guard >= 0);
+        QVERIFY(setting > guard);
+        QVERIFY(application > setting);
+        const auto windows = main.lastIndexOf(QStringLiteral("#ifdef Q_OS_WIN"), guard);
+        const auto end = main.indexOf(QStringLiteral("#endif"), windows);
+        QVERIFY(windows >= 0);
+        QVERIFY(end > setting);
+    }
+
     void virtualControllerEdgesAreCommittedBeforeFixtureAdvances()
     {
         const auto smoke = source(QStringLiteral("src/acceptance/SmokeAcceptance.cpp"));
