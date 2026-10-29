@@ -50,8 +50,16 @@ final class NativeStreamPresentationController: UIViewController {
     func tearDown() {
         guard !dismantled else { return }
         dismantled = true
-        host.releaseSystemPreferences()
-        if host.presentingViewController != nil { host.dismiss(animated: false) }
+        host.releaseSystemPreferences(restoreOrientation: false)
+        if host.presentingViewController != nil {
+            host.dismiss(animated: false) { [weak self] in
+                StreamOrientation.setStreaming(false)
+                self?.setNeedsStatusBarAppearanceUpdate()
+            }
+        } else {
+            StreamOrientation.setStreaming(false)
+            setNeedsStatusBarAppearanceUpdate()
+        }
     }
 }
 
@@ -82,10 +90,10 @@ final class NativeStreamHostingController: UIHostingController<AnyView> {
         }
     }
 
-    func releaseSystemPreferences() {
+    func releaseSystemPreferences(restoreOrientation: Bool = true) {
         pointerCaptureRequested = false
         statusBarHidden = false
-        StreamOrientation.setStreaming(false)
+        if restoreOrientation { StreamOrientation.setStreaming(false) }
     }
 
     override var prefersStatusBarHidden: Bool { statusBarHidden }

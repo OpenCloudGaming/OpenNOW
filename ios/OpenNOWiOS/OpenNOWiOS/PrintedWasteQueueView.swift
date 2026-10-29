@@ -160,6 +160,7 @@ func printedWasteRegionalURL(zoneId: String, title: String?, regions: [StreamReg
 
 struct PrintedWasteQueueView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject private var store: OpenNOWStore
 
     let game: CloudGame
@@ -182,9 +183,17 @@ struct PrintedWasteQueueView: View {
 
         var title: String {
             switch self {
-            case .auto: return "Auto"
+            case .auto: return "Automatic"
             case .closest: return "Closest"
             case .manual: return "Manual"
+            }
+        }
+
+        var detail: String {
+            switch self {
+            case .auto: return "Balances measured latency and queue length."
+            case .closest: return "Uses the server with the lowest measured latency."
+            case .manual: return "Choose a location below. Queue times are estimates."
             }
         }
     }
@@ -365,89 +374,78 @@ struct PrintedWasteQueueView: View {
     }
 
     private var zoneList: some View {
-        GeometryReader { geometry in
-            let wide = geometry.size.width > 650
-            let selected = selectedRoutingZone
-            let recommended = autoZone
-            HStack(alignment: .top, spacing: 24) {
-                if wide {
-                    launchSummary
-                        .frame(width: min(260, geometry.size.width * 0.3))
-                        .padding(.top, 8)
+        let selected = selectedRoutingZone
+        let recommended = autoZone
+        return List {
+            Section {
+                launchSummary
+                    .padding(.vertical, 4)
+            }
+            Section {
+                if dynamicTypeSize.isAccessibilitySize {
+                    routingPicker.pickerStyle(.menu)
+                } else {
+                    routingPicker.pickerStyle(.segmented)
+                        .listRowBackground(Color.clear)
+                        .listRowInsets(EdgeInsets())
                 }
-                VStack(spacing: 16) {
-                    if !wide { launchSummary }
-                    Picker("Routing", selection: $routingPreference) {
-                        Text("Auto").tag(RoutingPreference.auto)
-                        Text("Closest").tag(RoutingPreference.closest)
-                        Text("Manual").tag(RoutingPreference.manual)
+            } header: {
+                Text("Connection preference")
+            } footer: {
+                Text(routingPreference.detail)
+            }
+            if let recommended {
+                Section("Recommended") {
+                    Button { routingPreference = .auto } label: {
+                        ZoneRow(zone: recommended, title: recommended.title, alternateCount: 0,
+                                gpuTier: recommended.gpuTier, isSelected: selected?.id == recommended.id,
+                                isAuto: false)
                     }
-                    .pickerStyle(.segmented)
-
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 18) {
-                            if let recommended { recommendationCard(recommended, selected: selected) }
-                            ForEach(regionGroups, id: \.region) { group in
-                                locationGroup(group, selected: selected, recommended: recommended)
-                            }
-                        }
-                    }
-                    .refreshable { await loadZones() }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(selected?.id == recommended.id ? .isSelected : [])
+                    .accessibilityHint("Use automatic server selection")
                 }
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 16)
+            ForEach(regionGroups, id: \.region) { group in
+                locationGroup(group, selected: selected, recommended: recommended)
+            }
         }
+        .listStyle(.insetGrouped)
+        .refreshable { await loadZones() }
         .safeAreaInset(edge: .bottom, spacing: 0) { launchFooter }
     }
 
-    private func recommendationCard(_ zone: PrintedWasteZone, selected: PrintedWasteZone?) -> some View {
-        Button { routingPreference = .auto } label: {
-            VStack(alignment: .leading, spacing: 8) {
-                Label("Recommended", systemImage: "sparkles")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(brandAccent)
-                ZoneRow(zone: zone, title: zone.title, alternateCount: 0, gpuTier: zone.gpuTier,
-                        isSelected: selected?.id == zone.id, isAuto: false)
-            }
-            .padding(16)
-            .background(brandAccent.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
-            .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(brandAccent.opacity(0.18)))
+    private var routingPicker: some View {
+        Picker("Routing", selection: $routingPreference) {
+            Text(RoutingPreference.auto.title).tag(RoutingPreference.auto)
+            Text(RoutingPreference.closest.title).tag(RoutingPreference.closest)
+            Text(RoutingPreference.manual.title).tag(RoutingPreference.manual)
         }
-        .buttonStyle(.plain)
     }
 
     private func locationGroup(
         _ group: (region: String, locations: [PrintedWasteLocation]),
         selected: PrintedWasteZone?, recommended: PrintedWasteZone?
     ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(group.region)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 4)
-            VStack(spacing: 0) {
-                ForEach(group.locations) { location in
-                    Button {
-                        selectedZoneId = location.primary.id
-                        routingPreference = .manual
-                    } label: {
-                        ZoneRow(
-                            zone: selected.flatMap { location.zoneIDs.contains($0.id) ? $0 : nil } ?? location.primary,
-                            title: location.title, alternateCount: location.alternateCount,
-                            gpuTier: location.gpuTier,
-                            isSelected: selected.map { location.zoneIDs.contains($0.id) } ?? false,
-                            isAuto: recommended.map { location.zoneIDs.contains($0.id) } ?? false
-                        )
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    if location.id != group.locations.last?.id { Divider().padding(.leading, 14) }
+        Section(group.region) {
+            ForEach(group.locations) { location in
+                Button {
+                    selectedZoneId = location.primary.id
+                    routingPreference = .manual
+                } label: {
+                    ZoneRow(
+                        zone: selected.flatMap { location.zoneIDs.contains($0.id) ? $0 : nil } ?? location.primary,
+                        title: location.title, alternateCount: location.alternateCount,
+                        gpuTier: location.gpuTier,
+                        isSelected: selected.map { location.zoneIDs.contains($0.id) } ?? false,
+                        isAuto: recommended.map { location.zoneIDs.contains($0.id) } ?? false
+                    )
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(selected.map { location.zoneIDs.contains($0.id) } == true ? .isSelected : [])
+                .accessibilityHint("Select this location manually")
             }
-            .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 16))
         }
     }
 
@@ -744,6 +742,7 @@ struct PrintedWasteQueueView: View {
 }
 
 private struct ZoneRow: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let zone: PrintedWasteZone
     let title: String
     let alternateCount: Int
@@ -752,47 +751,67 @@ private struct ZoneRow: View {
     let isAuto: Bool
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(alignment: .top, spacing: 14) {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
                     Text(title)
                         .font(.subheadline.weight(.semibold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.85)
+                        .fixedSize(horizontal: false, vertical: true)
                         .layoutPriority(1)
-                    Text(alternateCount > 0 ? "+\(alternateCount)" : "")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.85)
-                }
-                HStack(spacing: 6) {
-                    statusText("Queue \(zone.queuePosition)", color: queueColor(zone.queuePosition))
-                    if let gpuTier { statusText(gpuTier, color: .secondary) }
-                    if isAuto {
-                        statusText("Auto", color: .green)
+                    if alternateCount > 0 {
+                        Text("+\(alternateCount)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.85)
                     }
-
+                }
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 6) { metadata }
+                    VStack(alignment: .leading, spacing: 4) { metadata }
+                }
+                if dynamicTypeSize.isAccessibilitySize {
+                    connectionMetrics
                 }
             }
 
             Spacer(minLength: 8)
 
-            VStack(alignment: .trailing, spacing: 4) {
-                if let etaMs = zone.etaMs, etaMs.isFinite, etaMs >= 0 {
-                    Text(formatWait(etaMs))
-                        .font(.subheadline.weight(.semibold))
-                }
-                pingBadge
+            if !dynamicTypeSize.isAccessibilitySize {
+                connectionMetrics
+                    .fixedSize(horizontal: true, vertical: false)
             }
-            .fixedSize(horizontal: true, vertical: false)
 
             Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                 .font(.body.weight(.semibold))
                 .foregroundStyle(isSelected ? brandAccent : Color.secondary.opacity(0.35))
+                .accessibilityHidden(true)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 6)
+        .frame(minHeight: 44)
         .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private var metadata: some View {
+        statusText("Queue \(zone.queuePosition)", color: queueColor(zone.queuePosition))
+        if let gpuTier { statusText(gpuTier, color: .secondary) }
+        if isAuto {
+            statusText("Recommended", color: .secondary)
+        }
+    }
+
+    private var connectionMetrics: some View {
+        VStack(alignment: dynamicTypeSize.isAccessibilitySize ? .leading : .trailing, spacing: 4) {
+            if let etaMs = zone.etaMs, etaMs.isFinite, etaMs >= 0 {
+                let wait = formatWait(etaMs)
+                Text(wait)
+                    .font(.subheadline.weight(.semibold))
+                    .accessibilityLabel("Estimated wait \(wait)")
+            }
+            pingBadge
+        }
     }
 
     private var pingBadge: some View {
@@ -807,7 +826,7 @@ private struct ZoneRow: View {
                 } else if let pingMs = zone.pingMs {
                     Text("\(pingMs) ms").monospacedDigit()
                 } else {
-                    Text("N/A")
+                    Text("Latency unavailable")
                 }
             }
         }

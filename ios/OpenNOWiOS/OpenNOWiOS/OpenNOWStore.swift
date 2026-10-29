@@ -102,7 +102,7 @@ struct PersistedAuthState: Codable, Equatable {
     }
 }
 
-private struct CachedCatalogSnapshot: Codable {
+struct CachedCatalogSnapshot: Codable, Sendable {
     let schemaVersion: Int
     let cachedAt: TimeInterval
     let vpcId: String
@@ -111,7 +111,24 @@ private struct CachedCatalogSnapshot: Codable {
     let libraryGames: [CloudGame]
 }
 
-struct CloudGame: Identifiable, Codable, Equatable {
+actor CatalogSnapshotCodec {
+    func encode(_ snapshot: CachedCatalogSnapshot) -> Data? {
+        guard !Task.isCancelled else { return nil }
+        return try? JSONEncoder().encode(snapshot)
+    }
+
+    func decode(_ data: Data) -> CachedCatalogSnapshot? {
+        guard !Task.isCancelled else { return nil }
+        return try? JSONDecoder().decode(CachedCatalogSnapshot.self, from: data)
+    }
+
+    func decodeLegacyLibrary(_ data: Data) -> [CloudGame] {
+        guard !Task.isCancelled else { return [] }
+        return (try? JSONDecoder().decode([CloudGame].self, from: data)) ?? []
+    }
+}
+
+struct CloudGame: Identifiable, Codable, Equatable, Sendable {
     let id: String
     let title: String
     let genre: String
@@ -140,7 +157,11 @@ struct CloudGame: Identifiable, Codable, Equatable {
     var screenshotUrls: [String]? = nil
 
     var lastPlayedDate: String? {
-        launchOptions.compactMap(\.lastPlayedDate).max()
+        launchOptions.compactMap { option -> String? in
+            guard let date = option.lastPlayedDate?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !date.isEmpty else { return nil }
+            return date
+        }.max()
     }
 
     var ownedStorefronts: [String] {
@@ -234,6 +255,10 @@ func gameMatchesCatalogSearch(_ game: CloudGame, query: String) -> Bool {
     let terms = query
         .split(whereSeparator: { $0.isWhitespace })
         .map(String.init)
+    return gameMatchesCatalogSearch(game, terms: terms)
+}
+
+private func gameMatchesCatalogSearch(_ game: CloudGame, terms: [String]) -> Bool {
     guard !terms.isEmpty else { return true }
     let searchableText = ([
         game.title,
@@ -250,6 +275,105 @@ func gameMatchesCatalogSearch(_ game: CloudGame, query: String) -> Bool {
         + game.launchOptions.map(\.storefront))
         .joined(separator: " ")
     return terms.allSatisfy { searchableText.localizedCaseInsensitiveContains($0) }
+}
+
+enum CatalogGameSort: String, CaseIterable {
+    case popular, title, lastPlayed
+}
+
+@MainActor
+final class CatalogPresentation {
+    private let allGames: [CloudGame]
+    private let libraryGames: [CloudGame]
+    private let importedGames: [CloudGame]
+    private var gridCache: (query: String, remoteResults: [CloudGame], stores: Set<String>,
+                            genres: Set<String>, sort: CatalogGameSort, games: [CloudGame])?
+
+    init(allGames: [CloudGame], libraryGames: [CloudGame], importedGames: [CloudGame]) {
+        self.allGames = allGames
+        self.libraryGames = libraryGames
+        self.importedGames = importedGames
+    }
+
+    private(set) lazy var catalogGames: [CloudGame] = {
+        var seen = Set<String>()
+        return (allGames + importedGames).filter { seen.insert(catalogStableGameKey($0)).inserted }
+    }()
+
+    private(set) lazy var visibleLibraryGames = LibraryGameCollection.games(
+        synced: libraryGames, catalog: [], imported: importedGames
+    )
+
+    private(set) lazy var favoriteGamesByID = Dictionary(
+        (allGames + libraryGames + importedGames).map { ($0.id, $0) },
+        uniquingKeysWith: { _, last in last }
+    )
+
+    private(set) lazy var homeFavoriteGamesByID = Dictionary(
+        (allGames + libraryGames).map { ($0.id, $0) },
+        uniquingKeysWith: { first, _ in first }
+    )
+
+    private(set) lazy var recentGames: [CloudGame] = {
+        let datedGames = (libraryGames + allGames)
+            .enumerated().compactMap { index, game -> (index: Int, game: CloudGame, date: String)? in
+                guard let date = game.lastPlayedDate else { return nil }
+                return (index, game, date)
+            }
+        let sortedGames = datedGames.sorted { left, right in
+            left.date == right.date ? left.index < right.index : left.date > right.date
+        }
+        var seen = Set<String>()
+        return sortedGames.compactMap { entry in
+            seen.insert(catalogStableGameKey(entry.game)).inserted ? entry.game : nil
+        }
+    }()
+
+    private(set) lazy var storeFilters = Array(Set(allGames.flatMap {
+        $0.launchOptions.map { $0.storefront.uppercased() }
+    })).filter { !$0.isEmpty && $0 != "AUTO" }.sorted()
+
+    private(set) lazy var genreFilters = Array(Set(allGames.map(\.genre)))
+        .filter { !$0.isEmpty && $0 != "Cloud Game" }.sorted()
+
+    func matchingGames(query: String, remoteResults: [CloudGame]) -> [CloudGame] {
+        let terms = query.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        guard !terms.isEmpty else { return catalogGames }
+        let local = catalogGames.filter { gameMatchesCatalogSearch($0, terms: terms) }
+        guard !remoteResults.isEmpty else { return local }
+        var seen = Set(local.map(catalogStableGameKey))
+        return local + remoteResults.filter { seen.insert(catalogStableGameKey($0)).inserted }
+    }
+
+    func gridGames(query: String, remoteResults: [CloudGame], stores: Set<String>,
+                   genres: Set<String>, sort: CatalogGameSort) -> [CloudGame] {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let cached = gridCache, cached.query == query, cached.remoteResults == remoteResults,
+           cached.stores == stores, cached.genres == genres, cached.sort == sort {
+            return cached.games
+        }
+        let source = query.isEmpty ? allGames : matchingGames(query: query, remoteResults: remoteResults)
+        var games = source.filter { game in
+            (stores.isEmpty || game.launchOptions.contains { stores.contains($0.storefront.uppercased()) })
+                && (genres.isEmpty || genres.contains(game.genre))
+        }
+        switch sort {
+        case .popular:
+            break
+        case .title:
+            games.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        case .lastPlayed:
+            var datedGames: [(index: Int, game: CloudGame, date: String)] = games.enumerated().map {
+                (index: $0.offset, game: $0.element, date: $0.element.lastPlayedDate ?? "")
+            }
+            datedGames.sort { left, right in
+                left.date == right.date ? left.index < right.index : left.date > right.date
+            }
+            games = datedGames.map(\.game)
+        }
+        gridCache = (query, remoteResults, stores, genres, sort, games)
+        return games
+    }
 }
 
 struct GFNGameImportReference: Equatable {
@@ -487,7 +611,7 @@ struct StreamRegion: Identifiable, Codable, Equatable {
     let url: String
 }
 
-struct GameLaunchOption: Identifiable, Codable, Equatable {
+struct GameLaunchOption: Identifiable, Codable, Equatable, Sendable {
     var id: String { "\(storefront)-\(appId)" }
     let storefront: String
     let appId: String
@@ -970,6 +1094,7 @@ struct AppSettings: Codable, Equatable {
     var touchControlLayouts: [String: TouchControlLayout]
     var streamerPreferences: StreamerPreferences
     var favoriteGameIds: [String]
+    var dismissedContinuePlaying: [String: String] = [:]
     var defaultGameVariantIds: [String: String] = [:]
 
     // MARK: Parity fields
@@ -1084,6 +1209,7 @@ struct AppSettings: Codable, Equatable {
         case touchControlLayouts
         case streamerPreferences
         case favoriteGameIds
+        case dismissedContinuePlaying
         case defaultGameVariantIds
         case uiAccent
         case expressiveUI
@@ -1211,6 +1337,7 @@ struct AppSettings: Codable, Equatable {
         streamerPreferences = try container.decodeIfPresent(StreamerPreferences.self, forKey: .streamerPreferences)
             ?? .default
         favoriteGameIds = try container.decodeIfPresent([String].self, forKey: .favoriteGameIds) ?? []
+        dismissedContinuePlaying = try container.decodeIfPresent([String: String].self, forKey: .dismissedContinuePlaying) ?? [:]
         defaultGameVariantIds = try container.decodeIfPresent([String: String].self, forKey: .defaultGameVariantIds) ?? [:]
 
         uiAccent = try container.decodeIfPresent(UIAccent.self, forKey: .uiAccent) ?? .openNow
@@ -1276,6 +1403,25 @@ struct AppSettings: Codable, Equatable {
         streamerPreferences: .default,
         favoriteGameIds: []
     )
+
+    func isContinuePlayingDismissed(_ game: CloudGame) -> Bool {
+        guard let lastPlayed = game.lastPlayedDate else { return false }
+        return dismissedContinuePlaying[catalogStableGameKey(game)] == lastPlayed
+    }
+
+    mutating func dismissContinuePlaying(_ game: CloudGame) {
+        guard let lastPlayed = game.lastPlayedDate else { return }
+        let key = catalogStableGameKey(game)
+        guard !key.isEmpty else { return }
+        dismissedContinuePlaying.removeValue(forKey: key)
+        if dismissedContinuePlaying.count >= 48 {
+            let oldest = dismissedContinuePlaying.sorted {
+                $0.value == $1.value ? $0.key < $1.key : $0.value < $1.value
+            }.prefix(dismissedContinuePlaying.count - 47)
+            for entry in oldest { dismissedContinuePlaying.removeValue(forKey: entry.key) }
+        }
+        dismissedContinuePlaying[key] = lastPlayed
+    }
 
     func touchLayout(for profile: String) -> TouchControlLayout {
         touchControlLayouts[profile] ?? TouchControlLayout.preset(for: profile)
@@ -6238,9 +6384,13 @@ final class OpenNOWStore: ObservableObject {
     let sessionHistory = StreamSessionHistoryStore()
     @Published private(set) var user: UserProfile?
     @Published private(set) var providers: [LoginProvider] = []
-    @Published private(set) var allGames: [CloudGame] = []
+    @Published private(set) var allGames: [CloudGame] = [] {
+        didSet { invalidateCatalogPresentation() }
+    }
     @Published private(set) var featuredGames: [CloudGame] = []
-    @Published private(set) var libraryGames: [CloudGame] = []
+    @Published private(set) var libraryGames: [CloudGame] = [] {
+        didSet { invalidateCatalogPresentation() }
+    }
     @Published private(set) var activeSession: ActiveSession?
     @Published private(set) var resumableSessions: [RemoteSessionCandidate] = []
     @Published private(set) var telemetry = SessionTelemetry(pingMs: 0, fps: 0, packetLossPercent: 0, bitrateMbps: 0)
@@ -6254,14 +6404,20 @@ final class OpenNOWStore: ObservableObject {
     @Published var settings: AppSettings
     @Published var searchText = "" {
         didSet {
-            guard searchText != oldValue else { return }
+            guard searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+                != oldValue.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+            cachedFilteredCatalogGames = nil
             scheduleCatalogSearch()
         }
     }
 
     /// Games the server returned for the current query that are not in the local catalog.
-    @Published private(set) var importedGames: [CloudGame] = []
-    @Published private(set) var remoteSearchResults: [CloudGame] = []
+    @Published private(set) var importedGames: [CloudGame] = [] {
+        didSet { invalidateCatalogPresentation() }
+    }
+    @Published private(set) var remoteSearchResults: [CloudGame] = [] {
+        didSet { cachedFilteredCatalogGames = nil }
+    }
     @Published private(set) var isSearchingCatalog = false
     @Published var controllerConnected = true
     @Published var isAuthenticating = false
@@ -6322,6 +6478,12 @@ final class OpenNOWStore: ObservableObject {
     /// be skipped. See `persistAuthState`.
     private var persistedAuthState: PersistedAuthState?
     private var catalogSearchTask: Task<Void, Never>?
+    private var cachedCatalogPresentation: CatalogPresentation?
+    private var cachedFilteredCatalogGames: [CloudGame]?
+    private let catalogSnapshotCodec = CatalogSnapshotCodec()
+    private var catalogCacheGeneration = UUID()
+    private var catalogContentGeneration = UUID()
+    private var catalogHydrationTask: Task<Void, Never>?
     private var accountRefreshTask: Task<Void, Never>?
     private var backgroundRefreshingAccountUserId: String?
     #if os(tvOS)
@@ -6396,7 +6558,7 @@ final class OpenNOWStore: ObservableObject {
         activeStreamSettings = activeSession == nil ? nil : Self.loadActiveStreamSettings(from: defaults)
         user = authSession?.user
         if let authSession {
-            hydrateCachedCatalog(for: authSession)
+            scheduleCatalogHydration(for: authSession)
             hydrateCachedAccount(for: authSession)
         }
         showStreamLoading = activeSession != nil
@@ -6419,6 +6581,7 @@ final class OpenNOWStore: ObservableObject {
     }
 
     deinit {
+        catalogHydrationTask?.cancel()
         launchTask?.cancel()
         sessionPollTask?.cancel()
         #if os(tvOS)
@@ -7009,7 +7172,7 @@ final class OpenNOWStore: ObservableObject {
         settings.selectedProviderIdpId = session.provider.idpId
         persistSettings()
         if hydrateCache {
-            hydrateCachedCatalog(for: session)
+            scheduleCatalogHydration(for: session)
             hydrateCachedAccount(for: session)
         }
         lastError = nil
@@ -7034,8 +7197,16 @@ final class OpenNOWStore: ObservableObject {
     }
 
     private func clearAccountScopedState() {
+        catalogCacheGeneration = UUID()
+        catalogHydrationTask?.cancel()
+        catalogHydrationTask = nil
         sessionOperationGeneration = UUID()
         reopenToken = UUID()
+        catalogSearchTask?.cancel()
+        catalogSearchTask = nil
+        searchText = ""
+        if !remoteSearchResults.isEmpty { remoteSearchResults = [] }
+        if isSearchingCatalog { isSearchingCatalog = false }
         isLaunchingSession = false
         isLoadingFullCatalog = false
         isLoadingGames = false
@@ -7074,9 +7245,10 @@ final class OpenNOWStore: ObservableObject {
         catalogError = nil
         let requestedUserId = session.user.userId
         let requestedGeneration = authGeneration
+        let requestedCacheGeneration = catalogCacheGeneration
         isLoadingGames = true
         defer {
-            if accountIsCurrent(requestedUserId, generation: requestedGeneration) {
+            if accountIsCurrent(requestedUserId, generation: requestedGeneration, catalogGeneration: requestedCacheGeneration) {
                 isLoadingGames = false
                 isLoadingFullCatalog = false
             }
@@ -7084,9 +7256,10 @@ final class OpenNOWStore: ObservableObject {
 
         do {
             let refreshed = try await api.refreshSession(session)
-            guard accountIsCurrent(requestedUserId, generation: requestedGeneration) else { return }
+            guard accountIsCurrent(requestedUserId, generation: requestedGeneration, catalogGeneration: requestedCacheGeneration) else { return }
             if allGames.isEmpty || libraryGames.isEmpty {
-                hydrateCachedCatalog(for: refreshed, onlyMissing: true)
+                await hydrateCachedCatalog(for: refreshed)
+                guard accountIsCurrent(requestedUserId, generation: requestedGeneration, catalogGeneration: requestedCacheGeneration) else { return }
             }
 
             let (fetchedMainGames, vpcId, regions, loadedCompleteCatalog) = try await api.fetchMainGames(session: refreshed)
@@ -7107,7 +7280,7 @@ final class OpenNOWStore: ObservableObject {
                 !StreamZonePolicy.isBlocked($0.url) && !StreamZonePolicy.isBlocked($0.name)
             }
 
-            guard accountIsCurrent(requestedUserId, generation: requestedGeneration) else { return }
+            guard accountIsCurrent(requestedUserId, generation: requestedGeneration, catalogGeneration: requestedCacheGeneration) else { return }
             let catalogSession = AuthSession(
                 provider: refreshed.provider,
                 tokens: refreshed.tokens,
@@ -7121,13 +7294,14 @@ final class OpenNOWStore: ObservableObject {
             if allGames.isEmpty { allGames = mainGames }
             featuredGames = Array(mainGames.prefix(8))
             libraryGames = LibraryGameCollection.games(synced: library, catalog: mainGames, imported: [])
-            persistCachedCatalog(
+            await persistCachedCatalog(
                 allGames: allGames,
                 featuredGames: featuredGames,
                 libraryGames: libraryGames,
                 vpcId: vpcId,
                 for: catalogSession
             )
+            guard accountIsCurrent(requestedUserId, generation: requestedGeneration, catalogGeneration: requestedCacheGeneration) else { return }
             isLoadingGames = false
             lastError = nil
 
@@ -7136,15 +7310,16 @@ final class OpenNOWStore: ObservableObject {
             isLoadingFullCatalog = true
             do {
                 let catalog = loadedCompleteCatalog ? fetchedMainGames : try await api.fetchCompleteCatalog(session: refreshed, vpcId: vpcId)
-                guard accountIsCurrent(requestedUserId, generation: requestedGeneration) else { return }
+                guard accountIsCurrent(requestedUserId, generation: requestedGeneration, catalogGeneration: requestedCacheGeneration) else { return }
                 let merged = preservingCatalogMetadata(in: catalog, from: mainGames + allGames + library)
                 var seen = Set(merged.map { catalogStableGameKey($0) })
                 allGames = merged + (mainGames + library).filter { seen.insert(catalogStableGameKey($0)).inserted }
                 libraryGames = LibraryGameCollection.games(synced: library, catalog: allGames, imported: [])
-                persistCachedCatalog(allGames: allGames, featuredGames: featuredGames,
+                await persistCachedCatalog(allGames: allGames, featuredGames: featuredGames,
                     libraryGames: libraryGames, vpcId: vpcId, for: catalogSession)
+                guard accountIsCurrent(requestedUserId, generation: requestedGeneration, catalogGeneration: requestedCacheGeneration) else { return }
             } catch {
-                guard accountIsCurrent(requestedUserId) else { return }
+                guard accountIsCurrent(requestedUserId, generation: requestedGeneration, catalogGeneration: requestedCacheGeneration) else { return }
                 if OpenNOWErrorPresenter.isCancellation(error) { throw error }
                 let warning = OpenNOWErrorPresenter.message(for: error,
                     fallback: "The complete catalog could not be refreshed.")
@@ -7183,7 +7358,7 @@ final class OpenNOWStore: ObservableObject {
                 logger.warning("Could not refresh remote sessions during catalog refresh error=\(error.localizedDescription, privacy: .public)")
             }
 
-            guard accountIsCurrent(requestedUserId, generation: requestedGeneration) else { return }
+            guard accountIsCurrent(requestedUserId, generation: requestedGeneration, catalogGeneration: requestedCacheGeneration) else { return }
             var updatedUser = refreshed.user
             if let refreshedSubscription {
                 updatedUser.membershipTier = refreshedSubscription.membershipTier
@@ -7215,9 +7390,10 @@ final class OpenNOWStore: ObservableObject {
             // Pull-to-refresh can cancel an in-flight request; treat as non-failure.
             return
         } catch {
-            guard accountIsCurrent(requestedUserId, generation: requestedGeneration) else { return }
+            guard accountIsCurrent(requestedUserId, generation: requestedGeneration, catalogGeneration: requestedCacheGeneration) else { return }
             if allGames.isEmpty || libraryGames.isEmpty {
-                hydrateCachedCatalog(for: session, onlyMissing: true)
+                await hydrateCachedCatalog(for: session)
+                guard accountIsCurrent(requestedUserId, generation: requestedGeneration, catalogGeneration: requestedCacheGeneration) else { return }
             }
             hydrateCachedAccount(for: session, onlyMissing: true)
             let message = OpenNOWErrorPresenter.message(
@@ -7235,8 +7411,9 @@ final class OpenNOWStore: ObservableObject {
         }
     }
 
-    private func accountIsCurrent(_ userId: String, generation: UUID? = nil) -> Bool {
+    private func accountIsCurrent(_ userId: String, generation: UUID? = nil, catalogGeneration: UUID? = nil) -> Bool {
         authSession?.user.userId == userId && (generation == nil || generation == authGeneration)
+            && (catalogGeneration == nil || catalogGeneration == catalogCacheGeneration)
     }
 
     private func preservingCatalogMetadata(in games: [CloudGame], from fallbackGames: [CloudGame]) -> [CloudGame] {
@@ -7607,11 +7784,11 @@ final class OpenNOWStore: ObservableObject {
     private func scheduleCatalogSearch() {
         catalogSearchTask?.cancel()
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !remoteSearchResults.isEmpty { remoteSearchResults = [] }
 
         // Under three characters the server returns most of the catalog, which is slower and less
         // useful than the local list already on screen.
         guard query.count >= 3 else {
-            remoteSearchResults = []
             isSearchingCatalog = false
             return
         }
@@ -7625,7 +7802,13 @@ final class OpenNOWStore: ObservableObject {
     }
 
     private func runCatalogSearch(query: String) async {
-        defer { isSearchingCatalog = false }
+        let requestedGeneration = authGeneration
+        defer {
+            if !Task.isCancelled, requestedGeneration == authGeneration,
+               searchText.trimmingCharacters(in: .whitespacesAndNewlines) == query {
+                isSearchingCatalog = false
+            }
+        }
         guard let session = authSession else { return }
         do {
             let results = try await api.searchCatalog(
@@ -7635,6 +7818,7 @@ final class OpenNOWStore: ObservableObject {
             )
             // The query may have moved on while the request was in flight.
             guard !Task.isCancelled,
+                  requestedGeneration == authGeneration,
                   searchText.trimmingCharacters(in: .whitespacesAndNewlines) == query else { return }
             remoteSearchResults = results
         } catch where OpenNOWErrorPresenter.isCancellation(error) {
@@ -8602,6 +8786,16 @@ final class OpenNOWStore: ObservableObject {
         persistSettings()
     }
 
+    func dismissContinuePlaying(_ game: CloudGame) {
+        settings.dismissContinuePlaying(game)
+        persistSettings()
+    }
+
+    func restoreContinuePlaying() {
+        settings.dismissedContinuePlaying.removeAll()
+        persistSettings()
+    }
+
     func clearDefaultGameVariants() {
         settings.defaultGameVariantIds.removeAll()
         persistSettings()
@@ -8793,7 +8987,7 @@ final class OpenNOWStore: ObservableObject {
     /// the long tail. Ordering them this way means the list never reshuffles under a thumb that
     /// is already reaching for a result.
     var visibleLibraryGames: [CloudGame] {
-        LibraryGameCollection.games(synced: libraryGames, catalog: [], imported: importedGames)
+        catalogPresentation.visibleLibraryGames
     }
 
     func lookupGamesToAdd(_ raw: String, title: String = "", storefront: String = "STEAM") async throws -> [CloudGame] {
@@ -8863,26 +9057,32 @@ final class OpenNOWStore: ObservableObject {
     }
 
     var catalogGames: [CloudGame] {
-        var seen = Set<String>()
-        return (allGames + importedGames).filter { seen.insert(catalogStableGameKey($0)).inserted }
+        catalogPresentation.catalogGames
     }
 
     var filteredCatalogGames: [CloudGame] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let local = catalogGames.filter { gameMatchesCatalogSearch($0, query: query) }
-        guard !query.isEmpty, !remoteSearchResults.isEmpty else { return local }
-        var seen = Set(local.map { catalogStableGameKey($0) })
-        let extra = remoteSearchResults.filter { seen.insert(catalogStableGameKey($0)).inserted }
-        return local + extra
+        if let cachedFilteredCatalogGames { return cachedFilteredCatalogGames }
+        let games = catalogPresentation.matchingGames(query: searchText, remoteResults: remoteSearchResults)
+        cachedFilteredCatalogGames = games
+        return games
     }
 
     var favoriteGames: [CloudGame] {
         guard !settings.favoriteGameIds.isEmpty else { return [] }
-        var gamesById: [String: CloudGame] = [:]
-        for game in allGames + libraryGames + importedGames {
-            gamesById[game.id] = game
-        }
-        return settings.favoriteGameIds.compactMap { gamesById[$0] }
+        return settings.favoriteGameIds.compactMap { catalogPresentation.favoriteGamesByID[$0] }
+    }
+
+    var catalogPresentation: CatalogPresentation {
+        if let cachedCatalogPresentation { return cachedCatalogPresentation }
+        let presentation = CatalogPresentation(allGames: allGames, libraryGames: libraryGames, importedGames: importedGames)
+        cachedCatalogPresentation = presentation
+        return presentation
+    }
+
+    private func invalidateCatalogPresentation() {
+        catalogContentGeneration = UUID()
+        cachedCatalogPresentation = nil
+        cachedFilteredCatalogGames = nil
     }
 
     private func effectiveLaunchOption(for game: CloudGame, requested: GameLaunchOption?) -> GameLaunchOption? {
@@ -9773,13 +9973,26 @@ final class OpenNOWStore: ObservableObject {
         return try? JSONDecoder().decode(AppSettings.self, from: data)
     }
 
-    private func hydrateCachedCatalog(for session: AuthSession, onlyMissing: Bool = false) {
-        if let snapshot = loadCachedCatalog(for: session) {
-            if !onlyMissing || allGames.isEmpty {
+    private func scheduleCatalogHydration(for session: AuthSession) {
+        catalogHydrationTask?.cancel()
+        catalogHydrationTask = Task { [weak self] in
+            guard let self else { return }
+            await self.hydrateCachedCatalog(for: session)
+        }
+    }
+
+    private func hydrateCachedCatalog(for session: AuthSession) async {
+        let generation = catalogCacheGeneration
+        let contentGeneration = catalogContentGeneration
+        let snapshot = await loadCachedCatalog(for: session)
+        guard !Task.isCancelled, generation == catalogCacheGeneration,
+              contentGeneration == catalogContentGeneration, accountIsCurrent(session.user.userId) else { return }
+        if let snapshot {
+            if allGames.isEmpty {
                 allGames = snapshot.allGames
                 featuredGames = snapshot.featuredGames.isEmpty ? Array(snapshot.allGames.prefix(8)) : snapshot.featuredGames
             }
-            if !onlyMissing || libraryGames.isEmpty {
+            if libraryGames.isEmpty {
                 libraryGames = snapshot.libraryGames
             }
             if !snapshot.vpcId.isEmpty {
@@ -9788,17 +10001,19 @@ final class OpenNOWStore: ObservableObject {
             return
         }
 
-        let legacyLibraryGames = loadLegacyCachedLibraryGames(for: session)
-        if !legacyLibraryGames.isEmpty && (!onlyMissing || libraryGames.isEmpty) {
+        let legacyLibraryGames = await loadLegacyCachedLibraryGames(for: session)
+        guard !Task.isCancelled, generation == catalogCacheGeneration,
+              contentGeneration == catalogContentGeneration, accountIsCurrent(session.user.userId) else { return }
+        if !legacyLibraryGames.isEmpty && (libraryGames.isEmpty) {
             libraryGames = legacyLibraryGames
         }
     }
 
-    private func loadCachedCatalog(for session: AuthSession) -> CachedCatalogSnapshot? {
+    private func loadCachedCatalog(for session: AuthSession) async -> CachedCatalogSnapshot? {
         guard let data = defaults.data(forKey: catalogCacheKey(for: session.user.userId)) else {
             return nil
         }
-        return try? JSONDecoder().decode(CachedCatalogSnapshot.self, from: data)
+        return await catalogSnapshotCodec.decode(data)
     }
 
     private func hydrateCachedAccount(for session: AuthSession, onlyMissing: Bool = false) {
@@ -9855,7 +10070,7 @@ final class OpenNOWStore: ObservableObject {
         libraryGames: [CloudGame],
         vpcId: String,
         for session: AuthSession
-    ) {
+    ) async {
         let snapshot = CachedCatalogSnapshot(
             schemaVersion: 1,
             cachedAt: Date().timeIntervalSince1970,
@@ -9864,16 +10079,18 @@ final class OpenNOWStore: ObservableObject {
             featuredGames: featuredGames,
             libraryGames: libraryGames
         )
-        guard let encoded = try? JSONEncoder().encode(snapshot) else { return }
+        let generation = catalogCacheGeneration
+        guard let encoded = await catalogSnapshotCodec.encode(snapshot), !Task.isCancelled,
+              generation == catalogCacheGeneration, accountIsCurrent(session.user.userId) else { return }
         defaults.set(encoded, forKey: catalogCacheKey(for: session.user.userId))
         defaults.removeObject(forKey: legacyLibraryGamesCacheKey(for: session.user.userId))
     }
 
-    private func loadLegacyCachedLibraryGames(for session: AuthSession) -> [CloudGame] {
+    private func loadLegacyCachedLibraryGames(for session: AuthSession) async -> [CloudGame] {
         guard let data = defaults.data(forKey: legacyLibraryGamesCacheKey(for: session.user.userId)) else {
             return []
         }
-        return (try? JSONDecoder().decode([CloudGame].self, from: data)) ?? []
+        return await catalogSnapshotCodec.decodeLegacyLibrary(data)
     }
 
     private func removeCachedCatalog(forUserId userId: String) {

@@ -8,6 +8,34 @@ import Testing
 
 @Suite(.serialized)
 struct NvstMjolnirFeedbackTests {
+    @Test func videoStartupRequestsKeyframesWithoutAnyMediaArrival() {
+        var liveness = NativeStreamVideoLiveness(now: 0)
+        #expect(liveness.observe(decoded: 0, now: 999_999_999) == .none)
+        #expect(liveness.observe(decoded: 0, now: 1_000_000_000) == .requestKeyframe)
+        #expect(liveness.observe(decoded: 0, now: 1_500_000_000) == .none)
+        #expect(liveness.observe(decoded: 0, now: 2_000_000_000) == .requestKeyframe)
+        #expect(liveness.observe(decoded: 0, now: 19_000_000_000) == .requestKeyframe)
+        #expect(liveness.observe(decoded: 0, now: 20_000_000_000) == .failed)
+    }
+
+    @Test func onlyNewDecoderOutputResetsVideoStallRecovery() {
+        var liveness = NativeStreamVideoLiveness(now: 0)
+        #expect(liveness.observe(decoded: 1, now: 500_000_000) == .none)
+        #expect(liveness.observe(decoded: 1, now: 1_500_000_000) == .requestKeyframe)
+        #expect(liveness.observe(decoded: 2, now: 1_600_000_000) == .none)
+        #expect(liveness.observe(decoded: 2, now: 2_599_999_999) == .none)
+        #expect(liveness.observe(decoded: 2, now: 2_600_000_000) == .requestKeyframe)
+        #expect(liveness.observe(decoded: 2, now: 21_600_000_000) == .failed)
+    }
+
+    @Test func newVideoAttachmentStartsWithANewRecoveryBudget() {
+        var liveness = NativeStreamVideoLiveness(now: 0)
+        #expect(liveness.observe(decoded: 0, now: 20_000_000_000) == .failed)
+        liveness = NativeStreamVideoLiveness(now: 30_000_000_000)
+        #expect(liveness.observe(decoded: 0, now: 30_000_000_000) == .none)
+        #expect(liveness.observe(decoded: 0, now: 31_000_000_000) == .requestKeyframe)
+    }
+
     /// SRTCP feedback sealed at a constant index 0 is accepted by the seat's replay window exactly
     /// once per session; every later PLI and NACK was silently discarded (and reused a GCM nonce).
     @Test func srtcpFeedbackIndexesAreMonotonic() throws {
