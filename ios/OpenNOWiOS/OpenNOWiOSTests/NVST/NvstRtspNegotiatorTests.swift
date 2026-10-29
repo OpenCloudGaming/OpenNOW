@@ -242,6 +242,21 @@ private actor RecordedSeat: NvstRtspControlChannel {
     func requests(_ method: String) -> [SentRequest] { sent.filter { $0.method == method } }
 }
 
+private struct FailingControlSeat: NvstRtspControlChannel {
+    let seat: RecordedSeat
+    let method: String
+    let error: any Error & Sendable
+
+    func connect(sessionID: String?) async throws { try await seat.connect(sessionID: sessionID) }
+
+    func request(method: String, uri: String, headers: [(String, String)], body: String) async throws -> NvstRtspResponse {
+        if method == self.method { throw error }
+        return try await seat.request(method: method, uri: uri, headers: headers, body: body)
+    }
+
+    func close() async { await seat.close() }
+}
+
 private struct StubReserver: NvstBundleReserving {
     let reservation: NvstBundleReservation
     /// Stands in for the real ICE/DTLS bundle, which can only come up after SETUP.
@@ -257,6 +272,68 @@ private struct StubReserver: NvstBundleReserving {
 }
 
 @Suite struct NvstRtspNegotiatorTests {
+    @Test func aPlayTimeoutFailsNegotiationAndClosesTheControlChannel() async throws {
+        let seat = Self.seat()
+        let failing = FailingControlSeat(seat: seat, method: "PLAY", error: NvstRtspConnection.ConnectionError.timedOut("PLAY"))
+        let negotiator = NvstRtspNegotiator(reserver: StubReserver(reservation: Self.reservation),
+                                           connectionFactory: { _, _, _ in failing })
+        await #expect(throws: NvstRtspConnection.ConnectionError.timedOut("PLAY")) {
+            _ = try await negotiator.negotiate(Self.input)
+        }
+        #expect(await seat.closed)
+    }
+
+    @Test func aPlayTimeoutTriesTheNextEndpoint() async throws {
+        let first = Self.seat()
+        let second = Self.seat()
+        let failing = FailingControlSeat(seat: first, method: "PLAY", error: NvstRtspConnection.ConnectionError.timedOut("PLAY"))
+        let negotiator = NvstRtspNegotiator(reserver: StubReserver(reservation: Self.reservation),
+            connectionFactory: { target, _, _ in
+                if target.host == "first.example.com" { return failing }
+                return second
+            })
+        let input = NvstRtspNegotiationInput(sessionID: "test-session", rtspsEndpoints: [
+            "rtsps://first.example.com:322", "rtsps://second.example.com:322"
+        ])
+        let session = try await negotiator.negotiate(input)
+        #expect(session.endpoint == "rtsps://second.example.com:322")
+        #expect(session.steps.contains("play"))
+        #expect(await first.closed)
+        #expect(await second.connected)
+    }
+
+    @Test func aPlayTimeoutOutranksAnEarlierStageFallbackFailure() async throws {
+        let first = FailingControlSeat(seat: Self.seat(), method: "PLAY", error: NvstRtspConnection.ConnectionError.timedOut("PLAY"))
+        let second = FailingControlSeat(seat: Self.seat(), method: "ANNOUNCE", error: NvstRtspNegotiationError.requestFailed("ANNOUNCE", 500, "Rejected"))
+        let negotiator = NvstRtspNegotiator(reserver: StubReserver(reservation: Self.reservation),
+            connectionFactory: { target, _, _ in target.host == "first.example.com" ? first : second })
+        let input = NvstRtspNegotiationInput(sessionID: "test-session", rtspsEndpoints: [
+            "rtsps://first.example.com:322", "rtsps://second.example.com:322"
+        ])
+        await #expect(throws: NvstRtspConnection.ConnectionError.timedOut("PLAY")) {
+            _ = try await negotiator.negotiate(input)
+        }
+    }
+
+    @Test func cancellationDuringPlayDoesNotTryAnotherEndpoint() async throws {
+        let first = Self.seat()
+        let second = Self.seat()
+        let cancelled = FailingControlSeat(seat: first, method: "PLAY", error: CancellationError())
+        let negotiator = NvstRtspNegotiator(reserver: StubReserver(reservation: Self.reservation),
+            connectionFactory: { target, _, _ in
+                if target.host == "first.example.com" { return cancelled }
+                return second
+            })
+        let input = NvstRtspNegotiationInput(sessionID: "test-session", rtspsEndpoints: [
+            "rtsps://first.example.com:322", "rtsps://second.example.com:322"
+        ])
+        await #expect(throws: CancellationError.self) {
+            _ = try await negotiator.negotiate(input)
+        }
+        #expect(await first.closed)
+        #expect(await !second.connected)
+    }
+
     @Test func cancellationDoesNotTryAnotherEndpoint() async throws {
         let seat = Self.seat()
         let negotiator = Self.negotiator(seat)

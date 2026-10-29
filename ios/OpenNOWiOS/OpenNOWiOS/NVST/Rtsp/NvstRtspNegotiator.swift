@@ -145,7 +145,7 @@ public struct NvstRtspNegotiator: Sendable {
                 steps.append("native-announce-armed")
             }
 
-            await play(connection: connection,
+            try await play(connection: connection,
                        requestURI: requestURI,
                        described: described,
                        common: common,
@@ -594,7 +594,7 @@ extension NvstRtspNegotiator {
                       requestURI: String,
                       described: DescribedSession,
                       common: [(String, String)],
-                      steps: inout [String]) async {
+                      steps: inout [String]) async throws {
         // The official client sends PLAY unless the seat explicitly disables it, so an absent
         // attribute means "not disabled" rather than "disabled". Only a literal 1 suppresses it;
         // treating absence as a skip would leave a seat that omits the attribute with no PLAY.
@@ -602,19 +602,17 @@ extension NvstRtspNegotiator {
             steps.append("play-skipped")
             return
         }
-        let play = try? await connection.request(method: "PLAY",
+        let play = try await connection.request(method: "PLAY",
                                                  uri: described.officialCloudPath ? requestURI : "/",
                                                  headers: common + [("Session", described.sessionIdentifier)])
-        switch play?.statusCode {
+        switch play.statusCode {
         case 200:
             steps.append("play")
         case 455:
             // Bifrost ANNOUNCE-only seats answer 455; media already flows.
             steps.append("play-455")
-        case .some(let code):
-            steps.append("play-failed-\(code)")
-        case nil:
-            steps.append("play-timeout")
+        default:
+            steps.append("play-failed-\(play.statusCode)")
         }
     }
 
@@ -655,6 +653,7 @@ extension NvstRtspNegotiator {
     /// where the attempt's completed steps say it happened, so it outranks another endpoint's
     /// earlier handshake refusal.
     private static func nonNegotiationProgress(reachedSteps steps: [String]) -> Int {
+        if steps.contains("announce") { return 8 }
         if steps.contains("setup-video") { return 6 }
         if steps.contains("describe") { return 4 }
         if steps.contains("options") { return 2 }
