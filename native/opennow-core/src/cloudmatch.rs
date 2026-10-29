@@ -1485,8 +1485,8 @@ impl CloudMatchService {
             self.store_active(&mut info, &control_base, zone, &app_id, client)?;
             return Ok(json!({"session":info}));
         }
-        let resumed = session_requires_resume(initial_status)?;
-        if resumed {
+        let mut layout_applied = false;
+        if session_requires_resume(initial_status)? {
             let mut url = control_base
                 .join(&format!("v2/session/{session_id}"))
                 .map_err(|_| invalid("Invalid CloudMatch claim URL"))?;
@@ -1515,9 +1515,10 @@ impl CloudMatchService {
                 .json(&body)
                 .send()
                 .map_err(|error| network("Session claim failed", error))?;
-            let _ = read_cloudmatch_response("Session claim failed", response, true)?;
+            let payload = read_cloudmatch_response("Session claim failed", response, true)?;
+            layout_applied = !is_session_not_paused(&payload);
             eprintln!(
-                "CloudMatch RESUME handover completed; awaiting fresh ready status and stream endpoints"
+                "CloudMatch RESUME response received; awaiting fresh ready status and stream endpoints"
             );
         }
 
@@ -1529,7 +1530,7 @@ impl CloudMatchService {
         if let Some(retained) = &retained_webrtc {
             preserve_session_profile(&mut info, retained);
         }
-        if resumed {
+        if layout_applied {
             info["keyboardLayout"] = json!(crate::language::session_keyboard_layout(settings));
         }
         info["resumePending"] = json!(true);
@@ -2633,6 +2634,13 @@ fn read_cloudmatch_response(
     validate_cloudmatch_response(context, status, payload, allow_not_paused)
 }
 
+fn is_session_not_paused(payload: &Value) -> bool {
+    value_i64(&payload["requestStatus"]["statusCode"]) == Some(34)
+        || payload["requestStatus"]["statusDescription"]
+            .as_str()
+            .is_some_and(|description| description.contains("SESSION_NOT_PAUSED"))
+}
+
 fn validate_cloudmatch_response(
     context: &str,
     status: reqwest::StatusCode,
@@ -2642,12 +2650,7 @@ fn validate_cloudmatch_response(
     if allow_not_paused
         && status != reqwest::StatusCode::UNAUTHORIZED
         && status != reqwest::StatusCode::FORBIDDEN
-        && payload.as_ref().is_ok_and(|payload| {
-            value_i64(&payload["requestStatus"]["statusCode"]) == Some(34)
-                || payload["requestStatus"]["statusDescription"]
-                    .as_str()
-                    .is_some_and(|description| description.contains("SESSION_NOT_PAUSED"))
-        })
+        && payload.as_ref().is_ok_and(is_session_not_paused)
     {
         return payload.map_err(|error| network("CloudMatch returned invalid JSON", error));
     }
@@ -3937,6 +3940,7 @@ mod tests {
     #[test]
     fn create_and_claim_use_exact_independent_language_query_pairs() {
         for (game, keyboard, expected_game, expected_keyboard) in [
+            ("de_DE", "de-DE", "de_DE", "de-DE"),
             ("es_419", "de-DE", "es_419", "de-DE"),
             ("zh_Hant_TW", "ja-JP", "zh_Hant_TW", "ja-106"),
             ("system", "es-ES", "en_US", "es-ES_tradnl"),
@@ -3998,6 +4002,75 @@ mod tests {
             assert!(received[0].starts_with("POST "));
             assert!(received[1].starts_with("DELETE /v2/session/A"));
             assert!(received[3].starts_with("PUT /v2/session/B?"));
+        }
+    }
+
+    #[test]
+    fn claim_changes_keyboard_layout_only_after_an_accepted_resume() {
+        for (status, request_status, accepted) in [
+            (200, json!({"statusCode":1}), true),
+            (200, json!({"statusCode":"1"}), true),
+            (200, json!({"statusCode":34}), false),
+            (400, json!({"statusCode":34}), false),
+            (409, json!({"statusCode":"34"}), false),
+            (
+                500,
+                json!({"statusCode":0,"statusDescription":"SESSION_NOT_PAUSED"}),
+                false,
+            ),
+        ] {
+            for previous_layout in [Some("en-US"), None] {
+                let ready = json!({"requestStatus":{"statusCode":1},"session":{
+                    "sessionId":"A","status":3,
+                    "connectionInfo":[{"usage":16,"ip":"127.0.0.1","port":47999}]
+                }});
+                let (fixture, server) = session_server(
+                    vec![
+                        (200, ready.clone()),
+                        (status, json!({"requestStatus":request_status})),
+                        (200, ready),
+                    ],
+                    |_| {},
+                );
+                let client = Client::builder()
+                    .timeout(Duration::from_secs(5))
+                    .build()
+                    .unwrap();
+                let mut service = CloudMatchService::new(client.clone());
+                service.set_test_control_base(fixture);
+                let base = trusted_cloudmatch_base(DEFAULT_STREAMING_BASE).unwrap();
+                let mut previous = json!({"sessionId":"A","status":3,
+                    "keyboardLayout":previous_layout});
+                service
+                    .store_active(&mut previous, &base, "auto", "123", client)
+                    .unwrap();
+                let settings = json!({"gameLanguage":"de_DE","keyboardLayout":"de-DE"});
+                let claimed = service
+                    .claim(
+                        &json!({"sessionId":"A"}),
+                        &settings,
+                        &conflict_auth(),
+                        "device",
+                    )
+                    .unwrap();
+                let polled = service
+                    .poll(&json!({"sessionId":"A"}), &conflict_auth(), "device")
+                    .unwrap();
+                let received = server.join().unwrap();
+                let expected = if accepted {
+                    json!("de-DE")
+                } else {
+                    json!(previous_layout)
+                };
+                assert_eq!(claimed["session"]["keyboardLayout"], expected);
+                assert_eq!(polled["session"]["keyboardLayout"], expected);
+                assert_eq!(claimed["session"]["resumePending"], true);
+                assert_eq!(polled["session"]["resumePending"], false);
+                assert!(
+                    received[1]
+                        .starts_with("PUT /v2/session/A?keyboardLayout=de-DE&languageCode=de_DE ")
+                );
+            }
         }
     }
 

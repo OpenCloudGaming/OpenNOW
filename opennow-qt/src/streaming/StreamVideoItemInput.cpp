@@ -506,9 +506,10 @@ quint16 StreamVideoItem::eventVirtualKey(const QKeyEvent *event) const
                                      event->nativeScanCode(), event->nativeVirtualKey());
 #elif defined(Q_OS_LINUX)
     const auto evdevCode = PhysicalKeyMap::evdevCodeFromNativeScanCode(event->nativeScanCode());
-    if (m_keyboardMap && m_keyboardMap->locale == "sv-SE") {
+    if (m_keyboardMap && (m_keyboardMap->locale == "sv-SE" || m_keyboardMap->locale == "de-DE")) {
         const auto physical = linuxPhysicalVirtualKey(event->nativeScanCode());
-        if ((physical >= 0xba && physical <= 0xc0)
+        if ((m_keyboardMap->locale == "de-DE" && physical != 0)
+            || (physical >= 0xba && physical <= 0xc0)
             || (physical >= 0xdb && physical <= 0xde) || physical == 0xe2)
             return physical;
     }
