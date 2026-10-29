@@ -2,7 +2,7 @@ use std::fmt;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::{Arc, Mutex};
 
-use cros_codecs::backend::vaapi::decoder::VaapiBackend;
+use cros_codecs::backend::vaapi::decoder::{INITIAL_CONTEXT_SIZE, VaapiBackend};
 use cros_codecs::decoder::stateless::h264::H264;
 use cros_codecs::decoder::stateless::{DecodeError, StatelessDecoder, StatelessVideoDecoder};
 use cros_codecs::decoder::{DecodedHandle, DecoderEvent};
@@ -17,6 +17,10 @@ use crate::{
 };
 
 const MAX_DECODE_RETRIES: usize = 16;
+
+// Mesa radeonsi rejects H.264 decode contexts below 64x64 with
+// VA_STATUS_ERROR_RESOLUTION_NOT_SUPPORTED, which hid VA-API on AMD GPUs.
+const _: () = assert!(INITIAL_CONTEXT_SIZE >= 64);
 
 fn h264_access_unit_payload(data: &[u8]) -> &[u8] {
     let end = data
@@ -360,9 +364,10 @@ fn open_h264_device() -> std::result::Result<(Arc<Display>, H264VaapiDecoder), S
 }
 
 fn open_h264_decoder(display: Arc<Display>) -> std::result::Result<H264VaapiDecoder, String> {
-    // cros-codecs creates a 16x16 context without render targets in its
-    // constructor. Some drivers advertise H.264 and allocate surfaces but
-    // reject that context shape (notably nvidia-vaapi-driver). Exercise the
+    // cros-codecs creates a placeholder context without render targets in its
+    // constructor (`INITIAL_CONTEXT_SIZE` in the vendored backend). Some drivers
+    // advertise H.264 and allocate surfaces but reject that context shape
+    // (notably nvidia-vaapi-driver). Exercise the
     // exact operation first so an incompatible driver becomes a normal
     // capability failure instead of reaching the dependency's `expect`.
     validate_initial_context(&display)?;
@@ -386,7 +391,13 @@ fn validate_initial_context(display: &Arc<Display>) -> std::result::Result<(), S
         .map_err(|error| format!("VA-API cannot create the H.264 decoder config: {error}"))?;
     drop(
         display
-            .create_context::<()>(&config, 16, 16, None, true)
+            .create_context::<()>(
+                &config,
+                INITIAL_CONTEXT_SIZE,
+                INITIAL_CONTEXT_SIZE,
+                None,
+                true,
+            )
             .map_err(|error| {
                 format!("VA-API cannot create the initial H.264 decoder context: {error}")
             })?,
