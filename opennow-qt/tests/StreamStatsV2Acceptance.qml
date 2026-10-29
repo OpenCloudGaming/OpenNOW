@@ -115,6 +115,24 @@ QtObject {
         host.connectionNotificationsEnabled = true
     }
 
+    function checkDecoderHealth(stats) {
+        ShellStore.acceptNativeEvent({type:"log", event:"queue-dropped", media:"video", unit:"frames", count:60})
+        check(!stats.decoderLimited && stats.healthText === qsTr("Stream healthy"),
+            "network-side chain drops are not blamed on the decoder")
+        ShellStore.acceptNativeEvent({type:"log", event:"queue-dropped", media:"d3d11-video", unit:"frames", count:29})
+        check(!stats.decoderLimited, "a single decoder queue overflow is not sustained")
+        sampleTime += 1000
+        ShellStore.acceptNativeEvent({type:"log", event:"queue-dropped", media:"d3d11-video", unit:"frames", count:1,
+            sessionId:"another-session"})
+        check(!stats.decoderLimited, "another session's decoder drops are ignored")
+        ShellStore.acceptNativeEvent({type:"log", event:"queue-dropped", media:"d3d11-video", unit:"frames", count:1})
+        check(stats.decoderLimited && stats.degraded && stats.healthText === qsTr("Decoder can't keep up"),
+            "sustained decoder drops with zero packet loss are not reported as healthy")
+        sample(0, 4000)
+        check(!stats.decoderLimited && stats.healthText === qsTr("Stream healthy"),
+            "decoder health recovers once drops leave the window")
+    }
+
     function check(ok, message) { if (!ok) throw new Error("Stream stats V2: " + message) }
     function find(item, name) {
         if (item.objectName === name) return item
@@ -183,6 +201,7 @@ QtObject {
         check(!stats.degraded && stats.read("videoDropCount") === 23
             && stats.read("audioPacketDropCount") === 1,
             "fresh healthy telemetry preserves cumulative video and audio drops")
+        checkDecoderHealth(stats)
         for (let i = 0; i < 75; ++i) stats.sampleHistory()
         check(stats.history.framesPerSecond.length === 60, "history is bounded to sixty samples")
         ShellStore.streamer = Object.assign({}, ShellStore.streamer, {status:"starting"})

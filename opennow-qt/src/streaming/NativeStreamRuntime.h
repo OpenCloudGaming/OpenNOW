@@ -6,6 +6,7 @@
 
 #include <QByteArray>
 #include <QJsonObject>
+#include <QImage>
 #include <QObject>
 #include <QSize>
 #include <QString>
@@ -69,6 +70,10 @@ public:
             const OpenNowStreamer *, OpenNowGenericHidOutput *);
         using GetGenericHidAdmissions = OpenNowStreamerStatus (*)(
             const OpenNowStreamer *, OpenNowGenericHidAdmissions *);
+        using GetPresentationConfig = OpenNowStreamerStatus (*)(
+            const OpenNowStreamer *, OpenNowStreamerPresentationConfig *);
+        using SubmitPresentationSample = OpenNowStreamerStatus (*)(
+            const OpenNowStreamer *, const OpenNowStreamerPresentationSample *);
 
         Create create = nullptr;
         Send send = nullptr;
@@ -94,11 +99,14 @@ public:
         SubmitGenericHidReport submitGenericHidReport = nullptr;
         TakeGenericHidOutput takeGenericHidOutput = nullptr;
         GetGenericHidAdmissions getGenericHidAdmissions = nullptr;
+        GetPresentationConfig getPresentationConfig = nullptr;
+        SubmitPresentationSample submitPresentationSample = nullptr;
     };
 
     static constexpr int DefaultShutdownTimeoutMs = 1'500;
     static constexpr qsizetype MaximumCallbackBytes = 1024 * 1024;
     static constexpr qsizetype MaximumPendingCallbacks = 512;
+    static constexpr qsizetype TerminalCallbackReserve = 16;
 
     static void initializeDiagnostics(Api::SetLogFile setLogFile = &opennow_streamer_set_log_file);
 
@@ -115,6 +123,11 @@ public:
     [[nodiscard]] QString lastError() const;
     [[nodiscard]] quint64 presentationGeneration() const;
     [[nodiscard]] bool presentationAllowed() const;
+    [[nodiscard]] OpenNowStreamerPresentationConfig presentationConfig() const;
+    OpenNowStreamerStatus submitPresentationSample(const OpenNowStreamerPresentationSample &sample);
+    bool requestScreenshot();
+    quint64 takeScreenshotRequest();
+    void completeScreenshot(quint64 request, QImage image);
     [[nodiscard]] QSize decodedDisplaySize() const;
     struct UpstreamProgress
     {
@@ -142,6 +155,11 @@ public:
 
     OpenNowStreamerStatus setGraphicsContext(
         const OpenNowStreamerGraphicsContext &context);
+    OpenNowStreamerStatus acquireFrame(OpenNowStreamerFrameInfo *info,
+                                      OpenNowStreamerFrame **frame);
+    OpenNowStreamerStatus recordFrame(OpenNowStreamerFrame *frame,
+        const OpenNowStreamerRecordCommand &command, OpenNowStreamerFrameInfo *info,
+        OpenNowStreamerRecordedFrame *recorded);
     OpenNowStreamerStatus recordLatestFrame(
         const OpenNowStreamerRecordCommand &command,
         OpenNowStreamerFrameInfo *info,
@@ -172,6 +190,7 @@ public:
     OpenNowStreamerStatus submitGenericHidReport(const GenericHidReport &report);
 
 signals:
+    void screenshotReady(const QImage &image);
     void inputCaptureReset();
     void inputAllowedChanged();
     void presentationError(const QString &message, const QString &errorCode);
@@ -205,11 +224,13 @@ private:
     static void eventCallback(const std::uint8_t *bytes, std::size_t length,
                               void *userData);
     static void frameAvailableCallback(void *userData);
-    static void cursorCallback(const std::uint8_t *bytes, std::size_t length,
+    static void cursorCallback(const std::uint8_t *startId, std::size_t startIdLength,
+                               const std::uint8_t *bytes, std::size_t length,
                                void *userData);
     static void enqueueCallback(CallbackState *state, const std::uint8_t *bytes,
                                 std::size_t length, bool event);
     static void enqueueFrameAvailable(CallbackState *state);
+    static bool isTerminalEvent(const QByteArray &payload);
     static void scheduleDrain(const std::shared_ptr<CallbackState> &state);
     void drainCallbacks(const std::shared_ptr<CallbackState> &state);
     void setLastError(const QString &error);

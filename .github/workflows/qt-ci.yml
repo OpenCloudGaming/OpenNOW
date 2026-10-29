@@ -7,6 +7,13 @@ on:
         description: Publish a nightly with signed update manifests after all checks pass
         type: boolean
         default: false
+      linux_arm64_host:
+        description: Add an x64 cross-build benchmark alongside the native ARM64 baseline
+        type: choice
+        options:
+          - native
+          - x64
+        default: native
       public_key:
         description: Production Ed25519 public key (leave default for verified updates)
         type: string
@@ -22,10 +29,13 @@ on:
       - ".github/workflows/qt-build.yml"
       - ".github/workflows/qt-checks.yml"
       - ".github/workflows/qt-flatpak.yml"
+      - ".github/workflows/qt-linux-arm64-cross.yml"
       - ".github/workflows/qt-release-candidate.yml"
       - ".github/workflows/qt-stable-release.yml"
+      - ".github/workflows/decky.yml"
       - ".github/actionlint.yaml"
       - ".github/actions/**"
+      - ".github/cmake/**"
       - ".github/scripts/**"
       - "opennow-qt/**"
       - "native/opennow-core/**"
@@ -33,6 +43,7 @@ on:
       - "locales/**"
       - "scripts/**"
       - "package.json"
+      - "decky/**"
   push:
     branches:
       - dev
@@ -42,10 +53,12 @@ on:
       - ".github/workflows/qt-build.yml"
       - ".github/workflows/qt-checks.yml"
       - ".github/workflows/qt-flatpak.yml"
+      - ".github/workflows/qt-linux-arm64-cross.yml"
       - ".github/workflows/qt-release-candidate.yml"
       - ".github/workflows/qt-stable-release.yml"
       - ".github/actionlint.yaml"
       - ".github/actions/**"
+      - ".github/cmake/**"
       - ".github/scripts/**"
       - "opennow-qt/**"
       - "native/opennow-core/**"
@@ -147,10 +160,11 @@ jobs:
     with:
       upload_complete: ${{ github.event_name == 'workflow_dispatch' }}
       update_public_key: ${{ inputs.public_key }}
+      linux_arm64_host: ${{ inputs.linux_arm64_host }}
 
   sign-nightly:
     name: Isolated nightly update signing
-    if: github.event_name == 'workflow_dispatch' && inputs.publish_nightly
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_nightly && inputs.linux_arm64_host == 'native'
     needs: [preflight, contracts, checks, build]
     runs-on: blacksmith-2vcpu-ubuntu-2404
     environment: qt-update-signing
@@ -193,7 +207,7 @@ jobs:
 
   publish-nightly:
     name: Publish update-signed nightly prerelease
-    if: github.event_name == 'workflow_dispatch' && inputs.publish_nightly
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_nightly && inputs.linux_arm64_host == 'native'
     needs: [contracts, checks, build, sign-nightly]
     runs-on: blacksmith-2vcpu-ubuntu-2404
     permissions:
@@ -223,6 +237,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+          python3 opennow-qt/packaging/verify_release_tag.py \
+            --repository "$GITHUB_REPOSITORY" --tag "v$RELEASE_VERSION" \
+            --commit "$SOURCE_SHA" --allow-missing
           gh release create "v$RELEASE_VERSION" nightly-release/* \
             --repo "$GITHUB_REPOSITORY" --target "$SOURCE_SHA" \
             --title "OpenNOW v$RELEASE_VERSION" --generate-notes \
@@ -241,5 +259,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          python3 opennow-qt/packaging/verify_release_tag.py \
+            --repository "$GITHUB_REPOSITORY" --tag "v$RELEASE_VERSION" \
+            --commit "$SOURCE_SHA" --create-missing
           gh release edit "v$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" \
             --draft=false --prerelease --latest=false

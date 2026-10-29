@@ -145,16 +145,46 @@ fn output() -> PathBuf {
     PathBuf::from(env::var("OUT_DIR").unwrap())
 }
 
-const RPI_FFMPEG_REVISION: &str = "f43bd9dafd9349b6824ee1fdcd967662fcc94c20";
-
 fn use_v4l2_request() -> bool {
     env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux")
         && env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("aarch64")
 }
 
+fn v4l2_request_patches() -> io::Result<Vec<PathBuf>> {
+    let directory = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
+        .join("patches")
+        .join("v4l2-request");
+    let mut patches = fs::read_dir(&directory)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<io::Result<Vec<_>>>()?;
+    patches.retain(|path| {
+        path.extension()
+            .is_some_and(|extension| extension == "patch")
+    });
+    patches.sort();
+    if patches.is_empty() {
+        return Err(io::Error::other(format!(
+            "no V4L2 request patches in {}",
+            directory.display()
+        )));
+    }
+    Ok(patches)
+}
+
+fn v4l2_request_patchset() -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for patch in v4l2_request_patches().expect("V4L2 request patches must be readable") {
+        let name = patch.file_name().unwrap().as_encoded_bytes().to_vec();
+        for byte in name.into_iter().chain(fs::read(&patch).unwrap()) {
+            hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    format!("v4l2-request-{hash:016x}")
+}
+
 fn source() -> PathBuf {
     if use_v4l2_request() {
-        output().join(format!("ffmpeg-rpi-{RPI_FFMPEG_REVISION}"))
+        output().join(format!("ffmpeg-{}-{}", version(), v4l2_request_patchset()))
     } else {
         output().join(format!("ffmpeg-{}", version()))
     }
@@ -164,12 +194,36 @@ fn search() -> PathBuf {
     let mut absolute = env::current_dir().unwrap();
     absolute.push(output());
     absolute.push(if use_v4l2_request() {
-        format!("dist-rpi-{RPI_FFMPEG_REVISION}")
+        format!("dist-{}", v4l2_request_patchset())
     } else {
         "dist".to_string()
     });
 
     absolute
+}
+
+fn apply_v4l2_request_patches(source_dir: &Path) -> io::Result<()> {
+    for patch in v4l2_request_patches()? {
+        let status = Command::new("patch")
+            .current_dir(source_dir)
+            .args([
+                "-p1",
+                "--batch",
+                "--forward",
+                "--fuzz=0",
+                "--silent",
+                "--input",
+            ])
+            .arg(&patch)
+            .status()?;
+        if !status.success() {
+            return Err(io::Error::other(format!(
+                "applying {} to FFmpeg failed",
+                patch.display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn fetch() -> io::Result<()> {
@@ -190,6 +244,9 @@ fn fetch() -> io::Result<()> {
         if !status.success() || !source_dir.join("configure").is_file() {
             return Err(io::Error::other("offline FFmpeg source extraction failed"));
         }
+        if use_v4l2_request() {
+            apply_v4l2_request_patches(&source_dir)?;
+        }
         return Ok(());
     }
     if use_v4l2_request() {
@@ -197,26 +254,18 @@ fn fetch() -> io::Result<()> {
         if source_dir.exists() {
             fs::remove_dir_all(&source_dir)?;
         }
-        fs::create_dir_all(&source_dir)?;
-        for args in [
-            vec!["init"],
-            vec![
-                "fetch",
-                "--depth=1",
-                "https://github.com/jc-kynesim/rpi-ffmpeg.git",
-                RPI_FFMPEG_REVISION,
-            ],
-            vec!["checkout", "--detach", RPI_FFMPEG_REVISION],
-        ] {
-            let status = Command::new("git")
-                .current_dir(&source_dir)
-                .args(args)
-                .status()?;
-            if !status.success() {
-                return Err(io::Error::other("pinned Raspberry Pi FFmpeg fetch failed"));
-            }
+        let status = Command::new("git")
+            .arg("clone")
+            .arg("--depth=1")
+            .arg("-b")
+            .arg(format!("n{}", version()))
+            .arg("https://github.com/FFmpeg/FFmpeg")
+            .arg(&source_dir)
+            .status()?;
+        if !status.success() {
+            return Err(io::Error::other("FFmpeg release fetch failed"));
         }
-        return Ok(());
+        return apply_v4l2_request_patches(&source_dir);
     }
     let output_base_path = output();
     let clone_dest_dir = format!("ffmpeg-{}", version());
@@ -848,8 +897,6 @@ fn build(sysroot: Option<&str>) -> io::Result<()> {
             "--enable-libdrm",
             "--enable-libudev",
             "--enable-v4l2-request",
-            "--enable-v4l2-m2m",
-            "--enable-sand",
         ]);
     }
     enable!(configure, "BUILD_NVENC", "nvenc");
@@ -888,11 +935,17 @@ fn build(sysroot: Option<&str>) -> io::Result<()> {
     if use_v4l2_request() {
         for (header, required) in [
             ("config.h", "#define CONFIG_V4L2_REQUEST 1"),
-            ("config.h", "#define CONFIG_V4L2_M2M 1"),
-            ("config.h", "#define CONFIG_SAND 1"),
+            (
+                "config_components.h",
+                "#define CONFIG_H264_V4L2REQUEST_HWACCEL 1",
+            ),
             (
                 "config_components.h",
                 "#define CONFIG_HEVC_V4L2REQUEST_HWACCEL 1",
+            ),
+            (
+                "config_components.h",
+                "#define CONFIG_AV1_V4L2REQUEST_HWACCEL 1",
             ),
         ] {
             if !fs::read_to_string(source_dir.join(header))?
@@ -900,7 +953,7 @@ fn build(sysroot: Option<&str>) -> io::Result<()> {
                 .any(|line| line == required)
             {
                 return Err(io::Error::other(format!(
-                    "Raspberry Pi FFmpeg configuration is missing {required}"
+                    "V4L2 request FFmpeg configuration is missing {required}"
                 )));
             }
         }
@@ -1229,7 +1282,7 @@ fn main() {
     let sysroot = find_sysroot();
     let include_paths: Vec<PathBuf> = if env::var("CARGO_FEATURE_BUILD").is_ok() {
         if use_v4l2_request() {
-            println!("cargo:rpi=true");
+            println!("cargo:rerun-if-changed=patches/v4l2-request");
         }
         println!(
             "cargo:rustc-link-search=native={}",

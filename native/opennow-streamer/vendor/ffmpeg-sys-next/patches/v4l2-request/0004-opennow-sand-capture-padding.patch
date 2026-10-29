@@ -1,0 +1,46 @@
+OpenNOW: reserve GPU import padding in 8-bit SAND capture allocations.
+
+V3DV requires align(size + 64, 256) bytes for transfer-source buffers because
+the TFU reads ahead. A 2560x1440 split SAND luma plane occupies exactly
+3686400 bytes, including its final visible byte, and is already page-aligned.
+Allocating exactly sizeimage leaves no space for the 3686656-byte Vulkan
+memory requirement.
+
+Request 4096 extra bytes per SAND memory plane through VIDIOC_CREATE_BUFS.
+Only the allocation request changes. Keep the negotiated format, pitches,
+column heights and DRM descriptor extents unchanged. The Vulkan importer
+still checks the actual DMA-BUF size against its memory requirements.
+Other capture formats, 10-bit SAND and OUTPUT allocations are unchanged.
+
+diff --git a/libavutil/hwcontext_v4l2request.c b/libavutil/hwcontext_v4l2request.c
+--- a/libavutil/hwcontext_v4l2request.c
++++ b/libavutil/hwcontext_v4l2request.c
+@@ -762,6 +762,28 @@
+         buffer->m.planes = (struct v4l2_plane *)(buffer + 1);
+     }
+ 
++    if (!V4L2_TYPE_IS_OUTPUT(format->type)) {
++        uint32_t pixelformat = num_planes ? format->fmt.pix_mp.pixelformat :
++                                           format->fmt.pix.pixelformat;
++        if (pixelformat == V4L2_PIX_FMT_NV12_COL128 ||
++            pixelformat == V4L2_PIX_FMT_NV12MT_COL128) {
++            const uint32_t padding = 4096;
++            for (int i = 0; i < (num_planes ? num_planes : 1); i++) {
++                uint32_t sizeimage = num_planes ?
++                    format->fmt.pix_mp.plane_fmt[i].sizeimage :
++                    format->fmt.pix.sizeimage;
++                if (sizeimage > UINT32_MAX - padding) {
++                    av_log(hwfc, AV_LOG_ERROR, "SAND capture buffer padding overflows sizeimage\n");
++                    goto fail;
++                }
++                if (num_planes)
++                    buffers.format.fmt.pix_mp.plane_fmt[i].sizeimage = sizeimage + padding;
++                else
++                    buffers.format.fmt.pix.sizeimage = sizeimage + padding;
++            }
++        }
++    }
++
+     // Create the buffer
+     if (ioctl(fctxi->video_fd, VIDIOC_CREATE_BUFS, &buffers) < 0) {
+         av_log(hwfc, AV_LOG_ERROR, "Failed to create buffer of type %d: %s (%d)\n",

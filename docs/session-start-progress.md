@@ -15,7 +15,12 @@ for the desktop loading screen and the console's existing `streamMessage`.
 | Missing, invalid, or unknown | Preparing the game |
 
 A positive queue position retains the queue presentation except when the server
-explicitly reports cleanup or storage waiting. Cloud steps do not form a fixed
+explicitly reports cleanup or storage waiting. The core reads
+`seatSetupInfo.queuePosition` before the other containers, and it never reports a
+higher position than the lowest one already reported for the same session.
+CloudMatch can report a different position on successive polls. The official
+client handles this by displaying the lowest position it has seen, and OpenNOW
+matches that behavior. Cloud steps do not form a fixed
 linear sequence and do not support a calculated percentage. Unknown values do
 not imply completion or failure.
 

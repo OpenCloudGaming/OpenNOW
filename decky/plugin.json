@@ -1,0 +1,11 @@
+{
+  "name": "OpenNOW",
+  "author": "OpenCloudGaming",
+  "flags": [],
+  "api_version": 1,
+  "publish": {
+    "tags": ["cloud gaming", "geforce now", "streaming"],
+    "description": "Launch OpenNOW, add GeForce NOW games to your Steam library and tune stream settings from Game Mode.",
+    "image": "https://raw.githubusercontent.com/OpenCloudGaming/OpenNOW/main/logo.png"
+  }
+}

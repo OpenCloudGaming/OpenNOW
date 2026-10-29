@@ -47,9 +47,8 @@ class ApplicationIconTests(unittest.TestCase):
                     self.assertEqual(image.tobytes(), expected.tobytes())
 
     def test_windows_installer_uses_the_application_icon(self):
-        installer = (QT_ROOT / "cmake/WindowsInstaller.cmake").read_text()
-        self.assertIn('set(CPACK_WIX_PRODUCT_ICON "${CMAKE_CURRENT_SOURCE_DIR}/packaging/icons/OpenNOW.ico")',
-                      installer)
+        installer = (QT_ROOT / "packaging/windows/setup.iss").read_text()
+        self.assertIn("SetupIconFile=..\\icons\\OpenNOW.ico", installer)
 
     def test_macos_icon_contains_standard_and_retina_images(self):
         with Image.open(ICONS / "OpenNOW.icns") as icon:

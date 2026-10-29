@@ -131,63 +131,26 @@ pub(super) fn negotiated_announce(
     }
     handoff["framePacingFeedbackMode"] =
         json!(super::video_qos_offers(describe).pacing_feedback_mode(&result)?);
-    Ok(result)
-}
-
-pub(super) fn microphone_handoff(sdp: &str, handoff: &mut Value) {
-    let enabled = offered_bool(sdp, "aqos.enableRedundancyForMic").unwrap_or(false);
-    let level = if enabled {
-        offered_in(sdp, "aqos.redundancyLevelForMic", 0..=3).unwrap_or(0)
-    } else {
-        0
-    };
-    handoff["microphoneRedundancyLevel"] = json!(level);
-    let mut in_mic = false;
-    let mut payloads = Vec::new();
-    for line in sdp
-        .split("||")
-        .next()
-        .unwrap_or_default()
-        .split(";;")
-        .next()
-        .unwrap_or_default()
-        .lines()
-        .map(str::trim)
-    {
-        if let Some(media) = line.strip_prefix("m=") {
-            let mut parts = media.split_whitespace();
-            in_mic = parts
-                .next()
-                .is_some_and(|kind| kind.eq_ignore_ascii_case("mic"));
-            payloads = if in_mic {
-                parts.skip(2).collect()
-            } else {
-                Vec::new()
-            };
-        } else if in_mic
-            && let Some(mapping) = line.strip_prefix("a=rtpmap:")
-            && let Some((payload, encoding)) = mapping.split_once(char::is_whitespace)
-        {
-            if !payloads.contains(&payload) {
-                continue;
-            }
-            let Some(codec) = encoding.split('/').next() else {
-                continue;
-            };
-            let field = if codec.eq_ignore_ascii_case("opus") {
-                "microphoneOpusPayloadType"
-            } else if codec.eq_ignore_ascii_case("red") {
-                "microphoneRedPayloadType"
-            } else {
-                continue;
-            };
-            let Some(payload) = payload.parse::<u8>().ok().filter(|value| *value <= 127) else {
-                ignore_offer(field, payload);
-                continue;
-            };
-            handoff[field] = json!(payload);
+    let mut estimator = serde_json::Map::new();
+    for (field, attribute) in [
+        ("jitterMode", "jitterHistory.jitterEstimationMode"),
+        ("jitterN", "jitterHistory.n"),
+        ("jitterStddevsX1000", "jitterHistory.stddevsX1000"),
+        ("jitterOutlierUs", "jitterHistory.outlierUs"),
+        ("jitterMinAdvanceUs", "jitterHistory.minAdvanceUs"),
+        ("jitterMaxAdvanceUs", "jitterHistory.maxAdvanceUs"),
+        ("renderMode", "renderHistory.renderEstimationMode"),
+        ("renderN", "renderHistory.n"),
+        ("renderStddevsX1000", "renderHistory.stddevsX1000"),
+        ("renderMinTimeUs", "renderHistory.minTimeUs"),
+        ("renderMaxTimeUs", "renderHistory.maxTimeUs"),
+    ] {
+        if let Some(value) = offered_u32(describe, &format!("video[0].framePacing.{attribute}")) {
+            estimator.insert(field.to_owned(), json!(value));
         }
     }
+    handoff["presentationEstimator"] = Value::Object(estimator);
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -210,86 +173,6 @@ mod tests {
                 "a=x-nv-video[0].refPicInvalidation:2\r\na=x-nv-video[0].framesWithInvalidRefThreshold:-1\r\n"
             ),
             NvstRecoveryPolicy::default()
-        );
-    }
-
-    #[test]
-    fn mic_handoff_uses_only_its_offered_payloads_and_red_depth() {
-        let mut handoff = json!({});
-        microphone_handoff(
-            "a=x-nv-aqos.enableRedundancyForMic:1\r\na=x-nv-aqos.redundancyLevelForMic:3\r\nm=audio 5000 RTP/AVP 111 112\r\na=rtpmap:111 opus/48000/2\r\na=rtpmap:112 red/48000/2\r\nm=mic 5002 RTP/AVP 113 114\r\na=rtpmap:113 opus/48000/1\r\na=rtpmap:114 red/48000/1\r\na=rtpmap:115 red/48000/1\r\n",
-            &mut handoff,
-        );
-        assert_eq!(
-            handoff,
-            json!({"microphoneOpusPayloadType":113,"microphoneRedPayloadType":114,"microphoneRedundancyLevel":3})
-        );
-        for sdp in [
-            "",
-            "a=x-nv-aqos.enableRedundancyForMic:0\r\na=x-nv-aqos.redundancyLevelForMic:3\r\nm=audio 5000 RTP/AVP 111\r\na=rtpmap:111 opus/48000/2\r\n",
-        ] {
-            let mut handoff = json!({});
-            microphone_handoff(sdp, &mut handoff);
-            assert_eq!(handoff, json!({"microphoneRedundancyLevel":0}));
-        }
-        for sdp in [
-            "m=mic 5002 RTP/AVP 128\r\na=rtpmap:128 opus/48000/1\r\n",
-            "a=x-nv-aqos.enableRedundancyForMic:1\r\na=x-nv-aqos.redundancyLevelForMic:4",
-        ] {
-            let mut handoff = json!({});
-            microphone_handoff(sdp, &mut handoff);
-            assert_eq!(handoff, json!({"microphoneRedundancyLevel":0}));
-        }
-    }
-
-    #[test]
-    fn mic_describe_handoff_reaches_the_live_transport_parser() {
-        use opennow_streamer_transport::{NvstConfigError, NvstVideoConfig};
-
-        let mut handoff = json!({
-            "clientUdpPort":49005,"videoPeerIp":"192.0.2.1","videoPeerPort":5004,
-            "srtpAesKeyHex":"01".repeat(32),"srtpSaltHex":"02".repeat(12),"codec":"H264",
-            "microphoneOnBundle":true,"pingVersion":6,
-            "localIceUsernameFragment":"loc1","localIcePassword":"local-password-value-01",
-            "remoteIceUsernameFragment":"remote01","remoteIcePassword":"remote-password-value-01",
-            "remoteDtlsFingerprint":"AA:BB"
-        });
-        microphone_handoff(
-            "a=x-nv-aqos.enableRedundancyForMic:1\r\na=x-nv-aqos.redundancyLevelForMic:3\r\nm=mic 5002 RTP/AVP 113 114\r\na=rtpmap:113 opus/48000/1\r\na=rtpmap:114 red/48000/1\r\n",
-            &mut handoff,
-        );
-        assert_eq!(handoff["microphoneOpusPayloadType"], 113);
-        assert_eq!(handoff["microphoneRedPayloadType"], 114);
-        assert_eq!(handoff["microphoneRedundancyLevel"], 3);
-        assert!(
-            NvstVideoConfig::from_legacy_handoff(&handoff, None)
-                .unwrap()
-                .microphone_available()
-        );
-
-        for (field, invalid) in [
-            ("microphoneOpusPayloadType", 78),
-            ("microphoneRedPayloadType", 128),
-            ("microphoneRedPayloadType", 113),
-            ("microphoneRedundancyLevel", 4),
-        ] {
-            let mut invalid_handoff = handoff.clone();
-            invalid_handoff[field] = json!(invalid);
-            assert!(
-                matches!(NvstVideoConfig::from_legacy_handoff(&invalid_handoff, None),
-                Err(NvstConfigError::OutOfRange {field: rejected}) if rejected == field),
-                "the live transport parser must consume and validate {field}"
-            );
-        }
-        microphone_handoff(
-            "a=x-nv-aqos.enableRedundancyForMic:0\r\na=x-nv-aqos.redundancyLevelForMic:3\r\n",
-            &mut handoff,
-        );
-        assert_eq!(handoff["microphoneRedundancyLevel"], 0);
-        assert!(
-            NvstVideoConfig::from_legacy_handoff(&handoff, None)
-                .unwrap()
-                .microphone_available()
         );
     }
 }

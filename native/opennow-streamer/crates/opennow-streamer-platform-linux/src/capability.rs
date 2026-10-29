@@ -10,20 +10,30 @@ pub struct BackendCapability {
     pub name: &'static str,
     pub available: bool,
     pub detail: String,
+    pub max_decode_dimensions: Option<[u32; 2]>,
 }
 
 impl BackendCapability {
     fn from_probe(name: &'static str, probe: std::result::Result<String, String>) -> Self {
+        Self::from_limited_probe(name, probe.map(|detail| (detail, None)))
+    }
+
+    fn from_limited_probe(
+        name: &'static str,
+        probe: std::result::Result<(String, Option<[u32; 2]>), String>,
+    ) -> Self {
         match probe {
-            Ok(detail) => Self {
+            Ok((detail, max_decode_dimensions)) => Self {
                 name,
                 available: true,
                 detail,
+                max_decode_dimensions,
             },
             Err(detail) => Self {
                 name,
                 available: false,
                 detail,
+                max_decode_dimensions: None,
             },
         }
     }
@@ -84,7 +94,18 @@ pub fn probe_video_capabilities() -> (Vec<BackendCapability>, PresentationCapabi
         vec![
             BackendCapability::from_probe("vaapi-h264", probe_vaapi()),
             BackendCapability::from_probe("v4l2-h264", v4l2),
-            BackendCapability::from_probe("v4l2-h265", probe_v4l2_request()),
+            BackendCapability::from_limited_probe(
+                "v4l2-request-h264",
+                probe_v4l2_request(VideoCodec::H264),
+            ),
+            BackendCapability::from_limited_probe(
+                "v4l2-request-h265",
+                probe_v4l2_request(VideoCodec::H265),
+            ),
+            BackendCapability::from_limited_probe(
+                "v4l2-request-av1",
+                probe_v4l2_request(VideoCodec::Av1),
+            ),
             BackendCapability::from_probe(
                 "vulkan-video-h264",
                 probe_ffmpeg_vulkan(VideoCodec::H264),

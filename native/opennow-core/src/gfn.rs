@@ -28,6 +28,10 @@ mod store_launch;
 use catalog::*;
 
 #[cfg(test)]
+mod account_mutation_tests;
+#[cfg(test)]
+mod auth_restore_tests;
+#[cfg(test)]
 mod catalog_tests;
 #[cfg(test)]
 mod routing_tests;
@@ -67,6 +71,7 @@ const GFN_USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36
 const NVIDIA_FILE_ORIGIN: &str = "https://nvfile";
 const TOKEN_REFRESH_WINDOW_MS: u64 = 10 * 60 * 1000;
 const CLIENT_TOKEN_REFRESH_WINDOW_MS: u64 = 5 * 60 * 1000;
+const CLOCK_SKEW_TOLERANCE_MS: i64 = 5 * 60 * 1000;
 const LCARS_CLIENT_ID: &str = "ec7e38d4-03af-4b58-b131-cfb0495903ab";
 const GFN_CLIENT_VERSION: &str = "2.0.87.131";
 const GRAPHQL_URL: &str = "https://games.geforce.com/graphql";
@@ -295,9 +300,12 @@ struct ServiceState {
     providers_default: Option<String>,
     attempts: HashMap<String, DeviceAttempt>,
     session: Option<AuthSession>,
+    clock_skew_ms: Option<i64>,
     public_games: Vec<Value>,
     public_games_proxy_scope: String,
     restore_attempted: bool,
+    restore_retry_at: Option<Instant>,
+    restore_retry_delay: Duration,
     persistence_state: String,
     persistence_intent: PersistenceIntent,
     generation: u64,
@@ -309,6 +317,12 @@ struct ServiceState {
 pub struct ServiceError {
     pub code: &'static str,
     pub message: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum SessionCreateOutcome {
+    HandedOff,
+    Cleaned,
 }
 
 impl ServiceError {
@@ -554,6 +568,7 @@ impl GfnService {
             }
         }
         let mut retry_delay = Duration::from_secs(30);
+        let mut clock_skew = None;
         let result = self
             .client
             .get(&self.endpoints.service_urls)
@@ -563,6 +578,7 @@ impl GfnService {
             .send()
             .map_err(|error| ServiceError::network("Provider discovery failed", error))
             .and_then(|response| {
+                clock_skew = clock_skew_ms(&response);
                 if !response.status().is_success() {
                     if response.status().as_u16() == 429 {
                         retry_delay =
@@ -623,6 +639,9 @@ impl GfnService {
             .lock()
             .expect("GFN auth operation poisoned");
         let mut state = self.state.lock().expect("GFN state poisoned");
+        if clock_skew.is_some() {
+            state.clock_skew_ms = clock_skew;
+        }
         match result {
             Ok((providers, default)) => {
                 if let Some(session) = &mut state.session {
@@ -722,6 +741,13 @@ impl GfnService {
             .send()
             .map_err(|error| ServiceError::network("Device authorization failed", error))?;
         eprintln!("auth: device authorization response {}", response.status());
+        if let Some(skew) = clock_skew_ms(&response) {
+            self.state.lock().expect("GFN state poisoned").clock_skew_ms = Some(skew);
+            if let Some(error) = clock_skew_error(skew) {
+                eprintln!("auth: {}", error.message);
+                return Err(error);
+            }
+        }
         if !response.status().is_success() {
             return Err(ServiceError::response(
                 "Device authorization failed",
@@ -860,7 +886,7 @@ impl GfnService {
             access_token,
             refresh_token: payload["refresh_token"].as_str().map(ToOwned::to_owned),
             id_token: payload["id_token"].as_str().map(ToOwned::to_owned),
-            id_token_expires_at: payload["id_token"].as_str().and_then(jwt_expiry),
+            id_token_expires_at: payload["id_token"].as_str().and_then(received_jwt_expiry),
             expires_at: token_expiry(&payload),
             auth_client_id: STEAM_DECK_CLIENT_ID.to_owned(),
             client_token: payload["client_token"].as_str().map(ToOwned::to_owned),
@@ -1000,40 +1026,56 @@ impl GfnService {
         Ok(self.auth_envelope(&state, session.as_ref(), refresh))
     }
 
+    fn restore_session_locked_with(
+        &self,
+        now: Instant,
+        load: impl FnOnce() -> Result<Option<AuthSession>, String>,
+    ) {
+        let mut state = self.state.lock().expect("GFN state poisoned");
+        if state.session.is_some()
+            || state.restore_attempted
+            || state
+                .restore_retry_at
+                .is_some_and(|deadline| now < deadline)
+        {
+            return;
+        }
+        state.restore_attempted = true;
+        drop(state);
+        match load() {
+            Ok(session) => {
+                let session =
+                    session.filter(|session| !self.profiles.has_pin(&session.user.user_id));
+                let mut state = self.state.lock().expect("GFN state poisoned");
+                state.persistence_state = session
+                    .as_ref()
+                    .map(|session| self.vault.persistence_state(session))
+                    .unwrap_or("none")
+                    .to_owned();
+                state.persistence_intent = PersistenceIntent::SecureStore;
+                state.restore_retry_at = None;
+                state.restore_retry_delay = Duration::ZERO;
+                state.generation += 1;
+                state.session = session;
+            }
+            Err(error) => {
+                eprintln!("auth: saved session unavailable: {error}");
+                let mut state = self.state.lock().expect("GFN state poisoned");
+                state.persistence_state = "unavailable".to_owned();
+                state.restore_attempted = false;
+                state.restore_retry_delay = (state.restore_retry_delay * 2)
+                    .clamp(Duration::from_secs(1), Duration::from_secs(30));
+                state.restore_retry_at = Some(now + state.restore_retry_delay);
+            }
+        }
+    }
+
     fn resolve_session_locked(
         &self,
         purpose: TokenPurpose,
         force: bool,
     ) -> Result<(Option<AuthSession>, Value), ServiceError> {
-        {
-            let mut state = self.state.lock().expect("GFN state poisoned");
-            if state.session.is_none() && !state.restore_attempted {
-                state.restore_attempted = true;
-                drop(state);
-                match self.vault.load_active() {
-                    Ok(session) => {
-                        let session =
-                            session.filter(|session| !self.profiles.has_pin(&session.user.user_id));
-                        let mut state = self.state.lock().expect("GFN state poisoned");
-                        state.persistence_state = session
-                            .as_ref()
-                            .map(|session| self.vault.persistence_state(session))
-                            .unwrap_or("none")
-                            .to_owned();
-                        state.persistence_intent = PersistenceIntent::SecureStore;
-                        state.generation += 1;
-                        state.session = session;
-                    }
-                    Err(error) => {
-                        eprintln!("auth: saved session unavailable: {error}");
-                        self.state
-                            .lock()
-                            .expect("GFN state poisoned")
-                            .persistence_state = "unavailable".to_owned();
-                    }
-                }
-            }
-        }
+        self.restore_session_locked_with(Instant::now(), || self.vault.load_active());
         let current = self
             .state
             .lock()
@@ -1082,6 +1124,7 @@ impl GfnService {
                     json!({"attempted":true,"outcome":"refreshed","message":"Saved session token refreshed."}),
                 ),
                 Ok(_) => {
+                    eprintln!("auth: renewed token is already expired; check the system clock");
                     self.defer_refresh();
                     self.mark_needs_sign_in(&current.user.user_id);
                     (
@@ -1880,7 +1923,7 @@ impl GfnService {
         &self,
         session_id: &str,
         accepted: bool,
-    ) -> Result<(), ServiceError> {
+    ) -> Result<SessionCreateOutcome, ServiceError> {
         let mut routing = self
             .session_routing
             .lock()
@@ -1901,7 +1944,13 @@ impl GfnService {
         {
             owner.allocation_generation = None;
         }
-        result
+        result.map(|()| {
+            if accepted {
+                SessionCreateOutcome::HandedOff
+            } else {
+                SessionCreateOutcome::Cleaned
+            }
+        })
     }
 
     pub fn stop_session(&self, params: &Value, settings: &Value) -> Result<Value, ServiceError> {
@@ -2140,6 +2189,18 @@ impl GfnService {
         let _operation = crate::store_requests::lock(&self.auth_operation)?;
         let (session, generation) = self.session_snapshot_locked()?;
         let mut owned = self.owned_session_params(params, &routing, &session, generation, false)?;
+        let mut identity = json!({});
+        for (key, source) in [("sessionId", &owned), ("adId", params)] {
+            let value = source[key]
+                .as_str()
+                .filter(|value| {
+                    !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
+                })
+                .ok_or_else(|| {
+                    ServiceError::invalid("Session ad identity requires bounded string IDs")
+                })?;
+            identity[key] = json!(value);
+        }
         for key in [
             "action",
             "adId",
@@ -2154,7 +2215,8 @@ impl GfnService {
         }
         self.cloudmatch
             .report_ad(&owned, &session, &self.device_id)
-            .and_then(|result| {
+            .and_then(|mut result| {
+                result["adReportIdentity"] = identity;
                 self.publish_active_result(&mut routing, &session, generation, result)
             })
     }
@@ -2451,7 +2513,8 @@ impl GfnService {
         settings: &Value,
     ) -> Result<Value, ServiceError> {
         self.providers()?;
-        let (session, generation) = self.authenticated_snapshot(TokenPurpose::ServiceId, false)?;
+        let _operation = crate::store_requests::lock(&self.auth_operation)?;
+        let (session, generation) = self.account_mutation_snapshot_locked(params)?;
         let result = self.with_account_context(&session, generation, settings, |context| {
             self.account_connections.sync(params, context)
         })?;
@@ -2488,7 +2551,8 @@ impl GfnService {
         settings: &Value,
     ) -> Result<Value, ServiceError> {
         self.providers()?;
-        let (session, generation) = self.authenticated_snapshot(TokenPurpose::ServiceId, false)?;
+        let _operation = crate::store_requests::lock(&self.auth_operation)?;
+        let (session, generation) = self.account_mutation_snapshot_locked(params)?;
         let result = self.with_account_context(&session, generation, settings, |context| {
             self.account_connections.unlink(params, context)
         })?;
@@ -2503,7 +2567,8 @@ impl GfnService {
         settings: &Value,
     ) -> Result<Value, ServiceError> {
         self.providers()?;
-        let (session, generation) = self.authenticated_snapshot(TokenPurpose::ServiceId, false)?;
+        let _operation = crate::store_requests::lock(&self.auth_operation)?;
+        let (session, generation) = self.account_mutation_snapshot_locked(params)?;
         let result = self.with_account_context(&session, generation, settings, |context| {
             self.account_connections.start_link(params, context)
         })?;
@@ -2533,10 +2598,36 @@ impl GfnService {
 
     pub fn reset_persistent_storage(&self, params: &Value) -> Result<Value, ServiceError> {
         let _operation = crate::store_requests::lock(&self.auth_operation)?;
-        let (session, generation) = self.session_snapshot_locked()?;
+        let (session, generation) = self.account_mutation_snapshot_locked(params)?;
         self.persistent_storage
             .reset(params, &session)
             .map(|result| scoped_result(result, &session, generation))
+    }
+
+    fn account_mutation_snapshot_locked(
+        &self,
+        params: &Value,
+    ) -> Result<(AuthSession, u64), ServiceError> {
+        let validate = |session: &AuthSession, generation| {
+            if params["scope"] != scoped_result(json!({}), session, generation)["scope"] {
+                return Err(ServiceError {
+                    code: "stale_account",
+                    message: "This action belongs to a different account context. Review it again."
+                        .into(),
+                });
+            }
+            Ok(())
+        };
+        {
+            let state = self.state.lock().expect("GFN state poisoned");
+            if let Some(session) = &state.session {
+                validate(session, state.generation)?;
+            }
+        }
+        let (session, generation) =
+            self.authenticated_snapshot_locked(TokenPurpose::ServiceId, false)?;
+        validate(&session, generation)?;
+        Ok((session, generation))
     }
 
     pub(crate) fn authenticated_snapshot(
@@ -2548,6 +2639,14 @@ impl GfnService {
             .auth_operation
             .lock()
             .expect("GFN auth operation poisoned");
+        self.authenticated_snapshot_locked(purpose, force)
+    }
+
+    fn authenticated_snapshot_locked(
+        &self,
+        purpose: TokenPurpose,
+        force: bool,
+    ) -> Result<(AuthSession, u64), ServiceError> {
         crate::requests::check()?;
         let (session, _) = self.resolve_session_locked(purpose, force)?;
         session
@@ -2943,7 +3042,7 @@ impl GfnService {
                 .map(ToOwned::to_owned)
                 .or_else(|| session.tokens.id_token.clone()),
             id_token_expires_at: if let Some(token) = payload["id_token"].as_str() {
-                jwt_expiry(token)
+                received_jwt_expiry(token)
             } else {
                 session
                     .tokens
@@ -3066,7 +3165,7 @@ fn token_expiry(payload: &Value) -> u64 {
         .unwrap_or(0)
 }
 
-fn jwt_expiry(token: &str) -> Option<u64> {
+fn jwt_claims(token: &str) -> Option<Value> {
     if token.len() > 64 * 1024 {
         return None;
     }
@@ -3080,9 +3179,24 @@ fn jwt_expiry(token: &str) -> Option<u64> {
     let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(payload)
         .ok()?;
-    serde_json::from_slice::<Value>(&decoded).ok()?["exp"]
-        .as_u64()?
-        .checked_mul(1000)
+    serde_json::from_slice(&decoded).ok()
+}
+
+fn jwt_expiry(token: &str) -> Option<u64> {
+    jwt_claims(token)?["exp"].as_u64()?.checked_mul(1000)
+}
+
+fn received_jwt_expiry(token: &str) -> Option<u64> {
+    let claims = jwt_claims(token)?;
+    let expiry = claims["exp"].as_u64()?;
+    let lifetime = claims["iat"]
+        .as_u64()
+        .and_then(|issued| expiry.checked_sub(issued))
+        .and_then(|seconds| token_lifetime(&json!({ "expires_in": seconds })));
+    match lifetime {
+        Some(lifetime) => now_ms().checked_add(lifetime),
+        None => expiry.checked_mul(1000),
+    }
 }
 
 fn is_definitive_auth_revocation(error: &ServiceError) -> bool {
@@ -3553,11 +3667,39 @@ fn provider_result(state: &ServiceState) -> Value {
             providers.push(LoginProvider::default_nvidia());
         }
     }
-    json!({"providers":providers,"defaultProviderIdpId":state.providers_default,"generation":state.generation,"discovery":{
+    json!({"providers":providers,"defaultProviderIdpId":state.providers_default,"generation":state.generation,
+        "clockSkewMs":state.clock_skew_ms.filter(|skew| clock_skew_error(*skew).is_some()),"discovery":{
         "state":if state.providers_error.is_some() {"degraded"} else {"ready"},
         "message":state.providers_error,
         "retryAfterMs":state.providers_retry.map(|time| time.saturating_duration_since(Instant::now()).as_millis() as u64).unwrap_or(0)
     }})
+}
+
+fn clock_skew_ms(response: &Response) -> Option<i64> {
+    let server = response
+        .headers()
+        .get(reqwest::header::DATE)?
+        .to_str()
+        .ok()
+        .and_then(|value| httpdate::parse_http_date(value).ok())?;
+    let server_ms = server.duration_since(UNIX_EPOCH).ok()?.as_millis();
+    i64::try_from(now_ms())
+        .ok()?
+        .checked_sub(i64::try_from(server_ms).ok()?)
+}
+
+fn clock_skew_error(skew_ms: i64) -> Option<ServiceError> {
+    if skew_ms.abs() <= CLOCK_SKEW_TOLERANCE_MS {
+        return None;
+    }
+    let minutes = skew_ms.unsigned_abs().div_ceil(60_000);
+    let direction = if skew_ms > 0 { "ahead of" } else { "behind" };
+    Some(ServiceError {
+        code: "system_clock_wrong",
+        message: format!(
+            "This computer's clock is {minutes} minutes {direction} GeForce NOW. Set the date and time automatically, then sign in again."
+        ),
+    })
 }
 
 fn session_owner_error() -> ServiceError {
@@ -3965,6 +4107,69 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(path).unwrap();
     }
 
+    fn mock_dated_response(body: Value, date: SystemTime) -> (String, std::thread::JoinHandle<()>) {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let worker = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(&mut stream);
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse::<usize>().unwrap();
+                }
+            }
+            reader.read_exact(&mut vec![0; length]).unwrap();
+            let body = body.to_string();
+            write!(stream, "HTTP/1.1 200 OK\r\nDate: {}\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{body}", httpdate::fmt_http_date(date), body.len()).unwrap();
+        });
+        (url, worker)
+    }
+
+    #[test]
+    fn clock_skew_beyond_tolerance_names_its_direction() {
+        assert!(clock_skew_error(CLOCK_SKEW_TOLERANCE_MS).is_none());
+        assert!(clock_skew_error(-CLOCK_SKEW_TOLERANCE_MS).is_none());
+        let ahead = clock_skew_error(7 * 3_600_000).unwrap();
+        assert_eq!(ahead.code, "system_clock_wrong");
+        assert!(ahead.message.contains("420 minutes ahead of"));
+        let behind = clock_skew_error(-(CLOCK_SKEW_TOLERANCE_MS + 1)).unwrap();
+        assert!(behind.message.contains("6 minutes behind"));
+    }
+
+    #[test]
+    fn device_login_refuses_to_start_when_the_local_clock_is_wrong() {
+        let challenge = json!({"device_code":"private-device-sentinel","user_code":"ABCD", "verification_uri":"https://example.invalid", "verification_uri_complete":"https://example.invalid/code", "expires_in":600,"interval":5});
+        let server_time = SystemTime::now() - Duration::from_secs(7 * 3600);
+        let (url, server) = mock_dated_response(challenge, server_time);
+        let (service, path) = test_service(&url);
+        let error = service.start_device_login(&json!({})).unwrap_err();
+        assert_eq!(error.code, "system_clock_wrong");
+        let state = service.state.lock().unwrap();
+        assert!(state.attempts.is_empty());
+        assert!(provider_result(&state)["clockSkewMs"].as_i64().unwrap() > 6 * 3_600_000);
+        drop(state);
+        server.join().unwrap();
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn device_login_starts_when_the_local_clock_matches_the_server() {
+        let challenge = json!({"device_code":"private-device-sentinel","user_code":"ABCD", "verification_uri":"https://example.invalid", "verification_uri_complete":"https://example.invalid/code", "expires_in":600,"interval":5});
+        let (url, server) = mock_dated_response(challenge, SystemTime::now());
+        let (service, path) = test_service(&url);
+        assert!(service.start_device_login(&json!({})).is_ok());
+        assert!(provider_result(&service.state.lock().unwrap())["clockSkewMs"].is_null());
+        server.join().unwrap();
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
     #[test]
     fn challenge_hides_device_grant_and_defaults_zero_interval() {
         let challenge = json!({"device_code":"private-device-sentinel","user_code":"ABCD", "verification_uri":"https://example.invalid", "verification_uri_complete":"https://example.invalid/code", "expires_in":600,"interval":0});
@@ -4273,6 +4478,58 @@ pub(crate) mod tests {
         assert!(session.tokens.expiry(TokenPurpose::ServiceId) > now_ms());
     }
 
+    fn jwt_issued_at(user: &str, issued_ms: u64, expiry_ms: u64) -> String {
+        format!(
+            "header.{}.signature",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+                serde_json::to_vec(
+                    &json!({"sub":user,"iat":issued_ms / 1000,"exp":expiry_ms / 1000})
+                )
+                .unwrap()
+            )
+        )
+    }
+
+    #[test]
+    fn received_id_expiry_follows_token_lifetime_not_local_wall_clock() {
+        let server_now = now_ms() - 7 * 3_600_000;
+        let token = jwt_issued_at("user", server_now, server_now + 3_600_000);
+        assert!(jwt_expiry(&token).unwrap() < now_ms());
+        let expiry = received_jwt_expiry(&token).unwrap();
+        assert!(expiry > now_ms() + 3_500_000 && expiry <= now_ms() + 3_600_000);
+        assert_eq!(
+            received_jwt_expiry(&jwt("user", 5_000_000)),
+            Some(5_000_000)
+        );
+        let inverted = jwt_issued_at("user", 9_000_000, 5_000_000);
+        assert_eq!(received_jwt_expiry(&inverted), Some(5_000_000));
+    }
+
+    #[test]
+    fn renewal_survives_a_local_clock_running_ahead_of_the_issuer() {
+        let server_now = now_ms() - 7 * 3_600_000;
+        let token = jwt_issued_at("user", server_now, server_now + 3_600_000);
+        let (url, server) = mock_responses(
+            vec![(
+                200,
+                json!({"access_token":"renewed","id_token":token,"expires_in":3600}),
+            )],
+            |_| {},
+        );
+        let (service, path) = test_service(&url);
+        let mut session = auth_fixture("user");
+        session.tokens.id_token = Some(jwt("user", 1000));
+        service.state.lock().unwrap().session = Some(session);
+        let session = service
+            .authenticated_snapshot(TokenPurpose::ServiceId, false)
+            .map(|(session, _)| session)
+            .unwrap();
+        assert_eq!(session.tokens.access_token, "renewed");
+        assert!(session.tokens.expiry(TokenPurpose::ServiceId) > now_ms());
+        server.join().unwrap();
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
     #[test]
     fn expired_id_renews_with_issuing_client_even_when_access_is_valid() {
         let token = jwt("user", now_ms() + 3_600_000);
@@ -4527,6 +4784,12 @@ pub(crate) mod tests {
         service.state.lock().unwrap().providers = vec![LoginProvider::default_nvidia()];
         service.state.lock().unwrap().providers_expires =
             Some(Instant::now() + Duration::from_secs(900));
+        (service, path)
+    }
+
+    pub(crate) fn saved_service(user: &str) -> (GfnService, PathBuf) {
+        let (service, path) = test_service("http://127.0.0.1:1");
+        service.vault.save(&auth_fixture(user)).unwrap();
         (service, path)
     }
 

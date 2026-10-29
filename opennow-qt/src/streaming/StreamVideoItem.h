@@ -3,7 +3,6 @@
 #include "streaming/PhysicalKeyMap.h"
 #include "streaming/rendering/StreamVideoRenderCallback.h"
 
-#include <QAbstractNativeEventFilter>
 #include <QQuickItem>
 #include <QCursor>
 #include <QHash>
@@ -14,6 +13,7 @@
 #include <QSize>
 #include <QVariantMap>
 #include <QTimer>
+#include <QChronoTimer>
 
 #include <memory>
 #include <optional>
@@ -38,6 +38,8 @@ class StreamVideoItem : public QQuickItem
     Q_PROPERTY(QString inputCaptureError READ inputCaptureError NOTIFY inputCaptureErrorChanged)
     Q_PROPERTY(bool relativeMouse READ relativeMouse WRITE setRelativeMouse
                    NOTIFY relativeMouseChanged)
+    Q_PROPERTY(bool macPointerLockEnabled READ macPointerLockEnabled WRITE setMacPointerLockEnabled
+                   NOTIFY macPointerLockEnabledChanged)
     Q_PROPERTY(QVariantMap shortcutBindings READ shortcutBindings WRITE setShortcutBindings
                    NOTIFY shortcutBindingsChanged)
     Q_PROPERTY(bool frameGeneration READ frameGeneration WRITE setFrameGeneration
@@ -80,6 +82,8 @@ public:
     [[nodiscard]] QString inputCaptureError() const;
     [[nodiscard]] bool relativeMouse() const;
     void setRelativeMouse(bool relative);
+    [[nodiscard]] bool macPointerLockEnabled() const;
+    void setMacPointerLockEnabled(bool enabled);
     [[nodiscard]] QVariantMap shortcutBindings() const;
     void setShortcutBindings(const QVariantMap &bindings);
     [[nodiscard]] std::shared_ptr<StreamVideoRenderCallback> renderCallback() const;
@@ -141,6 +145,7 @@ signals:
     void clipboardPasteFailed();
     void inputCaptureErrorChanged();
     void relativeMouseChanged();
+    void macPointerLockEnabledChanged();
     void shortcutBindingsChanged();
     void frameGenerationChanged();
     void metalFxUpscalingChanged();
@@ -169,16 +174,6 @@ protected:
 
 private:
     friend class StreamVideoItemTest;
-    class NativeWindowMoveLoopFilter final : public QAbstractNativeEventFilter
-    {
-    public:
-        explicit NativeWindowMoveLoopFilter(StreamVideoItem &item) : m_item(item) {}
-        bool nativeEventFilter(const QByteArray &eventType, void *message,
-                               qintptr *result) override;
-
-    private:
-        StreamVideoItem &m_item;
-    };
     StreamVideoItem(std::unique_ptr<class MacPointerCapture> pointerCapture,
                     bool usesMacPointerCapture, QQuickItem *parent);
     struct PressedKey {
@@ -235,16 +230,20 @@ private:
     int m_upscalingDenoise = 0;
     QTimer m_frameStatsTimer;
     QTimer m_swapStatsTimer;
+    QChronoTimer m_senderFrameTimer;
     QString m_swapGateSource;
     QMetaObject::Connection m_frameSwapConnection;
     QMetaObject::Connection m_frameUpdateConnection;
+    QMetaObject::Connection m_frameBeginConnection;
+    QMetaObject::Connection m_afterRenderingConnection;
     QPointer<QQuickWindow> m_inputWindow;
     bool m_captureActive = false;
     bool m_relativeMouse = false;
+    bool m_macPointerLockEnabled = true;
     bool m_rawInputActive = false;
     bool m_cursorConfined = false;
     bool m_nativeWindowMoveLoop = false;
-    NativeWindowMoveLoopFilter m_nativeWindowMoveLoopFilter{*this};
+    std::unique_ptr<class WindowsWindowMoveLoop> m_windowsWindowMoveLoop;
     bool m_remoteCursorKnown = false;
     bool m_serverCursorComposited = true;
     bool m_remoteCursorVisible = false;

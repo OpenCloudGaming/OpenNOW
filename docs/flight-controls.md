@@ -49,6 +49,8 @@ HID polling continues when gameplay capture is disabled. Forwarding stops on foc
 
 A missing, malformed, or unsupported descriptor causes detach on capture loss and a fresh attach on resume instead of an invented neutral report. The next polled report can be forwarded after admission. Device removal and session end detach the device. Incarnations and platform arrival identities distinguish rapid reconnects from the old device, even when its path and physical port are reused. Ambiguous composite routing, oversized descriptors, and missing physical or arrival identity fail closed.
 
+On Linux, a nonempty SDL serial must exactly match either the USB ancestor's `serial` or the HID ancestor's `HID_UNIQ` on the same sysfs path. [SDL HIDAPI reads `HID_UNIQ`](https://github.com/libsdl-org/SDL/blob/release-3.2.20/src/hidapi/linux/hid.c), while the [Logitech HID++ driver can replace it with a device-information serial](https://github.com/torvalds/linux/blob/v6.17/drivers/hid/hid-logitech-hidpp.c). That serial can differ from the USB descriptor serial, as reported for the G920 in [#1258](https://github.com/OpenCloudGaming/OpenNOW/issues/1258). OpenNOW validates the serial against its source rather than normalizing unrelated identifiers or ignoring mismatches for a wheel model. USB VID/PID, the physical sysfs parent, and the per-arrival path and inode checks still apply, including when the device is opened.
+
 There are at most eight logical sources and 16 interfaces per source. Descriptors are limited to 4,096 bytes and reports to 256 bytes. Each native source queue holds at most 64 reports and 16 KiB. The output queue holds at most 32 commands and 8 KiB. Overflow retires the affected source instead of discarding a release. Physical-device discovery and blocking output operations stay off the GUI and render threads.
 
 ## Protocol evidence
@@ -80,8 +82,20 @@ Settings → Controls persists native forwarding in the Rust core, enabled by
 default. Qt changes routing only after the setting write is confirmed. When it
 is off, mapped SDL devices become controllers and unmapped devices are ignored.
 The connected list distinguishes detection (`ready`) from a verified server
-attach (`active`) and refusal (`declined`). Session teardown and capture detach
-reset admission; stale incarnations cannot update a replacement device.
+attach (`active`) and refusal (`declined`). On Linux, a device whose hidraw node
+OpenNOW cannot open for reading and writing shows `no-access`; the HID worker
+checks access on every discovery scan and retries once a udev rule grants it.
+A device SDL reports with an allowlisted VID:PID but no matching hidraw source
+shows `no-hid-path`: it cannot be forwarded and stays out of the gamepad path
+until forwarding is turned off. This status waits until two HID discovery
+scans complete after SDL first reports the device, so startup and hotplug
+ordering do not report it falsely.
+Session teardown and capture detach reset admission; stale incarnations cannot
+update a replacement device.
+
+HID worker refusals, opens, failures, and server admission results are written
+to the diagnostics log as `input generic-hid …` lines, so an exported report
+shows why a device never reached the game.
 
 ### T.Flight Hotas 4 guidance
 

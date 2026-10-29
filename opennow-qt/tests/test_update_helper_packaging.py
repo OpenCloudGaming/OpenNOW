@@ -69,7 +69,7 @@ include("{(ROOT / 'opennow-qt/cmake/NativeRuntime.cmake').as_posix()}")
                 })
                 self.assertEqual((build / "opennow-update-helper.exe").read_bytes(), b"helper deployment fixture")
 
-    def test_windows_authoritative_list_drives_installation_and_both_package_checks(self):
+    def test_windows_authoritative_list_drives_installation_and_package_checks(self):
         names = (PACKAGING / "windows-release-binaries.txt").read_text().splitlines()
         self.assertEqual(names.count("opennow-update-helper.exe"), 1)
         install = (PACKAGING / "WindowsReleaseBinaries.cmake").read_text()
@@ -84,10 +84,9 @@ include("{(ROOT / 'opennow-qt/cmake/NativeRuntime.cmake').as_posix()}")
             self.assertIn("Get-OpenNowReleaseBinaries -Root $Root", body)
             self.assertIn("Get-FileHash $file.FullName -Algorithm SHA256", body)
         workflow = (ROOT / ".github/workflows/qt-build.yml").read_text()
-        for root in ("$msiExpanded", "$zipExpanded"):
-            self.assertIn(f"Assert-OpenNowPackagePayload -Root {root}", workflow)
+        self.assertIn("Assert-OpenNowPackagePayload -Root $zipExpanded", workflow)
         candidate = (ROOT / ".github/workflows/qt-release-candidate.yml").read_text()
-        self.assertEqual(candidate.count("Assert-OpenNowSignedPackage -Root"), 2)
+        self.assertEqual(candidate.count("Assert-OpenNowSignedPackage -Root"), 1)
 
     def test_final_macos_dmg_validates_helper_architecture_and_dependencies(self):
         workflow = (ROOT / ".github/workflows/qt-build.yml").read_text()

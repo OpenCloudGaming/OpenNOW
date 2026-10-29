@@ -32,13 +32,16 @@ Item {
             clockPill.visible && clockPill.x + clockPill.width > width - 408 ? clockPill.y + clockPill.height + 12 : inset)
     readonly property color surface: Qt.rgba(14 / 255, 16 / 255, 24 / 255,
         Math.max(0.4, Math.min(1, Number(ShellStore.settings.statsOverlayOpacity || 85) / 100)))
-    readonly property bool degraded: telemetryActive && ShellStore.connectionHealth.status === "unstable"
-    readonly property bool healthKnown: telemetryActive && ShellStore.connectionHealth.status !== "unknown"
+    readonly property bool connectionUnstable: telemetryActive && ShellStore.connectionHealth.status === "unstable"
+    readonly property bool decoderLimited: telemetryActive && ShellStore.connectionHealth.decoderLimited
+    readonly property bool degraded: connectionUnstable || decoderLimited
+    readonly property bool healthKnown: telemetryActive && (decoderLimited || ShellStore.connectionHealth.status !== "unknown")
     readonly property color accent: degraded ? "#F5A623" : "#6EE7B7"
     readonly property color statusColor: !healthKnown || degraded ? "#F5A623" : "#1DB954"
     readonly property color metricColor: degraded ? accent : "white"
     readonly property string healthText: !telemetryActive ? qsTr("Waiting for stream")
-        : degraded ? qsTr("Connection unstable") : healthKnown ? qsTr("Stream healthy") : qsTr("Stream statistics")
+        : connectionUnstable ? qsTr("Connection unstable") : decoderLimited ? qsTr("Decoder can't keep up")
+        : healthKnown ? qsTr("Stream healthy") : qsTr("Stream statistics")
     readonly property real allocatedBitrateMbps: Math.max(0, numeric(ShellStore.runtimeStreamProfile.maxBitrateMbps)
         || numeric(profile.maxBitrateMbps) || numeric(ShellStore.settings.maxBitrateMbps) || 0)
     readonly property real bitrateUsage: allocatedBitrateMbps > 0 && read("bitrateMbps") !== null
@@ -162,11 +165,13 @@ Item {
             for (const device of flightDevices.filter(device => device.status !== "active")) {
                 const types = {stick:qsTr("STICK"), throttle:qsTr("THROTTLE"), pedals:qsTr("PEDALS"), wheel:qsTr("WHEEL")}
                 const states = {ready:qsTr("ready"), declined:qsTr("declined"),
+                    "no-hid-path":qsTr("NO HID PATH"), "no-access":qsTr("NO PERMISSION"),
                     controller:qsTr("controller P%1").arg(device.player), ignored:qsTr("ignored")}
                 cards.push({key:"FlightDevice", label:types[device.type] || qsTr("STICK"), unit:"", value:null,
                     textValue:device.status === "declined" ? qsTr("IDLE") : String(states[device.status] || qsTr("ready")).toUpperCase(),
                     detail:device.name + " · " + String(states[device.status] || qsTr("ready")),
-                    ink:device.status === "declined" ? "#FF8A80" : device.status === "controller" ? "#F5A623" : "#A3FFFFFF"})
+                    ink:["declined", "no-hid-path", "no-access"].includes(device.status) ? "#FF8A80"
+                        : device.status === "controller" ? "#F5A623" : "#A3FFFFFF"})
             }
         }
         return cards.filter(item => shown(item.key === "Receive" ? "Bitrate" : item.key)
@@ -453,7 +458,7 @@ Item {
                             Mono {
                                 text: root.metricValue(ledger.modelData)
                                     + (ledger.modelData.field === "videoDropCount" ? "" : ledger.modelData.unit === "%" ? "%" : " " + ledger.modelData.unit)
-                                color: ledger.modelData.ink || (root.degraded && ledger.modelData.key === "PacketLoss" ? "#D15A2C"
+                                color: ledger.modelData.ink || (root.connectionUnstable && ledger.modelData.key === "PacketLoss" ? "#D15A2C"
                                     : ledger.modelData.key === "Decode" || ledger.modelData.key === "Residence"
                                         || ledger.modelData.key === "Swap" ? "white" : root.metricColor)
                             }

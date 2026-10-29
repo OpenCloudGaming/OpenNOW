@@ -79,14 +79,13 @@ not replace FFmpeg's license. These builds do not enable GPL, version3, or
 nonfree components. The complete LGPL 2.1 text and upstream licensing details
 are packaged as FFmpeg-LGPL-2.1.txt and FFmpeg-LICENSE.md.
 
-Linux ARM64 bundled builds use the Raspberry Pi FFmpeg fork at the immutable
-commit f43bd9dafd9349b6824ee1fdcd967662fcc94c20:
-https://github.com/jc-kynesim/rpi-ffmpeg/tree/f43bd9dafd9349b6824ee1fdcd967662fcc94c20
-
-Its SAND and V4L2 request additions also contain BSD-3-Clause and MIT-licensed
-code. Their copyright and license notices are packaged in
-FFmpeg-Raspberry-Pi-NOTICES.txt. Other Linux architectures retain the upstream
-FFmpeg release/9.0 source path: https://github.com/FFmpeg/FFmpeg/tree/release/9.0
+Linux ARM64 bundled builds use the FFmpeg n9.0 release with the LGPL-2.1-or-later
+V4L2 Request API patches in
+native/opennow-streamer/vendor/ffmpeg-sys-next/patches/v4l2-request, taken from
+LibreELEC at commit 9739578403815cdbbff8623777d6bfa53faa3e39:
+https://github.com/LibreELEC/LibreELEC.tv/tree/9739578403815cdbbff8623777d6bfa53faa3e39/packages/multimedia/ffmpeg/patches
+Other Linux architectures retain the upstream FFmpeg release/9.0 source path:
+https://github.com/FFmpeg/FFmpeg/tree/release/9.0
 
 The OpenNOW source distribution contains the build configuration in
 native/opennow-streamer/vendor/ffmpeg-sys-next/build.rs and the Qt/Rust build

@@ -23,7 +23,7 @@ Python or Pillow. `--check` regenerates in memory and fails without changing any
 assets when the checked-in bytes differ.
 
 `OpenNOW.ico` contains 16, 24, 32, 48, 64, 128, and 256-pixel RGBA images for the
-Windows executable resource and the MSI's installed-product icon. `OpenNOW.icns` contains standard and Retina images
+Windows executable resource and the setup.exe icon. `OpenNOW.icns` contains standard and Retina images
 through 1024 pixels for the macOS bundle. PNGs supply Qt's window icon and Linux
 hicolor entries. The generated SVG embeds the 512-pixel PNG to preserve the
 existing Linux AppImage packaging path. It is a raster-backed SVG, not a traced

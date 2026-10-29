@@ -568,6 +568,7 @@ fn loss_without_a_frame_number_gap_requests_an_idr_immediately() {
     let mut invalidation = crate::nvst_invalidation::FrameInvalidation::default();
     let now = Instant::now();
     let frame = |frame_index, frame_type| EncodedVideoAccessUnit {
+        sender_timing: None,
         codec: NvstVideoCodec::H264,
         timestamp: 0,
         frame_index,
@@ -594,6 +595,7 @@ fn frames_without_a_type_end_invalidation_through_the_keyframe_path() {
     let feedback = NvstFeedbackState::default();
     let mut invalidation = crate::nvst_invalidation::FrameInvalidation::default();
     let frame = |frame_index, frame_type| EncodedVideoAccessUnit {
+        sender_timing: None,
         codec: NvstVideoCodec::H264,
         timestamp: 0,
         frame_index,
@@ -662,6 +664,7 @@ fn an_unanswered_invalidation_does_not_disable_future_rfi_episodes() {
     let mut invalidation = crate::nvst_invalidation::FrameInvalidation::default();
     let now = Instant::now();
     let frame = |frame_index, frame_type| EncodedVideoAccessUnit {
+        sender_timing: None,
         codec: NvstVideoCodec::H264,
         timestamp: 0,
         frame_index,
@@ -698,6 +701,7 @@ fn an_invalidation_that_was_never_sent_keeps_rfi_enabled() {
     let mut invalidation = crate::nvst_invalidation::FrameInvalidation::default();
     let now = Instant::now();
     let frame = |frame_index, frame_type| EncodedVideoAccessUnit {
+        sender_timing: None,
         codec: NvstVideoCodec::H264,
         timestamp: 0,
         frame_index,
@@ -725,6 +729,7 @@ fn recovery_discards_an_invalidation_that_was_not_sent_yet() {
     let mut invalidation = crate::nvst_invalidation::FrameInvalidation::default();
     let now = Instant::now();
     let frame = |frame_index, frame_type| EncodedVideoAccessUnit {
+        sender_timing: None,
         codec: NvstVideoCodec::H264,
         timestamp: 0,
         frame_index,

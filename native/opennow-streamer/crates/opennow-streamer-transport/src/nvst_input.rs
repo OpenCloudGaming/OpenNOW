@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fmt;
 use std::time::{Duration, Instant};
 
@@ -53,6 +54,7 @@ const INPUT_GAMEPAD: u32 = 12;
 const INPUT_HAPTICS_ENABLED: u32 = 13;
 const INPUT_LOCK_KEYS_SYNC: u32 = 19;
 const INPUT_TEXT: u32 = 23;
+const INPUT_MOUSE_SETTINGS: u32 = 25;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NvstChannelReliability {
@@ -319,9 +321,11 @@ fn channel_config(definition: NvstChannelDefinition) -> ChannelConfig {
 #[derive(Debug, Default)]
 pub(crate) struct NvstInputChannelState {
     control_open: bool,
+    input_open: bool,
     negotiated_version: Option<u16>,
     ready_reported: bool,
     activation_sent: bool,
+    closed: bool,
 }
 
 impl NvstInputChannelState {
@@ -330,8 +334,14 @@ impl NvstInputChannelState {
         channels: NvstInputChannels,
         id: ChannelId,
     ) -> Option<u16> {
+        if self.closed {
+            return None;
+        }
         if id == channels.control_reliable {
             self.control_open = true;
+        }
+        if id == channels.input_partial {
+            self.input_open = true;
         }
         self.take_new_ready_version()
     }
@@ -342,6 +352,9 @@ impl NvstInputChannelState {
         id: ChannelId,
         bytes: &[u8],
     ) -> Option<u16> {
+        if self.closed {
+            return None;
+        }
         if id == channels.control_reliable
             && let Some(version) = input_protocol_version(bytes)
         {
@@ -351,7 +364,7 @@ impl NvstInputChannelState {
     }
 
     pub(crate) fn is_ready(&self) -> bool {
-        self.control_open && self.negotiated_version.is_some()
+        !self.closed && self.control_open && self.negotiated_version.is_some()
     }
 
     pub(crate) fn control_is_open(&self) -> bool {
@@ -359,10 +372,25 @@ impl NvstInputChannelState {
     }
 
     pub(crate) fn handshake_timed_out(&self, started_at: Option<Instant>, now: Instant) -> bool {
-        !self.is_ready()
+        (!self.is_ready() || !self.input_open)
             && started_at.is_some_and(|started| {
                 now.saturating_duration_since(started) >= INPUT_HANDSHAKE_TIMEOUT
             })
+    }
+
+    pub(crate) fn send_encoded(
+        &self,
+        channels: NvstInputChannels,
+        rtc: &mut Rtc,
+        message: &NvstEncodedInput,
+    ) -> NvstInputWrite {
+        if self.closed {
+            return NvstInputWrite::Closed;
+        }
+        if message.route == NvstInputRoute::InputPartial && !self.input_open {
+            return NvstInputWrite::Deferred;
+        }
+        channels.send_encoded(rtc, message)
     }
 
     pub(crate) fn activation_sent(&self) -> bool {
@@ -374,18 +402,16 @@ impl NvstInputChannelState {
     }
 
     pub(crate) fn channel_closed(&mut self, channels: NvstInputChannels, id: ChannelId) -> bool {
-        if id == channels.input_partial {
-            return self.is_ready();
-        }
-        if id != channels.control_reliable {
+        if self.closed || (id != channels.control_reliable && id != channels.input_partial) {
             return false;
         }
-        let was_ready = self.is_ready();
+        self.closed = true;
         self.control_open = false;
+        self.input_open = false;
         self.negotiated_version = None;
         self.ready_reported = false;
         self.activation_sent = false;
-        was_ready
+        true
     }
 
     fn take_new_ready_version(&mut self) -> Option<u16> {
@@ -551,6 +577,7 @@ pub(crate) fn native_input_type_name(input_type: u32) -> &'static str {
         INPUT_HAPTICS_ENABLED => "haptics-enabled",
         INPUT_LOCK_KEYS_SYNC => "lock-keys-sync",
         INPUT_TEXT => "text",
+        INPUT_MOUSE_SETTINGS => "mouse-settings",
         _ => "unknown",
     }
 }
@@ -619,6 +646,86 @@ pub(crate) struct NvstInputCodec {
     gamepad_bitmap: Option<u16>,
     rich_slot_mask: u16,
     last_gamepad_report: Option<[u8; 38]>,
+}
+
+#[derive(Default)]
+pub(crate) struct NvstInputHeldState {
+    keys: BTreeSet<u16>,
+    buttons: BTreeSet<u8>,
+    gamepad_bitmap: u16,
+    last_gamepad_report: Option<[u8; 38]>,
+}
+
+impl NvstInputHeldState {
+    pub(crate) fn record_sent(&mut self, message: &NvstEncodedInput) {
+        let bytes = &message.bytes;
+        if read_u16_le(bytes, 0) == Some(COMMAND_REMOTE_INPUT)
+            && read_u32_le(bytes, 8) == Some(0x0e)
+        {
+            match read_u32_le(bytes, 16) {
+                Some(INPUT_KEY_DOWN) => {
+                    if let Some(key) = read_u16_be(bytes, 20) {
+                        self.keys.insert(key);
+                    }
+                }
+                Some(INPUT_KEY_UP) => {
+                    if let Some(key) = read_u16_be(bytes, 20) {
+                        self.keys.remove(&key);
+                    }
+                }
+                Some(INPUT_MOUSE_BUTTON_DOWN) => {
+                    if let Some(button) = bytes.get(20) {
+                        self.buttons.insert(*button);
+                    }
+                }
+                Some(INPUT_MOUSE_BUTTON_UP) => {
+                    if let Some(button) = bytes.get(20) {
+                        self.buttons.remove(button);
+                    }
+                }
+                _ => {}
+            }
+        }
+        if read_u16_le(bytes, 0) == Some(COMMAND_GAMEPAD)
+            && bytes.get(13) == Some(&0x26)
+            && let Some(report) = bytes.get(20..58)
+        {
+            self.gamepad_bitmap = read_u16_le(report, 8).unwrap_or_default();
+            self.last_gamepad_report = report.try_into().ok();
+        }
+        if read_u16_le(bytes, 0) == Some(COMMAND_GAMEPAD)
+            && bytes.get(13) == Some(&0x22)
+            && read_u32_le(bytes, 14) == Some(0x1a)
+        {
+            self.gamepad_bitmap = read_u16_le(bytes, 22).unwrap_or_default();
+        }
+    }
+
+    pub(crate) fn neutralize(self, timestamp_us: u64) -> Vec<NvstEncodedInput> {
+        let mut messages = Vec::new();
+        for key in self.keys {
+            let mut body = [0; 14];
+            body[..2].copy_from_slice(&key.to_be_bytes());
+            messages.push(remote_input_message(
+                remote_input_packet(INPUT_KEY_UP, &body),
+                timestamp_us,
+            ));
+        }
+        for button in self.buttons {
+            messages.push(remote_input_message(
+                remote_input_packet(INPUT_MOUSE_BUTTON_UP, &[button, 0]),
+                timestamp_us,
+            ));
+        }
+        if self.gamepad_bitmap != 0 {
+            let mut codec = NvstInputCodec {
+                last_gamepad_report: self.last_gamepad_report,
+                ..NvstInputCodec::default()
+            };
+            codec.emit_topology_transition(self.gamepad_bitmap, 0, timestamp_us, &mut messages);
+        }
+        messages
+    }
 }
 
 impl NvstInputCodec {
@@ -838,6 +945,13 @@ impl NvstInputCodec {
                     ));
                 }
                 INPUT_TEXT => encoded.extend(text_messages(&event)?),
+                INPUT_MOUSE_SETTINGS => {
+                    require_len(event.bytes, 20, "short mouse settings packet")?;
+                    encoded.push(remote_input_message(
+                        remote_input_packet(input_type, &event.bytes[4..12]),
+                        read_u64_be(event.bytes, 12).unwrap_or(event.timestamp_us),
+                    ));
+                }
                 other => return Err(NvstInputCodecError::UnsupportedType(other)),
             }
         }
@@ -949,6 +1063,7 @@ fn native_event_length(input_type: u32, remaining: usize) -> Result<usize, NvstI
         INPUT_HAPTICS_ENABLED => Ok(6),
         INPUT_LOCK_KEYS_SYNC => Ok(5),
         INPUT_TEXT => Ok(remaining),
+        INPUT_MOUSE_SETTINGS => Ok(20),
         other => Err(NvstInputCodecError::UnsupportedType(other)),
     }
 }
@@ -956,12 +1071,13 @@ fn native_event_length(input_type: u32, remaining: usize) -> Result<usize, NvstI
 fn remote_input_message(inner: Vec<u8>, timestamp_us: u64) -> NvstEncodedInput {
     let input_type = read_u32_le(&inner, 4).expect("remote input packet has type");
     let mut body = inner;
-    let padded = 24.max(body.len().div_ceil(8) * 8);
-    body.resize(padded, 0);
     let timestamp_count = usize::from(matches!(
         input_type,
         INPUT_KEY_DOWN | INPUT_KEY_UP | INPUT_MOUSE_ABSOLUTE
     )) + 1;
+    // Bifrost pads the inner packet to floor((N + 8) / 8) * 8 + 8 bytes before its
+    // timestamp. Keys and absolute moves carry a second timestamp in the last padding word.
+    body.resize((body.len() + 8) / 8 * 8 + 8 - 8 * (timestamp_count - 1), 0);
     for _ in 0..timestamp_count {
         body.extend_from_slice(&timestamp_us.to_le_bytes());
     }
@@ -2147,6 +2263,39 @@ mod tests {
     }
 
     #[test]
+    fn mouse_settings_use_the_bifrost_ri25_frame_on_reliable_control() {
+        let mut codec = NvstInputCodec::default();
+        let mut settings = INPUT_MOUSE_SETTINGS.to_le_bytes().to_vec();
+        settings.extend_from_slice(&0_u32.to_be_bytes());
+        settings.extend_from_slice(&10_u32.to_be_bytes());
+        settings.extend_from_slice(&1_u64.to_be_bytes());
+        let encoded = codec.encode(&settings, 99).unwrap();
+        assert_eq!(encoded.len(), 1);
+        assert_eq!(encoded[0].route, NvstInputRoute::ControlReliable);
+        assert!(!encoded[0].meaningful);
+        assert_eq!(
+            encoded[0].bytes,
+            hex(concat!(
+                "06023000",
+                "0000002c0e000000",
+                "0000000c19000000000000000000000a",
+                "00000000000000000000000000000000",
+                "0100000000000000",
+            ))
+        );
+
+        let mut accelerated = INPUT_MOUSE_SETTINGS.to_le_bytes().to_vec();
+        accelerated.extend_from_slice(&1_u32.to_be_bytes());
+        accelerated.extend_from_slice(&14_u32.to_be_bytes());
+        accelerated.extend_from_slice(&0x0102_u64.to_be_bytes());
+        let accelerated = codec.encode(&accelerated, 0).unwrap();
+        assert_eq!(accelerated[0].bytes.len(), 52);
+        assert_eq!(&accelerated[0].bytes[20..28], &hex("000000010000000e"));
+        assert_eq!(&accelerated[0].bytes[44..52], &0x0102_u64.to_le_bytes());
+        assert!(codec.encode(&settings[..19], 0).is_err());
+    }
+
+    #[test]
     fn unsupported_packets_fail_closed() {
         let mut codec = NvstInputCodec::default();
         assert_eq!(
@@ -2163,6 +2312,76 @@ mod tests {
     }
 
     #[test]
+    fn gamepad_waits_for_its_channel_and_missing_open_is_bounded() {
+        let now = Instant::now();
+        let mut rtc = Rtc::new(now);
+        let channels = NvstInputChannels::create(&mut rtc, false);
+        let mut state = NvstInputChannelState::default();
+        state.channel_opened(channels, channels.control_reliable);
+        state.channel_data(
+            channels,
+            channels.control_reliable,
+            &[0x0e, 0x02, 0x02, 0x00],
+        );
+        assert!(state.is_ready());
+        let message = NvstEncodedInput {
+            route: NvstInputRoute::InputPartial,
+            bytes: vec![1],
+            meaningful: true,
+        };
+        assert_eq!(
+            state.send_encoded(channels, &mut rtc, &message),
+            NvstInputWrite::Deferred
+        );
+        assert!(!state.handshake_timed_out(
+            Some(now),
+            now + INPUT_HANDSHAKE_TIMEOUT - Duration::from_millis(1)
+        ));
+        assert!(state.handshake_timed_out(Some(now), now + INPUT_HANDSHAKE_TIMEOUT));
+        state.channel_opened(channels, channels.input_partial);
+        assert!(!state.handshake_timed_out(Some(now), now + INPUT_HANDSHAKE_TIMEOUT));
+        assert!(state.channel_closed(channels, channels.input_partial));
+        assert_eq!(
+            state.send_encoded(channels, &mut rtc, &message),
+            NvstInputWrite::Closed
+        );
+    }
+
+    #[test]
+    fn required_channel_closure_cannot_leave_or_restore_ready_state() {
+        for partial in [false, true] {
+            let mut rtc = Rtc::new(Instant::now());
+            let channels = NvstInputChannels::create(&mut rtc, false);
+            let mut state = NvstInputChannelState::default();
+            state.channel_opened(channels, channels.control_reliable);
+            state.channel_data(
+                channels,
+                channels.control_reliable,
+                &[0x0e, 0x02, 0x02, 0x00],
+            );
+            assert!(state.is_ready());
+            let id = if partial {
+                channels.input_partial
+            } else {
+                channels.control_reliable
+            };
+            assert!(state.channel_closed(channels, id));
+            assert!(!state.is_ready());
+            assert!(!state.activation_sent());
+            assert_eq!(state.channel_opened(channels, id), None);
+            assert_eq!(
+                state.channel_data(
+                    channels,
+                    channels.control_reliable,
+                    &[0x0e, 0x02, 0x02, 0x00]
+                ),
+                None
+            );
+            assert!(!state.is_ready());
+        }
+    }
+
+    #[test]
     fn closure_and_timeout_state_are_predictable() {
         let now = Instant::now();
         let mut rtc = Rtc::new(now);
@@ -2176,6 +2395,7 @@ mod tests {
             channels.control_reliable,
             &[0x0e, 0x02, 0x02, 0x00, 0x03, 0x00],
         );
+        state.channel_opened(channels, channels.input_partial);
         assert!(!state.handshake_timed_out(Some(now), now + INPUT_HANDSHAKE_TIMEOUT));
         state.mark_activation_sent();
         assert_eq!(
@@ -2188,8 +2408,8 @@ mod tests {
         );
         assert!(state.activation_sent());
         assert!(state.channel_closed(channels, channels.input_partial));
-        assert!(state.is_ready());
-        assert!(state.channel_closed(channels, channels.control_reliable));
+        assert!(!state.is_ready());
+        assert!(!state.channel_closed(channels, channels.control_reliable));
         assert!(!state.is_ready());
         assert!(!state.channel_closed(channels, channels.input_partial));
         assert!(!state.is_ready());

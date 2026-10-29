@@ -46,6 +46,7 @@ impl LinuxCapabilitySnapshot {
                 name: "missing-decoder-probe",
                 available: false,
                 detail: format!("capability probe did not return {name}"),
+                max_decode_dimensions: None,
             })
     }
 
@@ -318,6 +319,13 @@ fn select_embedded_software(
     stream: crate::MediaStreamConfig,
     backends: &[VideoBackendCapability],
 ) -> LinuxVideoSelection {
+    if crate::HARDWARE_ONLY {
+        return LinuxVideoSelection {
+            path: LinuxVideoPath::Software,
+            use_vulkan_output: false,
+            fallback_reason: Some(crate::HARDWARE_ONLY_ERROR.to_owned()),
+        };
+    }
     let software = backends.iter().find(|backend| {
         backend.backend == "ffmpeg"
             && backend.available
@@ -368,9 +376,13 @@ fn select_video_path_for(
     let presentation = capabilities.presentation_available(window_system);
     let vulkan = capabilities.backend_supports_all_codecs("vulkan-video");
     let cuda = capabilities.backend_supports_all_codecs("cuda");
-    let ffmpeg = capabilities.backend_supports_all_codecs("ffmpeg-software");
+    let ffmpeg =
+        !crate::HARDWARE_ONLY && capabilities.backend_supports_all_codecs("ffmpeg-software");
     let vaapi = capabilities.decoder("vaapi-h264").available;
-    let v4l2 = capabilities.decoder("v4l2-h264").available;
+    let v4l2 = capabilities.decoder("v4l2-h264").available
+        || CODECS
+            .iter()
+            .any(|codec| capabilities.codec_decoder("v4l2-request", codec).available);
     let hardware = vulkan || cuda || vaapi || v4l2;
 
     let preference = match requested.as_str() {
@@ -401,6 +413,7 @@ fn select_video_path_for(
         "cuda" | "nvdec" => backend_unavailable_reason(capabilities, "cuda"),
         "vaapi" => capabilities.decoder("vaapi-h264").detail,
         "v4l2" => capabilities.decoder("v4l2-h264").detail,
+        "software" | "ffmpeg" if crate::HARDWARE_ONLY => crate::HARDWARE_ONLY_ERROR.to_owned(),
         "software" | "ffmpeg" => backend_unavailable_reason(capabilities, "ffmpeg-software"),
         "hardware" => format!(
             "no Linux hardware decoder is available (Vulkan Video: {}; CUDA/NVDEC: {}; VA-API: {}; V4L2: {})",
@@ -420,7 +433,11 @@ fn select_video_path_for(
     LinuxVideoSelection {
         path: LinuxVideoPath::Software,
         use_vulkan_output: false,
-        fallback_reason: Some(format!("{reason}; using OpenH264/SDL fallback")),
+        fallback_reason: Some(if crate::HARDWARE_ONLY {
+            format!("{reason}; hardware-only build cannot use OpenH264/SDL fallback")
+        } else {
+            format!("{reason}; using OpenH264/SDL fallback")
+        }),
     }
 }
 
@@ -457,40 +474,63 @@ fn v4l2_capability(
     capabilities: &LinuxCapabilitySnapshot,
     window_system: &str,
 ) -> VideoBackendCapability {
-    let mut backend = h264_capability("v4l2", "v4l2-h264", capabilities, window_system);
-    let decoder = capabilities.decoder("v4l2-h265");
+    let stateful_h264 = capabilities.decoder("v4l2-h264");
     let presentation = capabilities.presentation_available(window_system);
-    let codec = backend
-        .codecs
-        .iter_mut()
-        .find(|codec| codec.codec == "h265")
-        .unwrap();
-    codec.available = decoder.available && presentation;
-    codec.color_qualities = Some(if codec.available {
-        vec!["8bit_420"]
-    } else {
-        Vec::new()
-    });
-    codec.hdr_supported = Some(false);
-    codec.reason = if !decoder.available {
-        Some(static_reason(decoder.detail))
-    } else if !presentation {
-        Some(static_reason(presentation_unavailable_reason(
-            &capabilities.presentation,
-            window_system,
-        )))
-    } else {
-        None
-    };
-    backend.available = backend.codecs.iter().any(|codec| codec.available);
-    if backend.available {
-        backend.reason = None;
-    } else {
-        backend.reason = Some(static_reason(
-            backend
-                .codecs
+    let codecs = CODECS
+        .into_iter()
+        .map(|codec| {
+            if codec == "h264" && stateful_h264.available {
+                return CodecCapability {
+                    max_decode_dimensions: None,
+                    hdr_supported: None,
+                    hdr_color_qualities: None,
+                    color_qualities: None,
+                    codec,
+                    available: true,
+                    reason: None,
+                };
+            }
+            let request = capabilities.codec_decoder("v4l2-request", codec);
+            let available = request.available && presentation;
+            let reason = if !request.available {
+                Some(if codec == "h264" {
+                    format!(
+                        "stateful: {}; request: {}",
+                        stateful_h264.detail, request.detail
+                    )
+                } else {
+                    request.detail
+                })
+            } else if !presentation {
+                Some(presentation_unavailable_reason(
+                    &capabilities.presentation,
+                    window_system,
+                ))
+            } else {
+                None
+            };
+            CodecCapability {
+                max_decode_dimensions: request.max_decode_dimensions.filter(|_| available).map(
+                    |[width, height]| opennow_streamer_protocol::DecodeDimensions { width, height },
+                ),
+                hdr_supported: Some(false),
+                hdr_color_qualities: None,
+                color_qualities: Some(if available {
+                    vec!["8bit_420"]
+                } else {
+                    Vec::new()
+                }),
+                codec,
+                available,
+                reason: reason.map(static_reason),
+            }
+        })
+        .collect::<Vec<_>>();
+    let available = codecs.iter().any(|codec| codec.available);
+    let reason = (!available).then(|| {
+        static_reason(
+            codecs
                 .iter()
-                .filter(|codec| matches!(codec.codec, "h264" | "h265"))
                 .filter_map(|codec| {
                     codec
                         .reason
@@ -498,9 +538,16 @@ fn v4l2_capability(
                 })
                 .collect::<Vec<_>>()
                 .join("; "),
-        ));
+        )
+    });
+    VideoBackendCapability {
+        backend: "v4l2",
+        platform: "linux",
+        codecs,
+        zero_copy_modes: Vec::new(),
+        available,
+        reason,
     }
-    backend
 }
 
 fn multi_codec_capability(
@@ -619,6 +666,47 @@ fn static_reason(reason: String) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn empty_device_matrix_cannot_select_a_native_decoder() {
+        let capabilities = LinuxCapabilitySnapshot {
+            decoders: vec![],
+            presentation: PresentationCapability {
+                available: false,
+                api: "vulkan",
+                window_systems: vec![],
+                detail: "no hardware devices".to_owned(),
+            },
+        };
+        for requested in [
+            None,
+            Some("auto"),
+            Some("hardware"),
+            Some("software"),
+            Some("ffmpeg"),
+        ] {
+            let selection = select_video_path_for(requested, &capabilities, "x11");
+            assert_eq!(selection.path, LinuxVideoPath::Software);
+            assert!(!selection.use_vulkan_output);
+            assert!(selection.fallback_reason.is_some());
+            if crate::HARDWARE_ONLY {
+                assert!(selection.fallback_reason.unwrap().contains("hardware-only"));
+            }
+        }
+    }
+
+    #[test]
+    fn hardware_only_selection_never_uses_a_software_only_capability_snapshot() {
+        let capabilities = snapshot(false, false, true, true, vec!["x11"]);
+        for requested in [None, Some("auto"), Some("software"), Some("ffmpeg")] {
+            let selected = select_video_path_for(requested, &capabilities, "x11");
+            assert_eq!(
+                matches!(selected.path, LinuxVideoPath::Hardware(_)),
+                !crate::HARDWARE_ONLY,
+                "{requested:?}"
+            );
+        }
+    }
+
     use super::*;
 
     #[test]
@@ -703,9 +791,10 @@ mod tests {
     fn unavailable_v4l2_summary_preserves_the_hevc_failure() {
         let mut capabilities = snapshot(false, false, false, true, vec!["wayland"]);
         capabilities.decoders.push(BackendCapability {
-            name: "v4l2-h265",
+            name: "v4l2-request-h265",
             available: false,
             detail: "MEDIA_IOC_REQUEST_ALLOC failed: Permission denied (os error 13)".to_owned(),
+            max_decode_dimensions: None,
         });
         let backend = v4l2_capability(&capabilities, "wayland");
         assert!(!backend.available);
@@ -718,7 +807,9 @@ mod tests {
     #[test]
     fn hevc_request_is_available_without_stateful_h264_and_never_ten_bit() {
         let mut capabilities = snapshot(false, false, false, true, vec!["wayland"]);
-        capabilities.decoders.push(capability("v4l2-h265", true));
+        capabilities
+            .decoders
+            .push(capability("v4l2-request-h265", true));
         let backend = v4l2_capability(&capabilities, "wayland");
         assert!(backend.available);
         assert!(
@@ -758,6 +849,79 @@ mod tests {
             LinuxVideoPath::Software
         );
         assert!(!v4l2_capability(&capabilities, "x11").available);
+    }
+
+    #[test]
+    fn request_h264_and_av1_are_available_without_stateful_or_hevc_decoders() {
+        let mut capabilities = snapshot(false, false, false, true, vec!["wayland"]);
+        capabilities.decoders.push(BackendCapability {
+            max_decode_dimensions: Some([1920, 1088]),
+            ..capability("v4l2-request-h264", true)
+        });
+        capabilities
+            .decoders
+            .push(capability("v4l2-request-av1", true));
+        let backend = v4l2_capability(&capabilities, "wayland");
+        assert!(backend.available);
+        for codec in &backend.codecs {
+            assert_eq!(codec.available, codec.codec != "h265", "{}", codec.codec);
+            assert_eq!(codec.hdr_supported, Some(false));
+        }
+        let h264 = backend
+            .codecs
+            .iter()
+            .find(|codec| codec.codec == "h264")
+            .unwrap();
+        assert_eq!(
+            h264.max_decode_dimensions
+                .as_ref()
+                .map(|limit| (limit.width, limit.height)),
+            Some((1920, 1088))
+        );
+        assert_eq!(
+            select_video_path_for(Some("v4l2"), &capabilities, "wayland").path,
+            LinuxVideoPath::Hardware(DecoderPreference::V4l2Only)
+        );
+        let stream = crate::MediaStreamConfig {
+            codec: crate::MediaVideoCodec::Av1,
+            color_quality: crate::MediaColorQuality::EightBit420,
+            ..Default::default()
+        };
+        assert_eq!(
+            select_embedded_fallback("v4l2", stream, std::slice::from_ref(&backend)).path,
+            LinuxVideoPath::Hardware(DecoderPreference::V4l2Only)
+        );
+        let x11 = v4l2_capability(&capabilities, "x11");
+        assert!(!x11.available);
+        assert!(
+            x11.codecs
+                .iter()
+                .all(|codec| codec.max_decode_dimensions.is_none())
+        );
+    }
+
+    #[test]
+    fn stateful_h264_keeps_its_unrestricted_capability_beside_request_codecs() {
+        let mut capabilities = snapshot(false, false, false, true, vec!["wayland"]);
+        capabilities
+            .decoders
+            .retain(|decoder| decoder.name != "v4l2-h264");
+        capabilities.decoders.push(capability("v4l2-h264", true));
+        let backend = v4l2_capability(&capabilities, "x11");
+        let h264 = backend
+            .codecs
+            .iter()
+            .find(|codec| codec.codec == "h264")
+            .unwrap();
+        assert!(h264.available);
+        assert_eq!(h264.color_qualities, None);
+        let h264_request_missing = v4l2_capability(
+            &snapshot(false, false, false, true, vec!["wayland"]),
+            "wayland",
+        );
+        let reason = h264_request_missing.codecs[0].reason.unwrap();
+        assert!(reason.starts_with("stateful: "));
+        assert!(reason.contains("; request: "));
     }
 
     #[test]
@@ -914,12 +1078,21 @@ mod tests {
                 crate::MediaStreamConfig::default(),
                 &[software_backend("h264", vec!["8bit_420"])],
             );
+            if crate::HARDWARE_ONLY {
+                assert_eq!(selected.path, LinuxVideoPath::Software);
+                assert!(!selected.use_vulkan_output);
+                assert!(selected.fallback_reason.unwrap().contains("hardware-only"));
+                continue;
+            }
             assert_eq!(
                 selected.path,
                 LinuxVideoPath::Hardware(DecoderPreference::SoftwareOnly)
             );
             assert!(selected.use_vulkan_output);
             assert!(selected.fallback_reason.is_none());
+        }
+        if crate::HARDWARE_ONLY {
+            return;
         }
         for codec in ["h264", "h265", "av1"] {
             let stream = crate::MediaStreamConfig {
@@ -977,6 +1150,10 @@ mod tests {
             assert_eq!(selected.path, LinuxVideoPath::Software);
             assert!(!selected.use_vulkan_output);
             let reason = selected.fallback_reason.unwrap();
+            if crate::HARDWARE_ONLY {
+                assert!(reason.contains("hardware-only"));
+                continue;
+            }
             assert!(
                 reason.contains("Software decoding presents 8-bit 4:2:0 SDR only"),
                 "{color_quality:?} hdr={hdr}: {reason}"
@@ -1006,6 +1183,7 @@ mod tests {
             name,
             available,
             detail: format!("{name} probe"),
+            max_decode_dimensions: None,
         }
     }
 
@@ -1069,7 +1247,11 @@ mod tests {
         );
         assert_eq!(
             select_video_path_for(Some("software"), &available, "x11").path,
-            LinuxVideoPath::Hardware(DecoderPreference::SoftwareOnly)
+            if crate::HARDWARE_ONLY {
+                LinuxVideoPath::Software
+            } else {
+                LinuxVideoPath::Hardware(DecoderPreference::SoftwareOnly)
+            }
         );
         assert_eq!(
             select_video_path_for(Some("hardware"), &available, "x11").path,

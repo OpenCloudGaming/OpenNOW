@@ -208,10 +208,13 @@ impl Engine {
             let sink = session.sink();
             let (consumer, receiver) = mpsc::sync_channel(ENCODED_MEDIA_QUEUE_CAPACITY);
             let output = self.events.clone();
+            let presentation = Arc::clone(&self.presentation);
+            let generation = lock_lifecycle(&self.lifecycle).generation.wrapping_add(1);
             let worker = match thread::Builder::new()
                 .name("opennow-media-consumer".to_owned())
-                .spawn(move || consume_encoded_media(&output, receiver, sink))
-            {
+                .spawn(move || {
+                    consume_encoded_media(&output, receiver, sink, presentation, generation)
+                }) {
                 Ok(worker) => worker,
                 Err(spawn_error) => {
                     session.stop();

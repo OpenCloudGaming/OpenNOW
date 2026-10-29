@@ -241,6 +241,8 @@ public:
                              [](const auto &entry) { return bool(entry.bindings); });
     }
 
+    quint64 fsrResourceGeneration() const { return m_fsr.resourceGeneration(); }
+
 private:
     void clearUpscaling()
     {

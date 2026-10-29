@@ -92,7 +92,10 @@ FocusScope {
         anchors.right: parent.right
         anchors.rightMargin: 24
         y: statsView.topRightInset
-        visible: root.notificationsEnabled && !root.inputBlocking && y + 148 <= root.height - 24
+        active: root.notificationsEnabled && !root.inputBlocking
+            && telemetry.status === "streaming"
+        maximumHeight: Math.max(0, root.height - y - 24)
+        visible: active && maximumHeight > 0
     }
 
     Keys.onPressed: event => {

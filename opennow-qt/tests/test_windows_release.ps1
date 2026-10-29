@@ -145,23 +145,12 @@ include(CPack)
         [scriptblock]::Create(($body -replace '(?m)^          ', ''))
     }
     $workflow = $workflow.Replace("`r`n", "`n")
-    $verifyPackages = Get-CandidateStep "Verify MSI and portable ZIP payloads"
+    $verifyPackages = Get-CandidateStep "Verify portable ZIP payload"
     $signBinaries = Get-CandidateStep "Authenticode-sign application binaries"
     New-Item -ItemType Directory "$root/opennow-qt/packaging", "$root/build/release-artifacts", "$root/build/opennow-qt-release/Release" | Out-Null
     Copy-Item "$PSScriptRoot/../packaging/windows-release.ps1", "$PSScriptRoot/../packaging/windows-release-binaries.txt" "$root/opennow-qt/packaging"
     Copy-Item "$deployment/*" "$root/build/opennow-qt-release/Release"
     Copy-Item $zip.FullName "$root/build/release-artifacts/fixture.zip"
-    Set-Content "$root/build/release-artifacts/fixture.msi" "MSI extraction fixture"
-    $script:ExtractionExitCode = 0
-    function Start-Process {
-        param($FilePath, [switch]$Wait, [switch]$PassThru, $ArgumentList)
-        if ($FilePath -ne "msiexec.exe" -or $ArgumentList -notlike '/a * /qn TARGETDIR=*') {
-            throw "Expected MSI administrative extraction"
-        }
-        New-Item -ItemType Directory "$env:RUNNER_TEMP/msi-expanded" | Out-Null
-        Copy-Item "$deployment/*" "$env:RUNNER_TEMP/msi-expanded"
-        [pscustomobject]@{ ExitCode = $script:ExtractionExitCode }
-    }
     $savedEnvironment = @{}
     foreach ($name in @("RUNNER_TEMP", "WINDOWS_SIGNING_MODE", "WINDOWS_PFX_BASE64", "WINDOWS_PFX_PASSWORD")) {
         $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name)
@@ -175,19 +164,14 @@ include(CPack)
             & $verifyPackages
             if ($mode -eq "unsigned" -and $script:Verified.Count -ne 0) { throw "Unsigned candidate invoked signtool" }
             if ($mode -eq "authenticode") {
-                foreach ($directory in @("msi-expanded", "portable")) {
-                    foreach ($name in $names) {
-                        if (-not ($script:Verified | Where-Object { $_ -like "*$directory*" -and [IO.Path]::GetFileName($_) -eq $name })) {
-                            throw "$directory/$name was not signature-verified"
-                        }
+                foreach ($name in $names) {
+                    if (-not ($script:Verified | Where-Object { $_ -like "*portable*" -and [IO.Path]::GetFileName($_) -eq $name })) {
+                        throw "portable/$name was not signature-verified"
                     }
                 }
             }
-            Remove-Item "$root/msi-expanded", "$root/portable" -Recurse -Force
+            Remove-Item "$root/portable" -Recurse -Force
         }
-        $env:WINDOWS_SIGNING_MODE = "unsigned"
-        $script:ExtractionExitCode = 7
-        Assert-Fails { & $verifyPackages } "MSI administrative extraction failed"
         $env:WINDOWS_SIGNING_MODE = "auto"
         Assert-Fails { & $verifyPackages } "Invalid Windows signing mode"
         foreach ($missing in @("WINDOWS_PFX_BASE64", "WINDOWS_PFX_PASSWORD")) {
@@ -202,7 +186,6 @@ include(CPack)
         foreach ($name in $savedEnvironment.Keys) {
             [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name])
         }
-        Remove-Item Function:Start-Process
     }
     & "$PSScriptRoot/../../playnite/tests/test_paths.ps1"
     Write-Host "Windows package contract tests passed"

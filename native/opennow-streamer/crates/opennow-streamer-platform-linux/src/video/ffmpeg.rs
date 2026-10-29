@@ -1,3 +1,6 @@
+use std::cell::RefCell;
+use std::collections::VecDeque;
+use std::ffi::{CStr, c_char, c_int, c_void};
 use std::ptr;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -31,20 +34,25 @@ impl FfmpegMode {
             Self::Vulkan => "FFmpeg Vulkan Video",
             Self::Cuda => "FFmpeg CUDA/NVDEC",
             Self::Vaapi => "FFmpeg VAAPI",
-            Self::V4l2Request => "FFmpeg V4L2 HEVC request",
+            Self::V4l2Request => "FFmpeg V4L2 request",
             Self::Software => "FFmpeg software",
         }
     }
 
-    const fn device_type(self) -> Option<ffi::AVHWDeviceType> {
+    fn device_type(self) -> Option<ffi::AVHWDeviceType> {
         match self {
             Self::Vulkan => Some(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VULKAN),
             Self::Cuda => Some(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA),
             Self::Vaapi => Some(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI),
-            Self::V4l2Request => Some(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_DRM),
+            Self::V4l2Request => request_device_type(),
             Self::Software => None,
         }
     }
+}
+
+fn request_device_type() -> Option<ffi::AVHWDeviceType> {
+    let device_type = unsafe { ffi::av_hwdevice_find_type_by_name(c"v4l2request".as_ptr()) };
+    (device_type != ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_NONE).then_some(device_type)
 }
 
 pub(crate) struct FfmpegDecoder {
@@ -135,6 +143,12 @@ impl FfmpegDecoder {
         mode: FfmpegMode,
         shared_device: Option<Arc<crate::SharedVulkanDevice>>,
     ) -> Result<Self> {
+        if cfg!(feature = "hardware-only") && mode == FfmpegMode::Software {
+            return Err(Error::unavailable(
+                Subsystem::Ffmpeg,
+                "hardware-only build forbids software video decoding",
+            ));
+        }
         format.validate()?;
         if format.pixel_format.is_444() && (mode != FfmpegMode::Vulkan || shared_device.is_none()) {
             return Err(Error::unavailable(
@@ -142,9 +156,22 @@ impl FfmpegDecoder {
                 "4:4:4 requires shared Vulkan Video GPU snapshots; CUDA, VAAPI and CPU conversion are unsupported",
             ));
         }
+        #[cfg(all(feature = "hardware-only", not(feature = "vulkan")))]
+        if mode == FfmpegMode::Vulkan {
+            return Err(Error::unavailable(
+                Subsystem::Vulkan,
+                "hardware-only Vulkan requires native GPU validation support",
+            ));
+        }
         if mode == FfmpegMode::V4l2Request {
-            validate_request_profile(codec, format)?;
-            super::v4l2_request::probe()
+            validate_request_profile(format)?;
+            if request_device_type().is_none() {
+                return Err(Error::unavailable(
+                    Subsystem::V4l2,
+                    "FFmpeg was built without the V4L2 request hwaccel",
+                ));
+            }
+            super::v4l2_request::probe(codec, format.width, format.height)
                 .map_err(|reason| Error::unavailable(Subsystem::V4l2, reason))?;
         }
         if (format.color_transfer != ColorTransfer::Sdr || format.pixel_format.is_ten_bit())
@@ -156,6 +183,7 @@ impl FfmpegDecoder {
             ));
         }
         initialize_ffmpeg()?;
+        take_ffmpeg_log();
         let decoder_definition = match (mode, codec) {
             (FfmpegMode::Software, VideoCodec::Av1) => ["libdav1d", "libaom-av1"]
                 .into_iter()
@@ -229,11 +257,6 @@ impl FfmpegDecoder {
                 })?;
             let mut device = ptr::null_mut();
             let mut options = ptr::null_mut();
-            if mode == FfmpegMode::V4l2Request {
-                unsafe {
-                    ffi::av_dict_set(&mut options, c"v4l2fmts".as_ptr(), c"NC12/Nc12".as_ptr(), 0);
-                }
-            }
             if mode == FfmpegMode::Vulkan {
                 unsafe {
                     ffi::av_dict_set(
@@ -270,6 +293,39 @@ impl FfmpegDecoder {
                     create_result,
                 ));
             }
+            #[cfg(all(feature = "hardware-only", feature = "vulkan"))]
+            if mode == FfmpegMode::Vulkan {
+                let validation = (|| {
+                    use ash::vk::Handle;
+                    let entry = unsafe { ash::Entry::load() }.map_err(|error| {
+                        Error::unavailable(Subsystem::Vulkan, error.to_string())
+                    })?;
+                    let hardware = unsafe { &*(*device).data.cast::<ffi::AVHWDeviceContext>() };
+                    let vulkan = unsafe { &*hardware.hwctx.cast::<ffi::AVVulkanDeviceContext>() };
+                    let instance = unsafe {
+                        ash::Instance::load(
+                            entry.static_fn(),
+                            ash::vk::Instance::from_raw(vulkan.inst as u64),
+                        )
+                    };
+                    let properties = unsafe {
+                        instance.get_physical_device_properties(ash::vk::PhysicalDevice::from_raw(
+                            vulkan.phys_dev as u64,
+                        ))
+                    };
+                    if !crate::vulkan_device::physical_device_allowed(properties.device_type) {
+                        return Err(Error::unavailable(
+                            Subsystem::Vulkan,
+                            "hardware-only build forbids software Vulkan devices",
+                        ));
+                    }
+                    Ok(())
+                })();
+                if let Err(error) = validation {
+                    unsafe { ffi::av_buffer_unref(&mut device) };
+                    return Err(error);
+                }
+            }
             let mut selected = Box::new(HardwareFormatSelection {
                 pixel_format,
                 exportable_vulkan_frames: false,
@@ -290,6 +346,16 @@ impl FfmpegDecoder {
             wanted_hw_format = Some(selected);
         }
 
+        if mode == FfmpegMode::Cuda {
+            let cuda = unsafe {
+                let device = (*context.as_ptr()).hw_device_ctx;
+                let hardware = (*device).data.cast::<ffi::AVHWDeviceContext>();
+                &*(*hardware).hwctx.cast::<ffi::AVCUDADeviceContext>()
+            };
+            super::cuda_probe::validate(cuda.cuda_ctx, codec, format)
+                .map_err(|reason| Error::unavailable(Subsystem::Ffmpeg, reason))?;
+        }
+
         let decoder = context
             .decoder()
             .open_as(decoder_definition)
@@ -297,11 +363,11 @@ impl FfmpegDecoder {
             .map_err(|error| {
                 Error::backend(
                     Subsystem::Ffmpeg,
-                    format!(
+                    with_ffmpeg_log(format!(
                         "{} {} decoder initialization failed: {error}",
                         mode.label(),
                         codec.label()
-                    ),
+                    )),
                 )
             })?;
         Ok(Self {
@@ -328,13 +394,53 @@ impl FfmpegDecoder {
         mode: FfmpegMode,
     ) -> std::result::Result<String, String> {
         let format = StreamFormat::video_default(1920, 1080).map_err(|error| error.to_string())?;
-        let decoder = Self::open(codec, format, mode).map_err(|error| error.to_string())?;
+        let mut decoder = Self::open(codec, format, mode).map_err(|error| error.to_string())?;
+        if mode == FfmpegMode::Cuda {
+            decoder.probe_frame().map_err(|error| error.to_string())?;
+        }
         Ok(format!(
             "{} {} via libavcodec {}",
             decoder.mode.label(),
             decoder.codec.label(),
             ffmpeg::codec::version()
         ))
+    }
+
+    fn probe_frame(&mut self) -> Result<()> {
+        let data: &[u8] = match self.codec {
+            VideoCodec::H264 => include_bytes!("fixtures/cuda_probe.h264"),
+            VideoCodec::H265 => include_bytes!("fixtures/cuda_probe.hevc"),
+            VideoCodec::Av1 => include_bytes!("fixtures/cuda_probe.obu"),
+        };
+        let packet = ffmpeg::Packet::copy(data);
+        self.decoder
+            .send_packet(&packet)
+            .map_err(|error| self.decode_error("probe packet submission", error))?;
+        self.decoder
+            .send_eof()
+            .map_err(|error| self.decode_error("probe drain", error))?;
+        let mut decoded = frame::Video::empty();
+        self.decoder
+            .receive_frame(&mut decoded)
+            .map_err(|error| self.decode_error("probe frame receive", error))?;
+        if let Some(wanted) = self.wanted_hw_format.as_ref() {
+            if decoded.format() != Pixel::from(wanted.pixel_format) {
+                return Err(Error::backend(
+                    Subsystem::Ffmpeg,
+                    format!(
+                        "{} probe did not produce a hardware frame",
+                        self.mode.label()
+                    ),
+                ));
+            }
+        }
+        if decoded.width() != 1920 || decoded.height() != 1080 {
+            return Err(Error::backend(
+                Subsystem::Ffmpeg,
+                "decoder probe did not produce the expected 1920x1080 frame",
+            ));
+        }
+        Ok(())
     }
 
     fn drain(&mut self, draining: bool) -> Result<Vec<DecodedVideoFrame>> {
@@ -354,11 +460,11 @@ impl FfmpegDecoder {
     }
 
     fn decode_error(&self, operation: &str, error: ffmpeg::Error) -> Error {
-        let reason = format!(
+        let reason = with_ffmpeg_log(format!(
             "{} {} {operation} failed: {error}",
             self.mode.label(),
             self.codec.label()
-        );
+        ));
         if self.mode == FfmpegMode::V4l2Request && error == ffmpeg::Error::InvalidData {
             Error::ReferenceLost {
                 subsystem: Subsystem::V4l2,
@@ -370,9 +476,14 @@ impl FfmpegDecoder {
     }
 
     fn convert_frame(&mut self, decoded: &frame::Video) -> Result<DecodedVideoFrame> {
-        if self.mode == FfmpegMode::Software {
-            reject_corrupt_software_frame(decoded)?;
-        }
+        reject_corrupt_frame(
+            decoded,
+            if self.mode == FfmpegMode::V4l2Request {
+                Subsystem::V4l2
+            } else {
+                Subsystem::Ffmpeg
+            },
+        )?;
         if self.mode == FfmpegMode::V4l2Request {
             let output =
                 retain_request_frame(decoded, self.last_timestamp_us, self.negotiated_format)?;
@@ -816,13 +927,13 @@ fn vulkan_cpu_nv12_fallback(
     }))
 }
 
-fn reject_corrupt_software_frame(decoded: &frame::Video) -> Result<()> {
+fn reject_corrupt_frame(decoded: &frame::Video, subsystem: Subsystem) -> Result<()> {
     unsafe {
         let raw = &*decoded.as_ptr();
         if raw.flags & ffi::AV_FRAME_FLAG_CORRUPT != 0 || raw.decode_error_flags != 0 {
             return Err(Error::ReferenceLost {
-                subsystem: Subsystem::Ffmpeg,
-                reason: "software decode failed; refusing a corrupt frame".to_owned(),
+                subsystem,
+                reason: "decode failed; refusing a corrupt reference frame".to_owned(),
             });
         }
     }
@@ -1025,17 +1136,20 @@ fn map_hardware_frame_to_dmabuf(
     drm_frame(mapped, timestamp_us, output_format)
 }
 
-fn validate_request_profile(codec: VideoCodec, format: StreamFormat) -> Result<()> {
-    if codec != VideoCodec::H265
-        || format.pixel_format != PixelFormat::Nv12
-        || format.color_transfer != ColorTransfer::Sdr
-    {
+fn validate_request_profile(format: StreamFormat) -> Result<()> {
+    if format.pixel_format != PixelFormat::Nv12 || format.color_transfer != ColorTransfer::Sdr {
         return Err(Error::unavailable(
             Subsystem::V4l2,
-            "V4L2 HEVC request decoding supports only HEVC 8-bit 4:2:0 SDR",
+            "V4L2 request decoding supports only 8-bit 4:2:0 SDR",
         ));
     }
     Ok(())
+}
+
+const DRM_FORMAT_MOD_LINEAR: u64 = 0;
+
+fn is_presentable_request_modifier(modifier: u64) -> bool {
+    modifier == DRM_FORMAT_MOD_LINEAR || modifier & 0xff00_0000_0000_00ff == 0x0700_0000_0000_0004
 }
 
 fn retain_request_frame(
@@ -1043,33 +1157,28 @@ fn retain_request_frame(
     fallback_timestamp_us: u64,
     metadata: StreamFormat,
 ) -> Result<DecodedVideoFrame> {
+    reject_corrupt_frame(decoded, Subsystem::V4l2)?;
     if decoded.format() != Pixel::DRM_PRIME {
         return Err(Error::backend(
             Subsystem::V4l2,
-            "HEVC request decoder returned a non-DRM frame; CPU fallback is disabled",
+            "request decoder returned a non-DRM frame; CPU fallback is disabled",
         ));
     }
     unsafe {
         let raw = &*decoded.as_ptr();
-        if raw.flags & ffi::AV_FRAME_FLAG_CORRUPT != 0 || raw.decode_error_flags != 0 {
-            return Err(Error::ReferenceLost {
-                subsystem: Subsystem::V4l2,
-                reason: "HEVC request decode failed; refusing a corrupt reference frame".to_owned(),
-            });
-        }
         if raw.crop_left != 0 || raw.crop_top != 0 {
             return Err(Error::unavailable(
                 Subsystem::V4l2,
-                "SAND presentation does not support a nonzero crop origin",
+                "request presentation does not support a nonzero crop origin",
             ));
         }
     }
     let metadata = decoded_metadata(decoded, metadata);
-    validate_request_profile(VideoCodec::H265, metadata)?;
+    validate_request_profile(metadata)?;
     let mut retained = frame::Video::empty();
     let result = unsafe { ffi::av_frame_ref(retained.as_mut_ptr(), decoded.as_ptr()) };
     if result < 0 {
-        return Err(ffmpeg_error("retain HEVC request frame".to_owned(), result));
+        return Err(ffmpeg_error("retain request frame".to_owned(), result));
     }
     let timestamp_us = decoded
         .pts()
@@ -1095,11 +1204,11 @@ fn retain_request_frame(
         || dmabuf
             .objects
             .iter()
-            .any(|object| object.format_modifier & 0xff00_0000_0000_00ff != 0x0700_0000_0000_0004)
+            .any(|object| !is_presentable_request_modifier(object.format_modifier))
     {
         return Err(Error::unavailable(
             Subsystem::V4l2,
-            "HEVC request output is not SAND128 NV12; packed P030/10-bit is unsupported",
+            "request output is not linear or SAND128 NV12; tiled and 10-bit layouts are unsupported",
         ));
     }
     Ok(output)
@@ -1215,9 +1324,78 @@ impl VideoDecoder for FfmpegDecoder {
 fn initialize_ffmpeg() -> Result<()> {
     static INITIALIZED: OnceLock<std::result::Result<(), String>> = OnceLock::new();
     INITIALIZED
-        .get_or_init(|| ffmpeg::init().map_err(|error| error.to_string()))
+        .get_or_init(|| {
+            ffmpeg::init().map_err(|error| error.to_string())?;
+            unsafe { ffi::av_log_set_callback(Some(record_ffmpeg_log)) };
+            Ok(())
+        })
         .clone()
         .map_err(|reason| Error::unavailable(Subsystem::Ffmpeg, reason))
+}
+
+const FFMPEG_LOG_LINES: usize = 8;
+
+thread_local! {
+    static FFMPEG_LOG: RefCell<VecDeque<String>> = const { RefCell::new(VecDeque::new()) };
+}
+
+#[cfg(target_arch = "x86_64")]
+type FfmpegVaList = *mut ffi::__va_list_tag;
+#[cfg(not(target_arch = "x86_64"))]
+type FfmpegVaList = ffi::va_list;
+
+unsafe extern "C" fn record_ffmpeg_log(
+    context: *mut c_void,
+    level: c_int,
+    format: *const c_char,
+    arguments: FfmpegVaList,
+) {
+    if level > ffi::AV_LOG_VERBOSE {
+        return;
+    }
+    let mut line = [0 as c_char; 512];
+    let mut print_prefix = 1;
+    let written = unsafe {
+        ffi::av_log_format_line2(
+            context,
+            level,
+            format,
+            arguments,
+            line.as_mut_ptr(),
+            line.len() as c_int,
+            &mut print_prefix,
+        )
+    };
+    if written < 0 {
+        return;
+    }
+    let text = unsafe { CStr::from_ptr(line.as_ptr()) }.to_string_lossy();
+    let text = text.trim_end();
+    if text.is_empty() {
+        return;
+    }
+    if level <= unsafe { ffi::av_log_get_level() } {
+        eprintln!("{text}");
+    }
+    FFMPEG_LOG.with_borrow_mut(|lines| {
+        if lines.len() == FFMPEG_LOG_LINES {
+            lines.pop_front();
+        }
+        lines.push_back(text.to_owned());
+    });
+}
+
+fn take_ffmpeg_log() -> Vec<String> {
+    FFMPEG_LOG.with_borrow_mut(|lines| lines.drain(..).collect())
+}
+
+fn with_ffmpeg_log(reason: String) -> String {
+    let log = take_ffmpeg_log();
+    if log.is_empty() {
+        reason
+    } else {
+        format!("{reason} (FFmpeg: {})", log.join(" | "))
+    }
 }
 
 fn codec_id(codec: VideoCodec) -> codec::Id {
@@ -1435,7 +1613,8 @@ fn decoded_metadata(frame: &frame::Video, defaults: StreamFormat) -> StreamForma
     let chroma_location = match frame.chroma_location() {
         ffmpeg::chroma::Location::Unspecified => defaults.chroma_location,
         ffmpeg::chroma::Location::Center => ChromaLocation::Center,
-        ffmpeg::chroma::Location::Left | ffmpeg::chroma::Location::TopLeft => ChromaLocation::Left,
+        ffmpeg::chroma::Location::Left => ChromaLocation::Left,
+        ffmpeg::chroma::Location::TopLeft => ChromaLocation::TopLeft,
         other => unsupported_color_metadata(3, "chroma location", other, defaults.chroma_location),
     };
     StreamFormat {
@@ -1472,6 +1651,178 @@ mod tests {
 
     use super::*;
 
+    fn software_decoder(codec: VideoCodec, format: StreamFormat) -> Option<FfmpegDecoder> {
+        let opened = FfmpegDecoder::open(codec, format, FfmpegMode::Software);
+        if cfg!(feature = "hardware-only") {
+            let error = opened
+                .err()
+                .expect("hardware-only must reject direct software decoder creation");
+            assert!(error.to_string().contains("hardware-only"), "{error}");
+            return None;
+        }
+        Some(opened.unwrap())
+    }
+
+    fn decoder_for_synthetic_frames(format: StreamFormat) -> FfmpegDecoder {
+        initialize_ffmpeg().unwrap();
+        let definition = ffmpeg::decoder::find(codec::Id::H264).unwrap();
+        let decoder = codec::context::Context::new_with_codec(definition)
+            .decoder()
+            .open_as(definition)
+            .unwrap()
+            .video()
+            .unwrap();
+        FfmpegDecoder {
+            decoder,
+            wanted_hw_format: None,
+            scaler: None,
+            codec: VideoCodec::H264,
+            mode: FfmpegMode::Software,
+            configured_format: format,
+            negotiated_format: format,
+            pending_format_change: None,
+            last_timestamp_us: 0,
+            zero_copy_active: false,
+            zero_copy_unavailable_reported: false,
+            #[cfg(feature = "vulkan")]
+            shared_device: None,
+            #[cfg(feature = "vulkan")]
+            snapshot_pool: None,
+        }
+    }
+
+    #[test]
+    fn hardware_only_policy_rejects_every_software_codec_and_probe() {
+        for codec in [VideoCodec::H264, VideoCodec::H265, VideoCodec::Av1] {
+            let format = StreamFormat::video_default(64, 64).unwrap();
+            let probe = super::super::probe_ffmpeg_software(codec);
+            if cfg!(feature = "hardware-only") {
+                assert!(software_decoder(codec, format).is_none());
+                assert!(probe.unwrap_err().contains("hardware-only"));
+            } else if codec != VideoCodec::Av1 {
+                assert!(software_decoder(codec, format).is_some());
+                assert!(probe.is_ok());
+            }
+        }
+    }
+
+    unsafe extern "C" fn reject_probe_format(
+        _context: *mut ffi::AVCodecContext,
+        _formats: *const ffi::AVPixelFormat,
+    ) -> ffi::AVPixelFormat {
+        ffi::AVPixelFormat::AV_PIX_FMT_NONE
+    }
+
+    #[test]
+    fn opening_a_decoder_does_not_validate_first_packet_support() {
+        let format = StreamFormat::video_default(1920, 1080).unwrap();
+        let Some(mut decoder) = software_decoder(VideoCodec::H264, format) else {
+            return;
+        };
+        unsafe { (*decoder.decoder.as_mut_ptr()).get_format = Some(reject_probe_format) };
+        let packet = ffmpeg::Packet::copy(include_bytes!("fixtures/cuda_probe.h264"));
+        assert!(decoder.decoder.send_packet(&packet).is_err());
+    }
+
+    #[test]
+    fn decode_probe_rejects_first_packet_format_failure() {
+        let format = StreamFormat::video_default(1920, 1080).unwrap();
+        let Some(mut decoder) = software_decoder(VideoCodec::H264, format) else {
+            return;
+        };
+        unsafe { (*decoder.decoder.as_mut_ptr()).get_format = Some(reject_probe_format) };
+        let error = decoder.probe_frame().unwrap_err().to_string();
+        assert!(error.contains("probe packet submission failed"), "{error}");
+    }
+
+    #[test]
+    fn decode_probe_requires_a_frame_with_the_requested_hardware_format() {
+        let format = StreamFormat::video_default(1920, 1080).unwrap();
+        let Some(mut decoder) = software_decoder(VideoCodec::H264, format) else {
+            return;
+        };
+        decoder.wanted_hw_format = Some(Box::new(HardwareFormatSelection {
+            pixel_format: ffi::AVPixelFormat::AV_PIX_FMT_CUDA,
+            exportable_vulkan_frames: false,
+        }));
+        let error = decoder.probe_frame().unwrap_err().to_string();
+        assert!(
+            error.contains("did not produce a hardware frame"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn decode_probe_fixtures_produce_a_full_hd_frame() {
+        let format = StreamFormat::video_default(1920, 1080).unwrap();
+        for codec in [VideoCodec::H264, VideoCodec::H265] {
+            let Some(mut decoder) = software_decoder(codec, format) else {
+                continue;
+            };
+            decoder.probe_frame().unwrap();
+        }
+    }
+
+    #[test]
+    #[ignore = "opt-in: requires CUDA/NVDEC hardware supporting at least one codec"]
+    fn cuda_probe_decodes_each_advertised_codec() {
+        let mut available = 0;
+        for codec in [VideoCodec::H264, VideoCodec::H265, VideoCodec::Av1] {
+            match FfmpegDecoder::probe(codec, FfmpegMode::Cuda) {
+                Ok(detail) => {
+                    available += 1;
+                    assert!(detail.contains("CUDA/NVDEC"), "{detail}");
+                }
+                Err(reason) => eprintln!("{} unavailable: {reason}", codec.label()),
+            }
+        }
+        assert!(available > 0, "no CUDA codec produced a hardware frame");
+    }
+
+    #[test]
+    #[ignore = "opt-in: requires CUDA/NVDEC hardware with H.264 support but no AV1 support"]
+    fn cuda_probe_rejects_av1_on_h264_only_hardware() {
+        FfmpegDecoder::probe(VideoCodec::H264, FfmpegMode::Cuda)
+            .expect("this test requires working H.264 CUDA decode");
+        let reason = FfmpegDecoder::probe(VideoCodec::Av1, FfmpegMode::Cuda)
+            .expect_err("AV1 must not be advertised on hardware without AV1 decode");
+        assert!(
+            reason.contains("probe packet submission failed"),
+            "{reason}"
+        );
+        assert!(
+            reason.contains("Hardware is lacking required capabilities"),
+            "{reason}"
+        );
+    }
+
+    #[test]
+    fn ffmpeg_log_lines_reach_decoder_errors_and_are_bounded() {
+        initialize_ffmpeg().unwrap();
+        take_ffmpeg_log();
+        unsafe {
+            ffi::av_log(
+                ptr::null_mut(),
+                ffi::AV_LOG_DEBUG,
+                c"ignored %s\n".as_ptr(),
+                c"debug".as_ptr(),
+            );
+            for index in 0..(FFMPEG_LOG_LINES as c_int + 2) {
+                ffi::av_log(
+                    ptr::null_mut(),
+                    ffi::AV_LOG_VERBOSE,
+                    c"capture probe %d failed\n".as_ptr(),
+                    index,
+                );
+            }
+        }
+        let reason = with_ffmpeg_log("open failed".to_owned());
+        assert!(reason.starts_with("open failed (FFmpeg: capture probe 2 failed | "));
+        assert!(reason.ends_with("capture probe 9 failed)"));
+        assert!(!reason.contains("ignored"));
+        assert_eq!(with_ffmpeg_log("open failed".to_owned()), "open failed");
+    }
+
     #[test]
     fn software_decode_thread_count_stays_within_the_latency_budget() {
         let threads = software_decode_thread_count();
@@ -1495,7 +1846,9 @@ mod tests {
     #[test]
     fn software_decoder_opens_with_low_delay_and_a_bounded_thread_pool() {
         let format = StreamFormat::video_default(64, 64).unwrap();
-        let decoder = FfmpegDecoder::open(VideoCodec::H264, format, FfmpegMode::Software).unwrap();
+        let Some(decoder) = software_decoder(VideoCodec::H264, format) else {
+            return;
+        };
         unsafe {
             let raw = decoder.decoder.as_ptr();
             assert!(
@@ -1515,8 +1868,9 @@ mod tests {
     #[test]
     fn software_decoder_refuses_a_corrupt_frame() {
         let format = StreamFormat::video_default(2, 2).unwrap();
-        let mut decoder =
-            FfmpegDecoder::open(VideoCodec::H264, format, FfmpegMode::Software).unwrap();
+        let Some(mut decoder) = software_decoder(VideoCodec::H264, format) else {
+            return;
+        };
         let mut decoded = frame::Video::new(Pixel::NV12, 2, 2);
         unsafe { (*decoded.as_mut_ptr()).flags |= ffi::AV_FRAME_FLAG_CORRUPT };
         assert!(matches!(
@@ -1526,6 +1880,47 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn every_decode_mode_rejects_corruption_before_hardware_inspection() {
+        let format = StreamFormat::video_default(2, 2).unwrap();
+        let mut decoder = decoder_for_synthetic_frames(format);
+        for (mode, pixel) in [
+            (FfmpegMode::Software, Pixel::NV12),
+            (FfmpegMode::Vulkan, Pixel::VULKAN),
+            (FfmpegMode::Vaapi, Pixel::VAAPI),
+            (FfmpegMode::Cuda, Pixel::CUDA),
+            (FfmpegMode::V4l2Request, Pixel::DRM_PRIME),
+        ] {
+            decoder.mode = mode;
+            decoder.wanted_hw_format = Some(Box::new(HardwareFormatSelection {
+                pixel_format: pixel.into(),
+                exportable_vulkan_frames: false,
+            }));
+            for (flags, decode_error_flags) in [(ffi::AV_FRAME_FLAG_CORRUPT, 0), (0, 1)] {
+                let mut decoded = frame::Video::empty();
+                decoded.set_format(pixel);
+                unsafe {
+                    (*decoded.as_mut_ptr()).flags = flags;
+                    (*decoded.as_mut_ptr()).decode_error_flags = decode_error_flags;
+                }
+                let expected_subsystem = if mode == FfmpegMode::V4l2Request {
+                    Subsystem::V4l2
+                } else {
+                    Subsystem::Ffmpeg
+                };
+                assert!(
+                    matches!(
+                        decoder.convert_frame(&decoded),
+                        Err(Error::ReferenceLost { subsystem, .. }) if subsystem == expected_subsystem
+                    ),
+                    "{mode:?}, flags={flags}, decode_error_flags={decode_error_flags}"
+                );
+                assert!(decoder.pending_format_change.is_none());
+                assert_eq!(decoder.configured_format, format);
+            }
+        }
     }
 
     #[test]
@@ -1603,14 +1998,20 @@ mod tests {
 
     #[cfg(all(target_arch = "aarch64", feature = "ffmpeg-bundled"))]
     #[test]
-    fn bundled_arm64_hevc_exposes_request_hwaccel() {
+    fn bundled_arm64_exposes_request_hwaccels_for_every_codec() {
         initialize_ffmpeg().unwrap();
-        let decoder = ffmpeg::decoder::find_by_name("hevc").expect("HEVC decoder must be bundled");
-        assert_eq!(
-            hardware_pixel_format(decoder, ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_DRM),
-            Some(ffi::AVPixelFormat::AV_PIX_FMT_DRM_PRIME),
-            "bundled ARM64 HEVC requires a DRM_PRIME hardware config with HW_DEVICE_CTX support",
-        );
+        let device_type =
+            request_device_type().expect("bundled ARM64 FFmpeg must know v4l2request");
+        for codec in [VideoCodec::H264, VideoCodec::H265, VideoCodec::Av1] {
+            let decoder = ffmpeg::decoder::find_by_name(native_decoder_name(codec))
+                .expect("native decoder must be bundled");
+            assert_eq!(
+                hardware_pixel_format(decoder, device_type),
+                Some(ffi::AVPixelFormat::AV_PIX_FMT_DRM_PRIME),
+                "bundled ARM64 {} requires a DRM_PRIME request hwaccel",
+                codec.label(),
+            );
+        }
     }
 
     fn request_frame_fixture() -> (frame::Video, File) {
@@ -1666,7 +2067,40 @@ mod tests {
     }
 
     #[test]
-    fn request_frame_rejects_corruption_p030_linear_and_cropped_origins() {
+    fn request_frames_retain_explicit_chroma_metadata_with_drm_backing() {
+        let (mut decoded, _file) = request_frame_fixture();
+        let defaults = StreamFormat::video_default(256, 144).unwrap();
+        for (source, expected) in [
+            (ffmpeg::chroma::Location::Left, ChromaLocation::Left),
+            (ffmpeg::chroma::Location::Center, ChromaLocation::Center),
+            (ffmpeg::chroma::Location::TopLeft, ChromaLocation::TopLeft),
+        ] {
+            unsafe { (*decoded.as_mut_ptr()).chroma_location = source.into() };
+            let output = retain_request_frame(&decoded, 0, defaults).unwrap();
+            assert_eq!(output.format.chroma_location, expected);
+            assert!(output.dmabuf.is_some());
+            assert!(output.planes.is_empty());
+        }
+    }
+
+    #[test]
+    fn request_frame_retains_linear_nv12_from_stateless_decoders() {
+        let (mut decoded, _file) = request_frame_fixture();
+        unsafe {
+            let descriptor =
+                &mut *(*decoded.as_mut_ptr()).data[0].cast::<ffi::AVDRMFrameDescriptor>();
+            descriptor.objects[0].format_modifier = 0;
+            descriptor.layers[0].planes[1].offset = 256 * 144;
+        }
+        let metadata = StreamFormat::video_default(256, 144).unwrap();
+        let output = retain_request_frame(&decoded, 0, metadata).unwrap();
+        let dmabuf = output.dmabuf.as_ref().unwrap();
+        assert_eq!(dmabuf.objects[0].format_modifier, 0);
+        assert_eq!(dmabuf.layers[0].planes[1].offset, 256 * 144);
+    }
+
+    #[test]
+    fn request_frame_rejects_corruption_p030_tiled_and_cropped_origins() {
         let metadata = StreamFormat::video_default(256, 144).unwrap();
         let (mut decoded, _file) = request_frame_fixture();
         unsafe { (*decoded.as_mut_ptr()).flags |= ffi::AV_FRAME_FLAG_CORRUPT };
@@ -1693,7 +2127,7 @@ mod tests {
             let descriptor =
                 &mut *(*decoded.as_mut_ptr()).data[0].cast::<ffi::AVDRMFrameDescriptor>();
             descriptor.layers[0].format = u32::from_le_bytes(*b"NV12");
-            descriptor.objects[0].format_modifier = 0;
+            descriptor.objects[0].format_modifier = 0x0900_0000_0000_0001;
         }
         assert!(retain_request_frame(&decoded, 0, metadata).is_err());
         decoded.set_format(Pixel::NV12);
@@ -1733,23 +2167,38 @@ mod tests {
     }
 
     #[test]
-    fn request_decode_rejects_non_hevc_ten_bit_and_hdr_before_device_probe() {
+    fn request_decode_rejects_ten_bit_and_hdr_before_device_probe() {
         let mut format = StreamFormat::video_default(256, 144).unwrap();
-        assert!(validate_request_profile(VideoCodec::H265, format).is_ok());
-        for codec in [VideoCodec::H264, VideoCodec::Av1] {
+        assert!(validate_request_profile(format).is_ok());
+        for codec in [VideoCodec::H264, VideoCodec::H265, VideoCodec::Av1] {
+            format.pixel_format = PixelFormat::P010;
+            format.color_transfer = ColorTransfer::Sdr;
+            let error = FfmpegDecoder::open(codec, format, FfmpegMode::V4l2Request)
+                .err()
+                .expect("10-bit request decode must be rejected");
+            assert!(error.to_string().contains("8-bit 4:2:0 SDR"), "{error}");
+            format.pixel_format = PixelFormat::Nv12;
+            format.color_transfer = ColorTransfer::Pq;
+            assert!(validate_request_profile(format).is_err());
             assert!(FfmpegDecoder::open(codec, format, FfmpegMode::V4l2Request).is_err());
         }
-        format.pixel_format = PixelFormat::P010;
-        assert!(FfmpegDecoder::open(VideoCodec::H265, format, FfmpegMode::V4l2Request).is_err());
-        format.pixel_format = PixelFormat::Nv12;
-        format.color_transfer = ColorTransfer::Pq;
-        assert!(FfmpegDecoder::open(VideoCodec::H265, format, FfmpegMode::V4l2Request).is_err());
     }
 
     #[test]
-    #[ignore = "opt-in: requires Raspberry Pi HEVC request hardware, pinned FFmpeg, and FFmpeg CLI/libx265"]
-    fn raspberry_pi_hevc_request_drm_only() {
-        for (width, height) in [(256, 144), (640, 360)] {
+    #[ignore = "opt-in: requires V4L2 request decode hardware, bundled FFmpeg, and FFmpeg CLI with libx264/libx265"]
+    fn v4l2_request_decode_is_drm_only() {
+        let codecs = [(VideoCodec::H264, "libx264"), (VideoCodec::H265, "libx265")]
+            .into_iter()
+            .filter(|(codec, _)| super::super::v4l2_request::probe(*codec, 640, 360).is_ok())
+            .collect::<Vec<_>>();
+        assert!(
+            !codecs.is_empty(),
+            "no H.264 or HEVC request decoder is present"
+        );
+        for ((codec, encoder), (width, height)) in codecs
+            .into_iter()
+            .flat_map(|codec| [(codec, (256, 144)), (codec, (640, 360))])
+        {
             let encoded = Command::new("ffmpeg")
                 .args([
                     "-hide_banner",
@@ -1764,11 +2213,13 @@ mod tests {
                     "-pix_fmt",
                     "yuv420p",
                     "-c:v",
-                    "libx265",
-                    "-x265-params",
-                    "log-level=error:pools=1",
+                    encoder,
                     "-f",
-                    "hevc",
+                    if codec == VideoCodec::H264 {
+                        "h264"
+                    } else {
+                        "hevc"
+                    },
                     "pipe:1",
                 ])
                 .output()
@@ -1779,9 +2230,8 @@ mod tests {
                 String::from_utf8_lossy(&encoded.stderr)
             );
             let format = StreamFormat::video_default(width, height).unwrap();
-            let mut decoder =
-                FfmpegDecoder::open(VideoCodec::H265, format, FfmpegMode::V4l2Request)
-                    .expect("Pi HEVC request decoder must open");
+            let mut decoder = FfmpegDecoder::open(codec, format, FfmpegMode::V4l2Request)
+                .expect("request decoder must open");
             let packet = EncodedVideoFrame::new(encoded.stdout, 1_234_567, true).unwrap();
             let mut frames = decoder.decode(&packet).unwrap();
             frames.extend(decoder.flush().unwrap());
@@ -1846,7 +2296,7 @@ mod tests {
         }
         assert_eq!(
             decoded_metadata(&frame, defaults).chroma_location,
-            ChromaLocation::Left
+            ChromaLocation::TopLeft
         );
         unsafe {
             (*frame.as_mut_ptr()).chroma_location = ffmpeg::chroma::Location::Bottom.into();
@@ -1857,6 +2307,47 @@ mod tests {
         assert_eq!(metadata.chroma_location, defaults.chroma_location);
         assert_eq!(metadata.color_primaries, defaults.color_primaries);
         assert_eq!(metadata.color_transfer, defaults.color_transfer);
+    }
+
+    #[test]
+    fn decoded_frames_retain_each_explicit_chroma_location() {
+        let defaults = StreamFormat::video_default(4, 4).unwrap();
+        let mut decoder = decoder_for_synthetic_frames(defaults);
+        for (source, expected) in [
+            (ffmpeg::chroma::Location::Center, ChromaLocation::Center),
+            (ffmpeg::chroma::Location::Left, ChromaLocation::Left),
+            (ffmpeg::chroma::Location::TopLeft, ChromaLocation::TopLeft),
+        ] {
+            let mut decoded = frame::Video::new(Pixel::NV12, 4, 4);
+            unsafe { (*decoded.as_mut_ptr()).chroma_location = source.into() };
+            let output = decoder.convert_frame(&decoded).unwrap();
+            assert_eq!(output.format.chroma_location, expected);
+            assert_eq!(decoder.configured_format.chroma_location, expected);
+            assert_eq!(
+                decoder.pending_format_change.unwrap().chroma_location,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(all(feature = "hardware-only", not(feature = "vulkan")))]
+    fn hardware_only_vulkan_without_validation_rejects_after_format_validation() {
+        let format = StreamFormat::video_default(1920, 1080).unwrap();
+        let invalid = StreamFormat { width: 0, ..format };
+        let error = FfmpegDecoder::open(VideoCodec::H265, invalid, FfmpegMode::Vulkan)
+            .err()
+            .expect("invalid dimensions must reject before device validation");
+        assert!(matches!(error, Error::InvalidFormat(_)), "{error}");
+        let error = FfmpegDecoder::open(VideoCodec::H265, format, FfmpegMode::Vulkan)
+            .err()
+            .expect("hardware-only Vulkan must still require GPU validation");
+        assert!(
+            error
+                .to_string()
+                .contains("hardware-only Vulkan requires native GPU validation support"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -1876,11 +2367,13 @@ mod tests {
                 let error = FfmpegDecoder::open(VideoCodec::H265, metadata, mode)
                     .err()
                     .expect("4:4:4 must reject before device initialization");
-                assert!(
-                    error
-                        .to_string()
-                        .contains("4:4:4 requires shared Vulkan Video")
-                );
+                assert!(error.to_string().contains(
+                    if cfg!(feature = "hardware-only") && mode == FfmpegMode::Software {
+                        "hardware-only"
+                    } else {
+                        "4:4:4 requires shared Vulkan Video"
+                    }
+                ));
             }
             assert!(!cpu_conversion_allowed(metadata, Pixel::NV12));
         }
@@ -1968,8 +2461,9 @@ mod tests {
     #[test]
     fn cpu_output_has_no_foreign_gpu_metadata() {
         let format = StreamFormat::video_default(2, 2).unwrap();
-        let mut decoder =
-            FfmpegDecoder::open(VideoCodec::H264, format, FfmpegMode::Software).unwrap();
+        let Some(mut decoder) = software_decoder(VideoCodec::H264, format) else {
+            return;
+        };
         let decoded = frame::Video::new(Pixel::NV12, 2, 2);
         let output = decoder.convert_frame(&decoded).unwrap();
         assert_eq!(output.planes.len(), 2);
@@ -1995,6 +2489,11 @@ mod tests {
         let format = StreamFormat::video_default(64, 64).unwrap();
         let opened = FfmpegDecoder::open(VideoCodec::Av1, format, FfmpegMode::Software);
         let probe = super::super::probe_ffmpeg_software(VideoCodec::Av1);
+        if cfg!(feature = "hardware-only") {
+            assert!(opened.err().unwrap().to_string().contains("hardware-only"));
+            assert!(probe.unwrap_err().contains("hardware-only"));
+            return;
+        }
         if !available {
             assert!(matches!(opened, Err(Error::Unavailable { .. })));
             assert!(probe.is_err());

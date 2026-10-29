@@ -42,8 +42,12 @@ AcceptanceSession::AcceptanceSession(QGuiApplication &application,
 {
     QObject::connect(&m_engine, &QQmlApplicationEngine::warnings, this,
                      [this](const QList<QQmlError> &warnings) {
-                         m_qmlWarningOccurred = true;
                          for (const auto &warning : warnings) {
+                             const auto evicted = m_engine.rootContext()->contextProperty(u"ArtworkEvictionUrls"_s)
+                                 .toMap().value(u"cached"_s).toString();
+                             const bool expectedEviction = m_smokeTest && m_arguments.contains(u"--smoke-store-paging"_s)
+                                 && !evicted.isEmpty() && warning.description().endsWith(u"Cannot open: "_s + evicted);
+                             if (!expectedEviction) m_qmlWarningOccurred = true;
                              const auto message = warning.toString().toUtf8();
                              std::fprintf(stderr, "%s\n", message.constData());
                          }

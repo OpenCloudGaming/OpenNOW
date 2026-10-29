@@ -1,4 +1,7 @@
 {
+  "windowsSetup": {
+    "destinationConflict": "This folder contains application directories that do not belong to OpenNOW. Choose a separate OpenNOW folder."
+  },
   "updatesPage": {
     "versionUpgrade": "%1  →  %2 · %3",
     "downloadAmount": "%1 of %2 MB",
@@ -37,6 +40,16 @@
     "whatsNew": "WHAT'S NEW",
     "upToDate": "You're up to date"
   },
+  "macPointerLock": {
+    "title": "Pointer lock",
+    "description": "Capture the mouse for unrestricted movement. Temporarily released for menus and when OpenNOW loses focus.",
+    "off": "Pointer lock is off",
+    "enabledState": "ON",
+    "disabledState": "OFF",
+    "offHint": "Pointer lock is off. Mouse movement can stop at screen edges.",
+    "controlsHint": "Change pointer lock in the stream menu (Ctrl+G) or Settings > Controls.",
+    "enable": "Enable pointer lock"
+  },
   "flightControls": {
     "heading": "FLIGHT CONTROLS & WHEELS",
     "description": "Sticks, throttles, pedals and wheels on the supported list reach the game as the real device, not as an Xbox controller.",
@@ -63,6 +76,12 @@
     "ignored": "IGNORED",
     "ready": "READY",
     "declinedDescription": "%1 · The server declined this device. It stays idle and is not emulated as a controller.",
+    "noPermission": "NO PERMISSION",
+    "noPermissionDescription": "%1 · OpenNOW has no permission to open this device. Add a udev rule that grants access to its hidraw node.",
+    "noPermissionDetail": "no permission to open, not sent",
+    "noHidPath": "NO HID PATH",
+    "noHidPathDescription": "%1 · The system exposes no hidraw device for it, so it can't be forwarded. Check its kernel driver, or turn forwarding off to use it as a controller.",
+    "noHidPathDetail": "no hidraw device, not sent",
     "controllerDescription": "Mapped as an Xbox controller. Some axes and buttons may not reach the game.",
     "ignoredDescription": "%1 · SDL has no controller mapping for it, so the game doesn't receive it",
     "usbDescription": "%1 · USB %2",
@@ -368,6 +387,8 @@
     "frameGeneration": "FRAME GEN 2×",
     "packetLoss": "Packet loss · %1%",
     "healthy": "Stream healthy",
+    "decoderLimited": "Decoder can't keep up",
+    "decoderLimitedBody": "This device is dropping frames while decoding. Lower the resolution or frame rate in Settings.",
     "maximum": "max %1 · 60 s",
     "sessionTotal": "session total"
   },
@@ -2860,6 +2881,7 @@
       "s_18cea849": "The OpenNOW core is not ready",
       "s_1ac6fef1": "The OpenNOW core is still starting",
       "s_f9e99e88": "The desktop compositor did not allow OpenNOW to capture the stream.",
+      "stream_frame_screenshot_failed": "No video frame is available, or the screenshot could not be saved.",
       "s_92782fd0": "The native stream window is not active.",
       "s_1a38a57c": "The provider does not expose a supported friends service.",
       "s_4d2a7da7": "The requested GeForce NOW game was not found in the current catalog.",
@@ -3495,6 +3517,13 @@
     "s_qt_about_tagline": "Your games, anywhere.",
     "s_qt_update_confirm": "OpenNOW will close to install the verified update. Continue?",
     "s_qt_update_failed": "Update could not be completed",
+    "s_qt_clock_title": "Check your computer's clock",
+    "s_qt_clock_hours": "about %1 hours",
+    "s_qt_clock_minutes": "%1 minutes",
+    "s_qt_clock_ahead": "Your computer's clock is %1 ahead of GeForce NOW.",
+    "s_qt_clock_behind": "Your computer's clock is %1 behind GeForce NOW.",
+    "s_qt_clock_fix": "Signing in, your library and server list need the correct time. Turn on automatic date and time in your system settings, then restart OpenNOW.",
+    "s_qt_clock_sign_in_blocked": "Your computer's clock is wrong, so you can't sign in yet. Turn on automatic date and time in your system settings, then try again.",
     "s_qt_backend_auto_description": "Auto uses DX11 hardware decoding. DX12 and Vulkan texture sharing are not supported by the Windows stream view yet. Applies to the next stream.",
     "s_qt_backend_description": "Choose a supported decoder. Auto never falls back to software. Applies to the next stream.",
     "s_qt_codec_unavailable": "Not supported by the detected decoder or the selected color quality",
@@ -4317,5 +4346,30 @@
     "shows_the_live_status": "shows the live status",
     "in_a_session_shows_what_really_applies": "in a session shows what really applies",
     "dlss_overrides": "DLSS overrides"
+  },
+  "windowControls": {
+    "minimize": "Minimize",
+    "maximize": "Maximize",
+    "restore": "Restore",
+    "close": "Close"
+  },
+  "streamEndNotice": {
+    "streamEnded": "STREAM ENDED",
+    "sessionEnded": "SESSION ENDED",
+    "errorTitle": "The stream ended unexpectedly",
+    "errorBodyGame": "The cloud server closed your %1 session. You can start it again from here.",
+    "errorBody": "The cloud server closed your session. You can start it again from here.",
+    "idleTitle": "Closed after inactivity",
+    "idleBodyGame": "%1 didn't get any input for a while, so the session was closed. Start it again whenever you're ready.",
+    "idleBody": "Your game didn't get any input for a while, so the session was closed. Start it again whenever you're ready.",
+    "timeLimitTitle": "Session time limit reached",
+    "timeLimitBodyGame": "%1 ran for the longest session your membership allows. Start a new session to keep playing.",
+    "timeLimitBody": "Your game ran for the longest session your membership allows. Start a new session to keep playing.",
+    "errorCode": "Error code: %1",
+    "copy": "Copy",
+    "copied": "Copied",
+    "copyErrorCode": "Copy error code",
+    "errorCodeCopied": "Error code copied",
+    "copyCode": "Copy code"
   }
 }

@@ -69,16 +69,16 @@ class CIReleaseTrustTest(unittest.TestCase):
         for step in windows.split("      - name: ")[1:]:
             if "secrets.OPENNOW_WINDOWS_" in step:
                 self.assertIn("if: inputs.windows_signing_mode == 'authenticode'", step)
-        for name in ("Authenticode-sign application binaries", "Authenticode-sign MSI"):
+        for name in ("Authenticode-sign application binaries", "Authenticode-sign setup.exe"):
             step = windows.split(f"      - name: {name}\n", 1)[1].split("      - name:", 1)[0]
             self.assertIn("if: inputs.windows_signing_mode == 'authenticode'", step)
             self.assertIn("Invoke-OpenNowSignTool sign", step)
             self.assertIn("Invoke-OpenNowSignTool verify /pa /all", step)
             self.assertNotIn("continue-on-error", step)
-        verify = windows.split("      - name: Verify MSI and portable ZIP payloads\n", 1)[1].split("      - name:", 1)[0]
+        verify = windows.split("      - name: Verify portable ZIP payload\n", 1)[1].split("      - name:", 1)[0]
         self.assertNotIn("        if:", verify)
-        self.assertEqual(verify.count("Assert-OpenNowPackagePayload -Root"), 2)
-        self.assertEqual(verify.count("Assert-OpenNowSignedPackage -Root"), 2)
+        self.assertEqual(verify.count("Assert-OpenNowPackagePayload -Root"), 1)
+        self.assertEqual(verify.count("Assert-OpenNowSignedPackage -Root"), 1)
         self.assertIn("always() && inputs.windows_signing_mode == 'authenticode'", windows)
 
     def test_windows_artifact_names_and_inventory_record_platform_signing_mode(self):

@@ -142,15 +142,14 @@ input device. A nonempty `microphoneDeviceId` is rejected rather than silently
 capturing a different device.
 
 The native RTSP path requires the server's DESCRIBE to advertise
-`x-nv-general.rtcMicOnNativeBundle:1`. Only then, and with microphone opt-in,
-ANNOUNCE includes that flag and `x-nv-mic.micSsrcConfig.senderSsrc:1`. The existing
-str0m bundle sends the negotiated microphone Opus payload type on SSRC 1,
-independently of downlink audio. Handoffs without a microphone payload type retain
-PT 111. When the handoff supplies a RED payload type and a nonzero redundancy
-level, the sender wraps Opus in RFC 2198 RED with up to three previous frames.
-History is cleared on mute/unmute, and unrepresentable offsets, block lengths,
-or packets above the payload budget reduce redundancy rather than dropping the
-primary frame. This follows the native bundle findings documented in OpenNOW-Mac's
+`x-nv-general.rtcMicOnNativeBundle:1`. Only then does ANNOUNCE include that flag
+and `x-nv-mic.micSsrcConfig.senderSsrc:1`, whether or not capture starts muted. The
+existing str0m bundle sends plain Opus on the bundle's fixed RTC payload type 111
+and SSRC 1, independently of downlink audio. The payload types listed under the
+DESCRIBE `m=mic` section are not the bundle's: downlink audio also arrives on the
+fixed 111/63 mapping that Bifrost hardcodes for its RTC SDP. Plain PT 111 is the
+format verified on live seats by #1014 and by OpenNOW-Mac; upstream RED is not sent
+until a live seat confirms it decodes it. This follows the native bundle findings documented in OpenNOW-Mac's
 `docs/StreamTransportArchitecture.md` (reference revision `88a09bd68598651b367aa4744e7528da9c074d28`).
 Legacy RTSP/UDP microphone carriage is not implemented.
 
@@ -246,8 +245,9 @@ message integrity. Each receiver tracks at most 64 probes. ICE statistics only r
 the sample when the pair's response count changes; rereading old statistics cannot keep
 an old measurement alive.
 
-The bundle remembers up to 64 emitted ICE transactions and forwards each authenticated
-success response to the ICE library only once. Delayed duplicate replies must not overwrite
+The NVST bundle and the WebRTC transport each remember up to 64 emitted ICE transactions
+and forward each authenticated success response to the ICE library only once. Delayed
+duplicate replies must not overwrite
 the original completion time and turn the age of an old probe into the displayed network RTT.
 This does not cap genuine network latency or filter first replies based on their timing.
 

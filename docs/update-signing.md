@@ -74,40 +74,68 @@ upload is made public.
 
 For version `<version>`, the public nightly inventory contains exactly these packages:
 
-- `OpenNOW-Qt-<version>-Windows-x64.msi`
 - `OpenNOW-Qt-<version>-Windows-x64.zip`
 - `OpenNOW-Qt-<version>-Windows-x64-setup.exe`
-- `OpenNOW-Qt-<version>-Windows-arm64.msi`
 - `OpenNOW-Qt-<version>-Windows-arm64.zip`
 - `OpenNOW-Qt-<version>-Windows-arm64-setup.exe`
 - `OpenNOW-Qt-<version>-Linux-x64.AppImage`
 - `OpenNOW-Qt-<version>-Linux-x64.deb`
 - `OpenNOW-Qt-<version>-Linux-arm64.AppImage`
 - `OpenNOW-Qt-<version>-Linux-arm64.deb`
+- `OpenNOW-Qt-<version>-Linux-x64.flatpak`
+- `OpenNOW-Qt-<version>-Linux-arm64.flatpak`
 - `OpenNOW-Qt-<version>-Darwin-arm64.dmg`
+- `OpenNOW-Qt-<version>-Darwin-x64.dmg`
 
 Both AppImages also have versioned `.AppImage.zsync` sidecars. `setup.exe` is a
-Windows install artifact for each architecture. All thirteen assets have
+Windows install artifact for each architecture. All fourteen assets have
 exact sibling manifests. `RELEASE-INFO.json` retains the immutable
 package inventory and changes `updates` from `manual-download` to `signed-manifest`.
 `platformSigning` remains `unsigned`: update signatures do not provide Authenticode
-or macOS notarization. Final `SHA256SUMS` covers all thirteen assets, all thirteen manifests,
-and the rewritten release metadata. The validation-only macOS ZIP is never published.
+or macOS notarization. Final `SHA256SUMS` covers all fourteen assets, all fourteen manifests,
+and the rewritten release metadata. Neither macOS validation ZIP is published nightly.
 
-The production `qt-release-candidate.yml` contract uses twelve Linux, Windows,
-and macOS packages plus two AppImage sidecars, optional Windows platform signing and
+The production `qt-release-candidate.yml` contract uses fourteen Linux, Windows,
+and macOS packages plus two AppImage sidecars. It adds both
+`OpenNOW-Qt-<version>-Darwin-arm64.zip` and `OpenNOW-Qt-<version>-Darwin-x64.zip`
+to the nightly package set. It uses optional Windows platform signing and
 required macOS platform signing, isolated update signing,
 and a candidate artifact. See [Set up signed Qt releases](qt-release-signing-setup.md)
 for production credentials and first-release instructions.
 `qt-stable-release.yml` promotes only a successful candidate run with the exact reviewed
 main SHA and project version. It verifies the run's repository/workflow provenance,
 candidate inventory and production-key signatures before flattening and publishing
-the unchanged packages and manifests. Its 30-file release includes fourteen assets,
-fourteen manifests, metadata and checksums. The macOS Developer ID identity and
+the unchanged packages and manifests. Promotion verifies the Intel macOS ZIP and its
+manifest, then excludes both from publication. The Apple Silicon ZIP remains public.
+The resulting 32-file release includes fifteen assets, fifteen manifests, metadata
+and checksums. The macOS Developer ID identity and
 notarization from the candidate are preserved; stable releases must not replace
 these with ad-hoc packages because the update helper rejects a changed signing identity.
 Nightly release notes use GitHub-generated changelogs. Installation guidance and known
 limitations are documented in [`qt-nightly-release.md`](qt-nightly-release.md).
+
+The inventory counts include AppImage sidecars as assets:
+
+| Inventory | Assets | Manifests | Other files | Total files |
+| --- | --- | --- | --- | --- |
+| Signed nightly | 14 | 14 | 2 | 30 |
+| Signed candidate | 16 | 16 | 7 | 39 |
+| Promoted stable | 15 | 15 | 2 | 32 |
+
+Nightly and stable each include `RELEASE-INFO.json` and `SHA256SUMS` as their other
+files. The nested candidate retains six platform `SHA256SUMS` files, one per Linux,
+Windows, and macOS architecture, plus `RELEASE-CANDIDATE-INVENTORY.txt`. Flatpak
+artifacts do not add checksum files. The candidate inventory covers all 38 other
+files; the final nightly and stable checksum files cover 29 and 31 files respectively.
+
+These counts follow `nightly_release.py`, the candidate workflow's inventory step,
+and `promote_candidate.py`. Recheck the package list and generated inventories with
+fixture-only signing keys:
+
+```sh
+PYTHONPATH=opennow-qt/tests python3 -m unittest \
+  test_nightly_release test_signed_nightly_release test_candidate_promotion
+```
 
 Nightly macOS packaging enables `OPENNOW_MACOS_ADHOC_SIGN`. Qt deployment signs nested
 code with `macdeployqt -codesign=-`, then the final install script seals the complete
@@ -124,39 +152,31 @@ name, manifest signature, declared size, and SHA-256 digest before atomically st
 anything executable. It re-hashes the staged file immediately before install.
 AppImage replacement keeps a `.previous` rollback copy and restores it if the updated
 image cannot restart; native installers remain responsible for their platform rollback.
-Switching stable/nightly channels on Windows MSI or macOS can require a manual installation:
-MSI upgrade families and macOS signing identities intentionally differ. Do not relax
-those checks to turn cross-channel migration into a silent update.
+Switching stable/nightly channels on macOS can require a manual installation: macOS
+signing identities intentionally differ. Do not relax those checks to turn cross-channel
+migration into a silent update.
 
 ## Windows installation identity
 
-`opennow-qt/cmake/WindowsInstaller.cmake` preserves the existing MSI UpgradeCodes:
+OpenNOW no longer publishes Windows MSI packages. Earlier MSI releases registered these
+UpgradeCodes, shared by x64 and ARM64:
 
 - Stable: `6E81F7AE-B19D-4E87-A94A-2B2F01EBF762`
 - Nightly: `9661F4F8-656C-4B64-9035-01B04F4822B1`
 - Supporter: `B3AF8A40-5F44-445A-AD99-CECE00593601`
 
-Each channel's code is shared by x64 and ARM64 for compatibility with installed
-packages. It identifies an upgrade family, not an architecture. The helper must also
-validate the incoming MSI's SummaryInformation architecture and match an installed
-related product's registered root to the running installation. Portable ZIPs do not
-create an MSI product registration. A product registered elsewhere does not make a
-portable copy an MSI installation.
-
-CPack's WiX generator sets `ARPINSTALLLOCATION` to the resolved `[INSTALL_ROOT]`
-after `CostFinalize`. The installer policy leaves `CPACK_WIX_PROPERTY_ARPINSTALLLOCATION`
-unset so CPack also restores the previous product's registered root through its secure
-`INSTALL_ROOT` property. Do not add a second `SetARPINSTALLLOCATION` action in a product
-patch. Windows Installer stores the resolved value as `InstallLocation`, including
-custom installation paths.
-CPack still generates a new ProductCode for each MSI package and uses its existing
-`MajorUpgrade` behavior. The Windows installer integration test checks the registered
-root and requires exactly one related product after each successful channel upgrade.
+The core treats an installation as MSI-registered only when a related product's registered
+root matches the running installation. It never updates such an installation in place and
+asks the user to replace it once with setup.exe. setup.exe
+(`opennow-qt/packaging/windows/setup.iss`) checks the same codes and offers to uninstall the
+registered product before it installs into `%LOCALAPPDATA%\OpenNOW`. Portable ZIPs and
+setup.exe do not create an MSI product registration. A product registered elsewhere does not
+make a portable copy an MSI installation.
 
 The Windows update helper builds separately in `update-helper-rust-target` with
 `RUSTFLAGS=-C target-feature=+crt-static` and an explicit Rust target. That invocation
 clears inherited encoded Rust flags without changing core or streamer builds. The
 helper is deployed as the usual sibling `opennow-update-helper.exe`. Final Windows
-MSI and ZIP validation rejects helper imports outside an explicit Windows system-DLL
+ZIP validation rejects helper imports outside an explicit Windows system-DLL
 list, so Qt libraries and a separately installed Visual C++ runtime cannot mask a
 dependency that would break the helper when it runs outside the installation.

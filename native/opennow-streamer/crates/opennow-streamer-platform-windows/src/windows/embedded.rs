@@ -1196,15 +1196,12 @@ fn run_decoder_worker(
                 break;
             };
             if frame.reset_decoder && submitted_any {
-                decoder.stop();
                 decoded
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .clear();
-                decoder_generation.fetch_add(1, Ordering::AcqRel);
-                match Decoder::new(&device, format, mode) {
-                    Ok(replacement) => {
-                        decoder = replacement;
+                match decoder.flush() {
+                    Ok(()) => {
                         submitted_any = false;
                         // The queued frames follow this keyframe. Clearing them
                         // silently breaks the next P-frame's reference chain.
@@ -1213,6 +1210,7 @@ fn run_decoder_worker(
                         break;
                     }
                     Err(message) => {
+                        decoder.stop();
                         opennow_streamer_protocol::log::diagnostic(
                             "WARN",
                             "decode",

@@ -31,6 +31,7 @@ private:
     [[nodiscard]] int startSessionFullscreenWorkload();
     [[nodiscard]] int startSessionLaunchWorkload();
     [[nodiscard]] int startConsoleSessionWorkload();
+    [[nodiscard]] int startSteamLaunchWorkload();
 
     QGuiApplication &m_application;
     QQmlApplicationEngine &m_engine;

@@ -13,10 +13,20 @@ QtObject {
     property var history: []
     property bool noticeClaimed: false
     property var lastNoticeAt: null
+    readonly property int decoderDropWindowMs: 5000
+    readonly property int decoderDropThreshold: 30
+    property var decoderDrops: []
+    property bool decoderLimited: false
 
-    onActiveChanged: reset()
+    onActiveChanged: {
+        reset()
+        decoderDrops = []
+        decoderLimited = false
+    }
     onSessionIdChanged: {
         reset()
+        decoderDrops = []
+        decoderLimited = false
         lastNoticeAt = null
     }
 
@@ -34,6 +44,18 @@ QtObject {
             lastNoticeAt = null
         if (lastSampleAt !== null && (now < lastSampleAt || now - lastSampleAt >= 5000))
             reset()
+        const recentDrops = decoderDrops.filter(drop => drop.at <= now && now - drop.at < decoderDropWindowMs)
+        if (recentDrops.length !== decoderDrops.length)
+            decoderDrops = recentDrops
+        decoderLimited = recentDrops.reduce((total, drop) => total + drop.count, 0) >= decoderDropThreshold
+    }
+
+    function acceptDecoderDrops(count) {
+        if (!active || !Number.isSafeInteger(count) || count <= 0)
+            return
+        const now = clock()
+        decoderDrops = decoderDrops.concat([{at: now, count: count}])
+        expire(now)
     }
 
     function acceptSample(value) {
@@ -60,21 +82,24 @@ QtObject {
         sampleAccepted()
     }
 
-    function claimNotice() {
+    function canClaimNotice() {
         const now = clock()
         expire(now)
-        if (status !== "unstable" || noticeClaimed) return false
-        if (lastNoticeAt !== null && now - lastNoticeAt < 30000)
-            return false
+        return status === "unstable" && !noticeClaimed
+            && (lastNoticeAt === null || now - lastNoticeAt >= 30000)
+    }
+
+    function claimNotice() {
+        if (!canClaimNotice()) return false
         noticeClaimed = true
-        lastNoticeAt = now
+        lastNoticeAt = clock()
         return true
     }
 
     property Timer freshnessTimer: Timer {
         interval: 250
         repeat: true
-        running: root.active && root.lastSampleAt !== null
+        running: root.active && (root.lastSampleAt !== null || root.decoderDrops.length > 0)
         onTriggered: root.expire(root.clock())
     }
 }

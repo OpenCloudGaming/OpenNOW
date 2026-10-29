@@ -227,6 +227,7 @@ qt_add_qml_module(opennow-qt
         qml/Main.qml
         qml/components/AppChrome.qml
         qml/components/UpdateFailureDialog.qml
+        qml/components/ClockSkewDialog.qml
         qml/components/ShellViewport.qml
         qml/components/ArtworkSource.qml
         qml/components/ControllerGlyph.qml
@@ -253,6 +254,7 @@ qt_add_qml_module(opennow-qt
         qml/overlays/ConsoleSessionConflict.qml
         qml/overlays/ConsoleSessionReport.qml
         qml/overlays/ConsoleQueueAd.qml
+        qml/overlays/ConsoleStreamEndNotice.qml
         qml/components/GlassPanel.qml
         qml/components/HintBar.qml
         qml/components/HomeTileMenu.qml
@@ -266,11 +268,15 @@ qt_add_qml_module(opennow-qt
         qml/components/ScreenBackground.qml
         qml/components/SettingRow.qml
         qml/components/StreamCaptureStatus.qml
+        qml/components/StreamEndNoticeCopy.qml
         qml/components/StreamIdleWarning.qml
         qml/components/StreamInputNotice.qml
+        qml/components/StreamPointerLockHint.qml
         qml/components/TogglePill.qml
         qml/components/TenBitWarningDialog.qml
         qml/components/VirtualKeyboard.qml
+        qml/components/WindowResizeEdges.qml
+        qml/components/WindowTitleBar.qml
         qml/desktop/auth/DesktopAccountChip.qml
         qml/desktop/auth/DesktopAccountPicker.qml
         qml/desktop/auth/DesktopAccountTile.qml
@@ -358,6 +364,7 @@ qt_add_qml_module(opennow-qt
         qml/desktop/stream/DesktopSessionStarting.qml
         qml/desktop/stream/DesktopStreamControllersPage.qml
         qml/desktop/stream/DesktopStreamDrawerButton.qml
+        qml/desktop/stream/DesktopStreamEndNotice.qml
         qml/desktop/stream/DesktopStreamExitConfirm.qml
         qml/desktop/stream/DesktopStreamOverlayHost.qml
         qml/desktop/stream/DesktopStreamScreen.qml

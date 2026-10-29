@@ -1,0 +1,87 @@
+name: decky
+
+on:
+  pull_request:
+    branches:
+      - dev
+      - main
+    paths:
+      - ".github/workflows/decky.yml"
+      - "decky/**"
+      - "opennow-qt/packaging/update-public-key.base64"
+  push:
+    branches:
+      - dev
+      - main
+    paths:
+      - ".github/workflows/decky.yml"
+      - "decky/**"
+      - "opennow-qt/packaging/update-public-key.base64"
+
+permissions:
+  contents: read
+
+jobs:
+  plugin:
+    name: Decky plugin
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: decky
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Backend tests
+        run: python -m unittest discover -s tests -t .
+      - name: Install frontend dependencies
+        run: npx --yes pnpm@9 install
+      - name: Frontend tests
+        run: node --experimental-vm-modules --test tests/*.test.mjs
+      - name: Typecheck
+        run: npx --yes pnpm@9 run typecheck
+      - name: Build
+        run: npx --yes pnpm@9 run build
+      - name: Package
+        run: npx --yes pnpm@9 run package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OpenNOW-decky
+          path: decky/out/OpenNOW.zip
+          if-no-files-found: error
+
+
+  publish:
+    name: Publish plugin ZIP
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    needs: plugin
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: decky/package.json
+          sparse-checkout-cone-mode: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: OpenNOW-decky
+      - name: Release this plugin version once
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="decky-v$(jq -r .version decky/package.json)"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "$tag is already published; bump decky/package.json to publish a new plugin build."
+            exit 0
+          fi
+          url="https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/OpenNOW.zip"
+          gh release create "$tag" OpenNOW.zip --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --prerelease --latest=false --title "OpenNOW Decky plugin ${tag#decky-v}" \
+            --notes "OpenNOW plugin for Decky Loader. Install it from Decky's Developer tab with Install Plugin from URL: $url"

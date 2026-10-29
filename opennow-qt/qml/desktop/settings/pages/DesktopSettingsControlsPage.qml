@@ -28,10 +28,21 @@ Column {
                 DesktopSettingsSlider { width: parent.width; from: 0.1; to: 3; stepSize: 0.05; decimals: 2; suffix: "×"; value: Number(controlsRoot.settingsScreen.valueSetting("mouseSensitivity",1)); onCommitted: value => controlsRoot.settingsScreen.setSetting("mouseSensitivity",value) }
                 Text {
                     width: parent.width
+                    visible: Qt.platform.os !== "osx"
                     text: qsTr("Follows the remote cursor · F8 toggles capture")
                     color: Theme.textMuted; font.family: Theme.bodyFont; font.pixelSize: DesktopTokens.captionSize
                     wrapMode: Text.WordWrap
                 }
+            }
+        }
+        DesktopSettingsRow {
+            visible: Qt.platform.os === "osx"
+            width: parent.width; paperStyle: true; glyph: "mouse"; title: qsTr("Pointer lock")
+            description: qsTr("Capture the mouse for unrestricted movement. Temporarily released for menus and when OpenNOW loses focus.")
+            DesktopSettingsToggle {
+                objectName: "macPointerLockToggle"
+                checked: controlsRoot.settingsScreen.boolSetting("macPointerLockEnabled", true)
+                onValueChangedByUser: value => controlsRoot.settingsScreen.setSetting("macPointerLockEnabled", value)
             }
         }
         DesktopSettingsChoice {

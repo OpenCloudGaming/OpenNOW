@@ -1,4 +1,5 @@
 import copy
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -6,7 +7,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packaging"))
-from verify_linux_package import verify_capabilities, verify_package
+from verify_linux_package import verify_capabilities, verify_core, verify_core_capabilities, verify_package
 
 
 class LinuxPackageDependenciesTest(unittest.TestCase):
@@ -67,6 +68,105 @@ file(WRITE "{source.as_posix()}/architecture.txt" "${{CPACK_DEBIAN_PACKAGE_ARCHI
             helper.chmod(0o600)
             with self.assertRaisesRegex(ValueError, "executable update helper"):
                 verify_package(bin_dir)
+
+
+class CorePackageCapabilitiesTest(unittest.TestCase):
+    def setUp(self):
+        self.message = {"id": "package-core", "ok": True,
+                        "result": {"protocolVersion": 6, "capabilities": [
+                            "catalog.libraryPages.v1", "catalog.metadata.v1",
+                            "account.syncObservation.v1", "catalog.languages.v1",
+                            "queue.servers.v1", "auth.accountPicker.v1",
+                            "session.terminalCleanup.v1", "session.allocationSettlement.v1",
+                            "session.adReportIdentity.v1", "account.mutations.scoped.v1",
+                            "catalog.storeLocal.v2"]}}
+
+    def test_each_runtime_capability_is_required(self):
+        for capability in self.message["result"]["capabilities"]:
+            with self.subTest(capability=capability):
+                message = copy.deepcopy(self.message)
+                message["result"]["capabilities"].remove(capability)
+                with self.assertRaises(ValueError):
+                    verify_core_capabilities(message)
+
+    def test_installed_core_rejects_each_missing_runtime_capability(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "opennow-core"
+            for capability in self.message["result"]["capabilities"]:
+                with self.subTest(capability=capability):
+                    message = copy.deepcopy(self.message)
+                    message["result"]["capabilities"].remove(capability)
+                    binary.write_text(
+                        "#!/usr/bin/env python3\nimport sys\nsys.stdin.readline()\n"
+                        f"print({json.dumps(message)!r}, flush=True)\n"
+                    )
+                    binary.chmod(0o700)
+                    with self.assertRaises(ValueError):
+                        verify_core(Path(directory))
+
+    def test_store_replacement_capability_is_required(self):
+        verify_core_capabilities(self.message)
+        self.message["result"]["capabilities"].remove("catalog.storeLocal.v2")
+        self.message["result"]["capabilities"].append("catalog.storeLocal.v1")
+        with self.assertRaisesRegex(ValueError, "Store replacement support"):
+            verify_core_capabilities(self.message)
+
+    def test_scoped_account_mutation_capability_is_required(self):
+        self.message["result"]["capabilities"].remove("account.mutations.scoped.v1")
+        with self.assertRaisesRegex(ValueError, "scoped account mutations"):
+            verify_core_capabilities(self.message)
+
+    def test_allocation_settlement_capability_is_required(self):
+        self.message["result"]["capabilities"].remove("session.allocationSettlement.v1")
+        with self.assertRaisesRegex(ValueError, "allocation settlement"):
+            verify_core_capabilities(self.message)
+
+    def test_ad_report_identity_capability_is_required(self):
+        self.message["result"]["capabilities"].remove("session.adReportIdentity.v1")
+        with self.assertRaisesRegex(ValueError, "ad report identity"):
+            verify_core_capabilities(self.message)
+
+    def test_previous_protocol_is_rejected(self):
+        self.message["result"]["protocolVersion"] = 5
+        with self.assertRaisesRegex(ValueError, "Store replacement support"):
+            verify_core_capabilities(self.message)
+
+    def test_core_failure_is_not_a_valid_handshake(self):
+        self.message["ok"] = False
+        with self.assertRaisesRegex(ValueError, "Store replacement support"):
+            verify_core_capabilities(self.message)
+
+    def test_installed_core_probe_checks_the_real_response(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "opennow-core"
+            for capability in ("catalog.storeLocal.v2", "catalog.storeLocal.v1"):
+                message = copy.deepcopy(self.message)
+                message["result"]["capabilities"].remove("catalog.storeLocal.v2")
+                message["result"]["capabilities"].append(capability)
+                binary.write_text(
+                    "#!/usr/bin/env python3\nimport json, sys\n"
+                    "request = json.loads(sys.stdin.readline())\n"
+                    "assert request['method'] == 'core.hello' and request['params']['protocolVersion'] == 6\n"
+                    f"print({json.dumps(message)!r}, flush=True)\n"
+                )
+                binary.chmod(0o700)
+                if capability.endswith("v2"):
+                    verify_core(Path(directory))
+                else:
+                    with self.assertRaisesRegex(ValueError, "Store replacement support"):
+                        verify_core(Path(directory))
+
+    def test_installed_core_without_ad_report_identity_is_rejected(self):
+        self.message["result"]["capabilities"].remove("session.adReportIdentity.v1")
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "opennow-core"
+            binary.write_text(
+                "#!/usr/bin/env python3\nimport sys\nsys.stdin.readline()\n"
+                f"print({json.dumps(self.message)!r}, flush=True)\n"
+            )
+            binary.chmod(0o700)
+            with self.assertRaisesRegex(ValueError, "ad report identity"):
+                verify_core(Path(directory))
 
 
 class LinuxPackageCapabilitiesTest(unittest.TestCase):

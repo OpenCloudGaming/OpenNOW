@@ -2,7 +2,7 @@ import QtQuick
 
 QtObject {
     id: root
-    required property var coreClient
+    required property var persistSetting
     required property var persistedSettings
     required property bool ready
     required property bool signedIn
@@ -102,10 +102,7 @@ QtObject {
         if (remainingKeys[0] === "onboardingCompleted" && !verifyRequirements())
             return
         requestKey = remainingKeys[0]
-        requestId = coreClient.request("settings.set", {
-            key: requestKey,
-            value: requestKey === "onboardingCompleted" ? true : draft[requestKey]
-        })
+        requestId = persistSetting(requestKey, requestKey === "onboardingCompleted" ? true : draft[requestKey])
         if (requestId === "")
             fail(qsTr("Setup could not be saved. Your choices are still here. Try again."))
     }
@@ -150,12 +147,17 @@ QtObject {
         error = message
     }
 
+    function interruptForSettingsReset() {
+        if (saving) fail(qsTr("Setup could not be saved. Your choices are still here. Try again."))
+        if (replaying) failReplay(qsTr("Setup could not be reset. Try again."))
+    }
+
     function replay() {
         if (!ready || !replayAllowed || saving || replaying)
             return
         replayError = ""
         replaying = true
-        replayRequestId = coreClient.request("settings.set", {key: "onboardingCompleted", value: false})
+        replayRequestId = persistSetting("onboardingCompleted", false)
         if (replayRequestId === "")
             failReplay(qsTr("Setup could not be reset. Try again."))
     }

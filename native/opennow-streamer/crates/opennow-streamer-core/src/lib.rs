@@ -13,11 +13,11 @@ use decode_progress::{
 use opennow_streamer_hid::HidRuntime;
 use opennow_streamer_platform::{
     CapturedInput, CapturedInputQueue, CapturedInputSample, DecodeStageTimings,
-    DecodeTimingsReport, EncodedFrame, ManualRecordingSummary, MediaCodec, MediaColorQuality,
-    MediaControl, MediaFeedback, MediaRuntime, MediaRuntimeControl, MediaSession, MediaSink,
-    MediaStreamConfig, MediaVideoCodec, PushOutcome, StreamShortcutAction, StreamShortcutBindings,
-    record_matroska, record_replay_matroska, supports_audio_decode, supports_audio_output,
-    video_backends,
+    DecodeTimingsReport, EncodedFrame, ManualRecordingError, ManualRecordingSummary, MediaCodec,
+    MediaColorQuality, MediaControl, MediaFeedback, MediaRuntime, MediaRuntimeControl,
+    MediaSession, MediaSink, MediaStreamConfig, MediaVideoCodec, MouseSettings, PushOutcome,
+    StreamShortcutAction, StreamShortcutBindings, record_matroska, record_replay_matroska,
+    supports_audio_decode, supports_audio_output, video_backends,
 };
 use opennow_streamer_protocol::{
     Capabilities, Command, PROTOCOL_VERSION, RecordingCutReason, ReplayBufferConfig,
@@ -40,6 +40,8 @@ mod nvst_rtsp;
 mod queue_drops;
 #[cfg(test)]
 mod recording_tests;
+mod signaling_io;
+mod startup;
 mod telemetry;
 mod webrtc;
 
@@ -47,9 +49,12 @@ use microphone::MicrophoneController;
 
 use nvst_rtsp::{ActiveNvstRtspSession, prepare_owned_nvst};
 use queue_drops::QueueDropReports;
-use telemetry::{TELEMETRY_INTERVAL, media_telemetry};
+use telemetry::{MouseInputTimings, TELEMETRY_INTERVAL, media_telemetry};
 
+pub use opennow_streamer_transport::presentation_timing;
 pub use opennow_streamer_transport::{EncodedMediaFrame, MediaConsumer};
+use presentation_timing::PresentationTimingState;
+pub use startup::{EngineCancellation, StartupToken};
 
 #[derive(Clone)]
 pub struct EventSender {
@@ -154,13 +159,23 @@ trait NvstSessionResources {
     fn request_keyframe(&self);
     fn cut_recording(&self, reason: RecordingCutReason);
     fn acknowledge_video_frame(&self, frame_index: u32, bytes: u32);
+    fn invalidate_presentation(&self) {}
+    fn observe_video_admission(
+        &self,
+        _generation: u64,
+        _frame: u32,
+        _timestamp: u64,
+        _clock_rate_hz: u32,
+        _at: Instant,
+    ) {
+    }
     fn send_captured_input(&self, bytes: Vec<u8>) -> Result<(), TransportError>;
     fn send_captured_text(
         &self,
         text: opennow_streamer_protocol::text_input::UnicodeText,
         timestamp_us: u64,
     ) -> Result<(), TransportError>;
-    fn apply_cursor(&self, bytes: Vec<u8>);
+    fn apply_cursor(&self, start_id: String, bytes: Vec<u8>);
     fn recover(&self) -> Result<(), String>;
     fn stop(&self);
 }
@@ -204,6 +219,23 @@ impl NvstSessionResources for ActiveNvstResources {
             .publish_accepted_frame(frame_index, bytes, Instant::now());
     }
 
+    fn invalidate_presentation(&self) {
+        self.feedback.presentation().invalidate_scene();
+    }
+
+    fn observe_video_admission(
+        &self,
+        generation: u64,
+        frame: u32,
+        timestamp: u64,
+        clock_rate_hz: u32,
+        at: Instant,
+    ) {
+        self.feedback
+            .presentation()
+            .admit(generation, frame, timestamp, clock_rate_hz, at);
+    }
+
     fn send_captured_input(&self, bytes: Vec<u8>) -> Result<(), TransportError> {
         self.bundle.queue_input(bytes, false)
     }
@@ -216,13 +248,14 @@ impl NvstSessionResources for ActiveNvstResources {
         self.bundle.queue_text(text, timestamp_us)
     }
 
-    fn apply_cursor(&self, bytes: Vec<u8>) {
+    fn apply_cursor(&self, start_id: String, bytes: Vec<u8>) {
         if let Some(media) = self.media.as_ref() {
-            media.update_cursor(bytes);
+            media.update_cursor(start_id, bytes);
         }
     }
 
     fn recover(&self) -> Result<(), String> {
+        self.feedback.presentation().invalidate_scene();
         self.bundle
             .recover()
             .map_err(|error| format!("bundle recovery failed: {error}"))?;
@@ -235,6 +268,7 @@ impl NvstSessionResources for ActiveNvstResources {
     }
 
     fn stop(&self) {
+        self.feedback.presentation().deactivate();
         let _ = self.bundle.stop();
         if let Some(mjolnir) = self.mjolnir.as_ref() {
             let _ = mjolnir.stop();
@@ -246,6 +280,8 @@ impl NvstSessionResources for ActiveNvstResources {
 }
 
 pub struct Engine {
+    presentation: Arc<PresentationTimingState>,
+    cancellation: EngineCancellation,
     lifecycle: Arc<Mutex<Lifecycle>>,
     webrtc_session: Option<webrtc::OwnedSession>,
     nvst_transport: Option<NvstUdpReceiverSession>,
@@ -261,6 +297,7 @@ pub struct Engine {
     media_feedback: Option<Receiver<MediaFeedback>>,
     feedback_worker: Option<JoinHandle<PendingMediaFeedback>>,
     recording_worker: Option<RecordingWorker>,
+    recording_terminal: Option<Value>,
     clip_worker: Option<JoinHandle<()>>,
     clip_cancelled: Arc<AtomicBool>,
     replay_budget: Arc<AtomicUsize>,
@@ -270,8 +307,27 @@ pub struct Engine {
 
 struct RecordingWorker {
     request_id: String,
-    thread: JoinHandle<Result<ManualRecordingSummary, String>>,
+    thread: JoinHandle<Result<ManualRecordingSummary, ManualRecordingError>>,
     completed: Arc<AtomicBool>,
+}
+
+fn recording_result(
+    request_id: &str,
+    result: &Result<ManualRecordingSummary, ManualRecordingError>,
+) -> Value {
+    match result {
+        Ok(summary) => json!({
+            "state":"saved", "requestId":request_id,
+            "path":summary.media.path,
+            "videoPackets":summary.media.video_packets,
+            "audioPackets":summary.media.audio_packets,
+            "completion":summary.completion,
+        }),
+        Err(failure) => json!({
+            "state":"failed", "requestId":request_id,
+            "message":failure.message, "completion":failure.completion,
+        }),
+    }
 }
 
 #[derive(Debug)]
@@ -288,6 +344,8 @@ impl Engine {
 
     pub fn with_event_sender(events: EventSender) -> Self {
         Self {
+            presentation: Arc::new(PresentationTimingState::default()),
+            cancellation: EngineCancellation::default(),
             lifecycle: Arc::new(Mutex::new(Lifecycle {
                 state: State::Idle,
                 context: None,
@@ -307,6 +365,7 @@ impl Engine {
             media_feedback: None,
             feedback_worker: None,
             recording_worker: None,
+            recording_terminal: None,
             clip_worker: None,
             clip_cancelled: Arc::new(AtomicBool::new(false)),
             replay_budget: Arc::new(AtomicUsize::new(0)),
@@ -328,6 +387,8 @@ impl Engine {
         media_consumer: MediaConsumer,
     ) -> Self {
         Self {
+            presentation: Arc::new(PresentationTimingState::default()),
+            cancellation: EngineCancellation::default(),
             lifecycle: Arc::new(Mutex::new(Lifecycle {
                 state: State::Idle,
                 context: None,
@@ -347,6 +408,7 @@ impl Engine {
             media_feedback: None,
             feedback_worker: None,
             recording_worker: None,
+            recording_terminal: None,
             clip_worker: None,
             clip_cancelled: Arc::new(AtomicBool::new(false)),
             replay_budget: Arc::new(AtomicUsize::new(0)),
@@ -364,6 +426,8 @@ impl Engine {
         media_runtime: MediaRuntime,
     ) -> Self {
         Self {
+            presentation: Arc::new(PresentationTimingState::default()),
+            cancellation: EngineCancellation::default(),
             lifecycle: Arc::new(Mutex::new(Lifecycle {
                 state: State::Idle,
                 context: None,
@@ -383,6 +447,7 @@ impl Engine {
             media_feedback: None,
             feedback_worker: None,
             recording_worker: None,
+            recording_terminal: None,
             clip_worker: None,
             clip_cancelled: Arc::new(AtomicBool::new(false)),
             replay_budget: Arc::new(AtomicUsize::new(0)),
@@ -405,7 +470,25 @@ impl Engine {
         engine
     }
 
+    pub fn with_presentation_timing(mut self, presentation: Arc<PresentationTimingState>) -> Self {
+        self.presentation = presentation;
+        self
+    }
+
     pub fn handle(&mut self, command: Command) -> (Vec<Value>, bool) {
+        let token = self.cancellation.token();
+        self.handle_with_startup_token(command, token)
+    }
+
+    pub fn set_cancellation(&mut self, cancellation: EngineCancellation) {
+        self.cancellation = cancellation;
+    }
+
+    pub fn handle_with_startup_token(
+        &mut self,
+        command: Command,
+        token: StartupToken,
+    ) -> (Vec<Value>, bool) {
         let summary = opennow_streamer_protocol::log::message_summary(&json!({
             "id": &command.id, "type": &command.kind
         }));
@@ -423,7 +506,7 @@ impl Engine {
             "nvst-bind" => self.nvst_bind(command),
             "nvst-unbind" => self.nvst_unbind(command),
             "nvst-send" => self.nvst_send(command),
-            "start" => self.start(command),
+            "start" => self.start(command, token),
             "input-paused" => self.set_paused(command),
             "surface" => self.update_surface(command),
             "stats-toggle" => Ok(vec![
@@ -455,8 +538,15 @@ impl Engine {
                 format!("Native streamer cannot apply the {} command", command.kind),
             )),
             "stop" => {
-                self.stop(command.reason.as_deref().unwrap_or("stopped"));
-                Ok(vec![response(id, "ok")])
+                if command.recovery
+                    && let Some(session) = self.media_session.as_ref()
+                {
+                    session
+                        .control()
+                        .cut_recording(RecordingCutReason::Interrupted);
+                }
+                let recording = self.stop(command.reason.as_deref().unwrap_or("stopped"));
+                Ok(vec![json!({"id":id, "type":"ok", "recording":recording})])
             }
             "shutdown" => {
                 self.stop(command.reason.as_deref().unwrap_or("shutdown"));
@@ -688,7 +778,14 @@ impl Engine {
         Ok(vec![response])
     }
 
-    fn start(&mut self, command: Command) -> Result<Vec<Value>, Value> {
+    fn start(&mut self, command: Command, token: StartupToken) -> Result<Vec<Value>, Value> {
+        if token.is_cancelled() {
+            return Err(error(
+                Some(&command.id),
+                "nvst-start-aborted",
+                "Session startup was cancelled before dispatch",
+            ));
+        }
         let mut context = parse_context(command.context, &command.id)?;
         validate_context(&context, &command.id)?;
         let audio_device =
@@ -755,7 +852,7 @@ impl Engine {
                     .reserved_nvst_bundle
                     .as_mut()
                     .expect("NVST reservation created above");
-                let result = prepare_owned_nvst(&context, bundle);
+                let result = prepare_owned_nvst(&context, bundle, token.clone());
                 if result.is_ok() {
                     stage.complete();
                 }
@@ -870,10 +967,13 @@ impl Engine {
             let (media_consumer, media_receiver) =
                 std::sync::mpsc::sync_channel(ENCODED_MEDIA_QUEUE_CAPACITY);
             let output = self.events.clone();
+            let presentation = Arc::clone(&self.presentation);
+            let generation = lock_lifecycle(&self.lifecycle).generation.wrapping_add(1);
             let media_worker = match thread::Builder::new()
                 .name("opennow-media-consumer".to_owned())
-                .spawn(move || consume_encoded_media(&output, media_receiver, sink))
-            {
+                .spawn(move || {
+                    consume_encoded_media(&output, media_receiver, sink, presentation, generation)
+                }) {
                 Ok(worker) => worker,
                 Err(spawn_error) => {
                     session.stop();
@@ -927,6 +1027,7 @@ impl Engine {
                 };
             let mjolnir_udp_port = config.mjolnir_udp_port();
             let feedback = config.feedback();
+            config.bind_presentation(Arc::clone(&self.presentation));
             nvst_authenticated_ready = Some(feedback.clone());
             let (upstream_ready, upstream_waiter) = if prepared_nvst.is_some() {
                 let (sender, receiver) = std::sync::mpsc::sync_channel(1);
@@ -1022,6 +1123,7 @@ impl Engine {
 
         let replay_enabled = self.media_session.is_some()
             && ReplayBufferConfig::from_settings(&context.settings).enabled;
+        let stream_presentation = media_stream_config(&context);
         let generation = {
             let mut lifecycle = lock_lifecycle(&self.lifecycle);
             lifecycle.generation = lifecycle.generation.wrapping_add(1);
@@ -1038,6 +1140,14 @@ impl Engine {
             ));
         }
         if let Some(nvst_events) = nvst_events {
+            if let Some(resources) = nvst_resources.as_ref() {
+                resources.feedback.activate_presentation(
+                    generation,
+                    stream_presentation.fps,
+                    stream_presentation.cloud_gsync,
+                    cfg!(target_os = "windows"),
+                );
+            }
             let output = self.events.clone();
             let lifecycle = self.lifecycle.clone();
             let media_feedback = self.media_feedback.take();
@@ -1067,6 +1177,7 @@ impl Engine {
                 })
                 .ok();
             if self.feedback_worker.is_none() {
+                self.presentation.deactivate();
                 if let Some(transport) = self.nvst_transport.take() {
                     transport.stop();
                 }
@@ -1091,6 +1202,7 @@ impl Engine {
         if let Some(prepared) = prepared_nvst {
             let readiness = nvst_rtsp::wait_authenticated_transport(
                 || {
+                    prepared.check_startup()?;
                     let lifecycle = lock_lifecycle(&self.lifecycle);
                     if lifecycle.generation != generation || lifecycle.state != State::Connected {
                         return Err(nvst_rtsp::NvstRtspError {
@@ -1117,6 +1229,14 @@ impl Engine {
             match prepared.finish() {
                 Ok(active) => {
                     self.nvst_rtsp = Some(active);
+                    if token.is_cancelled() {
+                        self.stop("NVST startup was cancelled");
+                        return Err(error(
+                            Some(&command.id),
+                            "nvst-start-aborted",
+                            "NVST startup was cancelled",
+                        ));
+                    }
                     if nvst_upstream_ready
                         .take()
                         .is_some_and(|ready| ready.try_send(()).is_err())
@@ -1322,7 +1442,8 @@ impl Engine {
         Ok(vec![response(command.id, "ok")])
     }
 
-    fn stop(&mut self, reason: &str) {
+    fn stop(&mut self, reason: &str) -> Value {
+        self.presentation.deactivate();
         self.clip_cancelled.store(true, Ordering::Release);
         if let Some(session) = self.media_session.as_ref() {
             session.control().unsubscribe_recording();
@@ -1352,6 +1473,8 @@ impl Engine {
         }
         self.reserved_nvst_bundle = None;
         self.nvst_hole_punch_socket = None;
+        let _ = self.stop_recording_inner();
+        let recording = self.recording_terminal.clone().unwrap_or(Value::Null);
         self.stop_media_resources();
         if was_active {
             let _ = self.events.send(event(
@@ -1363,11 +1486,17 @@ impl Engine {
                 json!({ "status": "stopped", "message": reason }),
             ));
         }
+        recording
     }
 
     fn stop_media_resources(&mut self) {
         self.stop_replay();
         self.microphone = None;
+        if let Some(session) = self.media_session.as_ref() {
+            session
+                .control()
+                .cut_recording(RecordingCutReason::Interrupted);
+        }
         let _ = self.stop_recording_inner();
         if self.media_runtime.is_some() {
             self.media_consumer = None;
@@ -1549,19 +1678,7 @@ impl Engine {
             .spawn(move || {
                 let result = record_matroska(&worker_path, stream, receiver);
                 worker_completed.store(true, Ordering::Release);
-                let payload = match &result {
-                    Ok(summary) => json!({
-                        "state":"saved",
-                        "path":summary.media.path,
-                        "videoPackets":summary.media.video_packets,
-                        "audioPackets":summary.media.audio_packets,
-                        "completion":summary.completion,
-                        "requestId":request_id,
-                    }),
-                    Err(message) => {
-                        json!({"state":"failed","message":message,"requestId":request_id})
-                    }
-                };
+                let payload = recording_result(&request_id, &result);
                 let _ = events.send(event("recording-state", payload));
                 result
             })
@@ -1573,6 +1690,7 @@ impl Engine {
                     spawn_error.to_string(),
                 )
             })?;
+        self.recording_terminal = None;
         self.recording_worker = Some(RecordingWorker {
             request_id: command.id.clone(),
             thread: worker,
@@ -1587,17 +1705,18 @@ impl Engine {
 
     fn stop_recording(&mut self, command: Command) -> Result<Vec<Value>, Value> {
         match self.stop_recording_inner() {
-            Ok(Some((request_id, summary))) => Ok(vec![json!({
-                "id":command.id,
-                "type":"recording-stopped",
-                "path":summary.media.path,
-                "videoPackets":summary.media.video_packets,
-                "audioPackets":summary.media.audio_packets,
-                "completion":summary.completion,
-                "requestId":request_id,
-            })]),
-            Ok(None) => Ok(vec![response(command.id, "recording-not-active")]),
-            Err(message) => Err(error(Some(&command.id), "recording-failed", message)),
+            Some(mut result) => {
+                result["id"] = json!(command.id);
+                if result["state"] == "failed" {
+                    result["type"] = json!("error");
+                    result["code"] = json!("recording-failed");
+                    Err(result)
+                } else {
+                    result["type"] = json!("recording-stopped");
+                    Ok(vec![result])
+                }
+            }
+            None => Ok(vec![response(command.id, "recording-not-active")]),
         }
     }
 
@@ -1647,18 +1766,18 @@ impl Engine {
         Ok(vec![response(command.id, "ok")])
     }
 
-    fn stop_recording_inner(&mut self) -> Result<Option<(String, ManualRecordingSummary)>, String> {
-        let Some(worker) = self.recording_worker.take() else {
-            return Ok(None);
-        };
+    fn stop_recording_inner(&mut self) -> Option<Value> {
+        let worker = self.recording_worker.take()?;
         if let Some(session) = self.media_session.as_ref() {
             session.control().unsubscribe_recording();
         }
-        worker
+        let result = worker
             .thread
             .join()
-            .map_err(|_| "native recording worker panicked".to_owned())?
-            .map(|summary| Some((worker.request_id, summary)))
+            .unwrap_or_else(|_| Err("native recording worker panicked".to_owned().into()));
+        let terminal = recording_result(&worker.request_id, &result);
+        self.recording_terminal = Some(terminal.clone());
+        Some(terminal)
     }
 }
 
@@ -1876,6 +1995,7 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
     }
     let mut pending_rumble = [None; 4];
     let mut pending_input = None;
+    let mut sent_mouse_settings = None;
     let mut pending_control_output = NvstControlOutput {
         start_id: start_id.clone(),
         pending: None,
@@ -1940,6 +2060,27 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
                 );
                 break;
             } else {
+                if let Some(settings) = captured_input.mouse_settings()
+                    && sent_mouse_settings != Some(settings)
+                {
+                    match resources
+                        .send_captured_input(mouse_settings_packet(settings, &feedback_state))
+                    {
+                        Ok(()) => sent_mouse_settings = Some(settings),
+                        Err(TransportError::InputNotReady) => {}
+                        Err(error) => {
+                            let _ = emit_nvst_terminal(
+                                output,
+                                lifecycle,
+                                generation,
+                                &resources,
+                                "native-input-capture-failed",
+                                format!("Native window input capture failed: {error}"),
+                            );
+                            break 'session;
+                        }
+                    }
+                }
                 // Preserve high-polling-rate RawInput/SDL samples rather than
                 // turning several reports into one uneven movement burst.
                 for _ in 0..32 {
@@ -1970,7 +2111,7 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
                         continue;
                     }
                     if let Err(error) =
-                        forward_nvst_captured_sample(&resources, &input, &feedback_state)
+                        forward_nvst_captured_sample(&resources, &input, &mut feedback_state)
                     {
                         if matches!(error, TransportError::InputNotReady) {
                             pending_input = Some(input);
@@ -1994,6 +2135,7 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
                 match &nvst_event {
                     NvstReceiveEvent::InputReady(_) => {
                         feedback_state.input_available = true;
+                        sent_mouse_settings = None;
                         if let Some(queue) = captured_input.as_ref() {
                             queue.set_text_ready(generation, true);
                         }
@@ -2394,16 +2536,19 @@ fn forward_nvst_event<R: NvstSessionResources>(
             let resumable = termination.resumable();
             let message = format!(
                 "The server ended the streaming session (0x{:08x})",
-                termination.wire_code,
+                termination.extended_code,
             );
             let termination = json!({
                 "source": "nvst-server",
                 "startId": pending_control_output.start_id,
                 "code": "server-terminated",
                 "wireCode": termination.wire_code,
+                "shutdownReason": termination.shutdown_reason,
                 "reason": termination.reason,
+                "sessionAlive": termination.session_alive,
                 "extendedCode": termination.extended_code,
                 "resumable": resumable,
+                "disposition": termination.disposition(),
             });
             emit_nvst_terminal_with_termination(
                 output,
@@ -2416,7 +2561,7 @@ fn forward_nvst_event<R: NvstSessionResources>(
             )
         }
         NvstReceiveEvent::Cursor(bytes) => {
-            resources.apply_cursor(bytes);
+            resources.apply_cursor(pending_control_output.start_id.clone(), bytes);
             false
         }
         NvstReceiveEvent::CursorCapture(composited) => {
@@ -2604,6 +2749,7 @@ struct NvstMediaFeedbackState {
     recovery_attempts: usize,
     input_origin: Instant,
     input_available: bool,
+    mouse_input_timings: MouseInputTimings,
     telemetry_window_started: Instant,
     telemetry_frames: u64,
     telemetry_bytes: u64,
@@ -2625,6 +2771,7 @@ impl NvstMediaFeedbackState {
             recovery_attempts: 0,
             input_origin: Instant::now(),
             input_available,
+            mouse_input_timings: MouseInputTimings::default(),
             telemetry_window_started: Instant::now(),
             telemetry_frames: 0,
             telemetry_bytes: 0,
@@ -2649,6 +2796,9 @@ fn flush_nvst_telemetry<R: NvstSessionResources>(
     let elapsed = state.telemetry_window_started.elapsed();
     if elapsed < TELEMETRY_INTERVAL {
         return;
+    }
+    if let Some(report) = state.mouse_input_timings.take_report() {
+        opennow_streamer_protocol::log::log_async("INFO", "input-timing", &report.to_string());
     }
     let mut payload = media_telemetry(
         elapsed,
@@ -2702,12 +2852,22 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
     match feedback {
         MediaFeedback::VideoFrameAccepted {
             frame_index,
+            timestamp,
+            clock_rate_hz,
+            accepted_at,
             bytes,
             keyframe,
             ..
         } => {
             state.transport_frame_progress_stalled = false;
             if let Some(frame_index) = frame_index {
+                resources.observe_video_admission(
+                    generation,
+                    frame_index,
+                    timestamp,
+                    clock_rate_hz,
+                    accepted_at,
+                );
                 resources.acknowledge_video_frame(frame_index, bytes);
             }
             if keyframe {
@@ -2770,6 +2930,7 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
             ));
         }
         MediaFeedback::RequestKeyframe { reason, .. } => {
+            resources.invalidate_presentation();
             resources.request_keyframe();
             let _ = output.send(event(
                 "log",
@@ -2782,6 +2943,9 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
             ));
         }
         MediaFeedback::DecoderError { codec, message } => {
+            if codec != "opus" {
+                resources.invalidate_presentation();
+            }
             let message = format!("{codec} decoder error: {message}");
             state.last_video_decoder_error = Some(message.chars().take(240).collect());
             let _ = output.send(event(
@@ -2828,6 +2992,7 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
             ));
         }
         MediaFeedback::OutputError { message } => {
+            resources.invalidate_presentation();
             let _ = output.send(event(
                 "error",
                 json!({ "event": "output-error", "code": "media-output-error", "message": message }),
@@ -2838,6 +3003,7 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
             recovered,
             message,
         } => {
+            resources.invalidate_presentation();
             let _ = output.send(event(
                 "log",
                 json!({
@@ -2853,6 +3019,12 @@ fn forward_nvst_media_feedback<R: NvstSessionResources>(
             ));
         }
         MediaFeedback::DecodeTimings(timings) => {
+            if state
+                .decode_timings
+                .is_some_and(|previous| previous.epoch != timings.epoch)
+            {
+                resources.invalidate_presentation();
+            }
             state.decode_timings = Some(timings);
             flush_nvst_telemetry(output, resources, state);
         }
@@ -2885,7 +3057,7 @@ fn forward_nvst_captured_input<R: NvstSessionResources>(
 fn forward_nvst_captured_sample<R: NvstSessionResources>(
     resources: &R,
     sample: &CapturedInputSample,
-    state: &NvstMediaFeedbackState,
+    state: &mut NvstMediaFeedbackState,
 ) -> Result<(), TransportError> {
     if matches!(
         sample.input,
@@ -2907,7 +3079,19 @@ fn forward_nvst_captured_sample<R: NvstSessionResources>(
     if let CapturedInput::Text(text) = &sample.input {
         return resources.send_captured_text(text.clone(), timestamp_us);
     }
-    resources.send_captured_input(captured_input_packet(sample.input.clone(), timestamp_us))
+    resources.send_captured_input(captured_input_packet(sample.input.clone(), timestamp_us))?;
+    state.mouse_input_timings.record(sample, Instant::now());
+    Ok(())
+}
+
+fn mouse_settings_packet(settings: MouseSettings, state: &NvstMediaFeedbackState) -> Vec<u8> {
+    let timestamp_us = u64::try_from(state.input_origin.elapsed().as_micros()).unwrap_or(u64::MAX);
+    let mut packet = Vec::with_capacity(20);
+    packet.extend_from_slice(&25_u32.to_le_bytes());
+    packet.extend_from_slice(&u32::from(settings.acceleration).to_be_bytes());
+    packet.extend_from_slice(&settings.speed.to_be_bytes());
+    packet.extend_from_slice(&timestamp_us.to_be_bytes());
+    packet
 }
 
 fn captured_input_packet(input: CapturedInput, timestamp_us: u64) -> Vec<u8> {
@@ -3161,6 +3345,8 @@ fn consume_encoded_media(
     output: &EventSender,
     receiver: Receiver<EncodedMediaFrame>,
     sink: MediaSink,
+    presentation: Arc<PresentationTimingState>,
+    generation: u64,
 ) {
     let mut video = 0_u64;
     let mut audio = 0_u64;
@@ -3227,6 +3413,20 @@ fn consume_encoded_media(
         } else {
             MediaCodec::Unsupported(frame.codec)
         };
+        let video_frame = matches!(codec, MediaCodec::H264 | MediaCodec::H265 | MediaCodec::Av1);
+        if video_frame {
+            if !frame.contiguous {
+                presentation.invalidate_generation(generation);
+            }
+            presentation.register_source(
+                generation,
+                frame.frame_index,
+                frame.rtp_timestamp,
+                frame.clock_rate_hz,
+                frame.sender_timing,
+                Instant::now(),
+            );
+        }
         match sink.push(EncodedFrame {
             mid: frame.mid,
             codec,
@@ -3248,9 +3448,24 @@ fn consume_encoded_media(
                     }),
                 ));
             }
-            PushOutcome::Closed => break,
-            PushOutcome::DroppedOldest => dropped += 1,
-            PushOutcome::Paused => paused += 1,
+            PushOutcome::Closed => {
+                if video_frame {
+                    presentation.invalidate_generation(generation);
+                }
+                break;
+            }
+            PushOutcome::DroppedOldest => {
+                if video_frame {
+                    presentation.invalidate_generation(generation);
+                }
+                dropped += 1;
+            }
+            PushOutcome::Paused => {
+                if video_frame {
+                    presentation.invalidate_generation(generation);
+                }
+                paused += 1;
+            }
             PushOutcome::Queued => {}
         }
     }
@@ -3274,6 +3489,75 @@ mod tests {
 
     fn command(value: Value) -> Command {
         serde_json::from_value(value).expect("command")
+    }
+
+    #[test]
+    fn media_consumer_registers_sender_timing_only_for_identified_video_sources() {
+        use presentation_timing::{PresentationTimestampPrecision, SenderFrameTiming};
+        for (codec, frame_index, raw, recognized) in [
+            ("opus", Some(99), Some(SenderFrameTiming::default()), false),
+            ("h264", None, None, false),
+            ("h264", Some(99), None, false),
+            ("h264", Some(99), Some(SenderFrameTiming::default()), true),
+        ] {
+            let (host, runtime) = opennow_streamer_platform::create_test_runtime();
+            let (feedback, _feedback_receiver) = mpsc::channel();
+            let session = runtime
+                .start(feedback, MediaStreamConfig::default())
+                .unwrap();
+            let (events, _events_receiver) = mpsc::channel();
+            let (sender, receiver) = mpsc::sync_channel(1);
+            let presentation = Arc::new(PresentationTimingState::default());
+            presentation.activate(7, 120, false, 0, false);
+            sender
+                .send(EncodedMediaFrame {
+                    mid: "fixture".to_owned(),
+                    codec: codec.to_owned(),
+                    payload: Arc::from([0_u8; 4]),
+                    frame_index,
+                    sender_timing: raw,
+                    rtp_timestamp: 90_000,
+                    clock_rate_hz: 90_000,
+                    channels: Some(2),
+                    received_at_us: 0,
+                    keyframe: true,
+                    contiguous: true,
+                    ssrc: Some(1),
+                })
+                .unwrap();
+            drop(sender);
+            consume_encoded_media(
+                &EventSender::unbounded(events),
+                receiver,
+                session.sink(),
+                Arc::clone(&presentation),
+                7,
+            );
+            let config = presentation.config();
+            let source = presentation.lookup_source(
+                7,
+                config.scene_epoch,
+                1_000_000_000,
+                PresentationTimestampPrecision::Linux,
+                Instant::now(),
+            );
+            assert_eq!(
+                source.is_some(),
+                recognized,
+                "{codec} {frame_index:?} {raw:?}"
+            );
+            if let Some(source) = source {
+                assert_eq!(source.frame_index, 99);
+                assert_eq!(source.timing.capture_time_us, 0);
+                assert_eq!(config.sender_pacing, 1);
+            }
+            if codec == "opus" {
+                assert_eq!(config.sender_pacing, 0);
+            }
+            session.stop();
+            runtime.shutdown();
+            drop(host);
+        }
     }
 
     #[test]
@@ -3660,7 +3944,7 @@ mod tests {
             Ok(())
         }
 
-        fn apply_cursor(&self, _bytes: Vec<u8>) {}
+        fn apply_cursor(&self, _start_id: String, _bytes: Vec<u8>) {}
 
         fn send_captured_text(
             &self,
@@ -3891,6 +4175,8 @@ mod tests {
             MediaFeedback::VideoFrameAccepted {
                 frame_index: Some(71),
                 timestamp: 90_000,
+                clock_rate_hz: 90_000,
+                accepted_at: Instant::now(),
                 bytes: 1_024,
                 keyframe: true,
             },
@@ -3925,6 +4211,8 @@ mod tests {
             MediaFeedback::VideoFrameAccepted {
                 frame_index: Some(72),
                 timestamp: 90_000,
+                clock_rate_hz: 90_000,
+                accepted_at: Instant::now(),
                 bytes: 125_000,
                 keyframe: false,
             },
@@ -4020,6 +4308,8 @@ mod tests {
                 MediaFeedback::VideoFrameAccepted {
                     frame_index: Some(72),
                     timestamp: 90_000,
+                    clock_rate_hz: 90_000,
+                    accepted_at: Instant::now(),
                     bytes: 125_000,
                     keyframe: false,
                 },
@@ -4180,6 +4470,8 @@ mod tests {
             MediaFeedback::VideoFrameAccepted {
                 frame_index: Some(73),
                 timestamp: 90_000,
+                clock_rate_hz: 90_000,
+                accepted_at: Instant::now(),
                 bytes: 125_000,
                 keyframe: false,
             },
@@ -4256,6 +4548,8 @@ mod tests {
             MediaFeedback::VideoFrameAccepted {
                 frame_index: Some(74),
                 timestamp: 90_000,
+                clock_rate_hz: 90_000,
+                accepted_at: Instant::now(),
                 bytes: 125_000,
                 keyframe: false,
             },
@@ -4322,6 +4616,8 @@ mod tests {
             MediaFeedback::VideoFrameAccepted {
                 frame_index: Some(76),
                 timestamp: 90_000,
+                clock_rate_hz: 90_000,
+                accepted_at: Instant::now(),
                 bytes: 125_000,
                 keyframe: false,
             },
@@ -4440,6 +4736,8 @@ mod tests {
             MediaFeedback::VideoFrameAccepted {
                 frame_index: Some(11),
                 timestamp: 90_000,
+                clock_rate_hz: 90_000,
+                accepted_at: Instant::now(),
                 bytes: 1_000_000,
                 keyframe: false,
             },
@@ -4506,6 +4804,8 @@ mod tests {
             MediaFeedback::VideoFrameAccepted {
                 frame_index: Some(75),
                 timestamp: 90_000,
+                clock_rate_hz: 90_000,
+                accepted_at: Instant::now(),
                 bytes: 125_000,
                 keyframe: false,
             },
@@ -4586,6 +4886,8 @@ mod tests {
             MediaFeedback::VideoFrameAccepted {
                 frame_index: Some(72),
                 timestamp: 90_000,
+                clock_rate_hz: 90_000,
+                accepted_at: Instant::now(),
                 bytes: 125_000,
                 keyframe: false,
             },
@@ -4688,7 +4990,7 @@ mod tests {
                 },
                 captured_at: input_origin + Duration::from_micros(4_242),
             },
-            &state,
+            &mut state,
         )
         .expect("captured input");
 
@@ -4765,6 +5067,71 @@ mod tests {
     }
 
     #[test]
+    fn mouse_settings_send_on_change_and_again_after_input_ready() {
+        let (output, _received) = mpsc::channel();
+        let output = EventSender::unbounded(output);
+        let lifecycle = Arc::new(connected_lifecycle());
+        let worker_lifecycle = lifecycle.clone();
+        let queue = Arc::new(CapturedInputQueue::default());
+        let worker_queue = queue.clone();
+        let (transport, nvst_events) = mpsc::channel();
+        let (input_sent, inputs) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            forward_nvst_session_events(
+                &output,
+                &worker_lifecycle,
+                7,
+                NvstSessionEventResources {
+                    start_id: "mouse-settings".to_owned(),
+                    nvst_events,
+                    media_feedback: None,
+                    captured_input: Some(worker_queue),
+                    shortcut_runtime: None,
+                    transport: TestNvstResources {
+                        input_sent: Some(input_sent),
+                        ..TestNvstResources::default()
+                    },
+                },
+            )
+        });
+        let settings = |packet: &[u8]| {
+            assert_eq!(packet.len(), 20);
+            assert_eq!(u32::from_le_bytes(packet[..4].try_into().unwrap()), 25);
+            (
+                u32::from_be_bytes(packet[4..8].try_into().unwrap()),
+                u32::from_be_bytes(packet[8..12].try_into().unwrap()),
+            )
+        };
+        queue.set_mouse_settings(MouseSettings::UNACCELERATED);
+        transport.send(NvstReceiveEvent::InputReady(2)).unwrap();
+        let first = inputs.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert_eq!(settings(&first), (0, 10));
+
+        queue.set_mouse_settings(MouseSettings::UNACCELERATED);
+        queue.push(CapturedInput::MouseMove {
+            delta_x: 1,
+            delta_y: 0,
+        });
+        let motion = inputs.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert_eq!(u32::from_le_bytes(motion[..4].try_into().unwrap()), 7);
+
+        queue.set_mouse_settings(MouseSettings {
+            acceleration: true,
+            speed: 14,
+        });
+        let changed = inputs.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert_eq!(settings(&changed), (1, 14));
+
+        transport.send(NvstReceiveEvent::InputReady(2)).unwrap();
+        let resent = inputs.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert_eq!(settings(&resent), (1, 14));
+
+        lock_lifecycle(&lifecycle).generation += 1;
+        worker.join().unwrap();
+        assert!(inputs.try_recv().is_err());
+    }
+
+    #[test]
     fn captured_input_closed_transport_still_stops_the_session() {
         let (output, received) = mpsc::channel();
         let output = EventSender::unbounded(output);
@@ -4812,7 +5179,7 @@ mod tests {
     fn captured_unicode_text_uses_typed_transport_without_key_expansion() {
         use opennow_streamer_protocol::text_input::TextInputSlot;
         let resources = TestNvstResources::default();
-        let state = NvstMediaFeedbackState::new(true);
+        let mut state = NvstMediaFeedbackState::new(true);
         let text = TextInputSlot::default()
             .submit("é世界🦫".as_bytes())
             .unwrap();
@@ -4822,7 +5189,7 @@ mod tests {
                 input: CapturedInput::Text(text),
                 captured_at: state.input_origin,
             },
-            &state,
+            &mut state,
         )
         .unwrap();
         assert_eq!(
@@ -6104,6 +6471,71 @@ mod tests {
     }
 
     #[test]
+    fn captured_mouse_queue_delay_reaches_the_native_log() {
+        let _sink = LOG_SINK_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let path =
+            std::env::temp_dir().join(format!("opennow-input-timing-{}.log", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        opennow_streamer_protocol::log::set_log_file(path.to_str().unwrap()).unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = EventSender::unbounded(sender);
+        let resources = TestNvstResources {
+            input_not_ready: Arc::new(AtomicUsize::new(1)),
+            ..TestNvstResources::default()
+        };
+        let mut state = NvstMediaFeedbackState::new(true);
+        let sample = CapturedInputSample {
+            input: CapturedInput::MouseMove {
+                delta_x: 123,
+                delta_y: -456,
+            },
+            captured_at: Instant::now() - Duration::from_millis(20),
+        };
+        assert!(matches!(
+            forward_nvst_captured_sample(&resources, &sample, &mut state),
+            Err(TransportError::InputNotReady)
+        ));
+        forward_nvst_captured_sample(&resources, &sample, &mut state).unwrap();
+        state.telemetry_window_started = Instant::now() - Duration::from_secs(1);
+        flush_nvst_telemetry(&sender, &resources, &mut state);
+        assert_eq!(receiver.recv().unwrap()["type"], "telemetry");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let log = loop {
+            let log = std::fs::read_to_string(&path).unwrap();
+            if log.contains("INFO input-timing ") || Instant::now() >= deadline {
+                break log;
+            }
+            thread::sleep(Duration::from_millis(5));
+        };
+        let report: Value = serde_json::from_str(
+            log.lines()
+                .find_map(|line| {
+                    line.split_once("INFO input-timing ")
+                        .map(|(_, report)| report)
+                })
+                .expect("capture-to-transport-submission timing report"),
+        )
+        .unwrap();
+        assert_eq!(report["relative"]["submitted"], 1);
+        assert_eq!(report["relative"]["windowSamples"], 1);
+        assert!(
+            report["relative"]["captureToTransportSubmitMs"]["p50"]
+                .as_f64()
+                .unwrap()
+                >= 20.0
+        );
+        assert_eq!(report["absolute"], Value::Null);
+        assert_eq!(report.as_object().unwrap().len(), 2);
+        assert_eq!(report["relative"].as_object().unwrap().len(), 3);
+        state.telemetry_window_started = Instant::now() - Duration::from_secs(1);
+        flush_nvst_telemetry(&sender, &resources, &mut state);
+        assert!(state.mouse_input_timings.take_report().is_none());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn input_unavailable_reason_reaches_the_native_log() {
         let _sink = LOG_SINK_TEST_LOCK
             .lock()
@@ -6284,6 +6716,7 @@ mod tests {
                 frame_index: 1,
                 first_stream_packet_index: 1,
                 frame_type: None,
+                sender_timing: None,
                 keyframe: true,
                 contiguous: true,
                 bytes: vec![0, 0, 0, 1, 0x65],

@@ -149,6 +149,8 @@ struct Peer {
     held_rtp: Option<(Vec<u8>, SocketAddr)>,
     controlling_checks: bool,
     controlled_checks: bool,
+    last_ice_response: Option<(Vec<u8>, SocketAddr)>,
+    drop_ice_responses: bool,
 }
 
 impl Peer {
@@ -319,6 +321,8 @@ impl Peer {
             held_rtp: None,
             controlling_checks: false,
             controlled_checks: false,
+            last_ice_response: None,
+            drop_ice_responses: false,
         };
         peer.until(|peer| peer.connected && peer.input_ready);
         peer
@@ -358,6 +362,13 @@ impl Peer {
                             self.dropped_rtp += 1;
                             continue;
                         }
+                    }
+                    if packet.contents.get(..2) == Some(&[1, 1]) {
+                        if self.drop_ice_responses {
+                            continue;
+                        }
+                        self.last_ice_response =
+                            Some((packet.contents.to_vec(), packet.destination));
                     }
                     match self.socket.send_to(&packet.contents, packet.destination) {
                         Ok(_) => {}
@@ -502,6 +513,27 @@ impl Peer {
             self.tick();
         }
     }
+}
+
+#[test]
+fn delayed_duplicate_ice_response_does_not_become_ping() {
+    let mut peer = Peer::connect(4);
+    peer.until(|peer| peer.last_ice_response.is_some());
+    let (response, destination) = peer.last_ice_response.clone().unwrap();
+    peer.drop_ice_responses = true;
+    let replay_at = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < replay_at {
+        peer.tick();
+    }
+    peer.socket.send_to(&response, destination).unwrap();
+    let mut samples = Vec::new();
+    let deadline = Instant::now() + Duration::from_millis(1_500);
+    while Instant::now() < deadline {
+        peer.tick();
+        samples.extend(peer.stats.take().and_then(|stats| stats.ping_ms));
+    }
+    assert!(!samples.is_empty());
+    assert!(samples.iter().all(|ping| *ping < 500.0), "{samples:?}");
 }
 
 #[test]

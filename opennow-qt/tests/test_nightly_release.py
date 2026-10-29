@@ -1,12 +1,13 @@
 import hashlib
 import json
 from pathlib import Path
+import re
 import sys
 import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packaging"))
-from nightly_release import assemble, nightly_version
+from nightly_release import assemble, expected_packages, nightly_version
 
 
 class NightlyReleaseTest(unittest.TestCase):
@@ -20,7 +21,7 @@ class NightlyReleaseTest(unittest.TestCase):
         self.commit = "a" * 40
         self.packages = []
         for arch in ("x64", "arm64"):
-            for platform, extension in (("Windows", "msi"), ("Windows", "zip"), ("Linux", "AppImage"), ("Linux", "AppImage.zsync"), ("Linux", "deb"), ("Linux", "flatpak")):
+            for platform, extension in (("Windows", "zip"), ("Linux", "AppImage"), ("Linux", "AppImage.zsync"), ("Linux", "deb"), ("Linux", "flatpak")):
                 package = self.source / f"{platform}-{arch}" / f"OpenNOW-Qt-{self.version}-{platform}-{arch}.{extension}"
                 package.parent.mkdir(parents=True, exist_ok=True)
                 package.write_bytes(f"test fixture {platform} {arch}".encode())
@@ -29,10 +30,11 @@ class NightlyReleaseTest(unittest.TestCase):
             package = self.source / f"Windows-{arch}" / f"OpenNOW-Qt-{self.version}-Windows-{arch}-setup.exe"
             package.write_bytes(f"test fixture setup {arch}".encode())
             self.packages.append(package)
-        package = self.source / "Darwin-arm64" / f"OpenNOW-Qt-{self.version}-Darwin-arm64.dmg"
-        package.parent.mkdir(parents=True)
-        package.write_bytes(b"test fixture Darwin arm64")
-        self.packages.append(package)
+        for arch in ("x64", "arm64"):
+            package = self.source / f"Darwin-{arch}" / f"OpenNOW-Qt-{self.version}-Darwin-{arch}.dmg"
+            package.parent.mkdir(parents=True)
+            package.write_bytes(f"test fixture Darwin {arch}".encode())
+            self.packages.append(package)
 
     def collect(self):
         assemble(self.source, self.destination, self.version, self.commit)
@@ -43,7 +45,11 @@ class NightlyReleaseTest(unittest.TestCase):
         self.assertEqual(metadata["sourceCommit"], self.commit)
         self.assertEqual(metadata["version"], self.version)
         self.assertEqual(metadata["updates"], "manual-download")
-        self.assertEqual(len(metadata["assets"]), 15)
+        self.assertEqual(len(metadata["assets"]), 14)
+        self.assertEqual(
+            [asset["name"] for asset in metadata["assets"] if asset["name"].endswith(".dmg")],
+            [f"OpenNOW-Qt-{self.version}-Darwin-arm64.dmg",
+             f"OpenNOW-Qt-{self.version}-Darwin-x64.dmg"])
         self.assertEqual(
             [asset["name"] for asset in metadata["assets"] if asset["name"].endswith(".flatpak")],
             [f"OpenNOW-Qt-{self.version}-Linux-arm64.flatpak",
@@ -53,10 +59,19 @@ class NightlyReleaseTest(unittest.TestCase):
             [f"OpenNOW-Qt-{self.version}-Windows-arm64-setup.exe",
              f"OpenNOW-Qt-{self.version}-Windows-x64-setup.exe"])
         sums = (self.destination / "SHA256SUMS").read_text().splitlines()
-        self.assertEqual(len(sums), 16)
+        self.assertEqual(len(sums), 15)
         for line in sums:
             digest, name = line.split("  ")
             self.assertEqual(digest, hashlib.sha256((self.destination / name).read_bytes()).hexdigest())
+
+    def test_signing_documentation_lists_every_nightly_package(self):
+        documentation = (Path(__file__).resolve().parents[2] / "docs/update-signing.md").read_text()
+        inventory = documentation.split("the public nightly inventory contains exactly these packages:", 1)[1]
+        inventory = inventory.split("Both AppImages", 1)[0]
+        documented = set(re.findall(r"^- `(OpenNOW-Qt-[^`]+)`$", inventory, re.MULTILINE))
+        expected = {name.replace(self.version, "<version>") for name in
+                    expected_packages(self.version, self.commit) if not name.endswith(".zsync")}
+        self.assertEqual(documented, expected)
 
     def test_missing_architecture_is_rejected(self):
         self.packages[0].unlink()
@@ -79,14 +94,23 @@ class NightlyReleaseTest(unittest.TestCase):
                 self.assertFalse(self.destination.exists())
                 package.write_bytes(content)
 
-    def test_validation_zip_and_intel_mac_are_not_public_assets(self):
-        for suffix in ("Darwin-arm64.zip", "Darwin-x64.dmg"):
+    def test_validation_zips_are_not_public_assets(self):
+        for suffix in ("Darwin-arm64.zip", "Darwin-x64.zip"):
             with self.subTest(suffix=suffix):
                 extra = self.source / f"OpenNOW-Qt-{self.version}-{suffix}"
                 extra.write_bytes(b"not a public package")
                 with self.assertRaisesRegex(ValueError, "Unexpected"):
                     self.collect()
                 extra.unlink()
+
+    def test_public_inventories_exclude_intel_darwin_zips_in_every_channel(self):
+        for version, channel in ((self.version, "nightly"), ("1.0.0", "stable"),
+                                 ("1.0.0-supporter.123.2", "supporter")):
+            with self.subTest(channel=channel):
+                names = expected_packages(version, self.commit, channel)
+                self.assertIn(f"OpenNOW-Qt-{version}-Darwin-x64.dmg", names)
+                self.assertFalse(any("Darwin" in name and "x64" in name and name.endswith(".zip")
+                                     for name in names))
 
     def test_wrong_version_and_empty_artifacts_are_rejected(self):
         self.packages[0].write_bytes(b"")

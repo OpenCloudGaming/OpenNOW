@@ -9,6 +9,9 @@
 #include "streaming/rendering/StreamVideoTextureRenderer.h"
 #include "streaming/rendering/StreamFrameInterpolator.h"
 #include "streaming/rendering/StreamFramePacer.h"
+#include "streaming/rendering/StreamSenderPacer.h"
+#include "streaming/rendering/WindowsPresentationObserver.h"
+#include "streaming/rendering/StreamFrameSnapshot.h"
 
 #include <rhi/qrhi.h>
 #include <rhi/qrhi_platform.h>
@@ -47,6 +50,11 @@ public:
     explicit NativeStreamRenderCallback(NativeStreamRuntime *runtime)
         : m_runtime(runtime)
     {
+    }
+
+    ~NativeStreamRenderCallback() override
+    {
+        releaseResources();
     }
 
     void initialize(QRhi *rhi, QRhiCommandBuffer *commandBuffer,
@@ -144,12 +152,32 @@ public:
 
     void prepareFrame(QRhiCommandBuffer *commandBuffer) override
     {
+        m_renderStartNs = WindowsPresentationObserver::clockNs();
         prepareNativeFrame(commandBuffer);
         if (!m_runtime || !m_runtime->presentationAllowed()
             || m_presentationGeneration != m_runtime->presentationGeneration()
             || !m_graphicsReady || !m_rhi || !commandBuffer) return;
+        if (!m_snapshotRequest) {
+            m_snapshot.reset();
+            const auto request = m_runtime->takeScreenshotRequest();
+            if (request) {
+                m_snapshot = std::make_unique<StreamFrameSnapshot>();
+                m_snapshotRequest = request;
+                if (!m_textures.importedTexture()
+                    || !m_snapshot->submit(m_rhi, commandBuffer, m_textures.importedTexture(),
+                        m_sourceColorSpace, [this, request](QImage image) {
+                            if (m_snapshotRequest != request) return;
+                            m_snapshotRequest = 0;
+                            m_runtime->completeScreenshot(request, std::move(image));
+                        })) {
+                    m_snapshotRequest = 0;
+                    m_runtime->completeScreenshot(request, {});
+                }
+            }
+        }
         m_textures.prepareUpscaling(commandBuffer, m_upscalingTarget, m_fsrUpscaling,
             m_sourceColorSpace == OPENNOW_STREAMER_COLOR_SPACE_SDR709, m_upscalingSharpness);
+        m_fsrResourceGeneration.store(m_textures.fsrResourceGeneration());
     }
 
     void prepareNativeFrame(QRhiCommandBuffer *commandBuffer)
@@ -179,11 +207,85 @@ public:
             command.upscale_denoise = static_cast<std::uint32_t>(m_upscalingDenoise);
         }
         finishFrame();
+        const auto presentation = m_runtime->presentationConfig();
+        if (m_senderResetRequested.exchange(false)
+                || (m_pendingFrame && (!presentation.active
+                    || presentation.generation != m_pendingGeneration
+                    || presentation.scene_epoch != m_pendingSceneEpoch))) {
+            clearPendingFrame();
+            m_senderPacer.reset();
+        }
         OpenNowStreamerFrameInfo info{};
         OpenNowStreamerRecordedFrame recorded{};
         OpenNowStreamerFrame *frame = nullptr;
         OpenNowStreamerStatus status = OPENNOW_STREAMER_GRAPHICS_UNAVAILABLE;
-        {
+        auto senderNow = StreamSenderPacer::clockNs();
+        if (m_pendingFrame) {
+            if (senderNow < m_pendingDeadline) {
+                prepareOriginal();
+                return;
+            }
+            frame = std::exchange(m_pendingFrame, nullptr);
+            info = m_pendingInfo;
+            m_nextFrameDeadline.store(0);
+            status = OPENNOW_STREAMER_OK;
+        } else {
+            {
+                ExternalCommandScope externalCommands(commandBuffer);
+                status = m_runtime->acquireFrame(&info, &frame);
+            }
+            if (status == OPENNOW_STREAMER_OK && frame) {
+                const bool recognized = presentation.active
+                    && info.sender_generation == presentation.generation
+                    && info.sender_scene_epoch == presentation.scene_epoch
+                    && (info.sender_timing_flags & OPENNOW_STREAMER_FRAME_TIMING_CAPTURE);
+                const StreamSenderTiming timing{info.sender_generation, info.sender_scene_epoch,
+                    info.sender_frame_index, info.sender_capture_time_us,
+                    (info.sender_timing_flags & OPENNOW_STREAMER_FRAME_TIMING_PRESENTATION)
+                        ? info.sender_presentation_time_us : 0,
+                    recognized,
+                    recognized && presentation.sender_pacing == 2
+                        && bool(info.sender_timing_flags & OPENNOW_STREAMER_FRAME_TIMING_PACED)
+                        && info.sender_paced != 0};
+                if (recognized) m_senderFramesObserved.fetch_add(1);
+                if (timing.paced) m_senderFramesPaced.fetch_add(1);
+                const int senderMode = !recognized ? 0 : timing.paced ? 2 : 1;
+                const int previousSenderMode = m_senderMode.exchange(senderMode);
+                if (timing.paced && previousSenderMode != 2 && m_frameGeneration) {
+                    resetFrameGeneration();
+                    m_frameGenerationStatus.store(m_frameGeneration
+                        ? FrameGenerationState::Unavailable : FrameGenerationState::Off);
+                }
+                if (previousSenderMode != senderMode)
+                    qInfo("Sender frame pacing: metadata=%s sender_paced=%d clock=%s; at most one unrecorded frame.",
+                        recognized ? "correlated" : "unavailable", timing.paced,
+                        !recognized ? "unavailable" : timing.captureTimeUs != 0
+                            ? "capture-us" : timing.presentationTimeUs != 0 ? "extension-us" : "unavailable");
+                senderNow = StreamSenderPacer::clockNs();
+                const auto deadline = m_senderPacer.deadline(timing, senderNow);
+                if (deadline > senderNow) {
+                    m_pendingFrame = frame;
+                    m_pendingInfo = info;
+                    m_pendingGeneration = presentation.generation;
+                    m_pendingSceneEpoch = presentation.scene_epoch;
+                    m_pendingDeadline = deadline;
+                    m_nextFrameDeadline.store(deadline);
+                    m_senderFramesDeferred.fetch_add(1);
+                    prepareOriginal();
+                    return;
+                }
+            }
+        }
+        if (status == OPENNOW_STREAMER_OK && frame) {
+            const auto current = m_runtime->presentationConfig();
+            if (presentation.active && (!current.active
+                    || current.generation != presentation.generation
+                    || current.scene_epoch != presentation.scene_epoch)) {
+                m_runtime->releaseFrame(frame);
+                m_senderPacer.reset();
+                prepareOriginal();
+                return;
+            }
             ExternalCommandScope externalCommands(commandBuffer);
             // Native command-buffer handles can change when QRhi begins an external section, so
             // query them only after beginExternal(), as required by the QRhi contract.
@@ -214,10 +316,14 @@ public:
             }
 #endif
             default:
+                m_runtime->releaseFrame(frame);
                 return;
             }
-            if (!command.command_buffer) return;
-            status = m_runtime->recordLatestFrame(command, &info, &recorded, &frame);
+            if (!command.command_buffer) {
+                m_runtime->releaseFrame(frame);
+                return;
+            }
+            status = m_runtime->recordFrame(frame, command, &info, &recorded);
         }
 
         if (m_presentationGeneration != m_runtime->presentationGeneration()
@@ -227,6 +333,7 @@ public:
             return;
         }
         if (status == OPENNOW_STREAMER_NO_FRAME || status == OPENNOW_STREAMER_STALE_FRAME) {
+            if (frame) m_runtime->releaseFrame(frame);
             prepareOriginal();
             return;
         }
@@ -249,6 +356,9 @@ public:
             return;
         }
         m_preparedFrame = frame;
+        m_sourceGeneration = presentation.active ? presentation.generation : 0;
+        m_sourceSceneEpoch = presentation.scene_epoch;
+        m_sourceTimestampNs = recorded.presentation_time_ns;
         if (m_sourceColorSpace != int(recorded.color_space)) {
             resetFrameGeneration();
             m_sourceColorSpace = int(recorded.color_space);
@@ -283,8 +393,24 @@ public:
                     : recorded.texture_format == OPENNOW_STREAMER_TEXTURE_FORMAT_RGB10A2 ? 10u : 8u,
                   m_reportedOutputBits, m_reportedOutputBits == 8 ? "ordered-8x8" : "none");
         }
+        const bool senderPaced = info.sender_generation == presentation.generation
+            && info.sender_scene_epoch == presentation.scene_epoch
+            && bool(info.sender_timing_flags & OPENNOW_STREAMER_FRAME_TIMING_PACED)
+            && info.sender_paced != 0;
+        auto *source = m_textures.importedTexture();
+        if (m_frameGeneration && !senderPaced && (m_historySize != source->pixelSize()
+                                  || m_historyFormat != source->format())) {
+            resetFrameGeneration();
+            m_historySize = source->pixelSize();
+            m_historyFormat = source->format();
+        }
         m_outputDirty = true;
         m_outputKind = 1;
+        if (senderPaced) {
+            m_frameGenerationStatus.store(m_frameGeneration
+                ? FrameGenerationState::Unavailable : FrameGenerationState::Off);
+            return;
+        }
         if (m_sourceColorSpace != OPENNOW_STREAMER_COLOR_SPACE_SDR709) {
             m_frameGenerationStatus.store(m_frameGeneration ? FrameGenerationState::HdrUnsupported : FrameGenerationState::Off);
             return;
@@ -313,13 +439,6 @@ public:
             case StreamFramePacer::Result::Discontinuity: m_frameGenerationStatus.store(FrameGenerationState::Discontinuity); break;
             default: m_frameGenerationStatus.store(FrameGenerationState::WarmingUp); break;
             }
-        }
-        auto *source = m_textures.importedTexture();
-        if (m_historySize != source->pixelSize() || m_historyFormat != source->format()) {
-            m_textures.clearExternalTextures();
-            m_interpolator.release();
-            m_historySize = source->pixelSize();
-            m_historyFormat = source->format();
         }
         if (!m_interpolator.initialize(m_rhi) || !m_interpolator.ingest(commandBuffer, source)) {
             disableFrameGeneration();
@@ -380,6 +499,11 @@ public:
         return m_needsFrame.load() && m_runtime && m_runtime->presentationAllowed();
     }
 
+    std::uint64_t nextFrameDeadlineNs() const override
+    {
+        return m_nextFrameDeadline.load();
+    }
+
     QVariantMap swapStats() const override
     {
         const auto snapshot = m_swapTimings.snapshot();
@@ -394,6 +518,11 @@ public:
         stats.insert(QStringLiteral("swappedFramesTotal"),
                      qulonglong(snapshot.swappedFramesTotal));
         stats.insert(QStringLiteral("epoch"), qulonglong(snapshot.epoch));
+        stats.insert(QStringLiteral("senderTimingFrames"), qulonglong(m_senderFramesObserved.load()));
+        stats.insert(QStringLiteral("senderPacedFrames"), qulonglong(m_senderFramesPaced.load()));
+        stats.insert(QStringLiteral("senderDeferredFrames"), qulonglong(m_senderFramesDeferred.load()));
+        stats.insert(QStringLiteral("senderFramePending"), m_nextFrameDeadline.load() != 0);
+        stats.insert(QStringLiteral("fsrResourceGeneration"), qulonglong(m_fsrResourceGeneration.load()));
         if (snapshot.hasLastSwap)
             stats.insert(QStringLiteral("sinceLastSwapMs"),
                          double(clockNs() - snapshot.lastSwapNs) / 1.0e6);
@@ -403,10 +532,46 @@ public:
     void setSwapGated(bool gated, const QString &) override
     {
         m_swapTimings.setGated(gated);
+        if (gated) {
+            m_senderResetRequested.store(true);
+            m_nextFrameDeadline.store(0);
+        }
+    }
+
+    void beforeFrameBegin(QQuickWindow *window) override
+    {
+        m_presentationWindow = window;
+        const auto config = m_runtime ? m_runtime->presentationConfig() : OpenNowStreamerPresentationConfig{};
+        m_observationActive = config.active && config.feedback_mode == 1;
+        if (m_observationActive) m_presentationObserver.beginFrame(window);
+        else m_presentationObserver.reset();
+    }
+
+    void afterRendering() override
+    {
+        if (m_observationActive) m_presentationObserver.beforePresent();
     }
 
     void frameSwapped() override
     {
+        if (const auto observation = m_observationActive
+                ? m_presentationObserver.frameSwapped(m_presentationWindow) : std::nullopt;
+                observation && m_runtime && m_runtime->presentationAllowed()
+                && m_presentationGeneration == m_runtime->presentationGeneration()) {
+            OpenNowStreamerPresentationSample sample{};
+            sample.version = OPENNOW_STREAMER_PRESENTATION_VERSION;
+            sample.struct_size = sizeof(sample);
+            sample.generation = observation->source.generation;
+            sample.scene_epoch = observation->source.sceneEpoch;
+            sample.presentation_time_ns = observation->source.timestampNs;
+            sample.render_duration_ns = observation->renderDurationNs;
+            sample.render_present_to_complete_ns = observation->presentDurationNs;
+            sample.completion_age_ns = observation->completionAgeNs;
+            sample.vsync_interval_ns = observation->vsyncIntervalNs;
+            sample.completion_kind = OPENNOW_STREAMER_PRESENTATION_PLATFORM_PRESENTED;
+            sample.valid_fields = OPENNOW_STREAMER_PRESENTATION_REQUIRED_FIELDS;
+            m_runtime->submitPresentationSample(sample);
+        }
         const int kind = m_submittedKind.exchange(0);
         if (kind) {
             ++m_outputCount;
@@ -467,7 +632,11 @@ public:
         if (m_outputDirty) {
             m_submittedKind.store(m_outputKind);
             m_outputDirty = false;
-            if (m_outputKind == 1) m_swapTimings.markSubmit(clockNs());
+            if (m_outputKind == 1) {
+                m_swapTimings.markSubmit(clockNs());
+                m_presentationObserver.source(m_sourceGeneration, m_sourceSceneEpoch,
+                                               m_sourceTimestampNs, m_renderStartNs);
+            }
         }
         observeSwapProgress();
     }
@@ -486,12 +655,26 @@ public:
     void tearDownResources(bool ownRearm, bool deviceChanged, bool generationChanged)
     {
         m_swapStall.onResourcesReleased(ownRearm, deviceChanged, generationChanged);
+        if (m_snapshot) m_snapshot->cancel();
+        if (const auto request = std::exchange(m_snapshotRequest, 0); request && m_runtime)
+            m_runtime->completeScreenshot(request, {});
         if (m_rhi && m_graphicsReady) m_rhi->finish();
+        m_snapshot.reset();
         finishFrame();
+        clearPendingFrame();
+        m_senderPacer.reset();
+        m_senderFramesObserved.store(0);
+        m_senderFramesPaced.store(0);
+        m_senderFramesDeferred.store(0);
+        m_senderMode.store(-1);
         m_textures.release();
         m_interpolator.release();
         m_pacer.reset();
         m_swapTimings.reset();
+        m_presentationObserver.reset();
+        m_sourceGeneration = 0;
+        m_sourceSceneEpoch = 0;
+        m_sourceTimestampNs = 0;
         updateTimingStats();
         m_needsFrame.store(false);
         m_submittedKind.store(0);
@@ -536,18 +719,49 @@ public:
     }
 
 private:
+    void clearPendingFrame()
+    {
+        if (m_pendingFrame && m_runtime)
+            m_runtime->releaseFrame(std::exchange(m_pendingFrame, nullptr));
+        m_nextFrameDeadline.store(0);
+        m_pendingInfo = {};
+        m_pendingDeadline = 0;
+    }
+
     NativeStreamRuntime *m_runtime;
     QRhi *m_rhi = nullptr;
     std::uint32_t m_reportedColorFormat = 0;
     std::uint32_t m_reportedColorSpace = 0;
     int m_reportedOutputBits = 0;
     StreamVideoTextureRenderer m_textures;
+    std::unique_ptr<StreamFrameSnapshot> m_snapshot;
+    quint64 m_snapshotRequest = 0;
     StreamPresentTimings m_swapTimings;
+    WindowsPresentationObserver m_presentationObserver;
+    bool m_observationActive = false;
+    QQuickWindow *m_presentationWindow = nullptr;
+    std::uint64_t m_renderStartNs = 0;
+    std::uint64_t m_sourceGeneration = 0;
+    std::uint64_t m_sourceSceneEpoch = 0;
+    std::uint64_t m_sourceTimestampNs = 0;
     StreamSwapStallWatchdog m_swapStall;
     bool m_resourceRearmPending = false;
     int m_sourceColorSpace = OPENNOW_STREAMER_COLOR_SPACE_SDR709;
     StreamFrameInterpolator m_interpolator;
     StreamFramePacer m_pacer;
+    StreamSenderPacer m_senderPacer;
+    OpenNowStreamerFrame *m_pendingFrame = nullptr;
+    OpenNowStreamerFrameInfo m_pendingInfo{};
+    std::uint64_t m_pendingGeneration = 0;
+    std::uint64_t m_pendingSceneEpoch = 0;
+    std::uint64_t m_pendingDeadline = 0;
+    std::atomic_uint64_t m_nextFrameDeadline = 0;
+    std::atomic_bool m_senderResetRequested = false;
+    std::atomic_uint64_t m_senderFramesObserved = 0;
+    std::atomic_uint64_t m_senderFramesPaced = 0;
+    std::atomic_uint64_t m_senderFramesDeferred = 0;
+    std::atomic_uint64_t m_fsrResourceGeneration = 0;
+    std::atomic_int m_senderMode = -1;
     QSize m_historySize;
     QRhiTexture::Format m_historyFormat = QRhiTexture::UnknownFormat;
     double m_refreshRate = 0;
