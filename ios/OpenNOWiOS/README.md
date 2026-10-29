@@ -58,3 +58,9 @@ The iOS client now shares Android's preference for a usable WebRTC route over an
 Rig setup uses Android's 12-second estimated progress animation, capped at 90% until the session advances. It updates only the bar, pauses in the background and stops ticking at the cap. Queue position is hidden once rig setup has started. PrintedWaste routes require source data no older than 30 minutes and are rechecked when selected.
 
 Diagnostics exports include up to eight in-memory signaling attempts, retained after Stop/retry, with packet/offer/send counters, close/error codes and available URLSession DNS/TCP/TLS timings. Payloads, SDP and URL queries are excluded. Send completion does not establish server acknowledgment. Android JVM crash handlers and MediaCodec tuning are platform-specific; iOS retains its existing VideoToolbox/Metal decoder and presentation paths.
+
+Native NVST requests a keyframe when the control channel becomes ready and retries once per second while decoded video is stalled, within the existing 20-second failure budget. Asynchronous decoder failures request recovery immediately rather than waiting for another video packet. Audio reception does not reset the video watchdog.
+
+Catalog projections are reused until their inputs change, and catalog snapshot JSON encoding/decoding runs off the main actor. Account and catalog generations prevent stale cache reads or writes from crossing account changes. The library exposes All Games/Favorites, search, and labeled filtering/sorting controls; server selection uses native grouped sections and adapts to accessibility text sizes.
+
+Continue Playing supports Android-style local dismissal: long-press a recently played card and choose **Remove from Continue Playing**. **Show Hidden Games** in the section's options menu restores those cards. Playing a game again also restores it. This does not alter provider history or hide active/resumable sessions.

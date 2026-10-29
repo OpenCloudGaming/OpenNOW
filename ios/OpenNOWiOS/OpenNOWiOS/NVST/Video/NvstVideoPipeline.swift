@@ -286,8 +286,6 @@ public final class NvstVideoPipeline: @unchecked Sendable {
     private var isStopped = false
     private var inbox = NvstDecodeFrameInbox<NvstAccessUnit>()
     private var workerScheduled = false
-    /// Decoder failures already seen by the async-failure check, so each is answered once.
-    private var observedDecodeFailures: UInt64 = 0
     private var lastKeyframeRequestAt: UInt64?
 
     /// Register before calling VideoToolbox: its output callback can run before the
@@ -398,16 +396,6 @@ public final class NvstVideoPipeline: @unchecked Sendable {
         lock.unlock()
         guard !stopped else { return }
 
-        // VideoToolbox rejects a frame with a broken reference chain in its asynchronous output
-        // handler, not by throwing out of `decode` — the live -12909 bursts never touched the
-        // catch below. The failure is visible here one frame later, which at stream rate is
-        // milliseconds; ask for the keyframe the chain needs, at the retry cadence.
-        let asyncFailures = decoder.failedFrameCount
-        if asyncFailures > observedDecodeFailures {
-            observedDecodeFailures = asyncFailures
-            requestKeyframeThrottled()
-        }
-
         let started = DispatchTime.now().uptimeNanoseconds
         var timings = StageTimings()
         timings.hop = Self.milliseconds(from: enqueuedAt, to: started)
@@ -436,7 +424,7 @@ public final class NvstVideoPipeline: @unchecked Sendable {
             lock.lock()
             counters.missingParameterSetFrames += 1
             lock.unlock()
-            onKeyframeNeeded()
+            requestKeyframeThrottled()
             return
         } catch {
             discardDecodeCompletion(frameIndex: unit.frameIndex)
@@ -477,7 +465,10 @@ public final class NvstVideoPipeline: @unchecked Sendable {
         let entry = pendingCompletions.take(frameIndex: frameIndex)
         lock.unlock()
         guard let entry else { return }
-        guard success else { return }
+        guard success else {
+            requestKeyframeThrottled()
+            return
+        }
         let decodedAt = DispatchTime.now().uptimeNanoseconds
         var timings = StageTimings()
         timings.hop = entry.hopMilliseconds
@@ -668,7 +659,7 @@ public final class NvstVideoPipeline: @unchecked Sendable {
         let now = DispatchTime.now().uptimeNanoseconds
         lock.lock()
         let sinceLastRequest = lastKeyframeRequestAt.map { Self.seconds(from: $0, to: now) } ?? .infinity
-        let shouldRequest = sinceLastRequest >= Self.keyframeRetryInterval
+        let shouldRequest = !isStopped && sinceLastRequest >= Self.keyframeRetryInterval
         if shouldRequest { lastKeyframeRequestAt = now }
         lock.unlock()
         if shouldRequest { onKeyframeNeeded() }

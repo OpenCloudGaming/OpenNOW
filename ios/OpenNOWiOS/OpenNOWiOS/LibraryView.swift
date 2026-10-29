@@ -2,6 +2,7 @@ import SwiftUI
 
 struct LibraryView: View {
     @EnvironmentObject private var store: OpenNOWStore
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var pendingLaunchRequest: GameLaunchRequest?
     @State private var selectedGameForDetails: CloudGame?
     @State private var searchText = ""
@@ -14,6 +15,8 @@ struct LibraryView: View {
     @State private var selectedGameForLauncher: CloudGame?
 
     var body: some View {
+        let games = filteredGames
+        let empty = emptyState
         NavigationStack {
             Group {
                 if store.user == nil {
@@ -21,24 +24,25 @@ struct LibraryView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     GameCatalogGridView(
-                        games: filteredGames,
+                        games: games,
                         isLoading: store.visibleLibraryGames.isEmpty && store.isLoadingGames,
-                        emptyTitle: emptyState.title,
-                        emptySystemImage: emptyState.symbol,
-                        emptyDescription: emptyState.detail,
+                        emptyTitle: empty.title,
+                        emptySystemImage: empty.symbol,
+                        emptyDescription: empty.detail,
                         subtitle: { gameCatalogSubtitle(for: $0) },
                         badgeSystemImage: { _ in nil },
-                onOpenDetails: { selectedGameForDetails = $0 },
-                onPlay: launchFromCard,
-                onChooseLauncher: { selectedGameForLauncher = $0 }
+                        onOpenDetails: { selectedGameForDetails = $0 },
+                        onPlay: launchFromCard,
+                        onChooseLauncher: { selectedGameForLauncher = $0 }
                     ) {
-                        libraryHeader
+                        libraryHeader(gameCount: games.count)
                     } emptyActions: {
                         emptyStateActions
                     }
                 }
             }
             .navigationTitle("Library")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button { showingAddGame = true } label: { Image(systemName: "plus") }
@@ -47,7 +51,7 @@ struct LibraryView: View {
                 }
             }
             .sheet(isPresented: $showingAddGame) { AddLibraryGameSheet().environmentObject(store) }
-            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search library")
+            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search library")
             .refreshable { await store.refreshCatalog() }
             .background {
                 CatalogWallpaperBackdrop(
@@ -79,7 +83,7 @@ struct LibraryView: View {
     }
 
     private var emptyCause: LibraryEmptyCause {
-        if hasActiveFilters { return .filteredOut }
+        if hasNarrowingFilters { return .filteredOut }
         if store.accountConnectors.contains(where: \.isLinked) { return .syncing }
         return .noStoresLinked
     }
@@ -101,6 +105,13 @@ struct LibraryView: View {
                 "GeForce NOW has not returned any owned games from \(subject) yet. This usually settles within a minute."
             )
         case .filteredOut:
+            if favoritesOnly && !hasCatalogFilters {
+                return (
+                    "No favorites yet",
+                    "heart",
+                    "Mark games as favorites from their game details to keep them close at hand."
+                )
+            }
             let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
             if !query.isEmpty {
                 return (
@@ -131,13 +142,24 @@ struct LibraryView: View {
             }
             .buttonStyle(.bordered)
         case .filteredOut:
-            Button("Clear Filters") { clearFilters() }
-                .buttonStyle(.borderedProminent)
+            if favoritesOnly && !hasCatalogFilters {
+                Button("Show All Games") { favoritesOnly = false }
+                    .buttonStyle(.borderedProminent)
+            } else {
+                Button("Clear Filters") { clearFilters() }
+                    .buttonStyle(.borderedProminent)
+            }
         }
     }
 
-    private var libraryHeader: some View {
+    private func libraryHeader(gameCount: Int) -> some View {
         VStack(alignment: .leading, spacing: 12) {
+            if dynamicTypeSize.isAccessibilitySize {
+                libraryScopePicker.pickerStyle(.menu)
+            } else {
+                libraryScopePicker.pickerStyle(.segmented)
+            }
+
             if let active = store.activeSession {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Current Session")
@@ -155,23 +177,32 @@ struct LibraryView: View {
             }
 
             CatalogControlsHeader(
-                title: libraryCountTitle,
-                subtitle: "Synced library",
+                title: libraryCountTitle(gameCount: gameCount),
+                subtitle: favoritesOnly ? "Saved for your next session" : "Synced and added games",
                 chips: activeFilterChips,
                 onClear: hasActiveFilters ? clearFilters : nil
             ) {
-                HStack(spacing: 8) {
-                    filterMenu
-                    sortMenu
-                }
+                EmptyView()
             }
+
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) { filterMenu; sortMenu }
+                VStack(alignment: .leading, spacing: 8) { filterMenu; sortMenu }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.regular)
+        }
+    }
+
+    private var libraryScopePicker: some View {
+        Picker("Library collection", selection: $favoritesOnly) {
+            Text("All Games").tag(false)
+            Text("Favorites").tag(true)
         }
     }
 
     private var filterMenu: some View {
         Menu {
-            Toggle("Favorites", isOn: $favoritesOnly)
-
             Picker("Platform", selection: binding(for: $selectedPlatform)) {
                 Text("Any Platform").tag("")
                 ForEach(platforms, id: \.self) { platform in
@@ -200,9 +231,11 @@ struct LibraryView: View {
                 }
             }
         } label: {
-            Image(systemName: hasActiveFilters ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+            Label("Filter", systemImage: hasCatalogFilters ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+                .frame(minHeight: 28)
         }
         .accessibilityLabel("Filters")
+        .accessibilityValue(hasCatalogFilters ? "Active" : "None")
     }
 
     private var sortMenu: some View {
@@ -213,9 +246,11 @@ struct LibraryView: View {
                 }
             }
         } label: {
-            Image(systemName: "arrow.up.arrow.down")
+            Label(sortMode.title, systemImage: "arrow.up.arrow.down")
+                .frame(minHeight: 28)
         }
         .accessibilityLabel("Sort")
+        .accessibilityValue(sortMode.title)
     }
 
     private var filteredGames: [CloudGame] {
@@ -259,11 +294,11 @@ struct LibraryView: View {
         Array(Set(store.visibleLibraryGames.flatMap { gameResolvedStores(game: $0) })).sorted()
     }
 
-    private var libraryCountTitle: String {
-        if filteredGames.count == store.visibleLibraryGames.count {
+    private func libraryCountTitle(gameCount: Int) -> String {
+        if gameCount == store.visibleLibraryGames.count {
             return store.visibleLibraryGames.count == 1 ? "1 Game" : "\(store.visibleLibraryGames.count) Games"
         }
-        return "\(filteredGames.count) / \(store.visibleLibraryGames.count) Games"
+        return "\(gameCount) of \(store.visibleLibraryGames.count) Games"
     }
 
     private var activeFilterChips: [CatalogFilterChip] {
@@ -272,11 +307,6 @@ struct LibraryView: View {
         if !query.isEmpty {
             chips.append(CatalogFilterChip(label: "Search: \(query)") {
                 searchText = ""
-            })
-        }
-        if favoritesOnly {
-            chips.append(CatalogFilterChip(label: "Favorites") {
-                favoritesOnly = false
             })
         }
         if let selectedStore {
@@ -303,12 +333,18 @@ struct LibraryView: View {
     }
 
     private var hasActiveFilters: Bool {
+        hasNarrowingFilters || sortMode != .title
+    }
+
+    private var hasNarrowingFilters: Bool {
+        favoritesOnly || hasCatalogFilters
+    }
+
+    private var hasCatalogFilters: Bool {
         !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
             selectedGenre != nil ||
             selectedPlatform != nil ||
-            selectedStore != nil ||
-            favoritesOnly ||
-            sortMode != .title
+            selectedStore != nil
     }
 
     private func binding(for optional: Binding<String?>) -> Binding<String> {

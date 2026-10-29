@@ -51,6 +51,186 @@ private struct GameDetailsPresentationTestRoot: View {
 }
 
 final class OpenNOWiOSParityTests: XCTestCase {
+    @MainActor
+    func testContinuePlayingDismissalPreservesLiveSessionAndCanBeRestored() {
+        let defaults = UserDefaults.standard
+        let keys = ["OpenNOW.iOS.settings", "OpenNOW.iOS.activeSession", "OpenNOW.iOS.activeStreamSettings"]
+        let saved = keys.map { defaults.data(forKey: $0) }
+        defer {
+            for (key, value) in zip(keys, saved) {
+                if let value { defaults.set(value, forKey: key) }
+                else { defaults.removeObject(forKey: key) }
+            }
+        }
+        let store = OpenNOWStore()
+        store.installDebugQueuePreview(position: 1, isSettingUp: true)
+        store.streamSession = store.activeSession
+        let active = store.activeSession
+        let stream = store.streamSession
+        let resumableIDs = store.resumableSessions.map(\.id)
+        var option = GameLaunchOption(storefront: "STEAM", appId: "1", supportedControls: nil)
+        option.lastPlayedDate = "2026-10-01T12:00:00Z"
+        let game = Self.makeGame(title: "Recent", controls: [], options: [option])
+        store.dismissContinuePlaying(game)
+        XCTAssertTrue(store.settings.isContinuePlayingDismissed(game))
+        XCTAssertEqual(store.activeSession, active)
+        XCTAssertEqual(store.streamSession, stream)
+        XCTAssertEqual(store.resumableSessions.map(\.id), resumableIDs)
+        store.restoreContinuePlaying()
+        XCTAssertFalse(store.settings.isContinuePlayingDismissed(game))
+        XCTAssertEqual(store.activeSession, active)
+        XCTAssertEqual(store.streamSession, stream)
+    }
+
+    func testContinuePlayingDismissalPersistsAndExpiresAfterNewPlay() throws {
+        var option = GameLaunchOption(storefront: "STEAM", appId: "1", supportedControls: nil)
+        option.lastPlayedDate = "2026-10-01T12:00:00Z"
+        let game = Self.makeGame(title: "Recent", controls: [], options: [option])
+        var settings = AppSettings.default
+        XCTAssertFalse(settings.isContinuePlayingDismissed(game))
+        settings.dismissContinuePlaying(game)
+        let restored = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
+        XCTAssertTrue(restored.isContinuePlayingDismissed(game))
+        option.lastPlayedDate = "2026-10-02T12:00:00Z"
+        let replayed = Self.makeGame(title: "Recent", controls: [], options: [option])
+        XCTAssertFalse(restored.isContinuePlayingDismissed(replayed))
+        settings.dismissedContinuePlaying.removeAll()
+        XCTAssertFalse(settings.isContinuePlayingDismissed(game))
+    }
+
+    func testContinuePlayingDismissalsAreBoundedAndIgnoreUnplayedGames() throws {
+        var settings = AppSettings.default
+        settings.dismissContinuePlaying(Self.makeGame(title: "Unplayed", controls: []))
+        XCTAssertTrue(settings.dismissedContinuePlaying.isEmpty)
+        var option = GameLaunchOption(storefront: "STEAM", appId: "1", supportedControls: nil)
+        option.lastPlayedDate = "2026-10-01T12:00:00Z"
+        for index in 0..<60 {
+            let game = Self.makeGame(title: "Game \(index)", controls: [], options: [option])
+            settings.dismissContinuePlaying(game)
+            XCTAssertTrue(settings.isContinuePlayingDismissed(game))
+        }
+        XCTAssertEqual(settings.dismissedContinuePlaying.count, 48)
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(AppSettings.default)) as? [String: Any])
+        legacy.removeValue(forKey: "dismissedContinuePlaying")
+        let migrated = try JSONDecoder().decode(AppSettings.self, from: JSONSerialization.data(withJSONObject: legacy))
+        XCTAssertTrue(migrated.dismissedContinuePlaying.isEmpty)
+    }
+
+    func testCatalogSnapshotCodecRoundTripAndCorruptCacheFallback() async throws {
+        let codec = CatalogSnapshotCodec()
+        let game = Self.makeGame(title: "Cached", controls: [])
+        let snapshot = CachedCatalogSnapshot(schemaVersion: 1, cachedAt: 123, vpcId: "GFN-PC",
+                                             allGames: [game], featuredGames: [game], libraryGames: [game])
+        let encoded = await codec.encode(snapshot)
+        let decoded = await codec.decode(try XCTUnwrap(encoded))
+        let restored = try XCTUnwrap(decoded)
+        XCTAssertEqual(restored.schemaVersion, 1)
+        XCTAssertEqual(restored.cachedAt, 123)
+        XCTAssertEqual(restored.vpcId, "GFN-PC")
+        XCTAssertEqual(restored.allGames, [game])
+        XCTAssertEqual(restored.featuredGames, [game])
+        XCTAssertEqual(restored.libraryGames, [game])
+        let corrupt = await codec.decode(Data("not JSON".utf8))
+        XCTAssertNil(corrupt)
+        let legacy = await codec.decodeLegacyLibrary(try JSONEncoder().encode([game]))
+        XCTAssertEqual(legacy, [game])
+        let corruptLegacy = await codec.decodeLegacyLibrary(Data("not JSON".utf8))
+        XCTAssertTrue(corruptLegacy.isEmpty)
+    }
+
+    func testCatalogSnapshotCodecSkipsCancelledWork() async {
+        let codec = CatalogSnapshotCodec()
+        let snapshot = CachedCatalogSnapshot(schemaVersion: 1, cachedAt: 123, vpcId: "GFN-PC",
+                                             allGames: [], featuredGames: [], libraryGames: [])
+        let encoded = await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await codec.encode(snapshot)
+        }.value
+        XCTAssertNil(encoded)
+    }
+
+    @MainActor
+    func testCatalogPresentationPreservesCollectionPrecedenceAndSearchOrder() {
+        let catalog = Self.makeGame(title: "Catalog", controls: [])
+        let library = Self.makeGame(title: "Library", controls: [])
+        let imported = Self.makeGame(title: "Imported", controls: [])
+        let remote = Self.makeGame(title: "Remote", controls: [])
+        let presentation = CatalogPresentation(
+            allGames: [catalog, library], libraryGames: [library], importedGames: [catalog, imported]
+        )
+        XCTAssertEqual(presentation.catalogGames.map(\.id), [catalog.id, library.id, imported.id])
+        XCTAssertEqual(presentation.visibleLibraryGames.map(\.id), [library.id, catalog.id, imported.id])
+        XCTAssertEqual(presentation.matchingGames(query: "", remoteResults: [remote]), presentation.catalogGames)
+        XCTAssertEqual(presentation.matchingGames(query: "cat act", remoteResults: [catalog, remote, remote]).map(\.id),
+                       [catalog.id, remote.id])
+        XCTAssertTrue(presentation.matchingGames(query: "cat puzzle", remoteResults: []).isEmpty)
+        XCTAssertEqual(presentation.storeFilters, ["STEAM"])
+        XCTAssertEqual(presentation.genreFilters, ["Action"])
+    }
+
+    @MainActor
+    func testCatalogPresentationRecentGamesUseNewestVariantAndStableTies() {
+        var olderOption = GameLaunchOption(storefront: "STEAM", appId: "1", supportedControls: nil)
+        olderOption.lastPlayedDate = "2026-10-01T12:00:00Z"
+        var newerOption = GameLaunchOption(storefront: "EPIC", appId: "2", supportedControls: nil)
+        newerOption.lastPlayedDate = "2026-10-02T12:00:00Z"
+        let newest = Self.makeGame(title: "Newest", controls: [], options: [olderOption, newerOption])
+        let tied = Self.makeGame(title: "Tied", controls: [], options: [newerOption])
+        let older = Self.makeGame(title: "Older", controls: [], options: [olderOption])
+        var blankOption = olderOption
+        blankOption.lastPlayedDate = " \n "
+        let unplayed = Self.makeGame(title: "Unplayed", controls: [], options: [blankOption])
+        XCTAssertNil(unplayed.lastPlayedDate)
+        let presentation = CatalogPresentation(
+            allGames: [older, unplayed, newest], libraryGames: [tied], importedGames: []
+        )
+        XCTAssertEqual(presentation.recentGames.map(\.id), [tied.id, newest.id, older.id])
+    }
+
+    @MainActor
+    func testCatalogGridCacheTracksFiltersSortQueryAndRemoteResults() {
+        let alpha = Self.makeGame(title: "Alpha", controls: [])
+        let beta = Self.makeGame(title: "Beta", controls: [])
+        let remote = Self.makeGame(title: "Remote", controls: [])
+        let presentation = CatalogPresentation(allGames: [beta, alpha], libraryGames: [], importedGames: [])
+        XCTAssertEqual(presentation.gridGames(query: "", remoteResults: [], stores: [], genres: [], sort: .popular),
+                       [beta, alpha])
+        XCTAssertEqual(presentation.gridGames(query: "", remoteResults: [], stores: [], genres: [], sort: .title),
+                       [alpha, beta])
+        XCTAssertEqual(presentation.gridGames(query: "", remoteResults: [], stores: ["STEAM"], genres: ["Action"], sort: .title),
+                       [alpha, beta])
+        XCTAssertTrue(presentation.gridGames(query: "", remoteResults: [], stores: ["EPIC"], genres: [], sort: .title).isEmpty)
+        XCTAssertTrue(presentation.gridGames(query: "", remoteResults: [], stores: [], genres: ["Puzzle"], sort: .title).isEmpty)
+        XCTAssertEqual(presentation.gridGames(query: "alpha", remoteResults: [], stores: [], genres: [], sort: .popular), [alpha])
+        XCTAssertEqual(presentation.gridGames(query: "alpha", remoteResults: [remote], stores: [], genres: [], sort: .popular),
+                       [alpha, remote])
+        XCTAssertEqual(presentation.gridGames(query: "beta", remoteResults: [], stores: [], genres: [], sort: .popular), [beta])
+        XCTAssertEqual(presentation.gridGames(query: "", remoteResults: [], stores: [], genres: [], sort: .lastPlayed), [beta, alpha])
+    }
+
+    @MainActor
+    func testCatalogPresentationIsReusedUntilCatalogInputsChange() {
+        let store = OpenNOWStore()
+        let initial = store.catalogPresentation
+        store.controllerConnected.toggle()
+        store.settings.favoriteGameIds = ["missing"]
+        store.searchText = "a"
+        XCTAssertTrue(store.catalogPresentation === initial)
+        XCTAssertEqual(store.filteredCatalogGames,
+                       initial.matchingGames(query: "a", remoteResults: []))
+        #if DEBUG
+        store.installDebugStorePreview()
+        let updated = store.catalogPresentation
+        XCTAssertFalse(updated === initial)
+        XCTAssertFalse(updated.catalogGames.isEmpty)
+        store.searchText = "not a matching title"
+        XCTAssertTrue(store.filteredCatalogGames.isEmpty)
+        store.searchText = ""
+        XCTAssertEqual(store.filteredCatalogGames, updated.catalogGames)
+        XCTAssertTrue(store.catalogPresentation === updated)
+        #endif
+    }
+
     func testSessionRoutingPrefersWebRTCOverEarlierRTSPAndPreservesPort() throws {
         let session: [String: Any] = ["connectionInfo": [
             ["usage": 14, "resourcePath": "rtsps://native.example:322", "appLevelProtocol": 6],

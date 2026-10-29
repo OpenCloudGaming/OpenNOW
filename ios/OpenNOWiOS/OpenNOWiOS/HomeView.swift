@@ -686,25 +686,23 @@ struct CatalogWallpaperBackdrop: View {
     }
 }
 
-struct HomeView: View {
-    private enum StoreSort: String, CaseIterable {
-        case popular, title, lastPlayed
-
-        var label: String {
-            switch self {
-            case .popular: return "Most Popular"
-            case .title: return "Title A–Z"
-            case .lastPlayed: return "Last Played"
-            }
+extension CatalogGameSort {
+    var label: String {
+        switch self {
+        case .popular: return "Most Popular"
+        case .title: return "Title A–Z"
+        case .lastPlayed: return "Last Played"
         }
     }
+}
 
+struct HomeView: View {
     @EnvironmentObject private var store: OpenNOWStore
     @State private var pendingLaunchRequest: GameLaunchRequest?
     @State private var selectedGameForDetails: CloudGame?
     @State private var selectedGameForLauncher: CloudGame?
     @State private var isSearchPresented = false
-    @State private var sort = StoreSort.popular
+    @State private var sort = CatalogGameSort.popular
     @State private var selectedStores = Set<String>()
     @State private var selectedGenres = Set<String>()
 
@@ -797,7 +795,7 @@ struct HomeView: View {
             ) {
                 HStack(spacing: 8) {
                     Menu {
-                        ForEach(StoreSort.allCases, id: \.self) { option in
+                        ForEach(CatalogGameSort.allCases, id: \.self) { option in
                             Button {
                                 sort = option
                             } label: {
@@ -867,7 +865,7 @@ struct HomeView: View {
             )
         }
 
-        if !isResultsMode && jumpBackInHasContent {
+        if !isResultsMode && (jumpBackInHasContent || !store.settings.dismissedContinuePlaying.isEmpty) {
             continueSection
         }
 
@@ -929,8 +927,22 @@ struct HomeView: View {
 
     private var continueSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Continue playing")
-                .font(.title2.weight(.bold))
+            HStack {
+                Text("Continue playing")
+                    .font(.title2.weight(.bold))
+                Spacer()
+                if !store.settings.dismissedContinuePlaying.isEmpty {
+                    Menu {
+                        Button("Show Hidden Games", systemImage: "arrow.uturn.backward") {
+                            store.restoreContinuePlaying()
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                            .frame(minWidth: 44, minHeight: 44)
+                    }
+                    .accessibilityLabel("Continue Playing Options")
+                }
+            }
 
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(alignment: .top, spacing: 12) {
@@ -944,6 +956,11 @@ struct HomeView: View {
                             item.onSelect()
                         }
                         .frame(width: continueCardWidth)
+                        .contextMenu {
+                            if let onDismiss = item.onDismiss {
+                                Button("Remove from Continue Playing", systemImage: "minus.circle", action: onDismiss)
+                            }
+                        }
                     }
 
                     ForEach(unknownResumableSessions) { candidate in
@@ -1023,46 +1040,26 @@ struct HomeView: View {
     }
 
     private var favoriteGames: [CloudGame] {
-        let byId = Dictionary((store.allGames + store.libraryGames).map { ($0.id, $0) },
-            uniquingKeysWith: { first, _ in first })
+        let byId = store.catalogPresentation.homeFavoriteGamesByID
         let alreadyShown = Set((continueGameItems.map(\.game) + queueGames).map(catalogStableGameKey))
         return Array(store.settings.favoriteGameIds.compactMap { byId[$0] }
             .filter { !alreadyShown.contains(catalogStableGameKey($0)) }.prefix(14))
     }
 
     private var homeGridGames: [CloudGame] {
-        let source = isHomeSearchActive ? homeSearchResults : store.allGames
-        let filtered = source.filter { game in
-            let storeMatch = selectedStores.isEmpty || game.launchOptions.contains {
-                selectedStores.contains($0.storefront.uppercased())
-            }
-            let genreMatch = selectedGenres.isEmpty || selectedGenres.contains(game.genre)
-            return storeMatch && genreMatch
-        }
-        switch sort {
-        case .popular: return filtered
-        case .title:
-            return filtered.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
-        case .lastPlayed:
-            return filtered.enumerated().sorted { left, right in
-                let leftDate = left.element.lastPlayedDate ?? ""
-                let rightDate = right.element.lastPlayedDate ?? ""
-                return leftDate == rightDate ? left.offset < right.offset : leftDate > rightDate
-            }.map(\.element)
-        }
+        store.catalogPresentation.gridGames(query: store.searchText, remoteResults: store.remoteSearchResults,
+            stores: selectedStores, genres: selectedGenres, sort: sort)
     }
 
     private var hasCatalogFilters: Bool { !selectedStores.isEmpty || !selectedGenres.isEmpty }
     private var isResultsMode: Bool { isHomeSearchActive || hasCatalogFilters }
 
     private var availableStoreFilters: [String] {
-        Array(Set(store.allGames.flatMap { $0.launchOptions.map { $0.storefront.uppercased() } }))
-            .filter { !$0.isEmpty && $0 != "AUTO" }.sorted()
+        store.catalogPresentation.storeFilters
     }
 
     private var availableGenreFilters: [String] {
-        Array(Set(store.allGames.map(\.genre)))
-            .filter { !$0.isEmpty && $0 != "Cloud Game" }.sorted()
+        store.catalogPresentation.genreFilters
     }
 
     private func toggle(_ value: String, in selected: inout Set<String>) {
@@ -1120,10 +1117,6 @@ struct HomeView: View {
         !store.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private var homeSearchResults: [CloudGame] {
-        store.filteredCatalogGames
-    }
-
     private func launchFromCard(_ game: CloudGame) {
         switch store.launchChoice(for: game) {
         case .chooseLauncher:
@@ -1170,16 +1163,16 @@ struct HomeView: View {
             )
         }
 
-        let recentGames = (store.libraryGames + store.allGames)
-            .filter { $0.lastPlayedDate != nil }
-            .sorted { ($0.lastPlayedDate ?? "") > ($1.lastPlayedDate ?? "") }
-        for game in recentGames where items.count < 12 {
+        for game in store.catalogPresentation.recentGames {
+            if items.count >= 12 { break }
+            guard !store.settings.isContinuePlayingDismissed(game) else { continue }
             guard seenGameKeys.insert(catalogStableGameKey(game)).inserted else { continue }
             items.append(GameBannerActionItem(
                 id: "recent-\(catalogStableGameKey(game))",
                 game: game,
                 subtitle: "Recently played",
-                badgeSystemImage: nil
+                badgeSystemImage: nil,
+                onDismiss: { store.dismissContinuePlaying(game) }
             ) {
                 selectedGameForDetails = game
             })
@@ -1222,6 +1215,7 @@ struct GameBannerActionItem: Identifiable {
     let game: CloudGame
     let subtitle: String?
     let badgeSystemImage: String?
+    var onDismiss: (() -> Void)? = nil
     let onSelect: () -> Void
 }
 

@@ -3,6 +3,30 @@ import CoreVideo
 import Foundation
 import WebRTC
 
+struct NativeStreamVideoLiveness {
+    enum Action: Equatable { case none, requestKeyframe, failed }
+    private var lastProgressAt: UInt64
+    private var lastDecoded: UInt64 = 0
+    private var lastRequestAt: UInt64?
+
+    init(now: UInt64) { lastProgressAt = now }
+
+    mutating func observe(decoded: UInt64, now: UInt64) -> Action {
+        if decoded > lastDecoded {
+            lastDecoded = decoded
+            lastProgressAt = now
+            lastRequestAt = nil
+            return .none
+        }
+        let age = now >= lastProgressAt ? now - lastProgressAt : 0
+        if age >= 20_000_000_000 { return .failed }
+        guard age >= 1_000_000_000 else { return .none }
+        if let lastRequestAt, now >= lastRequestAt, now - lastRequestAt < 1_000_000_000 { return .none }
+        lastRequestAt = now
+        return .requestKeyframe
+    }
+}
+
 /// A PLI on an unopened feedback channel can be discarded without an error. The
 /// host also accepts an explicit IDR command on its reliable control channel.
 enum NativeStreamKeyframeRecovery {
@@ -76,8 +100,7 @@ actor NativeStreamNVST: NativeStreamNVSTTransport {
     private var keyframeRequests = 0
     private var controlKeyframeRequests = 0
     private var udpKeyframeRequests = 0
-    private var lastProgressAt = Date()
-    private var lastDecoded: UInt64 = 0
+    private var videoLiveness = NativeStreamVideoLiveness(now: DispatchTime.now().uptimeNanoseconds)
     private var didFail = false
     private var touchPacketsSent = 0
     private var touchRecordsSent = 0
@@ -122,7 +145,7 @@ actor NativeStreamNVST: NativeStreamNVSTTransport {
             }
             rtsp = negotiated
             if let preparationError { throw preparationError }
-            lastProgressAt = Date()
+            videoLiveness = NativeStreamVideoLiveness(now: DispatchTime.now().uptimeNanoseconds)
             sampling = Task { [weak self] in
                 while !Task.isCancelled {
                     await self?.sample()
@@ -227,6 +250,7 @@ actor NativeStreamNVST: NativeStreamNVSTTransport {
         guard !stopped, keepalive == nil else { return }
         _ = bundle?.sendControl(.windowStateChange())
         _ = bundle?.sendControl(.systemStateChange())
+        requestKeyframe()
         keepalive = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.sendKeepalive()
@@ -365,8 +389,10 @@ actor NativeStreamNVST: NativeStreamNVSTTransport {
         let stats = receiver.stats
         if let ssrc = stats.boundSSRC { feedback.updateMediaSSRC(ssrc) }
         let decoded = decoder.decodedFrameCount
-        if decoded > lastDecoded { lastProgressAt = Date(); lastDecoded = decoded }
-        if Date().timeIntervalSince(lastProgressAt) > 20 {
+        switch videoLiveness.observe(decoded: decoded, now: DispatchTime.now().uptimeNanoseconds) {
+        case .none: break
+        case .requestKeyframe: requestKeyframe()
+        case .failed:
             fail(bundle?.isControlChannelOpen == true
                 ? "Native NVST video stopped arriving or decoding. Switch off the experimental receiver to use the standard connection."
                 : "Native NVST control did not connect. Switch off the experimental receiver to use the standard connection.")
