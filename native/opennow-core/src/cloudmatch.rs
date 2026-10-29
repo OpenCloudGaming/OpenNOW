@@ -1996,8 +1996,12 @@ fn build_create_body(app_id: &str, params: &Value, settings: &Value, device_id: 
     };
     let cloud_gsync = resolved_cloud_gsync(settings);
     let reflex = cloud_gsync || fps >= 120;
-    let persistence = setting_bool(settings, "enablePersistingInGameSettings", true)
-        && params["supportsInGameSettingsPersistence"].as_bool() == Some(true);
+    // Honor the user toggle only, matching the official Bifrost client. The
+    // catalog support gate dropped persistence for titles whose variants do
+    // not advertise IN_GAME_SETTINGS_PERSISTENCE_ENABLED (Diablo IV), sending
+    // enablePersistingInGameSettings: false and resetting settings each session
+    // while the official app persisted them.
+    let persistence = setting_bool(settings, "enablePersistingInGameSettings", true);
     let metadata = vec![
         json!({"key":"wssignaling","value":"1"}),
         json!({"key":"SubSessionId","value":random_uuid()}),
@@ -6690,7 +6694,7 @@ mod tests {
     }
 
     #[test]
-    fn in_game_settings_persistence_defaults_on_and_requires_game_support() {
+    fn in_game_settings_persistence_defaults_on_and_follows_user_toggle_only() {
         for preference in [Value::Null, json!(false), json!(true)] {
             for support in [Value::Null, json!(false), json!(true)] {
                 let mut params = json!({});
@@ -6702,9 +6706,11 @@ mod tests {
                     settings["enablePersistingInGameSettings"] = preference.clone();
                 }
                 let body = build_create_body("123", &params, &settings, "stable-device");
+                // The catalog support flag no longer gates the preference:
+                // the official client sends the toggle value unconditionally.
                 assert_eq!(
                     body["sessionRequestData"]["enablePersistingInGameSettings"],
-                    preference != false && support == true
+                    preference != false
                 );
             }
         }
