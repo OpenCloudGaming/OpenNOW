@@ -36,8 +36,6 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>GCSupportsGameMode</key>
 	<true/>
-	<key>ITSAppUsesNonExemptEncryption</key>
-	<true/>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.games</string>
 	<key>LSRequiresIPhoneOS</key>
