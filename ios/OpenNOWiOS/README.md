@@ -23,7 +23,7 @@ xcodebuild build \
   CODE_SIGNING_ALLOWED=NO
 ```
 
-The preparation script downloads the matching static OpenSSL/usrsctp XCFrameworks, verifies the pinned SHA-256, and installs only their framework directories. The native C libraries are unchanged from build 128, so the preparation script reuses that checksum-pinned archive. Generated libraries and build outputs are ignored by Git. WebRTC remains the vendored framework already in the upstream repository. For a source build of the native dependencies, install CMake and run:
+The preparation script verifies the pinned SHA-256 of `Frameworks/OpenNOW-iOS-128-native-libraries.zip`, which is checked into this repository, and extracts only the matching static OpenSSL/usrsctp XCFrameworks. Preparation requires no network access or third-party release download. The native C libraries are unchanged from build 128. Extracted frameworks and build outputs are ignored by Git. WebRTC remains the vendored framework already in the upstream repository. For a source build of the native dependencies, install CMake and run:
 
 ```sh
 python3 ios/OpenNOWiOS/BuildScripts/build-native-protocol-libs.py --cmake /path/to/cmake

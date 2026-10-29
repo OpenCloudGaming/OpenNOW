@@ -22,7 +22,7 @@ The Archive action signs and uploads the app to App Store Connect for TestFlight
 
 Xcode Cloud automatically increments its build number for each new build. The next build number was set to **191** during setup, above the source build 190 and the existing TestFlight uploads. To change it later, use **Product Settings → Build Number → Next Build Number**. The app and widget both use `$(CURRENT_PROJECT_VERSION)`. Marketing version remains the checked-in `MARKETING_VERSION`; no version-only commits or extra push loops are needed.
 
-`ci_scripts/ci_post_clone.sh` runs the existing checksum-pinned native library preparation script before Xcode builds. Keep it executable and beside `OpenNOWiOS.xcodeproj`. Without this step, a clean cloud checkout is missing the ignored OpenSSL and usrsctp XCFrameworks.
+`ci_scripts/ci_post_clone.sh` verifies and extracts the checksum-pinned native library ZIP committed under `Frameworks/` before Xcode builds. This step is offline and does not depend on another repository or GitHub release downloads. Keep it executable and beside `OpenNOWiOS.xcodeproj`. Without this step, a clean cloud checkout is missing the ignored OpenSSL and usrsctp XCFrameworks.
 
 Save and push the script on `kief5555/ios` before starting the first cloud build. Check that the resulting cloud run lists this branch and the pushed commit, completes its archive/upload, and appears in TestFlight after Apple processing. A successful unsigned local archive verifies compilation and matched versions, but does not prove Apple signing or upload acceptance.
 

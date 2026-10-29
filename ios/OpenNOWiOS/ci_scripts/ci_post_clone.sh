@@ -1,5 +1,5 @@
 #!/bin/sh
-# Xcode Cloud runs this beside the project after checking out the pushed commit.
+# Prepare the repository-vendored native libraries offline after checkout.
 set -eu
 
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
