@@ -314,15 +314,20 @@ final class CatalogPresentation {
         uniquingKeysWith: { first, _ in first }
     )
 
-    private(set) lazy var recentGames: [CloudGame] = (libraryGames + allGames)
-        .enumerated().compactMap { index, game -> (index: Int, game: CloudGame, date: String)? in
-            guard let date = game.lastPlayedDate else { return nil }
-            return (index, game, date)
-        }
-        .sorted { left, right in
+    private(set) lazy var recentGames: [CloudGame] = {
+        let datedGames = (libraryGames + allGames)
+            .enumerated().compactMap { index, game -> (index: Int, game: CloudGame, date: String)? in
+                guard let date = game.lastPlayedDate else { return nil }
+                return (index, game, date)
+            }
+        let sortedGames = datedGames.sorted { left, right in
             left.date == right.date ? left.index < right.index : left.date > right.date
         }
-        .map(\.game)
+        var seen = Set<String>()
+        return sortedGames.compactMap { entry in
+            seen.insert(catalogStableGameKey(entry.game)).inserted ? entry.game : nil
+        }
+    }()
 
     private(set) lazy var storeFilters = Array(Set(allGames.flatMap {
         $0.launchOptions.map { $0.storefront.uppercased() }

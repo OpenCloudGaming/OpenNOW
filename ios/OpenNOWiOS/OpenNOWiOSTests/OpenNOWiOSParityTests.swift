@@ -82,6 +82,24 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertEqual(store.streamSession, stream)
     }
 
+    @MainActor
+    func testContinuePlayingDismissalCannotRevealAnOlderCatalogDuplicate() {
+        var option = GameLaunchOption(storefront: "STEAM", appId: "1", supportedControls: nil)
+        option.lastPlayedDate = "2026-10-01T12:00:00Z"
+        let older = Self.makeGame(title: "Recent", controls: [], options: [option])
+        option.lastPlayedDate = "2026-10-02T12:00:00Z"
+        let newer = Self.makeGame(title: "Recent", controls: [], options: [option])
+        for (catalog, library) in [([older], [newer]), ([newer], [older])] {
+            let presentation = CatalogPresentation(allGames: catalog, libraryGames: library, importedGames: [])
+            XCTAssertEqual(presentation.recentGames, [newer])
+            var settings = AppSettings.default
+            settings.dismissContinuePlaying(newer)
+            XCTAssertTrue(presentation.recentGames.filter { !settings.isContinuePlayingDismissed($0) }.isEmpty)
+            settings.dismissedContinuePlaying.removeAll()
+            XCTAssertEqual(presentation.recentGames.filter { !settings.isContinuePlayingDismissed($0) }, [newer])
+        }
+    }
+
     func testContinuePlayingDismissalPersistsAndExpiresAfterNewPlay() throws {
         var option = GameLaunchOption(storefront: "STEAM", appId: "1", supportedControls: nil)
         option.lastPlayedDate = "2026-10-01T12:00:00Z"
