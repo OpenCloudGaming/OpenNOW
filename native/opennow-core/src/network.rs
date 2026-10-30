@@ -166,12 +166,43 @@ fn measure_region(region_url: &str) -> Value {
     if crate::requests::check().is_err() {
         return Value::Null;
     }
-    let endpoint = match region_endpoint(region_url) {
+    let (host, addresses) = match region_endpoint(region_url) {
         Ok(endpoint) => endpoint,
         Err(error) => return json!({"url":region_url,"pingMs":null,"error":error}),
     };
-    let _ = tcp_ping(&endpoint);
+
+    // Local VPN tunnels and transparent proxies complete TCP handshakes on the
+    // spot, so a TCP connect measures the tunnel, not the region. An HTTPS
+    // response must be produced by the origin, so latency is an HTTPS RTT on a
+    // reused connection. Redirects stay disabled so a fast origin that 30x's to
+    // a slow host cannot inflate the sample. Addresses are pinned into the
+    // client so reqwest does not start a DNS job that outlives CONNECT_TIMEOUT
+    // when the Client drops.
+    let mut builder = reqwest::blocking::Client::builder()
+        .timeout(CONNECT_TIMEOUT)
+        .connect_timeout(CONNECT_TIMEOUT)
+        .pool_max_idle_per_host(1)
+        .pool_idle_timeout(Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::none());
+    for address in &addresses {
+        builder = builder.resolve(&host, *address);
+    }
+    let client = match builder.build() {
+        Ok(client) => client,
+        Err(_) => {
+            return json!({"url":region_url,"pingMs":null,"error":"HTTPS client unavailable"})
+        }
+    };
+
+    if crate::requests::check().is_err() {
+        return Value::Null;
+    }
+    if client.head(region_url).send().is_err() {
+        return json!({"url":region_url,"pingMs":null,"error":"HTTPS warm-up request failed"});
+    }
+
     let mut samples = Vec::with_capacity(3);
+    let mut baseline_ms: Option<u128> = None;
     for attempt in 0..3 {
         if crate::requests::check().is_err() {
             return Value::Null;
@@ -179,19 +210,57 @@ fn measure_region(region_url: &str) -> Value {
         if attempt > 0 {
             thread::sleep(Duration::from_millis(100));
         }
-        if let Some(sample) = tcp_ping(&endpoint) {
-            samples.push(sample);
-        }
+        let Some(sample_ms) = https_round_trip(&client, region_url) else {
+            continue;
+        };
+        let sample_ms = match accept_keep_alive_sample(sample_ms, baseline_ms) {
+            Some(ms) => ms,
+            None => {
+                // Server closed the pooled connection; the next request pays for
+                // a fresh TLS handshake. Retry once, then drop the outlier so it
+                // does not mix ~174 ms handshakes into ~20 ms keep-alive RTTs.
+                if crate::requests::check().is_err() {
+                    return Value::Null;
+                }
+                match https_round_trip(&client, region_url)
+                    .and_then(|ms| accept_keep_alive_sample(ms, baseline_ms))
+                {
+                    Some(ms) => ms,
+                    None => continue,
+                }
+            }
+        };
+        baseline_ms = Some(baseline_ms.map_or(sample_ms, |base| base.min(sample_ms)));
+        samples.push(sample_ms);
     }
     if samples.is_empty() {
-        return json!({"url":region_url,"pingMs":null,"error":"All TCP measurements failed"});
+        return json!({"url":region_url,"pingMs":null,"error":"All HTTPS measurements failed"});
     }
     let total = samples.iter().copied().sum::<u128>();
     let average = total.div_ceil(samples.len() as u128);
     json!({"url":region_url,"pingMs":u64::try_from(average).unwrap_or(u64::MAX)})
 }
 
-fn region_endpoint(region_url: &str) -> Result<Vec<SocketAddr>, String> {
+fn https_round_trip(client: &reqwest::blocking::Client, region_url: &str) -> Option<u128> {
+    let started = Instant::now();
+    // Any HTTP response, including errors, proves the round trip; only
+    // transport failure counts as a failed sample.
+    client.head(region_url).send().ok()?;
+    Some(started.elapsed().as_millis())
+}
+
+fn accept_keep_alive_sample(sample_ms: u128, baseline_ms: Option<u128>) -> Option<u128> {
+    let Some(baseline) = baseline_ms else {
+        return Some(sample_ms);
+    };
+    let reconnect_floor = baseline.saturating_mul(3).max(baseline.saturating_add(50));
+    if sample_ms >= reconnect_floor && sample_ms >= 100 {
+        return None;
+    }
+    Some(sample_ms)
+}
+
+fn region_endpoint(region_url: &str) -> Result<(String, Vec<SocketAddr>), String> {
     let parsed = Url::parse(region_url).map_err(|_| "Invalid region URL".to_owned())?;
     if !matches!(parsed.scheme(), "https" | "http") {
         return Err("Unsupported region URL scheme".to_owned());
@@ -199,31 +268,19 @@ fn region_endpoint(region_url: &str) -> Result<Vec<SocketAddr>, String> {
     let host = parsed
         .host_str()
         .filter(|host| !host.is_empty())
-        .ok_or_else(|| "Region URL has no host".to_owned())?;
+        .ok_or_else(|| "Region URL has no host".to_owned())?
+        .to_owned();
     let port = parsed
         .port_or_known_default()
         .ok_or_else(|| "Region URL has no TCP port".to_owned())?;
-    let addresses = (host, port)
+    let addresses = (host.as_str(), port)
         .to_socket_addrs()
         .map_err(|_| "Region host could not be resolved".to_owned())?
         .collect::<Vec<_>>();
     if addresses.is_empty() {
         return Err("Region host has no routable address".to_owned());
     }
-    Ok(addresses)
-}
-
-fn tcp_ping(addresses: &[SocketAddr]) -> Option<u128> {
-    let started = Instant::now();
-    for address in addresses {
-        if crate::requests::check().is_err() {
-            return None;
-        }
-        if TcpStream::connect_timeout(address, CONNECT_TIMEOUT).is_ok() {
-            return Some(started.elapsed().as_millis());
-        }
-    }
-    None
+    Ok((host, addresses))
 }
 
 #[cfg(test)]
@@ -316,6 +373,6 @@ mod tests {
         }))
         .expect("offline measurements remain serializable");
         assert_eq!(result["results"][0]["pingMs"], Value::Null);
-        assert_eq!(result["results"][0]["error"], "All TCP measurements failed");
+        assert_eq!(result["results"][0]["error"], "HTTPS warm-up request failed");
     }
 }
