@@ -391,7 +391,8 @@ impl ServiceError {
     }
 }
 
-fn transport_failure(error: &reqwest::Error) -> Option<&'static str> {
+/// The transport stage a request failed at, when the HTTP client identifies it.
+pub(crate) fn transport_failure(error: &reqwest::Error) -> Option<&'static str> {
     if error.is_timeout() {
         return Some("timeout");
     }
@@ -2156,6 +2157,12 @@ impl GfnService {
         })?;
         routing.discovery_owner = Some((session.provider.idp_id, session.user.user_id, generation));
         Ok(result)
+    }
+
+    /// The diagnostics summaries of the session-discovery sweeps since the last call, oldest
+    /// first.
+    pub fn take_discovery_summaries(&self) -> Vec<String> {
+        self.cloudmatch.take_discovery_summaries()
     }
 
     pub fn claim_session(&self, params: &Value, settings: &Value) -> Result<Value, ServiceError> {
