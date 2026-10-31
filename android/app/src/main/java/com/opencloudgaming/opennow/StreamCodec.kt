@@ -365,6 +365,7 @@ internal class OpenNowVideoDecoderFactory(
     private val defaultFactory = DefaultVideoDecoderFactory(sharedContext)
     private val hardwareFactory = openNowHardwareVideoDecoderFactory(sharedContext)
     private val platformSoftwareFactory = PlatformSoftwareVideoDecoderFactory(sharedContext)
+    private val rejectedDecoderTuning = ConcurrentHashMap.newKeySet<String>()
     private val surfacePresentationMode = if (directJavaDecode) SurfacePresentationMode.MediaCadence
         else SurfacePresentationMode.Immediate
 
@@ -421,13 +422,15 @@ internal class OpenNowVideoDecoderFactory(
             codec = codec,
             decoderImplementationName = hardwareDecoderImplementation,
         )
+        val tuningKey = hardwareDecoderImplementation ?: info.name
+        val tuningRejected = tuningKey in rejectedDecoderTuning
         if (codec != null && hardwareDecoder != null) {
             NativeInputDiagnostics.add(
                 "native MediaCodec decoder selected codec=${codec.name} " +
                     "implementation=$hardwareDecoderImplementation requestedFps=$exactRequestedFps " +
-                    "performanceTuning=$tuneDecoderPerformance lowLatency=$nativeLowLatencyDecoderEnabled " +
+                    "performanceTuning=${tuneDecoderPerformance && !tuningRejected} lowLatency=${nativeLowLatencyDecoderEnabled && !tuningRejected} " +
                     "standardLowLatencyAdvertised=$standardLowLatencyAdvertised " +
-                    "standardLowLatency=$standardLowLatencyEnabled " +
+                    "standardLowLatency=${standardLowLatencyEnabled && !tuningRejected} tuningRejected=$tuningRejected " +
                     "qualcommH264Guard=$bypassDecoderPerformanceTuning",
             )
         } else if (codec != null && decoder != null && (nativeLowLatencyDecoderEnabled || tuneDecoderPerformance)) {
@@ -440,12 +443,13 @@ internal class OpenNowVideoDecoderFactory(
             val tuned = LowLatencyVideoDecoder(
                 delegate = decoder,
                 requestedFps = exactRequestedFps,
-                lowLatencyEnabled = nativeLowLatencyDecoderEnabled,
-                standardLowLatencyEnabled = standardLowLatencyEnabled,
+                lowLatencyEnabled = nativeLowLatencyDecoderEnabled && !tuningRejected,
+                standardLowLatencyEnabled = standardLowLatencyEnabled && !tuningRejected,
+                tuningEnabled = !tuningRejected,
             )
-            // WebRTC owns its decoder recovery. NVST's direct Java calls need a local retry
-            // before an initialization error unwinds JNI and closes the media attachment.
-            if (directJavaDecode) DecoderInitializationFallback(
+            // Recover before either transport abandons a working media connection. WebRTC
+            // also reinitializes decoders, so retain the untuned choice across that lifecycle.
+            if (!tuningRejected) DecoderInitializationFallback(
                 preferred = tuned,
                 createFallback = {
                     hardwareFactory.createDecoder(info)?.let { plain ->
@@ -455,6 +459,9 @@ internal class OpenNowVideoDecoderFactory(
                     }
                 },
                 reportFailure = { detail ->
+                    // Native WebRTC may create another facade for the same hardware codec.
+                    // Do not reapply tuning already rejected during this factory's lifetime.
+                    rejectedDecoderTuning.add(tuningKey)
                     NativeInputDiagnostics.addRetained("codec-initialization-fallback", detail)
                 },
             ) else tuned
@@ -469,7 +476,8 @@ internal class OpenNowVideoDecoderFactory(
         val surfaceDecoder = MediaCodecSurfaceVideoDecoder(exactRequestedFps, decoderSurface,
             hdr = false, presentationMode = surfacePresentationMode) { width, height, rate ->
             sdrSurfaceDecoderConfiguration(codec, hardwareDecoderImplementation, width, height, rate,
-                tuneSelectedDecoder, nativeLowLatencyDecoderEnabled, standardLowLatencyEnabled)
+                tuneSelectedDecoder && !tuningRejected, nativeLowLatencyDecoderEnabled && !tuningRejected,
+                standardLowLatencyEnabled && !tuningRejected)
         }
         return SurfaceOrTextureVideoDecoder(surfaceDecoder, textureDecoder, directSdrEnabled,
             surfaceFailure = { surfaceDecoder.failureReason }, requestTexture = requestTextureOutput)

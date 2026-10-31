@@ -223,13 +223,20 @@ private fun cloudMatchClientIdentity(
     isAndroidTv: Boolean = false,
     useDesktopNativeTvIdentity: Boolean = false,
     preferNativeAndroidMode: Boolean = false,
+    preferNvstTransport: Boolean = false,
 ): CloudMatchClientIdentity {
     // The opt-in applies only to NVIDIA. Alliance client identities are provider-owned.
     val host = streamingBaseUrl?.toHttpUrlOrNull()?.host?.lowercase(Locale.US)
     if (preferBrowserMode && (streamingBaseUrl.isNullOrBlank() || host?.let(::isNvidiaCloudMatchHost) == true)) {
         return NVIDIA_BROWSER_CLOUD_MATCH_IDENTITY
     }
-    // Touch sessions use the desktop-native CloudMatch identity (NVIDIA-CLASSIC / NATIVE)
+    // NVIDIA's native client class allocates RTSP-only touch seats even when the request
+    // echoes GSStreamerType=WebRTC. Keep the client class aligned with the chosen transport.
+    if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY && !preferNvstTransport &&
+        (streamingBaseUrl.isNullOrBlank() || host?.let(::isNvidiaCloudMatchHost) == true)) {
+        return NVIDIA_BROWSER_CLOUD_MATCH_IDENTITY
+    }
+    // NVST touch sessions use the desktop-native CloudMatch identity (NVIDIA-CLASSIC / NATIVE)
     // with Android os + TABLET device type, so the server allocates the full desktop
     // resolution matrix (including ultrawide 2560×1080) while still enabling the
     // native touch digitizer on the host.
@@ -691,6 +698,7 @@ internal fun buildMinimalClaimRequestBody(
         preferBrowserMode = settings?.browserClientMode == true,
         preferNativeDesktopMode = if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) false else settings?.requiresNativeDesktopCloudMatchMode() == true,
         preferNativeAndroidMode = settings?.requiresNativeAndroidCloudMatchMode() == true,
+        preferNvstTransport = settings?.experimentalNvst == true,
         isAndroidTv = isAndroidTv,
         useDesktopNativeTvIdentity = useDesktopNativeTvIdentity,
     )
@@ -1018,6 +1026,7 @@ internal fun cloudMatchHeaders(
     isAndroidTv: Boolean = false,
     useDesktopNativeTvIdentity: Boolean = false,
     preferNativeAndroidMode: Boolean = false,
+    preferNvstTransport: Boolean = false,
 ): Headers {
     val identity = cloudMatchClientIdentity(
         streamingBaseUrl = streamingBaseUrl,
@@ -1025,18 +1034,21 @@ internal fun cloudMatchHeaders(
         preferBrowserMode = preferBrowserMode,
         preferNativeDesktopMode = preferNativeDesktopMode,
         preferNativeAndroidMode = preferNativeAndroidMode,
+        preferNvstTransport = preferNvstTransport,
         isAndroidTv = isAndroidTv,
         useDesktopNativeTvIdentity = useDesktopNativeTvIdentity,
     )
     val userAgent = when {
-        preferBrowserMode && identity == NVIDIA_BROWSER_CLOUD_MATCH_IDENTITY -> identity.userAgent
+        (preferBrowserMode || appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) &&
+            identity == NVIDIA_BROWSER_CLOUD_MATCH_IDENTITY -> identity.userAgent
         identity == NVIDIA_NATIVE_CLOUD_MATCH_IDENTITY -> identity.userAgent
         isAndroidTv -> GFN_ANDROID_TV_USER_AGENT
         appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY -> GFN_ANDROID_TOUCH_USER_AGENT
         else -> identity.userAgent
     }
     val deviceType = when {
-        preferBrowserMode && identity == NVIDIA_BROWSER_CLOUD_MATCH_IDENTITY -> identity.deviceType
+        (preferBrowserMode || appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) &&
+            identity == NVIDIA_BROWSER_CLOUD_MATCH_IDENTITY -> identity.deviceType
         isAndroidTv -> "DESKTOP"
         appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY -> "TABLET"
         else -> identity.deviceType
@@ -3157,6 +3169,7 @@ class GfnSessionRepository(
                     preferBrowserMode = settings.browserClientMode,
                     preferNativeDesktopMode = if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) false else settings.requiresNativeDesktopCloudMatchMode(),
                     preferNativeAndroidMode = settings.requiresNativeAndroidCloudMatchMode(),
+                    preferNvstTransport = settings.experimentalNvst,
                     isAndroidTv = isAndroidTv,
                     useDesktopNativeTvIdentity = useDesktopNativeTvIdentity,
                 ),
@@ -3344,6 +3357,7 @@ class GfnSessionRepository(
                         preferBrowserMode = settings.browserClientMode,
                         preferNativeDesktopMode = if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) false else settings.requiresNativeDesktopCloudMatchMode(),
                         preferNativeAndroidMode = settings.requiresNativeAndroidCloudMatchMode(),
+                        preferNvstTransport = settings.experimentalNvst,
                         isAndroidTv = isAndroidTv,
                         useDesktopNativeTvIdentity = useDesktopNativeTvIdentity,
                     ),
@@ -3487,6 +3501,7 @@ class GfnSessionRepository(
             preferBrowserMode = settings.browserClientMode,
             preferNativeDesktopMode = if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) false else settings.requiresNativeDesktopCloudMatchMode(),
             preferNativeAndroidMode = settings.requiresNativeAndroidCloudMatchMode(),
+            preferNvstTransport = settings.experimentalNvst,
             isAndroidTv = isAndroidTv,
             useDesktopNativeTvIdentity = useDesktopNativeTvIdentity,
         )

@@ -10,7 +10,7 @@ internal data class LaunchInputModeChoice(
     val rememberForGame: Boolean,
 )
 
-/** Native touch must use the native identity in both the request and stream routing. */
+/** Clear website-only input restrictions; CloudMatch media identity follows the NVST choice. */
 internal fun StreamSettings.forStreamInputMode(mode: StreamInputMode): StreamSettings =
     if (mode == StreamInputMode.NativeTouch && browserClientMode) copy(browserClientMode = false) else this
 

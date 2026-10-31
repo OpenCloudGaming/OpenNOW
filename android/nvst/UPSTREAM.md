@@ -37,6 +37,38 @@ Regression tests cover NVIDIA's reported WebRTC allocation with NVST off, explic
 opt-in, sparse-response retention, startup fallback and codec cleanup. Live playback on
 the affected phone still needs verification; these changes do not rewrite NVST negotiation.
 
+Fortnite native-touch allocation correction (2026-10-31), compared with iOS b3894f2bb
+(`NativeStreamNVSTConfiguration.swift`): a Pixel 9a on Android 17 reproduced the remaining
+failure with NVST off. TOUCH_FRIENDLY sent NVIDIA-CLASSIC/NATIVE headers and an Android
+platform, but requested GSStreamerType=WebRTC. CloudMatch echoed that metadata while
+allocating only RTSPS descriptors; the WebSocket registered but never produced an offer.
+NVIDIA touch launches/resumes now use a browser client identity when NVST is off, and the
+native touch identity when NVST is on. Launch input mode 3, digitizer provisioning, requested
+geometry/FPS, saved transport preference and alliance identities are preserved.
+
+With the corrected APK installed, a fresh Fortnite native-touch/WebRTC session produced
+an offer, connected ICE and both input channels, rendered the Epic launcher at 58-60 FPS,
+and accepted touch input opening its remote settings panel. The free-tier host negotiated
+1366x768 despite the unchanged 1920x1200@60 request. Gameplay beyond Epic authentication
+was not tested; no account password was supplied during this check.
+
+A second fresh Fortnite launch with NVST explicitly enabled completed native negotiation,
+decoded H.264 at the requested 1920x1200, sustained 59-60 FPS, and accepted a native touch
+tap opening the same remote settings panel. The original NVST-off preference was restored
+after testing. These checks verify both transport choices and remote launcher touch input
+on the Pixel 9a, not gameplay beyond Epic authentication or the RMX3890 hardware decoder.
+
+WebRTC startup fallback extension (2026-10-31): the RMX3890 2.2.8 report now receives
+WebRTC offers, opens input channels and receives about 60 FPS, but c2.qti.avc.decoder
+repeatedly rejects MediaCodec.start with vendor low-latency tuning enabled. The untuned
+startup retry previously wrapped only direct-Java NVST. It now covers WebRTC too, preserves
+its untuned choice across WebRTC Release/InitDecode cycles, and remembers rejected tuning
+per hardware decoder for the factory lifetime. A failed release prevents another decoder
+from starting; initialization/cleanup exceptions become status codes at the JNI boundary.
+CodecException diagnostics now retain the platform diagnostic string, code, recoverability
+and transience. Lifecycle regression tests cover this correction; untuned playback on the
+affected RMX3890 still requires an updated build and device verification.
+
 To refresh, compare the two crates and src/nvst_rtsp.rs against native/opennow-streamer
 at the recorded upstream revision, retaining the Android lifecycle differences.
 

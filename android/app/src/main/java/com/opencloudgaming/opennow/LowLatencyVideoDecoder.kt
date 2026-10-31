@@ -1,6 +1,7 @@
 package com.opencloudgaming.opennow
 
 import android.media.MediaFormat
+import android.media.MediaCodec
 import android.os.Build
 import android.util.Log
 import org.webrtc.EncodedImage
@@ -30,7 +31,7 @@ class LowLatencyVideoDecoder(
         NativeInputDiagnostics.add(
             "MediaCodecVideoDecoder initDecode delegate=${delegate.javaClass.name} " +
                 "requestedFps=$requestedFps lowLatency=$lowLatencyEnabled " +
-                "standardLowLatency=$standardLowLatencyEnabled",
+                "standardLowLatency=$standardLowLatencyEnabled tuning=$tuningEnabled",
         )
         patchMediaCodecWrapperFactory()
         return delegate.initDecode(settings, decodeCallback)
@@ -102,8 +103,12 @@ class LowLatencyVideoDecoder(
                     }
 
                     override fun initializationFailed(codecName: String, phase: String, error: RuntimeException) {
+                        val platformDetail = if (error is MediaCodec.CodecException) {
+                            " diagnostic=${error.diagnosticInfo} code=${error.errorCode}" +
+                                " recoverable=${error.isRecoverable} transient=${error.isTransient}"
+                        } else ""
                         NativeInputDiagnostics.addRetained("codec-initialization-error",
-                            "MediaCodec $phase failed decoder=$codecName ${boundedJavaCrashTrace(error)}")
+                            "MediaCodec $phase failed decoder=$codecName$platformDetail ${boundedJavaCrashTrace(error)}")
                     }
 
                     override fun initializationCleanupFailed(codecName: String, error: RuntimeException) {
