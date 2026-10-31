@@ -17,11 +17,6 @@ struct StreamLoadingView: View {
     return position
   }
 
-  private var providerName: String {
-    guard let code = store.authProviderCode else { return "GeForce NOW" }
-    return store.providers.first { $0.code.caseInsensitiveCompare(code) == .orderedSame }?.displayName ?? code
-  }
-
   private var queueStatusText: String {
     if isPastQueue {
       return store.activeSession?.status == 1 ? "Setting up your rig" : "Connecting stream"
@@ -42,14 +37,11 @@ struct StreamLoadingView: View {
 
   private var queueAdNotice: String? {
     guard !isPastQueue, let adState = store.effectiveAdState else { return nil }
-    let message = (adState.opportunity?.message ?? adState.message)?
-      .trimmingCharacters(in: .whitespacesAndNewlines)
     if adState.opportunity?.queuePaused == true || adState.isQueuePaused == true {
-      return message.map { $0.isEmpty ? "Queue paused" : "Queue paused. \($0)" } ?? "Queue paused"
+      return "Queue paused"
     }
-    if let message, !message.isEmpty { return message }
     if store.activeQueueAd != nil, adState.sessionAdsRequired ?? adState.isAdsRequired {
-      return "Watch the advertisement to continue in queue."
+      return "Watch ad to continue"
     }
     return nil
   }
@@ -123,46 +115,24 @@ struct StreamLoadingView: View {
   }
 
   private var gameHeading: some View {
-    VStack(spacing: OpenNOWSpacing.xs) {
-      Text(providerName)
-        .font(OpenNOWFont.overline)
-        .foregroundStyle(OpenNOWPalette.textMuted)
-      Text(store.activeSession?.game.title ?? "Starting stream")
-        .font(OpenNOWFont.sectionHead)
-        .foregroundStyle(OpenNOWPalette.textPrimary)
-        .fixedSize(horizontal: false, vertical: true)
-    }
-    .multilineTextAlignment(.center)
+    Text(store.activeSession?.game.title ?? "Starting stream")
+      .font(.title3.weight(.bold))
+      .foregroundStyle(OpenNOWPalette.textPrimary)
+      .fixedSize(horizontal: false, vertical: true)
+      .multilineTextAlignment(.center)
   }
 
   private func queueDetails(compact: Bool) -> some View {
     VStack(spacing: compact ? OpenNOWSpacing.sm : OpenNOWSpacing.lg) {
-      if let position = visibleQueuePosition {
-        QueuePositionDisplay(position: position, compact: compact)
+      AndroidQueueStatusText(text: queueStatusText, position: visibleQueuePosition, compact: compact)
+      if visibleQueuePosition != nil {
         QueueTrendStrip(trend: store.queueTrend)
-      } else {
-        Label(queueStatusText, systemImage: isPastQueue ? "desktopcomputer" : "hourglass")
-          .font(OpenNOWFont.sectionHead)
-          .foregroundStyle(OpenNOWPalette.textPrimary)
-          .multilineTextAlignment(.center)
-          .fixedSize(horizontal: false, vertical: true)
       }
 
-      VStack(spacing: OpenNOWSpacing.sm) {
-        if isPastQueue {
-          SessionSetupProgressView()
-        } else {
-          OscillatingQueueProgressView()
-        }
-        if isPastQueue || !compact {
-          Text(isPastQueue
-               ? "Your session is being prepared. No completion estimate is available."
-               : "You can browse OpenNOW while you wait.")
-            .font(OpenNOWFont.rowFootnote)
-            .foregroundStyle(OpenNOWPalette.textMuted)
-            .multilineTextAlignment(.center)
-            .fixedSize(horizontal: false, vertical: true)
-        }
+      if isPastQueue {
+        SessionSetupProgressView()
+      } else {
+        OscillatingQueueProgressView()
       }
 
       if let message = queueAdNotice {
@@ -210,7 +180,7 @@ struct StreamLoadingView: View {
         Haptics.light()
         store.minimizeQueueOverlay()
       } label: {
-        Label("Minimize", systemImage: "arrow.down.right.and.arrow.up.left")
+        Text("Minimize")
           .frame(maxWidth: .infinity, minHeight: OpenNOWSpacing.hitTarget)
       }
       .buttonStyle(.bordered)
@@ -250,18 +220,20 @@ private struct QueueTrendStrip: View {
   var body: some View {
     TimelineView(.periodic(from: .now, by: 30)) { context in
       let supportLine = trend.supportLine(now: context.date)
-      Text(supportLine ?? "Wait estimate unavailable")
-        .font(.footnote.weight(.medium))
-        .foregroundStyle(tint(now: context.date))
-        .monospacedDigit()
-        .multilineTextAlignment(.center)
-        .frame(maxWidth: .infinity)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Queue trend")
-        .accessibilityValue(supportLine ?? "Not enough recent queue movement to estimate a wait")
-        .accessibilityHint("Wait estimates are based on observed queue movement")
-        .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
-        .animation(reduceMotion ? nil : OpenNOWMotion.fast, value: supportLine)
+      if let supportLine {
+        Text(supportLine)
+          .font(.footnote.weight(.medium))
+          .foregroundStyle(tint(now: context.date))
+          .monospacedDigit()
+          .multilineTextAlignment(.center)
+          .frame(maxWidth: .infinity)
+          .accessibilityElement(children: .ignore)
+          .accessibilityLabel("Queue trend")
+          .accessibilityValue(supportLine)
+          .accessibilityHint("Wait estimates are based on observed queue movement")
+          .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
+          .animation(reduceMotion ? nil : OpenNOWMotion.fast, value: supportLine)
+      }
     }
   }
 

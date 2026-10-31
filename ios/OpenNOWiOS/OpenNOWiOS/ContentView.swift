@@ -471,7 +471,10 @@ struct MainTabView: View {
         .onChangeCompat(of: selectedTab) { _ in
             synchronizeCatalogControllerShortcuts()
         }
-        .onChangeCompat(of: store.queueOverlayVisible) { _ in
+        .onChangeCompat(of: store.queueOverlayVisible) { isVisible in
+            if isVisible {
+                Self.dismissFocusedInput()
+            }
             synchronizeCatalogControllerShortcuts()
         }
         .onChangeCompat(of: store.pendingSettingsRoute) { route in

@@ -118,46 +118,6 @@ struct QueueAmbientBackdrop: View {
     }
 }
 
-struct QueuePositionDisplay: View {
-    @Environment(\.openNowAccent) private var accent
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @ScaledMetric(relativeTo: .largeTitle) private var numeralSize: CGFloat = 64
-    let position: Int
-    var compact = false
-
-    var body: some View {
-        VStack(spacing: OpenNOWSpacing.xs) {
-            Text("QUEUE POSITION")
-                .font(OpenNOWFont.overline)
-                .tracking(1.2)
-                .foregroundStyle(OpenNOWPalette.textMuted)
-            Text(String(position))
-                .font(.system(size: min(numeralSize, compact ? 48 : 88), weight: .bold, design: .rounded))
-                .monospacedDigit()
-                .foregroundStyle(accent.color)
-                .numericQueueTransition(value: position)
-                .lineLimit(1)
-                .minimumScaleFactor(0.5)
-            if position == 1 {
-                Text("You're next")
-                    .font(OpenNOWFont.cardTitle)
-                    .foregroundStyle(OpenNOWPalette.textPrimary)
-            }
-        }
-        .padding(compact ? OpenNOWSpacing.md : OpenNOWSpacing.lg)
-        .frame(maxWidth: .infinity)
-        .openNowCard(radius: OpenNOWRadius.lg, bordered: true)
-        .transaction {
-            if reduceMotion {
-                $0.animation = nil
-                $0.disablesAnimations = true
-            }
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(position == 1 ? "Queue position 1. You're next." : "Queue position \(position)")
-    }
-}
-
 struct AndroidQueueStatusText: View {
     @Environment(\.openNowAccent) private var accent
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
