@@ -1967,9 +1967,34 @@ fn monitor_display_data(hdr: bool, settings: &Value) -> Value {
     data
 }
 
+/// DPI for `clientRequestMonitorSettings` (remote Windows UI scale).
+/// Prefer the client-reported physical screen DPI; fall back to 96×DPR.
+fn monitor_request_dpi(params: &Value, settings: &Value) -> i64 {
+    for key in ["screenDpi", "displayDpi"] {
+        for source in [params, settings] {
+            if let Some(dpi) = source
+                .get(key)
+                .and_then(Value::as_i64)
+                .or_else(|| source.get(key).and_then(Value::as_f64).map(|v| v.round() as i64))
+                .filter(|dpi| (72..=480).contains(dpi))
+            {
+                return dpi;
+            }
+        }
+    }
+    let dpr = params
+        .get("devicePixelRatio")
+        .or_else(|| settings.get("devicePixelRatio"))
+        .and_then(Value::as_f64)
+        .filter(|ratio| *ratio >= 1.0)
+        .unwrap_or(1.0);
+    ((96.0 * dpr).round() as i64).clamp(96, 288)
+}
+
 fn build_create_body(app_id: &str, params: &Value, settings: &Value, device_id: &str) -> Value {
     let (width, height) = parse_resolution(&setting_string(settings, "resolution", "1920x1080"));
     let fps = crate::frame_rate::request_frame_rate(settings, params, width, height);
+    let dpi = monitor_request_dpi(params, settings);
     // The codec stays client-selected: the official Bifrost client resolves it from local
     // preferences ("Selected %s codec from client preferences") and announces the choice
     // at RTSP time (x-nv-vqos bitStreamFormat). It is only read here to constrain the
@@ -2051,7 +2076,7 @@ fn build_create_body(app_id: &str, params: &Value, settings: &Value, device_id: 
             "sdrHdrMode":if hdr { 1 } else { 0 },
             "displayData":monitor_display_data(hdr, settings),
             "hdr10PlusGamingData":null,
-            "dpi":if cfg!(target_os = "macos") { 144 } else { 96 }
+            "dpi":dpi
         }],
         "useOps":true,
         "audioMode":2,
@@ -6786,6 +6811,30 @@ mod tests {
         let headers = cloudmatch_headers("token", "device-id").unwrap();
         assert_eq!(headers["nv-client-type"], "NATIVE");
         assert_eq!(headers["nv-client-streamer"], "NVIDIA-CLASSIC");
+    }
+
+    #[test]
+    fn session_dpi_uses_reported_screen_dpi() {
+        let body = build_create_body(
+            "1",
+            &json!({"screenDpi":254,"devicePixelRatio":2.0}),
+            &json!({"resolution":"3456x2160","fps":120}),
+            "device",
+        );
+        assert_eq!(
+            body["sessionRequestData"]["clientRequestMonitorSettings"][0]["dpi"],
+            254
+        );
+        let body = build_create_body(
+            "1",
+            &json!({"devicePixelRatio":2.0}),
+            &json!({"resolution":"2560x1600","fps":120}),
+            "device",
+        );
+        assert_eq!(
+            body["sessionRequestData"]["clientRequestMonitorSettings"][0]["dpi"],
+            192
+        );
     }
 
     #[test]

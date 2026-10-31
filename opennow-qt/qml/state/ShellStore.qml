@@ -666,7 +666,10 @@ QtObject {
                 root.streamCreateRequestId = CoreClient.request("session.create",
                     Object.assign({}, root.pendingLaunchParams, {
                         runtimeCapabilities: root.nativeRuntimeCapabilities,
-                        maxEntitledFps: settingsOwner.maxEntitledFps(String(root.settings.resolution || ""))
+                        maxEntitledFps: settingsOwner.maxEntitledFps(String(root.settings.resolution || "")),
+                        // Active display physical DPI (auto per screen / OS).
+                        screenDpi: AppController.screenDpi(),
+                        devicePixelRatio: Screen.devicePixelRatio
                     }), 60000)
             }
         }

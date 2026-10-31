@@ -2300,7 +2300,7 @@ private slots:
 
         QTest::newRow("mac-retina") << 1512 << 982 << 2.0 << true
             << QStringList{QStringLiteral("2560x1600"), QStringLiteral("2560x1440"), QStringLiteral("1920x1200")}
-            << QStringList{QStringLiteral("3200x1800"), QStringLiteral("3840x2160"), QStringLiteral("3840x2400")};
+            << QStringList{QStringLiteral("3200x1800"), QStringLiteral("3456x2160"), QStringLiteral("3840x2160"), QStringLiteral("3840x2400")};
         QTest::newRow("normal-16-9") << 1920 << 1080 << 1.0 << true
             << QStringList{QStringLiteral("1280x720"), QStringLiteral("1600x900"), QStringLiteral("1920x1080")}
             << QStringList{QStringLiteral("1920x1200"), QStringLiteral("2560x1440"), QStringLiteral("2560x1080")};

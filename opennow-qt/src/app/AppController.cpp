@@ -2,6 +2,7 @@
 #include "media/MediaPaths.h"
 
 #include <algorithm>
+#include <cmath>
 #include <QCoreApplication>
 #include <QClipboard>
 #include <QDesktopServices>
@@ -33,6 +34,40 @@ AppController::AppController(QObject *parent)
     : QObject(parent)
     , m_route(u"home"_s)
 {
+}
+
+int AppController::screenDpi(QWindow *window) const
+{
+    const QScreen *screen = window ? window->screen() : nullptr;
+    if (!screen) {
+        if (const QWindow *focus = QGuiApplication::focusWindow())
+            screen = focus->screen();
+    }
+    if (!screen)
+        screen = QGuiApplication::primaryScreen();
+    if (!screen)
+        return 96;
+
+    // Universal: native pixels / panel mm.
+    // size() is logical points; × devicePixelRatio → framebuffer pixels.
+    // Fixes Mac Retina where physicalDotsPerInch() alone under-reports (~128 vs ~255).
+    // Win/Linux: same formula when EDID physicalSize is present.
+    const qreal dpr = std::max<qreal>(1.0, screen->devicePixelRatio());
+    const QSizeF logical = screen->size();
+    const QSizeF mm = screen->physicalSize();
+    if (logical.width() > 0.0 && logical.height() > 0.0
+            && mm.width() > 0.0 && mm.height() > 0.0) {
+        const qreal dpiX = (logical.width() * dpr) * 25.4 / mm.width();
+        const qreal dpiY = (logical.height() * dpr) * 25.4 / mm.height();
+        const qreal dpi = 0.5 * (dpiX + dpiY);
+        if (std::isfinite(dpi) && dpi >= 72.0 && dpi <= 480.0)
+            return qRound(dpi);
+    }
+
+    const qreal dpi = screen->physicalDotsPerInch();
+    if (qIsFinite(dpi) && dpi >= 72.0 && dpi <= 480.0)
+        return qRound(dpi);
+    return qRound(96.0 * dpr);
 }
 
 void AppController::setConsoleLaunchInputBlocked(bool blocked)
