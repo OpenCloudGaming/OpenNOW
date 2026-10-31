@@ -33,13 +33,24 @@ private enum SettingsCategory: String, CaseIterable, Hashable, Identifiable {
 
     var summary: String {
         switch self {
-        case .general: return "Language, privacy, and app data"
+        case .general: return "Privacy, welcome tour, and app data"
         case .stream: return "Resolution, codec, HDR, region"
         case .input: return "Mouse, keyboard, touch, controller"
-        case .interface: return "Accent, cards, stats HUD, sound"
+        case .interface: return "Appearance, catalog, stats, and sessions"
         case .advanced: return "Experimental features and diagnostics"
         case .account: return "Sign-in, storage, connected stores"
         case .about: return "Version, links, and thanks"
+        }
+    }
+
+    var pages: [SettingsPage] {
+        switch self {
+        case .general: return [.privacy, .appData]
+        case .stream: return [.streamQuality, .video, .connection]
+        case .input: return [.keyboard, .pointer, .nativeTouch, .touchController, .controller]
+        case .interface: return [.appearance, .catalog, .stats, .streamControls, .sessions]
+        case .advanced: return [.experimental, .diagnostics]
+        case .account, .about: return []
         }
     }
 
@@ -107,6 +118,8 @@ struct SettingsView: View {
     @State private var showingResetConfirmation = false
     @State private var showingResetAppConfirmation = false
     @State private var showingSignOutAllConfirmation = false
+    @State private var showingTouchLayoutResetConfirmation = false
+    @State private var showingSessionProxyWarning = false
     @State private var showingAddAccountProvider = false
     @State private var connectorPendingDisconnect: AccountConnector?
     #if os(iOS)
@@ -140,6 +153,13 @@ struct SettingsView: View {
                 accountLandingSection
                 settingsCategorySection
             }
+            .overlay {
+                if isSearching && matchingPages.isEmpty && !accountLandingVisible && !SettingsCategory.about.matches(searchText) {
+                    OpenNOWUnavailableView("No Settings Found", systemImage: "magnifyingglass") {
+                        Text("Try another search.")
+                    }
+                }
+            }
             .navigationTitle("Settings")
             .searchable(text: $searchText, prompt: "Search settings")
             .onChangeCompat(of: store.pendingSettingsRoute) { route in
@@ -156,62 +176,83 @@ struct SettingsView: View {
                 }
                 .navigationTitle(category.title)
                 .navigationBarTitleDisplayMode(.inline)
-                .confirmationDialog("Reset settings?", isPresented: $showingResetConfirmation, titleVisibility: .visible) {
-                    Button("Reset Settings", role: .destructive) {
-                        store.resetSettings()
-                    }
-                    Button("Cancel", role: .cancel) {}
-                }
-                .confirmationDialog("Reset app?", isPresented: $showingResetAppConfirmation, titleVisibility: .visible) {
-                    Button("Reset App", role: .destructive) {
-                        store.resetApp()
-                        setupCompletedVersion = 0
-                    }
-                    Button("Cancel", role: .cancel) {}
-                } message: {
-                    Text("This clears local settings, saved accounts, launch choices, favorites, session state, and cached images on this device.")
-                }
-                .confirmationDialog("Sign out all accounts?", isPresented: $showingSignOutAllConfirmation, titleVisibility: .visible) {
-                    Button("Sign Out All Accounts", role: .destructive) {
-                        store.signOutAll()
-                    }
-                    Button("Cancel", role: .cancel) {}
-                } message: {
-                    Text("This removes every saved GeForce NOW account from this device.")
-                }
-                .sheet(isPresented: $showingAddAccountProvider) {
-                    ProviderChooserSheet(
-                        selectedProviderId: store.settings.selectedProviderIdpId,
-                        onContinue: { provider in
-                            store.selectProvider(provider)
-                            Task { await store.signIn(forceAccountSelection: true) }
-                        }
-                    )
-                    .environmentObject(store)
-                }
-                .alert(
-                    "Disconnect account?",
-                    isPresented: Binding(
-                        get: { connectorPendingDisconnect != nil },
-                        set: { isPresented in
-                            if !isPresented {
-                                connectorPendingDisconnect = nil
-                            }
-                        }
-                    ),
-                    presenting: connectorPendingDisconnect
-                ) { connector in
-                    Button("Disconnect", role: .destructive) {
-                        Task { await store.disconnectAccountConnector(connector) }
-                        connectorPendingDisconnect = nil
-                    }
-                    Button("Cancel", role: .cancel) {
-                        connectorPendingDisconnect = nil
-                    }
-                } message: { _ in
-                    Text("This removes the linked account from GeForce NOW. You can connect it again later.")
-                }
             }
+            .navigationDestination(for: SettingsPage.self) { page in
+                Form {
+                    settingsPageContent(for: page)
+                }
+                .navigationTitle(page.title)
+                .navigationBarTitleDisplayMode(.inline)
+            }
+        }
+        .confirmationDialog("Reset settings?", isPresented: $showingResetConfirmation, titleVisibility: .visible) {
+            Button("Reset Settings", role: .destructive) {
+                store.resetSettings()
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+        .confirmationDialog("Reset app?", isPresented: $showingResetAppConfirmation, titleVisibility: .visible) {
+            Button("Reset App", role: .destructive) {
+                store.resetApp()
+                setupCompletedVersion = 0
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This clears local settings, saved accounts, launch choices, favorites, session state, and cached images on this device.")
+        }
+        .confirmationDialog("Sign out all accounts?", isPresented: $showingSignOutAllConfirmation, titleVisibility: .visible) {
+            Button("Sign Out All Accounts", role: .destructive) {
+                store.signOutAll()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes every saved GeForce NOW account from this device.")
+        }
+        .sheet(isPresented: $showingAddAccountProvider) {
+            ProviderChooserSheet(
+                selectedProviderId: store.settings.selectedProviderIdpId,
+                onContinue: { provider in
+                    store.selectProvider(provider)
+                    Task { await store.signIn(forceAccountSelection: true) }
+                }
+            )
+            .environmentObject(store)
+        }
+        .alert(
+            "Disconnect account?",
+            isPresented: Binding(
+                get: { connectorPendingDisconnect != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        connectorPendingDisconnect = nil
+                    }
+                }
+            ),
+            presenting: connectorPendingDisconnect
+        ) { connector in
+            Button("Disconnect", role: .destructive) {
+                Task { await store.disconnectAccountConnector(connector) }
+                connectorPendingDisconnect = nil
+            }
+            Button("Cancel", role: .cancel) {
+                connectorPendingDisconnect = nil
+            }
+        } message: { _ in
+            Text("This removes the linked account from GeForce NOW. You can connect it again later.")
+        }
+        .confirmationDialog("Reset default touch layout?", isPresented: $showingTouchLayoutResetConfirmation, titleVisibility: .visible) {
+            Button("Reset Layout", role: .destructive) {
+                store.settings.resetDefaultTouchLayout()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This restores default sizes, opacity, positions, and padding. Game-specific layouts and touch input choices are kept.")
+        }
+        .confirmationDialog("Enable session proxy?", isPresented: $showingSessionProxyWarning, titleVisibility: .visible) {
+            Button("Enable Proxy") { store.settings.sessionProxyEnabled = true }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Use only a proxy you trust. It handles session requests and may receive sensitive account information. An incorrect address can prevent games from starting.")
         }
         .onChangeCompat(of: store.settings) { _ in
             store.persistSettings()
@@ -269,11 +310,11 @@ struct SettingsView: View {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(accountLandingTitle)
                                 .font(.body.weight(.semibold))
-                                .lineLimit(1)
+                                .fixedSize(horizontal: false, vertical: true)
                             Text(accountLandingDetail)
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
-                                .lineLimit(1)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                     .padding(.vertical, 4)
@@ -284,41 +325,59 @@ struct SettingsView: View {
 
     private var settingsCategorySection: some View {
         Section {
-            ForEach(visibleLandingCategories) { category in
-                NavigationLink(value: category) {
-                    SettingsCategoryLabel(category: category)
+            if isSearching {
+                ForEach(matchingPages) { page in
+                    settingsPageLink(page)
+                }
+                if SettingsCategory.about.matches(searchText) {
+                    NavigationLink(value: SettingsCategory.about) {
+                        SettingsCategoryLabel(category: .about)
+                    }
+                }
+            } else {
+                ForEach(landingCategories) { category in
+                    NavigationLink(value: category) {
+                        SettingsCategoryLabel(category: category)
+                    }
                 }
             }
         }
     }
 
+    private var isSearching: Bool {
+        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var matchingPages: [SettingsPage] {
+        SettingsPage.allCases.filter { $0.matches(searchText) }
+    }
+
+    private func settingsPageLink(_ page: SettingsPage) -> some View {
+        NavigationLink(value: page) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(page.title)
+                    .font(.body.weight(.medium))
+                Text(page.summary)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.vertical, 4)
+        }
+    }
+
     @ViewBuilder
     private func settingsDetailContent(for category: SettingsCategory) -> some View {
+        if !category.pages.isEmpty {
+            Section {
+                ForEach(category.pages) { page in
+                    settingsPageLink(page)
+                }
+            }
+        }
         switch category {
-        case .general:
-            privacySection
-            dataSection
-        case .stream:
-            streamQualitySection
-            streamVideoSection
-            streamConnectionSection
         case .input:
-            inputAudioKeyboardSection
-            inputPointerSection
-            inputTouchSection
-            #if os(iOS)
-            inputControllerSection
-            #endif
             inputTutorialSection
-        case .interface:
-            interfaceAppearanceSection
-            interfaceCatalogSection
-            interfaceStatsSection
-            interfaceSoundSessionSection
-        case .advanced:
-            experimentalSection
-            reportProblemSection
-            advancedSection
         case .account:
             savedAccountsSection
             accountActionsSection
@@ -328,13 +387,54 @@ struct SettingsView: View {
         case .about:
             aboutSection
             thanksSection
+        default:
+            EmptyView()
         }
     }
 
-    private var visibleLandingCategories: [SettingsCategory] {
-        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return landingCategories }
-        return landingCategories.filter { $0.matches(trimmed) }
+    @ViewBuilder
+    private func settingsPageContent(for page: SettingsPage) -> some View {
+        switch page {
+        case .privacy:
+            privacySection
+        case .appData:
+            dataSection
+            inputTutorialSection
+        case .streamQuality:
+            streamQualitySection
+        case .video:
+            streamVideoSection
+        case .connection:
+            streamConnectionSection
+        case .keyboard:
+            inputAudioSection
+            inputAudioKeyboardSection
+        case .pointer:
+            inputPointerSection
+        case .nativeTouch:
+            inputTouchSection
+        case .touchController:
+            inputTouchControllerSection
+        case .controller:
+            #if os(iOS)
+            inputControllerSection
+            #endif
+        case .appearance:
+            interfaceAppearanceSection
+        case .catalog:
+            interfaceCatalogSection
+        case .stats:
+            interfaceStatsSection
+        case .streamControls:
+            interfaceStreamControlsSection
+        case .sessions:
+            interfaceSoundSessionSection
+        case .experimental:
+            experimentalSection
+        case .diagnostics:
+            reportProblemSection
+            advancedSection
+        }
     }
 
     private var accountLandingVisible: Bool {
@@ -670,7 +770,6 @@ struct SettingsView: View {
                     Text(hdrUnavailableReason)
                 }
                 Text("Streaming uses the native decoder. Check Codec Diagnostics under Advanced for hardware codec support.")
-                Text("The Apple performance HUD is the system's own GPU readout drawn over the video. It is off unless you turn it on here — OpenNOW's stats overlay covers what most people need, and the system one sits on top of the game.")
             }
         }
     }
@@ -688,6 +787,8 @@ struct SettingsView: View {
                 }
             }
 
+            Toggle("Skip Server Selector", isOn: $store.settings.hideServerSelector)
+
             if #available(iOS 17.0, *) {
                 Toggle("Native NVST Receiver (Experimental)", isOn: $store.settings.experimentalNativeNVSTEnabled)
                 if store.settings.experimentalNativeNVSTEnabled {
@@ -696,7 +797,16 @@ struct SettingsView: View {
                 }
             }
 
-            Toggle("Session Proxy", isOn: $store.settings.sessionProxyEnabled)
+            Toggle("Session Proxy", isOn: Binding(
+                get: { store.settings.sessionProxyEnabled },
+                set: { enabled in
+                    if enabled {
+                        showingSessionProxyWarning = true
+                    } else {
+                        store.settings.sessionProxyEnabled = false
+                    }
+                }
+            ))
 
             if store.settings.sessionProxyEnabled {
                 TextField("Proxy URL", text: $store.settings.sessionProxyUrl)
@@ -738,6 +848,19 @@ struct SettingsView: View {
 
     // MARK: Input
 
+    private var inputAudioSection: some View {
+        Section {
+            Toggle("Game Audio", isOn: Binding(
+                get: { !store.settings.streamerPreferences.audioMuted },
+                set: { store.settings.streamerPreferences.audioMuted = !$0 }
+            ))
+        } header: {
+            Text("Audio")
+        } footer: {
+            Text("Sets the audio preference for new sessions. You can also mute or unmute the current game from stream controls.")
+        }
+    }
+
     private var inputAudioKeyboardSection: some View {
         Section {
             Picker("Keyboard Layout", selection: $store.settings.keyboardLayout) {
@@ -753,10 +876,14 @@ struct SettingsView: View {
             }
 
             Toggle("Paste Into Games", isOn: $store.settings.clipboardPasteEnabled)
+            Toggle("Confirm Before Clearing Game Text", isOn: Binding(
+                get: { !store.settings.streamKeyboardClearConfirmationDisabled },
+                set: { store.settings.streamKeyboardClearConfirmationDisabled = !$0 }
+            ))
         } header: {
             Text("Keyboard")
         } footer: {
-            Text("Paste sends your clipboard to the game as typed text, from the stream controls. The keyboard layout has to match the one the game expects, not the one on your device. Microphone input is not available yet — GeForce NOW's stream offer carries no upstream audio track.")
+            Text("These defaults apply to new sessions. Paste sends your clipboard to the game as typed text. The keyboard layout has to match the one the game expects, not the one on your device. Clear in the stream keyboard selects all text in the focused game field and deletes it.")
         }
     }
 
@@ -836,7 +963,17 @@ struct SettingsView: View {
                     format: { "\(Int($0)) pt" }
                 )
             }
+            #endif
+        } header: {
+            Text("Native Touch")
+        } footer: {
+            Text("Automatic sends native touch only to games that advertise touchscreen support. Other games use the finger mouse or on-screen controller you enable. Always requests native touch for every game. Session provisioning can require starting a new session.")
+        }
+    }
 
+    private var inputTouchControllerSection: some View {
+        Section {
+            #if !os(tvOS)
             Toggle("Touch Controller", isOn: $store.settings.streamerPreferences.touchControllerVisible)
 
             if store.settings.streamerPreferences.touchControllerVisible {
@@ -940,37 +1077,54 @@ struct SettingsView: View {
                     step: 2,
                     format: { "\(Int(-$0)) pt" }
                 )
-                Button("Reset Touch Layout") {
-                    store.settings.touch.resetLayout()
+                Button("Reset Default Touch Layout", role: .destructive) {
+                    showingTouchLayoutResetConfirmation = true
                 }
             }
 
             #endif
         } header: {
-            Text("Touch Controls")
+            Text("On-Screen Controller")
         } footer: {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Currently: \(resolvedTouchMode.label).")
-                Text("Automatic sends real touch only to games known to support it. Everything else gets a cursor or the on-screen controller.")
-            }
+            Text("Size and position controls adjust the default layout. Game-specific layouts are kept. To move individual controls while playing, choose Edit Layout in stream controls. Native touch can take priority over the on-screen controller in supported games.")
         }
     }
 
     #if os(iOS)
     private var inputControllerSection: some View {
-        Section {
-            settingsSlider("Vibration Strength", value: $store.settings.controllerRumbleStrength,
-                range: NativeStreamControllerRumbleGain.range, step: 0.64, format: NativeStreamControllerRumbleGain.label)
-            Toggle("Phone Vibration", isOn: $store.settings.phoneRumbleFallback)
-            NavigationLink {
-                NativeStreamControllerShortcutsView(settings: $store.settings)
-            } label: {
-                Label("Controller Shortcuts", systemImage: "gamecontroller")
+        Group {
+            Section {
+                Toggle("Send Controller Input to Game", isOn: $store.settings.streamerPreferences.physicalControllerPassthrough)
+                NavigationLink {
+                    NativeStreamControllerShortcutsView(settings: $store.settings)
+                } label: {
+                    Label("Controller Shortcuts", systemImage: "gamecontroller")
+                }
+            } header: {
+                Text("Game Input")
+            } footer: {
+                Text("Controllers connect automatically. These defaults apply to new sessions. You can also change controller input from stream controls during a game.")
             }
-        } header: {
-            Text("Controller")
-        } footer: {
-            Text("Controllers connect automatically. Set vibration strength to 0% to turn it off. Phone vibration is used when the controller has no vibration support.")
+
+            Section {
+                settingsSlider("Vibration Strength", value: $store.settings.controllerRumbleStrength,
+                    range: NativeStreamControllerRumbleGain.range, step: 0.64, format: NativeStreamControllerRumbleGain.label)
+                Toggle("Phone Vibration", isOn: $store.settings.phoneRumbleFallback)
+            } header: {
+                Text("Vibration")
+            } footer: {
+                Text("Set strength to 0% to turn vibration off. Phone vibration is used when the controller has no vibration support.")
+            }
+
+            if store.settings.controllerTouchPromptDismissed {
+                Section {
+                    Button("Show Touch Controller Prompt Again") {
+                        store.settings.controllerTouchPromptDismissed = false
+                    }
+                } footer: {
+                    Text("Ask about on-screen controls in a new session when a physical controller is connected and touch controls are enabled.")
+                }
+            }
         }
     }
     #endif
@@ -983,25 +1137,6 @@ struct SettingsView: View {
                 Label("Replay Stream Tutorial", systemImage: "questionmark.circle")
             }
             .disabled(!store.settings.streamTutorialCompleted)
-        }
-    }
-
-    /// The end state the routing settings actually add up to. Showing this is the difference
-    /// between three comprehensible pickers and three confusing ones.
-    private var resolvedTouchMode: ResolvedTouchMode {
-        let desktopWithoutTouch = StreamSettingsResolver.requiresDesktopColorProvisioning(for: store.settings)
-            && !store.settings.experimentalDesktop444TouchEnabled
-        switch desktopWithoutTouch ? .never : store.settings.touch.nativeTouchMode {
-        case .always:
-            return .nativeTouch
-        case .automatic, .never:
-            if store.settings.fingerMouseEnabled {
-                return .trackpadCursor(directClick: store.settings.touch.mouseDirectClick)
-            }
-            if store.settings.streamerPreferences.touchControllerVisible {
-                return .virtualGamepad
-            }
-            return .inert
         }
     }
 
@@ -1034,18 +1169,29 @@ struct SettingsView: View {
         format: @escaping (Double) -> String
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(title)
-                Spacer(minLength: 12)
-                Text(format(value.wrappedValue))
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
+            ViewThatFits(in: .horizontal) {
+                HStack {
+                    Text(title)
+                        .fixedSize(horizontal: true, vertical: false)
+                    Spacer(minLength: 12)
+                    Text(format(value.wrappedValue))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(format(value.wrappedValue))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
             }
+            .accessibilityHidden(true)
             Slider(value: value, in: range, step: step)
+                .accessibilityLabel(title)
+                .accessibilityValue(format(value.wrappedValue))
         }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(title)
-        .accessibilityValue(format(value.wrappedValue))
     }
 
     // MARK: Interface
@@ -1092,8 +1238,6 @@ struct SettingsView: View {
                 step: 0.05,
                 format: { String(format: "%.0f%%", $0 * 100) }
             )
-            Toggle("Skip Server Selector", isOn: $store.settings.hideServerSelector)
-
             #if os(iOS)
             Toggle("Catalog Wallpaper", isOn: $store.settings.catalogWallpaperEnabled)
             if store.settings.catalogWallpaperEnabled {
@@ -1162,18 +1306,27 @@ struct SettingsView: View {
                     }
                 }
                 NavigationLink {
-                    StatsMetricsPicker(metrics: $store.settings.streamStatsMetrics)
+                    StatsMetricsPicker(metrics: $store.settings.streamStatsMetrics,
+                                       showClock: $store.settings.streamerPreferences.showStatsClock)
                 } label: {
-                    LabeledContent("Metrics", value: "\(store.settings.streamStatsMetrics.enabledCount) shown")
+                    LabeledContent("Metrics", value: "\(store.settings.streamStatsMetrics.enabledCount + (store.settings.streamerPreferences.showStatsClock ? 1 : 0)) shown")
                 }
             }
-
-            Toggle("Keep Session Awake", isOn: $store.settings.showAntiAfkIndicator)
-            Toggle("Immersive Mode", isOn: $store.settings.hideStreamButtons)
         } header: {
             Text("Stats HUD")
         } footer: {
-            Text("Immersive mode hides stream controls, stats, and the system status bar. Double tap near the top to show or hide them. Keeping the session awake nudges the cursor by a pixel after two idle minutes so GeForce NOW does not disconnect you mid-cutscene; a dot in the corner shows while it is doing that. The HUD sits over the game, so keep it to the numbers you actually watch.")
+            Text("Choose which numbers appear over the game. Immersive mode in Stream Controls can hide the HUD even when statistics are enabled.")
+        }
+    }
+
+    private var interfaceStreamControlsSection: some View {
+        Section {
+            Toggle("Immersive Mode", isOn: $store.settings.hideStreamButtons)
+            Toggle("Keep Session Awake", isOn: $store.settings.showAntiAfkIndicator)
+        } header: {
+            Text("Stream Controls")
+        } footer: {
+            Text("Immersive mode hides stream controls, stats, and the system status bar. Double tap near the top to show or hide them. Keeping the session awake nudges the cursor by a pixel after two idle minutes; a dot in the corner shows while it is doing that.")
         }
     }
 
@@ -1198,7 +1351,7 @@ struct SettingsView: View {
 
     private var privacySection: some View {
         Section {
-            Toggle("Share Usage Analytics", isOn: analyticsSharingBinding)
+            Label("No Usage Analytics", systemImage: "checkmark.shield")
             NavigationLink {
                 OpenNOWPrivacyPolicyView()
             } label: {
@@ -1207,18 +1360,8 @@ struct SettingsView: View {
         } header: {
             Text("Privacy")
         } footer: {
-            Text("Anonymous counts of which screens and stream settings get used. Never game titles, account details, or anything that identifies you. Off by default.")
+            Text("OpenNOW does not run usage analytics. Diagnostics leave this device only when you choose to export, upload logs, or submit a problem report.")
         }
-    }
-
-    private var analyticsSharingBinding: Binding<Bool> {
-        Binding(
-            get: { store.settings.analyticsConsent.isSharing },
-            set: { sharing in
-                store.settings.analyticsConsentAsked = true
-                store.settings.analyticsOptOut = !sharing
-            }
-        )
     }
 
     private var experimentalSection: some View {
@@ -1466,17 +1609,8 @@ struct SettingsView: View {
         range: ClosedRange<Double>,
         step: Double
     ) -> some View {
-        let value = store.settings.touchLayout(for: "default")[keyPath: keyPath]
-
-        return VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(title)
-                Spacer()
-                Text(percentLabel(value))
-                    .foregroundStyle(.secondary)
-            }
-            Slider(value: touchLayoutBinding(keyPath), in: range, step: step)
-        }
+        settingsSlider(title, value: touchLayoutBinding(keyPath), range: range, step: step,
+                       format: percentLabel)
     }
 
     private func touchLayoutBinding(
@@ -1901,10 +2035,9 @@ struct SettingsView: View {
     }
 }
 
-/// Ten toggles for the in-stream HUD. Split into two groups because "how the stream is doing" and
-/// "what the stream is" are two different questions, and people want the second one far less often.
 private struct StatsMetricsPicker: View {
     @Binding var metrics: StreamStatsMetrics
+    @Binding var showClock: Bool
 
     var body: some View {
         Form {
@@ -1912,7 +2045,7 @@ private struct StatsMetricsPicker: View {
                 metricToggle("Frame Rate", \.fps)
                 metricToggle("Displayed FPS", \.displayedFPS)
                 metricToggle("Ping", \.ping)
-                metricToggle("Latency", \.latency)
+                metricToggle("Decode Time", \.latency)
                 metricToggle("Bitrate", \.bitrate)
                 metricToggle("Packet Loss", \.packetLoss)
             }
@@ -1926,6 +2059,7 @@ private struct StatsMetricsPicker: View {
                 metricToggle("Battery", \.battery)
                 metricToggle("Session battery", \.sessionBattery)
                 metricToggle("Network Type", \.connection)
+                Toggle("Clock", isOn: $showClock)
             } header: {
                 Text("Session")
             } footer: {
@@ -1995,7 +2129,7 @@ private struct SettingsCategoryLabel: View {
                 Text(category.summary)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         } icon: {
             Image(systemName: category.symbolName)

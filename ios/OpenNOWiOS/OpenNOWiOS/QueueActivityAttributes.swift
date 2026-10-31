@@ -114,11 +114,68 @@ enum QueueActivityProgress {
     }
 
     static func barFraction(_ progress: Double?, phase: QueueActivityAttributes.ContentState.Phase) -> Double {
-        let progress = normalized(progress)
         switch phase {
         case .ready: return 1
-        case .waiting: return max(progress ?? 0, 0.75)
-        case .queued: return progress.map { min(max($0, 0.03), 0.95) } ?? 0.06
+        case .waiting, .queued: return normalized(progress) ?? 0
         }
+    }
+}
+
+struct QueueActivityPresentation {
+    let state: QueueActivityAttributes.ContentState
+    let isStale: Bool
+
+    var canResume: Bool { !isStale && state.phase == .ready }
+
+    var queuePosition: Int? {
+        guard !isStale, state.phase == .queued, let position = state.queuePosition, position > 0 else {
+            return nil
+        }
+        return position
+    }
+
+    var progress: Double? {
+        guard !isStale else { return nil }
+        return state.phase == .ready ? 1 : QueueActivityProgress.normalized(state.progress)
+    }
+
+    var headline: String {
+        isStale ? "Status needs an update" : state.headline
+    }
+
+    var detail: String {
+        if isStale { return "Open OpenNOW to check your session." }
+        if state.phase == .waiting, progress == nil { return "Setting up your cloud rig" }
+        return state.detail
+    }
+
+    var symbol: String {
+        if isStale { return "arrow.clockwise" }
+        switch state.phase {
+        case .queued: return "person.2.fill"
+        case .waiting: return "gearshape.fill"
+        case .ready: return "play.fill"
+        }
+    }
+
+    var phaseLabel: String {
+        if isStale { return "Check session" }
+        switch state.phase {
+        case .queued: return "In queue"
+        case .waiting: return "Setting up"
+        case .ready: return "Ready to play"
+        }
+    }
+
+    var accessibilityValue: String {
+        if isStale { return "Status out of date. Open OpenNOW to check your session." }
+        let status = queuePosition.map { "Queue position \($0)" } ?? phaseLabel
+        guard let progress, !canResume else { return "\(status). \(detail)" }
+        let progressLabel = state.phase == .queued ? "Measured queue movement" : "Setup progress"
+        return "\(status). \(detail). \(progressLabel): \(progress.formatted(.percent.precision(.fractionLength(0))))"
+    }
+
+    var destination: URL? {
+        URL(string: isStale ? "opennow://" : "opennow://resume")
     }
 }

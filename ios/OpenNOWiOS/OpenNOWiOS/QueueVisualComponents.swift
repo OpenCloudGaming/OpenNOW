@@ -10,37 +10,11 @@ enum SessionSetupProgress {
     }
 }
 
-/// Only this small bar ticks; the shared store and full-screen artwork don't redraw with it.
 struct SessionSetupProgressView: View {
-    @Environment(\.openNowAccent) private var accent
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.scenePhase) private var scenePhase
-    @State private var startedAt = ProcessInfo.processInfo.systemUptime
-    @State private var settled = false
-
     var body: some View {
-        TimelineView(.animation(minimumInterval: reduceMotion ? 1 : 1.0 / 30,
-                                paused: scenePhase != .active || settled)) { _ in
-            let fraction = SessionSetupProgress.fraction(elapsed: ProcessInfo.processInfo.systemUptime - startedAt)
-            GeometryReader { geometry in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color.primary.opacity(0.10))
-                    Capsule().fill(accent.color)
-                        .frame(width: max(0, geometry.size.width * fraction))
-                }
-            }
-            .frame(height: 6)
-            .transaction { $0.animation = nil }
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Session setup")
-        // This is Android's estimated preparation animation, not a server completion percentage.
-        .accessibilityValue("Preparing stream")
-        .task {
-            do { try await Task.sleep(for: .seconds(SessionSetupProgress.duration)) }
-            catch { return }
-            settled = true
-        }
+        OscillatingQueueProgressView()
+            .accessibilityLabel("Session setup")
+            .accessibilityValue("Preparing stream. Completion time is not available.")
     }
 }
 
@@ -59,6 +33,8 @@ struct SessionSetupProgressView: View {
 /// still comes from the clock rather than `@State`, so a parent re-render cannot interrupt it.
 struct QueueAmbientBackdrop: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.openNowExpressive) private var expressive
 
     let accent: Color
 
@@ -82,7 +58,8 @@ struct QueueAmbientBackdrop: View {
                     endPoint: .bottom
                 )
 
-                TimelineView(.animation(minimumInterval: 1.0 / 10.0, paused: reduceMotion)) { context in
+                TimelineView(.animation(minimumInterval: 1.0 / 10.0,
+                                        paused: reduceMotion || !expressive || scenePhase != .active)) { context in
                     let drift = driftPhase(at: context.date)
 
                     ZStack {
@@ -98,6 +75,7 @@ struct QueueAmbientBackdrop: View {
                         .position(x: size.width * 0.72, y: size.height * 0.68)
                         .offset(x: -travel * 1.2 * drift, y: -travel * drift)
                     }
+                    .opacity(expressive ? 1 : 0)
                 }
                 // Decoration whose position already comes from the clock. Without this, an
                 // implicit animation anywhere up the tree — the queue numeral's spring, say —
@@ -109,7 +87,6 @@ struct QueueAmbientBackdrop: View {
             .frame(width: size.width, height: size.height)
             .clipped()
         }
-        .ignoresSafeArea()
         .accessibilityHidden(true)
     }
 
@@ -142,40 +119,48 @@ struct QueueAmbientBackdrop: View {
 }
 
 struct QueuePositionDisplay: View {
+    @Environment(\.openNowAccent) private var accent
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ScaledMetric(relativeTo: .largeTitle) private var numeralSize: CGFloat = 64
     let position: Int
     var compact = false
 
     var body: some View {
-        VStack(spacing: compact ? 2 : 5) {
-            Text(position == 1 ? "NEXT IN QUEUE" : "QUEUE POSITION")
-                .font((compact ? Font.caption2 : .caption).weight(.bold))
+        VStack(spacing: OpenNOWSpacing.xs) {
+            Text("QUEUE POSITION")
+                .font(OpenNOWFont.overline)
                 .tracking(1.2)
-                .foregroundStyle(.white.opacity(0.62))
-            Text(position == 1 ? "NEXT" : String(position))
-                .font(compact ? .title2.weight(.black) : .system(size: 54, weight: .black, design: .rounded))
+                .foregroundStyle(OpenNOWPalette.textMuted)
+            Text(String(position))
+                .font(.system(size: min(numeralSize, compact ? 48 : 88), weight: .bold, design: .rounded))
                 .monospacedDigit()
-                .foregroundStyle(urgencyColor)
+                .foregroundStyle(accent.color)
                 .numericQueueTransition(value: position)
-                .shadow(color: urgencyColor.opacity(0.42), radius: compact ? 8 : 18)
+                .lineLimit(1)
+                .minimumScaleFactor(0.5)
+            if position == 1 {
+                Text("You're next")
+                    .font(OpenNOWFont.cardTitle)
+                    .foregroundStyle(OpenNOWPalette.textPrimary)
+            }
         }
-        .padding(.horizontal, compact ? 14 : 24)
-        .padding(.vertical, compact ? 9 : 15)
-        .frame(maxWidth: compact ? 220 : 360)
-        .glassCard(cornerRadius: compact ? 15 : 22)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(position == 1 ? "Next in queue" : "Queue position \(position)")
-    }
-
-    private var urgencyColor: Color {
-        switch position {
-        case 1...9: return Color(red: 1, green: 0.54, blue: 0.30)
-        case 10...29: return Color(red: 1, green: 0.80, blue: 0.33)
-        default: return Color(red: 0.45, green: 0.82, blue: 1)
+        .padding(compact ? OpenNOWSpacing.md : OpenNOWSpacing.lg)
+        .frame(maxWidth: .infinity)
+        .openNowCard(radius: OpenNOWRadius.lg, bordered: true)
+        .transaction {
+            if reduceMotion {
+                $0.animation = nil
+                $0.disablesAnimations = true
+            }
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(position == 1 ? "Queue position 1. You're next." : "Queue position \(position)")
     }
 }
 
 struct AndroidQueueStatusText: View {
+    @Environment(\.openNowAccent) private var accent
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let text: String
     let position: Int?
     var compact = false
@@ -199,13 +184,19 @@ struct AndroidQueueStatusText: View {
                 }
             } else {
                 Text(text)
-                    .foregroundStyle(text.localizedCaseInsensitiveCompare("Starting session") == .orderedSame ? brandAccent : .secondary)
+                    .foregroundStyle(text.localizedCaseInsensitiveCompare("Starting session") == .orderedSame ? accent.color : .secondary)
             }
         }
         .font((compact ? Font.body : .title3).weight(.regular))
         .multilineTextAlignment(.center)
         .lineLimit(2)
         .minimumScaleFactor(0.8)
+        .transaction {
+            if reduceMotion {
+                $0.animation = nil
+                $0.disablesAnimations = true
+            }
+        }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(text)
     }
@@ -254,6 +245,8 @@ struct AndroidQueueStatusText: View {
 /// that is also holding a WebRTC connection open.
 struct OscillatingQueueProgressView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.openNowAccent) private var accent
 
     private let cycle: TimeInterval = 1.15
     private let barHeight: CGFloat = 8
@@ -272,14 +265,14 @@ struct OscillatingQueueProgressView: View {
 
                 // This is a layer transform, so follow the display's native cadence instead of
                 // making a 120 Hz screen present a deliberately 30 Hz progress indicator.
-                TimelineView(.animation(paused: reduceMotion)) { context in
+                TimelineView(.animation(paused: reduceMotion || scenePhase != .active)) { context in
                     Capsule(style: .continuous)
                         .fill(
                             LinearGradient(
                                 colors: [
-                                    brandAccent.opacity(0.35),
-                                    brandAccent,
-                                    brandAccent.opacity(0.35)
+                                    accent.color.opacity(0.35),
+                                    accent.color,
+                                    accent.color.opacity(0.35)
                                 ],
                                 startPoint: .leading,
                                 endPoint: .trailing

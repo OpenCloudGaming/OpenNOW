@@ -44,11 +44,14 @@ struct QueueTrendEstimator: Equatable {
         let highMinutes: Int
 
         var label: String {
+            if lowMinutes > 60 {
+                return "over an hour left"
+            }
             if lowMinutes == highMinutes {
                 return lowMinutes <= 1 ? "about a minute left" : "about \(lowMinutes) minutes left"
             }
-            if highMinutes >= 60 {
-                return "over an hour left"
+            if highMinutes > 60 {
+                return "about \(lowMinutes)–60+ minutes left"
             }
             return "about \(lowMinutes)–\(highMinutes) minutes left"
         }
@@ -61,7 +64,8 @@ struct QueueTrendEstimator: Equatable {
     /// Records a position. Repeated identical positions are kept, because "it has not moved" is
     /// exactly the signal the stall detector needs.
     mutating func record(position: Int, at time: Date = Date()) {
-        guard position >= 0 else { return }
+        guard position >= 0, time.timeIntervalSinceReferenceDate.isFinite else { return }
+        if let last = samples.last, time <= last.time { return }
         if let last = samples.last, last.position == position, time.timeIntervalSince(last.time) < 5 {
             // Poll cadence can be faster than the queue changes. Collapse the noise.
             return
@@ -82,9 +86,11 @@ struct QueueTrendEstimator: Equatable {
 
     func trend(now: Date = Date()) -> Trend {
         guard let first = samples.first, let last = samples.last else { return .unknown }
+        let age = now.timeIntervalSince(last.time)
+        guard age.isFinite, age >= 0, age <= Self.stallThreshold else { return .unknown }
         guard samples.count >= Self.minimumSamples else { return .unknown }
 
-        if last.position > first.position { return .slipped }
+        if last.position > first.position || last.position > samples[samples.count - 2].position { return .slipped }
 
         // Stalled is judged from the last time the number actually changed, not from the last
         // poll — otherwise a healthy 1 Hz poll makes every queue look like it is moving.
@@ -106,13 +112,14 @@ struct QueueTrendEstimator: Equatable {
         guard let last = samples.last, last.position > 0 else { return nil }
 
         let centreMinutes = Double(last.position) / perMinute
+        guard centreMinutes.isFinite, centreMinutes * 0.7 <= 60 else {
+            return Estimate(lowMinutes: 61, highMinutes: 61)
+        }
         // ±40 %. Queue rates are not stable enough to justify anything tighter, and a range the
         // user beats feels better than one they miss.
         let low = max(1, Int((centreMinutes * 0.7).rounded(.down)))
-        let high = max(low, Int((centreMinutes * 1.4).rounded(.up)))
-        // Past an hour the arithmetic is meaningless; say so rather than printing "about 94–187".
-        guard low <= 60 else { return Estimate(lowMinutes: 61, highMinutes: 61) }
-        return Estimate(lowMinutes: low, highMinutes: min(high, 61))
+        let high = max(low, Int(min(61, (centreMinutes * 1.4).rounded(.up))))
+        return Estimate(lowMinutes: low, highMinutes: high)
     }
 
     /// One line for under the position numeral. Nil when there is nothing honest to say yet.
@@ -123,7 +130,7 @@ struct QueueTrendEstimator: Equatable {
         case .holding:
             return "Queue is holding"
         case .slipped:
-            return "Position moved back — a rig was reclaimed"
+            return "Position moved back — wait estimate unavailable"
         case .moving:
             guard let estimate = estimate(now: now) else { return "Moving" }
             return "Moving — \(estimate.label)"
