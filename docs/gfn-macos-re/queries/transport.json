@@ -1,0 +1,116 @@
+[
+  {
+    "name": "search_procedures",
+    "arguments": {
+      "pattern": "Rtsp|RTSP|Mjolnir|Handshake|Dtls|Sctp|ICE|Ice",
+      "mode": "regex",
+      "case_sensitive": false
+    }
+  },
+  {
+    "name": "batch_decompile",
+    "arguments": {
+      "addresses": [
+        "0x1197a0",
+        "0x1145c0",
+        "0x1130f0",
+        "0x1bcda0",
+        "0x19de80",
+        "0xcc390",
+        "0x132c20",
+        "0x132da0"
+      ]
+    }
+  },
+  {
+    "name": "batch_decompile",
+    "arguments": {
+      "addresses": [
+        "0x256310",
+        "0x13cc00",
+        "0x19f190",
+        "0x19e400",
+        "0x1b6430",
+        "0x5b490",
+        "0x165a0",
+        "0x4f1e0"
+      ]
+    }
+  },
+  {
+    "name": "batch_decompile",
+    "arguments": {
+      "addresses": [
+        "0x11ea20",
+        "0x11fcd0",
+        "0x19ec00",
+        "0x19ebf0",
+        "0x8f810",
+        "0xcaa50",
+        "0xcaa60",
+        "0xcaa70",
+        "0xcaa80",
+        "0xcaaa0",
+        "0xcaab0"
+      ]
+    }
+  },
+  {
+    "name": "batch_decompile",
+    "arguments": {
+      "addresses": [
+        "0xfc6a0",
+        "0x25d510",
+        "0x25d310",
+        "0x1b82c0",
+        "0x1b8ef0"
+      ]
+    }
+  },
+  {
+    "name": "batch_decompile",
+    "arguments": {
+      "addresses": [
+        "0x121310",
+        "0x25da10",
+        "0x1b8320",
+        "0xffcf0",
+        "0x8fad0",
+        "0x1d4b00"
+      ]
+    }
+  },
+  {
+    "name": "batch_decompile",
+    "arguments": {
+      "addresses": [
+        "0x122780",
+        "0x11d250"
+      ]
+    }
+  },
+  {
+    "name": "procedure_references",
+    "arguments": {
+      "procedure": "0x11ea20",
+      "direction": "incoming"
+    }
+  },
+  {
+    "name": "batch_decompile",
+    "arguments": {
+      "addresses": [
+        "0x133dc0",
+        "0x136f00",
+        "0x1f1a80",
+        "0x1f1b10"
+      ]
+    }
+  },
+  {
+    "name": "procedure_pseudo_code",
+    "arguments": {
+      "procedure": "0xfcb40"
+    }
+  }
+]
