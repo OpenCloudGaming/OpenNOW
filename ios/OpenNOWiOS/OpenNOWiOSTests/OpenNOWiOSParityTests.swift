@@ -2526,6 +2526,105 @@ final class OpenNOWiOSParityTests: XCTestCase {
         )
     }
 
+    func testRemoteOfferPreservesPublicCandidateEvenWhenAllocationAdvertises443() {
+        let offer = remoteOffer(address: "203.0.113.10", port: 47998)
+        XCTAssertEqual(NativeStreamSDP.prepareRemoteOffer(offer, serverIP: "203.0.113.20",
+            mediaIP: "203.0.113.20", mediaPort: 443), offer)
+    }
+
+    func testRemoteOfferRepairsOnlyUnroutableAddressesWithMediaMetadata() {
+        for address in ["0.0.0.0", "10.0.175.4", "172.16.1.2", "192.168.1.2", "100.96.10.4", "169.254.1.2", "127.0.0.1", "224.0.0.1"] {
+            let offer = remoteOffer(address: address, port: 47998)
+            let prepared = NativeStreamSDP.prepareRemoteOffer(offer, serverIP: "203.0.113.20",
+                mediaIP: "203.0.113.21", mediaPort: 19353)
+            XCTAssertTrue(prepared.contains("c=IN IP4 203.0.113.21"), address)
+            XCTAssertTrue(prepared.contains("a=candidate:1 1 udp 2122260223 203.0.113.21 19353 typ host"), address)
+        }
+    }
+
+    func testRemoteOfferWithoutMediaMetadataOnlyRepairsPlaceholderAndPreservesPort() {
+        for address in ["10.0.175.4", "100.96.10.4", "203.0.113.10", "2001:db8::1", "10.0.invalid.1.2"] {
+            let offer = remoteOffer(address: address, port: 47998)
+            XCTAssertEqual(NativeStreamSDP.prepareRemoteOffer(offer, serverIP: "203.0.113.20",
+                mediaIP: nil, mediaPort: 0), offer)
+        }
+        let prepared = NativeStreamSDP.prepareRemoteOffer(remoteOffer(address: "0.0.0.0", port: 47998),
+            serverIP: "203.0.113.20", mediaIP: nil, mediaPort: 0)
+        XCTAssertTrue(prepared.contains("a=candidate:1 1 udp 2122260223 203.0.113.20 47998 typ host"))
+    }
+
+    func testRemoteOfferPreservesExplicitDNSAndIPv6MediaEndpoints() {
+        for (mediaIP, expectedHost, family) in [
+            ("media.example", "media.example", "IP4"),
+            ("2001:db8::10", "2001:db8::10", "IP6"),
+            ("[2001:db8::10]", "2001:db8::10", "IP6")
+        ] {
+            for serverIP in ["203.0.113.20", "signaling.example"] {
+                for address in ["0.0.0.0", "10.0.175.4"] {
+                    let prepared = NativeStreamSDP.prepareRemoteOffer(remoteOffer(address: address, port: 47998),
+                        serverIP: serverIP, mediaIP: mediaIP, mediaPort: 19353)
+                    XCTAssertTrue(prepared.contains("c=IN \(family) \(expectedHost)"))
+                    XCTAssertTrue(prepared.contains("a=candidate:1 1 udp 2122260223 \(expectedHost) 19353 typ host"))
+                    XCTAssertFalse(prepared.contains("203.0.113.20 19353"))
+                }
+            }
+        }
+    }
+
+    func testRemoteOfferDoesNotBorrowMediaPortWithoutUsableMediaHost() {
+        for mediaIP: String? in [nil, "", "0.0.0.0", "::", "bad host"] {
+            let prepared = NativeStreamSDP.prepareRemoteOffer(remoteOffer(address: "0.0.0.0", port: 47998),
+                serverIP: "203.0.113.20", mediaIP: mediaIP, mediaPort: 19353)
+            XCTAssertTrue(prepared.contains("a=candidate:1 1 udp 2122260223 203.0.113.20 47998 typ host"))
+            XCTAssertFalse(prepared.contains("203.0.113.20 19353"))
+        }
+    }
+
+    func testRemoteOfferKeepsLineEndingsAndUnknownAddresses() {
+        for ending in ["\n", "\r\n"] {
+            let offer = "v=0\(ending)a=candidate:1 1 udp 2122260223 203.0.113.10 47998 typ srflx\(ending)a=candidate:2 1 udp 2122260223 2001:db8::1 47999 typ host\(ending)a=candidate:3 1 udp 2122260223 10.0.invalid.1.2 48000 typ host\(ending)"
+            XCTAssertEqual(NativeStreamSDP.prepareRemoteOffer(offer, serverIP: "203.0.113.20",
+                mediaIP: "203.0.113.21", mediaPort: 443), offer)
+        }
+    }
+
+    func testRemoteIceWaitsForDescriptionAndPreservesServerCandidates() {
+        var buffer = NativeStreamRemoteIceBuffer()
+        let candidates = [
+            RTCIceCandidate(sdp: "candidate:1 1 udp 2122260223 203.0.113.10 47998 typ host", sdpMLineIndex: 0, sdpMid: "0"),
+            RTCIceCandidate(sdp: "candidate:2 1 udp 2122260223 203.0.113.11 49003 typ srflx raddr 10.0.0.1 rport 47998", sdpMLineIndex: 1, sdpMid: nil),
+            RTCIceCandidate(sdp: "candidate:3 1 tcp 2122260223 203.0.113.12 8443 typ relay tcptype passive", sdpMLineIndex: 2, sdpMid: "data")
+        ]
+        for candidate in candidates { XCTAssertTrue(buffer.receive(candidate).isEmpty) }
+        XCTAssertEqual(buffer.pending.count, 3)
+        let flushed = buffer.remoteDescriptionWasSet()
+        XCTAssertEqual(flushed.map(\.sdp), candidates.map(\.sdp))
+        XCTAssertEqual(flushed.map(\.sdpMid), candidates.map(\.sdpMid))
+        XCTAssertEqual(flushed.map(\.sdpMLineIndex), candidates.map(\.sdpMLineIndex))
+        XCTAssertTrue(buffer.pending.isEmpty)
+        XCTAssertTrue(buffer.remoteDescriptionWasSet().isEmpty)
+        XCTAssertEqual(buffer.receive(candidates[0]).map(\.sdp), [candidates[0].sdp])
+    }
+
+    func testRemoteIceBufferBoundsPendingCandidatesAndResetClearsReadiness() {
+        var buffer = NativeStreamRemoteIceBuffer()
+        for index in 0..<125 {
+            XCTAssertTrue(buffer.receive(RTCIceCandidate(
+                sdp: "candidate:\(index) 1 udp 2122260223 203.0.113.10 47998 typ host",
+                sdpMLineIndex: 0, sdpMid: "0")).isEmpty)
+        }
+        XCTAssertEqual(buffer.pending.count, 120)
+        XCTAssertEqual(buffer.droppedCandidates, 5)
+        let flushed = buffer.remoteDescriptionWasSet()
+        XCTAssertTrue(flushed.first?.sdp.hasPrefix("candidate:5 ") == true)
+        XCTAssertTrue(flushed.last?.sdp.hasPrefix("candidate:124 ") == true)
+        buffer = NativeStreamRemoteIceBuffer()
+        XCTAssertEqual(buffer.droppedCandidates, 0)
+        XCTAssertTrue(buffer.pending.isEmpty)
+        XCTAssertTrue(buffer.receive(flushed[0]).isEmpty)
+        XCTAssertEqual(buffer.remoteDescriptionWasSet().count, 1)
+    }
+
     func testPlaceholderSDPEndpointsUseSignalingEndpointWithoutMediaMetadata() {
         let offer = remoteOffer(address: "0.0.0.0", port: 47_998)
 
