@@ -4419,7 +4419,8 @@ private actor GFNAPIClient {
             launcherName: launcherName,
             deviceProfile: deviceProfile,
             deviceHashId: deviceId,
-            accountLinked: accountLinked
+            accountLinked: accountLinked,
+            streamingBaseURL: base
         )
         Logger(subsystem: "OpenNOWiOS", category: "GFNAPI").info(
             "Session create profile=\(streamProfile.width)x\(streamProfile.height) fps=\(streamProfile.fps) codec=\(settings.preferredCodec, privacy: .public) color=\(settings.preferredColorQuality, privacy: .public) hdr=\(settings.hdrEnabled) identity=\(deviceProfile.clientPlatformName, privacy: .public)"
@@ -4433,7 +4434,9 @@ private actor GFNAPIClient {
                 clientId: clientId,
                 deviceId: deviceId,
                 includeOrigin: true,
-                deviceProfile: deviceProfile
+                deviceProfile: deviceProfile,
+                settings: settings,
+                streamingBaseURL: base
             ),
             body: body,
             sessionSettings: settings
@@ -4535,7 +4538,9 @@ private actor GFNAPIClient {
                 token: token,
                 clientId: activeSession.clientId,
                 deviceId: activeSession.deviceId,
-                includeOrigin: false
+                includeOrigin: false,
+                settings: settings,
+                streamingBaseURL: activeSession.streamingBaseUrl
             ),
             sessionSettings: settings
         )
@@ -4648,7 +4653,9 @@ private actor GFNAPIClient {
                 token: token,
                 clientId: activeSession.clientId,
                 deviceId: activeSession.deviceId,
-                includeOrigin: true
+                includeOrigin: true,
+                settings: settings,
+                streamingBaseURL: activeSession.streamingBaseUrl
             ),
             body: body,
             sessionSettings: settings
@@ -4750,7 +4757,9 @@ private actor GFNAPIClient {
                 token: token,
                 clientId: UUID().uuidString,
                 deviceId: requestDeviceId,
-                includeOrigin: false
+                includeOrigin: false,
+                settings: settings,
+                streamingBaseURL: base
             ),
             sessionSettings: settings
         )
@@ -4826,7 +4835,9 @@ private actor GFNAPIClient {
                         clientId: clientId,
                         deviceId: claimDeviceId,
                         includeOrigin: false,
-                        deviceProfile: deviceProfile
+                        deviceProfile: deviceProfile,
+                        settings: settings,
+                        streamingBaseURL: zoneBase
                     ),
                     sessionSettings: settings
                 )
@@ -4853,7 +4864,9 @@ private actor GFNAPIClient {
                     clientId: clientId,
                     deviceId: claimDeviceId,
                     includeOrigin: false,
-                    deviceProfile: deviceProfile
+                    deviceProfile: deviceProfile,
+                    settings: settings,
+                    streamingBaseURL: zoneBase
                     ),
                     sessionSettings: settings
                 )
@@ -4876,7 +4889,8 @@ private actor GFNAPIClient {
                 settings: settings,
                 profile: streamProfile,
                 deviceProfile: deviceProfile,
-                deviceHashId: claimDeviceId
+                deviceHashId: claimDeviceId,
+                streamingBaseURL: zoneBase
             )
 
             let (claimData, claimResponse) = try await request(
@@ -4887,7 +4901,9 @@ private actor GFNAPIClient {
                     clientId: clientId,
                     deviceId: claimDeviceId,
                     includeOrigin: true,
-                    deviceProfile: deviceProfile
+                    deviceProfile: deviceProfile,
+                    settings: settings,
+                    streamingBaseURL: zoneBase
                 ),
                 body: claimBody,
                 sessionSettings: settings
@@ -6084,7 +6100,9 @@ private actor GFNAPIClient {
         clientId: String,
         deviceId: String,
         includeOrigin: Bool,
-        deviceProfile: StreamDeviceProfile = .desktop
+        deviceProfile: StreamDeviceProfile = .desktop,
+        settings: AppSettings? = nil,
+        streamingBaseURL: String? = nil
     ) -> [String: String] {
         var headers: [String: String] = [
             "User-Agent": deviceProfile.userAgent,
@@ -6105,7 +6123,9 @@ private actor GFNAPIClient {
             headers["Origin"] = "https://play.geforcenow.com"
             headers["Referer"] = "https://play.geforcenow.com/"
         }
-        return headers
+        guard let settings else { return headers }
+        return NativeStreamNVSTConfiguration.requestHeaders(headers,
+            enabled: settings.experimentalNativeNVSTEnabled, streamingBaseURL: streamingBaseURL)
     }
 
     private static func buildSessionBody(
@@ -6116,7 +6136,8 @@ private actor GFNAPIClient {
         launcherName: String,
         deviceProfile: StreamDeviceProfile,
         deviceHashId: String,
-        accountLinked: Bool
+        accountLinked: Bool,
+        streamingBaseURL: String
     ) -> Data {
         let hdrEnabled = settings.hdrEnabled
         let colorQuality = StreamSettingsResolver.colorQuality(for: settings)
@@ -6184,7 +6205,8 @@ private actor GFNAPIClient {
                 )
             ]
         ]
-        return (try? JSONSerialization.data(withJSONObject: NativeStreamNVSTConfiguration.requestBody(body, enabled: settings.experimentalNativeNVSTEnabled))) ?? Data()
+        return (try? JSONSerialization.data(withJSONObject: NativeStreamNVSTConfiguration.requestBody(body,
+            enabled: settings.experimentalNativeNVSTEnabled, streamingBaseURL: streamingBaseURL))) ?? Data()
     }
 
     private static func buildClaimBody(
@@ -6193,7 +6215,8 @@ private actor GFNAPIClient {
         settings: AppSettings,
         profile: StreamVideoProfile,
         deviceProfile: StreamDeviceProfile,
-        deviceHashId: String
+        deviceHashId: String,
+        streamingBaseURL: String
     ) -> Data {
         let hdrEnabled = settings.hdrEnabled
         let colorQuality = StreamSettingsResolver.colorQuality(for: settings)
@@ -6263,7 +6286,8 @@ private actor GFNAPIClient {
             ],
             "metaData": []
         ]
-        return (try? JSONSerialization.data(withJSONObject: NativeStreamNVSTConfiguration.requestBody(body, enabled: settings.experimentalNativeNVSTEnabled))) ?? Data()
+        return (try? JSONSerialization.data(withJSONObject: NativeStreamNVSTConfiguration.requestBody(body,
+            enabled: settings.experimentalNativeNVSTEnabled, streamingBaseURL: streamingBaseURL))) ?? Data()
     }
 
     private static func requestedStreamingFeatures(
@@ -6595,6 +6619,12 @@ final class OpenNOWStore: ObservableObject {
     var supportsEmbeddedStreamer: Bool { OpenNOWPlatform.supportsEmbeddedStreamer }
     var currentStreamerSettings: AppSettings { activeStreamSettings ?? settings }
 
+    var requestedReopenSettings: AppSettings {
+        var requested = currentStreamerSettings
+        requested.experimentalNativeNVSTEnabled = settings.experimentalNativeNVSTEnabled
+        return requested
+    }
+
     private func nativeLaunchSettings(for requestedSettings: AppSettings, context: String) -> AppSettings {
         let resolved = NativeStreamLaunchSettingsResolver.resolve(requestedSettings)
         if let reason = resolved.reason {
@@ -6647,6 +6677,7 @@ final class OpenNOWStore: ObservableObject {
             "session.adsRequired=\(isSessionAdsRequired(adState)) ads=\(sessionAdItems(adState).count) queuePaused=\(adState?.isQueuePaused ?? false) activeAd=\(activeQueueAd?.adId ?? "none")",
             "requested.resolution=\(profile.width)x\(profile.height) fps=\(profile.fps) bitrateKbps=\(profile.maxBitrateKbps) codec=\(currentStreamerSettings.preferredCodec) quality=\(currentStreamerSettings.preferredQuality)",
             "requested.aspect=\(currentStreamerSettings.preferredAspectRatio) color=\(currentStreamerSettings.preferredColorQuality) hdr=\(currentStreamerSettings.hdrEnabled) l4s=\(currentStreamerSettings.enableL4S)",
+            "transport.savedNativeEnabled=\(settings.experimentalNativeNVSTEnabled) activeNativeEnabled=\(currentStreamerSettings.experimentalNativeNVSTEnabled) allocationRequiresNative=\(active?.nativeTransportRequired.map(String.init) ?? "unknown") preferenceConflict=\(active?.transportPreferenceError(settings: currentStreamerSettings) != nil)",
             "requested.region=\(currentStreamerSettings.preferredRegion.isEmpty ? "automatic" : currentStreamerSettings.preferredRegion) proxy=\(proxyHost)",
             "negotiated.resolution=\(negotiated?.resolution ?? "unknown") fps=\(negotiated?.fps.map(String.init) ?? "unknown") codec=\(negotiated?.codec ?? "unknown") color=\(negotiated?.colorQuality?.rawValue ?? "unknown")",
             "input.keyboard=\(settings.keyboardLayout) language=\(settings.gameLanguage) fingerMouse=\(settings.fingerMouseEnabled) sensitivity=\(settings.mouseSensitivity) acceleration=\(settings.mouseAcceleration) phoneRumble=\(settings.phoneRumbleFallback)",
@@ -9396,6 +9427,9 @@ final class OpenNOWStore: ObservableObject {
         if let queuePosition = session.queuePosition, queuePosition > 1 {
             return false
         }
+        if session.transportPreferenceError(settings: activeStreamSettings ?? settings) != nil {
+            return true
+        }
         if session.usesNativeTransport(settings: activeStreamSettings ?? settings) {
             return !(session.nativeRtspsEndpoints ?? []).isEmpty
         }
@@ -9471,7 +9505,7 @@ final class OpenNOWStore: ObservableObject {
             guard generation == authGeneration, operation == sessionOperationGeneration else { return }
             authSession = refreshed
             persistAuthSession(refreshed)
-            let requestedStreamSettings = currentStreamerSettings
+            let requestedStreamSettings = nativeLaunchSettings(for: requestedReopenSettings, context: "reopenCurrentSession")
             let deviceId = persistentDeviceId()
             let baseUrl = refreshed.provider.streamingServiceUrl
             let activeCandidates = try await api.fetchActiveSessions(

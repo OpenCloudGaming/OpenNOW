@@ -53,7 +53,7 @@ If controller haptics are unavailable, the normal GameController API cannot driv
 
 ## Android streaming parity (October 2026)
 
-The iOS client now shares Android's preference for a usable WebRTC route over an earlier RTSP control entry, and honors native-only allocations without changing the saved Native NVST setting. Session reply numbers and ICE line indexes are checked before conversion. Stop immediately dismisses local media and invalidates pending launch, claim, poll and delayed reopen work before waiting for the provider.
+The iOS client shares Android's preference for a usable WebRTC route over an earlier RTSP control entry. Native-only allocations are retained as such, but cannot start the native receiver while Native NVST is disabled; the stream explains that a new WebRTC allocation or an explicit opt-in is required. Reopening uses the current saved transport preference while preserving the active game's other stream settings. NVIDIA WebRTC launch and claim requests use the browser client identity; alliance identities remain unchanged. Native requests use Android's streamer version 14, SDK 2.0 and native transport envelope on both launch and claim. Session reply numbers and ICE line indexes are checked before conversion. Stop immediately dismisses local media and invalidates pending launch, claim, poll and delayed reopen work before waiting for the provider.
 
 Rig setup uses Android's 12-second estimated progress animation, capped at 90% until the session advances. It updates only the bar, pauses in the background and stops ticking at the cap. Queue position is hidden once rig setup has started. PrintedWaste routes require source data no older than 30 minutes and are rechecked when selected.
 

@@ -298,6 +298,69 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertNil(SessionConnectionPolicy.resolve(session: [:], fallbackHost: "seat.example"))
     }
 
+    @MainActor
+    func testDisabledNativePreferenceRejectsNativeOnlyAllocationBeforeStartup() throws {
+        var session = Self.makeActiveSession(game: Self.makeGame(title: "Transport", controls: []), status: 3)
+        session.nativeTransportRequired = true
+        session.nativeRtspsEndpoints = ["rtsps://native.example:322"]
+        var settings = AppSettings.default
+        settings.experimentalNativeNVSTEnabled = false
+        let error = try XCTUnwrap(session.transportPreferenceError(settings: settings))
+        XCTAssertTrue(error.contains("disabled"))
+        XCTAssertTrue(error.contains("WebRTC"))
+        let coordinator = NativeStreamCoordinator(
+            session: session, settings: settings, membershipTier: "FREE", sessionHistory: nil,
+            onTouchLayoutChange: { _, _ in }, onStreamerPreferencesChange: { _ in },
+            onStreamSharpeningChange: { _, _ in }, onFingerMouseEnabledChange: { _ in },
+            onPhoneRumbleFallbackChange: { _ in }, onStreamTutorialCompleted: {},
+            onControllerTouchPromptDismissed: {}, onStatsOverlayChange: { _ in },
+            onTransportStable: {}, onSelectedVideoProfileRetry: { _ in }, onRuntimeSample: { _ in },
+            onSettingsChange: { _ in }, onBuildBugReportDeck: { BugReportPreflightDeck() },
+            onSubmitBugReport: { _, _ in .failure(BugReportError.invalid("Test")) }, onClose: {}, onRetry: nil)
+        defer { coordinator.stop() }
+        coordinator.start(viewportSize: CGSize(width: 844, height: 390))
+        XCTAssertEqual(coordinator.statusText, "Stream failed")
+        XCTAssertEqual(coordinator.detailText, error)
+        XCTAssertFalse(coordinator.retryAvailable)
+
+        settings.experimentalNativeNVSTEnabled = true
+        XCTAssertNil(session.transportPreferenceError(settings: settings))
+        settings.experimentalNativeNVSTEnabled = false
+        for required: Bool? in [nil, false] {
+            session.nativeTransportRequired = required
+            XCTAssertNil(session.transportPreferenceError(settings: settings))
+            XCTAssertFalse(session.usesNativeTransport(settings: settings))
+        }
+    }
+
+    @MainActor
+    func testReopenUsesSavedTransportPreferenceWithoutChangingActiveGameProfile() {
+        let defaults = UserDefaults.standard
+        let keys = ["OpenNOW.iOS.settings", "OpenNOW.iOS.activeSession", "OpenNOW.iOS.activeStreamSettings"]
+        let saved = keys.map { defaults.data(forKey: $0) }
+        defer {
+            for (key, value) in zip(keys, saved) {
+                if let value { defaults.set(value, forKey: key) }
+                else { defaults.removeObject(forKey: key) }
+            }
+        }
+        let store = OpenNOWStore()
+        store.settings.experimentalNativeNVSTEnabled = true
+        store.settings.maxBitrateMbps = 42
+        store.installDebugQueuePreview(position: 1, isSettingUp: true)
+        let active = store.currentStreamerSettings
+        XCTAssertTrue(active.experimentalNativeNVSTEnabled)
+        store.settings.experimentalNativeNVSTEnabled = false
+        store.settings.maxBitrateMbps = 17
+        var expected = active
+        expected.experimentalNativeNVSTEnabled = false
+        XCTAssertEqual(store.requestedReopenSettings, expected)
+        XCTAssertEqual(store.currentStreamerSettings, active)
+        XCTAssertTrue(store.diagnosticsReport.contains("transport.savedNativeEnabled=false activeNativeEnabled=true"))
+        store.settings.experimentalNativeNVSTEnabled = true
+        XCTAssertEqual(store.requestedReopenSettings, active)
+    }
+
     func testSessionMediaSkipsMalformedEntriesAndNeverUsesRTSPControl() {
         let media = SessionConnectionPolicy.mediaEndpoint(session: ["connectionInfo": [
             ["usage": 2, "ip": "0.0.0.0", "port": 49003],
@@ -310,6 +373,48 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertNil(SessionConnectionPolicy.mediaEndpoint(session: ["connectionInfo": [
             ["usage": 14, "resourcePath": "rtsps://control.example:322", "port": 322]
         ]]).ip)
+    }
+
+    func testSessionMediaFallbackPrioritizesHigherPortInEitherAllocationOrder() throws {
+        let signaling: [String: Any] = ["usage": 14, "ip": "203.0.113.10", "port": 443, "resourcePath": "/nvst/"]
+        let media: [String: Any] = ["usage": "14", "ip": "203.0.113.11", "port": "49003", "resourcePath": "/nvst/"]
+        for connections in [[signaling, media], [media, signaling]] {
+            let session: [String: Any] = ["connectionInfo": connections]
+            let endpoint = SessionConnectionPolicy.mediaEndpoint(session: session)
+            XCTAssertEqual(endpoint.ip, "203.0.113.11")
+            XCTAssertEqual(endpoint.port, 49003)
+            let route = try XCTUnwrap(SessionConnectionPolicy.resolve(session: session, fallbackHost: nil))
+            XCTAssertEqual(URLComponents(string: route.url)?.port, 443)
+            let candidate = NativeStreamSDP.rewriteIceCandidateEndpoint(
+                "candidate:1 1 udp 2122260223 100.96.10.4 47998 typ host",
+                mediaIP: endpoint.ip, mediaPort: endpoint.port)
+            XCTAssertEqual(candidate, "candidate:1 1 udp 2122260223 203.0.113.11 49003 typ host")
+        }
+    }
+
+    func testSessionMediaExplicitVideoAndBundleTakePriorityOverFallbackPorts() {
+        let fallback: [String: Any] = ["usage": 14, "ip": "203.0.113.10", "port": 59000]
+        let bundle: [String: Any] = ["usage": 17, "ip": "203.0.113.11", "port": 18342]
+        let video: [String: Any] = ["usage": 2, "ip": "203.0.113.12", "port": 13334]
+        let videoEndpoint = SessionConnectionPolicy.mediaEndpoint(session: ["connectionInfo": [fallback, bundle, video]])
+        XCTAssertEqual(videoEndpoint.ip, "203.0.113.12")
+        XCTAssertEqual(videoEndpoint.port, 13334)
+        let bundleEndpoint = SessionConnectionPolicy.mediaEndpoint(session: ["connectionInfo": [fallback, bundle]])
+        XCTAssertEqual(bundleEndpoint.ip, "203.0.113.11")
+        XCTAssertEqual(bundleEndpoint.port, 18342)
+    }
+
+    func testSessionMediaFallbackSkipsNativeAndInvalidHigherPorts() {
+        let endpoint = SessionConnectionPolicy.mediaEndpoint(session: ["connectionInfo": [
+            ["usage": 14, "ip": "203.0.113.10", "port": 443],
+            ["usage": 14, "ip": "203.0.113.11", "port": 65000, "appLevelProtocol": 6],
+            ["usage": 14, "ip": "203.0.113.12", "port": 64000, "resourcePath": "rtsps://control.example:64000"],
+            ["usage": 14, "ip": "203.0.113.13", "port": 99999],
+            ["usage": 14, "ip": "0.0.0.0", "port": 60000],
+            ["usage": 14, "ip": "203.0.113.14", "port": 49003]
+        ]])
+        XCTAssertEqual(endpoint.ip, "203.0.113.14")
+        XCTAssertEqual(endpoint.port, 49003)
     }
 
     func testSignInURLKeepsPathAndEncodesPairingValues() throws {
@@ -2044,6 +2149,63 @@ final class OpenNOWiOSParityTests: XCTestCase {
     func testNativeEndpointsRequireAdvertisedControlAndRetainExplicitHost() {
         XCTAssertEqual(NativeStreamNVSTConfiguration.endpoints(sessionObj: ["connectionInfo": [["port": 443, "usage": 1, "resourcePath": "/nvst/"]]], fallbackHost: "old.example"), [])
         XCTAssertEqual(NativeStreamNVSTConfiguration.endpoints(sessionObj: ["connectionInfo": [["port": 322, "usage": 16, "resourcePath": "rtsps://new.example:322"]]], fallbackHost: "old.example"), ["rtsps://new.example:322"])
+    }
+
+    func testNativeProvisioningMatchesAndroidTransportEnvelopeOnLaunchAndResume() throws {
+        for action: Int? in [nil, 2] {
+            var body: [String: Any] = ["sessionRequestData": [
+                "streamerVersion": 1, "sdkVersion": "1.0", "enhancedStreamMode": 1,
+                "secureRTSPSupported": false,
+                "metaData": [["key": "GSStreamerType", "value": "WebRTC"], ["key": "wssignaling", "value": "1"]]
+            ]]
+            if let action { body["action"] = action; body["data"] = "RESUME" }
+            let result = NativeStreamNVSTConfiguration.requestBody(body, enabled: true)
+            let request = try XCTUnwrap(result["sessionRequestData"] as? [String: Any])
+            XCTAssertEqual(request["streamerVersion"] as? String, "14")
+            XCTAssertEqual(request["sdkVersion"] as? String, "2.0")
+            XCTAssertEqual(request["enhancedStreamMode"] as? Int, 0)
+            XCTAssertEqual(request["secureRTSPSupported"] as? Bool, true)
+            XCTAssertEqual(request["requestedAudioFormat"] as? Int, 0)
+            XCTAssertTrue(request["transport"] is NSNull)
+            XCTAssertEqual(result["action"] as? Int, action)
+        }
+    }
+
+    func testDisabledNativeProvisioningUsesNvidiaBrowserIdentityAndPreservesAllianceIdentity() throws {
+        let headers = ["nv-client-streamer": "NVIDIA-CLASSIC", "nv-client-type": "NATIVE", "x-device-id": "stable-device"]
+        for action: Int? in [nil, 2] {
+            var body: [String: Any] = ["sessionRequestData": [
+                "streamerVersion": 1, "sdkVersion": "1.0", "enhancedStreamMode": 1,
+                "secureRTSPSupported": false, "clientPlatformName": "windows",
+                "enablePersistingInGameSettings": true, "deviceHashId": "stable-device",
+                "appLaunchMode": 2,
+                "metaData": [["key": "GSStreamerType", "value": "WebRTC"]]
+            ]]
+            if let action { body["action"] = action; body["data"] = "RESUME" }
+            for base in ["https://prod.cloudmatchbeta.nvidiagrid.net", "https://cloudmatch.nvidiagrid.net", "https://alliance.example", "https://cloudmatch.nvidiagrid.net.attacker.example"] {
+                for enabled in [false, true] {
+                    let browser = !enabled && URL(string: base)?.host?.hasSuffix("nvidiagrid.net") == true
+                    let result = NativeStreamNVSTConfiguration.requestBody(body, enabled: enabled, streamingBaseURL: base)
+                    let request = try XCTUnwrap(result["sessionRequestData"] as? [String: Any])
+                    let actualHeaders = NativeStreamNVSTConfiguration.requestHeaders(headers, enabled: enabled, streamingBaseURL: base)
+                    XCTAssertEqual(actualHeaders["nv-client-streamer"], browser ? "WEBRTC" : "NVIDIA-CLASSIC")
+                    XCTAssertEqual(actualHeaders["nv-client-type"], browser ? "BROWSER" : "NATIVE")
+                    XCTAssertEqual(actualHeaders["x-device-id"], "stable-device")
+                    XCTAssertEqual(request["clientPlatformName"] as? String, browser ? "browser" : "windows")
+                    XCTAssertEqual(request["enablePersistingInGameSettings"] as? Bool, !browser)
+                    XCTAssertEqual(request["secureRTSPSupported"] as? Bool, enabled)
+                    XCTAssertEqual(request["deviceHashId"] as? String, "stable-device")
+                    XCTAssertEqual(request["appLaunchMode"] as? Int, 2)
+                    XCTAssertEqual(result["action"] as? Int, action)
+                    if !enabled {
+                        XCTAssertEqual(request["streamerVersion"] as? Int, 1)
+                        XCTAssertEqual(request["sdkVersion"] as? String, "1.0")
+                        XCTAssertEqual(request["enhancedStreamMode"] as? Int, 1)
+                        XCTAssertEqual(request["metaData"] as? [[String: String]], [["key": "GSStreamerType", "value": "WebRTC"]])
+                    }
+                }
+            }
+        }
     }
 
     func testNativeProvisioningPreservesQualityAndIdentityOnLaunchAndResume() throws {

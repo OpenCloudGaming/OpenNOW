@@ -2937,6 +2937,10 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         self.viewportSize = viewportSize
         batteryMonitoringWasEnabled = UIDevice.current.isBatteryMonitoringEnabled
         UIDevice.current.isBatteryMonitoringEnabled = true
+        if let error = session.transportPreferenceError(settings: settings) {
+            fail(error)
+            return
+        }
         historyRecord = StreamSessionRecord(gameTitle: session.game.title,
             resolution: "\(streamProfile.width)×\(streamProfile.height)", targetFPS: streamProfile.fps,
             codec: settings.preferredCodec.uppercased(), hdr: settings.hdrEnabled,
