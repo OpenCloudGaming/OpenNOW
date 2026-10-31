@@ -20,6 +20,7 @@ public final class WebRtcTextureDelivery extends ClassVisitor implements Opcodes
     private int sizeMethods;
     private int rotationMethods;
     private int threadConstructors;
+    private int helperInitializations;
 
     public WebRtcTextureDelivery(ClassVisitor next, String owner) {
         super(ASM9, next);
@@ -39,6 +40,28 @@ public final class WebRtcTextureDelivery extends ClassVisitor implements Opcodes
         }
         MethodVisitor next = super.visitMethod(access, name, desc, signature, exceptions);
         return new MethodVisitor(ASM9, next) {
+            @Override
+            public void visitFieldInsn(int opcode, String target, String field, String descriptor) {
+                super.visitFieldInsn(opcode, target, field, descriptor);
+                if (owner.equals(DECODER) && name.equals("initDecode")
+                        && desc.equals("(Lorg/webrtc/VideoDecoder$Settings;Lorg/webrtc/VideoDecoder$Callback;)Lorg/webrtc/VideoCodecStatus;")
+                        && opcode == PUTFIELD && target.equals(DECODER)
+                        && field.equals("surfaceTextureHelper")
+                        && descriptor.equals("Lorg/webrtc/SurfaceTextureHelper;")) {
+                    helperInitializations++;
+                    Label ready = new Label();
+                    super.visitVarInsn(ALOAD, 0);
+                    super.visitFieldInsn(GETFIELD, DECODER, field, descriptor);
+                    super.visitJumpInsn(IFNONNULL, ready);
+                    super.visitVarInsn(ALOAD, 0);
+                    super.visitInsn(ACONST_NULL);
+                    super.visitFieldInsn(PUTFIELD, DECODER, "callback", "Lorg/webrtc/VideoDecoder$Callback;");
+                    super.visitFieldInsn(GETSTATIC, "org/webrtc/VideoCodecStatus", "ERROR", "Lorg/webrtc/VideoCodecStatus;");
+                    super.visitInsn(ARETURN);
+                    super.visitLabel(ready);
+                }
+            }
+
             @Override
             public void visitMethodInsn(int opcode, String target, String method, String descriptor,
                     boolean isInterface) {
@@ -88,11 +111,13 @@ public final class WebRtcTextureDelivery extends ClassVisitor implements Opcodes
     @Override
     public void visitEnd() {
         if (threadConstructors != (owner.equals(DECODER) ? 0 : 1)
+                || helperInitializations != (owner.equals(DECODER) ? 1 : 0)
                 || ((owner.equals(TEXTURE_HELPER) || owner.equals(DECODER))
                 && (sizeMethods != 1 || rotationMethods != 1))) {
             throw new IllegalStateException("WebRTC texture API changed; review texture delivery tuning: "
                     + owner + " size=" + sizeMethods + " rotation=" + rotationMethods
-                    + " threadConstructors=" + threadConstructors);
+                    + " threadConstructors=" + threadConstructors
+                    + " helperInitializations=" + helperInitializations);
         }
         if (owner.equals(TEXTURE_HELPER)) {
             // Only AndroidVideoDecoder uses these entry points. Preserve upstream setters

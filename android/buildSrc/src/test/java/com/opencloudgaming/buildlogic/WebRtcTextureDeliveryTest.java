@@ -7,7 +7,12 @@ import java.util.List;
 import org.junit.Before;
 import org.junit.Test;
 import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.ClassWriter;
+import org.objectweb.asm.MethodVisitor;
+import org.objectweb.asm.Opcodes;
+import org.webrtc.VideoCodecStatus;
+import org.webrtc.VideoDecoder;
 import static org.junit.Assert.*;
 
 public class WebRtcTextureDeliveryTest {
@@ -59,6 +64,74 @@ public class WebRtcTextureDeliveryTest {
                     .invoke(instance, helper, 1376, 640, 0);
         }
         assertEquals(List.of("size:1376x640", "rotation:0"), requests());
+    }
+
+    @Test
+    public void nullTextureHelperReturnsErrorAndClearsCallbackBeforeCodecStartup() throws Exception {
+        Class<?> decoder = instrument(WebRtcTextureDelivery.DECODER);
+        Object instance = decoder.getConstructor().newInstance();
+        decoder.getField("failHelper").set(instance, true);
+        VideoDecoder.Callback callback = new VideoDecoder.Callback() {};
+        assertEquals(VideoCodecStatus.ERROR, decoder.getMethod("initDecode", VideoDecoder.Settings.class,
+                VideoDecoder.Callback.class).invoke(instance, new VideoDecoder.Settings(1920, 1080), callback));
+        assertNull(decoder.getMethod("getCallback").invoke(instance));
+        assertNull(decoder.getMethod("getHelper").invoke(instance));
+        assertEquals(0, decoder.getField("codecInitializations").get(instance));
+        assertEquals(VideoCodecStatus.OK, decoder.getMethod("release").invoke(instance));
+        assertEquals(VideoCodecStatus.OK, decoder.getMethod("release").invoke(instance));
+        assertEquals(0, decoder.getField("codecReleases").get(instance));
+    }
+
+    @Test
+    public void successfulTextureStartupPreservesCallbackListenerAndRelease() throws Exception {
+        Class<?> decoder = instrument(WebRtcTextureDelivery.DECODER);
+        Object instance = decoder.getConstructor().newInstance();
+        VideoDecoder.Callback callback = new VideoDecoder.Callback() {};
+        assertEquals(VideoCodecStatus.OK, decoder.getMethod("initDecode", VideoDecoder.Settings.class,
+                VideoDecoder.Callback.class).invoke(instance, new VideoDecoder.Settings(1920, 1080), callback));
+        Object decoderHelper = decoder.getMethod("getHelper").invoke(instance);
+        assertSame(callback, decoder.getMethod("getCallback").invoke(instance));
+        assertSame(instance, type.getField("listener").get(decoderHelper));
+        assertEquals(1, decoder.getField("codecInitializations").get(instance));
+        assertEquals(VideoCodecStatus.OK, decoder.getMethod("release").invoke(instance));
+        assertEquals(VideoCodecStatus.OK, decoder.getMethod("release").invoke(instance));
+        assertEquals(1, decoder.getField("codecReleases").get(instance));
+        assertNull(decoder.getMethod("getCallback").invoke(instance));
+        assertNull(type.getField("listener").get(decoderHelper));
+        assertEquals(1, type.getField("disposals").get(decoderHelper));
+    }
+
+    @Test
+    public void textureStartupCanRecoverAfterNullHelperAndRelease() throws Exception {
+        Class<?> decoder = instrument(WebRtcTextureDelivery.DECODER);
+        Object instance = decoder.getConstructor().newInstance();
+        VideoDecoder.Callback callback = new VideoDecoder.Callback() {};
+        decoder.getField("failHelper").set(instance, true);
+        assertEquals(VideoCodecStatus.ERROR, decoder.getMethod("initDecode", VideoDecoder.Settings.class,
+                VideoDecoder.Callback.class).invoke(instance, new VideoDecoder.Settings(1920, 1080), callback));
+        assertEquals(VideoCodecStatus.OK, decoder.getMethod("release").invoke(instance));
+        decoder.getField("failHelper").set(instance, false);
+        assertEquals(VideoCodecStatus.OK, decoder.getMethod("initDecode", VideoDecoder.Settings.class,
+                VideoDecoder.Callback.class).invoke(instance, new VideoDecoder.Settings(1920, 1080), callback));
+        assertSame(callback, decoder.getMethod("getCallback").invoke(instance));
+        assertEquals(1, decoder.getField("codecInitializations").get(instance));
+        assertEquals(VideoCodecStatus.OK, decoder.getMethod("release").invoke(instance));
+    }
+
+    @Test
+    public void nonTextureStartupDoesNotRequireTextureHelper() throws Exception {
+        Class<?> decoder = instrument(WebRtcTextureDelivery.DECODER);
+        Object instance = decoder.getConstructor().newInstance();
+        decoder.getField("textureMode").set(instance, false);
+        decoder.getField("failHelper").set(instance, true);
+        VideoDecoder.Callback callback = new VideoDecoder.Callback() {};
+        assertEquals(VideoCodecStatus.OK, decoder.getMethod("initDecode", VideoDecoder.Settings.class,
+                VideoDecoder.Callback.class).invoke(instance, new VideoDecoder.Settings(1920, 1080), callback));
+        assertSame(callback, decoder.getMethod("getCallback").invoke(instance));
+        assertNull(decoder.getMethod("getHelper").invoke(instance));
+        assertEquals(1, decoder.getField("codecInitializations").get(instance));
+        assertEquals(VideoCodecStatus.OK, decoder.getMethod("release").invoke(instance));
+        assertEquals(1, decoder.getField("codecReleases").get(instance));
     }
 
     @Test
@@ -172,5 +245,24 @@ public class WebRtcTextureDeliveryTest {
                 assertTrue(e.getMessage().contains("WebRTC texture API changed"));
             }
         }
+    }
+
+    @Test
+    public void missingDecoderInitializationGuardSiteFailsBuild() throws Exception {
+        ClassWriter stripped = new ClassWriter(0);
+        try (InputStream stream = getClass().getResourceAsStream("/" + WebRtcTextureDelivery.DECODER + ".class")) {
+            new ClassReader(stream).accept(new ClassVisitor(Opcodes.ASM9, stripped) {
+                @Override
+                public MethodVisitor visitMethod(int access, String name, String descriptor,
+                        String signature, String[] exceptions) {
+                    return name.equals("initDecode") ? null
+                            : super.visitMethod(access, name, descriptor, signature, exceptions);
+                }
+            }, 0);
+        }
+        IllegalStateException error = assertThrows(IllegalStateException.class,
+                () -> new ClassReader(stripped.toByteArray()).accept(new WebRtcTextureDelivery(
+                        new ClassWriter(0), WebRtcTextureDelivery.DECODER), 0));
+        assertTrue(error.getMessage().contains("helperInitializations=0"));
     }
 }

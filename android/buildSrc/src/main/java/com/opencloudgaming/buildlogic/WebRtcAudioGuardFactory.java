@@ -11,11 +11,14 @@ public abstract class WebRtcAudioGuardFactory
         implements AsmClassVisitorFactory<InstrumentationParameters.None> {
     @Override
     public boolean isInstrumentable(ClassData data) {
-        return data.getClassName().equals(WebRtcAudioGuard.CLASS_NAME.replace('/', '.'));
+        String name = data.getClassName().replace('.', '/');
+        return name.equals(WebRtcAudioGuard.CLASS_NAME) || name.equals(WebRtcPlaybackGuard.CLASS_NAME) ||
+                name.equals(WebRtcPlaybackGuard.THREAD_NAME);
     }
 
     @Override
     public ClassVisitor createClassVisitor(ClassContext context, ClassVisitor next) {
-        return new WebRtcAudioGuard(next);
+        return context.getCurrentClassData().getClassName().replace('.', '/').equals(WebRtcAudioGuard.CLASS_NAME)
+                ? new WebRtcAudioGuard(next) : new WebRtcPlaybackGuard(next);
     }
 }
