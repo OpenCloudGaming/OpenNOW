@@ -75,7 +75,7 @@ final class NativeStreamHostingController: UIHostingController<AnyView> {
 
     override var prefersPointerLocked: Bool { pointerCaptureRequested }
     override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
-        statusBarHidden ? .landscape : StreamOrientation.supportedOrientations
+        StreamOrientation.supportedOrientations
     }
     override var preferredInterfaceOrientationForPresentation: UIInterfaceOrientation { .landscapeRight }
 

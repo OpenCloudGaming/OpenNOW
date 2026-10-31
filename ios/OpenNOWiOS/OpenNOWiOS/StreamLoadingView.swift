@@ -51,6 +51,8 @@ struct StreamLoadingView: View {
           .padding(18)
           .padding(.top, topInset)
           .padding(.bottom, bottomInset)
+          .padding(.leading, proxy.safeAreaInsets.leading)
+          .padding(.trailing, proxy.safeAreaInsets.trailing)
           .frame(maxWidth: .infinity)
           .frame(minHeight: max(0, proxy.size.height - topInset - bottomInset))
           // Scoped to the panel rather than the whole screen. An implicit animation applies to
@@ -183,21 +185,17 @@ struct StreamLoadingView: View {
         Haptics.light()
         store.minimizeQueueOverlay()
       } label: {
-        Text("Minimize").frame(maxWidth: .infinity)
+        Text("Minimize")
       }
-      .buttonStyle(.bordered)
-      .buttonBorderShape(.roundedRectangle(radius: 12))
 
       Button(role: .destructive) {
         Haptics.medium()
         Task { await store.endSession() }
       } label: {
-        Text("Cancel").frame(maxWidth: .infinity)
+        Text("Cancel")
       }
-      .buttonStyle(.bordered)
-      .buttonBorderShape(.roundedRectangle(radius: 12))
-      .tint(.red)
     }
+    .buttonStyle(QueueActionButtonStyle())
   }
 
   @ViewBuilder private var queueError: some View {
@@ -218,6 +216,23 @@ struct StreamLoadingView: View {
       green: max(0.06, 0.57 - 0.49 * heat),
       blue: max(0.08, 0.25 - 0.17 * heat)
     )
+  }
+}
+
+struct QueueActionButtonStyle: ButtonStyle {
+  @Environment(\.openNowAccent) private var accent
+
+  func makeBody(configuration: Configuration) -> some View {
+    let tint = configuration.role == .destructive ? Color.red : accent.color
+    configuration.label
+      .font(.subheadline.weight(.medium))
+      .foregroundStyle(tint)
+      .padding(.horizontal, 14)
+      .padding(.vertical, 7)
+      .background(tint.opacity(configuration.isPressed ? 0.24 : 0.12),
+                  in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+      .frame(minWidth: 44, minHeight: 44)
+      .contentShape(Rectangle())
   }
 }
 
