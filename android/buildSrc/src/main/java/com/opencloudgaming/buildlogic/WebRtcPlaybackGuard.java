@@ -11,6 +11,7 @@ public final class WebRtcPlaybackGuard extends ClassVisitor implements Opcodes {
     public static final String THREAD_NAME = CLASS_NAME + "$AudioTrackThread";
     private static final String THREAD_DESC = "L" + THREAD_NAME + ";";
     private static final String DEFERRED = "opennowDeferredRelease";
+    private static final String FINISHED = "opennowWorkerFinished";
     private boolean worker;
     private boolean initFound;
     private boolean startFound;
@@ -27,7 +28,7 @@ public final class WebRtcPlaybackGuard extends ClassVisitor implements Opcodes {
 
     @Override
     public FieldVisitor visitField(int access, String name, String desc, String signature, Object value) {
-        if (name.equals(DEFERRED)) throw new IllegalStateException("WebRTC playback guard field already exists");
+        if (name.equals(DEFERRED) || name.equals(FINISHED)) throw new IllegalStateException("WebRTC playback guard field already exists");
         if (worker) {
             if (name.equals("keepAlive") && desc.equals("Z") && (access & ACC_VOLATILE) != 0) fields |= 1;
             if (name.equals("this$0") && desc.equals("L" + CLASS_NAME + ";")) fields |= 2;
@@ -112,6 +113,9 @@ public final class WebRtcPlaybackGuard extends ClassVisitor implements Opcodes {
                     visitVarInsn(ALOAD, 0);
                     visitInsn(ICONST_0);
                     visitFieldInsn(PUTFIELD, CLASS_NAME, DEFERRED, "Z");
+                    visitVarInsn(ALOAD, 0);
+                    visitInsn(ICONST_0);
+                    visitFieldInsn(PUTFIELD, CLASS_NAME, FINISHED, "Z");
                 }
             };
         }
@@ -189,6 +193,7 @@ public final class WebRtcPlaybackGuard extends ClassVisitor implements Opcodes {
                 throw new IllegalStateException("WebRTC playback lifecycle changed; review worker ownership guard");
             }
             super.visitField(ACC_PRIVATE | ACC_VOLATILE, DEFERRED, "Z", null, null).visitEnd();
+            super.visitField(ACC_PRIVATE, FINISHED, "Z", null, null).visitEnd();
             emitRelease();
             emitTimeout();
             emitFinished();
@@ -207,6 +212,9 @@ public final class WebRtcPlaybackGuard extends ClassVisitor implements Opcodes {
         Label release = new Label();
         loadWorker(method);
         method.visitJumpInsn(IFNULL, release);
+        method.visitVarInsn(ALOAD, 0);
+        method.visitFieldInsn(GETFIELD, CLASS_NAME, FINISHED, "Z");
+        method.visitJumpInsn(IFNE, release);
         loadWorker(method);
         method.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Thread", "isAlive", "()Z", false);
         method.visitJumpInsn(IFEQ, release);
@@ -252,10 +260,15 @@ public final class WebRtcPlaybackGuard extends ClassVisitor implements Opcodes {
         method.visitVarInsn(ALOAD, 1);
         method.visitMethodInsn(INVOKESTATIC, "org/webrtc/Logging", "e", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/Throwable;)V", false);
         method.visitLabel(done);
+        Label release = new Label();
+        method.visitVarInsn(ALOAD, 0);
+        method.visitFieldInsn(GETFIELD, CLASS_NAME, FINISHED, "Z");
+        method.visitJumpInsn(IFNE, release);
         loadWorker(method);
         method.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Thread", "isAlive", "()Z", false);
         Label alive = new Label();
         method.visitJumpInsn(IFNE, alive);
+        method.visitLabel(release);
         method.visitVarInsn(ALOAD, 0);
         method.visitMethodInsn(INVOKEVIRTUAL, CLASS_NAME, "opennowReleaseAudioResources", "()V", false);
         method.visitLabel(alive);
@@ -268,12 +281,15 @@ public final class WebRtcPlaybackGuard extends ClassVisitor implements Opcodes {
         MethodVisitor method = super.visitMethod(ACC_SYNCHRONIZED, "opennowPlaybackFinished", "(Ljava/lang/Thread;)V", null, null);
         method.visitCode();
         Label done = new Label();
-        method.visitVarInsn(ALOAD, 0);
-        method.visitFieldInsn(GETFIELD, CLASS_NAME, DEFERRED, "Z");
-        method.visitJumpInsn(IFEQ, done);
         loadWorker(method);
         method.visitVarInsn(ALOAD, 1);
         method.visitJumpInsn(IF_ACMPNE, done);
+        method.visitVarInsn(ALOAD, 0);
+        method.visitInsn(ICONST_1);
+        method.visitFieldInsn(PUTFIELD, CLASS_NAME, FINISHED, "Z");
+        method.visitVarInsn(ALOAD, 0);
+        method.visitFieldInsn(GETFIELD, CLASS_NAME, DEFERRED, "Z");
+        method.visitJumpInsn(IFEQ, done);
         method.visitVarInsn(ALOAD, 0);
         method.visitMethodInsn(INVOKEVIRTUAL, CLASS_NAME, "opennowReleaseAudioResources", "()V", false);
         method.visitLabel(done);

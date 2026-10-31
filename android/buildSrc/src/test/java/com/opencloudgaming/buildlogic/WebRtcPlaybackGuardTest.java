@@ -26,6 +26,9 @@ public class WebRtcPlaybackGuardTest {
     public static volatile int stopCallbacks;
     private static CountDownLatch fetchEntered;
     private static CountDownLatch fetchResume;
+    private static CountDownLatch finishEntered;
+    private static CountDownLatch finishResume;
+    private static volatile boolean pauseAfterFinish;
     private Thread worker;
     private AudioTrack track;
 
@@ -36,11 +39,15 @@ public class WebRtcPlaybackGuardTest {
         stopCallbacks = 0;
         fetchEntered = new CountDownLatch(1);
         fetchResume = new CountDownLatch(1);
+        finishEntered = new CountDownLatch(1);
+        finishResume = new CountDownLatch(1);
+        pauseAfterFinish = false;
     }
 
     @After
     public void finishWorker() throws Exception {
         fetchResume.countDown();
+        finishResume.countDown();
         if (track != null) track.writeResume.countDown();
         if (worker != null) {
             Method stop = worker.getClass().getDeclaredMethod("stopThread");
@@ -54,6 +61,56 @@ public class WebRtcPlaybackGuardTest {
     public static void fetch() {
         fetchEntered.countDown();
         try { fetchResume.await(); } catch (InterruptedException error) { throw new AssertionError(error); }
+    }
+
+    public static void afterFinished() {
+        if (!pauseAfterFinish) return;
+        finishEntered.countDown();
+        try { finishResume.await(); } catch (InterruptedException error) { throw new AssertionError(error); }
+    }
+
+    @Test
+    public void completionBeforeTimeoutStillReleasesAnAliveWorkerResources() throws Exception {
+        for (boolean latency : new boolean[] { false, true }) {
+            reset();
+            pauseAfterFinish = true;
+            Object owner = owner(latency);
+            start(owner);
+            assertTrue(fetchEntered.await(2, TimeUnit.SECONDS));
+            Method stop = worker.getClass().getDeclaredMethod("stopThread");
+            stop.setAccessible(true);
+            stop.invoke(worker);
+            fetchResume.countDown();
+            assertTrue(finishEntered.await(2, TimeUnit.SECONDS));
+            assertTrue(worker.isAlive());
+            assertEquals(0, track.releases);
+            assertEquals(true, invoke(owner, "stopPlayout"));
+            assertTrue(worker.isAlive());
+            assertEquals(1, track.releases);
+            assertNull(field(owner, "audioTrack"));
+            assertEquals(1, stopCallbacks);
+            invoke(owner, "releaseAudioResources");
+            finishResume.countDown();
+            worker.join(2000);
+            assertFalse(worker.isAlive());
+            assertNull(failure.get());
+            assertEquals(1, track.releases);
+            assertEquals(1920, invoke(owner, "initPlayout", 48000, 2, 1.0));
+
+            track = (AudioTrack) field(owner, "audioTrack");
+            fetchEntered = new CountDownLatch(1);
+            fetchResume = new CountDownLatch(1);
+            pauseAfterFinish = false;
+            start(owner);
+            assertTrue(fetchEntered.await(2, TimeUnit.SECONDS));
+            assertEquals(true, invoke(owner, "stopPlayout"));
+            assertEquals(0, track.releases);
+            fetchResume.countDown();
+            worker.join(2000);
+            assertFalse(worker.isAlive());
+            assertNull(failure.get());
+            assertEquals(1, track.releases);
+        }
     }
 
     @Test
@@ -224,7 +281,25 @@ public class WebRtcPlaybackGuardTest {
                 if (type == null) {
                     try (InputStream input = getResourceAsStream(name.replace('.', '/') + ".class")) {
                         ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
-                        ClassVisitor visitor = new WebRtcPlaybackGuard(writer);
+                        ClassVisitor output = new ClassVisitor(Opcodes.ASM9, writer) {
+                            @Override
+                            public MethodVisitor visitMethod(int access, String method, String desc,
+                                    String signature, String[] exceptions) {
+                                MethodVisitor next = super.visitMethod(access, method, desc, signature, exceptions);
+                                if (!name.equals(WebRtcPlaybackGuard.THREAD_NAME.replace('/', '.')) || !method.equals("run")) return next;
+                                return new MethodVisitor(Opcodes.ASM9, next) {
+                                    @Override
+                                    public void visitMethodInsn(int opcode, String target, String called, String descriptor, boolean itf) {
+                                        super.visitMethodInsn(opcode, target, called, descriptor, itf);
+                                        if (target.equals(WebRtcPlaybackGuard.CLASS_NAME) && called.equals("opennowPlaybackFinished")) {
+                                            super.visitMethodInsn(Opcodes.INVOKESTATIC,
+                                                    "com/opencloudgaming/buildlogic/WebRtcPlaybackGuardTest", "afterFinished", "()V", false);
+                                        }
+                                    }
+                                };
+                            }
+                        };
+                        ClassVisitor visitor = new WebRtcPlaybackGuard(output);
                         new ClassReader(input).accept(visitor, 0);
                         byte[] bytes = writer.toByteArray();
                         type = defineClass(name, bytes, 0, bytes.length);
