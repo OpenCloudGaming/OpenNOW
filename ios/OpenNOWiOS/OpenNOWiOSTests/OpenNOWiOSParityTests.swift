@@ -172,7 +172,12 @@ final class OpenNOWiOSParityTests: XCTestCase {
         var criteria = LibraryScreenCriteria()
         criteria.query = "Game 24"
         measure {
-            XCTAssertFalse(try index.items(matching: criteria, favoriteIDs: []).isEmpty)
+            do {
+                let items = try index.items(matching: criteria, favoriteIDs: [])
+                XCTAssertFalse(items.isEmpty)
+            } catch {
+                XCTFail("Projection failed: \(error)")
+            }
         }
     }
 
