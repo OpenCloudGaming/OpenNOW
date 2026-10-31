@@ -1447,6 +1447,38 @@ final class OpenNOWiOSParityTests: XCTestCase {
     }
 
     @MainActor
+    func testQueuePresentationDismissesFocusedCatalogInput() async throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let previousKeyWindow = scene.windows.first(where: \.isKeyWindow)
+        let window = UIWindow(windowScene: scene)
+        let input = UITextField(frame: CGRect(x: 20, y: 100, width: 200, height: 44))
+        defer {
+            input.resignFirstResponder()
+            window.isHidden = true
+            window.rootViewController = nil
+            previousKeyWindow?.makeKeyAndVisible()
+        }
+        let store = OpenNOWStore()
+        store.installDebugQueuePreview(position: 24)
+        store.minimizeQueueOverlay()
+        let controller = UIHostingController(rootView: MainTabView(initialPage: .store)
+            .environmentObject(store).openNowTheme(store.settings))
+        window.rootViewController = controller
+        window.makeKeyAndVisible()
+        try await Task.sleep(nanoseconds: 300_000_000)
+        controller.view.addSubview(input)
+        XCTAssertTrue(input.becomeFirstResponder())
+        XCTAssertTrue(input.isFirstResponder)
+
+        store.maximizeQueueOverlay()
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        XCTAssertTrue(store.queueOverlayVisible)
+        XCTAssertFalse(input.isFirstResponder)
+        XCTAssertEqual(store.activeSession?.id, "debug-queue-preview")
+    }
+
+    @MainActor
     func testQueueSettingsAndLiveActivityPresentationsRender() async throws {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
         let previousKeyWindow = scene.windows.first(where: \.isKeyWindow)
@@ -1479,6 +1511,19 @@ final class OpenNOWiOSParityTests: XCTestCase {
             .openNowTheme(store.settings))
         try await capture("Queue-Large-Text", StreamLoadingView(coversBottomBar: true).environmentObject(store)
             .environment(\.dynamicTypeSize, .accessibility2)
+            .openNowTheme(store.settings))
+        store.installDebugQueuePreview(position: 24, isSettingUp: true)
+        try await capture("Queue-Setup", StreamLoadingView(coversBottomBar: true).environmentObject(store)
+            .openNowTheme(store.settings))
+        store.installDebugQueuePreview(position: 1)
+        try await capture("Queue-Next", StreamLoadingView(coversBottomBar: true).environmentObject(store)
+            .openNowTheme(store.settings))
+        store.installDebugQueuePreview(position: 24)
+        let game = try XCTUnwrap(store.activeSession?.game)
+        try await capture("Server-Selector", PrintedWasteQueueView(game: game, onConfirm: { _ in }, usesPreviewServers: true)
+            .environmentObject(store).openNowTheme(store.settings))
+        try await capture("Server-Selector-Large-Text", PrintedWasteQueueView(game: game, onConfirm: { _ in }, usesPreviewServers: true)
+            .environmentObject(store).environment(\.dynamicTypeSize, .accessibility2)
             .openNowTheme(store.settings))
         try await capture("Settings", SettingsView().environmentObject(store).openNowTheme(store.settings))
         store.installDebugLibraryPreview()
