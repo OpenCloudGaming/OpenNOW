@@ -2553,6 +2553,33 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertTrue(prepared.contains("a=candidate:1 1 udp 2122260223 203.0.113.20 47998 typ host"))
     }
 
+    func testRemoteOfferPreservesExplicitDNSAndIPv6MediaEndpoints() {
+        for (mediaIP, expectedHost, family) in [
+            ("media.example", "media.example", "IP4"),
+            ("2001:db8::10", "2001:db8::10", "IP6"),
+            ("[2001:db8::10]", "2001:db8::10", "IP6")
+        ] {
+            for serverIP in ["203.0.113.20", "signaling.example"] {
+                for address in ["0.0.0.0", "10.0.175.4"] {
+                    let prepared = NativeStreamSDP.prepareRemoteOffer(remoteOffer(address: address, port: 47998),
+                        serverIP: serverIP, mediaIP: mediaIP, mediaPort: 19353)
+                    XCTAssertTrue(prepared.contains("c=IN \(family) \(expectedHost)"))
+                    XCTAssertTrue(prepared.contains("a=candidate:1 1 udp 2122260223 \(expectedHost) 19353 typ host"))
+                    XCTAssertFalse(prepared.contains("203.0.113.20 19353"))
+                }
+            }
+        }
+    }
+
+    func testRemoteOfferDoesNotBorrowMediaPortWithoutUsableMediaHost() {
+        for mediaIP: String? in [nil, "", "0.0.0.0", "::", "bad host"] {
+            let prepared = NativeStreamSDP.prepareRemoteOffer(remoteOffer(address: "0.0.0.0", port: 47998),
+                serverIP: "203.0.113.20", mediaIP: mediaIP, mediaPort: 19353)
+            XCTAssertTrue(prepared.contains("a=candidate:1 1 udp 2122260223 203.0.113.20 47998 typ host"))
+            XCTAssertFalse(prepared.contains("203.0.113.20 19353"))
+        }
+    }
+
     func testRemoteOfferKeepsLineEndingsAndUnknownAddresses() {
         for ending in ["\n", "\r\n"] {
             let offer = "v=0\(ending)a=candidate:1 1 udp 2122260223 203.0.113.10 47998 typ srflx\(ending)a=candidate:2 1 udp 2122260223 2001:db8::1 47999 typ host\(ending)a=candidate:3 1 udp 2122260223 10.0.invalid.1.2 48000 typ host\(ending)"

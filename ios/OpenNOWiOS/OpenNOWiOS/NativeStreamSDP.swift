@@ -54,9 +54,10 @@ enum NativeStreamSDP {
     }
 
     static func prepareRemoteOffer(_ sdp: String, serverIP: String?, mediaIP: String?, mediaPort: Int) -> String {
-        let hasMediaEndpoint = mediaIP?.isEmpty == false && (1...65_535).contains(mediaPort)
-        guard let replacementIP = (hasMediaEndpoint ? extractPublicIP(from: mediaIP) : nil)
-            ?? extractPublicIP(from: serverIP) else { return sdp }
+        let mediaHost = normalizedEndpointHost(from: mediaIP)
+        let hasMediaEndpoint = mediaHost != nil && !["0.0.0.0", "::"].contains(mediaHost ?? "")
+            && (1...65_535).contains(mediaPort)
+        guard let replacementIP = hasMediaEndpoint ? mediaHost : extractPublicIP(from: serverIP) else { return sdp }
         let lineEnding = sdp.contains("\r\n") ? "\r\n" : "\n"
         return sdp.components(separatedBy: lineEnding).map { line in
             let fields = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
@@ -79,7 +80,7 @@ enum NativeStreamSDP {
                 || (octets[0] == 100 && (64...127).contains(octets[1]))
                 || (224...239).contains(octets[0])
             guard placeholder || (hasMediaEndpoint && unroutable) else { return line }
-            if fields[0] == "c=IN" { return "c=IN IP4 \(replacementIP)" }
+            if fields[0] == "c=IN" { return "c=IN \(replacementIP.contains(":") ? "IP6" : "IP4") \(replacementIP)" }
             return rewriteIceCandidate(line, replacementIP: replacementIP,
                                        replacementPort: hasMediaEndpoint ? mediaPort : nil)
         }.joined(separator: lineEnding)
