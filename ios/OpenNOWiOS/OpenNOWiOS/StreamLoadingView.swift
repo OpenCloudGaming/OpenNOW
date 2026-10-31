@@ -63,6 +63,7 @@ struct StreamLoadingView: View {
             }
           }
           .padding(OpenNOWSpacing.xl)
+          .padding(proxy.safeAreaInsets)
           .frame(maxWidth: .infinity)
           .frame(minHeight: proxy.size.height)
         }
@@ -181,22 +182,17 @@ struct StreamLoadingView: View {
         store.minimizeQueueOverlay()
       } label: {
         Text("Minimize")
-          .frame(maxWidth: .infinity, minHeight: OpenNOWSpacing.hitTarget)
       }
-      .buttonStyle(.bordered)
-      .buttonBorderShape(.roundedRectangle(radius: OpenNOWRadius.md))
       .accessibilityHint("Keep waiting while browsing OpenNOW")
 
       Button(role: .destructive) {
         Haptics.medium()
         Task { await store.endSession() }
       } label: {
-        Text("Cancel").frame(maxWidth: .infinity, minHeight: OpenNOWSpacing.hitTarget)
+        Text("Cancel")
       }
-      .buttonStyle(.bordered)
-      .buttonBorderShape(.roundedRectangle(radius: OpenNOWRadius.md))
-      .tint(.red)
     }
+    .buttonStyle(QueueActionButtonStyle())
   }
 
   @ViewBuilder private var queueError: some View {
@@ -209,6 +205,23 @@ struct StreamLoadingView: View {
     }
   }
 
+}
+
+struct QueueActionButtonStyle: ButtonStyle {
+  @Environment(\.openNowAccent) private var accent
+
+  func makeBody(configuration: Configuration) -> some View {
+    let tint = configuration.role == .destructive ? Color.red : accent.color
+    configuration.label
+      .font(.subheadline.weight(.medium))
+      .foregroundStyle(tint)
+      .padding(.horizontal, 14)
+      .padding(.vertical, 7)
+      .background(tint.opacity(configuration.isPressed ? 0.24 : 0.12),
+                  in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+      .frame(minWidth: OpenNOWSpacing.hitTarget, minHeight: OpenNOWSpacing.hitTarget)
+      .contentShape(Rectangle())
+  }
 }
 
 private struct QueueTrendStrip: View {

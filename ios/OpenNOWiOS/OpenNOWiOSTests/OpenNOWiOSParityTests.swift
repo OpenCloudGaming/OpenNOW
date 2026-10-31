@@ -202,6 +202,40 @@ final class OpenNOWiOSParityTests: XCTestCase {
     }
 
     @MainActor
+    func testResizableScenesSupportAllOrientations() throws {
+        let orientations = try XCTUnwrap(Bundle.main.object(forInfoDictionaryKey: "UISupportedInterfaceOrientations") as? [String])
+        XCTAssertEqual(Set(orientations), Set([
+            "UIInterfaceOrientationPortrait", "UIInterfaceOrientationPortraitUpsideDown",
+            "UIInterfaceOrientationLandscapeLeft", "UIInterfaceOrientationLandscapeRight"
+        ]))
+        if #available(iOS 27.0, *) {
+            XCTAssertEqual(StreamOrientation.supportedOrientations, .all)
+            let host = NativeStreamHostingController(rootView: AnyView(Color.black))
+            XCTAssertEqual(host.supportedInterfaceOrientations, .landscape)
+            host.releaseSystemPreferences(restoreOrientation: false)
+            XCTAssertEqual(host.supportedInterfaceOrientations, .all)
+        }
+    }
+
+    @MainActor
+    func testQueueActionsUseCompactVisualsAndAccessibleTouchTargets() {
+        for title in ["Minimize", "Cancel"] {
+            let host = UIHostingController(rootView: Button(title, action: {})
+                .buttonStyle(QueueActionButtonStyle()))
+            let size = host.sizeThatFits(in: CGSize(width: 430, height: 200))
+            XCTAssertGreaterThanOrEqual(size.width, 44)
+            XCTAssertGreaterThanOrEqual(size.height, 44)
+            XCTAssertLessThan(size.width, 160)
+            XCTAssertLessThan(size.height, 60)
+            let accessibleHost = UIHostingController(rootView: Button(title, action: {})
+                .buttonStyle(QueueActionButtonStyle())
+                .environment(\.dynamicTypeSize, .accessibility3))
+            let accessibleSize = accessibleHost.sizeThatFits(in: CGSize(width: 430, height: 200))
+            XCTAssertGreaterThan(accessibleSize.height, size.height)
+        }
+    }
+
+    @MainActor
     func testContinuePlayingDismissalPreservesLiveSessionAndCanBeRestored() {
         let defaults = UserDefaults.standard
         let keys = ["OpenNOW.iOS.settings", "OpenNOW.iOS.activeSession", "OpenNOW.iOS.activeStreamSettings"]

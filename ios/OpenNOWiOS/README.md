@@ -45,6 +45,14 @@ Native microphone carriage requires a host bundle offering it and the microphone
 
 Run the simulator test scheme `OpenNOWiOS`, plus the GPU validation commands in [METAL4.md](METAL4.md). Simulator and Mac checks cannot establish iPhone/iPad performance. Build 149 verified the visible iPhone block repair; consistent 120 FPS, the separate decoder recovery event and physical iPad behavior remain separate validation targets.
 
+## iPhone Duo and resizable scenes
+
+Build with the iOS 27.1 SDK or later for the full Duo display area and adaptive system bars. The shell uses the current horizontal size class to switch between tabs and a sidebar. On iOS 27 and later, the shell supports all orientations. Streaming retains its landscape orientation policy; Duo's inner display controls orientation independently, and the video surface lays out against its current bounds. Earlier iOS versions retain their existing orientation policy.
+
+The queue respects safe-area insets on all four edges, and Minimize and Cancel use content-sized controls with at least 44-point touch targets. The filtered renderer reads the attached window scene's display refresh limit again during layout, without restarting the stream or recreating its display link.
+
+Validate on both Duo displays, rotate in open and closed poses, and resize Split View with a queue, an advertisement and a live stream active. Check the sidebar/tab transition, camera clearance, large accessibility text, touch mapping and uninterrupted playback. Partially folded layouts and physical-device performance require separate Duo validation; this change does not introduce a hinge-specific split-video layout.
+
 ## Controller rumble diagnostics
 
 Build 152 adds a direct output test under Settings → Input → Touch & Controller. Connect the G8+ MFi, check the reported controller name/category and iOS haptics availability, then use Test Controller Rumble. Left/right tests appear only for exposed handle outputs. A successful API call reports acceptance, not proof that the physical motors moved. The pulse lasts 0.4 seconds; Stop Test, leaving the page, backgrounding and connection changes clean up the test engine. No stream or phone vibration fallback is used.

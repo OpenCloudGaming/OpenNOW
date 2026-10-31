@@ -36,7 +36,9 @@ enum StreamOrientation {
     private(set) static var isStreaming = false
 
     static var supportedOrientations: UIInterfaceOrientationMask {
-        isStreaming ? .landscape : (UIDevice.current.userInterfaceIdiom == .pad ? .all : .allButUpsideDown)
+        if isStreaming { return .landscape }
+        if #available(iOS 27.0, *) { return .all }
+        return UIDevice.current.userInterfaceIdiom == .pad ? .all : .allButUpsideDown
     }
 
     static var currentOrientation: UIInterfaceOrientationMask {

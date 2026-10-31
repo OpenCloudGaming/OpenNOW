@@ -3033,7 +3033,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         let sink = videoSink
         let maxDisplayFPS = max(
             streamProfile.fps,
-            max(renderer?.window?.screen.maximumFramesPerSecond ?? 0, UIScreen.main.maximumFramesPerSecond)
+            renderer?.window?.windowScene?.screen.maximumFramesPerSecond ?? streamProfile.fps
         )
         let transport = NativeStreamNVST(allocation: session, settings: settings, profile: streamProfile,
             codec: selectedCodec, displayFPS: maxDisplayFPS,
@@ -6517,6 +6517,7 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
     override func layoutSubviews() {
         super.layoutSubviews()
         mtkView.frame = bounds
+        updateDisplayFrameRate()
     }
 
     override func didMoveToWindow() {
@@ -6525,16 +6526,21 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
         displayLink = nil
         // Use one explicit display clock. MTKView's own timer remains paused.
         mtkView.isPaused = true
-        guard let window else { return }
-        let screenMax = Float(max(window.screen.maximumFramesPerSecond, UIScreen.main.maximumFramesPerSecond))
+        guard window != nil else { return }
         let link = CADisplayLink(target: displayClock, selector: #selector(DisplayClock.tick(_:)))
-        if screenMax > 60.0 {
-            link.preferredFrameRateRange = CAFrameRateRange(minimum: 60.0, maximum: screenMax, preferred: screenMax)
-        } else {
-            link.preferredFrameRateRange = CAFrameRateRange(minimum: 30.0, maximum: 60.0, preferred: 60.0)
-        }
         link.add(to: .main, forMode: .common)
         displayLink = link
+        updateDisplayFrameRate()
+    }
+
+    private func updateDisplayFrameRate() {
+        guard let displayLink, let screen = window?.windowScene?.screen else { return }
+        let screenMax = Float(max(1, screen.maximumFramesPerSecond))
+        let range = CAFrameRateRange(minimum: min(screenMax, screenMax > 60 ? 60 : 30),
+                                     maximum: screenMax, preferred: screenMax)
+        if displayLink.preferredFrameRateRange.maximum != screenMax {
+            displayLink.preferredFrameRateRange = range
+        }
     }
 
     private func displayTick(_ link: CADisplayLink) {
