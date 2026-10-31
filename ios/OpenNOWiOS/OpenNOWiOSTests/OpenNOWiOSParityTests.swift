@@ -375,6 +375,48 @@ final class OpenNOWiOSParityTests: XCTestCase {
         ]]).ip)
     }
 
+    func testSessionMediaFallbackPrioritizesHigherPortInEitherAllocationOrder() throws {
+        let signaling: [String: Any] = ["usage": 14, "ip": "203.0.113.10", "port": 443, "resourcePath": "/nvst/"]
+        let media: [String: Any] = ["usage": "14", "ip": "203.0.113.11", "port": "49003", "resourcePath": "/nvst/"]
+        for connections in [[signaling, media], [media, signaling]] {
+            let session: [String: Any] = ["connectionInfo": connections]
+            let endpoint = SessionConnectionPolicy.mediaEndpoint(session: session)
+            XCTAssertEqual(endpoint.ip, "203.0.113.11")
+            XCTAssertEqual(endpoint.port, 49003)
+            let route = try XCTUnwrap(SessionConnectionPolicy.resolve(session: session, fallbackHost: nil))
+            XCTAssertEqual(URLComponents(string: route.url)?.port, 443)
+            let candidate = NativeStreamSDP.rewriteIceCandidateEndpoint(
+                "candidate:1 1 udp 2122260223 100.96.10.4 47998 typ host",
+                mediaIP: endpoint.ip, mediaPort: endpoint.port)
+            XCTAssertEqual(candidate, "candidate:1 1 udp 2122260223 203.0.113.11 49003 typ host")
+        }
+    }
+
+    func testSessionMediaExplicitVideoAndBundleTakePriorityOverFallbackPorts() {
+        let fallback: [String: Any] = ["usage": 14, "ip": "203.0.113.10", "port": 59000]
+        let bundle: [String: Any] = ["usage": 17, "ip": "203.0.113.11", "port": 18342]
+        let video: [String: Any] = ["usage": 2, "ip": "203.0.113.12", "port": 13334]
+        let videoEndpoint = SessionConnectionPolicy.mediaEndpoint(session: ["connectionInfo": [fallback, bundle, video]])
+        XCTAssertEqual(videoEndpoint.ip, "203.0.113.12")
+        XCTAssertEqual(videoEndpoint.port, 13334)
+        let bundleEndpoint = SessionConnectionPolicy.mediaEndpoint(session: ["connectionInfo": [fallback, bundle]])
+        XCTAssertEqual(bundleEndpoint.ip, "203.0.113.11")
+        XCTAssertEqual(bundleEndpoint.port, 18342)
+    }
+
+    func testSessionMediaFallbackSkipsNativeAndInvalidHigherPorts() {
+        let endpoint = SessionConnectionPolicy.mediaEndpoint(session: ["connectionInfo": [
+            ["usage": 14, "ip": "203.0.113.10", "port": 443],
+            ["usage": 14, "ip": "203.0.113.11", "port": 65000, "appLevelProtocol": 6],
+            ["usage": 14, "ip": "203.0.113.12", "port": 64000, "resourcePath": "rtsps://control.example:64000"],
+            ["usage": 14, "ip": "203.0.113.13", "port": 99999],
+            ["usage": 14, "ip": "0.0.0.0", "port": 60000],
+            ["usage": 14, "ip": "203.0.113.14", "port": 49003]
+        ]])
+        XCTAssertEqual(endpoint.ip, "203.0.113.14")
+        XCTAssertEqual(endpoint.port, 49003)
+    }
+
     func testSignInURLKeepsPathAndEncodesPairingValues() throws {
         let url = try XCTUnwrap(SessionConnectionPolicy.signInURL(base: "wss://seat.example:8443/nvst/?old=1",
             peerName: "peer&name", sessionID: "session&other=1"))
