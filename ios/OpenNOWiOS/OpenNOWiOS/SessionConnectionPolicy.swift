@@ -43,6 +43,7 @@ enum SessionConnectionPolicy {
         let candidates = [2, 17].flatMap { usage in
             connections.filter { integer($0["usage"]) == usage }
         } + connections.filter { integer($0["usage"]) == 14 && !isNative($0) }
+            .sorted { (integer($0["port"]) ?? 0) > (integer($1["port"]) ?? 0) }
         for connection in candidates {
             // VIDEO/BUNDLE usages own media even when a provider reuses protocol tags.
             // An explicit RTSP resource is still a control route, never an ICE peer.
@@ -114,6 +115,11 @@ enum SessionConnectionPolicy {
 }
 
 extension ActiveSession {
+    func transportPreferenceError(settings: AppSettings) -> String? {
+        guard !settings.experimentalNativeNVSTEnabled, nativeTransportRequired == true else { return nil }
+        return "This allocation requires Native NVST, which is disabled. End this session and start a new one to request WebRTC, or enable Native NVST in Settings → Stream → Connection."
+    }
+
     func usesNativeTransport(settings: AppSettings) -> Bool {
         settings.experimentalNativeNVSTEnabled || nativeTransportRequired == true
     }

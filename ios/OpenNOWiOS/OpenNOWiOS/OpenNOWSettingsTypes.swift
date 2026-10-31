@@ -1,6 +1,97 @@
 import CoreGraphics
 import Foundation
 
+enum SettingsPage: String, CaseIterable, Hashable, Identifiable {
+    case privacy, appData
+    case streamQuality, video, connection
+    case keyboard, pointer, nativeTouch, touchController, controller
+    case appearance, catalog, stats, streamControls, sessions
+    case experimental, diagnostics
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .privacy: return String(localized: "Privacy")
+        case .appData: return String(localized: "App Data")
+        case .streamQuality: return String(localized: "Stream Quality")
+        case .video: return String(localized: "Video & Display")
+        case .connection: return String(localized: "Connection")
+        case .keyboard: return String(localized: "Audio & Keyboard")
+        case .pointer: return String(localized: "Mouse & Pointer")
+        case .nativeTouch: return String(localized: "Touch Input")
+        case .touchController: return String(localized: "On-Screen Controller")
+        case .controller: return String(localized: "Physical Controller")
+        case .appearance: return String(localized: "Appearance")
+        case .catalog: return String(localized: "Catalog & Navigation")
+        case .stats: return String(localized: "Stream Statistics")
+        case .streamControls: return String(localized: "Stream Controls")
+        case .sessions: return String(localized: "Sessions & Queue")
+        case .experimental: return String(localized: "Experimental")
+        case .diagnostics: return String(localized: "Diagnostics & Support")
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .privacy: return String(localized: "Local data and privacy policy")
+        case .appData: return String(localized: "Welcome tour, tutorials, cache, and reset")
+        case .streamQuality: return String(localized: "Preset, resolution, frame rate, and bitrate")
+        case .video: return String(localized: "Codec, color, HDR, MetalFX, and sharpening")
+        case .connection: return String(localized: "Region, server selector, native receiver, and proxy")
+        case .keyboard: return String(localized: "Game sound, layout, language, and paste")
+        case .pointer: return String(localized: "Sensitivity, scrolling, and mouse modes")
+        case .nativeTouch: return String(localized: "Native touch routing and tap stability")
+        case .touchController: return String(localized: "Preset, sticks, size, and placement")
+        case .controller: return String(localized: "Game input, vibration, and shortcuts")
+        case .appearance: return String(localized: "Accent, surfaces, and selection effects")
+        case .catalog: return String(localized: "Launch page, cards, and wallpaper")
+        case .stats: return String(localized: "HUD style, position, metrics, and clock")
+        case .streamControls: return String(localized: "Immersive mode and keep session awake")
+        case .sessions: return String(localized: "Counter, report, ready chime, and Live Activities")
+        case .experimental: return String(localized: "L4S low-latency networking")
+        case .diagnostics: return String(localized: "Decoders, network logs, and problem reports")
+        }
+    }
+
+    private var keywords: String {
+        switch self {
+        case .privacy: return "general analytics telemetry tracking usage policy"
+        case .appData: return "general setup onboarding tutorial replay stream guide clear reload catalog image cache favorites favourites launchers defaults reset app data"
+        case .streamQuality: return "stream recommended data saver quality custom aspect ratio fps max bitrate mbps stretch fill bandwidth"
+        case .video: return "stream h264 h265 hevc av1 8-bit 10-bit 420 444 4:4:4 hdr metal 4 metal4 metalfx upscaling sharpness display"
+        case .connection: return "stream network server region skip hide selector native nvst receiver experimental session proxy url"
+        case .keyboard: return "input audio sound mute keyboard game language layout clipboard paste clear text confirmation"
+        case .pointer: return "input mouse acceleration scroll finger direct click controller cursor sensitivity"
+        case .nativeTouch: return "input native touch automatic never always scroll speed jitter tap stability 444 4:4:4"
+        case .touchController: return "input touch virtual gamepad gamecontroller joystick sticks dead zone aim lock split touchpad style opacity scale buttons size edge bottom padding offset placement reset layout xbox geforce"
+        case .controller: return "input physical bluetooth gamepad passthrough rumble haptics vibration phone shortcuts prompt"
+        case .appearance: return "interface ui theme accent color expressive surfaces animated selection reduce motion accessibility"
+        case .catalog: return "interface store library launch page console home compact cards titles favorite favourite badge size labels background wallpaper photo image"
+        case .stats: return "interface stream statistics hud overlay fps displayed ping latency decode bitrate packet loss renderer gpu codec resolution server battery network time clock metrics position"
+        case .streamControls: return "interface stream buttons immersive hide controls afk idle keep awake"
+        case .sessions: return "interface session counter timer clock report quality summary queue ready chime sound live activities notifications"
+        case .experimental: return "advanced experimental l4s latency networking"
+        case .diagnostics: return "advanced support bug problem report issue feedback codec decoders hardware probe debug network log logs export upload redacted diagnostics copy summary"
+        }
+    }
+
+    func matches(_ query: String) -> Bool {
+        let tokens = query.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .split(whereSeparator: \.isWhitespace)
+        let haystack = "\(title) \(summary) \(keywords)"
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        return tokens.allSatisfy { haystack.contains($0) }
+    }
+}
+
+extension AppSettings {
+    mutating func resetDefaultTouchLayout() {
+        touch.resetLayout()
+        touchControlLayouts["default"] = .preset(for: "default")
+    }
+}
+
 // These presets select the streamed input size; MetalFX spatial has no quality knob.
 enum MetalFXQualityPreset: String, Codable, CaseIterable, Identifiable {
     case manual, quality, balanced, performance

@@ -57,6 +57,19 @@ enum PrintedWasteQueueFreshness {
     }
 }
 
+enum PrintedWasteQueuePresentation {
+    static func estimatedWait(etaMs: Double?) -> String? {
+        guard let etaMs, etaMs.isFinite, etaMs >= 0 else { return nil }
+        if etaMs < 60_000 { return "Under 1 min" }
+        if etaMs >= 86_400_000 { return "24+ hr" }
+        let minutes = Int(ceil(etaMs / 60_000))
+        if minutes < 60 { return "\(minutes) min" }
+        let hours = minutes / 60
+        let remaining = minutes % 60
+        return remaining > 0 ? "\(hours) hr \(remaining) min" : "\(hours) hr"
+    }
+}
+
 private struct PrintedWasteLocation: Identifiable {
     let title: String
     let primary: PrintedWasteZone
@@ -161,10 +174,14 @@ func printedWasteRegionalURL(zoneId: String, title: String?, regions: [StreamReg
 struct PrintedWasteQueueView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.openNowAccent) private var accent
     @EnvironmentObject private var store: OpenNOWStore
 
     let game: CloudGame
     let onConfirm: (String?) -> Void
+    #if DEBUG
+    var usesPreviewServers = false
+    #endif
 
     @State private var zones: [PrintedWasteZone] = []
     @State private var regionGroups: [(region: String, locations: [PrintedWasteLocation])] = []
@@ -186,14 +203,6 @@ struct PrintedWasteQueueView: View {
             case .auto: return "Automatic"
             case .closest: return "Closest"
             case .manual: return "Manual"
-            }
-        }
-
-        var detail: String {
-            switch self {
-            case .auto: return "Balances measured latency and queue length."
-            case .closest: return "Uses the server with the lowest measured latency."
-            case .manual: return "Choose a location below. Queue times are estimates."
             }
         }
     }
@@ -311,7 +320,7 @@ struct PrintedWasteQueueView: View {
         .presentationDragIndicator(.visible)
         .task {
             #if DEBUG
-            if ProcessInfo.processInfo.arguments.contains("--opennow-server-picker-preview") {
+            if usesPreviewServers || ProcessInfo.processInfo.arguments.contains("--opennow-server-picker-preview") {
                 zones = [
                     ("NP-PDX-01", "US Northwest", "North America", 18, 23),
                     ("NP-LAX-02", "US Southwest", "North America", 32, 48),
@@ -339,10 +348,7 @@ struct PrintedWasteQueueView: View {
                 .controlSize(.large)
             Text("Checking servers")
                 .font(.headline)
-            Text("Loading queue position and measuring latency.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+            providerDefaultButton
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         .padding(32)
@@ -356,6 +362,7 @@ struct PrintedWasteQueueView: View {
                 Task { await loadZones() }
             }
             .buttonStyle(.borderedProminent)
+            providerDefaultButton
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -364,13 +371,18 @@ struct PrintedWasteQueueView: View {
         OpenNOWUnavailableView("No Servers Available", systemImage: "network.slash") {
             Text("No routing data is available right now.")
         } actions: {
-            Button("Launch Anyway") {
-                onConfirm(nil)
-                dismiss()
-            }
-            .buttonStyle(.borderedProminent)
+            providerDefaultButton
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var providerDefaultButton: some View {
+        Button("Use Provider Default") {
+            onConfirm(nil)
+            dismiss()
+        }
+        .frame(minHeight: OpenNOWSpacing.hitTarget)
+        .accessibilityHint("Let GeForce NOW choose a server without PrintedWaste routing data")
     }
 
     private var zoneList: some View {
@@ -380,6 +392,8 @@ struct PrintedWasteQueueView: View {
             Section {
                 launchSummary
                     .padding(.vertical, 4)
+            } footer: {
+                Text("Estimates by PrintedWaste")
             }
             Section {
                 if dynamicTypeSize.isAccessibilitySize {
@@ -388,22 +402,6 @@ struct PrintedWasteQueueView: View {
                     routingPicker.pickerStyle(.segmented)
                         .listRowBackground(Color.clear)
                         .listRowInsets(EdgeInsets())
-                }
-            } header: {
-                Text("Connection preference")
-            } footer: {
-                Text(routingPreference.detail)
-            }
-            if let recommended {
-                Section("Recommended") {
-                    Button { routingPreference = .auto } label: {
-                        ZoneRow(zone: recommended, title: recommended.title, alternateCount: 0,
-                                gpuTier: recommended.gpuTier, isSelected: selected?.id == recommended.id,
-                                isAuto: false)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityAddTraits(selected?.id == recommended.id ? .isSelected : [])
-                    .accessibilityHint("Use automatic server selection")
                 }
             }
             ForEach(regionGroups, id: \.region) { group in
@@ -451,17 +449,22 @@ struct PrintedWasteQueueView: View {
 
     private var launchSummary: some View {
         HStack(spacing: 14) {
-            PrintedWasteArtwork(game: game)
-                .frame(width: 56, height: 56)
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            GameArtworkView(game: game, iconSize: 26, fit: true)
+                .frame(width: 48, height: 72)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(game.title)
                     .font(.headline)
                     .lineLimit(2)
-                Text(selectedRoutingZone?.title ?? "Choose your preferred region before launch.")
+                Text(selectedRoutingZone?.title ?? "Automatic")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                if let updatedAt = selectedRoutingZone?.lastUpdated, updatedAt.isFinite {
+                    Text("Updated \(Date(timeIntervalSince1970: updatedAt), style: .relative) ago")
+                        .font(OpenNOWFont.overline)
+                        .foregroundStyle(OpenNOWPalette.textMuted)
+                }
             }
             Spacer(minLength: 0)
         }
@@ -485,7 +488,7 @@ struct PrintedWasteQueueView: View {
             if routingPreference == .manual,
                let selectedPing = selectedRoutingZone?.pingMs,
                let nearestPing = closestZone?.pingMs, selectedPing > nearestPing {
-                Label("This server has more measured latency than the closest option.", systemImage: "exclamationmark.triangle")
+                Label("Higher latency than Closest", systemImage: "exclamationmark.triangle")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -501,33 +504,23 @@ struct PrintedWasteQueueView: View {
                 dismiss()
             } label: {
                 HStack {
-                    Text(launchButtonTitle)
+                    Text("Launch")
                     Image(systemName: "arrow.right")
                 }
                     .font(.headline)
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
-            .tint(brandAccent)
+            .tint(accent.color)
             .disabled(selectedZoneUrl == nil)
+
+            providerDefaultButton
         }
         .padding(.horizontal, 20)
         .padding(.top, 12)
         .padding(.bottom, 8)
         .frame(maxWidth: .infinity)
         .bottomSheetFooterBackground()
-    }
-
-    private var launchButtonTitle: String {
-        guard let zone = selectedRoutingZone else { return "Launch" }
-        switch routingPreference {
-        case .auto:
-            return "Launch with Auto"
-        case .closest:
-            return "Launch with Closest"
-        case .manual:
-            return "Launch on \(zone.title)"
-        }
     }
 
     private func loadZones() async {
@@ -743,6 +736,7 @@ struct PrintedWasteQueueView: View {
 
 private struct ZoneRow: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.openNowAccent) private var accent
     let zone: PrintedWasteZone
     let title: String
     let alternateCount: Int
@@ -759,7 +753,7 @@ private struct ZoneRow: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .layoutPriority(1)
                     if alternateCount > 0 {
-                        Text("+\(alternateCount)")
+                        Text("\(alternateCount + 1) servers")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -784,7 +778,7 @@ private struct ZoneRow: View {
 
             Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                 .font(.body.weight(.semibold))
-                .foregroundStyle(isSelected ? brandAccent : Color.secondary.opacity(0.35))
+                .foregroundStyle(isSelected ? accent.color : Color.secondary.opacity(0.35))
                 .accessibilityHidden(true)
         }
         .padding(.vertical, 6)
@@ -795,7 +789,8 @@ private struct ZoneRow: View {
 
     @ViewBuilder
     private var metadata: some View {
-        statusText("Queue \(zone.queuePosition)", color: queueColor(zone.queuePosition))
+        statusText(zone.queuePosition >= 0 ? "Queue \(zone.queuePosition)" : "Queue unavailable",
+                   color: zone.queuePosition >= 0 ? queueColor(zone.queuePosition) : .secondary)
         if let gpuTier { statusText(gpuTier, color: .secondary) }
         if isAuto {
             statusText("Recommended", color: .secondary)
@@ -804,11 +799,14 @@ private struct ZoneRow: View {
 
     private var connectionMetrics: some View {
         VStack(alignment: dynamicTypeSize.isAccessibilitySize ? .leading : .trailing, spacing: 4) {
-            if let etaMs = zone.etaMs, etaMs.isFinite, etaMs >= 0 {
-                let wait = formatWait(etaMs)
-                Text(wait)
+            if let wait = PrintedWasteQueuePresentation.estimatedWait(etaMs: zone.etaMs) {
+                Text("Est. \(wait)")
                     .font(.subheadline.weight(.semibold))
                     .accessibilityLabel("Estimated wait \(wait)")
+            } else {
+                Text("Wait unavailable")
+                    .font(OpenNOWFont.rowFootnote)
+                    .foregroundStyle(OpenNOWPalette.textMuted)
             }
             pingBadge
         }
@@ -859,48 +857,6 @@ private struct ZoneRow: View {
         return OpenNOWPalette.statusPoor
     }
 
-    private func formatWait(_ etaMs: Double) -> String {
-        let mins = Int(ceil(etaMs / 60000))
-        if mins < 60 { return "\(mins)m" }
-        let hours = mins / 60
-        let remaining = mins % 60
-        return remaining > 0 ? "\(hours)h\(remaining)m" : "\(hours)h"
-    }
-}
-
-private struct PrintedWasteArtwork: View {
-    let game: CloudGame
-
-    var body: some View {
-        GeometryReader { proxy in
-            ZStack {
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(gameColor(for: game.title).opacity(0.18))
-                if let imageUrl = game.imageUrl, let url = URL(string: imageUrl) {
-                    CachedRemoteImage(url: url, targetPixelSize: imageTargetPixelSize(for: proxy.size)) { image in
-                        image
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: proxy.size.width, height: proxy.size.height)
-                    } placeholder: {
-                        GameArtworkLoadingPlaceholder(game: game, iconSize: 26, isFailure: false)
-                    } failure: {
-                        fallbackIcon
-                    }
-                } else {
-                    fallbackIcon
-                }
-            }
-            .frame(width: proxy.size.width, height: proxy.size.height)
-            .clipped()
-        }
-    }
-
-    private var fallbackIcon: some View {
-        Image(systemName: game.icon)
-            .font(.system(size: 26, weight: .semibold))
-            .foregroundStyle(gameColor(for: game.title))
-    }
 }
 
 extension View {

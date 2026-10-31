@@ -12,6 +12,10 @@ import MetalFX
 import CoreImage
 @testable import OpenNOWiOS
 
+typealias QueueActivityAttributes = OpenNOWiOS.QueueActivityAttributes
+typealias QueueActivityPresentation = OpenNOWiOS.QueueActivityPresentation
+typealias QueueActivityProgress = OpenNOWiOS.QueueActivityProgress
+
 @MainActor
 private final class GameDetailsPresentationTestDriver: ObservableObject {
     @Published var selectedGame: CloudGame?
@@ -51,6 +55,152 @@ private struct GameDetailsPresentationTestRoot: View {
 }
 
 final class OpenNOWiOSParityTests: XCTestCase {
+    func testAbandonedArtworkLoadReleasesItsDownload() async throws {
+        let started = expectation(description: "Artwork download started")
+        let canceled = expectation(description: "Unobserved artwork download canceled")
+        let pipeline = OpenNOWRemoteImagePipeline { _ in
+            started.fulfill()
+            do {
+                try await Task.sleep(nanoseconds: 30_000_000_000)
+                return UIImage()
+            } catch {
+                canceled.fulfill()
+                throw error
+            }
+        }
+        let request = OpenNOWImageLoadRequest(url: URL(string: "https://artwork.invalid/\(UUID())")!, targetPixelSize: 200)
+        let subscriber = Task { try await pipeline.load(request) }
+        await fulfillment(of: [started], timeout: 2)
+        subscriber.cancel()
+        await fulfillment(of: [canceled], timeout: 2)
+        do {
+            _ = try await subscriber.value
+            XCTFail("Canceled artwork must not reach a reused card")
+        } catch {
+            XCTAssertTrue(error is CancellationError)
+        }
+    }
+
+    func testSettingsSearchFindsSupportedPages() {
+        XCTAssertTrue(SettingsPage.streamQuality.matches(" RÉSOLÚTION \n FPS "))
+        XCTAssertTrue(SettingsPage.video.matches("MetalFX HDR"))
+        XCTAssertTrue(SettingsPage.connection.matches("server selector"))
+        XCTAssertTrue(SettingsPage.keyboard.matches("clear confirmation"))
+        XCTAssertTrue(SettingsPage.touchController.matches("dead zone"))
+        XCTAssertTrue(SettingsPage.diagnostics.matches("upload logs"))
+        XCTAssertFalse(SettingsPage.catalog.matches("microphone"))
+        XCTAssertFalse(SettingsPage.allCases.contains { $0.matches("gyroscope") })
+    }
+
+    func testDefaultTouchLayoutResetPreservesOtherPreferencesAndProfiles() {
+        var settings = AppSettings.default
+        var layout = TouchControlLayout.standard
+        layout.scale = 1.4
+        layout.opacity = 0.3
+        layout.independentPositions = ["a": TouchControlPoint(x: 0.2, y: 0.4)]
+        settings.touchControlLayouts["default"] = layout
+        settings.touchControlLayouts["custom"] = layout
+        settings.touch.nativeTouchScrollScale = 1.7
+        settings.touch.joystickDeadZone = 0.2
+        settings.touch.edgePadding = 29
+        settings.touch.bottomPadding = 31
+        settings.touch.leftOffsetX = 10
+        settings.touch.rightOffsetY = -12
+        settings.mouseSensitivity = 2
+        var expected = settings
+        expected.touch.resetLayout()
+        expected.touchControlLayouts["default"] = .standard
+        settings.resetDefaultTouchLayout()
+        XCTAssertEqual(settings, expected)
+    }
+
+    func testEndAllConfirmationRejectsReplacedAndAdvancedSessions() {
+        var session = queueFixture()
+        let target = SessionTerminationConfirmation(generation: UUID(), operation: UUID(),
+            activeID: session.id, activeStatus: session.status, remoteStatuses: [:])
+        XCTAssertTrue(target.matches(active: session, remote: []))
+        XCTAssertFalse(target.matches(active: nil, remote: []))
+        session.status = 3
+        XCTAssertFalse(target.matches(active: session, remote: []))
+        let replacement = SessionTerminationConfirmation(generation: UUID(), operation: UUID(),
+            activeID: "replacement", activeStatus: session.status, remoteStatuses: [:])
+        XCTAssertFalse(replacement.matches(active: session, remote: []))
+    }
+
+    func testRecentlyPlayedUsesAbsoluteDatesAndKeepsNeverPlayedLast() {
+        func game(_ title: String, _ date: String?) -> CloudGame {
+            var option = GameLaunchOption(storefront: "STEAM", appId: title, supportedControls: nil)
+            option.lastPlayedDate = date
+            return Self.makeGame(title: title, controls: [], options: [option])
+        }
+        let oldest = game("Oldest", "2026-10-01T15:30:00+02:00")
+        let latest = game("Latest", "2026-10-01T14:00:00.500Z")
+        let never = game("Never", nil)
+        let invalid = game("Invalid", "not-a-date")
+        XCTAssertEqual(CatalogSortMode.lastPlayed.sorted([never, oldest, latest, invalid]), [latest, oldest, invalid, never])
+    }
+
+    func testLibraryIndexFiltersAndSortsLatestVariantByAbsoluteDate() throws {
+        func game(_ title: String, _ dates: [String]) -> CloudGame {
+            let options = dates.enumerated().map { index, date in
+                GameLaunchOption(storefront: "STEAM", appId: "\(title)-\(index)", supportedControls: ["KEYBOARD_MOUSE"],
+                    libraryStatus: "PLATFORM_SYNC", lastPlayedDate: date)
+            }
+            return Self.makeGame(title: title, controls: [], options: options)
+        }
+        let alpha = game("Alpha", ["2026-10-01T15:30:00+02:00", "2026-10-01T14:00:00.500Z"])
+        let beta = game("Beta", ["2026-10-01T14:00:00Z"])
+        let never = game("Never", ["invalid"])
+        let index = try LibraryCatalogIndex(games: [never, beta, alpha])
+        var criteria = LibraryScreenCriteria()
+        XCTAssertEqual(try index.items(matching: criteria, favoriteIDs: []).map(\.game), [alpha, beta, never])
+        criteria.favoritesOnly = true
+        XCTAssertEqual(try index.items(matching: criteria, favoriteIDs: [beta.id]).map(\.game), [beta])
+        criteria.clearNarrowing()
+        criteria.query = " ALPHA \n Steam "
+        XCTAssertEqual(try index.items(matching: criteria, favoriteIDs: []).map(\.game), [alpha])
+        criteria.storefront = "EPIC"
+        XCTAssertTrue(try index.items(matching: criteria, favoriteIDs: []).isEmpty)
+        criteria.clearNarrowing()
+        criteria.touchOnly = true
+        XCTAssertTrue(try index.items(matching: criteria, favoriteIDs: []).isEmpty)
+    }
+
+    func testLibraryProjectionPerformanceForLargeLibrary() throws {
+        let games = (0..<2500).map { Self.makeGame(title: "Game \($0)", controls: []) }
+        let index = try LibraryCatalogIndex(games: games)
+        var criteria = LibraryScreenCriteria()
+        criteria.query = "Game 24"
+        measure {
+            do {
+                let items = try index.items(matching: criteria, favoriteIDs: [])
+                XCTAssertFalse(items.isEmpty)
+            } catch {
+                XCTFail("Projection failed: \(error)")
+            }
+        }
+    }
+
+    func testReconnectKeepsAllocatedLauncherAndDecodesLegacySession() throws {
+        XCTAssertEqual(SessionLifecyclePolicy.allocatedAppID(in: [
+            "sessionRequestData": ["appId": "epic-variant"]
+        ], fallback: "steam-default"), "epic-variant")
+        XCTAssertEqual(SessionLifecyclePolicy.allocatedAppID(in: [
+            "sessionRequestData": ["appId": 12345]
+        ]), "12345")
+        XCTAssertEqual(SessionLifecyclePolicy.allocatedAppID(in: [:], fallback: "epic-variant"), "epic-variant")
+        XCTAssertNil(SessionLifecyclePolicy.allocatedAppID(in: [:]))
+        XCTAssertNil(SessionLifecyclePolicy.allocatedAppID(in: ["sessionRequestData": ["appId": true]]))
+        var session = queueFixture()
+        session.allocatedAppId = "epic-variant"
+        let data = try JSONEncoder().encode(session)
+        XCTAssertEqual(try JSONDecoder().decode(ActiveSession.self, from: data).allocatedAppId, "epic-variant")
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        legacy.removeValue(forKey: "allocatedAppId")
+        let oldData = try JSONSerialization.data(withJSONObject: legacy)
+        XCTAssertNil(try JSONDecoder().decode(ActiveSession.self, from: oldData).allocatedAppId)
+    }
+
     @MainActor
     func testResizableScenesSupportAllOrientations() throws {
         let orientations = try XCTUnwrap(Bundle.main.object(forInfoDictionaryKey: "UISupportedInterfaceOrientations") as? [String])
@@ -61,7 +211,7 @@ final class OpenNOWiOSParityTests: XCTestCase {
         if #available(iOS 27.0, *) {
             XCTAssertEqual(StreamOrientation.supportedOrientations, .all)
             let host = NativeStreamHostingController(rootView: AnyView(Color.black))
-            XCTAssertEqual(host.supportedInterfaceOrientations, .all)
+            XCTAssertEqual(host.supportedInterfaceOrientations, .landscape)
             host.releaseSystemPreferences(restoreOrientation: false)
             XCTAssertEqual(host.supportedInterfaceOrientations, .all)
         }
@@ -332,6 +482,69 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertNil(SessionConnectionPolicy.resolve(session: [:], fallbackHost: "seat.example"))
     }
 
+    @MainActor
+    func testDisabledNativePreferenceRejectsNativeOnlyAllocationBeforeStartup() throws {
+        var session = Self.makeActiveSession(game: Self.makeGame(title: "Transport", controls: []), status: 3)
+        session.nativeTransportRequired = true
+        session.nativeRtspsEndpoints = ["rtsps://native.example:322"]
+        var settings = AppSettings.default
+        settings.experimentalNativeNVSTEnabled = false
+        let error = try XCTUnwrap(session.transportPreferenceError(settings: settings))
+        XCTAssertTrue(error.contains("disabled"))
+        XCTAssertTrue(error.contains("WebRTC"))
+        let coordinator = NativeStreamCoordinator(
+            session: session, settings: settings, membershipTier: "FREE", sessionHistory: nil,
+            onTouchLayoutChange: { _, _ in }, onStreamerPreferencesChange: { _ in },
+            onStreamSharpeningChange: { _, _ in }, onFingerMouseEnabledChange: { _ in },
+            onPhoneRumbleFallbackChange: { _ in }, onStreamTutorialCompleted: {},
+            onControllerTouchPromptDismissed: {}, onStatsOverlayChange: { _ in },
+            onTransportStable: {}, onSelectedVideoProfileRetry: { _ in }, onRuntimeSample: { _ in },
+            onSettingsChange: { _ in }, onBuildBugReportDeck: { BugReportPreflightDeck() },
+            onSubmitBugReport: { _, _ in .failure(BugReportError.invalid("Test")) }, onClose: {}, onRetry: nil)
+        defer { coordinator.stop() }
+        coordinator.start(viewportSize: CGSize(width: 844, height: 390))
+        XCTAssertEqual(coordinator.statusText, "Stream failed")
+        XCTAssertEqual(coordinator.detailText, error)
+        XCTAssertFalse(coordinator.retryAvailable)
+
+        settings.experimentalNativeNVSTEnabled = true
+        XCTAssertNil(session.transportPreferenceError(settings: settings))
+        settings.experimentalNativeNVSTEnabled = false
+        for required: Bool? in [nil, false] {
+            session.nativeTransportRequired = required
+            XCTAssertNil(session.transportPreferenceError(settings: settings))
+            XCTAssertFalse(session.usesNativeTransport(settings: settings))
+        }
+    }
+
+    @MainActor
+    func testReopenUsesSavedTransportPreferenceWithoutChangingActiveGameProfile() {
+        let defaults = UserDefaults.standard
+        let keys = ["OpenNOW.iOS.settings", "OpenNOW.iOS.activeSession", "OpenNOW.iOS.activeStreamSettings"]
+        let saved = keys.map { defaults.data(forKey: $0) }
+        defer {
+            for (key, value) in zip(keys, saved) {
+                if let value { defaults.set(value, forKey: key) }
+                else { defaults.removeObject(forKey: key) }
+            }
+        }
+        let store = OpenNOWStore()
+        store.settings.experimentalNativeNVSTEnabled = true
+        store.settings.maxBitrateMbps = 42
+        store.installDebugQueuePreview(position: 1, isSettingUp: true)
+        let active = store.currentStreamerSettings
+        XCTAssertTrue(active.experimentalNativeNVSTEnabled)
+        store.settings.experimentalNativeNVSTEnabled = false
+        store.settings.maxBitrateMbps = 17
+        var expected = active
+        expected.experimentalNativeNVSTEnabled = false
+        XCTAssertEqual(store.requestedReopenSettings, expected)
+        XCTAssertEqual(store.currentStreamerSettings, active)
+        XCTAssertTrue(store.diagnosticsReport.contains("transport.savedNativeEnabled=false activeNativeEnabled=true"))
+        store.settings.experimentalNativeNVSTEnabled = true
+        XCTAssertEqual(store.requestedReopenSettings, active)
+    }
+
     func testSessionMediaSkipsMalformedEntriesAndNeverUsesRTSPControl() {
         let media = SessionConnectionPolicy.mediaEndpoint(session: ["connectionInfo": [
             ["usage": 2, "ip": "0.0.0.0", "port": 49003],
@@ -344,6 +557,48 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertNil(SessionConnectionPolicy.mediaEndpoint(session: ["connectionInfo": [
             ["usage": 14, "resourcePath": "rtsps://control.example:322", "port": 322]
         ]]).ip)
+    }
+
+    func testSessionMediaFallbackPrioritizesHigherPortInEitherAllocationOrder() throws {
+        let signaling: [String: Any] = ["usage": 14, "ip": "203.0.113.10", "port": 443, "resourcePath": "/nvst/"]
+        let media: [String: Any] = ["usage": "14", "ip": "203.0.113.11", "port": "49003", "resourcePath": "/nvst/"]
+        for connections in [[signaling, media], [media, signaling]] {
+            let session: [String: Any] = ["connectionInfo": connections]
+            let endpoint = SessionConnectionPolicy.mediaEndpoint(session: session)
+            XCTAssertEqual(endpoint.ip, "203.0.113.11")
+            XCTAssertEqual(endpoint.port, 49003)
+            let route = try XCTUnwrap(SessionConnectionPolicy.resolve(session: session, fallbackHost: nil))
+            XCTAssertEqual(URLComponents(string: route.url)?.port, 443)
+            let candidate = NativeStreamSDP.rewriteIceCandidateEndpoint(
+                "candidate:1 1 udp 2122260223 100.96.10.4 47998 typ host",
+                mediaIP: endpoint.ip, mediaPort: endpoint.port)
+            XCTAssertEqual(candidate, "candidate:1 1 udp 2122260223 203.0.113.11 49003 typ host")
+        }
+    }
+
+    func testSessionMediaExplicitVideoAndBundleTakePriorityOverFallbackPorts() {
+        let fallback: [String: Any] = ["usage": 14, "ip": "203.0.113.10", "port": 59000]
+        let bundle: [String: Any] = ["usage": 17, "ip": "203.0.113.11", "port": 18342]
+        let video: [String: Any] = ["usage": 2, "ip": "203.0.113.12", "port": 13334]
+        let videoEndpoint = SessionConnectionPolicy.mediaEndpoint(session: ["connectionInfo": [fallback, bundle, video]])
+        XCTAssertEqual(videoEndpoint.ip, "203.0.113.12")
+        XCTAssertEqual(videoEndpoint.port, 13334)
+        let bundleEndpoint = SessionConnectionPolicy.mediaEndpoint(session: ["connectionInfo": [fallback, bundle]])
+        XCTAssertEqual(bundleEndpoint.ip, "203.0.113.11")
+        XCTAssertEqual(bundleEndpoint.port, 18342)
+    }
+
+    func testSessionMediaFallbackSkipsNativeAndInvalidHigherPorts() {
+        let endpoint = SessionConnectionPolicy.mediaEndpoint(session: ["connectionInfo": [
+            ["usage": 14, "ip": "203.0.113.10", "port": 443],
+            ["usage": 14, "ip": "203.0.113.11", "port": 65000, "appLevelProtocol": 6],
+            ["usage": 14, "ip": "203.0.113.12", "port": 64000, "resourcePath": "rtsps://control.example:64000"],
+            ["usage": 14, "ip": "203.0.113.13", "port": 99999],
+            ["usage": 14, "ip": "0.0.0.0", "port": 60000],
+            ["usage": 14, "ip": "203.0.113.14", "port": 49003]
+        ]])
+        XCTAssertEqual(endpoint.ip, "203.0.113.14")
+        XCTAssertEqual(endpoint.port, 49003)
     }
 
     func testSignInURLKeepsPathAndEncodesPairingValues() throws {
@@ -1079,8 +1334,271 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertEqual(QueueActivityProgress.normalized(-1), 0)
         XCTAssertEqual(QueueActivityProgress.normalized(2), 1)
         XCTAssertEqual(QueueActivityProgress.barFraction(0.5, phase: .queued), 0.5)
-        XCTAssertEqual(QueueActivityProgress.barFraction(nil, phase: .waiting), 0.75)
+        XCTAssertEqual(QueueActivityProgress.barFraction(nil, phase: .waiting), 0)
         XCTAssertEqual(QueueActivityProgress.barFraction(nil, phase: .ready), 1)
+    }
+
+    func testStaleLiveActivitiesNeverOfferResumeOrOldQueueProgress() {
+        for phase in [QueueActivityAttributes.ContentState.Phase.queued, .waiting, .ready] {
+            let state = QueueActivityAttributes.ContentState(phase: phase, headline: "Ready to play",
+                detail: "Tap to resume", queueLabel: "Q8", queuePosition: 8, progress: 0.6, waitStartedAt: .now)
+            let presentation = QueueActivityPresentation(state: state, isStale: true)
+            XCTAssertFalse(presentation.canResume)
+            XCTAssertNil(presentation.queuePosition)
+            XCTAssertNil(presentation.progress)
+            XCTAssertEqual(presentation.phaseLabel, "Check session")
+            XCTAssertEqual(presentation.destination?.absoluteString, "opennow://")
+            XCTAssertFalse(presentation.headline.contains("Ready"))
+            XCTAssertNotEqual(presentation.symbol, "play.fill")
+        }
+    }
+
+    func testLiveActivityKeepsUnknownProgressUnknownAndSuppressesSetupQueuePosition() {
+        let ready = QueueActivityAttributes.ContentState(phase: .ready, headline: "Ready", detail: "Play",
+                                                         queueLabel: "Ready", queuePosition: nil)
+        XCTAssertTrue(QueueActivityPresentation(state: ready, isStale: false).canResume)
+        for progress: Double? in [nil, .nan, .infinity, -.infinity] {
+            let state = QueueActivityAttributes.ContentState(phase: .waiting, headline: "Setting up",
+                detail: "Preparing", queueLabel: "Setup", queuePosition: 4, progress: progress)
+            let presentation = QueueActivityPresentation(state: state, isStale: false)
+            XCTAssertNil(presentation.progress)
+            XCTAssertNil(presentation.queuePosition)
+        }
+        XCTAssertEqual(QueueActivityProgress.barFraction(0.25, phase: .waiting), 0.25)
+        XCTAssertEqual(QueueActivityProgress.barFraction(0, phase: .queued), 0)
+    }
+
+    func testCloudSessionTerminalStatesMatchAndroidAndCleanupIsNotTerminal() throws {
+        for status in [4, 5, 7, 8, 100] {
+            XCTAssertTrue(SessionLifecyclePolicy.isTerminal(status))
+            XCTAssertThrowsError(try SessionLifecyclePolicy.sessionObject(in: [
+                "requestStatus": ["statusCode": 1], "session": ["status": status]
+            ], httpStatus: 200)) { error in
+                XCTAssertTrue(error is RemoteSessionEndedError)
+            }
+        }
+        for status in [1, 2, 3, 6] {
+            XCTAssertFalse(SessionLifecyclePolicy.isTerminal(status))
+            let result = try SessionLifecyclePolicy.sessionObject(in: [
+                "requestStatus": ["statusCode": "1"], "session": ["status": "\(status)"]
+            ], httpStatus: 200)
+            XCTAssertEqual(SessionConnectionPolicy.integer(result["status"]), status)
+        }
+        XCTAssertFalse(SessionLifecyclePolicy.isLaunchable(6))
+    }
+
+    func testIncompleteOrFailedSessionChecksAreNotEvidenceOfAReadyOrEndedSession() {
+        for payload: [String: Any] in [[:], ["requestStatus": ["statusCode": 1]],
+            ["requestStatus": ["statusCode": 1], "session": ["status": true]],
+            ["requestStatus": ["statusCode": 1], "session": ["status": 0]],
+            ["requestStatus": ["statusCode": 503], "session": ["status": 3]]] {
+            XCTAssertThrowsError(try SessionLifecyclePolicy.sessionObject(in: payload, httpStatus: 200)) { error in
+                XCTAssertFalse(SessionLifecyclePolicy.isEnded(error))
+            }
+        }
+        for code in [401, 403, 429, 500, 503] {
+            XCTAssertFalse(SessionLifecyclePolicy.isEnded(NSError(domain: "OpenNOW.Session", code: code)))
+        }
+        for code in [404, 410] {
+            XCTAssertTrue(SessionLifecyclePolicy.isEnded(NSError(domain: "OpenNOW.Session", code: code)))
+            XCTAssertFalse(SessionLifecyclePolicy.isEnded(NSError(domain: "OpenNOW.SessionList", code: code)))
+        }
+        XCTAssertFalse(SessionLifecyclePolicy.isEnded(URLError(.timedOut)))
+        XCTAssertFalse(SessionLifecyclePolicy.isEnded(CancellationError()))
+    }
+
+    @MainActor
+    func testEndedSessionClearsResumeSurfacesAndPersistedSnapshotsWithoutAReplacement() {
+        let defaults = UserDefaults.standard
+        let keys = ["OpenNOW.iOS.settings", "OpenNOW.iOS.activeSession", "OpenNOW.iOS.activeStreamSettings"]
+        let saved = keys.map { defaults.data(forKey: $0) }
+        defer {
+            for (key, value) in zip(keys, saved) {
+                if let value { defaults.set(value, forKey: key) }
+                else { defaults.removeObject(forKey: key) }
+            }
+        }
+        let store = OpenNOWStore()
+        store.installDebugQueuePreview(position: 8)
+        store.streamSession = store.activeSession
+        store.handleEndedSession(id: "different-session")
+        XCTAssertNotNil(store.activeSession)
+        store.handleEndedSession(id: "debug-queue-preview")
+        XCTAssertNil(store.activeSession)
+        XCTAssertNil(store.streamSession)
+        XCTAssertNil(store.activeStreamSettings)
+        XCTAssertFalse(store.showStreamLoading)
+        XCTAssertFalse(store.queueOverlayVisible)
+        XCTAssertFalse(store.canReopenStreamer)
+        XCTAssertFalse(store.canJumpBackToSession)
+        XCTAssertNil(defaults.data(forKey: "OpenNOW.iOS.activeSession"))
+        XCTAssertNil(defaults.data(forKey: "OpenNOW.iOS.activeStreamSettings"))
+    }
+
+    func testSessionEndConfirmationIsPinnedToIdentityAndPhase() {
+        var session = queueFixture()
+        let queued = SessionEndTarget.current(session)
+        XCTAssertEqual(queued.actionTitle, "Leave Queue")
+        XCTAssertTrue(queued.message.contains("lose your place"))
+        XCTAssertTrue(queued.matches(activeSession: session, remoteSessions: []))
+        XCTAssertFalse(queued.matches(activeSession: nil, remoteSessions: []))
+        session.status = 3
+        XCTAssertFalse(queued.matches(activeSession: session, remoteSessions: []))
+        let running = SessionEndTarget.current(session)
+        XCTAssertEqual(running.actionTitle, "End Cloud Session")
+        XCTAssertTrue(running.message.contains("unsaved progress"))
+        let remote = RemoteSessionCandidate(id: "remote", appId: "1", status: 3, serverIp: nil,
+                                             streamSettingsSignature: nil, resolution: nil, fps: nil)
+        let remoteTarget = SessionEndTarget.remote(remote, title: "Game")
+        XCTAssertTrue(remoteTarget.matches(activeSession: nil, remoteSessions: [remote]))
+        XCTAssertFalse(remoteTarget.matches(activeSession: session, remoteSessions: []))
+    }
+
+    func testPrintedWasteEstimatesRejectInvalidValuesAndRemainBounded() {
+        for invalid: Double? in [nil, -1, .nan, .infinity, -.infinity] {
+            XCTAssertNil(PrintedWasteQueuePresentation.estimatedWait(etaMs: invalid))
+        }
+        XCTAssertEqual(PrintedWasteQueuePresentation.estimatedWait(etaMs: 0), "Under 1 min")
+        XCTAssertEqual(PrintedWasteQueuePresentation.estimatedWait(etaMs: 59_999), "Under 1 min")
+        XCTAssertEqual(PrintedWasteQueuePresentation.estimatedWait(etaMs: 60_000), "1 min")
+        XCTAssertEqual(PrintedWasteQueuePresentation.estimatedWait(etaMs: 3_600_000), "1 hr")
+        XCTAssertEqual(PrintedWasteQueuePresentation.estimatedWait(etaMs: .greatestFiniteMagnitude), "24+ hr")
+    }
+
+    func testSessionScreenDoesNotAdvertiseUnverifiedReadyState() {
+        var session = queueFixture()
+        session.status = 3
+        let checking = SessionScreenPresentation(session: session, availability: .checking, isStreaming: false)
+        XCTAssertTrue(checking.isChecking)
+        XCTAssertEqual(checking.actionTitle, "Checking Session…")
+        XCTAssertFalse(checking.status.contains("Ready"))
+        let unverified = SessionScreenPresentation(session: session, availability: .unverified, isStreaming: false)
+        XCTAssertEqual(unverified.actionTitle, "Check Session")
+        XCTAssertFalse(unverified.status.contains("Ready"))
+        let confirmed = SessionScreenPresentation(session: session, availability: .available, isStreaming: false)
+        XCTAssertEqual(confirmed.actionTitle, "Resume Session")
+        XCTAssertEqual(confirmed.status, "Ready to return")
+    }
+
+    @MainActor
+    func testQueuePresentationDismissesFocusedCatalogInput() async throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let previousKeyWindow = scene.windows.first(where: \.isKeyWindow)
+        let window = UIWindow(windowScene: scene)
+        let input = UITextField(frame: CGRect(x: 20, y: 100, width: 200, height: 44))
+        defer {
+            input.resignFirstResponder()
+            window.isHidden = true
+            window.rootViewController = nil
+            previousKeyWindow?.makeKeyAndVisible()
+        }
+        let store = OpenNOWStore()
+        store.installDebugQueuePreview(position: 24)
+        store.minimizeQueueOverlay()
+        let controller = UIHostingController(rootView: MainTabView(initialPage: .store)
+            .environmentObject(store).openNowTheme(store.settings))
+        window.rootViewController = controller
+        window.makeKeyAndVisible()
+        try await Task.sleep(nanoseconds: 300_000_000)
+        controller.view.addSubview(input)
+        XCTAssertTrue(input.becomeFirstResponder())
+        XCTAssertTrue(input.isFirstResponder)
+
+        store.maximizeQueueOverlay()
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        XCTAssertTrue(store.queueOverlayVisible)
+        XCTAssertFalse(input.isFirstResponder)
+        XCTAssertEqual(store.activeSession?.id, "debug-queue-preview")
+    }
+
+    @MainActor
+    func testQueueSettingsAndLiveActivityPresentationsRender() async throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let previousKeyWindow = scene.windows.first(where: \.isKeyWindow)
+        let window = UIWindow(windowScene: scene)
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previousKeyWindow?.makeKeyAndVisible()
+        }
+        let store = OpenNOWStore()
+        store.installDebugQueuePreview(position: 24)
+        store.settings.expressiveUI = false
+
+        func capture<V: View>(_ name: String, _ view: V) async throws {
+            window.rootViewController = UIHostingController(rootView: view)
+            window.makeKeyAndVisible()
+            try await Task.sleep(nanoseconds: 300_000_000)
+            window.layoutIfNeeded()
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+                window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+            }
+            XCTAssertNotNil(image.cgImage)
+            let attachment = XCTAttachment(image: image)
+            attachment.name = "Parity-\(name)"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+
+        try await capture("Queue", StreamLoadingView(coversBottomBar: true).environmentObject(store)
+            .openNowTheme(store.settings))
+        try await capture("Queue-Large-Text", StreamLoadingView(coversBottomBar: true).environmentObject(store)
+            .environment(\.dynamicTypeSize, .accessibility2)
+            .openNowTheme(store.settings))
+        store.installDebugQueuePreview(position: 24, isSettingUp: true)
+        try await capture("Queue-Setup", StreamLoadingView(coversBottomBar: true).environmentObject(store)
+            .openNowTheme(store.settings))
+        store.installDebugQueuePreview(position: 1)
+        try await capture("Queue-Next", StreamLoadingView(coversBottomBar: true).environmentObject(store)
+            .openNowTheme(store.settings))
+        store.installDebugQueuePreview(position: 24)
+        let game = try XCTUnwrap(store.activeSession?.game)
+        try await capture("Server-Selector", PrintedWasteQueueView(game: game, onConfirm: { _ in }, usesPreviewServers: true)
+            .environmentObject(store).openNowTheme(store.settings))
+        try await capture("Server-Selector-Large-Text", PrintedWasteQueueView(game: game, onConfirm: { _ in }, usesPreviewServers: true)
+            .environmentObject(store).environment(\.dynamicTypeSize, .accessibility2)
+            .openNowTheme(store.settings))
+        try await capture("Settings", SettingsView().environmentObject(store).openNowTheme(store.settings))
+        store.installDebugLibraryPreview()
+        try await capture("Library", LibraryView().environmentObject(store)
+            .environmentObject(CatalogControllerShortcutCoordinator()).openNowTheme(store.settings))
+        try await capture("Library-Large-Text", LibraryView().environmentObject(store)
+            .environmentObject(CatalogControllerShortcutCoordinator())
+            .environment(\.dynamicTypeSize, .accessibility2).openNowTheme(store.settings))
+        for (name, phase, stale) in [
+            ("Queued", QueueActivityAttributes.ContentState.Phase.queued, false),
+            ("Setup", .waiting, false), ("Ready", .ready, false), ("Stale", .ready, true)
+        ] {
+            let state = QueueActivityAttributes.ContentState(phase: phase,
+                headline: phase == .ready ? "Ready to play" : phase == .waiting ? "Preparing your rig" : "In queue",
+                detail: phase == .ready ? "Your cloud rig is ready" : "Waiting for a cloud rig",
+                queueLabel: "Queue", queuePosition: phase == .queued ? 24 : nil,
+                progress: phase == .queued ? 0.4 : nil)
+            let card = LockScreenQueueLiveActivityView(
+                attributes: QueueActivityAttributes(sessionId: "snapshot", gameTitle: "Cyberpunk 2077", storeName: "Steam"),
+                presentation: QueueActivityPresentation(state: state, isStale: stale))
+                .clipShape(RoundedRectangle(cornerRadius: 24))
+                .padding(16)
+                .frame(maxHeight: .infinity, alignment: .center)
+                .background(Color.gray.opacity(0.2))
+            try await capture("LiveActivity-\(name)", card)
+        }
+    }
+
+    func testQueueTrendsWithdrawStaleEstimatesAndIgnoreOutOfOrderSamples() {
+        let start = Date(timeIntervalSinceReferenceDate: 100)
+        var trend = QueueTrendEstimator()
+        trend.record(position: 30, at: start)
+        trend.record(position: 24, at: start.addingTimeInterval(30))
+        trend.record(position: 18, at: start.addingTimeInterval(60))
+        XCTAssertNotNil(trend.estimate(now: start.addingTimeInterval(60)))
+        trend.record(position: 99, at: start.addingTimeInterval(30))
+        XCTAssertEqual(trend.samples.count, 3)
+        XCTAssertNil(trend.estimate(now: start.addingTimeInterval(151)))
+        trend.record(position: 22, at: start.addingTimeInterval(90))
+        XCTAssertEqual(trend.trend(now: start.addingTimeInterval(90)), .slipped)
+        XCTAssertEqual(QueueTrendEstimator.Estimate(lowMinutes: 61, highMinutes: 61).label, "over an hour left")
     }
 
     func testMetal4RenderingIsOptInAndPersistsIndependentlyOfHDRAndMetalFX() throws {
@@ -2080,6 +2598,63 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertEqual(NativeStreamNVSTConfiguration.endpoints(sessionObj: ["connectionInfo": [["port": 322, "usage": 16, "resourcePath": "rtsps://new.example:322"]]], fallbackHost: "old.example"), ["rtsps://new.example:322"])
     }
 
+    func testNativeProvisioningMatchesAndroidTransportEnvelopeOnLaunchAndResume() throws {
+        for action: Int? in [nil, 2] {
+            var body: [String: Any] = ["sessionRequestData": [
+                "streamerVersion": 1, "sdkVersion": "1.0", "enhancedStreamMode": 1,
+                "secureRTSPSupported": false,
+                "metaData": [["key": "GSStreamerType", "value": "WebRTC"], ["key": "wssignaling", "value": "1"]]
+            ]]
+            if let action { body["action"] = action; body["data"] = "RESUME" }
+            let result = NativeStreamNVSTConfiguration.requestBody(body, enabled: true)
+            let request = try XCTUnwrap(result["sessionRequestData"] as? [String: Any])
+            XCTAssertEqual(request["streamerVersion"] as? String, "14")
+            XCTAssertEqual(request["sdkVersion"] as? String, "2.0")
+            XCTAssertEqual(request["enhancedStreamMode"] as? Int, 0)
+            XCTAssertEqual(request["secureRTSPSupported"] as? Bool, true)
+            XCTAssertEqual(request["requestedAudioFormat"] as? Int, 0)
+            XCTAssertTrue(request["transport"] is NSNull)
+            XCTAssertEqual(result["action"] as? Int, action)
+        }
+    }
+
+    func testDisabledNativeProvisioningUsesNvidiaBrowserIdentityAndPreservesAllianceIdentity() throws {
+        let headers = ["nv-client-streamer": "NVIDIA-CLASSIC", "nv-client-type": "NATIVE", "x-device-id": "stable-device"]
+        for action: Int? in [nil, 2] {
+            var body: [String: Any] = ["sessionRequestData": [
+                "streamerVersion": 1, "sdkVersion": "1.0", "enhancedStreamMode": 1,
+                "secureRTSPSupported": false, "clientPlatformName": "windows",
+                "enablePersistingInGameSettings": true, "deviceHashId": "stable-device",
+                "appLaunchMode": 2,
+                "metaData": [["key": "GSStreamerType", "value": "WebRTC"]]
+            ]]
+            if let action { body["action"] = action; body["data"] = "RESUME" }
+            for base in ["https://prod.cloudmatchbeta.nvidiagrid.net", "https://cloudmatch.nvidiagrid.net", "https://alliance.example", "https://cloudmatch.nvidiagrid.net.attacker.example"] {
+                for enabled in [false, true] {
+                    let browser = !enabled && URL(string: base)?.host?.hasSuffix("nvidiagrid.net") == true
+                    let result = NativeStreamNVSTConfiguration.requestBody(body, enabled: enabled, streamingBaseURL: base)
+                    let request = try XCTUnwrap(result["sessionRequestData"] as? [String: Any])
+                    let actualHeaders = NativeStreamNVSTConfiguration.requestHeaders(headers, enabled: enabled, streamingBaseURL: base)
+                    XCTAssertEqual(actualHeaders["nv-client-streamer"], browser ? "WEBRTC" : "NVIDIA-CLASSIC")
+                    XCTAssertEqual(actualHeaders["nv-client-type"], browser ? "BROWSER" : "NATIVE")
+                    XCTAssertEqual(actualHeaders["x-device-id"], "stable-device")
+                    XCTAssertEqual(request["clientPlatformName"] as? String, browser ? "browser" : "windows")
+                    XCTAssertEqual(request["enablePersistingInGameSettings"] as? Bool, !browser)
+                    XCTAssertEqual(request["secureRTSPSupported"] as? Bool, enabled)
+                    XCTAssertEqual(request["deviceHashId"] as? String, "stable-device")
+                    XCTAssertEqual(request["appLaunchMode"] as? Int, 2)
+                    XCTAssertEqual(result["action"] as? Int, action)
+                    if !enabled {
+                        XCTAssertEqual(request["streamerVersion"] as? Int, 1)
+                        XCTAssertEqual(request["sdkVersion"] as? String, "1.0")
+                        XCTAssertEqual(request["enhancedStreamMode"] as? Int, 1)
+                        XCTAssertEqual(request["metaData"] as? [[String: String]], [["key": "GSStreamerType", "value": "WebRTC"]])
+                    }
+                }
+            }
+        }
+    }
+
     func testNativeProvisioningPreservesQualityAndIdentityOnLaunchAndResume() throws {
         for action: Int? in [nil, 2] {
             var body: [String: Any] = ["sessionRequestData": [
@@ -2396,6 +2971,105 @@ final class OpenNOWiOSParityTests: XCTestCase {
             OpenNOWErrorPresenter.message(for: error, fallback: "Refresh failed."),
             "The request timed out. Check your connection and try again."
         )
+    }
+
+    func testRemoteOfferPreservesPublicCandidateEvenWhenAllocationAdvertises443() {
+        let offer = remoteOffer(address: "203.0.113.10", port: 47998)
+        XCTAssertEqual(NativeStreamSDP.prepareRemoteOffer(offer, serverIP: "203.0.113.20",
+            mediaIP: "203.0.113.20", mediaPort: 443), offer)
+    }
+
+    func testRemoteOfferRepairsOnlyUnroutableAddressesWithMediaMetadata() {
+        for address in ["0.0.0.0", "10.0.175.4", "172.16.1.2", "192.168.1.2", "100.96.10.4", "169.254.1.2", "127.0.0.1", "224.0.0.1"] {
+            let offer = remoteOffer(address: address, port: 47998)
+            let prepared = NativeStreamSDP.prepareRemoteOffer(offer, serverIP: "203.0.113.20",
+                mediaIP: "203.0.113.21", mediaPort: 19353)
+            XCTAssertTrue(prepared.contains("c=IN IP4 203.0.113.21"), address)
+            XCTAssertTrue(prepared.contains("a=candidate:1 1 udp 2122260223 203.0.113.21 19353 typ host"), address)
+        }
+    }
+
+    func testRemoteOfferWithoutMediaMetadataOnlyRepairsPlaceholderAndPreservesPort() {
+        for address in ["10.0.175.4", "100.96.10.4", "203.0.113.10", "2001:db8::1", "10.0.invalid.1.2"] {
+            let offer = remoteOffer(address: address, port: 47998)
+            XCTAssertEqual(NativeStreamSDP.prepareRemoteOffer(offer, serverIP: "203.0.113.20",
+                mediaIP: nil, mediaPort: 0), offer)
+        }
+        let prepared = NativeStreamSDP.prepareRemoteOffer(remoteOffer(address: "0.0.0.0", port: 47998),
+            serverIP: "203.0.113.20", mediaIP: nil, mediaPort: 0)
+        XCTAssertTrue(prepared.contains("a=candidate:1 1 udp 2122260223 203.0.113.20 47998 typ host"))
+    }
+
+    func testRemoteOfferPreservesExplicitDNSAndIPv6MediaEndpoints() {
+        for (mediaIP, expectedHost, family) in [
+            ("media.example", "media.example", "IP4"),
+            ("2001:db8::10", "2001:db8::10", "IP6"),
+            ("[2001:db8::10]", "2001:db8::10", "IP6")
+        ] {
+            for serverIP in ["203.0.113.20", "signaling.example"] {
+                for address in ["0.0.0.0", "10.0.175.4"] {
+                    let prepared = NativeStreamSDP.prepareRemoteOffer(remoteOffer(address: address, port: 47998),
+                        serverIP: serverIP, mediaIP: mediaIP, mediaPort: 19353)
+                    XCTAssertTrue(prepared.contains("c=IN \(family) \(expectedHost)"))
+                    XCTAssertTrue(prepared.contains("a=candidate:1 1 udp 2122260223 \(expectedHost) 19353 typ host"))
+                    XCTAssertFalse(prepared.contains("203.0.113.20 19353"))
+                }
+            }
+        }
+    }
+
+    func testRemoteOfferDoesNotBorrowMediaPortWithoutUsableMediaHost() {
+        for mediaIP: String? in [nil, "", "0.0.0.0", "::", "bad host"] {
+            let prepared = NativeStreamSDP.prepareRemoteOffer(remoteOffer(address: "0.0.0.0", port: 47998),
+                serverIP: "203.0.113.20", mediaIP: mediaIP, mediaPort: 19353)
+            XCTAssertTrue(prepared.contains("a=candidate:1 1 udp 2122260223 203.0.113.20 47998 typ host"))
+            XCTAssertFalse(prepared.contains("203.0.113.20 19353"))
+        }
+    }
+
+    func testRemoteOfferKeepsLineEndingsAndUnknownAddresses() {
+        for ending in ["\n", "\r\n"] {
+            let offer = "v=0\(ending)a=candidate:1 1 udp 2122260223 203.0.113.10 47998 typ srflx\(ending)a=candidate:2 1 udp 2122260223 2001:db8::1 47999 typ host\(ending)a=candidate:3 1 udp 2122260223 10.0.invalid.1.2 48000 typ host\(ending)"
+            XCTAssertEqual(NativeStreamSDP.prepareRemoteOffer(offer, serverIP: "203.0.113.20",
+                mediaIP: "203.0.113.21", mediaPort: 443), offer)
+        }
+    }
+
+    func testRemoteIceWaitsForDescriptionAndPreservesServerCandidates() {
+        var buffer = NativeStreamRemoteIceBuffer()
+        let candidates = [
+            RTCIceCandidate(sdp: "candidate:1 1 udp 2122260223 203.0.113.10 47998 typ host", sdpMLineIndex: 0, sdpMid: "0"),
+            RTCIceCandidate(sdp: "candidate:2 1 udp 2122260223 203.0.113.11 49003 typ srflx raddr 10.0.0.1 rport 47998", sdpMLineIndex: 1, sdpMid: nil),
+            RTCIceCandidate(sdp: "candidate:3 1 tcp 2122260223 203.0.113.12 8443 typ relay tcptype passive", sdpMLineIndex: 2, sdpMid: "data")
+        ]
+        for candidate in candidates { XCTAssertTrue(buffer.receive(candidate).isEmpty) }
+        XCTAssertEqual(buffer.pending.count, 3)
+        let flushed = buffer.remoteDescriptionWasSet()
+        XCTAssertEqual(flushed.map(\.sdp), candidates.map(\.sdp))
+        XCTAssertEqual(flushed.map(\.sdpMid), candidates.map(\.sdpMid))
+        XCTAssertEqual(flushed.map(\.sdpMLineIndex), candidates.map(\.sdpMLineIndex))
+        XCTAssertTrue(buffer.pending.isEmpty)
+        XCTAssertTrue(buffer.remoteDescriptionWasSet().isEmpty)
+        XCTAssertEqual(buffer.receive(candidates[0]).map(\.sdp), [candidates[0].sdp])
+    }
+
+    func testRemoteIceBufferBoundsPendingCandidatesAndResetClearsReadiness() {
+        var buffer = NativeStreamRemoteIceBuffer()
+        for index in 0..<125 {
+            XCTAssertTrue(buffer.receive(RTCIceCandidate(
+                sdp: "candidate:\(index) 1 udp 2122260223 203.0.113.10 47998 typ host",
+                sdpMLineIndex: 0, sdpMid: "0")).isEmpty)
+        }
+        XCTAssertEqual(buffer.pending.count, 120)
+        XCTAssertEqual(buffer.droppedCandidates, 5)
+        let flushed = buffer.remoteDescriptionWasSet()
+        XCTAssertTrue(flushed.first?.sdp.hasPrefix("candidate:5 ") == true)
+        XCTAssertTrue(flushed.last?.sdp.hasPrefix("candidate:124 ") == true)
+        buffer = NativeStreamRemoteIceBuffer()
+        XCTAssertEqual(buffer.droppedCandidates, 0)
+        XCTAssertTrue(buffer.pending.isEmpty)
+        XCTAssertTrue(buffer.receive(flushed[0]).isEmpty)
+        XCTAssertEqual(buffer.remoteDescriptionWasSet().count, 1)
     }
 
     func testPlaceholderSDPEndpointsUseSignalingEndpointWithoutMediaMetadata() {

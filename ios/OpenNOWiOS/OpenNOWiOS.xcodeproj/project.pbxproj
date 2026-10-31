@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		A184D1000000000000000001 /* SessionConnectionPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A184D1000000000000000002; };
+		A184D1000000000000000003 /* SessionLifecyclePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A184D1000000000000000004; };
 		A16E9C000000000000000001 /* NativeStreamVirtualStick.swift in Sources */ = {isa = PBXBuildFile; fileRef = A16E9C000000000000000002; };
 		4A9F701B95F642B4B396FF48 /* StreamSessionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12734E3A4AF1481E9CA7E9E4; };
 		DC2C1BC3FB56423B96FF2C69 /* StreamSessionHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BEF4FE1193044C9B24243CB; };
@@ -124,6 +125,7 @@
 		CC0000000000000000000002 /* QueueLiveActivityManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000012 /* QueueLiveActivityManager.swift */; };
 		CC0000000000000000000003 /* OpenNOWWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000013 /* OpenNOWWidgetBundle.swift */; };
 		CC0000000000000000000004 /* QueueLiveActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000014 /* QueueLiveActivityWidget.swift */; };
+		CC0000000000000000000008 /* QueueLiveActivityWidget.swift in Tests */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000014 /* QueueLiveActivityWidget.swift */; };
 		CC0000000000000000000005 /* QueueActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000011 /* QueueActivityAttributes.swift */; };
 		CC0000000000000000000006 /* OpenNOWWidget.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000016 /* OpenNOWWidget.appex */; platformFilter = ios; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		CC0000000000000000000007 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000017 /* Assets.xcassets */; };
@@ -144,7 +146,6 @@
 		DE0000000000000000000004 /* SessionReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE0000000000000000000014 /* SessionReport.swift */; };
 		DE0000000000000000000005 /* SessionReportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE0000000000000000000015 /* SessionReportView.swift */; };
 		DE0000000000000000000006 /* QueueTrendEstimator.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE0000000000000000000016 /* QueueTrendEstimator.swift */; };
-		DE0000000000000000000007 /* AnalyticsConsentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE0000000000000000000017 /* AnalyticsConsentView.swift */; };
 		DE0000000000000000000008 /* BugReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE0000000000000000000018 /* BugReport.swift */; };
 		DE0000000000000000000009 /* BugReportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE0000000000000000000019 /* BugReportView.swift */; };
 		DE000000000000000000000A /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = DE000000000000000000001A /* Localizable.xcstrings */; };
@@ -209,6 +210,7 @@
 
 /* Begin PBXFileReference section */
 		A184D1000000000000000002 /* SessionConnectionPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionConnectionPolicy.swift; sourceTree = "<group>"; };
+		A184D1000000000000000004 /* SessionLifecyclePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionLifecyclePolicy.swift; sourceTree = "<group>"; };
 		A16E9C000000000000000002 /* NativeStreamVirtualStick.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeStreamVirtualStick.swift; sourceTree = "<group>"; };
 		12734E3A4AF1481E9CA7E9E4 /* StreamSessionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamSessionsView.swift; sourceTree = "<group>"; };
 		6BEF4FE1193044C9B24243CB /* StreamSessionHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamSessionHistory.swift; sourceTree = "<group>"; };
@@ -344,7 +346,6 @@
 		DE0000000000000000000014 /* SessionReport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionReport.swift; sourceTree = "<group>"; };
 		DE0000000000000000000015 /* SessionReportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionReportView.swift; sourceTree = "<group>"; };
 		DE0000000000000000000016 /* QueueTrendEstimator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueTrendEstimator.swift; sourceTree = "<group>"; };
-		DE0000000000000000000017 /* AnalyticsConsentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnalyticsConsentView.swift; sourceTree = "<group>"; };
 		DE0000000000000000000018 /* BugReport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BugReport.swift; sourceTree = "<group>"; };
 		DE0000000000000000000019 /* BugReportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BugReportView.swift; sourceTree = "<group>"; };
 		DE000000000000000000001A /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
@@ -492,6 +493,7 @@
 				0A1B2C3D4E5F6A7B8C9D2001 /* OpenNOWiOSApp.swift */,
 				0A1B2C3D4E5F6A7B8C9D2002 /* ContentView.swift */,
 				A184D1000000000000000002 /* SessionConnectionPolicy.swift */,
+				A184D1000000000000000004 /* SessionLifecyclePolicy.swift */,
 				AB0000000000000000000011 /* DiagnosticsSupport.swift */,
 				AC0000000000000000000011 /* AccountStateSupport.swift */,
 				0A1B2C3D4E5F6A7B8C9D2006 /* OpenNOWStore.swift */,
@@ -499,7 +501,6 @@
 				DE0000000000000000000013 /* NativeTouchSupport.swift */,
 				DE0000000000000000000015 /* SessionReportView.swift */,
 				DE0000000000000000000016 /* QueueTrendEstimator.swift */,
-				DE0000000000000000000017 /* AnalyticsConsentView.swift */,
 				DE000000000000000000001E /* OpenNOWFailure.swift */,
 				DE000000000000000000001D /* DebugLogView.swift */,
 				DE000000000000000000001C /* QueueReadyAlert.swift */,
@@ -808,6 +809,7 @@
 				0A1B2C3D4E5F6A7B8C9D1002 /* ContentView.swift in Sources */,
 				0A1B2C3D4E5F6A7B8C9D1001 /* OpenNOWiOSApp.swift in Sources */,
 				A184D1000000000000000001 /* SessionConnectionPolicy.swift in Sources */,
+				A184D1000000000000000003 /* SessionLifecyclePolicy.swift in Sources */,
 				AB0000000000000000000001 /* DiagnosticsSupport.swift in Sources */,
 				AC0000000000000000000001 /* AccountStateSupport.swift in Sources */,
 				0A1B2C3D4E5F6A7B8C9D1005 /* OpenNOWStore.swift in Sources */,
@@ -815,7 +817,6 @@
 				DE0000000000000000000003 /* NativeTouchSupport.swift in Sources */,
 				DE0000000000000000000005 /* SessionReportView.swift in Sources */,
 				DE0000000000000000000006 /* QueueTrendEstimator.swift in Sources */,
-				DE0000000000000000000007 /* AnalyticsConsentView.swift in Sources */,
 				DE000000000000000000000E /* OpenNOWFailure.swift in Sources */,
 				DE000000000000000000000D /* DebugLogView.swift in Sources */,
 				DE000000000000000000000C /* QueueReadyAlert.swift in Sources */,
@@ -885,6 +886,7 @@
 				69D8855CDF5917C51CB99E24 /* NVST/NvstDtlsHandshakeTests.swift in Sources */,
 				22D0B32C8458038A33A4ACE0 /* NVST/SrtpCryptographyTests.swift in Sources */,
 				F10000000000000000000001 /* OpenNOWiOSParityTests.swift in Sources */,
+				CC0000000000000000000008 /* QueueLiveActivityWidget.swift in Tests */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1128,6 +1130,7 @@
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) OPENNOW_WIDGET_SNAPSHOT_TESTS";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/OpenNOWiOS.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/OpenNOWiOS";
@@ -1163,6 +1166,7 @@
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_VERSION = 5.0;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) OPENNOW_WIDGET_SNAPSHOT_TESTS";
 				TARGETED_DEVICE_FAMILY = "1,2";
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/OpenNOWiOS.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/OpenNOWiOS";
 			};

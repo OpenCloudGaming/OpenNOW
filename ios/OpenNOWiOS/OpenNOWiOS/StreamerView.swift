@@ -52,6 +52,29 @@ enum NativeStreamTransportPolicy {
     static let allowsTCPCandidates = true
 }
 
+struct NativeStreamRemoteIceBuffer {
+    private var remoteDescriptionReady = false
+    private(set) var pending: [RTCIceCandidate] = []
+    private(set) var droppedCandidates = 0
+
+    mutating func receive(_ candidate: RTCIceCandidate) -> [RTCIceCandidate] {
+        if remoteDescriptionReady { return [candidate] }
+        if pending.count == 120 {
+            pending.removeFirst()
+            droppedCandidates += 1
+        }
+        pending.append(candidate)
+        return []
+    }
+
+    mutating func remoteDescriptionWasSet() -> [RTCIceCandidate] {
+        remoteDescriptionReady = true
+        let candidates = pending
+        pending.removeAll(keepingCapacity: true)
+        return candidates
+    }
+}
+
 enum NativeStreamLivenessAction: Equatable {
     case none
     case requestKeyframe(stalledFor: TimeInterval, attempt: Int)
@@ -2741,6 +2764,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     private var localCodecDebugText = ""
     private var answerSent = false
     private var queuedLocalIceCandidates: [[String: Any]] = []
+    private var remoteIceCandidates = NativeStreamRemoteIceBuffer()
     private var lastStatsSampleAt: TimeInterval?
     private var lastStatsFramesReceived: Int?
     private var lastStatsFramesDecoded: Int?
@@ -2937,6 +2961,10 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         self.viewportSize = viewportSize
         batteryMonitoringWasEnabled = UIDevice.current.isBatteryMonitoringEnabled
         UIDevice.current.isBatteryMonitoringEnabled = true
+        if let error = session.transportPreferenceError(settings: settings) {
+            fail(error)
+            return
+        }
         historyRecord = StreamSessionRecord(gameTitle: session.game.title,
             resolution: "\(streamProfile.width)×\(streamProfile.height)", targetFPS: streamProfile.fps,
             codec: settings.preferredCodec.uppercased(), hdr: settings.hdrEnabled,
@@ -3833,6 +3861,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         playbackAudioDevice = nil
         answerSent = false
         queuedLocalIceCandidates.removeAll(keepingCapacity: true)
+        remoteIceCandidates = NativeStreamRemoteIceBuffer()
     }
 
     /// Rebuilds only the local signaling/decoder transport. The CloudMatch allocation, selected
@@ -3914,6 +3943,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         remotePeerId = 1
         answerSent = false
         queuedLocalIceCandidates.removeAll(keepingCapacity: true)
+        remoteIceCandidates = NativeStreamRemoteIceBuffer()
         mediaTransportConnected = false
         transportWasStable = false
         mediaLivenessWatchdog.reset()
@@ -4243,6 +4273,9 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
                     self.fail("Remote SDP failed: \(error.localizedDescription)")
                     return
                 }
+                let candidates = self.remoteIceCandidates.remoteDescriptionWasSet()
+                self.log("Remote SDP ready; flushing ICE candidates count=\(candidates.count)")
+                for candidate in candidates { self.deliverRemoteCandidate(candidate) }
                 self.applyCodecPreferences()
                 self.createAnswer(for: processedOffer)
             }
@@ -4250,8 +4283,8 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     }
 
     private func prepareRemoteOffer(_ offerSDP: String) -> String {
-        var prepared = NativeStreamSDP.fixServerEndpoint(
-            in: offerSDP,
+        var prepared = NativeStreamSDP.prepareRemoteOffer(
+            offerSDP,
             serverIP: session.serverIp,
             mediaIP: session.mediaIp,
             mediaPort: session.mediaPort
@@ -4445,25 +4478,26 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     }
 
     private func addRemoteCandidate(_ candidate: String, sdpMid: String?, sdpMLineIndex: Int?) {
-        guard let peerConnection, let lineIndex = Int32(exactly: sdpMLineIndex ?? 0), lineIndex >= 0 else { return }
-        let rewrittenCandidate = NativeStreamSDP.rewriteIceCandidateEndpoint(
-            candidate,
-            mediaIP: session.mediaIp,
-            mediaPort: session.mediaPort
-        )
-        if rewrittenCandidate != candidate {
-            log("Rewrote remote ICE candidate to media endpoint \(session.mediaIp ?? "nil"):\(session.mediaPort)")
-        }
+        guard !stopped, let lineIndex = Int32(exactly: sdpMLineIndex ?? 0), lineIndex >= 0 else { return }
         let ice = RTCIceCandidate(
-            sdp: rewrittenCandidate,
+            sdp: candidate,
             sdpMLineIndex: lineIndex,
             sdpMid: sdpMid
         )
-        peerConnection.add(ice) { [weak self] error in
+        let candidates = remoteIceCandidates.receive(ice)
+        log("Remote ICE received deliver=\(candidates.count) pending=\(remoteIceCandidates.pending.count) dropped=\(remoteIceCandidates.droppedCandidates)")
+        for candidate in candidates { deliverRemoteCandidate(candidate) }
+    }
+
+    private func deliverRemoteCandidate(_ candidate: RTCIceCandidate) {
+        guard !stopped, let peerConnection else { return }
+        peerConnection.add(candidate) { [weak self] error in
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, self.peerConnection === peerConnection else { return }
                 if let error {
                     self.log("Remote ICE rejected: \(error.localizedDescription)")
+                } else {
+                    self.log("Remote ICE accepted")
                 }
             }
         }

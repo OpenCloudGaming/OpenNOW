@@ -53,6 +53,39 @@ enum NativeStreamSDP {
         return parts.joined(separator: ".")
     }
 
+    static func prepareRemoteOffer(_ sdp: String, serverIP: String?, mediaIP: String?, mediaPort: Int) -> String {
+        let mediaHost = normalizedEndpointHost(from: mediaIP)
+        let hasMediaEndpoint = mediaHost != nil && !["0.0.0.0", "::"].contains(mediaHost ?? "")
+            && (1...65_535).contains(mediaPort)
+        guard let replacementIP = hasMediaEndpoint ? mediaHost : extractPublicIP(from: serverIP) else { return sdp }
+        let lineEnding = sdp.contains("\r\n") ? "\r\n" : "\n"
+        return sdp.components(separatedBy: lineEnding).map { line in
+            let fields = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
+            let address: String
+            if fields.count == 3, fields[0] == "c=IN", fields[1] == "IP4" {
+                address = String(fields[2])
+            } else if fields.count >= 8, fields[0].hasPrefix("a=candidate:") {
+                address = String(fields[4])
+            } else {
+                return line
+            }
+            let parts = address.split(separator: ".", omittingEmptySubsequences: false)
+            let octets = parts.compactMap { Int($0) }
+            guard parts.count == 4, octets.count == 4, octets.allSatisfy({ (0...255).contains($0) }) else { return line }
+            let placeholder = octets.allSatisfy { $0 == 0 }
+            let unroutable = octets[0] == 10 || octets[0] == 127
+                || (octets[0] == 172 && (16...31).contains(octets[1]))
+                || (octets[0] == 192 && octets[1] == 168)
+                || (octets[0] == 169 && octets[1] == 254)
+                || (octets[0] == 100 && (64...127).contains(octets[1]))
+                || (224...239).contains(octets[0])
+            guard placeholder || (hasMediaEndpoint && unroutable) else { return line }
+            if fields[0] == "c=IN" { return "c=IN \(replacementIP.contains(":") ? "IP6" : "IP4") \(replacementIP)" }
+            return rewriteIceCandidate(line, replacementIP: replacementIP,
+                                       replacementPort: hasMediaEndpoint ? mediaPort : nil)
+        }.joined(separator: lineEnding)
+    }
+
     static func fixServerIP(in sdp: String, serverIP: String?) -> String {
         fixServerEndpoint(
             in: sdp,

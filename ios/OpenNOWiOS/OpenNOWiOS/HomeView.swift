@@ -345,7 +345,7 @@ private actor OpenNOWImageLoadGate {
     }
 }
 
-private struct OpenNOWImageLoadRequest: Hashable {
+struct OpenNOWImageLoadRequest: Hashable, Sendable {
     let url: URL
     let targetPixelSize: Int
 }
@@ -458,68 +458,107 @@ private enum OpenNOWRemoteImageFetcher {
     }
 }
 
-private actor OpenNOWRemoteImagePipeline {
+actor OpenNOWRemoteImagePipeline {
     static let shared = OpenNOWRemoteImagePipeline()
 
-    private var inFlight: [OpenNOWImageLoadRequest: Task<UIImage, Error>] = [:]
+    private struct Load {
+        let id: UUID
+        let task: Task<UIImage, Error>
+        var subscribers: Set<UUID>
+    }
+
+    private let imageLoader: @Sendable (OpenNOWImageLoadRequest) async throws -> UIImage
+    private var inFlight: [OpenNOWImageLoadRequest: Load] = [:]
+
+    init(imageLoader: @escaping @Sendable (OpenNOWImageLoadRequest) async throws -> UIImage = {
+        try await OpenNOWRemoteImagePipeline.fetchImage($0)
+    }) {
+        self.imageLoader = imageLoader
+    }
 
     func load(_ request: OpenNOWImageLoadRequest) async throws -> UIImage {
+        try Task.checkCancellation()
         if let cached = OpenNOWImageCache.shared.image(
             for: request.url,
             targetPixelSize: request.targetPixelSize
         ) {
             return cached
         }
-        if let existing = inFlight[request] {
-            return try await existing.value
+        let subscriber = UUID()
+        let load: Load
+        if var existing = inFlight[request] {
+            existing.subscribers.insert(subscriber)
+            inFlight[request] = existing
+            load = existing
+        } else {
+            let loader = imageLoader
+            let task = Task(priority: Task.currentPriority) {
+                try await loader(request)
+            }
+            load = Load(id: UUID(), task: task, subscribers: [subscriber])
+            inFlight[request] = load
         }
 
-        let task = Task(priority: Task.currentPriority) {
-            if let diskFile = OpenNOWImageDiskCache.freshFileURL(for: request.url) {
-                do {
-                    let diskImage = try await OpenNOWImageDecoder.downsampledImage(
-                        fileURL: diskFile,
-                        targetPixelSize: request.targetPixelSize
-                    )
-                    let cost = diskImage.cgImage.map { $0.bytesPerRow * $0.height } ?? 0
-                    OpenNOWImageCache.shared.insert(
-                        diskImage,
-                        for: request.url,
-                        targetPixelSize: request.targetPixelSize,
-                        cost: cost
-                    )
-                    return diskImage
-                } catch {
-                    OpenNOWImageDiskCache.remove(for: request.url)
-                }
+        return try await withTaskCancellationHandler {
+            do {
+                let image = try await load.task.value
+                unsubscribe(request, loadID: load.id, subscriber: subscriber)
+                try Task.checkCancellation()
+                return image
+            } catch {
+                unsubscribe(request, loadID: load.id, subscriber: subscriber)
+                throw error
             }
+        } onCancel: {
+            Task { await self.unsubscribe(request, loadID: load.id, subscriber: subscriber) }
+        }
+    }
 
-            let loaded = try await OpenNOWRemoteImageFetcher.load(
-                url: request.url,
-                targetPixelSize: request.targetPixelSize
-            )
-            OpenNOWImageCache.shared.insert(
-                loaded.image,
-                for: request.url,
-                targetPixelSize: request.targetPixelSize,
-                cost: loaded.cost
-            )
-            // First paint must not wait for an atomic disk write. The decoded image is already in
-            // memory, so persist the reusable encoded bytes independently at utility priority.
-            Task.detached(priority: .utility) {
-                await OpenNOWImageDiskCache.store(loaded.data, for: request.url)
+    private func unsubscribe(_ request: OpenNOWImageLoadRequest, loadID: UUID, subscriber: UUID) {
+        guard var load = inFlight[request], load.id == loadID else { return }
+        load.subscribers.remove(subscriber)
+        if load.subscribers.isEmpty {
+            inFlight[request] = nil
+            load.task.cancel()
+        } else {
+            inFlight[request] = load
+        }
+    }
+
+    nonisolated static func fetchImage(_ request: OpenNOWImageLoadRequest) async throws -> UIImage {
+        if let diskFile = OpenNOWImageDiskCache.freshFileURL(for: request.url) {
+            do {
+                let diskImage = try await OpenNOWImageDecoder.downsampledImage(
+                    fileURL: diskFile,
+                    targetPixelSize: request.targetPixelSize
+                )
+                let cost = diskImage.cgImage.map { $0.bytesPerRow * $0.height } ?? 0
+                OpenNOWImageCache.shared.insert(
+                    diskImage,
+                    for: request.url,
+                    targetPixelSize: request.targetPixelSize,
+                    cost: cost
+                )
+                return diskImage
+            } catch {
+                OpenNOWImageDiskCache.remove(for: request.url)
             }
-            return loaded.image
         }
-        inFlight[request] = task
-        do {
-            let image = try await task.value
-            inFlight[request] = nil
-            return image
-        } catch {
-            inFlight[request] = nil
-            throw error
+
+        let loaded = try await OpenNOWRemoteImageFetcher.load(
+            url: request.url,
+            targetPixelSize: request.targetPixelSize
+        )
+        OpenNOWImageCache.shared.insert(
+            loaded.image,
+            for: request.url,
+            targetPixelSize: request.targetPixelSize,
+            cost: loaded.cost
+        )
+        Task.detached(priority: .utility) {
+            await OpenNOWImageDiskCache.store(loaded.data, for: request.url)
         }
+        return loaded.image
     }
 }
 
@@ -705,6 +744,7 @@ struct HomeView: View {
     @State private var sort = CatalogGameSort.popular
     @State private var selectedStores = Set<String>()
     @State private var selectedGenres = Set<String>()
+    @State private var touchControlsOnly = false
 
     private var continueCardWidth: CGFloat {
         let baseWidth: CGFloat = store.settings.compactGameCards ? 140 : 160
@@ -751,6 +791,7 @@ struct HomeView: View {
         GameCatalogGridView(
             games: homeGridGames,
             isLoading: store.isLoadingGames && store.allGames.isEmpty,
+            isSearching: store.isSearchingCatalog,
             emptyTitle: homeEmptyTitle,
             emptySystemImage: store.isSearchingCatalog ? "arrow.triangle.2.circlepath"
                 : (isHomeSearchActive ? "magnifyingglass" : "square.grid.2x2"),
@@ -771,6 +812,7 @@ struct HomeView: View {
                     isSearchPresented = false
                     selectedStores.removeAll()
                     selectedGenres.removeAll()
+                    touchControlsOnly = false
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(brandAccent)
@@ -791,9 +833,13 @@ struct HomeView: View {
                     isSearchPresented = false
                     selectedStores.removeAll()
                     selectedGenres.removeAll()
+                    touchControlsOnly = false
                 } : nil
             ) {
                 HStack(spacing: 8) {
+                    if store.isSearchingCatalog {
+                        ProgressView().accessibilityLabel("Searching games")
+                    }
                     Menu {
                         ForEach(CatalogGameSort.allCases, id: \.self) { option in
                             Button {
@@ -808,6 +854,7 @@ struct HomeView: View {
                     }
 
                     Menu {
+                        Toggle("Touch controls", isOn: $touchControlsOnly)
                         if !availableStoreFilters.isEmpty {
                             Section("Stores") {
                                 ForEach(availableStoreFilters, id: \.self) { storeID in
@@ -838,10 +885,11 @@ struct HomeView: View {
                             Button("Clear Filters", systemImage: "xmark.circle") {
                                 selectedStores.removeAll()
                                 selectedGenres.removeAll()
+                                touchControlsOnly = false
                             }
                         }
                     } label: {
-                        Label(hasCatalogFilters ? "Filter \(selectedStores.count + selectedGenres.count)" : "Filter",
+                        Label(hasCatalogFilters ? "Filter \(selectedStores.count + selectedGenres.count + (touchControlsOnly ? 1 : 0))" : "Filter",
                               systemImage: "line.3.horizontal.decrease")
                     }
                 }
@@ -856,14 +904,7 @@ struct HomeView: View {
             newGamesHeroSection
         }
 
-        if let error = store.catalogError {
-            ErrorBannerView(
-                message: error,
-                failure: store.lastFailure?.message == error ? store.lastFailure : nil,
-                onRecover: { store.performRecovery($0) },
-                onDismiss: { store.clearCatalogError() }
-            )
-        }
+        CatalogFailureNotice()
 
         if !isResultsMode && (jumpBackInHasContent || !store.settings.dismissedContinuePlaying.isEmpty) {
             continueSection
@@ -956,6 +997,7 @@ struct HomeView: View {
                             item.onSelect()
                         }
                         .frame(width: continueCardWidth)
+                        .disabled(!item.isEnabled)
                         .contextMenu {
                             if let onDismiss = item.onDismiss {
                                 Button("Remove from Continue Playing", systemImage: "minus.circle", action: onDismiss)
@@ -968,7 +1010,7 @@ struct HomeView: View {
                             Haptics.light()
                             store.scheduleResume(candidate: candidate)
                         } label: {
-                            Label("Cloud Session", systemImage: "arrow.clockwise.circle")
+                            Label("Check Cloud Session", systemImage: "arrow.clockwise.circle")
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         .buttonStyle(.bordered)
@@ -1015,7 +1057,7 @@ struct HomeView: View {
     private var queueGames: [CloudGame] {
         var seen = Set<String>()
         var games: [CloudGame] = []
-        if let active = store.activeSession, active.status == 1,
+        if let active = store.activeSession, active.status == 1, store.sessionAvailability == .available,
            seen.insert(catalogStableGameKey(active.game)).inserted {
             games.append(active.game)
         }
@@ -1047,11 +1089,12 @@ struct HomeView: View {
     }
 
     private var homeGridGames: [CloudGame] {
-        store.catalogPresentation.gridGames(query: store.searchText, remoteResults: store.remoteSearchResults,
+        let games = store.catalogPresentation.gridGames(query: store.searchText, remoteResults: store.remoteSearchResults,
             stores: selectedStores, genres: selectedGenres, sort: sort)
+        return touchControlsOnly ? games.filter { NativeTouchSupport.catalogClaimsTouchSupport($0) } : games
     }
 
-    private var hasCatalogFilters: Bool { !selectedStores.isEmpty || !selectedGenres.isEmpty }
+    private var hasCatalogFilters: Bool { !selectedStores.isEmpty || !selectedGenres.isEmpty || touchControlsOnly }
     private var isResultsMode: Bool { isHomeSearchActive || hasCatalogFilters }
 
     private var availableStoreFilters: [String] {
@@ -1070,6 +1113,7 @@ struct HomeView: View {
     /// silently filling the grid a second later.
     private var homeEmptyTitle: String {
         if store.isSearchingCatalog { return "Searching the catalog…" }
+        if store.catalogError != nil && !isResultsMode { return "Games Unavailable" }
         return isResultsMode ? "No Matches" : "No Games"
     }
 
@@ -1106,6 +1150,9 @@ struct HomeView: View {
                 selectedGenres.remove(genre)
             })
         }
+        if touchControlsOnly {
+            chips.append(CatalogFilterChip(label: "Touch controls") { touchControlsOnly = false })
+        }
         return chips
     }
 
@@ -1134,15 +1181,18 @@ struct HomeView: View {
     private var continueGameItems: [GameBannerActionItem] {
         var items: [GameBannerActionItem] = []
         var seenGameKeys = Set<String>()
-        if let active = store.activeSession, active.status != 1 {
+        if let active = store.activeSession, active.status != 1 || store.sessionAvailability != .available {
+            let presentation = SessionScreenPresentation(session: active, availability: store.sessionAvailability, isStreaming: store.streamSession != nil)
             seenGameKeys.insert(catalogStableGameKey(active.game))
             items.append(
                 GameBannerActionItem(
                     id: "active-\(active.id)",
                     game: active.game,
-                    subtitle: jumpBackInSubtitleActive(active),
-                    badgeSystemImage: active.status == 3 ? "play.circle.fill" : "hourglass"
+                    subtitle: presentation.status,
+                    badgeSystemImage: presentation.symbol,
+                    isEnabled: !presentation.isChecking && !store.isEndingSession
                 ) {
+                    guard !presentation.isChecking else { return }
                     store.jumpBackToSession()
                 }
             )
@@ -1155,7 +1205,7 @@ struct HomeView: View {
                 GameBannerActionItem(
                     id: "remote-\(candidate.id)",
                     game: game,
-                    subtitle: "Resume session",
+                    subtitle: "Check session",
                     badgeSystemImage: "arrow.clockwise.circle"
                 ) {
                     store.scheduleResume(candidate: candidate)
@@ -1187,20 +1237,6 @@ struct HomeView: View {
             .filter { $0.status != 1 && store.gameForRemoteSession($0) == nil }
     }
 
-    private func jumpBackInSubtitleActive(_ session: ActiveSession) -> String {
-        switch session.status {
-        case 3:
-            guard store.supportsEmbeddedStreamer else { return "Ready on another platform" }
-            return store.streamSession == nil ? "Ready to return" : "Streaming"
-        case 2:
-            return "Connecting"
-        default:
-            if let queue = session.queuePosition {
-                return queue == 1 ? "Next in queue" : "Queue #\(queue)"
-            }
-            return "Queued"
-        }
-    }
 }
 
 private let gameVerticalBannerAspectRatio: CGFloat = 2.0 / 3.0
@@ -1215,6 +1251,7 @@ struct GameBannerActionItem: Identifiable {
     let game: CloudGame
     let subtitle: String?
     let badgeSystemImage: String?
+    var isEnabled = true
     var onDismiss: (() -> Void)? = nil
     let onSelect: () -> Void
 }
@@ -1267,6 +1304,7 @@ struct CatalogFilterChip: Identifiable {
 }
 
 struct CatalogControlsHeader<Controls: View>: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let title: String
     let subtitle: String?
     let chips: [CatalogFilterChip]
@@ -1275,18 +1313,17 @@ struct CatalogControlsHeader<Controls: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .center, spacing: 10) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.headline.weight(.semibold))
-                    if let subtitle, !subtitle.isEmpty {
-                        Text(subtitle)
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(.secondary)
-                    }
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 10) {
+                    heading
+                    controls()
                 }
-                Spacer(minLength: 8)
-                controls()
+            } else {
+                HStack(alignment: .center, spacing: 10) {
+                    heading
+                    Spacer(minLength: 8)
+                    controls()
+                }
             }
 
             if !chips.isEmpty {
@@ -1302,10 +1339,23 @@ struct CatalogControlsHeader<Controls: View>: View {
                             .font(.caption.weight(.semibold))
                             .buttonStyle(.bordered)
                             .controlSize(.small)
+                            .minimumHitTarget()
                         }
                     }
                     .padding(.vertical, 1)
                 }
+            }
+        }
+    }
+
+    private var heading: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.headline.weight(.semibold))
+            if let subtitle, !subtitle.isEmpty {
+                Text(subtitle)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -1324,6 +1374,7 @@ private struct CatalogFilterChipButton: View {
                 Image(systemName: "xmark")
                     .font(.caption2.weight(.bold))
             }
+            .frame(minHeight: OpenNOWSpacing.hitTarget)
         }
         .font(.caption.weight(.semibold))
         .buttonStyle(.bordered)
@@ -1336,6 +1387,7 @@ struct GameCatalogGridView<Header: View, EmptyActions: View>: View {
     @EnvironmentObject private var store: OpenNOWStore
     let games: [CloudGame]
     let isLoading: Bool
+    var isSearching: Bool = false
     let emptyTitle: String
     let emptySystemImage: String
     /// One line under the empty-state title saying what actually happened. Optional because not
@@ -1378,6 +1430,9 @@ struct GameCatalogGridView<Header: View, EmptyActions: View>: View {
                     }
                     .shimmeringSkeleton()
                     .padding(.horizontal, 12)
+                } else if games.isEmpty && isSearching {
+                    ProgressView("Searching games…")
+                        .frame(maxWidth: .infinity, minHeight: 160)
                 } else if games.isEmpty {
                     OpenNOWUnavailableView(emptyTitle, systemImage: emptySystemImage) {
                         if let emptyDescription {
@@ -1424,6 +1479,7 @@ struct GameCatalogGridView<Header: View, EmptyActions: View>: View {
 private struct GameCatalogGridCard: View {
     @EnvironmentObject private var controllerShortcuts: CatalogControllerShortcutCoordinator
     @Environment(\.gameDetailsTransition) private var detailsTransition
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var detailsSourceID = UUID()
     @FocusState private var isPosterFocused: Bool
     @State private var isLegacyPosterFocused = false
@@ -1549,8 +1605,8 @@ private struct GameCatalogGridCard: View {
                 onLegacyFocusChange: { isLegacyPosterFocused = $0 }
             )
             .focused($isPosterFocused)
-            .scaleEffect(isPosterVisuallyFocused ? 1.025 : 1)
-            .animation(.easeOut(duration: 0.16), value: isPosterVisuallyFocused)
+            .scaleEffect(isPosterVisuallyFocused && !reduceMotion ? 1.025 : 1)
+            .animation(reduceMotion ? nil : OpenNOWMotion.fast, value: isPosterVisuallyFocused)
             .accessibilityLabel("Open details for \(game.title)")
 
             HStack(alignment: .bottom) {
@@ -1560,6 +1616,7 @@ private struct GameCatalogGridCard: View {
                             .font(.headline.weight(.bold))
                             .foregroundStyle(favorite ? Color.red : Color.white)
                             .artworkControlChip(diameter: controlSize)
+                            .minimumHitTarget()
                     }
                     .buttonStyle(.plain)
                     .controllerFocusableCompat(fallbackActivation: toggleFavorite)
@@ -1577,6 +1634,7 @@ private struct GameCatalogGridCard: View {
                             diameter: controlSize,
                             fill: brandAccent.opacity(canLaunch ? 0.96 : 0.45)
                         )
+                        .minimumHitTarget()
                 }
                 .buttonStyle(.plain)
                 .controllerFocusableCompat(fallbackActivation: play)
@@ -1804,6 +1862,7 @@ private struct GameBannerSkeletonCard: View {
 }
 
 struct GameBannerButton: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var isFocused: Bool
     @State private var isLegacyFocused = false
     let game: CloudGame
@@ -1839,8 +1898,8 @@ struct GameBannerButton: View {
         )
         .focused($isFocused)
         .accessibilityLabel([game.title, subtitle].compactMap { $0 }.joined(separator: ", "))
-        .scaleEffect(isVisuallyFocused ? 1.025 : 1)
-        .animation(.easeOut(duration: 0.16), value: isVisuallyFocused)
+        .scaleEffect(isVisuallyFocused && !reduceMotion ? 1.025 : 1)
+        .animation(reduceMotion ? nil : OpenNOWMotion.fast, value: isVisuallyFocused)
         .zIndex(isVisuallyFocused ? 2 : 0)
     }
 }
@@ -2093,9 +2152,31 @@ private struct GameScreenshotGallery: View {
             HStack {
                 Button("Close", systemImage: "xmark") { showingViewer = false }
                     .labelStyle(.iconOnly)
+                    .minimumHitTarget()
                 Spacer()
+                if screenshotURLs.count > 1 {
+                    Button {
+                        selectedIndex = max(0, selectedIndex - 1)
+                    } label: {
+                        Label("Previous screenshot", systemImage: "chevron.left")
+                    }
+                    .labelStyle(.iconOnly)
+                    .minimumHitTarget()
+                    .disabled(selectedIndex == 0)
+                }
                 Text("\(selectedIndex + 1) of \(screenshotURLs.count)")
                     .font(.subheadline.weight(.semibold))
+                    .monospacedDigit()
+                if screenshotURLs.count > 1 {
+                    Button {
+                        selectedIndex = min(screenshotURLs.count - 1, selectedIndex + 1)
+                    } label: {
+                        Label("Next screenshot", systemImage: "chevron.right")
+                    }
+                    .labelStyle(.iconOnly)
+                    .minimumHitTarget()
+                    .disabled(selectedIndex >= screenshotURLs.count - 1)
+                }
             }
             .foregroundStyle(.white)
             .padding(14)
@@ -2475,7 +2556,7 @@ private struct ComingNextCarousel: View {
     }
 
     private func selectPage(_ index: Int) {
-        withAnimation(.easeInOut(duration: 0.28)) {
+        withAnimation(reduceMotion ? nil : OpenNOWMotion.standard) {
             selectedPage = index
         }
     }
@@ -2483,6 +2564,7 @@ private struct ComingNextCarousel: View {
 
 private struct ComingNextHeroCard: View {
     @Environment(\.gameDetailsTransition) private var detailsTransition
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var detailsSourceID = UUID()
     @FocusState private var isFocused: Bool
     @State private var isLegacyFocused = false
@@ -2548,8 +2630,8 @@ private struct ComingNextHeroCard: View {
         .overlay(
             shape.stroke(isVisuallyFocused ? brandAccent : Color.white.opacity(0.12), lineWidth: isVisuallyFocused ? 2 : 1)
         )
-        .scaleEffect(isVisuallyFocused ? 1.012 : 1)
-        .animation(.easeOut(duration: 0.16), value: isVisuallyFocused)
+        .scaleEffect(isVisuallyFocused && !reduceMotion ? 1.012 : 1)
+        .animation(reduceMotion ? nil : OpenNOWMotion.fast, value: isVisuallyFocused)
         .onChangeCompat(of: isVisuallyFocused) { focused in
             onFocusChange(focused)
         }
@@ -2565,6 +2647,7 @@ private struct ComingNextHeroCard: View {
 struct FeaturedGameCard: View {
     @EnvironmentObject private var store: OpenNOWStore
     @Environment(\.gameDetailsTransition) private var detailsTransition
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var detailsSourceID = UUID()
     @FocusState private var isFocused: Bool
     @State private var isLegacyFocused = false
@@ -2607,8 +2690,8 @@ struct FeaturedGameCard: View {
             onLegacyFocusChange: { isLegacyFocused = $0 }
         )
         .focused($isFocused)
-        .scaleEffect(isVisuallyFocused ? 1.025 : 1)
-        .animation(.easeOut(duration: 0.16), value: isVisuallyFocused)
+        .scaleEffect(isVisuallyFocused && !reduceMotion ? 1.025 : 1)
+        .animation(reduceMotion ? nil : OpenNOWMotion.fast, value: isVisuallyFocused)
         .zIndex(isVisuallyFocused ? 2 : 0)
     }
 }
@@ -2640,6 +2723,33 @@ private struct FeaturedGameCardSkeleton: View {
 /// The action is the point. "Session launch failed" on its own leaves someone tapping Play again
 /// and getting the same result; "All rigs in this region are busy" next to a Change Server button
 /// is a screen they can leave.
+struct CatalogFailureNotice: View {
+    @EnvironmentObject private var store: OpenNOWStore
+
+    var body: some View {
+        if let error = store.catalogError {
+            let failure = store.lastFailure?.message == error ? store.lastFailure : nil
+            VStack(alignment: .leading, spacing: OpenNOWSpacing.sm) {
+                ErrorBannerView(
+                    message: error,
+                    failure: failure,
+                    onRecover: { store.performRecovery($0) },
+                    onDismiss: { store.clearCatalogError() }
+                )
+                if failure?.recovery.label == nil {
+                    Button {
+                        Task { await store.refreshCatalog() }
+                    } label: {
+                        Label("Try Again", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(store.isLoadingGames || store.isLoadingFullCatalog)
+                }
+            }
+        }
+    }
+}
+
 struct ErrorBannerView: View {
     let message: String
     var failure: OpenNOWFailure?
@@ -2672,13 +2782,14 @@ struct ErrorBannerView: View {
                 Button(label) { onRecover(failure.recovery) }
                     .font(.footnote.weight(.semibold))
                     .buttonStyle(.borderless)
+                    .minimumHitTarget()
             } else if let onDismiss {
                 Button {
                     onDismiss()
                 } label: {
                     Image(systemName: "xmark")
                         .font(.caption2.weight(.bold))
-                        .frame(width: 28, height: 28)
+                        .minimumHitTarget()
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -2736,6 +2847,7 @@ private struct GameCapabilityBadges: View {
 struct GameCardView: View {
     @EnvironmentObject private var store: OpenNOWStore
     @Environment(\.gameDetailsTransition) private var detailsTransition
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var detailsSourceID = UUID()
     @FocusState private var isFocused: Bool
     @State private var isLegacyFocused = false
@@ -2772,8 +2884,8 @@ struct GameCardView: View {
             onLegacyFocusChange: { isLegacyFocused = $0 }
         )
         .focused($isFocused)
-        .scaleEffect(isVisuallyFocused ? 1.025 : 1)
-        .animation(.easeOut(duration: 0.16), value: isVisuallyFocused)
+        .scaleEffect(isVisuallyFocused && !reduceMotion ? 1.025 : 1)
+        .animation(reduceMotion ? nil : OpenNOWMotion.fast, value: isVisuallyFocused)
         .zIndex(isVisuallyFocused ? 2 : 0)
     }
 }
@@ -2784,18 +2896,25 @@ struct GameLaunchDetailsSheet: View {
     @EnvironmentObject private var store: OpenNOWStore
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var selectedOption: GameLaunchOption?
     @State private var selectedOptionChanged = false
     @State private var showingLauncherPicker = false
     @State private var descriptionExpanded = true
     @State private var launchAlertMessage: String?
+    @State private var pendingPickerLaunch: GameLaunchOption?
+    @State private var showingRemoveConfirmation = false
 
     private var launcherOptions: [GameLaunchOption] { store.launchOptions(for: game) }
     private var savedDefault: GameLaunchOption? { store.defaultLaunchOption(for: game) }
     private var isInLibrary: Bool {
-        !game.ownedStorefronts.isEmpty || store.libraryGames.contains {
+        !game.ownedStorefronts.isEmpty || store.visibleLibraryGames.contains {
             catalogStableGameKey($0) == catalogStableGameKey(game)
         }
+    }
+    private var importedGame: CloudGame? {
+        store.importedGames.first { catalogStableGameKey($0) == catalogStableGameKey(game) }
     }
     private var launchUnavailableMessage: String? {
         if !OpenNOWPlatform.supportsEmbeddedStreamer { return OpenNOWPlatform.streamingUnavailableReason }
@@ -2806,7 +2925,7 @@ struct GameLaunchDetailsSheet: View {
     var body: some View {
         NavigationStack {
             GeometryReader { proxy in
-                let landscape = proxy.size.width > 700 && proxy.size.width > proxy.size.height
+                let landscape = !dynamicTypeSize.isAccessibilitySize && proxy.size.width > 700 && proxy.size.width > proxy.size.height
                 Group {
                     if landscape {
                         HStack(alignment: .top, spacing: 22) {
@@ -2855,10 +2974,14 @@ struct GameLaunchDetailsSheet: View {
                 }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) { actionBar }
-            .sheet(isPresented: $showingLauncherPicker) {
+            .sheet(isPresented: $showingLauncherPicker, onDismiss: {
+                guard let option = pendingPickerLaunch else { return }
+                pendingPickerLaunch = nil
+                completeLaunch(option)
+            }) {
                 GameLauncherSelectionSheet(game: game) { option in
+                    pendingPickerLaunch = option
                     showingLauncherPicker = false
-                    completeLaunch(option)
                 }
                 .environmentObject(store)
             }
@@ -2866,6 +2989,17 @@ struct GameLaunchDetailsSheet: View {
                 Button("OK", role: .cancel) { launchAlertMessage = nil }
             } message: {
                 Text(launchAlertMessage ?? "")
+            }
+            .confirmationDialog("Remove Added Game?", isPresented: $showingRemoveConfirmation, titleVisibility: .visible) {
+                if let importedGame {
+                    Button("Remove from Added Games", role: .destructive) {
+                        store.removeImportedGame(importedGame)
+                        dismiss()
+                    }
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("Remove \(game.title) from this account’s added games? This won’t change ownership in your game stores or end a cloud session.")
             }
         }
         .presentationDetents([.large])
@@ -3049,6 +3183,7 @@ struct GameLaunchDetailsSheet: View {
                                 in: RoundedRectangle(cornerRadius: 12))
                         }
                         .buttonStyle(.plain)
+                        .accessibilityAddTraits(selectedOption?.id == option.id ? .isSelected : [])
                     }
                     if let selectedOption {
                         Button(selectedOption.id == savedDefault?.id ? "Clear default launcher" : "Set as default launcher") {
@@ -3073,6 +3208,15 @@ struct GameLaunchDetailsSheet: View {
                 .padding(.horizontal, 4)
             }
             #endif
+
+            if importedGame != nil {
+                Button(role: .destructive) {
+                    showingRemoveConfirmation = true
+                } label: {
+                    Label("Remove from Added Games", systemImage: "minus.circle")
+                }
+                .minimumHitTarget()
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -3102,7 +3246,7 @@ struct GameLaunchDetailsSheet: View {
             Button { store.toggleFavorite(game) } label: {
                 Image(systemName: store.isFavorite(game) ? "heart.fill" : "heart")
                     .font(.title3)
-                    .frame(width: 46, height: 46)
+                    .frame(minWidth: 46, minHeight: 46)
             }
             .gameDetailsActionStyle()
             .tint(store.isFavorite(game) ? .red : brandAccent)
@@ -3112,7 +3256,8 @@ struct GameLaunchDetailsSheet: View {
                 Label(launchUnavailableMessage == nil ? "Play" : "Play unavailable", systemImage: "play.fill")
                     .font(.headline)
                     .frame(maxWidth: .infinity)
-                    .frame(height: 46)
+                    .frame(minHeight: 46)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .gameDetailsActionStyle(prominent: true)
             .tint(brandAccent)
@@ -3122,7 +3267,7 @@ struct GameLaunchDetailsSheet: View {
                 Button { showingLauncherPicker = true } label: {
                     Image(systemName: "ellipsis")
                         .font(.title3)
-                        .frame(width: 46, height: 46)
+                        .frame(minWidth: 46, minHeight: 46)
                 }
                 .gameDetailsActionStyle()
                 .accessibilityLabel("Choose launcher")
@@ -3138,16 +3283,27 @@ struct GameLaunchDetailsSheet: View {
         VStack(alignment: .leading, spacing: 12, content: content)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(16)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .openNowPanelBackground(overVideo: false, reduceTransparency: reduceTransparency, radius: OpenNOWRadius.lg)
     }
 
     private func detailRow(_ label: String, _ value: String) -> some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(label).foregroundStyle(.secondary)
-            Spacer(minLength: 12)
-            Text(value).multilineTextAlignment(.trailing)
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: OpenNOWSpacing.xs) {
+                    Text(label).foregroundStyle(.secondary)
+                    Text(value)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(label).foregroundStyle(.secondary)
+                    Spacer(minLength: 12)
+                    Text(value).multilineTextAlignment(.trailing)
+                }
+            }
         }
         .font(.subheadline)
+        .accessibilityElement(children: .combine)
     }
 
     private func primaryPlay() {
