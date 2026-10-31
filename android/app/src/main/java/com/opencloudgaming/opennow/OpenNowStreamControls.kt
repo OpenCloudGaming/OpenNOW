@@ -896,7 +896,6 @@ internal fun StreamControlsPanel(
                     if (!touchLayoutEditing) onTouchLayoutEditingToggle()
                     onClose()
                 },
-                onClose = onClose,
                 headerActions = {
                     androidx.compose.material3.IconButton(onClick = { expandedPanel = !expandedPanel }) {
                         Icon(

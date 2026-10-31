@@ -64,7 +64,6 @@ internal fun OnScreenControlsSettings(
     onVisibilityChange: (Boolean) -> Unit = { onChange(touch.copy(enabled = it)) },
     onModeChange: (Boolean) -> Unit = { onChange(touch.copy(keyboardModeEnabled = it)) },
     onEditLayout: (() -> Unit)? = null,
-    onClose: () -> Unit = onBack,
     headerActions: @Composable RowScope.() -> Unit = {},
     additionalSettings: @Composable () -> Unit = {},
     notice: @Composable () -> Unit = {},
@@ -93,13 +92,6 @@ internal fun OnScreenControlsSettings(
         LocalContentColor provides rowStyle.labelColor,
     ) {
         Column(modifier.fillMaxSize()) {
-            val actions: @Composable RowScope.() -> Unit = {
-                headerActions()
-                TextButton(
-                    onClick = onClose,
-                    colors = ButtonDefaults.textButtonColors(contentColor = rowStyle.labelColor),
-                ) { Text(stringResource(R.string.stream_panel_done)) }
-            }
             if (livePreview) {
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 8.dp),
@@ -109,7 +101,7 @@ internal fun OnScreenControlsSettings(
                         Icon(painterResource(R.drawable.ic_arrow_back), stringResource(R.string.action_back))
                     }
                     Text(stringResource(page.title), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-                    actions()
+                    headerActions()
                 }
             } else {
                 SettingsDetailHeader(
@@ -117,7 +109,7 @@ internal fun OnScreenControlsSettings(
                     summary = if (page == TouchSettingsPage.Home) stringResource(R.string.controls_summary) else null,
                     onBack = goBack,
                     backFocusRequester = backFocusRequester,
-                    actions = actions,
+                    actions = headerActions,
                     modifier = Modifier.padding(horizontal = 14.dp, vertical = 14.dp),
                 )
             }
