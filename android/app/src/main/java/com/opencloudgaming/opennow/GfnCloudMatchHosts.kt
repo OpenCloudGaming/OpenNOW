@@ -14,3 +14,9 @@ internal fun isAllianceCloudMatchBase(streamingBaseUrl: String?): Boolean {
     return !isNvidiaCloudMatchHost(host) && host.contains('.') && ':' !in host &&
         host.any(Char::isLetter)
 }
+
+/** YES native seats register WebRTC peers without producing offers; use its native allocation. */
+internal fun requiresNativeAllianceCloudMatchTransport(streamingBaseUrl: String?): Boolean {
+    val host = streamingBaseUrl?.toHttpUrlOrNull()?.host ?: return false
+    return host == "yes.geforcenow.nvidiagrid.net" || host.endsWith(".yes.geforcenow.nvidiagrid.net")
+}

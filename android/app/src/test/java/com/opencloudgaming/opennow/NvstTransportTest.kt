@@ -38,6 +38,21 @@ class NvstTransportTest {
         assertEquals(NvstNetworkMetrics(null, null, 23), parseNvstNetworkMetrics(",,23,-1"))
     }
 
+    @Test fun partnerNegotiationIsOptedInOnlyByNamedAllianceProviderContext() {
+        val session = SessionInfo("seat", 2, serverIp = "203.0.113.10",
+            signalingServer = "seat.example:443", signalingUrl = "wss://seat.example/nvst/")
+        for (base in listOf(null, "", "https://prod.cloudmatchbeta.nvidiagrid.net",
+            "https://np-sjc-01.cloudmatch.nvidiagrid.net", "https://203.0.113.10", "https://[2001:db8::10]")) {
+            val context = OpenNowJson.parseToJsonElement(nvstSessionContext(session.copy(streamingBaseUrl = base), StreamSettings())).jsonObject
+            assertNull(context.getValue("session").jsonObject["alliancePartner"])
+        }
+        val settings = StreamSettings(experimentalNvst = false)
+        val context = OpenNowJson.parseToJsonElement(nvstSessionContext(
+            session.copy(streamingBaseUrl = "https://my-yes.yes.geforcenow.nvidiagrid.net"), settings)).jsonObject
+        assertEquals("true", context.getValue("session").jsonObject.getValue("alliancePartner").jsonPrimitive.content)
+        assertFalse(settings.experimentalNvst)
+    }
+
     @Test fun newAndLegacyProfilesDefaultOff() {
         for (raw in listOf(null, "invalid", "{}", """{"stream":{"fps":120,"experimentalNvst":true}}""")) {
             val loaded = loadSettingsWithNvstDefault(raw)

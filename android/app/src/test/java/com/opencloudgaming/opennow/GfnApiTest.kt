@@ -677,6 +677,52 @@ class GfnApiTest {
     }
 
     @Test
+    fun yesResumeTransportProfileDoesNotAskForAnAbsentWebRtcStreamer() {
+        for (base in listOf("https://my-yes.yes.geforcenow.nvidiagrid.net", "https://prod.yes.geforcenow.nvidiagrid.net")) {
+            for (settings in listOf(
+                StreamSettings(resolution = "2560x1080", aspectRatio = "21:9", maxBitrateMbps = 35),
+                StreamSettings(resolution = "2560x1080", aspectRatio = "21:9", browserClientMode = true),
+                StreamSettings(resolution = "1376x640", aspectRatio = "19.5:9"),
+                StreamSettings(experimentalNvst = true),
+            )) {
+                val data = buildMinimalClaimRequestBody("123", "device", settings = settings,
+                    streamingBaseUrl = base).getValue("sessionRequestData").jsonObject
+                assertTrue(data.getValue("secureRTSPSupported").jsonPrimitive.boolean)
+                assertEquals(if (settings.experimentalNvst) "14" else "1", data.getValue("streamerVersion").jsonPrimitive.content)
+                assertEquals(if (settings.experimentalNvst) "2.0" else "1.0", data.getValue("sdkVersion").jsonPrimitive.content)
+                assertEquals(if (settings.experimentalNvst) 0 else 1, data.getValue("enhancedStreamMode").jsonPrimitive.int)
+                assertTrue(data.getValue("metaData").jsonArray.none {
+                    it.jsonObject["key"]?.jsonPrimitive?.contentOrNull == "GSStreamerType"
+                })
+                val monitor = data.getValue("clientRequestMonitorSettings").jsonArray.single().jsonObject
+                val (width, height) = streamResolutionPixels(settings)
+                assertEquals(width, monitor.getValue("widthInPixels").jsonPrimitive.int)
+                assertEquals(height, monitor.getValue("heightInPixels").jsonPrimitive.int)
+            }
+            val minimal = buildMinimalClaimRequestBody("123", "device", streamingBaseUrl = base)
+                .getValue("sessionRequestData").jsonObject
+            assertTrue(minimal.getValue("secureRTSPSupported").jsonPrimitive.boolean)
+            assertTrue(minimal.getValue("metaData").jsonArray.none {
+                it.jsonObject["key"]?.jsonPrimitive?.contentOrNull == "GSStreamerType"
+            })
+        }
+    }
+
+    @Test
+    fun otherAllianceProvidersKeepTheirExistingWebRtcAllocation() {
+        for (base in listOf("https://provider.alliance.example", "https://yes.geforcenow.nvidiagrid.net.other.example",
+            "https://203.0.113.10")) {
+            val data = buildMinimalClaimRequestBody("123", "device", settings = StreamSettings(),
+                streamingBaseUrl = base).getValue("sessionRequestData").jsonObject
+            assertFalse(data.getValue("secureRTSPSupported").jsonPrimitive.boolean)
+            assertTrue(data.getValue("metaData").jsonArray.any {
+                it.jsonObject["key"]?.jsonPrimitive?.contentOrNull == "GSStreamerType" &&
+                    it.jsonObject["value"]?.jsonPrimitive?.contentOrNull == "WebRTC"
+            })
+        }
+    }
+
+    @Test
     fun freePortalLaunchAndClaimUseCanonicalNativeAndroidIdentityWithExactGeometry() {
         val settings = StreamSettings(resolution = "1376x640", aspectRatio = "19.5:9", fps = 120)
             .eligibleForAndroidLaunch(SubscriptionInfo(membershipTier = "FREE"), null, androidTvProfile = false)
@@ -726,11 +772,12 @@ class GfnApiTest {
                 assertEquals("1", data.getValue("streamerVersion").jsonPrimitive.content)
                 assertEquals("1.0", data.getValue("sdkVersion").jsonPrimitive.content)
                 assertEquals(1, data.getValue("enhancedStreamMode").jsonPrimitive.int)
-                assertEquals(nativeAndroid, data.getValue("secureRTSPSupported").jsonPrimitive.boolean)
+                val nativeTransport = nativeAndroid || !nvidia
+                assertEquals(nativeTransport, data.getValue("secureRTSPSupported").jsonPrimitive.boolean)
                 val streamerMetadata = data.getValue("metaData").jsonArray.firstOrNull {
                     it.jsonObject["key"]?.jsonPrimitive?.contentOrNull == "GSStreamerType"
                 }
-                if (nativeAndroid) {
+                if (nativeTransport) {
                     assertNull("Native Android requests must not provision the WebRTC streamer", streamerMetadata)
                 } else {
                     assertEquals("WebRTC", streamerMetadata?.jsonObject?.get("value")?.jsonPrimitive?.content)

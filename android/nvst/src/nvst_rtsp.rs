@@ -13,6 +13,9 @@ use tungstenite::http::{HeaderValue, Uri};
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket, client_tls};
 
+#[path = "nvst_rtsp_alliance.rs"]
+pub(crate) mod alliance;
+
 const SETUP_PEER_RETRY_ROUNDS: u32 = 3;
 const SETUP_PEER_RETRY_DELAY: Duration = Duration::from_secs(3);
 
@@ -33,7 +36,7 @@ pub struct NvstRtspError {
 }
 
 impl NvstRtspError {
-    fn new(code: &'static str, message: impl Into<String>) -> Self {
+    pub(crate) fn new(code: &'static str, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
@@ -912,14 +915,18 @@ fn prepare_nvst_endpoint(
             "SETUP selected ping version 6 without an X-Nv-Ping-Payload",
         ));
     }
-    let remote_ufrag = resolve_remote_ufrag(
-        setup_ping_payload.as_deref(),
-        remote_ufrag.as_deref(),
-        ping_version,
-        sdp_attribute(&describe.body, "general.serverBundlePort")
-            .and_then(|value| value.parse::<u16>().ok())
-            .filter(|port| *port != 0),
-    )
+    let remote_ufrag = if alliance::enabled(context) {
+        alliance::remote_ufrag(&describe.body, setup_ping_payload.as_deref(), ping_version)
+    } else {
+        resolve_remote_ufrag(
+            setup_ping_payload.as_deref(),
+            remote_ufrag.as_deref(),
+            ping_version,
+            sdp_attribute(&describe.body, "general.serverBundlePort")
+                .and_then(|value| value.parse::<u16>().ok())
+                .filter(|port| *port != 0),
+        )
+    }
     .ok_or_else(|| {
         NvstRtspError::new(
             "missing-ice-credentials",
@@ -933,8 +940,15 @@ fn prepare_nvst_endpoint(
             "DESCRIBE did not return NVST ICE credentials",
         )
     })?;
-    // DESCRIBE is a capability/config offer, not a source of session key material.
-    let (key, key_id) = random_runtime_key()?;
+    // Some partner seats retain the runtime key offered in DESCRIBE, as in dev.
+    // NVIDIA keeps Android's fresh client-generated key negotiation.
+    let (key, key_id) = match alliance::enabled(context)
+        .then(|| alliance::runtime_key(&describe.body))
+        .flatten()
+    {
+        Some(key) => key,
+        None => random_runtime_key()?,
+    };
     let salt = format!("{key_id:024X}");
     let codec = negotiated_codec(context);
     let srtp_profile =
@@ -1179,7 +1193,12 @@ fn build_announce(context: &SessionContext, params: AnnounceParams<'_>) -> Strin
         "i=DeviceString, DeviceName".to_owned(),
         String::new(),
     ];
-    lines.join("\r\n")
+    let body = lines.join("\r\n");
+    if alliance::enabled(context) {
+        alliance::announce(body, params.unified_socket)
+    } else {
+        body
+    }
 }
 
 fn negotiated_color_format(context: &SessionContext, codec: &str) -> (u8, u8) {
@@ -1842,6 +1861,49 @@ mod tests {
                 u8::from(unified_socket)
             )));
         }
+    }
+
+    #[test]
+    fn partner_announce_effective_socket_value_matches_the_media_receiver() {
+        for unified_socket in [false, true] {
+            let mut partner = context();
+            partner
+                .session
+                .extra
+                .insert("alliancePartner".into(), json!(true));
+            let sdp = build_announce(
+                &partner,
+                AnnounceParams {
+                    key: &"01".repeat(32),
+                    key_id: 7,
+                    port: 49006,
+                    address: "192.0.2.10",
+                    ufrag: "abcd",
+                    password: "abcdefghijklmnopqrstuv",
+                    fingerprint: "AA:BB",
+                    video_port: 5004,
+                    rtcp_on_sctp: true,
+                    unified_socket,
+                },
+            );
+            assert_eq!(
+                sdp_attribute(&sdp, "general.enableUnifiedSocket"),
+                Some(u8::from(unified_socket).to_string())
+            );
+            assert_eq!(
+                sdp.matches("a=x-nv-general.enableUnifiedSocket:").count(),
+                1
+            );
+            assert_eq!(
+                sdp_attribute(&sdp, "general.clientBundlePort").as_deref(),
+                Some("49006")
+            );
+            assert_eq!(
+                sdp_attribute(&sdp, "general.iceUserNameFragmentV2").as_deref(),
+                Some("abcd")
+            );
+        }
+        assert!(!alliance::enabled(&context()));
     }
 
     #[test]

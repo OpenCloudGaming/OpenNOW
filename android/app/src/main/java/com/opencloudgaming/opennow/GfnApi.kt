@@ -264,6 +264,10 @@ private fun cloudMatchPlatformName(identity: CloudMatchClientIdentity, appLaunch
         identity.platformName
     }
 
+/** Keep YES allocation aligned with its working native Android streaming path. */
+private fun CloudMatchClientIdentity.requiresNativeSessionTransport(streamingBaseUrl: String?): Boolean =
+    this == NVIDIA_NATIVE_ANDROID_CLOUD_MATCH_IDENTITY || requiresNativeAllianceCloudMatchTransport(streamingBaseUrl)
+
 internal fun isNvidiaShieldTvDevice(
     androidTvProfile: Boolean,
     manufacturer: String?,
@@ -570,10 +574,10 @@ private fun cloudMatchLatencyMetadataHost(streamingBaseUrl: String?): String? {
     }
 }
 
-private fun baseWebRtcSessionMetadata(streamingBaseUrl: String? = null): JsonArray = buildJsonArray {
+private fun baseWebRtcSessionMetadata(streamingBaseUrl: String? = null, nativeTransport: Boolean = false): JsonArray = buildJsonArray {
     add(metadataEntry("SubSessionId", UUID.randomUUID().toString()))
     add(metadataEntry("wssignaling", "1"))
-    add(metadataEntry("GSStreamerType", "WebRTC"))
+    if (!nativeTransport) add(metadataEntry("GSStreamerType", "WebRTC"))
     add(metadataEntry("networkType", "Unknown"))
     cloudMatchLatencyMetadataHost(streamingBaseUrl)?.let { host ->
         add(metadataEntry("latency@$host", "3"))
@@ -704,7 +708,7 @@ internal fun buildMinimalClaimRequestBody(
                 controllerCapabilities.supportedControllerTypes.forEach { add(JsonPrimitive(it)) }
             }
             put("clientVersion", "30.0")
-            putStreamTransportRequest(settings, identity == NVIDIA_NATIVE_ANDROID_CLOUD_MATCH_IDENTITY)
+            putStreamTransportRequest(settings, identity.requiresNativeSessionTransport(streamingBaseUrl))
             put("deviceHashId", deviceId)
             put("internalTitle", JsonNull)
             put("clientPlatformName", cloudMatchPlatformName(identity, appLaunchMode))
@@ -716,9 +720,9 @@ internal fun buildMinimalClaimRequestBody(
             put(
                 "metaData",
                 if (settings != null && profile != null) {
-                    streamSessionMetadata(settings, profile, physicalDisplayResolution, streamingBaseUrl, identity == NVIDIA_NATIVE_ANDROID_CLOUD_MATCH_IDENTITY)
+                    streamSessionMetadata(settings, profile, physicalDisplayResolution, streamingBaseUrl, identity.requiresNativeSessionTransport(streamingBaseUrl))
                 } else {
-                    baseWebRtcSessionMetadata(streamingBaseUrl)
+                    baseWebRtcSessionMetadata(streamingBaseUrl, identity.requiresNativeSessionTransport(streamingBaseUrl))
                 },
             )
             put("surroundAudioInfo", 0)
@@ -3497,14 +3501,14 @@ class GfnSessionRepository(
                 put("clientIdentification", "GFN-PC")
                 put("deviceHashId", deviceId)
                 put("clientVersion", "30.0")
-                putStreamTransportRequest(settings, identity == NVIDIA_NATIVE_ANDROID_CLOUD_MATCH_IDENTITY)
+                putStreamTransportRequest(settings, identity.requiresNativeSessionTransport(streamingBaseUrl))
                 put("clientPlatformName", cloudMatchPlatformName(identity, appLaunchMode))
                 putJsonArray("clientRequestMonitorSettings") {
                     add(monitorSettings(profile, settings.fps, identity))
                 }
                 put("useOps", true)
                 put("audioMode", 2)
-                put("metaData", streamSessionMetadata(settings, profile, physicalDisplayResolution, streamingBaseUrl, identity == NVIDIA_NATIVE_ANDROID_CLOUD_MATCH_IDENTITY))
+                put("metaData", streamSessionMetadata(settings, profile, physicalDisplayResolution, streamingBaseUrl, identity.requiresNativeSessionTransport(streamingBaseUrl)))
                 put("sdrHdrMode", if (profile.hdrEnabled) 1 else 0)
                 put("clientDisplayHdrCapabilities", if (profile.hdrEnabled) hdrCapabilitiesJson() else JsonNull)
                 put("surroundAudioInfo", 0)

@@ -7,14 +7,8 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.layout.absoluteOffset
-import androidx.compose.ui.layout.positionInRoot
-import androidx.compose.ui.layout.findRootCoordinates
-import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -1336,45 +1330,11 @@ internal fun TouchControlGroup(
     modifier: Modifier = Modifier,
     content: @Composable BoxScope.() -> Unit,
 ) {
-    val density = LocalDensity.current
-    val currentOffsetX by rememberUpdatedState(offsetX)
-    val currentOffsetY by rememberUpdatedState(offsetY)
-    val currentOnOffsetChange by rememberUpdatedState(onOffsetChange)
-    var controlBounds by remember { mutableStateOf(Rect.Zero) }
-    var viewportSize by remember { mutableStateOf(IntSize.Zero) }
     Box(
         modifier
-            .absoluteOffset(x = offsetX, y = offsetY)
+            .draggableTouchOverlay(layoutEditing, offsetX, offsetY, onOffsetChange)
             .then(if (layoutEditing && onEdit != null) Modifier.clickable(onClick = onEdit) else Modifier)
-            .pointerInput(layoutEditing) {
-                if (!layoutEditing) return@pointerInput
-                var start = TouchOffset()
-                var bounds = Rect.Zero
-                var viewport = IntSize.Zero
-                var travel = Offset.Zero
-                detectDragGestures(onDragStart = {
-                    start = TouchOffset(currentOffsetX.value, currentOffsetY.value)
-                    bounds = controlBounds
-                    viewport = viewportSize
-                    travel = Offset.Zero
-                }) { change, dragAmount ->
-                    change.consume()
-                    travel += dragAmount
-                    with(density) {
-                        currentOnOffsetChange(
-                            draggedTouchOffset(start.x, travel.x.toDp().value,
-                                bounds.left.toDp().value, bounds.right.toDp().value, viewport.width.toDp().value),
-                            draggedTouchOffset(start.y, travel.y.toDp().value,
-                                bounds.top.toDp().value, bounds.bottom.toDp().value, viewport.height.toDp().value),
-                        )
-                    }
-                }
-            }
             .onGloballyPositioned { coordinates ->
-                controlBounds = Rect(coordinates.positionInRoot(), androidx.compose.ui.geometry.Size(
-                    coordinates.size.width.toFloat(), coordinates.size.height.toFloat(),
-                ))
-                viewportSize = coordinates.findRootCoordinates().size
                 val bounds = coordinates.boundsInRoot()
                 NativeStreamInputRouter.setTouchControllerPassthroughBound(
                     id,

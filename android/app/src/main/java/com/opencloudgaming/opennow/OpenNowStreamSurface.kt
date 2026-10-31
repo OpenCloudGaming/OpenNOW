@@ -1064,56 +1064,13 @@ internal fun StreamScreen(
                 )
             }
             if (touchLayoutEditing) {
-                val doneButtonTone = playButtonTone
-                Column(
-                    Modifier
-                        .align(Alignment.Center),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = Color.Black.copy(alpha = 0.8f),
-                        contentColor = Color.White,
-                    ) {
-                        Text(stringResource(R.string.touch_layout_edit_hint),
-                            modifier = Modifier.padding(12.dp),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color.White)
-                    }
-                    Button(
-                        onClick = {
-                            doneButtonTone()
-                            touchLayoutEditing = false
-                        },
-                        shape = RoundedCornerShape(999.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.primary,
-                        ),
-                        contentPadding = PaddingValues(horizontal = 28.dp, vertical = 14.dp),
-                        elevation = ButtonDefaults.buttonElevation(defaultElevation = 8.dp),
-                        modifier = Modifier.pointerInteropFilter { event ->
-                            if (event.action == MotionEvent.ACTION_UP ||
-                                event.action == MotionEvent.ACTION_DOWN
-                            ) {
-                                false // let Button's click handling still work
-                            } else {
-                                false
-                            }
-                        },
-                    ) {
-                        Icon(
-                            Icons.Rounded.Check,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            stringResource(R.string.stream_panel_done),
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                    }
-                }
+                TouchLayoutEditorPanel(
+                    onDone = {
+                        playButtonTone()
+                        touchLayoutEditing = false
+                    },
+                    modifier = Modifier.fillMaxSize().padding(top = topNoticePadding.dp),
+                )
             }
             if (statusBarDragging && !controlsOpen && !exitConfirmOpen && !keyboardOpen &&
                 !streamGuideOpen && !physicalControllerPromptOpen && inputModePromptOpen == null

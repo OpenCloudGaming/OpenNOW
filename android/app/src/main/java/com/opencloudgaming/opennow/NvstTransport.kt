@@ -89,6 +89,7 @@ internal fun nvstSessionContext(session: SessionInfo, settings: StreamSettings):
     put("session", buildJsonObject {
         put("sessionId", session.sessionId)
         put("serverIp", session.serverIp)
+        if (isAllianceCloudMatchBase(session.streamingBaseUrl)) put("alliancePartner", true)
         session.mediaConnectionInfo?.let { put("mediaConnectionInfo", OpenNowJson.encodeToJsonElement(it)) }
         session.bundleConnectionInfo?.let { bundle ->
             putJsonArray("connectionInfo") {
@@ -265,6 +266,7 @@ internal class NvstTransport(
 
     @Keep fun onNativeEvent(kind: String, detail: String) {
         if (stopped) return
+        if (kind == "stage") NativeInputDiagnostics.add(detail)
         when (kind) {
             "input-ready" -> inputReady = true
             "input-unavailable", "error" -> inputReady = false

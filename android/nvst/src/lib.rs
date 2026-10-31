@@ -10,7 +10,7 @@ use jni::{
 use opennow_streamer_protocol::SessionContext;
 use opennow_streamer_transport::*;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicI64, Ordering},
@@ -204,6 +204,7 @@ fn run(
     state: &Attachment,
 ) -> Result<(), String> {
     let mut context: SessionContext = serde_json::from_str(context).map_err(|e| e.to_string())?;
+    let alliance_partner = nvst_rtsp::alliance::enabled(&context);
     if state.stopped.load(Ordering::Acquire) {
         return Ok(());
     }
@@ -221,6 +222,19 @@ fn run(
             .map_err(|e| e.to_string())?
             .ok_or("Missing NVST handoff")?;
     let feedback = config.feedback();
+    if alliance_partner {
+        event(
+            env,
+            callback,
+            "stage",
+            &format!(
+                "Alliance NVST SETUP complete unifiedSocket={} pingVersion={}",
+                prepared.handoff["unifiedSocket"].as_bool().unwrap_or(false),
+                prepared.handoff["pingVersion"].as_u64().unwrap_or(0),
+            ),
+        )
+        .map_err(|e| e.to_string())?;
+    }
     feedback.set_application_ready(false);
     *state.feedback.lock().unwrap() = Some(feedback.clone());
     prepared.announce().map_err(|e| e.message)?;
@@ -249,6 +263,37 @@ fn run(
     if state.stopped.load(Ordering::Acquire) {
         return Ok(());
     }
+    let mut pending_events = VecDeque::new();
+    if alliance_partner {
+        event(
+            env,
+            callback,
+            "stage",
+            "Alliance NVST waiting for authenticated DTLS before PLAY",
+        )
+        .map_err(|e| e.to_string())?;
+        nvst_rtsp::alliance::wait_authenticated_transport(|| {
+            if state.stopped.load(Ordering::Acquire) {
+                return Err(nvst_rtsp::NvstRtspError::new("nvst-cancelled", "NVST startup cancelled"));
+            }
+            while let Ok(notification) = events.try_recv() {
+                match notification {
+                    NvstReceiveEvent::TransportReady("dtls") => return Ok(true),
+                    NvstReceiveEvent::RecoveryNeeded(nvst::NvstRecovery::Timeout { .. }) =>
+                        return Err(nvst_rtsp::NvstRtspError::new("nvst-transport-ready-timeout",
+                            "Alliance NVST authentication timed out before PLAY; cloud session retained")),
+                    other => {
+                        if pending_events.len() >= 128 {
+                            return Err(nvst_rtsp::NvstRtspError::new("nvst-startup-event-overflow",
+                                "NVST startup event budget exceeded; cloud session retained"));
+                        }
+                        pending_events.push_back(other);
+                    }
+                }
+            }
+            Ok(false)
+        }, Duration::from_secs(8)).map_err(|e| format!("{}: {}", e.code, e.message))?;
+    }
     let _rtsp = prepared.finish().map_err(|e| e.message)?;
     feedback.set_application_ready(true);
     event(env, callback, "connected", "NVST encrypted UDP").map_err(|e| e.to_string())?;
@@ -256,7 +301,7 @@ fn run(
     let mut round_trip_ms = None;
     let mut duplicate_stun_responses = 0;
     while !state.stopped.load(Ordering::Acquire) {
-        for notification in events.try_iter().take(128) {
+        for notification in pending_events.drain(..).chain(events.try_iter()).take(128) {
             match notification {
                 NvstReceiveEvent::RoundTripTime {
                     rtt,

@@ -29,6 +29,24 @@ Touch records and OC report layout reuse Android's existing input protocol. Mapp
 onto native RemoteInput and the native descriptor indices needs live GFN/device verification;
 unit tests cover framing, bounds, motor ordering, and Opus/RED round trips, not host acceptance.
 
+Alliance native startup correction (2026-10-30), compared with dev 5b89338a3:
+- YES CloudMatch identities now request secure RTSP and omit GSStreamerType=WebRTC
+  in both CREATE and RESUME. The YES logs reached WSS registration/heartbeats but never an
+  offer; the user confirmed the official Android app streams the same game. Existing reported
+  WebRTC allocations retain their WebRTC interpretation; this changes new YES native requests.
+  Other alliance providers retain their existing allocation defaults.
+- Partner negotiation uses dev's legacy bundle NATT username plus decimal bundle port, retains
+  a valid server-offered runtime key, and authenticates DTLS before finishing PLAY startup.
+- Partner ANNOUNCE emits the selected enableUnifiedSocket value once. The old Android template
+  appended a second hard-coded zero, contradicting the unified receiver on partner seats.
+- Kotlin supplies the partner flag from the named CloudMatch provider base. Missing, direct-IP,
+  and NVIDIA contexts do not enable these rules. NVIDIA request and RTSP negotiation behavior
+  stay on the existing path. Startup waits and retained pre-PLAY events have bounded budgets;
+  cancellation/failure closes only the local attachment and retains the cloud session.
+
+Rust negotiation/transport tests and Android request-profile tests cover these changes. Live YES
+startup and video still require verification with the updated build; the supplied logs predate it.
+
 Startup validation on Android (2026-09-07) found `invalid-media-peer` when Android's WebRTC
 fallback classified an RTSPS usage-14 control endpoint as the UDP bundle peer. RTSP connections
 are now excluded from that fallback, matching dev's usage-2/17-only media selection; absent an
