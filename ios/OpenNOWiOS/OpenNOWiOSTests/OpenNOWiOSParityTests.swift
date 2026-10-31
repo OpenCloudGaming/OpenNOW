@@ -1449,9 +1449,13 @@ final class OpenNOWiOSParityTests: XCTestCase {
     @MainActor
     func testQueueSettingsAndLiveActivityPresentationsRender() async throws {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
-        let window = try XCTUnwrap(scene.windows.first(where: \.isKeyWindow))
-        let previous = window.rootViewController
-        defer { window.rootViewController = previous }
+        let previousKeyWindow = scene.windows.first(where: \.isKeyWindow)
+        let window = UIWindow(windowScene: scene)
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previousKeyWindow?.makeKeyAndVisible()
+        }
         let store = OpenNOWStore()
         store.installDebugQueuePreview(position: 24)
         store.settings.expressiveUI = false
