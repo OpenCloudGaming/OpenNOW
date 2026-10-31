@@ -81,7 +81,7 @@ private const val GFN_ANDROID_TOUCH_USER_AGENT =
 // User-Agent used by the official GeForce NOW Android client for TV sessions.
 private const val GFN_ANDROID_TV_USER_AGENT =
     "GFN-PC/22.0 (Android-Generic-TV 14) PGC/3.8 (6.36.38319306) okhttp/4.12.0"
-private const val GFN_CLIENT_VERSION = "2.0.88.129"
+private const val GFN_CLIENT_VERSION = "2.0.89.154"
 private const val GFN_ANDROID_NATIVE_APP_VERSION = "6.39.39022815"
 
 internal fun nativeAndroidCloudMatchUserAgent(androidRelease: String?): String {
@@ -227,6 +227,16 @@ private fun cloudMatchClientIdentity(
     // The opt-in applies only to NVIDIA. Alliance client identities are provider-owned.
     val host = streamingBaseUrl?.toHttpUrlOrNull()?.host?.lowercase(Locale.US)
     if (preferBrowserMode && (streamingBaseUrl.isNullOrBlank() || host?.let(::isNvidiaCloudMatchHost) == true)) {
+        return NVIDIA_BROWSER_CLOUD_MATCH_IDENTITY
+    }
+    // NVIDIA's 2026-10-27 CloudMatch change selects the streamer type from the request headers
+    // (nv-client-type / nv-client-streamer) instead of the body's GSStreamerType. Any request
+    // still advertising NATIVE / NVIDIA-CLASSIC is now allocated a legacy RTSP endpoint
+    // (rtsps://<host>:322/48322) that this client cannot connect to, which surfaces as
+    // "EOFException: Signaling failed" followed by a native crash. BROWSER / WEBRTC is the only
+    // identity still handed a WebRTC streamer, so force it for every NVIDIA CloudMatch host and
+    // keep the opt-in flags above as the documented way to request it explicitly.
+    if (host != null && isNvidiaCloudMatchHost(host)) {
         return NVIDIA_BROWSER_CLOUD_MATCH_IDENTITY
     }
     // Touch sessions use the desktop-native CloudMatch identity (NVIDIA-CLASSIC / NATIVE)
