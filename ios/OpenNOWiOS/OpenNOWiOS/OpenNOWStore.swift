@@ -9385,6 +9385,9 @@ final class OpenNOWStore: ObservableObject {
 
     private func startSessionTasks() {
         guard !isEndingSession else { return }
+        if activeSession != nil, authSession != nil {
+            Task { await NotificationManager.shared.requestPermission() }
+        }
         sessionReconciliationTask?.cancel()
         sessionReconciliationTask = nil
         sessionAvailability = .checking

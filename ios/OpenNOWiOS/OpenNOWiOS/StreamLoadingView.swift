@@ -80,10 +80,6 @@ struct StreamLoadingView: View {
       }
     }
     .environment(\.colorScheme, .dark)
-    .task(id: store.activeSession?.id) {
-      guard store.activeSession != nil else { return }
-      await NotificationManager.shared.requestPermission()
-    }
   }
 
   private var ignoredBackgroundEdges: Edge.Set {
