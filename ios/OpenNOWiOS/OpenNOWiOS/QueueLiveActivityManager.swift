@@ -27,7 +27,7 @@ final class QueueLiveActivityManager {
 
         let content = ActivityContent(
             state: state,
-            staleDate: Date().addingTimeInterval(state.phase == .ready ? 900 : 300)
+            staleDate: Date().addingTimeInterval(300)
         )
 
         if let existing = activities.first(where: { $0.attributes.sessionId == sessionId }) {

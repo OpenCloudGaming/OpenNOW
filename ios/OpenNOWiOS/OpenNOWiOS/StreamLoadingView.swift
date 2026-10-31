@@ -3,65 +3,76 @@ import SwiftUI
 
 struct StreamLoadingView: View {
   @EnvironmentObject private var store: OpenNOWStore
+  @Environment(\.openNowAccent) private var accent
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
   var coversBottomBar = false
 
+  private var isPastQueue: Bool {
+    store.activeSession.map(QueueSessionPhase.isPastQueue) ?? false
+  }
+
+  private var visibleQueuePosition: Int? {
+    guard !isPastQueue, let position = store.displayQueuePosition, position > 0 else { return nil }
+    return position
+  }
+
+  private var providerName: String {
+    guard let code = store.authProviderCode else { return "GeForce NOW" }
+    return store.providers.first { $0.code.caseInsensitiveCompare(code) == .orderedSame }?.displayName ?? code
+  }
+
   private var queueStatusText: String {
-    if let session = store.activeSession, QueueSessionPhase.isPastQueue(session) {
-      return session.status == 1 ? "Setting up gaming rig" : "Launching stream"
+    if isPastQueue {
+      return store.activeSession?.status == 1 ? "Setting up your rig" : "Connecting stream"
     }
-    if let position = store.displayQueuePosition {
+    if let position = visibleQueuePosition {
       return "Queue position \(position)"
     }
-    if let adState = store.effectiveAdState, store.activeQueueAd != nil {
+    if let adState = store.effectiveAdState {
       if adState.opportunity?.queuePaused == true || adState.isQueuePaused == true {
-        return adState.message ?? "Queue paused"
-      }
-      if adState.sessionAdsRequired ?? adState.isAdsRequired {
-        return adState.message ?? "Advertisement required"
+        return "Queue paused"
       }
     }
-    guard let session = store.activeSession else {
-      return store.isLaunchingSession ? "Starting session" : "Waiting in queue"
+    if store.activeSession?.seatSetupStep == 1 {
+      return "Waiting for a rig"
     }
-    switch session.status {
-    case 2: return "Setting up gaming rig"
-    case 3: return "Launching stream"
-    default: return store.isLaunchingSession ? "Starting session" : "Waiting in queue"
+    return store.isLaunchingSession ? "Starting session" : "Waiting in queue"
+  }
+
+  private var queueAdNotice: String? {
+    guard !isPastQueue, let adState = store.effectiveAdState else { return nil }
+    let message = (adState.opportunity?.message ?? adState.message)?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    if adState.opportunity?.queuePaused == true || adState.isQueuePaused == true {
+      return message.map { $0.isEmpty ? "Queue paused" : "Queue paused. \($0)" } ?? "Queue paused"
     }
+    if let message, !message.isEmpty { return message }
+    if store.activeQueueAd != nil, adState.sessionAdsRequired ?? adState.isAdsRequired {
+      return "Watch the advertisement to continue in queue."
+    }
+    return nil
   }
 
   var body: some View {
     GeometryReader { proxy in
+      let isWide = proxy.size.width >= 600 && proxy.size.width > proxy.size.height
+        && !dynamicTypeSize.isAccessibilitySize
       ZStack {
-        // Deliberately no longer passed the queue position: it changed on every poll and
-        // invalidated a full-screen gradient for a difference nobody could see.
-        QueueAmbientBackdrop(accent: brandAccent)
+        QueueAmbientBackdrop(accent: accent.color)
           .ignoresSafeArea(edges: ignoredBackgroundEdges)
 
-        let topInset = max(18, proxy.safeAreaInsets.top + 10)
-        let bottomInset = max(18, proxy.safeAreaInsets.bottom + 10)
         ScrollView {
           Group {
             if let ad = store.activeQueueAd {
-              queueAdPanel(ad: ad, isWide: proxy.size.width > proxy.size.height)
+              queueAdPanel(ad: ad, isWide: isWide)
             } else {
-              queueStatusPanel
+              queueStatusPanel(isWide: isWide)
             }
           }
-          .padding(18)
-          .padding(.top, topInset)
-          .padding(.bottom, bottomInset)
+          .padding(OpenNOWSpacing.xl)
           .frame(maxWidth: .infinity)
-          .frame(minHeight: max(0, proxy.size.height - topInset - bottomInset))
-          // Scoped to the panel rather than the whole screen. An implicit animation applies to
-          // everything beneath it, and at the root it was reaching the ambient backdrop and the
-          // progress bar — both of which derive their position from the clock and stutter the
-          // moment something re-interpolates it.
-          .animation(
-            .spring(response: 0.34, dampingFraction: 0.84),
-            value: store.displayQueuePosition
-          )
-          .animation(.easeInOut(duration: 0.22), value: queueStatusText)
+          .frame(minHeight: proxy.size.height)
         }
         #if os(iOS)
           .scrollBounceBehavior(.basedOnSize)
@@ -79,79 +90,96 @@ struct StreamLoadingView: View {
     coversBottomBar ? .all : [.top, .leading, .trailing]
   }
 
-  private var queueStatusPanel: some View {
-    VStack(spacing: 0) {
-      queueGameArtwork
-      Spacer().frame(height: 16)
-      Text(store.activeSession?.game.title ?? "Starting stream")
-        .font(.title3.weight(.bold))
-        .foregroundStyle(.primary)
-        .multilineTextAlignment(.center)
-        .lineLimit(2)
-        .minimumScaleFactor(0.78)
-
-      AndroidQueueStatusText(
-        text: queueStatusText,
-        position: store.displayQueuePosition,
-        compact: false
-      )
-
-      QueueTrendStrip(trend: store.queueTrend)
-        .padding(.top, 10)
-
-      Spacer().frame(height: 18)
-      Group {
-        if let session = store.activeSession, QueueSessionPhase.isPastQueue(session) {
-          SessionSetupProgressView()
-            .id(session.id)
-        } else {
-          OscillatingQueueProgressView()
-        }
+  private func queueStatusPanel(isWide: Bool) -> some View {
+    let layout = isWide
+      ? AnyLayout(HStackLayout(alignment: .center, spacing: OpenNOWSpacing.xxl))
+      : AnyLayout(VStackLayout(spacing: OpenNOWSpacing.xl))
+    return layout {
+      VStack(spacing: OpenNOWSpacing.md) {
+        queueGameArtwork
+        gameHeading
       }
-      .frame(maxWidth: 430)
-      Spacer().frame(height: 12)
-      actionButtons
+      .frame(maxWidth: isWide ? 260 : .infinity)
+
+      queueDetails(compact: isWide)
         .frame(maxWidth: 430)
-      queueError
     }
-    .frame(maxWidth: 620)
+    .frame(maxWidth: isWide ? 780 : 540)
   }
 
   private func queueAdPanel(ad: SessionAdInfo, isWide: Bool) -> some View {
-    VStack(spacing: isWide ? 10 : 12) {
-      HStack(spacing: 12) {
-        VStack(alignment: .leading, spacing: 2) {
-          Text("Advertisement")
-            .font(.caption.weight(.bold))
-            .foregroundStyle(.secondary)
-          Text(store.activeSession?.game.title ?? "Starting stream")
-            .font((isWide ? Font.headline : .title3).weight(.bold))
-            .lineLimit(1)
-            .minimumScaleFactor(0.75)
+    let layout = isWide
+      ? AnyLayout(HStackLayout(alignment: .center, spacing: OpenNOWSpacing.lg))
+      : AnyLayout(VStackLayout(spacing: OpenNOWSpacing.lg))
+    return layout {
+      QueueAdPlayerCard(ad: ad, compact: isWide)
+        .environmentObject(store)
+
+      VStack(spacing: OpenNOWSpacing.md) {
+        gameHeading
+        queueDetails(compact: true)
+      }
+      .frame(maxWidth: isWide ? 300 : .infinity)
+    }
+    .padding(OpenNOWSpacing.lg)
+    .openNowCard(radius: OpenNOWRadius.xl, bordered: true)
+    .frame(maxWidth: isWide ? 900 : 620)
+  }
+
+  private var gameHeading: some View {
+    VStack(spacing: OpenNOWSpacing.xs) {
+      Text(providerName)
+        .font(OpenNOWFont.overline)
+        .foregroundStyle(OpenNOWPalette.textMuted)
+      Text(store.activeSession?.game.title ?? "Starting stream")
+        .font(OpenNOWFont.sectionHead)
+        .foregroundStyle(OpenNOWPalette.textPrimary)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .multilineTextAlignment(.center)
+  }
+
+  private func queueDetails(compact: Bool) -> some View {
+    VStack(spacing: compact ? OpenNOWSpacing.sm : OpenNOWSpacing.lg) {
+      if let position = visibleQueuePosition {
+        QueuePositionDisplay(position: position, compact: compact)
+        QueueTrendStrip(trend: store.queueTrend)
+      } else {
+        Label(queueStatusText, systemImage: isPastQueue ? "desktopcomputer" : "hourglass")
+          .font(OpenNOWFont.sectionHead)
+          .foregroundStyle(OpenNOWPalette.textPrimary)
+          .multilineTextAlignment(.center)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+
+      VStack(spacing: OpenNOWSpacing.sm) {
+        if isPastQueue {
+          SessionSetupProgressView()
+        } else {
+          OscillatingQueueProgressView()
         }
-        Spacer(minLength: 8)
-        if let position = store.displayQueuePosition {
-          Text(String(position))
-            .font(.title2.weight(.black))
-            .monospacedDigit()
-            .foregroundStyle(queueUrgencyColor(position))
-            .numericQueueTransition(value: position)
+        if isPastQueue || !compact {
+          Text(isPastQueue
+               ? "Your session is being prepared. No completion estimate is available."
+               : "You can browse OpenNOW while you wait.")
+            .font(OpenNOWFont.rowFootnote)
+            .foregroundStyle(OpenNOWPalette.textMuted)
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
         }
       }
 
-      QueueAdPlayerCard(ad: ad, compact: isWide)
-        .environmentObject(store)
+      if let message = queueAdNotice {
+        Label(message, systemImage: "info.circle")
+          .font(OpenNOWFont.rowFootnote)
+          .foregroundStyle(OpenNOWPalette.statusNotice)
+          .fixedSize(horizontal: false, vertical: true)
+      }
 
       actionButtons
       queueError
     }
-    .padding(isWide ? 14 : 16)
-    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-    .overlay {
-      RoundedRectangle(cornerRadius: 18, style: .continuous)
-        .stroke(Color.white.opacity(0.10), lineWidth: 1)
-    }
-    .frame(maxWidth: isWide ? 720 : 620)
+    .animation(reduceMotion ? nil : OpenNOWMotion.standard, value: isPastQueue)
   }
 
   private var queueGameArtwork: some View {
@@ -169,33 +197,38 @@ struct StreamLoadingView: View {
       }
     }
     .aspectRatio(16.0 / 9.0, contentMode: .fit)
-    .frame(width: 220)
-    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .frame(maxWidth: 220)
+    .clipShape(RoundedRectangle(cornerRadius: OpenNOWRadius.lg, style: .continuous))
     .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
+      RoundedRectangle(cornerRadius: OpenNOWRadius.lg, style: .continuous)
         .stroke(Color.white.opacity(0.1), lineWidth: 1)
     )
   }
 
   private var actionButtons: some View {
-    HStack(spacing: 10) {
+    let layout = dynamicTypeSize.isAccessibilitySize
+      ? AnyLayout(VStackLayout(spacing: OpenNOWSpacing.sm))
+      : AnyLayout(HStackLayout(spacing: OpenNOWSpacing.sm))
+    return layout {
       Button {
         Haptics.light()
         store.minimizeQueueOverlay()
       } label: {
-        Text("Minimize").frame(maxWidth: .infinity)
+        Label("Minimize", systemImage: "arrow.down.right.and.arrow.up.left")
+          .frame(maxWidth: .infinity, minHeight: OpenNOWSpacing.hitTarget)
       }
       .buttonStyle(.bordered)
-      .buttonBorderShape(.roundedRectangle(radius: 12))
+      .buttonBorderShape(.roundedRectangle(radius: OpenNOWRadius.md))
+      .accessibilityHint("Keep waiting while browsing OpenNOW")
 
       Button(role: .destructive) {
         Haptics.medium()
         Task { await store.endSession() }
       } label: {
-        Text("Cancel").frame(maxWidth: .infinity)
+        Text("Cancel").frame(maxWidth: .infinity, minHeight: OpenNOWSpacing.hitTarget)
       }
       .buttonStyle(.bordered)
-      .buttonBorderShape(.roundedRectangle(radius: 12))
+      .buttonBorderShape(.roundedRectangle(radius: OpenNOWRadius.md))
       .tint(.red)
     }
   }
@@ -204,56 +237,40 @@ struct StreamLoadingView: View {
     if let error = store.sessionError, !error.isEmpty {
       Text(error)
         .font(.footnote)
-        .foregroundStyle(Color(red: 1, green: 0.62, blue: 0.62))
+        .foregroundStyle(OpenNOWPalette.statusPoor)
         .multilineTextAlignment(.center)
         .padding(.top, 12)
     }
   }
 
-  private func queueUrgencyColor(_ position: Int) -> Color {
-    let heat = position >= 10 ? 0 : Double(10 - max(1, position)) / 9
-    guard heat > 0 else { return .secondary }
-    return Color(
-      red: 1,
-      green: max(0.06, 0.57 - 0.49 * heat),
-      blue: max(0.08, 0.25 - 0.17 * heat)
-    )
-  }
 }
 
-/// One line under the queue numeral saying whether the queue is moving and roughly how long is
-/// left. There was a sparkline here too; it was noise — the sentence is the part that answers
-/// "should I wait?", and a twenty-two point chart of six samples was decoration.
-///
-/// Renders nothing until the estimator has seen enough to be honest. An empty line for the first
-/// minute is better than a confident wrong number, and the layout does not shift when it appears
-/// because the numeral above it is the anchor.
 private struct QueueTrendStrip: View {
   let trend: QueueTrendEstimator
 
   @Environment(\.openNowAccent) private var accent
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-  private var supportLine: String? { trend.supportLine() }
-
   var body: some View {
-    if let supportLine {
-      Text(supportLine)
+    TimelineView(.periodic(from: .now, by: 30)) { context in
+      let supportLine = trend.supportLine(now: context.date)
+      Text(supportLine ?? "Wait estimate unavailable")
         .font(.footnote.weight(.medium))
-        .foregroundStyle(tint)
+        .foregroundStyle(tint(now: context.date))
         .monospacedDigit()
         .multilineTextAlignment(.center)
         .frame(maxWidth: .infinity)
-      .accessibilityElement(children: .ignore)
-      .accessibilityLabel("Queue trend")
-      .accessibilityValue(supportLine)
-      .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
-      .animation(.easeInOut(duration: 0.24), value: supportLine)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Queue trend")
+        .accessibilityValue(supportLine ?? "Not enough recent queue movement to estimate a wait")
+        .accessibilityHint("Wait estimates are based on observed queue movement")
+        .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
+        .animation(reduceMotion ? nil : OpenNOWMotion.fast, value: supportLine)
     }
   }
 
-  private var tint: Color {
-    switch trend.trend() {
+  private func tint(now: Date) -> Color {
+    switch trend.trend(now: now) {
     case .moving: return accent.color
     case .holding: return OpenNOWPalette.statusFair
     case .slipped: return OpenNOWPalette.statusPoor
@@ -277,19 +294,6 @@ private struct AdVideoView: UIViewControllerRepresentable {
 
   func updateUIViewController(_ vc: AVPlayerViewController, context: Context) {
     vc.player = player
-  }
-}
-
-private struct QueueAdVideoFrame: ViewModifier {
-  let compact: Bool
-
-  @ViewBuilder
-  func body(content: Content) -> some View {
-    if compact {
-      content.aspectRatio(16.0 / 9.0, contentMode: .fit)
-    } else {
-      content.frame(height: 220)
-    }
   }
 }
 
@@ -317,8 +321,8 @@ private struct QueueAdPlayerCard: View {
         HStack(spacing: 8) {
           Image(systemName: "play.rectangle.fill")
             .foregroundStyle(.orange)
-          Text("Ad Queue")
-            .font((compact ? Font.caption2 : Font.caption).bold())
+          Text("Advertisement")
+            .font(OpenNOWFont.overline)
             .foregroundStyle(.secondary)
 
           Spacer(minLength: 8)
@@ -329,6 +333,7 @@ private struct QueueAdPlayerCard: View {
             Label("Report Ad", systemImage: "exclamationmark.bubble")
               .font((compact ? Font.caption2 : Font.caption).weight(.semibold))
               .lineLimit(1)
+              .minimumHitTarget()
           }
           .buttonStyle(.plain)
           .foregroundStyle(.secondary)
@@ -339,7 +344,7 @@ private struct QueueAdPlayerCard: View {
           if let mediaUrl = preferredMediaURLString(for: ad), let url = URL(string: mediaUrl) {
             ZStack(alignment: .bottom) {
               AdVideoView(player: player)
-                .modifier(QueueAdVideoFrame(compact: compact))
+                .aspectRatio(16.0 / 9.0, contentMode: .fit)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
 
               HStack {
@@ -353,9 +358,10 @@ private struct QueueAdPlayerCard: View {
                   Image(systemName: isPlaying ? "pause.fill" : "play.fill")
                     .font(.caption.bold())
                     .foregroundStyle(.white)
-                    .padding(8)
+                    .frame(width: OpenNOWSpacing.hitTarget, height: OpenNOWSpacing.hitTarget)
                     .background(.ultraThinMaterial, in: Circle())
                 }
+                .accessibilityLabel(isPlaying ? "Pause ad" : "Play ad")
 
                 Spacer()
 
@@ -365,9 +371,10 @@ private struct QueueAdPlayerCard: View {
                   Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
                     .font(.caption.bold())
                     .foregroundStyle(.white)
-                    .padding(8)
+                    .frame(width: OpenNOWSpacing.hitTarget, height: OpenNOWSpacing.hitTarget)
                     .background(.ultraThinMaterial, in: Circle())
                 }
+                .accessibilityLabel(isMuted ? "Unmute ad" : "Mute ad")
               }
               .padding(8)
             }

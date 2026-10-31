@@ -4514,6 +4514,8 @@ private actor GFNAPIClient {
                 throw error
             } catch where (error as NSError).domain == "OpenNOW.Queue" {
                 throw error
+            } catch where error is RemoteSessionEndedError {
+                throw error
             } catch {
                 // The rig may still be warming up. Preserve the successful control snapshot and
                 // retry hydration on the next poll without restarting or claiming the allocation.
@@ -4557,14 +4559,8 @@ private actor GFNAPIClient {
         }
 
         let json = try parsedResponse ?? parseJSON(data)
-        let statusCode = requestStatus?["statusCode"] as? Int ?? 0
-        guard statusCode == 1 else {
-            let description = requestStatus?["statusDescription"] as? String ?? "Session poll failed"
-            throw NSError(domain: "OpenNOW.Session", code: statusCode, userInfo: [NSLocalizedDescriptionKey: description])
-        }
-
-        let sessionObj = json["session"] as? [String: Any] ?? [:]
-        let status = sessionObj["status"] as? Int ?? activeSession.status
+        let sessionObj = try SessionLifecyclePolicy.sessionObject(in: json, httpStatus: response.statusCode)
+        let status = SessionConnectionPolicy.integer(sessionObj["status"]) ?? activeSession.status
         let queue = Self.extractQueuePosition(sessionObj: sessionObj)
         let seatSetupStep = Self.extractSeatSetupStep(sessionObj: sessionObj)
         let serverIp = Self.extractServerIp(sessionObj: sessionObj) ?? activeSession.serverIp
@@ -4763,10 +4759,17 @@ private actor GFNAPIClient {
             ),
             sessionSettings: settings
         )
-        guard response.statusCode == 200 else { return [] }
+        guard response.statusCode == 200 else {
+            throw responseError(domain: "OpenNOW.SessionList", response: response, data: data,
+                                fallback: "Active sessions could not be refreshed.")
+        }
         let json = try parseJSON(data)
         let requestStatus = json["requestStatus"] as? [String: Any]
-        guard (requestStatus?["statusCode"] as? Int) == 1 else { return [] }
+        guard SessionConnectionPolicy.integer(requestStatus?["statusCode"]) == 1 else {
+            throw NSError(domain: "OpenNOW.SessionList", code: SessionConnectionPolicy.integer(requestStatus?["statusCode"]) ?? -1,
+                          userInfo: [NSLocalizedDescriptionKey: requestStatus?["statusDescription"] as? String
+                            ?? "Active sessions could not be refreshed."])
+        }
         let sessions = json["sessions"] as? [[String: Any]] ?? []
         return sessions.compactMap { item in
             let status = item["status"] as? Int ?? 0
@@ -4870,10 +4873,20 @@ private actor GFNAPIClient {
                     ),
                     sessionSettings: settings
                 )
-            let validationJSON = validationResponse.statusCode == 200 ? (try? parseJSON(validationData)) ?? [:] : [:]
-            validationSessionObj = validationJSON["session"] as? [String: Any] ?? [:]
-            preClaimStatus = validationSessionObj["status"] as? Int
+            guard validationResponse.statusCode == 200 else {
+                throw responseError(domain: "OpenNOW.Session", response: validationResponse, data: validationData,
+                                    fallback: "The cloud session could not be checked before resuming.")
+            }
+            let validationJSON = try parseJSON(validationData)
+            validationSessionObj = try SessionLifecyclePolicy.sessionObject(in: validationJSON, httpStatus: validationResponse.statusCode)
+            preClaimStatus = SessionConnectionPolicy.integer(validationSessionObj["status"])
+            guard let preClaimStatus, SessionLifecyclePolicy.isLaunchable(preClaimStatus) else {
+                throw NSError(domain: "OpenNOW.Session", code: -1, userInfo: [
+                    NSLocalizedDescriptionKey: "The cloud session is still cleaning up. Check again in a moment."
+                ])
+            }
         } catch {
+            throw error
         }
 
         var claimJSON: [String: Any] = [:]
@@ -4912,7 +4925,12 @@ private actor GFNAPIClient {
                 let text = String(data: claimData, encoding: .utf8) ?? "unknown"
                 throw NSError(domain: "OpenNOW.Session", code: claimResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: text])
             }
-            claimJSON = (try? parseJSON(claimData)) ?? [:]
+            claimJSON = try parseJSON(claimData)
+            if let claimedSession = claimJSON["session"] as? [String: Any],
+               let status = SessionConnectionPolicy.integer(claimedSession["status"]),
+               SessionLifecyclePolicy.isTerminal(status) {
+                throw RemoteSessionEndedError(status: status)
+            }
         }
 
         let claimSessionObj = claimJSON["session"] as? [String: Any] ?? [:]
@@ -6416,6 +6434,7 @@ final class OpenNOWStore: ObservableObject {
         didSet { invalidateCatalogPresentation() }
     }
     @Published private(set) var activeSession: ActiveSession?
+    @Published private(set) var sessionAvailability: SessionAvailability = .checking
     @Published private(set) var resumableSessions: [RemoteSessionCandidate] = []
     @Published private(set) var telemetry = SessionTelemetry(pingMs: 0, fps: 0, packetLossPercent: 0, bitrateMbps: 0)
     @Published private(set) var subscription: SubscriptionSnapshot?
@@ -6473,6 +6492,7 @@ final class OpenNOWStore: ObservableObject {
 
     /// A launch that is waiting on the user to confirm ending the session it would replace.
     @Published private(set) var pendingLaunchConflict: LaunchConflict?
+    @Published private(set) var pendingTerminationConfirmation: SessionTerminationConfirmation?
 
     /// The last failure, classified. `lastError` still carries the same text for anything that
     /// only needs a string; this adds the recovery action, which is the part worth showing.
@@ -6494,6 +6514,7 @@ final class OpenNOWStore: ObservableObject {
     private var authGeneration = UUID()
     private var sessionOperationGeneration = UUID()
     private var sessionPollTask: Task<Void, Never>?
+    private var sessionReconciliationTask: Task<Void, Never>?
     private var launchTask: Task<Void, Never>?
     private var sessionReportAccumulator: StreamSessionReportAccumulator?
     private var sessionReportSessionId: String?
@@ -6608,6 +6629,7 @@ final class OpenNOWStore: ObservableObject {
         catalogHydrationTask?.cancel()
         launchTask?.cancel()
         sessionPollTask?.cancel()
+        sessionReconciliationTask?.cancel()
         #if os(tvOS)
         if let tvAuthLogObserver {
             NotificationCenter.default.removeObserver(tvAuthLogObserver)
@@ -6868,6 +6890,7 @@ final class OpenNOWStore: ObservableObject {
 
     #if DEBUG
     func installDebugQueuePreview(position: Int, isSettingUp: Bool = false) {
+        sessionAvailability = .available
         if activeSession?.id == "debug-queue-preview" {
             activeSession?.queuePosition = max(1, position)
             activeSession?.status = isSettingUp ? 2 : 1
@@ -6991,6 +7014,12 @@ final class OpenNOWStore: ObservableObject {
         }
         isLoadingGames = false
         isBootstrapping = false
+    }
+
+    func installDebugLibraryPreview() {
+        installDebugStorePreview()
+        user = UserProfile(userId: "library-preview", displayName: "Preview", email: nil, membershipTier: "Free")
+        libraryGames = allGames
     }
     #endif
 
@@ -7937,8 +7966,11 @@ final class OpenNOWStore: ObservableObject {
             launchTask?.cancel()
             launchTask = Task { await self.refreshCatalog() }
         case "stop", "terminate", "end":
-            launchTask?.cancel()
-            launchTask = Task { await self.terminateAllSessions(reason: "deepLink.stop") }
+            pendingTerminationConfirmation = SessionTerminationConfirmation(
+                generation: authGeneration, operation: sessionOperationGeneration,
+                activeID: activeSession?.id, activeStatus: activeSession?.status,
+                remoteStatuses: Dictionary(resumableSessions.map { ($0.id, $0.status) }, uniquingKeysWith: { first, _ in first })
+            )
         default:
             if let appId = parts.first, appId.rangeOfCharacter(from: CharacterSet.alphanumerics.inverted) == nil {
                 scheduleDeepLinkLaunch(
@@ -8062,8 +8094,12 @@ final class OpenNOWStore: ObservableObject {
 
     func refreshRemoteSessions() async {
         guard let session = authSession else { return }
+        let generation = authGeneration
+        let operation = sessionOperationGeneration
         do {
             let refreshed = try await api.refreshSession(session)
+            try Task.checkCancellation()
+            guard generation == authGeneration, operation == sessionOperationGeneration else { return }
             authSession = refreshed
             persistAuthSession(refreshed)
             let streamSettings = nativeLaunchSettings(for: activeStreamSettings ?? settings, context: "refreshRemoteSessions")
@@ -8074,23 +8110,39 @@ final class OpenNOWStore: ObservableObject {
                 settings: streamSettings,
                 deviceId: persistentDeviceId()
             )
+            try Task.checkCancellation()
+            guard generation == authGeneration, operation == sessionOperationGeneration else { return }
             resumableSessions = remoteSessions.filter {
                 remoteSessionIsLaunchable($0) && remoteSessionIsAllowed($0)
             }
             remoteSessionsSnapshotLoaded = true
+        } catch where OpenNOWErrorPresenter.isCancellation(error) {
+            return
         } catch {
+            guard generation == authGeneration, operation == sessionOperationGeneration else { return }
             remoteSessionsSnapshotLoaded = false
             report(error, context: .session)
         }
     }
 
     func endRemoteSession(candidate: RemoteSessionCandidate) async {
+        if activeSession?.id == candidate.id {
+            await endSession()
+            return
+        }
         guard let session = authSession else {
             lastError = "Sign in first."
             return
         }
+        let generation = authGeneration
         do {
             let refreshed = try await api.refreshSession(session)
+            try Task.checkCancellation()
+            guard generation == authGeneration else { return }
+            if activeSession?.id == candidate.id {
+                await endSession()
+                return
+            }
             authSession = refreshed
             persistAuthSession(refreshed)
             try await api.stopRemoteSession(
@@ -8099,14 +8151,21 @@ final class OpenNOWStore: ObservableObject {
                 streamingBaseUrl: refreshed.provider.streamingServiceUrl,
                 vpcId: cachedVpcId
             )
-            if activeSession?.id == candidate.id {
-                await endSession()
-            } else {
-                resumableSessions.removeAll { $0.id == candidate.id }
-                await refreshRemoteSessions()
-            }
+            try Task.checkCancellation()
+            guard generation == authGeneration else { return }
+            resumableSessions.removeAll { $0.id == candidate.id }
+            if activeSession?.id == candidate.id { handleEndedSession(id: candidate.id) }
+            await refreshRemoteSessions()
+            guard generation == authGeneration else { return }
             lastError = nil
+            sessionError = nil
+        } catch where OpenNOWErrorPresenter.isCancellation(error) {
+            return
+        } catch where SessionLifecyclePolicy.isEnded(error) {
+            guard generation == authGeneration else { return }
+            handleEndedSession(id: candidate.id)
         } catch {
+            guard generation == authGeneration else { return }
             report(error, context: .session)
         }
     }
@@ -8169,6 +8228,9 @@ final class OpenNOWStore: ObservableObject {
             lastError = nil
         } catch where OpenNOWErrorPresenter.isCancellation(error) {
             return
+        } catch where SessionLifecyclePolicy.isEnded(error) {
+            guard generation == authGeneration, operation == sessionOperationGeneration else { return }
+            handleEndedSession(id: candidate.id)
         } catch {
             guard operation == sessionOperationGeneration else { return }
             logger.error("Resume session failed error=\(error.localizedDescription, privacy: .public)")
@@ -8243,13 +8305,34 @@ final class OpenNOWStore: ObservableObject {
             authSession = refreshed
             persistAuthSession(refreshed)
             try await api.stopSession(session: refreshed, activeSession: active)
+            guard generation == authGeneration else { return }
+            resumableSessions.removeAll { $0.id == active.id }
+            lastError = nil
+            sessionError = nil
+        } catch where SessionLifecyclePolicy.isEnded(error) {
+            guard generation == authGeneration else { return }
+            resumableSessions.removeAll { $0.id == active.id }
         } catch where OpenNOWErrorPresenter.isCancellation(error) {
             // Local teardown has already completed.
         } catch {
             guard generation == authGeneration else { return }
-            lastError = "Stop session failed: \(OpenNOWErrorPresenter.message(for: error, fallback: "The session could not be stopped."))"
+            await refreshRemoteSessions()
+            guard generation == authGeneration else { return }
+            lastError = "Disconnected from this device, but the cloud session could not be stopped. Check Active on Account to try again."
+            sessionError = lastError
         }
-        if generation == authGeneration { resumableSessions.removeAll { $0.id == active.id } }
+    }
+
+    func cancelTerminationConfirmation() {
+        pendingTerminationConfirmation = nil
+    }
+
+    func confirmTermination(_ target: SessionTerminationConfirmation) {
+        pendingTerminationConfirmation = nil
+        guard target.generation == authGeneration, target.operation == sessionOperationGeneration,
+              target.matches(active: activeSession, remote: resumableSessions), !isEndingSession else { return }
+        launchTask?.cancel()
+        launchTask = Task { await self.terminateAllSessions(reason: "deepLink.stop") }
     }
 
     private func terminateAllSessions(reason: String) async {
@@ -8258,9 +8341,9 @@ final class OpenNOWStore: ObservableObject {
         defer { isEndingSession = false }
         let activeToStop = activeSession
         let generation = authGeneration
-        launchTask?.cancel()
         launchTask = nil
         clearLocalSessionState(reason: reason)
+        let operation = sessionOperationGeneration
         showStreamLoading = false
         queueOverlayVisible = false
         await NotificationManager.shared.cancelSessionNotifications()
@@ -8273,7 +8356,7 @@ final class OpenNOWStore: ObservableObject {
         var failures: [String] = []
         do {
             let refreshed = try await api.refreshSession(session)
-            guard generation == authGeneration else { return }
+            guard generation == authGeneration, operation == sessionOperationGeneration else { return }
             authSession = refreshed
             persistAuthSession(refreshed)
             if let activeToStop {
@@ -8284,15 +8367,17 @@ final class OpenNOWStore: ObservableObject {
                 }
             }
 
-            let remoteSessions = (try? await api.fetchActiveSessions(
+            guard generation == authGeneration, operation == sessionOperationGeneration else { return }
+            let remoteSessions = try await api.fetchActiveSessions(
                 session: refreshed,
                 streamingBaseUrl: refreshed.provider.streamingServiceUrl,
                 vpcId: cachedVpcId,
                 settings: settings,
                 deviceId: persistentDeviceId()
-            )) ?? []
-            guard generation == authGeneration else { return }
+            )
+            guard generation == authGeneration, operation == sessionOperationGeneration else { return }
             for candidate in remoteSessions where candidate.id != activeToStop?.id {
+                guard generation == authGeneration, operation == sessionOperationGeneration else { return }
                 do {
                     try await api.stopRemoteSession(
                         session: refreshed,
@@ -8308,23 +8393,30 @@ final class OpenNOWStore: ObservableObject {
             failures.append("refresh")
         }
 
-        guard generation == authGeneration else { return }
-        resumableSessions = []
+        guard generation == authGeneration, operation == sessionOperationGeneration else { return }
+        if failures.isEmpty { resumableSessions = [] }
+        else { await refreshRemoteSessions() }
+        guard generation == authGeneration, operation == sessionOperationGeneration else { return }
         lastError = failures.isEmpty ? nil : "Could not stop every remote session: \(failures.joined(separator: ", "))"
+        sessionError = lastError
     }
 
     private func clearLocalSessionState(reason: String) {
+        sessionReconciliationTask?.cancel()
+        sessionReconciliationTask = nil
         sessionOperationGeneration = UUID()
         reopenToken = UUID()
         isLaunchingSession = false
         finalizeSessionReport(reason: reason)
         if let id = activeSession?.id { QueueReadyAlert.forget(sessionId: id) }
         activeSession = nil
+        sessionAvailability = .checking
         activeStreamSettings = nil
         setStreamSession(nil, reason: reason)
         adReportStateById = [:]
         adStartedAtById = [:]
         sessionPollTask?.cancel()
+        sessionPollTask = nil
         endSessionPollBackgroundTask()
         syncTrackedSessionSurface()
     }
@@ -8343,7 +8435,7 @@ final class OpenNOWStore: ObservableObject {
     var canReopenStreamer: Bool {
         guard supportsEmbeddedStreamer else { return false }
         guard let active = activeSession else { return false }
-        return !isEndingSession && streamSession == nil && isReadyForStreamer(active)
+        return !isEndingSession && sessionAvailability == .available && streamSession == nil && isReadyForStreamer(active)
     }
 
     var effectiveAdState: SessionAdState? {
@@ -8433,10 +8525,78 @@ final class OpenNOWStore: ObservableObject {
 
     func dismissStreamer() {
         finalizeSessionReport(reason: "dismissStreamer")
+        sessionAvailability = .checking
         setStreamSession(nil, reason: "dismissStreamer")
-        // Note: poll task stays cancelled (stopped in handoff).
-        // The queue banner reflects last known activeSession state.
-        // User can reopen via the banner tap.
+        showStreamLoading = false
+        queueOverlayVisible = false
+        sessionPollTask?.cancel()
+        sessionPollTask = nil
+        startSessionReconciliation()
+    }
+
+    func handleEndedSession(id: String) {
+        resumableSessions.removeAll { $0.id == id }
+        if activeSession?.id == id {
+            showStreamLoading = false
+            queueOverlayVisible = false
+            clearLocalSessionState(reason: "session.remoteEnded")
+            Task { await NotificationManager.shared.cancelSessionNotifications() }
+        }
+        if activeSession == nil {
+            showStreamLoading = false
+            queueOverlayVisible = false
+        }
+        lastError = RemoteSessionEndedError(status: nil).localizedDescription
+        sessionError = lastError
+    }
+
+    private func startSessionReconciliation() {
+        sessionReconciliationTask?.cancel()
+        guard activeSession != nil, streamSession == nil, !isEndingSession,
+              currentScenePhase == .active else { return }
+        let generation = authGeneration
+        let operation = sessionOperationGeneration
+        sessionReconciliationTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                guard generation == self.authGeneration, operation == self.sessionOperationGeneration,
+                      let active = self.activeSession, self.streamSession == nil,
+                      self.currentScenePhase == .active, !self.isLaunchingSession else { break }
+                guard let auth = self.authSession else {
+                    self.sessionAvailability = .unverified
+                    self.syncTrackedSessionSurface()
+                    break
+                }
+                do {
+                    let refreshed = try await self.api.refreshSession(auth)
+                    try Task.checkCancellation()
+                    guard generation == self.authGeneration, operation == self.sessionOperationGeneration else { break }
+                    self.authSession = refreshed
+                    self.persistAuthSession(refreshed)
+                    let polled = try await self.api.pollSession(session: refreshed, activeSession: active,
+                                                                settings: self.currentStreamerSettings)
+                    try Task.checkCancellation()
+                    guard generation == self.authGeneration, operation == self.sessionOperationGeneration,
+                          self.activeSession?.id == active.id, self.streamSession == nil else { break }
+                    self.activeSession = polled
+                    self.sessionAvailability = SessionLifecyclePolicy.isLaunchable(polled.status) ? .available : .unverified
+                    self.syncTrackedSessionSurface()
+                } catch where OpenNOWErrorPresenter.isCancellation(error) {
+                    break
+                } catch {
+                    guard generation == self.authGeneration, operation == self.sessionOperationGeneration,
+                          self.activeSession?.id == active.id, self.streamSession == nil else { break }
+                    if SessionLifecyclePolicy.isEnded(error) || (error as NSError).domain == "OpenNOW.Queue" {
+                        self.handleEndedSession(id: active.id)
+                        break
+                    }
+                    self.sessionAvailability = .unverified
+                    self.syncTrackedSessionSurface()
+                }
+                do { try await Task.sleep(for: .seconds(15)) }
+                catch { break }
+            }
+        }
     }
 
     // MARK: - Session report
@@ -8656,14 +8816,6 @@ final class OpenNOWStore: ObservableObject {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "1"
     }
 
-    /// Records the user's answer to the one-time analytics prompt. Both answers are terminal —
-    /// the prompt never reappears, which is the only reason it is acceptable to block on it.
-    func recordAnalyticsConsent(sharing: Bool) {
-        settings.analyticsConsentAsked = true
-        settings.analyticsOptOut = !sharing
-        persistSettings()
-    }
-
     func dismissSessionReport(disableFutureReports: Bool = false) {
         if disableFutureReports {
             settings.showSessionReportAfterStream = false
@@ -8675,7 +8827,7 @@ final class OpenNOWStore: ObservableObject {
     private func restoreActiveSessionSurface(_ session: ActiveSession) {
         guard !isEndingSession else { return }
         guard activeSession?.id == session.id else { return }
-        if canReopenStreamer {
+        if streamSession == nil && isReadyForStreamer(session) {
             reopenStreamer()
             return
         }
@@ -8692,7 +8844,7 @@ final class OpenNOWStore: ObservableObject {
     }
 
     func reopenStreamer() {
-        guard !isEndingSession else { return }
+        guard !isEndingSession, !isLaunchingSession else { return }
         guard supportsEmbeddedStreamer else {
             lastError = OpenNOWPlatform.streamingUnavailableReason
             return
@@ -8720,8 +8872,15 @@ final class OpenNOWStore: ObservableObject {
         if phase == .active {
             sessionPollBackgroundAllowanceConsumed = false
             endSessionPollBackgroundTask()
+            if streamSession == nil, activeSession != nil, !showStreamLoading {
+                sessionAvailability = .checking
+                startSessionReconciliation()
+            }
         } else if activeSession != nil {
             refreshSessionPollBackgroundTask()
+            sessionReconciliationTask?.cancel()
+            sessionReconciliationTask = nil
+            if streamSession == nil && !showStreamLoading { sessionAvailability = .unverified }
         }
         syncTrackedSessionSurface()
     }
@@ -9103,6 +9262,8 @@ final class OpenNOWStore: ObservableObject {
         return settings.favoriteGameIds.compactMap { catalogPresentation.favoriteGamesByID[$0] }
     }
 
+    var catalogRevision: UUID { catalogContentGeneration }
+
     var catalogPresentation: CatalogPresentation {
         if let cachedCatalogPresentation { return cachedCatalogPresentation }
         let presentation = CatalogPresentation(allGames: allGames, libraryGames: libraryGames, importedGames: importedGames)
@@ -9215,6 +9376,9 @@ final class OpenNOWStore: ObservableObject {
 
     private func startSessionTasks() {
         guard !isEndingSession else { return }
+        sessionReconciliationTask?.cancel()
+        sessionReconciliationTask = nil
+        sessionAvailability = .checking
         let operation = sessionOperationGeneration
         recordDebugEvent("queue", "Starting session poll status=\(activeSession?.status ?? -1) queue=\(activeSession?.queuePosition ?? -1)")
         setStreamSession(nil, reason: "startSessionTasks.reset")
@@ -9269,6 +9433,7 @@ final class OpenNOWStore: ObservableObject {
                         self.sessionError = nil
                     }
                     self.activeSession = polled
+                    self.sessionAvailability = SessionLifecyclePolicy.isLaunchable(polled.status) ? .available : .unverified
                     if polled.status != active.status || polled.queuePosition != active.queuePosition
                         || polled.sessionControlBaseUrl != active.sessionControlBaseUrl {
                         self.recordDebugEvent("queue", "Session updated status=\(polled.status) queue=\(polled.queuePosition ?? -1) control=\(URL(string: polled.sessionControlBaseUrl ?? "")?.host ?? "zone")")
@@ -9386,9 +9551,15 @@ final class OpenNOWStore: ObservableObject {
                     self.recordDebugEvent("queue", "Provider ended queue request")
                     await NotificationManager.shared.cancelSessionNotifications()
                     break
+                } catch where SessionLifecyclePolicy.isEnded(error) {
+                    guard !Task.isCancelled, operation == self.sessionOperationGeneration else { break }
+                    self.handleEndedSession(id: active.id)
+                    break
                 } catch {
                     guard !Task.isCancelled, operation == self.sessionOperationGeneration else { break }
                     consecutivePollFailures += 1
+                    self.sessionAvailability = .unverified
+                    self.syncTrackedSessionSurface()
                     self.logger.error("Session poll failed attempt=\(consecutivePollFailures) error=\(error.localizedDescription, privacy: .public)")
                     self.recordDebugEvent("queue", "Poll failed attempt=\(consecutivePollFailures) error=\(error.localizedDescription)")
                     // One dropped poll is normal on a phone changing networks. Only say so once the
@@ -9491,12 +9662,23 @@ final class OpenNOWStore: ObservableObject {
     }
 
     private func reopenCurrentSession(_ session: ActiveSession) async {
-        guard !isEndingSession else { return }
+        guard !isEndingSession, !isLaunchingSession else { return }
         let generation = authGeneration
         let operation = sessionOperationGeneration
         guard let currentAuth = authSession else {
+            sessionAvailability = .unverified
             lastError = "Sign in first."
             return
+        }
+        sessionReconciliationTask?.cancel()
+        sessionReconciliationTask = nil
+        sessionAvailability = .checking
+        isLaunchingSession = true
+        defer {
+            if operation == sessionOperationGeneration {
+                isLaunchingSession = false
+                if streamSession == nil && !showStreamLoading { startSessionReconciliation() }
+            }
         }
 
         do {
@@ -9506,144 +9688,68 @@ final class OpenNOWStore: ObservableObject {
             authSession = refreshed
             persistAuthSession(refreshed)
             let requestedStreamSettings = nativeLaunchSettings(for: requestedReopenSettings, context: "reopenCurrentSession")
-            let deviceId = persistentDeviceId()
-            let baseUrl = refreshed.provider.streamingServiceUrl
-            let activeCandidates = try await api.fetchActiveSessions(
-                session: refreshed,
-                streamingBaseUrl: baseUrl,
-                vpcId: cachedVpcId,
-                settings: requestedStreamSettings,
-                deviceId: deviceId
-            )
+            let polled = try await api.pollSession(session: refreshed, activeSession: session, settings: requestedStreamSettings)
             try Task.checkCancellation()
             guard generation == authGeneration, operation == sessionOperationGeneration else { return }
-            let compatibleCandidates = activeCandidates.filter {
-                remoteSession($0, matchesStreamSettings: requestedStreamSettings, session: refreshed)
-            }
-            let gameAppIds = Set(
-                ([session.game.launchAppId] + session.game.launchOptions.map(\.appId))
-                    .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { !$0.isEmpty }
-            )
-            let sameGameCandidates = activeCandidates.filter { candidate in
-                guard remoteSessionIsLaunchable(candidate) else { return false }
-                if candidate.id == session.id { return true }
-                guard let appId = candidate.appId else { return false }
-                return gameAppIds.contains(appId)
-            }
-            let candidatePool = compatibleCandidates + sameGameCandidates.filter { candidate in
-                !compatibleCandidates.contains(where: { $0.id == candidate.id })
-            }
-            let readyCandidate = candidatePool.first {
-                $0.id == session.id && ($0.status == 2 || $0.status == 3) && $0.serverIp?.isEmpty == false
-            } ?? candidatePool.first {
-                guard let appId = $0.appId else { return false }
-                return gameAppIds.contains(appId) && ($0.status == 2 || $0.status == 3) && $0.serverIp?.isEmpty == false
-            }
-            let launchingCandidate = candidatePool.first {
-                $0.id == session.id && remoteSessionIsLaunchable($0)
-            } ?? candidatePool.first {
-                guard let appId = $0.appId else { return false }
-                return gameAppIds.contains(appId) && remoteSessionIsLaunchable($0)
-            }
-
-            let candidate: RemoteSessionCandidate
-            if let readyCandidate {
-                candidate = readyCandidate
-            } else if let launchingCandidate {
-                let pollingSettings = streamSettingsByAdoptingRemoteProfile(
-                    launchingCandidate,
-                    base: requestedStreamSettings,
-                    session: refreshed
-                )
-                var latest = ActiveSession(
-                    id: launchingCandidate.id,
-                    game: session.game,
-                    startedAt: .now,
-                    status: launchingCandidate.status,
-                    queuePosition: nil,
-                    seatSetupStep: nil,
-                    serverIp: launchingCandidate.serverIp,
-                    mediaIp: nil,
-                    mediaPort: 0,
-                    signalingServer: nil,
-                    signalingUrl: nil,
-                    iceServers: [],
-                    zone: cachedVpcId,
-                    streamingBaseUrl: baseUrl,
-                    clientId: UUID().uuidString,
-                    deviceId: deviceId,
-                    adState: nil
-                )
-                activeSession = latest
-                for attempt in 0..<45 {
-                    if isReadyForStreamer(latest) {
-                        break
-                    }
-                    logger.info(
-                        "Reopen polling active candidate id=\(latest.id, privacy: .public) status=\(latest.status) attempt=\(attempt + 1) signalingServer=\(latest.signalingServer ?? "nil", privacy: .public) signalingUrl=\(latest.signalingUrl ?? "nil", privacy: .public) mediaIp=\(latest.mediaIp ?? "nil", privacy: .public) mediaPort=\(latest.mediaPort)"
-                    )
-                    try await Task.sleep(for: .seconds(1))
-                    latest = try await api.pollSession(session: refreshed, activeSession: latest, settings: pollingSettings)
-                    try Task.checkCancellation()
-                    guard generation == authGeneration, operation == sessionOperationGeneration else { return }
-                    activeSession = mergeQueueSessionState(previous: activeSession ?? latest, next: latest)
-                }
-                guard isReadyForStreamer(latest), let serverIp = latest.serverIp, !serverIp.isEmpty else {
-                    activeSession = latest
-                    lastError = "Session is still preparing its stream endpoint. Try reopening again in a moment."
-                    sessionError = lastError
-                    return
-                }
-                candidate = RemoteSessionCandidate(
-                    id: latest.id,
-                    appId: launchingCandidate.appId,
-                    status: latest.status,
-                    serverIp: serverIp,
-                    streamSettingsSignature: launchingCandidate.streamSettingsSignature,
-                    resolution: launchingCandidate.resolution ?? latest.negotiatedStreamProfile?.resolution,
-                    fps: launchingCandidate.fps ?? latest.negotiatedStreamProfile?.fps
-                )
-            } else {
-                activeSession = nil
-                activeStreamSettings = nil
-                syncTrackedSessionSurface()
-                lastError = "No active session for this game is available to reconnect."
+            activeSession = polled
+            sessionAvailability = SessionLifecyclePolicy.isLaunchable(polled.status) ? .available : .unverified
+            guard SessionLifecyclePolicy.isLaunchable(polled.status) else {
+                lastError = "The cloud session is still cleaning up. Check again in a moment."
                 sessionError = lastError
+                syncTrackedSessionSurface()
+                return
+            }
+            guard isReadyForStreamer(polled) else {
+                activeStreamSettings = requestedStreamSettings
+                showStreamLoading = true
+                queueOverlayVisible = true
+                startSessionTasks()
+                syncTrackedSessionSurface()
                 return
             }
 
-            let streamSettings = streamSettingsByAdoptingRemoteProfile(
-                candidate,
-                base: requestedStreamSettings,
-                session: refreshed
+            let candidate = RemoteSessionCandidate(
+                id: polled.id,
+                appId: polled.game.launchAppId,
+                status: polled.status,
+                serverIp: polled.serverIp,
+                streamSettingsSignature: nil,
+                resolution: polled.negotiatedStreamProfile?.resolution,
+                fps: polled.negotiatedStreamProfile?.fps,
+                colorQuality: polled.negotiatedStreamProfile?.colorQuality,
+                hdrEnabled: polled.finalizedStreamingFeatures?.trueHdr
             )
-
+            let streamSettings = streamSettingsByAdoptingRemoteProfile(
+                candidate, base: requestedStreamSettings, session: refreshed
+            )
             let claimed = try await api.claimSession(
                 session: refreshed,
                 candidate: candidate,
                 game: session.game,
-                streamingBaseUrl: baseUrl,
-                vpcId: cachedVpcId,
+                streamingBaseUrl: session.streamingBaseUrl,
+                vpcId: session.zone,
                 settings: streamSettings,
-                deviceId: deviceId,
+                deviceId: persistentDeviceId(),
                 touchProvisionedOverride: session.touchProvisioned
             )
             try Task.checkCancellation()
             guard generation == authGeneration, operation == sessionOperationGeneration else { return }
             activeSession = claimed
             activeStreamSettings = streamSettings
+            sessionAvailability = .available
             setStreamSession(claimed, reason: "reopenStreamer.claimed")
             lastError = nil
             sessionError = nil
         } catch where OpenNOWErrorPresenter.isCancellation(error) {
             return
+        } catch where SessionLifecyclePolicy.isEnded(error) {
+            guard generation == authGeneration, operation == sessionOperationGeneration else { return }
+            handleEndedSession(id: session.id)
         } catch {
-            guard operation == sessionOperationGeneration else { return }
-            logger.error(
-                "Reopen refresh failed id=\(session.id, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
-            )
-            lastError = "Failed to reconnect session: \(error.localizedDescription)"
+            guard generation == authGeneration, operation == sessionOperationGeneration else { return }
+            sessionAvailability = .unverified
+            syncTrackedSessionSurface()
+            lastError = "Couldn't check the cloud session. Your session has been kept; try again when your connection is available."
             sessionError = lastError
         }
     }
@@ -9778,7 +9884,7 @@ final class OpenNOWStore: ObservableObject {
         if let active {
             QueueReadyAlert.announceIfNeeded(
                 sessionId: active.id,
-                isReady: isReadyForStreamer(active) || active.status == 3,
+                isReady: sessionAvailability == .available && (isReadyForStreamer(active) || active.status == 3),
                 enabled: settings.queueReadySound
             )
         }
@@ -9813,10 +9919,10 @@ final class OpenNOWStore: ObservableObject {
             queueTrend.reset()
         }
         // Android keeps the lowest displayed position for a session so delayed polls cannot
-        // make the queue numeral jump backwards. The trend must use the same visible series.
+        // make the queue numeral jump backwards.
         let stablePosition = min(displayQueuePosition ?? position, position)
         displayQueuePosition = stablePosition
-        queueTrend.record(position: stablePosition)
+        queueTrend.record(position: position)
     }
 
     private func queueActivityStoreName(for session: ActiveSession) -> String {
@@ -9831,7 +9937,7 @@ final class OpenNOWStore: ObservableObject {
     }
 
     private func queueActivityState(for session: ActiveSession) -> QueueActivityAttributes.ContentState? {
-        if streamSession != nil {
+        if streamSession != nil || sessionAvailability != .available {
             return nil
         }
         if isReadyForStreamer(session) || session.status == 3 {
@@ -9878,10 +9984,10 @@ final class OpenNOWStore: ObservableObject {
             return QueueActivityAttributes.ContentState(
                 phase: .waiting,
                 headline: "Preparing your rig",
-                detail: session.seatSetupStep.map { "Step \($0) of 4" } ?? "Almost there",
+                detail: "Setting up your cloud rig",
                 queueLabel: "Setup",
                 queuePosition: nil,
-                progress: session.seatSetupStep.map { min(max(Double($0) / 4, 0.25), 0.95) },
+                progress: nil,
                 waitStartedAt: session.startedAt
             )
         }

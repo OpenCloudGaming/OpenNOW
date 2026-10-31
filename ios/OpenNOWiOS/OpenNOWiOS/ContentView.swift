@@ -427,6 +427,15 @@ struct MainTabView: View {
         }
         .animation(.easeInOut(duration: 0.28), value: store.showStreamLoading && !store.queueOverlayVisible)
         .animation(.easeInOut(duration: 0.2), value: presentedStreamerSession?.id)
+        .alert("End All Cloud Sessions?", isPresented: Binding(
+            get: { store.pendingTerminationConfirmation != nil },
+            set: { if !$0 { store.cancelTerminationConfirmation() } }
+        ), presenting: store.pendingTerminationConfirmation) { target in
+            Button("End All Sessions", role: .destructive) { store.confirmTermination(target) }
+            Button("Keep Playing", role: .cancel) { store.cancelTerminationConfirmation() }
+        } message: { _ in
+            Text("This link will close every game running on your GeForce NOW account. Unsaved progress may be lost. This is not just a disconnect.")
+        }
         .onAppear {
             synchronizeCatalogControllerShortcuts()
             // MainTabView can be recreated by upstream auth/bootstrap state updates.
@@ -567,30 +576,6 @@ struct MainTabView: View {
             .environmentObject(store)
             .onAppear { bugReportPresented = true }
         }
-        // Two sheets cannot be presented from one view, so consent waits until nothing else is
-        // on screen. It is a one-time prompt; deferring it a launch costs nothing.
-        .sheet(isPresented: Binding(
-            get: { showAnalyticsConsent },
-            set: { if !$0 { store.recordAnalyticsConsent(sharing: false) } }
-        )) {
-            AnalyticsConsentView { sharing in
-                store.recordAnalyticsConsent(sharing: sharing)
-            }
-        }
-    }
-
-    /// Only after sign-in, and only when the screen is otherwise clear. Asking during a queue or
-    /// over a session report is asking at the worst possible moment.
-    private var showAnalyticsConsent: Bool {
-        store.settings.analyticsConsent == .notAsked
-            && store.sessionReport == nil
-            && !sessionReportPresented
-            && bugReportDeck == nil
-            && pendingBugReportDeck == nil
-            && !bugReportPresented
-            && store.pendingLaunchConflict == nil
-            && !store.queueOverlayVisible
-            && presentedStreamerSession == nil
     }
 
     private var tabBarSurface: some View {
@@ -868,8 +853,11 @@ extension View {
 
 private struct JumpBackStatusBanner: View {
     @EnvironmentObject private var store: OpenNOWStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var pendingEnd: SessionEndTarget?
 
     private var statusColor: Color {
+        if store.activeSession == nil || store.sessionAvailability != .available { return .secondary }
         switch currentStatus {
         case 3:
             return .green
@@ -897,12 +885,11 @@ private struct JumpBackStatusBanner: View {
 
     private var subtitle: String {
         if let session = store.activeSession {
+            if store.sessionAvailability == .checking { return "Checking cloud session…" }
+            if store.sessionAvailability == .unverified { return "Status unavailable · Tap to check" }
             return subtitle(for: session.status, queuePosition: session.queuePosition)
         }
-        if let candidate = store.primaryRemoteJumpBackSession {
-            return subtitle(for: candidate.status, queuePosition: nil)
-        }
-        return "Resume"
+        return "Check cloud session"
     }
 
     private func subtitle(for status: Int, queuePosition: Int?) -> String {
@@ -927,9 +914,13 @@ private struct JumpBackStatusBanner: View {
                 store.jumpBackToSession()
             } label: {
                 HStack(spacing: 10) {
-                    Circle()
-                        .fill(statusColor)
-                        .frame(width: 10, height: 10)
+                    if store.activeSession != nil && store.sessionAvailability == .checking {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Circle()
+                            .fill(statusColor)
+                            .frame(width: 10, height: 10)
+                    }
                     VStack(alignment: .leading, spacing: 1) {
                         Text(title)
                             .font(.caption.bold())
@@ -947,11 +938,13 @@ private struct JumpBackStatusBanner: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .disabled(store.isLaunchingSession || store.isEndingSession
+                || (store.activeSession != nil && store.sessionAvailability == .checking))
 
-            if store.activeSession != nil {
+            if let session = store.activeSession {
                 Button(role: .destructive) {
                     Haptics.medium()
-                    Task { await store.endSession() }
+                    pendingEnd = .current(session)
                 } label: {
                     Image(systemName: "stop.fill")
                         .font(.caption.bold())
@@ -960,14 +953,32 @@ private struct JumpBackStatusBanner: View {
                         .foregroundStyle(.red)
                 }
                 .buttonStyle(.borderless)
+                .accessibilityLabel("End Cloud Session")
+                .disabled(store.isEndingSession)
             }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .numericTextTransition(value: store.activeSession?.queuePosition ?? -1)
-        .animation(.spring(response: 0.34, dampingFraction: 0.8), value: subtitle)
-        .animation(.spring(response: 0.34, dampingFraction: 0.8), value: store.activeSession?.status)
+        .animation(reduceMotion ? nil : OpenNOWMotion.standard, value: subtitle)
+        .confirmationDialog(
+            pendingEnd?.title ?? "End Cloud Session?",
+            isPresented: Binding(get: { pendingEnd != nil }, set: { if !$0 { pendingEnd = nil } }),
+            titleVisibility: .visible,
+            presenting: pendingEnd
+        ) { target in
+            Button(target.actionTitle, role: .destructive) {
+                guard target.matches(activeSession: store.activeSession, remoteSessions: store.resumableSessions) else {
+                    pendingEnd = nil
+                    return
+                }
+                pendingEnd = nil
+                Task { await store.endSession() }
+            }
+            Button("Keep Session", role: .cancel) { pendingEnd = nil }
+        } message: { target in
+            Text(target.message)
+        }
     }
 }
 

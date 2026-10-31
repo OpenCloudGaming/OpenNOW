@@ -57,6 +57,19 @@ enum PrintedWasteQueueFreshness {
     }
 }
 
+enum PrintedWasteQueuePresentation {
+    static func estimatedWait(etaMs: Double?) -> String? {
+        guard let etaMs, etaMs.isFinite, etaMs >= 0 else { return nil }
+        if etaMs < 60_000 { return "Under 1 min" }
+        if etaMs >= 86_400_000 { return "24+ hr" }
+        let minutes = Int(ceil(etaMs / 60_000))
+        if minutes < 60 { return "\(minutes) min" }
+        let hours = minutes / 60
+        let remaining = minutes % 60
+        return remaining > 0 ? "\(hours) hr \(remaining) min" : "\(hours) hr"
+    }
+}
+
 private struct PrintedWasteLocation: Identifiable {
     let title: String
     let primary: PrintedWasteZone
@@ -161,6 +174,7 @@ func printedWasteRegionalURL(zoneId: String, title: String?, regions: [StreamReg
 struct PrintedWasteQueueView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.openNowAccent) private var accent
     @EnvironmentObject private var store: OpenNOWStore
 
     let game: CloudGame
@@ -343,6 +357,7 @@ struct PrintedWasteQueueView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+            providerDefaultButton
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         .padding(32)
@@ -356,6 +371,7 @@ struct PrintedWasteQueueView: View {
                 Task { await loadZones() }
             }
             .buttonStyle(.borderedProminent)
+            providerDefaultButton
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -364,13 +380,18 @@ struct PrintedWasteQueueView: View {
         OpenNOWUnavailableView("No Servers Available", systemImage: "network.slash") {
             Text("No routing data is available right now.")
         } actions: {
-            Button("Launch Anyway") {
-                onConfirm(nil)
-                dismiss()
-            }
-            .buttonStyle(.borderedProminent)
+            providerDefaultButton
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var providerDefaultButton: some View {
+        Button("Use Provider Default") {
+            onConfirm(nil)
+            dismiss()
+        }
+        .frame(minHeight: OpenNOWSpacing.hitTarget)
+        .accessibilityHint("Let GeForce NOW choose a server without PrintedWaste routing data")
     }
 
     private var zoneList: some View {
@@ -380,6 +401,8 @@ struct PrintedWasteQueueView: View {
             Section {
                 launchSummary
                     .padding(.vertical, 4)
+            } footer: {
+                Text("NVIDIA free-tier server availability from PrintedWaste. These are regional estimates, not your live session queue position. Alliance providers use their own queues.")
             }
             Section {
                 if dynamicTypeSize.isAccessibilitySize {
@@ -462,6 +485,11 @@ struct PrintedWasteQueueView: View {
                 Text(selectedRoutingZone?.title ?? "Choose your preferred region before launch.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                if let updatedAt = selectedRoutingZone?.lastUpdated, updatedAt.isFinite {
+                    Text("Queue data updated \(Date(timeIntervalSince1970: updatedAt), style: .relative) ago")
+                        .font(OpenNOWFont.overline)
+                        .foregroundStyle(OpenNOWPalette.textMuted)
+                }
             }
             Spacer(minLength: 0)
         }
@@ -508,8 +536,10 @@ struct PrintedWasteQueueView: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
-            .tint(brandAccent)
+            .tint(accent.color)
             .disabled(selectedZoneUrl == nil)
+
+            providerDefaultButton
         }
         .padding(.horizontal, 20)
         .padding(.top, 12)
@@ -743,6 +773,7 @@ struct PrintedWasteQueueView: View {
 
 private struct ZoneRow: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.openNowAccent) private var accent
     let zone: PrintedWasteZone
     let title: String
     let alternateCount: Int
@@ -759,7 +790,7 @@ private struct ZoneRow: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .layoutPriority(1)
                     if alternateCount > 0 {
-                        Text("+\(alternateCount)")
+                        Text("\(alternateCount + 1) servers")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -784,7 +815,7 @@ private struct ZoneRow: View {
 
             Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                 .font(.body.weight(.semibold))
-                .foregroundStyle(isSelected ? brandAccent : Color.secondary.opacity(0.35))
+                .foregroundStyle(isSelected ? accent.color : Color.secondary.opacity(0.35))
                 .accessibilityHidden(true)
         }
         .padding(.vertical, 6)
@@ -795,7 +826,8 @@ private struct ZoneRow: View {
 
     @ViewBuilder
     private var metadata: some View {
-        statusText("Queue \(zone.queuePosition)", color: queueColor(zone.queuePosition))
+        statusText(zone.queuePosition >= 0 ? "Queue \(zone.queuePosition)" : "Queue unavailable",
+                   color: zone.queuePosition >= 0 ? queueColor(zone.queuePosition) : .secondary)
         if let gpuTier { statusText(gpuTier, color: .secondary) }
         if isAuto {
             statusText("Recommended", color: .secondary)
@@ -804,11 +836,14 @@ private struct ZoneRow: View {
 
     private var connectionMetrics: some View {
         VStack(alignment: dynamicTypeSize.isAccessibilitySize ? .leading : .trailing, spacing: 4) {
-            if let etaMs = zone.etaMs, etaMs.isFinite, etaMs >= 0 {
-                let wait = formatWait(etaMs)
-                Text(wait)
+            if let wait = PrintedWasteQueuePresentation.estimatedWait(etaMs: zone.etaMs) {
+                Text("Est. \(wait)")
                     .font(.subheadline.weight(.semibold))
                     .accessibilityLabel("Estimated wait \(wait)")
+            } else {
+                Text("Wait unavailable")
+                    .font(OpenNOWFont.rowFootnote)
+                    .foregroundStyle(OpenNOWPalette.textMuted)
             }
             pingBadge
         }
@@ -859,13 +894,6 @@ private struct ZoneRow: View {
         return OpenNOWPalette.statusPoor
     }
 
-    private func formatWait(_ etaMs: Double) -> String {
-        let mins = Int(ceil(etaMs / 60000))
-        if mins < 60 { return "\(mins)m" }
-        let hours = mins / 60
-        let remaining = mins % 60
-        return remaining > 0 ? "\(hours)h\(remaining)m" : "\(hours)h"
-    }
 }
 
 private struct PrintedWasteArtwork: View {

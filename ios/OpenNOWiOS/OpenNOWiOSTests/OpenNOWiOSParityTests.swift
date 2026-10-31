@@ -12,6 +12,10 @@ import MetalFX
 import CoreImage
 @testable import OpenNOWiOS
 
+typealias QueueActivityAttributes = OpenNOWiOS.QueueActivityAttributes
+typealias QueueActivityPresentation = OpenNOWiOS.QueueActivityPresentation
+typealias QueueActivityProgress = OpenNOWiOS.QueueActivityProgress
+
 @MainActor
 private final class GameDetailsPresentationTestDriver: ObservableObject {
     @Published var selectedGame: CloudGame?
@@ -51,6 +55,129 @@ private struct GameDetailsPresentationTestRoot: View {
 }
 
 final class OpenNOWiOSParityTests: XCTestCase {
+    func testAbandonedArtworkLoadReleasesItsDownload() async throws {
+        let started = expectation(description: "Artwork download started")
+        let canceled = expectation(description: "Unobserved artwork download canceled")
+        let pipeline = OpenNOWRemoteImagePipeline { _ in
+            started.fulfill()
+            do {
+                try await Task.sleep(nanoseconds: 30_000_000_000)
+                return UIImage()
+            } catch {
+                canceled.fulfill()
+                throw error
+            }
+        }
+        let request = OpenNOWImageLoadRequest(url: URL(string: "https://artwork.invalid/\(UUID())")!, targetPixelSize: 200)
+        let subscriber = Task { try await pipeline.load(request) }
+        await fulfillment(of: [started], timeout: 2)
+        subscriber.cancel()
+        await fulfillment(of: [canceled], timeout: 2)
+        do {
+            _ = try await subscriber.value
+            XCTFail("Canceled artwork must not reach a reused card")
+        } catch {
+            XCTAssertTrue(error is CancellationError)
+        }
+    }
+
+    func testSettingsSearchFindsSupportedPages() {
+        XCTAssertTrue(SettingsPage.streamQuality.matches(" RÉSOLÚTION \n FPS "))
+        XCTAssertTrue(SettingsPage.video.matches("MetalFX HDR"))
+        XCTAssertTrue(SettingsPage.connection.matches("server selector"))
+        XCTAssertTrue(SettingsPage.keyboard.matches("clear confirmation"))
+        XCTAssertTrue(SettingsPage.touchController.matches("dead zone"))
+        XCTAssertTrue(SettingsPage.diagnostics.matches("upload logs"))
+        XCTAssertFalse(SettingsPage.catalog.matches("microphone"))
+        XCTAssertFalse(SettingsPage.allCases.contains { $0.matches("gyroscope") })
+    }
+
+    func testDefaultTouchLayoutResetPreservesOtherPreferencesAndProfiles() {
+        var settings = AppSettings.default
+        var layout = TouchControlLayout.standard
+        layout.scale = 1.4
+        layout.opacity = 0.3
+        layout.independentPositions = ["a": TouchControlPoint(x: 0.2, y: 0.4)]
+        settings.touchControlLayouts["default"] = layout
+        settings.touchControlLayouts["custom"] = layout
+        settings.touch.nativeTouchScrollScale = 1.7
+        settings.touch.joystickDeadZone = 0.2
+        settings.touch.edgePadding = 29
+        settings.touch.bottomPadding = 31
+        settings.touch.leftOffsetX = 10
+        settings.touch.rightOffsetY = -12
+        settings.mouseSensitivity = 2
+        var expected = settings
+        expected.touch.resetLayout()
+        expected.touchControlLayouts["default"] = .standard
+        settings.resetDefaultTouchLayout()
+        XCTAssertEqual(settings, expected)
+    }
+
+    func testEndAllConfirmationRejectsReplacedAndAdvancedSessions() {
+        var session = queueFixture()
+        let target = SessionTerminationConfirmation(generation: UUID(), operation: UUID(),
+            activeID: session.id, activeStatus: session.status, remoteStatuses: [:])
+        XCTAssertTrue(target.matches(active: session, remote: []))
+        XCTAssertFalse(target.matches(active: nil, remote: []))
+        session.status = 3
+        XCTAssertFalse(target.matches(active: session, remote: []))
+        let replacement = SessionTerminationConfirmation(generation: UUID(), operation: UUID(),
+            activeID: "replacement", activeStatus: session.status, remoteStatuses: [:])
+        XCTAssertFalse(replacement.matches(active: session, remote: []))
+    }
+
+    func testRecentlyPlayedUsesAbsoluteDatesAndKeepsNeverPlayedLast() {
+        func game(_ title: String, _ date: String?) -> CloudGame {
+            var option = GameLaunchOption(storefront: "STEAM", appId: title, supportedControls: nil)
+            option.lastPlayedDate = date
+            return Self.makeGame(title: title, controls: [], options: [option])
+        }
+        let oldest = game("Oldest", "2026-10-01T15:30:00+02:00")
+        let latest = game("Latest", "2026-10-01T14:00:00.500Z")
+        let never = game("Never", nil)
+        let invalid = game("Invalid", "not-a-date")
+        XCTAssertEqual(CatalogSortMode.lastPlayed.sorted([never, oldest, latest, invalid]), [latest, oldest, invalid, never])
+    }
+
+    func testLibraryIndexFiltersAndSortsLatestVariantByAbsoluteDate() throws {
+        func game(_ title: String, _ dates: [String]) -> CloudGame {
+            let options = dates.enumerated().map { index, date in
+                GameLaunchOption(storefront: "STEAM", appId: "\(title)-\(index)", supportedControls: ["KEYBOARD_MOUSE"],
+                    libraryStatus: "PLATFORM_SYNC", lastPlayedDate: date)
+            }
+            return Self.makeGame(title: title, controls: [], options: options)
+        }
+        let alpha = game("Alpha", ["2026-10-01T15:30:00+02:00", "2026-10-01T14:00:00.500Z"])
+        let beta = game("Beta", ["2026-10-01T14:00:00Z"])
+        let never = game("Never", ["invalid"])
+        let index = try LibraryCatalogIndex(games: [never, beta, alpha])
+        var criteria = LibraryScreenCriteria()
+        XCTAssertEqual(try index.items(matching: criteria, favoriteIDs: []).map(\.game), [alpha, beta, never])
+        criteria.favoritesOnly = true
+        XCTAssertEqual(try index.items(matching: criteria, favoriteIDs: [beta.id]).map(\.game), [beta])
+        criteria.clearNarrowing()
+        criteria.query = " ALPHA \n Steam "
+        XCTAssertEqual(try index.items(matching: criteria, favoriteIDs: []).map(\.game), [alpha])
+        criteria.storefront = "EPIC"
+        XCTAssertTrue(try index.items(matching: criteria, favoriteIDs: []).isEmpty)
+        criteria.clearNarrowing()
+        criteria.touchOnly = true
+        XCTAssertTrue(try index.items(matching: criteria, favoriteIDs: []).isEmpty)
+    }
+
+    func testLibraryProjectionPerformanceForLargeLibrary() throws {
+        let games = (0..<2500).map { Self.makeGame(title: "Game \($0)", controls: []) }
+        let index = try LibraryCatalogIndex(games: games)
+        var criteria = LibraryScreenCriteria()
+        criteria.query = "Game 24"
+        measure {
+            do {
+                XCTAssertFalse(try index.items(matching: criteria, favoriteIDs: []).isEmpty)
+            } catch { XCTFail("Projection failed: \(error)") }
+        }
+    }
+
     @MainActor
     func testContinuePlayingDismissalPreservesLiveSessionAndCanBeRestored() {
         let defaults = UserDefaults.standard
@@ -1150,8 +1277,222 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertEqual(QueueActivityProgress.normalized(-1), 0)
         XCTAssertEqual(QueueActivityProgress.normalized(2), 1)
         XCTAssertEqual(QueueActivityProgress.barFraction(0.5, phase: .queued), 0.5)
-        XCTAssertEqual(QueueActivityProgress.barFraction(nil, phase: .waiting), 0.75)
+        XCTAssertEqual(QueueActivityProgress.barFraction(nil, phase: .waiting), 0)
         XCTAssertEqual(QueueActivityProgress.barFraction(nil, phase: .ready), 1)
+    }
+
+    func testStaleLiveActivitiesNeverOfferResumeOrOldQueueProgress() {
+        for phase in [QueueActivityAttributes.ContentState.Phase.queued, .waiting, .ready] {
+            let state = QueueActivityAttributes.ContentState(phase: phase, headline: "Ready to play",
+                detail: "Tap to resume", queueLabel: "Q8", queuePosition: 8, progress: 0.6, waitStartedAt: .now)
+            let presentation = QueueActivityPresentation(state: state, isStale: true)
+            XCTAssertFalse(presentation.canResume)
+            XCTAssertNil(presentation.queuePosition)
+            XCTAssertNil(presentation.progress)
+            XCTAssertEqual(presentation.phaseLabel, "Check session")
+            XCTAssertEqual(presentation.destination?.absoluteString, "opennow://")
+            XCTAssertFalse(presentation.headline.contains("Ready"))
+            XCTAssertNotEqual(presentation.symbol, "play.fill")
+        }
+    }
+
+    func testLiveActivityKeepsUnknownProgressUnknownAndSuppressesSetupQueuePosition() {
+        let ready = QueueActivityAttributes.ContentState(phase: .ready, headline: "Ready", detail: "Play",
+                                                         queueLabel: "Ready", queuePosition: nil)
+        XCTAssertTrue(QueueActivityPresentation(state: ready, isStale: false).canResume)
+        for progress: Double? in [nil, .nan, .infinity, -.infinity] {
+            let state = QueueActivityAttributes.ContentState(phase: .waiting, headline: "Setting up",
+                detail: "Preparing", queueLabel: "Setup", queuePosition: 4, progress: progress)
+            let presentation = QueueActivityPresentation(state: state, isStale: false)
+            XCTAssertNil(presentation.progress)
+            XCTAssertNil(presentation.queuePosition)
+        }
+        XCTAssertEqual(QueueActivityProgress.barFraction(0.25, phase: .waiting), 0.25)
+        XCTAssertEqual(QueueActivityProgress.barFraction(0, phase: .queued), 0)
+    }
+
+    func testCloudSessionTerminalStatesMatchAndroidAndCleanupIsNotTerminal() throws {
+        for status in [4, 5, 7, 8, 100] {
+            XCTAssertTrue(SessionLifecyclePolicy.isTerminal(status))
+            XCTAssertThrowsError(try SessionLifecyclePolicy.sessionObject(in: [
+                "requestStatus": ["statusCode": 1], "session": ["status": status]
+            ], httpStatus: 200)) { error in
+                XCTAssertTrue(error is RemoteSessionEndedError)
+            }
+        }
+        for status in [1, 2, 3, 6] {
+            XCTAssertFalse(SessionLifecyclePolicy.isTerminal(status))
+            let result = try SessionLifecyclePolicy.sessionObject(in: [
+                "requestStatus": ["statusCode": "1"], "session": ["status": "\(status)"]
+            ], httpStatus: 200)
+            XCTAssertEqual(SessionConnectionPolicy.integer(result["status"]), status)
+        }
+        XCTAssertFalse(SessionLifecyclePolicy.isLaunchable(6))
+    }
+
+    func testIncompleteOrFailedSessionChecksAreNotEvidenceOfAReadyOrEndedSession() {
+        for payload: [String: Any] in [[:], ["requestStatus": ["statusCode": 1]],
+            ["requestStatus": ["statusCode": 1], "session": ["status": true]],
+            ["requestStatus": ["statusCode": 1], "session": ["status": 0]],
+            ["requestStatus": ["statusCode": 503], "session": ["status": 3]]] {
+            XCTAssertThrowsError(try SessionLifecyclePolicy.sessionObject(in: payload, httpStatus: 200)) { error in
+                XCTAssertFalse(SessionLifecyclePolicy.isEnded(error))
+            }
+        }
+        for code in [401, 403, 429, 500, 503] {
+            XCTAssertFalse(SessionLifecyclePolicy.isEnded(NSError(domain: "OpenNOW.Session", code: code)))
+        }
+        for code in [404, 410] {
+            XCTAssertTrue(SessionLifecyclePolicy.isEnded(NSError(domain: "OpenNOW.Session", code: code)))
+            XCTAssertFalse(SessionLifecyclePolicy.isEnded(NSError(domain: "OpenNOW.SessionList", code: code)))
+        }
+        XCTAssertFalse(SessionLifecyclePolicy.isEnded(URLError(.timedOut)))
+        XCTAssertFalse(SessionLifecyclePolicy.isEnded(CancellationError()))
+    }
+
+    @MainActor
+    func testEndedSessionClearsResumeSurfacesAndPersistedSnapshotsWithoutAReplacement() {
+        let defaults = UserDefaults.standard
+        let keys = ["OpenNOW.iOS.settings", "OpenNOW.iOS.activeSession", "OpenNOW.iOS.activeStreamSettings"]
+        let saved = keys.map { defaults.data(forKey: $0) }
+        defer {
+            for (key, value) in zip(keys, saved) {
+                if let value { defaults.set(value, forKey: key) }
+                else { defaults.removeObject(forKey: key) }
+            }
+        }
+        let store = OpenNOWStore()
+        store.installDebugQueuePreview(position: 8)
+        store.streamSession = store.activeSession
+        store.handleEndedSession(id: "different-session")
+        XCTAssertNotNil(store.activeSession)
+        store.handleEndedSession(id: "debug-queue-preview")
+        XCTAssertNil(store.activeSession)
+        XCTAssertNil(store.streamSession)
+        XCTAssertNil(store.activeStreamSettings)
+        XCTAssertFalse(store.showStreamLoading)
+        XCTAssertFalse(store.queueOverlayVisible)
+        XCTAssertFalse(store.canReopenStreamer)
+        XCTAssertFalse(store.canJumpBackToSession)
+        XCTAssertNil(defaults.data(forKey: "OpenNOW.iOS.activeSession"))
+        XCTAssertNil(defaults.data(forKey: "OpenNOW.iOS.activeStreamSettings"))
+    }
+
+    func testSessionEndConfirmationIsPinnedToIdentityAndPhase() {
+        var session = queueFixture()
+        let queued = SessionEndTarget.current(session)
+        XCTAssertEqual(queued.actionTitle, "Leave Queue")
+        XCTAssertTrue(queued.message.contains("lose your place"))
+        XCTAssertTrue(queued.matches(activeSession: session, remoteSessions: []))
+        XCTAssertFalse(queued.matches(activeSession: nil, remoteSessions: []))
+        session.status = 3
+        XCTAssertFalse(queued.matches(activeSession: session, remoteSessions: []))
+        let running = SessionEndTarget.current(session)
+        XCTAssertEqual(running.actionTitle, "End Cloud Session")
+        XCTAssertTrue(running.message.contains("unsaved progress"))
+        let remote = RemoteSessionCandidate(id: "remote", appId: "1", status: 3, serverIp: nil,
+                                             streamSettingsSignature: nil, resolution: nil, fps: nil)
+        let remoteTarget = SessionEndTarget.remote(remote, title: "Game")
+        XCTAssertTrue(remoteTarget.matches(activeSession: nil, remoteSessions: [remote]))
+        XCTAssertFalse(remoteTarget.matches(activeSession: session, remoteSessions: []))
+    }
+
+    func testPrintedWasteEstimatesRejectInvalidValuesAndRemainBounded() {
+        for invalid: Double? in [nil, -1, .nan, .infinity, -.infinity] {
+            XCTAssertNil(PrintedWasteQueuePresentation.estimatedWait(etaMs: invalid))
+        }
+        XCTAssertEqual(PrintedWasteQueuePresentation.estimatedWait(etaMs: 0), "Under 1 min")
+        XCTAssertEqual(PrintedWasteQueuePresentation.estimatedWait(etaMs: 59_999), "Under 1 min")
+        XCTAssertEqual(PrintedWasteQueuePresentation.estimatedWait(etaMs: 60_000), "1 min")
+        XCTAssertEqual(PrintedWasteQueuePresentation.estimatedWait(etaMs: 3_600_000), "1 hr")
+        XCTAssertEqual(PrintedWasteQueuePresentation.estimatedWait(etaMs: .greatestFiniteMagnitude), "24+ hr")
+    }
+
+    func testSessionScreenDoesNotAdvertiseUnverifiedReadyState() {
+        var session = queueFixture()
+        session.status = 3
+        let checking = SessionScreenPresentation(session: session, availability: .checking, isStreaming: false)
+        XCTAssertTrue(checking.isChecking)
+        XCTAssertEqual(checking.actionTitle, "Checking Session…")
+        XCTAssertFalse(checking.status.contains("Ready"))
+        let unverified = SessionScreenPresentation(session: session, availability: .unverified, isStreaming: false)
+        XCTAssertEqual(unverified.actionTitle, "Check Session")
+        XCTAssertFalse(unverified.status.contains("Ready"))
+        let confirmed = SessionScreenPresentation(session: session, availability: .available, isStreaming: false)
+        XCTAssertEqual(confirmed.actionTitle, "Resume Session")
+        XCTAssertEqual(confirmed.status, "Ready to return")
+    }
+
+    @MainActor
+    func testQueueSettingsAndLiveActivityPresentationsRender() async throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = try XCTUnwrap(scene.windows.first(where: \.isKeyWindow))
+        let previous = window.rootViewController
+        defer { window.rootViewController = previous }
+        let store = OpenNOWStore()
+        store.installDebugQueuePreview(position: 24)
+        store.settings.expressiveUI = false
+
+        func capture<V: View>(_ name: String, _ view: V) async throws {
+            window.rootViewController = UIHostingController(rootView: view)
+            window.makeKeyAndVisible()
+            try await Task.sleep(nanoseconds: 300_000_000)
+            window.layoutIfNeeded()
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+                window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+            }
+            XCTAssertNotNil(image.cgImage)
+            let attachment = XCTAttachment(image: image)
+            attachment.name = "Parity-\(name)"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+
+        try await capture("Queue", StreamLoadingView(coversBottomBar: true).environmentObject(store)
+            .openNowTheme(store.settings))
+        try await capture("Queue-Large-Text", StreamLoadingView(coversBottomBar: true).environmentObject(store)
+            .environment(\.dynamicTypeSize, .accessibility2)
+            .openNowTheme(store.settings))
+        try await capture("Settings", SettingsView().environmentObject(store).openNowTheme(store.settings))
+        store.installDebugLibraryPreview()
+        try await capture("Library", LibraryView().environmentObject(store)
+            .environmentObject(CatalogControllerShortcutCoordinator()).openNowTheme(store.settings))
+        try await capture("Library-Large-Text", LibraryView().environmentObject(store)
+            .environmentObject(CatalogControllerShortcutCoordinator())
+            .environment(\.dynamicTypeSize, .accessibility2).openNowTheme(store.settings))
+        for (name, phase, stale) in [
+            ("Queued", QueueActivityAttributes.ContentState.Phase.queued, false),
+            ("Setup", .waiting, false), ("Ready", .ready, false), ("Stale", .ready, true)
+        ] {
+            let state = QueueActivityAttributes.ContentState(phase: phase,
+                headline: phase == .ready ? "Ready to play" : phase == .waiting ? "Preparing your rig" : "In queue",
+                detail: phase == .ready ? "Your cloud rig is ready" : "Waiting for a cloud rig",
+                queueLabel: "Queue", queuePosition: phase == .queued ? 24 : nil,
+                progress: phase == .queued ? 0.4 : nil)
+            let card = LockScreenQueueLiveActivityView(
+                attributes: QueueActivityAttributes(sessionId: "snapshot", gameTitle: "Cyberpunk 2077", storeName: "Steam"),
+                presentation: QueueActivityPresentation(state: state, isStale: stale))
+                .clipShape(RoundedRectangle(cornerRadius: 24))
+                .padding(16)
+                .frame(maxHeight: .infinity, alignment: .center)
+                .background(Color.gray.opacity(0.2))
+            try await capture("LiveActivity-\(name)", card)
+        }
+    }
+
+    func testQueueTrendsWithdrawStaleEstimatesAndIgnoreOutOfOrderSamples() {
+        let start = Date(timeIntervalSinceReferenceDate: 100)
+        var trend = QueueTrendEstimator()
+        trend.record(position: 30, at: start)
+        trend.record(position: 24, at: start.addingTimeInterval(30))
+        trend.record(position: 18, at: start.addingTimeInterval(60))
+        XCTAssertNotNil(trend.estimate(now: start.addingTimeInterval(60)))
+        trend.record(position: 99, at: start.addingTimeInterval(30))
+        XCTAssertEqual(trend.samples.count, 3)
+        XCTAssertNil(trend.estimate(now: start.addingTimeInterval(151)))
+        trend.record(position: 22, at: start.addingTimeInterval(90))
+        XCTAssertEqual(trend.trend(now: start.addingTimeInterval(90)), .slipped)
+        XCTAssertEqual(QueueTrendEstimator.Estimate(lowMinutes: 61, highMinutes: 61).label, "over an hour left")
     }
 
     func testMetal4RenderingIsOptInAndPersistsIndependentlyOfHDRAndMetalFX() throws {

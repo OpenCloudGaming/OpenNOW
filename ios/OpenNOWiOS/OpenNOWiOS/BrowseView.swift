@@ -6,6 +6,7 @@ struct BrowseView: View {
     @State private var selectedPlatform: String?
     @State private var selectedStore: String?
     @State private var favoritesOnly = false
+    @State private var touchControlsOnly = false
     @State private var sortMode: CatalogSortMode = .title
     @State private var pendingLaunchRequest: GameLaunchRequest?
     @State private var selectedGameForDetails: CloudGame?
@@ -16,8 +17,10 @@ struct BrowseView: View {
             GameCatalogGridView(
                 games: filteredGames,
                 isLoading: store.isLoadingGames && store.allGames.isEmpty,
-                emptyTitle: hasActiveFilters ? "No Matches" : "No Games",
-                emptySystemImage: hasActiveFilters ? "line.3.horizontal.decrease.circle" : "square.grid.2x2",
+                isSearching: store.isSearchingCatalog,
+                emptyTitle: store.catalogError != nil && !hasNarrowingFilters ? "Games Unavailable" : hasNarrowingFilters ? "No Matches" : "No Games",
+                emptySystemImage: hasNarrowingFilters ? "line.3.horizontal.decrease.circle" : "square.grid.2x2",
+                emptyDescription: hasNarrowingFilters ? "Try another search or remove a filter." : nil,
                 subtitle: { gameCatalogSubtitle(for: $0) },
                 badgeSystemImage: { _ in nil },
                 onOpenDetails: { selectedGameForDetails = $0 },
@@ -55,16 +58,20 @@ struct BrowseView: View {
     }
 
     private var browseHeader: some View {
-        CatalogControlsHeader(
-            title: browseCountTitle,
-            subtitle: store.isLoadingFullCatalog ? "Loading full NVIDIA catalog…" : store.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Store catalog" : "Search results",
-            chips: activeFilterChips,
-            onClear: hasActiveFilters ? clearFilters : nil
-        ) {
-            HStack(spacing: 8) {
-                if store.isLoadingFullCatalog { ProgressView().accessibilityLabel("Loading full catalog") }
-                filterMenu
-                sortMenu
+        VStack(alignment: .leading, spacing: OpenNOWSpacing.md) {
+            CatalogFailureNotice()
+            CatalogControlsHeader(
+                title: browseCountTitle,
+                subtitle: store.isLoadingFullCatalog ? "Loading full NVIDIA catalog…" : store.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Store catalog" : "Search results",
+                chips: activeFilterChips,
+                onClear: hasActiveFilters ? clearFilters : nil
+            ) {
+                HStack(spacing: 8) {
+                    if store.isLoadingFullCatalog { ProgressView().accessibilityLabel("Loading full catalog") }
+                    if store.isSearchingCatalog { ProgressView().accessibilityLabel("Searching games") }
+                    filterMenu
+                    sortMenu
+                }
             }
         }
     }
@@ -72,6 +79,7 @@ struct BrowseView: View {
     private var filterMenu: some View {
         Menu {
             Toggle("Favorites", isOn: $favoritesOnly)
+            Toggle("Touch controls", isOn: $touchControlsOnly)
 
             Picker("Platform", selection: binding(for: $selectedPlatform)) {
                 Text("Any Platform").tag("")
@@ -96,14 +104,16 @@ struct BrowseView: View {
 
             if hasActiveFilters {
                 Divider()
-                Button("Clear Filters", role: .destructive) {
+                Button("Clear Filters") {
                     clearFilters()
                 }
             }
         } label: {
             Image(systemName: hasActiveFilters ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+                .minimumHitTarget()
         }
         .accessibilityLabel("Filters")
+        .accessibilityValue(hasActiveFilters ? "Active" : "None")
     }
 
     private var sortMenu: some View {
@@ -115,8 +125,10 @@ struct BrowseView: View {
             }
         } label: {
             Image(systemName: "arrow.up.arrow.down")
+                .minimumHitTarget()
         }
         .accessibilityLabel("Sort")
+        .accessibilityValue(sortMode.title)
     }
 
     private var browseCountTitle: String {
@@ -138,6 +150,9 @@ struct BrowseView: View {
             chips.append(CatalogFilterChip(label: "Favorites") {
                 favoritesOnly = false
             })
+        }
+        if touchControlsOnly {
+            chips.append(CatalogFilterChip(label: "Touch controls") { touchControlsOnly = false })
         }
         if let selectedPlatform {
             chips.append(CatalogFilterChip(label: selectedPlatform) {
@@ -180,34 +195,24 @@ struct BrowseView: View {
             let matchesPlatform = selectedPlatform == nil || game.platform == selectedPlatform
             let matchesStore = selectedStore.map { gameResolvedStores(game: game).contains($0) } ?? true
             let matchesFavorite = !favoritesOnly || store.isFavorite(game)
-            return matchesGenre && matchesPlatform && matchesStore && matchesFavorite
+            let matchesTouch = !touchControlsOnly || NativeTouchSupport.catalogClaimsTouchSupport(game)
+            return matchesGenre && matchesPlatform && matchesStore && matchesFavorite && matchesTouch
         }
 
-        switch sortMode {
-        case .title:
-            return filtered.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
-        case .genre:
-            return filtered.sorted {
-                $0.genre == $1.genre
-                    ? $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
-                    : $0.genre.localizedCaseInsensitiveCompare($1.genre) == .orderedAscending
-            }
-        case .platform:
-            return filtered.sorted {
-                $0.platform == $1.platform
-                    ? $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
-                    : $0.platform.localizedCaseInsensitiveCompare($1.platform) == .orderedAscending
-            }
-        }
+        return sortMode.sorted(filtered)
     }
 
     private var hasActiveFilters: Bool {
+        hasNarrowingFilters || sortMode != .title
+    }
+
+    private var hasNarrowingFilters: Bool {
         !store.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
             selectedGenre != nil ||
             selectedPlatform != nil ||
             selectedStore != nil ||
             favoritesOnly ||
-            sortMode != .title
+            touchControlsOnly
     }
 
     private func binding(for optional: Binding<String?>) -> Binding<String> {
@@ -223,6 +228,7 @@ struct BrowseView: View {
         selectedPlatform = nil
         selectedStore = nil
         favoritesOnly = false
+        touchControlsOnly = false
         sortMode = .title
     }
 
@@ -239,6 +245,7 @@ struct BrowseView: View {
 
 enum CatalogSortMode: String, CaseIterable, Identifiable {
     case title
+    case lastPlayed
     case genre
     case platform
 
@@ -247,6 +254,7 @@ enum CatalogSortMode: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .title: return "Title"
+        case .lastPlayed: return "Recently Played"
         case .genre: return "Genre"
         case .platform: return "Platform"
         }
@@ -255,8 +263,45 @@ enum CatalogSortMode: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .title: return "textformat"
+        case .lastPlayed: return "clock.arrow.circlepath"
         case .genre: return "square.grid.2x2"
         case .platform: return "gamecontroller"
+        }
+    }
+
+    func sorted(_ games: [CloudGame]) -> [CloudGame] {
+        switch self {
+        case .title:
+            return games.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        case .lastPlayed:
+            let standard = ISO8601DateFormatter()
+            let fractional = ISO8601DateFormatter()
+            fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            return games.map { game in
+                let latest = game.launchOptions.compactMap { option -> Date? in
+                    guard let value = option.lastPlayedDate?.trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
+                    return fractional.date(from: value) ?? standard.date(from: value)
+                }.max()
+                return (game: game, date: latest ?? .distantPast)
+            }
+                .sorted {
+                    $0.date == $1.date
+                        ? $0.game.title.localizedCaseInsensitiveCompare($1.game.title) == .orderedAscending
+                        : $0.date > $1.date
+                }
+                .map(\.game)
+        case .genre:
+            return games.sorted {
+                $0.genre == $1.genre
+                    ? $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+                    : $0.genre.localizedCaseInsensitiveCompare($1.genre) == .orderedAscending
+            }
+        case .platform:
+            return games.sorted {
+                $0.platform == $1.platform
+                    ? $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+                    : $0.platform.localizedCaseInsensitiveCompare($1.platform) == .orderedAscending
+            }
         }
     }
 }
