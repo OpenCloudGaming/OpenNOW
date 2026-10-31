@@ -277,19 +277,18 @@ enum CatalogSortMode: String, CaseIterable, Identifiable {
             let standard = ISO8601DateFormatter()
             let fractional = ISO8601DateFormatter()
             fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            return games.map { game in
+            let datedGames: [(game: CloudGame, date: Date)] = games.map { game in
                 let latest = game.launchOptions.compactMap { option -> Date? in
                     guard let value = option.lastPlayedDate?.trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
                     return fractional.date(from: value) ?? standard.date(from: value)
                 }.max()
-                return (game: game, date: latest ?? .distantPast)
+                return (game: game, date: latest ?? Date.distantPast)
             }
-                .sorted {
-                    $0.date == $1.date
-                        ? $0.game.title.localizedCaseInsensitiveCompare($1.game.title) == .orderedAscending
-                        : $0.date > $1.date
-                }
-                .map(\.game)
+            let sortedGames = datedGames.sorted { left, right in
+                if left.date != right.date { return left.date > right.date }
+                return left.game.title.localizedCaseInsensitiveCompare(right.game.title) == .orderedAscending
+            }
+            return sortedGames.map { $0.game }
         case .genre:
             return games.sorted {
                 $0.genre == $1.genre

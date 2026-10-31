@@ -345,7 +345,7 @@ private actor OpenNOWImageLoadGate {
     }
 }
 
-struct OpenNOWImageLoadRequest: Hashable {
+struct OpenNOWImageLoadRequest: Hashable, Sendable {
     let url: URL
     let targetPixelSize: Int
 }
@@ -470,7 +470,9 @@ actor OpenNOWRemoteImagePipeline {
     private let imageLoader: @Sendable (OpenNOWImageLoadRequest) async throws -> UIImage
     private var inFlight: [OpenNOWImageLoadRequest: Load] = [:]
 
-    init(imageLoader: @escaping @Sendable (OpenNOWImageLoadRequest) async throws -> UIImage = OpenNOWRemoteImagePipeline.fetchImage) {
+    init(imageLoader: @escaping @Sendable (OpenNOWImageLoadRequest) async throws -> UIImage = {
+        try await OpenNOWRemoteImagePipeline.fetchImage($0)
+    }) {
         self.imageLoader = imageLoader
     }
 
